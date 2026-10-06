@@ -72,3 +72,40 @@ func TestShellRingLeavesAPartCharacter(t *testing.T) {
 		t.Fatalf("stray bytes %q skipped %d", text, skipped)
 	}
 }
+
+// The last line is redacted before it is clipped, and a tail cut from longer
+// output drops where a part of a cut secret could be, so neither a clip nor
+// the cut shows a part of a stored value.
+func TestShellLastLineRedactsBeforeClipping(t *testing.T) {
+	const standIn = "lv-standin-5c8e2a7d1f"
+	redact := func(s string) string { return strings.ReplaceAll(s, standIn, "[secret:STAND_IN]") }
+	leaks := func(s string) bool {
+		s = strings.ReplaceAll(s, "[secret:STAND_IN]", "")
+		for i := 0; i+3 <= len(standIn); i++ {
+			if strings.Contains(s, standIn[i:i+3]) {
+				return true
+			}
+		}
+		return false
+	}
+	lineOf := func(out string) *ShellProc {
+		p := &ShellProc{out: &shellRing{max: 1 << 20}}
+		_, _ = p.out.Write([]byte(out))
+		return p
+	}
+	// A secret across the clip.
+	p := lineOf("first\n" + strings.Repeat(".", 190) + standIn + strings.Repeat(".", 50) + "\n")
+	if got := p.LastLine(200, redact, len(standIn)); leaks(got) || !strings.Contains(got, "[secret:") {
+		t.Fatalf("across the clip: %q", got)
+	}
+	if !leaks(redact(p.LastLine(200, nil, 0))) {
+		t.Fatal("the clip does not cut the value; the case tests nothing")
+	}
+	// A secret across the start of the tail the last line is read from.
+	for into := 1; into < len(standIn); into++ {
+		p := lineOf(strings.Repeat(".", 5000) + standIn + strings.Repeat(".", 4096-len(standIn)+into))
+		if got := p.LastLine(200, redact, len(standIn)); leaks(got) {
+			t.Fatalf("%d bytes into the value: %q", into, got)
+		}
+	}
+}

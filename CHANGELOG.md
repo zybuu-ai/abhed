@@ -20,6 +20,13 @@ All notable changes to Abhed are recorded here. The format follows
   A secret a program prints in two writes more than a second apart can now
   show its first part to a read between them; the whole value is redacted
   as before.
+- The last line of a background shell's output, shown in the notice when the
+  shell ends and in the task listing (`TaskInfo.LastLine`), was clipped to
+  200 characters before it was redacted, so a stored secret across the clip,
+  or across the start of the 4 KiB tail the line is read from, showed its
+  first characters. Affects 1.2.3 to 1.2.6. The line is now redacted before
+  it is clipped, and a tail cut from longer output leaves out its first bytes,
+  where a part of a cut secret could be.
 
 ### Changed
 

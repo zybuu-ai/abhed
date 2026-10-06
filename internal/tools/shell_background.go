@@ -246,9 +246,25 @@ func (p *ShellProc) Unread() int64 {
 	return total - p.cursor
 }
 
-// LastLine is the last non-empty line of output, clipped to max runes.
-func (p *ShellProc) LastLine(max int) string {
-	tail := p.out.tail(4096)
+// LastLine is the last non-empty line of output, clipped to max runes. With
+// redact, the output is redacted before it is clipped, so a clip never cuts a
+// secret it would have hidden; span is the longest value redact hides, and a
+// tail cut from longer output drops its first span-1 bytes, where a part of a
+// cut value could be.
+func (p *ShellProc) LastLine(max int, redact func(string) string, span int) string {
+	tail, cut := p.out.tail(4096)
+	if cut {
+		if span > 1 {
+			tail = tail[min(span-1, len(tail)):]
+		}
+		for n := 0; n < utf8.UTFMax && len(tail) > 0 && !utf8.RuneStart(tail[0]); n++ {
+			tail = tail[1:]
+		}
+	}
+	tail = strings.ToValidUTF8(tail, "�")
+	if redact != nil {
+		tail = redact(tail)
+	}
 	lines := strings.Split(strings.TrimRight(tail, "\r\n \t"), "\n")
 	line := strings.TrimSpace(lines[len(lines)-1])
 	if r := []rune(line); len(r) > max {
@@ -366,10 +382,11 @@ func incompleteTail(b []byte) int {
 	return 0
 }
 
-// tail is the last n bytes held.
-func (r *shellRing) tail(n int) string {
+// tail is the last n bytes held, as written, and whether output came before
+// them.
+func (r *shellRing) tail(n int) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	from := max(r.kept(), r.total-int64(n))
-	return strings.ToValidUTF8(string(r.buf[from-r.base:]), "�")
+	return string(r.buf[from-r.base:]), from > 0
 }

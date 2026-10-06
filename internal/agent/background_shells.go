@@ -308,7 +308,7 @@ func (b *Background) watchShell(sctx context.Context, t *bgTask, stopDeadline fu
 		b.loop.record(EvShellEnded, ActorSystem, end)
 	}
 	n := Notice{TaskID: t.ID, Session: b.sessionID(), Description: t.Description, Kind: KindShell,
-		Status: state, Reason: reason, CallID: "bgn_" + newID(), Content: b.redacted(shellEndText(t, end, sh.proc))}
+		Status: state, Reason: reason, CallID: "bgn_" + newID(), Content: b.redacted(shellEndText(t, end, sh.proc.Unread(), b.lastLine(sh.proc)))}
 	b.mu.Lock()
 	quiet := sh.quiet || b.closed
 	b.mu.Unlock()
@@ -333,14 +333,14 @@ func (b *Background) forget(id string) {
 }
 
 // shellEndText is what the conversation is told when a shell ends.
-func shellEndText(t *bgTask, end ShellEnded, p *tools.ShellProc) string {
+func shellEndText(t *bgTask, end ShellEnded, unread int64, line string) string {
 	how := fmt.Sprintf("exited with code %d", end.ExitCode)
 	if end.State == ShellKilled {
 		how = "was killed (" + end.Reason + ")"
 	}
 	s := fmt.Sprintf("Background shell %s (%s) %s after %s; %d bytes of output, %d not yet read.",
-		t.ID, t.Description, how, (time.Duration(end.DurationMS) * time.Millisecond).String(), end.OutputBytes, p.Unread())
-	if line := p.LastLine(shellLastLine); line != "" {
+		t.ID, t.Description, how, (time.Duration(end.DurationMS) * time.Millisecond).String(), end.OutputBytes, unread)
+	if line != "" {
 		s += "\nLast line: " + line
 	}
 	return s + "\nRead its output with shell_output."
@@ -422,6 +422,16 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 	return "", skipped
 }
 
+// lastLine is a shell's last line of output, redacted before it is clipped.
+func (b *Background) lastLine(p *tools.ShellProc) string {
+	if b.loop != nil {
+		if red := b.loop.Recorder.redactor(); red != nil {
+			return p.LastLine(shellLastLine, func(s string) string { return redactedText(red.Redact, s) }, red.Span())
+		}
+	}
+	return p.LastLine(shellLastLine, nil, 0)
+}
+
 // redacted is text as the session's record would keep it.
 func (b *Background) redacted(text string) string {
 	if b.loop != nil {
@@ -477,7 +487,8 @@ func (t *bgTask) shellInfo(ti *TaskInfo) {
 		ti.ExitCode = &code
 	}
 	ti.OutputBytes, _ = sh.proc.Size()
-	ti.LastLine = sh.proc.LastLine(shellLastLine)
+	// Its last line is read when it is redacted, outside b.mu.
+	ti.shellProc = sh.proc
 }
 
 // maxShellRead bounds one shell_output result, as a foreground command's is.
