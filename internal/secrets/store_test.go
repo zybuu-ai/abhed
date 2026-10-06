@@ -380,7 +380,8 @@ func TestJoinedRedactsEveryPartAndFailsClosed(t *testing.T) {
 	if err := os.WriteFile(op.Path(), []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := string(j.Redact([]byte(`"own-value-123"`))); strings.Contains(got, "own-value") {
+	// Withheld outright: even text holding no stored value is not passed on.
+	if got := j.Redact([]byte(`"own-value-123 and plain text"`)); got != nil {
 		t.Errorf("a part that cannot be loaded did not withhold: %s", got)
 	}
 }
