@@ -39,6 +39,12 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` shows the egress state. See
   [Network policy](docs/guide/21-network-policy.md).
 
+### Security
+
+- On the macOS process tier a command, or the workbench shell, can signal
+  only processes in its own sandbox: `kill $PPID` no longer stops Abhed, and
+  one command cannot signal another's processes, as on Linux.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in

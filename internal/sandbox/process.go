@@ -183,6 +183,10 @@ func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
 func (s *Process) seatbeltProfileFor(port uint16) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
+	// A command signals only processes in its own sandbox: never Abhed,
+	// which it could otherwise kill with kill $PPID, nor another command's,
+	// as bubblewrap's PID namespace keeps them apart on Linux.
+	b.WriteString(";; Signals stay inside this sandbox.\n(deny signal)\n(allow signal (target same-sandbox))\n\n")
 
 	b.WriteString(";; Writes are confined to the workspace and standard temp dirs.\n")
 	b.WriteString("(deny file-write*)\n")

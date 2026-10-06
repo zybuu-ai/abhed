@@ -94,6 +94,11 @@ What each tier bounds today:
 - **`process`.** Writes go to the workspace, plus temp folders and, on macOS, toolchain
   caches ([Configuration](../guide/02-configuration.md#sandbox) lists them). Processes are
   bounded by `max_procs` and each command by its timeout; memory, CPU and disk are not.
+  A command signals only its own processes: bubblewrap's PID namespace on Linux, a
+  Seatbelt `same-sandbox` signal rule on macOS, so `kill $PPID` does not reach Abhed. On
+  macOS, Mach service lookups other than the network and system configuration services
+  stay open under the profile's `(allow default)`
+  ([security posture](../trust/security-posture.md)).
 - **No tier** puts a quota on the workspace's disk use.
 
 The aim is one VM per session, never reused across tenants, since reuse is how T6 happens.
