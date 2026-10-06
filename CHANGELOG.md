@@ -18,6 +18,15 @@ All notable changes to Abhed are recorded here. The format follows
   shows it once the shell has written nothing for a second; at a gap, the
   same fixed length is skipped.
 
+### Go API
+
+Listed late from 1.2.6, all additive there:
+
+- `config`: `Attempt`, one setting loading did not take as written, which
+  `Config.Attempts` returns.
+- `config`: `Config.Fence` and `FenceConfig`, the fence tier's settings, and
+  `SandboxConfig.Tier`, which chooses the fence tier.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
