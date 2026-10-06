@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-10-06
+
 ### Security
 
 - The `ABHED_BASE_URL`, `ABHED_MODEL`, `ABHED_API_KEY`, `ABHED_DATABASE_URL`,
