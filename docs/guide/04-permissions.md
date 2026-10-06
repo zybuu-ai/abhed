@@ -535,12 +535,24 @@ The `write` and `edit` tools also refuse anything inside a `.git` folder, and
 a `.git` file, in any case and through a link, in every mode: a hook or a
 config line written there runs a program at the next git command, Abhed's
 own or yours. Git commands still change the repository. Commands are not
-held to this by the file tools. Abhed Studio's sessions also keep every
-`.git/config` and `.git/hooks` out of their commands' reach: on macOS by
-pattern, at any depth and for repositories made later; under bubblewrap and
-in a container by binding read-only those found when each command starts,
-an empty hooks folder or config file made first where a repository has none,
-down to six folders, past `node_modules` and `.abhed`.
+held to this by the file tools. Abhed Studio's sessions also keep out of
+their commands' reach what git reads in a git folder as configuration or
+follows elsewhere: `config`, `config.worktree`, `hooks`, `commondir`,
+`gitdir`, `info/attributes` and `objects/info/alternates`, in every git
+folder, its linked worktrees' (`.git/worktrees/*`) and its submodules'
+(`.git/modules/**`). On macOS this is by pattern, at any depth and for
+repositories and files made later. Under bubblewrap and in a container (the
+vm tier too) it is by binding read-only those found when each command
+starts, down to six folders, past `node_modules` and `.abhed`; an empty hooks
+folder or config file is made first where a repository has none, and an
+empty `config.worktree` where git would read one. Git refuses an empty
+`commondir`, so none can stand in for a missing one: a `commondir` found in a
+git folder where git never writes one is moved to `~/.abhed/quarantine` and
+that command is not run. Until the next command starts, git you run yourself
+in that repository would follow it; Abhed's own git on the host refuses to
+run while a `commondir` points anywhere but the repository's own git folder.
+The fence cannot hold paths inside the writable workspace, so a Studio
+session does not run commands on it.
 
 The command sandbox guards `.abhed/` by path, not by file: a hardlink to a
 state file elsewhere in the workspace is an ordinary path to it, which a

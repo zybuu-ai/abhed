@@ -224,3 +224,112 @@ func TestOnlyHTTPSTransportRuns(t *testing.T) {
 		t.Fatalf("a transport the repository allowed ran a program:\n%s", out)
 	}
 }
+
+// A commondir planted in the git folder points git at another folder's
+// configuration, hooks and refs. Abhed's git on the host reads the
+// repository's own: no planted fsmonitor or hook runs, and the refs and
+// configuration it sees are the repository's.
+func TestPlantedCommondirIsNotFollowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the planted programs are shell scripts")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root, marks := t.TempDir(), t.TempDir()
+	repo, evil := filepath.Join(root, "repo"), filepath.Join(root, "evil")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(Env(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for _, d := range []string{repo, evil} {
+		git(root, "init", "-q", "-b", "main", d)
+		git(d, "commit", "-q", "--allow-empty", "-m", filepath.Base(d))
+	}
+	want := git(repo, "rev-parse", "main")
+	mark := filepath.Join(marks, "ran")
+	script := filepath.Join(marks, "fsmonitor.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+mark+"\n"), 0o755); err != nil { // #nosec G306 -- a test script
+		t.Fatal(err)
+	}
+	evilGit := filepath.Join(evil, ".git")
+	git(evil, "config", "core.fsmonitor", script)
+	git(evil, "config", "abhed.planted", "yes")
+	if err := os.WriteFile(filepath.Join(evilGit, "hooks", "post-index-change"), []byte("#!/bin/sh\ntouch "+mark+"\n"), 0o755); err != nil { // #nosec G306 -- a test hook
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "commondir"), []byte(evilGit+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	r := New(ctx, repo)
+	for _, args := range [][]string{{"rev-parse", "main"}, {"status", "--porcelain"}, {"add", "-A"}, {"config", "--get", "abhed.planted"}} {
+		cmd := r.Command(ctx, args...)
+		out, err := cmd.CombinedOutput()
+		if err == nil || cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "commondir") {
+			t.Errorf("git %v ran with a planted commondir: %v %s", args, err, out)
+		}
+	}
+	if _, err := os.Stat(mark); err == nil {
+		t.Error("a planted program ran")
+	}
+	// Taken out, git runs on the repository's own folder again.
+	if err := os.Remove(filepath.Join(repo, ".git", "commondir")); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := New(ctx, repo).Command(ctx, "rev-parse", "main").Output(); err != nil || strings.TrimSpace(string(out)) != want {
+		t.Errorf("main is %q (%v), want %q", out, err, want)
+	}
+}
+
+// A linked worktree's commondir, which git writes, is followed when it
+// names the common git folder, and refused when it names another.
+func TestWorktreeCommondirMustNameItsRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	repo, wt, other := filepath.Join(root, "repo"), filepath.Join(root, "wt"), filepath.Join(root, "other")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", repo}, {"init", "-q", "-b", "main", other},
+		{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", repo, "worktree", "add", "-q", "-b", "w", wt},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = Env()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	ctx := context.Background()
+	if out, err := New(ctx, wt).Command(ctx, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "w" {
+		t.Fatalf("the worktree: %v %s", err, out)
+	}
+	cd := filepath.Join(repo, ".git", "worktrees", "wt", "commondir")
+	if err := os.WriteFile(cd, []byte(filepath.Join(other, ".git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cmd := New(ctx, wt).Command(ctx, "status"); cmd.Err == nil {
+		t.Fatal("ran with the worktree's commondir pointing at another repository")
+	}
+}
+
+// A bare repository Abhed names with GIT_DIR keeps it: no common git folder
+// found from elsewhere is put in its place.
+func TestGitDirInEnvIsNotPinned(t *testing.T) {
+	env := pinned("/somewhere/.git", []string{"GIT_DIR=/tmp/bare"})
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_COMMON_DIR=") {
+			t.Fatalf("pinned beside GIT_DIR: %v", kv)
+		}
+	}
+	if env := pinned("/r/.git", nil); env[len(env)-1] != "GIT_COMMON_DIR=/r/.git" {
+		t.Fatalf("not pinned: %v", env[len(env)-1])
+	}
+}

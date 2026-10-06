@@ -6,6 +6,26 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Abhed Studio's sessions kept a command from writing `.git/config` and
+  `.git/hooks`, but a command could still write `.git/commondir`, pointing
+  git at configuration and hooks of its own, or a submodule's config and
+  hooks under `.git/modules`, or `config.worktree`, and the next `git status`
+  run on the host (yours, an editor's, or one a tool runs) ran the program
+  they named. Commands are now kept from writing everything git reads in a
+  git folder as configuration or follows elsewhere (`config`,
+  `config.worktree`, `hooks`, `commondir`, `gitdir`, `info/attributes`,
+  `objects/info/alternates`), in linked worktrees' and submodules' git
+  folders too: on macOS by pattern, including files not made yet; under
+  bubblewrap, a container and the vm tier by binding read-only those that
+  exist. Git refuses an empty `commondir`, so on Linux a `commondir` made where
+  git never writes one is moved to `~/.abhed/quarantine` before the next
+  command, which is not run; until then, git run outside Abhed would follow
+  it. Abhed's own git on the host now names the repository's common git
+  folder to git and refuses to run while a `commondir` points anywhere else,
+  since git reads refs through that file regardless. Affects 1.2.3 to 1.2.6.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
