@@ -393,8 +393,8 @@ and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
 enabled on its own, and neither enables shell networking. Both sections are
 managed only: only the managed configuration turns them on or names the
 provider, endpoint, key or hosts. The user's file, `-settings`, a workspace
-trusted or not, the SDK and the environment may only turn them off or narrow
-them, and each attempt that did not take effect is recorded as a
+trusted or not and the SDK may only turn them off or narrow them (no
+`ABHED_*` variable sets either), and each attempt that did not take effect is recorded as a
 `config.refused` event naming who made it (`config/websection.go`). `web_fetch`
 fetches only the URL policy has judged: it refuses schemes other than
 http and https, and any loopback, private, link-local, metadata or reserved

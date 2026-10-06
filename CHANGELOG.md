@@ -21,9 +21,11 @@ All notable changes to Abhed are recorded here. The format follows
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
-`~/.abhed/config.json`, `-settings`, a workspace's `.abhed/config.json`, an
-SDK `ConfigDir` or the environment are off after upgrading: re-enable them
-with `sudo abhed admin web-search on …`, or ask your administrator. Managed
+`~/.abhed/config.json`, `-settings`, a workspace's `.abhed/config.json` or an
+SDK `ConfigDir` are off after upgrading: re-enable web search with
+`sudo abhed admin web-search on …`, and web fetch by editing the `web_fetch`
+section of `/etc/abhed/config.json` by hand with sudo, which no command does
+for you; or ask your administrator. Managed
 deployments are unchanged. Accounts in a workspace's `.abhed/users.json` load
 only when that workspace is trusted (`abhed trust grant`), or move them to an
 `auth.users_file` outside the workspace. A nested `abhed -settings` or
@@ -136,8 +138,8 @@ by last activity. Details under Upgrading.
   switcher alone; ⌘P stays the full command palette.
 - Web search and web fetch are administrator settings. Only the managed
   configuration (`/etc/abhed/config.json`) turns them on. The user's file,
-  `-settings`, a workspace trusted or not, an SDK `ConfigDir` and the
-  environment may only turn them off, lower `max_results` or `max_chars`, or
+  `-settings`, a workspace trusted or not and an SDK `ConfigDir` may only
+  turn them off, lower `max_results` or `max_chars`, or
   keep fewer of the managed `allowed_hosts`; anything else is set aside with
   a startup warning.
 - New `abhed admin web-search on|off [--provider] [--base-url]
@@ -174,11 +176,12 @@ by last activity. Details under Upgrading.
 ### Upgrading
 
 - If you turned web search or web fetch on in `~/.abhed/config.json`, a
-  `-settings` file, a workspace's `.abhed/config.json`, an SDK `ConfigDir` or
-  the environment, it is now off, with a warning naming the setting. Ask your administrator to enable it in the
-  managed configuration, or on your own machine run
-  `sudo abhed admin web-search on` with your provider and endpoint (web
-  fetch: add the `web_fetch` section to `/etc/abhed/config.json` with sudo).
+  `-settings` file, a workspace's `.abhed/config.json` or an SDK `ConfigDir`,
+  it is now off, with a warning naming the setting. No `ABHED_*` variable
+  sets either. Ask your administrator to enable it in the managed
+  configuration, or on your own machine run `sudo abhed admin web-search on`
+  with your provider and endpoint. Web fetch has no command: edit
+  `/etc/abhed/config.json` by hand with sudo and add the `web_fetch` section.
   Then remove the section from your own file.
 - An agent's command that ran a nested `abhed -settings …` or
   `abhed -mcp-config …` is now refused. Narrow a nested run with
