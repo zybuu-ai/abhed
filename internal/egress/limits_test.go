@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -378,5 +379,83 @@ func TestProxyHoldsIPv6Loopback(t *testing.T) {
 	_, _ = io.WriteString(c, "CONNECT a.test:443 HTTP/1.1\r\n\r\n")
 	if s, _ := bufio.NewReader(c).ReadString('\n'); !strings.Contains(s, " 407 ") {
 		t.Fatalf("[::1] is not the proxy: %q", s)
+	}
+}
+
+// Allowed decisions past the budget in an interval are counted, not
+// recorded one by one, and recorded as a summary with their bytes.
+func TestProxyBudgetsAllowedDecisions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }))
+	defer srv.Close()
+	port := portOf(t, srv.URL)
+	p, rec := startWith(t, Config{Rules: []Rule{
+		{Host: "allowed.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}},
+	}}, Options{AllowBudget: 5, Interval: time.Hour})
+	auth := proxyAuth(t, p, "call-loop")
+	for i := range 12 {
+		s := send(t, p, fmt.Sprintf("GET http://allowed.test:%d/x%d HTTP/1.1\r\nHost: allowed.test\r\nProxy-Authorization: %s\r\n\r\n", port, i, auth))
+		if !strings.Contains(s, " 200 ") {
+			t.Fatalf("allowed: %q", s)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(rec.events(func(Event) bool { return true })) < 5 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = p.Close()
+	one := rec.events(func(e Event) bool { return e.Decision == Allow && e.Repeats == 0 })
+	sums := rec.events(func(e Event) bool { return e.Decision == Allow && e.Repeats > 0 })
+	if len(one) != 5 || len(sums) != 1 || sums[0].Repeats != 7 {
+		t.Fatalf("allowed one by one %d, summaries %+v; want 5 and one of 7", len(one), sums)
+	}
+	if s := sums[0]; s.Host != "allowed.test" || s.CallID != "" || s.Path != "" || !strings.Contains(s.Reason, "7 more allowed") {
+		t.Fatalf("summary: %+v", s)
+	}
+}
+
+// Past maxKinds, a new kind shares its decision's overflow count, so the
+// kinds held stay bounded; the overflow is recorded as one summary, with
+// the bytes of what it counted. No count keeps a path.
+func TestLimiterKindsOverflow(t *testing.T) {
+	var mu sync.Mutex
+	var got []Event
+	l := newLimiter(1, 1, time.Hour, func(e Event) { mu.Lock(); got = append(got, e); mu.Unlock() })
+	long := "/" + strings.Repeat("p", 4096)
+	for i := range maxKinds + 5 {
+		l.record(Event{Kind: "connect", Decision: Deny, Rule: "default", Host: fmt.Sprintf("h%d.test", i), Port: 443, Path: long})
+	}
+	l.record(Event{Kind: "connect", Decision: Allow, Rule: "r", Host: "a0.test", Port: 443})
+	for i := range 3 {
+		l.record(Event{Kind: "connect", Decision: Allow, Rule: "r", Host: fmt.Sprintf("a%d.test", i+1), Port: 443, BytesIn: 10, BytesOut: 1, Path: long})
+	}
+	l.mu.Lock()
+	n := len(l.kinds)
+	for k, tl := range l.kinds {
+		if tl.sample.Path != "" || tl.sample.CallID != "" {
+			l.mu.Unlock()
+			t.Fatalf("kind %s keeps %q", k, tl.sample.Path[:10])
+		}
+	}
+	l.mu.Unlock()
+	if n != maxKinds+2 {
+		t.Fatalf("%d kinds held, want %d and the two overflows", n, maxKinds)
+	}
+	l.stop()
+	mu.Lock()
+	defer mu.Unlock()
+	var deny, allow *Event
+	for i, e := range got {
+		if e.Kind == "summary" && e.Decision == Deny {
+			deny = &got[i]
+		}
+		if e.Kind == "summary" && e.Decision == Allow {
+			allow = &got[i]
+		}
+	}
+	if deny == nil || deny.Repeats != 5 || deny.Rule != "rate" {
+		t.Fatalf("denial overflow: %+v", deny)
+	}
+	if allow == nil || allow.Repeats != 3 || allow.BytesIn != 30 || allow.BytesOut != 3 {
+		t.Fatalf("allowed overflow: %+v", allow)
 	}
 }

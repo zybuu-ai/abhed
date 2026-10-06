@@ -85,6 +85,9 @@ type Options struct {
 	// minute.
 	Burst    int
 	Interval time.Duration
+	// AllowBudget bounds the allowed decisions recorded one by one in each
+	// Interval; the rest are counted into summaries. Zero means 200.
+	AllowBudget int
 }
 
 // Timeouts and bounds.
@@ -135,7 +138,7 @@ func Start(opts Options) (*Proxy, error) {
 	}
 	p := &Proxy{opts: opts, token: hex.EncodeToString(b[:]), tcp: lns[0], conns: map[net.Conn]struct{}{},
 		slots: make(chan struct{}, opts.MaxConns)}
-	p.limit = newLimiter(opts.Burst, opts.Interval, p.emit)
+	p.limit = newLimiter(opts.Burst, opts.AllowBudget, opts.Interval, p.emit)
 	p.addr = lns[0].Addr().(*net.TCPAddr).AddrPort()
 	for _, ln := range lns {
 		p.serve(ln)

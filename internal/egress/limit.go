@@ -6,49 +6,65 @@ import (
 	"time"
 )
 
-// Bounds on what the record takes of repeated denials.
+// Bounds on what the record takes of repeated decisions.
 const (
 	defaultBurst    = 10
 	defaultInterval = time.Minute
 	// maxPerInterval bounds the denials recorded one by one in an interval,
 	// whatever their kinds, so varying the target does not lift the limit.
 	maxPerInterval = 100
-	// maxKinds bounds the kinds counted at once; the rest share one summary.
+	// defaultAllowBudget bounds the allowed decisions recorded one by one in
+	// an interval: a loop through an allowed host would otherwise grow the
+	// record without end.
+	defaultAllowBudget = 200
+	// maxKinds bounds the kinds counted at once; the rest share one summary
+	// per decision.
 	maxKinds = 512
 )
 
-// limiter records allowed decisions as they come and rate-limits denials:
-// the first burst of a kind in each interval one by one, the rest counted
-// and recorded as one summary per kind when the interval ends.
+// limiter rate-limits the record. Denials: the first burst of a kind in
+// each interval one by one, at most maxPerInterval of all kinds. Allowed
+// decisions: the first allowBudget in each interval, whatever their kind.
+// The rest are counted and recorded as one summary per kind when the
+// interval ends.
 type limiter struct {
-	burst    int
-	interval time.Duration
-	emit     func(Event)
+	burst       int
+	allowBudget int
+	interval    time.Duration
+	emit        func(Event)
 
-	mu     sync.Mutex
-	kinds  map[string]*tally
-	order  []string
-	total  int
-	done   chan struct{}
-	ticked chan struct{} // tests wait on a flush
-	once   sync.Once
-	wg     sync.WaitGroup
+	mu      sync.Mutex
+	kinds   map[string]*tally
+	order   []string
+	total   int
+	allowed int
+	done    chan struct{}
+	ticked  chan struct{} // tests wait on a flush
+	once    sync.Once
+	wg      sync.WaitGroup
 }
 
 type tally struct {
 	recorded   int
 	suppressed int64
-	sample     Event
+	bytesIn    int64
+	bytesOut   int64
+	// sample is the kind's first decision, without what varies by call or
+	// could be large (the path holds up to 64 KiB): the summary keeps none of it.
+	sample Event
 }
 
-func newLimiter(burst int, interval time.Duration, emit func(Event)) *limiter {
+func newLimiter(burst, allowBudget int, interval time.Duration, emit func(Event)) *limiter {
 	if burst <= 0 {
 		burst = defaultBurst
+	}
+	if allowBudget <= 0 {
+		allowBudget = defaultAllowBudget
 	}
 	if interval <= 0 {
 		interval = defaultInterval
 	}
-	l := &limiter{burst: burst, interval: interval, emit: emit, kinds: map[string]*tally{},
+	l := &limiter{burst: burst, allowBudget: allowBudget, interval: interval, emit: emit, kinds: map[string]*tally{},
 		done: make(chan struct{}), ticked: make(chan struct{}, 1)}
 	l.wg.Add(1)
 	go func() {
@@ -71,41 +87,63 @@ func newLimiter(burst int, interval time.Duration, emit func(Event)) *limiter {
 	return l
 }
 
-// kindKey is what makes two denials the same kind: not the call id, path,
+// kindKey is what makes two decisions the same kind: not the call id, path,
 // method or reason, which a flood can vary at no cost.
 func kindKey(e Event) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%d", e.Kind, e.Decision, e.Rule, e.Host, e.Port)
 }
 
-func (l *limiter) record(e Event) {
-	if e.Decision == Allow {
-		l.emit(e)
-		return
-	}
+// tallyFor is e's kind's count, begun if need be; past maxKinds, a kind
+// not yet counted shares its decision's overflow count. l.mu is held.
+func (l *limiter) tallyFor(e Event) *tally {
 	key := kindKey(e)
-	l.mu.Lock()
-	t := l.kinds[key]
-	if t == nil {
-		if len(l.kinds) >= maxKinds {
-			key = "overflow"
-			t = l.kinds[key]
+	if t := l.kinds[key]; t != nil {
+		return t
+	}
+	s := e
+	s.CallID, s.Method, s.Path, s.IP, s.BytesIn, s.BytesOut = "", "", "", "", 0, 0
+	t := &tally{sample: s}
+	if len(l.kinds) >= maxKinds {
+		key = "overflow|" + string(e.Decision)
+		if o := l.kinds[key]; o != nil {
+			return o
 		}
-		if t == nil {
-			t = &tally{sample: e}
-			if key == "overflow" {
-				t.sample = Event{Kind: "summary", Decision: Deny, Rule: "rate", Reason: "denials of many kinds"}
-				t.recorded = l.burst // never recorded one by one
-			}
-			l.kinds[key] = t
-			l.order = append(l.order, key)
+		what := "denials"
+		if e.Decision == Allow {
+			what = "allowed connections"
+		}
+		t.sample = Event{Kind: "summary", Decision: e.Decision, Rule: "rate", Reason: what + " of many kinds"}
+		t.recorded = l.burst // never recorded one by one
+	}
+	l.kinds[key] = t
+	l.order = append(l.order, key)
+	return t
+}
+
+func (l *limiter) record(e Event) {
+	l.mu.Lock()
+	var t *tally
+	var now bool
+	if e.Decision == Allow {
+		// Allowed decisions are not counted by kind until over budget, so
+		// they take no room from the denials' kinds.
+		if now = l.allowed < l.allowBudget; now {
+			l.allowed++
+		}
+	} else {
+		t = l.tallyFor(e)
+		if now = t.recorded < l.burst && l.total < maxPerInterval; now {
+			t.recorded++
+			l.total++
 		}
 	}
-	now := t.recorded < l.burst && l.total < maxPerInterval
-	if now {
-		t.recorded++
-		l.total++
-	} else {
+	if !now {
+		if t == nil {
+			t = l.tallyFor(e)
+		}
 		t.suppressed++
+		t.bytesIn += e.BytesIn
+		t.bytesOut += e.BytesOut
 	}
 	l.mu.Unlock()
 	if now {
@@ -113,7 +151,7 @@ func (l *limiter) record(e Event) {
 	}
 }
 
-// flush records a summary for each kind that had denials left out, and
+// flush records a summary for each kind that had decisions left out, and
 // starts a new interval.
 func (l *limiter) flush() {
 	l.mu.Lock()
@@ -124,12 +162,15 @@ func (l *limiter) flush() {
 			continue
 		}
 		s := t.sample
-		s.CallID, s.Method, s.Path, s.IP, s.BytesIn, s.BytesOut = "", "", "", "", 0, 0
-		s.Repeats = t.suppressed
-		s.Reason = fmt.Sprintf("%d more like this within %s, not recorded one by one; the first: %s", t.suppressed, l.interval, t.sample.Reason)
+		s.Repeats, s.BytesIn, s.BytesOut = t.suppressed, t.bytesIn, t.bytesOut
+		if s.Decision == Allow {
+			s.Reason = fmt.Sprintf("%d more allowed within %s, over the %d recorded one by one", t.suppressed, l.interval, l.allowBudget)
+		} else {
+			s.Reason = fmt.Sprintf("%d more like this within %s, not recorded one by one; the first: %s", t.suppressed, l.interval, t.sample.Reason)
+		}
 		out = append(out, s)
 	}
-	l.kinds, l.order, l.total = map[string]*tally{}, nil, 0
+	l.kinds, l.order, l.total, l.allowed = map[string]*tally{}, nil, 0, 0
 	l.mu.Unlock()
 	for _, e := range out {
 		l.emit(e)
