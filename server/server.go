@@ -415,7 +415,9 @@ func (s *Server) sessionRedactor() agent.Redactor {
 	}); ok {
 		red, err := fresh.Session()
 		if err != nil {
-			s.log.Error("the session's event payloads will be withheld", "err", err)
+			s.log.Error("the session's event payloads will be withheld until the secrets store loads again", "err", err)
+		}
+		if red == nil {
 			return secrets.Withholding()
 		}
 		return red
@@ -3914,12 +3916,18 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	// draining lets the workbench leave a queued message where it is rather
 	// than withdraw it for a Send now the server would refuse.
-	WriteJSON(w, http.StatusOK, map[string]any{
+	h := map[string]any{
 		"status":   "ok",
 		"sessions": n,
 		"model":    s.opts.Adapter.Profile().Name,
 		"draining": s.draining.Load(),
-	})
+	}
+	// Sessions still start with a broken operator store, but record nothing
+	// but withheld payloads; a probe should see that, not a plain ok.
+	if l, ok := s.opts.Redact.(interface{ Loads() error }); ok && l.Loads() != nil {
+		h["status"], h["secrets_store"] = "degraded", "unreadable"
+	}
+	WriteJSON(w, http.StatusOK, h)
 }
 
 // claimNode records that this process holds the session, under its liveness

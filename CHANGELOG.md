@@ -28,6 +28,14 @@ All notable changes to Abhed are recorded here. The format follows
 - `New` in the SDK lets go of the session record it opened when it fails
   after opening it, so another process may continue the session.
 
+### Fixed
+
+- A server session started while the operator's secrets store could not be
+  loaded withheld every payload for good, though the docs said until the
+  store was fixed. It now redacts again once the store loads. While the
+  store cannot be loaded, `GET /v1/health` answers `"status": "degraded"`
+  and `"secrets_store": "unreadable"`, still with code 200.
+
 ### Go API
 
 Listed late from 1.2.6, all additive there:

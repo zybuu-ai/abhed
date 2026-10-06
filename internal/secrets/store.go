@@ -305,13 +305,21 @@ func (s *Store) Live() *Live { return &Live{Redactor: s.Redactor(), store: s} }
 // Load reads the store again, as LoadRedactor does.
 func (l *Live) Load() (*Redactor, error) { return l.store.LoadRedactor() }
 
-// Session is a Fresh redactor for one session, starting from the store as it is now.
+// Session is a Fresh redactor for one session, starting from the store as it
+// is now. A store that cannot be loaded is an error, with a Fresh that
+// withholds every payload until the store loads again.
 func (l *Live) Session() (*Fresh, error) {
 	r, err := l.store.LoadRedactor()
 	if err != nil {
-		return nil, err
+		return l.store.Fresh(Withholding()), err
 	}
 	return l.store.Fresh(r), nil
+}
+
+// Loads reports whether the store can be loaded now.
+func (l *Live) Loads() error {
+	_, err := l.store.LoadRedactor()
+	return err
 }
 
 // Session is a Fresh redactor starting from the store as it is now; a store
