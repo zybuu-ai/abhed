@@ -45,6 +45,14 @@ All notable changes to Abhed are recorded here. The format follows
   stored values out of file paths, or the secret names a suggestion is
   checked against.
 
+- When a terminal shell ends, the sweep of what it left running gave up
+  after a fixed number of passes. On a loaded machine a process it had
+  already killed stays listed until the scheduler runs it, so the sweep could
+  report processes left in the shell's session, and stop looking, while they
+  were dying. It now kills every member on every pass until the session is
+  empty, waiting a moment between passes that find only processes it already
+  killed, for up to ten seconds.
+
 ### Go API
 
 Listed late from 1.2.6, all additive there:

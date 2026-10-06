@@ -3,6 +3,7 @@ package sandbox
 import (
 	"syscall"
 	"testing"
+	"time"
 )
 
 // fakeSession replaces the sweep's view of the system with a script: the
@@ -59,11 +60,29 @@ func TestSweepKillsWhatAppearsAfterTheKill(t *testing.T) {
 	}
 }
 
-// A session still growing after every pass is reported, so it is logged.
+// A session that keeps members past the grace is reported, so it is logged.
 func TestSweepSaysWhenMembersRemain(t *testing.T) {
+	saved := sweepGrace
+	sweepGrace = 50 * time.Millisecond
+	t.Cleanup(func() { sweepGrace = saved })
 	f := &fakeSession{listings: [][]int{{103}}}
 	f.install(t)
 	if named.sweep() == "" {
 		t.Fatal("members left after every pass went unreported")
+	}
+}
+
+// A killed member starved of CPU stays listed for longer than any fixed count
+// of passes before it dies; the sweep waits for it rather than report a
+// session it has in fact emptied. The macOS runners showed this under load.
+func TestSweepWaitsForKilledMembersToGo(t *testing.T) {
+	listings := [][]int{{101}, {101}} // stop passes
+	for range 4 * maxSweepPasses {
+		listings = append(listings, []int{101}) // killed, not yet scheduled
+	}
+	f := &fakeSession{listings: append(listings, []int{})}
+	f.install(t)
+	if why := named.sweep(); why != "" {
+		t.Fatalf("a member that was dying was reported as left: %s", why)
 	}
 }
