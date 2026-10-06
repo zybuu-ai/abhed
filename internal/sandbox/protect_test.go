@@ -177,12 +177,14 @@ func TestHoldersStopAtTheNearestGit(t *testing.T) {
 	}
 }
 
-// The pattern is the workspace quoted, with .git, config and hooks in any case.
+// The pattern is the workspace quoted, with .git, a worktree's or a
+// submodule's folder, and each pointer in any case.
 func TestSeatbeltGitPatternQuotesTheWorkspace(t *testing.T) {
 	p := DefaultPolicy("/w.s+x")
 	p.ProtectGit = true
 	profile := NewProcess(p).seatbeltProfile()
-	if !strings.Contains(profile, `(regex #"^/w\.s\+x/(.+/)?\.[gG][iI][tT]/([cC][oO][nN][fF][iI][gG]|[hH][oO][oO][kK][sS])(/|$)")`) {
+	if !strings.Contains(profile, `(regex #"^/w\.s\+x/(.+/)?\.[gG][iI][tT]/(([wW][oO][rR][kK][tT][rR][eE][eE][sS]/[^/]+|[mM][oO][dD][uU][lL][eE][sS]/.+)/)?(`) ||
+		!strings.Contains(profile, `[cC][oO][mM][mM][oO][nN][dD][iI][rR]|`) {
 		t.Fatalf("%s", profile)
 	}
 	if strings.Contains(NewProcess(DefaultPolicy("/w")).seatbeltProfile(), "regex #\"^/w/") {

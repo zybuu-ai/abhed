@@ -444,7 +444,7 @@ func (f *Fence) takeOut(p string) map[string]any {
 	// A folder the command left without write permission cannot be moved
 	// to another parent, nor later read or removed.
 	restoreOwnerAccess(inert)
-	if dest, err := quarantine(inert, filepath.Base(p), f.id); err == nil {
+	if dest, err := quarantine(inert, filepath.Base(p), "fence-"+f.id+"-"); err == nil {
 		m["outcome"], m["moved_to"] = plantMoved, dest
 	} else {
 		m["outcome"], m["reason"] = plantRenamed, err.Error()
@@ -453,9 +453,9 @@ func (f *Fence) takeOut(p string) map[string]any {
 }
 
 // quarantine moves p, a planted entry first named name, into a folder of its
-// own under ~/.abhed/quarantine, which nothing reads as state, and returns
-// where it went.
-func quarantine(p, name, id string) (string, error) {
+// own under ~/.abhed/quarantine, named from prefix, which nothing reads as
+// state, and returns where it went.
+func quarantine(p, name, prefix string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -464,7 +464,7 @@ func quarantine(p, name, id string) (string, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
-	dir, err := os.MkdirTemp(root, "fence-"+id+"-")
+	dir, err := os.MkdirTemp(root, prefix)
 	if err != nil {
 		return "", err
 	}

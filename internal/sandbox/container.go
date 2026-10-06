@@ -144,8 +144,9 @@ func saysPodman(path string) bool {
 }
 
 // runArgs is everything up to the image: the confinement both a command and
-// a shell run under. It begins with "run --rm -i".
-func (c *Container) runArgs(cwd string) []string {
+// a shell run under. It begins with "run --rm -i". An error is why the
+// command is not run.
+func (c *Container) runArgs(cwd string) ([]string, error) {
 	args := []string{"run", "--rm", "-i"}
 	args = append(args, c.extra...)
 
@@ -225,9 +226,14 @@ func (c *Container) runArgs(cwd string) []string {
 			protected = append(protected, p)
 		}
 	}
-	// The git folders found now, as on bubblewrap.
+	// The git folders found now, as on bubblewrap, after a planted
+	// commondir is taken out.
 	if c.policy.ProtectGit {
-		protected = append(protected, GitProtected(c.policy.Workspace)...)
+		g := scanGit(c.policy.Workspace)
+		if err := takeOutGitPlanted(g.planted); err != nil {
+			return nil, err
+		}
+		protected = append(protected, g.protected...)
 	}
 	for _, p := range holders(ws, protected) {
 		if info, err := os.Lstat(p); err == nil && info.IsDir() {
@@ -256,14 +262,18 @@ func (c *Container) runArgs(cwd string) []string {
 	}
 
 	args = append(args, "-e", "ABHED_SANDBOX="+string(c.Tier()))
-	return args
+	return args, nil
 }
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
+	run, err := c.runArgs(cwd)
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
 	name := containerName("abhed-cmd-")
-	args := append(c.runArgs(cwd), "--name", name, Image, "/bin/sh", "-c", command)
+	args := append(run, "--name", name, Image, "/bin/sh", "-c", command)
 	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the command runs inside the container
 	// The engine's CLI needs the host's PATH, HOME and DOCKER_HOST; only the
 	// -e flags above reach the container.
@@ -309,9 +319,13 @@ func (c *Container) shellLabel() string {
 // terminal (-t). The container is named so that ending the shell removes it,
 // even when the engine's CLI is killed before it can.
 func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
+	run, err := c.runArgs(cwd)
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
 	name := containerName("abhed-term-")
 	args := []string{"run", "--rm", "-i", "-t", "--name", name, "--label", c.shellLabel()}
-	args = append(args, c.runArgs(cwd)[3:]...)
+	args = append(args, run[3:]...)
 	for _, kv := range shellEnv(c.Tier()) {
 		args = append(args, "-e", kv)
 	}
