@@ -223,9 +223,17 @@ type ShellRead struct {
 // ReadNew returns the output written since the last ReadNew, at most max
 // bytes of it: the latest, since the end of output is where errors are.
 func (p *ShellProc) ReadNew(max int) ShellRead {
+	// Until the command ends, a character it has only partly written is left
+	// for the next read.
+	ended := false
+	select {
+	case <-p.done:
+		ended = true
+	default:
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	text, dropped, skipped, next, last := p.out.since(p.cursor, max)
+	text, dropped, skipped, next, last := p.out.since(p.cursor, max, !ended)
 	p.cursor = next
 	return ShellRead{Text: text, Dropped: dropped, Skipped: skipped, Quiet: time.Since(last)}
 }
@@ -307,25 +315,55 @@ func (r *shellRing) size() (total, dropped int64) {
 }
 
 // since returns the output from cursor on, at most limit bytes of its end, and
-// the offset the next read starts at, and when it was last written.
-func (r *shellRing) since(cursor int64, limit int) (text string, dropped, skipped, next int64, last time.Time) {
+// the offset the next read starts at, and when it was last written. With
+// partial, a character only partly written is left for the next read, so a
+// read never ends inside one and the next never starts inside one.
+func (r *shellRing) since(cursor int64, limit int, partial bool) (text string, dropped, skipped, next int64, last time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	end := r.total
+	if partial {
+		if end -= int64(incompleteTail(r.buf)); end < cursor {
+			end = cursor
+		}
+	}
 	from := cursor
 	if k := r.kept(); from < k {
 		dropped, from = k-from, k
 	}
-	if limit > 0 && r.total-from > int64(limit) {
-		skipped = r.total - from - int64(limit)
+	if from > end {
+		from = end
+	}
+	cut := false
+	if limit > 0 && end-from > int64(limit) {
+		skipped = end - from - int64(limit)
 		from += skipped
+		cut = true
 	}
-	b := r.buf[from-r.base:]
-	// Start on a whole character: a cut never splits one.
-	for n := 0; n < utf8.UTFMax && len(b) > 0 && !utf8.RuneStart(b[0]); n++ {
-		b = b[1:]
-		skipped++
+	b := r.buf[from-r.base : end-r.base]
+	// Start on a whole character: a cut never splits one. A read from the
+	// cursor already starts on one, so it skips nothing.
+	if cut || dropped > 0 {
+		for n := 0; n < utf8.UTFMax && len(b) > 0 && !utf8.RuneStart(b[0]); n++ {
+			b = b[1:]
+			skipped++
+		}
 	}
-	return strings.ToValidUTF8(string(b), "�"), dropped, skipped, r.total, r.last
+	return strings.ToValidUTF8(string(b), "�"), dropped, skipped, end, r.last
+}
+
+// incompleteTail is how many bytes at the end of b are the start of a
+// character not yet whole.
+func incompleteTail(b []byte) int {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax+1; i-- {
+		if utf8.RuneStart(b[i]) {
+			if utf8.FullRune(b[i:]) {
+				return 0
+			}
+			return len(b) - i
+		}
+	}
+	return 0
 }
 
 // tail is the last n bytes held.
