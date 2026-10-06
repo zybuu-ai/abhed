@@ -205,6 +205,18 @@ func (s *Store) Remove(name string) error {
 	return s.save(m)
 }
 
+// Delete removes the whole store, under the lock Set and Remove take: a value
+// being stored lands in the file before it is removed, never in one written
+// back after. A missing store is not an error. A later Set makes a new one.
+func (s *Store) Delete() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // Names lists what is stored, without values.
 func (s *Store) Names() ([]string, error) {
 	s.mu.Lock()

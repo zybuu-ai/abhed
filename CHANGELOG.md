@@ -54,6 +54,12 @@ Listed late from 1.2.6, all additive there:
 - `config`: `Config.Fence` and `FenceConfig`, the fence tier's settings, and
   `SandboxConfig.Tier`, which chooses the fence tier.
 
+New in this release:
+
+- `secretstore`: `Store.Delete` removes a whole store under the lock `Set`
+  and `Remove` take, so an edition that forgets an account's store cannot
+  have a `Set` under way write it back.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
