@@ -30,10 +30,30 @@ import (
 
 // The launcher runs before anything else in any binary that links this
 // package, so the abhed command and an SDK embedder fence commands alike.
+// It runs whole on this thread, which executes the command: the mounts'
+// capability, its drop, Landlock and the checks of them are all per thread.
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == fenceLauncherArg {
+		runtime.LockOSThread()
 		os.Exit(runLauncher(os.Args[2:]))
 	}
+}
+
+// folderIdentity is p's identity, not following a link, with its birth time
+// where the filesystem records one.
+func folderIdentity(p string) (folderID, error) {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return folderID{}, err
+	}
+	id := folderID{info: info, dir: info.IsDir()}
+	var stx unix.Statx_t
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if ok && unix.Statx(unix.AT_FDCWD, p, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_INO|unix.STATX_BTIME, &stx) == nil &&
+		stx.Mask&unix.STATX_BTIME != 0 && stx.Ino == st.Ino {
+		id.birth, id.hasBirth = stx.Btime.Sec*1e9+int64(stx.Btime.Nsec), true
+	}
+	return id, nil
 }
 
 // fenceLauncherArg is the first argument with which Abhed re-executes itself
@@ -236,13 +256,9 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 			return false, err.Error()
 		}
 	}
-	ok, why := f.qualifySession(base)
-	// A .abhed made to mount over goes with a fence that did not qualify.
-	if !ok && f.madeState {
-		_ = os.Remove(filepath.Join(f.policy.Workspace, stateDir))
-		f.madeState = false
-	}
-	return ok, why
+	// A .abhed made to mount over stays when the session cannot be made:
+	// another fence on the workspace may already mount over it.
+	return f.qualifySession(base)
 }
 
 // qualifySession makes the session's cgroup and private temp.
@@ -552,7 +568,6 @@ func runLauncher(args []string) int {
 	// 1a. The mounts, in this launcher's own namespace, where it holds
 	// CAP_SYS_ADMIN only to make them; then every capability is dropped.
 	if s.Mounts != nil {
-		runtime.LockOSThread()
 		if err := mountns.Apply(*s.Mounts); err != nil {
 			return fail("%v", err)
 		}
@@ -636,12 +651,14 @@ func runLauncher(args []string) int {
 	return 127
 }
 
-// holdsNothing refuses root and any capability this process holds.
+// holdsNothing refuses root and any capability this thread holds: the one
+// that executes the command, whose capabilities the command starts with.
+// Other threads may still hold the mounts' capability, which an exec drops.
 func holdsNothing() error {
 	if os.Getuid() == 0 || os.Geteuid() == 0 {
 		return errors.New("the fence refuses root in this release")
 	}
-	f, err := os.Open("/proc/self/status")
+	f, err := os.Open("/proc/thread-self/status")
 	if err != nil {
 		return err
 	}

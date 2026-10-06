@@ -3,7 +3,7 @@ package mountns
 import "testing"
 
 func TestPlanValidate(t *testing.T) {
-	ok := Plan{Root: "/w", Pin: []string{".git"}, ReadOnly: []string{".git/hooks", ".git/config"}, Empty: []string{".abhed"}, Null: []string{"users.json"}}
+	ok := Plan{Root: "/w", Pin: []string{".git"}, ReadOnly: []string{".git/hooks", ".git/config"}, Empty: []string{".abhed", "sub/.abhed"}}
 	if err := ok.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -13,7 +13,7 @@ func TestPlanValidate(t *testing.T) {
 		"absolute":      {Root: "/w", Empty: []string{"/etc"}},
 		"unclean":       {Root: "/w", Pin: []string{"a/../b"}},
 		"root itself":   {Root: "/w", ReadOnly: []string{"."}},
-		"empty":         {Root: "/w", Null: []string{""}},
+		"empty":         {Root: "/w", Empty: []string{""}},
 	} {
 		if err := p.Validate(); err == nil {
 			t.Errorf("%s: validated", name)

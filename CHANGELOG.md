@@ -18,8 +18,10 @@ All notable changes to Abhed are recorded here. The format follows
   `mount_namespace` or `landlock_only`, and `abhed doctor` shows the probe's
   new `userns_mounts` check. Each Studio and served session has a fence and a
   cgroup of its own.
-- Skill scripts in `~/.abhed/skills` run under the fence, read and run but
-  never written.
+- Skill scripts in `~/.abhed/skills` and the `skills.dirs` folders run under
+  the fence, read and run but never written. A `skills.dirs` folder that
+  holds or sits inside Abhed's state, or sits in the workspace, is left out
+  and listed in `fence.qualified` as `skills_left_out`.
 
 ### Changed
 
@@ -29,8 +31,13 @@ All notable changes to Abhed are recorded here. The format follows
   fence never moves between modes on its own.
 - In `mount_namespace`, a workspace's existing `.abhed` no longer refuses the
   fence, and the fence makes an empty `.abhed` to mount over where there is
-  none, removing it at close while it is still empty. The planted-state check
-  stays as defence in depth for other spellings of `.abhed`.
+  none, and leaves it in place, since other fences on the same workspace mount
+  over it too. One empty when a session starts must stay empty while it runs.
+  The planted-state check stays as defence in depth for other spellings of
+  `.abhed`. A `landlock_only` fence refuses a workspace holding one, as it
+  refuses any `.abhed`.
+- A file held read-only in `mount_namespace` that has a second name (a hard
+  link) refuses the command.
 
 ## [1.2.6] - 2026-10-06
 

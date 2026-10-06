@@ -297,26 +297,40 @@ without running anything.
   `/lib`, `/etc`, `/opt` and the like) and `sandbox.read_only_paths`, reads
   `/proc` and `/sys`, and writes only the workspace and a private temp folder
   of the session's. `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and `npm_config_cache`
-  point into that folder. `~/.abhed/skills` is readable and its scripts run,
-  but cannot be written, so a skill's script works. The rest of your home,
-  `~/.abhed`, the record and the secrets are out of reach.
+  point into that folder. `~/.abhed/skills` and the folders in `skills.dirs`
+  are readable and their scripts run, but cannot be written, so a skill's
+  script works. A `skills.dirs` folder that holds or sits inside Abhed's state
+  (your home, say, or `~/.abhed/records`), or one inside the workspace, is
+  left out, and `fence.qualified` lists it under `skills_left_out`. The rest
+  of your home, `~/.abhed`, the record and the secrets are out of reach.
 - **Read-only paths in the workspace** (`mount_namespace` only). Abhed
   Studio keeps git's config and hooks and its editor's files read-only; each
   is bound read-only over itself in the command's namespace, and the folders
   holding them (`.git`, `.vscode`) are bound over themselves, so they cannot
   be renamed or removed to get around it. A command can still commit: only
-  the config and hooks are held. Git folders are found when each command
-  starts, as the process tier finds them. A protected path that is a symbolic
-  link refuses the command.
+  the config and hooks are held. The protected paths are those that exist
+  when each command starts, and git folders are found then, as the process
+  tier finds them: one a command makes while it runs is not held during that
+  command, only from the next. A protected path that is a symbolic link, or a
+  file with a second name (a hard link), refuses the command, since the file
+  would stay writable through the other name.
 - **Abhed's state in the workspace, `mount_namespace`.** The workspace's
   `.abhed` is covered by an empty tmpfs in each command's namespace: what
   Abhed keeps there is out of sight, and whatever a command writes there is
   gone when it ends, so nothing it writes there ever reaches Abhed. Where the
-  workspace has no `.abhed`, the fence makes an empty one to mount over, and
-  removes it when the session closes if it is still empty. State kept in the
-  workspace outside `.abhed` (a `users_file` there) is hidden the same way. A
-  `.abhed` in another spelling of its case is not covered, and is still taken
-  out as below.
+  workspace has no `.abhed`, the fence makes an empty one to mount over and
+  leaves it in place: other fences on the same workspace (two Studio tabs,
+  Studio beside the command line) mount over it too, and removing it would
+  uncover their commands; empty, it holds nothing. A `.abhed` that was
+  empty when the session started must stay empty while it runs: anything
+  that appears in it, or a folder made again in its place, is taken out as
+  below, so put state there (`abhed user add`, say) before a fenced session
+  starts. One that already held state is
+  Abhed's own, and stays covered. Abhed refuses to start with a state file
+  (`auth.users_file`, the secrets file) inside the workspace outside `.abhed`,
+  so there is none to hide; another configuration folder's `.abhed` inside
+  the workspace is covered as the workspace's is. A `.abhed` in another
+  spelling of its case is not covered, and is still taken out as below.
 - **Abhed's state in the workspace, `landlock_only`.** Landlock cannot keep a command from
   making a folder inside the writable workspace, so Abhed checks instead:
   after every command, before the next one and when the session closes. A
@@ -369,6 +383,12 @@ without running anything.
   fence of its own, with its own cgroup that its tool calls' cgroups sit
   under, closed with the session. A served session qualifies its fence at
   its first command, so a session opened only to be read records nothing.
+  Sessions are not kept apart from each other's processes below Landlock ABI
+  6 (Linux older than 6.12): there, one session's commands can signal
+  another session's commands, those of another account on the same server
+  included, and read their command lines in `/proc`. On Linux 6.12 or later
+  Landlock keeps each command's signals to its own processes; command lines
+  stay readable either way, since there is no PID namespace.
 - **The record.** `fence.qualified` holds the probe's report and the mode
   at the start of the session (for `serve`, before the session's first
   command), `process.launched` each command's launch with its call id
@@ -412,7 +432,8 @@ a sandboxed process access to processes outside its domain.
 - Toolchains kept in your home (`~/go`, `~/.cargo`, `~/.nvm`) unless listed
   in `sandbox.read_only_paths`, and scripts that write a fixed path in `/tmp`.
 - Every kernel below 6.2, and below 6.7 with the network off.
-- In `landlock_only`: a workspace with a `.abhed` folder, and the surfaces
+- In `landlock_only`: a workspace with a `.abhed` folder (the empty one a
+  `mount_namespace` fence leaves included; remove it), and the surfaces
   that keep paths inside the workspace read-only (Abhed Studio's git and
   editor protections) or need the mounts (`abhed serve`). Landlock alone
   cannot keep part of a writable folder read-only, so they are refused.

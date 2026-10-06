@@ -142,6 +142,10 @@ type Policy struct {
 	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
 	// one CPU; zero leaves it unbounded.
 	CPUPercent int
+	// SkillDirs are the configured skills.dirs, absolute. The fence lets
+	// commands read and run them, as it does ~/.abhed/skills, but never one
+	// that holds or sits inside Abhed's state.
+	SkillDirs []string
 	// fenceNoMounts keeps the fence from giving commands a mount
 	// namespace of their own, for tests of the mode without one.
 	fenceNoMounts bool

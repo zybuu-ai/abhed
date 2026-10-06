@@ -10,7 +10,9 @@
 //	Pin       folders bound onto themselves, so they cannot be renamed or removed
 //	ReadOnly  files and folders bound read-only onto themselves
 //	Empty     folders covered by an empty, throwaway tmpfs
-//	Null      files covered by /dev/null
+//
+// A file held read-only must have one name: a hard link elsewhere would stay
+// writable, so Apply refuses it.
 //
 // Every path is opened beneath the plan's root without following a symbolic
 // link, and mounted through its descriptor, so a link a command left in the

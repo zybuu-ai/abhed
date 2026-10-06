@@ -25,8 +25,7 @@ func Attr(a *syscall.SysProcAttr) {
 }
 
 // Apply makes every mount private to this namespace, then applies p: the
-// pins, the read-only binds, the empty folders and the null files, in that
-// order. It needs CAP_SYS_ADMIN in the namespace, and checks each mount.
+// pins, the read-only binds and the empty folders, in that order. It needs CAP_SYS_ADMIN in the namespace, and checks each mount.
 func Apply(p Plan) error {
 	if err := p.Validate(); err != nil {
 		return err
@@ -54,11 +53,6 @@ func Apply(p Plan) error {
 			return fmt.Errorf("hiding %s: %w", filepath.Join(p.Root, rel), err)
 		}
 	}
-	for _, rel := range p.Null {
-		if err := null(root, rel); err != nil {
-			return fmt.Errorf("hiding %s: %w", filepath.Join(p.Root, rel), err)
-		}
-	}
 	return nil
 }
 
@@ -76,6 +70,8 @@ func fdPath(fd int) string { return "/proc/self/fd/" + strconv.Itoa(fd) }
 
 // bindSelf binds rel onto itself through its descriptor, and makes the new
 // mount read-only when ro, keeping the flags the mount below it is locked to.
+// A file with another name is refused: the bind holds one name read-only,
+// and the file would stay writable through the other.
 func bindSelf(root int, rel string, ro bool) error {
 	fd, err := beneath(root, rel, 0)
 	if err != nil {
@@ -88,6 +84,9 @@ func bindSelf(root int, rel string, ro bool) error {
 	}
 	if t := before.Mode & unix.S_IFMT; t != unix.S_IFDIR && t != unix.S_IFREG {
 		return errors.New("neither a folder nor a file")
+	}
+	if before.Mode&unix.S_IFMT == unix.S_IFREG && before.Nlink > 1 {
+		return fmt.Errorf("the file has %d names (hard links), and would stay writable through another", before.Nlink)
 	}
 	if err := unix.Mount(fdPath(fd), fdPath(fd), "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return err
@@ -164,23 +163,6 @@ func empty(root int, rel string) error {
 		return errors.New("the folder is not covered after mounting over it")
 	}
 	return nil
-}
-
-// null covers the file rel with /dev/null.
-func null(root int, rel string) error {
-	fd, err := beneath(root, rel, 0)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = unix.Close(fd) }()
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return err
-	}
-	if st.Mode&unix.S_IFMT == unix.S_IFDIR {
-		return errors.New("a folder, not a file")
-	}
-	return unix.Mount("/dev/null", fdPath(fd), "", unix.MS_BIND, "")
 }
 
 // Drop clears this thread's capabilities, ambient, inheritable, permitted and

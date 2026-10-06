@@ -2,15 +2,22 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 
+	"github.com/zybuu-ai/abhed/internal/fence/mountns"
 	"github.com/zybuu-ai/abhed/internal/fence/probe"
 )
 
@@ -152,18 +159,12 @@ func TestFenceMountsStateDoesNotPersist(t *testing.T) {
 	})
 }
 
-// Missing, the workspace's .abhed is made to mount over and removed at Close.
-func TestFenceMountsMakesAndRemovesTheStateFolder(t *testing.T) {
+// Missing, the workspace's .abhed is made to mount over, and stays, empty,
+// after Close: another fence on the workspace may still mount over it.
+func TestFenceMountsMakesAndKeepsTheStateFolder(t *testing.T) {
 	p := fencePolicy(t)
 	p.MaxProcs, p.MaxMemoryMB = 64, 256
-	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
-		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
-	}
-	sb, err := Select(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := sb.(*Fence)
+	f := selectFence(t, p)
 	if f.Mode() != FenceModeMounts || !f.madeState {
 		t.Fatalf("mode %s, made %v", f.Mode(), f.madeState)
 	}
@@ -173,25 +174,199 @@ func TestFenceMountsMakesAndRemovesTheStateFolder(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(p.Workspace, ".abhed")); !os.IsNotExist(err) {
-		t.Fatalf("the .abhed the fence made outlived Close: %v", err)
+	left, err := os.ReadDir(filepath.Join(p.Workspace, ".abhed"))
+	if err != nil || len(left) != 0 {
+		t.Fatalf("the made .abhed after Close: %v %v", err, left)
 	}
 }
 
-// A skill's script in ~/.abhed/skills runs under the fence, and cannot be
-// changed from it; the rest of ~/.abhed stays out of reach.
+// selectFence selects the fence for p, or skips; the caller closes it.
+func selectFence(t *testing.T, p Policy) *Fence {
+	t.Helper()
+	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
+		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
+	}
+	sb, err := Select(p)
+	if err != nil {
+		t.Fatalf("the fence did not qualify: %v", err)
+	}
+	f := sb.(*Fence)
+	if f.Mode() != FenceModeMounts {
+		t.Fatalf("the fence is in mode %s", f.Mode())
+	}
+	return f
+}
+
+// Two fences on one workspace, as two Studio tabs or Studio beside the
+// command line: one closing while the other's command runs leaves that
+// command's .abhed covered, so what it writes there does not persist, and
+// the other's next command runs.
+func TestFenceMountsTwoFencesOnOneWorkspace(t *testing.T) {
+	p := fencePolicy(t)
+	p.MaxProcs, p.MaxMemoryMB = 64, 256
+	a := selectFence(t, p)
+	t.Cleanup(func() { _ = a.Close() })
+	b := selectFence(t, p)
+	t.Cleanup(func() {
+		if err := b.Close(); err != nil {
+			t.Errorf("closing the second fence: %v", err)
+		}
+	})
+	if !a.madeState || b.madeState {
+		t.Fatalf("made: first %v, second %v", a.madeState, b.madeState)
+	}
+	ws := p.Workspace
+	ev := &events{}
+	started := make(chan struct{})
+	var once sync.Once
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := fenceRun(t, b, ws, `sleep 3; mkdir -p .abhed && echo '{"users":[{"name":"mallory","role":"admin"}]}' > .abhed/users.json && ls -A .abhed`,
+			ev.record(func() { once.Do(func() { close(started) }) }), "call-long")
+		done <- result{out, err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the second fence's command did not launch")
+	}
+	time.Sleep(500 * time.Millisecond)
+	if err := a.Close(); err != nil {
+		t.Fatalf("closing the first fence: %v", err)
+	}
+	r := <-done
+	t.Logf("the long command: %v %s", r.err, strings.TrimSpace(r.out))
+	if r.err != nil || !strings.Contains(r.out, "users.json") {
+		t.Fatalf("the long command: %v\n%s", r.err, r.out)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, ".abhed", "users.json")); err == nil {
+		t.Fatal("users.json the command wrote persists in the workspace")
+	}
+	out, err := fenceRun(t, b, ws, "echo next; ls -A .abhed | wc -l", ev.record(nil), "call-next")
+	if err != nil || !strings.HasPrefix(out, "next") {
+		t.Fatalf("the next command: %v\n%s", err, out)
+	}
+	if b.planted.Load() != nil || len(ev.of(EvFenceStatePlanted)) != 0 {
+		t.Fatalf("the second fence was marked planted: %v %v", b.planted.Load(), ev.of(EvFenceStatePlanted))
+	}
+	if left, err := os.ReadDir(filepath.Join(ws, ".abhed")); err != nil || len(left) != 0 {
+		t.Fatalf("the workspace's .abhed: %v %v", err, left)
+	}
+}
+
+// A protected file with a second name, a hard link elsewhere in the
+// workspace, refuses the command: held read-only by one name, it would stay
+// writable through the other.
+func TestFenceMountsRefusesAHardLinkedProtectedFile(t *testing.T) {
+	var ws string
+	f, _ := mounted(t, func(p *Policy) {
+		ws = p.Workspace
+		if err := os.MkdirAll(filepath.Join(ws, ".vscode"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ws, ".vscode", "settings.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		p.WriteProtected = []string{filepath.Join(ws, ".vscode", "settings.json")}
+	})
+	ev := &events{}
+	if out, err := fenceRun(t, f, ws, "echo ok", ev.record(nil), "call-before"); err != nil {
+		t.Fatalf("before the link: %v %s", err, out)
+	}
+	if err := os.Link(filepath.Join(ws, ".vscode", "settings.json"), filepath.Join(ws, "settings-link.json")); err != nil {
+		t.Fatal(err)
+	}
+	out, err := fenceRun(t, f, ws, `echo '{"x":1}' > settings-link.json`, ev.record(nil), "call-link")
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 126 || !strings.Contains(out, "hard links") {
+		t.Fatalf("a hard-linked protected file: %v\n%s", err, out)
+	}
+	t.Logf("refused: %s", strings.TrimSpace(out))
+	if b, _ := os.ReadFile(filepath.Join(ws, ".vscode", "settings.json")); string(b) != "{}" {
+		t.Fatalf("settings.json changed: %q", b)
+	}
+}
+
+const threadCapsEnv = "ABHED_TEST_THREAD_CAPS"
+
+// Started by TestFenceCapabilityCheckReadsTheExecutingThread in a user
+// namespace holding CAP_SYS_ADMIN, as the launcher is.
+func init() {
+	if os.Getenv(threadCapsEnv) != "1" {
+		return
+	}
+	done := make(chan int)
+	// A goroutine other than main's, which init keeps on the leader.
+	go func() {
+		runtime.LockOSThread()
+		if unix.Gettid() == os.Getpid() {
+			fmt.Println("on the leader thread")
+			done <- 3
+			return
+		}
+		if err := mountns.Drop(); err != nil {
+			fmt.Println(err)
+			done <- 1
+			return
+		}
+		if err := holdsNothing(); err != nil {
+			fmt.Println(err)
+			done <- 1
+			return
+		}
+		// The leader still holds it, so reading its status would refuse.
+		leader, _ := os.ReadFile("/proc/self/status")
+		if !strings.Contains(string(leader), "CapEff:\t") || strings.Contains(string(leader), "CapEff:\t0000000000000000") {
+			fmt.Printf("the leader holds no capability, so the test proves nothing:\n%s", leader)
+			done <- 2
+			return
+		}
+		fmt.Println("checked the thread that dropped them")
+		done <- 0
+	}()
+	os.Exit(<-done)
+}
+
+// The launcher checks the capabilities of the thread that executes the
+// command, not the leader's, which may still hold the mounts' capability.
+func TestFenceCapabilityCheckReadsTheExecutingThread(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
+		t.Skip("set ABHED_REQUIRE_FENCE=1 where an ordinary user can make a user namespace")
+	}
+	cmd := exec.Command("/proc/self/exe", "-test.run=^$")
+	cmd.Env = append(os.Environ(), threadCapsEnv+"=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{}
+	mountns.Attr(cmd.SysProcAttr)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	t.Logf("%s", strings.TrimSpace(string(out)))
+}
+
+// A skill's script in ~/.abhed/skills or in a skills.dirs folder runs under
+// the fence, and cannot be changed from it; the rest of ~/.abhed stays out
+// of reach.
 func TestFenceRunsASkillScript(t *testing.T) {
 	for _, mode := range []func(*Policy){nil, noMounts} {
-		var home, script string
+		var home, script, team string
 		f, p := fenced(t, func(p *Policy) {
 			home, _ = os.UserHomeDir()
 			script = filepath.Join(home, ".abhed", "skills", "hello", "run.sh")
-			if err := os.MkdirAll(filepath.Dir(script), 0o700); err != nil {
-				t.Fatal(err)
+			team = filepath.Join(t.TempDir(), "team", "hello", "run.sh")
+			for _, s := range []string{script, team} {
+				if err := os.MkdirAll(filepath.Dir(s), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(s, []byte("#!/bin/sh\necho skill ran\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if err := os.WriteFile(script, []byte("#!/bin/sh\necho skill ran\n"), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			p.SkillDirs = []string{filepath.Dir(filepath.Dir(team))}
 			if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte("abhed-state"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -200,11 +375,14 @@ func TestFenceRunsASkillScript(t *testing.T) {
 			}
 		})
 		ev := &events{}
-		out, err := fenceRun(t, f, p.Workspace, script, ev.record(nil), "call-skill")
-		if err != nil || strings.TrimSpace(out) != "skill ran" {
-			t.Fatalf("%s: the skill's script: %v\n%s", f.Mode(), err, out)
+		for _, s := range []string{script, team} {
+			out, err := fenceRun(t, f, p.Workspace, s, ev.record(nil), "call-skill")
+			if err != nil || strings.TrimSpace(out) != "skill ran" {
+				t.Fatalf("%s: the skill's script %s: %v\n%s", f.Mode(), s, err, out)
+			}
 		}
-		for _, c := range []string{"echo x >> " + script, "touch " + filepath.Join(filepath.Dir(script), "new"), "cat " + filepath.Join(home, ".abhed", "config.json")} {
+		for _, c := range []string{"echo x >> " + script, "touch " + filepath.Join(filepath.Dir(script), "new"), "cat " + filepath.Join(home, ".abhed", "config.json"),
+			"echo x >> " + team, "touch " + filepath.Join(filepath.Dir(team), "new")} {
 			if out, err := fenceRun(t, f, p.Workspace, c, ev.record(nil), "call-deny"); err == nil || strings.Contains(out, "abhed-state") {
 				t.Errorf("%s: %q succeeded:\n%s", f.Mode(), c, out)
 			}
