@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -410,5 +411,151 @@ func TestSeatbeltEgressProfile(t *testing.T) {
 	}
 	if s.wrapEgress(context.Background(), "/w", nil, nil, "/bin/true").Err == nil {
 		t.Fatal("a command was built under the allowlist with no proxy")
+	}
+}
+
+// proxyOf is the address the command's proxy variables name.
+func proxyOf(t *testing.T, cmd *exec.Cmd) string {
+	t.Helper()
+	if cmd.Err != nil {
+		t.Fatalf("command not built: %v", cmd.Err)
+	}
+	for _, kv := range cmd.Env {
+		if v, ok := strings.CutPrefix(kv, "HTTP_PROXY="); ok {
+			u, err := url.Parse(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return u.Host
+		}
+	}
+	t.Fatalf("no proxy in the command's environment")
+	return ""
+}
+
+func listening(addr string) bool {
+	c, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+// A session's proxy stays while any of its commands is in flight, closes
+// once none has been for the quiet time, and the next command opens a
+// new one with a new token.
+func TestEgressProxyClosesWhenQuiet(t *testing.T) {
+	s, ws := egressProcess(t)
+	s.egress.quiet = 100 * time.Millisecond
+	l := Launch{CallID: "c1", Session: "sess-Q", Record: (&eventLog{}).record}
+
+	ctx1, cancel1 := context.WithCancel(WithLaunch(context.Background(), l))
+	ctx2, cancel2 := context.WithCancel(WithLaunch(context.Background(), l))
+	addr := proxyOf(t, s.Command(ctx1, ws, "true"))
+	if a2 := proxyOf(t, s.Command(ctx2, ws, "true")); a2 != addr {
+		t.Fatalf("two commands of one session got proxies %s and %s", addr, a2)
+	}
+	first := s.sessionProxy("sess-Q")
+	cancel1()
+	time.Sleep(400 * time.Millisecond)
+	if s.sessionProxy("sess-Q") != first || !listening(addr) {
+		t.Fatal("the proxy closed with a command still in flight")
+	}
+	cancel2()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.sessionProxy("sess-Q") != nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if s.sessionProxy("sess-Q") != nil {
+		t.Fatal("a quiet session kept its proxy")
+	}
+	if listening(addr) {
+		t.Fatal("the quiet session's proxy still listens")
+	}
+	if first.dir != "" {
+		if _, err := os.Stat(first.dir); !os.IsNotExist(err) {
+			t.Fatalf("socket folder left: %v", err)
+		}
+	}
+	ctx3, cancel3 := context.WithCancel(WithLaunch(context.Background(), l))
+	defer cancel3()
+	if a3 := proxyOf(t, s.Command(ctx3, ws, "true")); !listening(a3) {
+		t.Fatal("the next command's proxy does not listen")
+	}
+	if next := s.sessionProxy("sess-Q"); next == first || next.proxy.Token() == first.proxy.Token() {
+		t.Fatal("the next command reused the closed proxy")
+	}
+}
+
+// Commands built and ended at once across sessions, with a quiet time
+// shorter than a command, never get a proxy that is closed while they run.
+func TestEgressQuietCloseRace(t *testing.T) {
+	s, ws := egressProcess(t)
+	s.egress.quiet = time.Millisecond
+	var wg sync.WaitGroup
+	errs := make(chan string, 64)
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l := Launch{CallID: fmt.Sprint("c", g), Session: fmt.Sprint("sess-", g%3), Record: (&eventLog{}).record}
+			for range 25 {
+				ctx, cancel := context.WithCancel(WithLaunch(context.Background(), l))
+				cmd := s.Command(ctx, ws, "true")
+				if cmd.Err != nil {
+					errs <- cmd.Err.Error()
+					cancel()
+					return
+				}
+				var addr string
+				for _, kv := range cmd.Env {
+					if v, ok := strings.CutPrefix(kv, "HTTP_PROXY="); ok {
+						u, _ := url.Parse(v)
+						addr = u.Host
+					}
+				}
+				time.Sleep(3 * time.Millisecond)
+				if !listening(addr) {
+					errs <- "a command's proxy closed while it was in flight"
+				}
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
+	}
+}
+
+// Close stops every session's proxy, on every platform: none still
+// listens, on 127.0.0.1 or, where held, [::1].
+func TestEgressCloseStopsEveryProxy(t *testing.T) {
+	s, ws := egressProcess(t)
+	var addrs []netip.AddrPort
+	var v6 []bool
+	for _, id := range []string{"sess-1", "sess-2", "sess-3"} {
+		ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "c", Session: id, Record: (&eventLog{}).record}))
+		defer cancel()
+		_ = proxyOf(t, s.Command(ctx, ws, "true"))
+		ap := s.sessionProxy(id).proxy.Addr()
+		addrs = append(addrs, ap)
+		v6 = append(v6, listening(net.JoinHostPort("::1", fmt.Sprint(ap.Port()))))
+	}
+	if addrs[0] == addrs[1] || addrs[1] == addrs[2] {
+		t.Fatalf("sessions share a proxy: %v", addrs)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for i, ap := range addrs {
+		if listening(ap.String()) {
+			t.Errorf("proxy %d still listens on %s after Close", i, ap)
+		}
+		if v6[i] && listening(net.JoinHostPort("::1", fmt.Sprint(ap.Port()))) {
+			t.Errorf("proxy %d still listens on [::1]:%d after Close", i, ap.Port())
+		}
 	}
 }

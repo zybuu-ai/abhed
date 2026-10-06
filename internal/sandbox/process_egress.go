@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
@@ -43,6 +44,10 @@ const maxRoutes = 4096
 // egressStart starts a proxy; a test replaces it to make starting fail.
 var egressStart = egress.Start
 
+// egressQuiet is how long a session's proxy outlives its last command: a
+// session left open but idle holds no listener, goroutine or socket folder.
+const egressQuiet = 30 * time.Second
+
 // recordFn writes one event to a record.
 type recordFn = func(string, map[string]any) error
 
@@ -52,17 +57,25 @@ type egressSessions struct {
 	mu     sync.Mutex
 	m      map[string]*egressState
 	closed bool
+	// quiet overrides egressQuiet; tests shorten it.
+	quiet time.Duration
 }
 
 // egressState is one session's egress proxy, started with its first
-// command and stopped when the session ends or the sandbox closes.
+// command and stopped when the session ends, the sandbox closes, or no
+// command has been in flight for egressQuiet.
 type egressState struct {
 	session string
-	once    sync.Once
-	proxy   *egress.Proxy
-	err     error
-	dir     string // the unix socket's folder, Linux only
-	exe     string // this binary, run as the relay, Linux only
+	// inflight counts commands built and not yet ended; quiet changes with
+	// each command, so only the latest wait closes the proxy. Both are
+	// guarded by egressSessions.mu, which also hands e out.
+	inflight int
+	quiet    uint64
+	once     sync.Once
+	proxy    *egress.Proxy
+	err      error
+	dir      string // the unix socket's folder, Linux only
+	exe      string // this binary, run as the relay, Linux only
 
 	mu     sync.Mutex
 	routes map[string]recordFn
@@ -99,12 +112,51 @@ func (s *Process) egressFor(ctx context.Context) (*egressState, error) {
 		e = &egressState{session: l.Session}
 		ss.m[l.Session] = e
 	}
+	e.inflight++
+	e.quiet++
 	ss.mu.Unlock()
+	// A command's context ends when it does; one that never ends keeps the
+	// proxy until the session ends.
+	context.AfterFunc(ctx, func() { s.egressDone(e) })
 	if err := s.startEgress(e); err != nil {
 		return nil, err
 	}
 	e.remember(l)
 	return e, nil
+}
+
+// egressDone notes that a command of e's session ended, and closes the
+// proxy once the session has run none for egressQuiet.
+func (s *Process) egressDone(e *egressState) {
+	ss := &s.egress
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	e.inflight--
+	if e.inflight > 0 || ss.m[e.session] != e {
+		return
+	}
+	gen, wait := e.quiet, ss.quiet
+	if wait <= 0 {
+		wait = egressQuiet
+	}
+	time.AfterFunc(wait, func() { s.closeIfQuiet(e, gen) })
+}
+
+// closeIfQuiet closes e's proxy if no command was built since the wait
+// that gen names began. Removed from the map first, under the lock that
+// hands proxies out, so a new command starts a fresh proxy, never this one.
+func (s *Process) closeIfQuiet(e *egressState, gen uint64) {
+	ss := &s.egress
+	ss.mu.Lock()
+	if ss.m[e.session] != e || e.inflight > 0 || e.quiet != gen {
+		ss.mu.Unlock()
+		return
+	}
+	delete(ss.m, e.session)
+	ss.mu.Unlock()
+	if err := e.close(); err != nil {
+		slog.Warn("closing a quiet session's egress proxy", "session", e.session, "err", err)
+	}
 }
 
 // startEgress starts e's proxy once. A session closed before or while it

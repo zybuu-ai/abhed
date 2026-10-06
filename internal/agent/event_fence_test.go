@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -58,5 +60,52 @@ func TestRecorderRoot(t *testing.T) {
 	grand.root = child.Root()
 	if top.Root() != "s" || child.Root() != "s" || grand.Root() != "s" {
 		t.Fatalf("roots %q %q %q", top.Root(), child.Root(), grand.Root())
+	}
+}
+
+// sessionSeer stands in for bash, which every subagent role has, and keeps
+// the session each launch of its calls names.
+type sessionSeer struct {
+	mu   *sync.Mutex
+	seen map[string]string
+}
+
+func (sessionSeer) Name() string            { return "bash" }
+func (sessionSeer) Description() string     { return "sees its launch" }
+func (sessionSeer) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (sessionSeer) Mutates() bool           { return false }
+func (s sessionSeer) Run(ctx context.Context, _ *tools.Session, _ json.RawMessage) tools.Result {
+	l := sandbox.LaunchOf(ctx)
+	s.mu.Lock()
+	s.seen[l.CallID] = l.Session
+	s.mu.Unlock()
+	return tools.Result{Content: "seen"}
+}
+
+// Spawned through the task tool, a subagent's and a grandchild's commands
+// are launched as the top-level session's, which keys the sandbox's state
+// for it, such as its egress proxy.
+func TestSubagentLaunchesAsItsRootSession(t *testing.T) {
+	seer := sessionSeer{mu: &sync.Mutex{}, seen: map[string]string{}}
+	store := NewMemStore()
+	l, _, f := taskTree(t, &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{taskCall("t1", "outer")}},
+		{calls: []model.ToolCall{bashCall("s-child", "echo child")}},
+		{calls: []model.ToolCall{taskCall("t2", "inner")}},
+		{calls: []model.ToolCall{bashCall("s-grand", "echo grand")}},
+		{text: "grandchild done"},
+		{text: "child done"},
+		{text: "done"},
+	}}, AutoApprove{Yes: true}, store, store, true)
+	f.Tools.Add(seer)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := l.Run(ctx, "go"); err != nil {
+		t.Fatal(err)
+	}
+	seer.mu.Lock()
+	defer seer.mu.Unlock()
+	if seer.seen["s-child"] != "parent" || seer.seen["s-grand"] != "parent" {
+		t.Fatalf("launches named sessions %v, want parent for both", seer.seen)
 	}
 }

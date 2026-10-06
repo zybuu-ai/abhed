@@ -113,3 +113,30 @@ func TestTerminalCommandsAreBoundToTheirSession(t *testing.T) {
 		t.Fatalf("sessions ended: %v", ended)
 	}
 }
+
+// A session taken by another node leaves this process's sandbox too: the
+// fence tells it the session has ended, once.
+func TestFenceEndsTheSessionInTheSandbox(t *testing.T) {
+	var ended []string
+	var endMu sync.Mutex
+	wb := shellBenchOpts(t, nil, func(o *Options) {
+		o.SessionEnded = func(id string) {
+			endMu.Lock()
+			ended = append(ended, id)
+			endMu.Unlock()
+		}
+	})
+	wb.s.mu.Lock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.Unlock()
+	if live == nil {
+		t.Fatal("no live session")
+	}
+	wb.s.fence(live)
+	wb.s.fence(live)
+	endMu.Lock()
+	defer endMu.Unlock()
+	if len(ended) != 1 || ended[0] != wb.session {
+		t.Fatalf("sessions ended: %v", ended)
+	}
+}
