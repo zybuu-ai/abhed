@@ -56,7 +56,11 @@ hides its environment; bubblewrap ends everything in its namespace. See
 - `shell_output` returns what the command wrote since the last read, with its
   state (`running`, or `exited` / `killed` and the exit code). One read returns
   at most the last 30,000 bytes of what is new; `wait_ms` waits up to that
-  long (at most ten minutes) for the command to end first.
+  long (at most ten minutes) for the command to end first. While secrets are
+  stored and the command is still running, a read holds back the last few
+  hundred bytes, a fixed length whatever they say, in case a secret goes on
+  in what comes next; they are shown once the command has written nothing
+  for a second, or when it ends.
 - `shell_kill` stops it and every process it started (its process group), and
   returns its last output.
 - A shell keeps the last 1 MiB of its output; a read that fell behind says how
