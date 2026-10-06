@@ -13,10 +13,13 @@ All notable changes to Abhed are recorded here. The format follows
   started after a gap with a secret's last characters was skipped. Both
   depended on the stored values, so a model with no `secret(...)` rule could
   print guesses and learn a value one character at a time from what was
-  held. Since 1.2.4. A read of a running shell now holds back a fixed tail
-  (the longest stored value, rounded up to 256 bytes) whatever it says, and
-  shows it once the shell has written nothing for a second; at a gap, the
-  same fixed length is skipped.
+  held. Affects 1.2.3, which brought background shells, to 1.2.6. A read of
+  a running shell now holds back a fixed tail (the longest stored value,
+  rounded up to 256 bytes) whatever it says, and shows it once the shell has
+  written nothing for a second; at a gap, the same fixed length is skipped.
+  A secret a program prints in two writes more than a second apart can now
+  show its first part to a read between them; the whole value is redacted
+  as before.
 
 ### Changed
 
