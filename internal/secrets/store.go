@@ -432,7 +432,8 @@ func (r *Redactor) Current() *Redactor { return r }
 // as it is at the call; any part that cannot be loaded withholds every payload.
 type Joined []interface{ Current() *Redactor }
 
-// Current is the union of every part's values now.
+// Current is the union of every part's values now. A value two parts hold
+// is labelled by the earlier part, so a session's own name for it shows.
 func (j Joined) Current() *Redactor {
 	r := &Redactor{}
 	for _, p := range j {
@@ -440,7 +441,7 @@ func (j Joined) Current() *Redactor {
 		if c == nil || c.broken {
 			return Withholding()
 		}
-		r = c.union(r)
+		r = r.union(c)
 	}
 	return r
 }

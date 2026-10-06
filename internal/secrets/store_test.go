@@ -377,6 +377,13 @@ func TestJoinedRedactsEveryPartAndFailsClosed(t *testing.T) {
 	if names := strings.Join(j.Names(), ","); !strings.Contains(names, "OWN") || !strings.Contains(names, "OP") {
 		t.Errorf("names: %s", names)
 	}
+	// A value both stores hold is named as the owner's store names it.
+	if err := op.Set("OP_SAME", "own-value-123"); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(j.Redact([]byte(`"own-value-123"`))); got != `"[secret:OWN]"` {
+		t.Errorf("a shared value took the operator's label: %s", got)
+	}
 	if err := os.WriteFile(op.Path(), []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
