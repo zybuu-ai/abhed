@@ -29,10 +29,15 @@ All notable changes to Abhed are recorded here. The format follows
   workbench terminal and `!` commands run as the session's own calls; a
   call id a session did not launch is recorded in its own record as
   `unattributed`, never in another session's, and a session's proxy stops
-  when it is deleted or taken by another node, and at shutdown. A `;` in a
+  when it is deleted or taken by another node, at shutdown, and after 30
+  seconds with no command in flight, reopening with the next command. The
+  Studio terminal, in lines and interactive mode, runs as the session's own
+  calls too. A `;` in a
   path is refused with 400. Denials and auth failures are rate-limited in
   the record (the first 10 of a kind a minute, then a summary with
-  `repeats`), and requests refused before they are read are recorded too.
+  `repeats`), allowed decisions past 200 a minute are counted into
+  summaries the same way, and requests refused before they are read are
+  recorded too.
   `egress.record_paths: false` keeps paths out of the record and
   `egress.idle_seconds` (default 300) closes idle connections. The `bash`
   tool tells the model which destinations it may reach.
@@ -43,7 +48,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 - On the macOS process tier a command, or the workbench shell, can signal
   only processes in its own sandbox: `kill $PPID` no longer stops Abhed, and
-  one command cannot signal another's processes, as on Linux.
+  one command cannot signal another's processes, as on Linux. A command can
+  therefore no longer `kill`, or `kill -0`, a process an earlier command left
+  running; use `run_in_background` and `shell_kill` for that.
 
 ## [1.2.6] - 2026-10-06
 

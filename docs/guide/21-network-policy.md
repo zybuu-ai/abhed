@@ -97,10 +97,13 @@ proxy. Under `abhed serve`, every session of the server has its own: the
 agent's commands, the workbench terminal and `!` commands each run as one of
 the session's calls, so their decisions go to that session's record and no
 other. The proxy stops, and its socket folder is removed, when the session
-leaves the server (it is deleted, or another node takes it) and when the
-server shuts down; a later command of a session that comes back starts a new
-proxy with a new token. On the command line the proxies stop when Abhed
-exits. A command is given
+leaves the server (it is deleted, or another node takes it), when the
+server shuts down, and when the session has had no command in flight for 30
+seconds (a workbench terminal left open counts as one); the next command
+starts a new proxy with a new token. A process a command left running
+after it ended loses its way out when the proxy stops, so run a server
+the agent needs with `run_in_background`, which keeps it in flight. On the
+command line the proxies stop when Abhed exits. A command is given
 `HTTP_PROXY`, `HTTPS_PROXY` and their lower-case forms, pointing at it with the
 call id as the user name and a per-session token as the password, and
 `NO_PROXY=localhost,127.0.0.1,::1`, so a server the command starts inside its
@@ -189,14 +192,17 @@ launch is recorded in that session's record with `unattributed: true`. A
 command run outside any session has no record; its decisions are dropped and
 logged as a warning.
 
-Denials and auth failures are rate-limited, so a command looping on a
-refused request cannot flood the record. Allowed requests are always
-recorded. In each one-minute interval the first 10 denials of a kind (same
+Decisions are rate-limited, so a command looping on a request cannot flood
+the record. In each one-minute interval the first 10 denials of a kind (same
 `kind`, `decision`, `rule`, `host` and `port`) are recorded one by one, and at
 most 100 of all kinds; the rest are counted, and when the interval ends each
 kind with denials left out gets one summary event with `repeats` set to the
-count and the first denial's reason. Summaries still owed are written when
-the proxy stops.
+count and the first denial's reason. Allowed decisions have a budget of
+their own: the first 200 in each interval are recorded one by one, whatever
+their kind, and the rest are counted the same way, each kind's summary
+carrying `repeats` and the bytes each way of what it counts. At most 512
+kinds are counted in an interval; past that, the rest share one summary per
+decision. Summaries still owed are written when the proxy stops.
 
 ## What each tier enforces
 
