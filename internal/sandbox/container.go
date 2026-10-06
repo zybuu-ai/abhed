@@ -268,12 +268,12 @@ func (c *Container) runArgs(cwd string) ([]string, error) {
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
-	run, err := c.runArgs(cwd)
+	args, err := c.runArgs(cwd)
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
 	name := containerName("abhed-cmd-")
-	args := append(run, "--name", name, Image, "/bin/sh", "-c", command)
+	args = append(args, "--name", name, Image, "/bin/sh", "-c", command)
 	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the command runs inside the container
 	// The engine's CLI needs the host's PATH, HOME and DOCKER_HOST; only the
 	// -e flags above reach the container.
