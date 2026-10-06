@@ -459,6 +459,12 @@ func sharedSecretRules(opts Options) []string {
 // its values could not be redacted.
 func (s *Server) sessionSecrets(spec StartSpec) (*secrets.Store, agent.Redactor, error) {
 	if s.opts.SecretsFor == nil {
+		// Said at each session too: a warning given only at startup is lost
+		// in a long-running server's log by the time an account uses it.
+		if rules := sharedSecretRules(s.opts); len(rules) > 0 {
+			s.log.Warn("this session shares the operator's secrets store with every account on this server",
+				"user", spec.User, "tenant", spec.Tenant, "rules", rules)
+		}
 		return nil, s.sessionRedactor(), nil
 	}
 	v, err := s.opts.SecretsFor(spec.Tenant, spec.User)

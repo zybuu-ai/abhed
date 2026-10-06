@@ -36,6 +36,15 @@ All notable changes to Abhed are recorded here. The format follows
   store cannot be loaded, `GET /v1/health` answers `"status": "degraded"`
   and `"secrets_store": "unreadable"`, still with code 200.
 
+- A server that gives every account the operator's one secrets store, with
+  an allow rule naming a secret, logged its warning only at startup. It now
+  also logs it as each session starts, naming the account.
+- On a server embedding Abhed with `SecretsFor`, a value both the account's
+  store and the operator's hold is labelled with the account's name for it,
+  and an operator redactor of its own no longer drops the check that keeps
+  stored values out of file paths, or the secret names a suggestion is
+  checked against.
+
 ### Go API
 
 Listed late from 1.2.6, all additive there:

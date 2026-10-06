@@ -2,11 +2,15 @@ package server
 
 import (
 	"bytes"
+	"log/slog"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // plainRedactor is an operator redactor with only Redact and Span.
@@ -36,5 +40,24 @@ func TestChainedKeepsPathCheckAndNames(t *testing.T) {
 	}
 	if names := c.Names(); !slices.Contains(names, "OWN_TOKEN") {
 		t.Fatalf("names: %v", names)
+	}
+}
+
+// The shared-store warning is given at each session's start as well as at
+// startup, naming whose session it is.
+func TestSharedStoreWarnsPerSession(t *testing.T) {
+	t.Setenv(secrets.EnvFile, filepath.Join(t.TempDir(), "secrets.json"))
+	var buf bytes.Buffer
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Permissions.Allow = []string{"secret(GITHUB_TOKEN)"}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+	buf.Reset()
+	if _, _, err := s.sessionSecrets(StartSpec{User: "ann"}); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, "shares the operator's secrets store") || !strings.Contains(out, "user=ann") {
+		t.Fatalf("no warning at the session's start:\n%s", out)
 	}
 }

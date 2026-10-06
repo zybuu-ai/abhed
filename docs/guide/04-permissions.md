@@ -705,7 +705,8 @@ On a Community server that several accounts sign in to (local, proxy or OIDC
 authentication), every account shares the operator's one store. Any account
 can then use every secret an allow rule names, and can read it too: redaction
 hides the stored value, not a command that prints it reversed, encoded or
-split. The server logs a warning at startup when it finds such a rule. Give
+split. The server logs a warning at startup when it finds such a rule, and
+again as each session starts, naming its account. Give
 each person who must not see another's secrets their own server.
 
 A server embedding Abhed for several accounts can instead give each account
