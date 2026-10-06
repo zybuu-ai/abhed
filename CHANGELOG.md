@@ -18,6 +18,16 @@ All notable changes to Abhed are recorded here. The format follows
   shows it once the shell has written nothing for a second; at a gap, the
   same fixed length is skipped.
 
+### Changed
+
+- `abhed -p` exits 1 when its record cannot take `session.started` or the
+  `config.refused` and `config.narrowed` events, as the SDK's `New` already
+  failed; before, it warned and ran on. An interactive session still says so
+  and stays at the prompt, its fence closed, and its first message fails on
+  the same record before the model is asked. `abhed serve` logs it.
+- `New` in the SDK lets go of the session record it opened when it fails
+  after opening it, so another process may continue the session.
+
 ### Go API
 
 Listed late from 1.2.6, all additive there:
