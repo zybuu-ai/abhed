@@ -358,7 +358,8 @@ func (b *Background) sessionID() string {
 const shellQuietRelease = time.Second
 
 // shellHoldUnit rounds what a read holds back up to a multiple, so its size
-// says nothing of how long a stored value is.
+// says nothing of a stored value shorter than this; of a longer one, only
+// ceil(span/256).
 const shellHoldUnit = 256
 
 // shellHold is how many trailing bytes a read of a running shell holds back:
@@ -386,9 +387,17 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 	if r.Dropped > 0 || r.Skipped > 0 {
 		skipped += int64(len(sh.carry))
 		sh.carry = ""
+		// Skip a fixed length, moved on only past a whole secret it would
+		// cut, as the tail cut below moves back.
+		whole := redactedText(red.Redact, text)
 		n := min(hold, len(text))
-		for n < len(text) && !utf8.RuneStart(text[n]) {
-			n++
+		for ; n < len(text); n++ {
+			if !utf8.RuneStart(text[n]) {
+				continue
+			}
+			if redactedText(red.Redact, text[:n])+redactedText(red.Redact, text[n:]) == whole {
+				break
+			}
 		}
 		text, skipped = text[n:], skipped+int64(n)
 	}

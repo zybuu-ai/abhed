@@ -793,3 +793,34 @@ func TestMovableSubagentNotMovedReturnsItsSummary(t *testing.T) {
 		t.Fatal("a subagent not moved became a background task")
 	}
 }
+
+// After a gap, the skip never cuts through a whole stored value: one that
+// straddles the skip point is skipped whole or shown redacted, for any
+// lead-in length.
+func TestShellGapSkipKeepsWholeValues(t *testing.T) {
+	const standIn = "sv-standin-7b3d1e9f0a"
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("STAND_IN", standIn); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := suggestLoop(t, &suggestStub{})
+	l.Recorder.Redact = vault.Redactor()
+	b := &Background{loop: l}
+	tail := strings.Repeat("#", 300)
+	for lead := 200; lead <= 260; lead++ {
+		for _, final := range []bool{true, false} {
+			sh := &shellState{}
+			r := tools.ShellRead{Text: strings.Repeat(".", lead) + standIn + tail, Dropped: 1}
+			if !final {
+				r.Quiet = shellQuietRelease
+			}
+			out, _ := sh.redactRead(b, r, final)
+			shown := strings.ReplaceAll(out, "[secret:STAND_IN]", "")
+			for i := 0; i+3 <= len(standIn); i++ {
+				if strings.Contains(shown, standIn[i:i+3]) {
+					t.Fatalf("lead-in %d: part %q of the value shown in %q", lead, standIn[i:i+3], out)
+				}
+			}
+		}
+	}
+}
