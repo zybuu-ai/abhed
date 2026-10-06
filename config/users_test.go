@@ -167,3 +167,33 @@ func TestRecordDecisionKeepsTheAccountsGrant(t *testing.T) {
 		t.Fatal("refused trust read the accounts")
 	}
 }
+
+// The trust loaded for a workspace stays with the directory it was decided
+// for: a workspace path swapped for a link to another directory after load
+// is decided afresh, not given the loaded trust.
+func TestUsersTrustStaysWithTheLoadedDirectory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(TrustEnv, "")
+	parent := t.TempDir()
+	ws := filepath.Join(parent, "ws")
+	if err := os.Mkdir(ws, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src := cfg.UsersFile(ws); src.Ignored {
+		t.Fatalf("trusted at load: %+v", src)
+	}
+	other := t.TempDir()
+	if err := os.Rename(ws, filepath.Join(parent, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, ws); err != nil {
+		t.Fatal(err)
+	}
+	if src := cfg.UsersFile(ws); !src.Ignored {
+		t.Fatalf("the loaded trust followed a swapped link to %s: %+v", other, src)
+	}
+}
