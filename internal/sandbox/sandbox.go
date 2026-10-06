@@ -142,6 +142,9 @@ type Policy struct {
 	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
 	// one CPU; zero leaves it unbounded.
 	CPUPercent int
+	// fenceNoMounts keeps the fence from giving commands a mount
+	// namespace of their own, for tests of the mode without one.
+	fenceNoMounts bool
 }
 
 func DefaultPolicy(workspace string) Policy {

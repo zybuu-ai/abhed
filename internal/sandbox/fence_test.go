@@ -41,20 +41,25 @@ func TestSelectRefusesAnUnknownChosenTier(t *testing.T) {
 	}
 }
 
-// A surface that keeps paths in the workspace read-only refuses the fence,
-// naming why, before any probe; no other tier is chosen in its place.
-func TestSelectRefusesTheFenceForProtectedWorkspaces(t *testing.T) {
+// A surface that keeps paths in the workspace read-only refuses the fence
+// without a mount namespace, naming why; no other tier is chosen in its place.
+func TestSelectRefusesTheFenceForProtectedWorkspacesWithoutMounts(t *testing.T) {
 	for name, set := range map[string]func(*Policy){
 		"protect git":     func(p *Policy) { p.ProtectGit = true },
 		"write protected": func(p *Policy) { p.WriteProtected = []string{filepath.Join(p.Workspace, ".vscode")} },
 	} {
 		p := fencePolicy(t)
+		p.fenceNoMounts = true
 		set(&p)
 		sb, err := Select(p)
 		if err == nil {
 			t.Fatalf("%s: selected %s", name, sb.Tier())
 		}
-		if !strings.Contains(err.Error(), "read-only area") || !strings.Contains(err.Error(), "no other tier") {
+		want := "read-only area"
+		if runtime.GOOS != "linux" {
+			want = "needs Linux"
+		}
+		if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "no other tier") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -68,7 +73,9 @@ func TestSelectRefusesTheFenceWhenStateIsGranted(t *testing.T) {
 	if _, err := Select(p); err == nil || !strings.Contains(err.Error(), ".abhed") {
 		t.Fatalf("home granted read-only: %v", err)
 	}
+	// Without a mount namespace, which would cover it.
 	p = fencePolicy(t)
+	p.fenceNoMounts = true
 	if err := os.Mkdir(filepath.Join(p.Workspace, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +84,7 @@ func TestSelectRefusesTheFenceWhenStateIsGranted(t *testing.T) {
 	}
 	// In any case: a filesystem that folds case reads it as .abhed.
 	p = fencePolicy(t)
+	p.fenceNoMounts = true
 	if err := os.Mkdir(filepath.Join(p.Workspace, ".ABhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +278,7 @@ func TestReleaseOnlyUnstarted(t *testing.T) {
 // A fence that did not qualify builds commands that never start.
 func TestUnqualifiedFenceRunsNothing(t *testing.T) {
 	p := fencePolicy(t)
-	p.ProtectGit = true
+	p.ProtectGit, p.fenceNoMounts = true, true
 	f := NewFence(p)
 	marker := filepath.Join(p.Workspace, "ran")
 	err := f.Command(context.Background(), p.Workspace, "touch "+marker).Run()
@@ -402,5 +410,146 @@ func TestClosedFenceRunsNothing(t *testing.T) {
 	}
 	if err := f.Command(context.Background(), p.Workspace, "true").Run(); err == nil {
 		t.Fatal("a closed fence ran a command")
+	}
+}
+
+// In the mount mode, Describe says what the namespace holds, and no longer
+// names the planted-state window it closes.
+func TestFenceDescribeMounts(t *testing.T) {
+	p := fencePolicy(t)
+	p.ProtectGit = true
+	f := NewFence(p)
+	f.mounts = true
+	d := f.Describe()
+	for _, want := range []string{"mode mount_namespace", "empty tmpfs", "bound read-only", "~/.abhed/skills", "a .abhed in a subfolder or an added folder (not covered)"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("Describe lacks %q:\n%s", want, d)
+		}
+	}
+	if strings.Contains(d, "until the check that follows it") {
+		t.Errorf("Describe names a window the mounts close:\n%s", d)
+	}
+	if f.Mode() != FenceModeMounts || NewFence(p).Mode() != FenceModeLandlock {
+		t.Errorf("modes %s %s", f.Mode(), NewFence(p).Mode())
+	}
+}
+
+// The plan holds git's config and hooks and the write-protected paths
+// read-only, pins the folders holding them, covers the workspace's .abhed
+// and hides state kept elsewhere in the workspace; a link is refused.
+func TestFencePlan(t *testing.T) {
+	p := fencePolicy(t)
+	ws := p.Workspace
+	for _, d := range []string{".git/hooks", "sub/.git", ".vscode", ".abhed", "state.d"} {
+		if err := os.MkdirAll(filepath.Join(ws, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{".git/config", ".vscode/settings.json", "users.json", "state.d/x"} {
+		if err := os.WriteFile(filepath.Join(ws, f), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.ProtectGit = true
+	p.WriteProtected = []string{filepath.Join(ws, ".vscode", "settings.json"), filepath.Join(ws, ".vscode", "missing.json"), "/etc/outside"}
+	p.StatePaths = []string{filepath.Join(ws, "users.json"), filepath.Join(ws, "state.d"), filepath.Join(ws, ".abhed", "inner.json")}
+	f := NewFence(p)
+	f.mounts = true
+	plan, err := f.plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".git/hooks", ".git/config", "sub/.git/hooks", "sub/.git/config", ".vscode/settings.json"} {
+		if !slices.Contains(plan.ReadOnly, filepath.FromSlash(want)) {
+			t.Errorf("read-only lacks %s: %v", want, plan.ReadOnly)
+		}
+	}
+	for _, want := range []string{".git", "sub/.git", ".vscode"} {
+		if !slices.Contains(plan.Pin, filepath.FromSlash(want)) {
+			t.Errorf("pins lack %s: %v", want, plan.Pin)
+		}
+	}
+	if !slices.Equal(plan.Empty, []string{".abhed", "state.d"}) || !slices.Equal(plan.Null, []string{"users.json"}) {
+		t.Errorf("hidden: empty %v, null %v", plan.Empty, plan.Null)
+	}
+	if err := os.Symlink("/tmp", filepath.Join(ws, ".vscode", "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	f.policy.WriteProtected = append(f.policy.WriteProtected, filepath.Join(ws, ".vscode", "link.json"))
+	if _, err := f.plan(); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Errorf("a linked protected path: %v", err)
+	}
+}
+
+// ~/.abhed/skills is granted read and run, inside the denied state, and the
+// rest of ~/.abhed stays denied; in the mount mode the covered .abhed and
+// the state the mounts hide are not denied, since no grant can reach them.
+func TestFenceSpecGrantsSkills(t *testing.T) {
+	p := fencePolicy(t)
+	home, _ := os.UserHomeDir()
+	skills := filepath.Join(home, ".abhed", "skills")
+	if err := os.MkdirAll(skills, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(p.Workspace, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p.StatePaths = []string{filepath.Join(p.Workspace, "users.json")}
+	if err := os.WriteFile(p.StatePaths[0], nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFence(p)
+	s := f.spec()
+	if !slices.Contains(s.Exec, skills) || !slices.Contains(s.Within, skills) || slices.Contains(s.Write, skills) {
+		t.Errorf("skills: exec %v within %v", s.Exec, s.Within)
+	}
+	if !slices.Contains(s.Deny, filepath.Join(home, ".abhed")) {
+		t.Errorf("deny lacks ~/.abhed: %v", s.Deny)
+	}
+	if err := s.Validate(); err == nil {
+		t.Error("landlock only: the workspace's .abhed under the write grant validated")
+	}
+	f.mounts = true
+	if err := f.prepareStateMount(); err != nil {
+		t.Fatal(err)
+	}
+	s = f.spec()
+	if err := s.Validate(); err != nil {
+		t.Errorf("mounts: %v (deny %v)", err, s.Deny)
+	}
+}
+
+// In the mount mode the fence makes the workspace's .abhed to mount over
+// when it is missing, does not take it for planted state, and removes it at
+// Close while it is still empty; another spelling is still planted.
+func TestFenceStateMountIsNotPlanted(t *testing.T) {
+	p := fencePolicy(t)
+	f := NewFence(p)
+	f.mounts = true
+	if err := f.prepareStateMount(); err != nil || !f.madeState {
+		t.Fatalf("prepare: %v made %v", err, f.madeState)
+	}
+	if err := f.checkPlanted(nil, "", "before_command"); err != nil {
+		t.Fatalf("the covered .abhed was taken for planted: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(p.Workspace, ".abhed")); !os.IsNotExist(err) {
+		t.Errorf("the made .abhed outlived Close: %v", err)
+	}
+	if runtime.GOOS == "darwin" {
+		return // APFS folds case: .ABHED is the same entry
+	}
+	g := NewFence(p)
+	g.mounts = true
+	if err := g.prepareStateMount(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(p.Workspace, ".ABHED"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.checkPlanted(nil, "", "before_command"); err == nil {
+		t.Error("another spelling of .abhed was not taken out")
 	}
 }

@@ -16,12 +16,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/zybuu-ai/abhed/internal/fence/cgroup"
 	"github.com/zybuu-ai/abhed/internal/fence/landlock"
+	"github.com/zybuu-ai/abhed/internal/fence/mountns"
 	"github.com/zybuu-ai/abhed/internal/fence/probe"
 	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
 )
@@ -52,6 +54,9 @@ type fenceSpec struct {
 	// only from the process that started it.
 	Qualified bool `json:"qualified"`
 	ProbePID  int  `json:"probe_pid"`
+	// Mounts, when set, is applied in the launcher's own user and mount
+	// namespace before anything else confines it.
+	Mounts *mountns.Plan `json:"mounts,omitempty"`
 }
 
 // fenceReport is what the launcher applied, sent before it runs the command.
@@ -180,7 +185,7 @@ func FenceProbe(ctx context.Context, p Policy) probe.Report {
 
 func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	base, derr := cgroup.Discover()
-	req := probe.Requirements{AllowNetwork: p.AllowNetwork}
+	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit}
 	if derr == nil {
 		req.CgroupDir = base.Path()
 	}
@@ -201,15 +206,47 @@ func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	return r, base
 }
 
+// mountsRefusal is why a surface with protected paths is refused on a host
+// that gives commands no mount namespace of their own.
+func mountsRefusal(why string) string {
+	return "this surface keeps paths inside the workspace read-only (its editor settings or git's config and hooks), " +
+		"which the fence holds only in a mount namespace of the command's own, and this host gives an ordinary user none (" + why + "); " +
+		"Landlock alone cannot carve a read-only area out of the writable workspace, so use the command line, or another tier"
+}
+
 // qualifyHost runs the probe afresh, asks the cgroup's manager whether it
 // delegated the cgroup, and makes the session's cgroup and private temp.
 func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 	var base *cgroup.Base
 	f.report, base = fenceProbe(ctx, f.policy)
+	mounts, _ := f.report.Check(probe.CheckMounts)
+	f.mounts = mounts.Status == probe.Pass && !f.policy.fenceNoMounts
+	if f.needsMounts() && !f.mounts {
+		why := mounts.Reason
+		if f.policy.fenceNoMounts {
+			why = "the mount namespace was turned off"
+		}
+		return false, mountsRefusal(why)
+	}
 	if !f.report.Qualified {
 		return false, f.report.Summary
 	}
+	if f.mounts {
+		if err := f.prepareStateMount(); err != nil {
+			return false, err.Error()
+		}
+	}
+	ok, why := f.qualifySession(base)
+	// A .abhed made to mount over goes with a fence that did not qualify.
+	if !ok && f.madeState {
+		_ = os.Remove(filepath.Join(f.policy.Workspace, stateDir))
+		f.madeState = false
+	}
+	return ok, why
+}
 
+// qualifySession makes the session's cgroup and private temp.
+func (f *Fence) qualifySession(base *cgroup.Base) (bool, string) {
 	var raw [6]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return false, "naming the session's cgroup: " + err.Error()
@@ -285,8 +322,15 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 		defer cancel()
 		_ = leaf.Remove(rctx)
 	}
+	var plan *mountns.Plan
+	if f.mounts {
+		if plan, err = f.plan(); err != nil {
+			drop()
+			return refusedCmd("%v", err)
+		}
+	}
 	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: f.policy.AllowNetwork, Leaf: leaf.Path(),
-		Qualified: f.report.Qualified, ProbePID: os.Getpid()})
+		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan})
 	if err != nil {
 		drop()
 		return refusedCmd("%v", err)
@@ -307,6 +351,10 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	cmd.Dir = cwd
 	cmd.Env = env
 	cmd.ExtraFiles = []*os.File{theirs}
+	if plan != nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+		mountns.Attr(cmd.SysProcAttr)
+	}
 	// Release ends the wait at once for a command that never starts.
 	abandoned := make(chan struct{})
 	var once sync.Once
@@ -316,7 +364,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 			_ = ours.SetReadDeadline(time.Now())
 		})
 	})
-	sup := supervision{ours: ours, theirs: theirs, leaf: leaf, launch: launch, rec: rec, source: source, drop: drop,
+	sup := supervision{ours: ours, theirs: theirs, leaf: leaf, launch: launch, rec: rec, source: source, drop: drop, plan: plan,
 		abandoned: abandoned, done: func() { pendingLaunches.Delete(cmd) }}
 	// The supervisor outlives this call by design: it holds the launch until
 	// the command exits, and cleans up with contexts of its own.
@@ -334,6 +382,8 @@ type supervision struct {
 	rec    func(string, map[string]any) error
 	source string
 	drop   func()
+	// plan is what the command's mount namespace holds, nil without one.
+	plan *mountns.Plan
 	// abandoned closes when the command is released unstarted; done
 	// forgets it once the launcher has reported or the wait is over.
 	abandoned <-chan struct{}
@@ -384,7 +434,7 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		if err := sv.rec("process.launched", map[string]any{
 			"call_id": l.CallID, "source": sv.source, "pid": rep.PID, "tier": string(TierFence), "sandbox": f.id, "cgroup": rep.Cgroup,
 			"landlock_abi": rep.ABI, "landlock": rep.Landlock, "seccomp": rep.Seccomp, "seccomp_sha256": rep.Digest,
-			"network": f.policy.AllowNetwork,
+			"network": f.policy.AllowNetwork, "mode": f.Mode(), "mounts": planText(sv.plan),
 		}); err != nil {
 			refuse()
 			return
@@ -409,6 +459,14 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 	_ = leaf.Remove(rctx)
 	// Once nothing of the command's is left running, no .abhed it made stays.
 	_ = f.checkPlanted(sv.rec, l.CallID, "after_command")
+}
+
+// planText words a launch's mounts for its record.
+func planText(p *mountns.Plan) string {
+	if p == nil {
+		return "none"
+	}
+	return p.Describe()
 }
 
 // readReport waits for the launcher's report, until ctx ends, the command
@@ -490,6 +548,26 @@ func runLauncher(args []string) int {
 	// would-be command, checked again here.
 	if !s.Qualified || s.ProbePID != os.Getppid() {
 		return fail("no qualification from the Abhed process that started it")
+	}
+	// 1a. The mounts, in this launcher's own namespace, where it holds
+	// CAP_SYS_ADMIN only to make them; then every capability is dropped.
+	if s.Mounts != nil {
+		runtime.LockOSThread()
+		if err := mountns.Apply(*s.Mounts); err != nil {
+			return fail("%v", err)
+		}
+		// The working folder was entered before the mounts; entered again,
+		// it is seen through them.
+		wd, err := os.Getwd()
+		if err == nil {
+			err = unix.Chdir(wd)
+		}
+		if err != nil {
+			return fail("entering the working folder again: %v", err)
+		}
+		if err := mountns.Drop(); err != nil {
+			return fail("%v", err)
+		}
 	}
 	if err := holdsNothing(); err != nil {
 		return fail("%v", err)

@@ -48,17 +48,22 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 
-	// The fence preview runs the command line's commands; the server's
-	// sessions and terminals wait for a later release.
-	if cfg.Sandbox.Tier == string(sandbox.TierFence) {
-		fmt.Fprintln(os.Stderr, "abhed: sandbox.tier is fence, a preview the command line supports and serve does not yet; "+
-			"serve refuses rather than run commands under another tier. Unset sandbox.tier to serve.")
-		return 1
-	}
 	sb, err := buildSandbox(cfg, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
+	}
+	// Under the fence each session gets a fence of its own, with its own
+	// cgroup, qualified at its first command; this one qualifies the host at
+	// startup and confines nothing else.
+	fence := fenceOf(sb)
+	if fence != nil {
+		defer func() { _ = fence.Close() }()
+		if fence.Mode() != sandbox.FenceModeMounts {
+			fmt.Fprintln(os.Stderr, "abhed: sandbox.tier is fence, and serve needs its mount_namespace mode, which this host does not give an ordinary user; "+
+				"serve refuses rather than run commands under another tier. Unset sandbox.tier to serve, or run it where user namespaces are allowed.")
+			return 1
+		}
 	}
 	vault := openVault()
 	bash := tools.Bash{Sandbox: sb.Command,
@@ -207,6 +212,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Index:         set.Index,
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
+	}
+	if fence != nil {
+		opts.SessionBash = fenceSessionBash(cfg, workspace)
 	}
 	for _, h := range a.serverOpts {
 		if err := h(cfg, &opts); err != nil {

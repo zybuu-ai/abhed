@@ -88,6 +88,27 @@ func TestRequirementsShapeTheChecks(t *testing.T) {
 	}
 }
 
+// The mounts check is made either way, required only when asked for, and
+// leaves the folder it tested in removed.
+func TestMountsCheckIsRequiredOnlyWhenAsked(t *testing.T) {
+	requireFence(t)
+	for _, want := range []bool{false, true} {
+		r := Run(context.Background(), Requirements{Mounts: want})
+		c, ok := r.Check(CheckMounts)
+		if !ok || c.Required != want || c.Status == Skip {
+			t.Fatalf("mounts %v: %+v", want, c)
+		}
+		if want && c.Status != Pass && r.Qualified {
+			t.Errorf("a required mounts failure qualified: %s", r.Summary)
+		}
+		t.Logf("mounts %v: %s %s", want, c.Status, c.Reason)
+	}
+	left, _ := filepath.Glob(filepath.Join(os.TempDir(), "abhed-fence-probe-mounts-*"))
+	if len(left) != 0 {
+		t.Errorf("left behind: %v", left)
+	}
+}
+
 // Run confines only its helpers: the caller keeps no_new_privs off, its
 // seccomp mode and its filesystem.
 func TestRunLeavesTheCallerUnconfined(t *testing.T) {
