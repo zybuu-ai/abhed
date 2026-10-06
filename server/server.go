@@ -499,6 +499,45 @@ func (c chained) Span() int {
 	return n
 }
 
+// FindInPath finds a stored value of any part in a path: by the part's own
+// FindInPath, or for a part without one, by whether redacting changes it.
+// The label is "" when a part cannot be read.
+func (c chained) FindInPath(path string) (string, bool) {
+	quoted, _ := json.Marshal(path)
+	for _, r := range c {
+		if f, ok := r.(interface{ FindInPath(string) (string, bool) }); ok {
+			if label, found := f.FindInPath(path); found {
+				return label, true
+			}
+			continue
+		}
+		switch out := r.Redact(quoted); {
+		case out == nil:
+			return "", true
+		case string(out) != string(quoted):
+			return "[secret]", true
+		}
+	}
+	return "", false
+}
+
+// Names are the names every part that can say them holds.
+func (c chained) Names() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range c {
+		if n, ok := r.(interface{ Names() []string }); ok {
+			for _, name := range n.Names() {
+				if !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
+		}
+	}
+	return out
+}
+
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
