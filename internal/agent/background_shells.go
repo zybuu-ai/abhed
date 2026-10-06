@@ -353,14 +353,26 @@ func (b *Background) sessionID() string {
 	return b.loop.sessionID()
 }
 
-// partials finds text that may be part of a stored value; secrets.Redactor has it.
-type partials interface {
-	Pending(s string) int
-	Partial(s string) int
+// shellQuietRelease is how long a running shell must have written nothing
+// before a read shows the tail it holds back.
+const shellQuietRelease = time.Second
+
+// shellHoldUnit rounds what a read holds back up to a multiple, so its size
+// says nothing of how long a stored value is.
+const shellHoldUnit = 256
+
+// shellHold is how many trailing bytes a read of a running shell holds back:
+// at least span-1, enough for a secret's start, fixed whatever the text says.
+func shellHold(span int) int {
+	return ((span-1)/shellHoldUnit + 1) * shellHoldUnit
 }
 
-// redactRead holds back output that may start a secret until the next read;
-// at a gap, text a cut secret could leave a part in is skipped. Holds readMu.
+// redactRead holds back the tail of a running shell's output until the next
+// read, or until the shell goes quiet, since a stored secret may continue in
+// what comes next; at a gap, the start a cut secret could leave a part in is
+// skipped. What is held depends only on lengths and timing, never on what the
+// text says, or a model could test guesses at a value it was not given by
+// seeing whether they are held. Holds readMu.
 func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (string, int64) {
 	var red Redactor
 	if b.loop != nil {
@@ -369,43 +381,30 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 	if red == nil || red.Span() == 0 {
 		return r.Text, r.Skipped
 	}
+	hold := shellHold(red.Span())
 	text, skipped := r.Text, r.Skipped
-	pt, precise := red.(partials)
 	if r.Dropped > 0 || r.Skipped > 0 {
 		skipped += int64(len(sh.carry))
 		sh.carry = ""
-		n := red.Span() - 1
-		if precise {
-			n = pt.Partial(text)
-		}
-		n = min(n, len(text))
+		n := min(hold, len(text))
 		for n < len(text) && !utf8.RuneStart(text[n]) {
 			n++
 		}
 		text, skipped = text[n:], skipped+int64(n)
 	}
-	if !precise {
-		fb := fragmentBuffer{redact: red.Redact, span: red.Span(), carry: sh.carry}
-		out := fb.push(text)
-		if final {
-			out += fb.flush()
-		}
-		sh.carry = fb.carry
-		return out, skipped
-	}
 	raw := sh.carry + text
 	sh.carry = ""
-	if final {
+	if final || r.Quiet >= shellQuietRelease {
 		return redactedText(red.Redact, raw), skipped
 	}
-	// Cut before a possible secret's start, and never inside a whole one.
+	// Cut a fixed length from the end, moved back only off a whole secret,
+	// which the redacted text names anyway.
 	whole := redactedText(red.Redact, raw)
-	cut := len(raw) - pt.Pending(raw)
-	for ; cut > 0; cut-- {
-		if cut < len(raw) && !utf8.RuneStart(raw[cut]) {
+	for cut := len(raw) - hold; cut > 0; cut-- {
+		if !utf8.RuneStart(raw[cut]) {
 			continue
 		}
-		if head := redactedText(red.Redact, raw[:cut]); cut == len(raw) || head+redactedText(red.Redact, raw[cut:]) == whole {
+		if head := redactedText(red.Redact, raw[:cut]); head+redactedText(red.Redact, raw[cut:]) == whole {
 			sh.carry = raw[cut:]
 			return head, skipped
 		}

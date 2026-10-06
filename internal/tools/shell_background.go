@@ -216,6 +216,8 @@ type ShellRead struct {
 	Dropped int64
 	// Skipped is output left out to keep this read within its size.
 	Skipped int64
+	// Quiet is how long the command had written nothing when it was read.
+	Quiet time.Duration
 }
 
 // ReadNew returns the output written since the last ReadNew, at most max
@@ -223,9 +225,9 @@ type ShellRead struct {
 func (p *ShellProc) ReadNew(max int) ShellRead {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	text, dropped, skipped, next := p.out.since(p.cursor, max)
+	text, dropped, skipped, next, last := p.out.since(p.cursor, max)
 	p.cursor = next
-	return ShellRead{Text: text, Dropped: dropped, Skipped: skipped}
+	return ShellRead{Text: text, Dropped: dropped, Skipped: skipped, Quiet: time.Since(last)}
 }
 
 // Unread is how many bytes were written since the last ReadNew.
@@ -276,6 +278,7 @@ type shellRing struct {
 	buf   []byte
 	base  int64 // the offset of buf[0] in everything written
 	total int64
+	last  time.Time // the latest write
 }
 
 func (r *shellRing) Write(b []byte) (int, error) {
@@ -283,6 +286,7 @@ func (r *shellRing) Write(b []byte) (int, error) {
 	defer r.mu.Unlock()
 	r.buf = append(r.buf, b...)
 	r.total += int64(len(b))
+	r.last = time.Now()
 	if len(r.buf) > 2*r.max {
 		cut := len(r.buf) - r.max
 		r.buf = append(r.buf[:0:0], r.buf[cut:]...)
@@ -303,8 +307,8 @@ func (r *shellRing) size() (total, dropped int64) {
 }
 
 // since returns the output from cursor on, at most limit bytes of its end, and
-// the offset the next read starts at.
-func (r *shellRing) since(cursor int64, limit int) (text string, dropped, skipped, next int64) {
+// the offset the next read starts at, and when it was last written.
+func (r *shellRing) since(cursor int64, limit int) (text string, dropped, skipped, next int64, last time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	from := cursor
@@ -321,7 +325,7 @@ func (r *shellRing) since(cursor int64, limit int) (text string, dropped, skippe
 		b = b[1:]
 		skipped++
 	}
-	return strings.ToValidUTF8(string(b), "�"), dropped, skipped, r.total
+	return strings.ToValidUTF8(string(b), "�"), dropped, skipped, r.total, r.last
 }
 
 // tail is the last n bytes held.

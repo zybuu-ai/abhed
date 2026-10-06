@@ -6,6 +6,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- A running background shell's output that ended in the first characters of
+  any stored secret was held back from `shell_output`, and output that
+  started after a gap with a secret's last characters was skipped. Both
+  depended on the stored values, so a model with no `secret(...)` rule could
+  print guesses and learn a value one character at a time from what was
+  held. Since 1.2.4. A read of a running shell now holds back a fixed tail
+  (the longest stored value, rounded up to 256 bytes) whatever it says, and
+  shows it once the shell has written nothing for a second; at a gap, the
+  same fixed length is skipped.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
