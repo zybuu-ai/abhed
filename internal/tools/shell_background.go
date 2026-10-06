@@ -250,16 +250,11 @@ func (p *ShellProc) Unread() int64 {
 // redact, the output is redacted before it is clipped, so a clip never cuts a
 // secret it would have hidden; span is the longest value redact hides, and a
 // tail cut from longer output drops its first span-1 bytes, where a part of a
-// cut value could be.
+// cut value could be, moved on past a whole value that drop would cut.
 func (p *ShellProc) LastLine(max int, redact func(string) string, span int) string {
 	tail, cut := p.out.tail(4096)
 	if cut {
-		if span > 1 {
-			tail = tail[min(span-1, len(tail)):]
-		}
-		for n := 0; n < utf8.UTFMax && len(tail) > 0 && !utf8.RuneStart(tail[0]); n++ {
-			tail = tail[1:]
-		}
+		tail = tail[dropCutStart(tail, redact, span):]
 	}
 	tail = strings.ToValidUTF8(tail, "�")
 	if redact != nil {
@@ -271,6 +266,26 @@ func (p *ShellProc) LastLine(max int, redact func(string) string, span int) stri
 		line = string(r[:max]) + "…"
 	}
 	return line
+}
+
+// dropCutStart is how much of a tail cut from longer output to drop: the first
+// span-1 bytes, then on to a character start where redacting the two parts
+// apart gives what redacting the whole does, so no value is split.
+func dropCutStart(tail string, redact func(string) string, span int) int {
+	n := 0
+	if redact == nil || span <= 1 {
+		for n < utf8.UTFMax && n < len(tail) && !utf8.RuneStart(tail[n]) {
+			n++
+		}
+		return n
+	}
+	whole := redact(tail)
+	for n = min(span-1, len(tail)); n < len(tail); n++ {
+		if utf8.RuneStart(tail[n]) && redact(tail[:n])+redact(tail[n:]) == whole {
+			break
+		}
+	}
+	return n
 }
 
 // EndBackgroundShells stops every background command this process started

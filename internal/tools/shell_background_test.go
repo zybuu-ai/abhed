@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,90 @@ func TestShellLastLineRedactsBeforeClipping(t *testing.T) {
 		p := lineOf(strings.Repeat(".", 5000) + standIn + strings.Repeat(".", 4096-len(standIn)+into))
 		if got := p.LastLine(200, redact, len(standIn)); leaks(got) {
 			t.Fatalf("%d bytes into the value: %q", into, got)
+		}
+	}
+}
+
+// A value that starts inside the bytes a cut tail drops is not split by the
+// drop: its end is never shown on its own, for any start in that drop.
+func TestShellLastLineDropKeepsWholeValues(t *testing.T) {
+	const standIn = "lv-standin-5c8e2a7d1f"
+	span := len(standIn)
+	redact := func(s string) string { return strings.ReplaceAll(s, standIn, "[secret:STAND_IN]") }
+	for at := 1; at <= span-2; at++ {
+		out := strings.Repeat(".", 5000) + strings.Repeat("-", at) + standIn + strings.Repeat(".", 4096-at-span)
+		p := &ShellProc{out: &shellRing{max: 1 << 20}}
+		_, _ = p.out.Write([]byte(out))
+		got := p.LastLine(200, redact, span)
+		if shown := strings.ReplaceAll(got, "[secret:STAND_IN]", ""); strings.ContainsAny(shown, "abcdefilnstv0123456789") {
+			t.Fatalf("value %d bytes into the tail: %q", at, got)
+		}
+		// A fixed drop of span-1 bytes would show its end.
+		tail := out[len(out)-4096:]
+		if at >= 2 && !strings.Contains(redact(tail[span-1:]), standIn[span-1-at:span-1-at+2]) {
+			t.Fatalf("value %d bytes into the tail: the case tests nothing", at)
+		}
+	}
+}
+
+// Over random output, the last line never shows a part of a stored value
+// longer than a few bytes that redacting all the output would not show.
+func TestShellLastLineNeverShowsAPart(t *testing.T) {
+	const standIn = "fz-standin-93ab17c4e0"
+	redact := func(s string) string { return strings.ReplaceAll(s, standIn, "[secret:STAND_IN]") }
+	rng := rand.New(rand.NewSource(7))
+	const filler = "....----  =="
+	for i := range 3000 {
+		var sb strings.Builder
+		for sb.Len() < 4096+rng.Intn(3000) {
+			// Newlines are rare, so the cut tail's start is often on the last line.
+			switch c := rng.Intn(60); {
+			case c < 8:
+				sb.WriteString(standIn)
+			case c < 10:
+				sb.WriteString(standIn[:rng.Intn(len(standIn))])
+			case c == 10:
+				sb.WriteByte('\n')
+			default:
+				for range rng.Intn(40) {
+					sb.WriteByte(filler[rng.Intn(len(filler))])
+				}
+			}
+		}
+		out := sb.String()
+		p := &ShellProc{out: &shellRing{max: 1 << 20}}
+		_, _ = p.out.Write([]byte(out))
+		got := p.LastLine(1+rng.Intn(5000), redact, len(standIn))
+		whole := redact(out)
+		for k := 4; k <= len(standIn); k++ {
+			for j := 0; j+k <= len(standIn); j++ {
+				if part := standIn[j : j+k]; strings.Contains(got, part) && !strings.Contains(whole, part) {
+					t.Fatalf("case %d: part %q shown in %q", i, part, got)
+				}
+			}
+		}
+	}
+}
+
+// What the drop moves on past depends only on whole values: a guess at a
+// value's start reads the same as other text of its shape, wherever it is.
+func TestShellLastLineDropRevealsNothing(t *testing.T) {
+	const standIn = "pv-standin-2d6b8f1a"
+	redact := func(s string) string { return strings.ReplaceAll(s, standIn, "[secret:STAND_IN]") }
+	line := func(out string) string {
+		p := &ShellProc{out: &shellRing{max: 1 << 20}}
+		_, _ = p.out.Write([]byte(out))
+		return p.LastLine(4096, redact, len(standIn))
+	}
+	for at := 0; at < 40; at++ {
+		for _, n := range []int{1, 5, len(standIn) - 1} {
+			right, wrong := standIn[:n], strings.Repeat("q", n)
+			mk := func(g string) string {
+				return strings.Repeat(".", 5000) + strings.Repeat("-", at) + g + strings.Repeat(".", 4096-at-n)
+			}
+			if a, b := line(mk(right)), line(mk(wrong)); len(a) != len(b) {
+				t.Fatalf("at %d, %d bytes: a correct start reads as %d bytes, a wrong one as %d", at, n, len(a), len(b))
+			}
 		}
 	}
 }
