@@ -333,3 +333,32 @@ func TestGitDirInEnvIsNotPinned(t *testing.T) {
 		t.Fatalf("not pinned: %v", env[len(env)-1])
 	}
 }
+
+// Where a .git is present but git cannot say where the git folder is, no
+// common folder can be pinned, so no git runs there; outside any
+// repository git runs as before.
+func TestUnknownGitFolderRefusesGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	ctx := context.Background()
+	plain := t.TempDir()
+	if r := New(ctx, plain); r.unknown != nil {
+		t.Fatalf("refused outside a repository: %v", r.unknown)
+	}
+	for name, plant := range map[string]func(string) error{
+		"a .git folder git does not take": func(d string) error { return os.MkdirAll(filepath.Join(d, ".git", "hooks"), 0o750) },
+		"a .git file naming no folder": func(d string) error {
+			return os.WriteFile(filepath.Join(d, ".git"), []byte("gitdir: "+filepath.Join(d, "missing")+"\n"), 0o600)
+		},
+	} {
+		dir := t.TempDir()
+		if err := plant(dir); err != nil {
+			t.Fatal(err)
+		}
+		cmd := New(ctx, dir).Command(ctx, "status")
+		if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "runs no git") {
+			t.Errorf("%s: git was not refused: %v", name, cmd.Err)
+		}
+	}
+}

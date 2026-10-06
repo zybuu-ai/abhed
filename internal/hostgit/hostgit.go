@@ -67,12 +67,18 @@ type Repo struct {
 	// where the git folder is rather than from a commondir file in it;
 	// both "" outside a repository.
 	gitDir, common string
+	// unknown is why git is not run: a .git is there, but git could not
+	// say where its git folder is, so nothing can be pinned.
+	unknown error
 }
 
 // New finds dir's git folders and reads the configuration for the filter
 // and merge drivers it names. Neither runs anything.
 func New(ctx context.Context, dir string) *Repo {
-	gitDir, common := gitDirs(ctx, dir)
+	gitDir, common, err := gitDirs(ctx, dir)
+	if err != nil {
+		return &Repo{Dir: dir, unknown: err}
+	}
 	return &Repo{Dir: dir, gitDir: gitDir, common: common, drivers: drivers(ctx, dir, common)}
 }
 
@@ -97,6 +103,9 @@ func (r *Repo) CommandWith(ctx context.Context, config [][2]string, env []string
 	all := append(append(append([][2]string(nil), safety...), r.drivers...), config...)
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", r.Dir}, args...)...) // #nosec G204 -- fixed binary, arguments from Abhed
 	place(cmd, r.Dir)
+	if r.unknown != nil && cmd.Err == nil {
+		cmd.Err = r.unknown
+	}
 	if err := r.redirected(); err != nil && cmd.Err == nil {
 		cmd.Err = err
 	}
@@ -126,25 +135,35 @@ func pinned(common string, more []string) []string {
 // gitDirs are dir's git folder and its common git folder: the same one, or
 // for a linked worktree's (<common>/worktrees/<name>) the folder two up. A
 // commondir file is not read, since a sandboxed command can write one; ""
-// for both when dir is in no repository.
-func gitDirs(ctx context.Context, dir string) (string, string) {
+// for both when dir is in no repository. When a .git is at or above dir but
+// git cannot name the git folder, the error is why no git is run there:
+// unpinned, git would follow whatever commondir it found.
+func gitDirs(ctx context.Context, dir string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--absolute-git-dir") // #nosec G204 -- fixed arguments
 	place(cmd, dir)
 	cmd.Env = Env()
 	out, err := cmd.Output()
-	if err != nil {
-		return "", ""
-	}
 	gd := filepath.Clean(strings.TrimSpace(string(out)))
-	if !filepath.IsAbs(gd) {
-		return "", ""
+	if err != nil || !filepath.IsAbs(gd) {
+		if root := repoRoot(dir); root != "" {
+			var ee *exec.ExitError
+			switch {
+			case err == nil:
+				err = fmt.Errorf("git named %q", gd)
+			case errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0:
+				err = errors.New(string(bytes.TrimSpace(ee.Stderr)))
+			}
+			return "", "", fmt.Errorf("git could not say where the git folder of %s is (%v), "+
+				"so it cannot be pinned against a commondir planted there; Abhed runs no git in this repository", root, err)
+		}
+		return "", "", nil
 	}
 	if parent := filepath.Dir(gd); strings.EqualFold(filepath.Base(parent), "worktrees") {
 		if c := filepath.Dir(parent); isGitDir(c) {
-			return gd, c
+			return gd, c, nil
 		}
 	}
-	return gd, gd
+	return gd, gd, nil
 }
 
 // redirected says why git is not run while a commondir file in the git
