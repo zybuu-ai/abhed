@@ -40,6 +40,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A `shell_output` read that ended inside a multi-byte character showed it
+  as `�`, and the next read reported one byte not shown and, while secrets
+  were stored, skipped its start as after a gap. A character only partly
+  written is now left for the next read.
+
 - A server session started while the operator's secrets store could not be
   loaded withheld every payload for good, though the docs said until the
   store was fixed. It now redacts again once the store loads. While the
