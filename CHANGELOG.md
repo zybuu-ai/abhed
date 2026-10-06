@@ -6,6 +6,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The fence preview now runs Abhed Studio (ACP) and `abhed serve`, where the
+  host lets an ordinary user make a user namespace. Each command then gets a
+  mount namespace of its own, made by the launcher before Landlock and
+  seccomp: git's config and hooks and the editor's protected files are bound
+  read-only, the folders holding them pinned, and the workspace's `.abhed` is
+  covered by an empty tmpfs, so nothing a command writes there persists.
+  The mode is recorded in `fence.qualified` and each `process.launched` as
+  `mount_namespace` or `landlock_only`, and `abhed doctor` shows the probe's
+  new `userns_mounts` check. Each Studio and served session has a fence and a
+  cgroup of its own.
+- Skill scripts in `~/.abhed/skills` run under the fence, read and run but
+  never written.
+
+### Changed
+
+- Where user namespaces are not allowed (Ubuntu's AppArmor restriction, a
+  zero `user.max_user_namespaces`), the fence runs as before in
+  `landlock_only`, and Studio and `serve` are refused with the reason; the
+  fence never moves between modes on its own.
+- In `mount_namespace`, a workspace's existing `.abhed` no longer refuses the
+  fence, and the fence makes an empty `.abhed` to mount over where there is
+  none, removing it at close while it is still empty. The planted-state check
+  stays as defence in depth for other spellings of `.abhed`.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in

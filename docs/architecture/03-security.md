@@ -102,7 +102,12 @@ That waits on I3.
 ### The fence tier (preview, Linux)
 
 `fence` is a preview, Linux only, and off unless `sandbox.tier: "fence"`. Each command is
-confined with Landlock and a seccomp filter and runs in a cgroup of its own tool call. For
+confined with Landlock and a seccomp filter and runs in a cgroup of its own tool call.
+Where the host lets an ordinary user make a user namespace, the launcher first gives the
+command a mount namespace of its own, binds the surface's protected paths (git's config
+and hooks, an editor's settings) read-only and covers the workspace's `.abhed` with an
+empty tmpfs, then drops the one capability it held for that; this mode, `mount_namespace`,
+is what `abhed serve` and Studio need, and without it they are refused. For
 `min_tier` it counts as `process`, and it fails closed: when the host lacks anything it
 needs, Abhed refuses to start and names the check, and never runs the command under another
 tier. It is not a microVM; the command shares the host kernel. Requirements and what it
