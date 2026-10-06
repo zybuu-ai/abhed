@@ -38,8 +38,8 @@ type Process struct {
 	nsOnce sync.Once
 	nsErr  string
 
-	// egress is the session's proxy under sandbox.network allowlist.
-	egress egressState
+	// egress is each session's proxy under sandbox.network allowlist.
+	egress egressSessions
 }
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
@@ -176,7 +176,11 @@ func WritableAreas() []string {
 	return append(out, cacheAreas()...)
 }
 
-func (s *Process) seatbeltProfile() string {
+func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
+
+// seatbeltProfileFor is the profile for a command whose session's egress
+// proxy holds port; 0 is none.
+func (s *Process) seatbeltProfileFor(port uint16) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
 
@@ -251,8 +255,9 @@ func (s *Process) seatbeltProfile() string {
 		b.WriteString("\n;; Egress denied: a successful injection has no channel out.\n")
 		b.WriteString("(deny network*)\n")
 		// Under the allowlist, the one way out is the session's proxy on
-		// loopback, which holds the port; "localhost" is 127.0.0.1 and ::1.
-		if port := s.egressPort(); s.policy.Egress != nil && port != 0 {
+		// loopback. Seatbelt names no address but "localhost", which is
+		// 127.0.0.1 and ::1, so the proxy holds the port on both.
+		if s.policy.Egress != nil && port != 0 {
 			fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", port)
 		}
 		// Nor a view of the host's network: its interfaces, addresses and
@@ -345,45 +350,50 @@ func (s *Process) bwrapFreshOK() bool {
 }
 
 func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
-	env, err := s.commandEnv(ctx)
+	env, eg, err := s.commandEnv(ctx)
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	return s.wrap(ctx, cwd, env, "/bin/bash", "-c", command)
+	return s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
 }
 
-// commandEnv is env, with the egress proxy's variables under the allowlist.
-// A proxy that cannot start refuses the command: never the open network.
-func (s *Process) commandEnv(ctx context.Context) ([]string, error) {
+// commandEnv is env, with the egress proxy's variables under the allowlist,
+// and the session's proxy. A proxy that cannot start refuses the command:
+// never the open network.
+func (s *Process) commandEnv(ctx context.Context) ([]string, *egressState, error) {
 	env := s.env()
 	if s.policy.Egress == nil {
-		return env, nil
+		return env, nil, nil
 	}
-	pe, err := s.egressEnv(ctx)
+	pe, eg, err := s.egressEnv(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: the command was not run: the egress proxy is not available: %w", err)
+		return nil, nil, fmt.Errorf("sandbox: the command was not run: the egress proxy is not available: %w", err)
 	}
-	return append(env, pe...), nil
+	return append(env, pe...), eg, nil
 }
 
 // Shell starts a long-lived interactive bash under the same confinement as
 // Command, for a person at a terminal.
 func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	env, err := s.commandEnv(ctx)
+	env, eg, err := s.commandEnv(ctx)
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	return hangUp(s.wrap(ctx, cwd, append(env, shellEnv(s.Tier())...), shellArgv...))
+	return hangUp(s.wrapEgress(ctx, cwd, append(env, shellEnv(s.Tier())...), eg, shellArgv...))
 }
 
 // Backend names the mechanism: sandbox-exec or bwrap.
 func (s *Process) Backend() string { return s.backend }
 
-// wrap runs argv inside the backend's confinement.
-func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...string) *exec.Cmd {
+// wrapEgress runs argv inside the backend's confinement; under the
+// allowlist eg is the session's proxy, its one way out.
+func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *egressState, argv ...string) *exec.Cmd {
+	if s.policy.Egress != nil && eg.port() == 0 {
+		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: the egress proxy has not started")}
+	}
 	switch s.backend {
 	case "sandbox-exec":
-		profile := s.seatbeltProfile()
+		profile := s.seatbeltProfileFor(eg.port())
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
 		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
@@ -433,10 +443,7 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		// loopback only: a relay inside it, listening where the proxy
 		// variables point, joins each connection to the proxy's socket.
 		if s.policy.Egress != nil {
-			if s.egressPort() == 0 {
-				return &exec.Cmd{Err: errors.New("sandbox: the command was not run: the egress proxy has not started")}
-			}
-			binds, wrapped := s.relayArgs(argv)
+			binds, wrapped := eg.relayArgs(argv)
 			args = append(args, binds...)
 			argv = wrapped
 		}

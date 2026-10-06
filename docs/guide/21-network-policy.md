@@ -47,7 +47,8 @@ Each rule has:
 - `ports`: the ports the rule covers. Left out, it covers 80 and 443.
 - `methods` and `paths`: narrow the rule to plain HTTP requests. A path is
   exact (`/health`), or ends in `/*` for itself and everything below it
-  (`/v2/*` covers `/v2`, `/v2/` and `/v2/x`).
+  (`/v2/*` covers `/v2`, `/v2/` and `/v2/x`). See "Path rules" below before
+  writing a deny rule on a path.
 - `decision`: `allow` or `deny`.
 - `allow_ips`: internal addresses or prefixes this rule may reach (see
   Addresses below).
@@ -56,10 +57,50 @@ Deny rules win over allow rules. A request no rule matches gets `default`:
 `deny` unless set to `allow`. `mode: "audit"` lets a denied request through and
 records it as `would_deny`, so a rule set can be tried before it is enforced.
 
+Two more settings, also managed only:
+
+- `record_paths`: `true` (the default) records each plain HTTP request's
+  path; `false` records the host, port and method only. A path can hold a
+  token or other secret (`/reset/<token>`, `/hooks/<key>`), and the record
+  keeps it; set `false` where clients put secrets in paths.
+- `idle_seconds`: a tunnel or forwarded request that carries no bytes either
+  way for this long is closed. Left out, 300 (five minutes). It applies after
+  the request head, which has its own 30-second limit, so a command cannot
+  hold the proxy's connections open by sending nothing.
+
+## Path rules
+
+A path rule matches the path exactly as the request spells it, after
+percent-decoding. The proxy refuses the spellings servers commonly rewrite
+before routing: `.` and `..` segments, `//`, a backslash, an encoded `/`,
+`\`, `.` or NUL, and any `;`. The `;` is refused with 400 because servers
+that read path parameters (many Java servers among them) route `/admin;x`
+as `/admin` and `/secret;x/a` as `/secret/a`, which would step around a
+deny rule on `/admin` or `/secret/*`. Refusing it is simpler and safer than
+guessing how each server reads parameters; few clients of a command's
+allowlist need path parameters.
+
+Other spellings are not refused, and a server may treat them as the same
+path as the one a deny rule names: `/ADMIN` (a case-insensitive server),
+`/admin/` (trailing slash), `/admin.` or `/admin.json` (suffix matching),
+`/admin%20` (trailing space). A deny rule on a path is therefore a speed
+bump, not a boundary. To keep commands away from part of a service, allow
+the paths they need and let the default deny the rest: an allow-list fails
+closed when the server spells a path in a way the rule did not foresee, and
+a deny-list fails open.
+
 ## How a decision is made
 
 Each session gets its own proxy, started with its first command, listening on
-a random loopback port and stopped when the session ends. A command is given
+a random loopback port, with its own token. A session's subagents share its
+proxy. Under `abhed serve`, every session of the server has its own: the
+agent's commands, the workbench terminal and `!` commands each run as one of
+the session's calls, so their decisions go to that session's record and no
+other. The proxy stops, and its socket folder is removed, when the session
+leaves the server (it is deleted, or another node takes it) and when the
+server shuts down; a later command of a session that comes back starts a new
+proxy with a new token. On the command line the proxies stop when Abhed
+exits. A command is given
 `HTTP_PROXY`, `HTTPS_PROXY` and their lower-case forms, pointing at it with the
 call id as the user name and a per-session token as the password, and
 `NO_PROXY=localhost,127.0.0.1,::1`, so a server the command starts inside its
@@ -76,9 +117,32 @@ own sandbox is reached directly. A request without the token is answered with
 
 A request target that is not one plain spelling is refused with 400 rather
 than cleaned: a host with a trailing number (`2130706433`, `0x7f.1`), a
-non-ASCII name (write the `xn--` form), an IPv4 address written as IPv6, a
-path with `.` or `..` segments, `//`, a backslash, or an encoded `/`, `\`, `.`
-or NUL. A rule on `/admin` cannot be stepped around with `/public/../admin`.
+non-ASCII name (write the `xn--` form), an IPv4 address written as IPv6, or
+a path with `.` or `..` segments, `//`, a backslash, a `;`, or an encoded
+`/`, `\`, `.` or NUL. A rule on `/admin` cannot be stepped around with
+`/public/../admin` or `/admin;x`; see "Path rules" for what a deny rule on a
+path still cannot catch.
+
+The proxy serves at most 256 connections at once per session; one more is
+closed unread. Clients that keep connections open should be within it.
+
+### Clients that do not send proxy credentials
+
+The proxy asks for its credentials (the user and password in the proxy
+variables) on every request, `CONNECT` included, and answers 407 without
+them. Most clients send them: curl, wget, git, pip, npm, Go and Python
+`requests`. Java's `HttpURLConnection`, which Maven and Gradle use, does
+not send Basic credentials on a `CONNECT` by default, so HTTPS from a JVM
+gets 407. The JVM's own flag turns that default off:
+
+```
+-Djdk.http.auth.tunneling.disabledSchemes=
+```
+
+(an empty value; set it with `JAVA_TOOL_OPTIONS`, `MAVEN_OPTS` or
+`org.gradle.jvmargs`), together with `-Dhttps.proxyHost`, `-Dhttps.proxyPort`,
+`-Dhttps.proxyUser` and `-Dhttps.proxyPassword` from the proxy URL, since the
+JVM does not read `HTTPS_PROXY`.
 
 A denied request gets 403 with the rule and the reason in the body, which the
 agent sees in the command's output.
@@ -105,16 +169,34 @@ event, once per connection (CONNECT) or request (plain HTTP), when it ends:
 | Field | |
 |---|---|
 | `call_id` | the tool call whose command made it, from the proxy credentials Abhed set |
-| `kind` | `connect`, `http`, or `auth` for a request without the token |
+| `kind` | `connect`, `http`, `auth` for a request without the token, or `request` for one refused before it was read |
 | `host`, `port`, `ip` | the target, and the address dialled |
-| `method`, `path` | plain HTTP only; the path without its query |
+| `method`, `path` | plain HTTP only; the path without its query, left out with `record_paths: false` |
 | `decision` | `allow`, `deny` or `would_deny` |
-| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`) and why |
+| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`; and why |
 | `bytes_in`, `bytes_out` | bytes received from and sent to the destination |
+| `unattributed` | `true` when the call id is not one this session launched |
+| `repeats` | on a summary, how many denials like it were counted rather than recorded |
 
-Bodies, header values, query strings and credentials are never recorded. The
-call id is attribution, not authentication: a command can change its own
-environment, so it could present another call's id.
+Bodies, header values, query strings and credentials are never recorded. A
+path can hold a secret; see `record_paths`.
+
+The call id is attribution, not authentication: a command can change its own
+environment, so it could present another call's id. The token is the
+session's, though, and each session has its own proxy, so a claimed id never
+moves a decision to another session's record. A call id the session did not
+launch is recorded in that session's record with `unattributed: true`. A
+command run outside any session has no record; its decisions are dropped and
+logged as a warning.
+
+Denials and auth failures are rate-limited, so a command looping on a
+refused request cannot flood the record. Allowed requests are always
+recorded. In each one-minute interval the first 10 denials of a kind (same
+`kind`, `decision`, `rule`, `host` and `port`) are recorded one by one, and at
+most 100 of all kinds; the rest are counted, and when the interval ends each
+kind with denials left out gets one summary event with `repeats` set to the
+count and the first denial's reason. Summaries still owed are written when
+the proxy stops.
 
 ## What each tier enforces
 
@@ -125,7 +207,7 @@ allowlist, naming why, rather than opening the network in its place.
 | Tier | Under the allowlist |
 |---|---|
 | process, Linux (bubblewrap) | **Enforced.** The command has its own network namespace with loopback only. A small relay inside it, Abhed's own binary, listens where the proxy variables point and passes each connection to the proxy's unix socket, which is bound into the sandbox. Nothing else leaves: a client that ignores the proxy variables has no route out. |
-| process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port, which the proxy holds. A client that ignores the proxy variables is refused by the sandbox. Commands need no DNS of their own, since the proxy resolves names. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. |
+| process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. Commands need no DNS of their own, since the proxy resolves names. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. |
 | fence (Linux preview) | **Refused.** Landlock limits TCP connects by port, not by address, and seccomp cannot read the address a socket connects to, so allowing the proxy's port would allow that port on any host. Leave `sandbox.tier` unset to use the process tier. |
 | container, vm | **Refused.** The proxy listens on the host's loopback, which the container's network cannot reach without opening more than the proxy. `Select` passes over them, so the process tier is chosen when `min_tier` allows it; with `min_tier` container or vm, the session does not start. |
 | none | **Refused.** Nothing stops a command on the host from ignoring the proxy variables. |
@@ -145,5 +227,8 @@ names the tier and says whether it holds it.
 - UDP, raw TCP other than through `CONNECT`, and DNS policy; the proxy
   resolves names for the requests it carries.
 - Asking a person to approve a destination; a request is allowed or denied.
-- The `bash` tool's description still tells the model whether
-  `allow_network` is on; under the allowlist it says the network is off.
+
+Under the allowlist the `bash` tool's description tells the model that the
+network is limited to the allowed destinations, through the proxy, names up
+to 20 of the hosts the allow rules name, and says a refusal is a 403 from the
+proxy.

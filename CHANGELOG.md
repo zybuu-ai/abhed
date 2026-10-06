@@ -25,6 +25,17 @@ All notable changes to Abhed are recorded here. The format follows
   namespace and reaches the proxy through a relay over a unix socket, and on
   macOS Seatbelt allows only the proxy's loopback port. The fence, container,
   vm and none tiers refuse the setting rather than open the network.
+  Under `abhed serve` each session has its own proxy and token, and the
+  workbench terminal and `!` commands run as the session's own calls; a
+  call id a session did not launch is recorded in its own record as
+  `unattributed`, never in another session's, and a session's proxy stops
+  when it is deleted or taken by another node, and at shutdown. A `;` in a
+  path is refused with 400. Denials and auth failures are rate-limited in
+  the record (the first 10 of a kind a minute, then a summary with
+  `repeats`), and requests refused before they are read are recorded too.
+  `egress.record_paths: false` keeps paths out of the record and
+  `egress.idle_seconds` (default 300) closes idle connections. The `bash`
+  tool tells the model which destinations it may reach.
   `abhed doctor` shows the egress state. See
   [Network policy](docs/guide/21-network-policy.md).
 

@@ -99,6 +99,7 @@ func TestMethodsAndPaths(t *testing.T) {
 		{"POST", "/v1/items", false},
 		{"GET", "/v1/admin/users", false},
 		{"GET", "/", false},
+		{"GET", "/v1/items;jsessionid=1", false},
 	}
 	for _, c := range cases {
 		got := p.Decide(Request{Host: "api.test", Port: 80, Method: c.method, Path: c.path}).Allowed()
@@ -106,10 +107,38 @@ func TestMethodsAndPaths(t *testing.T) {
 			t.Errorf("%s %s allowed %v, want %v", c.method, c.path, got, c.want)
 		}
 	}
+	// Deny rules on paths under an open host: a server that reads path
+	// parameters routes /admin;x as /admin and /secret;x/a as /secret/a, so
+	// a ; is refused before any rule is read.
+	d := mustCompile(t, Config{Rules: []Rule{
+		{Host: "api.test", Ports: []int{80}, Decision: "allow"},
+		{Host: "api.test", Ports: []int{80}, Paths: []string{"/admin", "/secret/*"}, Decision: "deny"},
+	}})
+	for path, want := range map[string]bool{
+		"/ok": true, "/admin": false, "/secret/a": false, "/admin;x": false, "/secret;x/a": false, "/ok;x": false,
+	} {
+		if got := d.Decide(Request{Host: "api.test", Port: 80, Method: "GET", Path: path}).Allowed(); got != want {
+			t.Errorf("deny rules: GET %s allowed %v, want %v", path, got, want)
+		}
+	}
 	// A tunnel's path is not seen: a narrowed allow cannot allow it, and a
-	// narrowed deny refuses it.
-	if p.Decide(Request{Host: "api.test", Port: 80, Tunnel: true}).Allowed() {
-		t.Error("a path-narrowed rule allowed a tunnel")
+	// narrowed deny refuses it. The narrowed allows alone, with no deny rule
+	// to refuse the tunnel for them.
+	n := mustCompile(t, Config{Rules: []Rule{
+		{Host: "api.test", Ports: []int{80}, Methods: []string{"GET"}, Decision: "allow"},
+		{Host: "api.test", Ports: []int{80}, Paths: []string{"/v1/*"}, Decision: "allow"},
+	}})
+	if v := n.Decide(Request{Host: "api.test", Port: 80, Tunnel: true}); v.Allowed() {
+		t.Errorf("a method- or path-narrowed allow allowed a tunnel: %+v", v)
+	}
+	if !n.Decide(Request{Host: "api.test", Port: 80, Method: "GET", Path: "/x"}).Allowed() {
+		t.Error("the narrowed allow refused a plain request it covers")
+	}
+	// Even under default allow, a ; is refused, and in audit mode too.
+	for _, c := range []Config{{Default: "allow"}, {Default: "allow", Mode: "audit"}} {
+		if v := mustCompile(t, c).Decide(Request{Host: "api.test", Port: 80, Method: "GET", Path: "/admin;x"}); v.Allowed() || v.Rule != "path" {
+			t.Errorf("%+v: a ; in the path got %+v", c, v)
+		}
 	}
 	q := mustCompile(t, Config{Rules: []Rule{
 		{Host: "api.test", Decision: "allow"},
@@ -138,6 +167,8 @@ func TestAuditMode(t *testing.T) {
 
 func TestCompileRefuses(t *testing.T) {
 	for name, c := range map[string]Config{
+		"semicolon path": {Rules: []Rule{{Host: "a.test", Paths: []string{"/admin;x"}, Decision: "deny"}}},
+		"negative idle":  {IdleSeconds: -1},
 		"decision":       {Rules: []Rule{{Host: "a.test"}}},
 		"wide wildcard":  {Rules: []Rule{{Host: "*.com", Decision: "allow"}}},
 		"bare star":      {Rules: []Rule{{Host: "*", Decision: "allow"}}},
@@ -235,6 +266,9 @@ func TestParseTarget(t *testing.T) {
 		{"get", "http://example.com/"},
 		{"GET", "http://exa mple.com/"},
 		{"GET", "http://bücher.test/"},
+		{"GET", "http://example.com/admin;x"},
+		{"GET", "http://example.com/secret;x/a"},
+		{"GET", "http://example.com/admin%3Bx"},
 	}
 	for _, b := range bad {
 		if _, err := ParseTarget(b[0], b[1]); err == nil {

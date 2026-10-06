@@ -323,6 +323,22 @@ func TestBashDescriptionSaysWhetherTheNetworkIsReachable(t *testing.T) {
 	if d := (Bash{}).Description(); strings.Contains(d, "no network") {
 		t.Errorf("on the host: %s", d)
 	}
+	// Under the allowlist: limited to the allowed destinations, through the proxy.
+	list := off
+	list.Isolation = Isolation{Tier: "process", Allowlist: true, AllowedHosts: []string{"proxy.golang.org", "*.example.com"}}
+	if d := list.Description(); strings.Contains(d, "no network") || strings.Contains(d, "can reach the network") ||
+		!strings.Contains(d, "limited to the destinations") || !strings.Contains(d, "proxy") ||
+		!strings.Contains(d, "proxy.golang.org, *.example.com") || !strings.Contains(d, "403") {
+		t.Errorf("allowlist: %s", d)
+	}
+	list.Isolation.AllowedHosts = nil
+	if d := list.Description(); !strings.Contains(d, "No destination is allowed") {
+		t.Errorf("empty allowlist: %s", d)
+	}
+	list.Isolation.DefaultAllow = true
+	if d := list.Description(); strings.Contains(d, "No destination") || !strings.Contains(d, "unless a rule denies") {
+		t.Errorf("allowlist with default allow: %s", d)
+	}
 }
 
 // daemonEnv makes this test binary a daemon: run with it set to "start" it

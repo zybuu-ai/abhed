@@ -45,5 +45,9 @@ func (l *Loop) LaunchContext(ctx context.Context, callID string) context.Context
 // loop's record for the launch events it writes.
 func (l *Loop) withLaunch(ctx context.Context, callID string) context.Context {
 	ctx = WithCallID(ctx, callID)
-	return sandbox.WithLaunch(ctx, sandbox.Launch{CallID: CallIDOf(ctx), Record: SandboxRecord(l.Recorder)})
+	launch := sandbox.Launch{CallID: CallIDOf(ctx)}
+	if l.Recorder != nil {
+		launch.Session, launch.Record = l.Recorder.Root(), SandboxRecord(l.Recorder)
+	}
+	return sandbox.WithLaunch(ctx, launch)
 }

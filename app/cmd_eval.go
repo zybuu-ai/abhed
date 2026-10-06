@@ -13,6 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
@@ -97,7 +98,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		set := toolset.Build(ctx, cfg, toolset.Options{
 			Workspace: ws,
 			Bash: tools.Bash{Sandbox: sb.Command,
-				Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
+				Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))},
 			Parts: toolset.Skills | toolset.WebSearch | toolset.WebFetch,
 			Vault: vault,
 		})

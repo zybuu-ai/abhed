@@ -25,7 +25,7 @@ var claimFiles = []string{
 // and the comment that defines it, which fence_linux_test.go holds to them.
 func TestDocsClaimNoSyscallFilterTheSandboxLacks(t *testing.T) {
 	b := &Process{policy: DefaultPolicy(workspace(t)), backend: "bwrap"}
-	args := b.wrap(t.Context(), b.policy.Workspace, nil, "/bin/true").Args
+	args := b.wrapEgress(t.Context(), b.policy.Workspace, nil, nil, "/bin/true").Args
 	for _, a := range args {
 		if a == "--seccomp" || a == "--add-seccomp-fd" {
 			t.Skip("bwrap now applies a seccomp filter; revisit this test and the docs together")

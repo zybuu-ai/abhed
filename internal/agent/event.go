@@ -612,7 +612,9 @@ type Recorder struct {
 	store     Store
 	sessionID string
 	parentID  string
-	mu        sync.Mutex
+	// root is the top-level session's id, when it is not parentID.
+	root string
+	mu   sync.Mutex
 	// writeMu holds from taking a seq to its append, so the store commits and
 	// publishes a session's events in seq order and a reader never sees a gap fill late.
 	writeMu  sync.Mutex
@@ -667,6 +669,18 @@ func (r *Recorder) redactor() Redactor {
 
 func NewRecorder(store Store, sessionID, parentID string) *Recorder {
 	return &Recorder{store: store, sessionID: sessionID, parentID: parentID}
+}
+
+// Root is the id of the top-level session this record belongs to: its own
+// for a session, the session that spawned it, however deep, for a subagent.
+func (r *Recorder) Root() string {
+	switch {
+	case r.root != "":
+		return r.root
+	case r.parentID != "":
+		return r.parentID
+	}
+	return r.sessionID
 }
 
 // Advance moves the sequence past events already in the store, so a session

@@ -198,7 +198,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
 		Bash: tools.Bash{Sandbox: sb.Command,
-			Isolation: tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork},
+			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
 		Parts:  toolset.All,
 		Vault:  vault,

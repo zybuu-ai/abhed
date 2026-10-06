@@ -618,6 +618,9 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		approver = AutoApprove{Yes: false}
 	}
 	rec := NewRecorder(f.Store, sessionID, parentID)
+	if parent != nil {
+		rec.root = parent.rec.Root()
+	}
 	// A child redacts as its parent's session does; the factory's own is for a
 	// spawn with no parent.
 	rec.Redact = f.Redact

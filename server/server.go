@@ -275,6 +275,10 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// SessionEnded, when set, is told a session's id as the session leaves
+	// this process (deleted, or taken by another), so what the sandbox keeps
+	// for it, such as its egress proxy, goes with it.
+	SessionEnded func(id string)
 	// StreamRecheck is how often an open event or terminal stream is
 	// authorised again. Zero means the default; it can only be shortened, and
 	// anything above maxStreamRecheck is held to it.
@@ -3257,6 +3261,14 @@ func (s *Server) fence(live *liveSession) {
 	}
 	live.closeTerminals(closedWithSession)
 	live.Loop.Background.Close(agent.TermLeaseLost)
+	s.sessionEnded(live.ID)
+}
+
+// sessionEnded tells the sandbox a session has left this process.
+func (s *Server) sessionEnded(id string) {
+	if s.opts.SessionEnded != nil {
+		s.opts.SessionEnded(id)
+	}
 }
 
 // releaseNodeNow ends the hold whatever is live, for a session going away

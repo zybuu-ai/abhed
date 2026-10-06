@@ -241,3 +241,18 @@ func under(spellings, dirs []string) bool {
 	}
 	return false
 }
+
+// Isolation is what the bash tool tells the model of the sandbox of tier:
+// no network, any host, or, under the allowlist, only the destinations the
+// egress rules allow, through the session's proxy.
+func Isolation(cfg config.Config, tier string) tools.Isolation {
+	iso := tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork}
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return iso
+	}
+	iso.Network, iso.Allowlist = false, true
+	if pol, err := egress.Compile(cfg.Egress); err == nil {
+		iso.AllowedHosts, iso.DefaultAllow = pol.AllowedHosts(), pol.DefaultAllow()
+	}
+	return iso
+}

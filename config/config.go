@@ -246,6 +246,8 @@ var managedOnly = map[string]string{
 	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
 	"egress.default":               "only the managed configuration sets which destinations commands reach",
 	"egress.mode":                  "only the managed configuration sets the egress mode",
+	"egress.record_paths":          "only the managed configuration sets what the egress record keeps",
+	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
 }
 
 // ManagedOnly reports whether only the managed configuration may make the
@@ -278,6 +280,10 @@ func clearManagedOnly(c *Config, key string) {
 		c.Egress.Default = ""
 	case "egress.mode":
 		c.Egress.Mode = ""
+	case "egress.record_paths":
+		c.Egress.RecordPaths = nil
+	case "egress.idle_seconds":
+		c.Egress.IdleSeconds = 0
 	}
 }
 

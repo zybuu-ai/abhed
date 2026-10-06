@@ -323,8 +323,15 @@ func TestAllowlistReplacesAllowNetwork(t *testing.T) {
 	if p.Egress == nil || p.AllowNetwork || p.Egress.Rules() != 1 {
 		t.Fatalf("policy: egress %v, allow_network %v", p.Egress, p.AllowNetwork)
 	}
+	iso := Isolation(cfg, "process")
+	if iso.Network || !iso.Allowlist || len(iso.AllowedHosts) != 1 || iso.AllowedHosts[0] != "example.com" {
+		t.Fatalf("the bash tool is told %+v under the allowlist", iso)
+	}
 	cfg.Sandbox.Network = ""
 	if p, err = Policy(cfg, t.TempDir()); err != nil || p.Egress != nil || !p.AllowNetwork {
 		t.Fatalf("without the allowlist: %v %v %v", p.Egress, p.AllowNetwork, err)
+	}
+	if iso := Isolation(cfg, "process"); !iso.Network || iso.Allowlist {
+		t.Fatalf("the bash tool is told %+v with allow_network", iso)
 	}
 }

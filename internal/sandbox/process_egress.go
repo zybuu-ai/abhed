@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -36,23 +37,42 @@ const (
 // Tests replace it to point names at local servers.
 var egressResolve func(ctx context.Context, host string) ([]netip.Addr, error)
 
-// maxRoutes bounds the calls whose records the proxy remembers.
+// maxRoutes bounds the calls whose records a session's proxy remembers.
 const maxRoutes = 4096
 
-// egressState is a process-tier session's egress proxy, started with its
-// first command and stopped by Close.
-type egressState struct {
-	once  sync.Once
-	proxy *egress.Proxy
-	err   error
-	dir   string // the unix socket's folder, Linux only
-	exe   string // this binary, run as the relay, Linux only
+// egressStart starts a proxy; a test replaces it to make starting fail.
+var egressStart = egress.Start
 
+// recordFn writes one event to a record.
+type recordFn = func(string, map[string]any) error
+
+// egressSessions are the proxies of a process tier's sessions, one each, so
+// a server's sessions never share a proxy, a token or a record.
+type egressSessions struct {
 	mu     sync.Mutex
-	routes map[string]func(string, map[string]any) error
-	last   func(string, map[string]any) error
+	m      map[string]*egressState
 	closed bool
 }
+
+// egressState is one session's egress proxy, started with its first
+// command and stopped when the session ends or the sandbox closes.
+type egressState struct {
+	session string
+	once    sync.Once
+	proxy   *egress.Proxy
+	err     error
+	dir     string // the unix socket's folder, Linux only
+	exe     string // this binary, run as the relay, Linux only
+
+	mu     sync.Mutex
+	routes map[string]recordFn
+	own    recordFn // the record of the session's latest command
+	closed bool
+}
+
+// errEgressClosed is a command built after its session's proxy, or the
+// sandbox, was closed.
+var errEgressClosed = errors.New("the session's sandbox is closed")
 
 // egressRefusal says why this tier cannot hold sandbox.network allowlist,
 // or "".
@@ -61,18 +81,45 @@ func egressRefusal(t Tier) string {
 		"the %s tier is not used for it, so the network is not opened in its place", t)
 }
 
-// startEgress starts the session's proxy once.
-func (s *Process) startEgress() (*egress.Proxy, error) {
-	e := &s.egress
+// egressFor is the proxy of the session ctx's launch names, started if
+// need be, with the launch's call remembered for its record.
+func (s *Process) egressFor(ctx context.Context) (*egressState, error) {
+	l := LaunchOf(ctx)
+	ss := &s.egress
+	ss.mu.Lock()
+	if ss.closed {
+		ss.mu.Unlock()
+		return nil, errEgressClosed
+	}
+	if ss.m == nil {
+		ss.m = map[string]*egressState{}
+	}
+	e := ss.m[l.Session]
+	if e == nil {
+		e = &egressState{session: l.Session}
+		ss.m[l.Session] = e
+	}
+	ss.mu.Unlock()
+	if err := s.startEgress(e); err != nil {
+		return nil, err
+	}
+	e.remember(l)
+	return e, nil
+}
+
+// startEgress starts e's proxy once. A session closed before or while it
+// starts refuses the command: the proxy is never handed out after Close.
+func (s *Process) startEgress(e *egressState) error {
 	e.once.Do(func() {
 		e.mu.Lock()
 		closed := e.closed
 		e.mu.Unlock()
 		if closed {
-			e.err = errors.New("the session's sandbox is closed")
+			e.err = errEgressClosed
 			return
 		}
-		p, err := egress.Start(egress.Options{Policy: s.policy.Egress, Record: e.route, Resolve: egressResolve})
+		p, err := egressStart(egress.Options{Policy: s.policy.Egress, Record: e.route, Resolve: egressResolve,
+			IPv6Loopback: s.backend == "sandbox-exec"})
 		if err != nil {
 			e.err = err
 			return
@@ -103,21 +150,40 @@ func (s *Process) startEgress() (*egress.Proxy, error) {
 		}
 		e.proxy = p
 	})
-	return e.proxy, e.err
+	if e.err != nil {
+		return e.err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return errEgressClosed
+	}
+	return nil
 }
 
-// route writes a decision to the record of the call it names, or the
-// session's last known record when the call is not one launched here.
+// route writes a decision to the record of the call it names. A call id
+// this session did not launch, which a command can claim, goes to the
+// session's own record marked unattributed; with no record it is dropped
+// and logged. It never reaches another session: each has its own proxy
+// and token.
 func (e *egressState) route(ev egress.Event) {
 	e.mu.Lock()
 	rec := e.routes[ev.CallID]
-	if rec == nil {
-		rec = e.last
+	unattributed := rec == nil
+	if unattributed {
+		rec = e.own
 	}
 	e.mu.Unlock()
-	if rec != nil {
-		_ = rec(EvEgressDecision, ev.Payload())
+	payload := ev.Payload()
+	if unattributed {
+		payload["unattributed"] = true
 	}
+	if rec == nil {
+		slog.Warn("egress decision dropped: the session has no record", "session", e.session,
+			"call_id", ev.CallID, "host", ev.Host, "decision", string(ev.Decision), "rule", ev.Rule)
+		return
+	}
+	_ = rec(EvEgressDecision, payload)
 }
 
 // remember keeps where a call's decisions are recorded.
@@ -128,59 +194,87 @@ func (e *egressState) remember(l Launch) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.routes == nil || len(e.routes) >= maxRoutes {
-		e.routes = map[string]func(string, map[string]any) error{}
+		e.routes = map[string]recordFn{}
 	}
 	if l.CallID != "" {
 		e.routes[l.CallID] = l.Record
 	}
-	e.last = l.Record
+	e.own = l.Record
 }
 
-// egressEnv is the proxy environment for a command of the call ctx names,
-// starting the proxy if need be.
-func (s *Process) egressEnv(ctx context.Context) ([]string, error) {
-	p, err := s.startEgress()
-	if err != nil {
-		return nil, err
-	}
-	l := LaunchOf(ctx)
-	s.egress.remember(l)
-	return p.Env(l.CallID), nil
-}
-
-// egressPort is the proxy's loopback port, or 0 before it starts.
-func (s *Process) egressPort() uint16 {
-	if s.egress.proxy == nil {
-		return 0
-	}
-	return s.egress.proxy.Addr().Port()
-}
-
-// relayArgs are the bwrap arguments that bind the relay and the proxy's
-// socket into the sandbox, and the argv that runs the command behind the relay.
-func (s *Process) relayArgs(argv []string) (binds, wrapped []string) {
-	e := &s.egress
-	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", filepath.Join(e.dir, "proxy.sock"), relaySocket}
-	listen := e.proxy.Addr().String()
-	wrapped = append([]string{relayBinary, egress.RelayArg, relaySocket, listen, "--"}, argv...)
-	return binds, wrapped
-}
-
-// Close stops the session's egress proxy, if one was started; commands
-// built after it do not start.
-func (s *Process) Close() error {
-	e := &s.egress
+// close stops e's proxy and removes its socket's folder; commands of the
+// session built after it do not start.
+func (e *egressState) close() error {
 	e.mu.Lock()
 	e.closed = true
 	e.mu.Unlock()
 	// A proxy starting now finishes first; one never started stays so.
-	e.once.Do(func() { e.err = errors.New("the session's sandbox is closed") })
+	e.once.Do(func() { e.err = errEgressClosed })
 	var err error
 	if e.proxy != nil {
 		err = e.proxy.Close()
 	}
 	if e.dir != "" {
 		err = errors.Join(err, os.RemoveAll(e.dir))
+	}
+	return err
+}
+
+// egressEnv is the proxy environment for a command of the call ctx names,
+// starting its session's proxy if need be.
+func (s *Process) egressEnv(ctx context.Context) ([]string, *egressState, error) {
+	e, err := s.egressFor(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return e.proxy.Env(LaunchOf(ctx).CallID), e, nil
+}
+
+// port is the proxy's loopback port, or 0 with none.
+func (e *egressState) port() uint16 {
+	if e == nil || e.proxy == nil {
+		return 0
+	}
+	return e.proxy.Addr().Port()
+}
+
+// relayArgs are the bwrap arguments that bind the relay and the proxy's
+// socket into the sandbox, and the argv that runs the command behind the relay.
+func (e *egressState) relayArgs(argv []string) (binds, wrapped []string) {
+	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", filepath.Join(e.dir, "proxy.sock"), relaySocket}
+	listen := e.proxy.Addr().String()
+	wrapped = append([]string{relayBinary, egress.RelayArg, relaySocket, listen, "--"}, argv...)
+	return binds, wrapped
+}
+
+// EndSession stops the egress proxy of the session id, if it has one, and
+// removes its socket's folder. A later command of that session starts a
+// new proxy, with a new token.
+func (s *Process) EndSession(id string) error {
+	ss := &s.egress
+	ss.mu.Lock()
+	e := ss.m[id]
+	delete(ss.m, id)
+	ss.mu.Unlock()
+	if e == nil {
+		return nil
+	}
+	return e.close()
+}
+
+// Close stops every session's egress proxy and removes their sockets'
+// folders. Every command built after it is refused, under the allowlist,
+// rather than given a proxy that is gone.
+func (s *Process) Close() error {
+	ss := &s.egress
+	ss.mu.Lock()
+	ss.closed = true
+	all := ss.m
+	ss.m = nil
+	ss.mu.Unlock()
+	var err error
+	for _, e := range all {
+		err = errors.Join(err, e.close())
 	}
 	return err
 }

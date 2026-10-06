@@ -182,11 +182,15 @@ func CanonicalHost(host string) (string, error) {
 }
 
 // plainPath refuses a decoded path a server would rewrite before acting on
-// it: a . or .. segment, an empty one, a backslash or a control character.
-// A rule on /admin must not be dodged by /public/../admin.
+// it: a . or .. segment, an empty one, a backslash, a control character or
+// a ;. A rule on /admin must not be dodged by /public/../admin, nor by
+// /admin;x, which servers that read path parameters route as /admin.
 func plainPath(p string) error {
 	if !strings.HasPrefix(p, "/") {
 		return errors.New("the path must start with /")
+	}
+	if strings.Contains(p, ";") {
+		return errSemicolon
 	}
 	if strings.ContainsAny(p, "\\") || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return errors.New("the path has a backslash or control character")
@@ -199,8 +203,7 @@ func plainPath(p string) error {
 		if seg == "" && i == len(segs)-1 {
 			continue
 		}
-		name, _, _ := strings.Cut(seg, ";")
-		if name == "" || strings.Trim(name, ". ") == "" {
+		if seg == "" || strings.Trim(seg, ". ") == "" {
 			return errors.New("the path has an empty, . or .. segment")
 		}
 	}

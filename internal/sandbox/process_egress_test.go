@@ -2,12 +2,16 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -150,5 +154,261 @@ func TestEgressAllowlistThroughTheProcessTier(t *testing.T) {
 	}
 	if !strings.Contains(s.Describe(), "egress proxy") {
 		t.Errorf("Describe does not name the proxy: %s", s.Describe())
+	}
+}
+
+// eventLog collects one record's egress decisions.
+type eventLog struct {
+	mu  sync.Mutex
+	evs []map[string]any
+}
+
+func (l *eventLog) record(name string, payload map[string]any) error {
+	if name == EvEgressDecision {
+		l.mu.Lock()
+		l.evs = append(l.evs, payload)
+		l.mu.Unlock()
+	}
+	return nil
+}
+
+func (l *eventLog) find(f func(map[string]any) bool) []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []map[string]any
+	for _, e := range l.evs {
+		if f(e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (l *eventLog) waitFor(t *testing.T, what string, f func(map[string]any) bool) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := l.find(f); len(got) > 0 {
+			return got[0]
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no event: %s; have %v", what, l.find(func(map[string]any) bool { return true }))
+	return nil
+}
+
+// egressProcess is a process tier under an allowlist that denies
+// denied.test, with the tier skipped where it cannot run.
+func egressProcess(t *testing.T) (*Process, string) {
+	t.Helper()
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is not installed")
+	}
+	requireNetNS(t)
+	old := egressResolve
+	egressResolve = func(_ context.Context, host string) ([]netip.Addr, error) {
+		return nil, fmt.Errorf("no such host %s", host)
+	}
+	t.Cleanup(func() { egressResolve = old })
+	ws := workspace(t)
+	p := DefaultPolicy(ws)
+	p.Egress = egressPolicy(t, egress.Config{Rules: []egress.Rule{{Host: "denied.test", Decision: "deny"}}})
+	s := NewProcess(p)
+	if ok, why := s.Available(); !ok {
+		t.Skipf("process sandbox unavailable: %s", why)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s, ws
+}
+
+func runLaunched(t *testing.T, s *Process, ws string, l Launch, command string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, _ := s.Command(WithLaunch(ctx, l), ws, command).CombinedOutput()
+	return string(out)
+}
+
+func (s *Process) sessionProxy(id string) *egressState {
+	s.egress.mu.Lock()
+	defer s.egress.mu.Unlock()
+	return s.egress.m[id]
+}
+
+// Two sessions of one server: each has its own proxy and token, a call id
+// session A forges never lands in session B's record, and a terminal's
+// traffic lands in its own session's record under its own call.
+func TestEgressSessionsAreKeptApart(t *testing.T) {
+	s, ws := egressProcess(t)
+	var recA, recB eventLog
+	a := Launch{CallID: "call-a", Session: "sess-A", Record: recA.record}
+	b := Launch{CallID: "call-b", Session: "sess-B", Record: recB.record}
+
+	_ = runLaunched(t, s, ws, b, "curl -sS -m 20 -o /dev/null http://denied.test/b")
+	recB.waitFor(t, "B's own request", func(e map[string]any) bool { return e["call_id"] == "call-b" })
+	_ = runLaunched(t, s, ws, a, "curl -sS -m 20 -o /dev/null http://denied.test/a")
+	recA.waitFor(t, "A's own request", func(e map[string]any) bool { return e["call_id"] == "call-a" && e["unattributed"] == nil })
+
+	pa, pb := s.sessionProxy("sess-A").proxy, s.sessionProxy("sess-B").proxy
+	if pa == pb || pa.Addr() == pb.Addr() || pa.Token() == pb.Token() {
+		t.Fatal("the two sessions share a proxy or a token")
+	}
+
+	// A claims B's call id in its proxy credentials.
+	forge := `curl -sS -m 20 -o /dev/null -x "$(printf %s "$HTTP_PROXY" | sed 's#//call-a:#//call-b:#')" http://denied.test/forged`
+	_ = runLaunched(t, s, ws, a, forge)
+	got := recA.waitFor(t, "the forged request in A's record", func(e map[string]any) bool { return e["path"] == "/forged" })
+	if got["call_id"] != "call-b" || got["unattributed"] != true {
+		t.Fatalf("forged request recorded as %v", got)
+	}
+	// B's proxy, reached directly with A's token, refuses it.
+	cross := fmt.Sprintf(`curl -sS -m 20 -o /dev/null -w 'code=%%{http_code}' -x "$(printf %%s "$HTTP_PROXY" | sed 's#:[0-9]*$#:%d#')" http://denied.test/cross`, pb.Addr().Port())
+	out := runLaunched(t, s, ws, a, cross)
+	if strings.Contains(out, "code=403") {
+		t.Fatalf("A's command reached B's proxy and was decided: %s", out)
+	}
+
+	// The terminal, a long-lived shell bound to session A as its own call.
+	term := Launch{CallID: "term-1", Session: "sess-A", Record: recA.record}
+	ctx, cancel := context.WithTimeout(WithLaunch(context.Background(), term), 60*time.Second)
+	defer cancel()
+	sh := s.Shell(ctx, ws)
+	sh.Stdin = strings.NewReader("curl -sS -m 20 -o /dev/null http://denied.test/terminal\nexit\n")
+	if out, err := sh.CombinedOutput(); err != nil && !strings.Contains(err.Error(), "exit status") {
+		t.Fatalf("terminal: %v\n%s", err, out)
+	}
+	tev := recA.waitFor(t, "the terminal's request", func(e map[string]any) bool { return e["path"] == "/terminal" })
+	if tev["call_id"] != "term-1" || tev["unattributed"] != nil {
+		t.Fatalf("terminal recorded as %v", tev)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	for _, e := range recB.find(func(map[string]any) bool { return true }) {
+		if e["call_id"] != "call-b" {
+			t.Errorf("B's record holds another session's decision: %v", e)
+		}
+	}
+	for _, e := range recA.find(func(map[string]any) bool { return true }) {
+		if e["path"] == "/b" {
+			t.Errorf("A's record holds B's decision: %v", e)
+		}
+	}
+
+	// Ending session B stops its proxy and removes its socket's folder; A's
+	// keeps running, and B's next command gets a new proxy and token.
+	dirB := s.sessionProxy("sess-B").dir
+	if err := s.EndSession("sess-B"); err != nil {
+		t.Fatal(err)
+	}
+	if dirB != "" {
+		if _, err := os.Stat(dirB); !os.IsNotExist(err) {
+			t.Fatalf("B's socket folder is left: %v", err)
+		}
+	}
+	if c, err := net.Dial("tcp", pb.Addr().String()); err == nil {
+		_ = c.Close()
+		t.Fatal("B's proxy still listens after its session ended")
+	}
+	_ = runLaunched(t, s, ws, a, "curl -sS -m 20 -o /dev/null http://denied.test/after")
+	recA.waitFor(t, "A after B ended", func(e map[string]any) bool { return e["path"] == "/after" })
+	_ = runLaunched(t, s, ws, b, "curl -sS -m 20 -o /dev/null http://denied.test/b2")
+	recB.waitFor(t, "B's next proxy", func(e map[string]any) bool { return e["path"] == "/b2" })
+	if s.sessionProxy("sess-B").proxy.Token() == pb.Token() {
+		t.Fatal("B's new proxy kept the old token")
+	}
+}
+
+// A decision with no record to go to, from a command run outside any
+// session, is dropped, never written to a session's record.
+func TestEgressWithoutARecordIsDropped(t *testing.T) {
+	s, ws := egressProcess(t)
+	var rec eventLog
+	_ = runLaunched(t, s, ws, Launch{CallID: "c", Session: "sess-A", Record: rec.record}, "true")
+	_ = runLaunched(t, s, ws, Launch{}, "curl -sS -m 20 -o /dev/null http://denied.test/orphan")
+	time.Sleep(300 * time.Millisecond)
+	if got := rec.find(func(e map[string]any) bool { return e["path"] == "/orphan" }); len(got) > 0 {
+		t.Fatalf("a session-less command's decision reached a session: %v", got)
+	}
+}
+
+// After Close, a command is refused rather than given a proxy that is
+// gone, and every proxy's socket folder is removed.
+func TestEgressRefusedAfterClose(t *testing.T) {
+	s, ws := egressProcess(t)
+	var rec eventLog
+	l := Launch{CallID: "c", Session: "sess-A", Record: rec.record}
+	_ = runLaunched(t, s, ws, l, "true")
+	dir := s.sessionProxy("sess-A").dir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if dir != "" {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("socket folder left: %v", err)
+		}
+	}
+	marker := filepath.Join(ws, "ran-after-close")
+	cmd := s.Command(WithLaunch(context.Background(), l), ws, "touch "+marker)
+	if err := cmd.Run(); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("a command ran after Close: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the command ran")
+	}
+}
+
+// A proxy that cannot start refuses the command, never the open network.
+func TestEgressFailsClosedWhenTheProxyCannotStart(t *testing.T) {
+	ws := workspace(t)
+	p := DefaultPolicy(ws)
+	p.Egress = egressPolicy(t, egress.Config{Default: "allow"})
+	s := NewProcess(p)
+	t.Cleanup(func() { _ = s.Close() })
+	old := egressStart
+	egressStart = func(egress.Options) (*egress.Proxy, error) { return nil, errors.New("no loopback today") }
+	t.Cleanup(func() { egressStart = old })
+	marker := filepath.Join(ws, "ran")
+	for _, cmd := range []*exec.Cmd{
+		s.Command(context.Background(), ws, "touch "+marker),
+		s.Shell(context.Background(), ws),
+	} {
+		if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "no loopback today") {
+			t.Fatalf("command built without its proxy: %v %v", cmd.Args, cmd.Err)
+		}
+		if err := cmd.Run(); err == nil {
+			t.Fatal("the command ran")
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the command ran")
+	}
+}
+
+// Under the allowlist the Seatbelt profile denies the network and allows
+// only the session's proxy port on localhost, after the deny; without a
+// proxy, or without the allowlist, no port is allowed.
+func TestSeatbeltEgressProfile(t *testing.T) {
+	p := DefaultPolicy("/w")
+	p.Egress = egressPolicy(t, egress.Config{})
+	s := NewProcess(p)
+	prof := s.seatbeltProfileFor(4321)
+	deny := strings.Index(prof, "(deny network*)")
+	allow := strings.Index(prof, `(allow network-outbound (remote ip "localhost:4321"))`)
+	if deny < 0 || allow < deny {
+		t.Fatalf("profile:\n%s", prof)
+	}
+	if strings.Count(prof, "allow network") != 1 {
+		t.Fatalf("more than the proxy is allowed:\n%s", prof)
+	}
+	if strings.Contains(s.seatbeltProfileFor(0), "allow network") {
+		t.Fatal("a port was allowed with no proxy")
+	}
+	open := DefaultPolicy("/w")
+	open.AllowNetwork = true
+	if strings.Contains(NewProcess(open).seatbeltProfileFor(4321), "(deny network*)") {
+		t.Fatal("the open network was denied")
+	}
+	if s.wrapEgress(context.Background(), "/w", nil, nil, "/bin/true").Err == nil {
+		t.Fatal("a command was built under the allowlist with no proxy")
 	}
 }

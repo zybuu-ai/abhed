@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Decision is what the proxy did with a connection or request.
@@ -45,7 +46,17 @@ type Config struct {
 	// Mode is enforce (the default) or audit, which lets a denied request
 	// through and records it as would_deny.
 	Mode string `json:"mode,omitempty"`
+	// RecordPaths, when false, keeps plain HTTP paths out of the record,
+	// which then holds the host and port only. Unset means true.
+	RecordPaths *bool `json:"record_paths,omitempty"`
+	// IdleSeconds ends a tunnel or a forwarded request after this long
+	// with no bytes either way; zero means DefaultIdle.
+	IdleSeconds int `json:"idle_seconds,omitempty"`
 }
+
+// DefaultIdle is how long a connection through the proxy may sit with no
+// bytes either way before it is closed.
+const DefaultIdle = 5 * time.Minute
 
 // defaultPorts are a rule's ports when it names none.
 var defaultPorts = []uint16{80, 443}
@@ -67,6 +78,8 @@ type Policy struct {
 	rules        []rule
 	defaultAllow bool
 	audit        bool
+	hidePaths    bool
+	idle         time.Duration
 }
 
 // Compile checks c and builds its policy.
@@ -85,6 +98,15 @@ func Compile(c Config) (*Policy, error) {
 		p.audit = true
 	default:
 		return nil, fmt.Errorf("egress.mode is %q; use enforce or audit", c.Mode)
+	}
+	p.hidePaths = c.RecordPaths != nil && !*c.RecordPaths
+	switch {
+	case c.IdleSeconds < 0:
+		return nil, fmt.Errorf("egress.idle_seconds is %d; use a number of seconds, or leave it out for %s", c.IdleSeconds, DefaultIdle)
+	case c.IdleSeconds == 0:
+		p.idle = DefaultIdle
+	default:
+		p.idle = time.Duration(c.IdleSeconds) * time.Second
 	}
 	for i, r := range c.Rules {
 		cr, err := compileRule(r)
@@ -203,9 +225,45 @@ func (p *Policy) Rules() int { return len(p.rules) }
 // DefaultAllow reports whether a request no rule matches is allowed.
 func (p *Policy) DefaultAllow() bool { return p.defaultAllow }
 
+// RecordPaths reports whether plain HTTP paths are recorded.
+func (p *Policy) RecordPaths() bool { return !p.hidePaths }
+
+// Idle is how long a connection may carry no bytes before it is closed.
+func (p *Policy) Idle() time.Duration {
+	if p.idle == 0 {
+		return DefaultIdle
+	}
+	return p.idle
+}
+
+// AllowedHosts are the hosts the allow rules name, in order, for telling
+// the model where its commands may go.
+func (p *Policy) AllowedHosts() []string {
+	var out []string
+	for _, ru := range p.rules {
+		if !ru.allow {
+			continue
+		}
+		h := ru.host
+		if ru.wildcard {
+			h = "*" + h
+		}
+		if !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
 // Decide applies the rules to r: a matching deny rule wins, then a matching
 // allow rule, then the default. In audit mode a deny becomes would_deny.
 func (p *Policy) Decide(r Request) Verdict {
+	// A ; in a path is a parameter some servers drop before routing, so
+	// /admin;x would be /admin to them and no rule on /admin to us. It is
+	// refused, in audit mode as well, as an unplain spelling is.
+	if !r.Tunnel && strings.Contains(r.Path, ";") {
+		return Verdict{Decision: Deny, Rule: "path", Reason: errSemicolon.Error()}
+	}
 	var allowedBy []rule
 	denied := ""
 	for _, ru := range p.rules {
@@ -281,6 +339,9 @@ func HostMatches(ruleHost string, wildcard bool, host string) bool {
 	}
 	return len(host) > len(ruleHost) && strings.HasSuffix(host, ruleHost)
 }
+
+// errSemicolon is a path with a ;, refused before any rule is read.
+var errSemicolon = errors.New("the path has a ; (a path parameter), which is refused")
 
 // errHostForm is a host that is not one plain spelling.
 var errHostForm = errors.New("not a host name or address")

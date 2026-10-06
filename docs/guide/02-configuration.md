@@ -226,8 +226,9 @@ stays open; unset means 30.
 `"network": "allowlist"`, set only in the managed configuration, sends
 commands' traffic through a per-session proxy that reaches only what the
 `egress` rules allow, and records each decision; it takes the place of
-`allow_network`. Only the process tier enforces it. See
-[Network policy](21-network-policy.md).
+`allow_network`. Only the process tier enforces it. The `egress` section
+(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
+too. See [Network policy](21-network-policy.md).
 
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that
