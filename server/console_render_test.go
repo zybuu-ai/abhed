@@ -412,3 +412,38 @@ function resolveApproval(){}
 globalThis.__clear = () => { tx.childNodes.length = 0; turnEl = null; };
 globalThis.__shown = () => tx.textContent;
 `
+
+// consoleSwitchHarness is the page state the chat list, the address and the
+// switcher run against.
+const consoleSwitchHarness = `import { El } from './dom.mjs';
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+El.prototype.focus = function(){}; El.prototype.select = function(){}; El.prototype.scrollIntoView = function(){};
+El.prototype.closest = function(){ return null; };
+El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
+const ids = {}, $ = id => ids[id] || (ids[id] = Object.assign(new El('div'), {id}));
+let current = null, live = false, sessionsSeen = [];
+const macKeys = false;
+const stats = {reason:null};
+globalThis.__urls = []; globalThis.__posts = []; globalThis.__notes = []; globalThis.__opened = []; globalThis.__states = {};
+let __list = [];
+globalThis.location = {href:'https://h/console', search:''};
+globalThis.history = {state:null, replaceState(_, __, url){ __urls.push(url); const u = new URL(url, 'https://h'); location.href = u.href; location.search = u.search; }};
+const api = async (path, opts) => {
+  if(opts && opts.method === 'POST'){ const b = JSON.parse(opts.body); __posts.push([path, b]); return {title: b.title}; }
+  const m = /^\/v1\/sessions\/([^/]+)\/state$/.exec(path);
+  if(m){ if(!__states[m[1]]) throw new Error('session not found'); return __states[m[1]]; }
+  return __list;
+};
+const note = t => __notes.push(t);
+const confirmDelete = () => {}, openSwitcher = () => { $('qs').hidden = false; }, closeSwitcher = () => { $('qs').hidden = true; };
+const openSession = id => { __opened.push(id); current = id; };
+$('qs').hidden = true;
+`
+
+// The chat list is ordered by last activity and searched by title too, the
+// open chat lives in the address, and the switcher, the keys and rename work.
+func TestConsoleSwitchesChats(t *testing.T) {
+	if out, err := runConsoleCases(t, "switch", consoleSwitchHarness, "console_switch_cases.mjs"); err != nil {
+		t.Fatalf("switching chats failed:\n%s", out)
+	}
+}

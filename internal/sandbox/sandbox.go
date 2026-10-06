@@ -39,12 +39,16 @@ const (
 	// TierVM runs in a container under gVisor (runsc), a user-space kernel that
 	// intercepts system calls. Not a microVM; the name is kept for compatibility.
 	TierVM Tier = "vm"
+	// TierFence confines each command with Landlock, a seccomp filter and a
+	// cgroup of its own, on Linux, as a preview chosen with sandbox.tier. It
+	// counts as the process tier for min_tier.
+	TierFence Tier = "fence"
 )
 
 // Strength orders tiers so callers can compare against a required minimum.
 func (t Tier) Strength() int {
 	switch t {
-	case TierProcess:
+	case TierProcess, TierFence:
 		return 1
 	case TierContainer:
 		return 2
@@ -132,6 +136,12 @@ type Policy struct {
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int
 	MaxProcs    int
+	// Tier, when set, is the one backend Select builds, in place of the
+	// strongest available; only TierFence can be chosen.
+	Tier Tier
+	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
+	// one CPU; zero leaves it unbounded.
+	CPUPercent int
 }
 
 func DefaultPolicy(workspace string) Policy {
@@ -166,6 +176,9 @@ type Sandbox interface {
 // error naming what was tried. A sandbox that quietly weakens itself is worse
 // than no sandbox, because the operator stops checking.
 func Select(p Policy) (Sandbox, error) {
+	if p.Tier != "" {
+		return selectChosen(p)
+	}
 	candidates := []Sandbox{
 		NewGVisor(p),
 		NewContainer(p),
@@ -191,4 +204,20 @@ func Select(p Policy) (Sandbox, error) {
 			"Install gVisor (runsc) or a container runtime, or lower sandbox.min_tier "+
 			"in config — but do not run untrusted repositories below tier %q",
 		p.MinTier, strings.Join(tried, "; "), TierProcess)
+}
+
+// selectChosen builds the one tier the configuration chose, or refuses
+// naming why: never another tier in its place.
+func selectChosen(p Policy) (Sandbox, error) {
+	if p.Tier != TierFence {
+		return nil, fmt.Errorf("sandbox.tier %q cannot be chosen; only %q can", p.Tier, TierFence)
+	}
+	if TierFence.Strength() < p.MinTier.Strength() {
+		return nil, fmt.Errorf("sandbox.tier is fence, which counts as tier %q, weaker than the required minimum %q", TierProcess, p.MinTier)
+	}
+	f := NewFence(p)
+	if ok, why := f.Available(); !ok {
+		return nil, fmt.Errorf("sandbox.tier is fence, but commands cannot be fenced here, and no other tier is used in its place: %s", why)
+	}
+	return f, nil
 }

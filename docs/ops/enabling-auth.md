@@ -79,6 +79,15 @@ With `storage.driver: postgres`, accounts are a table in the same database as
 the event store, which is what a multi-node deployment needs. Without it, they
 go to `<workspace>/.abhed/users.json`, mode `0600`, written atomically.
 
+That file, or any `auth.users_file` inside the workspace, is read only when
+the workspace is trusted (`abhed trust grant`, or `abhed -trust-workspace
+serve`): a repository's planted `users.json` must not sign anyone in. Untrusted,
+`serve` starts with no accounts from it and says so, and `abhed user` lists
+none and refuses changes. A deployment keeps accounts in `auth.users_file`
+outside every workspace, set in the managed file, which is read either way.
+See [Accounts in the
+workspace](../architecture/workspace-trust.md#accounts-in-the-workspace).
+
 Every change to that file is made under an exclusive lock on
 `users.json.lock` beside it, so two `abhed user` commands, or a command and a
 running server, cannot drop each other's change. A change waits up to five

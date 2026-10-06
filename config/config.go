@@ -75,6 +75,8 @@ type Config struct {
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
 	Suggest SuggestConfig `json:"suggest,omitempty"`
+	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
+	Fence FenceConfig `json:"fence,omitempty"`
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
@@ -92,6 +94,15 @@ type Config struct {
 	SetAside []SetAsideKey `json:"-"`
 	// Settings is the -settings file this run merged, if any.
 	Settings SettingsSource `json:"-"`
+	// Narrowed are the web settings a lower layer made that took effect
+	// over the managed file because they only narrow it.
+	Narrowed []SetAsideKey `json:"-"`
+	// Overridden are the settings a lower layer made that the managed file
+	// replaced with another value.
+	Overridden []SetAsideKey `json:"-"`
+	// webIntents and origins are what loading holds until the managed file.
+	webIntents []webIntent
+	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 }
@@ -161,6 +172,14 @@ type RecordConfig struct {
 
 // SuggestConfig governs the next-prompt suggestion an interactive surface
 // shows after a completed turn. Headless runs never make one.
+// FenceConfig tunes the fence tier; memory and processes come from the
+// sandbox's max_memory_mb and max_procs.
+type FenceConfig struct {
+	// CPUPercent bounds a session's commands' CPU time, in percent of one
+	// core: 50 is half of one, 200 two whole ones. Zero leaves it unbounded.
+	CPUPercent int `json:"cpu_percent,omitempty"`
+}
+
 type SuggestConfig struct {
 	// Enabled is on by default; a workspace may only turn it off, and a
 	// managed false binds.
@@ -246,6 +265,7 @@ func clearManagedOnly(c *Config, key string) {
 // made, crediting them to file. It runs before the managed file is merged,
 // so every managed-only value present came from a lower layer.
 func setAside(c *Config, file, layer string) {
+	setAsideWeb(c, file, layer)
 	kept := c.SetKeys[:0:0]
 	for _, k := range c.SetKeys {
 		if why, ok := managedOnly[k]; ok {
@@ -785,7 +805,10 @@ type MCPServerConfig struct {
 // SandboxConfig controls execution isolation. Defaults deny egress, because a
 // successful prompt injection then has no channel to exfiltrate through.
 type SandboxConfig struct {
-	MinTier       string   `json:"min_tier"` // none|process|container|vm
+	MinTier string `json:"min_tier"` // none|process|container|vm
+	// Tier chooses the backend instead of the strongest available one:
+	// "fence", the Linux preview. Empty selects as before.
+	Tier          string   `json:"tier,omitempty"`
 	AllowNetwork  bool     `json:"allow_network"`
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
 	// MaxMemoryMB applies on the container and vm tiers only; MaxProcs on
@@ -934,10 +957,12 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	var userFile string
 	if home, err := os.UserHomeDir(); err == nil {
 		userFile = filepath.Join(home, ".abhed", "config.json")
-		if err := mergeFile(&cfg, userFile); err != nil {
+		data, err := mergeFileData(&cfg, userFile)
+		if err != nil {
 			return cfg, err
 		}
 		setAside(&cfg, userFile, LayerUser)
+		noteOrigins(&cfg, userFile, LayerUser, data)
 		cfg.noteRuleLayer(LayerUser)
 	}
 	if o.SettingsName != "" {
@@ -945,11 +970,13 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 			return cfg, err
 		}
 		setAside(&cfg, o.SettingsName, LayerSettings)
+		noteOrigins(&cfg, o.SettingsName, LayerSettings, o.Settings)
 		cfg.noteRuleLayer(LayerSettings)
 		sum := sha256.Sum256(o.Settings)
 		cfg.Settings = SettingsSource{Name: o.SettingsName, SHA256: hex.EncodeToString(sum[:])}
 	}
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
+	noteUsers(&st, workspace, o)
 	cfg.Workspace = st
 	if err != nil {
 		return cfg, err
@@ -961,6 +988,8 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
+	cfg.origins = nil
+	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
 
 	applyEnv(&cfg)
@@ -977,13 +1006,18 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 // mergeFile merges the workspace's or the home directory's config. One with a
 // second name is refused: a command could rewrite it through that name.
 func mergeFile(cfg *Config, path string) error {
-	if n, err := nlink.Linked(path); err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	} else if n > 0 {
-		return fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
-	}
-	_, err := readMerge(cfg, path)
+	_, err := mergeFileData(cfg, path)
 	return err
+}
+
+// mergeFileData is mergeFile, returning what it read.
+func mergeFileData(cfg *Config, path string) ([]byte, error) {
+	if n, err := nlink.Linked(path); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	} else if n > 0 {
+		return nil, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
+	}
+	return readMerge(cfg, path)
 }
 
 // readMerge merges the file at path into cfg and returns what it read, or
@@ -1248,6 +1282,14 @@ func (c Config) Validate() error {
 	case "none", "process", "container", "vm", "":
 	default:
 		return fmt.Errorf("unknown sandbox.min_tier %q (want none|process|container|vm)", c.Sandbox.MinTier)
+	}
+	switch c.Sandbox.Tier {
+	case "", "fence":
+	default:
+		return fmt.Errorf("unknown sandbox.tier %q (want fence, or leave it unset)", c.Sandbox.Tier)
+	}
+	if c.Fence.CPUPercent < 0 || c.Fence.CPUPercent > 102400 {
+		return fmt.Errorf("fence.cpu_percent %d is outside 0 to 102400", c.Fence.CPUPercent)
 	}
 	switch c.Sandbox.Terminal {
 	case "", "shell", "lines":

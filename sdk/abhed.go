@@ -143,7 +143,8 @@ type Options struct {
 
 	// Warn receives what the tool set skipped or found unsafe as it was
 	// built: an MCP server or extension that did not start, a cluster or
-	// host that skips verification. Nil discards it.
+	// host that skips verification; and, at Close, a fence that found state
+	// planted in the workspace or could not list it. Nil discards it.
 	Warn func(format string, args ...any)
 
 	// ConfiguredTools gives the agent the tool set the CLI runs with, as the
@@ -223,6 +224,10 @@ type Agent struct {
 	// switch to by name; current names the one the loop runs on, under forkMu.
 	cfg     config.Config
 	current string
+	// sandbox is the backend New built for commands, closed with the agent;
+	// warn is Options.Warn, which hears what closing it found.
+	sandbox sandbox.Sandbox
+	warn    func(format string, args ...any)
 	// running counts the runs in progress, under forkMu: Fork holds it while
 	// it forks and refuses while a run is in progress, and a run starting
 	// meanwhile waits for the fork to finish.
@@ -330,13 +335,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	bash := tools.Bash{}
 	cfg.Sandbox.WriteProtected = append(cfg.Sandbox.WriteProtected, embedded.From(ctx).Protect...)
 	cfg.Sandbox.ProtectGit = cfg.Sandbox.ProtectGit || embedded.From(ctx).ProtectGit
-	if opts.Sandbox || cfg.ManagedSets("sandbox") {
+	// A chosen tier confines commands too: none runs unconfined in its place.
+	var fence *sandbox.Fence
+	var sbox sandbox.Sandbox
+	if opts.Sandbox || cfg.ManagedSets("sandbox") || cfg.Sandbox.Tier != "" {
 		sb, err := sandboxconfig.Build(cfg, opts.Workspace, stateRoots...)
 		if err != nil {
 			return nil, fmt.Errorf("abhed: %w", err)
 		}
+		sbox = sb
 		bash.Sandbox = sb.Command
 		bash.Isolation = tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}
+		fence, _ = sb.(*sandbox.Fence)
 		if in, ok := sb.(sandbox.Interactive); ok {
 			bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
 		}
@@ -354,11 +364,17 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
 		Vault: secrets.Default(), Warn: opts.Warn,
 	})
+	// What New made is released on every error from here: the tools, and
+	// the sandbox's cgroup and private temp.
+	fail := func(err error) (*Agent, error) {
+		set.Close()
+		_ = sandbox.Close(sbox)
+		return nil, err
+	}
 	// A skill's own directory is reachable, as it is from the command line.
 	for _, dir := range set.SkillDirs() {
 		if err := sess.AddRoot(dir); err != nil {
-			set.Close()
-			return nil, fmt.Errorf("abhed: skill directory: %w", err)
+			return fail(fmt.Errorf("abhed: skill directory: %w", err))
 		}
 	}
 	toolset.Police(set.Extensions, pol, "embedded")
@@ -370,8 +386,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	store, err := recordFor(ctx, opts, id, cfg, x)
 	if err != nil {
-		set.Close()
-		return nil, err
+		return fail(err)
 	}
 	// Every write goes through the forwarder, so OnEvent misses none, from the
 	// first event on.
@@ -396,8 +411,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		mode, err = agent.WakeOff, nil
 	}
 	if err != nil {
-		set.Close()
-		return nil, fmt.Errorf("abhed: Background is off, notify or auto, not %q", opts.Background)
+		return fail(fmt.Errorf("abhed: Background is off, notify or auto, not %q", opts.Background))
 	}
 	bgCfg := cfg
 	bgCfg.Subagents.Wake = string(mode.Tighter(wakeOf(cfg)))
@@ -445,14 +459,25 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// A surface's new session says how it started, as the command line's does.
 	if x.Surface != "" && !x.Resume {
 		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
-			"model": adapter.Profile().Name, "mode": string(pol.Mode)}
+			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg)}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
-			set.Close()
-			return nil, fmt.Errorf("abhed: recording the session start: %w", err)
+			return fail(fmt.Errorf("abhed: recording the session start: %w", err))
+		}
+		attempts := toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(sandbox.InAgentCommand()))
+		if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
+			return fail(fmt.Errorf("abhed: recording the configuration attempts: %w", err))
 		}
 	}
+	// Every agent under the fence records what qualified it, a plain SDK
+	// caller's included, and gives it the record before any command runs.
+	if fence != nil {
+		if _, err := rec.Record(agent.EvFenceQualified, agent.ActorSystem, agent.Trusted, fence.Qualification()); err != nil {
+			return fail(fmt.Errorf("abhed: recording the fence's qualification: %w", err))
+		}
+		fence.SetRecord(agent.SandboxRecord(rec))
+	}
 	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
-		cfg: cfg, current: cfg.Model.Default}
+		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, warn: opts.Warn}
 	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
@@ -660,6 +685,13 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	// The fence closes before the record is released, so state it finds
+	// planted then is recorded; its error goes to Warn.
+	if a.sandbox != nil {
+		if err := sandbox.Close(a.sandbox); err != nil && a.warn != nil {
+			a.warn("abhed: %v", err)
+		}
+	}
 	a.releaseRecord()
 }
 

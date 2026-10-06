@@ -44,6 +44,7 @@ func TestOwnerPolicyFollowsTheAuthMode(t *testing.T) {
 // The owner migration reads the accounts in auth.users_file, or in the
 // default file when one exists, with their tenants.
 func TestMigrateReadsTheUsersFile(t *testing.T) {
+	t.Setenv(config.TrustEnv, "1") // the test wrote these accounts
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state", "users.json")
 	fs, err := auth.NewFileUserStore(path)
@@ -95,6 +96,7 @@ func TestMigrateReadsTheUsersFile(t *testing.T) {
 // unless --force-no-accounts is given, and a relative one is found beside the
 // workspace whatever directory migrate runs in.
 func TestMigrateNeedsItsUsersFile(t *testing.T) {
+	t.Setenv(config.TrustEnv, "1") // the test wrote these accounts
 	ws := t.TempDir()
 	cfg := config.Default()
 	cfg.Auth.Mode, cfg.Auth.UsersFile = "local", "state/users.json"
@@ -170,6 +172,7 @@ func TestMigrateCommandPassesFileAccounts(t *testing.T) {
 // A single-role server reads its users_file when it migrates owners itself;
 // a two-role one leaves that to migrate.
 func TestSingleRoleStartReadsTheUsersFile(t *testing.T) {
+	t.Setenv(config.TrustEnv, "1") // the test wrote these accounts
 	ws := t.TempDir()
 	fs, err := auth.NewFileUserStore(filepath.Join(ws, "state", "users.json"))
 	if err != nil {
@@ -181,6 +184,7 @@ func TestSingleRoleStartReadsTheUsersFile(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode, cfg.Auth.UsersFile = "local", "state/users.json"
 	cfg.Workspace.Workspace = ws
+	cfg.Workspace.UsersTrusted = true // as a load with the trust variable set decides
 	if storeConfig(cfg).OwnerAccounts != nil {
 		t.Fatal("a two-role start reads the users file")
 	}

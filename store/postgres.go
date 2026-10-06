@@ -339,6 +339,9 @@ type SessionRecord struct {
 	Title     string
 	ParentID  string
 	StartedAt time.Time
+	// UpdatedAt is when its conversation last went on (agent.Conversational),
+	// StartedAt before it has; set by the lists, zero where a store cannot say.
+	UpdatedAt time.Time
 	// Holder, when set, is written with the row as the process holding it,
 	// so no other process can take it for an orphan before its first beat.
 	Holder string
@@ -514,12 +517,25 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 			}
 		}
 	}
-	// The row carries the title the record last gave the session, for the list.
+	// The row carries the title the record last gave the session, for the list:
+	// a rename on the server, or a name the command line gave with /rename or -n.
 	if ev.Type == agent.EvSessionRenamed {
 		var rn agent.SessionRenamed
 		if jsonUnmarshal(ev.Payload, &rn) == nil {
 			if _, err := p.pool.Exec(ctx, `UPDATE sessions SET title = $2 WHERE id = $1`, ev.SessionID, truncatePrompt(rn.Title)); err != nil {
 				slog.Warn("session row not updated after a rename", "session", ev.SessionID, "error", err)
+			}
+		}
+	}
+	if ev.Type == agent.EvSessionNamed && ev.ParentID == "" {
+		var n agent.SessionNamed
+		if jsonUnmarshal(ev.Payload, &n) == nil {
+			// The rules a rename on the server applies: a name they refuse stays
+			// in the record, and the list goes on showing the title it had.
+			if title, why := CleanTitle(n.Name); why != "" {
+				slog.Warn("session name not shown as its title", "session", ev.SessionID, "reason", why)
+			} else if _, err := p.pool.Exec(ctx, `UPDATE sessions SET title = $2 WHERE id = $1`, ev.SessionID, title); err != nil {
+				slog.Warn("session row not updated after a name", "session", ev.SessionID, "error", err)
 			}
 		}
 	}
@@ -631,8 +647,12 @@ func (p *Postgres) listSessions(ctx context.Context, owner string, limit int) ([
 		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''), COALESCE(title,''),
 		       started_at, ended_at, COALESCE(terminal_reason,''),
 		       turns, tokens_in, tokens_out, tokens_cached, compactions,
-		       context_tokens, context_window, COALESCE(parent_id,'')
-		FROM sessions WHERE deleted_at IS NULL AND parent_id IS NULL
+		       context_tokens, context_window, COALESCE(parent_id,''),
+		       COALESCE((SELECT e.created_at FROM events e WHERE e.session_id = s.id
+		                   AND (e.type IN ('user.message', 'agent.message')
+		                        OR e.type = 'action.requested' AND e.actor = 'agent')
+		                 ORDER BY e.seq DESC LIMIT 1), started_at)
+		FROM sessions s WHERE deleted_at IS NULL AND parent_id IS NULL
 		  AND ($2 = '' OR user_id = $2)
 		ORDER BY started_at DESC LIMIT $1`, limit, owner)
 	if err != nil {
@@ -646,7 +666,7 @@ func (p *Postgres) listSessions(ctx context.Context, owner string, limit int) ([
 		if err := rows.Scan(&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt, &s.Title,
 			&s.StartedAt, &s.EndedAt, &s.TerminalReason,
 			&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions,
-			&s.ContextTokens, &s.ContextWindow, &s.ParentID); err != nil {
+			&s.ContextTokens, &s.ContextWindow, &s.ParentID, &s.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

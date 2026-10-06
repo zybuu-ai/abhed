@@ -76,8 +76,10 @@ func TestStopAfterSpawnRecordedEndsTheChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the return", func() bool { return len(payloads[map[string]any](r.events(t), EvSubagentReturn)) == 1 })
+	// The return is recorded before the task leaves the live count.
+	waitFor(t, "the task to end", func() bool { return r.l.Background.Live() == 0 })
 	ret := payloads[map[string]any](r.events(t), EvSubagentReturn)[0]
-	if ret["reason"] != string(TermUserInterrupt) || r.l.Background.Live() != 0 {
+	if ret["reason"] != string(TermUserInterrupt) {
 		t.Fatalf("returned %v, live %d", ret, r.l.Background.Live())
 	}
 }

@@ -54,6 +54,11 @@ func startSandbox(cfg config.Config, workspace string, terminal bool) (*lazySand
 		l.sb, l.err = sandbox.Select(p)
 		close(l.done)
 	}()
+	// A chosen tier is waited for: no other tier stands in for it.
+	if p.Tier != "" {
+		<-l.done
+		return l, l.err
+	}
 	if p.MinTier.Strength() <= sandbox.TierProcess.Strength() {
 		if ok, _ := sandbox.NewProcess(p).Available(); ok {
 			l.floor = sandbox.TierProcess
@@ -68,6 +73,29 @@ func startSandbox(cfg config.Config, workspace string, terminal bool) (*lazySand
 	}
 	<-l.done
 	return l, l.err
+}
+
+// fenceOf is sb when it is the fence, once chosen, else nil.
+func fenceOf(sb sandbox.Sandbox) *sandbox.Fence {
+	if l, ok := sb.(*lazySandbox); ok {
+		if !l.Resolved() {
+			return nil
+		}
+		var err error
+		if sb, err = l.wait(); err != nil {
+			return nil
+		}
+	}
+	f, _ := sb.(*sandbox.Fence)
+	return f
+}
+
+// Close releases what the chosen backend holds, once it is chosen.
+func (l *lazySandbox) Close() error {
+	if sb, err := l.wait(); err == nil {
+		return sandbox.Close(sb)
+	}
+	return nil
 }
 
 func (l *lazySandbox) wait() (sandbox.Sandbox, error) {

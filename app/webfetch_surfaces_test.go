@@ -43,7 +43,9 @@ func webFetchWorkspace(t *testing.T) string {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
 	t.Cleanup(srv.Close)
-	cfg := `{"web_fetch":{"enabled":true},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` +
+	// Only the managed configuration turns web fetch on.
+	managedAt(t, t.TempDir(), `{"web_fetch":{"enabled":true}}`)
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` +
 		srv.URL + `","model":"m","context_window":8192}}}}`
 	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)

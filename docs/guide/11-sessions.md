@@ -88,6 +88,45 @@ Forking needs no extra storage: the messages are derivable from events that were
 already being recorded for audit. The log was never a description of the
 session — it is the session.
 
+## Finding and switching chats
+
+The console's rail lists your chats in order of last activity, so a chat you
+just continued comes first, grouped by Today, Yesterday, This week and
+Earlier. Activity is the conversation: your messages, the agent's replies and
+the calls it makes. Opening a chat, its terminal or its files, renaming it or
+switching its model does not move it. Each row's age is how long since then.
+
+- **Search** matches every word you type in a chat's title or its first
+  message, and says so when nothing matches.
+- **The open chat is in the address**, as `/console?s=<id>`. A reload, a
+  bookmark or a second tab opens that chat again, so two tabs can stay on two
+  chats. **Workbench** in the header opens the same session there.
+- **The header shows the title.** Its tooltip and **copy id** give the id.
+  Double-click the title, or press F2 on a row, to rename the chat in place;
+  Enter keeps it and Esc does not. A title with hidden characters is shown
+  with them written out, and is not put in the box raw.
+- **Ctrl+K** (⌘K on a Mac) opens a quick switcher: type to filter, ↑↓ and
+  Enter to open, Esc to close. The open chat is marked.
+- **Alt+↑ / Alt+↓** goes to the chat above or below the open one in the rail.
+  In a message box with text in it the keys move the cursor instead.
+
+`GET /v1/sessions` returns each session's `updated` (when its conversation last went on)
+alongside `created`, newest activity first. It also takes:
+
+| Parameter | |
+|---|---|
+| `q` | only sessions whose title or opening request contains it, ignoring case; an id prefix matches too |
+| `limit` | at most this many, 1 to 200 |
+| `cursor` | the page after the one whose response carried it |
+
+When more remain, the response has an `X-Next-Cursor` header; pass it back as
+`cursor` for the next page. The body is the same JSON array as before, and a
+request with none of these returns the whole list as it always did, up to
+your 200 most recently active sessions. A search or a paged list looks at
+your 500 most recently active sessions and no further: a session older than
+those is not found by `q` and is past the last page, though it still opens
+by its id.
+
 ## Getting it out
 
 ```

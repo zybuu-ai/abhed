@@ -78,6 +78,9 @@ func (b Bash) Description() string {
 	case networkOn:
 		d += " Commands can reach the network."
 	}
+	if b.Isolation.Tier == "fence" {
+		d += " Commands run under the fence: they write only the workspace and a private temp folder (HOME and TMPDIR point there), and unix sockets, such as docker's or an ssh agent's, are refused."
+	}
 	if len(b.SecretNames) > 0 {
 		d += " Secrets available by name, as environment variables for one command when listed in `secrets`: " + strings.Join(b.SecretNames, ", ") + ". You never see their values."
 	}
@@ -426,6 +429,7 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 
 	output, err := newBashOutput(cmd)
 	if err != nil {
+		sandbox.Release(cmd)
 		endProc()
 		return errf("Failed to run command: %v", err)
 	}
@@ -519,6 +523,7 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	if len(a.Secrets) > 0 {
 		env, err := b.Secrets(a.Secrets)
 		if err != nil {
+			sandbox.Release(cmd)
 			return nil, err
 		}
 		cmd.Env = append(cmd.Env, env...)

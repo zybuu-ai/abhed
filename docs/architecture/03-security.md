@@ -64,13 +64,14 @@ agent still cannot exceed its granted authority.
 | I4 | Dedicated node | Physical | High | Classified / cross-tenant-sensitive |
 
 **What ships today.** The four configurable tiers are `none`, `process`, `container` and
-`vm`. `process` is bubblewrap on Linux and the Seatbelt sandbox on macOS; `container` is an
-OCI container through the host's engine; `vm` is that same container pinned to the gVisor
-`runsc` runtime, which is I2 above — a userspace kernel intercepting syscalls, not a
-hardware-virtualised microVM. `internal/sandbox` contains exactly two backends, `process.go`
-and `container.go`; there is no Firecracker or Kata implementation, and the tier refuses to
-start if `runsc` is not registered with the container engine rather than silently running
-without it. The `process` tier filters no system calls: bubblewrap runs without `--seccomp`
+`vm`, with a fifth, `fence`, as a Linux preview that is off unless chosen
+([below](#the-fence-tier-preview-linux)). `process` is bubblewrap on Linux and the Seatbelt
+sandbox on macOS; `container` is an OCI container through the host's engine; `vm` is that
+same container pinned to the gVisor `runsc` runtime, which is I2 above — a userspace kernel
+intercepting syscalls, not a hardware-virtualised microVM. `internal/sandbox` contains three
+backends, `process.go`, `container.go` and the fence (`fence.go`, `fence_linux.go`); there
+is no Firecracker or Kata implementation, and the tier refuses to start if `runsc` is not
+registered with the container engine rather than silently running without it. The `process` tier filters no system calls: bubblewrap runs without `--seccomp`
 and no Landlock ruleset is applied, so a command there can make any call your user could.
 
 **Why the naming, and what it costs you.** `vm` names the strongest tier the harness can
@@ -97,6 +98,15 @@ What each tier bounds today:
 
 The aim is one VM per session, never reused across tenants, since reuse is how T6 happens.
 That waits on I3.
+
+### The fence tier (preview, Linux)
+
+`fence` is a preview, Linux only, and off unless `sandbox.tier: "fence"`. Each command is
+confined with Landlock and a seccomp filter and runs in a cgroup of its own tool call. For
+`min_tier` it counts as `process`, and it fails closed: when the host lacks anything it
+needs, Abhed refuses to start and names the check, and never runs the command under another
+tier. It is not a microVM; the command shares the host kernel. Requirements and what it
+does not cover: [Configuration](../guide/02-configuration.md#the-fence-tier-preview-linux).
 
 ## 4. Prompt-injection controls
 

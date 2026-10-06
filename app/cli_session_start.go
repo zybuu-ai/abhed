@@ -10,10 +10,12 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
+	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
 )
 
@@ -182,7 +184,7 @@ func findSession(ctx context.Context, st *cliState, f sessionFlags, say func(str
 		}
 		id = entries[0].ID
 	case f.Pick:
-		picked, err := pickSession(ctx, st)
+		picked, err := pickSession(ctx, st, say)
 		if err != nil || picked == "" {
 			return "", nil, err
 		}
@@ -324,11 +326,12 @@ func readRecordFile(path string) ([]agent.Event, error) {
 }
 
 // pickSession asks which of this workspace's sessions to resume; a last
-// entry widens the list to every workspace.
-func pickSession(ctx context.Context, st *cliState) (string, error) {
+// entry widens the list to every workspace. Typing filters the list, and the
+// session already open is marked and is not resumed again.
+func pickSession(ctx context.Context, st *cliState, say func(string, ...any)) (string, error) {
 	rec, ok := st.store.(*local.Store)
 	if !ok {
-		return "", errors.New("the session picker needs the local record; name the session with -r <id>")
+		return pickStoredSession(ctx, st, say)
 	}
 	for _, all := range []bool{false, true} {
 		entries, err := rec.Index().List(local.Filter{Cwd: st.workspace, All: all, Limit: 30})
@@ -340,34 +343,100 @@ func pickSession(ctx context.Context, st *cliState) (string, error) {
 		}
 		var items []ui.PickItem
 		for _, e := range entries {
-			items = append(items, pickItem(e, all))
+			items = append(items, pickItem(e, all, st.sessionID))
 		}
 		title := "Resume which session? (this workspace)"
 		if all {
 			title = "Resume which session? (every workspace)"
 		} else {
-			items = append(items, ui.PickItem{ID: "*all", Label: "…sessions in every workspace"})
+			items = append(items, ui.PickItem{ID: "*all", Label: "…sessions in every workspace", Always: true})
 		}
-		id, err := st.ui().Pick(ctx, ui.PickSpec{Title: title, Items: items})
+		id, err := st.ui().Pick(ctx, ui.PickSpec{Title: title, Items: items, Default: firstOther(items, st.sessionID), Filter: true})
 		if err != nil {
 			return "", nil //nolint:nilerr // no answer is no session, not a failure
 		}
 		if id != "*all" {
-			return id, nil
+			return notCurrent(st, id, say), nil
 		}
 	}
 	return "", nil
 }
 
-func pickItem(e local.Entry, withCwd bool) ui.PickItem {
+// pickStoredSession is the picker where the record is a database: this
+// user's sessions, latest active first, in every workspace.
+func pickStoredSession(ctx context.Context, st *cliState, say func(string, ...any)) (string, error) {
+	lister, ok := st.store.(interface {
+		ListSessions(context.Context, int) ([]store.SessionRecord, error)
+	})
+	if !ok {
+		return "", errors.New("the session picker needs a session record; name the session with -r <id>")
+	}
+	records, err := lister.ListSessions(ctx, 200)
+	if err != nil {
+		return "", err
+	}
+	sortByActivity(records)
+	me, tenant := cliUser(), cliTenant(st.appCfg)
+	var items []ui.PickItem
+	for _, rec := range records {
+		if rec.ParentID != "" || rec.Tenant != tenant || rec.User != me && rec.User != auth.LocalOwner(me) {
+			continue
+		}
+		detail := fmt.Sprintf("%s · %s", age(activityOf(rec)), recordState(rec))
+		if rec.Workspace != "" && rec.Workspace != st.workspace {
+			detail += " · " + rec.Workspace
+		}
+		if rec.ID == st.sessionID {
+			detail = "● current · " + detail
+		}
+		items = append(items, ui.PickItem{ID: rec.ID, Label: orDefault(recordLabel(rec), "(no prompt)"), Detail: detail})
+		if len(items) == 30 {
+			break
+		}
+	}
+	if len(items) == 0 {
+		return "", errors.New("no sessions recorded for you")
+	}
+	id, err := st.ui().Pick(ctx, ui.PickSpec{Title: "Resume which session?", Items: items, Default: firstOther(items, st.sessionID), Filter: true})
+	if err != nil {
+		return "", nil //nolint:nilerr // no answer is no session, not a failure
+	}
+	return notCurrent(st, id, say), nil
+}
+
+// firstOther is the first item that is not the session already open, so
+// Enter never offers to resume the session in use.
+func firstOther(items []ui.PickItem, current string) string {
+	for _, it := range items {
+		if it.ID != current && !strings.HasPrefix(it.ID, "*") {
+			return it.ID
+		}
+	}
+	return ""
+}
+
+// notCurrent passes on a picked session unless it is the one already open,
+// which is said and left as it is.
+func notCurrent(st *cliState, id string, say func(string, ...any)) string {
+	if id != "" && id == st.sessionID {
+		say("%s is the session you are in", id)
+		return ""
+	}
+	return id
+}
+
+func pickItem(e local.Entry, withCwd bool, current string) ui.PickItem {
 	label := orDefault(e.Title, "(no prompt)")
 	if e.Name != "" {
 		label = e.Name + " · " + label
 	}
 	state := orDefault(e.Ended, "open")
-	detail := fmt.Sprintf("%s · %s · %s", age(e.Updated), orDefault(e.GitBranch, "-"), state)
+	detail := fmt.Sprintf("%s · %s · %s", age(e.Active), orDefault(e.GitBranch, "-"), state)
 	if withCwd {
 		detail += " · " + e.Cwd
+	}
+	if e.ID == current {
+		detail = "● current · " + detail
 	}
 	return ui.PickItem{ID: e.ID, Label: label, Detail: detail}
 }

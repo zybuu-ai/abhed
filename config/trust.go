@@ -77,6 +77,13 @@ type WorkspaceTrust struct {
 	// decision: a link, a second name, too large. They never load.
 	AgentsProblems []string `json:"agents_problems,omitempty"`
 
+	// UsersFile is the workspace's .abhed/users.json, when there is one.
+	UsersFile string `json:"users_file,omitempty"`
+	// UsersTrusted is whether an accounts file inside the workspace is read,
+	// and UsersReason why: as Reason, or home.
+	UsersTrusted bool   `json:"users_trusted,omitempty"`
+	UsersReason  string `json:"users_reason,omitempty"`
+
 	agentFiles []AgentFile
 }
 
@@ -255,6 +262,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		// Trust does not reach these: a workspace never makes a managed-only
 		// setting, may only turn auto memory off, and may only import less deep.
 		setAside(cfg, path, LayerWorkspace)
+		noteOrigins(cfg, path, LayerWorkspace, data)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -344,7 +352,22 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 		r := ruleFor(s.key)
 		if r.apply != nil && r.apply(cfg, &ws) {
 			st.Applied = append(st.Applied, s.key)
+			if WebKey(s.key) {
+				// Applied again over the managed file, which may turn it on.
+				in := webIntent{key: s.key, file: path, layer: LayerWorkspace}
+				switch s.key {
+				case "web_search.max_results":
+					in.limit = ws.WebSearch.MaxResults
+				case "web_fetch.max_chars":
+					in.limit = ws.WebFetch.MaxChars
+				default:
+					in.off = true
+				}
+				cfg.webIntents = append(cfg.webIntents, in)
+				continue
+			}
 			cfg.SetKeys = append(cfg.SetKeys, s.key)
+			noteOrigin(cfg, path, LayerWorkspace, s.key, s.val)
 			continue
 		}
 		st.Ignored = append(st.Ignored, IgnoredKey{Key: Printable(s.key), Value: shortJSON(redact(s.key, s.val))})
@@ -525,9 +548,11 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 		st.AgentsTrusted, st.AgentsReason = decideAgents(st, LoadOptions{})
 	}
 	if st.File == "" || st.Reason == "home" {
+		noteUsers(&st, workspace, LoadOptions{})
 		return st, nil
 	}
 	st.Trusted, st.Reason = decide(st, LoadOptions{})
+	noteUsers(&st, workspace, LoadOptions{})
 	// Under a managed lock on allow rules, the workspace's would be dropped
 	// even once trusted, so the prompt must not show them as gained.
 	locked := Default()
@@ -581,6 +606,8 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.terminal":              {onlyLines, "only lines"},
 	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
+	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
+	"fence":                         {nil, "tunes the fence tier's limits"},
 
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
 	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
@@ -597,21 +624,23 @@ var workspaceRules = map[string]fieldRule{
 
 	"tools.syntax_check": {stricterSyntax, "only stricter"},
 
-	"web_search.enabled": {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
-	"web_search":         {nil, "a search provider, key and endpoint receive the agent's queries"},
-	"web_fetch.enabled":  {onlyFalse(func(c *Config) *bool { return &c.WebFetch.Enabled }), "only false"},
-	"web_fetch":          {nil, "names the hosts the agent may fetch from"},
-	"k8s.enabled":        {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
-	"k8s.allow_writes":   {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
-	"k8s":                {nil, "names which cluster and credentials the agent reaches"},
-	"ssh.enabled":        {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
-	"ssh.hosts":          {nil, "names machines and keys the agent reaches"},
-	"ssh.connect_hosts":  {nil, "names machines ssh_connect may reach"},
-	"skills.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
-	"skills.dirs":        {nil, "a skill is instructions to the agent"},
-	"agents.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
-	"agents.dirs":        {nil, "a definition is instructions and a model choice"},
-	"telemetry":          {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
+	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
+	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
+	"web_search":             {nil, "a search provider, key and endpoint receive the agent's queries"},
+	"web_fetch.enabled":      {onlyFalse(func(c *Config) *bool { return &c.WebFetch.Enabled }), "only false"},
+	"web_fetch.max_chars":    {lower(func(c *Config) *int { return &c.WebFetch.MaxChars }, zeroIs(20000)), "only lower"},
+	"web_fetch":              {nil, "names the hosts the agent may fetch from"},
+	"k8s.enabled":            {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
+	"k8s.allow_writes":       {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
+	"k8s":                    {nil, "names which cluster and credentials the agent reaches"},
+	"ssh.enabled":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
+	"ssh.hosts":              {nil, "names machines and keys the agent reaches"},
+	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
+	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
+	"skills.dirs":            {nil, "a skill is instructions to the agent"},
+	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
+	"agents.dirs":            {nil, "a definition is instructions and a model choice"},
+	"telemetry":              {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
 
 	"commands.dirs":       {nil, "a command is instructions to the agent"},
 	"rules.dirs":          {nil, "a rule is instructions to the agent"},

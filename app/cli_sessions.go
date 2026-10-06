@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ func init() {
 	registerSlash(slashCmd{Name: "/branch", Args: "[name]", Help: "go on in a copy of this session; the original stays as it is", Group: "session", Order: 125, Run: legacy("/branch", slashBranch)})
 	registerSlash(slashCmd{Name: "/sessions", Help: "list this workspace's recorded sessions", Group: "session", Order: 110, ReadOnly: true, Run: legacy("/sessions", slashSessions)})
 	registerSlash(slashCmd{Name: "/resume", Args: "[id|name]", Help: "replay a past session and continue its conversation; alone, pick one", Group: "session", Order: 120, Run: legacy("/resume", slashResume)})
+	registerSlash(slashCmd{Name: "/switch", Args: "[id|name]", Help: "switch to another session: /resume by another name", Group: "session", Order: 121, Run: legacy("/switch", slashResume)})
 	registerSlash(slashCmd{Name: "/export", Args: "[path]", Help: "write the transcript to ~/.abhed/exports (.html; .jsonl verifiable, .json, .txt)", Group: "session", Order: 150, Run: legacy("/export", slashExport)})
 }
 
@@ -71,15 +73,82 @@ func slashSessions(ctx context.Context, fields []string, r *ui.Renderer,
 		fmt.Println(s.Dim("  no sessions recorded"))
 		return false
 	}
+	sortByActivity(records)
 	for _, rec := range records {
-		state := "running"
-		if rec.EndedAt != nil {
-			state = rec.TerminalReason
+		if rec.ParentID != "" {
+			continue // a subagent's own row
 		}
-		fmt.Printf("  %-22s %-10s %s  %s\n", rec.ID, state,
-			rec.StartedAt.Format("2006-01-02 15:04"), s.Dim(rec.User))
+		mark := "  "
+		if rec.ID == st.sessionID {
+			mark = "* "
+		}
+		fmt.Printf("%s%-27s %-10s %-9s %s  %s\n", mark, rec.ID, recordState(rec), age(activityOf(rec)),
+			ui.VisibleLine(orDefault(recordLabel(rec), "(no prompt)")), s.Dim(rec.User))
 	}
+	fmt.Println(s.Dim("  /resume <id> continues one"))
 	return false
+}
+
+// recordState is a session row's state as the lists show it.
+func recordState(rec store.SessionRecord) string {
+	if rec.EndedAt == nil {
+		return "open"
+	}
+	return orDefault(rec.TerminalReason, "ended")
+}
+
+// recordLabel is a session row's title, else its opening request.
+func recordLabel(rec store.SessionRecord) string {
+	return strings.TrimSpace(strings.SplitN(orDefault(rec.Title, rec.Prompt), "\n", 2)[0])
+}
+
+// activityOf is when a session row was last active, its start where the
+// store cannot say.
+func activityOf(rec store.SessionRecord) time.Time {
+	if rec.UpdatedAt.IsZero() {
+		return rec.StartedAt
+	}
+	return rec.UpdatedAt
+}
+
+func sortByActivity(records []store.SessionRecord) {
+	sort.SliceStable(records, func(i, j int) bool { return activityOf(records[i]).After(activityOf(records[j])) })
+}
+
+// sessionLabel is what the footer calls the session: the name /rename gave
+// it, else its first prompt cut to 30 characters, else its id.
+func (st *cliState) sessionLabel() string {
+	if st.sessionID == "" {
+		return ""
+	}
+	if rec, ok := st.store.(*local.Store); ok {
+		if e, err := rec.Index().Get(st.sessionID); err == nil {
+			return clipLabel(orDefault(e.Name, e.Title), st.sessionID)
+		}
+		return st.sessionID
+	}
+	if st.labelID != st.sessionID || st.label == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if rec, ok, _ := storedSession(ctx, st, st.sessionID); ok {
+			st.labelID, st.label = st.sessionID, recordLabel(rec)
+		}
+	}
+	if st.labelID == st.sessionID {
+		return clipLabel(st.label, st.sessionID)
+	}
+	return st.sessionID
+}
+
+func clipLabel(label, id string) string {
+	label = strings.TrimSpace(strings.SplitN(label, "\n", 2)[0])
+	if label == "" {
+		return id
+	}
+	if r := []rune(label); len(r) > 30 {
+		return string(r[:29]) + "…"
+	}
+	return label
 }
 
 // slashResume is /resume.
@@ -123,6 +192,12 @@ func slashRename(ctx context.Context, fields []string, r *ui.Renderer,
 		fmt.Println(s.Dim("  usage: /rename <name>"))
 		return false
 	}
+	// The rules a rename in the console or over the API has, and its words.
+	name, why := store.CleanTitle(name)
+	if why != "" {
+		fmt.Printf("  %s not renamed: %s\n", s.Red("✕"), why)
+		return false
+	}
 	st.pendingName = name
 	if st.loop == nil {
 		fmt.Println(s.Dim("  the session is named " + name + " when it starts"))
@@ -139,6 +214,7 @@ func slashRename(ctx context.Context, fields []string, r *ui.Renderer,
 		fmt.Printf("  %s not renamed\n", s.Red("✕"))
 		return false
 	}
+	st.labelID, st.label = st.sessionID, name
 	fmt.Println(s.Dim("  named " + name))
 	return false
 }

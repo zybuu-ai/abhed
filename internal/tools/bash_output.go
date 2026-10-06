@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // bashOutputWait is how long output is read after the command has ended.
@@ -98,6 +100,7 @@ func (o *bashOutput) run(cmd *exec.Cmd, delay time.Duration, started func(), det
 	err = cmd.Start()
 	_ = o.w.Close() // the command has its own copy; this one would hold the pipe open
 	if err != nil {
+		sandbox.Release(cmd)
 		_ = o.r.Close()
 		<-o.done
 		return o.buf.String(), false, false, false, err

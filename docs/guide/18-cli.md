@@ -35,6 +35,18 @@ more often a mistyped command than a task.
 | `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 
+### Moving between sessions
+
+```bash
+abhed sessions                 # this workspace's sessions, latest active first (abhed record list)
+abhed -r                       # pick one to resume
+```
+
+Inside a session, `/resume` or `/switch` alone opens the picker: type to
+filter it, Enter opens the first match, and the session you are in is marked
+`● current`. The footer names the session you are in. The details are in
+[Sessions and the local record](12-records.md#starting-resuming-and-naming).
+
 The familiar spellings `-permission-mode`, `-allowedTools`,
 `-disallowedTools` and `-dangerously-skip-permissions` are accepted too; the
 table of what each maps to is in [Automation](10-automation.md#familiar-flag-spellings).

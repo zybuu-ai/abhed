@@ -476,6 +476,21 @@ which is the failure the heartbeat exists to prevent.
 across fifty heartbeats, so "detached write" does not quietly become
 "leaked goroutine".
 
+A seventh, found by gosec v2.29.0 on Linux only, is suppressed in the code
+with `#nosec G118` and a reason, so it is not in the baseline:
+`internal/sandbox/fence_linux.go`'s fence supervisor, started by `wrap` for
+each fenced command. It is a **false positive**: the goroutine is given the
+command's context and stops waiting for the launcher when that context ends,
+but its cleanup must outlive the call. It holds the launch until the command
+exits, then removes the call's cgroup, ending what the command left running,
+and checks the workspace for planted `.abhed` state, each with a
+`context.Background` timeout of its own, because by then the caller's context
+is often already cancelled, and cleanup bound to it would leave the cgroup and
+its processes behind. It ends when the command exits, when the launcher does
+not report within two minutes, or at once when `sandbox.Release` frees a
+command that never started; `TestFenceReleaseFreesAnUnstartedCommand` covers
+the last.
+
 #### G124 — cookie missing Secure/HttpOnly/SameSite (4 findings, MEDIUM)
 
 | file:line | Finding | Triage |

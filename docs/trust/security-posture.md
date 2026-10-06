@@ -17,6 +17,7 @@ whose strength is explicit and self-reporting (`internal/sandbox/sandbox.go`):
 | `process` | Process-level confinement: macOS `sandbox-exec`; on Linux, bubblewrap with its own PID, IPC, UTS and (with no network) network namespaces and a read-only view of the system. No seccomp filter or Landlock ruleset is applied | The minimum to set on any shared server: `sandbox.min_tier: "process"` |
 | `container` | OCI container: namespace isolation, shared kernel | |
 | `vm` | gVisor (`runsc`): a user-space kernel that intercepts system calls, run as a container runtime. Not a microVM; the name is kept for compatibility | Strongest tier implemented |
+| `fence` | Preview, Linux only, off unless `sandbox.tier: "fence"`: each command confined by Landlock and a seccomp filter, in a cgroup per tool call (`internal/sandbox/fence_linux.go`). Not a microVM; shares the host kernel | Counts as `process` for `min_tier`; fails closed, never falls back to another tier. Requirements and limits: [Configuration](../guide/02-configuration.md#the-fence-tier-preview-linux) |
 
 `Select` (`internal/sandbox/sandbox.go`) picks the strongest backend
 available that meets the configured `MinTier`, and **refuses to start** if
@@ -45,8 +46,10 @@ design (gVisor by default, a microVM per session) as the target architecture.
 That document is explicit that this is **engineering judgment, not verified
 practice**, and the tiers actually implemented in
 `internal/sandbox/sandbox.go` today are `none` / `process` / `container` /
-`vm`, verified by the escape tests in that package. Treat the design doc as
-direction, and this document and the code as what runs today.
+`vm`, verified by the escape tests in that package, plus the `fence` preview
+on Linux, which is off unless chosen, counts as `process` for `min_tier`,
+fails closed and is not a microVM. Treat the design doc as direction, and
+this document and the code as what runs today.
 
 **Policy engine order.** Every tool call is evaluated in a fixed order,
 documented at the top of `internal/policy/policy.go`:
@@ -387,7 +390,12 @@ the scheme's default asks unless an allow rule names it, even for a host on
 `web_fetch.allowed_hosts`, except in bypass mode (unless a managed policy
 disables it) and `abhed eval`, which approve every ask. Both are off by default (`web_search.enabled`
 and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
-enabled on its own, and neither enables shell networking. `web_fetch`
+enabled on its own, and neither enables shell networking. Both sections are
+managed only: only the managed configuration turns them on or names the
+provider, endpoint, key or hosts. The user's file, `-settings`, a workspace
+trusted or not, the SDK and the environment may only turn them off or narrow
+them, and each attempt that did not take effect is recorded as a
+`config.refused` event naming who made it (`config/websection.go`). `web_fetch`
 fetches only the URL policy has judged: it refuses schemes other than
 http and https, and any loopback, private, link-local, metadata or reserved
 address, checked on the address it connects to, on every redirect hop
@@ -536,6 +544,15 @@ Stated plainly rather than buried:
   too: the server that next takes the session over (by a message, or its
   sweep once the stopped server's claim is stale) records them as `lost`,
   and their work is not resumed on its own.
+- **Agent-command detection can be escaped on the `none` tier.** Whether a
+  process is the agent's is decided by `ABHED_SANDBOX` and by an `abhed`
+  ancestor in the process tree. A command that unsets the variable and
+  double-forks, so its process is reparented to init or launchd, has no
+  `abhed` ancestor, and `abhed admin`, `trust grant`, `-settings` and the
+  other refusals above no longer recognise it. On the `process`, `container`
+  and `vm` tiers the sandbox's deny on `~/.abhed` and the state paths
+  still holds; on `none` nothing stands behind the check. Run
+  a tier other than `none` wherever the agent must not administer Abhed.
 - **A small team.** Zybuu is a small company. There is no security team, no
   on-call rotation, and no bus-factor mitigation beyond what is written down
   in this repository. See `SECURITY.md` for the

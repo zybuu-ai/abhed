@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -72,6 +71,13 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
+	}
+	// An untrusted workspace's accounts file is neither read nor written:
+	// list shows none, and a change would go to a file the server ignores.
+	ignored := cfg.Storage.Driver != "postgres" && cfg.UsersFile(workspace).Ignored
+	if ignored && action != "list" {
+		fmt.Fprintf(os.Stderr, "abhed: %s\n", cfg.UsersIgnoredWarning(workspace))
+		return 1
 	}
 
 	us, err := userStore(cfg, workspace)
@@ -154,6 +160,10 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
+		if len(users) == 0 && ignored {
+			fmt.Println("no accounts: the workspace's accounts file is ignored until the workspace is trusted")
+			return 0
+		}
 		if len(users) == 0 {
 			fmt.Println("no accounts yet — create one with: abhed user add <username>")
 			return 0
@@ -223,7 +233,12 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 				"abhed: import copies accounts INTO postgres; set storage.driver first")
 			return 1
 		}
-		src, err := auth.NewFileUserStore(usersFile(cfg, workspace))
+		from := cfg.UsersFile(workspace)
+		if from.Ignored {
+			fmt.Fprintf(os.Stderr, "abhed: %s\n", cfg.UsersIgnoredWarning(workspace))
+			return 1
+		}
+		src, err := auth.NewFileUserStore(from.Path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
@@ -296,21 +311,30 @@ func userStore(cfg config.Config, workspace string) (auth.UserStore, error) {
 	// No Postgres: keep accounts in a file beside the workspace config, so
 	// `abhed user add` and `abhed serve` see the same accounts. An in-memory
 	// store here silently discarded every account the CLI created.
-	return auth.NewFileUserStore(usersFile(cfg, workspace))
+	src := cfg.UsersFile(workspace)
+	if src.Ignored {
+		// An untrusted workspace's accounts are not read: none of them signs in.
+		warnUsersIgnored(cfg, workspace)
+		return auth.NewMemoryUserStore(), nil
+	}
+	return auth.NewFileUserStore(src.Path)
+}
+
+// warnUsersIgnored says, on stderr, which accounts file was not read and how
+// to trust its workspace, when there is one.
+func warnUsersIgnored(cfg config.Config, workspace string) {
+	if _, err := os.Lstat(cfg.UsersFile(workspace).Path); err != nil {
+		return // nothing there to ignore
+	}
+	if s := cfg.UsersIgnoredWarning(workspace); s != "" {
+		fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", s)
+	}
 }
 
 // usersFile is where local accounts live: the configured path, else beside
-// the workspace config.
+// the workspace config. Whether it may be read is cfg.UsersFile's to say.
 func usersFile(cfg config.Config, workspace string) string {
-	if p := cfg.Auth.UsersFile; p != "" {
-		// Relative to the workspace, so serve, user and migrate find one file
-		// whichever directory each was started in.
-		if !filepath.IsAbs(p) {
-			return filepath.Join(workspace, p)
-		}
-		return p
-	}
-	return filepath.Join(workspace, ".abhed", "users.json")
+	return cfg.UsersFile(workspace).Path
 }
 
 // provision is store.Provision, a variable so a test can see what migrate
@@ -322,7 +346,12 @@ var provision = store.Provision
 // serves accounts from its table, but a file can hold accounts made before
 // the move to Postgres, or never imported.
 func fileOwnerAccounts(cfg config.Config, workspace string, force bool) ([]*auth.User, string, error) {
-	path := usersFile(cfg, workspace)
+	src := cfg.UsersFile(workspace)
+	if src.Ignored {
+		warnUsersIgnored(cfg, workspace)
+		return nil, "", nil
+	}
+	path := src.Path
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) && cfg.Auth.UsersFile == "" {
 		return nil, "", nil
 	}

@@ -124,6 +124,21 @@ abhed -c -p "and the tests"  continue headless
 
 - `-c` and `-r` also work with `-p`. `-p` cannot show the picker, so name the
   session there.
+- The picker (`-r`, `/resume` or `/switch` alone) lists this workspace's
+  sessions, latest active first, and a last entry widens it to every
+  workspace. Type to filter by name, first prompt or branch; Backspace widens
+  the filter again, and Enter opens the first match. A number still chooses
+  by its place in the list. The session you are in is marked `● current`, and
+  choosing it does nothing.
+- With `storage.driver` set to `postgres` the picker lists your own sessions
+  from the database, in every workspace, by title or first prompt, and
+  `/sessions` shows each one's title. A name `/rename` or `-n` gives becomes
+  that title, as a rename in the console does, under the same rules: one
+  line, at most 120 characters, no control or invisible format characters.
+  A name they refuse stays in the record, and the title is left as it was.
+- The lists are in order of the conversation's last activity: a prompt, or a
+  run the agent answered in. Resuming a session only to look, or naming it,
+  does not move it.
 - Resuming replays the last ten prompts on screen. Nothing is run again.
 - The session goes on with its turn count, budget and model. If the model is
   different now, you are told, and `/model` switches back.
@@ -141,8 +156,9 @@ Inside a session:
 
 | Command | What it does |
 |---|---|
-| `/sessions` | this workspace's sessions, newest first |
+| `/sessions` | this workspace's sessions, latest active first; `*` marks the one you are in |
 | `/resume [id or name]` | continue a session; with no argument, pick one |
+| `/switch [id or name]` | the same as `/resume` |
 | `/rename <name>` | name this session (recorded as `session.named`) |
 | `/branch [name]` | go on in a copy of this session; the original is left as it was |
 | `/clear [name]` | end this session and start a new one; nothing is deleted |
@@ -191,7 +207,8 @@ file changed through `bash` is not.
 ## Checking the record
 
 ```
-abhed record list [-all|-repo]   sessions, newest first
+abhed record list [-all|-repo]   sessions, latest active first
+abhed sessions [-all|-repo]      the same
 abhed record show <session>      a session's events
 abhed record verify              the index and every session
 abhed record verify <session>    one session

@@ -12,7 +12,7 @@
 | `task`, `tasks` | run one subagent, or several at once, in the foreground or the background; `task` can resume a finished one; see [Parallel subagents](14-parallel-subagents.md) |
 | `task_status`, `task_cancel` | report or cancel this session's background tasks, where the surface runs them |
 | `skill` | load a procedure on demand |
-| `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default |
+| `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default, and only the managed configuration turns it on ([Web search](02-configuration.md#web-search)) |
 | `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |
 | `ssh`, `ssh_connect` | remote execution, off by default |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |

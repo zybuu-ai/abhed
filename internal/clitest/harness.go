@@ -30,6 +30,9 @@ var DefaultTimeout = 20 * time.Second
 // managed paths are under its own directory, where nothing is written.
 const managedEnv = "ABHED_CLITEST_MANAGED_DIR"
 
+// BinaryEnv names a prebuilt abhed binary to run instead of building one.
+const BinaryEnv = "ABHED_CLITEST_BINARY"
+
 var build struct {
 	once sync.Once
 	dir  string
@@ -42,6 +45,12 @@ var build struct {
 func Binary(t testing.TB) string {
 	t.Helper()
 	build.once.Do(func() {
+		// A binary built elsewhere, for a host with no Go toolchain: it
+		// must be built as below, with the same -ldflags.
+		if bin := os.Getenv(BinaryEnv); bin != "" {
+			build.bin = bin
+			return
+		}
 		build.dir, build.err = os.MkdirTemp("", "clitest-bin-")
 		if build.err != nil {
 			return

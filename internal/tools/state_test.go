@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // The agent's tools cannot reach Abhed's own state, whatever the mode: the
@@ -340,6 +342,39 @@ func TestHardlinkToAKnownStateFileHoldsPastTheBound(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{"path": hard})
 	if res := (Read{}).Run(context.Background(), s, raw); strings.Contains(res.Content, "secret-hash") {
 		t.Fatalf("read a hardlink to the users file: %q", res.Content)
+	}
+}
+
+// The fence's quarantine holds what commands planted, not state: however
+// much it holds, a state file walked after it is still recognised.
+func TestQuarantineDoesNotUseUpTheBound(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewSession(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, StateDir)
+	q := filepath.Join(state, sandbox.QuarantineDir, "fence-1-x", ".abhed")
+	if err := os.MkdirAll(q, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxStateEntries+10; i++ {
+		if err := os.WriteFile(filepath.Join(q, fmt.Sprintf("f%05d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Named to be walked after the quarantine.
+	later := filepath.Join(state, "zz-state.json")
+	if err := os.WriteFile(later, []byte("secret-state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(dir, "notes.txt")
+	if err := os.Link(later, hard); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]any{"path": hard})
+	if res := (Read{}).Run(context.Background(), s, raw); strings.Contains(res.Content, "secret-state") {
+		t.Fatalf("read a hardlink to a state file walked after the quarantine: %q", res.Content)
 	}
 }
 

@@ -494,8 +494,9 @@ func TestIndexListResolveAndName(t *testing.T) {
 	rec.Advance(1)
 	_, _ = rec.Record(agent.EvSessionNamed, agent.ActorUser, agent.Trusted, agent.SessionNamed{Name: "auth-fix"})
 
+	// A name is not activity: s-2, prompted last, stays first.
 	mine, _ := s.Index().List(Filter{Cwd: ws})
-	if len(mine) != 2 || mine[0].ID != "s-1" || mine[0].Title != "task 1" || mine[0].Name != "auth-fix" {
+	if len(mine) != 2 || mine[0].ID != "s-2" || mine[1].ID != "s-1" || mine[1].Title != "task 1" || mine[1].Name != "auth-fix" {
 		t.Fatalf("list: %+v", mine)
 	}
 	all, _ := s.Index().List(Filter{All: true})
@@ -700,5 +701,87 @@ func TestAnchorSeesEachHead(t *testing.T) {
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "default/s-1/1") || !strings.Contains(joined, "default/s-1/2") || !strings.Contains(joined, "default/index/") {
 		t.Fatalf("anchored: %v", got)
+	}
+}
+
+// A session's last activity is its conversation: a prompt, or a run the agent
+// answered in. A claim, a name, the person's own call at the workbench and a
+// run that only looked leave it; an index from before active lines still
+// orders by its ends.
+func TestIndexActiveFollowsTheConversation(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	ctx := context.Background()
+	ws := t.TempDir()
+	turn := func(rec *agent.Recorder, prompt bool) {
+		t.Helper()
+		if prompt {
+			_, _ = rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "go on"})
+			_, _ = rec.Record(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c", Tool: "read"})
+			_, _ = rec.Record(agent.EvAgentMessage, agent.ActorAgent, agent.Untrusted, agent.Message{Text: "done"})
+		}
+		if _, err := rec.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(3 * time.Millisecond)
+	}
+	recs := map[string]*agent.Recorder{}
+	for _, id := range []string{"a", "b"} {
+		if err := s.CreateSession(ctx, store.SessionRecord{ID: id, Workspace: ws, User: "tester"}); err != nil {
+			t.Fatal(err)
+		}
+		recs[id] = agent.NewRecorder(s, id, "")
+		turn(recs[id], true)
+	}
+	order := func() string {
+		l, _ := s.Index().List(Filter{Cwd: ws})
+		var out []string
+		for _, e := range l {
+			out = append(out, e.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := order(); got != "b,a" {
+		t.Fatalf("after a turn each: %s", got)
+	}
+	before, _ := s.Index().Get("a")
+
+	// a is claimed, named, used by hand and ended: none of it is conversation.
+	if ok, err := s.ClaimResume(ctx, "a"); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	_, _ = recs["a"].Record(agent.EvSessionNamed, agent.ActorUser, agent.Trusted, agent.SessionNamed{Name: "named"})
+	_, _ = recs["a"].Record(agent.EvActionRequested, agent.ActorUser, agent.Trusted, agent.ActionRequested{CallID: "m", Tool: "bash"})
+	_, _ = recs["a"].Record(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "m", Tool: "bash"})
+	turn(recs["a"], false)
+	after, _ := s.Index().Get("a")
+	if got := order(); got != "b,a" || !after.Active.Equal(before.Active) || !after.Updated.After(before.Updated) {
+		t.Fatalf("looking after a moved it: %s, active %v -> %v", got, before.Active, after.Active)
+	}
+
+	// A turn the agent answers moves it to the top.
+	if ok, _ := s.ClaimResume(ctx, "a"); !ok {
+		t.Fatal("second claim")
+	}
+	turn(recs["a"], true)
+	if got := order(); got != "a,b" {
+		t.Fatalf("after a's next turn: %s", got)
+	}
+}
+
+// An index written before active lines orders by its ends.
+func TestIndexActiveFromAnOlderIndex(t *testing.T) {
+	at := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC).Format(timeFormat)
+	later := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC).Format(timeFormat)
+	got := fold([]indexLine{
+		{Op: opCreate, ID: "old", At: at}, {Op: opTitle, ID: "old", At: at}, {Op: opEnd, ID: "old", At: later},
+	})
+	if len(got) != 1 || got[0].Active.Format(timeFormat) != later {
+		t.Fatalf("an older index's end is not its activity: %+v", got)
+	}
+	got = fold([]indexLine{
+		{Op: opCreate, ID: "new", At: at}, {Op: opActive, ID: "new", At: at}, {Op: opEnd, ID: "new", At: later},
+	})
+	if got[0].Active.Format(timeFormat) != at {
+		t.Fatalf("an end after active lines counted as activity: %+v", got)
 	}
 }

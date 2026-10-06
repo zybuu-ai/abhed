@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -170,6 +171,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if err != nil {
 		fail(err)
 	}
+	defer func() { _ = sb.Close() }()
 	// With a floor the session does not wait: a process floor is never
 	// none, and a none floor is shown as such until the answer is in.
 	if sb.floor == "" && sb.Tier() == sandbox.TierNone {
@@ -253,6 +255,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	start := startPayload(cfg, f, headless, provider.Model)
 	sysPrompt.record(start)
 	recordRunFlags(start, cfg, mcpSrc, f.strictMCP, agentsSrc, role)
+	start["web"] = toolset.WebState(cfg)
+	attempts := toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand()))
 
 	// The CLI uses whatever the config selects. Previously this was hardcoded
 	// to memory, so a Postgres-configured deployment silently lost its CLI
@@ -262,7 +266,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if err != nil {
 		fail(err)
 	}
-	defer closeStore()
+	closeAll := sync.OnceValue(func() error { return closeSandboxThenStore(sb, closeStore, os.Stderr) })
+	defer func() { _ = closeAll() }()
 	factory.Store = store
 	// stdout is resolved on each write rather than captured here: the
 	// interactive path replaces os.Stdout once the line editor takes the
@@ -293,7 +298,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 
 	if headless {
-		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start,
+		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start, fence: fenceOf(sb), attempts: attempts,
 			providerName: cfg.Model.Default, provider: provider, fallback: fallback}
 		prompt := f.task()
 		if f.inputFormat == "stream-json" {
@@ -309,11 +314,13 @@ func run(a *App, workspace string, f *cliFlags) int {
 			fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
 			return 2
 		}
-		return runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions)
+		return headlessExit(runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions), closeAll)
 	}
 	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions,
 		interactiveStart{first: f.task(), sandbox: sb, probe: probe, set: set, recordStart: func(rec *agent.Recorder, after int64) {
-			recordStart(rec, resumedStart(start, after))
+			if err := recordStart(rec, resumedStart(start, after), attempts, fenceOf(sb)); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			}
 		}, onOpen: func(rec *agent.Recorder) {
 			if fallback != nil {
 				fallback.SetRecord(recordFallback(rec))
@@ -321,26 +328,16 @@ func run(a *App, workspace string, f *cliFlags) int {
 		}})
 }
 
+// webSearchLabel is doctor's and serve's line on web search: on or off, and
+// that only the managed configuration turns it on.
 func webSearchLabel(cfg config.Config) string {
-	if !cfg.WebSearch.Enabled {
-		return "disabled"
+	if cfg.WebSearch.Enabled {
+		return cfg.WebSearchState() + "; the agent can reach the public internet"
 	}
-	p := cfg.WebSearch.Provider
-	if p == "" {
-		p = "duckduckgo"
-	}
-	return p + " (agent can reach the public internet)"
+	return cfg.WebSearchState()
 }
 
-func webFetchLabel(cfg config.Config) string {
-	switch {
-	case !cfg.WebFetch.Enabled:
-		return "disabled"
-	case len(cfg.WebFetch.AllowedHosts) > 0:
-		return "enabled for " + strings.Join(cfg.WebFetch.AllowedHosts, ", ")
-	}
-	return "enabled (agent can read any public web page)"
-}
+func webFetchLabel(cfg config.Config) string { return cfg.WebFetchState() }
 
 // buildSandbox selects an execution backend meeting the configured minimum
 // tier. Select never silently downgrades, so a failure here is a real
@@ -405,6 +402,27 @@ func orDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// closeSandboxThenStore closes the sandbox while the record is still open,
+// so state the fence finds planted then is recorded, and says what it found.
+func closeSandboxThenStore(sb interface{ Close() error }, closeStore func(), w io.Writer) error {
+	err := sb.Close()
+	if err != nil {
+		_, _ = fmt.Fprintf(w, "abhed: %v\n", err)
+	}
+	closeStore()
+	return err
+}
+
+// headlessExit closes the session and fails a run that otherwise completed
+// when the close reports something wrong, such as a .abhed the fence found
+// planted or a workspace it could not list.
+func headlessExit(code int, closeAll func() error) int {
+	if err := closeAll(); err != nil && code == 0 {
+		return 1
+	}
+	return code
 }
 
 func must(err error) {

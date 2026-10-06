@@ -27,7 +27,7 @@ import (
 func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin io.Reader, stdout, stderr io.Writer) int {
 	usage := func() int {
 		fmt.Fprint(stderr, `usage: abhed record <command>
-  list    [-all|-repo] [-n N] [-json]   sessions in this workspace, newest first
+  list    [-all|-repo] [-n N] [-json]   sessions in this workspace, latest active first
   show    <session> [-json]            a session's events
   verify  [session|file ...]           check the chain; no argument checks everything
   export  <session> [-o path] [-format jsonl|html|txt] [-unverified]
@@ -124,7 +124,7 @@ func entryLine(e local.Entry, withCwd bool) string {
 	if e.Name != "" {
 		label = e.Name + " · " + label
 	}
-	line := fmt.Sprintf("%-27s %-10s %-9s %-12s %s", e.ID, state, age(e.Updated), orDefault(e.GitBranch, "-"), label)
+	line := fmt.Sprintf("%-27s %-10s %-9s %-12s %s", e.ID, state, age(e.Active), orDefault(e.GitBranch, "-"), label)
 	if withCwd {
 		line += "  (" + e.Cwd + ")"
 	}

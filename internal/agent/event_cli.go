@@ -35,7 +35,44 @@ const (
 	EvHookFired EventType = "hook.fired"
 	// EvRecordRepaired is a record whose torn end was cut off on open; see RecordRepaired.
 	EvRecordRepaired EventType = "record.repaired"
+	// EvConfigRefused is a setting that did not take effect as written, or a
+	// change to the configuration that was refused; see ConfigAttempt.
+	EvConfigRefused EventType = "config.refused"
+	// EvConfigNarrowed is a web setting a layer below the managed
+	// configuration narrowed, as it may; see ConfigAttempt.
+	EvConfigNarrowed EventType = "config.narrowed"
 )
+
+// ConfigAttempt is the payload of config.refused and config.narrowed: who
+// tried to change which setting, from where, to what, and what was decided.
+type ConfigAttempt struct {
+	// Layer is user, settings, workspace, env, flag or command.
+	Layer string `json:"layer"`
+	// Source is the file, flag or variable that made the setting.
+	Source string `json:"source,omitempty"`
+	Key    string `json:"key"`
+	// Value is the value asked for, credentials redacted.
+	Value string `json:"value,omitempty"`
+	// Decision is set_aside, ignored_untrusted, overridden, refused or narrowed.
+	Decision  string    `json:"decision"`
+	Reason    string    `json:"reason,omitempty"`
+	Principal Principal `json:"principal"`
+}
+
+// Principal is who made an attempt, as far as the process can tell.
+type Principal struct {
+	// Kind is os-user, session-owner or agent-command.
+	Kind string `json:"kind"`
+	// OSUser and UID are the account the process runs as.
+	OSUser string `json:"os_user,omitempty"`
+	UID    string `json:"uid,omitempty"`
+	// SessionOwner is the signed-in owner of a server session.
+	SessionOwner string `json:"session_owner,omitempty"`
+	// AgentCommand says why the process runs inside an agent's command, and
+	// CommandID is that command's marker.
+	AgentCommand string `json:"agent_command,omitempty"`
+	CommandID    string `json:"command_id,omitempty"`
+}
 
 // Events the editor protocol records about the person's own actions in Abhed
 // Studio (docs/architecture/studio-acp-contract.md).

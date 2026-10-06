@@ -48,6 +48,13 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 
+	// The fence preview runs the command line's commands; the server's
+	// sessions and terminals wait for a later release.
+	if cfg.Sandbox.Tier == string(sandbox.TierFence) {
+		fmt.Fprintln(os.Stderr, "abhed: sandbox.tier is fence, a preview the command line supports and serve does not yet; "+
+			"serve refuses rather than run commands under another tier. Unset sandbox.tier to serve.")
+		return 1
+	}
 	sb, err := buildSandbox(cfg, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)

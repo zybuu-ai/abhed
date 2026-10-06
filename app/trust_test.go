@@ -362,7 +362,7 @@ func TestLeadingTrustFlag(t *testing.T) {
 // Every registered subcommand says whether it loads the workspace
 // configuration, and the ones that never read it do not take the flag.
 func TestSubcommandsDeclareTrust(t *testing.T) {
-	never := map[string]bool{"init": true, "trust": true, "providers": true, "secret": true, "version": true}
+	never := map[string]bool{"init": true, "trust": true, "providers": true, "secret": true, "admin": true, "version": true}
 	for _, c := range subcommands {
 		if c.trust == never[c.name] {
 			t.Errorf("%s: trust %v; a subcommand that loads the workspace configuration takes the flag, one that does not never does", c.name, c.trust)
@@ -393,5 +393,50 @@ func TestFailedRunNamesIgnoredModelSettings(t *testing.T) {
 	if !strings.Contains(out.String(), "note: the workspace configuration's model settings (model.default, model.providers.gpu) were ignored") ||
 		!strings.Contains(out.String(), srv.URL) {
 		t.Fatalf("the failure does not name the ignored model settings:\n%s", out.String())
+	}
+}
+
+// The prompt for a workspace with accounts says the file's trust covers them,
+// and warns when git tracks them.
+func TestAskTrustNamesTheAccountsFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	_, ws := trustWorkspace(t, widening)
+	users := filepath.Join(ws, ".abhed", "users.json")
+	if err := os.WriteFile(users, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ask := func() string {
+		t.Helper()
+		cfg, err := config.LoadWith(ws, config.LoadOptions{Quiet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if _, err := askTrust(strings.NewReader("1\n"), &out, cfg.Workspace); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	out := ask()
+	if !strings.Contains(out, "also trusts the accounts in") || !strings.Contains(out, "users.json") {
+		t.Fatalf("the prompt does not name the accounts file:\n%s", out)
+	}
+	if strings.Contains(out, "tracked by git") {
+		t.Fatalf("warned of git with no repository:\n%s", out)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-f", ".abhed/users.json"}} {
+		if b, err := exec.Command("git", append([]string{"-C", ws}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, b)
+		}
+	}
+	if out := ask(); !strings.Contains(out, ".abhed/users.json is tracked by git") {
+		t.Fatalf("no warning for a tracked accounts file:\n%s", out)
+	}
+	// abhed trust grant says it too.
+	var grant bytes.Buffer
+	if code := trustCmd(ws, []string{"grant"}, &grant); code != 0 || !strings.Contains(grant.String(), "tracked by git") {
+		t.Fatalf("trust grant = %d:\n%s", code, grant.String())
 	}
 }

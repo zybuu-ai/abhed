@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // ShellOutputCap is how much of a background command's output is kept: the
@@ -128,6 +130,7 @@ func StartShellProc(cmd *exec.Cmd, stop func(), capBytes int) (*ShellProc, error
 	}
 	r, w, err := os.Pipe()
 	if err != nil {
+		sandbox.Release(cmd)
 		return nil, err
 	}
 	p := &ShellProc{cmd: cmd, stop: stop, out: &shellRing{max: capBytes}, done: make(chan struct{}), started: time.Now()}
@@ -140,6 +143,7 @@ func StartShellProc(cmd *exec.Cmd, stop func(), capBytes int) (*ShellProc, error
 	err = cmd.Start()
 	_ = w.Close() // the command has its own copy; this one would hold the pipe open
 	if err != nil {
+		sandbox.Release(cmd)
 		_ = r.Close()
 		<-copied
 		return nil, err

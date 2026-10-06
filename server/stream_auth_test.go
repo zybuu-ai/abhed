@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -561,5 +562,102 @@ func TestEventStreamEndsWhenTheSignInNamesSomeoneElse(t *testing.T) {
 	seen := strings.Join(untilClosed(t, lines, 2*time.Second), "\n")
 	if !strings.Contains(seen, errStreamIdentity.Error()) {
 		t.Fatalf("stream did not end on the changed identity: %q", seen)
+	}
+}
+
+// A recheck asked for while the event stream is starting, after its backlog
+// is written, ends the stream at once rather than at the next interval.
+func TestRecheckWhileTheEventStreamStartsEndsIt(t *testing.T) {
+	g := newStreamRig(t, flipAuth)
+	g.s.opts.StreamRecheck = maxStreamRecheck
+	first := g.emit(t)
+	g.s.streamStep = func(stage string) {
+		if stage == "backlog" {
+			g.prov.allow.Store(false)
+			g.s.RecheckStreams()
+		}
+	}
+	lines := g.open(t, "/v1/sessions/s1/events")
+	seen := untilClosed(t, lines, time.Second)
+	if !strings.Contains(strings.Join(seen, "\n"), seqLine(first)) {
+		t.Fatalf("the backlog was not written before the recheck: %q", seen)
+	}
+	if !strings.Contains(strings.Join(seen, "\n"), "event: refused") {
+		t.Fatalf("stream closed without saying why: %q", seen)
+	}
+}
+
+// A sign-in that ended after the request was authorised but before its
+// stream was guarded ends the stream before anything is written.
+func TestSignInEndedBeforeTheStreamIsGuardedEndsIt(t *testing.T) {
+	for name, path := range map[string]string{
+		"events":   "/v1/sessions/s1/events",
+		"terminal": "/v1/sessions/s1/pty/p1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newStreamRig(t, flipAuth)
+			g.s.opts.StreamRecheck = maxStreamRecheck
+			g.startTestPTY()
+			first := g.emit(t)
+			g.s.streamStep = func(stage string) {
+				if stage == "opening" {
+					g.prov.allow.Store(false)
+					g.s.RecheckStreams()
+				}
+			}
+			seen := untilClosed(t, g.open(t, path), time.Second)
+			for _, l := range seen {
+				if l == seqLine(first) || strings.HasPrefix(l, "event: out") {
+					t.Fatalf("written after the sign-in ended: %q", seen)
+				}
+			}
+			if !strings.Contains(strings.Join(seen, "\n"), "event: refused") {
+				t.Fatalf("stream closed without saying why: %q", seen)
+			}
+		})
+	}
+}
+
+// sinceHookStore runs hook once, as the stream reads its backlog.
+type sinceHookStore struct {
+	*agent.MemStore
+	once sync.Once
+	hook func()
+}
+
+func (h *sinceHookStore) Since(id string, seq int64) ([]agent.Event, error) {
+	backlog, err := h.MemStore.Since(id, seq)
+	h.once.Do(h.hook)
+	return backlog, err
+}
+
+// A recheck asked for while the backlog is replayed stops the replay at the
+// next event: none of a refused caller's backlog is written.
+func TestBacklogReplayChecksEachEvent(t *testing.T) {
+	prov := &flipProvider{}
+	prov.allow.Store(true)
+	st := &sinceHookStore{MemStore: agent.NewMemStore()}
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}), StreamRecheck: maxStreamRecheck, Auth: flipAuth(prov)})
+	user, tenant := s.callerOf(context.Background(), &auth.Identity{Subject: "bob", Tenant: "default"})
+	s.running["s1"] = &liveSession{ID: "s1", User: user, Tenant: tenant, State: "running", ptys: map[string]*ptyRun{}}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	g := &streamRig{s: s, srv: srv, prov: prov}
+	for range 3 {
+		g.emit(t)
+	}
+	st.hook = func() {
+		prov.allow.Store(false)
+		g.markStale()
+	}
+	seen := untilClosed(t, g.open(t, "/v1/sessions/s1/events"), 2*time.Second)
+	for _, l := range seen {
+		if strings.HasPrefix(l, "id: ") {
+			t.Fatalf("backlog written after the recheck refused: %q", seen)
+		}
+	}
+	if !strings.Contains(strings.Join(seen, "\n"), "event: refused") {
+		t.Fatalf("stream closed without saying why: %q", seen)
 	}
 }

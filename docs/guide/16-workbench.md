@@ -57,7 +57,9 @@ with how each ended, and **Cancel** stops one still running
 
 | Key | |
 |---|---|
-| ⌘P / Ctrl P, or ⌘K outside the editor | command palette: files, sessions, commands |
+| ⌘P / Ctrl P | command palette: files, sessions, commands |
+| ⌘K / Ctrl K, outside the editor | your sessions alone, to filter and switch to |
+| Alt ↑ / Alt ↓, outside the editor and the terminal | the previous or next session in the list |
 | ⇧⌘P / Ctrl Shift P | the same palette |
 | F1, in the editor | the editor's own commands |
 | ⌘S / Ctrl S | save the open file |
@@ -206,7 +208,24 @@ rather than saved as an error.
 ## Sessions
 
 The **Sessions** view lists your sessions by title, or by the first line of
-the opening prompt until one is given. Rename one with the pencil beside its
+the opening prompt until one is given, in order of last activity under Today
+and Earlier, each with how long ago it was last active. Activity is the
+conversation; opening a session, using its terminal or editor, or renaming it
+does not move it. The box at its top
+filters by title and opening prompt.
+
+The title at the top of the agent panel is a menu of your sessions: click it,
+or press ⌘K / Ctrl K outside the editor. Type to filter, ↑↓ and Enter to
+open one, Esc to close. The open session is marked *current*, and **New
+session** and **All sessions…** are at its foot. Alt ↑ and Alt ↓ go to the
+previous or next session without opening the menu.
+
+The open session is in the address, as `/ide?s=<id>`. A reload, a bookmark or
+a second tab with that address opens the same session; a page opened without
+one goes back to the session this tab last had open, and otherwise to the one
+most recently active.
+
+Rename one with the pencil beside its
 title in the agent panel, a double-click on the title, F2 on its row, or its
 right-click menu.
 The rename is recorded as `session.renamed` with the title, the one before it

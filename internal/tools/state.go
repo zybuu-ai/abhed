@@ -137,7 +137,9 @@ func (set *StateSet) addFile(path string) {
 
 // walk records a state directory's folders and files, up to the bound. The
 // worktrees earlier versions kept there are copies of the workspace, not
-// state, and are passed over.
+// state, and are passed over, as is the fence's quarantine at its top: what
+// a command planted, which Abhed never reads and which must not use up the
+// bound. Both stay out of commands' reach as the rest of the folder does.
 func (set *StateSet) walk(dir string) {
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -160,6 +162,8 @@ func (set *StateSet) walk(dir string) {
 			return filepath.SkipDir
 		case info == nil || path == dir:
 		case d.IsDir() && d.Name() == "worktrees":
+			return filepath.SkipDir
+		case d.IsDir() && d.Name() == sandbox.QuarantineDir && filepath.Dir(path) == filepath.Clean(dir):
 			return filepath.SkipDir
 		case d.IsDir():
 			if !set.seen(set.dirs, info) {

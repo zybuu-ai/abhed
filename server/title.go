@@ -4,15 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/store"
 )
-
-// maxTitleRunes bounds a session title: a label for the list, not a note.
-const maxTitleRunes = 120
 
 type titleRequest struct {
 	Title string `json:"title"`
@@ -102,41 +97,6 @@ func (s *Server) renameSession(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, titleResponse{Title: title, From: from})
 }
 
-// cleanTitle trims a title and refuses one that is too long or holds a
-// control or format character, such as a bidi override that would make it
-// read differently in a client that does not reveal it; it returns the
-// title, or why it was refused.
-func cleanTitle(raw string) (string, string) {
-	t := strings.TrimSpace(raw)
-	if !utf8.ValidString(t) {
-		return "", "the title is not valid text"
-	}
-	if utf8.RuneCountInString(t) > maxTitleRunes {
-		return "", "the title is longer than 120 characters"
-	}
-	if strings.IndexFunc(t, unicode.IsControl) >= 0 {
-		return "", "the title holds a control character, such as a line break"
-	}
-	if hiddenFormat(t) {
-		return "", "the title holds an invisible format character, such as a direction override"
-	}
-	return t, ""
-}
-
-// hiddenFormat reports a format character in t, other than a zero-width
-// joiner between two emoji, which joins them into one (👨‍💻) and hides nothing.
-func hiddenFormat(t string) bool {
-	runes := []rune(t)
-	emoji := func(r rune) bool { return unicode.Is(unicode.So, r) }
-	for i, r := range runes {
-		if !unicode.Is(unicode.Cf, r) {
-			continue
-		}
-		joined := r == '\u200d' && i > 0 && i+1 < len(runes) && emoji(runes[i+1]) &&
-			(emoji(runes[i-1]) || runes[i-1] == '\ufe0f' || runes[i-1] >= 0x1f3fb && runes[i-1] <= 0x1f3ff)
-		if !joined {
-			return true
-		}
-	}
-	return false
-}
+// cleanTitle is store.CleanTitle: the rules every way a title reaches the list
+// shares, so a name given at the command line is held to them too.
+func cleanTitle(raw string) (string, string) { return store.CleanTitle(raw) }

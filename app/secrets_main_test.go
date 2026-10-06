@@ -15,6 +15,8 @@ func TestMain(m *testing.M) {
 	// Tests re-run this binary as their own helpers; only a test that sets it
 	// sees itself inside an agent's command.
 	inAgentCommand = func() string { return "" }
+	// No test writes the real system log; one that checks it captures it.
+	sysLogWrite = func(string) error { return nil }
 	if os.Getenv("ABHED_TRUST_MAIN_ARGS") != "" || os.Getenv("ABHED_CONV_KEEP_HOME") != "" || os.Getenv("ABHED_SESS_WS") != "" {
 		os.Exit(m.Run())
 	}

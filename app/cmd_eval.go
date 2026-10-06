@@ -12,6 +12,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/eval"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
@@ -75,6 +76,11 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		if err != nil {
 			return nil, eval.Result{}, err
 		}
+		defer func() {
+			if err := sandbox.Close(sb); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: eval %s: %v\n", task.ID, err)
+			}
+		}()
 		sess, err := tools.NewSession(ws)
 		if err != nil {
 			return nil, eval.Result{}, err

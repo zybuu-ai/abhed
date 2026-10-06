@@ -13,6 +13,7 @@
 #   extract.py ide.html ide-call      an opened call and the plan
 #   extract.py ide.html ide-files     downloads, a session's title and delete, notifications
 #   extract.py console.go model       the model picker (ide-model: the workbench's)
+#   extract.py console.go switch      the chat list, the address and the switcher (ide-switch: the workbench's)
 #   extract.py console.go hidden      hasHidden (ide-hidden: the workbench's)
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
@@ -43,6 +44,11 @@ sets = {
     'conn': ['function connect(id){'],
     'state': ['function visible(s, lines){','function reveal(s, lines){','function sessionName(s){','function shownState(s){','function paintOpenPill(){','function listBadges(s){'],
     'mode': ['async function loadMode(){'],
+    # The console's chat list: order, search, the address, the switcher and rename.
+    'switch': ['function visible(s, lines){','function reveal(s, lines){','function sessionName(s){','function shownState(s){','function listBadges(s){','function ago(iso){','function dayGroup(iso){',
+          'const sessionTime = ','function sortSessions(list){','function matchSession(s, q){','const SESSION_ID = ','function sessionFromURL(){','function setURL(id){','async function restoreFromURL(){',
+          'function headTitle(s){','function renameInPlace(span, s){','async function setTitle(s, title){','function neighbour(dir){','let qsHits = ','function drawSwitcher(){','function switchKeys(e){',
+          'function sessionRow(s){','async function refresh(){'],
     'workbench': ['function node(cls, text){','function visible(s, lines){','function reveal(s, lines){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.
@@ -80,6 +86,11 @@ sets = {
     'ide-at': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function drawAt(){'],
     'ide-pal': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const sessionLabel = ','function palItems(){','function drawPal(){'],
     'ide-subject': ['function tail(p){','function subjectOf(tool, args){'],
+    # From ide.html: the session list's order and filter, the address, the dropdown and its keys.
+    'ide-switch': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const sessionLabel = ',
+          'const sessionTime = ','function sortSessions(list){','function matchSession(s, q){','function ageOf(iso){','const dayOf = ','function drawSessions(){',
+          'const SESSION_ID = ','function sessionFromURL(){','function setURL(id){','let startNote = ','async function startingSession(){','function neighbour(dir){',
+          'let dropSel = ','function drawDrop(){','function switchKeys(e){'],
     'ide-modes': ['function limitModes(m){', 'function modeForNewSession(){'],
     # From ide.html: the Events and HawkEYE panels, which draw record text.
     'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function reveal(s, lines){','function tail(p){','function subjectOf(tool, args){',

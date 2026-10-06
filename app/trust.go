@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,9 +12,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"golang.org/x/term"
 )
@@ -92,6 +95,11 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 		fmt.Fprintln(out, "Abhed now asks about workspace configuration, including files you wrote.")
 	}
 	describeTrust(out, st)
+	if st.UsersFile != "" && st.File != "" && !st.Trusted && !st.UsersTrusted {
+		fmt.Fprintf(out, "Trusting the file also trusts the accounts in %s: each can sign in to `abhed serve` and the console here.\n",
+			config.Printable(st.UsersFile))
+		warnUsersTracked(out, st.Workspace)
+	}
 	// Ask about what is not yet trusted, never about what already is.
 	question := "Trust this file?"
 	agentsPending := len(st.Agents) > 0 && !st.AgentsTrusted
@@ -318,8 +326,8 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 			fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 			return 1
 		}
-		if st.File == "" && len(st.Agents) == 0 {
-			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json or .abhed/agents to trust\n", st.Workspace)
+		if st.File == "" && len(st.Agents) == 0 && st.UsersFile == "" {
+			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json, .abhed/agents or .abhed/users.json to trust\n", st.Workspace)
 			return 1
 		}
 		if st.Reason == "home" || st.AgentsReason == "home" {
@@ -337,9 +345,19 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 			return 1
 		}
 		// The hashes are of the content just classified, not of a second read.
-		if err := config.GrantReviewed(dir, st.Reviewed()); err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
-			return 1
+		if st.File != "" || len(st.Agents) > 0 {
+			if err := config.GrantReviewed(dir, st.Reviewed()); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
+				return 1
+			}
+		}
+		if st.UsersFile != "" {
+			if err := config.GrantUsers(dir); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
+				return 1
+			}
+			fmt.Fprintf(out, "Trusted the accounts in %s.\n", config.Printable(st.UsersFile))
+			warnUsersTracked(out, st.Workspace)
 		}
 		if st.File != "" {
 			fmt.Fprintf(out, "Trusted %s (sha256 %s).\n", config.Printable(st.File), st.SHA256[:12])
@@ -406,6 +424,7 @@ func trustLabel(st config.WorkspaceTrust) string {
 
 func printTrust(out io.Writer, st config.WorkspaceTrust) {
 	fmt.Fprintf(out, "workspace   %s\n", config.Printable(st.Workspace))
+	printUsersTrust(out, st)
 	printAgentsTrust(out, st)
 	if st.File == "" {
 		fmt.Fprintln(out, "config      none")
@@ -431,6 +450,18 @@ func printTrust(out io.Writer, st config.WorkspaceTrust) {
 	if len(st.Applied) > 0 {
 		fmt.Fprintf(out, "Applied either way, since they only tighten: %s\n", strings.Join(st.Applied, ", "))
 	}
+}
+
+// printUsersTrust is abhed trust's line on the workspace's accounts file.
+func printUsersTrust(out io.Writer, st config.WorkspaceTrust) {
+	if st.UsersFile == "" {
+		return
+	}
+	state := "read: the workspace is trusted"
+	if !st.UsersTrusted {
+		state = "IGNORED until you trust the workspace (`abhed trust grant`)"
+	}
+	fmt.Fprintf(out, "accounts    %s — %s\n", config.Printable(st.UsersFile), state)
 }
 
 // agentsLabel is the one-line state of the workspace's agent definitions.
@@ -516,4 +547,23 @@ func noteIgnoredModel(cfg config.Config) {
 	fmt.Fprintf(os.Stderr, "abhed: note: the workspace configuration's model settings (%s) were ignored because it is not trusted; "+
 		"this run used provider %q at %s. Trust it with `abhed trust grant`, or -trust-workspace for one run\n",
 		strings.Join(keys, ", "), config.Printable(cfg.Model.Default), config.PrintableURL(endpoint))
+}
+
+// usersTracked reports whether git tracks the workspace's .abhed/users.json:
+// then it came with the repository, or goes out with it. Git runs as
+// hostgit runs it, with none of the repository's programs.
+var usersTracked = func(workspace string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := hostgit.Command(ctx, workspace, "ls-files", "--error-unmatch", "--", ".abhed/users.json")
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	return cmd.Run() == nil
+}
+
+// warnUsersTracked warns when the accounts file is in git.
+func warnUsersTracked(out io.Writer, workspace string) {
+	if usersTracked(workspace) {
+		fmt.Fprintln(out, "Warning: .abhed/users.json is tracked by git. Accounts that came with a repository are someone else's, "+
+			"and its password hashes go to everyone it is pushed to; keep accounts in an auth.users_file outside the workspace.")
+	}
 }

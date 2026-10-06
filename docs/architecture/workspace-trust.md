@@ -131,7 +131,8 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
-| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false |
+| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
+| `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `model` (`default`, `providers`, any `base_url`) | ignored: the provider receives the code |
@@ -145,7 +146,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |
 | `rag` | ignored: a corpus URL and its headers are egress |
-| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts` | ignored: each names an endpoint, hosts, credentials or machines |
+| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts` | ignored: each names an endpoint, hosts, credentials or machines. The web ones are set aside even when trusted |
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
@@ -173,6 +174,51 @@ untrusted file sets anything under these three sections, `serve`, `user` and
 on: `abhed trust grant`, `abhed -trust-workspace serve`, or moving the
 settings to `~/.abhed/config.json` or the managed file. Commands that do not
 serve anyone, such as the CLI and `-p`, run with the settings ignored and warn.
+
+## Accounts in the workspace
+
+A workspace's `.abhed/users.json`, or any `auth.users_file` that resolves
+inside the workspace, holds password hashes and administrator rights, so a
+repository could bring accounts that sign in to your server. It is read only
+when the workspace is trusted:
+
+- **Trusted** means the workspace's `config.json` is trusted at its current
+  content, `abhed trust grant` was run on it (which, when there is a
+  `users.json`, also records `"users": "trusted"` for the workspace), the run
+  has `-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`, or the workspace is the
+  home directory. The accounts decision is not keyed by content, since
+  accounts change as they are managed; `abhed trust revoke` forgets it.
+  Since trusting `config.json` trusts the accounts too, the trust prompt
+  names `.abhed/users.json` when there is one, and it and `abhed trust
+  grant` warn when git tracks that file.
+- **Two exemptions count as trusted without a decision.** A workspace that
+  is the home directory is trusted, since its `.abhed/users.json` is the
+  user's own `~/.abhed/users.json`. A run with `-trust-workspace` or
+  `ABHED_TRUST_WORKSPACE=1` is trusted for that run, and reads the
+  workspace's accounts with nothing stored; start a server that way only on
+  a workspace whose accounts you know.
+- **Inside** means the path as written lies under the workspace (as given,
+  or its canonical path), or the fully resolved path does. A `.abhed` that
+  is a link to a directory elsewhere is still the workspace's.
+- **Untrusted**, the file is not read. `abhed serve`, the console and the
+  workbench start with no accounts from it, so none of them signs in; `abhed
+  user list` prints a warning naming the file and lists none; `add`, `passwd`,
+  `remove` and `import` refuse rather than write a file the server ignores;
+  `abhed migrate` and a single-role start count no accounts from it. Each
+  says how to go on: trust the workspace, or move the file to an
+  `auth.users_file` outside it.
+- **Recorded.** With `auth.mode` `local`, the file being ignored is recorded
+  as `config.refused` with key `auth.users_file`, decision
+  `ignored_untrusted`, the file, and the principal: in each CLI session, and
+  by `abhed serve` once at startup in its log and the admin audit hook, not
+  in every user's session.
+- **Not affected:** an `auth.users_file` the managed configuration sets,
+  wherever it points, and one outside the workspace set by
+  `~/.abhed/config.json` or `ABHED_USERS_FILE`. A link inside the workspace
+  counts as inside, wherever it points.
+
+The report (`WorkspaceTrust`) gains `users_file`, `users_trusted` and
+`users_reason`, and `abhed trust` shows an `accounts` line.
 
 ## Asking
 
@@ -254,7 +300,7 @@ line per ignored setting.
 | Command | What it does |
 |---|---|
 | `abhed trust [show] [dir]` | shows the file, its hash, the decision, and what it sets beyond tightening |
-| `abhed trust grant [-sha256 H] [-agents-sha256 H] [dir]` | trusts the current content, the file and the agent definitions; with `-sha256` or `-agents-sha256`, only if each is still the content with that hash, as `show` or ACP reported it |
+| `abhed trust grant [-sha256 H] [-agents-sha256 H] [dir]` | trusts the current content, the file and the agent definitions, and the workspace's `.abhed/users.json` when there is one; with `-sha256` or `-agents-sha256`, only if each is still the content with that hash, as `show` or ACP reported it |
 | `abhed trust revoke [dir]` | forgets the decision |
 | `abhed trust list` | lists every stored decision |
 

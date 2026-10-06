@@ -99,6 +99,10 @@ type Entry struct {
 	GitBranch string
 	Created   time.Time
 	Updated   time.Time
+	// Active is when the conversation last went on: its start, a prompt, or
+	// a run that the agent answered in. Opening it, naming it or ending a
+	// run that only viewed it leave it as it was.
+	Active time.Time
 	// Parent and ForkSeq name the session this one was branched or forked
 	// from and the last seq it took from it.
 	Parent  string

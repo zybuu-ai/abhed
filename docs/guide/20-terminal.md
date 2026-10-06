@@ -256,16 +256,18 @@ Under the input, always:
 
 ```
   ⏵⏵ accept edits · shift+tab                                ? for shortcuts
-  model-name · 23% context · 12k tokens · 2 background · ~/repo (main)
+  model-name · session auth fix · 23% context · 12k tokens · 2 background · ~/repo (main)
 ```
 
-The first row is the permission mode. The second is the model, how full its
-context window is, the session's tokens, background tasks, and the workspace
-with its git branch. Items give way from the right at narrow widths.
+The first row is the permission mode. The second is the model, the session
+you are in, how full its context window is, the session's tokens, background
+tasks, and the workspace with its git branch. The session is named by what
+`/rename` or `-n` gave it, else by its first prompt cut to 30 characters,
+else by its id. Items give way from the right at narrow widths.
 
 **A status line of your own.** `statusline.command` in `~/.abhed/config.json`
 replaces the second row with the first line a command prints. It gets the
-status as JSON on stdin (`model`, `provider`, `mode`, `context_tokens`,
+status as JSON on stdin (`model`, `provider`, `mode`, `session_title`, `context_tokens`,
 `context_percent`, `tokens_in`, `tokens_out`, `background_tasks`,
 `sandbox_tier`, `git_branch`, `cwd` and more) and runs at most once a
 second, under the process sandbox with the network off whatever the session

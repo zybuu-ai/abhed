@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -51,6 +52,8 @@ func selfAdmin(rest []string) string {
 		}
 	case "migrate":
 		return "abhed migrate"
+	case "admin":
+		return "abhed admin"
 	}
 	for _, a := range rest[1:] {
 		if strings.HasPrefix(strings.TrimLeft(a, "-"), "trust-workspace") {
@@ -61,9 +64,16 @@ func selfAdmin(rest []string) string {
 }
 
 // escalation names a top-level flag that would widen what a nested session
-// may do, or "".
+// may do, or "". -settings and -mcp-config are refused whatever they hold:
+// either can name an endpoint the session sends the code or its queries to,
+// so judging their content key by key would trail every new key that can.
+// A nested run narrows with -mode plan, -disallowedTools or -max-turns.
 func (f *cliFlags) escalation() string {
 	switch {
+	case f.settings != "":
+		return "-settings"
+	case len(f.mcpConfig) > 0:
+		return "-mcp-config"
 	case f.trustWS:
 		return "-trust-workspace"
 	case f.skipPerms:
@@ -97,10 +107,21 @@ func widened(base, eff config.Config) string {
 			return fmt.Sprintf("an ask rule removed on the command line (%s)", r)
 		}
 	}
+	// The fence's settings choose what confines this run's commands.
+	if eff.Sandbox.Tier != base.Sandbox.Tier {
+		return fmt.Sprintf("sandbox.tier changed on the command line (%q)", eff.Sandbox.Tier)
+	}
+	if eff.Fence != base.Fence {
+		return "a fence setting changed on the command line"
+	}
 	for _, x := range eff.Permissions.GitExtensions {
 		if !slices.Contains(base.Permissions.GitExtensions, x) {
 			return fmt.Sprintf("a git extension added on the command line (%s)", x)
 		}
+	}
+	// Managed only, so a flag should never get here; checked all the same.
+	if !reflect.DeepEqual(base.WebSearch, eff.WebSearch) || !reflect.DeepEqual(base.WebFetch, eff.WebFetch) {
+		return "a web_search or web_fetch change on the command line"
 	}
 	return ""
 }

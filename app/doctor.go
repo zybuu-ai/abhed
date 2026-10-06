@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/store"
@@ -59,6 +60,11 @@ func (a *App) doctor(workspace string) int {
 	}
 	findings := configFindings(os.Stdout, cfg)
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
+		defer func() {
+			if err := sandbox.Close(sb); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			}
+		}()
 		label := string(sb.Tier())
 		if sb.Tier() == sandbox.TierNone {
 			label += "  ⚠"
@@ -69,6 +75,9 @@ func (a *App) doctor(workspace string) int {
 		}
 	} else {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
+	}
+	if cfg.Sandbox.Tier == string(sandbox.TierFence) {
+		printFenceProbe(os.Stdout, cfg, workspace)
 	}
 	if files := agent.DiscoverMemoryFiles(workspace); len(files) > 0 {
 		fmt.Printf("memory      %s\n", strings.Join(files, ", "))
@@ -266,6 +275,9 @@ func (a *App) doctor(workspace string) int {
 		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		out, err := sb.Command(sctx, workspace, "echo abhed-sandbox-ok").CombinedOutput()
 		cancel()
+		if cerr := sandbox.Close(sb); cerr != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", cerr)
+		}
 		if err != nil || !strings.Contains(string(out), "abhed-sandbox-ok") {
 			fmt.Println("FAILED")
 			fmt.Printf("  tier %s could not run a command: %v\n", sb.Tier(), err)
@@ -291,7 +303,7 @@ func (a *App) doctor(workspace string) int {
 // default, is not warned about.
 func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 	var out []string
-	if m := cfg.Sandbox.MaxMemoryMB; m > 0 && cfg.Sets("sandbox.max_memory_mb") && tier.Strength() < sandbox.TierContainer.Strength() {
+	if m := cfg.Sandbox.MaxMemoryMB; m > 0 && cfg.Sets("sandbox.max_memory_mb") && tier.Strength() < sandbox.TierContainer.Strength() && tier != sandbox.TierFence {
 		out = append(out, fmt.Sprintf("sandbox.max_memory_mb (%d) is not applied on the %s tier; only the container and vm tiers bound memory", m, tier))
 	}
 	switch {
@@ -301,6 +313,21 @@ func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied: this runs as root, whose processes the kernel does not bound", cfg.Sandbox.MaxProcs))
 	}
 	return out
+}
+
+// printFenceProbe shows the fence's probe, check by check, when the
+// configuration chose the fence tier.
+func printFenceProbe(w io.Writer, cfg config.Config, workspace string) {
+	p, err := sandboxconfig.Policy(cfg, workspace)
+	if err != nil {
+		fmt.Fprintf(w, "fence       UNAVAILABLE — %v\n", err)
+		return
+	}
+	lines := strings.Split(sandbox.FenceProbe(context.Background(), p).String(), "\n")
+	fmt.Fprintf(w, "fence       preview · %s\n", lines[0])
+	for _, l := range lines[1:] {
+		fmt.Fprintf(w, "          %s\n", l)
+	}
 }
 
 // runningAsRoot is replaced in tests.
