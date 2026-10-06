@@ -16,7 +16,9 @@ All notable changes to Abhed are recorded here. The format follows
   held. Affects 1.2.3, which brought background shells, to 1.2.6. A read of
   a running shell now holds back a fixed tail (the longest stored value,
   rounded up to 256 bytes) whatever it says, and shows it once the shell has
-  written nothing for a second; at a gap, the same fixed length is skipped.
+  written nothing for a second; at a gap, the same fixed length is skipped,
+  once twice that has arrived, so a secret across the skip is seen whole
+  even when the reads after the gap are short.
   A secret a program prints in two writes more than a second apart can now
   show its first part to a read between them; the whole value is redacted
   as before.
@@ -26,7 +28,8 @@ All notable changes to Abhed are recorded here. The format follows
   or across the start of the 4 KiB tail the line is read from, showed its
   first characters. Affects 1.2.3 to 1.2.6. The line is now redacted before
   it is clipped, and a tail cut from longer output leaves out its first bytes,
-  where a part of a cut secret could be.
+  where a part of a cut secret could be, and goes on past a whole secret that
+  would split.
 
 ### Changed
 
