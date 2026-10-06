@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,6 +62,36 @@ func TestShellReadHoldRevealsNothing(t *testing.T) {
 			}
 			if got := shape(text, gap); got != want {
 				t.Errorf("gap %v: probe %q read as %v, other text as %v", gap, probe, got, want)
+			}
+		}
+	}
+	// After a gap, reads shorter than the hold wait and then skip; a probe
+	// anywhere in them reads the same as other text of its length.
+	shapes := func(reads []string) [][4]int {
+		sh := &shellState{}
+		var got [][4]int
+		for i, text := range reads {
+			r := tools.ShellRead{Text: text}
+			if i == 0 {
+				r.Dropped = 1
+			}
+			out, skipped := sh.redactRead(b, r, false)
+			got = append(got, [4]int{len(out), int(skipped), len(sh.gapCarry), len(sh.carry)})
+		}
+		return got
+	}
+	lens := []int{100, 200, 400, 300}
+	base := make([]string, len(lens))
+	for i, n := range lens {
+		base[i] = strings.Repeat("z", n)
+	}
+	want := fmt.Sprint(shapes(base))
+	for _, probe := range []string{"zq-st", "e", "9c2e", "zq-standin-4f7a9c2"} {
+		for _, at := range []struct{ read, off int }{{0, 100 - len(probe)}, {1, 0}, {1, 156 - len(probe) + 2}, {1, 200 - len(probe)}, {2, 0}, {2, 212 - len(probe) + 1}} {
+			reads := append([]string(nil), base...)
+			reads[at.read] = reads[at.read][:at.off] + probe + reads[at.read][at.off+len(probe):]
+			if got := fmt.Sprint(shapes(reads)); got != want {
+				t.Errorf("probe %q in read %d at %d read as %s, other text as %s", probe, at.read, at.off, got, want)
 			}
 		}
 	}

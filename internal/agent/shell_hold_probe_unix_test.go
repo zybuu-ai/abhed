@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,39 @@ func TestShellOutputProbeSeesNoDifference(t *testing.T) {
 		if got := probe(guess); !strings.Contains(got, "\n"+guess+"\n") {
 			t.Errorf("probe %q: the read held it back, which tells the model it starts a value:\n%s", guess, got)
 		}
+	}
+
+	// After a gap, the guess ends a read shorter than the hold, which waits;
+	// the next read decides the skip. Both read the same for either guess.
+	timing := regexp.MustCompile(`running · [^\n]*`)
+	gapProbe := func(guess string) string {
+		r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{ShellOutputCap: 200}, nil)
+		id := r.start(t, "head -c 300 /dev/zero | tr '\\0' .; printf '"+guess+"'; sleep 3; "+
+			"head -c 150 /dev/zero | tr '\\0' '#'; printf '\\n'; sleep 30")
+		sh, _ := r.l.Background.shell(id)
+		waitFor(t, "the first output", func() bool { total, _ := sh.shell.proc.Size(); return total >= 308 })
+		first := r.run(t, "shell_output", map[string]any{"shell_id": id}).Content
+		waitFor(t, "the second output", func() bool { total, _ := sh.shell.proc.Size(); return total >= 459 })
+		time.Sleep(shellQuietRelease + 200*time.Millisecond)
+		second := r.run(t, "shell_output", map[string]any{"shell_id": id}).Content
+		r.run(t, "shell_kill", map[string]any{"shell_id": id})
+		return shellIDIn.ReplaceAllString(timing.ReplaceAllString(first+"\n----\n"+second, "running"), "sh_")
+	}
+	right, wrong := gapProbe("tok-9f8e"), gapProbe("tok-0f8e")
+	if right != wrong || !strings.Contains(right, "dropped") || !strings.Contains(right, "#\n") || strings.Contains(right, "8e") {
+		t.Errorf("after a gap, a correct guess reads:\n%s\nand a wrong one:\n%s", right, wrong)
+	}
+
+	// The guess starts inside what a cut tail's last line drops.
+	lineProbe := func(guess string) string {
+		r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
+		id := r.start(t, "head -c 5000 /dev/zero | tr '\\0' .; printf -- '--"+guess+"'; head -c 4086 /dev/zero | tr '\\0' .")
+		waitFor(t, "the shell to end", func() bool { ti, _ := r.l.Background.Task(id); return ti.Status == ShellExited })
+		ti, _ := r.l.Background.Task(id)
+		return ti.LastLine
+	}
+	if right, wrong := lineProbe("tok-9f8e"), lineProbe("tok-0f8e"); right != wrong || right == "" {
+		t.Errorf("a cut tail's last line reads %q for a correct guess, %q for a wrong one", right, wrong)
 	}
 }
 

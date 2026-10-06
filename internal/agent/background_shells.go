@@ -83,6 +83,9 @@ type shellState struct {
 	// because a stored secret may continue in what comes next.
 	readMu sync.Mutex
 	carry  string
+	// gapCarry is output after a gap not yet shown or counted as skipped: the
+	// skip is decided once a value across its end would be whole in it.
+	gapCarry string
 }
 
 // shellHost is the ShellHost a tool call gets: the session's Background,
@@ -384,26 +387,17 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 	}
 	hold := shellHold(red.Span())
 	text, skipped := r.Text, r.Skipped
+	quiet := final || r.Quiet >= shellQuietRelease
 	if r.Dropped > 0 || r.Skipped > 0 {
-		skipped += int64(len(sh.carry))
-		sh.carry = ""
-		// Skip a fixed length, moved on only past a whole secret it would
-		// cut, as the tail cut below moves back.
-		whole := redactedText(red.Redact, text)
-		n := min(hold, len(text))
-		for ; n < len(text); n++ {
-			if !utf8.RuneStart(text[n]) {
-				continue
-			}
-			if redactedText(red.Redact, text[:n])+redactedText(red.Redact, text[n:]) == whole {
-				break
-			}
-		}
-		text, skipped = text[n:], skipped+int64(n)
+		skipped += int64(len(sh.carry) + len(sh.gapCarry))
+		sh.carry, sh.gapCarry = "", ""
+		text, skipped = sh.skipAfterGap(red, hold, text, skipped, final, quiet)
+	} else if sh.gapCarry != "" {
+		text, skipped = sh.skipAfterGap(red, hold, text, skipped, final, quiet)
 	}
 	raw := sh.carry + text
 	sh.carry = ""
-	if final || r.Quiet >= shellQuietRelease {
+	if quiet {
 		return redactedText(red.Redact, raw), skipped
 	}
 	// Cut a fixed length from the end, moved back only off a whole secret,
@@ -420,6 +414,33 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 	}
 	sh.carry = raw
 	return "", skipped
+}
+
+// skipAfterGap skips the first hold bytes after a gap, moved on only past a
+// whole secret it would cut. It waits for twice the hold, so a value across
+// the skip point is whole when it is checked; a shell gone quiet or ended
+// decides with what there is. The wait depends only on lengths.
+func (sh *shellState) skipAfterGap(red Redactor, hold int, text string, skipped int64, final, quiet bool) (string, int64) {
+	all := sh.gapCarry + text
+	sh.gapCarry = ""
+	switch {
+	case final && len(all) < hold:
+		return "", skipped + int64(len(all))
+	case len(all) < hold || len(all) < 2*hold && !quiet:
+		sh.gapCarry = all
+		return "", skipped
+	}
+	whole := redactedText(red.Redact, all)
+	n := hold
+	for ; n < len(all); n++ {
+		if !utf8.RuneStart(all[n]) {
+			continue
+		}
+		if redactedText(red.Redact, all[:n])+redactedText(red.Redact, all[n:]) == whole {
+			break
+		}
+	}
+	return all[n:], skipped + int64(n)
 }
 
 // lastLine is a shell's last line of output, redacted before it is clipped.
