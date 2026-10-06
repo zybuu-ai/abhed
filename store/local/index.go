@@ -25,6 +25,7 @@ const (
 	opPrune  = "prune"  // the tombstone: the file was removed, its head kept
 	opRepair = "repair" // an unfinished last index line was cut off
 	opBranch = "branch" // the session began as a copy of another
+	opActive = "active" // the conversation went on: a later prompt, or a run's replies
 )
 
 // kindSubagent marks a subagent's own session.
@@ -350,6 +351,7 @@ func (x *index) entries() ([]Entry, error) {
 // fold is what the index says about each session, in first-seen order.
 func fold(ls []indexLine) []Entry {
 	byID := map[string]*Entry{}
+	activeSeen := false
 	var order []string
 	for _, l := range ls {
 		at, _ := time.Parse(timeFormat, l.At)
@@ -363,6 +365,19 @@ func fold(ls []indexLine) []Entry {
 			order = append(order, l.ID)
 		}
 		e.Updated = at
+		switch l.Op {
+		case opCreate, opTitle, opActive:
+			e.Active = at
+		case opEnd:
+			// Ends written before this index held any active line, by a version
+			// that wrote none: a run's end is the best those say.
+			if !activeSeen {
+				e.Active = at
+			}
+		}
+		if l.Op == opActive {
+			activeSeen = true
+		}
 		switch l.Op {
 		case opCreate:
 			e.Cwd, e.Repo, e.GitBranch, e.User = l.Cwd, l.Repo, l.GitBranch, l.User
@@ -408,7 +423,7 @@ func (x *index) get(id string) (Entry, bool) {
 	return Entry{}, false
 }
 
-// list selects sessions, most recently updated first: never a subagent's own
+// list selects sessions, most recently active first: never a subagent's own
 // session, and never a pruned one.
 func (x *index) list(f Filter) ([]Entry, error) {
 	all, err := x.entries()
@@ -435,7 +450,7 @@ func (x *index) list(f Filter) ([]Entry, error) {
 		}
 		out = append(out, e)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Active.After(out[j].Active) })
 	if f.Limit > 0 && len(out) > f.Limit {
 		out = out[:f.Limit]
 	}

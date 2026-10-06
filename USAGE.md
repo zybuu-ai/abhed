@@ -439,6 +439,7 @@ Abhed in that directory (abhed -C <dir>) or grant it with --add-dir <dir>
 | `process` | Seatbelt (macOS) / bubblewrap (Linux); no syscall filter | Default; trusted repos |
 | `container` | OCI, all capabilities dropped | Untrusted repos |
 | `vm` | gVisor (`runsc`); no microVM backend yet | Hostile code |
+| `fence` | Preview, Linux only, off unless `sandbox.tier: "fence"`: Landlock, seccomp and a cgroup per call; not a microVM | Counts as `process` for `min_tier`; fails closed. [Requirements and limits](docs/guide/02-configuration.md#the-fence-tier-preview-linux) |
 
 ```json
 { "sandbox": { "min_tier": "container", "allow_network": false } }

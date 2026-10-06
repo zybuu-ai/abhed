@@ -110,7 +110,7 @@ func personBash(ctx context.Context, st *cliState, sf ui.Surface, cmd, descripti
 		return tools.Result{}, false
 	}
 	start := time.Now()
-	res := tool.Run(ctx, st.sess, args)
+	res := tool.Run(loop.LaunchContext(ctx, id), st.sess, args)
 	res.Content = redactFor(loop, res.Content)
 	if err := loop.ManualObserve(id, "bash", res, time.Since(start)); err != nil {
 		sf.Append(ui.Block{Kind: ui.BlockError, Text: "the output could not be recorded, so it is not used: " + err.Error()})

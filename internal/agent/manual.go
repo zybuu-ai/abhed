@@ -26,7 +26,7 @@ func (l *Loop) Manual(ctx context.Context, sess *tools.Session, call string, id 
 		return orEmpty(refused), err
 	}
 	start := time.Now()
-	result := tool.Run(ctx, sess, args)
+	result := tool.Run(l.withLaunch(ctx, id), sess, args)
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}
@@ -70,7 +70,7 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 		return orEmpty(refused), err
 	}
 	start := time.Now()
-	result := tool.Run(ctx, sess, runArgs)
+	result := tool.Run(l.withLaunch(ctx, id), sess, runArgs)
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}

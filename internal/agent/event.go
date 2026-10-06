@@ -527,6 +527,41 @@ func (m *MemStore) Append(ev Event) error {
 	return nil
 }
 
+// Conversational reports whether ev is the conversation going on: a person's
+// message, the agent's reply, or a call the agent made. Opening a terminal,
+// a person's own calls, a rename and a model switch are not: a session list
+// ordered by activity must not reorder because someone looked at a session.
+// The agent's tool results are not counted on their own: they cannot be told
+// from a person's by type and actor, and the agent's call stands for them.
+func Conversational(ev Event) bool {
+	return ConversationalType(ev.Type, ev.Actor)
+}
+
+// ConversationalType is Conversational on an event's type and actor.
+func ConversationalType(t EventType, a Actor) bool {
+	switch t {
+	case EvUserMessage, EvAgentMessage:
+		return true
+	case EvActionRequested:
+		return a == ActorAgent
+	}
+	return false
+}
+
+// LastAt is when the session's conversation last went on, for a list sorted
+// by activity; false when it has none.
+func (m *MemStore) LastAt(sessionID string) (time.Time, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	evs := m.events[sessionID]
+	for i := len(evs) - 1; i >= 0; i-- {
+		if Conversational(evs[i]) {
+			return evs[i].CreatedAt, true
+		}
+	}
+	return time.Time{}, false
+}
+
 func (m *MemStore) Events(sessionID string) ([]Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -126,10 +126,13 @@ jobs:
       # output arrives). Delete an item once it lands, and its tests must
       # then pass. "netns" is this runner, which
       # cannot unshare a network namespace for the statusline; the sandbox
-      # job below runs those tests and lets none skip.
+      # job below runs those tests and lets none skip. "fence" is the fence
+      # tier's end-to-end tests, which need a delegated cgroup v2 user scope
+      # this runner lacks; they run on a real kernel before each release
+      # until a job with a delegated scope exists.
       - name: End-to-end CLI tests actually ran
         env:
-          ABHED_CLITEST_PENDING: "editor netns"
+          ABHED_CLITEST_PENDING: "editor netns fence"
         run: |
           set -euo pipefail
           python3 scripts/ci/clitest-skips.py --self-test
@@ -142,12 +145,14 @@ jobs:
       # boundaries themselves are verified in the privileged job below. A skip
       # for any other reason means a boundary stopped being checked, so the
       # build fails rather than let the count drift.
+      # The fence tier's kernel tests need a delegated cgroup v2 user scope
+      # this runner lacks; they run on a real kernel before each release.
       - name: Sandbox boundary tests actually ran
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
-          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup" sandbox.log || true)
           if [ "$skipped" -ne "$expected" ]; then
             echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
             grep -B3 -- "--- SKIP" sandbox.log

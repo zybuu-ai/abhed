@@ -31,8 +31,11 @@ type TrustRecord struct {
 	// AgentsDecision, when set, is the decision about the definitions where it
 	// differs from Decision: a person may decline new definitions and keep a
 	// configuration file they trusted.
-	AgentsDecision string    `json:"agents_decision,omitempty"`
-	At             time.Time `json:"at"`
+	AgentsDecision string `json:"agents_decision,omitempty"`
+	// Users is the decision about accounts files inside the workspace, kept
+	// apart from the file's: accounts change as they are managed.
+	Users string    `json:"users,omitempty"`
+	At    time.Time `json:"at"`
 }
 
 type trustFile struct {
@@ -193,6 +196,9 @@ func RecordDecision(workspace string, r Reviewed, configTrusted, agentsTrusted b
 	key := canonical(workspace)
 	return updateTrust(func(m map[string]TrustRecord) {
 		rec := TrustRecord{SHA256: r.SHA256, Decision: decisionOf(configTrusted), At: time.Now().UTC()}
+		if old, ok := m[key]; ok {
+			rec.Users = old.Users
+		}
 		agentsSum, agentsDecision := r.AgentsSHA256, decisionOf(agentsTrusted)
 		// A decision about the file alone keeps what was decided about the
 		// definitions: abhed init must not forget a trust it did not review.

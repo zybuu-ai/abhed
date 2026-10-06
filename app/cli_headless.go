@@ -21,6 +21,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -38,6 +39,11 @@ type headlessOpts struct {
 	// stream-json; nil for a single task.
 	inputs <-chan string
 	start  map[string]any
+	// fence is the fence, when commands run under it.
+	fence *sandbox.Fence
+	// attempts are the configuration changes that did not take effect,
+	// recorded after the start.
+	attempts []agent.ConfigAttempt
 	// provider names the model, for an error that says what to do.
 	providerName string
 	provider     config.ProviderConfig
@@ -324,13 +330,34 @@ func recordResumedMode(rec *agent.Recorder, events []agent.Event, now, via strin
 
 // recordStart records how the session was started. The CLI recorded
 // nothing before the first message, so a changed system prompt left no
-// trace in the record.
-func recordStart(rec *agent.Recorder, start map[string]any) {
-	if start == nil {
-		return
+// trace in the record. The configuration changes that did not take effect
+// follow it, as the SDK records them. Under the fence it records what
+// qualified it and gives it the record; when that cannot be recorded it
+// closes the fence, so no command runs, and says why, as the SDK refuses to
+// build the agent.
+func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.ConfigAttempt, fence *sandbox.Fence) error {
+	if start != nil {
+		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: recording the session start: %v\n", err)
+		}
 	}
-	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: recording the session start: %v\n", err)
+	recordAttempts(rec, attempts)
+	// What qualified the fence for this run's commands, after the start.
+	if fence != nil {
+		if _, err := rec.Record(agent.EvFenceQualified, agent.ActorSystem, agent.Trusted, fence.Qualification()); err != nil {
+			_ = fence.Close()
+			return fmt.Errorf("recording the fence's qualification: %w; the fence is closed, so no command will run", err)
+		}
+		fence.SetRecord(agent.SandboxRecord(rec))
+	}
+	return nil
+}
+
+// recordAttempts records the configuration changes loading set aside,
+// overrode or narrowed, after session.started.
+func recordAttempts(rec *agent.Recorder, attempts []agent.ConfigAttempt) {
+	if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: recording the configuration attempts: %v\n", err)
 	}
 }
 
@@ -412,7 +439,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if resumedAfter > 0 {
 		before, _ = store.Events(sessionID)
 	}
-	recordStart(rec, resumedStart(o.start, resumedAfter))
+	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.fence); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
 	if mode, _ := o.start["mode"].(string); resumedAfter > 0 {
 		recordResumedMode(rec, before, mode, resumedVia(mode, appCfg))
 	}

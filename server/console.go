@@ -347,6 +347,26 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .stage-head .id{color:var(--ink-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .stage-head .ghost{flex:none}
 .stage-head .spacer{flex:1}
+/* A chat's title, with its id a click away; a double-click renames it. */
+.stage-head .id.named{font-family:var(--sans);font-size:12.5px;font-weight:600;color:var(--ink);cursor:text}
+.stage-head .id input,.item .q input{font:inherit;font-size:12.5px;width:100%;min-width:180px;background:var(--sunken);
+  color:var(--ink);border:1px solid var(--accent);border-radius:5px;padding:2px 6px;outline:none}
+.nomatch{padding:14px;font-size:12px;color:var(--muted);line-height:1.5}
+/* The quick switcher: every chat, filtered as you type. */
+.qs{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.38);display:flex;justify-content:center;align-items:flex-start;padding:12vh 16px 16px}
+.qs[hidden]{display:none}
+.qsbox{width:min(560px,100%);background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;
+  box-shadow:0 18px 50px rgba(0,0,0,.35);overflow:hidden;display:flex;flex-direction:column;max-height:70vh}
+.qsbox input{font:inherit;font-size:14px;padding:12px 14px;border:0;border-bottom:1px solid var(--line);
+  background:transparent;color:var(--ink);outline:none}
+.qsl{overflow-y:auto;min-height:0}
+.qsl button{display:flex;gap:10px;align-items:baseline;width:100%;text-align:left;background:none;border:0;
+  padding:8px 14px;font:inherit;font-size:12.5px;color:var(--ink);cursor:pointer;border-left:2px solid transparent}
+.qsl button[aria-selected="true"]{background:var(--sunken);border-left-color:var(--accent)}
+.qsl .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qsl .w{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
+.qsl .cur{font-family:var(--mono);font-size:9.5px;color:var(--accent);white-space:nowrap}
+.qshint{padding:7px 14px;border-top:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--muted)}
 .ghost{background:none;border:1px solid var(--line);border-radius:5px;
   padding:3px 9px;font-family:var(--mono);font-size:10.5px;color:var(--ink-2);cursor:pointer}
 .ghost:hover{background:var(--sunken);border-color:var(--line-strong)}
@@ -664,7 +684,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   <aside class="rail">
     <div class="composer">
       <button class="new" id="new" type="button"><span>+</span> New chat</button>
-      <input class="search" id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off">
+      <input class="search" id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"
+             title="Matches titles and first messages. Ctrl+K (⌘K) switches chats; Alt+↑/↓ goes to the previous or next">
     </div>
     <div class="rail-head"><span>Chats</span><span id="count"></span></div>
     <div class="list" id="list"></div>
@@ -675,6 +696,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   <main class="stage">
     <div class="stage-head">
       <span class="id" id="sid">new chat</span>
+      <button class="ghost" id="copyid" type="button" hidden title="Copy this chat's id">copy id</button>
       <span class="spacer"></span>
       <button class="ghost" id="wbfiles" type="button" hidden>Files</button>
       <button class="ghost" id="wbchanges" type="button" hidden>Changes</button>
@@ -714,6 +736,15 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
       </div>
     </div>
   </main>
+
+  <div class="qs" id="qs" hidden>
+    <div class="qsbox" role="dialog" aria-modal="true" aria-label="Switch to a chat">
+      <input id="qsq" type="text" placeholder="Switch to a chat…" autocomplete="off" spellcheck="false"
+             aria-label="Filter chats" aria-controls="qsl">
+      <div class="qsl" id="qsl" role="listbox" aria-label="Chats"></div>
+      <div class="qshint">↑↓ to choose · Enter opens · Esc closes · Alt+↑/↓ previous or next chat</div>
+    </div>
+  </div>
 
   <aside class="drawer" id="drawer" aria-hidden="true">
     <div class="drawer-head">
@@ -940,26 +971,34 @@ function paintOpenPill(){
 
 async function refresh(){
   try{
-    const list = await api('/v1/sessions');
-    list.sort((a,b) => new Date(b.created) - new Date(a.created));
+    const list = sortSessions(await api('/v1/sessions'));
     sessionsSeen = list;
-    $('count').textContent = list.length;
+    const cur = list.find(s => s.id === current);
+    if(cur && !$('sid').querySelector('input')) headTitle(cur);
 
     const el = $('list');
     const q = ($('search') && $('search').value || '').trim().toLowerCase();
+    const shown = list.filter(s => matchSession(s, q));
+    $('count').textContent = q ? shown.length + ' of ' + list.length : list.length;
     // Rebuild only when something changed. The poll runs every few seconds,
     // and rebuilding the rail on every tick tore down whatever the person
     // was doing in it — a hover, a focused row, an open delete confirmation.
     list.forEach(s => { s.shown = shownState(s); });
-    const sig = q + '|' + current + '|' + list.map(s => s.id + ':' + s.shown + ':' + (s.title || '') + ':' + (s.prompt || '')).join('\n');
+    const sig = q + '|' + current + '|' + list.map(s => s.id + ':' + s.shown + ':' + sessionTime(s) + ':' + (s.title || '') + ':' + (s.prompt || '')).join('\n');
     if(el.dataset.sig === sig) return;
-    if(el.querySelector('.item.confirm')) return;   // never yank a question mid-answer
+    if(el.querySelector('.item.confirm, .item .q input')) return;   // never yank a question or a rename mid-answer
     el.dataset.sig = sig;
     el.textContent = '';
+    if(q && !shown.length && list.length){
+      const n = document.createElement('div');
+      n.className = 'nomatch'; n.setAttribute('role', 'status');
+      n.textContent = 'No chats match \u201c' + visible($('search').value.trim()) + '\u201d. The search looks at titles and first messages.';
+      el.appendChild(n);
+      return;
+    }
     let grp = null;
-    for(const s of list){
-      if(q && !(s.prompt || '').toLowerCase().includes(q)) continue;
-      const g = dayGroup(s.created);
+    for(const s of shown){
+      const g = dayGroup(sessionTime(s));
       if(g !== grp){
         grp = g;
         const h = document.createElement('div');
@@ -982,6 +1021,178 @@ function dayGroup(iso){
   return 'Earlier';
 }
 if($('search')) $('search').addEventListener('input', () => refresh());
+
+// The list is in order of last activity: a chat just continued comes first.
+const sessionTime = s => s.updated || s.created;
+function sortSessions(list){
+  return (list || []).slice().sort((a, b) => new Date(sessionTime(b)) - new Date(sessionTime(a)) || (a.id < b.id ? 1 : -1));
+}
+// matchSession is the search: every word in the title or the first message,
+// as written and as shown, ignoring case.
+function matchSession(s, q){
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if(!words.length) return true;
+  const hay = [s.title, s.title && reveal(s.title), s.prompt, s.prompt && reveal(s.prompt)].filter(Boolean).join(' ').toLowerCase();
+  return words.every(w => hay.includes(w));
+}
+
+// The open chat is in the address, so a reload, a second tab or a bookmark opens it again.
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+function sessionFromURL(){
+  const id = new URLSearchParams(location.search).get('s');
+  return id && SESSION_ID.test(id) ? id : null;
+}
+function setURL(id){
+  const u = new URL(location.href);
+  if(id) u.searchParams.set('s', id); else u.searchParams.delete('s');
+  if(u.href !== location.href) history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+  if($('wblink')) $('wblink').href = '/ide' + (id ? '?s=' + encodeURIComponent(id) : '');
+}
+async function restoreFromURL(){
+  const id = sessionFromURL();
+  if(!id || current) return;
+  await refresh();
+  const s = (sessionsSeen || []).find(x => x.id === id);
+  if(s){ openSession(s.id, s.state); return; }
+  try{
+    const st = await api('/v1/sessions/' + id + '/state');
+    if(!current) openSession(id, st.state);
+  }catch{
+    setURL(null);
+    note('The chat in the address is not one you can open here; it may have been deleted.');
+  }
+}
+
+// headTitle names the open chat in the header by its title; the id is the tooltip and the copy button's.
+function headTitle(s){
+  const h = $('sid');
+  h.textContent = sessionName(s);
+  h.className = 'id named';
+  h.title = 'Chat ' + s.id + ' \u00b7 double-click to rename';
+  $('copyid').hidden = false;
+}
+$('sid').addEventListener('dblclick', () => {
+  const s = (sessionsSeen || []).find(x => x.id === current);
+  if(s) renameInPlace($('sid'), s);
+});
+$('copyid').addEventListener('click', async () => {
+  if(!current) return;
+  let ok = false; try{ await navigator.clipboard.writeText(current); ok = true; }catch{}
+  if(!ok){ prompt('The chat id:', current); return; }
+  $('copyid').textContent = 'copied'; setTimeout(() => { $('copyid').textContent = 'copy id'; }, 1500);
+});
+
+// renameInPlace edits a chat's title where it is shown; Enter or leaving the box keeps it, Esc does not.
+// A title with hidden characters is not put in the box raw: the box starts empty, with the title shown written out.
+function renameInPlace(span, s){
+  if(!span || span.querySelector('input')) return;
+  const inp = document.createElement('input');
+  const raw = s.title || '';
+  inp.value = reveal(raw) === raw ? raw : '';
+  inp.maxLength = 120; inp.spellcheck = false;
+  inp.placeholder = raw ? reveal(raw) : s.prompt ? reveal(s.prompt).slice(0, 80) : 'Chat title';
+  inp.setAttribute('aria-label', 'Chat title');
+  span.textContent = ''; span.appendChild(inp); inp.focus(); inp.select();
+  let over = false;
+  const end = keep => {
+    if(over) return; over = true;
+    const v = inp.value.trim(); inp.remove();
+    span.textContent = sessionName(s);
+    if(keep && v !== raw && (v || reveal(raw) === raw)) setTitle(s, v);
+    else if(span.closest('.item')) span.closest('.item').focus();
+  };
+  inp.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if(e.key === 'Enter'){ e.preventDefault(); end(true); }
+    else if(e.key === 'Escape'){ e.preventDefault(); end(false); }
+  });
+  inp.addEventListener('click', e => e.stopPropagation());
+  inp.addEventListener('blur', () => end(true));
+}
+async function setTitle(s, title){
+  try{
+    const r = await api('/v1/sessions/' + s.id + '/title', {method:'POST', body: JSON.stringify({title})});
+    s.title = r.title;
+  }catch(err){ note('Not renamed: ' + visible(err && err.message || err)); }
+  if(s.id === current) headTitle(s);
+  $('list').dataset.sig = '';
+  refresh();
+}
+
+// neighbour is the chat before (-1) or after (+1) the open one in the list as shown.
+function neighbour(dir){
+  const q = ($('search') && $('search').value || '').trim().toLowerCase();
+  const list = (sessionsSeen || []).filter(s => matchSession(s, q) || s.id === current);
+  if(!list.length) return null;
+  const i = list.findIndex(s => s.id === current);
+  if(i < 0) return dir > 0 ? list[0] : list[list.length - 1];
+  return list[i + dir] || null;
+}
+
+/* ------------------------------------------------------------------ quick switcher */
+let qsHits = [], qsSel = 0;
+function openSwitcher(){
+  const box = $('qs'); if(!box) return;
+  box.hidden = false; $('qsq').value = ''; qsSel = 0;
+  drawSwitcher(); $('qsq').focus();
+  refresh().then(() => { if(!box.hidden) drawSwitcher(); });
+}
+function closeSwitcher(){ $('qs').hidden = true; }
+function drawSwitcher(){
+  const q = $('qsq').value.trim().toLowerCase();
+  qsHits = (sessionsSeen || []).filter(s => matchSession(s, q)).slice(0, 60);
+  if(!q){ const i = qsHits.findIndex(s => s.id === current); if(i >= 0 && qsSel === 0 && qsHits.length > 1) qsSel = i === 0 ? 1 : 0; }
+  qsSel = Math.min(qsSel, Math.max(0, qsHits.length - 1));
+  const box = $('qsl'); box.textContent = '';
+  qsHits.forEach((s, n) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'option'); b.setAttribute('aria-selected', String(n === qsSel));
+    const t = document.createElement('span'); t.className = 't'; t.textContent = sessionName(s);
+    b.appendChild(t);
+    if(s.id === current){ const c = document.createElement('span'); c.className = 'cur'; c.textContent = '\u25cf open'; b.appendChild(c); }
+    const w = document.createElement('span'); w.className = 'w'; w.textContent = ago(sessionTime(s)); b.appendChild(w);
+    b.addEventListener('click', () => pickSwitcher(s));
+    box.appendChild(b);
+  });
+  if(!qsHits.length){
+    const n = document.createElement('div'); n.className = 'nomatch';
+    n.textContent = (sessionsSeen || []).length ? 'No chats match.' : 'No chats yet.';
+    box.appendChild(n);
+  }
+  const sel = box.querySelector('[aria-selected="true"]'); if(sel && sel.scrollIntoView) sel.scrollIntoView({block:'nearest'});
+}
+function pickSwitcher(s){ closeSwitcher(); if(s && s.id !== current) openSession(s.id, s.state); }
+$('qsq').addEventListener('input', () => { qsSel = 0; drawSwitcher(); });
+$('qsq').addEventListener('keydown', e => {
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    if(qsHits.length){ qsSel = (qsSel + (e.key === 'ArrowDown' ? 1 : qsHits.length - 1)) % qsHits.length; drawSwitcher(); }
+  } else if(e.key === 'Enter'){ e.preventDefault(); pickSwitcher(qsHits[qsSel]); }
+  else if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeSwitcher(); }
+});
+$('qs').addEventListener('pointerdown', e => { if(e.target === $('qs')) closeSwitcher(); });
+
+// Ctrl+K (⌘K on a Mac) opens the switcher; Alt+↑/↓ goes to the previous or
+// next chat, except in a box with text in it, where the keys move the cursor.
+const macKeys = /Mac|iPhone|iPad/.test(navigator.platform || '');
+function switchKeys(e){
+  const mod = macKeys ? e.metaKey : e.ctrlKey;
+  if(mod && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')){
+    e.preventDefault();
+    if($('qs').hidden) openSwitcher(); else closeSwitcher();
+    return true;
+  }
+  if(e.altKey && !mod && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')){
+    const t = e.target;
+    if(t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT') && t.id !== 'qsq' && t.value) return false;
+    e.preventDefault();
+    const n = neighbour(e.key === 'ArrowUp' ? -1 : 1);
+    if(n){ if(!$('qs').hidden) closeSwitcher(); openSession(n.id, n.state); }
+    return true;
+  }
+  return false;
+}
+document.addEventListener('keydown', switchKeys);
 
 // sessionName is what the rail calls a session: its title, else its first
 // message, else what a session opened in the workbench with no message is.
@@ -1012,7 +1223,8 @@ function sessionRow(s){
   pill.dataset.state = s.state;
   pill.textContent = shown.replace(/_/g,' ');
   const when = document.createElement('span');
-  when.textContent = ago(s.created);
+  when.textContent = ago(sessionTime(s));
+  when.title = 'last active ' + new Date(sessionTime(s)).toLocaleString();
   m.append(pill, ...listBadges(s), when);
 
   const del = document.createElement('button');
@@ -1030,7 +1242,9 @@ function sessionRow(s){
     if(e.target !== row) return;
     if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); }
     if(e.key === 'Delete' || e.key === 'Backspace'){ e.preventDefault(); confirmDelete(row, s, m); }
+    if(e.key === 'F2'){ e.preventDefault(); renameInPlace(q, s); }
   };
+  row.title = 'F2 renames';
   return row;
 }
 
@@ -1119,7 +1333,9 @@ function openSession(id, state){
   Object.assign(stats, {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0, ctx:0, ctxWindow:0});
 
   $('tx').textContent = '';
-  $('sid').textContent = id;
+  const known = (sessionsSeen || []).find(x => x.id === id);
+  if(known) headTitle(known); else { $('sid').textContent = id; $('sid').className = 'id'; $('sid').title = id; }
+  setURL(id);
   $('stop').hidden = false;
   $('wbfiles').hidden = $('wbchanges').hidden = false;
   // The panel shows one session's workspace and changes, so it follows the
@@ -1987,7 +2203,9 @@ function newChat(){
   approvals.clear();
   pending = []; renderFiles();
   Object.assign(stats, {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0, ctx:0, ctxWindow:0});
-  $('sid').textContent = 'new chat';
+  $('sid').textContent = 'new chat'; $('sid').className = 'id'; $('sid').title = '';
+  $('copyid').hidden = true;
+  setURL(null);
   $('stop').hidden = true;
   $('wbfiles').hidden = $('wbchanges').hidden = true;
   closeDrawer();
@@ -2458,7 +2676,8 @@ function hideThinking(){
   el.remove();
 }
 
-drawExamples(); whoami(); capabilities(); health(); refresh(); loadProviders(); loadMode();
+drawExamples(); whoami(); capabilities(); health(); loadProviders(); loadMode();
+if(sessionFromURL()) restoreFromURL(); else refresh();
 setInterval(health, 10000);
 setInterval(refresh, 5000);
 </script>

@@ -280,6 +280,9 @@ func Main(args []string, opts ...Option) int {
 	}
 	if len(rest) > 0 {
 		if refuseInAgent(selfAdmin(rest)) {
+			if rest[0] == "admin" {
+				logAdminInAgent(rest[1:], inAgentCommand(), os.Stderr)
+			}
 			return 1
 		}
 		return a.subcommand(workspace, rest, f.listenAddr)
@@ -332,6 +335,8 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		return providersCmd()
 	case "record":
 		return recordCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
+	case "sessions":
+		return recordCmd(workspace, append([]string{"list"}, rest[1:]...), a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "hawkeye":
 		return hawkeyeCmd(workspace, rest[1:], a.trust)
 	case "migrate":
@@ -349,6 +354,8 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "admin":
+		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
 		return mcpCmd(workspace, rest[1:], a.trust, stdMCPIO())
 	case "index":
@@ -432,7 +439,7 @@ func leadingTrustFlag(args []string, trust *bool) []string {
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"secret": true, "mcp": true, "record": true, "hawkeye": true, "migrate": true,
+	"secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true,
 }
 

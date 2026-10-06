@@ -394,7 +394,7 @@ function renderFacts(o){
     o.auth_mode === 'none' ? 'off' : 'on'));
   const online = o.web_search !== 'disabled' || o.web_fetch;
   f.appendChild(card('Web search', o.web_search,
-    online ? 'the agent can reach the internet' : 'the agent stays offline',
+    o.web_search_state || (online ? 'the agent can reach the internet' : 'the agent stays offline'),
     o.web_search === 'disabled' ? 'off' : 'warn'));
   f.appendChild(card('Web fetch', o.web_fetch ? 'enabled' : 'disabled',
     o.web_fetch ? 'the agent can read web pages' : 'the agent reads no web pages',

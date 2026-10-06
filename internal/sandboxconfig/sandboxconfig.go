@@ -51,6 +51,8 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 	if cfg.Sandbox.MaxProcs > 0 {
 		p.MaxProcs = cfg.Sandbox.MaxProcs
 	}
+	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
+	p.CPUPercent = cfg.Fence.CPUPercent
 	return p, nil
 }
 

@@ -329,6 +329,27 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #agent.dropping #composer,#tree.drop,.tree .row.drop{outline:2px dashed var(--accent);outline-offset:-2px}
 #ahead .ttl input{width:100%;font:600 13px var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:1px 4px}
 #ahead .ico{border:0;padding:3px;display:grid;place-items:center;color:var(--muted)}#ahead .ico:hover{color:var(--ink)}
+#ahead .ttl{cursor:pointer;flex:0 1 auto}#ahead .ttl:hover{color:var(--accent)}
+#ahead #s-switch{border:0;padding:3px;margin:0 auto 0 -4px;display:grid;place-items:center;color:var(--muted)}#ahead #s-switch:hover{color:var(--ink)}
+/* The session dropdown under the agent's title, and the sessions-only pick. */
+#sdrop{position:fixed;z-index:12;width:min(420px,92vw);background:var(--raised);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 14px 40px rgba(0,0,0,.35);display:flex;flex-direction:column;max-height:min(60vh,520px);overflow:hidden}
+#sdrop[hidden]{display:none}
+#sdropq{border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);font:13px var(--sans);padding:9px 12px}
+#sdropq:focus-visible{outline:none}
+#sdropl{overflow:auto;padding:4px;min-height:0}
+#sdropl button{display:flex;gap:8px;align-items:center;width:100%;padding:6px 9px;border-radius:5px;text-align:left;font-size:12.5px}
+#sdropl button[aria-selected="true"]{background:var(--accent-soft)}
+#sdropl .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#sdropl .cur{font:10px var(--mono);color:var(--accent)}
+#sdropl .age,.row .age{font:10.5px var(--mono);color:var(--muted);flex:none}
+#sdropl .empty{padding:10px}
+#sdrop .foot{display:flex;gap:6px;padding:6px;border-top:1px solid var(--line)}
+#sdrop .foot button{flex:1;font-size:12px;padding:5px 8px;border:1px solid var(--line-strong);border-radius:5px;color:var(--ink-2)}
+#sdrop .foot button:hover{background:var(--sunken)}
+#sdrop .hint{padding:0 12px 7px;font:10px var(--mono);color:var(--muted)}
+#sfilter{margin:6px 12px 4px;width:calc(100% - 24px);font:12.5px var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--line-strong);border-radius:5px;padding:4px 8px}
+#sfilter:focus-visible{outline:none;border-color:var(--accent)}
+.sgrp{font:600 10px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:8px 12px 3px}
 #slash{position:absolute;left:10px;right:10px;bottom:100%;margin-bottom:4px;background:var(--raised);border:1px solid var(--line-strong);border-radius:7px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 #slash button{display:flex;gap:10px;width:100%;padding:6px 10px;text-align:left}
 #slash button[aria-selected="true"]{background:var(--accent-soft)}
@@ -375,7 +396,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   <header id="title">
     <span class="brand">{{BRAND_LOCKUP}}</span>
     <span class="ws" id="wsname"></span>
-    <button id="palette-open" type="button" aria-label="Open the command palette">Go to file, run a command… <kbd id="palkey">⌘K</kbd></button>
+    <button id="palette-open" type="button" aria-label="Open the command palette">Go to file, run a command… <kbd id="palkey">⌘P</kbd></button>
     <span class="right"><a id="who"></a><a id="pwlink" href="/account" hidden>password</a><a id="switchuser" href="/logout" hidden>switch</a><a id="signout" href="/logout" hidden>sign out</a><a href="/console">classic console</a><a href="/docs">docs</a></span>
   </header>
 
@@ -396,6 +417,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
     <section class="view" id="v-sessions" hidden>
       <div class="vhead">Sessions<span class="sp"></span></div>
       <button class="primary" id="new" type="button">New session</button>
+      <input id="sfilter" type="search" placeholder="Filter sessions" aria-label="Filter sessions" autocomplete="off" spellcheck="false">
       <div class="vbody" id="sessions"></div>
     </section>
     <section class="view" id="v-explorer">
@@ -466,7 +488,8 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   <div class="split" id="split-agent" role="separator" aria-orientation="vertical"></div>
 
   <section id="agent" aria-label="Agent">
-    <div id="ahead"><span class="ttl" id="attl">New session</span>
+    <div id="ahead"><span class="ttl" id="attl" role="button" tabindex="0" aria-haspopup="listbox" aria-controls="sdrop" title="Switch session (Ctrl+K / ⌘K) · double-click to rename">New session</span>
+      <button type="button" id="s-switch" aria-haspopup="listbox" aria-controls="sdrop" title="Switch session (Ctrl+K / ⌘K)" aria-label="Switch session"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
       <button type="button" class="ico" id="s-rename" title="Rename this session" aria-label="Rename this session" hidden><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 2.5l2.5 2.5L6 12.5 3 13l.5-3z"/></svg></button>
       <button type="button" class="ico" id="s-resume" title="Continue in a terminal: copy the command" aria-label="Copy the command that continues this session in a terminal" hidden><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></svg></button>
       <button type="button" class="ico" id="s-export" title="Export this session: the transcript, or the record" aria-label="Export this session" hidden><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8M5 7l3 3 3-3M2.5 11v2.5h11V11"/></svg></button>
@@ -502,6 +525,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   </footer>
 </div>
 
+<div id="sdrop" hidden role="dialog" aria-label="Sessions"><input id="sdropq" placeholder="Filter sessions" autocomplete="off" spellcheck="false" aria-label="Filter sessions" aria-controls="sdropl"><div id="sdropl" role="listbox" aria-label="Sessions"></div><div class="foot"><button type="button" id="sdrop-new">New session</button><button type="button" id="sdrop-all">All sessions…</button></div><div class="hint">↑↓ Enter · Esc · Alt+↑/↓ previous or next session</div></div>
 <div id="pal" hidden><div class="box" role="dialog" aria-label="Command palette"><input id="palq" placeholder="Type a command, a file or a session" autocomplete="off" spellcheck="false"><div id="pall"></div></div></div>
 <div id="ctx" role="menu" hidden></div>
 <div id="rcbox" role="dialog" aria-label="Comment on a line" hidden><div id="rc-at"></div><textarea id="rc-text" aria-label="Your comment"></textarea>
@@ -1356,20 +1380,144 @@ $('s-find').addEventListener('click', () => setPanel('problems'));
 
 /* ---------------------------------------------------------------- sessions */
 async function loadSessions(){
-  try{ sessionList = await api('/v1/sessions'); }catch{ sessionList = []; }
-  sessionList.sort((a, b) => String(b.created || '').localeCompare(String(a.created || '')));
+  try{ sessionList = sortSessions(await api('/v1/sessions')); }catch{ sessionList = []; }
+  drawSessions();
+  if(!$('sdrop').hidden) drawDrop();
+}
+// The list is in order of last activity: a session just continued comes first.
+const sessionTime = s => s.updated || s.created || '';
+function sortSessions(list){
+  return (list || []).slice().sort((a, b) => String(sessionTime(b)).localeCompare(String(sessionTime(a))) || (a.id < b.id ? 1 : -1));
+}
+// matchSession is the filter: every word in the title or the first message, as written and as shown.
+function matchSession(s, q){
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if(!words.length) return true;
+  const hay = [s.title, s.title && reveal(s.title), s.prompt, s.prompt && reveal(s.prompt)].filter(Boolean).join(' ').toLowerCase();
+  return words.every(w => hay.includes(w));
+}
+function ageOf(iso){
+  const t = new Date(iso).getTime(); if(!t) return '';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  return s < 60 ? 'now' : s < 3600 ? Math.floor(s / 60) + 'm' : s < 86400 ? Math.floor(s / 3600) + 'h' : Math.floor(s / 86400) + 'd';
+}
+const dayOf = iso => { const d = new Date(iso), now = new Date(); return d.getTime() >= new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() ? 'Today' : 'Earlier'; };
+function drawSessions(){
   const box = $('sessions'); clear(box);
   if(!sessionList.length){ box.appendChild(el('div', 'empty', 'No sessions yet. Ask the agent for something on the right.')); return; }
-  for(const s of sessionList){
+  const q = $('sfilter').value.trim().toLowerCase(), shown = sessionList.filter(s => matchSession(s, q));
+  if(!shown.length){ box.appendChild(el('div', 'empty', 'No sessions match. The filter looks at titles and first messages.')); return; }
+  let grp = null;
+  for(const s of shown){
+    const g = dayOf(sessionTime(s)); if(g !== grp){ grp = g; box.appendChild(el('div', 'sgrp', g)); }
     const row = el('button', 'row'); row.type = 'button'; row.setAttribute('aria-current', String(s.id === current));
     row.appendChild(el('span', 'dot ' + s.state + (s.reason ? ' ' + s.reason : ''))); row.appendChild(el('span', 'name', sessionLabel(s)));
     if(s.background) row.appendChild(el('span', 'badge', 'bg ' + s.background));
     if(s.pending_ask) row.appendChild(el('span', 'badge warn', 'approval waiting'));
+    const age = el('span', 'age', ageOf(sessionTime(s))); age.title = 'last active ' + new Date(sessionTime(s)).toLocaleString(); row.appendChild(age);
     row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state));
     row.addEventListener('contextmenu', ev => { ev.preventDefault(); sessionMenu(ev.clientX, ev.clientY, s, row); });
     row.addEventListener('keydown', ev => { if(ev.key === 'F2'){ ev.preventDefault(); editTitle(row.querySelector('.name'), s); } else if(ev.key === 'Delete'){ ev.preventDefault(); deleteSession(s); } });
     box.appendChild(row);
   }
+}
+$('sfilter').addEventListener('input', drawSessions);
+$('sfilter').addEventListener('keydown', e => { if(e.key === 'Escape' && e.target.value){ e.preventDefault(); e.target.value = ''; drawSessions(); } });
+
+// The open session is in the address, and this tab remembers it, so a reload or a second tab opens it again.
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+function sessionFromURL(){ const id = new URLSearchParams(location.search).get('s'); return id && SESSION_ID.test(id) ? id : null; }
+function setURL(id){
+  const u = new URL(location.href);
+  if(id) u.searchParams.set('s', id); else u.searchParams.delete('s');
+  if(u.href !== location.href) history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+  try{ if(id) sessionStorage.setItem('abhed.ide.session', id); else sessionStorage.removeItem('abhed.ide.session'); }catch{}
+}
+let startNote = '';
+// startingSession is the one a page opens with: the address's, else this tab's last, else the latest active.
+async function startingSession(){
+  const want = sessionFromURL();
+  let tab = null; try{ tab = sessionStorage.getItem('abhed.ide.session'); }catch{}
+  for(const id of [want, tab]){
+    if(!id || !SESSION_ID.test(id)) continue;
+    const s = sessionList.find(x => x.id === id); if(s) return s;
+    try{ const st = await api('/v1/sessions/' + id + '/state'); return {id, state: st.state}; }
+    catch{ if(id === want) startNote = 'The session in the address is not one you can open here; it may have been deleted. This is the latest instead.'; }
+  }
+  return sessionList[0] || null;
+}
+
+// neighbour is the session before (-1) or after (+1) the open one, in the list's order.
+function neighbour(dir){
+  if(!sessionList.length) return null;
+  const i = sessionList.findIndex(s => s.id === current);
+  if(i < 0) return dir > 0 ? sessionList[0] : sessionList[sessionList.length - 1];
+  return sessionList[i + dir] || null;
+}
+
+/* the session dropdown: under the agent's title, and the sessions-only pick */
+let dropSel = 0, dropHits = [];
+function openDrop(){
+  const d = $('sdrop'), r = $('ahead').getBoundingClientRect();
+  d.hidden = false; $('sdropq').value = ''; dropSel = 0;
+  d.style.top = (r.bottom + 4) + 'px';
+  d.style.left = Math.max(8, Math.min(r.left + 6, window.innerWidth - d.offsetWidth - 8)) + 'px';
+  drawDrop(); $('sdropq').focus(); $('attl').setAttribute('aria-expanded', 'true');
+  loadSessions();
+}
+function closeDrop(){ $('sdrop').hidden = true; $('attl').setAttribute('aria-expanded', 'false'); }
+function drawDrop(){
+  const q = $('sdropq').value.trim().toLowerCase();
+  const was = dropHits[dropSel] && dropHits[dropSel].id;
+  dropHits = sessionList.filter(s => matchSession(s, q)).slice(0, 50);
+  const keep = dropHits.findIndex(s => s.id === was);
+  if(keep >= 0) dropSel = keep;
+  else if(!q){ const i = dropHits.findIndex(s => s.id === current); dropSel = i === 0 && dropHits.length > 1 ? 1 : 0; }
+  dropSel = Math.min(dropSel, Math.max(0, dropHits.length - 1));
+  const box = $('sdropl'); clear(box);
+  dropHits.forEach((s, n) => {
+    const b = el('button'); b.type = 'button'; b.setAttribute('role', 'option'); b.setAttribute('aria-selected', String(n === dropSel));
+    b.appendChild(el('span', 'dot ' + s.state + (s.reason ? ' ' + s.reason : ''))); b.appendChild(el('span', 'name', sessionLabel(s)));
+    if(s.id === current){ b.appendChild(el('span', 'cur', '● current')); b.setAttribute('aria-current', 'true'); }
+    b.appendChild(el('span', 'age', ageOf(sessionTime(s)))); b.title = s.id;
+    b.addEventListener('click', () => pickDrop(s)); box.appendChild(b);
+  });
+  if(!dropHits.length) box.appendChild(el('div', 'empty', sessionList.length ? 'No sessions match.' : 'No sessions yet.'));
+  const sel = box.querySelector('[aria-selected="true"]'); if(sel && sel.scrollIntoView) sel.scrollIntoView({block:'nearest'});
+}
+function pickDrop(s){ closeDrop(); if(s && s.id !== current) openSession(s.id, s.state); }
+$('sdropq').addEventListener('input', () => { dropSel = 0; dropHits = []; drawDrop(); });
+$('sdropq').addEventListener('keydown', e => {
+  e.stopPropagation();
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){ e.preventDefault(); if(dropHits.length){ dropSel = (dropSel + (e.key === 'ArrowDown' ? 1 : dropHits.length - 1)) % dropHits.length; drawDrop(); } }
+  else if(e.key === 'Enter'){ e.preventDefault(); pickDrop(dropHits[dropSel]); }
+  else if(e.key === 'Escape'){ e.preventDefault(); closeDrop(); }
+  else if(switchKeys(e)) return;
+});
+$('sdrop-new').addEventListener('click', () => { closeDrop(); $('new').click(); });
+$('sdrop-all').addEventListener('click', () => { closeDrop(); setView('sessions'); $('sfilter').focus(); });
+document.addEventListener('pointerdown', e => { const d = $('sdrop'); if(!d.hidden && !d.contains(e.target) && !$('s-switch').contains(e.target) && e.target !== $('attl')) closeDrop(); });
+// A click on the title opens the list; a double-click renames, so the list waits a moment for a second click.
+let titleClick = 0;
+$('attl').addEventListener('click', () => { if($('attl').querySelector('input')) return; clearTimeout(titleClick); titleClick = setTimeout(() => { if($('sdrop').hidden) openDrop(); else closeDrop(); }, 230); });
+$('attl').addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown'){ e.preventDefault(); openDrop(); } else if(e.key === 'F2'){ e.preventDefault(); $('s-rename').click(); } });
+$('s-switch').addEventListener('click', () => { if($('sdrop').hidden) openDrop(); else closeDrop(); });
+
+// Ctrl+K (⌘K) opens the sessions alone; Alt+↑/↓ goes to the previous or next session,
+// except in the editor, a terminal, or a box with text in it, where those keys already mean something.
+function switchKeys(e){
+  const mod = isMac ? e.metaKey : e.ctrlKey;
+  if(mod && !e.altKey && !e.shiftKey && e.code === 'KeyK'){ e.preventDefault(); if($('sdrop').hidden) openDrop(); else closeDrop(); return true; }
+  if(e.altKey && !mod && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')){
+    const t = e.target;
+    if(t && t.closest && t.closest('.monaco-editor, .xterm')) return false;
+    if(t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT') && t.id !== 'sdropq' && t.value) return false;
+    e.preventDefault();
+    const n = neighbour(e.key === 'ArrowUp' ? -1 : 1);
+    if(n){ closeDrop(); openSession(n.id, n.state); }
+    return true;
+  }
+  return false;
 }
 // A title is the person's name for a session; the server records each rename as session.renamed.
 function editTitle(span, s){
@@ -1408,7 +1556,7 @@ function sessionsNote(text, bad){
   if($('v-sessions').hidden && current) add(el('div', 'sys' + (bad ? ' bad' : ''), text));
 }
 $('s-rename').addEventListener('click', () => { const s = sessionList.find(x => x.id === current); if(s) editTitle($('attl'), s); });
-$('attl').addEventListener('dblclick', () => { const s = sessionList.find(x => x.id === current); if(s) editTitle($('attl'), s); });
+$('attl').addEventListener('dblclick', () => { clearTimeout(titleClick); closeDrop(); const s = sessionList.find(x => x.id === current); if(s) editTitle($('attl'), s); });
 $('s-resume').addEventListener('click', () => copyResume(current, $('s-resume')));
 // The command that goes on with this session in a terminal, against the same record.
 const resumeCommand = id => /^[A-Za-z0-9_-]+$/.test(id || '') ? 'abhed -r ' + id : '';
@@ -1497,7 +1645,7 @@ function resetSession(){
   $('b-changes').hidden = $('b-hawk').hidden = $('s-find').hidden = true;
   clear($('hawkeye')); clear($('changes')); clear($('dl'));
   pending = []; ready = []; lastUser = null; editing = null; drawFiles(); reviewNotes = []; drawNotes(); closeComment(); $('s-rename').hidden = $('s-resume').hidden = $('s-export').hidden = true;
-  $('attl').textContent = 'New session'; setLive(false); drawStatus();
+  $('attl').textContent = 'New session'; setURL(null); setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
   modeForNewSession();
   const p = providers.find(x => x.name === $('mdlpick').value);
@@ -1566,7 +1714,7 @@ async function switchModel(){
 $('mdlpick').addEventListener('change', switchModel);
 // opts.auto marks the session the page opened by itself; opts.note is shown on its terminal.
 function openSession(id, state, opts){
-  resetSession(); offerNext(''); current = id; setLive(state === 'running' || state === 'waiting_approval');
+  resetSession(); offerNext(''); current = id; setURL(id); setLive(state === 'running' || state === 'waiting_approval');
   const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? sessionLabel(s) : id;
   // The mode is fixed when a session starts; the selector shows it rather than implying it can change.
   if(s && s.mode) $('mode').value = s.mode;
@@ -2788,6 +2936,9 @@ function palItems(){
   out.push({k:'command', l:'Find in files', h:isMac ? '⇧⌘F' : 'Ctrl+Shift+F', run:findInFiles});
   out.push({k:'command', l:'New file', h:'', run:() => newEntry(false)});
   out.push({k:'command', l:'Attach files to the message', h:'', run:() => $('attach').click()});
+  out.push({k:'command', l:'Switch session…', h:mod + 'K', run:() => openDrop()});
+  out.push({k:'command', l:'Previous session', h:'Alt+↑', run:() => { const n = neighbour(-1); if(n) openSession(n.id, n.state); }});
+  out.push({k:'command', l:'Next session', h:'Alt+↓', run:() => { const n = neighbour(1); if(n) openSession(n.id, n.state); }});
   if(current){
     out.push({k:'command', l:'Rename this session', h:'', run:() => $('s-rename').click()});
     out.push({k:'command', l:'Continue this session in a terminal (copy the command)', h:'', run:() => copyResume(current, $('s-resume'))});
@@ -2846,11 +2997,12 @@ $('pal').addEventListener('pointerdown', e => { if(e.target === $('pal')) closeP
 document.addEventListener('keydown', e => {
   // Ctrl+` is the terminal on every platform, as in desktop editors.
   if(e.ctrlKey && !e.metaKey && !e.altKey && e.code === 'Backquote'){ e.preventDefault(); toggleTerminal(); return; }
+  if(switchKeys(e)) return;
   const mod = isMac ? e.metaKey : e.ctrlKey; if(!mod) return; const k = e.key.toLowerCase();
   if(e.shiftKey && e.code === 'KeyF'){ e.preventDefault(); findInFiles(); }
   else if(e.shiftKey && e.code === 'KeyE'){ e.preventDefault(); setView('explorer'); }
   else if(e.altKey && e.code === 'KeyS'){ e.preventDefault(); saveAll(); }
-  else if(k === 'k' || k === 'p'){ e.preventDefault(); if($('pal').hidden) openPal(); else closePal(); }
+  else if(k === 'p'){ e.preventDefault(); if($('pal').hidden) openPal(); else closePal(); }
   else if(k === 's'){ e.preventDefault(); saveActive(); }
   // A browser keeps Cmd+W for itself in a normal tab; where it reaches the page, it closes the editor tab.
   else if(k === 'w'){ e.preventDefault(); closeActive(); }
@@ -2923,7 +3075,8 @@ $('switchuser').addEventListener('click', postSignOut);
   await loadSessions();
   setView(store.get('view', 'explorer')); $('app').dataset.pane = 'agent';
   // A terminal as soon as the page opens: the last session, reopened if need be, or a new workbench session.
-  const last = sessionList[0]; if(last) openSession(last.id, last.state, {auto:true, reattach:true}); else createWorkbench();
+  const first = await startingSession(); if(first) openSession(first.id, first.state, {auto:true, reattach:true}); else createWorkbench();
+  if(startNote) add(el('div', 'sys bad', startNote));
 })();
 </script>
 </body>

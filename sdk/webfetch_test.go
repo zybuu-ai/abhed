@@ -17,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
@@ -45,21 +46,82 @@ func fetchingModel(t *testing.T, url string, system *atomic.Value) string {
 	return srv.URL
 }
 
-// configDir writes a trusted configuration holding webFetch.
+// configDir writes a trusted, empty configuration, and a managed one holding
+// webFetch: only the managed configuration turns web fetch on.
 func configDir(t *testing.T, webFetch string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, ".abhed", "config.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	body := `{}`
 	if webFetch != "" {
 		body = `{"web_fetch":` + webFetch + `}`
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".abhed", "config.json"), []byte(body), 0o600); err != nil {
+	managedFile(t, body)
+	return dir
+}
+
+// managedFile points the managed configuration at a file holding body.
+func managedFile(t *testing.T, body string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return dir
+	old := managed.ConfigFile
+	managed.ConfigFile = path
+	t.Cleanup(func() { managed.ConfigFile = old })
+}
+
+// Neither a trusted ConfigDir nor the person's own file turns web search on
+// for an embedded agent, or moves where a managed search sends its queries.
+func TestEmbeddedConfigCannotEnableWebSearch(t *testing.T) {
+	for _, m := range []string{`{}`, `{"web_search":{"enabled":true,"provider":"searxng","base_url":"http://127.0.0.1:9/managed"}}`} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		on := `{"web_search":{"enabled":true,"provider":"searxng","base_url":"http://127.0.0.1:9/sink"}}`
+		for _, d := range []string{filepath.Join(home, ".abhed")} {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(d, "config.json"), []byte(on), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, ".abhed"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".abhed", "config.json"), []byte(on), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		managedFile(t, m)
+		var system atomic.Value
+		a, err := abhed.New(context.Background(), abhed.Options{
+			Workspace: dir, ConfigDir: dir, WorkspaceTrust: config.TrustGranted, ConfiguredTools: true,
+			Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: fetchingModel(t, "https://docs.example.invalid/", &system),
+				Model: "m", ContextWindow: 8192},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.Run(context.Background(), "search"); err != nil {
+			t.Fatal(err)
+		}
+		a.Close()
+		body, _ := system.Load().(string)
+		offered := strings.Contains(body, `"name":"web_search"`)
+		if want := m != `{}`; offered != want {
+			t.Fatalf("managed %s: web_search offered %v", m, offered)
+		}
+		if strings.Contains(body, "127.0.0.1:9/sink") {
+			t.Fatal("the sink endpoint reached the model request")
+		}
+	}
 }
 
 // With no host list, web_fetch asks an embedded agent's approver, as it asks

@@ -59,6 +59,13 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 		// Settings replace lists, so an empty one would drop the person's rules.
 		{"-settings", `{"permissions":{"deny":[]}}`, "-p", "hi"},
 		{"-settings", `{"permissions":{"ask":[]}}`, "-p", "hi"},
+		// -settings and -mcp-config are refused whatever they hold: one turned
+		// web search on for a nested run while the parent had it off.
+		{"-settings", `{"web_search":{"enabled":true}}`, "-p", "hi"},
+		{"-settings", `{"web_search":{"base_url":"http://127.0.0.1:1/collect"}}`, "-p", "hi"},
+		{"-settings", `{"permissions":{"deny":["bash(curl*)","bash(wget*)"]}}`, "-p", "hi"},
+		{"-mcp-config", `{"mcpServers":{"x":{"command":"/bin/true"}}}`, "-p", "hi"},
+		{"admin", "web-search", "on"},
 	} {
 		out, code := stderrOf(t, append([]string{"-C", ws}, args...))
 		if code != 1 || !strings.Contains(out, "refused inside an agent's command") {
@@ -68,9 +75,9 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 	if code, out, _ := runRecord(t, ws, "list"); code != 0 || !strings.Contains(out, ids[0]) {
 		t.Fatalf("the session was pruned: %d %s", code, out)
 	}
-	// Reading, and a session with one more deny rule, are still allowed.
+	// Reading, and a session with one more deny rule or a narrower mode, are still allowed.
 	for _, args := range [][]string{{"record", "list"}, {"trust", "show"}, {"mcp", "list"},
-		{"-settings", `{"permissions":{"deny":["bash(curl*)","bash(wget*)"]}}`, "-p", "hi"},
+		{"-p", "hi"}, {"-mode", "plan", "-p", "hi"},
 		{"-disallowedTools", "Bash(wget:*)", "-p", "hi"}} {
 		if out, _ := stderrOf(t, append([]string{"-C", ws}, args...)); strings.Contains(out, "refused inside") {
 			t.Errorf("%v refused: %s", args, out)
@@ -85,6 +92,7 @@ func TestSelfAdminNamesOnlyChanges(t *testing.T) {
 		"user add a": true, "user list": false, "secret set A": true, "secret list": false,
 		"mcp add a b": true, "mcp rm a": true, "mcp remove a": true, "mcp list": false, "init": true, "doctor": false,
 		"eval -trust-workspace": true, "resolve --trust-workspace=true u": true,
+		"admin web-search on": true, "admin web-search off": true,
 	} {
 		if got := selfAdmin(strings.Fields(args)) != ""; got != want {
 			t.Errorf("selfAdmin(%q) = %v, want %v", args, got, want)
@@ -121,5 +129,26 @@ func TestWidenedNamesRemovedRules(t *testing.T) {
 	eff.Permissions.Ask = []string{}
 	if got := widened(base, eff); !strings.Contains(got, "ask rule removed") {
 		t.Errorf("ask removed: %q", got)
+	}
+}
+
+// A nested run's settings cannot choose or tune the fence for its commands.
+func TestWidenedNamesFenceSettings(t *testing.T) {
+	var base config.Config
+	eff := base
+	eff.Sandbox.Tier = "fence"
+	if got := widened(base, eff); !strings.Contains(got, "sandbox.tier") {
+		t.Errorf("tier chosen: %q", got)
+	}
+	base.Sandbox.Tier = "fence"
+	eff = base
+	eff.Sandbox.Tier = ""
+	if got := widened(base, eff); !strings.Contains(got, "sandbox.tier") {
+		t.Errorf("tier dropped: %q", got)
+	}
+	eff = base
+	eff.Fence.CPUPercent = 400
+	if got := widened(base, eff); !strings.Contains(got, "fence setting") {
+		t.Errorf("cpu changed: %q", got)
 	}
 }

@@ -130,7 +130,7 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | Code | Meaning |
 |---|---|
 | `0` | completed |
-| `1` | error: the model or a tool failed, or no structured answer was delivered |
+| `1` | error: the model or a tool failed, or no structured answer was delivered; or, under the fence, closing it failed: a `.abhed` was found in the workspace or it could not be listed, or its cgroup or temp folder could not be removed |
 | `2` | bad invocation, or the turn limit |
 | `3` | token budget |
 | `5` | model retries exhausted |

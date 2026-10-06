@@ -92,6 +92,13 @@ func (s *Server) newStreamGuard(r *http.Request, sessionID string, read bool) *s
 	return g
 }
 
+// atStreamStep runs the test hook for stage, if one is set.
+func (s *Server) atStreamStep(stage string) {
+	if s.streamStep != nil {
+		s.streamStep(stage)
+	}
+}
+
 func (g *streamGuard) stop() {
 	g.ticker.Stop()
 	g.s.streamMu.Lock()

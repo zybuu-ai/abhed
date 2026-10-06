@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	default:
 		add("trust", "Workspace trust", "warn", fmt.Sprintf("the workspace's configuration file is not trusted (%s); %d setting(s) ignored", ws.Reason, len(ws.Ignored)))
 	}
+	add("web_search", "Web search", "ok", cfg.WebSearchState())
 	provider, err := cfg.Provider()
 	if err != nil {
 		add("provider", "Model provider", "fail", err.Error())
@@ -73,6 +75,9 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		got, err := sb.Command(sctx, workspace, "echo abhed-sandbox-ok").CombinedOutput()
 		cancel()
+		if cerr := sandbox.Close(sb); cerr != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", cerr)
+		}
 		switch {
 		case err != nil || !strings.Contains(string(got), "abhed-sandbox-ok"):
 			add("sandbox", "Sandbox", "fail", fmt.Sprintf("the %s tier could not run a command", sb.Tier()))

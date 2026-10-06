@@ -85,6 +85,9 @@ type cliState struct {
 	addedDirs []agent.WorkspaceDirAdded
 	// pendingName is a name given before the conversation exists.
 	pendingName string
+	// labelID and label are what the footer calls session labelID, kept
+	// where the store is a database rather than asked after every turn.
+	labelID, label string
 	// copiedID is the session a record from elsewhere, or one that failed
 	// verification, was copied into, with the events copied.
 	copiedID     string

@@ -27,6 +27,7 @@ func (d *dock) footerRows(w int) []string {
 	// only text is drawn, and a status line's colours only where colour is on.
 	m.Model, m.Provider = sanitize(m.Model, false), sanitize(m.Provider, false)
 	m.GitBranch, m.Cwd = sanitize(m.GitBranch, false), sanitize(m.Cwd, false)
+	m.SessionTitle = sanitize(m.SessionTitle, false)
 	m.Mode, m.PendingMode = sanitize(m.Mode, false), sanitize(m.PendingMode, false)
 	m.Line = sanitize(m.Line, s.enabled)
 
@@ -102,6 +103,9 @@ func statusLine(s Style, m StatusModel, w int) string {
 	var parts []string
 	if m.Model != "" {
 		parts = append(parts, m.Model)
+	}
+	if m.SessionTitle != "" {
+		parts = append(parts, "session "+truncateWidth(m.SessionTitle, 32))
 	}
 	if m.ContextTokens > 0 {
 		p := fmt.Sprintf("%d%% context", m.ContextPercent)

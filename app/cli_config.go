@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -141,21 +142,29 @@ func configPanel(c config.Config) ui.PanelSpec {
 // may do needs a confirmation, which a surface with no answers never gives.
 func configSet(ctx context.Context, e *cmdEnv, path, value string) error {
 	c := e.st.appCfg
+	refused := func(err error) error {
+		recordSetRefused(e.st, path, value, err.Error())
+		return err
+	}
+	if config.WebKey(path) {
+		return refused(fmt.Errorf("%s is managed only: only the managed configuration turns web search or web fetch on "+
+			"or says where they go; ask your administrator, or run `sudo abhed admin web-search on`", path))
+	}
 	i := slices.IndexFunc(configKeys, func(k configKey) bool { return k.path == path })
 	if i < 0 {
 		var names []string
 		for _, k := range configKeys {
 			names = append(names, k.path)
 		}
-		return fmt.Errorf("/config set takes %s; edit ~/.abhed/config.json for the rest", strings.Join(names, ", "))
+		return refused(fmt.Errorf("/config set takes %s; edit ~/.abhed/config.json for the rest", strings.Join(names, ", ")))
 	}
 	k := configKeys[i]
 	if c.ManagedSets(path) {
-		return fmt.Errorf("%s is set by the managed configuration and cannot be changed here", path)
+		return refused(fmt.Errorf("%s is set by the managed configuration and cannot be changed here", path))
 	}
 	v, err := k.check(c, value)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return refused(fmt.Errorf("%s: %w", path, err))
 	}
 	// Held across the read, the question and the write, so two sessions
 	// cannot lose each other's change.
@@ -176,7 +185,7 @@ func configSet(ctx context.Context, e *cmdEnv, path, value string) error {
 			Title: fmt.Sprintf("Set %s to %s in your own configuration?", path, config.Printable(value)),
 			Why:   "this lets the agent do more than it does now"})
 		if err != nil || ans != ui.ChoiceYes {
-			return fmt.Errorf("%s not changed", path)
+			return refused(fmt.Errorf("%s not changed", path))
 		}
 	}
 	file, err := writeUserSetting(path, v)
@@ -185,6 +194,14 @@ func configSet(ctx context.Context, e *cmdEnv, path, value string) error {
 	}
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("%s set in %s; it applies from the next session", path, config.Printable(file))})
 	return nil
+}
+
+// recordSetRefused records a refused /config set with who asked for it.
+func recordSetRefused(st *cliState, path, value, why string) {
+	home, _ := os.UserHomeDir()
+	st.recordCLI(agent.EvConfigRefused, agent.ConfigAttempt{Layer: "command", Source: "/config set " + config.Printable(filepath.Join(home, ".abhed", "config.json")),
+		Key: config.Printable(path), Value: config.RedactValue(path, value), Decision: "refused", Reason: why,
+		Principal: toolset.LocalPrincipal(inAgentCommand())})
 }
 
 // lockUserConfig locks ~/.abhed/config.json against another /config set.

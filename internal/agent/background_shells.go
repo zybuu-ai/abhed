@@ -12,6 +12,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -211,7 +212,8 @@ func (h shellHost) StartShell(ctx context.Context, req tools.ShellRequest) (stri
 		life = req.Timeout
 	}
 	// The session's context, not the call's: only a kill, a stop or the session's end ends it.
-	sctx, cancel := context.WithCancelCause(b.ctx)
+	// The call's launch goes with it, so a fenced command is still recorded.
+	sctx, cancel := context.WithCancelCause(sandbox.WithLaunch(b.ctx, sandbox.LaunchOf(ctx)))
 	sctx, stopDeadline := context.WithDeadlineCause(sctx, b.policy.now().Add(life), ErrBackgroundLifetime)
 	var proc *tools.ShellProc
 	if req.Proc != nil {

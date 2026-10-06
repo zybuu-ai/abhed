@@ -61,13 +61,17 @@ func (l *LineReader) Pick(ctx context.Context, p PickSpec) (string, error) {
 	if def == "" {
 		def = p.Items[0].ID // picking is not a grant: Enter may take the first
 	}
-	spec := DialogSpec{Kind: DialogChoice, Title: p.Title, Default: def, NoRecord: true, Cancel: "\x00cancel"}
+	spec := DialogSpec{Kind: DialogChoice, Title: p.Title, Default: def, NoRecord: true, Cancel: "\x00cancel",
+		Filter: p.Filter, Pinned: []string{"\x00cancel"}}
 	for _, it := range p.Items {
 		label := sanitize(it.Label, false)
 		if it.Detail != "" {
 			label += "  " + l.d.st.Dim(sanitize(it.Detail, false))
 		}
 		spec.Choices = append(spec.Choices, Choice{ID: it.ID, Label: label})
+		if it.Always {
+			spec.Pinned = append(spec.Pinned, it.ID)
+		}
 	}
 	spec.Choices = append(spec.Choices, Choice{ID: "\x00cancel", Label: "Cancel (esc)"})
 	id, err := l.Dialog(ctx, spec)

@@ -46,7 +46,10 @@ type StatusModel struct {
 
 	Record      RecordStatus `json:"record"`
 	SessionName string       `json:"session_name,omitempty"`
-	GitBranch   string       `json:"git_branch,omitempty"`
+	// SessionTitle is what the footer calls the session: its name, else its
+	// first prompt cut short, else its id.
+	SessionTitle string `json:"session_title,omitempty"`
+	GitBranch    string `json:"git_branch,omitempty"`
 
 	// Cwd is the workspace as the footer shows it, ~ for home.
 	Cwd string `json:"cwd,omitempty"`

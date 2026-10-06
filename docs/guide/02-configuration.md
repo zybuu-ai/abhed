@@ -35,7 +35,8 @@ configuration](#trusting-the-workspace-configuration).
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
-| `sandbox` | process isolation and network access; `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
+| `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
+| `fence` | `cpu_percent`: the fence tier's CPU bound — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
 | `auth` | who may use a server deployment |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
@@ -44,8 +45,8 @@ configuration](#trusting-the-workspace-configuration).
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
-| `web_search` | provider and result count |
-| `web_fetch` | whether the agent can read a web page, and from which hosts — [below](#web-fetch) |
+| `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
+| `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
 | `retrieval`, `rag` | the local index, and external corpora |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
@@ -230,7 +231,283 @@ gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
 `npm`, `pip` and the like) and the failure is in its last five lines, so
 output that merely mentions such an error, a log being read, does not.
 
+### The fence tier (preview, Linux)
+
+```json
+"sandbox": { "tier": "fence", "allow_network": false, "max_memory_mb": 4096, "max_procs": 512 },
+"fence": { "cpu_percent": 200 }
+```
+
+The fence is a preview. It is off unless `sandbox.tier` is `"fence"`, it runs
+on Linux only (amd64 and arm64), and it fails closed: when anything it needs
+is missing, Abhed refuses to start and names the check that failed. It never
+runs a command under another tier in its place. For `sandbox.min_tier` it
+counts as the process tier.
+
+**Requirements.**
+
+- Linux 6.7 or later with the default `allow_network: false`, since refusing
+  TCP takes Landlock ABI 4; with `allow_network: true`, Linux 6.2 or later
+  (Landlock ABI 3). Landlock must be turned on (`landlock` in
+  `/sys/kernel/security/lsm`).
+- cgroups v2, with a cgroup delegated to you. Abhed asks systemd whether the
+  scope it runs in has `Delegate=yes`, and refuses when it does not; a
+  cgroup you can merely write is not enough, since systemd still manages it.
+- An ordinary user. The fence refuses root in this release.
+
+**How to run it.** Start Abhed in a delegated scope:
+
+```sh
+systemd-run --user --scope -p Delegate=yes abhed ...
+```
+
+`abhed doctor` shows the fence's probe check by check when the fence tier is
+configured: the kernel, Landlock, seccomp, no_new_privs, capabilities and the
+delegated cgroup, each pass or fail with what it measured.
+
+**What it does.** Abhed re-executes itself as a small launcher for every
+command. In order, the launcher checks it holds no privileges and that this
+run's probe qualified the host, joins a cgroup made for the tool call, confines
+itself with Landlock and a seccomp filter, reports what it applied, and waits.
+Abhed writes `process.launched` to the record, and only then lets the launcher
+run the command in its place. A launcher that cannot do any step exits 126
+without running anything.
+
+- **Files.** A command reads and runs the system folders (`/usr`, `/bin`,
+  `/lib`, `/etc`, `/opt` and the like) and `sandbox.read_only_paths`, reads
+  `/proc` and `/sys`, and writes only the workspace and a private temp folder
+  of the session's. `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and `npm_config_cache`
+  point into that folder. The rest of your home, `~/.abhed`, the record and
+  the secrets are out of reach.
+- **Abhed's state in the workspace.** Landlock cannot keep a command from
+  making a folder inside the writable workspace, so Abhed checks instead:
+  after every command, before the next one and when the session closes. A
+  `.abhed` at the top of the workspace, in any spelling of its case, is first
+  renamed in place to `.abhed-planted-<id>`, a name Abhed never reads, and
+  then moved to `~/.abhed/quarantine/` where it can be (not when the
+  workspace is on another filesystem than your home). It is recorded as
+  `fence.state_planted`, saying whether it was moved, renamed in place or is
+  still present. The session's commands still running are ended, its
+  cgroup killed (`session_killed` in the event), since one may be the
+  command that made it, and the session's fence runs no further command. A
+  workspace a command made unlistable, by its mode say, counts as holding
+  one: the session is refused the same way. When a `.abhed` is still present
+  or the workspace cannot be listed at close, the session ends with an
+  error saying so, and `abhed -p` exits 1 for a run that otherwise
+  completed, as it does for any failure to close the fence; remove it, or restore the folder's permissions and check
+  it, before Abhed runs there again.
+
+  The check is not a guard. A file a command writes into the workspace's
+  `.abhed` is there while it runs and until the check that follows it, and
+  Abhed can read it then (for example its users or memory files). After an unclean exit (Abhed killed,
+  the machine down) nothing is checked or moved, so look for a `.abhed` in
+  the workspace yourself. A `.abhed` in a subfolder of the workspace or in a
+  folder added with `--add-dir` is not checked.
+- **Terminals.** Of the devices, a command opens only `/dev/null`,
+  `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and `/dev/tty`,
+  which reaches only its own terminal. Each command runs in a session of
+  its own, so a command not started on a terminal, such as those `abhed
+  doctor` runs, has none, and `/dev/tty` never reaches Abhed's. It keeps
+  stdin, stdout and stderr through the descriptors it was given, but cannot
+  open `/dev/ptmx` or any `/dev/pts/*`, so it can neither read nor write your
+  other terminals.
+- **System calls.** The seccomp filter (profile `command/3`) refuses ptrace,
+  namespaces, mounts, bpf, kernel keyrings, loading modules and a filter of
+  the command's own. It also refuses signals aimed at Abhed: `kill`,
+  `tkill`, `tgkill`, `rt_sigqueueinfo` and `rt_tgsigqueueinfo` naming Abhed's
+  process id, `kill` of its process group or of every process (`kill -1`),
+  and `pidfd_send_signal` altogether, since a filter cannot see whom a pidfd
+  names. Each command also runs in a process group apart from Abhed's.
+- **Network.** All or nothing. With `allow_network` false every `socket()` is
+  refused, and Landlock refuses TCP as well. With it true, commands get the
+  host's network, unfiltered. Unix sockets are refused either way.
+- **Limits.** Each session's commands share a cgroup bounded by
+  `max_memory_mb` (with no swap), `max_procs` (processes and threads) and
+  `fence.cpu_percent` (percent of one core; unset is unbounded), and each tool
+  call gets a cgroup of its own with the same bounds. When a command exits,
+  whatever it left running is ended.
+- **The record.** `fence.qualified` holds the probe's report at the start of
+  the session, `process.launched` each command's launch with its call id
+  before it runs, `fence.limit` a command that ran into its memory or
+  process limit, and `fence.state_planted` a `.abhed` found in the workspace.
+  `process.launched` names its `source`: `call` for a tool call or a `!`
+  command, `harness` for one Abhed runs itself within a session. When
+  `fence.qualified` cannot be recorded, the command line closes the fence
+  and runs no command, and an SDK agent is not built.
+
+**What it does not cover.** Abhed itself and what it runs in-process (the
+file, web and MCP tools, extensions) stay outside the fence, as on every tier.
+There is no network filtering. Below Landlock ABI 6 (Linux 6.12) a command can
+signal your other processes, and can reach Abhed by one of its thread ids,
+which the filter does not know; Landlock ABI 6 keeps signals inside the
+command's own processes. With no PID namespace a command can read other
+processes' command lines in `/proc` (not their environment or memory). A hard
+link inside the workspace to a file of Abhed's state, made before the
+session, stays readable through the link: Landlock checks the path a file is
+opened by, and the fence makes no such link, but does not look for one. The
+planted-state check above has the limits it states: a file written into the
+workspace's `.abhed` is visible while its command runs, nothing is moved
+after an unclean exit, and a `.abhed` in a subfolder or an added folder is
+not checked.
+
+**What breaks under it.**
+
+- Debuggers and tracers such as `gdb` and `strace` (no ptrace).
+- Clients of unix sockets: Docker, ssh-agent, gpg-agent, D-Bus.
+- Programs that open a terminal of their own: `script`, `expect`, `ssh -t`,
+  `tmux` and `screen`, and anything else that allocates a pty.
+- Programs that signal through a pidfd (`pidfd_send_signal`), such as
+  util-linux `kill --timeout` and Python's `os.pidfd_send_signal`; Go
+  programs and most others use `kill`.
+- Tools that sandbox themselves, such as a headless browser with its sandbox
+  on, and anything that makes a namespace or mounts.
+- Toolchains kept in your home (`~/go`, `~/.cargo`, `~/.nvm`) unless listed
+  in `sandbox.read_only_paths`, and scripts that write a fixed path in `/tmp`.
+- Every kernel below 6.2, and below 6.7 with the network off.
+- A workspace with a `.abhed` folder, or a read-only path inside the
+  workspace (Abhed Studio's git and editor protections, `abhed serve`): the
+  fence cannot keep part of a writable folder read-only, so it refuses.
+- A command Abhed runs outside any session, which is only `abhed doctor`'s
+  check, runs fenced but leaves no `process.launched`, since there is no
+  session record to write it to.
+
+## Web search
+
+```json
+"web_search": {
+  "enabled": true,
+  "provider": "searxng",
+  "base_url": "https://search.internal.example",
+  "max_results": 5
+}
+```
+
+Off by default. Web search is the one tool that sends what the agent is
+working on, its queries, to a service outside the machine, so it is an
+administrator's setting: **only the managed configuration**
+(`/etc/abhed/config.json`) turns it on or says where the queries go. The
+same holds for [`web_fetch`](#web-fetch).
+
+Every other layer, `~/.abhed/config.json`, `-settings`, a workspace's
+`.abhed/config.json` trusted or not, an SDK `ConfigDir` and the environment,
+may only turn it off or narrow it:
+
+| Key | Below the managed file |
+|---|---|
+| `web_search.enabled`, `web_fetch.enabled` | `false` applies, even when the managed file says `true`; `true` is set aside |
+| `web_search.max_results`, `web_fetch.max_chars` | a lower number applies |
+| `web_fetch.allowed_hosts` | only hosts the managed list already allows apply; with no managed list, the list is set aside, since its hosts would be fetched unasked |
+| `web_search.provider`, `base_url`, `api_key`, `api_key_env` | set aside, so no file can send a managed search's queries to another endpoint |
+
+A value set aside is named in a startup warning, as other managed-only
+settings are, and each one is recorded in the session as a `config.refused`
+event: the layer, the file or flag, the key, the value asked for with any key
+redacted, and who asked (the account, or the agent's command that ran a
+nested `abhed`). A value the managed file replaces is recorded as
+`config.refused` with the decision `overridden`, and a narrowing as
+`config.narrowed`. `session.started` says whether web search and web fetch
+are on and who decided. `abhed doctor` prints "enabled by the managed
+configuration" or "off; only the managed configuration can enable it".
+`/config set web_search.enabled true` is refused and recorded the same way.
+On a server accounts sign in to (`auth.mode` other than `none`), the
+operator's own attempts are not put in every user's session: `abhed serve`
+logs each once at startup, as `configuration attempt`, and hands it to the
+admin audit hook as `config.refused` or `config.narrowed`.
+
+**On your own machine** the administrator is you with `sudo`:
+
+```sh
+sudo abhed admin web-search on --provider searxng --base-url http://127.0.0.1:8888
+sudo abhed admin web-search off
+```
+
+`abhed admin web-search` edits only the managed file, keeping everything else
+in it, and refuses unless it can write there. `--provider`, `--base-url`,
+`--api-key-env` (the name of the variable holding the key, in capitals,
+digits and `_`, such as `SEARCH_API_KEY`; something shaped like a key is
+refused, and the key itself is never taken on the command line) and
+`--max-results` go with `on`. Every attempt, done or refused, is appended to
+`admin.jsonl` beside the managed file: when, the command as checked (a value
+that failed its check shows as `(refused)`, and a URL without its
+credentials), the account and uid (and `SUDO_USER` under sudo), the section
+before and after with any key left out, and the result. The managed file is
+replaced whole, keeping its owner, group and mode, so a `root:abhed 0640`
+file stays readable by the server. A refused attempt by
+someone who cannot write there is logged in their own `~/.abhed/admin.jsonl`
+instead. It is refused inside an agent's command, as other commands that
+administer Abhed are. New CLI sessions take the change; restart
+`abhed serve` for the server.
+
+**The system log.** A user can erase their own `admin.jsonl`, so every
+attempt, changed, unchanged or refused (one refused inside an agent's command
+included), also goes to the operating system's log, which an administrator
+can read and an ordinary user cannot erase. Each entry is one line of fixed
+fields, every value quoted with newlines and control characters escaped, so a
+value cannot forge an entry:
+
+```text
+abhed-admin time="2026-10-06T04:40:00Z" uid="0" user="root" sudo_user="ana" action="web-search on" from="{\"enabled\":false}" to="{\"enabled\":true,\"provider\":\"searxng\",...}" result="changed" reason=""
+```
+
+It holds no key: a section shows `api_key_set` in place of one. Find the
+entries with:
+
+| System | Where | Query |
+|---|---|---|
+| macOS | the unified log, through `/usr/bin/logger` | `log show --last 7d --predicate 'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` |
+| Linux, journald | the journal, through its native socket, identifier `abhed-admin`, facility auth | `journalctl -t abhed-admin` (as root or a member of `adm` or `systemd-journal` to see every user's attempts); `journalctl -t abhed-admin -o verbose` shows the `_UID` journald attached itself |
+| Linux, no journald | syslog, tag `abhed-admin`, facility auth | `grep abhed-admin /var/log/auth.log` (Debian, Ubuntu) or `/var/log/secure` (RHEL, Fedora) |
+| Windows | not written yet | the attempt is in `admin.jsonl` only, and the command says so on stderr |
+
+**Telling real entries apart.** The tag is not a credential: any local user
+can add a line tagged `abhed-admin` to the system log with `logger -t
+abhed-admin ...`, with whatever `uid=` and `result=` they like in its text. The fields inside the
+message are what `abhed` wrote only when the log itself says who sent it:
+
+- **Linux, journald:** `journalctl -t abhed-admin -o verbose` shows the
+  trusted fields journald adds itself, beginning with `_`. A real entry has
+  `_COMM=abhed` (a forged one usually `_COMM=logger`, though a user can
+  name their own program `abhed`) and a `_UID` that
+  matches the `uid=` in the message; for a change, `_UID=0`.
+- **macOS:** every entry is sent by `/usr/bin/logger`, so the process name
+  does not tell them apart. `log show --last 7d --style json --predicate
+  'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` gives each
+  entry's `userID`, the uid the system recorded for the sender; it must match
+  the `uid=` in the message, and is `0` for a change.
+- **syslog files** carry no sender the system vouches for; trust them only as
+  far as `admin.jsonl` beside the managed file, which only root can write.
+
+A system log that cannot be written is reported on stderr and does not change
+the command's result. The unified log keeps entries for days, not forever;
+forward it if you need them longer.
+
+**Providers.**
+
+| `provider` | Needs | Notes |
+|---|---|---|
+| `searxng` | `base_url` of your instance | Recommended: free, self-hosted metasearch. The queries stay on infrastructure you run, and it is the one an air-gapped site can put behind its own egress proxy |
+| `brave` | a key, in the variable `api_key_env` names | Hosted API |
+| `tavily` | a key | Hosted API built for agents |
+| `serper` | a key | Hosted API returning Google results |
+| `duckduckgo` (`ddg`) | nothing | The default name, and unofficial: it scrapes DuckDuckGo's HTML results page, which is not an API. It may break when the page changes and may be rate-limited, and its terms do not cover automated use |
+
+A key belongs in an environment variable named by `api_key_env`, not in the
+file. A query holding a stored secret is refused before it is sent.
+
+**Upgrading from 1.2.5 or earlier.** Web search or web fetch turned on in
+`~/.abhed/config.json`, a `-settings` file or a workspace's file is now set
+aside, with a warning at startup, and the tool is no longer offered. Ask your
+administrator to turn it on in the managed configuration, or, on your own
+machine, run `sudo abhed admin web-search on` with the provider and endpoint
+you used (for web fetch, add the `web_fetch` section to
+`/etc/abhed/config.json` with sudo). Then remove the section from your own
+file; a copy that only repeats the defaults, as `abhed init` writes, is
+quietly accepted.
+
 ## Web fetch
+
+Managed only, as [web search](#web-search) is: only the managed file turns it
+on or names `allowed_hosts`.
 
 ```json
 "web_fetch": {
@@ -439,6 +716,14 @@ is pointed at. With Postgres, accounts are rows and the file is not used.
 `abhed user add`, `passwd` and `import` refuse a `users_file` that `serve`
 would refuse to start with, with the same message.
 
+A users file inside the workspace, the default one included, is read only
+when the workspace is trusted (`abhed trust grant`, `-trust-workspace`, or a
+trusted `.abhed/config.json`). In an untrusted workspace `serve` starts with
+no accounts from it, `abhed user list` warns that it is ignoring the file, and
+`add`, `passwd`, `remove` and `import` refuse. The managed `auth.users_file`,
+and one outside the workspace, are read either way. See [Accounts in the
+workspace](../architecture/workspace-trust.md#accounts-in-the-workspace).
+
 A change to an account reaches its live sessions on their next request,
 whichever process made it: an account removed with `abhed user remove` is
 signed out, and a group added or removed applies at once. Removing
@@ -492,10 +777,24 @@ Later sources win, except that an org-managed file cannot be overridden:
 
 1. built-in defaults
 2. `~/.abhed/config.json`
-3. `.abhed/config.json` in the workspace
-4. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
-5. command-line flags
-6. **managed settings**, which nothing below can loosen
+3. a `-settings` file or inline JSON, for one run
+4. `.abhed/config.json` in the workspace (whole only when trusted)
+5. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
+6. command-line flags and the SDK's `Options`
+7. **managed settings**, which nothing below can loosen
+
+Some settings are **managed only**: a lower layer's value is set aside with a
+warning and a record event. They are `record.dir`, `record.retention_days`,
+`hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
+`studio.disable_host_terminal`, and the whole of `web_search` and
+`web_fetch`, which a lower layer may only turn off or narrow
+([Web search](#web-search)). A lower layer's value the managed file replaces
+is recorded too, as `config.refused` with the decision `overridden`.
+
+Inside an agent's command, a nested `abhed` refuses `-settings` and
+`-mcp-config` whatever they hold: either can name an endpoint the nested
+session would send the code or its queries to. A nested run narrows with
+`-mode plan`, `-disallowedTools` or `-max-turns`.
 
 ### The managed file
 
@@ -634,6 +933,10 @@ loaded, and the warning names each one as `agents/<name>`. A definition can
 choose a model, and so where your code is sent. Declining new definitions
 keeps a file you already trusted. See [Agent
 definitions](17-agent-definitions.md).
+
+A workspace's `.abhed/users.json` is read only when the workspace is trusted;
+`abhed trust grant` covers it, and an untrusted workspace's accounts cannot
+sign in (see [Accounts](#accounts)).
 
 Trust is for the file's exact contents: after an edit it is asked about again.
 `abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and

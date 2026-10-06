@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,52 @@ type dialogState struct {
 	byArrow bool
 	note    string
 	done    chan int
+	// all is every choice of a filtering dialog, and filter what has been
+	// typed; spec.Choices holds those that match.
+	all    []Choice
+	filter string
+}
+
+// narrow keeps the choices whose words hold every word typed, and the pinned
+// ones, and selects the first match so Enter takes it.
+func (s *dialogState) narrow() {
+	words := strings.Fields(strings.ToLower(s.filter))
+	var out []Choice
+	matched := 0
+	for _, c := range s.all {
+		if slices.Contains(s.spec.Pinned, c.ID) {
+			continue
+		}
+		hay := strings.ToLower(stripANSI(c.Label))
+		ok := true
+		for _, w := range words {
+			if !strings.Contains(hay, w) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, c)
+			matched++
+		}
+	}
+	for _, c := range s.all {
+		if slices.Contains(s.spec.Pinned, c.ID) {
+			out = append(out, c)
+		}
+	}
+	s.spec.Choices = out
+	switch {
+	case s.filter == "":
+		s.sel, s.byArrow = s.index(s.spec.Default), false
+		s.note = ""
+	case matched == 0:
+		s.sel, s.byArrow = -1, false
+		s.note = "nothing matches " + strconv.Quote(s.filter) + " · backspace to widen"
+	default:
+		s.sel, s.byArrow = 0, true
+		s.note = ""
+	}
 }
 
 func (s *dialogState) index(id string) int {
@@ -64,6 +111,9 @@ func (d *dock) ask(ctx context.Context, spec DialogSpec) (string, error) {
 	// answers nothing, so an approval is always a choice someone made.
 	st := &dialogState{spec: spec, pending: -1, done: make(chan int, 1)}
 	st.sel = st.index(spec.Default)
+	if spec.Filter {
+		st.all = slices.Clone(spec.Choices)
+	}
 	d.mu.Lock()
 	if d.inputEnded {
 		d.mu.Unlock()
@@ -99,9 +149,9 @@ func (d *dock) ask(ctx context.Context, spec DialogSpec) (string, error) {
 		d.draw()
 		return "", err
 	}
-	id := spec.Choices[i].ID
+	id := st.spec.Choices[i].ID
 	if !spec.NoRecord {
-		d.commit(&dialogRecord{spec: spec, chosen: i})
+		d.commit(&dialogRecord{spec: st.spec, chosen: i})
 	} else {
 		d.draw()
 	}
@@ -151,6 +201,9 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 		return
 	}
 	quiet := gap >= approvalGuard
+	if st.spec.Filter && st.filterKey(k) {
+		return
+	}
 	switch {
 	case k.code == kEsc:
 		d.resolve(st.cancelIndex())
@@ -177,7 +230,7 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 		case !strict && !st.byArrow:
 			st.note = "choose with a number, or ↑↓ then Enter"
 			return
-		case !quiet:
+		case !quiet && st.filter == "":
 			// An arrow is a key, so Enter straight after one is not quiet.
 			st.note = "too quick after another key; press Enter again"
 			return
@@ -207,6 +260,33 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 			d.draw()
 		})
 	}
+}
+
+// filterKey applies a key that edits a filtering dialog's filter: a letter
+// or a space narrows, Backspace widens, Ctrl-U clears. A number is not
+// typed into it: numbers choose. It reports whether the key was used.
+func (s *dialogState) filterKey(k key) bool {
+	if k.code != kNone {
+		return false
+	}
+	switch {
+	case k.r == 0x7f || k.r == keyCtrlH:
+		if s.filter == "" {
+			return true
+		}
+		r := []rune(s.filter)
+		s.filter = string(r[:len(r)-1])
+	case k.r == keyCtrlU:
+		s.filter = ""
+	case k.alt || k.r < ' ' || k.r >= '0' && k.r <= '9':
+		return false
+	case len(s.filter) >= 60:
+		return true
+	default:
+		s.filter += string(k.r)
+	}
+	s.narrow()
+	return true
 }
 
 // choiceFor maps a number to its choice's index, or -1: no letter answers.
@@ -297,8 +377,13 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 	}
 	// Only a number answers: Enter on a highlighted Yes answers nothing.
 	hint := "press a number to answer · esc to decline"
-	if st.note != "" {
+	switch {
+	case st.note != "":
 		hint = st.note
+	case st.spec.Filter && st.filter != "":
+		hint = "filter: " + sanitize(st.filter, false) + " · enter opens · numbers choose · esc to cancel"
+	case st.spec.Filter:
+		hint = "type to filter · a number or ↑↓ then enter chooses · esc to cancel"
 	}
 	tail = append(tail, s.Accent("╰─ ")+s.Dim(truncateWidth(hint, w-4)))
 

@@ -1544,7 +1544,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}
 
 	start := time.Now()
-	runCtx, forget := l.withDetach(l.withShellHost(l.asParent(ctx), call.ID))
+	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
 	if _, isTask := tool.(Task); isTask {

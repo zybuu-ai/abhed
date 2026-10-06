@@ -655,7 +655,7 @@ const startTries = new Map(), startNoted = new Set();
 const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map(), bgTasks = new Map(), known = new Set(), tabs = [], providers = [];
 const stat = {}, qbox = new El('div');
 const cancelAnimationFrame = () => {}, clear = () => {}, drawBg = () => {}, waiting = () => {}, dropTab = () => {}, drawTabs = () => {}, welcome = () => {};
-const drawFiles = () => {}, drawNotes = () => {}, closeComment = () => {}, setLive = () => {}, drawStatus = () => {}, closeAllTerms = () => {}, noTerminal = () => {}, modeForNewSession = () => {};
+const drawFiles = () => {}, drawNotes = () => {}, closeComment = () => {}, setLive = () => {}, drawStatus = () => {}, closeAllTerms = () => {}, noTerminal = () => {}, modeForNewSession = () => {}, setURL = () => {};
 `
 	if out, err := runConsoleCases(t, "ide-reset", harness, "ide_reset_cases.mjs"); err != nil {
 		t.Fatalf("a new session's box failed:\n%s", out)
@@ -699,5 +699,38 @@ func TestIDEAtListAndPaletteRevealHiddenNames(t *testing.T) {
 		if out, err := runConsoleCases(t, set, ideAtHarness, "ide_at_cases.mjs"); err != nil {
 			t.Errorf("%s:\n%s", set, out)
 		}
+	}
+}
+
+// ideSwitchHarness is the page state the workbench's session list, the
+// address and the dropdown run against.
+const ideSwitchHarness = `import { El } from './dom.mjs';
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); c.parentNode = null; };
+El.prototype.scrollIntoView = function(){};
+const ids = {}, $ = id => ids[id] || (ids[id] = Object.assign(new El('div'), {id}));
+let current = null, sessionList = [];
+const isMac = false;
+globalThis.__opened = []; globalThis.__states = {}; globalThis.__tab = {}; globalThis.__drops = 0;
+globalThis.location = {href:'https://h/ide', search:''};
+globalThis.history = {state:null, replaceState(_, __, url){ const u = new URL(url, 'https://h'); location.href = u.href; location.search = u.search; }};
+globalThis.sessionStorage = {getItem: k => k in __tab ? __tab[k] : null, setItem(k, v){ __tab[k] = String(v); }, removeItem(k){ delete __tab[k]; }};
+const api = async path => {
+  const m = /^\/v1\/sessions\/([^/]+)\/state$/.exec(path);
+  if(m && __states[m[1]]) return __states[m[1]];
+  const e = new Error('session not found'); e.status = 404; throw e;
+};
+const add = () => {}, editTitle = () => {}, sessionMenu = () => {}, deleteSession = () => {};
+const openSession = id => { __opened.push(id); current = id; };
+const openDrop = () => { __drops++; $('sdrop').hidden = false; }, closeDrop = () => { $('sdrop').hidden = true; };
+$('sdrop').hidden = true; $('sfilter').value = ''; $('sdropq').value = '';
+`
+
+// The session list is ordered by last activity with an age and a filter, the
+// open session lives in the address, and the dropdown and its keys work.
+func TestIDESwitchesSessions(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-switch", ideSwitchHarness, "ide_switch_cases.mjs"); err != nil {
+		t.Fatalf("switching sessions failed:\n%s", out)
 	}
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -322,6 +323,9 @@ type Server struct {
 	// when a sign-in changes (stream_auth.go).
 	streamMu sync.Mutex
 	streams  map[*streamGuard]struct{}
+	// streamStep, when set by a test, runs at the named points of a stream's
+	// start, to widen the gaps a recheck could fall into.
+	streamStep func(stage string)
 }
 
 type liveSession struct {
@@ -562,6 +566,7 @@ func New(opts Options) *Server {
 		s.sessions = rec
 	}
 	srv = s
+	s.reportConfigAttempts()
 	if local := s.LocalAuth(); local != nil {
 		local.OnChange(func(username string) {
 			s.releaseStale(local, username)
@@ -1097,6 +1102,49 @@ type StartSpec struct {
 	OnEnd func(reason string, err error)
 }
 
+// recordConfigAttempts records, after a session's start, the settings the
+// server's configuration set aside, overrode or narrowed when it loaded:
+// made by the account that runs the server, in owner's session. On a server
+// accounts sign in to they are the operator's, not the session owner's, and
+// reportConfigAttempts has put them in the server log and the admin audit.
+func (s *Server) recordConfigAttempts(rec *agent.Recorder, owner string) {
+	if s.multiUser() {
+		return
+	}
+	p := toolset.LocalPrincipal(sandbox.InAgentCommand())
+	p.SessionOwner = owner
+	if err := toolset.RecordConfigAttempts(rec, toolset.ConfigAttempts(s.opts.Config, p)); err != nil {
+		s.log.Error("record the configuration attempts", "err", err)
+	}
+}
+
+// multiUser reports whether accounts sign in to this server.
+func (s *Server) multiUser() bool {
+	m := s.opts.Config.Auth.Mode
+	return m != "" && m != "none"
+}
+
+// reportConfigAttempts gives the operator's configuration attempts, once, to
+// the server log and Options.AdminAudit, on a server accounts sign in to.
+func (s *Server) reportConfigAttempts() {
+	if !s.multiUser() {
+		return
+	}
+	for _, a := range toolset.ConfigAttempts(s.opts.Config, toolset.LocalPrincipal(sandbox.InAgentCommand())) {
+		action := "config.refused"
+		if a.Decision == "narrowed" {
+			action = "config.narrowed"
+		}
+		detail := map[string]any{"layer": a.Layer, "source": a.Source, "value": a.Value, "decision": a.Decision,
+			"reason": a.Reason, "principal": a.Principal}
+		s.log.Warn("configuration attempt", "action", action, "key", a.Key, "layer", a.Layer, "source", a.Source,
+			"value", a.Value, "decision", a.Decision, "reason", a.Reason)
+		if s.opts.AdminAudit != nil {
+			s.opts.AdminAudit(context.Background(), action, a.Key, detail)
+		}
+	}
+}
+
 // errBadMode is returned by StartSession when the requested mode would widen
 // permissions; the HTTP handler turns it into a 403.
 var errBadMode = errors.New("mode may only narrow permissions; a client may request \"plan\" and nothing else")
@@ -1193,13 +1241,14 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		return "", err
 	}
 	// Names the provider, so a resume cannot mistake it for another serving the same model.
-	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{
+	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]any{
 		"origin": "chat", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
-		"provider": live.provider,
+		"provider": live.provider, "web": toolset.WebState(s.opts.Config),
 	}); err != nil {
 		s.forgetUnstarted(sessionID)
 		return "", fmt.Errorf("record session start: %w", err)
 	}
+	s.recordConfigAttempts(rec, spec.User)
 
 	runCtx, cancelCause := context.WithCancelCause(context.Background())
 	cancel := func() { cancelCause(nil) }
@@ -1321,9 +1370,9 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	}
 	live.State = "idle"
 	// The first event, so the session has a record to be resumed from.
-	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{
+	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]any{
 		"origin": "workbench", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
-		"provider": live.provider,
+		"provider": live.provider, "web": toolset.WebState(s.opts.Config),
 	}); err != nil {
 		// An empty session left listed would be one nobody can open.
 		if del, ok := s.under().(agent.SessionDeleter); ok {
@@ -1331,6 +1380,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 		}
 		return "", fmt.Errorf("record session start: %w", err)
 	}
+	s.recordConfigAttempts(rec, spec.User)
 	s.mu.Lock()
 	if s.draining.Load() {
 		s.mu.Unlock()
@@ -2026,6 +2076,9 @@ type sessionSummary struct {
 	// Reason is how a done session's last run ended, when the record says.
 	Reason  string    `json:"reason,omitempty"`
 	Created time.Time `json:"created"`
+	// Updated is when its conversation last went on (agent.Conversational):
+	// opening it, its terminal, a rename or a model switch leave it alone.
+	Updated time.Time `json:"updated"`
 	// Mode is the permission mode the session was started in.
 	Mode string `json:"mode,omitempty"`
 	// Model is what the session runs on now; Provider its configured name,
@@ -2058,11 +2111,20 @@ func (l *liveSession) activity() (int, *pendingAsk) {
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	tenant := TenantOf(r.Context())
 	user := UserOf(r.Context())
+	page, err := parseListPage(r.URL.Query())
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	window := 200
+	if page.q != "" || page.cursor != nil || page.limit > 0 {
+		window = 500 // a search or a paged list reaches further back
+	}
 
 	// A durable store also returns sessions from before this process started,
 	// which is what makes audit useful after a restart.
 	if s.sessions != nil {
-		records, err := s.listOwned(r.Context(), user, 200)
+		records, err := s.listOwned(r.Context(), user, window)
 		if err == nil {
 			out := make([]sessionSummary, 0, len(records))
 			for _, rec := range records {
@@ -2105,13 +2167,20 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 					live.mu.Unlock()
 				}
 				s.mu.RUnlock()
+				updated := rec.UpdatedAt
+				if at, ok := s.lastActivity(rec.ID); ok && at.After(updated) {
+					updated = at
+				}
+				if updated.IsZero() {
+					updated = rec.StartedAt
+				}
 				out = append(out, sessionSummary{
 					ID: rec.ID, User: rec.User, Tenant: rec.Tenant,
-					Prompt: prompt, Title: title, State: state, Reason: reason, Created: rec.StartedAt, Mode: rec.Mode,
+					Prompt: prompt, Title: title, State: state, Reason: reason, Created: rec.StartedAt, Updated: updated, Mode: rec.Mode,
 					Model: modelName, Provider: provider, Background: bg, PendingAsk: ask,
 				})
 			}
-			WriteJSON(w, http.StatusOK, out)
+			writeSessionPage(w, out, page)
 			return
 		}
 		s.log.Warn("durable session list failed, falling back to in-process", "error", err)
@@ -2130,17 +2199,21 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		if !ownsSession(l.Tenant, l.User, tenant, user) {
 			continue
 		}
+		updated, ok := s.lastActivity(l.ID)
 		l.mu.Lock()
+		if !ok || updated.Before(l.Created) {
+			updated = l.Created
+		}
 		bg, ask := l.activity()
 		out = append(out, sessionSummary{
 			ID: l.ID, User: l.User, Tenant: l.Tenant,
 			Prompt: l.Prompt, Title: l.title, State: l.State, Reason: listedReason(l.State, l.Reason),
-			Created: l.Created, Mode: string(l.Loop.Policy.Mode),
+			Created: l.Created, Updated: updated, Mode: string(l.Loop.Policy.Mode),
 			Model: l.model, Provider: l.provider, Background: bg, PendingAsk: ask,
 		})
 		l.mu.Unlock()
 	}
-	WriteJSON(w, http.StatusOK, out)
+	writeSessionPage(w, out, page)
 }
 
 // sessionStateResponse is one session's state, for a page watching it.
@@ -2339,6 +2412,13 @@ func (st *streamEnd) closes(e agent.Event, running func() bool) bool {
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
+	// Guarded before anything is read or written, so a RecheckStreams from
+	// here on is seen by the backlog's writes; the check once the headers
+	// are out catches a sign-in that ended before the guard existed.
+	s.atStreamStep("opening")
+	guard := s.guardReadStream(r, id)
+	defer guard.stop()
+
 	// A session this process is not running may still be replayable from a
 	// durable store — that is the whole point of event sourcing. Looking only
 	// at the in-memory map meant every session from before a restart returned
@@ -2370,6 +2450,10 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if err := guard.check(); err != nil {
+		endStream(w, err)
+		return
+	}
 
 	// ?after= does what Last-Event-ID does for a client that opens a new
 	// EventSource, which cannot set the header itself.
@@ -2402,6 +2486,11 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if backlog, err := s.store.Since(id, lastSeq); err == nil {
 		for _, ev := range backlog {
+			if err := guard.allowed(); err != nil {
+				flusher.Flush()
+				endStream(w, err)
+				return
+			}
 			writeSSE(w, ev)
 			lastSeq = ev.Seq
 			if running {
@@ -2410,6 +2499,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 	}
+	s.atStreamStep("backlog")
 
 	// Only a session still running in this process can produce new events.
 	// For a replayed one the backlog above is the whole story, so close cleanly
@@ -2423,8 +2513,6 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Authorised again while it runs, not only when it opened: every write
 	// below goes through guard.allowed, and a refusal ends the stream.
-	guard := s.guardReadStream(r, id)
-	defer guard.stop()
 
 	// The store drops events for a subscriber that falls behind rather than
 	// stall the loop. Seeing a full buffer, or a gap in seq, means some may
@@ -3708,15 +3796,17 @@ type overviewResponse struct {
 	// s.Admin() on the server, so a client that flips this in the browser
 	// gets a link to a page that answers 403. Hiding a control is courtesy;
 	// the guard is the boundary.
-	Admin      bool     `json:"admin"`
-	WebSearch  string   `json:"web_search"`
-	WebFetch   bool     `json:"web_fetch"`
-	Retrieval  bool     `json:"retrieval"`
-	MCPServers int      `json:"mcp_servers"`
-	Tools      []string `json:"tools"`
-	Sessions   int      `json:"sessions"`
-	Events     int64    `json:"events"`
-	Running    int      `json:"running"`
+	Admin     bool   `json:"admin"`
+	WebSearch string `json:"web_search"`
+	WebFetch  bool   `json:"web_fetch"`
+	// WebSearchState says who decides web search: only the managed configuration turns it on.
+	WebSearchState string   `json:"web_search_state"`
+	Retrieval      bool     `json:"retrieval"`
+	MCPServers     int      `json:"mcp_servers"`
+	Tools          []string `json:"tools"`
+	Sessions       int      `json:"sessions"`
+	Events         int64    `json:"events"`
+	Running        int      `json:"running"`
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -3756,6 +3846,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		o.WebSearch = orDefaultStr(cfg.WebSearch.Provider, "duckduckgo")
 	}
 	o.WebFetch = cfg.WebFetch.Enabled
+	o.WebSearchState = cfg.WebSearchState()
 
 	if reg := s.state.toolRegistry(); reg != nil {
 		o.Tools = reg.Names()

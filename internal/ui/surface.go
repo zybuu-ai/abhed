@@ -111,6 +111,11 @@ type DialogSpec struct {
 	Outcome func(id string) string
 	// NoRecord leaves nothing in the transcript; the caller writes its own.
 	NoRecord bool
+	// Filter lets typed letters narrow a choice dialog's list; numbers still
+	// choose. Pinned names the choices every filter keeps, such as cancel.
+	// Only a DialogChoice may filter: an approval is never typed at.
+	Filter bool
+	Pinned []string
 }
 
 // Confirm choice IDs.
@@ -142,6 +147,9 @@ func (d DialogSpec) Normalized() (DialogSpec, error) {
 	}
 	if len(d.Choices) == 0 {
 		return d, errors.New("a dialog needs at least one choice")
+	}
+	if d.Filter && d.Kind != DialogChoice {
+		return d, fmt.Errorf("only a choice dialog may filter, not a %s", d.Kind)
 	}
 	switch {
 	case d.Kind == DialogConfirm && d.Default != ChoiceNo:
@@ -208,6 +216,8 @@ type PickItem struct {
 	ID     string
 	Label  string
 	Detail string // a second, dimmer column: age, branch, size
+	// Always keeps the item in view whatever is typed to filter the list.
+	Always bool
 }
 
 // PickSpec is a list to choose one entry from.
@@ -216,6 +226,8 @@ type PickSpec struct {
 	Items []PickItem
 	// Default is the ID taken on an empty answer; "" means an answer is required.
 	Default string
+	// Filter lets typing narrow the list by label and detail.
+	Filter bool
 }
 
 // PanelSpec is a read-only view.

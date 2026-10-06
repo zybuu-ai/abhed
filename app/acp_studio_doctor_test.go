@@ -18,9 +18,14 @@ func TestStudioDoctor(t *testing.T) {
 	for _, c := range res.Checks {
 		ids[c.ID] = c.Status
 	}
-	for _, want := range []string{"config", "trust", "provider", "sandbox", "record", "mcp", "index", "managed"} {
+	for _, want := range []string{"config", "trust", "provider", "sandbox", "record", "mcp", "index", "managed", "web_search"} {
 		if ids[want] == "" {
 			t.Errorf("no %s check: %v", want, res.Checks)
+		}
+	}
+	for _, c := range res.Checks {
+		if c.ID == "web_search" && c.Detail != "off; only the managed configuration can enable it" {
+			t.Errorf("web search: %q", c.Detail)
 		}
 	}
 	if ids["provider"] != "ok" || ids["record"] != "ok" {

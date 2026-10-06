@@ -664,6 +664,7 @@ func (c *acpConn) capabilities(msg rpcMessage) {
 	}
 	out["extensions"] = ext
 	out["web"] = map[string]any{"search": cfg.WebSearch.Enabled, "fetch": cfg.WebFetch.Enabled,
+		"search_state": cfg.WebSearchState(), "fetch_state": cfg.WebFetchState(),
 		"allowed_hosts": orEmptyList(cfg.WebFetch.AllowedHosts), "ask": cfg.WebFetch.Enabled && len(cfg.WebFetch.AllowedHosts) == 0}
 	clusters := []any{}
 	for _, cl := range cfg.K8s.Clusters {

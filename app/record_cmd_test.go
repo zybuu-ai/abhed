@@ -70,8 +70,9 @@ func TestRecordListShowVerify(t *testing.T) {
 	if code != 0 || strings.Count(out, "ok ") != 3 || !strings.Contains(out, "not proof against them") {
 		t.Fatalf("verify: %d %s", code, out)
 	}
-	// The index is numbered by line; it used to say "head seq 0".
-	if !strings.Contains(out, "ok      index: 6 lines, head line 6 ") || strings.Contains(out, "head seq 0") {
+	// The index is numbered by line; it used to say "head seq 0". Each session
+	// has its create, title, active and end lines.
+	if !strings.Contains(out, "ok      index: 8 lines, head line 8 ") || strings.Contains(out, "head seq 0") {
 		t.Fatalf("verify names the index head by seq: %s", out)
 	}
 }

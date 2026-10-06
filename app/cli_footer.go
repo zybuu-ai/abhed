@@ -71,14 +71,15 @@ func (f *footer) refresh(st *cliState, pol *policy.Engine) {
 		return
 	}
 	m := ui.StatusModel{
-		Provider:    st.appCfg.Model.Default,
-		Mode:        string(pol.Mode),
-		ModeLocked:  st.appCfg.ManagedSets("permissions.mode"),
-		Network:     st.appCfg.Sandbox.AllowNetwork,
-		Record:      st.recordStatus(),
-		GitBranch:   gitBranch(f.root),
-		Cwd:         homeRel(f.root),
-		SessionName: st.sessionID,
+		Provider:     st.appCfg.Model.Default,
+		Mode:         string(pol.Mode),
+		ModeLocked:   st.appCfg.ManagedSets("permissions.mode"),
+		Network:      st.appCfg.Sandbox.AllowNetwork,
+		Record:       st.recordStatus(),
+		GitBranch:    gitBranch(f.root),
+		Cwd:          homeRel(f.root),
+		SessionName:  st.sessionID,
+		SessionTitle: st.sessionLabel(),
 	}
 	if st.adapter != nil {
 		m.Model = st.adapter.Profile().Name

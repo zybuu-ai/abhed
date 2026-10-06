@@ -768,3 +768,72 @@ func TestApprovalPasteThenEnterAnswersNothing(t *testing.T) {
 		t.Fatalf("a pasted 1 then Enter answered %q", id)
 	}
 }
+
+// pickSpec is a session picker: a filtering choice with cancel pinned.
+func pickSpec() DialogSpec {
+	return DialogSpec{
+		Kind: DialogChoice, Title: "Resume which session?", Ask: "Resume which session?", Default: "s1",
+		Choices: []Choice{{ID: "s1", Label: "Release notes draft"}, {ID: "s2", Label: "Terraform cleanup"},
+			{ID: "s3", Label: "Zebra renamed · terraform state"}, {ID: "cancel", Label: "Cancel (esc)"}},
+		Cancel: "cancel", NoRecord: true, Filter: true, Pinned: []string{"cancel"},
+	}
+}
+
+// Typing narrows a filtering pick, and Enter takes the first match at once;
+// a number chooses within what is shown.
+func TestDialogFilterNarrowsAndEnterTakesTheMatch(t *testing.T) {
+	dr := openDialog(t, pickSpec())
+	dr.clock.advance(time.Second)
+	dr.waitText("type to filter")
+	for _, r := range "zebra" {
+		dr.key(string(r))
+	}
+	dr.waitText("filter: zebra")
+	if text := dr.term.Text(); strings.Contains(text, "Release notes") || !strings.Contains(text, "Cancel (esc)") {
+		t.Fatalf("the filter left the wrong rows:\n%s", dr.term.Dump())
+	}
+	dr.key("\r")
+	if id, ok := dr.answered(); !ok || id != "s3" {
+		t.Fatalf("Enter after a filter answered %q, %v", id, ok)
+	}
+
+	dr = openDialog(t, pickSpec())
+	dr.clock.advance(time.Second)
+	for _, r := range "terra" {
+		dr.key(string(r))
+	}
+	dr.clock.advance(time.Second)
+	dr.key("2")
+	dr.timers.advance(time.Second)
+	if id, ok := dr.answered(); !ok || id != "s3" {
+		t.Fatalf("2 after filtering to two rows answered %q, %v", id, ok)
+	}
+}
+
+// Backspace widens the filter again, a filter that matches nothing says so
+// and Enter then answers nothing, and an approval refuses to filter at all.
+func TestDialogFilterWidensAndNeverFiltersAnApproval(t *testing.T) {
+	dr := openDialog(t, pickSpec())
+	dr.clock.advance(time.Second)
+	for _, r := range "qq" {
+		dr.key(string(r))
+	}
+	dr.waitText("nothing matches")
+	dr.key("\r")
+	if id, ok := dr.answered(); ok {
+		t.Fatalf("Enter with nothing matching answered %q", id)
+	}
+	dr.key("\x7f")
+	dr.key("\x7f")
+	dr.waitText("Release notes draft")
+	dr.key("\x1b")
+	if id, _ := dr.answered(); id != "cancel" {
+		t.Fatalf("Esc answered %q", id)
+	}
+
+	spec := approvalSpec()
+	spec.Filter = true
+	if _, err := spec.Normalized(); err == nil {
+		t.Fatal("an approval that filters was accepted")
+	}
+}

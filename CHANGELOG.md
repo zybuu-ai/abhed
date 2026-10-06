@@ -6,6 +6,201 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-10-06
+
+**Before you upgrade.** Web search and web fetch turned on in
+`~/.abhed/config.json`, `-settings`, a workspace's `.abhed/config.json`, an
+SDK `ConfigDir` or the environment are off after upgrading: re-enable them
+with `sudo abhed admin web-search on …`, or ask your administrator. Managed
+deployments are unchanged. Accounts in a workspace's `.abhed/users.json` load
+only when that workspace is trusted (`abhed trust grant`), or move them to an
+`auth.users_file` outside the workspace. A nested `abhed -settings` or
+`-mcp-config` inside an agent's command is refused. Session lists are ordered
+by last activity. Details under Upgrading.
+
+### Security
+
+- A nested `abhed` run from the agent's own command could turn web search on
+  for itself with `-settings '{"web_search":{"enabled":true}}'` while the
+  session that ran it had it off, and send queries wherever that file said.
+  Inside an agent's command, `-settings` and `-mcp-config` are now refused
+  whatever they hold, as `-trust-workspace` and bypass already were.
+- With web search turned on by the managed configuration,
+  `~/.abhed/config.json`, `-settings` or a trusted workspace could still set
+  `web_search.base_url` or `api_key_env`, sending every query, and the key,
+  to an endpoint of their choosing. The whole `web_search` and `web_fetch`
+  sections are now managed only: no other layer can set the provider,
+  endpoint, key or hosts.
+- A workspace's `.abhed/users.json` was read by `abhed serve`, the console,
+  the workbench, `abhed user` and `abhed migrate` whether or not the
+  workspace was trusted, so a repository could plant an administrator
+  account that signed in to your server. A users file inside the workspace,
+  the default one or an `auth.users_file` resolving there, is now read only
+  when the workspace is trusted. Untrusted, there are no accounts from it,
+  a warning names the file and how to trust the workspace, and
+  `config.refused` for `auth.users_file` is recorded with the principal. The
+  managed `auth.users_file` and one outside the workspace are not affected.
+- `abhed admin web-search` attempts, changed, unchanged or refused, now also
+  go to the system log, which an ordinary user cannot erase as they can
+  their own `admin.jsonl`: the unified log on macOS, the journal (or syslog)
+  on Linux, under `abhed-admin`. Each entry is one line of escaped, fixed
+  fields with no key. Not yet on Windows, which says so.
+- Access revoked while a session's event stream or a terminal stream was
+  starting stayed in effect for that stream until its next timed recheck, up
+  to 10 seconds by default: a sign-out, revocation or ended sign-in session
+  landing between the request's authorisation and the stream's guard was not
+  seen. Both streams are now guarded before they read or write anything, and
+  check access once more as they start.
+- No security advisory is published for the two web-search fixes or the
+  workspace-accounts fix; upgrade to get them.
+
+### Added
+
+- The fence tier, a preview for Linux, chosen with `sandbox.tier: "fence"`
+  and off otherwise. Each command runs through a launcher that joins a cgroup
+  of its tool call, confines itself with Landlock and a seccomp filter, and
+  runs the command only once Abhed has recorded its launch. Commands write
+  only the workspace and a private temp folder; Abhed's state, record and
+  secrets are out of reach; the network is all or nothing, with unix sockets
+  refused either way; `max_memory_mb`, `max_procs` and the new
+  `fence.cpu_percent` bound them. A `.abhed` a command makes at the top of
+  the workspace, in any case, is renamed out of the way once the command
+  ends and moved to `~/.abhed/quarantine/` where it can be, and the
+  session's fence ends what its commands still run and runs no further
+  command; so does a workspace a command made unlistable, and the session
+  ends with an error when either remains (`abhed -p` then exits 1). It is a
+  check, not a guard: a file written there is visible while its command
+  runs and until the check that follows it, nothing is moved after an
+  unclean exit, and a `.abhed` in a subfolder or an `--add-dir` folder is
+  not checked. Commands run in a session of their own and cannot open a pty,
+  so other terminals are out of reach, and cannot signal Abhed by its
+  process id or group. It needs Linux 6.7 or later with the default
+  `allow_network: false` (Landlock ABI 4 refuses TCP), or 6.2 with the
+  network on, cgroups v2 delegated by systemd
+  (`systemd-run --user --scope -p Delegate=yes`) and an ordinary user, and
+  refuses to start, naming the failing check, when any is missing; it never
+  falls back to another tier. `abhed doctor` shows its probe, and the record
+  gains `fence.qualified`, `process.launched`, `fence.limit` and
+  `fence.state_planted`. `sandbox.tier` and `fence.*` are never taken from an
+  untrusted workspace or a nested run's `-settings`. `abhed serve` and Abhed
+  Studio refuse it in this release. See "What it does not cover" in
+  [Configuration](docs/guide/02-configuration.md#the-fence-tier-preview-linux),
+  which also names three limits: below Landlock ABI 6 (Linux 6.12) a command
+  can signal your other processes, and Abhed by a thread id; with no PID
+  namespace it can read other processes' command lines in `/proc`; and a
+  hard link into Abhed's state made before the session stays readable.
+
+- Switching between sessions. In the console, the open chat is kept in the
+  address (`/console?s=<id>`), so a reload or a second tab opens it again;
+  search matches titles as well as first messages and says when nothing
+  matches; the header shows the title, with the id a click away, and renames
+  it in place (double-click, or F2 on a row); the rail is ordered by last
+  activity; Ctrl+K (⌘K) opens a quick switcher and Alt+↑/↓ goes to the
+  previous or next chat. In the workbench, `?s=<id>` is restored on a reload
+  or a second tab instead of the newest session; the agent panel's title is a
+  session menu with a filter, the current session marked, and New; the
+  Sessions view has a filter and each row's age; Ctrl+K (⌘K) outside the
+  editor now opens the sessions alone (⌘P stays the full palette), and
+  Alt+↑/↓ moves between sessions. In the CLI, the `/resume` picker filters
+  as you type and marks the session you are in, the footer names the current
+  session, `/switch` is `/resume` by another name, and `abhed sessions` is
+  `abhed record list`; with Postgres storage the picker works and `/sessions`
+  shows titles, and a name given with `/rename` or `-n` becomes the session's
+  title there, under the same rules as a rename in the console.
+- `GET /v1/sessions` returns each session's last activity as `updated` (the
+  last message, reply or agent call; viewing, a terminal, a rename or a model
+  switch do not count) and
+  takes `q` (a search over title and opening request), `limit` and `cursor`,
+  with the next page's cursor in an `X-Next-Cursor` header. The body is
+  unchanged. A search or a paged list looks at the caller's 500 most
+  recently active sessions; a plain request lists up to 200.
+
+### Changed
+
+- `GET /v1/sessions`, `abhed record list` (and `abhed sessions`), `/sessions`
+  and the `/resume` picker are ordered by last activity, most recent first,
+  rather than by when each session was created.
+- In the workbench, Ctrl+K (⌘K) outside the editor opens the session
+  switcher alone; ⌘P stays the full command palette.
+- Web search and web fetch are administrator settings. Only the managed
+  configuration (`/etc/abhed/config.json`) turns them on. The user's file,
+  `-settings`, a workspace trusted or not, an SDK `ConfigDir` and the
+  environment may only turn them off, lower `max_results` or `max_chars`, or
+  keep fewer of the managed `allowed_hosts`; anything else is set aside with
+  a startup warning.
+- New `abhed admin web-search on|off [--provider] [--base-url]
+  [--api-key-env] [--max-results]` edits the managed file and nothing else.
+  It refuses unless it can write there (on your own machine, run it with
+  sudo), never takes or prints a key (`--api-key-env` must be a variable
+  name such as `SEARCH_API_KEY`), is refused inside an agent's command,
+  and appends every attempt, done or refused, to `admin.jsonl` beside the
+  managed file, with the command as checked and URLs without credentials.
+  The managed file is replaced whole and flushed, keeping its owner, group
+  and mode.
+- The trust prompt names `.abhed/users.json` when there is one, since
+  trusting the workspace's file trusts its accounts too, and it and
+  `abhed trust grant` warn when git tracks that file.
+- Every setting loading did not take as written is recorded in the session,
+  after `session.started`, as a `config.refused` event: set aside, ignored
+  in an untrusted workspace, or replaced by a managed value, which was
+  silent before. A narrowing of the web sections is `config.narrowed`. Each
+  names the layer, the file or flag, the key, the value with credentials
+  redacted, and the principal: the account, the server session's owner, or
+  the agent's command. A refused `/config set` is recorded the same way.
+  On a server accounts sign in to, the operator's attempts are not put in
+  every user's session: `abhed serve` logs each once at startup and hands it
+  to the admin audit hook.
+- `session.started` says whether web search and web fetch are on and who
+  decided. `abhed doctor`, `abhed serve`, Studio's capabilities and the
+  console overview say "enabled by the managed configuration" or "off; only
+  the managed configuration can enable it".
+- The docs recommend a self-hosted searxng as the free provider that keeps
+  queries on your own infrastructure, and describe `duckduckgo` as
+  unofficial scraping of an HTML page that may break or be rate-limited. The
+  default provider name is unchanged.
+
+### Upgrading
+
+- If you turned web search or web fetch on in `~/.abhed/config.json`, a
+  `-settings` file, a workspace's `.abhed/config.json`, an SDK `ConfigDir` or
+  the environment, it is now off, with a warning naming the setting. Ask your administrator to enable it in the
+  managed configuration, or on your own machine run
+  `sudo abhed admin web-search on` with your provider and endpoint (web
+  fetch: add the `web_fetch` section to `/etc/abhed/config.json` with sudo).
+  Then remove the section from your own file.
+- An agent's command that ran a nested `abhed -settings …` or
+  `abhed -mcp-config …` is now refused. Narrow a nested run with
+  `-mode plan`, `-disallowedTools` or `-max-turns` instead.
+- A managed deployment that enables web search for its users keeps working
+  unchanged; a user's own `base_url`, provider or key for it is now set
+  aside.
+- If you keep accounts in a workspace's `.abhed/users.json` (the default
+  without Postgres or `auth.users_file`), trust that workspace with
+  `abhed trust grant` (or run `abhed -trust-workspace serve`), or move the
+  file to an `auth.users_file` outside the workspace in the managed file or
+  `~/.abhed/config.json`. Until then `serve` starts with none of its accounts
+  and `abhed user add` refuses. A workspace whose `.abhed/config.json` you
+  already trust needs nothing.
+- Session lists change order: `GET /v1/sessions`, `abhed record list`,
+  `/sessions` and the `/resume` picker put the most recently active session
+  first, not the most recently created. A script that took the first row as
+  the newest session should sort by `created` itself.
+
+### Go API
+
+All additive.
+
+- `config`: `WebKey`, `RedactValue`, `Config.Attempts`, `Config.Narrowed`,
+  `Config.Overridden`, `Config.WebSearchState` and `Config.WebFetchState`.
+- `config`: `Config.UsersFile`, `Config.UsersIgnoredWarning`, `UsersSource`,
+  `WorkspaceUsersFile` and `GrantUsers`; `WorkspaceTrust` gains `UsersFile`,
+  `UsersTrusted` and `UsersReason`, and `TrustRecord` gains `Users`.
+- `store`: `CleanTitle` and `MaxTitleRunes`; `SessionRecord` gains
+  `UpdatedAt`, the session's last activity.
+- `store/local`: `Entry` gains `Active`.
+- `server`: `NextCursorHeader`; the `GET /v1/overview` response gains
+  `web_search_state`.
+
 ## [1.2.5] - 2026-10-06
 
 ### Security

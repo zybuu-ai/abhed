@@ -107,6 +107,8 @@ func TestUntrustedWorkspaceIgnoresWhatWidens(t *testing.T) {
 		{"network on", "sandbox.allow_network", `{"sandbox":{"allow_network":true}}`, func(c Config) bool { return c.Sandbox.AllowNetwork }},
 		{"tier none", "sandbox.min_tier", `{"sandbox":{"min_tier":"none"}}`, func(c Config) bool { return c.Sandbox.MinTier == "none" }},
 		{"read-only mounts", "sandbox.read_only_paths", `{"sandbox":{"read_only_paths":["/Users"]}}`, func(c Config) bool { return len(c.Sandbox.ReadOnlyPaths) > 0 }},
+		{"fence tier", "sandbox.tier", `{"sandbox":{"tier":"fence"}}`, func(c Config) bool { return c.Sandbox.Tier == "fence" }},
+		{"fence cpu", "fence.cpu_percent", `{"fence":{"cpu_percent":50}}`, func(c Config) bool { return c.Fence.CPUPercent == 50 }},
 		{"more processes", "sandbox.max_procs", `{"sandbox":{"max_procs":100000}}`, func(c Config) bool { return c.Sandbox.MaxProcs == 100000 }},
 		{"shell terminal", "sandbox.terminal", `{"sandbox":{"terminal":"shell"}}`, func(c Config) bool { return c.Sandbox.Terminal == "shell" }},
 		{"skills dirs", "skills.dirs", `{"skills":{"dirs":["./skills"]}}`, func(c Config) bool { return len(c.Skills.Dirs) > 0 }},
@@ -141,6 +143,13 @@ func TestUntrustedWorkspaceIgnoresWhatWidens(t *testing.T) {
 				t.Fatalf("no decision asked for, or the warning does not name %s: %q", c.key, cfg.Workspace.Warning())
 			}
 			trusted, _ := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+			if WebKey(c.key) {
+				// Managed only: trust does not reach the web sections.
+				if !trusted.Workspace.Trusted || c.took(trusted) {
+					t.Fatalf("a trusted workspace applied %s", c.key)
+				}
+				return
+			}
 			if !trusted.Workspace.Trusted || !c.took(trusted) {
 				t.Fatalf("the trusted file did not apply %s", c.key)
 			}
@@ -168,8 +177,6 @@ func TestUntrustedWorkspaceAppliesWhatTightens(t *testing.T) {
 		{"fewer turns", "", `{"limits":{"max_turns":5}}`, "limits.max_turns", func(c Config) bool { return c.Limits.MaxTurns == 5 }},
 		{"a budget where there was none", "", `{"limits":{"max_budget_tokens":1000}}`, "limits.max_budget_tokens", func(c Config) bool { return c.Limits.MaxBudgetTokens == 1000 }},
 		{"stricter syntax check", `{"tools":{"syntax_check":"off"}}`, `{"tools":{"syntax_check":"report"}}`, "tools.syntax_check", func(c Config) bool { return c.Tools.SyntaxCheck == "report" }},
-		{"web search off", `{"web_search":{"enabled":true}}`, `{"web_search":{"enabled":false}}`, "web_search.enabled", func(c Config) bool { return !c.WebSearch.Enabled }},
-		{"web fetch off", `{"web_fetch":{"enabled":true}}`, `{"web_fetch":{"enabled":false}}`, "web_fetch.enabled", func(c Config) bool { return !c.WebFetch.Enabled }},
 		{"skills off", "", `{"skills":{"disabled":true}}`, "skills.disabled", func(c Config) bool { return c.Skills.Disabled }},
 	} {
 		t.Run(c.name, func(t *testing.T) {

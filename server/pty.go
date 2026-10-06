@@ -623,6 +623,13 @@ func (p *ptyRun) say(text string) {
 
 // streamPTY sends a command's output as it happens, then its exit code.
 func (s *Server) streamPTY(w http.ResponseWriter, r *http.Request) {
+	// A terminal can stay open for hours, so its caller is authorised again
+	// while it runs, as the session's event stream is. Guarded first, so no
+	// recheck falls between the request's authorisation and the guard.
+	s.atStreamStep("opening")
+	guard := s.guardStream(r, r.PathValue("id"))
+	defer guard.stop()
+
 	_, run, ok := s.ptyFor(w, r)
 	if !ok {
 		return
@@ -650,10 +657,11 @@ func (s *Server) streamPTY(w http.ResponseWriter, r *http.Request) {
 		run.mu.Unlock()
 	}()
 
-	// A terminal can stay open for hours, so its caller is authorised again
-	// while it runs, as the session's event stream is.
-	guard := s.guardStream(r, r.PathValue("id"))
-	defer guard.stop()
+	// A sign-in that ended before the guard existed is caught here.
+	if err := guard.check(); err != nil {
+		endStream(w, err)
+		return
+	}
 	refused := false
 	send := func(event string, data []byte) bool {
 		if refused {

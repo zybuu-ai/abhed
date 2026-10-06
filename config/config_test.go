@@ -379,3 +379,17 @@ func TestK8sClustersAreValidatedAtLoad(t *testing.T) {
 		t.Fatalf("refused valid clusters: %v", err)
 	}
 }
+
+func TestValidateFenceSettings(t *testing.T) {
+	for _, c := range []struct {
+		tier string
+		cpu  int
+		ok   bool
+	}{{"", 0, true}, {"fence", 0, true}, {"fence", 250, true}, {"outer", 0, false}, {"process", 0, false}, {"fence", -1, false}, {"fence", 102401, false}} {
+		cfg := Default()
+		cfg.Sandbox.Tier, cfg.Fence.CPUPercent = c.tier, c.cpu
+		if err := cfg.Validate(); (err == nil) != c.ok {
+			t.Errorf("tier %q cpu %d: err = %v", c.tier, c.cpu, err)
+		}
+	}
+}

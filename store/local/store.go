@@ -85,8 +85,11 @@ type session struct {
 	// in the background, as a Postgres session row's ended_at is cleared.
 	running bool
 	titled  bool
-	child   bool
-	repair  *agent.RecordRepaired
+	// conversed is set when the conversation went on since the last active
+	// line, so a run's end writes one; a run that only viewed it writes none.
+	conversed bool
+	child     bool
+	repair    *agent.RecordRepaired
 	// size is the file's length after the last whole line, and poisoned why
 	// nothing more may be written when a failed write could not be undone.
 	size     int64
@@ -657,16 +660,21 @@ func boundary(t agent.EventType) bool {
 // track keeps the index in step with what a session's events say: its title,
 // name and ends. It reports whether ev closed the session. The caller holds h.mu.
 func (s *Store) track(h *session, ev agent.Event) (ended bool) {
+	if agent.Conversational(ev) && ev.Type != agent.EvUserMessage {
+		h.conversed = true
+	}
 	switch ev.Type {
 	case agent.EvUserMessage:
-		if h.titled {
-			return false
-		}
+		// A prompt is activity at once; what the agent does after it is marked
+		// at the run's end, so a turn writes two index lines, not one per step.
 		var m agent.Message
-		if json.Unmarshal(ev.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" {
+		if json.Unmarshal(ev.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" && !h.titled {
 			h.titled = true
 			_ = s.index.append(indexLine{Op: opTitle, ID: h.id, Title: Title(m.Text)})
+		} else {
+			_ = s.index.append(indexLine{Op: opActive, ID: h.id})
 		}
+		h.conversed = false
 	case agent.EvSessionBranched:
 		var b agent.SessionBranched
 		if json.Unmarshal(ev.Payload, &b) == nil {
@@ -683,6 +691,10 @@ func (s *Store) track(h *session, ev agent.Event) (ended bool) {
 			return false
 		}
 		h.running = false
+		if h.conversed {
+			h.conversed = false
+			_ = s.index.append(indexLine{Op: opActive, ID: h.id})
+		}
 		_ = s.index.append(indexLine{Op: opEnd, ID: h.id, Ended: string(orReason(e.Reason)),
 			HeadLines: h.last.Lines, HeadSeq: h.last.Seq, HeadHash: h.last.Hash})
 		return true
@@ -1048,7 +1060,8 @@ func (s *Store) GetSession(_ context.Context, id string) (store.SessionRecord, e
 func (s *Store) row(e Entry) store.SessionRecord {
 	rec := store.SessionRecord{
 		ID: e.ID, Tenant: s.tenant, User: e.User, Workspace: e.Cwd,
-		Prompt: e.Title, ParentID: e.Parent, StartedAt: e.Created, TerminalReason: e.Ended,
+		Prompt: e.Title, Title: e.Name, ParentID: e.Parent, StartedAt: e.Created, UpdatedAt: e.Active,
+		TerminalReason: e.Ended,
 	}
 	if !s.running(e.ID) {
 		at := e.Updated
