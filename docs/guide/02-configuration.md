@@ -311,9 +311,22 @@ without running anything.
   the config and hooks are held. The protected paths are those that exist
   when each command starts, and git folders are found then, as the process
   tier finds them: one a command makes while it runs is not held during that
-  command, only from the next. A protected path that is a symbolic link, or a
-  file with a second name (a hard link), refuses the command, since the file
-  would stay writable through the other name.
+  command, only from the next. A protected path that is a symbolic link, a
+  file with a second name (a hard link), or a protected folder holding a file
+  with a name outside it (a hook hard-linked to a file in the workspace, say)
+  refuses the command, since the file would stay writable through the other
+  name.
+- **Other mounts of the workspace** (`mount_namespace` only). The same files
+  can be mounted at a second path: on an ostree host (Fedora CoreOS,
+  Silverblue, Kinoite) `/var`, and so `/home`, is also mounted under
+  `/sysroot/ostree/deploy/<os>/var`, and a bind mount does the same. The
+  launcher reads the namespace's mounts and applies the same read-only binds
+  and the same tmpfs at every such path, so the protected files stay
+  read-only and `.abhed` stays covered whichever path a command takes;
+  `fence.qualified` lists them as `aliases`. One the fence cannot check,
+  such as a second mount whose path now leads somewhere else, refuses the
+  fence when it qualifies, or the command (exit 126) when it starts, saying
+  which.
 - **Abhed's state in the workspace, `mount_namespace`.** The workspace's
   `.abhed` is covered by an empty tmpfs in each command's namespace: what
   Abhed keeps there is out of sight, and whatever a command writes there is
@@ -323,10 +336,13 @@ without running anything.
   Studio beside the command line) mount over it too, and removing it would
   uncover their commands; empty, it holds nothing. A `.abhed` that was
   empty when the session started must stay empty while it runs: anything
-  that appears in it, or a folder made again in its place, is taken out as
-  below, so put state there (`abhed user add`, say) before a fenced session
-  starts. One that already held state is
-  Abhed's own, and stays covered. Abhed refuses to start with a state file
+  that appears in it is taken out of it as below, one entry at a time, the
+  folder itself left in place for the other fences, and a folder made again
+  in its place is taken out whole; either way the session runs no further
+  command. So put state there (`abhed user add`, say) before a fenced
+  session starts. A `.abhed` that cannot be listed when the session starts
+  refuses the fence, since it is not known to be empty. One that already
+  held state is Abhed's own, and stays covered. Abhed refuses to start with a state file
   (`auth.users_file`, the secrets file) inside the workspace outside `.abhed`,
   so there is none to hide; another configuration folder's `.abhed` inside
   the workspace is covered as the workspace's is. A `.abhed` in another

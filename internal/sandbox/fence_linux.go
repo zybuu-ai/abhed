@@ -40,17 +40,22 @@ func init() {
 }
 
 // folderIdentity is p's identity, not following a link, with its birth time
-// where the filesystem records one.
+// where the filesystem records one; both are read from one descriptor, so a
+// folder swapped in between cannot lend the other its birth time.
 func folderIdentity(p string) (folderID, error) {
-	info, err := os.Lstat(p)
+	fd, err := unix.Open(p, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return folderID{}, &os.PathError{Op: "open", Path: p, Err: err}
+	}
+	file := os.NewFile(uintptr(fd), p) // #nosec G115 -- a descriptor fits
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
 	if err != nil {
 		return folderID{}, err
 	}
 	id := folderID{info: info, dir: info.IsDir()}
 	var stx unix.Statx_t
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if ok && unix.Statx(unix.AT_FDCWD, p, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_INO|unix.STATX_BTIME, &stx) == nil &&
-		stx.Mask&unix.STATX_BTIME != 0 && stx.Ino == st.Ino {
+	if unix.Statx(fd, "", unix.AT_EMPTY_PATH, unix.STATX_INO|unix.STATX_BTIME, &stx) == nil && stx.Mask&unix.STATX_BTIME != 0 {
 		id.birth, id.hasBirth = stx.Btime.Sec*1e9+int64(stx.Btime.Nsec), true
 	}
 	return id, nil
@@ -252,6 +257,13 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 		return false, f.report.Summary
 	}
 	if f.mounts {
+		// Another mount of the workspace's files, such as /sysroot on an
+		// ostree host, is covered as the workspace is, or the fence refuses.
+		aliases, err := mountns.Aliases(f.policy.Workspace)
+		if err != nil {
+			return false, "mode mount_namespace: " + err.Error() + "; the fence covers every other mount of the workspace's files, and refuses where it cannot"
+		}
+		f.aliases = aliases
 		if err := f.prepareStateMount(); err != nil {
 			return false, err.Error()
 		}

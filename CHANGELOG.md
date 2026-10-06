@@ -37,7 +37,16 @@ All notable changes to Abhed are recorded here. The format follows
   `.abhed`. A `landlock_only` fence refuses a workspace holding one, as it
   refuses any `.abhed`.
 - A file held read-only in `mount_namespace` that has a second name (a hard
-  link) refuses the command.
+  link) refuses the command, and so does a held folder, such as git's hooks,
+  holding a file with a name outside it.
+- In `mount_namespace`, every other mount of the workspace's files gets the
+  same read-only binds and tmpfs as the workspace: on ostree hosts (Fedora
+  CoreOS, Silverblue) `/var` is also mounted under `/sysroot`, and a command
+  could write git's config or read `.abhed` there. They are listed in
+  `fence.qualified` as `aliases`, and one the fence cannot check refuses it.
+- Content that appears in a `.abhed` the fence covers is taken out of it,
+  and the folder stays, so other fences on the workspace stay covered. A
+  `.abhed` that cannot be listed when a session starts refuses the fence.
 
 ## [1.2.6] - 2026-10-06
 

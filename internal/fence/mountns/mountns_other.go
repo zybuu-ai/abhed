@@ -20,3 +20,6 @@ func Drop() error { return errLinux }
 
 // SelfTest refuses off Linux.
 func SelfTest(string) (string, error) { return "", errLinux }
+
+// Aliases refuses off Linux.
+func Aliases(string) ([]string, error) { return nil, errLinux }

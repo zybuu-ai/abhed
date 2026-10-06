@@ -466,3 +466,104 @@ func TestFenceMountsShellOnATerminal(t *testing.T) {
 		t.Fatal("the shell wrote a hook")
 	}
 }
+
+// A second mount of the workspace's files reaches them by another path: on
+// an ostree host (Fedora CoreOS, Silverblue) /var is also mounted under
+// /sysroot/ostree/deploy/<os>/var, and a bind mount does the same. Run with
+// ABHED_TEST_ALIAS=<dir>:<mirror>, where mirror shows dir through another
+// mount (/var/tmp:/sysroot/ostree/deploy/fedora-coreos/var/tmp on such a
+// host). Through the alias a command can neither write git's config and
+// hooks nor read or plant Abhed's state.
+func TestFenceMountsCoversAnAlias(t *testing.T) {
+	spec := os.Getenv("ABHED_TEST_ALIAS")
+	if spec == "" {
+		t.Skip("set ABHED_TEST_ALIAS=<dir>:<mirror>, where mirror shows dir through another mount")
+	}
+	dir, mirror, ok := strings.Cut(spec, ":")
+	if !ok {
+		t.Fatalf("ABHED_TEST_ALIAS=%q is not <dir>:<mirror>", spec)
+	}
+	var ws, alias string
+	f, _ := mounted(t, func(p *Policy) {
+		w, err := os.MkdirTemp(dir, "abhed-alias-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(w) })
+		ws, alias = w, filepath.Join(mirror, filepath.Base(w))
+		if _, err := os.Stat(alias); err != nil {
+			t.Fatalf("the mirror does not show the workspace: %v", err)
+		}
+		p.Workspace = ws
+		gitInit(t, ws)
+		if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte("abhed-state"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		p.ProtectGit = true
+	})
+	q := f.Qualification()
+	if q["aliases"] == nil {
+		t.Fatalf("fence.qualified names no alias: %v", q)
+	}
+	t.Logf("aliases: %v", q["aliases"])
+	config, _ := os.ReadFile(filepath.Join(ws, ".git", "config"))
+	ev := &events{}
+	for _, c := range []string{
+		"echo '[core]' >> " + alias + "/.git/config",
+		"git -C " + alias + " config core.fsmonitor 'touch /tmp/pwned'",
+		"echo x > " + alias + "/.git/hooks/x",
+		"grep abhed-state " + alias + "/.abhed/config.json",
+	} {
+		if out, err := fenceRun(t, f, ws, c, ev.record(nil), "call-alias"); err == nil {
+			t.Errorf("%q succeeded:\n%s", c, out)
+		} else {
+			t.Logf("%s: %v: %s", c, err, strings.TrimSpace(out))
+		}
+	}
+	if out, err := fenceRun(t, f, ws, "echo '{}' > "+alias+"/.abhed/users.json", ev.record(nil), "call-plant"); err != nil {
+		t.Logf("planting through the alias: %v %s", err, out)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, ".abhed", "users.json")); err == nil {
+		t.Error("users.json written through the alias persists")
+	}
+	if now, _ := os.ReadFile(filepath.Join(ws, ".git", "config")); string(now) != string(config) {
+		t.Errorf(".git/config changed through the alias:\n%s", now)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, ".git", "hooks", "x")); err == nil {
+		t.Error("a hook was written through the alias")
+	}
+	if f.planted.Load() != nil {
+		t.Errorf("the session was marked planted: %s", *f.planted.Load())
+	}
+}
+
+// A hook with a second name outside the hooks folder, such as a file in the
+// workspace hard-linked to it, refuses the command: the folder is held
+// read-only by one name, and the hook would stay writable through the other.
+func TestFenceMountsRefusesAHookLinkedOutside(t *testing.T) {
+	var ws string
+	f, _ := mounted(t, func(p *Policy) {
+		ws = p.Workspace
+		gitInit(t, ws)
+		p.ProtectGit = true
+	})
+	hook := filepath.Join(ws, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(hook, filepath.Join(ws, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	out, err := fenceRun(t, f, ws, "echo 'touch /tmp/pwned' >> notes.txt", (&events{}).record(nil), "call-link")
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 126 || !strings.Contains(out, "hard link") {
+		t.Fatalf("a hook linked outside the hooks folder: %v\n%s", err, out)
+	}
+	t.Logf("refused: %s", strings.TrimSpace(out))
+	if b, _ := os.ReadFile(hook); string(b) != "#!/bin/sh\n" {
+		t.Fatalf("the hook changed: %q", b)
+	}
+}

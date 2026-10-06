@@ -224,6 +224,18 @@ asserted. Current state:
       `TestEnclosingStateThroughALinkedWorkspaceIsRefused`), while another user's
       shared folder above it cannot block the start
       (`TestAncestorStateCountsOnlyWhatARunLoads`)
+- [x] **Fence, `mount_namespace`** — git's config and hooks and an editor's files stay
+      read-only, and the workspace's `.abhed` covered, through every path a command can
+      take: Abhed's own view in `/proc` (`TestFenceMountsProtectGit`,
+      `TestFenceMountsStateDoesNotPersist`), a second mount of the workspace's files such
+      as an ostree host's `/sysroot` or a bind mount (`TestFenceMountsCoversAnAlias`,
+      `TestApplyCoversAliases`, which also refuses one whose path is shadowed), and a
+      hard link to a held file or to a file in a held folder
+      (`TestFenceMountsRefusesAHardLinkedProtectedFile`,
+      `TestFenceMountsRefusesAHookLinkedOutside`); another fence closing does not uncover
+      a command's `.abhed` (`TestFenceMountsTwoFencesOnOneWorkspace`). These run on Linux
+      with `ABHED_REQUIRE_FENCE=1`, the alias case on an ostree host or with
+      `ABHED_TEST_ALIAS`
 - [x] **Runaway commands** — a command is stopped at its timeout with everything it
       started, a `setsid` child included (`TestRunawayCommandEndsAtItsDeadline`,
       `TestBashTimeoutEndsADetachedChild`)

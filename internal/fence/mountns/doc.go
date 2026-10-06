@@ -11,8 +11,13 @@
 //	ReadOnly  files and folders bound read-only onto themselves
 //	Empty     folders covered by an empty, throwaway tmpfs
 //
-// A file held read-only must have one name: a hard link elsewhere would stay
-// writable, so Apply refuses it.
+// A file held read-only must have one name, and a folder held read-only no
+// file named also outside it: a hard link elsewhere would stay writable, so
+// Apply refuses it.
+//
+// The same files can be mounted at another path too (an ostree host's
+// /sysroot, a bind mount). Apply reads the namespace's mounts and applies
+// the plan at each such path as well, and refuses one it cannot check.
 //
 // Every path is opened beneath the plan's root without following a symbolic
 // link, and mounted through its descriptor, so a link a command left in the

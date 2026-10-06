@@ -592,11 +592,21 @@ func TestFenceStateMountRule(t *testing.T) {
 	if f.isStateMount(state) {
 		t.Error("a file in the made .abhed was not taken for planted")
 	}
+	before, _ := folderIdentity(state)
 	if err := f.checkPlanted(nil, "", "after_command"); err == nil {
 		t.Error("checkPlanted passed a file in the made .abhed")
 	}
-	if _, err := os.Lstat(state); !os.IsNotExist(err) {
-		t.Errorf("the planted .abhed is still in place: %v", err)
+	// Its contents are taken out and the folder stays: other fences on the
+	// workspace mount over it.
+	if left, err := os.ReadDir(state); err != nil || len(left) != 0 {
+		t.Errorf("the covered .abhed after the check: %v %v", err, left)
+	}
+	if now, err := folderIdentity(state); err != nil || !now.same(before) {
+		t.Errorf("the covered .abhed was moved or made again: %v", err)
+	}
+	home, _ := os.UserHomeDir()
+	if moved, _ := filepath.Glob(filepath.Join(home, ".abhed", QuarantineDir, "*", "users.json")); len(moved) != 1 {
+		t.Errorf("users.json in quarantine: %v", moved)
 	}
 
 	// A folder made again in its place is not taken for it, even empty:
@@ -633,6 +643,64 @@ func TestFenceStateMountRule(t *testing.T) {
 	}
 	if !h.isStateMount(state) || h.isStateMount(filepath.Join(p.Workspace, "other")) {
 		t.Error("the .abhed that held state is not the fence's own")
+	}
+}
+
+// Two fences on one workspace: content that appears in the covered .abhed
+// after the first qualified with it empty is taken out by the first, and
+// the folder stays for the second, which held state then.
+func TestFenceStateMountKeepsTheSharedFolder(t *testing.T) {
+	p := fencePolicy(t)
+	state := filepath.Join(p.Workspace, ".abhed")
+	a := NewFence(p)
+	a.mounts = true
+	if err := a.prepareStateMount(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "users.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := NewFence(p)
+	b.mounts = true
+	if err := b.prepareStateMount(); err != nil || !b.stateHeld {
+		t.Fatalf("the second fence: %v held %v", err, b.stateHeld)
+	}
+	var got []map[string]any
+	rec := func(ev string, pay map[string]any) error { got = append(got, pay); return nil }
+	if err := a.checkPlanted(rec, "", "before_command"); err == nil || !strings.Contains(err.Error(), "was empty when this session's fence started") {
+		t.Fatalf("the first fence's check: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("events: %v", got)
+	}
+	entries := got[0]["entries"].([]map[string]any)
+	if len(entries) != 1 || entries[0]["outcome"] != plantEmptied || len(entries[0]["contents"].([]map[string]any)) != 1 {
+		t.Errorf("entries: %v", entries)
+	}
+	if !b.isStateMount(state) {
+		t.Error("the second fence lost its .abhed")
+	}
+	if err := b.checkPlanted(nil, "", "before_command"); err != nil {
+		t.Errorf("the second fence's check: %v", err)
+	}
+}
+
+// A .abhed that cannot be listed when the fence qualifies is not known to
+// be empty, and is not taken for state the mounts cover: the fence refuses.
+func TestFenceStateMountRefusesAnUnlistableFolder(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lists any folder")
+	}
+	p := fencePolicy(t)
+	state := filepath.Join(p.Workspace, ".abhed")
+	if err := os.Mkdir(state, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(state, 0o700) })
+	f := NewFence(p)
+	f.mounts = true
+	if err := f.prepareStateMount(); err == nil || !strings.Contains(err.Error(), "cannot be listed") {
+		t.Fatalf("an unlistable .abhed: %v (held %v)", err, f.stateHeld)
 	}
 }
 

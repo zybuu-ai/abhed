@@ -50,6 +50,9 @@ type Fence struct {
 	stateID   *folderID
 	stateHeld bool
 	madeState bool
+	// aliases are the other mounts of the workspace's files, which each
+	// command's namespace covers as it covers the workspace.
+	aliases []string
 	// id names the session's cgroup; tmp is the commands' private temp.
 	id  string
 	tmp string
@@ -211,10 +214,11 @@ func (f *Fence) Describe() string {
 	if f.mounts {
 		mode = "mode mount_namespace: each command in a user and mount namespace of its own, the workspace's .abhed under an empty tmpfs that is gone when the command ends; " +
 			"where the workspace has none, the fence makes an empty .abhed to mount over and leaves it in place, and one empty when the session started must stay empty, " +
-			"or what is found in it is taken out as below"
+			"or what is found in it is taken out, the folder left, and the session ends as below"
 		if f.needsMounts() {
-			mode += ", the surface's protected paths (git's config and hooks, its editor settings) bound read-only"
+			mode += ", the surface's protected paths (git's config and hooks, its editor settings) bound read-only, and a file in a read-only folder with a name outside it refused"
 		}
+		mode += ", the same done at every other mount of the workspace's files (such as /sysroot on an ostree host, or a bind mount), or the command refused where it cannot be"
 		mode += "; another spelling of .abhed a command makes is still taken out and ends the session"
 		planted = "a .abhed in a subfolder or an added folder (not covered)"
 	}
@@ -407,7 +411,11 @@ func (f *Fence) isStateMount(p string) bool {
 	if err != nil || !id.dir || !id.same(*f.stateID) {
 		return false
 	}
-	return f.stateHeld || !folderHolds(p, id)
+	if f.stateHeld {
+		return true
+	}
+	holds, err := folderHolds(p, id)
+	return err == nil && !holds
 }
 
 // prepareStateMount finds the workspace's .abhed for each command's
@@ -428,7 +436,13 @@ func (f *Fence) prepareStateMount() error {
 	if !id.dir {
 		return fmt.Errorf("the workspace's %s is not a folder, and the fence can cover only a folder", stateDir)
 	}
-	f.stateID, f.stateHeld = &id, folderHolds(p, id)
+	// Not known to be empty is not taken for state: what appears in it
+	// later would then be accepted as Abhed's own.
+	holds, err := folderHolds(p, id)
+	if err != nil {
+		return fmt.Errorf("the workspace's %s cannot be listed to tell whether it holds state (%v); restore its permissions, and the fence will cover it", stateDir, err)
+	}
+	f.stateID, f.stateHeld = &id, holds
 	return nil
 }
 
@@ -446,18 +460,39 @@ func (a folderID) same(b folderID) bool {
 }
 
 // folderHolds is whether the folder p, still the folder id, holds anything.
-// One that cannot be listed, or changed meanwhile, is not known to be empty.
-func folderHolds(p string, id folderID) bool {
+// One that cannot be listed, or changed meanwhile, is not known either way,
+// and is the error.
+func folderHolds(p string, id folderID) (bool, error) {
 	d, err := os.Open(p) // #nosec G304 -- the workspace's .abhed
 	if err != nil {
-		return true
+		return true, err
 	}
 	defer func() { _ = d.Close() }()
-	if info, err := d.Stat(); err != nil || !os.SameFile(info, id.info) {
-		return true
+	info, err := d.Stat()
+	if err != nil {
+		return true, err
 	}
-	_, err = d.Readdirnames(1)
-	return !errors.Is(err, io.EOF)
+	if !os.SameFile(info, id.info) {
+		return true, errors.New("it was replaced while it was being listed")
+	}
+	switch _, err = d.Readdirnames(1); {
+	case errors.Is(err, io.EOF):
+		return false, nil
+	case err != nil:
+		return true, err
+	}
+	return true, nil
+}
+
+// isSharedState is whether p is the workspace's .abhed each command's
+// namespace covers, by name and identity, whatever it holds now. Other
+// fences on the workspace mount over it, so it is never moved itself.
+func (f *Fence) isSharedState(p string) bool {
+	if !f.mounts || f.stateID == nil || filepath.Base(p) != stateDir {
+		return false
+	}
+	id, err := folderIdentity(p)
+	return err == nil && id.dir && id.same(*f.stateID)
 }
 
 // plan is what the command's mount namespace holds read-only or hides: the
@@ -619,6 +654,9 @@ const (
 	plantRenamed   = "renamed_in_place"
 	plantRemoved   = "removed"
 	plantRemaining = "still_present"
+	// plantEmptied is the covered .abhed, its contents taken out one by
+	// one and the folder left in place.
+	plantEmptied = "contents_taken_out"
 )
 
 // checkPlanted looks for a .abhed in the workspace, which none can hold when
@@ -640,11 +678,8 @@ func (f *Fence) checkPlanted(rec func(string, map[string]any) error, callID, whe
 		return nil
 	}
 	var entries []map[string]any
-	var done, left []string
-	for _, p := range found {
-		m := f.takeOut(p)
-		entries = append(entries, m)
-		name := filepath.Base(p)
+	var done, left, what []string
+	tally := func(name string, m map[string]any) {
 		switch m["outcome"] {
 		case plantMoved:
 			done = append(done, name+" was moved to "+m["moved_to"].(string))
@@ -656,10 +691,25 @@ func (f *Fence) checkPlanted(rec func(string, map[string]any) error, callID, whe
 			left = append(left, name)
 		}
 	}
-	var parts []string
-	if len(found) > 0 {
-		parts = append(parts, "a "+names(found)+" appeared in the workspace, where Abhed keeps its own state")
+	for _, p := range found {
+		// The covered .abhed stays, emptied: moving it would move other
+		// fences' mounts with it and uncover their commands.
+		if f.isSharedState(p) {
+			if contents, ok := f.takeOutContents(p); ok {
+				entries = append(entries, map[string]any{"path": p, "outcome": plantEmptied, "contents": contents})
+				what = append(what, "the workspace's "+stateDir+", which was empty when this session's fence started, holds something now or could not be listed")
+				for _, m := range contents {
+					tally(stateDir+"/"+filepath.Base(m["path"].(string)), m)
+				}
+				continue
+			}
+		}
+		m := f.takeOut(p, filepath.Dir(p))
+		entries = append(entries, m)
+		what = append(what, "a "+filepath.Base(p)+" appeared in the workspace, where Abhed keeps its own state")
+		tally(filepath.Base(p), m)
 	}
+	parts := what
 	parts = append(parts, done...)
 	if len(left) > 0 {
 		parts = append(parts, strings.Join(left, ", ")+" is still in the workspace and could not be taken out; remove it before Abhed runs there again")
@@ -692,22 +742,36 @@ func (f *Fence) checkPlanted(rec func(string, map[string]any) error, callID, whe
 	return errors.New("fence: " + why)
 }
 
-func names(paths []string) string {
-	out := make([]string, len(paths))
-	for i, p := range paths {
-		out[i] = filepath.Base(p)
+// takeOutContents takes out everything in the covered .abhed at p, each
+// entry renamed to the top of the workspace first, and leaves the folder.
+// It is false when the folder cannot be listed.
+func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
+	restoreOwnerAccess(p)
+	d, err := os.Open(p) // #nosec G304 -- the workspace's .abhed
+	if err != nil {
+		return nil, false
 	}
-	return strings.Join(out, ", ")
+	names, err := d.Readdirnames(-1)
+	_ = d.Close()
+	if err != nil {
+		return nil, false
+	}
+	out := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, f.takeOut(filepath.Join(p, n), f.policy.Workspace))
+	}
+	return out, true
 }
 
-// takeOut makes the planted entry p inert and says how: renamed within the
-// workspace, then moved to quarantine where it can be. Where the rename
-// fails, the entry is removed as a last resort, else it is still present.
-func (f *Fence) takeOut(p string) map[string]any {
+// takeOut makes the planted entry p inert and says how: renamed into the
+// folder dir in the workspace, then moved to quarantine where it can be.
+// Where the rename fails, the entry is removed as a last resort, else it is
+// still present.
+func (f *Fence) takeOut(p, dir string) map[string]any {
 	m := map[string]any{"path": p}
 	var raw [6]byte
 	_, _ = rand.Read(raw[:])
-	inert := filepath.Join(filepath.Dir(p), plantedPrefix+f.id+"-"+hex.EncodeToString(raw[:]))
+	inert := filepath.Join(dir, plantedPrefix+f.id+"-"+hex.EncodeToString(raw[:]))
 	if err := os.Rename(p, inert); err != nil {
 		restoreOwnerAccess(p)
 		if rerr := os.RemoveAll(p); rerr == nil {
@@ -835,6 +899,9 @@ func (f *Fence) Qualification() map[string]any {
 	}
 	if f.mounts {
 		out["state_folder_made"] = f.madeState
+		if len(f.aliases) > 0 {
+			out["aliases"] = f.aliases
+		}
 		out["protected"] = map[string]any{"git": f.policy.ProtectGit, "paths": f.policy.WriteProtected}
 	}
 	if c, ok := f.report.Check(probe.CheckMounts); ok && !f.mounts {
