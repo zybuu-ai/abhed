@@ -83,3 +83,63 @@ func TestProcessSandboxDeniesHomeSecretsThroughALink(t *testing.T) {
 		t.Errorf("an ordinary file in home was refused: %v %s", err, out)
 	}
 }
+
+// Seatbelt checks a rename only at its two ends, so the folders holding
+// git's pointers are held themselves: none can be moved aside and replaced
+// with a link to a copy holding a planted fsmonitor (a submodule's git
+// folder, named with slashes or not, a linked worktree's, modules,
+// worktrees, info, objects), in any case. Files inside them stay writable.
+func TestProcessSandboxHoldsTheFoldersHoldingGitPointers(t *testing.T) {
+	ws := workspace(t)
+	gitTree(t, ws, "x")
+	writeFiles(t, ws, map[string]string{".git/modules/sub/HEAD": "ref: refs/heads/main\n", ".git/modules/sub/config": "x"})
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	folders := []string{".git/modules/sub", ".git/modules/lib/x", ".git/modules/lib", ".git/worktrees/w", ".git/modules",
+		".git/worktrees", ".git/info", ".git/objects/info", ".git/objects"}
+	var cmd []string
+	for _, f := range folders {
+		for _, spelling := range []string{f, strings.ToUpper(f)} {
+			cmd = append(cmd, "mv "+spelling+" "+spelling+".old", "rm -rf "+spelling, "ln -s $PWD/evil "+spelling)
+		}
+	}
+	_, _ = runIn(t, s, ws, "mkdir -p evil; "+strings.Join(cmd, "; ")+"; mkdir .git/modules/new; ln -s $PWD/evil .git/modules/new2")
+	for _, f := range folders {
+		if info, err := os.Lstat(filepath.Join(ws, filepath.FromSlash(f))); err != nil || !info.IsDir() {
+			t.Errorf("%s was moved or replaced: %v", f, err)
+		}
+	}
+	for _, f := range []string{".git/modules/new", ".git/modules/new2"} {
+		if _, err := os.Lstat(filepath.Join(ws, filepath.FromSlash(f))); err == nil {
+			t.Errorf("the command made %s", f)
+		}
+	}
+	if out, err := runIn(t, s, ws, "set -e; touch .git/modules/sub/ORIG_HEAD .git/modules/lib/x/FETCH_HEAD .git/worktrees/w/ORIG_HEAD "+
+		".git/info/exclude .git/objects/info/packs; mkdir .git/objects/ab .git/modules/sub/refs"); err != nil {
+		t.Fatalf("what the folders hold is not writable: %v %s", err, out)
+	}
+}
+
+// A linked hooks folder is held where it leads, as the link is by name.
+func TestProcessSandboxHoldsWhereLinkedHooksLead(t *testing.T) {
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n", "hooks-real/.keep": ""})
+	if err := os.Symlink("../hooks-real", filepath.Join(ws, ".git", "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	_, _ = runIn(t, s, ws, "echo x > hooks-real/pre-commit; echo x > .git/hooks/post-checkout; rm .git/hooks; ln -s ../evil .git/hooks")
+	for _, f := range []string{"hooks-real/pre-commit", "hooks-real/post-checkout"} {
+		if _, err := os.Lstat(filepath.Join(ws, f)); err == nil {
+			t.Errorf("the command wrote %s", f)
+		}
+	}
+	if to, err := os.Readlink(filepath.Join(ws, ".git", "hooks")); err != nil || to != "../hooks-real" {
+		t.Errorf("the link was changed: %q %v", to, err)
+	}
+}

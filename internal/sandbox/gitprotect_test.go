@@ -5,7 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -204,5 +207,262 @@ func TestContainerProtectsEveryGitPointer(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	if m, _ := filepath.Glob(filepath.Join(home, stateDir, QuarantineDir, "git-*", "commondir")); len(m) == 0 {
 		t.Error("the planted commondir is not in the quarantine")
+	}
+}
+
+// writeFiles writes each file under ws, making its folders.
+func writeFiles(t *testing.T, ws string, files map[string]string) {
+	t.Helper()
+	for f, data := range files {
+		p := filepath.Join(ws, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func relSet(ws string, paths []string) map[string]bool {
+	got := map[string]bool{}
+	for _, p := range paths {
+		rel, _ := filepath.Rel(ws, p)
+		got[filepath.ToSlash(rel)] = true
+	}
+	return got
+}
+
+// A folder with more folders than the walk's bound, sorting before .git,
+// cannot hide the workspace's own git folder, a folder's own .git, a
+// submodule's .git file or a linked worktree's: each is found apart from the
+// walk or before what its folder holds, and the bound is noted.
+func TestScanGitFindsEachGitBeforeTheBound(t *testing.T) {
+	old := gitWalkFolders
+	gitWalkFolders = 20
+	t.Cleanup(func() { gitWalkFolders = old })
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{
+		".git/HEAD":               "ref: refs/heads/main\n",
+		".git/config":             "[core]\n",
+		".git/modules/z/HEAD":     "ref: refs/heads/main\n",
+		".git/modules/z/config":   "[core]\n\tworktree = ../../../z\n",
+		".git/worktrees/w/HEAD":   "ref: refs/heads/w\n",
+		".git/worktrees/w/gitdir": filepath.Join(ws, "w", ".git") + "\n",
+		"-a/.git/HEAD":            "ref: refs/heads/main\n",
+		"-a/.git/config":          "[core]\n",
+		"z/.git":                  "gitdir: ../.git/modules/z\n",
+		"w/.git":                  "gitdir: " + filepath.Join(ws, ".git", "worktrees", "w") + "\n",
+	})
+	for i := range 3 * gitWalkFolders {
+		if err := os.MkdirAll(filepath.Join(ws, "-a", "-b", strconv.Itoa(i)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := scanGit(ws)
+	if !g.walkBounded {
+		t.Fatal("the walk did not stop at its bound")
+	}
+	got := relSet(ws, g.protected)
+	for _, want := range []string{".git/config", ".git/modules/z/config", ".git/worktrees/w/gitdir", "-a/.git/config", "z/.git", "w/.git"} {
+		if !got[want] {
+			t.Errorf("missing %s in %v", want, got)
+		}
+	}
+}
+
+// A linked worktree's commondir is git's while it names the repository's
+// git folder; one changed to name anything else counts as planted.
+func TestWorktreeCommondirPointingElsewhereIsPlanted(t *testing.T) {
+	ws := workspace(t)
+	gitTree(t, ws, "x")
+	if g := scanGit(ws); len(g.planted) != 0 {
+		t.Fatalf("git's own commondir counted as planted: %v", g.planted)
+	}
+	c := filepath.Join(ws, ".git", "worktrees", "w", "commondir")
+	for _, to := range []string{filepath.Join(ws, "evil") + "\n", "../../../evil\n", ""} {
+		if err := os.WriteFile(c, []byte(to), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if g := scanGit(ws); len(g.planted) != 1 || g.planted[0] != c {
+			t.Errorf("commondir %q not planted: %v", to, g.planted)
+		}
+	}
+}
+
+// recorded collects the events a sandbox writes to a call's record.
+type recorded struct{ events []map[string]any }
+
+func (r *recorded) ctx() context.Context {
+	return WithLaunch(context.Background(), Launch{CallID: "call-1", Record: func(ev string, pay map[string]any) error {
+		pay["event"] = ev
+		r.events = append(r.events, pay)
+		return nil
+	}})
+}
+
+func (r *recorded) of(ev string) []map[string]any {
+	var out []map[string]any
+	for _, e := range r.events {
+		if e["event"] == ev {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// A planted commondir taken out is recorded with the call, saying where it
+// went, and the command is refused with the reason.
+func TestGitPlantedIsRecorded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	gitTree(t, ws, "x")
+	planted := filepath.Join(ws, ".git", "commondir")
+	if err := os.WriteFile(planted, []byte("/elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var rec recorded
+	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
+	if cmd := c.Command(rec.ctx(), ws, "true"); cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "commondir") {
+		t.Fatalf("ran with a planted commondir: %v", cmd.Err)
+	}
+	got := rec.of(EvGitPlanted)
+	if len(got) != 1 || got[0]["call_id"] != "call-1" || got[0]["workspace"] != ws {
+		t.Fatalf("not recorded: %v", rec.events)
+	}
+	entries, _ := got[0]["entries"].([]map[string]any)
+	if len(entries) != 1 || entries[0]["path"] != planted || entries[0]["outcome"] != plantMoved || entries[0]["moved_to"] == "" {
+		t.Errorf("entries: %v", got[0]["entries"])
+	}
+}
+
+// Stopping at the walk's bound is recorded once for the sandbox, and the
+// command runs; modules holding more than their bound refuse it.
+func TestGitWalkBoundIsRecorded(t *testing.T) {
+	oldWalk, oldModules := gitWalkFolders, gitModulesEntries
+	gitWalkFolders, gitModulesEntries = 5, 10
+	t.Cleanup(func() { gitWalkFolders, gitModulesEntries = oldWalk, oldModules })
+	ws := workspace(t)
+	gitTree(t, ws, "x")
+	for i := range 10 {
+		if err := os.MkdirAll(filepath.Join(ws, "-a", strconv.Itoa(i)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rec recorded
+	var noted atomic.Bool
+	for range 2 {
+		if _, err := gitGuard(rec.ctx(), ws, "bwrap", &noted); err != nil {
+			t.Fatalf("refused at the walk's bound: %v", err)
+		}
+	}
+	if got := rec.of(EvGitWalkBounded); len(got) != 1 || got[0]["refused"] != false {
+		t.Fatalf("the bound was not recorded once: %v", rec.events)
+	}
+	for i := range 2 * gitModulesEntries {
+		if err := os.MkdirAll(filepath.Join(ws, ".git", "modules", "-"+strconv.Itoa(i)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := gitGuard(rec.ctx(), ws, "bwrap", &noted); err == nil || !strings.Contains(err.Error(), "modules") {
+		t.Fatalf("ran with modules past their bound: %v", err)
+	}
+	if got := rec.of(EvGitWalkBounded); len(got) != 2 || got[1]["refused"] != true {
+		t.Fatalf("the refusal was not recorded: %v", rec.events)
+	}
+}
+
+// A linked hooks folder cannot be bound read-only, and a command could
+// point the link elsewhere, so bubblewrap and the container refuse to run
+// rather than fail to start or leave it writable.
+func TestLinkedGitHooksRefuseTheCommand(t *testing.T) {
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n", "hooks-real/pre-commit": "#!/bin/sh\n"})
+	if err := os.Symlink("../hooks-real", filepath.Join(ws, ".git", "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	var noted atomic.Bool
+	if _, err := gitGuard(context.Background(), ws, "bwrap", &noted); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a linked hooks folder did not refuse: %v", err)
+	}
+	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
+	if cmd := c.Command(context.Background(), ws, "true"); cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "symbolic link") {
+		t.Fatalf("the container ran with a linked hooks folder: %v", cmd.Err)
+	}
+}
+
+// The folders holding the pointers are matched themselves, at any depth
+// and in any case, and nothing they hold is.
+func TestSeatbeltGitFoldersPattern(t *testing.T) {
+	ws := "/w/s"
+	re := regexp.MustCompile(gitFoldersPattern(ws))
+	for _, p := range []string{".git/modules", ".git/modules/x", ".GIT/Modules/X", "a/b/.git/worktrees", ".git/worktrees/w",
+		".git/info", ".git/objects", ".git/objects/info", ".git/modules/a/modules/b", ".git/modules/a/b/info", ".git/worktrees/w/info"} {
+		if !re.MatchString(ws + "/" + p) {
+			t.Errorf("%s is not held", p)
+		}
+	}
+	for _, p := range []string{".git/modules/x/HEAD", ".git/info/exclude", ".git/objects/ab", ".git/objects/info/packs",
+		".git/worktrees/w/HEAD", ".git/refs", "info", "src/objects", ".git/modules/x/refs/heads"} {
+		if re.MatchString(ws + "/" + p) {
+			t.Errorf("%s is held", p)
+		}
+	}
+}
+
+// A folder with more folders than the walk's bound, sorting before .git,
+// leaves the repository protected on every backend: its config cannot be
+// written, and a planted commondir stops the next command.
+func TestProcessSandboxWalkBoundKeepsTheRepository(t *testing.T) {
+	requireNetNS(t)
+	t.Setenv("HOME", t.TempDir())
+	old := gitWalkFolders
+	gitWalkFolders = 20
+	t.Cleanup(func() { gitWalkFolders = old })
+	ws := workspace(t)
+	const mark = "[core]\n\tbare = false\n"
+	gitTree(t, ws, mark)
+	writeFiles(t, ws, map[string]string{".git/config": mark})
+	for i := range 3 * gitWalkFolders {
+		if err := os.MkdirAll(filepath.Join(ws, "-a", strconv.Itoa(i)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	_, _ = runIn(t, s, ws, "echo '[core] fsmonitor = touch x' >> .git/config; echo $PWD/evil > .git/commondir")
+	if data, _ := os.ReadFile(filepath.Join(ws, ".git", "config")); string(data) != mark {
+		t.Errorf("the command changed .git/config: %q", data)
+	}
+	out, err := runIn(t, s, ws, "true")
+	if s.Backend() == "bwrap" && (err == nil || !strings.Contains(err.Error()+out, "commondir")) {
+		t.Errorf("a planted commondir did not stop the next command: %v %s", err, out)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, ".git", "commondir")); err == nil {
+		t.Error("the planted commondir is still there")
+	}
+}
+
+// Under bubblewrap a linked hooks folder refuses the command, saying why,
+// rather than every command failing to start with a mount error.
+func TestBwrapRefusesLinkedHooksClearly(t *testing.T) {
+	requireNetNS(t)
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n", "hooks-real/.keep": ""})
+	if err := os.Symlink("../hooks-real", filepath.Join(ws, ".git", "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	if s.Backend() != "bwrap" {
+		t.Skip("seatbelt holds where the link leads; see the darwin tests")
+	}
+	out, err := runIn(t, s, ws, "true")
+	if err == nil || !strings.Contains(err.Error()+out, "symbolic link") {
+		t.Fatalf("not refused clearly: %v %s", err, out)
 	}
 }

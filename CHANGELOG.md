@@ -19,12 +19,33 @@ All notable changes to Abhed are recorded here. The format follows
   `objects/info/alternates`), in linked worktrees' and submodules' git
   folders too: on macOS by pattern, including files not made yet; under
   bubblewrap, a container and the vm tier by binding read-only those that
-  exist. Git refuses an empty `commondir`, so on Linux a `commondir` made where
-  git never writes one is moved to `~/.abhed/quarantine` before the next
-  command, which is not run; until then, git run outside Abhed would follow
-  it. Abhed's own git on the host now names the repository's common git
-  folder to git and refuses to run while a `commondir` points anywhere else,
-  since git reads refs through that file regardless. Affects 1.2.3 to 1.2.6.
+  exist. On macOS the folders holding them (`modules` and each folder in it,
+  `worktrees` and each folder in it, `info`, `objects`, `objects/info`)
+  cannot be moved, removed or made by a command either, since a rename moved
+  one aside for a link to a planted copy; git inside the macOS sandbox can
+  therefore no longer run `git worktree add` or `remove`, or `git submodule
+  add` or `update --init` for a submodule not yet checked out. Git refuses
+  an empty `commondir`, so on Linux a `commondir` made where git never
+  writes one, or a linked worktree's pointing anywhere but back to its
+  repository, is moved to `~/.abhed/quarantine` before the next command,
+  which is not run and is recorded as `sandbox.git_planted`; until then, git
+  run outside Abhed would follow it. On Linux, a folder of 20,000 entries
+  sorting before `.git` stopped the walk for git folders before it reached
+  the repository's own, leaving all of them writable: the workspace's own
+  git folder, its submodules' and linked worktrees' are now found before the
+  walk, which counts folders only and looks at each folder's `.git` first;
+  reaching its bound is recorded as `sandbox.git_walk_bounded`. A linked
+  `.git/hooks` made every bubblewrap command fail to start with a mount
+  error: it now refuses each command, saying to replace the link, and on
+  macOS is held where it leads. Binding holds only what exists when a
+  command starts, so on Linux a repository a command makes and adds as a
+  submodule entry in that same command, or a `.git/modules/<name>` it makes
+  for a later `git submodule update --init`, is not protected; see
+  [Permissions](docs/guide/04-permissions.md). Abhed's own git on the host
+  now names the repository's common git folder to git and refuses to run
+  while a `commondir` points anywhere else, since git reads refs through
+  that file regardless, or while a `.git` is present but git cannot say
+  where its git folder is. Affects 1.2.3 to 1.2.6.
 
 ## [1.2.6] - 2026-10-06
 

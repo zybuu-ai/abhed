@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +36,10 @@ type Process struct {
 	// refusing unshare) failed every command instead of the start-up check.
 	nsOnce sync.Once
 	nsErr  string
+
+	// gitNoted is set once the walk for git folders has been recorded
+	// stopping at its bound, so a large workspace is noted once.
+	gitNoted atomic.Bool
 }
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
@@ -229,7 +234,21 @@ func (s *Process) seatbeltProfile() string {
 		// or follows elsewhere, in any case, made later too.
 		for _, ws := range s.workspaces() {
 			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitPattern(ws))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFoldersPattern(ws))
 			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s$\"))\n", regexQuote(ws), anyCase(".git"))
+			// The folders holding a submodule's git folder named with slashes,
+			// which the patterns cannot tell from what a git folder holds.
+			g := scanOwnGit(ws)
+			for _, p := range holders([]string{ws}, g.protected) {
+				fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", anyCaseRegex(ws, p))
+			}
+			// Seatbelt matches the path a link resolves to, so what a linked
+			// pointer such as hooks names is held as well.
+			for _, l := range g.linked {
+				for _, t := range PathForms(RealPath(l)) {
+					fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", t)
+				}
+			}
 		}
 	}
 	for _, p := range s.statePaths() {
@@ -401,11 +420,11 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		// pattern. A commondir no bind could have stopped is taken out first.
 		if s.policy.ProtectGit {
 			for _, ws := range s.workspaces() {
-				g := scanGit(ws)
-				if err := takeOutGitPlanted(g.planted); err != nil {
+				found, err := gitGuard(ctx, ws, s.backend, &s.gitNoted)
+				if err != nil {
 					return &exec.Cmd{Err: err}
 				}
-				protected = append(protected, g.protected...)
+				protected = append(protected, found...)
 			}
 		}
 		for _, p := range holders(s.workspaces(), protected) {

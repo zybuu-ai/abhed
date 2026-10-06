@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +39,9 @@ type Container struct {
 	// podman is set when the runtime is Podman by what it says it is, as the
 	// podman-docker wrapper named docker is; see engine.
 	podman bool
+	// gitNoted is set once the walk for git folders has been recorded
+	// stopping at its bound.
+	gitNoted atomic.Bool
 }
 
 func NewContainer(p Policy) *Container {
@@ -146,7 +150,7 @@ func saysPodman(path string) bool {
 // runArgs is everything up to the image: the confinement both a command and
 // a shell run under. It begins with "run --rm -i". An error is why the
 // command is not run.
-func (c *Container) runArgs(cwd string) ([]string, error) {
+func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 	args := []string{"run", "--rm", "-i"}
 	args = append(args, c.extra...)
 
@@ -229,11 +233,11 @@ func (c *Container) runArgs(cwd string) ([]string, error) {
 	// The git folders found now, as on bubblewrap, after a planted
 	// commondir is taken out.
 	if c.policy.ProtectGit {
-		g := scanGit(c.policy.Workspace)
-		if err := takeOutGitPlanted(g.planted); err != nil {
+		found, err := gitGuard(ctx, c.policy.Workspace, string(c.Tier()), &c.gitNoted)
+		if err != nil {
 			return nil, err
 		}
-		protected = append(protected, g.protected...)
+		protected = append(protected, found...)
 	}
 	for _, p := range holders(ws, protected) {
 		if info, err := os.Lstat(p); err == nil && info.IsDir() {
@@ -268,7 +272,7 @@ func (c *Container) runArgs(cwd string) ([]string, error) {
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
-	args, err := c.runArgs(cwd)
+	args, err := c.runArgs(ctx, cwd)
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
@@ -319,7 +323,7 @@ func (c *Container) shellLabel() string {
 // terminal (-t). The container is named so that ending the shell removes it,
 // even when the engine's CLI is killed before it can.
 func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	run, err := c.runArgs(cwd)
+	run, err := c.runArgs(ctx, cwd)
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
