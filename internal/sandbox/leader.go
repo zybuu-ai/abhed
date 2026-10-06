@@ -107,8 +107,10 @@ func (l Leader) sweep() string {
 	// a process continued in that instant may fork once more. Every member is
 	// killed on every pass until none is left; a pass that finds only members
 	// killed before waits a moment for them to be scheduled and die, while one
-	// that finds a new member goes again at once.
+	// that finds a new member goes again at once. The wait doubles while
+	// passes find only those, so a member slow to die is not polled hard.
 	deadline := time.Now().Add(sweepGrace)
+	wait := sweepWaitMin
 	for {
 		left, fresh := 0, 0
 		for _, pid := range listMembers(l.Pid) {
@@ -126,8 +128,17 @@ func (l Leader) sweep() string {
 		if time.Now().After(deadline) {
 			return "processes were still running in the shell's session after it was swept"
 		}
-		if fresh == 0 {
-			time.Sleep(time.Millisecond)
+		if fresh > 0 {
+			wait = sweepWaitMin
+			continue
 		}
+		time.Sleep(min(wait, time.Until(deadline)+time.Millisecond))
+		wait = min(2*wait, sweepWaitMax)
 	}
 }
+
+// sweepWaitMin and sweepWaitMax bound the wait between passes of a sweep that
+// find only members it has already killed.
+const sweepWaitMin = time.Millisecond
+
+var sweepWaitMax = 50 * time.Millisecond

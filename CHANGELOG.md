@@ -60,8 +60,8 @@ All notable changes to Abhed are recorded here. The format follows
   already killed stays listed until the scheduler runs it, so the sweep could
   report processes left in the shell's session, and stop looking, while they
   were dying. It now kills every member on every pass until the session is
-  empty, waiting a moment between passes that find only processes it already
-  killed, for up to ten seconds.
+  empty, waiting between passes that find only processes it already killed
+  (a wait that doubles from 1 ms to 50 ms), for up to ten seconds.
 
 ### Go API
 
