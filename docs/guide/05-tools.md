@@ -60,7 +60,9 @@ hides its environment; bubblewrap ends everything in its namespace. See
   stored and the command is still running, a read holds back the last few
   hundred bytes, a fixed length whatever they say, in case a secret goes on
   in what comes next; they are shown once the command has written nothing
-  for a second, or when it ends.
+  for a second, or when it ends. So a secret a program prints in two writes
+  more than a second apart can show its first part to a read between them;
+  a value printed whole is redacted as before.
 - `shell_kill` stops it and every process it started (its process group), and
   returns its last output.
 - A shell keeps the last 1 MiB of its output; a read that fell behind says how

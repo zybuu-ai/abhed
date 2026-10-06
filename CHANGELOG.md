@@ -71,6 +71,14 @@ New in this release:
   and `Remove` take, so an edition that forgets an account's store cannot
   have a `Set` under way write it back.
 
+Removed in this release:
+
+- `secretstore`: `Redactor.Pending` and `Redactor.Partial`, reachable through
+  `Store.Redactor`, and the same methods of the `Fresh` that `Store.Session`
+  and `Store.Fresh` return. They answered whether text could start or end a
+  stored value, which is what let a running shell's read be probed; nothing
+  replaces them.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
