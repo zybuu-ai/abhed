@@ -28,7 +28,11 @@ for n in sys.argv[1:]:
 
 // launchServices are the services `open` and osascript reach an app through.
 var launchServices = []string{"com.apple.coreservices.launchservicesd", "com.apple.lsd.open",
-	"com.apple.lsd.mapdb", "com.apple.lsd.modifydb", "com.apple.coreservices.appleevents"}
+	"com.apple.lsd.mapdb", "com.apple.lsd.modifydb", "com.apple.coreservices.appleevents",
+	"com.apple.CoreServices.coreservicesd"}
+
+// unhandledURL has a scheme no app claims, so open launches nothing even outside the sandbox.
+const unhandledURL = "abhed-unclaimed-scheme-7f3d://probe"
 
 // probeSource is the probe, once launchd is seen to find each service outside the sandbox.
 func probeSource(t *testing.T) []byte {
@@ -77,16 +81,36 @@ func TestSeatbeltRefusesLaunchServices(t *testing.T) {
 			}
 		}
 	}
+	// Outside, LaunchServices answers that no app claims the scheme; inside it cannot.
+	host, _ := exec.Command("/usr/bin/open", unhandledURL).CombinedOutput()
+	openControl := strings.Contains(string(host), "kLSApplicationNotFoundErr")
+	if !openControl {
+		t.Logf("open gives no kLSApplicationNotFoundErr outside the sandbox here, so its end effect is not checked:\n%s", host)
+	}
+	checkOpen := func(ctx context.Context, t *testing.T, s *Process, ws string) {
+		t.Helper()
+		out, err := s.Command(ctx, ws, "/usr/bin/open "+unhandledURL).CombinedOutput()
+		if err == nil || strings.Contains(string(out), "kLSApplicationNotFoundErr") {
+			t.Errorf("ESCAPE: open reached LaunchServices from a command (err %v):\n%s", err, out)
+		}
+	}
 	for _, allowNet := range []bool{false, true} {
 		t.Run(fmt.Sprintf("allow_network=%v", allowNet), func(t *testing.T) {
 			ws := workspace(t)
 			s := processSandbox(t, ws, allowNet).(*Process)
 			check(context.Background(), t, s, ws)
+			if openControl {
+				checkOpen(context.Background(), t, s, ws)
+			}
 		})
 	}
 	t.Run("allowlist", func(t *testing.T) {
 		s, ws := egressProcess(t)
-		check(WithLaunch(context.Background(), Launch{CallID: "c-ls", Session: "sess-ls"}), t, s, ws)
+		ctx := WithLaunch(context.Background(), Launch{CallID: "c-ls", Session: "sess-ls"})
+		check(ctx, t, s, ws)
+		if openControl {
+			checkOpen(ctx, t, s, ws)
+		}
 	})
 }
 

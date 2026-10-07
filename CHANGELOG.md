@@ -15,8 +15,9 @@ already allows). To keep the process tier, run Abhed as an ordinary user or turn
 the network off. As root the tier is also refused where it cannot mount a
 private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
 On the macOS process tier a command can no longer signal a process an earlier
-command left running; use `run_in_background` and `shell_kill`. Nor can it run
-`open` or `osascript`; run those outside Abhed. With git
+command left running; use `run_in_background` and `shell_kill`. `open`, and
+`osascript` sending Apple events to another app, still run there but fail without
+launching anything; run those outside Abhed. With git
 protection on (Abhed Studio's sessions), git inside the sandbox fails at `git
 submodule update` on every tier, at `git worktree remove` on Linux and macOS,
 and on macOS also at `git worktree add` and at `git submodule add` or `update
@@ -83,9 +84,11 @@ in `secretstore` no longer compiles; see Go API.
   `open -a` or `osascript` could run an app outside the sandbox. With the
   network off this leaked past `allow_network: false` in every earlier
   release; under the new `network: "allowlist"` it went around the proxy. The
-  profile now denies `com.apple.coreservices.*` and `com.apple.lsd.*`, as the
-  stdio MCP server's does, on every network setting, so `open` and `osascript`
-  fail inside the sandbox; run them outside Abhed.
+  profile, and the stdio MCP server's, now deny the LaunchServices and Apple
+  event services (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, matched in any case), on every network
+  setting. `open` still runs inside the sandbox but exits non-zero without
+  opening the URL, file or app; `osascript` runs a script but cannot send
+  Apple events to another app. Run those outside Abhed.
 - Abhed Studio's sessions kept a command from writing `.git/config` and
   `.git/hooks`, but a command could still write `.git/commondir`, pointing
   git at configuration and hooks of its own, or a submodule's config and

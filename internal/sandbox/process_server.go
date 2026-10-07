@@ -88,9 +88,9 @@ func serverProfile(port uint16) string {
 	return b.String()
 }
 
-// denyLaunchServices keeps LaunchServices and Apple events from a profile:
-// they would open a URL or run an app outside the sandbox for it.
-const denyLaunchServices = "(deny mach-lookup (global-name-prefix \"com.apple.coreservices.\") (global-name-prefix \"com.apple.lsd.\"))\n"
+// denyLaunchServices keeps LaunchServices and Apple events from a profile, which would
+// open a URL or run an app outside it; matched in any case, as Seatbelt names are case-sensitive.
+const denyLaunchServices = `(deny mach-lookup (global-name-regex #"^com\.apple\.[cC][oO][rR][eE][sS][eE][rR][vV][iI][cC][eE][sS]\.") (global-name-regex #"^com\.apple\.[lL][sS][dD]\."))` + "\n"
 
 // serverEnvDropped are variables naming a session bus, an agent or a
 // container engine: ways out a server is not handed.

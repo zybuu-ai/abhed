@@ -207,10 +207,12 @@ workspace and a few shared folders, not only the workspace:
 design: tools expect a shared temp area there, so keep nothing in them a command
 should not read or change.
 
-On macOS a command cannot reach LaunchServices or Apple events, whatever the
-network setting: `open`, `osascript` and anything else that asks the system to
-open a URL, a file or an app fail, since that app would run outside the sandbox.
-Run them outside Abhed.
+On macOS the profile denies the LaunchServices and Apple event services
+(`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, matched in any case), whatever the network
+setting, since an app they start runs outside the sandbox. `open` still runs
+there but exits non-zero without opening the URL, file or app, and `osascript`
+runs a script but cannot send Apple events to another app. Run those outside
+Abhed.
 
 Each command on the process tier is kept apart from every other: on Linux
 it has its own PID namespace, and on macOS the Seatbelt profile lets it
