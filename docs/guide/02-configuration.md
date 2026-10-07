@@ -426,6 +426,9 @@ without running anything.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
   refused, and Landlock refuses TCP as well. With it true, commands get the
   host's network, unfiltered. Unix sockets are refused either way.
+  `sandbox.network: "allowlist"` refuses the fence in both modes, since it
+  cannot keep a command's sockets to the egress proxy alone
+  ([Network policy](21-network-policy.md)).
 - **Limits.** Each session's commands share a cgroup bounded by
   `max_memory_mb` (with no swap), `max_procs` (processes and threads) and
   `fence.cpu_percent` (percent of one core; unset is unbounded), and each tool
