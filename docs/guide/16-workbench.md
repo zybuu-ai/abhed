@@ -293,6 +293,7 @@ screen on each line as typed (see **Terminal** below).
 | Workspace boundary | cannot leave it | cannot leave it |
 | `.abhed/`, `.git/`, anything a read rule withholds | not served | cannot be opened or written |
 | Commands | run in the session's sandbox | your shell runs in the same sandbox: no network unless the operator allowed it |
+| What git reads in `.git` (`config`, `hooks`, `commondir` and the like) | cannot be written by a command | cannot be written by your commands or shell either |
 | The record | every call, decision and result | the same events, marked as yours (`actor: user`, `by: user`); in a shell, each line you enter, as typed (see below) |
 
 So HawkEYE's report covers what people did as well as what the agent did, and a
@@ -427,6 +428,21 @@ processes, so it can still crowd out the server's own for a while, and root
 is not bounded at all. On the none tier nothing bounds it. Memory is bounded
 only on the container and vm tiers; a pids cgroup per shell is the planned
 follow-up.
+
+**Git's own files.** In a served session no command, the agent's or yours,
+in a line or in a shell, can write what git reads in a git folder as
+configuration or follows elsewhere: `.git/config`, `.git/hooks`,
+`commondir`, `info/attributes` and the rest listed under
+[Permissions](04-permissions.md). So nothing run here can plant a program
+that your next `git status` outside Abhed would run. Git itself works as
+usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
+`git worktree add`. A few commands fail inside the sandbox and are run
+outside Abhed: `git submodule update` on a submodule already checked out, on
+every tier; `git worktree remove` on Linux and macOS; and on macOS also
+`git worktree add` and `git submodule add` or `update --init` for a
+submodule not yet checked out. **Changes** and **Review** compare each
+file with what it held before its first edit, by the server rather than
+through a command, and are unaffected.
 
 What a shell changes about the checks, stated plainly:
 
