@@ -228,8 +228,14 @@ func TestFenceEndToEndPlantedStateDoesNotPersist(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(h.Workspace())
 	for _, e := range entries {
-		if strings.EqualFold(e.Name(), ".abhed") {
-			t.Fatalf("%s persists in the workspace", e.Name())
+		if !strings.EqualFold(e.Name(), ".abhed") {
+			continue
+		}
+		// The mount mode keeps an empty .abhed of its own to cover; nothing
+		// planted may be in it, under any spelling.
+		inside, _ := os.ReadDir(filepath.Join(h.Workspace(), e.Name()))
+		if e.Name() != ".abhed" || len(inside) != 0 {
+			t.Fatalf("%s persists in the workspace holding %d entries", e.Name(), len(inside))
 		}
 	}
 	if _, err := os.Stat(filepath.Join(h.Workspace(), "next.txt")); err == nil {

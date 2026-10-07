@@ -455,7 +455,7 @@ func TestFencePlan(t *testing.T) {
 	p.StatePaths = []string{filepath.Join(ws, "state.d"), filepath.Join(ws, ".abhed", "inner.json")}
 	f := NewFence(p)
 	f.mounts = true
-	plan, err := f.plan()
+	plan, err := f.plan(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestFencePlan(t *testing.T) {
 	withFile := NewFence(p)
 	withFile.mounts = true
 	withFile.policy.StatePaths = append(slices.Clone(p.StatePaths), filepath.Join(ws, "users.json"))
-	if _, err := withFile.plan(); err == nil || !strings.Contains(err.Error(), "state file inside the workspace") {
+	if _, err := withFile.plan(t.Context()); err == nil || !strings.Contains(err.Error(), "state file inside the workspace") {
 		t.Errorf("a state file in the workspace: %v", err)
 	}
 	for _, want := range []string{".git/hooks", ".git/config", "sub/.git/hooks", "sub/.git/config", ".vscode/settings.json"} {
@@ -484,7 +484,7 @@ func TestFencePlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.policy.WriteProtected = append(f.policy.WriteProtected, filepath.Join(ws, ".vscode", "link.json"))
-	if _, err := f.plan(); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+	if _, err := f.plan(t.Context()); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Errorf("a linked protected path: %v", err)
 	}
 }

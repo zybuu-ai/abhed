@@ -352,7 +352,13 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	}
 	var plan *mountns.Plan
 	if f.mounts {
-		if plan, err = f.plan(); err != nil {
+		pctx := ctx
+		if launch.Record == nil {
+			l := launch
+			l.Record = rec
+			pctx = WithLaunch(ctx, l)
+		}
+		if plan, err = f.plan(pctx); err != nil {
 			drop()
 			return refusedCmd("%v", err)
 		}

@@ -61,6 +61,8 @@ type Fence struct {
 	// host is the platform's state once qualified: the cgroups on Linux.
 	host *fenceHost
 	seq  atomic.Uint64
+	// git is what the look for git folders keeps between commands.
+	git gitMemory
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -542,7 +544,7 @@ func (f *Fence) isSharedState(p string) bool {
 // renamed away), git's config and hooks, the workspace's .abhed, and another
 // state folder in the workspace. It is built afresh for each command, so a
 // protected path is held only once it exists when a command starts.
-func (f *Fence) plan() (*mountns.Plan, error) {
+func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 	ws := f.policy.Workspace
 	forms := PathForms(ws)
 	p := &mountns.Plan{Root: ws}
@@ -567,7 +569,11 @@ func (f *Fence) plan() (*mountns.Plan, error) {
 		}
 	}
 	if f.policy.ProtectGit {
-		protected = append(protected, GitProtected(ws)...)
+		found, err := gitGuard(ctx, ws, string(TierFence), &f.git)
+		if err != nil {
+			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
+		}
+		protected = append(protected, found...)
 	}
 	for _, h := range holders(forms, protected) {
 		r, ok := rel(h)

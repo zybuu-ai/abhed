@@ -60,6 +60,9 @@ prepare() {
 			sudo tee /etc/apparmor.d/abhed-fence-ci > /dev/null
 		sudo apparmor_parser -r /etc/apparmor.d/abhed-fence-ci
 	fi
+	# A second mount of a folder, for the test that the fence covers aliases.
+	install -d -m 0755 "$dir/alias-src" "$dir/alias-mirror"
+	sudo mount --bind "$dir/alias-src" "$dir/alias-mirror"
 	# A service-started runner has no user manager until lingering starts one.
 	sudo loginctl enable-linger "$(id -un)"
 	bus=/run/user/$(id -u)/bus
@@ -117,6 +120,8 @@ passed_all() {
 		fi
 		if grep -q -- "--- SKIP: $t " "$log"; then
 			[[ $off_linux == *" $t "* ]] && continue
+			# Proven by a run of its own, under the condition it needs.
+			grep -qx -- "$t" "$dir/elsewhere" 2>/dev/null && continue
 			item=$(sed -n "/=== RUN   $t\$/,/--- SKIP: $t /s/^ *[^ ]*\.go:[0-9]*: clitest: pending (\([a-z]*\)):.*/\1/p" "$log" | head -1)
 			[[ $name == clitest && -n $item && " ${FENCE_PENDING:-} " == *" $item "* ]] && continue
 		fi
@@ -168,13 +173,32 @@ in_scope() {
 	[ -O "$cg/cgroup.procs" ] || { echo "ENVIRONMENT: $cg is not delegated to this user"; return 1; }
 }
 
+# no_userns runs the sandbox's no-user-namespace test from outside DIR, where
+# AppArmor grants none, and notes it as proven for the main run.
+no_userns() {
+	local dir=$1 t=TestFenceWithoutUserNamespaces bin rel=internal/sandbox
+	[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ] ||
+		{ echo "ENVIRONMENT: $t needs a host that refuses user namespaces outside $dir"; return 1; }
+	bin=$(mktemp -d /var/tmp/abhed-nouserns-XXXXXX)
+	cp "$dir/sandbox.test" "$bin/"
+	echo "== $rel -run '^$t\$' outside $dir"
+	if (cd "$root/$rel" && ABHED_FENCE_NO_USERNS=1 "$bin/sandbox.test" -test.v -test.count=1 -test.run "^$t\$" < /dev/null) > "$dir/nouserns.log" 2>&1 &&
+		grep -q -- "--- PASS: $t " "$dir/nouserns.log"; then
+		echo "$t" >> "$dir/elsewhere"; rm -rf "$bin"; echo "1 passed"
+	else
+		cat "$dir/nouserns.log"; rm -rf "$bin"; return 1
+	fi
+}
+
 # run: every suite, offline. Only the network-on test may skip, as fencenet.
 run() {
 	local dir=$1 fail=0 ran=0 total name pkg pattern
 	in_scope || return 1
 	export ABHED_REQUIRE_FENCE=1 ABHED_CLITEST_BINARY=$dir/abhed FENCE_PENDING=fencenet
+	export ABHED_TEST_ALIAS=$dir/alias-src:$dir/alias-mirror
 	unset ABHED_FENCE_NETWORK
-	rm -f "$dir"/*.log
+	rm -f "$dir"/*.log "$dir/elsewhere"
+	no_userns "$dir" || fail=1
 	while IFS='|' read -r -u 3 name pkg pattern; do
 		run_suite "$name" "$pkg" "$pattern" "$dir" "$dir/$name.gated" || fail=1
 		if [ -s "$dir/$name.log" ]; then ran=$((ran + 1)); fi

@@ -612,8 +612,12 @@ anything but the repository's own git folder, by `../..` or its path
 through no symbolic link, while a work tree's `.git` file reaches its git
 folder through a symbolic link (`git worktree repair` writes it afresh),
 and where a `.git` is present but git cannot say where the git folder is.
-The fence cannot hold paths inside the writable workspace, so a Studio
-session does not run commands on it.
+The fence holds the same files in its `mount_namespace` mode: each command's
+mount namespace binds them read-only and pins the folders holding them, a
+planted `commondir` is taken out before the next command, which is refused,
+and a linked git folder, or a held file with a second name, refuses the
+command. In `landlock_only` the fence cannot hold paths inside the writable
+workspace, so Studio and `abhed serve` are refused there.
 
 The command sandbox guards `.abhed/` by path, not by file: a hardlink to a
 state file elsewhere in the workspace is an ordinary path to it, which a

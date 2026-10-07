@@ -137,7 +137,10 @@ All notable changes to Abhed are recorded here. The format follows
   The mode is recorded in `fence.qualified` and each `process.launched` as
   `mount_namespace` or `landlock_only`, and `abhed doctor` shows the probe's
   new `userns_mounts` check. Each Studio and served session has a fence and a
-  cgroup of its own.
+  cgroup of its own. With git protection on, the fence holds git's pointers,
+  configuration and hooks as the process tier does: read-only in each
+  command's namespace, a planted `commondir` taken out and the next command
+  refused, and a linked git folder refusing the command.
 - Skill scripts in `~/.abhed/skills` and the `skills.dirs` folders run under
   the fence, read and run but never written. A `skills.dirs` folder that
   holds or sits inside Abhed's state, or sits in the workspace, is left out
@@ -181,7 +184,10 @@ All notable changes to Abhed are recorded here. The format follows
   cgroup scope with `ABHED_REQUIRE_FENCE=1`, so a skip fails the build. In that
   job only the network-on end-to-end test may skip, as pending on `fencenet`;
   it runs in a separate job that is not required, since it needs PyPI and
-  nodejs.org, and now checks the Node download against its SHASUMS256.
+  nodejs.org, and now checks the Node download against its SHASUMS256. The
+  job also bind-mounts a folder twice for the fence's alias test, and runs
+  the test of a host without user namespaces from outside the folder
+  AppArmor lets make them.
 
 ### Fixed
 
