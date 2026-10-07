@@ -43,6 +43,19 @@ All notable changes to Abhed are recorded here. The format follows
   tool tells the model which destinations it may reach.
   `abhed doctor` shows the egress state. See
   [Network policy](docs/guide/21-network-policy.md).
+- Name resolution under the egress allowlist is policy-controlled and
+  recorded. On Linux each command's network namespace gets the session's
+  resolver at `127.0.0.1:53`, through a generated `resolv.conf` bound into
+  the sandbox (the host's file is not touched). It answers only names an
+  allow rule could match, with an address from `198.18.0.0/15` held for the
+  session and a 30-second TTL; it never forwards a query, and any other name
+  gets NXDOMAIN and an `egress.decision` of kind `dns`, rate-limited like
+  other denials. A `CONNECT` or plain request to one of those addresses is
+  judged on the name it stands for, and the proxy resolves that name once and
+  dials the address it checked, as before. On macOS commands resolve nothing
+  themselves: Seatbelt refuses raw DNS and the system resolver, and the proxy
+  resolves names. A wildcard allow rule logs a one-time warning that it lets
+  a command carry data in DNS labels under its domain.
 
 ### Security
 

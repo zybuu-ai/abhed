@@ -34,3 +34,25 @@ func ipv6Available() bool {
 	_ = ln.Close()
 	return true
 }
+
+// Seatbelt cannot redirect DNS, so under the allowlist a macOS command
+// resolves nothing itself: raw DNS and the system resolver are both refused.
+func TestSeatbeltAllowlistHasNoDNS(t *testing.T) {
+	s, ws := egressProcess(t)
+	var rec eventLog
+	l := Launch{CallID: "cd", Session: "sess-d", Record: rec.record}
+	for _, c := range []string{
+		// Raw DNS: a UDP socket to any server.
+		`/usr/bin/python3 -c 'import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.sendto(b"x",("8.8.8.8",53))'`,
+		// The system resolver's socket, which getaddrinfo uses.
+		`/usr/bin/python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/var/run/mDNSResponder")'`,
+		`/usr/bin/python3 -c 'import socket;socket.getaddrinfo("example.com",443)'`,
+	} {
+		if out := runLaunched(t, s, ws, l, c+" && echo RESOLVED || echo REFUSED"); !strings.Contains(out, "REFUSED") {
+			t.Errorf("ESCAPE: %s worked under the allowlist:\n%s", c, out)
+		}
+	}
+	if out := runLaunched(t, s, ws, l, "dscacheutil -q host -a name example.org"); strings.Contains(out, "address") {
+		t.Errorf("ESCAPE: the directory service resolved a name under the allowlist:\n%s", out)
+	}
+}

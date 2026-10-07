@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ const (
 	relayDir    = "/run/abhed-egress"
 	relayBinary = relayDir + "/relay"
 	relaySocket = relayDir + "/proxy.sock"
+	relayDNS    = relayDir + "/dns.sock"
 )
 
 // egressResolve looks names up for the proxy; nil is the system resolver.
@@ -73,6 +76,7 @@ type egressState struct {
 	err      error
 	dir      string // the unix socket's folder, Linux only
 	exe      string // this binary, run as the relay, Linux only
+	dns      bool   // the session's resolver is served, Linux only
 
 	mu     sync.Mutex
 	routes map[string]recordFn
@@ -195,6 +199,15 @@ func (s *Process) startEgress(e *egressState) error {
 				return
 			}
 			e.dir, e.exe = dir, exe
+			if s.bwrapDNSOK(exe) {
+				if err := startResolver(p, dir); err != nil {
+					_ = p.Close()
+					_ = os.RemoveAll(dir)
+					e.err = fmt.Errorf("the egress resolver: %w", err)
+					return
+				}
+				e.dns = true
+			}
 		}
 		e.proxy = p
 	})
@@ -287,12 +300,65 @@ func (e *egressState) port() uint16 {
 }
 
 // relayArgs are the bwrap arguments that bind the relay and the proxy's
-// socket into the sandbox, and the argv that runs the command behind the relay.
-func (e *egressState) relayArgs(argv []string) (binds, wrapped []string) {
+// socket into the sandbox, and the argv that runs the command behind the
+// relay; with the resolver, its socket and resolv.conf too.
+func (e *egressState) relayArgs(argv []string, callID string) (binds, wrapped []string) {
 	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", filepath.Join(e.dir, "proxy.sock"), relaySocket}
 	listen := e.proxy.Addr().String()
-	wrapped = append([]string{relayBinary, egress.RelayArg, relaySocket, listen, "--"}, argv...)
-	return binds, wrapped
+	wrapped = []string{relayBinary, egress.RelayArg, relaySocket, listen}
+	if e.dns {
+		// Bound after the host's resolv.conf, so this one is what the command reads.
+		binds = append(binds, "--ro-bind", filepath.Join(e.dir, "dns.sock"), relayDNS,
+			"--ro-bind", filepath.Join(e.dir, "resolv.conf"), "/etc/resolv.conf")
+		binds = append(binds, relayCaps()...)
+		wrapped = append(wrapped, egress.DNSArg, relayDNS, callID, strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()))
+	}
+	return binds, append(append(wrapped, "--"), argv...)
+}
+
+// relayCaps let the relay bind port 53: as root of the namespace that owns the network,
+// since bwrap's own nesting would leave it none there; the relay nests the command itself.
+func relayCaps() []string {
+	if os.Getuid() == 0 {
+		return []string{"--cap-add", "CAP_NET_BIND_SERVICE"}
+	}
+	return []string{"--uid", "0", "--gid", "0", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETFCAP"}
+}
+
+// resolvConf points a sandbox's lookups at the relay's resolver, and nowhere else.
+const resolvConf = "# Written by Abhed: names resolve through the session's egress policy.\nnameserver 127.0.0.1\noptions timeout:2 attempts:2\n"
+
+// startResolver serves p's resolver beside its proxy socket in dir and writes
+// the resolv.conf bound over the sandbox's; the host's own file is not touched.
+func startResolver(p *egress.Proxy, dir string) error {
+	if err := p.ListenDNS(filepath.Join(dir, "dns.sock")); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "resolv.conf"), []byte(resolvConf), 0o644) // #nosec G306 -- read inside the sandbox
+}
+
+// bwrapDNSOK reports whether the relay can serve the resolver here: bind port
+// 53 and start a command as this user. Without it names stay unresolved.
+func (s *Process) bwrapDNSOK(exe string) bool {
+	s.dnsOnce.Do(func() {
+		if !s.bwrapFreshOK() { // the relay writes the command's id maps through /proc
+			slog.Warn("egress: no private /proc here, so names will not resolve inside the sandbox")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid", "--ro-bind", "/", "/",
+			"--proc", "/proc", "--dev", "/dev"}, relayCaps()...)
+		args = append(args, exe, egress.RelayArg, "/nonexistent", "127.0.0.1:0", egress.DNSArg, "/nonexistent", "probe",
+			strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), "--", "/bin/sh", "-c", `test "$(id -u)" = `+strconv.Itoa(os.Getuid()))
+		out, err := bwrapRun(ctx, args...)
+		s.dnsOK = err == nil
+		if err != nil {
+			slog.Warn("egress: the relay cannot serve the resolver here, so names will not resolve inside the sandbox",
+				"err", err, "output", strings.TrimSpace(string(out)))
+		}
+	})
+	return s.dnsOK
 }
 
 // EndSession stops the egress proxy of the session id, if it has one, and

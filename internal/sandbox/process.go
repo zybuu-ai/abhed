@@ -38,6 +38,11 @@ type Process struct {
 	nsOnce sync.Once
 	nsErr  string
 
+	// Whether bwrap may grant the relay the capability to bind the
+	// resolver's port; a setuid bwrap refuses it to a user. Probed once.
+	dnsOnce sync.Once
+	dnsOK   bool
+
 	// egress is each session's proxy under sandbox.network allowlist.
 	egress egressSessions
 }
@@ -447,7 +452,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// loopback only: a relay inside it, listening where the proxy
 		// variables point, joins each connection to the proxy's socket.
 		if s.policy.Egress != nil {
-			binds, wrapped := eg.relayArgs(argv)
+			binds, wrapped := eg.relayArgs(argv, LaunchOf(ctx).CallID)
 			args = append(args, binds...)
 			argv = wrapped
 		}
