@@ -32,7 +32,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -197,7 +197,7 @@ jobs:
       image: golang:1.26
       options: --privileged
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install bubblewrap and vim
         run: apt-get update && apt-get install -y --no-install-recommends bubblewrap vim
       - name: Every process-sandbox boundary runs under bubblewrap
@@ -274,7 +274,7 @@ jobs:
     env:
       FENCE_DIR: /var/tmp/abhed-fence-ci
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
@@ -306,7 +306,7 @@ jobs:
     env:
       FENCE_DIR: /var/tmp/abhed-fence-ci
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
@@ -336,7 +336,7 @@ jobs:
     name: macOS case-folding paths
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -382,7 +382,7 @@ jobs:
     name: Container tier on Docker
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
@@ -398,7 +398,7 @@ jobs:
     name: Container image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build the image
         run: docker build --build-arg VERSION=v0.0.0-ci -t abhed:ci -f Dockerfile .
       - name: The image runs and reports its version
@@ -408,7 +408,7 @@ jobs:
     name: CVE scans and report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
