@@ -521,6 +521,24 @@ func gitFoldersPattern(ws string) string {
 		regexQuote(ws), anyCase(".git"), anyCase("worktrees"), anyCase("modules"), strings.Join(folders, "|"))
 }
 
+// modulesPrefix reports whether p, in ws, is a folder below a git folder's
+// modules that is not a git folder itself: part of a submodule name with slashes.
+func modulesPrefix(ws, p string) bool {
+	rest, ok := Within(p, ws)
+	if !ok || len(rest) == 0 || exists(filepath.Join(p, "HEAD")) {
+		return false
+	}
+	git := false
+	for _, part := range rest[:len(rest)-1] {
+		if strings.EqualFold(part, ".git") {
+			git = true
+		} else if git && strings.EqualFold(part, "modules") {
+			return true
+		}
+	}
+	return false
+}
+
 // anyCaseRegex is the seatbelt regex for exactly the path p in ws, its
 // part below ws in any case.
 func anyCaseRegex(ws, p string) string {

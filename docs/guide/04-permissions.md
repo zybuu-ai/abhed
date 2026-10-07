@@ -547,15 +547,19 @@ made later. The folders holding those files (`modules` and each folder in
 it, `worktrees` and each folder in it, `info`, `objects`, `objects/info`)
 cannot be moved, removed or made by a command, though what they hold stays
 writable, so a command cannot move one aside and put a link to a copy in its
-place. Git inside the sandbox therefore cannot make a linked worktree or a
-submodule's git folder: `git worktree add`, `git worktree remove` and
-`git submodule add` or `update --init` for a submodule not yet checked out
-fail there; run them yourself. A `hooks` (or other of those files) that is a
-link is held where it leads as well, as is the workspace's own `.git`, or
-a `modules` or `worktrees` folder or a folder in either, that is a link; a
-linked `.git` is then read-only throughout, so git cannot commit there. A
-nested repository's `.git` that is a link is not followed: the folder it
-leads to stays writable, so replace such a link with the folder itself.
+place. Nor can a name be made beside a submodule's git folder named with
+slashes (`modules/lib/y` beside `modules/lib/x`) in the workspace's own
+repository; in a nested repository it can, as Abhed looks for those names
+only in the workspace's own. Git inside the sandbox therefore cannot make a
+linked worktree or a submodule's git folder: `git worktree add`, `git
+worktree remove` and `git submodule add` or `update --init` for a submodule
+not yet checked out fail there; run them yourself. A `hooks` (or other of
+those files) that is a link is held where it leads as well, as is the
+workspace's own `.git`, or a `modules` or `worktrees` folder or a folder in
+either, that is a link; a linked `.git` is then read-only throughout, so git
+cannot commit there. A nested repository's `.git` that is a link is not
+followed: the folder it leads to stays writable, so replace such a link with
+the folder itself.
 
 On every tier, plain `git submodule update` on a submodule already checked
 out fails inside the sandbox too, as git rewrites `core.worktree` in the
@@ -572,40 +576,42 @@ folders and looks at each folder's `.git` before what the folder holds.
 Repositories a session has found stay protected after a command fills the
 workspace with folders; one past that bound and not found before is not
 protected, and reaching the bound is recorded once a session as
-`sandbox.git_walk_bounded`. Modules holding more than 20,000
-entries refuse the command, as no repository has them. A `hooks` (or other
-of those files) that is a link cannot be bound, and a command could point
-it elsewhere, so each command is refused until it is replaced with what it
-points to; so is a `.git`, `modules` or `worktrees` folder, or a folder in
-either, that is a link. `git worktree remove` fails there, as the worktree's folder is
-bound. Git refuses an empty `commondir`, so none can stand in for a
-missing one: a `commondir` found where git never writes one, or a linked
-worktree's that names anything but its repository's git folder by `../..`
-or by its path, with no symbolic link on the way, is moved to
-`~/.abhed/quarantine`, that command is not run, its error says what was
-moved where, and the record gains `sandbox.git_planted`. Until the next
-command starts, git you run yourself in that repository would follow it.
-Binding holds only what exists when a command starts: within one command, a
-command can make a repository (`git init new`), give it a config naming an
-fsmonitor and add it to the parent as a submodule entry (`git add new`), or
-make a `.git/modules/<name>` that a later `git submodule update --init`
-reuses, and git run in the parent outside Abhed may then run that program.
-On macOS no `.git` or modules folder can be made in the workspace, but
-Seatbelt checks a rename only at its two ends, so the same gap is open
-there: a command can build a repository in the writable temp area, with a
-config naming an fsmonitor, move it into the workspace and add it as a
-submodule entry, or move it over a nested repository that is not a
-submodule. Moving a registered submodule's work tree is refused. Before
-running git in a workspace a session has used, check `git status` and
-`git diff --submodule` for submodule entries you did not add. A root
-status never enters a nested repository that is not a submodule, so before
-running git in one, check its `.git/config` for settings that run a
-program, such as `core.fsmonitor` and `core.hooksPath`.
+`sandbox.git_walk_bounded`. Modules holding more than 20,000 entries refuse
+the command, as no repository has them. A `hooks` (or other of those files)
+that is a link cannot be bound, and a command could point it elsewhere, so
+each command is refused until it is replaced with what it points to; so is a
+`.git`, `modules` or `worktrees` folder, or a folder in either, that is a
+link. `git worktree remove` fails there, as the worktree's folder is bound.
+Git refuses an empty `commondir`, so none can stand in for a missing one: a
+`commondir` found where git never writes one, or a linked worktree's that
+names anything but its repository's git folder by `../..` or by its path,
+with no symbolic link on the way, is moved to `~/.abhed/quarantine`, that
+command is not run, its error says what was moved where, and the record
+gains `sandbox.git_planted`. Until the next command starts, git you run
+yourself in that repository would follow it. Binding holds only what exists
+when a command starts: within one command, a command can make a repository
+(`git init new`), give it a config naming an fsmonitor and add it to the
+parent as a submodule entry (`git add new`), or make a `.git/modules/<name>`
+that a later `git submodule update --init` reuses, and git run in the parent
+outside Abhed may then run that program. On macOS no `.git` can be made in
+the workspace, nor a folder under the workspace's own `modules` (a nested
+repository's slash-named submodules excepted, as above), but Seatbelt checks
+a rename only at its two ends, so the same gap is open there: a command can
+build a repository in the writable temp area, with a config naming an
+fsmonitor, move it into the workspace and add it as a submodule entry, or
+move it over a nested repository that is not a submodule. Moving a
+registered submodule's work tree is refused. Before running git in a
+workspace a session has used, check `git status` and `git diff --submodule`
+for submodule entries you did not add. A root status never enters a nested
+repository that is not a submodule, so before running git in one, check its
+`.git/config` for settings that run a program, such as `core.fsmonitor` and
+`core.hooksPath`.
 
 Abhed's own git on the host refuses to run while a `commondir` names
 anything but the repository's own git folder, by `../..` or its path
-through no symbolic link, and where a `.git` is present
-but git cannot say where the git folder is.
+through no symbolic link, while a work tree's `.git` file reaches its git
+folder through a symbolic link (`git worktree repair` writes it afresh),
+and where a `.git` is present but git cannot say where the git folder is.
 The fence cannot hold paths inside the writable workspace, so a Studio
 session does not run commands on it.
 

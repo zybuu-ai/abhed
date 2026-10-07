@@ -334,6 +334,59 @@ func TestWorktreeCommondirMustNameItsRepository(t *testing.T) {
 	}
 }
 
+// A linked worktree's git folder swapped for a link into a folder a command
+// can write, holding a git folder of its own, is not followed.
+func TestWorktreeGitFolderThroughALinkIsRefused(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("no symbolic links")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, wt := filepath.Join(root, "repo"), filepath.Join(root, "repo", ".abhed-worktrees", "wt")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", repo},
+		{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", repo, "worktree", "add", "-q", "-b", "w", wt},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = Env()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	ctx := context.Background()
+	if cmd := New(ctx, wt).Command(ctx, "status"); cmd.Err != nil {
+		t.Fatalf("the worktree before the swap: %v", cmd.Err)
+	}
+	// evil is a git folder of its own, holding the worktree's folder moved there.
+	evil := filepath.Join(repo, "evil")
+	for _, d := range []string{"worktrees", "objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(evil, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for f, data := range map[string]string{"HEAD": "ref: refs/heads/main\n", "config": "[core]\n\tfsmonitor = x\n"} {
+		if err := os.WriteFile(filepath.Join(evil, f), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(repo, ".git", "worktrees", "wt")
+	if err := os.Rename(link, filepath.Join(evil, "worktrees", "wt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", "evil", "worktrees", "wt"), link); err != nil {
+		t.Fatal(err)
+	}
+	if cmd := New(ctx, wt).Command(ctx, "status"); cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "symbolic link") {
+		t.Fatalf("ran through the linked worktree folder: %v", cmd.Err)
+	}
+}
+
 // A bare repository Abhed names with GIT_DIR keeps it: no common git folder
 // found from elsewhere is put in its place.
 func TestGitDirInEnvIsNotPinned(t *testing.T) {

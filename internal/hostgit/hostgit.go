@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -151,12 +152,45 @@ func gitDirs(ctx context.Context, dir string) (string, string, error) {
 		}
 		return "", "", nil
 	}
+	if err := gitFileLinked(dir, gd); err != nil {
+		return "", "", err
+	}
 	if parent := filepath.Dir(gd); strings.EqualFold(filepath.Base(parent), "worktrees") {
 		if c := filepath.Dir(parent); isGitDir(c) {
 			return gd, c, nil
 		}
 	}
 	return gd, gd, nil
+}
+
+// gitFileLinked says why git is not run when the work tree's .git file reaches
+// the git folder gd through a link, which a command could repoint at a folder of its own.
+func gitFileLinked(dir, gd string) error {
+	root := repoRoot(dir)
+	if root == "" || runtime.GOOS == "windows" {
+		return nil
+	}
+	f := filepath.Join(root, ".git")
+	if info, err := os.Lstat(f); err != nil || !info.Mode().IsRegular() {
+		return nil //nolint:nilerr // a .git folder, or none, has no gitdir line to check
+	}
+	data, err := os.ReadFile(f) // #nosec G304 -- the work tree's own .git file
+	if err != nil {
+		return fmt.Errorf("%s cannot be read (%w); Abhed runs no git in this repository", f, err)
+	}
+	// Read as git reads it: the whole file less trailing line ends.
+	to, ok := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), "gitdir: ")
+	if !ok {
+		return fmt.Errorf("%s names no git folder; Abhed runs no git in this repository", f)
+	}
+	if !filepath.IsAbs(to) {
+		to = filepath.Join(sandbox.RealPath(root), to)
+	}
+	if to = filepath.Clean(to); sandbox.RealPath(to) != to || to != sandbox.RealPath(gd) {
+		return fmt.Errorf("%s names its git folder %s through a symbolic link, which a command could point at a git folder "+
+			"of its own; Abhed runs no git in this repository until the link is replaced or git worktree repair is run", f, to)
+	}
+	return nil
 }
 
 // redirected says why git is not run while a commondir is not git's own, by

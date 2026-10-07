@@ -239,6 +239,10 @@ func (s *Process) seatbeltProfile() string {
 			g := scanOwnGit(ws)
 			for _, p := range holders([]string{ws}, g.protected) {
 				fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", anyCaseRegex(ws, p))
+				// Nor can a name be made beside one, which the patterns cannot tell from a folder's contents.
+				if modulesPrefix(ws, p) {
+					fmt.Fprintf(&b, "(deny file-write* (regex #\"%s/[^/]+$\"))\n", strings.TrimSuffix(anyCaseRegex(ws, p), "$"))
+				}
 			}
 			// Seatbelt matches the path a link resolves to, so what a linked
 			// pointer such as hooks names is held as well.

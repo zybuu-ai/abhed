@@ -119,6 +119,33 @@ func TestProcessSandboxHoldsTheFoldersHoldingGitPointers(t *testing.T) {
 	}
 }
 
+// Beside a submodule named with slashes (lib/x), no new name can be made under
+// modules/lib, by a link or a rename from the temp area; lib/x stays writable.
+func TestProcessSandboxRefusesANewNameBesideASlashNamedSubmodule(t *testing.T) {
+	ws := workspace(t)
+	gitTree(t, ws, "x")
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	tmp, err := os.MkdirTemp(userTemp(), "gp-mod-")
+	if err != nil {
+		t.Skip("no temp area to build in")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+	_, _ = runIn(t, s, ws, "mkdir -p evm "+tmp+"/y; printf '[core]\\n\\tfsmonitor = x\\n' > "+tmp+"/y/config; touch "+tmp+"/y/HEAD; "+
+		"ln -s ../../../evm .git/modules/lib/y; ln -s ../../../evm .GIT/Modules/LIB/z; mv "+tmp+"/y .git/modules/lib/w; "+
+		"mkdir .git/modules/lib/v; touch .git/modules/lib/u")
+	for _, f := range []string{"y", "z", "w", "v", "u"} {
+		if _, err := os.Lstat(filepath.Join(ws, ".git", "modules", "lib", f)); err == nil {
+			t.Errorf("the command made modules/lib/%s", f)
+		}
+	}
+	if out, err := runIn(t, s, ws, "set -e; touch .git/modules/lib/x/FETCH_HEAD; mkdir -p .git/modules/lib/x/refs/heads"); err != nil {
+		t.Fatalf("the submodule's git folder is not writable: %v %s", err, out)
+	}
+}
+
 // A linked hooks folder is held where it leads, as the link is by name.
 func TestProcessSandboxHoldsWhereLinkedHooksLead(t *testing.T) {
 	ws := workspace(t)
