@@ -84,11 +84,8 @@ func TestProcessSandboxDeniesHomeSecretsThroughALink(t *testing.T) {
 	}
 }
 
-// Seatbelt checks a rename only at its two ends, so the folders holding
-// git's pointers are held themselves: none can be moved aside and replaced
-// with a link to a copy holding a planted fsmonitor (a submodule's git
-// folder, named with slashes or not, a linked worktree's, modules,
-// worktrees, info, objects), in any case. Files inside them stay writable.
+// Seatbelt checks a rename only at its two ends, so the folders holding git's
+// pointers cannot be moved aside for a link, in any case; their files stay writable.
 func TestProcessSandboxHoldsTheFoldersHoldingGitPointers(t *testing.T) {
 	ws := workspace(t)
 	gitTree(t, ws, "x")

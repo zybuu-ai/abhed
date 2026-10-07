@@ -551,7 +551,11 @@ place. Git inside the sandbox therefore cannot make a linked worktree or a
 submodule's git folder: `git worktree add`, `git worktree remove` and
 `git submodule add` or `update --init` for a submodule not yet checked out
 fail there; run them yourself. A `hooks` (or other of those files) that is a
-link is held where it leads as well.
+link is held where it leads as well, as is the workspace's own `.git`, or
+a `modules` or `worktrees` folder or a folder in either, that is a link; a
+linked `.git` is then read-only throughout, so git cannot commit there. A
+nested repository's `.git` that is a link is not followed: the folder it
+leads to stays writable, so replace such a link with the folder itself.
 
 On every tier, plain `git submodule update` on a submodule already checked
 out fails inside the sandbox too, as git rewrites `core.worktree` in the
@@ -572,7 +576,8 @@ protected, and reaching the bound is recorded once a session as
 entries refuse the command, as no repository has them. A `hooks` (or other
 of those files) that is a link cannot be bound, and a command could point
 it elsewhere, so each command is refused until it is replaced with what it
-points to. `git worktree remove` fails there, as the worktree's folder is
+points to; so is a `.git`, `modules` or `worktrees` folder, or a folder in
+either, that is a link. `git worktree remove` fails there, as the worktree's folder is
 bound. Git refuses an empty `commondir`, so none can stand in for a
 missing one: a `commondir` found where git never writes one, or a linked
 worktree's that names anything but its repository's git folder by `../..`
@@ -592,10 +597,14 @@ config naming an fsmonitor, move it into the workspace and add it as a
 submodule entry, or move it over a nested repository that is not a
 submodule. Moving a registered submodule's work tree is refused. Before
 running git in a workspace a session has used, check `git status` and
-`git diff --submodule` for submodule entries you did not add.
+`git diff --submodule` for submodule entries you did not add. A root
+status never enters a nested repository that is not a submodule, so before
+running git in one, check its `.git/config` for settings that run a
+program, such as `core.fsmonitor` and `core.hooksPath`.
 
-Abhed's own git on the host refuses to run while a `commondir` points
-anywhere but the repository's own git folder, and where a `.git` is present
+Abhed's own git on the host refuses to run while a `commondir` names
+anything but the repository's own git folder, by `../..` or its path
+through no symbolic link, and where a `.git` is present
 but git cannot say where the git folder is.
 The fence cannot hold paths inside the writable workspace, so a Studio
 session does not run commands on it.

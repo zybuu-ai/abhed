@@ -9,10 +9,8 @@
 // the server's privileges. The settings known to do that for the commands
 // Abhed runs are switched off in git's command-line scope, which wins over
 // every configuration file, submodules are not entered, and git's own
-// environment is dropped. The common git folder, where configuration, hooks
-// and refs are read from, is found from where the git folder is and named to
-// git outright, and a command is refused while a commondir file in the git
-// folder points anywhere else: a sandboxed command could have planted one.
+// environment is dropped. The common git folder is named to git outright,
+// and git is refused while a commondir, which a command could plant, is not git's own.
 //
 // This is a list, and so best effort: a git release that adds a setting
 // naming a program is not covered until it is added here. Running these
@@ -63,9 +61,8 @@ var safety = [][2]string{
 type Repo struct {
 	Dir     string
 	drivers [][2]string
-	// gitDir is dir's git folder, and common the common one, found from
-	// where the git folder is rather than from a commondir file in it;
-	// both "" outside a repository.
+	// gitDir is dir's git folder and common the common one, found from where
+	// the git folder is, never from its commondir; "" outside a repository.
 	gitDir, common string
 	// unknown is why git is not run: a .git is there, but git could not
 	// say where its git folder is, so nothing can be pinned.
@@ -132,12 +129,8 @@ func pinned(common string, more []string) []string {
 	return append(out, "GIT_COMMON_DIR="+common)
 }
 
-// gitDirs are dir's git folder and its common git folder: the same one, or
-// for a linked worktree's (<common>/worktrees/<name>) the folder two up. A
-// commondir file is not read, since a sandboxed command can write one; ""
-// for both when dir is in no repository. When a .git is at or above dir but
-// git cannot name the git folder, the error is why no git is run there:
-// unpinned, git would follow whatever commondir it found.
+// gitDirs are dir's git folder and its common one, two up for a linked worktree's,
+// never read from a commondir; an error when a .git is there but git cannot name it.
 func gitDirs(ctx context.Context, dir string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--absolute-git-dir") // #nosec G204 -- fixed arguments
 	place(cmd, dir)
@@ -166,39 +159,25 @@ func gitDirs(ctx context.Context, dir string) (string, string, error) {
 	return gd, gd, nil
 }
 
-// redirected says why git is not run while a commondir file in the git
-// folder points anywhere but the common git folder found. Git reads refs
-// through that file whatever GIT_COMMON_DIR says, so naming the folder is
-// not enough.
+// redirected says why git is not run while a commondir is not git's own, by
+// sandbox.CommondirIsGits: git reads refs through it whatever GIT_COMMON_DIR says.
 func (r *Repo) redirected() error {
 	if r.gitDir == "" {
 		return nil
 	}
 	p := filepath.Join(r.gitDir, "commondir")
-	data, err := os.ReadFile(p) // #nosec G304 -- the repository's own git folder
+	_, err := os.Lstat(p)
 	if errors.Is(err, fs.ErrNotExist) {
 		if r.gitDir == r.common {
 			return nil
 		}
 		return fmt.Errorf("%s is missing, so git cannot be told which repository the worktree belongs to; Abhed runs no git there", p)
 	}
-	if err == nil && r.gitDir != r.common {
-		to := strings.TrimRight(string(data), "\r\n")
-		if !filepath.IsAbs(to) {
-			to = filepath.Join(r.gitDir, to)
-		}
-		if sameDir(to, r.common) {
-			return nil
-		}
+	if err == nil && r.gitDir != r.common && sandbox.CommondirIsGits(p, r.gitDir, r.common) {
+		return nil
 	}
-	return fmt.Errorf("%s points git at another folder's configuration, hooks and refs, and git never writes one there; "+
-		"a command may have planted it. Abhed runs no git in this repository until it is removed", p)
-}
-
-func sameDir(a, b string) bool {
-	ra, err1 := filepath.EvalSymlinks(a)
-	rb, err2 := filepath.EvalSymlinks(b)
-	return err1 == nil && err2 == nil && ra == rb
+	return fmt.Errorf("%s points git at another folder's configuration, hooks and refs, or reaches its own through a link, "+
+		"and git never writes one so; a command may have planted it. Abhed runs no git in this repository until it is removed", p)
 }
 
 // isGitDir reports whether d holds what every git folder does.

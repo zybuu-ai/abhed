@@ -43,17 +43,22 @@ All notable changes to Abhed are recorded here. The format follows
   `sandbox.git_walk_bounded`. A linked
   `.git/hooks` made every bubblewrap command fail to start with a mount
   error: it now refuses each command, saying to replace the link, and on
-  macOS is held where it leads. Binding holds only what exists when a
+  macOS is held where it leads; so is a `.git`, `modules` or `worktrees`
+  folder, or a folder in either, that is a link, which a command could
+  repoint at a git folder of its own (on macOS, a nested repository's
+  linked `.git` is not followed). Binding holds only what exists when a
   command starts, so on Linux a repository a command makes and adds as a
   submodule entry in that same command, or a `.git/modules/<name>` it makes
   for a later `git submodule update --init`, is not protected. On macOS a
   command can likewise build a repository in the temp area and move it
   into the workspace, since Seatbelt checks a rename only at its two ends;
-  see [Permissions](docs/guide/04-permissions.md). Abhed's own git on the host
+  check a nested repository's `.git/config` before running git in it; see
+  [Permissions](docs/guide/04-permissions.md). Abhed's own git on the host
   now names the repository's common git folder to git and refuses to run
-  while a `commondir` points anywhere else, since git reads refs through
-  that file regardless, or while a `.git` is present but git cannot say
-  where its git folder is. Affects 1.2.3 to 1.2.6.
+  while a `commondir` names anything else or reaches it through a link,
+  since git reads refs through that file regardless, or while a `.git` is
+  present but git cannot say where its git folder is. Affects 1.2.3 to
+  1.2.6.
 
 ## [1.2.6] - 2026-10-06
 

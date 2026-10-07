@@ -127,14 +127,8 @@ type Policy struct {
 	// WriteProtected are paths inside the workspace a command may read but
 	// not write, such as an editor's own settings there.
 	WriteProtected []string
-	// ProtectGit write-protects what git reads as configuration or follows
-	// elsewhere (gitPointers) in every git folder in the workspace, its linked
-	// worktrees' and its submodules', and each .git file. Seatbelt names them
-	// by pattern, at any depth and for folders made later, with the folders
-	// holding them; bubblewrap and the container bind those found when a
-	// command starts (the workspace's own repository first, then a bounded
-	// walk), take out a commondir planted where git writes none, and refuse
-	// a linked one.
+	// ProtectGit write-protects the gitPointers of every git folder in the
+	// workspace and each .git file; see gitprotect.go for how each backend does it.
 	ProtectGit bool
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
 	// container and vm tiers only, processes on those and the process tier.

@@ -15,11 +15,8 @@ import (
 	"sync/atomic"
 )
 
-// Bounds on the walk for git folders: a deeper tree, or one with more
-// folders, is not walked further, and a repository past the bound is not
-// protected. Each workspace's own git folder, its submodules' and its
-// linked worktrees' are found apart from the walk, so no bound leaves them
-// out. Variables, so a test can lower them.
+// Bounds on the walk for git folders; a repository past them is not protected
+// unless found apart from the walk. Variables, so a test can lower them.
 var (
 	gitWalkDepth   = 6
 	gitWalkFolders = 20000
@@ -32,8 +29,7 @@ var (
 )
 
 // gitPointers are the names in a git folder that git reads as configuration,
-// runs programs from, or follows to another folder: a commondir moves where
-// the configuration and hooks are read from, and alternates where objects are.
+// runs programs from, or follows to another folder.
 var gitPointers = []string{"config", "config.worktree", "commondir", "gitdir", "hooks", "info/attributes", "objects/info/alternates"}
 
 // gitScan is what one look for git folders found.
@@ -54,11 +50,8 @@ type gitScan struct {
 	seen map[string]bool
 }
 
-// GitProtected are the paths in ws that git runs programs from or follows
-// elsewhere: in each git folder, its submodules' and its linked worktrees',
-// the gitPointers there, with config and hooks made empty where missing, and
-// each .git file (a worktree's or a submodule's link to its git folder), at
-// most gitWalkDepth folders down.
+// GitProtected are the gitPointers of every git folder found in ws, config and
+// hooks made empty where missing, and each .git file naming a git folder.
 func GitProtected(ws string) []string { return scanGit(ws).protected }
 
 // scanGit looks at ws's own git folder, then the .git entries known from
@@ -125,6 +118,8 @@ func (g *gitScan) at(dir string) {
 
 func (g *gitScan) gitEntry(p string, d fs.DirEntry) {
 	switch {
+	case d.Type()&fs.ModeSymlink != 0:
+		g.link(p)
 	case d.IsDir():
 		if !g.seen[p] {
 			g.gits = append(g.gits, p)
@@ -135,6 +130,14 @@ func (g *gitScan) gitEntry(p string, d fs.DirEntry) {
 			g.gits = append(g.gits, p)
 		}
 		g.add(p)
+	}
+}
+
+// link notes p, a link where git would read a git folder or one of its parts.
+func (g *gitScan) link(p string) {
+	if !g.seen[p] {
+		g.seen[p] = true
+		g.linked = append(g.linked, p)
 	}
 }
 
@@ -184,9 +187,8 @@ func (g *gitScan) folder(dir string, level int) {
 		}
 	}
 	g.existing(dir, "config", "hooks", "config.worktree", "gitdir", "info/attributes", "objects/info/alternates")
-	// Git writes a commondir only in a linked worktree's folder; one here
-	// was put there, and no empty one can stand in for it, since git
-	// refuses an empty commondir.
+	// Git writes a commondir only in a linked worktree's folder, and refuses an
+	// empty one, so one here was planted and no empty one can stand in for it.
 	if c := filepath.Join(dir, "commondir"); exists(c) {
 		g.planted = append(g.planted, c)
 	}
@@ -200,19 +202,26 @@ func (g *gitScan) folder(dir string, level int) {
 			g.gitFile(filepath.Join(wt, ".git"))
 		}
 	}
-	if entries, err := os.ReadDir(filepath.Join(dir, "worktrees")); err == nil {
+	if isLink(filepath.Join(dir, "worktrees")) {
+		g.link(filepath.Join(dir, "worktrees"))
+	} else if entries, err := os.ReadDir(filepath.Join(dir, "worktrees")); err == nil {
 		for _, e := range entries {
+			wt := filepath.Join(dir, "worktrees", e.Name())
+			// Git follows a linked worktree's folder, whose commondir could name anything.
+			if isLink(wt) {
+				g.link(wt)
+				continue
+			}
 			if !e.IsDir() {
 				continue
 			}
-			wt := filepath.Join(dir, "worktrees", e.Name())
 			if g.make && perWorktree {
 				makeEmpty(filepath.Join(wt, "config.worktree"), false)
 			}
 			g.existing(wt, "commondir", "gitdir", "config.worktree")
 			// Git writes one here pointing back to dir; one pointing elsewhere
 			// was changed before the first bind could hold it.
-			if c := filepath.Join(wt, "commondir"); exists(c) && !pointsBack(c, wt, dir) {
+			if c := filepath.Join(wt, "commondir"); exists(c) && !CommondirIsGits(c, wt, dir) {
 				g.planted = append(g.planted, c)
 			}
 			if to := readPointer(filepath.Join(wt, "gitdir")); to != "" {
@@ -223,7 +232,9 @@ func (g *gitScan) folder(dir string, level int) {
 			}
 		}
 	}
-	if level < gitModulesDepth {
+	if isLink(filepath.Join(dir, "modules")) {
+		g.link(filepath.Join(dir, "modules"))
+	} else if level < gitModulesDepth {
 		g.modules(filepath.Join(dir, "modules"), level+1, 0)
 	}
 }
@@ -255,10 +266,14 @@ func (g *gitScan) modules(dir string, level, depth int) {
 			g.modulesBounded = true
 			return
 		}
+		sub := filepath.Join(dir, e.Name())
+		if isLink(sub) {
+			g.link(sub)
+			continue
+		}
 		if !e.IsDir() {
 			continue
 		}
-		sub := filepath.Join(dir, e.Name())
 		if exists(filepath.Join(sub, "HEAD")) {
 			g.folder(sub, level)
 		} else {
@@ -285,14 +300,19 @@ func (g *gitScan) existing(dir string, names ...string) {
 	}
 }
 
+func isLink(p string) bool {
+	info, err := os.Lstat(p)
+	return err == nil && info.Mode()&fs.ModeSymlink != 0
+}
+
 func exists(p string) bool {
 	_, err := os.Lstat(p)
 	return err == nil
 }
 
-// pointsBack reports whether the commondir c, in the linked worktree's folder
-// wt, names dir with no link on the way, which a command could later repoint.
-func pointsBack(c, wt, dir string) bool {
+// CommondirIsGits reports whether the commondir c, in the linked worktree's
+// folder wt, names its git folder dir as git writes it, through no link.
+func CommondirIsGits(c, wt, dir string) bool {
 	if info, err := os.Lstat(c); err != nil || !info.Mode().IsRegular() {
 		return false
 	}
@@ -370,8 +390,7 @@ func configWorktree(p string) string {
 }
 
 // worktreeConfigOn reports whether the configuration at p may turn on
-// extensions.worktreeConfig, under which git reads config.worktree. A
-// mention anywhere counts: an empty config.worktree changes nothing.
+// extensions.worktreeConfig; any mention counts, as an empty config.worktree is harmless.
 func worktreeConfigOn(p string) bool {
 	f, err := os.Open(p) // #nosec G304 -- a git folder's config the walk found
 	if err != nil {

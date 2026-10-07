@@ -11,9 +11,8 @@ import (
 	"testing"
 )
 
-// gitTree makes a repository's git folder by hand, with a submodule's git
-// folder under modules and a linked worktree's under worktrees, each written
-// once with mark so a change shows.
+// gitTree makes a git folder by hand, with a submodule's and a linked
+// worktree's, writing mark into each so a change shows.
 func gitTree(t *testing.T, ws, mark string) {
 	t.Helper()
 	files := map[string]string{
@@ -78,10 +77,8 @@ func checkGitPlant(t *testing.T, ws, mark string) {
 	}
 }
 
-// With ProtectGit, no command can write a commondir, a submodule's config or
-// hooks, a config.worktree or a linked worktree's pointers: seatbelt refuses
-// each write, even of a file that did not exist; bubblewrap binds what exists
-// read-only and takes out a commondir before the next command runs.
+// With ProtectGit, no command can write any git pointer: seatbelt refuses each
+// write; bubblewrap binds them and takes out a commondir before the next command.
 func TestProcessSandboxProtectsEveryGitPointer(t *testing.T) {
 	requireNetNS(t)
 	t.Setenv("HOME", t.TempDir())
@@ -168,9 +165,8 @@ func TestGitProtectedMakesNoNeedlessConfigWorktree(t *testing.T) {
 	}
 }
 
-// The container binds a submodule's config and hooks and a worktree's
-// commondir read-only, and refuses to run while a commondir is planted,
-// taking it out to the quarantine.
+// The container binds the git pointers read-only, and refuses to run while a
+// commondir is planted, quarantining it.
 func TestContainerProtectsEveryGitPointer(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ws, err := filepath.EvalSymlinks(t.TempDir())
@@ -232,10 +228,8 @@ func relSet(ws string, paths []string) map[string]bool {
 	return got
 }
 
-// A folder with more folders than the walk's bound, sorting before .git,
-// cannot hide the workspace's own git folder, a folder's own .git, a
-// submodule's .git file or a linked worktree's: each is found apart from the
-// walk or before what its folder holds, and the bound is noted.
+// Folders past the walk's bound, sorting before .git, hide no own git folder,
+// folder's .git, submodule's or linked worktree's .git file.
 func TestScanGitFindsEachGitBeforeTheBound(t *testing.T) {
 	old := gitWalkFolders
 	gitWalkFolders = 20
@@ -481,9 +475,8 @@ func TestGitWalkBoundIsRecorded(t *testing.T) {
 	}
 }
 
-// A linked hooks folder cannot be bound read-only, and a command could
-// point the link elsewhere, so bubblewrap and the container refuse to run
-// rather than fail to start or leave it writable.
+// A linked hooks folder cannot be bound and could be repointed, so bubblewrap
+// and the container refuse to run rather than fail to start or leave it writable.
 func TestLinkedGitHooksRefuseTheCommand(t *testing.T) {
 	ws := workspace(t)
 	writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n", "hooks-real/pre-commit": "#!/bin/sh\n"})
@@ -497,6 +490,65 @@ func TestLinkedGitHooksRefuseTheCommand(t *testing.T) {
 	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
 	if cmd := c.Command(context.Background(), ws, "true"); cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "symbolic link") {
 		t.Fatalf("the container ran with a linked hooks folder: %v", cmd.Err)
+	}
+}
+
+// A link where git reads a git folder or one of its parts cannot be bound,
+// and could be repointed, so it refuses the command as a linked hooks does.
+func TestLinkedGitFoldersRefuseTheCommand(t *testing.T) {
+	cases := map[string]func(t *testing.T, ws string){
+		// A worktree's folder moved aside for a link, its commondir naming another git folder.
+		"worktree folder": func(t *testing.T, ws string) {
+			gitTree(t, ws, "x")
+			writeFiles(t, ws, map[string]string{"evilc/HEAD": "ref: refs/heads/main\n", "evilc/config": "[core]\n\tfsmonitor = x\n"})
+			if err := os.Rename(filepath.Join(ws, ".git", "worktrees", "w"), filepath.Join(ws, "hid")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../../hid", filepath.Join(ws, ".git", "worktrees", "w")); err != nil {
+				t.Fatal(err)
+			}
+			writeFiles(t, ws, map[string]string{"hid/commondir": filepath.Join(ws, "evilc") + "\n"})
+		},
+		"modules entry": func(t *testing.T, ws string) {
+			gitTree(t, ws, "x")
+			writeFiles(t, ws, map[string]string{"hidm/HEAD": "ref: refs/heads/main\n", "hidm/config": "[core]\n"})
+			if err := os.Symlink("../../../../hidm", filepath.Join(ws, ".git", "modules", "lib", "y")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"modules folder": func(t *testing.T, ws string) {
+			writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n", "hidm/a/HEAD": "ref: refs/heads/main\n"})
+			if err := os.Symlink("../hidm", filepath.Join(ws, ".git", "modules")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"workspace .git": func(t *testing.T, ws string) {
+			writeFiles(t, ws, map[string]string{"real/HEAD": "ref: refs/heads/main\n", "real/config": "[core]\n"})
+			if err := os.Symlink("real", filepath.Join(ws, ".git")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"nested .git": func(t *testing.T, ws string) {
+			writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n",
+				"real/HEAD": "ref: refs/heads/main\n", "real/config": "[core]\n", "n/README": ""})
+			if err := os.Symlink("../real", filepath.Join(ws, "n", ".git")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			ws := workspace(t)
+			setup(t, ws)
+			var mem gitMemory
+			if _, err := gitGuard(context.Background(), ws, "bwrap", &mem); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+				t.Fatalf("a linked git folder did not refuse: %v", err)
+			}
+			c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
+			if cmd := c.Command(context.Background(), ws, "true"); cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "symbolic link") {
+				t.Fatalf("the container ran with a linked git folder: %v", cmd.Err)
+			}
+		})
 	}
 }
 
@@ -519,9 +571,8 @@ func TestSeatbeltGitFoldersPattern(t *testing.T) {
 	}
 }
 
-// A folder with more folders than the walk's bound, sorting before .git,
-// leaves the repository protected on every backend: its config cannot be
-// written, and a planted commondir stops the next command.
+// Folders past the walk's bound leave the repository protected on every
+// backend: config unwritable, and a planted commondir stops the next command.
 func TestProcessSandboxWalkBoundKeepsTheRepository(t *testing.T) {
 	requireNetNS(t)
 	t.Setenv("HOME", t.TempDir())

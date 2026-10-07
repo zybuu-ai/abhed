@@ -225,10 +225,8 @@ func TestOnlyHTTPSTransportRuns(t *testing.T) {
 	}
 }
 
-// A commondir planted in the git folder points git at another folder's
-// configuration, hooks and refs. Abhed's git on the host reads the
-// repository's own: no planted fsmonitor or hook runs, and the refs and
-// configuration it sees are the repository's.
+// A commondir planted in the git folder is not followed: no planted fsmonitor
+// or hook runs, and the refs and configuration seen are the repository's.
 func TestPlantedCommondirIsNotFollowed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the planted programs are shell scripts")
@@ -318,6 +316,22 @@ func TestWorktreeCommondirMustNameItsRepository(t *testing.T) {
 	if cmd := New(ctx, wt).Command(ctx, "status"); cmd.Err == nil {
 		t.Fatal("ran with the worktree's commondir pointing at another repository")
 	}
+	// Reaching its own git folder through a link counts too: the link could be repointed.
+	if err := os.Symlink(".", filepath.Join(repo, ".git", "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cd, []byte("../../lnk\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cmd := New(ctx, wt).Command(ctx, "status"); cmd.Err == nil {
+		t.Fatal("ran with the worktree's commondir reaching its repository through a link")
+	}
+	if err := os.WriteFile(cd, []byte("../..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cmd := New(ctx, wt).Command(ctx, "status"); cmd.Err != nil {
+		t.Fatalf("git's own commondir refused: %v", cmd.Err)
+	}
 }
 
 // A bare repository Abhed names with GIT_DIR keeps it: no common git folder
@@ -334,9 +348,8 @@ func TestGitDirInEnvIsNotPinned(t *testing.T) {
 	}
 }
 
-// Where a .git is present but git cannot say where the git folder is, no
-// common folder can be pinned, so no git runs there; outside any
-// repository git runs as before.
+// Where git cannot say where a present .git's git folder is, no git runs;
+// outside any repository git runs as before.
 func TestUnknownGitFolderRefusesGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
