@@ -180,14 +180,19 @@ func TestFenceEndToEndHoldsAForkBomb(t *testing.T) {
 // reaches the internet, so it runs only with ABHED_FENCE_NETWORK=1 as well,
 // and reports what each step printed.
 func TestFenceEndToEndNetworkOnInstalls(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
+		Pending(t, "fence", "set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to run the fence end to end")
+	}
+	// Its own item, so a job can run the fence offline and accept only this.
 	if os.Getenv("ABHED_FENCE_NETWORK") != "1" {
-		Pending(t, "fence", "set ABHED_FENCE_NETWORK=1 as well to reach the internet")
+		Pending(t, "fencenet", "set ABHED_FENCE_NETWORK=1 as well to reach the internet")
 	}
 	steps := []string{
 		`getent ahosts pypi.org | head -2; python3 -c "import socket; print('getaddrinfo', socket.getaddrinfo('pypi.org', 443)[0][4])"`,
 		`python3 -m venv .venv && .venv/bin/pip install --disable-pip-version-check -q six && .venv/bin/python -c 'import six; print("pip ok: six", six.__version__)'`,
 		`a=$(uname -m); case $a in aarch64) a=arm64;; x86_64) a=x64;; esac; v=v20.18.0; ` +
-			`curl -sSfL https://nodejs.org/dist/$v/node-$v-linux-$a.tar.xz -o node.tar.xz && tar xJf node.tar.xz && ` +
+			`n=node-$v-linux-$a.tar.xz; get() { curl -sSfL --retry 3 --retry-all-errors "https://nodejs.org/dist/$v/$1" -o "$1"; }; ` +
+			`get $n && get SHASUMS256.txt && grep " $n\$" SHASUMS256.txt | sha256sum -c - && tar xJf $n && ` +
 			`export PATH=$PWD/node-$v-linux-$a/bin:$PATH && npm install --no-audit --no-fund -s left-pad && ` +
 			`node -e 'console.log("npm ok:", require("left-pad")("x", 3))'`,
 	}
