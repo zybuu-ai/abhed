@@ -26,7 +26,8 @@ var claimFiles = []string{
 // A syscall filter named in the docs must be one the bwrap command applies:
 // the claim was once made with none in place. The fence tier's own text may
 // name its filters: a Markdown section headed by it, its row in a tier table,
-// and the comment that defines it, which fence_linux_test.go holds to them.
+// its checklist items ("- [x] **Fence"), and the comment that defines it,
+// which fence_linux_test.go holds to them.
 func TestDocsClaimNoSyscallFilterTheSandboxLacks(t *testing.T) {
 	b := &Process{policy: DefaultPolicy(workspace(t)), backend: "bwrap"}
 	args := b.wrapEgress(t.Context(), b.policy.Workspace, nil, nil, "/bin/true").Args
@@ -42,12 +43,16 @@ func TestDocsClaimNoSyscallFilterTheSandboxLacks(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fence := false
+		fence, item := false, false
 		for i, line := range strings.Split(string(data), "\n") {
 			if strings.HasSuffix(f, ".md") && strings.HasPrefix(line, "#") {
 				fence = strings.TrimSpace(strings.TrimLeft(line, "#")) == fenceHeading
 			}
-			if fence || strings.Contains(line, "TierFence") || strings.HasPrefix(line, "| `fence` |") {
+			// A list item runs until the next item, heading or blank line.
+			if strings.HasSuffix(f, ".md") && (strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "") {
+				item = strings.HasPrefix(line, "- [x] **Fence") || strings.HasPrefix(line, "- [ ] **Fence")
+			}
+			if fence || item || strings.Contains(line, "TierFence") || strings.HasPrefix(line, "| `fence` |") {
 				continue
 			}
 			if mention.MatchString(line) && !negated.MatchString(line) {
