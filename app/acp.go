@@ -155,7 +155,10 @@ type acpSession struct {
 	protected []string
 	// trustSHA is the workspace file's hash when the session opened.
 	trustSHA string
-	closed   bool
+	// trust is what the session was opened with, so a restart keeps an
+	// editor's "untrusted" rather than falling back to the connection's.
+	trust  config.TrustChoice
+	closed bool
 	// woken is set while a turn the session started itself runs, and
 	// closed when it ends; a prompt waits for it.
 	woken chan struct{}
@@ -547,6 +550,27 @@ func sessionMeta(raw map[string]json.RawMessage, into any) *rpcError {
 	return nil
 }
 
+// requestedTrust is the trust a session/new, load, resume or fork asks for in
+// its _meta: the connection's, or "untrusted", which only narrows it.
+func (c *acpConn) requestedTrust(raw map[string]json.RawMessage) (config.TrustChoice, *rpcError) {
+	var m struct {
+		// Trust "untrusted" takes only what tightens, whatever was recorded.
+		Trust string `json:"trust"`
+	}
+	if e := sessionMeta(raw, &m); e != nil {
+		return "", e
+	}
+	switch m.Trust {
+	case "":
+		return c.trust, nil
+	case string(config.TrustRefused):
+		return config.TrustRefused, nil
+	}
+	// Trust is granted by the person, with abhed trust or the flag, never over the wire.
+	return "", refusal(errParams, `_meta[%q].trust may only be "untrusted"; `+
+		"trust a workspace with `abhed trust grant` or -trust-workspace", acpMetaKey)
+}
+
 // openOptions say how a session is opened: new, or continued from the record.
 type openOptions struct {
 	cwd    string
@@ -565,28 +589,14 @@ func (c *acpConn) newSession(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errParams, "session/new: %v", err))
 		return
 	}
-	var m struct {
-		// Trust "untrusted" takes only what tightens, whatever was recorded.
-		Trust string `json:"trust"`
-	}
-	if e := sessionMeta(p.Meta, &m); e != nil {
+	trust, e := c.requestedTrust(p.Meta)
+	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
 	cwd := p.Cwd
 	if cwd == "" {
 		cwd = c.base
-	}
-	trust := c.trust
-	switch m.Trust {
-	case "":
-	case string(config.TrustRefused):
-		trust = config.TrustRefused
-	default:
-		// Trust is granted by the person, with abhed trust or the flag, never over the wire.
-		c.reply(msg.ID, nil, refusal(errParams, `_meta[%q].trust may only be "untrusted"; `+
-			"trust a workspace with `abhed trust grant` or -trust-workspace", acpMetaKey))
-		return
 	}
 	s, e := c.openSession(openOptions{cwd: cwd, trust: trust})
 	if e != nil {
@@ -635,7 +645,7 @@ func metaOf(res map[string]any) map[string]any {
 // openSession builds a session's agent, in the record when the connection
 // keeps one, and adds it to the connection.
 func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
-	s := &acpSession{id: o.id, cwd: o.cwd, always: map[string]bool{}}
+	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]bool{}}
 	if s.id == "" {
 		s.id = "s-" + acpID()
 		if c.durable() {

@@ -360,7 +360,11 @@ trusted it; `session/new` reports the decision in
 `_meta["zybuu.ai/abhed"].workspaceTrust`, with the settings it ignored, so the
 editor can ask and then run `abhed trust grant`. The editor may send
 `_meta["zybuu.ai/abhed"].trust: "untrusted"` (the older `_meta.abhed` key is
-still read) to take only what tightens; any other field there is refused, and
+still read) to take only what tightens, on `session/new` and equally on
+`session/load`, `session/resume` and `_abhed/session/fork`, so a chat continued
+from an untrusted window stays untrusted. A session already open with the
+folder's stored trust is not narrowed in place: close it and load it again.
+Any other field there is refused, and
 it cannot grant trust over the wire; pass the reported `sha256` to `abhed trust grant
 -sha256` so only the content the person saw is trusted. Starting
 `abhed -trust-workspace acp` trusts the file of the workspace it was started

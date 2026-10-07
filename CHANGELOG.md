@@ -6,6 +6,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- An untrusted editor window could continue a chat with the folder's stored
+  trust. ACP `session/load` and `session/resume` ignored the
+  `_meta["zybuu.ai/abhed"].trust: "untrusted"` that `session/new` honours, so
+  Abhed Studio in Restricted Mode got the workspace's full
+  `.abhed/config.json`, loosening settings included, when it reopened a
+  session. Load, resume and `_abhed/session/fork` now take the field with the
+  same meaning, the session keeps it when it restarts for a changed workspace
+  file, and asking for an open, trusted session untrusted is refused until it
+  is closed.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in

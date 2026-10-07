@@ -167,11 +167,26 @@ func (c *acpConn) sessionInfo(rec *local.Store, e local.Entry) map[string]any {
 // model, mode and "always" scopes restored as today's policy allows.
 func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 	var p struct {
-		SessionID string `json:"sessionId"`
-		Cwd       string `json:"cwd"`
+		SessionID string                     `json:"sessionId"`
+		Cwd       string                     `json:"cwd"`
+		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
-	_ = json.Unmarshal(msg.Params, &p)
-	if c.session(p.SessionID) != nil {
+	if err := json.Unmarshal(msg.Params, &p); err != nil {
+		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		return
+	}
+	trust, terr := c.requestedTrust(p.Meta)
+	if terr != nil {
+		c.reply(msg.ID, nil, terr)
+		return
+	}
+	if open := c.session(p.SessionID); open != nil {
+		// Its agent already holds the wider configuration; narrowing it in place is not possible.
+		if trust == config.TrustRefused && open.trust != config.TrustRefused {
+			c.reply(msg.ID, nil, refusal(errRefused, "this session is open on this connection with the workspace's stored trust; "+
+				"close it, then load it again untrusted"))
+			return
+		}
 		c.reply(msg.ID, nil, refusal(errRefused, "this session is already open on this connection"))
 		return
 	}
@@ -201,7 +216,7 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 	var s *acpSession
 	if rep.OK {
 		var e2 *rpcError
-		if s, e2 = c.openSession(openOptions{cwd: cwd, trust: c.trust, id: e.ID, resume: true}); e2 != nil {
+		if s, e2 = c.openSession(openOptions{cwd: cwd, trust: trust, id: e.ID, resume: true}); e2 != nil {
 			c.reply(msg.ID, nil, e2)
 			return
 		}
@@ -212,7 +227,7 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		}
 	} else {
 		// Read, never written to: going on from it is a fork.
-		s = &acpSession{id: e.ID, cwd: cwd, always: map[string]bool{}, agent: recordOnly{},
+		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]bool{}, agent: recordOnly{},
 			readOnly: "the record failed verification at seq " + strconv.FormatInt(rep.FirstBad, 10)}
 		c.sessMu.Lock()
 		c.sessions[s.id] = s
@@ -350,10 +365,19 @@ func (c *acpConn) renameSession(msg rpcMessage) {
 // session, recorded session.branched in the new one, and opens it here.
 func (c *acpConn) forkSession(msg rpcMessage) {
 	var p struct {
-		SessionID  string `json:"sessionId"`
-		ThroughSeq int64  `json:"throughSeq"`
+		SessionID  string                     `json:"sessionId"`
+		ThroughSeq int64                      `json:"throughSeq"`
+		Meta       map[string]json.RawMessage `json:"_meta"`
 	}
-	_ = json.Unmarshal(msg.Params, &p)
+	if err := json.Unmarshal(msg.Params, &p); err != nil {
+		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		return
+	}
+	trust, terr := c.requestedTrust(p.Meta)
+	if terr != nil {
+		c.reply(msg.ID, nil, terr)
+		return
+	}
 	rec, e, rerr := c.recorded(p.SessionID)
 	if rerr != nil {
 		c.reply(msg.ID, nil, rerr)
@@ -393,7 +417,7 @@ func (c *acpConn) forkSession(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRecord, "the fork could not be written: %v", err))
 		return
 	}
-	s, oerr := c.openSession(openOptions{cwd: e.Cwd, trust: c.trust, id: id, resume: true})
+	s, oerr := c.openSession(openOptions{cwd: e.Cwd, trust: trust, id: id, resume: true})
 	if oerr != nil {
 		c.reply(msg.ID, nil, oerr)
 		return
@@ -778,7 +802,7 @@ func (c *acpConn) restartForTrust(s *acpSession) {
 		return
 	}
 	s.agent.Close()
-	if err := c.buildAgent(s, openOptions{cwd: s.cwd, trust: c.trust, id: s.id, resume: true}); err != nil {
+	if err := c.buildAgent(s, openOptions{cwd: s.cwd, trust: s.trust, id: s.id, resume: true}); err != nil {
 		s.readOnly = "the session could not restart after its workspace file changed: " + err.Message
 		say(s.readOnly + "\n")
 		return
