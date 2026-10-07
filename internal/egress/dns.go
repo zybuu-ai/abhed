@@ -32,7 +32,7 @@ const (
 	// maxDNSMessage bounds a query read from a command; real ones are far smaller.
 	maxDNSMessage = 4096
 	dnsTimeout    = 10 * time.Second
-	// maxCredential bounds the credential frame: a call id of 128 and the token, encoded.
+	// maxCredential bounds the credential frame: a call id and the token, encoded.
 	maxCredential = 512
 )
 
@@ -220,9 +220,9 @@ func (p *Proxy) handleDNS(c net.Conn) {
 	if err != nil {
 		return
 	}
-	callID, ok := p.authorize(string(cred))
-	if !ok {
-		p.record(Event{Kind: "dns", Decision: Deny, Rule: "auth", Reason: "missing or wrong proxy credentials"})
+	callID, _, err := p.authorize(string(cred))
+	if err != nil {
+		p.record(Event{CallID: callID, Kind: "dns", Decision: Deny, Rule: "auth", Reason: err.Error()})
 		if q, _, err := parseQuery(m); err == nil {
 			_ = writeFrame(c, dnsReply(q, rcodeRefused, nil, 0))
 		}

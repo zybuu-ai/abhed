@@ -95,15 +95,16 @@ func egressRefusal(t Tier) string {
 		"the %s tier is not used for it, so the network is not opened in its place", t)
 }
 
-// egressFor is the proxy of the session ctx's launch names, started if
-// need be, with the launch's call remembered for its record.
-func (s *Process) egressFor(ctx context.Context) (*egressState, error) {
+// egressFor is the proxy of the session ctx's launch names, started if need
+// be, and a credential for the launch's call that ends with ctx. Any launch
+// gets one this way, an MCP server's (mcp/<name>) as well, for as long as its ctx.
+func (s *Process) egressFor(ctx context.Context) (*egressState, *egress.Call, error) {
 	l := LaunchOf(ctx)
 	ss := &s.egress
 	ss.mu.Lock()
 	if ss.closed {
 		ss.mu.Unlock()
-		return nil, errEgressClosed
+		return nil, nil, errEgressClosed
 	}
 	if ss.m == nil {
 		ss.m = map[string]*egressState{}
@@ -120,10 +121,16 @@ func (s *Process) egressFor(ctx context.Context) (*egressState, error) {
 	// proxy until the session ends.
 	context.AfterFunc(ctx, func() { s.egressDone(e) })
 	if err := s.startEgress(e); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	call, err := e.proxy.Issue(l.CallID)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The command's ctx outlives it when it runs on in the background, so the credential does too.
+	context.AfterFunc(ctx, call.End)
 	e.remember(l)
-	return e, nil
+	return e, call, nil
 }
 
 // egressDone notes that a command of e's session ended, and closes the
@@ -222,23 +229,17 @@ func (s *Process) startEgress(e *egressState) error {
 	return nil
 }
 
-// route writes a decision to the record of the call it names. A call id
-// this session did not launch, which a command can claim, goes to the
-// session's own record marked unattributed; with no record it is dropped
-// and logged. It never reaches another session: each has its own proxy
-// and token.
+// route writes a decision to the record of its call, which the proxy took
+// from the call's own credential; a call no longer remembered, or none, goes
+// to the session's latest record, and with no record it is dropped and logged.
 func (e *egressState) route(ev egress.Event) {
 	e.mu.Lock()
 	rec := e.routes[ev.CallID]
-	unattributed := rec == nil
-	if unattributed {
+	if rec == nil {
 		rec = e.own
 	}
 	e.mu.Unlock()
 	payload := ev.Payload()
-	if unattributed {
-		payload["unattributed"] = true
-	}
 	if rec == nil {
 		slog.Warn("egress decision dropped: the session has no record", "session", e.session,
 			"call_id", ev.CallID, "host", ev.Host, "decision", string(ev.Decision), "rule", ev.Rule)
@@ -284,11 +285,11 @@ func (e *egressState) close() error {
 // egressEnv is the proxy environment for a command of the call ctx names,
 // starting its session's proxy if need be.
 func (s *Process) egressEnv(ctx context.Context) ([]string, *egressState, error) {
-	e, err := s.egressFor(ctx)
+	e, call, err := s.egressFor(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	return e.proxy.Env(LaunchOf(ctx).CallID), e, nil
+	return call.Env(), e, nil
 }
 
 // port is the proxy's loopback port, or 0 with none.

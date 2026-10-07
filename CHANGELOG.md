@@ -11,7 +11,8 @@ All notable changes to Abhed are recorded here. The format follows
 - An egress allowlist for the agent's shell commands, between the network
   off and the network open. With `sandbox.network: "allowlist"` in the
   managed configuration, each session gets a proxy on loopback that commands
-  reach through `HTTP_PROXY` and `HTTPS_PROXY`, with a per-session token. The
+  reach through `HTTP_PROXY` and `HTTPS_PROXY`, each command with a token of
+  its own call's. The
   `egress` rules (host, exact or `*.example.com`; ports; methods and paths for
   plain HTTP; allow or deny, deny winning) decide each CONNECT by host and
   port and each plain request by method and path too; the default is deny,
@@ -25,10 +26,12 @@ All notable changes to Abhed are recorded here. The format follows
   namespace and reaches the proxy through a relay over a unix socket, and on
   macOS Seatbelt allows only the proxy's loopback port. The fence, container,
   vm and none tiers refuse the setting rather than open the network.
-  Under `abhed serve` each session has its own proxy and token, and the
-  workbench terminal and `!` commands run as the session's own calls; a
-  call id a session did not launch is recorded in its own record as
-  `unattributed`, never in another session's, and a session's proxy stops
+  Under `abhed serve` each session has its own proxy, and the workbench
+  terminal and `!` commands run as the session's own calls. The proxy and
+  the resolver take the call id from the call's own token, never from what
+  the client sends, so a command cannot put its traffic under another call;
+  the token is revoked when the call ends, and a process left running after
+  its command is refused, recorded under the ended call. A session's proxy stops
   when it is deleted or taken by another node, at shutdown, and after 30
   seconds with no command in flight, reopening with the next command. The
   Studio terminal, in lines and interactive mode, runs as the session's own

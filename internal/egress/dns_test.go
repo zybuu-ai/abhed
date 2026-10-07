@@ -285,7 +285,7 @@ func TestResolverOverTheRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = udp.Close(); _ = tcp.Close() }()
-	go ServeDNS(udp, tcp, sock, Credential(p.URL("call-r")))
+	go ServeDNS(udp, tcp, sock, Credential(callURL(t, p, "call-r")))
 
 	c, err := net.Dial("udp", udp.LocalAddr().String())
 	if err != nil {
@@ -349,7 +349,7 @@ func rawRequest(t *testing.T, p *Proxy, line string) string {
 	}
 	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("call-s:"+p.Token()))
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("call-s:"+issue(t, p, "call-s").token))
 	fmt.Fprintf(c, "%s\r\nHost: x\r\nProxy-Authorization: %s\r\n\r\n", line, auth)
 	st, _ := bufio.NewReader(c).ReadString('\n')
 	return st
@@ -371,7 +371,7 @@ func TestProxyMapsSyntheticAddresses(t *testing.T) {
 	}}, Options{})
 	syn := synthOf(t, p, "allowed.test")
 
-	c := client(t, p.URL("call-s"), nil)
+	c := client(t, callURL(t, p, "call-s"), nil)
 	resp, err := c.Get(fmt.Sprintf("http://%s:%d/x", syn, port))
 	if err != nil {
 		t.Fatal(err)
@@ -501,7 +501,7 @@ func TestResolverSocketNeedsTheCredential(t *testing.T) {
 	if e := rec.wait(t, ""); e.Kind != "dns" || e.Rule != "auth" || e.Decision != Deny {
 		t.Fatalf("forged frame recorded as %+v", e)
 	}
-	out, err := exchangeDNS(sock, Credential(p.URL("call-ok")), query(5, "allowed.test", dnsTypeA))
+	out, err := exchangeDNS(sock, Credential(callURL(t, p, "call-ok")), query(5, "allowed.test", dnsTypeA))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +534,7 @@ func TestResolverSocketIsBounded(t *testing.T) {
 			t.Fatalf("%d of %d held", len(p.dnsSlots), maxDNSInFlight)
 		}
 	}
-	if _, err := exchangeDNS(sock, Credential(p.URL("c")), query(1, "a.test", dnsTypeA)); err == nil {
+	if _, err := exchangeDNS(sock, Credential(callURL(t, p, "c")), query(1, "a.test", dnsTypeA)); err == nil {
 		t.Fatal("a lookup past the bound was answered")
 	}
 	if e := rec.wait(t, ""); e.Kind != "dns" || e.Rule != "cap" {

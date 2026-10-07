@@ -96,7 +96,7 @@ a deny-list fails open.
 ## How a decision is made
 
 Each session gets its own proxy, started with its first command, listening on
-a random loopback port, with its own token. A session's subagents share its
+a random loopback port. A session's subagents share its
 proxy. Under `abhed serve`, every session of the server has its own: the
 agent's commands, the workbench terminal and `!` commands each run as one of
 the session's calls, so their decisions go to that session's record and no
@@ -104,15 +104,40 @@ other. The proxy stops, and its socket folder is removed, when the session
 leaves the server (it is deleted, or another node takes it), when the
 server shuts down, and when the session has had no command in flight for 30
 seconds (a workbench terminal left open counts as one); the next command
-starts a new proxy with a new token. A process a command left running
-after it ended loses its way out when the proxy stops, so run a server
-the agent needs with `run_in_background`, which keeps it in flight. On the
-command line the proxies stop when Abhed exits. A command is given
-`HTTP_PROXY`, `HTTPS_PROXY` and their lower-case forms, pointing at it with the
-call id as the user name and a per-session token as the password, and
-`NO_PROXY=localhost,127.0.0.1,::1`, so a server the command starts inside its
-own sandbox is reached directly. A request without the token is answered with
-407.
+starts a new proxy. On the command line the proxies stop when Abhed exits.
+A command is given `HTTP_PROXY`, `HTTPS_PROXY` and their lower-case forms,
+pointing at it with the call id as the user name and a token of its own as
+the password, and `NO_PROXY=localhost,127.0.0.1,::1`, so a server the
+command starts inside its own sandbox is reached directly. A request without
+a valid token is answered with 407.
+
+### Per-call credentials
+
+Each command gets a token issued for its call alone, and the proxy and the
+resolver take the call id from the token, never from the user name or
+anything else the client sends. A command that writes another call's id
+into its proxy URL is still recorded under its own call. The token is
+revoked when the command's call ends:
+
+- A process a command left running after the command ended is refused from
+  then on (407, or REFUSED for a lookup), and the refusal is recorded under
+  the ended call with rule `auth`. Connections it opened with the token
+  while the call was live are closed when the call ends. On Linux the
+  sandbox's PID namespace usually ends such a process first.
+- Run a server the agent needs with `run_in_background`, or move a command
+  to the background with Ctrl-B: the call stays live while it runs, so its
+  token does too, and it is revoked when the process exits.
+- A workbench terminal and each `!` command are calls of their own, with
+  their own tokens, live while they run.
+- Any launch bound to a session gets a token the same way, an MCP server
+  started as `mcp/<name>` included, for as long as it runs.
+
+The proxy remembers the last 1,024 ended tokens, so their late traffic is
+recorded under the right call; an older one, or one never issued, is
+refused with no call id. A token lives only in its command's environment.
+On Linux each command has its own PID namespace, so no command can see
+another's environment. On macOS, `ps` is refused inside the sandbox and the
+system does not return another process's environment, so the same holds.
 
 - **HTTPS** goes through `CONNECT` and is decided by host and port only: the
   proxy does not see inside TLS. So a rule narrowed by `methods` or `paths`
@@ -243,26 +268,23 @@ event, once per connection (CONNECT) or request (plain HTTP), when it ends:
 | Field | |
 |---|---|
 | `call_id` | the tool call whose command made it, from the proxy credentials Abhed set |
-| `kind` | `connect`, `http`, `dns` for a name lookup (Linux), `auth` for a request without the token, or `request` for one refused before it was read |
+| `kind` | `connect`, `http`, `dns` for a name lookup (Linux), `auth` for a request without a valid token, or `request` for one refused before it was read |
 | `host`, `port`, `ip` | the target, and the address dialled; for `dns`, the name, port 0, and the synthetic address given |
 | `synthetic` | the resolver's address the command connected to, when it stood for `host` |
 | `method`, `path` | plain HTTP only; the path without its query, left out with `record_paths: false` |
 | `decision` | `allow`, `deny` or `would_deny` |
 | `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`, `dns` (a lookup refused before any rule, or a synthetic address not given out); and why. A `dns` lookup can also be refused with `auth` or `cap` |
 | `bytes_in`, `bytes_out` | bytes received from and sent to the destination |
-| `unattributed` | `true` when the call id is not one this session launched |
 | `repeats` | on a summary, how many denials like it were counted rather than recorded |
 
 Bodies, header values, query strings and credentials are never recorded. A
 path can hold a secret; see `record_paths`.
 
-The call id is attribution, not authentication: a command can change its own
-environment, so it could present another call's id. The token is the
-session's, though, and each session has its own proxy, so a claimed id never
-moves a decision to another session's record. A call id the session did not
-launch is recorded in that session's record with `unattributed: true`. A
-command run outside any session has no record; its decisions are dropped and
-logged as a warning.
+The call id comes from the call's own token (see Per-call credentials), and
+each session has its own proxy, so a decision is recorded under the call
+that made it and never in another session's record. A command run outside
+any session has no record; its decisions are dropped and logged as a
+warning.
 
 Decisions are rate-limited, so a command looping on a request cannot flood
 the record; `dns` lookups count with the rest. A refused name is recorded
