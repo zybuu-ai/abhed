@@ -51,7 +51,7 @@ func TestServerCommandConfinesTheNetwork(t *testing.T) {
 	script := fmt.Sprintf(`curl -sS -m 20 http://allowed.test:%[1]d/allowed; echo
 curl -sS -m 20 -o /dev/null -w 'denied=%%{http_code}\n' http://denied.test:%[1]d/
 curl -sS -m 5 --noproxy '*' http://127.0.0.1:%[1]d/direct && echo REACHED || echo BLOCKED
-echo "bus=${DBUS_SESSION_BUS_ADDRESS:-none} rundirs=$(ls /run/user 2>/dev/null | wc -l | tr -d ' ')"`, port)
+echo "bus=${DBUS_SESSION_BUS_ADDRESS:-none} socket=$(test -S /run/user/$(id -u)/bus && echo visible || echo hidden)"`, port)
 	var log eventLog
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -71,7 +71,7 @@ echo "bus=${DBUS_SESSION_BUS_ADDRESS:-none} rundirs=$(ls /run/user 2>/dev/null |
 	if !strings.Contains(got, "BLOCKED") || strings.Contains(got, "REACHED") {
 		t.Fatalf("ESCAPE: a direct socket got out of a confined server:\n%s", got)
 	}
-	if !strings.Contains(got, "bus=none rundirs=0") {
+	if !strings.Contains(got, "bus=none socket=hidden") {
 		t.Fatalf("the session bus was handed to the server:\n%s", got)
 	}
 	log.waitFor(t, "the allowed request", func(e map[string]any) bool {
