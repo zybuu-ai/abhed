@@ -24,8 +24,9 @@ of the file.
 
 A stdio server is a process Abhed starts on your machine, as you, **outside the
 sandbox**. It can read and write what your user can and reach the network,
-whatever the sandbox tier and `allow_network` say. A URL server runs wherever
-it is hosted. `digest` is accepted in the configuration but not checked yet.
+whatever the sandbox tier and `allow_network` say. The one exception is the
+network under `sandbox.network: "allowlist"`; see below. A URL server runs
+wherever it is hosted. `digest` is accepted in the configuration but not checked yet.
 Add a server as you would install any program: only one you trust.
 
 A stdio server does not inherit Abhed's environment, which holds model
@@ -36,6 +37,35 @@ Windows, also what a program needs to start, such as `SYSTEMROOT` and
 value, and a bare `"KEY"` passes your own value of `KEY`, as `GITHUB_TOKEN`
 above. Anything else a server needs, a proxy setting included, is listed
 there.
+
+### Under the egress allowlist
+
+With `sandbox.network: "allowlist"` (see
+[Network policy](21-network-policy.md)), MCP servers are held to the same
+`egress` rules as the agent's commands:
+
+- **URL servers** are judged in Abhed's own process: each request is
+  decided by the rules and recorded as an `egress.decision` event with
+  `kind: "mcp"`, in the record of the session whose tool call made it. A
+  server no rule allows does not connect.
+- **Stdio servers** start with their network confined, on the process tier
+  only: on macOS a Seatbelt profile allows nothing but the server's own
+  egress proxy, and on Linux the server runs in its own network namespace
+  (bubblewrap) behind a relay to that proxy. The server is given
+  `HTTP_PROXY` and `HTTPS_PROXY` for it; a client that ignores them has no
+  route out. Only the network is confined: the server still reads and
+  writes what your user can, but cannot reach services on your machine's
+  loopback other than its proxy.
+  On Windows, and on any surface with no process-tier sandbox to confine
+  it, a stdio server is not started under the allowlist; the warning at
+  start-up and `/mcp` give the reason.
+
+A stdio server's decisions go to the record of the session whose call to
+it is in flight, with that call's id, or with none in flight, the session
+that called it last. Its traffic before any call, or while calls from two
+sessions to the same server are in flight at once (possible under
+`abhed serve`, where servers are shared), cannot be put to one session; it
+is written to Abhed's log instead of a record.
 
 ## From the command line
 

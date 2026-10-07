@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -64,6 +65,12 @@ type Gateway struct {
 	// restarting serialises Restart, so two restarts of one server cannot
 	// both start a process and leave one running unowned.
 	restarting sync.Mutex
+
+	// Confine, when set, builds each stdio server's command with its network
+	// confined; MustConfine refuses a stdio server when it cannot be.
+	Confine     Launcher
+	MustConfine bool
+	calls       serverCallers
 }
 
 func NewGateway() *Gateway {
@@ -129,7 +136,7 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 		}
 		transport, err = NewHTTPTransport(life, HTTPConfig{URL: cfg.URL, Headers: headers})
 	} else {
-		transport, err = NewStdioTransport(life, cfg.Command, cfg.Args, ServerEnv(cfg.Env))
+		transport, err = g.startStdio(life, cfg)
 	}
 	if err != nil {
 		return err
@@ -371,6 +378,7 @@ func (t *remoteTool) Run(ctx context.Context, _ *tools.Session, args json.RawMes
 	if client == nil {
 		return tools.Result{Content: fmt.Sprintf("MCP server %s is not connected; /mcp restart %s reconnects it", t.server, t.server), IsError: true}
 	}
+	defer t.gw.calls.begin(t.server, egress.CallerOf(ctx))()
 	content, isErr, err := client.Call(ctx, t.remoteName, args)
 	if err != nil {
 		return tools.Result{

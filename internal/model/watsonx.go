@@ -62,7 +62,7 @@ func NewWatsonX(cfg WatsonXConfig) *WatsonX {
 	}
 	cfg.Profile.SupportsTools = true
 	cfg.Profile.SupportsStream = true
-	return &WatsonX{
+	w := &WatsonX{
 		BaseURL:   strings.TrimSuffix(cfg.BaseURL, "/"),
 		APIKey:    cfg.APIKey,
 		ProjectID: cfg.ProjectID,
@@ -72,8 +72,9 @@ func NewWatsonX(cfg WatsonXConfig) *WatsonX {
 		IAMURL:    cfg.IAMURL,
 		profile:   cfg.Profile,
 		Defaults:  cfg.Defaults,
-		client:    timeoutClient(DefaultTimeouts()),
 	}
+	w.client = timeoutClient(DefaultTimeouts(), w.endpoints)
+	return w
 }
 
 // WatsonXConfig configures the adapter.

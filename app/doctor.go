@@ -178,6 +178,17 @@ func (a *App) doctor(workspace string) int {
 	}
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
+		// Under the allowlist the servers are reached as a session reaches them.
+		if own := toolset.OwnEgress(cfg); own != nil {
+			defer own.Close()
+			defer egress.Install(own)()
+			if sb, err := buildSandbox(cfg, workspace); err == nil {
+				defer func() { _ = sandbox.Close(sb) }()
+				toolset.ConfineMCP(gw, cfg, sb)
+			} else {
+				toolset.ConfineMCP(gw, cfg, nil)
+			}
+		}
 		gw.Connect(context.Background(), toolset.MCPConfigs(cfg))
 		status := gw.Status()
 		gw.Close()

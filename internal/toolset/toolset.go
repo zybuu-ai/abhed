@@ -13,11 +13,13 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -80,6 +82,9 @@ type Options struct {
 	// Warn receives what failed and was skipped: an MCP server, an extension,
 	// a skill, a corpus. Nil discards them.
 	Warn func(format string, args ...any)
+	// Sandbox is the surface's sandbox. Under sandbox.network allowlist it
+	// confines the stdio MCP servers' network; without it they do not start.
+	Sandbox sandbox.Sandbox
 }
 
 // Set is one assembled tool set. Registry holds no session-bound tool, so a
@@ -94,8 +99,12 @@ type Set struct {
 	// Agents are the subagent types a session built from this set offers:
 	// the built-in roles, plus the loaded definitions with the Agents part.
 	Agents *agent.Definitions
+	// Egress judges Abhed's own requests under sandbox.network allowlist; nil
+	// otherwise. Build puts it in force until Close.
+	Egress *egress.Guard
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
+	uninstall      func()
 }
 
 // ExtensionToolNames are the tools the set's extensions provided.
@@ -118,6 +127,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		o.Bash.SecretNames = VaultNames(o.Vault)
 	}
 	s := &Set{
+		Egress: OwnEgress(cfg),
 		Registry: tools.NewRegistry(
 			tools.Read{}, tools.Write{}, tools.Edit{},
 			tools.Glob{}, tools.Grep{}, o.Bash,
@@ -126,6 +136,10 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		),
 		Skills: skills.NewRegistry(),
 		Agents: agent.BuiltinDefinitions(),
+	}
+	// In force before anything below connects, MCP servers included.
+	if s.Egress != nil {
+		s.uninstall = egress.Install(s.Egress)
 	}
 	if o.Parts&(Vetoes|ExtensionTools) != 0 {
 		s.Extensions = extension.NewHost(o.Warn)
@@ -138,6 +152,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	// routes through the policy engine, since Abhed cannot know what it does.
 	if o.Parts&MCP != 0 {
 		s.Gateway = mcp.NewGateway()
+		ConfineMCP(s.Gateway, cfg, o.Sandbox)
 		for _, err := range s.Gateway.Connect(ctx, MCPConfigs(cfg)) {
 			warn("%v", err)
 		}
@@ -205,7 +220,8 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	return s
 }
 
-// Close ends the MCP connections and the extension processes.
+// Close ends the MCP connections and the extension processes, then takes
+// the egress guard out of force.
 func (s *Set) Close() {
 	if s == nil {
 		return
@@ -216,6 +232,47 @@ func (s *Set) Close() {
 	if s.Extensions != nil {
 		s.Extensions.Close()
 	}
+	s.CloseEgress()
+	if s.uninstall != nil {
+		s.uninstall()
+	}
+}
+
+// CloseEgress records what the egress guard still counts; a surface calls
+// it before closing the store the records go to. The guard stays in force.
+func (s *Set) CloseEgress() {
+	if s != nil && s.Egress != nil {
+		s.Egress.Close()
+	}
+}
+
+// EndSession records what the egress guard still counts for session id.
+func (s *Set) EndSession(id string) {
+	if s != nil && s.Egress != nil {
+		s.Egress.EndSession(id)
+	}
+}
+
+// ConfineMCP has gw start stdio servers with their network confined by sb
+// under sandbox.network allowlist, and refuse them where sb cannot.
+func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return
+	}
+	gw.MustConfine = true
+	if l, ok := sb.(sandbox.ServerLauncher); ok {
+		gw.Confine = l.ServerCommand
+	}
+}
+
+// OwnEgress is the guard of Abhed's own requests under sandbox.network
+// allowlist, or nil. A policy that does not compile refuses all but the model.
+func OwnEgress(cfg config.Config) *egress.Guard {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return nil
+	}
+	pol, err := egress.Compile(cfg.Egress)
+	return egress.NewGuard(egress.GuardOptions{Policy: pol, Err: err})
 }
 
 // Extension states, as ExtensionStatus reports them.

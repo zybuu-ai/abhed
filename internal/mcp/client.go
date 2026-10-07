@@ -434,7 +434,15 @@ func NewStdioTransport(ctx context.Context, command string, args []string, env [
 	cmd := exec.CommandContext(ctx, command, args...)
 	// Never nil, which would inherit Abhed's whole environment and its keys.
 	cmd.Env = append([]string{}, env...)
+	return startStdio(cmd, command)
+}
 
+// startStdio starts cmd, built to run the server command, and speaks to it
+// over its stdin and stdout.
+func startStdio(cmd *exec.Cmd, command string) (*StdioTransport, error) {
+	if cmd.Env == nil {
+		cmd.Env = []string{}
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

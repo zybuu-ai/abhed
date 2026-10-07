@@ -4,6 +4,8 @@ import (
 	"context"
 	"os/exec"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Launch is what a command's caller tells a backend that records each launch
@@ -22,8 +24,10 @@ type Launch struct {
 
 type launchKey struct{}
 
-// WithLaunch carries l to the backend that builds the command.
+// WithLaunch carries l to the backend that builds the command, and to
+// Abhed's own clients, whose requests are recorded for the same call.
 func WithLaunch(ctx context.Context, l Launch) context.Context {
+	ctx = egress.WithCaller(ctx, egress.Caller{Session: l.Session, CallID: l.CallID, Record: l.Record})
 	return context.WithValue(ctx, launchKey{}, l)
 }
 

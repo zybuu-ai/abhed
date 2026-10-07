@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // HTTP transport for remote MCP servers.
@@ -85,7 +87,8 @@ func NewHTTPTransport(ctx context.Context, cfg HTTPConfig) (*HTTPTransport, erro
 			// stream connection below uses no timeout at all.
 			timeout = 120 * time.Second
 		}
-		client = &http.Client{Timeout: timeout}
+		// Judged and recorded by the egress guard under the allowlist.
+		client = &http.Client{Timeout: timeout, Transport: &egress.Transport{Kind: egress.KindMCP}}
 	}
 
 	streamCtx, cancel := context.WithCancel(context.Background())

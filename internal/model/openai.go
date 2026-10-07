@@ -60,15 +60,16 @@ func NewOpenAICompatible(baseURL, apiKey, model string, p Profile) *OpenAICompat
 	if p.Name == "" {
 		p.Name = model
 	}
-	return &OpenAICompatible{
+	c := &OpenAICompatible{
 		BaseURL:       strings.TrimSuffix(baseURL, "/"),
 		APIKey:        apiKey,
 		Model:         model,
-		HTTP:          timeoutClient(DefaultTimeouts()),
 		Retry:         DefaultRetry(),
 		ReasoningTags: [2]string{"<think>", "</think>"},
 		profile:       p,
 	}
+	c.HTTP = timeoutClient(DefaultTimeouts(), c.endpoints)
+	return c
 }
 
 func (c *OpenAICompatible) Name() string     { return c.profile.Name }

@@ -200,10 +200,11 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Bash: tools.Bash{Sandbox: sb.Command,
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
-		Parts:  toolset.All,
-		Vault:  vault,
-		Warn:   warnf,
-		Agents: sessionDefs,
+		Parts:   toolset.All,
+		Vault:   vault,
+		Warn:    warnf,
+		Agents:  sessionDefs,
+		Sandbox: sb,
 	})
 	defer set.Close()
 	// A skill's own directory is reachable: its instructions reference files beside them.
@@ -266,7 +267,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if err != nil {
 		fail(err)
 	}
-	closeAll := sync.OnceValue(func() error { return closeSandboxThenStore(sb, closeStore, os.Stderr) })
+	closeAll := sync.OnceValue(func() error {
+		set.CloseEgress()
+		return closeSandboxThenStore(sb, closeStore, os.Stderr)
+	})
 	defer func() { _ = closeAll() }()
 	factory.Store = store
 	// stdout is resolved on each write rather than captured here: the

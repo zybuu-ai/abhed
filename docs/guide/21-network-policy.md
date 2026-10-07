@@ -1,4 +1,4 @@
-# Network policy for commands
+# Network policy
 
 The agent's shell commands have three network settings:
 
@@ -14,10 +14,10 @@ configuration (`/etc/abhed/config.json`) and set aside, with a warning, in
 `~/.abhed/config.json`, `-settings` or a workspace's file. With the allowlist
 on, `allow_network` is not read.
 
-This is the first piece of the network policy layer. It covers the agent's
-shell commands on the process tier. Abhed's own requests (the model,
-`web_fetch`, `web_search`, MCP over HTTP) do not go through it yet; they keep
-their own settings.
+Under the allowlist the same rules also judge Abhed's own requests: the
+model client, `web_fetch`, `web_search`, MCP servers over HTTP, and the
+network of stdio MCP servers. See "Abhed's own requests" below. Outside the
+allowlist none of this changes how they connect.
 
 ## Configuration
 
@@ -172,14 +172,16 @@ event, once per connection (CONNECT) or request (plain HTTP), when it ends:
 | Field | |
 |---|---|
 | `call_id` | the tool call whose command made it, from the proxy credentials Abhed set |
-| `kind` | `connect`, `http`, `auth` for a request without the token, or `request` for one refused before it was read |
+| `kind` | `connect`, `http`, `auth` for a request without the token, or `request` for one refused before it was read; for Abhed's own requests `model`, `web_fetch`, `web_search` or `mcp` |
 | `host`, `port`, `ip` | the target, and the address dialled |
 | `method`, `path` | plain HTTP only; the path without its query, left out with `record_paths: false` |
 | `decision` | `allow`, `deny` or `would_deny` |
-| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`; and why |
+| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`; for Abhed's own requests also `model`, `policy`, or `web_fetch` (its own address check); and why |
 | `bytes_in`, `bytes_out` | bytes received from and sent to the destination |
 | `unattributed` | `true` when the call id is not one this session launched |
 | `repeats` | on a summary, how many denials like it were counted rather than recorded |
+| `session` | Abhed's own requests and stdio MCP servers: the session's id |
+| `mcp_server` | a stdio MCP server's decisions: the server's name |
 
 Bodies, header values, query strings and credentials are never recorded. A
 path can hold a secret; see `record_paths`.
@@ -205,6 +207,68 @@ kinds of denials are counted in an interval, and apart from them 512 of
 allowed decisions, so allowed traffic never takes a denial's place; past
 that, the rest share one summary per decision. Summaries still owed are written when the proxy stops.
 
+## Abhed's own requests
+
+Under the allowlist, Abhed's own HTTP clients connect through a guard in
+its own process that applies the same `egress` rules and records each
+request as an `egress.decision` event:
+
+| Client | `kind` | Judged |
+|---|---|---|
+| the model provider | `model` | its configured endpoint (`base_url`, and watsonx's IAM URL) is allowed without a rule, by the rule `model`, loopback included, so the agent keeps working; any other host the model client is sent to is judged by the rules |
+| `web_fetch` | `web_fetch` | by the rules, then by `web_fetch`'s own checks as before (its `allowed_hosts`, and internal addresses, which it never reaches even when an egress rule names them in `allow_ips`) |
+| `web_search` | `web_search` | by the rules |
+| MCP over HTTP | `mcp` | by the rules |
+
+Each request, not each connection, is decided, since Abhed builds the
+request itself: the host, port, method and path, for HTTPS too. A rule
+narrowed by `methods` or `paths` therefore can allow one of Abhed's HTTPS
+requests, where for a command's tunnel it cannot. The guard resolves the
+name once, refuses the same internal addresses the proxy refuses unless the
+allowing rule names them in `allow_ips`, and connects only to an address it
+checked; a pooled connection is checked again against each request's rule
+before it is reused. It never uses `HTTP_PROXY` or `HTTPS_PROXY` from
+Abhed's environment, so it sees where each connection goes. A denied
+request is never sent: the tool gets an error naming the rule and the
+reason, and the model client's caller sees the same error.
+
+The record entry is the one described below, with `session` set to the
+session's id, `call_id` to the tool call (empty for the model's own
+requests), and `method` and `path` for HTTPS as well. `ip` is the address
+connected to; `bytes_out` is the request body's declared length, and
+`bytes_in` is not counted. The same per-interval limits apply, counted
+apart from the commands' proxy: each session's own requests have their own
+10-a-kind denials and 200 allowed one by one a minute, with summaries past
+that, written when the interval ends, the session ends or Abhed exits.
+
+The guard fails closed. If it cannot compile the `egress` section (the
+sandbox refuses such a configuration first, so this is a second line),
+every one of Abhed's own requests is refused by the rule `policy`, except
+the model's endpoint. It never falls back to the open network.
+
+Requests made outside any session, such as an MCP server's connection when
+Abhed starts and the legacy SSE stream it keeps open, are judged the same
+way but written to Abhed's log rather than a record.
+
+### Stdio MCP servers
+
+A stdio MCP server is started with its network confined to an egress proxy
+of its own, apart from the sessions' proxies, with its own token:
+
+| Tier | Stdio MCP server under the allowlist |
+|---|---|
+| process, Linux (bubblewrap) | **Confined.** It runs in its own network namespace with loopback only, behind the same relay commands use. Its filesystem is not confined. |
+| process, macOS (Seatbelt) | **Confined.** The profile denies all network use but outbound to the proxy's port on `localhost`. Its filesystem is not confined. |
+| fence, container, vm, none | Not reached: these tiers refuse the allowlist, so no session starts on them. |
+| Windows, or a surface with no process-tier sandbox | **Not started.** It cannot be confined, so it is refused with that reason. |
+
+The server is given `HTTP_PROXY` and `HTTPS_PROXY` pointing at its proxy.
+Its decisions are recorded in the record of the session whose tool call to
+it is in flight, with that call's id, or with none in flight, of the
+session that called it last, with `mcp_server` naming it. Decisions made
+before any call, or while calls from two sessions are in flight at once,
+are logged instead. See [MCP](08-mcp.md).
+
 ## What each tier enforces
 
 The proxy is the policy point; what keeps a command from going around it is
@@ -229,7 +293,12 @@ names the tier and says whether it holds it.
 
 ## Not covered yet
 
-- Abhed's own requests (model calls, `web_fetch`, `web_search`, MCP over HTTP).
+- Abhed's other own connections: the start-up check that the model endpoint
+  is up (a TCP connect to it), embeddings for retrieval and `rag` corpora,
+  the Kubernetes and SSH tools, the forge client, extensions' processes,
+  and the checks `abhed doctor` and onboarding make. These keep their own
+  settings.
+- The filesystem of a stdio MCP server: only its network is confined.
 - Inspecting HTTPS: no TLS termination, so HTTPS rules are host and port only.
 - UDP, raw TCP other than through `CONNECT`, and DNS policy; the proxy
   resolves names for the requests it carries.

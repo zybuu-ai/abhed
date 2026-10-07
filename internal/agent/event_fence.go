@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -50,4 +51,13 @@ func (l *Loop) withLaunch(ctx context.Context, callID string) context.Context {
 		launch.Session, launch.Record = l.Recorder.Root(), SandboxRecord(l.Recorder)
 	}
 	return sandbox.WithLaunch(ctx, launch)
+}
+
+// withCaller names the session the loop's own model requests are made for,
+// so the egress guard records them there.
+func (l *Loop) withCaller(ctx context.Context) context.Context {
+	if l.Recorder == nil {
+		return ctx
+	}
+	return egress.WithCaller(ctx, egress.Caller{Session: l.Recorder.Root(), Record: SandboxRecord(l.Recorder)})
 }

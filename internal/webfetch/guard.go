@@ -59,11 +59,8 @@ func (t *Tool) dial(ctx context.Context, network, addr string) (net.Conn, error)
 	// addresses is not one to trust with the choice.
 	for _, a := range addrs {
 		ap := netip.AddrPortFrom(a.Unmap(), uint16(port)) // #nosec G115 -- LookupPort returns 0-65535
-		if t.permit != nil && t.permit(ap) {
-			continue
-		}
-		if why := blockedAddr(a); why != "" {
-			return nil, &blockedError{host: host, addr: a.Unmap(), why: why}
+		if err := t.addrCheck(host, ap); err != nil {
+			return nil, err
 		}
 	}
 	d := net.Dialer{Timeout: dialTimeout}
@@ -76,6 +73,18 @@ func (t *Tool) dial(ctx context.Context, network, addr string) (net.Conn, error)
 		last = err
 	}
 	return nil, last
+}
+
+// addrCheck refuses an internal address the tests have not permitted; under
+// the allowlist it runs after the egress guard's own check.
+func (t *Tool) addrCheck(host string, ap netip.AddrPort) error {
+	if t.permit != nil && t.permit(ap) {
+		return nil
+	}
+	if why := blockedAddr(ap.Addr()); why != "" {
+		return &blockedError{host: host, addr: ap.Addr().Unmap(), why: why}
+	}
+	return nil
 }
 
 func (t *Tool) resolve(ctx context.Context, host string) ([]netip.Addr, error) {

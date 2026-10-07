@@ -43,6 +43,22 @@ All notable changes to Abhed are recorded here. The format follows
   tool tells the model which destinations it may reach.
   `abhed doctor` shows the egress state. See
   [Network policy](docs/guide/21-network-policy.md).
+- Under `sandbox.network: "allowlist"`, Abhed's own requests go through the
+  same `egress` rules: the model client, `web_fetch`, `web_search` and MCP
+  servers over HTTP are judged in Abhed's process, request by request
+  (host, port, method and path), connect only to an address the rules
+  allow, and are recorded as `egress.decision` events with `kind` `model`,
+  `web_fetch`, `web_search` or `mcp`, the session's id and the tool call's
+  id, under the same rate limits. The model's configured endpoint is allowed
+  without a rule, by the rule `model`. `web_fetch` keeps its own checks
+  after the rules', so it still never reaches an internal address. A guard
+  that cannot compile the rules refuses every one of these requests but
+  the model's. Stdio MCP servers start with their network confined to an
+  egress proxy of their own (Seatbelt on macOS, a network namespace on
+  Linux; their files are not confined) and are not started where they
+  cannot be. Outside the allowlist nothing changes. See
+  [Network policy](docs/guide/21-network-policy.md) and
+  [MCP](docs/guide/08-mcp.md).
 
 ### Security
 

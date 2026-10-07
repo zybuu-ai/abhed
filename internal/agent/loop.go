@@ -770,7 +770,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(ctx, "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.withCaller(ctx), "auto", l.Config.SystemPrompt, l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -803,7 +803,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	used, _ := l.Adapter.CountTokens(model.Request{
 		System: l.Config.SystemPrompt, Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(ctx, "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.withCaller(ctx), "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -912,7 +912,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	callStart := time.Now()
-	stream, err := l.Adapter.Complete(ctx, req)
+	stream, err := l.Adapter.Complete(l.withCaller(ctx), req)
 	if err != nil {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
 		// model failure, just as for a stream cut part way.
