@@ -13,35 +13,31 @@ const (
 	// maxPerInterval bounds the denials recorded one by one in an interval,
 	// whatever their kinds, so varying the target does not lift the limit.
 	maxPerInterval = 100
-	// defaultAllowBudget bounds the allowed decisions recorded one by one in
-	// an interval: a loop through an allowed host would otherwise grow the
-	// record without end.
+	// defaultAllowBudget bounds the allowed decisions recorded one by one in an interval.
 	defaultAllowBudget = 200
-	// maxKinds bounds the kinds counted at once; the rest share one summary
-	// per decision.
+	// maxKinds bounds the kinds of denials, and apart those of allowed decisions, counted at once.
 	maxKinds = 512
 )
 
-// limiter rate-limits the record. Denials: the first burst of a kind in
-// each interval one by one, at most maxPerInterval of all kinds. Allowed
-// decisions: the first allowBudget in each interval, whatever their kind.
-// The rest are counted and recorded as one summary per kind when the
-// interval ends.
+// limiter records the first decisions of each interval one by one and
+// summarises the rest per kind, so a loop cannot grow the record without end.
 type limiter struct {
 	burst       int
 	allowBudget int
 	interval    time.Duration
 	emit        func(Event)
 
-	mu      sync.Mutex
-	kinds   map[string]*tally
-	order   []string
-	total   int
-	allowed int
-	done    chan struct{}
-	ticked  chan struct{} // tests wait on a flush
-	once    sync.Once
-	wg      sync.WaitGroup
+	mu    sync.Mutex
+	kinds map[string]*tally
+	order []string
+	// held counts kinds per side, so allowed traffic never takes a denial's room.
+	heldAllow, heldDeny int
+	total               int
+	allowed             int
+	done                chan struct{}
+	ticked              chan struct{} // tests wait on a flush
+	once                sync.Once
+	wg                  sync.WaitGroup
 }
 
 type tally struct {
@@ -103,7 +99,11 @@ func (l *limiter) tallyFor(e Event) *tally {
 	s := e
 	s.CallID, s.Method, s.Path, s.IP, s.BytesIn, s.BytesOut = "", "", "", "", 0, 0
 	t := &tally{sample: s}
-	if len(l.kinds) >= maxKinds {
+	held := &l.heldDeny
+	if e.Decision == Allow {
+		held = &l.heldAllow
+	}
+	if *held >= maxKinds {
 		key = "overflow|" + string(e.Decision)
 		if o := l.kinds[key]; o != nil {
 			return o
@@ -114,6 +114,8 @@ func (l *limiter) tallyFor(e Event) *tally {
 		}
 		t.sample = Event{Kind: "summary", Decision: e.Decision, Rule: "rate", Reason: what + " of many kinds"}
 		t.recorded = l.burst // never recorded one by one
+	} else {
+		*held++
 	}
 	l.kinds[key] = t
 	l.order = append(l.order, key)
@@ -125,8 +127,7 @@ func (l *limiter) record(e Event) {
 	var t *tally
 	var now bool
 	if e.Decision == Allow {
-		// Allowed decisions are not counted by kind until over budget, so
-		// they take no room from the denials' kinds.
+		// Counted by kind only once over budget, in kinds of their own.
 		if now = l.allowed < l.allowBudget; now {
 			l.allowed++
 		}
@@ -171,6 +172,7 @@ func (l *limiter) flush() {
 		out = append(out, s)
 	}
 	l.kinds, l.order, l.total, l.allowed = map[string]*tally{}, nil, 0, 0
+	l.heldAllow, l.heldDeny = 0, 0
 	l.mu.Unlock()
 	for _, e := range out {
 		l.emit(e)

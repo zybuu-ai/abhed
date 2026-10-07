@@ -201,8 +201,9 @@ count and the first denial's reason. Allowed decisions have a budget of
 their own: the first 200 in each interval are recorded one by one, whatever
 their kind, and the rest are counted the same way, each kind's summary
 carrying `repeats` and the bytes each way of what it counts. At most 512
-kinds are counted in an interval; past that, the rest share one summary per
-decision. Summaries still owed are written when the proxy stops.
+kinds of denials are counted in an interval, and apart from them 512 of
+allowed decisions, so allowed traffic never takes a denial's place; past
+that, the rest share one summary per decision. Summaries still owed are written when the proxy stops.
 
 ## What each tier enforces
 

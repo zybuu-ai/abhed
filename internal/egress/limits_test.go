@@ -413,9 +413,8 @@ func TestProxyBudgetsAllowedDecisions(t *testing.T) {
 	}
 }
 
-// Past maxKinds, a new kind shares its decision's overflow count, so the
-// kinds held stay bounded; the overflow is recorded as one summary, with
-// the bytes of what it counted. No count keeps a path.
+// Past maxKinds, a new kind shares its side's overflow, recorded as one
+// summary with its bytes, so the kinds held stay bounded; no count keeps a path.
 func TestLimiterKindsOverflow(t *testing.T) {
 	var mu sync.Mutex
 	var got []Event
@@ -425,7 +424,7 @@ func TestLimiterKindsOverflow(t *testing.T) {
 		l.record(Event{Kind: "connect", Decision: Deny, Rule: "default", Host: fmt.Sprintf("h%d.test", i), Port: 443, Path: long})
 	}
 	l.record(Event{Kind: "connect", Decision: Allow, Rule: "r", Host: "a0.test", Port: 443})
-	for i := range 3 {
+	for i := range maxKinds + 3 {
 		l.record(Event{Kind: "connect", Decision: Allow, Rule: "r", Host: fmt.Sprintf("a%d.test", i+1), Port: 443, BytesIn: 10, BytesOut: 1, Path: long})
 	}
 	l.mu.Lock()
@@ -437,8 +436,8 @@ func TestLimiterKindsOverflow(t *testing.T) {
 		}
 	}
 	l.mu.Unlock()
-	if n != maxKinds+2 {
-		t.Fatalf("%d kinds held, want %d and the two overflows", n, maxKinds)
+	if n != 2*maxKinds+2 {
+		t.Fatalf("%d kinds held, want %d per side and the two overflows", n, maxKinds)
 	}
 	l.stop()
 	mu.Lock()
@@ -457,5 +456,24 @@ func TestLimiterKindsOverflow(t *testing.T) {
 	}
 	if allow == nil || allow.Repeats != 3 || allow.BytesIn != 30 || allow.BytesOut != 3 {
 		t.Fatalf("allowed overflow: %+v", allow)
+	}
+}
+
+// Allowed traffic past its budget, over many hosts, leaves the denials their
+// kinds: a new denied host is still recorded with its host.
+func TestLimiterAllowedFloodKeepsDenialKinds(t *testing.T) {
+	var mu sync.Mutex
+	var got []Event
+	l := newLimiter(1, 1, time.Hour, func(e Event) { mu.Lock(); got = append(got, e); mu.Unlock() })
+	defer l.stop()
+	for i := range maxKinds + 50 {
+		l.record(Event{Kind: "connect", Decision: Allow, Rule: "*.example.com", Host: fmt.Sprintf("s%d.example.com", i), Port: 443})
+	}
+	l.record(Event{Kind: "connect", Decision: Deny, Rule: "default", Host: "exfil.test", Port: 443})
+	mu.Lock()
+	defer mu.Unlock()
+	last := got[len(got)-1]
+	if last.Decision != Deny || last.Host != "exfil.test" || last.Repeats != 0 {
+		t.Fatalf("the denial was not recorded with its host: %+v", last)
 	}
 }
