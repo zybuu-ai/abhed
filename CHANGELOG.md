@@ -159,8 +159,9 @@ in `secretstore` no longer compiles; see Go API.
   same meaning, the session keeps it when it restarts for a changed workspace
   file, and asking for an open, trusted session untrusted is refused until it
   is closed. Each continuation now records a `session.resumed` event with
-  `workspace_trust` (the trust asked for and what applied), followed by the
-  settings it refused, so the record shows that later turns ran narrowed; a
+  `workspace_trust` (the trust asked for and what applied, and the
+  workspace file's hash), so the record shows that later turns ran narrowed,
+  followed by `config.refused` for the managed-only keys the file set; a
   new session's `session.started` carries `workspace_trust` too.
   `_abhed/doctor` takes the same field. Affects 1.2.3, which brought
   `session/load`, `session/resume` and `_abhed/session/fork`, to 1.2.6.
