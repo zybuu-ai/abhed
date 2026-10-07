@@ -114,6 +114,9 @@ func Compile(c Config) (*Policy, error) {
 			return nil, fmt.Errorf("egress.rules[%d]: %w", i, err)
 		}
 		cr.name = fmt.Sprintf("rules[%d] %s", i, r.Host)
+		if cr.allow && cr.wildcard {
+			noteWildcard("*" + cr.host)
+		}
 		p.rules = append(p.rules, cr)
 	}
 	return p, nil
@@ -295,6 +298,20 @@ func (p *Policy) Decide(r Request) Verdict {
 		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule matches and the default is allow"}
 	}
 	return p.deny("default", "no rule allows it")
+}
+
+// DecideName says whether the in-sandbox resolver answers name: an allow rule's
+// host matches it, or the default is allow; ports and deny rules are the proxy's.
+func (p *Policy) DecideName(name string) Verdict {
+	for _, ru := range p.rules {
+		if ru.allow && HostMatches(ru.host, ru.wildcard, name) {
+			return Verdict{Decision: Allow, Rule: ru.name, Reason: "an allow rule names this host"}
+		}
+	}
+	if p.defaultAllow {
+		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule names this host and the default is allow"}
+	}
+	return p.deny("default", "no allow rule names this host")
 }
 
 func (p *Policy) deny(name, why string) Verdict {

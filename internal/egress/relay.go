@@ -15,6 +15,28 @@ import (
 // the relay in front of a command; see RunRelay.
 const RelayArg = "__abhed_egress_relay"
 
+// DNSArg, after the relay's socket and address, names the resolver's socket,
+// the call id its queries are recorded under, and the uid and gid the command runs as.
+const DNSArg = "--dns"
+
+// ResolverAddr is where the relay serves DNS inside the sandbox, as the generated resolv.conf names it.
+const ResolverAddr = "127.0.0.1:53"
+
+// relayDNS listens for DNS inside the sandbox and passes queries to sock.
+func relayDNS(sock, callID string) error {
+	udp, err := net.ListenPacket("udp", ResolverAddr)
+	if err != nil {
+		return err
+	}
+	tcp, err := net.Listen("tcp", ResolverAddr)
+	if err != nil {
+		_ = udp.Close()
+		return err
+	}
+	go ServeDNS(udp, tcp, sock, callID)
+	return nil
+}
+
 // Relay accepts on ln and joins each connection to the proxy's unix socket
 // at sock, until ln is closed.
 func Relay(ln net.Listener, sock string) {
@@ -43,10 +65,26 @@ func Relay(ln net.Listener, sock string) {
 // it listens on the loopback address the command's proxy variables name,
 // joins each connection to the proxy's unix socket bound into the sandbox,
 // and runs the command as its child, passing on its signals and its exit
-// status. args are: socket, listen address, "--", argv.
+// status. args are: socket, listen address, optionally DNSArg with the
+// resolver's socket, the call id, uid and gid, then "--" and argv.
 func RunRelay(args []string) int {
+	var attr *syscall.SysProcAttr
+	dns := len(args) >= 7 && args[2] == DNSArg
+	if dns {
+		// The sandbox gave the relay the capability to bind port 53; the
+		// command runs in a user namespace of its own as uid and gid, holding none.
+		var err error
+		if attr, err = nestedUser(args[5], args[6]); err == nil {
+			err = relayDNS(args[3], args[4])
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed egress relay: the resolver: %v\n", err)
+			return 126
+		}
+		args = append(args[:2:2], args[7:]...)
+	}
 	if len(args) < 4 || args[2] != "--" {
-		fmt.Fprintln(os.Stderr, "abhed egress relay: usage: socket addr -- command...")
+		fmt.Fprintln(os.Stderr, "abhed egress relay: usage: socket addr ["+DNSArg+" dns-socket call-id uid gid] -- command...")
 		return 126
 	}
 	sock, addr, argv := args[0], args[1], args[3:]
@@ -58,6 +96,7 @@ func RunRelay(args []string) int {
 	go Relay(ln, sock)
 	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 -- the sandboxed command, inside its sandbox
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.SysProcAttr = attr
 	// A terminal's interrupt and quit reach the command through its process
 	// group already, so the relay only survives them; a termination or
 	// hang-up sent to the relay alone is passed on.
@@ -72,6 +111,12 @@ func RunRelay(args []string) int {
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed egress relay: %v\n", err)
 		return 127
+	}
+	// Writing the command's id maps needed the relay's capabilities; they go now.
+	if err := dropCaps(); err != nil {
+		_ = cmd.Process.Kill()
+		fmt.Fprintf(os.Stderr, "abhed egress relay: dropping capabilities: %v\n", err)
+		return 126
 	}
 	go func() {
 		for s := range sigs {

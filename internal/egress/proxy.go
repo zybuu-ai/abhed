@@ -35,6 +35,8 @@ type Event struct {
 	Reason   string
 	BytesIn  int64
 	BytesOut int64
+	// Synthetic is the resolver's address the command connected to, which named Host.
+	Synthetic string
 	// Repeats, on a summary, is how many decisions like this one were not
 	// recorded one by one in the interval it covers.
 	Repeats int64
@@ -58,6 +60,9 @@ func (e Event) Payload() map[string]any {
 	}
 	if e.Repeats > 0 {
 		m["repeats"] = e.Repeats
+	}
+	if e.Synthetic != "" {
+		m["synthetic"] = e.Synthetic
 	}
 	return m
 }
@@ -113,6 +118,8 @@ type Proxy struct {
 	wg    sync.WaitGroup
 	once  sync.Once
 	limit *limiter
+	// synth is the resolver's address pool, once ListenDNS has started it.
+	synth atomic.Pointer[synthPool]
 	// served counts connections handled, for tests and doctor.
 	served atomic.Int64
 }
@@ -141,7 +148,7 @@ func Start(opts Options) (*Proxy, error) {
 	p.limit = newLimiter(opts.Burst, opts.AllowBudget, opts.Interval, p.emit)
 	p.addr = lns[0].Addr().(*net.TCPAddr).AddrPort()
 	for _, ln := range lns {
-		p.serve(ln)
+		p.serve(ln, p.handle)
 	}
 	return p, nil
 }
@@ -189,11 +196,11 @@ func (p *Proxy) ListenUnix(path string) error {
 	if err != nil {
 		return err
 	}
-	p.serve(ln)
+	p.serve(ln, p.handle)
 	return nil
 }
 
-func (p *Proxy) serve(ln net.Listener) {
+func (p *Proxy) serve(ln net.Listener, handle func(net.Conn)) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -229,7 +236,7 @@ func (p *Proxy) serve(ln net.Listener) {
 				defer func() { <-p.slots }()
 				defer p.untrack(c)
 				p.served.Add(1)
-				p.handle(c)
+				handle(c)
 			}()
 		}
 	}()
@@ -349,6 +356,21 @@ func (p *Proxy) handle(raw net.Conn) {
 		return
 	}
 	ev := Event{CallID: callID, Kind: kindOf(t.Method), Host: t.Host, Port: t.Port}
+	// A resolver's address stands for its name: judged and dialled as that name.
+	if pool := p.synth.Load(); pool != nil {
+		if a, err := netip.ParseAddr(t.Host); err == nil && SynthPrefix.Contains(a) {
+			name, ok := pool.lookup(a)
+			if !ok {
+				ev.Decision, ev.Rule = Deny, "dns"
+				ev.Reason = a.String() + " was not given out by this session's resolver, or its mapping has expired"
+				p.record(ev)
+				writeStatus(c, http.StatusForbidden, "abhed egress: "+ev.Reason+"\n", nil)
+				return
+			}
+			t = t.WithHost(name)
+			ev.Host, ev.Synthetic = name, a.String()
+		}
+	}
 	if !t.Tunnel {
 		ev.Method, ev.Path = t.Method, t.Path
 	}
