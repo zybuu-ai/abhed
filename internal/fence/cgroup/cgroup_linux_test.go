@@ -186,7 +186,8 @@ func TestForkBombHeldAtPidsMax(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if peak > limit {
+	// pids.current can read one over while a refused clone is unwound (seen on arm64 CI).
+	if peak > limit+1 {
 		t.Fatalf("pids.current reached %d past pids.max %d", peak, limit)
 	}
 	ev, _ := s.Events()
