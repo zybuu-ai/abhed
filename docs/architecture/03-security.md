@@ -95,8 +95,13 @@ What each tier bounds today:
   caches ([Configuration](../guide/02-configuration.md#sandbox) lists them). Processes are
   bounded by `max_procs` and each command by its timeout; memory, CPU and disk are not.
   When Abhed runs as root the command is given no capabilities (`--cap-drop ALL` in a user
-  namespace, `no_new_privs` kept), and the tier fails closed if it cannot drop them; as an
-  ordinary user bubblewrap already runs the command unprivileged.
+  namespace, `no_new_privs` kept) and the writable root-owned `/proc` files are bound
+  read-only (`core_pattern`, `modprobe` and the rest), so it cannot run code as host root.
+  It still runs as uid 0, so it keeps owner rights on the root-owned files it can already
+  write and a peer-credential check sees uid 0; it has no capability and no host path. The
+  tier fails closed if it cannot drop the capabilities or mount a private `/proc` and `/dev`
+  (the host `/dev` fallback would expose block devices). As an ordinary user bubblewrap
+  already runs the command unprivileged.
 - **No tier** puts a quota on the workspace's disk use.
 
 The aim is one VM per session, never reused across tenants, since reuse is how T6 happens.

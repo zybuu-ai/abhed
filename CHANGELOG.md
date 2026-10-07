@@ -10,13 +10,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 - When Abhed itself ran as root on Linux, a command in the `process` tier
   (bubblewrap) kept the host's full capability set (`CapPrm`, `CapEff` =
-  `000001ffffffffff`), so it could mount, `mknod` or `ptrace` its way past the
-  sandbox's bind-mount and namespace confinement. The tier now runs such
-  commands with `--cap-drop ALL` in a user namespace, leaving every capability
-  set empty with `no_new_privs` kept, and refuses to start if it cannot. The
-  `container`, `vm` and `fence` tiers were unaffected (the first two always
-  drop all capabilities; the fence refuses root). Running Abhed as an ordinary
-  user was never affected.
+  `000001ffffffffff`) and ran as uid 0, so it could `mknod`, `ptrace` or write
+  root-owned `/proc` files (`core_pattern`, `modprobe`) to run code as host
+  root, escaping the sandbox. The tier now runs such commands with
+  `--cap-drop ALL` in a user namespace (every capability set empty,
+  `no_new_privs` kept) and binds those writable `/proc` files read-only. The
+  command still runs as uid 0, so it keeps owner rights on the root-owned files
+  it can already write (the workspace and temp dirs) but holds no capability
+  and no path to the host. The tier refuses to start if it cannot drop the
+  capabilities or mount a private `/proc` and `/dev`. The `container`, `vm` and
+  `fence` tiers were unaffected (the first two always drop all capabilities;
+  the fence refuses root). Running Abhed as an ordinary user was never affected.
 
 ## [1.2.6] - 2026-10-06
 

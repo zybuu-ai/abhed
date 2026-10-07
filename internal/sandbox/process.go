@@ -38,16 +38,33 @@ type Process struct {
 	nsOnce sync.Once
 	nsErr  string
 
-	// Whether bwrap leaves a sandboxed command no capabilities when Abhed runs
-	// as root. Probed once; empty means it does, so the tier fails closed if a
-	// command could keep them.
+	// Whether a sandboxed command is left no capabilities and no writable
+	// host-root path. Probed once; empty means it is, so the tier fails closed.
 	capsOnce sync.Once
 	capsErr  string
 }
 
-// rootCaps reports whether Abhed runs with a uid that keeps the host's full
-// capability set, so a sandboxed command must have them dropped explicitly.
+// rootCaps reports whether Abhed runs as uid 0, where bwrap keeps the host's
+// full capability set and the command stays uid 0, so both need neutralising.
 func rootCaps() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
+
+// rootWritableProc are the /proc paths a uid-0 command would otherwise write
+// by owner match; core_pattern and modprobe run a chosen program as host root.
+// /proc is the only writable host-root surface the command can reach.
+var rootWritableProc = []string{
+	"/proc/sys", "/proc/sysrq-trigger", "/proc/dynamic_debug",
+	"/proc/latency_stats", "/proc/pressure", "/proc/scsi",
+}
+
+// capProbeCaps prints the capability sets, checked whatever the uid.
+const capProbeCaps = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; echo PROBE_DONE`
+
+// capProbeProc also checks, read-only, that the dangerous root-owned /proc
+// files are not writable; only meaningful as uid 0, where the covers apply.
+// Non-root can write some of these (PSI triggers) harmlessly.
+const capProbeProc = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; ` +
+	`for f in /proc/sys/kernel/core_pattern /proc/sys/kernel/modprobe /proc/dynamic_debug/control /proc/latency_stats /proc/pressure/cpu; do ` +
+	`test -w "$f" && echo "WRITABLE $f"; done; echo PROBE_DONE`
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
 var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -86,6 +103,11 @@ func (s *Process) Available() (bool, string) {
 		if why := s.bwrapNamespaces(); why != "" {
 			return false, why
 		}
+		// As root the command would otherwise read the host's block devices
+		// through the bound /dev; refuse rather than take that fallback.
+		if rootCaps() && !s.bwrapFreshOK() {
+			return false, "running as root, bubblewrap needs a private /proc and /dev here, which the kernel refuses; use the container or vm tier"
+		}
 		if why := s.bwrapDropsCaps(); why != "" {
 			return false, why
 		}
@@ -113,45 +135,88 @@ func (s *Process) bwrapNamespaces() string {
 	return s.nsErr
 }
 
-// capDropArgs are the bwrap options that empty a command's capabilities when
-// Abhed runs as root: --cap-drop ALL clears the inheritable, permitted,
-// effective and ambient sets, and the user namespace empties the bounding set
-// too, so no file-capability or setuid binary can refill it. Without root
-// these are unneeded — bwrap already runs unprivileged with no capabilities.
-func (s *Process) capDropArgs() []string {
+// rootCapArgs empty every capability set when Abhed runs as root: a user
+// namespace plus --cap-drop ALL. Off root bwrap already runs unprivileged.
+func rootCapArgs() []string {
 	if !rootCaps() {
 		return nil
 	}
 	return []string{"--unshare-user", "--cap-drop", "ALL"}
 }
 
-// bwrapDropsCaps is why a sandboxed command would keep capabilities here, or
-// "", probing once. Only root is at risk; the tier fails closed rather than
-// run a command that could mount, mknod or ptrace its way out.
-func (s *Process) bwrapDropsCaps() string {
+// rootProcCovers bind the writable root-owned /proc files read-only, so the
+// still-uid-0 command cannot use owner rights to run code as host root. They
+// must follow --proc, which they override, and are moot off root.
+func rootProcCovers() []string {
 	if !rootCaps() {
-		return ""
+		return nil
 	}
+	var args []string
+	for _, p := range rootWritableProc {
+		args = append(args, "--ro-bind-try", p, p)
+	}
+	return args
+}
+
+// bwrapDropsCaps is why a sandboxed command would keep a capability or a
+// writable host-root path here, or "", probing once. It only reads, so it
+// runs whenever the backend is bwrap, not just as root.
+func (s *Process) bwrapDropsCaps() string {
 	s.capsOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		args := append(s.capDropArgs(), "--unshare-pid", "--proc", "/proc", "--ro-bind", "/", "/",
-			"/bin/sh", "-c", "grep -E '^Cap(Inh|Prm|Eff|Amb|Bnd):' /proc/self/status")
+		probe := capProbeCaps
+		if rootCaps() {
+			probe = capProbeProc
+		}
+		args := append(rootCapArgs(), "--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc")
+		args = append(args, rootProcCovers()...)
+		args = append(args, "/bin/sh", "-c", probe)
 		out, err := bwrapRun(ctx, args...)
 		if err != nil {
-			s.capsErr = "bubblewrap (bwrap) cannot drop a command's capabilities here: " + firstLine(out, err)
+			s.capsErr = "bubblewrap (bwrap) cannot confine a command here: " + firstLine(out, err)
 			return
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			if _, v, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(v) != "" {
-				if n, perr := strconv.ParseUint(strings.TrimSpace(v), 16, 64); perr != nil || n != 0 {
-					s.capsErr = "bubblewrap (bwrap) left a sandboxed command capabilities (" + strings.TrimSpace(line) + ")"
-					return
-				}
-			}
-		}
+		s.capsErr = checkCapProbe(string(out))
 	})
 	return s.capsErr
+}
+
+// checkCapProbe fails closed unless all five capability sets and NoNewPrivs
+// were reported with safe values and no /proc file was writable.
+func checkCapProbe(out string) string {
+	if !strings.Contains(out, "PROBE_DONE") {
+		return "bubblewrap (bwrap) confinement probe did not finish"
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, "WRITABLE "); ok {
+			return "a sandboxed command can still write " + strings.TrimSpace(rest)
+		}
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		switch k {
+		case "CapInh", "CapPrm", "CapEff", "CapAmb", "CapBnd":
+			if n, perr := strconv.ParseUint(v, 16, 64); perr != nil || n != 0 {
+				return "bubblewrap (bwrap) left a sandboxed command capabilities (" + k + " " + v + ")"
+			}
+			seen[k] = true
+		case "NoNewPrivs":
+			if v != "1" {
+				return "a sandboxed command can gain privileges (NoNewPrivs " + v + ")"
+			}
+			seen[k] = true
+		}
+	}
+	for _, k := range []string{"CapInh", "CapPrm", "CapEff", "CapAmb", "CapBnd", "NoNewPrivs"} {
+		if !seen[k] {
+			return "bubblewrap (bwrap) confinement probe did not report " + k
+		}
+	}
+	return ""
 }
 
 // firstLine is a command's first line of output, or its error when it printed none.
@@ -375,14 +440,16 @@ func (s *Process) readableFiles() []string {
 }
 
 // bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev in
-// this environment, probing once with a trivial command.
+// this environment, probing once. It uses the same capability context as the
+// real command, so the probe and the command cannot disagree under root.
 func (s *Process) bwrapFreshOK() bool {
 	s.freshOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "bwrap", "--unshare-pid", "--proc", "/proc", "--dev", "/dev",
+		args := append(rootCapArgs(), "--unshare-pid", "--proc", "/proc", "--dev", "/dev",
 			"--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
-			"--ro-bind-try", "/lib64", "/lib64", "/bin/true").CombinedOutput()
+			"--ro-bind-try", "/lib64", "/lib64", "/bin/true")
+		out, err := exec.CommandContext(ctx, "bwrap", args...).CombinedOutput() // #nosec G204 -- fixed probe argv
 		s.freshOK = err == nil
 		if err != nil && !strings.Contains(string(out), "Can't mount") {
 			// Some other failure: keep the private mounts and let the real
@@ -423,18 +490,19 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			"--die-with-parent",
 			"--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		}
-		// As root bwrap keeps the host's full capability set; drop it so a
-		// sandboxed command cannot escape the mount and namespace setup.
-		args = append(args, s.capDropArgs()...)
-		// A private /proc and /dev when the kernel allows them. Where it does
-		// not (a container that has dropped the capabilities), the host's
-		// /dev is bound instead and /proc is left out: the PID namespace still
-		// holds, and tools that read /proc see nothing rather than the host.
-		// That is the lesser loss — the alternative was no sandboxed command
-		// running at all.
-		if s.bwrapFreshOK() {
+		// As root bwrap keeps the host's full capability set and the command
+		// stays uid 0; empty the sets so it cannot escape the setup.
+		args = append(args, rootCapArgs()...)
+		// A private /proc and /dev when the kernel allows them, with the
+		// writable root-owned /proc files bound read-only after. The host-/dev
+		// fallback is refused as root, where it would expose block devices.
+		switch {
+		case s.bwrapFreshOK():
 			args = append(args, "--proc", "/proc", "--dev", "/dev")
-		} else {
+			args = append(args, rootProcCovers()...)
+		case rootCaps():
+			return refusedCmd("running as root, bubblewrap cannot mount a private /proc and /dev here, and the host /dev would expose block devices; use the container or vm tier")
+		default:
 			args = append(args, "--dev-bind", "/dev", "/dev")
 		}
 		args = append(args,

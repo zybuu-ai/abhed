@@ -403,7 +403,12 @@ func TestProcessAvailableProbesBwrapNamespaces(t *testing.T) {
 	if calls != 1 || !slices.Contains(asked, "--unshare-pid") {
 		t.Fatalf("probed %d times with %v", calls, asked)
 	}
-	bwrapRun = func(context.Context, ...string) ([]byte, error) { return nil, nil }
+	// A working bwrap: the namespaces probe passes, and the capability probe
+	// reports empty sets, no_new_privs and no writable /proc file.
+	bwrapRun = func(context.Context, ...string) ([]byte, error) {
+		return []byte("CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n" +
+			"CapAmb:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\nPROBE_DONE\n"), nil
+	}
 	if ok, why := (&Process{backend: "bwrap", policy: Policy{AllowNetwork: true}}).Available(); !ok {
 		t.Fatalf("a working bwrap: %s", why)
 	}
