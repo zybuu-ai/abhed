@@ -6,6 +6,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- When Abhed itself ran as root on Linux, a command in the `process` tier
+  (bubblewrap) kept the host's full capability set (`CapPrm`, `CapEff` =
+  `000001ffffffffff`), so it could mount, `mknod` or `ptrace` its way past the
+  sandbox's bind-mount and namespace confinement. The tier now runs such
+  commands with `--cap-drop ALL` in a user namespace, leaving every capability
+  set empty with `no_new_privs` kept, and refuses to start if it cannot. The
+  `container`, `vm` and `fence` tiers were unaffected (the first two always
+  drop all capabilities; the fence refuses root). Running Abhed as an ordinary
+  user was never affected.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in

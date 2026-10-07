@@ -37,7 +37,17 @@ type Process struct {
 	// refusing unshare) failed every command instead of the start-up check.
 	nsOnce sync.Once
 	nsErr  string
+
+	// Whether bwrap leaves a sandboxed command no capabilities when Abhed runs
+	// as root. Probed once; empty means it does, so the tier fails closed if a
+	// command could keep them.
+	capsOnce sync.Once
+	capsErr  string
 }
+
+// rootCaps reports whether Abhed runs with a uid that keeps the host's full
+// capability set, so a sandboxed command must have them dropped explicitly.
+func rootCaps() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
 var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -76,6 +86,9 @@ func (s *Process) Available() (bool, string) {
 		if why := s.bwrapNamespaces(); why != "" {
 			return false, why
 		}
+		if why := s.bwrapDropsCaps(); why != "" {
+			return false, why
+		}
 	}
 	return true, ""
 }
@@ -98,6 +111,56 @@ func (s *Process) bwrapNamespaces() string {
 		}
 	})
 	return s.nsErr
+}
+
+// capDropArgs are the bwrap options that empty a command's capabilities when
+// Abhed runs as root: --cap-drop ALL clears the inheritable, permitted,
+// effective and ambient sets, and the user namespace empties the bounding set
+// too, so no file-capability or setuid binary can refill it. Without root
+// these are unneeded — bwrap already runs unprivileged with no capabilities.
+func (s *Process) capDropArgs() []string {
+	if !rootCaps() {
+		return nil
+	}
+	return []string{"--unshare-user", "--cap-drop", "ALL"}
+}
+
+// bwrapDropsCaps is why a sandboxed command would keep capabilities here, or
+// "", probing once. Only root is at risk; the tier fails closed rather than
+// run a command that could mount, mknod or ptrace its way out.
+func (s *Process) bwrapDropsCaps() string {
+	if !rootCaps() {
+		return ""
+	}
+	s.capsOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		args := append(s.capDropArgs(), "--unshare-pid", "--proc", "/proc", "--ro-bind", "/", "/",
+			"/bin/sh", "-c", "grep -E '^Cap(Inh|Prm|Eff|Amb|Bnd):' /proc/self/status")
+		out, err := bwrapRun(ctx, args...)
+		if err != nil {
+			s.capsErr = "bubblewrap (bwrap) cannot drop a command's capabilities here: " + firstLine(out, err)
+			return
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if _, v, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(v) != "" {
+				if n, perr := strconv.ParseUint(strings.TrimSpace(v), 16, 64); perr != nil || n != 0 {
+					s.capsErr = "bubblewrap (bwrap) left a sandboxed command capabilities (" + strings.TrimSpace(line) + ")"
+					return
+				}
+			}
+		}
+	})
+	return s.capsErr
+}
+
+// firstLine is a command's first line of output, or its error when it printed none.
+func firstLine(out []byte, err error) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if first == "" && err != nil {
+		return err.Error()
+	}
+	return first
 }
 
 func (s *Process) Describe() string {
@@ -360,6 +423,9 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			"--die-with-parent",
 			"--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		}
+		// As root bwrap keeps the host's full capability set; drop it so a
+		// sandboxed command cannot escape the mount and namespace setup.
+		args = append(args, s.capDropArgs()...)
 		// A private /proc and /dev when the kernel allows them. Where it does
 		// not (a container that has dropped the capabilities), the host's
 		// /dev is bound instead and /proc is left out: the PID namespace still

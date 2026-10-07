@@ -94,6 +94,9 @@ What each tier bounds today:
 - **`process`.** Writes go to the workspace, plus temp folders and, on macOS, toolchain
   caches ([Configuration](../guide/02-configuration.md#sandbox) lists them). Processes are
   bounded by `max_procs` and each command by its timeout; memory, CPU and disk are not.
+  When Abhed runs as root the command is given no capabilities (`--cap-drop ALL` in a user
+  namespace, `no_new_privs` kept), and the tier fails closed if it cannot drop them; as an
+  ordinary user bubblewrap already runs the command unprivileged.
 - **No tier** puts a quota on the workspace's disk use.
 
 The aim is one VM per session, never reused across tenants, since reuse is how T6 happens.

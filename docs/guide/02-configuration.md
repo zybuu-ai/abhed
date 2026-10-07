@@ -207,6 +207,11 @@ On the container and vm tiers a command writes only the workspace and a
 throwaway `/tmp`. The process tier is a boundary, not a jail: it is not
 sufficient for genuinely hostile code.
 
+When Abhed runs as root on Linux, the process tier drops every capability from
+the command (`--cap-drop ALL` in a user namespace, with `no_new_privs`), so it
+holds none of root's privileges; if the host cannot drop them the tier refuses
+to start. Running Abhed as an ordinary user is still the recommendation.
+
 `"max_procs"` (512 by default) bounds how many more processes a command can
 start: on the process tier, as a limit of what your user runs plus this many
 (the kernel counts all of the user's processes, and does not bound root), and
