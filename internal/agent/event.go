@@ -95,6 +95,9 @@ const (
 	// EvSessionRenamed records a person giving the session a title; see
 	// SessionRenamed. The opening prompt stays the record's own.
 	EvSessionRenamed EventType = "session.renamed"
+	// EvSessionResumed marks an editor continuing a recorded session in a new
+	// agent: the trust it opened under, before the settings it refused.
+	EvSessionResumed EventType = "session.resumed"
 )
 
 type Actor string

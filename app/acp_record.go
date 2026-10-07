@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -225,6 +226,15 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 			c.reply(msg.ID, nil, refusal(errRecord, "the conversation could not be rebuilt: %v", err))
 			return
 		}
+		via := "resume"
+		if replay {
+			via = "load"
+		}
+		if err := c.recordContinued(s, events, via); err != nil {
+			c.dropSession(s)
+			c.reply(msg.ID, nil, refusal(errRecord, "the session's start could not be recorded: %v", err))
+			return
+		}
 	} else {
 		// Read, never written to: going on from it is a fork.
 		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]bool{}, agent: recordOnly{},
@@ -246,6 +256,28 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 	cmds := commandsUpdate(s)
 	c.reply(msg.ID, res, nil)
 	c.sessionUpdate(s.id, cmds)
+}
+
+// recordContinued records how a session continued from its record opened, by
+// via: a session.resumed with the trust it asked for, then the settings that
+// did not take effect, so the record shows the turns that follow ran narrowed.
+// The session keeps its one session.started.
+func (c *acpConn) recordContinued(s *acpSession, events []agent.Event, via string) error {
+	if !s.inner {
+		return nil
+	}
+	var last int64
+	for _, ev := range events {
+		last = max(last, ev.Seq)
+	}
+	loop, cfg := s.parts.Loop, s.parts.Config
+	resumed := map[string]any{"surface": "acp", "via": via, "through_seq": last, "provider": loop.Provider,
+		"model": loop.Adapter.Profile().Name, "mode": string(loop.Policy.Mode), "web": toolset.WebState(cfg),
+		"workspace_trust": toolset.TrustState(config.GrantFor(s.trust, c.base, s.cwd), cfg.Workspace)}
+	if _, err := loop.Recorder.Record(agent.EvSessionResumed, agent.ActorSystem, agent.Trusted, resumed); err != nil {
+		return err
+	}
+	return toolset.RecordConfigAttempts(loop.Recorder, toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand())))
 }
 
 // recordOnly stands in for the agent of a session whose record failed
@@ -426,6 +458,11 @@ func (c *acpConn) forkSession(msg rpcMessage) {
 	if err := c.restore(s, rec, all); err != nil {
 		c.dropSession(s)
 		c.reply(msg.ID, nil, refusal(errRecord, "the fork could not be rebuilt: %v", err))
+		return
+	}
+	if err := c.recordContinued(s, all, "fork"); err != nil {
+		c.dropSession(s)
+		c.reply(msg.ID, nil, refusal(errRecord, "the fork's start could not be recorded: %v", err))
 		return
 	}
 	res := c.sessionResult(s)
@@ -810,6 +847,8 @@ func (c *acpConn) restartForTrust(s *acpSession) {
 	events, _ := rec.Events(s.id)
 	if err := c.restore(s, rec, events); err != nil {
 		s.readOnly = "the session could not restart after its workspace file changed"
+	} else if err := c.recordContinued(s, events, "restart"); err != nil {
+		s.readOnly = "the session could not record its restart: " + err.Error()
 	}
 	say("The workspace's configuration file changed; the session restarted under the decision about its new content.\n")
 }

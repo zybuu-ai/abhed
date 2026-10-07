@@ -535,6 +535,12 @@ type trustReporter interface {
 // older abhed one. Its fields are decoded strictly: a field this engine does
 // not know is refused, since none may widen what a session can do (§2.1).
 func sessionMeta(raw map[string]json.RawMessage, into any) *rpcError {
+	// Only one is read, so a second could hide what the client asked for.
+	if _, ok := raw[acpLegacyMetaKey]; ok {
+		if _, ok := raw[acpMetaKey]; ok {
+			return refusal(errParams, "_meta has both %q and %q; send %q only", acpMetaKey, acpLegacyMetaKey, acpMetaKey)
+		}
+	}
 	for _, key := range []string{acpMetaKey, acpLegacyMetaKey} {
 		b, ok := raw[key]
 		if !ok {

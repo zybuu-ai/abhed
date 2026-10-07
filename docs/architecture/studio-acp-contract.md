@@ -305,7 +305,12 @@ interface SessionMeta {
   session opens with the folder's stored trust, as before. A session already
   open on the connection is never narrowed in place: asking for it untrusted
   while it is open with the stored trust is refused with -32000, and Studio
-  closes it and loads it again.
+  closes it and loads it again. Each records a `session.resumed` with `via`,
+  `through_seq` and `workspace_trust` (§10), then the `config.refused` and
+  `config.narrowed` of the configuration it opened under.
+  `_abhed/doctor` takes the same field, so a Restricted window's checks do not
+  reach a provider only the trusted file names. A `_meta` with both the
+  `zybuu.ai/abhed` and the legacy `abhed` key is -32602.
 - **Verification before trust.** `session/load` and `session/resume` verify
   the chain first. The reply's `meta.record = {verified: boolean, head,
   firstBad?}`. Studio shows "unverified" and asks before continuing a session
@@ -848,7 +853,7 @@ forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 
 ### 8.1 Doctor
 
-`_abhed/doctor {cwd?}` → `{checks: {id, title, status: "ok" | "warn" | "fail",
+`_abhed/doctor {cwd?, _meta?: {trust?: "untrusted"}}` → `{checks: {id, title, status: "ok" | "warn" | "fail",
 detail}[]}`, the same checks as `abhed doctor --json`: configuration, trust,
 provider reachability (loopback only unless configured), sandbox tier,
 record store and verification, MCP, index, managed policy. Output is
@@ -894,6 +899,7 @@ them.
 | Type | Actor | Payload (main fields) |
 |---|---|---|
 | `session.started`, `session.ended` | system | reason on end |
+| `session.resumed` | system | `via`, `through_seq`, `workspace_trust` |
 | `user.message` | user | text; `steered?` |
 | `agent.message`, `agent.delta` | agent | text |
 | `agent.reasoning`, `agent.reasoning.delta` | agent | text |

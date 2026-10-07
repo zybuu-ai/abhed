@@ -148,13 +148,23 @@ func providerReach(ctx context.Context, base string) (status, detail string) {
 
 func (c *acpConn) doctorACP(msg rpcMessage) {
 	var p struct {
-		Cwd string `json:"cwd"`
+		Cwd  string                     `json:"cwd"`
+		Meta map[string]json.RawMessage `json:"_meta"`
 	}
-	_ = json.Unmarshal(msg.Params, &p)
+	if err := json.Unmarshal(msg.Params, &p); err != nil {
+		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		return
+	}
+	// A Restricted window's checks must not dial a host only the trusted file names.
+	trust, terr := c.requestedTrust(p.Meta)
+	if terr != nil {
+		c.reply(msg.ID, nil, terr)
+		return
+	}
 	if p.Cwd == "" {
 		p.Cwd = c.base
 	}
-	cfg, err := config.LoadWith(p.Cwd, config.LoadOptions{Trust: config.GrantFor(c.trust, c.base, p.Cwd)})
+	cfg, err := config.LoadWith(p.Cwd, config.LoadOptions{Trust: config.GrantFor(trust, c.base, p.Cwd)})
 	var verify func() error
 	if c.durable() {
 		verify = func() error {

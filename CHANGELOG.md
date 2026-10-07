@@ -16,7 +16,18 @@ All notable changes to Abhed are recorded here. The format follows
   session. Load, resume and `_abhed/session/fork` now take the field with the
   same meaning, the session keeps it when it restarts for a changed workspace
   file, and asking for an open, trusted session untrusted is refused until it
-  is closed.
+  is closed. Each continuation now records a `session.resumed` event with
+  `workspace_trust` (the trust asked for and what applied), followed by the
+  settings it refused, so the record shows that later turns ran narrowed; a
+  new session's `session.started` carries `workspace_trust` too.
+  `_abhed/doctor` takes the same field.
+- **Breaking for ACP clients.** `session/load`, `session/resume`,
+  `_abhed/session/fork` and `_abhed/doctor` now refuse with -32602 what 1.2.6
+  ignored: params that do not parse, a `_meta["zybuu.ai/abhed"]` block that is
+  not an object or has a field the engine does not know, `trust` other than
+  `"untrusted"` (`"trusted"` included), and a `_meta` carrying both the
+  `zybuu.ai/abhed` and the legacy `abhed` key (on `session/new` too). A client
+  that sends no `_meta` on these methods is unaffected.
 
 ## [1.2.6] - 2026-10-06
 

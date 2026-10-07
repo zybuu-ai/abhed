@@ -2,14 +2,17 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
 // loosening is a workspace file that widens policy: trusted, echo runs unasked.
-const loosening = `{"permissions":{"allow":["bash(echo *)"]}}`
+// Its web key is one the record names when refused (config.refused).
+const loosening = `{"permissions":{"allow":["bash(echo *)"]},"web_fetch":{"enabled":true}}`
 
 // closedSession is a recorded, closed session in a workspace holding the
 // loosening file, granted when grant is set, as Studio finds one after a reload.
@@ -125,6 +128,10 @@ func TestStudioUntrustedSurvivesRestartAndFork(t *testing.T) {
 	if st := s.agent.(trustReporter).WorkspaceTrust(); st.Trusted || st.Reason != "refused" {
 		t.Fatalf("after restart: %+v", st)
 	}
+	starts, _ := startsOf(r, id)
+	if last := starts[len(starts)-1]; last["via"] != "restart" || last["workspace_trust"].(map[string]any)["requested"] != "untrusted" {
+		t.Fatalf("the restart's record: %v", last)
+	}
 	var forked map[string]any
 	r.cl.ok("_abhed/session/fork", map[string]any{"sessionId": id, "_meta": untrusted}, &forked)
 	if trusted, reason := workspaceTrustOf(t, forked); trusted || reason != "refused" {
@@ -172,4 +179,123 @@ func TestStudioUntrustedLoadIgnoresLooseningWorkspaceConfig(t *testing.T) {
 	if !strings.Contains(string(raw), "echo hi") {
 		t.Fatal("the call is not in the record")
 	}
+}
+
+// startsOf are the session.started and session.resumed payloads in the
+// session's record, in order, and the decisions of the config.refused events
+// after the last one.
+func startsOf(r *studioRig, id string) (starts []map[string]any, refused []string) {
+	for _, ev := range r.events(id) {
+		var p map[string]any
+		_ = json.Unmarshal(ev.Payload, &p)
+		switch ev.Type {
+		case agent.EvSessionStarted, agent.EvSessionResumed:
+			p["type"] = string(ev.Type)
+			starts, refused = append(starts, p), nil
+		case agent.EvConfigRefused:
+			d, _ := p["decision"].(string)
+			refused = append(refused, d)
+		}
+	}
+	return starts, refused
+}
+
+// The record shows the trust a continued session ran under: load, resume and
+// fork each record a session.resumed with the trust asked for and what
+// applied, followed by the settings it refused, as session/new does.
+func TestStudioContinuedSessionRecordsItsTrust(t *testing.T) {
+	untrusted := map[string]any{acpMetaKey: map[string]any{"trust": "untrusted"}}
+	check := func(t *testing.T, r *studioRig, id, via, requested string, trusted bool) {
+		t.Helper()
+		starts, refused := startsOf(r, id)
+		last := starts[len(starts)-1]
+		wt, _ := last["workspace_trust"].(map[string]any)
+		if last["type"] != "session.resumed" || last["via"] != via || last["surface"] != "acp" || last["through_seq"] == nil ||
+			wt["requested"] != requested || wt["trusted"] != trusted {
+			t.Fatalf("last session.started: %v", last)
+		}
+		want := "set_aside"
+		if !trusted {
+			want = "ignored_untrusted"
+		}
+		if !slices.Contains(refused, want) {
+			t.Fatalf("config.refused after the start: %v, want %s", refused, want)
+		}
+	}
+	for method, via := range map[string]string{"session/load": "load", "session/resume": "resume"} {
+		t.Run(method, func(t *testing.T) {
+			r, id := closedSession(t, true)
+			starts, _ := startsOf(r, id)
+			if wt, _ := starts[0]["workspace_trust"].(map[string]any); len(starts) != 1 || starts[0]["type"] != "session.started" ||
+				wt["requested"] != "stored" || wt["trusted"] != true {
+				t.Fatalf("session/new's start: %v", starts)
+			}
+			r.cl.ok(method, map[string]any{"sessionId": id, "cwd": r.ws, "_meta": untrusted}, nil)
+			check(t, r, id, via, "untrusted", false)
+			r.cl.ok("session/close", map[string]any{"sessionId": id}, nil)
+			r.cl.ok(method, map[string]any{"sessionId": id, "cwd": r.ws}, nil)
+			check(t, r, id, via, "stored", true)
+			if again, _ := r.recorded(id, agent.EvSessionStarted); len(again) != 1 {
+				t.Fatalf("a continuation recorded another start: %v", again)
+			}
+		})
+	}
+	t.Run("fork", func(t *testing.T) {
+		r, id := closedSession(t, true)
+		var forked struct {
+			SessionID string `json:"sessionId"`
+		}
+		r.cl.ok("_abhed/session/fork", map[string]any{"sessionId": id, "_meta": untrusted}, &forked)
+		check(t, r, forked.SessionID, "fork", "untrusted", false)
+	})
+}
+
+// A fork with no _meta takes the stored trust, even from a session open
+// untrusted: trust is the request's, not the source's.
+func TestStudioForkWithoutMetaTakesStoredTrust(t *testing.T) {
+	r, id := closedSession(t, true)
+	r.cl.ok("session/resume", map[string]any{"sessionId": id, "cwd": r.ws,
+		"_meta": map[string]any{acpMetaKey: map[string]any{"trust": "untrusted"}}}, nil)
+	var forked map[string]any
+	r.cl.ok("_abhed/session/fork", map[string]any{"sessionId": id}, &forked)
+	if trusted, reason := workspaceTrustOf(t, forked); !trusted || reason != "stored" {
+		t.Fatalf("fork workspaceTrust: trusted=%v reason=%q", trusted, reason)
+	}
+}
+
+// Both _meta keys at once are refused, since only one would be read; the
+// doctor's checks take the requested trust too.
+func TestStudioMetaBothKeysAndDoctorTrust(t *testing.T) {
+	r, id := closedSession(t, true)
+	both := map[string]any{acpMetaKey: map[string]any{}, "abhed": map[string]any{"trust": "untrusted"}}
+	for _, method := range []string{"session/new", "session/load", "session/resume", "_abhed/session/fork", "_abhed/doctor"} {
+		r.cl.refused(errParams, method, map[string]any{"sessionId": id, "cwd": r.ws, "_meta": both})
+	}
+	if r.cl.conn.session(id) != nil {
+		t.Fatal("a refused request opened the session")
+	}
+	trustCheck := func(meta map[string]any) map[string]any {
+		var res struct {
+			Checks []map[string]any `json:"checks"`
+		}
+		params := map[string]any{"cwd": r.ws}
+		if meta != nil {
+			params["_meta"] = meta
+		}
+		r.cl.ok("_abhed/doctor", params, &res)
+		for _, c := range res.Checks {
+			if c["id"] == "trust" {
+				return c
+			}
+		}
+		t.Fatalf("no trust check: %v", res.Checks)
+		return nil
+	}
+	if c := trustCheck(nil); c["status"] != "ok" {
+		t.Fatalf("stored grant: %v", c)
+	}
+	if c := trustCheck(map[string]any{acpMetaKey: map[string]any{"trust": "untrusted"}}); c["status"] != "warn" || !strings.Contains(c["detail"].(string), "refused") {
+		t.Fatalf("untrusted doctor: %v", c)
+	}
+	r.cl.refused(errParams, "_abhed/doctor", map[string]any{"cwd": r.ws, "_meta": map[string]any{acpMetaKey: map[string]any{"trust": "trusted"}}})
 }

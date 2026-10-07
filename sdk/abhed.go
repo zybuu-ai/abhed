@@ -459,7 +459,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// A surface's new session says how it started, as the command line's does.
 	if x.Surface != "" && !x.Resume {
 		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
-			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg)}
+			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg),
+			"workspace_trust": toolset.TrustState(opts.WorkspaceTrust, cfg.Workspace)}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
 			return fail(fmt.Errorf("abhed: recording the session start: %w", err))
 		}
