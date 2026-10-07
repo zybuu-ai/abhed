@@ -49,7 +49,11 @@ func TestModelEndpointAllowedUnderTheAllowlist(t *testing.T) {
 	// Another host from the same client is judged: no rule allows it.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://other.test/", nil)
 	var de *egress.DeniedError
-	if _, err := c.HTTP.Do(req); !errors.As(err, &de) {
+	resp, err := c.HTTP.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.As(err, &de) {
 		t.Fatalf("the model client reached another host: %v", err)
 	}
 	mu.Lock()
