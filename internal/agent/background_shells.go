@@ -222,9 +222,10 @@ func (h shellHost) StartShell(ctx context.Context, req tools.ShellRequest) (stri
 		go func() {
 			select {
 			case <-sctx.Done():
-				proc.Stop()
 			case <-proc.Done():
 			}
+			// Ended by itself too: stopping releases the call's context, and with it the egress proxy.
+			proc.Stop()
 		}()
 	} else {
 		cmd, err := req.Build(sctx)

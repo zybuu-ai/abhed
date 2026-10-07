@@ -687,6 +687,35 @@ func TestMovedCommandStopsOnShellKill(t *testing.T) {
 	}
 }
 
+// A moved command that exits by itself releases its build context, which the
+// sandbox's egress proxy counts as in flight (sandbox.egressFor binds the same way).
+func TestMovedCommandThatExitsReleasesTheProxy(t *testing.T) {
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
+	var inflight atomic.Int32
+	r.l.Tools.Add(tools.Bash{Sandbox: func(ctx context.Context, cwd, command string) *exec.Cmd {
+		inflight.Add(1)
+		context.AfterFunc(ctx, func() { inflight.Add(-1) })
+		cmd := exec.CommandContext(ctx, "bash", "-c", command)
+		cmd.Dir = cwd
+		return cmd
+	}})
+	ctx, forget := r.l.withDetach(r.l.withShellHost(r.l.asParent(context.Background()), "c3"))
+	defer forget()
+	tool, _ := r.l.Tools.Get("bash")
+	raw, _ := json.Marshal(map[string]any{"command": "sleep 1", "description": "short"})
+	done := make(chan tools.Result, 1)
+	go func() { done <- tool.Run(ctx, r.l.Session, raw) }()
+	waitFor(t, "the command to run", func() bool { return r.l.MoveToBackground() == 1 })
+	if id := shellIDIn.FindString((<-done).Content); id == "" {
+		t.Fatal("the command was not moved")
+	}
+	waitFor(t, "the moved shell to end", func() bool { return hasEvent(r.events(t), EvShellEnded) })
+	waitFor(t, "the proxy to be released", func() bool { return inflight.Load() == 0 })
+	if ended := payloads[ShellEnded](r.events(t), EvShellEnded); len(ended) != 1 || ended[0].State != ShellExited {
+		t.Fatalf("shell.ended: %+v", ended)
+	}
+}
+
 // gatedAdapter answers once gate is closed, or ends with the call.
 type gatedAdapter struct{ gate chan struct{} }
 
