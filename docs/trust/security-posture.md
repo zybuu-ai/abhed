@@ -405,8 +405,8 @@ root on Linux). Not brokered: `ssh`, the `k8s_*` tools, remote RAG, a stdio
 server's files (it can plant something that runs later outside any
 sandbox), and requests system services make on a command's or server's
 behalf, outside the proxy and unrecorded: on macOS `trustd` fetches a
-certificate's AIA and OCSP URLs, and on Linux a resolver reached over a
-unix socket left visible looks names up. HTTPS is judged by host and port
+certificate's AIA and OCSP URLs, and on Linux, for a stdio server, a
+resolver reached over a unix socket left visible looks names up. HTTPS is judged by host and port
 only; there is no TLS inspection. Details:
 `docs/guide/21-network-policy.md`.
 

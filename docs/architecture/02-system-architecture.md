@@ -61,8 +61,8 @@ rules decide what leaves: `bash` commands (process tier only), the model client,
 `web_fetch`, `web_search`, MCP servers over HTTP, and stdio MCP servers' direct sockets.
 Every decision is an `egress.decision` event. Outside the allowlist's reach are `ssh`, the
 `k8s_*` tools, remote RAG, a stdio server's files, and requests system services make on a
-command's or server's behalf (`trustd` on macOS; on Linux a resolver reached over a unix
-socket left visible); see 03-security.md §5 and §6. A separate egress host, the only thing
+command's or server's behalf (`trustd` on macOS; on Linux, for a stdio server, a resolver
+reached over a unix socket left visible); see 03-security.md §5 and §6. A separate egress host, the only thing
 that would cross the air gap, with full content audit, is a target design not yet built.
 
 ## 2. The agent loop

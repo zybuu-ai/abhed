@@ -318,7 +318,7 @@ func (e *egressState) relayArgs(argv []string) (binds, wrapped []string) {
 // since bwrap's own nesting would leave it none there; the relay nests the command itself.
 func relayCaps() []string {
 	// As root the command is not nested, so the relay empties the bounding set (SETPCAP) before it starts.
-	if os.Getuid() == 0 {
+	if rootCaps() {
 		return []string{"--cap-drop", "ALL", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETPCAP"}
 	}
 	return []string{"--uid", "0", "--gid", "0", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETFCAP"}
@@ -366,7 +366,7 @@ func dnsProbeArgs(exe string) []string {
 	args = append(args, relayCaps()...)
 	// The command must run as this user and hold no capability, or the resolver stays off.
 	sets := "Inh|Prm|Eff|Amb"
-	if os.Getuid() == 0 {
+	if rootCaps() {
 		sets += "|Bnd" // a root command would regain its bounding set at exec
 	}
 	check := fmt.Sprintf(`test "$(id -u)" = %d && ! grep -qE '^Cap(%s):.*[1-9a-f]' /proc/self/status`, os.Getuid(), sets)

@@ -51,8 +51,8 @@ commands (the process tier enforces it; the other tiers refuse the setting), the
 client, `web_fetch`, `web_search`, MCP servers over HTTP, and stdio MCP servers' direct
 sockets. Outside it stay `ssh`, the `k8s_*` tools, remote RAG, a stdio server's files, and
 requests system services make on a command's or server's behalf: `trustd` on macOS
-fetches a certificate's AIA and OCSP URLs, and on Linux a resolver reached over a unix
-socket left visible looks names up (§5, §6,
+fetches a certificate's AIA and OCSP URLs, and on Linux, for a stdio server, a resolver
+reached over a unix socket left visible looks names up (§5, §6,
 [Network policy](../guide/21-network-policy.md)). L5 is not built: nothing watches the
 action stream for anomalies, and the monitor is not turned on.
 
