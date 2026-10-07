@@ -325,8 +325,9 @@ func relayCaps() []string {
 	return []string{"--uid", "0", "--gid", "0", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETFCAP"}
 }
 
-// resolvConf points a sandbox's lookups at the relay's resolver, and nowhere else.
-const resolvConf = "# Written by Abhed: names resolve through the session's egress policy.\nnameserver 127.0.0.1\noptions timeout:2 attempts:2\n"
+// resolvConf points a sandbox's lookups at the relay's resolver, and nowhere else; "search ."
+// stops glibc appending the hostname's domain, which would query, and deny, name.localdomain.
+const resolvConf = "# Written by Abhed: names resolve through the session's egress policy.\nnameserver 127.0.0.1\nsearch .\noptions timeout:2 attempts:2\n"
 
 // startResolver serves p's resolver beside its proxy socket in dir and writes
 // the resolv.conf bound over the sandbox's; the host's own file is not touched.

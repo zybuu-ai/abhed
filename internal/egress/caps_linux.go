@@ -13,9 +13,8 @@ import (
 // lastCap is past every capability a kernel defines; dropping one it lacks is EINVAL.
 const lastCap = 64
 
-// dropCaps clears the relay's capabilities on every thread, and with bounding its
-// bounding set too, so a root command it then starts gains none at exec.
-// A cgo build cannot reach every thread, so it fails rather than drop on one.
+// dropCaps clears the relay's capabilities on every thread, with bounding its bounding set too;
+// a cgo build cannot reach every thread, so it fails rather than drop on one.
 func dropCaps(bounding bool) error {
 	all := func(trap, a1, a2 uintptr) syscall.Errno {
 		_, _, e := syscall.AllThreadsSyscall6(trap, a1, a2, 0, 0, 0, 0)

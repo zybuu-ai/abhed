@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
@@ -56,6 +57,11 @@ func TestEgressResolverInTheSandbox(t *testing.T) {
 	syn, err := netip.ParseAddr(f[0])
 	if err != nil || !egress.SynthPrefix.Contains(syn) {
 		t.Fatalf("allowed.test resolved to %q, not a synthetic address", f[0])
+	}
+	// One lookup of an allowed name leaves no denial, as a search-suffixed retry would.
+	time.Sleep(100 * time.Millisecond)
+	if d := rec.find(func(e map[string]any) bool { return e["kind"] == "dns" && e["decision"] != "allow" }); len(d) > 0 {
+		t.Fatalf("an allowed lookup left denials: %v", d)
 	}
 	if out := runLaunched(t, s, ws, l, "getent hosts other.test; echo rc=$?"); !strings.Contains(out, "rc=2") {
 		t.Fatalf("getent hosts other.test:\n%s", out)
