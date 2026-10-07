@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -39,9 +38,8 @@ type Container struct {
 	// podman is set when the runtime is Podman by what it says it is, as the
 	// podman-docker wrapper named docker is; see engine.
 	podman bool
-	// gitNoted is set once the walk for git folders has been recorded
-	// stopping at its bound.
-	gitNoted atomic.Bool
+	// git is what the look for git folders keeps between commands.
+	git gitMemory
 }
 
 func NewContainer(p Policy) *Container {
@@ -233,7 +231,7 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 	// The git folders found now, as on bubblewrap, after a planted
 	// commondir is taken out.
 	if c.policy.ProtectGit {
-		found, err := gitGuard(ctx, c.policy.Workspace, string(c.Tier()), &c.gitNoted)
+		found, err := gitGuard(ctx, c.policy.Workspace, string(c.Tier()), &c.git)
 		if err != nil {
 			return nil, err
 		}

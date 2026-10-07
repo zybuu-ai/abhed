@@ -553,6 +553,10 @@ submodule's git folder: `git worktree add`, `git worktree remove` and
 fail there; run them yourself. A `hooks` (or other of those files) that is a
 link is held where it leads as well.
 
+On every tier, plain `git submodule update` on a submodule already checked
+out fails inside the sandbox too, as git rewrites `core.worktree` in the
+submodule's protected config; run it yourself.
+
 Under bubblewrap and in a container (the vm tier too) it is by binding
 read-only those found when each command starts; an empty hooks folder or
 config file is made first where a repository has none, and an empty
@@ -560,15 +564,19 @@ config file is made first where a repository has none, and an empty
 its submodules' and its linked worktrees', with each one's `.git` file in
 the work tree, are found first; other repositories by a walk down six
 folders, past `node_modules` and `.abhed`, that enters at most 20,000
-folders and looks at each folder's `.git` before what the folder holds. A
-repository past that bound is not protected; reaching it is recorded once a
-session as `sandbox.git_walk_bounded`. Modules holding more than 20,000
+folders and looks at each folder's `.git` before what the folder holds.
+Repositories a session has found stay protected after a command fills the
+workspace with folders; one past that bound and not found before is not
+protected, and reaching the bound is recorded once a session as
+`sandbox.git_walk_bounded`. Modules holding more than 20,000
 entries refuse the command, as no repository has them. A `hooks` (or other
 of those files) that is a link cannot be bound, and a command could point
 it elsewhere, so each command is refused until it is replaced with what it
-points to. Git refuses an empty `commondir`, so none can stand in for a
+points to. `git worktree remove` fails there, as the worktree's folder is
+bound. Git refuses an empty `commondir`, so none can stand in for a
 missing one: a `commondir` found where git never writes one, or a linked
-worktree's that points anywhere but back to its repository, is moved to
+worktree's that names anything but its repository's git folder by `../..`
+or by its path, with no symbolic link on the way, is moved to
 `~/.abhed/quarantine`, that command is not run, its error says what was
 moved where, and the record gains `sandbox.git_planted`. Until the next
 command starts, git you run yourself in that repository would follow it.
@@ -577,7 +585,14 @@ command can make a repository (`git init new`), give it a config naming an
 fsmonitor and add it to the parent as a submodule entry (`git add new`), or
 make a `.git/modules/<name>` that a later `git submodule update --init`
 reuses, and git run in the parent outside Abhed may then run that program.
-macOS refuses both, as no `.git` or modules folder can be made there.
+On macOS no `.git` or modules folder can be made in the workspace, but
+Seatbelt checks a rename only at its two ends, so the same gap is open
+there: a command can build a repository in the writable temp area, with a
+config naming an fsmonitor, move it into the workspace and add it as a
+submodule entry, or move it over a nested repository that is not a
+submodule. Moving a registered submodule's work tree is refused. Before
+running git in a workspace a session has used, check `git status` and
+`git diff --submodule` for submodule entries you did not add.
 
 Abhed's own git on the host refuses to run while a `commondir` points
 anywhere but the repository's own git folder, and where a `.git` is present

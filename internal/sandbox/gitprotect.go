@@ -9,7 +9,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -24,9 +26,8 @@ var (
 	// gitModulesDepth bounds how deep a submodule's git folder is looked
 	// for under modules: names with slashes, and submodules within submodules.
 	gitModulesDepth = 8
-	// gitModulesEntries bounds what is looked at under the modules folders
-	// of one scan; no real repository comes near it, so reaching it refuses
-	// the command rather than leave a submodule unprotected.
+	// gitModulesEntries bounds one scan's modules folders; no real repository
+	// nears it, so reaching it refuses rather than leave a submodule exposed.
 	gitModulesEntries = 20000
 )
 
@@ -39,20 +40,16 @@ var gitPointers = []string{"config", "config.worktree", "commondir", "gitdir", "
 type gitScan struct {
 	ws        string
 	protected []string
-	// planted are commondir files git would not have written: in a
-	// repository's own git folder or a submodule's, or in a linked
-	// worktree's pointing anywhere but back to its repository.
+	// gits are the .git entries found, which a later scan looks at again.
+	gits []string
+	// planted are commondir files git would not have written there.
 	planted []string
-	// linked are protected paths that are symbolic links, or lie under one
-	// inside the git folder: a link cannot be bound read-only, and a
-	// command could point it elsewhere.
+	// linked are protected paths reached through a link, which no bind can hold.
 	linked []string
-	// walkBounded is set when the walk stopped at gitWalkFolders, and
-	// modulesBounded when the modules folders held more than gitModulesEntries.
+	// walkBounded and modulesBounded are set when a bound stopped the look.
 	walkBounded, modulesBounded bool
 	folders, entries            int
-	// make is whether a missing config and hooks are made empty, so they
-	// can be bound; seatbelt names them by pattern and needs none made.
+	// make is whether a missing config and hooks are made empty for binding.
 	make bool
 	seen map[string]bool
 }
@@ -64,11 +61,17 @@ type gitScan struct {
 // most gitWalkDepth folders down.
 func GitProtected(ws string) []string { return scanGit(ws).protected }
 
-// scanGit looks at ws's own git folder first, then walks the workspace for
-// others, looking at each folder's .git before anything the folder holds.
-func scanGit(ws string) *gitScan {
+// scanGit looks at ws's own git folder, then the .git entries known from
+// earlier scans, then walks for others, each folder's .git before its contents.
+func scanGit(ws string, known ...string) *gitScan {
 	g := &gitScan{ws: ws, make: true, seen: map[string]bool{}}
 	g.at(ws)
+	for _, p := range known {
+		// One whose folder became a link is passed over, as the walk would.
+		if info, err := os.Lstat(p); err == nil && !linkBelow(ws, filepath.Dir(p)) {
+			g.gitEntry(p, fs.FileInfoToDirEntry(info))
+		}
+	}
 	_ = filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // a folder that cannot be read is passed over, and the walk goes on
@@ -123,10 +126,28 @@ func (g *gitScan) at(dir string) {
 func (g *gitScan) gitEntry(p string, d fs.DirEntry) {
 	switch {
 	case d.IsDir():
+		if !g.seen[p] {
+			g.gits = append(g.gits, p)
+		}
 		g.folder(p, 0)
 	case d.Type().IsRegular():
+		if !g.seen[p] {
+			g.gits = append(g.gits, p)
+		}
 		g.add(p)
 	}
+}
+
+// linkBelow reports whether p or a folder between it and ws is a symbolic
+// link, or cannot be looked at.
+func linkBelow(ws, p string) bool {
+	ws, p = filepath.Clean(ws), filepath.Clean(p)
+	for ; len(p) > len(ws); p = filepath.Dir(p) {
+		if info, err := os.Lstat(p); err != nil || info.Mode()&fs.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return p != ws
 }
 
 func sameEntry(a, b string) bool {
@@ -269,22 +290,49 @@ func exists(p string) bool {
 	return err == nil
 }
 
-// pointsBack reports whether the commondir c, in the linked worktree's
-// folder wt, names dir, the git folder it sits under. A link is never git's.
+// pointsBack reports whether the commondir c, in the linked worktree's folder
+// wt, names dir with no link on the way, which a command could later repoint.
 func pointsBack(c, wt, dir string) bool {
 	if info, err := os.Lstat(c); err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	to := readPointer(c)
-	if to == "" {
+	to, ok := readCommondir(c)
+	if !ok || to == "" {
 		return false
 	}
-	if !filepath.IsAbs(to) {
-		to = filepath.Join(wt, to)
+	raw := to
+	if filepath.IsAbs(to) {
+		if slices.Contains(strings.Split(filepath.ToSlash(to), "/"), "..") {
+			return false
+		}
+	} else {
+		// Only climbing out, as git's own "../.." does, through no link.
+		for _, e := range strings.Split(filepath.ToSlash(to), "/") {
+			if e != ".." && e != "" {
+				return false
+			}
+		}
+		if linkBelow(dir, wt) {
+			return false
+		}
+		raw = wt + string(filepath.Separator) + to
 	}
-	a, err1 := os.Stat(to)
-	b, err2 := os.Stat(dir)
-	return err1 == nil && err2 == nil && os.SameFile(a, b)
+	return filepath.Clean(raw) == filepath.Clean(dir) && RealPath(raw) == RealPath(dir)
+}
+
+// readCommondir is the commondir file at p as git reads it: all of it, less
+// trailing line ends; ok is false for one larger than any git writes.
+func readCommondir(p string) (string, bool) {
+	f, err := os.Open(p) // #nosec G304 -- a commondir in a git folder the walk found
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil || len(b) > 4096 {
+		return "", false
+	}
+	return strings.TrimRight(string(b), "\r\n"), true
 }
 
 // readPointer is the first line of a small pointer file, or "".
@@ -356,13 +404,27 @@ const (
 	EvGitWalkBounded = "sandbox.git_walk_bounded"
 )
 
-// gitGuard scans ws for what git reads there before a command on backend
-// starts. A planted commondir is taken out, and it, a link that cannot be
-// held or an overfull modules folder refuses the command; the walk's bound
-// is recorded once per sandbox, through noted. It returns the paths to bind
-// read-only, or why the command is not run.
-func gitGuard(ctx context.Context, ws, backend string, noted *atomic.Bool) ([]string, error) {
-	g := scanGit(ws)
+// gitMemory is what one sandbox keeps between scans: whether the walk's bound
+// was recorded, and the .git entries found, so a later flood cannot hide them.
+type gitMemory struct {
+	noted atomic.Bool
+	mu    sync.Mutex
+	known map[string][]string // by workspace
+}
+
+// gitGuard returns the paths in ws to bind read-only before a command starts,
+// or why the command is not run; a planted commondir is taken out first.
+func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string, error) {
+	mem.mu.Lock()
+	known := mem.known[ws]
+	mem.mu.Unlock()
+	g := scanGit(ws, known...)
+	mem.mu.Lock()
+	if mem.known == nil {
+		mem.known = map[string][]string{}
+	}
+	mem.known[ws] = g.gits
+	mem.mu.Unlock()
 	launch := LaunchOf(ctx)
 	record := func(ev string, pay map[string]any) {
 		if launch.Record != nil {
@@ -370,10 +432,10 @@ func gitGuard(ctx context.Context, ws, backend string, noted *atomic.Bool) ([]st
 			_ = launch.Record(ev, pay)
 		}
 	}
-	if g.walkBounded && noted.CompareAndSwap(false, true) {
+	if g.walkBounded && mem.noted.CompareAndSwap(false, true) {
 		record(EvGitWalkBounded, map[string]any{"bound": gitWalkFolders, "refused": false,
 			"reason": fmt.Sprintf("the workspace has more than %d folders within %d levels; a repository past them, "+
-				"other than the workspace's own and its submodules and linked worktrees, is not protected", gitWalkFolders, gitWalkDepth)})
+				"other than the workspace's own, its submodules and linked worktrees and those found earlier, is not protected", gitWalkFolders, gitWalkDepth)})
 	}
 	if g.modulesBounded {
 		why := fmt.Sprintf("sandbox: the command was not run: a git folder's modules hold more than %d entries, "+
@@ -393,11 +455,8 @@ func gitGuard(ctx context.Context, ws, backend string, noted *atomic.Bool) ([]st
 	return g.protected, nil
 }
 
-// takeOutGitPlanted moves each planted commondir to the quarantine, or
-// removes it, and says what became of each and why the command is not run;
-// no error when there was none. Bubblewrap and the container can bind only
-// what exists, so a commondir a command makes is found here, before the
-// next command runs.
+// takeOutGitPlanted quarantines or removes each planted commondir, which no
+// bind could have stopped, and says what became of each; nil when none.
 func takeOutGitPlanted(planted []string) ([]map[string]any, error) {
 	if len(planted) == 0 {
 		return nil, nil
@@ -434,10 +493,8 @@ func gitPattern(ws string) string {
 		regexQuote(ws), anyCase(".git"), anyCase("worktrees"), anyCase("modules"), strings.Join(names, "|"))
 }
 
-// gitFoldersPattern is the seatbelt regex for the folders that hold the
-// gitPointers, the folders themselves and not what they hold: seatbelt
-// checks a rename only at its two ends, so moving one would carry the
-// pointers out from under gitPattern and let a link take its place.
+// gitFoldersPattern matches the folders holding the gitPointers, not their
+// contents: seatbelt checks a rename only at its ends, so one moved would escape.
 func gitFoldersPattern(ws string) string {
 	folders := []string{anyCase("modules"), anyCase("modules") + "/[^/]+", anyCase("worktrees"), anyCase("worktrees") + "/[^/]+",
 		anyCase("info"), anyCase("objects"), anyCase("objects/info")}

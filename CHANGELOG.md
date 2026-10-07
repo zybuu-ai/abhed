@@ -24,24 +24,32 @@ All notable changes to Abhed are recorded here. The format follows
   cannot be moved, removed or made by a command either, since a rename moved
   one aside for a link to a planted copy; git inside the macOS sandbox can
   therefore no longer run `git worktree add` or `remove`, or `git submodule
-  add` or `update --init` for a submodule not yet checked out. Git refuses
-  an empty `commondir`, so on Linux a `commondir` made where git never
-  writes one, or a linked worktree's pointing anywhere but back to its
-  repository, is moved to `~/.abhed/quarantine` before the next command,
+  add` or `update --init` for a submodule not yet checked out. On every
+  tier, plain `git submodule update` on a submodule already checked out
+  fails inside the sandbox, as git rewrites the protected config, and on
+  Linux `git worktree remove` fails too. Git refuses an empty `commondir`,
+  so on Linux a `commondir` made where git never writes one, or a linked
+  worktree's naming anything but its repository's git folder (by `../..`
+  or its path, through no symbolic link), is moved to
+  `~/.abhed/quarantine` before the next command,
   which is not run and is recorded as `sandbox.git_planted`; until then, git
   run outside Abhed would follow it. On Linux, a folder of 20,000 entries
   sorting before `.git` stopped the walk for git folders before it reached
   the repository's own, leaving all of them writable: the workspace's own
   git folder, its submodules' and linked worktrees' are now found before the
-  walk, which counts folders only and looks at each folder's `.git` first;
-  reaching its bound is recorded as `sandbox.git_walk_bounded`. A linked
+  walk, which counts folders only and looks at each folder's `.git` first,
+  and repositories found earlier in a session stay protected after a
+  command floods the workspace; reaching the bound is recorded as
+  `sandbox.git_walk_bounded`. A linked
   `.git/hooks` made every bubblewrap command fail to start with a mount
   error: it now refuses each command, saying to replace the link, and on
   macOS is held where it leads. Binding holds only what exists when a
   command starts, so on Linux a repository a command makes and adds as a
   submodule entry in that same command, or a `.git/modules/<name>` it makes
-  for a later `git submodule update --init`, is not protected; see
-  [Permissions](docs/guide/04-permissions.md). Abhed's own git on the host
+  for a later `git submodule update --init`, is not protected. On macOS a
+  command can likewise build a repository in the temp area and move it
+  into the workspace, since Seatbelt checks a rename only at its two ends;
+  see [Permissions](docs/guide/04-permissions.md). Abhed's own git on the host
   now names the repository's common git folder to git and refuses to run
   while a `commondir` points anywhere else, since git reads refs through
   that file regardless, or while a `.git` is present but git cannot say

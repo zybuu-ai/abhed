@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -37,9 +36,8 @@ type Process struct {
 	nsOnce sync.Once
 	nsErr  string
 
-	// gitNoted is set once the walk for git folders has been recorded
-	// stopping at its bound, so a large workspace is noted once.
-	gitNoted atomic.Bool
+	// git is what the look for git folders keeps between commands.
+	git gitMemory
 }
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
@@ -420,7 +418,7 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		// pattern. A commondir no bind could have stopped is taken out first.
 		if s.policy.ProtectGit {
 			for _, ws := range s.workspaces() {
-				found, err := gitGuard(ctx, ws, s.backend, &s.gitNoted)
+				found, err := gitGuard(ctx, ws, s.backend, &s.git)
 				if err != nil {
 					return &exec.Cmd{Err: err}
 				}

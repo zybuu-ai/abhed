@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 )
 
@@ -290,6 +289,116 @@ func TestWorktreeCommondirPointingElsewhereIsPlanted(t *testing.T) {
 	}
 }
 
+// A commondir reaching the repository through a link counts as planted: the
+// link could be pointed at another git folder once the commondir is bound.
+func TestWorktreeCommondirThroughALinkIsPlanted(t *testing.T) {
+	ws := workspace(t)
+	gitTree(t, ws, "x")
+	if err := os.Symlink(".", filepath.Join(ws, ".git", "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".git", filepath.Join(ws, "gl")); err != nil {
+		t.Fatal(err)
+	}
+	// Git reads the whole file, so a second line names a folder of its own.
+	if err := os.MkdirAll(filepath.Join(ws, ".git", "worktrees", "..\nx"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	c := filepath.Join(ws, ".git", "worktrees", "w", "commondir")
+	for _, to := range []string{"../../lnk\n", filepath.Join(ws, "gl") + "\n", "../..\nx\n", "../../../.git\n"} {
+		if err := os.WriteFile(c, []byte(to), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if g := scanGit(ws); len(g.planted) != 1 || g.planted[0] != c {
+			t.Errorf("commondir %q not planted: %v", to, g.planted)
+		}
+	}
+	for _, to := range []string{"../..\n", "../../\n", filepath.Join(ws, ".git") + "\n"} {
+		if err := os.WriteFile(c, []byte(to), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if g := scanGit(ws); len(g.planted) != 0 {
+			t.Errorf("commondir %q counted as planted: %v", to, g.planted)
+		}
+	}
+}
+
+// The commondir `git worktree add` writes is git's own.
+func TestGitWorktreeAddCommondirIsNotPlanted(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", ws},
+		{"-C", ws, "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-q", "--allow-empty", "-m", "one"},
+		{"-C", ws, "worktree", "add", "-q", "-b", "w", filepath.Join(ws, "wt")},
+	} {
+		if out, err := exec.Command(git, args...).CombinedOutput(); err != nil { // #nosec G204 -- test fixture
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	c := filepath.Join(ws, ".git", "worktrees", "wt", "commondir")
+	if !exists(c) {
+		t.Fatal("git wrote no commondir")
+	}
+	g := scanGit(ws)
+	if len(g.planted) != 0 {
+		t.Fatalf("git's own commondir counted as planted: %v", g.planted)
+	}
+	if got := relSet(ws, g.protected); !got[".git/worktrees/wt/commondir"] || !got["wt/.git"] {
+		t.Errorf("the linked worktree is not protected: %v", got)
+	}
+}
+
+// A nested repository found by an earlier scan stays protected after a
+// command floods the workspace with folders sorting before it.
+func TestGitGuardKeepsRepositoriesFoundEarlier(t *testing.T) {
+	old := gitWalkFolders
+	gitWalkFolders = 20
+	t.Cleanup(func() { gitWalkFolders = old })
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{
+		".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n",
+		"zz/.git/HEAD": "ref: refs/heads/main\n", "zz/.git/config": "[core]\n",
+	})
+	var rec recorded
+	var mem gitMemory
+	found, err := gitGuard(rec.ctx(), ws, "bwrap", &mem)
+	if err != nil || !relSet(ws, found)["zz/.git/config"] {
+		t.Fatalf("the nested repository was not found: %v %v", err, found)
+	}
+	for i := range 3 * gitWalkFolders {
+		if err := os.MkdirAll(filepath.Join(ws, "a"+strconv.Itoa(i)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if relSet(ws, scanGit(ws).protected)["zz/.git/config"] {
+		t.Fatal("the flood did not hide the nested repository from a fresh walk")
+	}
+	found, err = gitGuard(rec.ctx(), ws, "bwrap", &mem)
+	if err != nil || !relSet(ws, found)["zz/.git/config"] {
+		t.Fatalf("the flood unprotected a repository found earlier: %v %v", err, relSet(ws, found))
+	}
+	if got := rec.of(EvGitWalkBounded); len(got) != 1 {
+		t.Errorf("the bound was not recorded: %v", rec.events)
+	}
+	// One whose folder became a link is not followed out of the workspace.
+	out := t.TempDir()
+	writeFiles(t, out, map[string]string{".git/HEAD": "ref: refs/heads/main\n"})
+	if err := os.RemoveAll(filepath.Join(ws, "zz")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(out, filepath.Join(ws, "zz")); err != nil {
+		t.Fatal(err)
+	}
+	if found, err = gitGuard(rec.ctx(), ws, "bwrap", &mem); err != nil || exists(filepath.Join(out, ".git", "config")) {
+		t.Fatalf("followed a link out of the workspace: %v %v", err, found)
+	}
+}
+
 // recorded collects the events a sandbox writes to a call's record.
 type recorded struct{ events []map[string]any }
 
@@ -350,9 +459,9 @@ func TestGitWalkBoundIsRecorded(t *testing.T) {
 		}
 	}
 	var rec recorded
-	var noted atomic.Bool
+	var mem gitMemory
 	for range 2 {
-		if _, err := gitGuard(rec.ctx(), ws, "bwrap", &noted); err != nil {
+		if _, err := gitGuard(rec.ctx(), ws, "bwrap", &mem); err != nil {
 			t.Fatalf("refused at the walk's bound: %v", err)
 		}
 	}
@@ -364,7 +473,7 @@ func TestGitWalkBoundIsRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := gitGuard(rec.ctx(), ws, "bwrap", &noted); err == nil || !strings.Contains(err.Error(), "modules") {
+	if _, err := gitGuard(rec.ctx(), ws, "bwrap", &mem); err == nil || !strings.Contains(err.Error(), "modules") {
 		t.Fatalf("ran with modules past their bound: %v", err)
 	}
 	if got := rec.of(EvGitWalkBounded); len(got) != 2 || got[1]["refused"] != true {
@@ -381,8 +490,8 @@ func TestLinkedGitHooksRefuseTheCommand(t *testing.T) {
 	if err := os.Symlink("../hooks-real", filepath.Join(ws, ".git", "hooks")); err != nil {
 		t.Fatal(err)
 	}
-	var noted atomic.Bool
-	if _, err := gitGuard(context.Background(), ws, "bwrap", &noted); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+	var mem gitMemory
+	if _, err := gitGuard(context.Background(), ws, "bwrap", &mem); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("a linked hooks folder did not refuse: %v", err)
 	}
 	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
