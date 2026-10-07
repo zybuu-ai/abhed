@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -35,12 +36,18 @@ func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []st
 	if len(argv) == 0 {
 		return nil, errors.New("sandbox: no command")
 	}
+	if s.backend == "bwrap" {
+		if err := serverRootRefusal(os.Getuid(), os.Geteuid()); err != nil {
+			return nil, err
+		}
+	}
 	key := ServerKey(name)
-	e, err := s.egressFor(WithLaunch(ctx, Launch{CallID: key, Session: key, Record: record}))
+	// The server's own credential, revoked when ctx ends.
+	e, call, err := s.egressFor(WithLaunch(ctx, Launch{CallID: key, Session: key, Record: record}))
 	if err != nil {
 		return nil, fmt.Errorf("the egress proxy is not available: %w", err)
 	}
-	env = append(serverEnv(env), e.proxy.Env(key)...)
+	env = append(serverEnv(env), call.Env()...)
 	var cmd *exec.Cmd
 	switch s.backend {
 	case "sandbox-exec":
@@ -52,7 +59,14 @@ func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []st
 		}
 		args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid", "--dev-bind", "/", "/", "--proc", "/proc"},
 			serverHides(e.dir, e.exe)...)
-		args = append(args, e.exe, egress.RelayArg, filepath.Join(e.dir, "proxy.sock"), e.proxy.Addr().String(), "--")
+		relay := []string{e.exe, egress.RelayArg, filepath.Join(e.dir, "proxy.sock"), e.proxy.Addr().String()}
+		if e.dns {
+			// The session's resolver, as commands get it; its socket is in the folder bound back.
+			args = append(args, "--ro-bind", filepath.Join(e.dir, "resolv.conf"), "/etc/resolv.conf")
+			args = append(args, relayCaps()...)
+			relay = append(relay, egress.DNSArg, filepath.Join(e.dir, "dns.sock"), strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()))
+		}
+		args = append(append(args, relay...), "--")
 		cmd = exec.CommandContext(ctx, "bwrap", append(args, argv...)...) // #nosec G204 -- the configured server, confined
 	default:
 		return nil, fmt.Errorf("sandbox: the %s backend cannot confine a server's network", s.backend)
@@ -133,4 +147,14 @@ func serverHides(sockDir, exe string) []string {
 		}
 	}
 	return append(args, "--bind", sockDir, sockDir, "--ro-bind", exe, exe)
+}
+
+// serverRootRefusal refuses a stdio server under bubblewrap when Abhed runs
+// as root: the server would keep root's capabilities over the host's files.
+func serverRootRefusal(uid, euid int) error {
+	if uid == 0 || euid == 0 {
+		return errors.New("sandbox: Abhed runs as root, and a stdio MCP server under bubblewrap would keep root's " +
+			"capabilities and a writable host filesystem, so it is not started; run Abhed as an ordinary user")
+	}
+	return nil
 }

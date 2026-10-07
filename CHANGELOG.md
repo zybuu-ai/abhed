@@ -11,7 +11,8 @@ All notable changes to Abhed are recorded here. The format follows
 - An egress allowlist for the agent's shell commands, between the network
   off and the network open. With `sandbox.network: "allowlist"` in the
   managed configuration, each session gets a proxy on loopback that commands
-  reach through `HTTP_PROXY` and `HTTPS_PROXY`, with a per-session token. The
+  reach through `HTTP_PROXY` and `HTTPS_PROXY`, each command with a token of
+  its own call's. The
   `egress` rules (host, exact or `*.example.com`; ports; methods and paths for
   plain HTTP; allow or deny, deny winning) decide each CONNECT by host and
   port and each plain request by method and path too; the default is deny,
@@ -25,10 +26,12 @@ All notable changes to Abhed are recorded here. The format follows
   namespace and reaches the proxy through a relay over a unix socket, and on
   macOS Seatbelt allows only the proxy's loopback port. The fence, container,
   vm and none tiers refuse the setting rather than open the network.
-  Under `abhed serve` each session has its own proxy and token, and the
-  workbench terminal and `!` commands run as the session's own calls; a
-  call id a session did not launch is recorded in its own record as
-  `unattributed`, never in another session's, and a session's proxy stops
+  Under `abhed serve` each session has its own proxy, and the workbench
+  terminal and `!` commands run as the session's own calls. The proxy and
+  the resolver take the call id from the call's own token, never from what
+  the client sends, so a command cannot put its traffic under another call;
+  the token is revoked when the call ends, and a process left running after
+  its command is refused, recorded under the ended call. A session's proxy stops
   when it is deleted or taken by another node, at shutdown, and after 30
   seconds with no command in flight, reopening with the next command. The
   Studio terminal, in lines and interactive mode, runs as the session's own
@@ -59,13 +62,29 @@ All notable changes to Abhed are recorded here. The format follows
   confined to an egress proxy of their own (Seatbelt, without
   LaunchServices, on macOS; network and process namespaces, with the
   session bus, `/run/user`, container sockets and other sessions' egress
-  sockets hidden, on Linux) and are not started where they cannot be. This
+  sockets hidden, on Linux, with the egress resolver and a credential of
+  their own; not as root) and are not started where they cannot be. This
   confines a server's direct network, not a hostile server: its files are
   not confined, so it can plant a LaunchAgent, systemd unit or rc file, and
   on Linux it can reach AF_UNIX sockets in folders left visible. Outside
   the allowlist nothing changes. See
   [Network policy](docs/guide/21-network-policy.md) and
   [MCP](docs/guide/08-mcp.md).
+
+- Name resolution under the egress allowlist is policy-controlled and
+  recorded. On Linux each command's network namespace gets the session's
+  resolver at `127.0.0.1:53`, through a generated `resolv.conf` bound into
+  the sandbox (the host's file is not touched). It answers only names an
+  allow rule could match, with an address from `198.18.0.0/15` held for the
+  session and a 30-second TTL; it never forwards a query, and any other name
+  gets NXDOMAIN and an `egress.decision` of kind `dns`, rate-limited like
+  other denials. Each lookup carries the session's proxy credential, so one
+  without it is refused, and the command holds no capability, as root too. A `CONNECT` or plain request to one of those addresses is
+  judged on the name it stands for, and the proxy resolves that name once and
+  dials the address it checked, as before. On macOS commands resolve nothing
+  themselves: Seatbelt refuses raw DNS and the system resolver, and the proxy
+  resolves names. A wildcard allow rule logs a one-time warning that it lets
+  a command carry data in DNS labels under its domain.
 
 ### Changed
 

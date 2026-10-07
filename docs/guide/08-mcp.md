@@ -55,7 +55,10 @@ With `sandbox.network: "allowlist"` (see
   behind a relay to that proxy, with the session bus, `/run/user`, the
   container engines' sockets and a private temporary folder hidden, and
   without `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK` and similar
-  variables. It is given `HTTP_PROXY` and `HTTPS_PROXY` for its proxy.
+  variables. It is given `HTTP_PROXY` and `HTTPS_PROXY` for its proxy,
+  with a credential of its own, and on Linux the session resolver for
+  names. Under bubblewrap a stdio server is not started when Abhed runs as
+  root.
   On Windows, and on any surface with no process-tier sandbox to confine
   it, a stdio server is not started under the allowlist; the warning at
   start-up and `/mcp` give the reason.

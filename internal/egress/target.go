@@ -28,6 +28,21 @@ func (t Target) Request() Request {
 	return Request{Host: t.Host, Port: t.Port, Tunnel: t.Tunnel, Method: t.Method, Path: t.Path}
 }
 
+// WithHost is t aimed at host instead, a canonical name, with a plain
+// request's URL rewritten so the upstream sees that name.
+func (t Target) WithHost(host string) Target {
+	t.Host = host
+	if t.URL != nil {
+		u := *t.URL
+		u.Host = net.JoinHostPort(host, strconv.Itoa(int(t.Port)))
+		if t.Port == 80 {
+			u.Host = host
+		}
+		t.URL = &u
+	}
+	return t
+}
+
 // Authority is host:port, with an IPv6 address in brackets.
 func (t Target) Authority() string {
 	return net.JoinHostPort(t.Host, strconv.Itoa(int(t.Port)))

@@ -38,6 +38,11 @@ type Process struct {
 	nsOnce sync.Once
 	nsErr  string
 
+	// Whether bwrap may grant the relay the capability to bind the
+	// resolver's port; a setuid bwrap refuses it to a user. Probed once.
+	dnsOnce sync.Once
+	dnsOK   bool
+
 	// egress is each session's proxy under sandbox.network allowlist.
 	egress egressSessions
 }

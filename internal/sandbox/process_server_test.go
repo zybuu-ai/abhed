@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -102,5 +104,28 @@ func TestServerProfileDeniesLaunchServices(t *testing.T) {
 	env := serverEnv([]string{"PATH=/bin", "DBUS_SESSION_BUS_ADDRESS=x", "SSH_AUTH_SOCK=y", "https_proxy=z", "TOKEN=t"})
 	if strings.Join(env, " ") != "PATH=/bin TOKEN=t" {
 		t.Errorf("server env %v", env)
+	}
+}
+
+// Under bubblewrap a root-run Abhed starts no stdio server: it would keep
+// root's capabilities over the host.
+func TestServerRefusedAsRoot(t *testing.T) {
+	for _, ids := range [][2]int{{0, 0}, {1000, 0}, {0, 1000}} {
+		if err := serverRootRefusal(ids[0], ids[1]); err == nil || !strings.Contains(err.Error(), "root") {
+			t.Errorf("uid %d euid %d: %v", ids[0], ids[1], err)
+		}
+	}
+	if err := serverRootRefusal(1000, 1000); err != nil {
+		t.Errorf("an ordinary user was refused: %v", err)
+	}
+	if os.Geteuid() == 0 && runtime.GOOS == "linux" {
+		p := DefaultPolicy(t.TempDir())
+		p.Egress = egressPolicy(t, egress.Config{})
+		s := NewProcess(p)
+		if s.Backend() == "bwrap" {
+			if _, err := s.ServerCommand(context.Background(), "x", []string{"true"}, nil, nil); err == nil {
+				t.Fatal("a stdio server was given a command as root")
+			}
+		}
 	}
 }

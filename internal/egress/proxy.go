@@ -3,17 +3,12 @@ package egress
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +30,8 @@ type Event struct {
 	Reason   string
 	BytesIn  int64
 	BytesOut int64
+	// Synthetic is the resolver's address the command connected to, which named Host.
+	Synthetic string
 	// Repeats, on a summary, is how many decisions like this one were not
 	// recorded one by one in the interval it covers.
 	Repeats int64
@@ -58,6 +55,9 @@ func (e Event) Payload() map[string]any {
 	}
 	if e.Repeats > 0 {
 		m["repeats"] = e.Repeats
+	}
+	if e.Synthetic != "" {
+		m["synthetic"] = e.Synthetic
 	}
 	return m
 }
@@ -99,12 +99,14 @@ const (
 
 // Proxy is one session's forward proxy.
 type Proxy struct {
-	opts  Options
-	token string
-	tcp   net.Listener
-	addr  netip.AddrPort
+	opts Options
+	tcp  net.Listener
+	addr netip.AddrPort
 
-	mu        sync.Mutex
+	mu sync.Mutex
+	// creds are the calls' credentials, by token hash; ended, the latest maxEnded kept, in order.
+	creds     map[[32]byte]*credential
+	ended     [][32]byte
 	listeners []net.Listener
 	conns     map[net.Conn]struct{}
 	closed    bool
@@ -113,6 +115,9 @@ type Proxy struct {
 	wg    sync.WaitGroup
 	once  sync.Once
 	limit *limiter
+	// synth is the resolver's address pool, once ListenDNS has started it.
+	synth    atomic.Pointer[synthPool]
+	dnsSlots chan struct{}
 	// served counts connections handled, for tests and doctor.
 	served atomic.Int64
 }
@@ -128,20 +133,16 @@ func Start(opts Options) (*Proxy, error) {
 	if opts.MaxConns <= 0 {
 		opts.MaxConns = maxConns
 	}
-	var b [24]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, err
-	}
 	lns, err := listenLoopback(opts.IPv6Loopback)
 	if err != nil {
 		return nil, err
 	}
-	p := &Proxy{opts: opts, token: hex.EncodeToString(b[:]), tcp: lns[0], conns: map[net.Conn]struct{}{},
-		slots: make(chan struct{}, opts.MaxConns)}
+	p := &Proxy{opts: opts, tcp: lns[0], conns: map[net.Conn]struct{}{},
+		slots: make(chan struct{}, opts.MaxConns), dnsSlots: make(chan struct{}, maxDNSInFlight)}
 	p.limit = newLimiter(opts.Burst, opts.AllowBudget, opts.Interval, p.emit)
 	p.addr = lns[0].Addr().(*net.TCPAddr).AddrPort()
 	for _, ln := range lns {
-		p.serve(ln)
+		p.serve(ln, p.handle)
 	}
 	return p, nil
 }
@@ -189,11 +190,11 @@ func (p *Proxy) ListenUnix(path string) error {
 	if err != nil {
 		return err
 	}
-	p.serve(ln)
+	p.serve(ln, p.handle)
 	return nil
 }
 
-func (p *Proxy) serve(ln net.Listener) {
+func (p *Proxy) serve(ln net.Listener, handle func(net.Conn)) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -229,7 +230,7 @@ func (p *Proxy) serve(ln net.Listener) {
 				defer func() { <-p.slots }()
 				defer p.untrack(c)
 				p.served.Add(1)
-				p.handle(c)
+				handle(c)
 			}()
 		}
 	}()
@@ -254,32 +255,6 @@ func (p *Proxy) untrack(c net.Conn) {
 
 // Addr is the loopback address the proxy listens on.
 func (p *Proxy) Addr() netip.AddrPort { return p.addr }
-
-// Token is the session's proxy password.
-func (p *Proxy) Token() string { return p.token }
-
-// URL is the proxy URL a command is given: the call id as the user name,
-// the session token as the password.
-func (p *Proxy) URL(callID string) string {
-	if callID == "" {
-		callID = "abhed"
-	}
-	u := url.URL{Scheme: "http", User: url.UserPassword(callID, p.token), Host: p.addr.String()}
-	return u.String()
-}
-
-// Env is the environment that sends a command's HTTP clients through the
-// proxy, in both cases since clients read one or the other. Loopback is
-// left direct: on the sandbox tiers it is the sandbox's own.
-func (p *Proxy) Env(callID string) []string {
-	u := p.URL(callID)
-	const noProxy = "localhost,127.0.0.1,::1"
-	return []string{
-		"HTTP_PROXY=" + u, "http_proxy=" + u,
-		"HTTPS_PROXY=" + u, "https_proxy=" + u,
-		"NO_PROXY=" + noProxy, "no_proxy=" + noProxy,
-	}
-}
 
 // Served is how many connections the proxy has handled.
 func (p *Proxy) Served() int64 { return p.served.Load() }
@@ -335,13 +310,20 @@ func (p *Proxy) handle(raw net.Conn) {
 		return
 	}
 	_ = c.SetReadDeadline(time.Time{})
-	callID, ok := p.authorize(req.Header.Get("Proxy-Authorization"))
-	if !ok {
-		p.record(Event{Kind: "auth", Decision: Deny, Rule: "auth", Reason: "missing or wrong proxy credentials"})
-		writeStatus(c, http.StatusProxyAuthRequired, "abhed egress: proxy credentials required\n",
+	// The request's life: ending its call cancels the dial and closes the upstream.
+	life, endLife := context.WithCancel(context.Background())
+	defer endLife()
+	callID, key, err := p.authorize(req.Header.Get("Proxy-Authorization"))
+	if err == nil && !p.bind(key, raw, endLife) {
+		err = errCallEnded
+	}
+	if err != nil {
+		p.record(Event{CallID: callID, Kind: "auth", Decision: Deny, Rule: "auth", Reason: err.Error()})
+		writeStatus(c, http.StatusProxyAuthRequired, "abhed egress: "+err.Error()+"\n",
 			http.Header{"Proxy-Authenticate": {`Basic realm="abhed"`}})
 		return
 	}
+	defer p.unbind(key, raw)
 	t, err := ParseTarget(req.Method, req.RequestURI)
 	if err != nil {
 		p.record(Event{CallID: callID, Kind: kindOf(req.Method), Decision: Deny, Rule: "parse", Reason: err.Error()})
@@ -349,6 +331,22 @@ func (p *Proxy) handle(raw net.Conn) {
 		return
 	}
 	ev := Event{CallID: callID, Kind: kindOf(t.Method), Host: t.Host, Port: t.Port}
+	// A resolver's address stands for its name: judged and dialled as that name.
+	if pool := p.synth.Load(); pool != nil {
+		if a, err := netip.ParseAddr(t.Host); err == nil && SynthPrefix.Contains(a.Unmap()) {
+			a = a.Unmap()
+			name, ok := pool.lookup(a)
+			if !ok {
+				ev.Decision, ev.Rule = Deny, "dns"
+				ev.Reason = a.String() + " was not given out by this session's resolver, or its mapping has expired"
+				p.record(ev)
+				writeStatus(c, http.StatusForbidden, "abhed egress: "+ev.Reason+"\n", nil)
+				return
+			}
+			t = t.WithHost(name)
+			ev.Host, ev.Synthetic = name, a.String()
+		}
+	}
 	if !t.Tunnel {
 		ev.Method, ev.Path = t.Method, t.Path
 	}
@@ -359,10 +357,16 @@ func (p *Proxy) handle(raw net.Conn) {
 		writeStatus(c, http.StatusForbidden, fmt.Sprintf("abhed egress: %s refused by %s: %s\n", t.Authority(), v.Rule, v.Reason), nil)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), p.opts.DialTimeout)
+	ctx, cancel := context.WithTimeout(life, p.opts.DialTimeout)
 	up, ip, err := p.dial(ctx, t, v)
 	cancel()
 	ev.IP = ip
+	if err != nil && life.Err() != nil {
+		ev.Decision, ev.Reason = Deny, errCallEnded.Error()
+		p.record(ev)
+		writeStatus(c, http.StatusProxyAuthRequired, "abhed egress: "+errCallEnded.Error()+"\n", nil)
+		return
+	}
 	if err != nil {
 		var ref *refusal
 		if errors.As(err, &ref) {
@@ -377,6 +381,8 @@ func (p *Proxy) handle(raw net.Conn) {
 		return
 	}
 	cu := &counted{Conn: up, act: act}
+	stopUp := context.AfterFunc(life, func() { _ = cu.Close() })
+	defer stopUp()
 	if !p.track(cu) {
 		_ = cu.Close()
 		return
@@ -408,30 +414,6 @@ func kindOf(method string) string {
 		return "connect"
 	}
 	return "http"
-}
-
-// authorize checks the Basic credentials: any user name, which is the call
-// id the launcher set, and the session token as the password.
-func (p *Proxy) authorize(h string) (string, bool) {
-	scheme, enc, ok := strings.Cut(h, " ")
-	if !ok || !strings.EqualFold(scheme, "Basic") {
-		return "", false
-	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(enc))
-	if err != nil {
-		return "", false
-	}
-	user, pass, ok := strings.Cut(string(raw), ":")
-	if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(p.token)) != 1 {
-		return "", false
-	}
-	if u, err := url.PathUnescape(user); err == nil {
-		user = u
-	}
-	if len(user) > 128 || strings.ContainsFunc(user, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		user = "invalid"
-	}
-	return user, true
 }
 
 // refusal is an address the policy does not reach, kept apart from a

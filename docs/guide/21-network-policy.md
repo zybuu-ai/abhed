@@ -43,7 +43,11 @@ Each rule has:
 - `host`: an exact name or address, or `*.example.com` for any name under
   `example.com`. The wildcard matches on a label boundary: `a.example.com` and
   `a.b.example.com`, never `example.com` itself or `example.com.evil.net`. A
-  wildcard needs at least two labels after `*.`, so `*.com` is refused.
+  wildcard needs at least two labels after `*.`, so `*.com` is refused. An
+  allow rule with a wildcard logs a warning once: a command can put data in
+  the labels of names under that domain (`<data>.example.com`), and that
+  domain's name servers see them when the proxy resolves the name. Prefer
+  exact names where the domain is not yours.
 - `ports`: the ports the rule covers. Left out, it covers 80 and 443.
 - `methods` and `paths`: narrow the rule to plain HTTP requests. A path is
   exact (`/health`), or ends in `/*` for itself and everything below it
@@ -92,7 +96,7 @@ a deny-list fails open.
 ## How a decision is made
 
 Each session gets its own proxy, started with its first command, listening on
-a random loopback port, with its own token. A session's subagents share its
+a random loopback port. A session's subagents share its
 proxy. Under `abhed serve`, every session of the server has its own: the
 agent's commands, the workbench terminal and `!` commands each run as one of
 the session's calls, so their decisions go to that session's record and no
@@ -100,15 +104,45 @@ other. The proxy stops, and its socket folder is removed, when the session
 leaves the server (it is deleted, or another node takes it), when the
 server shuts down, and when the session has had no command in flight for 30
 seconds (a workbench terminal left open counts as one); the next command
-starts a new proxy with a new token. A process a command left running
-after it ended loses its way out when the proxy stops, so run a server
-the agent needs with `run_in_background`, which keeps it in flight. On the
-command line the proxies stop when Abhed exits. A command is given
-`HTTP_PROXY`, `HTTPS_PROXY` and their lower-case forms, pointing at it with the
-call id as the user name and a per-session token as the password, and
-`NO_PROXY=localhost,127.0.0.1,::1`, so a server the command starts inside its
-own sandbox is reached directly. A request without the token is answered with
-407.
+starts a new proxy. On the command line the proxies stop when Abhed exits.
+A command is given `HTTP_PROXY`, `HTTPS_PROXY` and their lower-case forms,
+pointing at it with the call id as the user name and a token of its own as
+the password, and `NO_PROXY=localhost,127.0.0.1,::1`, so a server the
+command starts inside its own sandbox is reached directly. A request without
+a valid token is answered with 407.
+
+### Per-call credentials
+
+Each command gets a token issued for its call alone, and the proxy and the
+resolver take the call id from the token, never from the user name or
+anything else the client sends. A command that writes another call's id
+into its proxy URL is still recorded under its own call. The token is
+revoked when the command's call ends:
+
+- A process a command left running after the command ended is refused from
+  then on (407, or REFUSED for a lookup), and the refusal is recorded under
+  the ended call with rule `auth`. Requests it made with the token while the
+  call was live are stopped when the call ends: a connection still being
+  dialled is cancelled, and both sides of an open one are closed. Bytes
+  already sent upstream before then cannot be recalled. On Linux the
+  sandbox's PID namespace usually ends such a process first.
+- Run a server the agent needs with `run_in_background`, or move a command
+  to the background with Ctrl-B: the call stays live while it runs, so its
+  token does too, and it is revoked when the process exits.
+- A workbench terminal and each `!` command are calls of their own, with
+  their own tokens, live while they run.
+- Any launch bound to a session gets a token the same way, an MCP server
+  started as `mcp/<name>` included, for as long as it runs.
+
+The proxy remembers the last 1,024 ended tokens, so their late traffic is
+recorded under the right call; an older one, or one never issued, is
+refused with no call id. A token is given only in its command's environment,
+though a command can pass it on: one written to the workspace and read by a
+concurrent call makes that call's traffic recorded as the first call's, until
+the first call ends.
+On Linux each command has its own PID namespace, so no command can see
+another's environment. On macOS, `ps` is refused inside the sandbox and the
+system does not return another process's environment, so the same holds.
 
 - **HTTPS** goes through `CONNECT` and is decided by host and port only: the
   proxy does not see inside TLS. So a rule narrowed by `methods` or `paths`
@@ -164,6 +198,73 @@ whole. The proxy's own port is never reachable through it.
 Audit mode does not lift the address check: a request that resolves to an
 internal address no allowing rule names is refused even in audit mode.
 
+## Names (DNS)
+
+Commands under the allowlist never send a DNS query to the network.
+
+On **Linux** each command's network namespace has the session's resolver
+on `127.0.0.1:53`, served by the relay and answered by the session's proxy
+over a unix socket, the same way as the proxy itself. A generated
+`resolv.conf` naming only that resolver is bound over `/etc/resolv.conf`
+inside the sandbox; the host's file is not touched. The resolver:
+
+- answers a name only if an allow rule's host could match it, on any port
+  (or any name, with `default: allow`). Ports, methods, paths and deny rules
+  are left to the proxy, which sees the request;
+- answers `A` with an address from `198.18.0.0/15` (benchmarking space,
+  never routed), one per name, held for the session, with a 30-second TTL.
+  An address stays mapped for five minutes after its name was last
+  answered, so a client that caches past the TTL still connects. After
+  that the address may be given to another name; a client still holding
+  it then reaches that name, judged as that name. The pool holds 131,070
+  addresses per session; when every one is mapped, a new name gets
+  SERVFAIL, recorded, until a mapping expires; `AAAA` and
+  other types of an allowed name get no data, so clients use the `A` answer;
+- answers every other name with NXDOMAIN (REFUSED for a class other than
+  IN) and records it as an `egress.decision` with `kind: "dns"`;
+- answers `localhost` with loopback, since no `/etc/hosts` is bound;
+- never forwards a query anywhere, so a lookup alone carries nothing out;
+- takes each lookup with the session's proxy credential, which the relay
+  reads from the command's `HTTP_PROXY`, so it is recorded against the call.
+  A command that reaches the resolver's socket itself without the
+  credential is refused and recorded with rule `auth`. At most 64 lookups
+  are served at once; one more is closed unread and recorded with rule `cap`.
+
+The address the command gets is only a token for the name. A `CONNECT` or
+plain request to it is judged on the name it stands for, and the proxy
+resolves that name itself, checks every address, and dials the one it
+checked, as for any request, so the rebinding protection below is the same.
+The request to the origin carries the name in its `Host` header. An address
+in `198.18.0.0/15` the resolver did not give out, or whose mapping has
+expired, is refused with rule `dns`. Each session's proxy has its own
+mapping, so a new proxy (after the session was quiet, say) starts afresh.
+
+Plain UDP and TCP other than the resolver and the proxy still have no
+route, so QUIC and DNS to any other server fail. To bind port 53 the relay
+starts as root of the sandbox's user namespace with
+`CAP_NET_BIND_SERVICE` (and `CAP_SETFCAP`, to map ids), makes itself
+undumpable, runs the command in a user namespace of its own as the user
+Abhed runs as, and drops every capability; the command holds none. When
+Abhed runs as root there is no nesting: bwrap drops every capability but
+`CAP_NET_BIND_SERVICE` and `CAP_SETPCAP`, and the relay empties all its
+sets, the bounding set included, before the command starts, so a root
+command gains none at exec. Before using the resolver Abhed checks once
+that a command started this way runs as its user with no capability. Where
+that fails (bwrap installed setuid, no private `/proc`, nested user
+namespaces refused, or a build with cgo, where capabilities cannot be
+dropped on every thread), Abhed logs a warning once and commands resolve
+nothing, as before; the proxy still resolves the names it carries.
+
+On **macOS** Seatbelt cannot redirect DNS, so there is no in-sandbox
+resolver and no `dns` record. The profile already refuses both ways a
+command could resolve: a UDP or TCP socket to any DNS server, and the
+system resolver's socket (`/var/run/mDNSResponder`, which `getaddrinfo`
+uses), so lookups fail inside the sandbox. Commands reach hosts by name
+through the proxy variables, and the proxy resolves them. A client that
+resolves a name before using the proxy fails there; one that hands the
+proxy the name works. Lookups a command attempts are refused by the sandbox,
+not recorded.
+
 ## The record
 
 Every decision is written to the session's record as an `egress.decision`
@@ -172,13 +273,13 @@ event, once per connection (CONNECT) or request (plain HTTP), when it ends:
 | Field | |
 |---|---|
 | `call_id` | the tool call whose command made it, from the proxy credentials Abhed set |
-| `kind` | `connect`, `http`, `auth` for a request without the token, or `request` for one refused before it was read; for Abhed's own requests `model`, `web_fetch`, `web_search` or `mcp` |
-| `host`, `port`, `ip` | the target, and the address dialled |
+| `kind` | `connect`, `http`, `dns` for a name lookup (Linux), `auth` for a request without a valid token, or `request` for one refused before it was read; for Abhed's own requests `model`, `web_fetch`, `web_search` or `mcp` |
+| `host`, `port`, `ip` | the target, and the address dialled; for `dns`, the name, port 0, and the synthetic address given |
+| `synthetic` | the resolver's address the command connected to, when it stood for `host` |
 | `method`, `path` | plain HTTP only; the path without its query, left out with `record_paths: false` |
 | `decision` | `allow`, `deny` or `would_deny` |
-| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`; for Abhed's own requests also `model`, `policy`, or `web_fetch` (its own address check); and why |
+| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`, `dns` (a lookup refused before any rule, or a synthetic address not given out); for Abhed's own requests also `model`, `policy`, or `web_fetch` (its own address check); and why. A `dns` lookup can also be refused with `auth` or `cap` |
 | `bytes_in`, `bytes_out` | bytes received from and sent to the destination |
-| `unattributed` | `true` when the call id is not one this session launched |
 | `repeats` | on a summary, how many denials like it were counted rather than recorded |
 | `session` | Abhed's own requests and stdio MCP servers: the session's id |
 | `mcp_server` | a stdio MCP server's decisions: the server's name |
@@ -186,16 +287,16 @@ event, once per connection (CONNECT) or request (plain HTTP), when it ends:
 Bodies, header values, query strings and credentials are never recorded. A
 path can hold a secret; see `record_paths`.
 
-The call id is attribution, not authentication: a command can change its own
-environment, so it could present another call's id. The token is the
-session's, though, and each session has its own proxy, so a claimed id never
-moves a decision to another session's record. A call id the session did not
-launch is recorded in that session's record with `unattributed: true`. A
-command run outside any session has no record; its decisions are dropped and
-logged as a warning.
+The call id comes from the call's own token (see Per-call credentials), and
+each session has its own proxy, so a decision is recorded under the call
+that made it and never in another session's record. A command run outside
+any session has no record; its decisions are dropped and logged as a
+warning.
 
 Decisions are rate-limited, so a command looping on a request cannot flood
-the record. In each one-minute interval the first 10 denials of a kind (same
+the record; `dns` lookups count with the rest. A refused name is recorded
+each time it is asked (rate-limited); an allowed name is recorded when it is
+first given an address, not on each lookup. In each one-minute interval the first 10 denials of a kind (same
 `kind`, `decision`, `rule`, `host` and `port`) are recorded one by one, and at
 most 100 of all kinds; the rest are counted, and when the interval ends each
 kind with denials left out gets one summary event with `repeats` set to the
@@ -264,11 +365,12 @@ way but written to Abhed's log rather than a record.
 ### Stdio MCP servers
 
 A stdio MCP server is started with its network confined to an egress proxy
-of its own, apart from the sessions' proxies, with its own token:
+of its own, apart from the sessions' proxies, with its own `mcp/<name>`
+credential, revoked when the server stops:
 
 | Tier | Stdio MCP server under the allowlist |
 |---|---|
-| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker and containerd sockets under `/run`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Where bubblewrap cannot mount a private `/proc`, the server is not started. |
+| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker and containerd sockets under `/run`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Names resolve through the proxy's resolver, as for commands, where the relay can serve it. Where bubblewrap cannot mount a private `/proc`, or Abhed runs as root, the server is not started. |
 | process, macOS (Seatbelt) | **Direct sockets confined.** The profile denies all network use, AF_UNIX included, but outbound to the proxy's port on `localhost`, and denies LaunchServices, which would open a URL or an app outside the sandbox. Its filesystem is not confined. |
 | fence, container, vm, none | Not reached: these tiers refuse the allowlist, so no session starts on them. |
 | Windows, or a surface with no process-tier sandbox | **Not started.** It cannot be confined, so it is refused with that reason. |
@@ -295,8 +397,8 @@ allowlist, naming why, rather than opening the network in its place.
 
 | Tier | Under the allowlist |
 |---|---|
-| process, Linux (bubblewrap) | **Enforced.** The command has its own network namespace with loopback only. A small relay inside it, Abhed's own binary, listens where the proxy variables point and passes each connection to the proxy's unix socket, which is bound into the sandbox. Nothing else leaves: a client that ignores the proxy variables has no route out. |
-| process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. Commands need no DNS of their own, since the proxy resolves names. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. |
+| process, Linux (bubblewrap) | **Enforced.** The command has its own network namespace with loopback only. A small relay inside it, Abhed's own binary, listens where the proxy variables point and passes each connection to the proxy's unix socket, which is bound into the sandbox, and serves the session's resolver (see Names). Nothing else leaves: a client that ignores the proxy variables has no route out. |
+| process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. Commands cannot resolve names themselves (see Names); the proxy resolves them. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. |
 | fence (Linux preview) | **Refused.** Landlock limits TCP connects by port, not by address, and seccomp cannot read the address a socket connects to, so allowing the proxy's port would allow that port on any host. Leave `sandbox.tier` unset to use the process tier. |
 | container, vm | **Refused.** The proxy listens on the host's loopback, which the container's network cannot reach without opening more than the proxy. `Select` passes over them, so the process tier is chosen when `min_tier` allows it; with `min_tier` container or vm, the session does not start. |
 | none | **Refused.** Nothing stops a command on the host from ignoring the proxy variables. |
@@ -318,8 +420,8 @@ names the tier and says whether it holds it.
   settings.
 - The filesystem of a stdio MCP server: only its network is confined.
 - Inspecting HTTPS: no TLS termination, so HTTPS rules are host and port only.
-- UDP, raw TCP other than through `CONNECT`, and DNS policy; the proxy
-  resolves names for the requests it carries.
+- UDP and raw TCP other than through `CONNECT`, QUIC among them.
+- A resolver inside the macOS sandbox; see Names.
 - Asking a person to approve a destination; a request is allowed or denied.
 
 Under the allowlist the `bash` tool's description tells the model that the
