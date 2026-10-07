@@ -65,6 +65,13 @@ type Isolation struct {
 	Tier    string `json:"tier"`
 	Backend string `json:"backend"`
 	Network bool   `json:"network"`
+	// Allowlist is sandbox.network allowlist: commands reach only what the
+	// egress rules allow, through the session's proxy, and Network is false.
+	Allowlist bool `json:"allowlist,omitempty"`
+	// AllowedHosts are the hosts the allow rules name; DefaultAllow is a
+	// default that lets through what no rule denies.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	DefaultAllow bool     `json:"default_allow,omitempty"`
 }
 
 func (Bash) Name() string  { return "bash" }
@@ -77,6 +84,8 @@ func (b Bash) Description() string {
 		d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget, package installs and git fetch fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
 	case networkOn:
 		d += " Commands can reach the network."
+	case networkAllowlist:
+		d += " " + b.allowlistText()
 	}
 	if b.Isolation.Tier == "fence" {
 		d += " Commands run under the fence: they write only the workspace and a private temp folder (HOME and TMPDIR point there), and unix sockets, such as docker's or an ssh agent's, are refused."
@@ -602,6 +611,7 @@ const (
 	networkUnknown networkState = iota
 	networkOff
 	networkOn
+	networkAllowlist
 )
 
 // network is whether commands can reach the network, as far as this bash
@@ -613,10 +623,41 @@ func (b Bash) network() networkState {
 		return networkOn
 	case t == "":
 		return networkUnknown
+	case b.Isolation.Allowlist:
+		return networkAllowlist
 	case b.Isolation.Network:
 		return networkOn
 	}
 	return networkOff
+}
+
+// maxNamedHosts bounds the hosts the description names.
+const maxNamedHosts = 20
+
+// allowlistText tells the model where its commands may go under the
+// allowlist, and how a refusal looks.
+func (b Bash) allowlistText() string {
+	d := "The network is limited to the destinations your organisation's allowlist permits, reached through the session's egress proxy, which HTTP_PROXY and HTTPS_PROXY already name: tools that honour them (curl, wget, git, pip, npm, go) work; anything that ignores them, or connects to an address directly, has no route out. "
+	hosts := b.Isolation.AllowedHosts
+	switch {
+	case len(hosts) == 0 && !b.Isolation.DefaultAllow:
+		d += "No destination is allowed at present. "
+	case len(hosts) > 0:
+		named := hosts
+		if len(named) > maxNamedHosts {
+			named = named[:maxNamedHosts]
+		}
+		d += "Allowed: " + strings.Join(named, ", ")
+		if len(hosts) > len(named) {
+			d += fmt.Sprintf(" and %d more", len(hosts)-len(named))
+		}
+		d += " (some only on certain ports, methods or paths). "
+	}
+	if b.Isolation.DefaultAllow {
+		d += "Other hosts are allowed unless a rule denies them. "
+	}
+	d += "A refused destination answers 403 from the proxy with the rule that refused it; do not try to work around it, tell the user what you needed."
+	return d
 }
 
 // networkFailures are what common clients print when a name does not resolve

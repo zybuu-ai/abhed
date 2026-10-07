@@ -21,6 +21,10 @@ const (
 	// workspace: where it was moved, and that the session's fence runs no
 	// further command.
 	EvFenceStatePlanted EventType = sandbox.EvFenceStatePlanted
+	// EvEgressDecision is one decision of the egress proxy under
+	// sandbox.network allowlist: the call, host, port, address, method and
+	// path for plain HTTP, the decision, the rule, and the bytes each way.
+	EvEgressDecision EventType = sandbox.EvEgressDecision
 )
 
 // SandboxRecord is rec as a sandbox writes to it: system events, trusted.
@@ -41,5 +45,9 @@ func (l *Loop) LaunchContext(ctx context.Context, callID string) context.Context
 // loop's record for the launch events it writes.
 func (l *Loop) withLaunch(ctx context.Context, callID string) context.Context {
 	ctx = WithCallID(ctx, callID)
-	return sandbox.WithLaunch(ctx, sandbox.Launch{CallID: CallIDOf(ctx), Record: SandboxRecord(l.Recorder)})
+	launch := sandbox.Launch{CallID: CallIDOf(ctx)}
+	if l.Recorder != nil {
+		launch.Session, launch.Record = l.Recorder.Root(), SandboxRecord(l.Recorder)
+	}
+	return sandbox.WithLaunch(ctx, launch)
 }

@@ -32,6 +32,50 @@ All notable changes to Abhed are recorded here. The format follows
   where a part of a cut secret could be, and goes on past a whole secret that
   would split.
 
+- On the macOS process tier a command, or the workbench shell, can signal
+  only processes in its own sandbox: `kill $PPID` no longer stops Abhed, and
+  one command cannot signal another's processes, as on Linux. A command can
+  therefore no longer `kill`, or `kill -0`, a process an earlier command left
+  running; use `run_in_background` and `shell_kill` for that.
+
+### Added
+
+- An egress allowlist for the agent's shell commands, between the network
+  off and the network open. With `sandbox.network: "allowlist"` in the
+  managed configuration, each session gets a proxy on loopback that commands
+  reach through `HTTP_PROXY` and `HTTPS_PROXY`, with a per-session token. The
+  `egress` rules (host, exact or `*.example.com`; ports; methods and paths for
+  plain HTTP; allow or deny, deny winning) decide each CONNECT by host and
+  port and each plain request by method and path too; the default is deny,
+  and `mode: "audit"` lets denials through and records them as would_deny.
+  The proxy resolves names itself, refuses loopback, private, link-local,
+  metadata and multicast addresses unless a rule names them in `allow_ips`,
+  and dials the address it checked. Every decision is recorded as an
+  `egress.decision` event with the call id, host, port, address, method and
+  path, the rule, and bytes each way; never bodies or credentials. The
+  process tier enforces it: on Linux the command keeps its own network
+  namespace and reaches the proxy through a relay over a unix socket, and on
+  macOS Seatbelt allows only the proxy's loopback port. The fence, container,
+  vm and none tiers refuse the setting rather than open the network.
+  Under `abhed serve` each session has its own proxy and token, and the
+  workbench terminal and `!` commands run as the session's own calls; a
+  call id a session did not launch is recorded in its own record as
+  `unattributed`, never in another session's, and a session's proxy stops
+  when it is deleted or taken by another node, at shutdown, and after 30
+  seconds with no command in flight, reopening with the next command. The
+  Studio terminal, in lines and interactive mode, runs as the session's own
+  calls too. A `;` in a
+  path is refused with 400. Denials and auth failures are rate-limited in
+  the record (the first 10 of a kind a minute, then a summary with
+  `repeats`), allowed decisions past 200 a minute are counted into
+  summaries the same way, and requests refused before they are read are
+  recorded too.
+  `egress.record_paths: false` keeps paths out of the record and
+  `egress.idle_seconds` (default 300) closes idle connections. The `bash`
+  tool tells the model which destinations it may reach.
+  `abhed doctor` shows the egress state. See
+  [Network policy](docs/guide/21-network-policy.md).
+
 ### Changed
 
 - `abhed -p` exits 1 when its record cannot take `session.started` or the
@@ -94,6 +138,7 @@ Removed in this release:
   and `Store.Fresh` return. They answered whether text could start or end a
   stored value, which is what let a running shell's read be probed; nothing
   replaces them.
+
 
 ## [1.2.6] - 2026-10-06
 

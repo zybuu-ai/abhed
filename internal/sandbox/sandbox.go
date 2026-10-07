@@ -20,6 +20,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Tier is the isolation strength actually in force.
@@ -113,6 +115,11 @@ type Policy struct {
 	// successful prompt injection then has no channel to exfiltrate through
 	// (docs §03 L4).
 	AllowNetwork bool
+	// Egress, when set, is sandbox.network allowlist: commands reach the
+	// network only through the session's egress proxy, which applies this
+	// policy, and AllowNetwork is not read. Only the process tier holds it;
+	// every other tier refuses it.
+	Egress *egress.Policy
 	// ReadOnlyPaths are additional paths mounted read-only (toolchains, caches).
 	ReadOnlyPaths []string
 	// ReadableFiles are single files a command may read, and run, even where

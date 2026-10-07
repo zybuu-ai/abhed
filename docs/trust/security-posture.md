@@ -271,8 +271,19 @@ and cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
 profiles. Each is named both as given and with its links resolved, so a
 home reached through a link is covered. The list is a deny list: another
 file in home that holds a secret is readable, where Linux's bubblewrap
-leaves home out altogether. The shell can signal other processes running as
-the same user. The environment is an allowlist
+leaves home out altogether. Signals stay inside the sandbox: the profile
+allows a command or shell to signal only processes in its own Seatbelt
+sandbox (`(allow signal (target same-sandbox))`), so it cannot stop Abhed
+(`kill $PPID`), the server, or another command's processes, as bubblewrap's
+PID namespace keeps them apart on Linux (`TestSeatbeltSignalsStayInside`).
+One consequence: a command cannot stop a server an earlier command left
+running; Abhed's own stop for a background shell, sent from outside, does.
+The profile starts from `(allow default)`, and the only Mach lookups it
+denies are the network and system configuration services, with the network
+off or under the allowlist; other `mach-lookup` services stay reachable: a command can ask the user's per-session services
+(the pasteboard, Launch Services, which opens applications and URLs, and
+others) to act for it outside the sandbox. Linux has no equivalent. A
+deny-by-default profile for Mach services is not done yet. The environment is an allowlist
 (`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
 `ABHED_` settings. On the `none` tier the shell has the server's environment
 without its `ABHED_` settings, which leaves anything else the operator

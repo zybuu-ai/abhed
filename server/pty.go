@@ -235,6 +235,8 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), ptyMax)
+	// The command is the session's: its egress decisions land in this record.
+	ctx = live.Loop.LaunchContext(ctx, id)
 	var cmd *exec.Cmd
 	if b, ok := tool.(tools.Bash); ok && b.Sandbox != nil {
 		cmd = b.Sandbox(ctx, sess.Cwd, req.Command)
@@ -379,7 +381,8 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
-	cmd := b.Shell(ctx, sess.Root)
+	// The terminal is the session's own call: its proxy, and its record.
+	cmd := b.Shell(live.Loop.LaunchContext(ctx, id), sess.Root)
 	cmd.Env = withTerm(cmd.Env)
 	shell := &shellInfo{
 		capture: newLineCapture(id, func(in agent.TerminalInput) { s.unrecorded(nil, live, live.Loop.ManualTerminalInput(in)) }),

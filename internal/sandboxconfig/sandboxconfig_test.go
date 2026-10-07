@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -304,5 +305,33 @@ func TestStatePathsHoldTheAccountStores(t *testing.T) {
 	t.Setenv(secrets.EnvAccountsDir, "/srv/abhed/accounts")
 	if !slices.Contains(StatePaths(config.Default(), t.TempDir()), "/srv/abhed/accounts") {
 		t.Error("the per-account stores are not among the state paths")
+	}
+}
+
+// sandbox.network allowlist gives the policy the compiled egress rules and
+// takes allow_network out of play: the proxy is the only way out.
+func TestAllowlistReplacesAllowNetwork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.Sandbox.AllowNetwork = true
+	cfg.Sandbox.Network = config.NetworkAllowlist
+	cfg.Egress.Rules = []egress.Rule{{Host: "example.com", Decision: "allow"}}
+	p, err := Policy(cfg, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Egress == nil || p.AllowNetwork || p.Egress.Rules() != 1 {
+		t.Fatalf("policy: egress %v, allow_network %v", p.Egress, p.AllowNetwork)
+	}
+	iso := Isolation(cfg, "process")
+	if iso.Network || !iso.Allowlist || len(iso.AllowedHosts) != 1 || iso.AllowedHosts[0] != "example.com" {
+		t.Fatalf("the bash tool is told %+v under the allowlist", iso)
+	}
+	cfg.Sandbox.Network = ""
+	if p, err = Policy(cfg, t.TempDir()); err != nil || p.Egress != nil || !p.AllowNetwork {
+		t.Fatalf("without the allowlist: %v %v %v", p.Egress, p.AllowNetwork, err)
+	}
+	if iso := Isolation(cfg, "process"); !iso.Network || iso.Allowlist {
+		t.Fatalf("the bash tool is told %+v with allow_network", iso)
 	}
 }

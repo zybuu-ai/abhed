@@ -136,7 +136,7 @@ func TestMountsPinHoldersAndBothForms(t *testing.T) {
 		}
 	}
 	b := &Process{policy: p, backend: "bwrap"}
-	check("bwrap", strings.Join(b.wrap(t.Context(), link, nil, "/bin/true").Args, " "),
+	check("bwrap", strings.Join(b.wrapEgress(t.Context(), link, nil, nil, "/bin/true").Args, " "),
 		"--bind "+gitDir+" "+gitDir, "--ro-bind-try "+hooks+" "+hooks)
 	c := &Container{policy: p}
 	check("container", strings.Join(c.Command(context.Background(), link, "true").Args, " "),

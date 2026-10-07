@@ -203,6 +203,15 @@ workspace and a few shared folders, not only the workspace:
   with the rest of your machine, so a command can leave a file there that a
   program outside the sandbox later reads.
 
+Each command on the process tier is kept apart from every other: on Linux
+it has its own PID namespace, and on macOS the Seatbelt profile lets it
+signal only processes in its own sandbox, so `kill $PPID` cannot stop Abhed.
+One consequence, on macOS as on Linux: a command cannot `kill`, or check
+with `kill -0`, a process an earlier command left running, such as a server
+started with `&` in one call and stopped with `kill` in the next; the
+`kill` fails with "Operation not permitted". Start and stop it within one
+command, or run it with `run_in_background` and stop it with `shell_kill`.
+
 On the container and vm tiers a command writes only the workspace and a
 throwaway `/tmp`. The process tier is a boundary, not a jail: it is not
 sufficient for genuinely hostile code.
@@ -222,6 +231,13 @@ policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
+
+`"network": "allowlist"`, set only in the managed configuration, sends
+commands' traffic through a per-session proxy that reaches only what the
+`egress` rules allow, and records each decision; it takes the place of
+`allow_network`. Only the process tier enforces it. The `egress` section
+(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
+too. See [Network policy](21-network-policy.md).
 
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that

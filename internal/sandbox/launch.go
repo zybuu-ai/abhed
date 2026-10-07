@@ -11,6 +11,10 @@ import (
 type Launch struct {
 	// CallID is the model's id for the tool call, as agent.CallIDOf gives it.
 	CallID string
+	// Session is the id of the session the call belongs to: the top-level
+	// session for a subagent's call. Backends that keep state per session,
+	// such as the egress proxy, key it by this.
+	Session string
 	// Record writes one event to the session's record and reports whether
 	// it was written. Nil when the command runs outside a session.
 	Record func(event string, payload map[string]any) error

@@ -345,7 +345,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		sbox = sb
 		bash.Sandbox = sb.Command
-		bash.Isolation = tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}
+		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))
 		fence, _ = sb.(*sandbox.Fence)
 		if in, ok := sb.(sandbox.Interactive); ok {
 			bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()

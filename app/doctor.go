@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
@@ -76,6 +77,7 @@ func (a *App) doctor(workspace string) int {
 	} else {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
+	fmt.Printf("egress      %s\n", egressLabel(cfg))
 	if cfg.Sandbox.Tier == string(sandbox.TierFence) {
 		printFenceProbe(os.Stdout, cfg, workspace)
 	}
@@ -313,6 +315,30 @@ func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied: this runs as root, whose processes the kernel does not bound", cfg.Sandbox.MaxProcs))
 	}
 	return out
+}
+
+// egressLabel states the commands' network policy: off, open, or the
+// allowlist with its rules and mode.
+func egressLabel(cfg config.Config) string {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		if cfg.Sandbox.AllowNetwork {
+			return "open — sandbox.allow_network lets commands reach any host directly"
+		}
+		return "off — commands have no network (sandbox.allow_network is false)"
+	}
+	pol, err := egress.Compile(cfg.Egress)
+	if err != nil {
+		return "UNAVAILABLE — " + err.Error()
+	}
+	def, mode := "deny", "enforce"
+	if pol.DefaultAllow() {
+		def = "allow"
+	}
+	if pol.Audit() {
+		mode = "audit (denials recorded, not enforced)"
+	}
+	return fmt.Sprintf("allowlist — %d rules, default %s, mode %s; a proxy on loopback per session, "+
+		"each decision recorded as %s; direct sockets blocked on the process tier only", pol.Rules(), def, mode, sandbox.EvEgressDecision)
 }
 
 // printFenceProbe shows the fence's probe, check by check, when the

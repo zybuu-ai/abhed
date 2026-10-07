@@ -250,7 +250,7 @@ func TestBwrapBindsReadableFilesLast(t *testing.T) {
 	p := DefaultPolicy(ws)
 	p.ReadableFiles = []ReadableFile{f}
 	s := &Process{policy: p, backend: "bwrap"}
-	bindArgs := func() string { return strings.Join(s.wrap(t.Context(), ws, nil, "/bin/true").Args, " ") }
+	bindArgs := func() string { return strings.Join(s.wrapEgress(t.Context(), ws, nil, nil, "/bin/true").Args, " ") }
 	bind := "--ro-bind " + f.Path + " " + f.Path
 	if args := bindArgs(); !strings.Contains(args, bind) || strings.Index(args, bind) < strings.LastIndex(args, "--tmpfs") {
 		t.Fatalf("%s", args)
@@ -339,7 +339,7 @@ func TestBwrapBindsMissingGitHooksReadOnly(t *testing.T) {
 	p := DefaultPolicy(ws)
 	p.ProtectGit = true
 	s := &Process{policy: p, backend: "bwrap"}
-	args := strings.Join(s.wrap(t.Context(), ws, nil, "/bin/true").Args, " ")
+	args := strings.Join(s.wrapEgress(t.Context(), ws, nil, nil, "/bin/true").Args, " ")
 	for _, f := range []string{"hooks", "config"} {
 		q := filepath.Join(ws, ".git", f)
 		if !strings.Contains(args, "--ro-bind-try "+q+" "+q) {

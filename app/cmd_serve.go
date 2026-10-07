@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -62,7 +64,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	vault := openVault()
 	bash := tools.Bash{Sandbox: sb.Command,
-		Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}}
+		Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
 		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
@@ -208,6 +210,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 	}
+	// A session leaving this process takes its egress proxy with it.
+	if es, ok := sb.(interface{ EndSession(string) error }); ok {
+		opts.SessionEnded = func(id string) { _ = es.EndSession(id) }
+	}
 	for _, h := range a.serverOpts {
 		if err := h(cfg, &opts); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -215,6 +221,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 	srv := server.New(opts)
+	// Every session's egress proxy stops with the server, before the store
+	// closes, so the last summaries it records are kept.
+	if c, ok := sb.(io.Closer); ok {
+		defer func() { _ = c.Close() }()
+	}
 
 	stopper := cancelOnStop(stopDrains)
 	defer stopper.stop()

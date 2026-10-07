@@ -83,7 +83,8 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 		return refusal(errPolicy, "%s", refused.Content)
 	}
 	ctx, cancel := context.WithTimeout(t.ctx, shellLife)
-	cmd := b.Shell(ctx, parts.Session.Root)
+	// The shell is the session's own call: its egress decisions land in its record.
+	cmd := b.Shell(loop.LaunchContext(ctx, id), parts.Session.Root)
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}

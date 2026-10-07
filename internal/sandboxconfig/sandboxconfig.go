@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -36,6 +37,14 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 		p.MinTier = sandbox.Tier(cfg.Sandbox.MinTier)
 	}
 	p.AllowNetwork = cfg.Sandbox.AllowNetwork
+	if cfg.Sandbox.Network == config.NetworkAllowlist {
+		pol, err := egress.Compile(cfg.Egress)
+		if err != nil {
+			return sandbox.Policy{}, err
+		}
+		// The allowlist replaces allow_network: the proxy is the only way out.
+		p.Egress, p.AllowNetwork = pol, false
+	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.WriteProtected = cfg.Sandbox.WriteProtected
 	p.ProtectGit = cfg.Sandbox.ProtectGit
@@ -231,4 +240,19 @@ func under(spellings, dirs []string) bool {
 		}
 	}
 	return false
+}
+
+// Isolation is what the bash tool tells the model of the sandbox of tier:
+// no network, any host, or, under the allowlist, only the destinations the
+// egress rules allow, through the session's proxy.
+func Isolation(cfg config.Config, tier string) tools.Isolation {
+	iso := tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork}
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return iso
+	}
+	iso.Network, iso.Allowlist = false, true
+	if pol, err := egress.Compile(cfg.Egress); err == nil {
+		iso.AllowedHosts, iso.DefaultAllow = pol.AllowedHosts(), pol.DefaultAllow()
+	}
+	return iso
 }

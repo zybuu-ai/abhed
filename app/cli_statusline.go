@@ -54,6 +54,8 @@ func statuslineSandbox(cfg config.Config, workspace string, granted []string) (s
 	}
 	p.MinTier = sandbox.TierProcess
 	p.AllowNetwork = false
+	// No egress proxy either: the status line is drawn with no network.
+	p.Egress = nil
 	pin, rest, err := statuslineScript(command, workspace, p.StatePaths, append(append([]string{}, cfg.AdditionalDirs...), granted...))
 	if err != nil {
 		return nil, "", pin, err

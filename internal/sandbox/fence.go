@@ -144,6 +144,13 @@ func (f *Fence) policyRefusal() string {
 			"and the fence cannot carve a read-only area out of the writable workspace; use the command line, or another tier"
 	case f.policy.CPUPercent < 0:
 		return "fence.cpu_percent is negative"
+	case f.policy.Egress != nil:
+		// Landlock limits TCP connects by port, not address, and seccomp
+		// cannot read the address a socket connects to: a command allowed the
+		// proxy's port could reach that port on any host.
+		return "sandbox.network is allowlist, and the fence cannot keep a command's sockets to the egress proxy alone " +
+			"(Landlock limits TCP by port, not by address, and seccomp cannot read the address); " +
+			"leave sandbox.tier unset to use the process tier, which enforces it, or turn the allowlist off"
 	}
 	return ""
 }
