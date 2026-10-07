@@ -14,6 +14,18 @@ otherwise it stops with an error naming the refused tier, unless
 already allows). To keep the process tier, run Abhed as an ordinary user or turn
 the network off. As root the tier is also refused where it cannot mount a
 private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
+On the macOS process tier a command can no longer signal a process an earlier
+command left running; use `run_in_background` and `shell_kill`. With git
+protection on (Abhed Studio's sessions), git inside the sandbox fails at `git
+submodule update` on every tier, at `git worktree remove` on Linux and macOS,
+and on macOS also at `git worktree add` and at `git submodule add` or `update
+--init` for a submodule not yet checked out; run those outside Abhed. ACP
+clients: `session/load`, `session/resume`, `_abhed/session/fork` and
+`_abhed/doctor` now refuse with -32602 parameters 1.2.6 ignored, and these
+and `session/new` refuse a `_meta` with both the `zybuu.ai/abhed` and the
+legacy `abhed` key. `abhed -p` exits 1 when its record cannot take the
+session's start. Go code that called `Redactor.Pending` or `Redactor.Partial`
+in `secretstore` no longer compiles; see Go API.
 
 ### Security
 
@@ -34,6 +46,7 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   services that trust uid 0 take commands). The `container`, `vm` and `fence`
   tiers were unaffected (the first two always drop all capabilities; the fence
   refuses root). Running Abhed as an ordinary user was never affected.
+  Affects 0.1.0 to 1.2.6.
 - A running background shell's output that ended in the first characters of
   any stored secret was held back from `shell_output`, and output that
   started after a gap with a secret's last characters was skipped. Both
@@ -57,12 +70,12 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   it is clipped, and a tail cut from longer output leaves out its first bytes,
   where a part of a cut secret could be, and goes on past a whole secret that
   would split.
-
 - On the macOS process tier a command, or the workbench shell, can signal
   only processes in its own sandbox: `kill $PPID` no longer stops Abhed, and
   one command cannot signal another's processes, as on Linux. A command can
   therefore no longer `kill`, or `kill -0`, a process an earlier command left
-  running; use `run_in_background` and `shell_kill` for that.
+  running; use `run_in_background` and `shell_kill` for that. Affects 0.1.0
+  to 1.2.6.
 - Abhed Studio's sessions kept a command from writing `.git/config` and
   `.git/hooks`, but a command could still write `.git/commondir`, pointing
   git at configuration and hooks of its own, or a submodule's config and
@@ -98,7 +111,8 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   floods the workspace; reaching the bound is recorded as
   `sandbox.git_walk_bounded`. A linked `.git/hooks` made every bubblewrap
   command fail to start with a mount error: it now refuses each command,
-  saying to replace the link, and on macOS is held where it leads; so is a
+  saying to replace the link, recorded as `sandbox.git_linked` with the
+  linked `paths`, and on macOS is held where it leads; so is a
   `.git`, `modules` or `worktrees` folder, or a folder in either, that is a
   link, which a command could repoint at a git folder of its own (on macOS,
   a nested repository's linked `.git` is not followed). Binding holds only
@@ -127,7 +141,8 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   `workspace_trust` (the trust asked for and what applied), followed by the
   settings it refused, so the record shows that later turns ran narrowed; a
   new session's `session.started` carries `workspace_trust` too.
-  `_abhed/doctor` takes the same field.
+  `_abhed/doctor` takes the same field. Affects 1.2.3, which brought
+  `session/load`, `session/resume` and `_abhed/session/fork`, to 1.2.6.
 - **Breaking for ACP clients.** `session/load`, `session/resume`,
   `_abhed/session/fork` and `_abhed/doctor` now refuse with -32602 what 1.2.6
   ignored: params that do not parse, a `_meta["zybuu.ai/abhed"]` block that is
@@ -135,75 +150,77 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   `"untrusted"` (`"trusted"` included), and a `_meta` carrying both the
   `zybuu.ai/abhed` and the legacy `abhed` key (on `session/new` too). A client
   that sends no `_meta` on these methods is unaffected.
+- A workspace trusted when its configuration loaded kept that trust for its
+  `.abhed/users.json` when its path was later replaced by a link to another
+  folder: Abhed resolved the path again and read the accounts of the folder
+  the link named. The trust now stays with the folder the load decided it
+  for, and a path that resolves elsewhere is decided afresh from the trust
+  store. Affects 1.2.6.
 
 ### Added
 
-- An egress allowlist for the agent's shell commands, between the network
-  off and the network open. With `sandbox.network: "allowlist"` in the
-  managed configuration, each session gets a proxy on loopback that commands
-  reach through `HTTP_PROXY` and `HTTPS_PROXY`, each command with a token of
-  its own call's. The
-  `egress` rules (host, exact or `*.example.com`; ports; methods and paths for
-  plain HTTP; allow or deny, deny winning) decide each CONNECT by host and
-  port and each plain request by method and path too; the default is deny,
-  and `mode: "audit"` lets denials through and records them as would_deny.
-  The proxy resolves names itself, refuses loopback, private, link-local,
-  metadata and multicast addresses unless a rule names them in `allow_ips`,
-  and dials the address it checked. Every decision is recorded as an
-  `egress.decision` event with the call id, host, port, address, method and
-  path, the rule, and bytes each way; never bodies or credentials. The
-  process tier enforces it: on Linux the command keeps its own network
-  namespace and reaches the proxy through a relay over a unix socket, and on
-  macOS Seatbelt allows only the proxy's loopback port. The fence, container,
-  vm and none tiers refuse the setting rather than open the network.
-  Under `abhed serve` each session has its own proxy, and the workbench
-  terminal and `!` commands run as the session's own calls. The proxy and
-  the resolver take the call id from the call's own token, never from what
-  the client sends, so a command cannot put its traffic under another call;
-  the token is revoked when the call ends, and a process left running after
-  its command is refused, recorded under the ended call. A session's proxy stops
-  when it is deleted or taken by another node, at shutdown, and after 30
-  seconds with no command in flight, reopening with the next command. The
-  Studio terminal, in lines and interactive mode, runs as the session's own
-  calls too. A `;` in a
-  path is refused with 400. Denials and auth failures are rate-limited in
-  the record (the first 10 of a kind a minute, then a summary with
-  `repeats`), allowed decisions past 200 a minute are counted into
-  summaries the same way, and requests refused before they are read are
-  recorded too.
+- An egress allowlist for the agent's shell commands, between the network off
+  and the network open. With `sandbox.network: "allowlist"` in the managed
+  configuration, each session gets a proxy on loopback that commands reach
+  through `HTTP_PROXY` and `HTTPS_PROXY`, each command with a token of its own
+  call. The `egress` rules (host, exact or `*.example.com`; ports; methods and
+  paths for plain HTTP; allow or deny, deny winning) decide each CONNECT by
+  host and port and each plain request by method and path too; the default is
+  deny, and `mode: "audit"` lets denials through and records them as
+  would_deny. The proxy resolves names itself, refuses loopback, private,
+  link-local, metadata and multicast addresses unless a rule names them in
+  `allow_ips`, and dials the address it checked. Every decision is recorded as
+  an `egress.decision` event with the call id, host, port, address, method and
+  path, the rule, and bytes each way; never bodies or credentials. The process
+  tier enforces it: on Linux the command keeps its own network namespace and
+  reaches the proxy through a relay over a unix socket, and on macOS Seatbelt
+  allows only the proxy's loopback port. The fence, container, vm and none
+  tiers refuse the setting rather than open the network. Under `abhed serve`
+  each session has its own proxy, and the workbench terminal and `!` commands
+  run as the session's own calls. The proxy and the resolver take the call id
+  from the call's own token, never from what the client sends, so a command
+  cannot put its traffic under another call; the token is revoked when the
+  call ends, and a process left running after its command is refused, recorded
+  under the ended call. A session's proxy stops when it is deleted or taken by
+  another node, at shutdown, and after 30 seconds with no command in flight,
+  reopening with the next command. The Studio terminal, in lines and
+  interactive mode, runs as the session's own calls too. A `;` in a path is
+  refused with 400. Denials and auth failures are rate-limited in the record
+  (the first 10 of a kind a minute, then a summary with `repeats`), allowed
+  decisions past 200 a minute are counted into summaries the same way, and
+  requests refused before they are read are recorded too.
   `egress.record_paths: false` keeps paths out of the record and
-  `egress.idle_seconds` (default 300) closes idle connections. The `bash`
-  tool tells the model which destinations it may reach.
-  `abhed doctor` shows the egress state. See
-  [Network policy](docs/guide/21-network-policy.md).
+  `egress.idle_seconds` (default 300) closes idle connections. The `bash` tool
+  tells the model which destinations it may reach. `abhed doctor` shows the
+  egress state. See [Network policy](docs/guide/21-network-policy.md).
 - Under `sandbox.network: "allowlist"`, Abhed's own requests go through the
   same `egress` rules: the model client, `web_fetch`, `web_search` and MCP
-  servers over HTTP are judged in Abhed's process, request by request
-  (host, port, method and path), connect only to an address the rules
-  allow, and are recorded as `egress.decision` events with `kind` `model`,
-  `web_fetch`, `web_search` or `mcp`, the session's id and the tool call's
-  id, under the same rate limits. The model's configured endpoint is allowed
-  without a rule, by the rule `model`. `web_fetch` keeps its own checks
-  after the rules', so it still never reaches an internal address. A guard
-  that cannot compile the rules refuses every one of these requests but
-  the model's. Each tool set has its own guard, so SDK agents in one
-  process are judged by their own rules, and one outside the allowlist is
-  left alone. Stdio MCP servers start with their direct network sockets
-  confined to an egress proxy of their own (Seatbelt, without
-  LaunchServices, on macOS; network and process namespaces, with the
-  session bus, `/run/user`, container sockets and other sessions' egress
-  sockets hidden, on Linux, with the egress resolver and a credential of
-  their own; not as root) and are not started where they cannot be. This
-  confines a server's direct network, not a hostile server: its files are
-  not confined, so it can plant a LaunchAgent, systemd unit or rc file, and
-  on Linux it can reach AF_UNIX sockets in folders left visible. System
-  services can also make requests for it, outside the proxy and
-  unrecorded: on macOS `trustd` fetches a certificate's AIA and OCSP URLs,
-  for commands as well as servers. Outside
-  the allowlist nothing changes. See
-  [Network policy](docs/guide/21-network-policy.md) and
-  [MCP](docs/guide/08-mcp.md).
-
+  servers over HTTP are judged in Abhed's process, request by request (host,
+  port, method and path), connect only to an address the rules allow, and are
+  recorded as `egress.decision` events with `kind` `model`, `web_fetch`,
+  `web_search` or `mcp`, the session's id and the tool call's id, under the
+  same rate limits. The model's configured endpoint is allowed without a rule,
+  by the rule `model`. `web_fetch` keeps its own checks after the rules', so
+  it still never reaches an internal address. A guard that cannot compile the
+  rules refuses every one of these requests but the model's. The model client
+  no longer uses `HTTPS_PROXY` or `HTTP_PROXY` from Abhed's environment under
+  the allowlist: it connects directly, so the guard sees where each connection
+  goes, and a provider reachable only through a corporate proxy is not
+  reached. Outside the allowlist the model client is unchanged. Each tool set
+  has its own guard, so SDK agents in one process are judged by their own
+  rules, and one outside the allowlist is left alone. Stdio MCP servers start
+  with their direct network sockets confined to an egress proxy of their own
+  (Seatbelt, without LaunchServices, on macOS; network and process namespaces,
+  with the session bus, `/run/user`, container sockets and other sessions'
+  egress sockets hidden, on Linux, with the egress resolver and a credential
+  of their own; not as root) and are not started where they cannot be. This
+  confines a server's direct network, not a hostile server: its files are not
+  confined, so it can plant a LaunchAgent, systemd unit or rc file, and on
+  Linux it can reach AF_UNIX sockets in folders left visible. System services
+  can also make requests for it, outside the proxy and unrecorded: on macOS
+  `trustd` fetches a certificate's AIA and OCSP URLs, for commands as well as
+  servers. Outside the allowlist nothing changes. See [Network
+  policy](docs/guide/21-network-policy.md) and [MCP](docs/guide/08-mcp.md).
 - Name resolution under the egress allowlist is policy-controlled and
   recorded. On Linux each command's network namespace gets the session's
   resolver at `127.0.0.1:53`, through a generated `resolv.conf` bound into
@@ -211,21 +228,16 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   allow rule could match, with an address from `198.18.0.0/15` held for the
   session and a 30-second TTL; it never forwards a query, and any other name
   gets NXDOMAIN and an `egress.decision` of kind `dns`, rate-limited like
-  other denials. Each lookup carries the session's proxy credential, so one
-  without it is refused, and the command holds no capability, as root too. A `CONNECT` or plain request to one of those addresses is
-  judged on the name it stands for, and the proxy resolves that name once and
-  dials the address it checked, as before. On macOS commands resolve nothing
+  other denials. Each lookup carries the call's own proxy credential, so one
+  without it is refused, and the command holds no capability, as root too.
+  A `CONNECT` or plain request to one of those addresses is judged on the
+  name it stands for, and the proxy resolves that name once and dials the
+  address it checked, as before. On macOS commands resolve nothing
   themselves: Seatbelt refuses raw DNS and the system resolver, and the proxy
   resolves names. A wildcard allow rule logs a one-time warning that it lets
   a command carry data in DNS labels under its domain.
 
 ### Changed
-
-- Under `sandbox.network: "allowlist"`, the model client no longer uses
-  `HTTPS_PROXY` or `HTTP_PROXY` from Abhed's environment: it connects
-  directly, so the egress guard sees where each connection goes. A
-  provider reachable only through a corporate proxy is not reached under
-  the allowlist. Outside the allowlist the model client is unchanged.
 
 - The fence preview now runs Abhed Studio (ACP) and `abhed serve`, where the
   host lets an ordinary user make a user namespace. Each command then gets a
@@ -244,9 +256,6 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   the fence, read and run but never written. A `skills.dirs` folder that
   holds or sits inside Abhed's state, or sits in the workspace, is left out
   and listed in `fence.qualified` as `skills_left_out`.
-
-### Changed
-
 - `abhed -p` exits 1 when its record cannot take `session.started` or the
   `config.refused` and `config.narrowed` events, as the SDK's `New` already
   failed; before, it warned and ran on. An interactive session still says so
@@ -254,7 +263,6 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   the same record before the model is asked. `abhed serve` logs it.
 - `New` in the SDK lets go of the session record it opened when it fails
   after opening it, so another process may continue the session.
-
 - Where user namespaces are not allowed (Ubuntu's AppArmor restriction, a
   zero `user.max_user_namespaces`), the fence runs as before in
   `landlock_only`, and Studio and `serve` are refused with the reason; the
@@ -277,17 +285,16 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
 - Content that appears in a `.abhed` the fence covers is taken out of it,
   and the folder stays, so other fences on the workspace stay covered. A
   `.abhed` that cannot be listed when a session starts refuses the fence.
-
-- CI runs the fence tier's gated tests for real: a new required job on
-  Ubuntu 24.04, x86-64 and arm64, runs them as an ordinary user in a delegated
-  cgroup scope with `ABHED_REQUIRE_FENCE=1`, so a skip fails the build. In that
-  job only the network-on end-to-end test may skip, as pending on `fencenet`,
-  and the no-user-namespace test once a run of its own has passed it; the
-  network-on test runs in a separate job that is not required, since it needs PyPI and
-  nodejs.org, and now checks the Node download against its SHASUMS256. The
-  job also bind-mounts a folder twice for the fence's alias test, and runs
-  the test of a host without user namespaces from outside the folder
-  AppArmor lets make them.
+- CI runs the fence tier's gated tests for real: a new required job on Ubuntu
+  24.04, x86-64 and arm64, runs them as an ordinary user in a delegated cgroup
+  scope with `ABHED_REQUIRE_FENCE=1`, so a skip fails the build. In that job
+  only the network-on end-to-end test may skip, as pending on `fencenet`, and
+  the no-user-namespace test once a run of its own has passed it; the
+  network-on test runs in a separate job that is not required, since it needs
+  PyPI and nodejs.org, and now checks the Node download against its
+  SHASUMS256. The job also bind-mounts a folder twice for the fence's alias
+  test, and runs the test of a host without user namespaces from outside the
+  folder AppArmor lets make them.
 
 ### Fixed
 
@@ -295,13 +302,11 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   as `�`, and the next read reported one byte not shown and, while secrets
   were stored, skipped its start as after a gap. A character only partly
   written is now left for the next read.
-
 - A server session started while the operator's secrets store could not be
   loaded withheld every payload for good, though the docs said until the
   store was fixed. It now redacts again once the store loads. While the
   store cannot be loaded, `GET /v1/health` answers `"status": "degraded"`
   and `"secrets_store": "unreadable"`, still with code 200.
-
 - A server that gives every account the operator's one secrets store, with
   an allow rule naming a secret, logged its warning only at startup. It now
   also logs it as each session starts, naming the account.
@@ -310,7 +315,6 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   and an operator redactor of its own no longer drops the check that keeps
   stored values out of file paths, or the secret names a suggestion is
   checked against.
-
 - When a terminal shell ends, the sweep of what it left running gave up
   after a fixed number of passes. On a loaded machine a process it had
   already killed stays listed until the scheduler runs it, so the sweep could
@@ -328,8 +332,19 @@ Listed late from 1.2.6, all additive there:
 - `config`: `Config.Fence` and `FenceConfig`, the fence tier's settings, and
   `SandboxConfig.Tier`, which chooses the fence tier.
 
-New in this release:
+New in this release, all additive:
 
+- `sdk`: `EvSessionResumed`, the event an ACP session continued from its
+  record writes in place of a second `session.started`.
+- `config`: `SandboxConfig.Network` and `NetworkAllowlist`, its one value,
+  which sends commands through the session's egress proxy; and
+  `Config.Egress`, the proxy's rules. Both are managed only.
+- `server`: `Options.Egress`, the tool set's egress guard (set by `abhed
+  serve`; its type is internal); `Options.SessionEnded`, told a session's id
+  as the session leaves the process, so what the sandbox keeps for it, such
+  as its egress proxy, goes with it; and `Options.SessionBash`, which gives
+  each session a bash of its own in place of the registry's, with a function
+  that releases it.
 - `secretstore`: `Store.Delete` removes a whole store under the lock `Set`
   and `Remove` take, so an edition that forgets an account's store cannot
   have a `Set` under way write it back.

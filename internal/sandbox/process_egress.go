@@ -347,17 +347,7 @@ func (s *Process) bwrapDNSOK(exe string) bool {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid", "--ro-bind", "/", "/",
-			"--proc", "/proc", "--dev", "/dev"}, relayCaps()...)
-		// The command must run as this user and hold no capability, or the resolver stays off.
-		sets := "Inh|Prm|Eff|Amb"
-		if os.Getuid() == 0 {
-			sets += "|Bnd" // a root command would regain its bounding set at exec
-		}
-		check := fmt.Sprintf(`test "$(id -u)" = %d && ! grep -qE '^Cap(%s):.*[1-9a-f]' /proc/self/status`, os.Getuid(), sets)
-		args = append(args, "--setenv", "HTTP_PROXY", "http://probe:probe@127.0.0.1:1", exe, egress.RelayArg, "/nonexistent", "127.0.0.1:0",
-			egress.DNSArg, "/nonexistent", strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), "--", "/bin/sh", "-c", check)
-		out, err := bwrapRun(ctx, args...)
+		out, err := bwrapRun(ctx, dnsProbeArgs(exe)...)
 		s.dnsOK = err == nil
 		if err != nil {
 			slog.Warn("egress: the relay cannot serve the resolver here, so names will not resolve inside the sandbox",
@@ -365,6 +355,23 @@ func (s *Process) bwrapDNSOK(exe string) bool {
 		}
 	})
 	return s.dnsOK
+}
+
+// dnsProbeArgs are bwrapDNSOK's bwrap arguments: as root, the capability args
+// and /proc covers wrapEgress gives a command, so the probe holds what it will.
+func dnsProbeArgs(exe string) []string {
+	args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid"}, rootCapArgs()...)
+	args = append(args, "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev")
+	args = append(args, rootProcCovers()...)
+	args = append(args, relayCaps()...)
+	// The command must run as this user and hold no capability, or the resolver stays off.
+	sets := "Inh|Prm|Eff|Amb"
+	if os.Getuid() == 0 {
+		sets += "|Bnd" // a root command would regain its bounding set at exec
+	}
+	check := fmt.Sprintf(`test "$(id -u)" = %d && ! grep -qE '^Cap(%s):.*[1-9a-f]' /proc/self/status`, os.Getuid(), sets)
+	return append(args, "--setenv", "HTTP_PROXY", "http://probe:probe@127.0.0.1:1", exe, egress.RelayArg, "/nonexistent", "127.0.0.1:0",
+		egress.DNSArg, "/nonexistent", strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), "--", "/bin/sh", "-c", check)
 }
 
 // EndSession stops the egress proxy of the session id, if it has one, and

@@ -52,9 +52,9 @@ type Process struct {
 	capsErr  string
 }
 
-// rootCaps reports whether Abhed runs as uid 0, where bwrap keeps the host's
-// full capability set and the command stays uid 0, so both need neutralising.
-func rootCaps() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
+// rootCaps reports whether Abhed runs as uid 0, where bwrap keeps the host's full
+// capability set and the command stays uid 0; a test replaces it to build root's args.
+var rootCaps = func() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
 
 // rootWritableProc are /proc paths a uid-0 command could write by owner match;
 // they are bound read-only.

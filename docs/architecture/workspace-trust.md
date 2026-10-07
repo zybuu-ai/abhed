@@ -267,14 +267,14 @@ line per ignored setting.
 
 **Reporting.**
 
-- ACP: `session/new` answers with `_meta.abhed.workspaceTrust`. It holds the
-  file, its hash, `trusted`, a `reason`, and the `applied` and `ignored`
-  settings, so an editor can ask the person and then run `abhed trust grant`.
-  An editor may send `_meta.abhed.trust: "untrusted"` to take only what
-  tightens, on `session/new`, `session/load`, `session/resume` and
-  `_abhed/session/fork` alike, and on `_abhed/doctor`; a continued session
-  keeps it across a restart. Sending both the `zybuu.ai/abhed` and the older
-  `abhed` key is refused.
+- ACP: `session/new` answers with `_meta["zybuu.ai/abhed"].workspaceTrust`.
+  It holds the file, its hash, `trusted`, a `reason`, and the `applied` and
+  `ignored` settings, so an editor can ask the person and then run `abhed
+  trust grant`. An editor may send `_meta["zybuu.ai/abhed"].trust:
+  "untrusted"` to take only what tightens, on `session/new`, `session/load`,
+  `session/resume` and `_abhed/session/fork` alike, and on `_abhed/doctor`; a
+  continued session keeps it across a restart. The legacy `_meta.abhed` key
+  is still read on input, never written; sending both keys is refused.
   The wire cannot grant trust, and any other value is an error.
 - `rpc`: the `ready` event carries `workspace_trust`.
 - SDK: `Options.WorkspaceTrust` sets the choice, and `Agent.WorkspaceTrust()`

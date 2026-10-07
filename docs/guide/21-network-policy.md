@@ -224,7 +224,7 @@ inside the sandbox; the host's file is not touched. The resolver:
   IN) and records it as an `egress.decision` with `kind: "dns"`;
 - answers `localhost` with loopback, since no `/etc/hosts` is bound;
 - never forwards a query anywhere, so a lookup alone carries nothing out;
-- takes each lookup with the session's proxy credential, which the relay
+- takes each lookup with the call's own proxy credential, which the relay
   reads from the command's `HTTP_PROXY`, so it is recorded against the call.
   A command that reaches the resolver's socket itself without the
   credential is refused and recorded with rule `auth`. At most 64 lookups
@@ -370,7 +370,7 @@ credential, revoked when the server stops:
 
 | Tier | Stdio MCP server under the allowlist |
 |---|---|
-| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker, containerd and snapd sockets under `/run`, the resolvers' `/run/systemd/resolve` and `/run/nscd`, `/run/cups`, `/run/avahi-daemon`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Names resolve through the proxy's resolver, as for commands, where the relay can serve it. Where bubblewrap cannot mount a private `/proc`, or Abhed runs as root, the server is not started. |
+| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker, containerd and snapd sockets under `/run`, the resolvers' `/run/systemd/resolve` and `/run/nscd`, `/run/cups`, `/run/avahi-daemon`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Names resolve through the proxy's resolver, as for commands, where the relay can serve it. When Abhed runs as root the server is refused, with that reason, and not started; so is it where bubblewrap cannot mount a private `/proc`. |
 | process, macOS (Seatbelt) | **Direct sockets confined.** The profile denies all network use, AF_UNIX included, but outbound to the proxy's port on `localhost`, and denies LaunchServices (`com.apple.coreservices.*`, `com.apple.lsd.*`), which would open a URL or an app outside the sandbox. `trustd` is reachable: TLS verification needs it, and it fetches a certificate's AIA and OCSP URLs outside the proxy. Its filesystem is not confined. |
 | fence, container, vm, none | Not reached: these tiers refuse the allowlist, so no session starts on them. |
 | Windows, or a surface with no process-tier sandbox | **Not started.** It cannot be confined, so it is refused with that reason. |

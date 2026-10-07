@@ -40,9 +40,10 @@ transcript recorded from the real engine settles any disagreement.
 - **`_meta` key.** Abhed's fields in any `_meta` object live under the key
   `zybuu.ai/abhed`, written `meta` below. Engines up to 1.2.2 also read and
   write `_meta.abhed` in two places (the `trust` field of `session/new` and
-  the `workspaceTrust` field of its result). The engine accepts `abhed` on
-  input for one more release and writes only `zybuu.ai/abhed` from `apiLevel`
-  1. Studio reads both until then.
+  the `workspaceTrust` field of its result). `zybuu.ai/abhed` is the current
+  key; the engine still accepts the legacy `abhed` on input, refuses a
+  `_meta` carrying both, and writes only `zybuu.ai/abhed` from `apiLevel` 1.
+  Studio reads both.
 - **W3C trace keys** (`traceparent`, `tracestate`, `baggage`) at the root of
   `_meta` are reserved by ACP and are never used for Abhed data.
 
@@ -559,8 +560,8 @@ are sent, with `meta.hunksOnly: true`.
 
 | | |
 |---|---|
-| Wire today | `session/new`, `session/load`, `session/resume` and `_abhed/session/fork` accept `_meta.abhed.trust: "untrusted"` only (tighten-only; anything else is -32602) and return `_meta.abhed.workspaceTrust = {workspace, file?, sha256?, trusted, reason, applied[], ignored[{key, value?, reason?}]}`. |
-| Not implemented in 1.2.2 | Move both to the `zybuu.ai/abhed` key. `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
+| Wire today | `session/new`, `session/load`, `session/resume` and `_abhed/session/fork` accept `_meta["zybuu.ai/abhed"].trust: "untrusted"` only (tighten-only; anything else is -32602) and return `_meta["zybuu.ai/abhed"].workspaceTrust = {workspace, file?, sha256?, trusted, reason, applied[], ignored[{key, value?, reason?}]}`. The legacy `_meta.abhed.trust` is still accepted on input; replies use only `zybuu.ai/abhed`, and both keys at once are -32602. |
+| Added in 1.2.3 | `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
 | Studio | A banner, then a review editor built from `inspect`, then **Trust this exact file**, which asks in a native dialog raised by Studio's main process (path and SHA-256 shown) and then runs `abhed trust grant -sha256 <H> <dir>` with the bundled, hash-checked engine binary. |
 | Security | There is no grant method, now or later. A grant is pinned to the reviewed hash, so a file changed after review is not trusted. Studio's own Restricted Mode must send `trust: "untrusted"` on every method that opens a session, a continued one included; up to 1.2.6 the engine ignored it on load and resume. |
 

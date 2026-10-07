@@ -371,7 +371,8 @@ Design and the classification of every setting:
 ## Data flow — what leaves the deployment
 
 **Nothing, by default.** The shell tool gets no network access unless
-`sandbox.allow_network` is set to true (verified by
+`sandbox.allow_network` is set to true or `sandbox.network` to `"allowlist"`
+(the default verified by
 `TestProcessSandboxBlocksNetworkByDefault` on both the macOS and the Linux
 backend — the Linux run needs a privileged CI job, since a hosted runner
 cannot unshare a network namespace — per `docs/architecture/03-security.md`
@@ -389,6 +390,25 @@ registry (`networksetup -listallhardwareports`, `ioreg`), and the host name.
 Programs that enumerate interfaces get an error rather than a loopback-only
 list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
 pytest are unaffected.
+
+**Under `sandbox.network: "allowlist"`**, set in the managed configuration,
+each session gets a proxy on loopback and the `egress` rules decide what
+leaves, default deny, each decision recorded as an `egress.decision` event
+with the call or session it came from, never bodies or credentials. Brokered
+this way: `bash` commands (only the process tier accepts the setting; on
+Linux a command reaches the proxy only through a relay in its own network
+namespace, on macOS Seatbelt allows only the proxy's port), the model
+client, `web_fetch`, `web_search` and MCP servers over HTTP (judged in
+Abhed's process, request by request), and stdio MCP servers' direct sockets
+(confined to a proxy of their own; not started where they cannot be, or as
+root on Linux). Not brokered: `ssh`, the `k8s_*` tools, remote RAG, a stdio
+server's files (it can plant something that runs later outside any
+sandbox), and requests system services make on a command's or server's
+behalf, outside the proxy and unrecorded: on macOS `trustd` fetches a
+certificate's AIA and OCSP URLs, and on Linux a resolver reached over a
+unix socket left visible looks names up. HTTPS is judged by host and port
+only; there is no TLS inspection. Details:
+`docs/guide/21-network-policy.md`.
 
 **`web_search` and `web_fetch`, when enabled**, are the two narrow,
 structured exceptions: a Go tool in the Abhed process makes the request, not

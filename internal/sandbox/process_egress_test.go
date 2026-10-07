@@ -624,3 +624,100 @@ func TestEgressOutlivingProcessIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// gitRepo makes a .git in ws with the config and hooks git protection holds.
+func gitRepo(t *testing.T, ws string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(ws, ".git", "hooks"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"config", "HEAD"} {
+		if err := os.WriteFile(filepath.Join(ws, ".git", f), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// startedEgress is a session's egress state with a running proxy, for building arguments.
+func startedEgress(t *testing.T) *egressState {
+	t.Helper()
+	p, err := egress.Start(egress.Options{Policy: egressPolicy(t, egress.Config{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	return &egressState{proxy: p, exe: "/abhed", dir: "/d", dns: true}
+}
+
+// The allowlist and git protection compose in one Seatbelt profile: the
+// signal rule, the git patterns and the proxy's port all hold.
+func TestSeatbeltProfileComposesAllowlistAndGit(t *testing.T) {
+	ws := workspace(t)
+	gitRepo(t, ws)
+	p := DefaultPolicy(ws)
+	p.Egress = egressPolicy(t, egress.Config{})
+	p.ProtectGit = true
+	s := &Process{policy: p, backend: "sandbox-exec"}
+	eg := startedEgress(t)
+	args := s.wrapEgress(t.Context(), ws, nil, eg, "/bin/true").Args
+	prof := ""
+	for i, a := range args {
+		if a == "-p" && i+1 < len(args) {
+			prof = args[i+1]
+		}
+	}
+	for _, want := range []string{
+		"(deny signal)\n(allow signal (target same-sandbox))",
+		`(deny file-write* (regex #"` + gitPattern(ws) + `"))`,
+		`(deny file-write* (regex #"` + gitFoldersPattern(ws) + `"))`,
+		"(deny network*)",
+		fmt.Sprintf(`(allow network-outbound (remote ip "localhost:%d"))`, eg.port()),
+	} {
+		if !strings.Contains(prof, want) {
+			t.Errorf("profile lacks %q:\n%s", want, prof)
+		}
+	}
+	if strings.Index(prof, "(allow network-outbound") < strings.Index(prof, "(deny network*)") {
+		t.Errorf("the proxy's port is allowed before the network is denied:\n%s", prof)
+	}
+}
+
+// The allowlist, git protection and root compose in one bwrap argv: no
+// capability, /proc covered, the relay bound and git's files read-only.
+func TestBwrapArgsComposeAllowlistGitAndRoot(t *testing.T) {
+	was := rootCaps
+	rootCaps = func() bool { return true }
+	t.Cleanup(func() { rootCaps = was })
+	ws := workspace(t)
+	gitRepo(t, ws)
+	p := DefaultPolicy(ws)
+	p.Egress = egressPolicy(t, egress.Config{})
+	p.ProtectGit = true
+	s := &Process{policy: p, backend: "bwrap"}
+	s.freshOnce.Do(func() { s.freshOK = true }) // no probe: arguments only
+	args := strings.Join(s.wrapEgress(t.Context(), ws, nil, startedEgress(t), "/bin/true").Args, " ")
+	cfg, hooks := filepath.Join(ws, ".git", "config"), filepath.Join(ws, ".git", "hooks")
+	for _, want := range []string{
+		strings.Join(rootCapArgs(), " "),
+		"--proc /proc --dev /dev " + strings.Join(rootProcCovers(), " "),
+		"--unshare-net",
+		"--ro-bind /abhed " + relayBinary,
+		"--ro-bind " + filepath.Join("/d", "proxy.sock") + " " + relaySocket,
+		"--ro-bind " + filepath.Join("/d", "dns.sock") + " " + relayDNS,
+		"--ro-bind-try " + cfg + " " + cfg,
+		"--ro-bind-try " + hooks + " " + hooks,
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("bwrap args lack %q:\n%s", want, args)
+		}
+	}
+	if !strings.Contains(args, "--unshare-user --cap-drop ALL") || !strings.Contains(args, "--ro-bind-try /proc/sys /proc/sys") {
+		t.Errorf("as root the command keeps a capability or /proc is uncovered:\n%s", args)
+	}
+	// The resolver's probe holds what the command will: root's args and the covers.
+	probe := strings.Join(dnsProbeArgs("/abhed"), " ")
+	if !strings.Contains(probe, strings.Join(rootCapArgs(), " ")) ||
+		!strings.Contains(probe, "--proc /proc --dev /dev "+strings.Join(rootProcCovers(), " ")) {
+		t.Errorf("the resolver's probe does not mirror the command as root:\n%s", probe)
+	}
+}
