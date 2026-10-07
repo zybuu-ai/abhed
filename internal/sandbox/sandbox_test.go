@@ -407,7 +407,7 @@ func TestProcessAvailableProbesBwrapNamespaces(t *testing.T) {
 	// reports empty sets, no_new_privs, the /proc scan and no writable file.
 	bwrapRun = func(context.Context, ...string) ([]byte, error) {
 		return []byte("CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n" +
-			"CapAmb:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\nPROC_SCANNED\nPROBE_DONE\n"), nil
+			"CapAmb:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\nPROC_CONTROL\nPROC_SCANNED\nPROBE_DONE\n"), nil
 	}
 	if ok, why := (&Process{backend: "bwrap", policy: Policy{}}).Available(); !ok {
 		t.Fatalf("a working bwrap: %s", why)

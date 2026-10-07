@@ -6,6 +6,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+**Before you upgrade.** If Abhed runs as root on Linux with
+`sandbox.allow_network` on and no container runtime, the `process` tier is now
+refused: install Docker or Podman for the `container` tier, run Abhed as an
+ordinary user, or turn the network off. As root it also refuses to start where
+it cannot mount a private `/proc` and `/dev` or finds a writable `/proc` file it
+does not cover.
+
 ### Security
 
 - When Abhed itself ran as root on Linux, a command in the `process` tier

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -160,9 +161,9 @@ func TestProcessSandboxProcEscapesClosed(t *testing.T) {
 	}
 }
 
-// As root the process tier refuses network access rather than share the host's
-// abstract sockets; as an ordinary user it is allowed.
-func TestProcessTierNetworkAsRoot(t *testing.T) {
+// As root the process tier refuses network access (the host's abstract
+// sockets); as an ordinary user it is allowed. Named to run in the root CI job.
+func TestProcessSandboxRefusesNetworkAsRoot(t *testing.T) {
 	p := DefaultPolicy(workspace(t))
 	p.AllowNetwork = true
 	s := NewProcess(p)
@@ -178,5 +179,41 @@ func TestProcessTierNetworkAsRoot(t *testing.T) {
 	}
 	if !ok && !strings.Contains(why, "namespace") {
 		t.Fatalf("non-root with network on: unexpectedly unavailable: %s", why)
+	}
+}
+
+// runProbeScript runs the root probe script under /bin/sh, with fakeFind (if
+// set) first on PATH as find.
+func runProbeScript(t *testing.T, fakeFind string) string {
+	t.Helper()
+	env := os.Environ()
+	if fakeFind != "" {
+		dir := t.TempDir()
+		if err := os.WriteFile(dir+"/find", []byte("#!/bin/sh\n"+fakeFind+"\n"), 0o755); err != nil { //nolint:gosec // a test stub
+			t.Fatal(err)
+		}
+		env = append(env, "PATH="+dir+":"+os.Getenv("PATH"))
+	}
+	cmd := exec.Command("/bin/sh", "-c", capProbeRoot)
+	cmd.Env = env
+	out, _ := cmd.CombinedOutput()
+	return string(out)
+}
+
+// The /proc scan fails closed when find fails or silently matches nothing,
+// and its positive control is reported by a working find.
+func TestCapProbeRootScriptFailsClosed(t *testing.T) {
+	if out := runProbeScript(t, "exit 1"); strings.Contains(out, "PROC_SCANNED") || checkCapProbe(out, true) == "" {
+		t.Fatalf("a failing find passed the scan:\n%s", out)
+	}
+	if out := runProbeScript(t, "exit 0"); strings.Contains(out, "PROC_CONTROL") || checkCapProbe(out, true) == "" {
+		t.Fatalf("a find that matches nothing passed the scan:\n%s", out)
+	}
+	// The real scan runs only as root, where every /proc dir is readable.
+	if _, err := exec.LookPath("find"); err != nil || !rootCaps() {
+		return
+	}
+	if out := runProbeScript(t, ""); !strings.Contains(out, "PROC_CONTROL") || !strings.Contains(out, "PROC_SCANNED") {
+		t.Fatalf("a working find did not report the control and finish:\n%s", out)
 	}
 }

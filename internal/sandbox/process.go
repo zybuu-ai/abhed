@@ -48,25 +48,26 @@ type Process struct {
 // full capability set and the command stays uid 0, so both need neutralising.
 func rootCaps() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
 
-// rootWritableProc are the /proc paths a uid-0 command would otherwise write
-// by owner match; core_pattern and modprobe run a program as host root.
+// rootWritableProc are /proc paths a uid-0 command could write by owner match;
+// they are bound read-only.
 var rootWritableProc = []string{
 	"/proc/sys", "/proc/sysrq-trigger", "/proc/dynamic_debug",
 	"/proc/latency_stats", "/proc/pressure", "/proc/scsi",
-	"/proc/acpi", "/proc/fs", // known root-writable on x86 and with cifs; the probe backstops the rest
 }
+
+// rootEmptyProc get an empty read-only tmpfs rather than the host's copy, so a
+// host mount made there after start cannot propagate in writable.
+var rootEmptyProc = []string{"/proc/sys/fs/binfmt_misc", "/proc/fs", "/proc/acpi"}
 
 // capProbeCaps prints the five capability sets and NoNewPrivs, for any uid.
 const capProbeCaps = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; echo PROBE_DONE`
 
-// capProbeRoot also lists every writable file left under /proc (outside the
-// command's own self, thread-self and pid dirs); any marks the tier unsafe, so
-// a per-kernel file the covers miss refuses rather than slips through.
-// Read-only: -writable is an access check.
+// capProbeRoot, run once at startup, also lists writable /proc files outside
+// the command's own; markers print only if both finds exit 0 (POSIX sh).
 const capProbeRoot = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; ` +
-	`if command -v find >/dev/null 2>&1; then ` +
-	`find /proc -xdev -writable -not -path '/proc/[0-9]*' -not -path '/proc/self/*' -not -path '/proc/thread-self/*' 2>/dev/null ` +
-	`| sed 's/^/WRITABLE /'; echo PROC_SCANNED; fi; echo PROBE_DONE`
+	`if c=$(find /proc/self/ -maxdepth 1 -name comm -writable 2>/dev/null) && ` +
+	`w=$(find /proc -xdev \( -path '/proc/[0-9]*' -o -path /proc/self -o -path /proc/thread-self \) -prune -o -writable -print 2>/dev/null); then ` +
+	`[ -n "$c" ] && echo PROC_CONTROL; [ -n "$w" ] && printf '%s\n' "$w" | sed 's/^/WRITABLE /'; echo PROC_SCANNED; fi; echo PROBE_DONE`
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
 var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -105,9 +106,8 @@ func (s *Process) Available() (bool, string) {
 		if why := s.bwrapNamespaces(); why != "" {
 			return false, why
 		}
-		// As root with the network on, the command shares the host's network
-		// namespace and so its abstract unix sockets, where host services that
-		// trust uid 0 (iscsid and the like) take commands. Refuse it.
+		// Network on means the host's netns and its abstract sockets, where
+		// services that trust uid 0 take commands; refuse it as root.
 		if rootCaps() && s.policy.AllowNetwork {
 			return false, "running as root, the process tier cannot allow network access: the command would share the host's abstract sockets; use the container or vm tier"
 		}
@@ -152,11 +152,8 @@ func rootCapArgs() []string {
 	return []string{"--unshare-user", "--cap-drop", "ALL"}
 }
 
-// rootProcCovers bind the writable root-owned /proc files read-only so the
-// still-uid-0 command cannot use owner rights to run code as host root; they
-// follow --proc, which they override. binfmt_misc is an autofs point, so a
-// host mount made after start would propagate in read-write: an empty
-// read-only tmpfs over it keeps register unreachable regardless.
+// rootProcCovers make root-owned /proc files unwritable to a uid-0 command;
+// they follow --proc, and the tmpfs covers only go where the path exists.
 func rootProcCovers() []string {
 	if !rootCaps() {
 		return nil
@@ -165,12 +162,16 @@ func rootProcCovers() []string {
 	for _, p := range rootWritableProc {
 		args = append(args, "--ro-bind-try", p, p)
 	}
-	return append(args, "--tmpfs", "/proc/sys/fs/binfmt_misc", "--remount-ro", "/proc/sys/fs/binfmt_misc")
+	for _, p := range rootEmptyProc {
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, "--tmpfs", p, "--remount-ro", p)
+		}
+	}
+	return args
 }
 
-// bwrapDropsCaps is why a sandboxed command would keep a capability or a
-// writable host-root path here, or "", probing once. It sets up /proc exactly
-// as wrap does, so a non-root user without a private /proc still passes.
+// bwrapDropsCaps is why a command would keep a capability or a writable
+// host-root path, or "", probing once with /proc set up as wrap does.
 func (s *Process) bwrapDropsCaps() string {
 	s.capsOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -179,8 +180,7 @@ func (s *Process) bwrapDropsCaps() string {
 		if rootCaps() {
 			probe, scanned = capProbeRoot, true
 		}
-		// A writable /dev (as wrap gives) when there is a fresh /proc, so the
-		// probe's own redirects work; otherwise the host /dev through --ro-bind.
+		// Mirror wrap: a fresh /proc and writable /dev only where they mount.
 		args := append(rootCapArgs(), "--ro-bind", "/", "/", "--unshare-pid")
 		if s.bwrapFreshOK() {
 			args = append(args, "--proc", "/proc", "--dev", "/dev")
@@ -197,15 +197,17 @@ func (s *Process) bwrapDropsCaps() string {
 	return s.capsErr
 }
 
-// checkCapProbe fails closed unless all five capability sets and NoNewPrivs
-// were reported with safe values and no /proc file was writable; requireScan
-// also demands the writable-/proc enumeration ran.
+// checkCapProbe fails closed unless every set is empty, NoNewPrivs is 1 and,
+// with requireScan, the /proc scan and its control both ran with nothing found.
 func checkCapProbe(out string, requireScan bool) string {
 	if !strings.Contains(out, "PROBE_DONE") {
 		return "bubblewrap (bwrap) confinement probe did not finish"
 	}
 	if requireScan && !strings.Contains(out, "PROC_SCANNED") {
 		return "bubblewrap (bwrap) could not enumerate writable /proc files"
+	}
+	if requireScan && !strings.Contains(out, "PROC_CONTROL") {
+		return "the writable-/proc scan missed its control file, so it cannot be trusted"
 	}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
@@ -463,9 +465,8 @@ func (s *Process) readableFiles() []string {
 	return out
 }
 
-// bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev in
-// this environment, probing once. It uses the same capability context as the
-// real command, so the probe and the command cannot disagree under root.
+// bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev here,
+// probing once with the real command's capability args.
 func (s *Process) bwrapFreshOK() bool {
 	s.freshOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
