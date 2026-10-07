@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +39,8 @@ type Process struct {
 
 	// egress is each session's proxy under sandbox.network allowlist.
 	egress egressSessions
+	// git is what the look for git folders keeps between commands.
+	git gitMemory
 }
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
@@ -244,10 +245,29 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 		fmt.Fprintf(&b, "(deny file-write* (literal %q))\n", p)
 	}
 	if s.policy.ProtectGit {
-		// Every .git at any depth, and its config and hooks, in any case.
+		// Every .git at any depth, and what git reads in it as configuration
+		// or follows elsewhere, in any case, made later too.
 		for _, ws := range s.workspaces() {
-			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s/(%s|%s)(/|$)\"))\n", regexQuote(ws), anyCase(".git"), anyCase("config"), anyCase("hooks"))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitPattern(ws))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFoldersPattern(ws))
 			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s$\"))\n", regexQuote(ws), anyCase(".git"))
+			// The folders holding a submodule's git folder named with slashes,
+			// which the patterns cannot tell from what a git folder holds.
+			g := scanOwnGit(ws)
+			for _, p := range holders([]string{ws}, g.protected) {
+				fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", anyCaseRegex(ws, p))
+				// Nor can a name be made beside one, which the patterns cannot tell from a folder's contents.
+				if modulesPrefix(ws, p) {
+					fmt.Fprintf(&b, "(deny file-write* (regex #\"%s/[^/]+$\"))\n", strings.TrimSuffix(anyCaseRegex(ws, p), "$"))
+				}
+			}
+			// Seatbelt matches the path a link resolves to, so what a linked
+			// pointer such as hooks names is held as well.
+			for _, l := range g.linked {
+				for _, t := range PathForms(RealPath(l)) {
+					fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", t)
+				}
+			}
 		}
 	}
 	for _, p := range s.statePaths() {
@@ -456,10 +476,15 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// .git file, which names the git folder, is bound read-only.
 		protected := s.protectedInside()
 		// Bubblewrap can bind only what exists, so each git folder found now
-		// has its config and hooks bound read-only; Seatbelt names them by pattern.
+		// has what git reads there bound read-only; Seatbelt names them by
+		// pattern. A commondir no bind could have stopped is taken out first.
 		if s.policy.ProtectGit {
 			for _, ws := range s.workspaces() {
-				protected = append(protected, GitProtected(ws)...)
+				found, err := gitGuard(ctx, ws, s.backend, &s.git)
+				if err != nil {
+					return &exec.Cmd{Err: err}
+				}
+				protected = append(protected, found...)
 			}
 		}
 		for _, p := range holders(s.workspaces(), protected) {
@@ -673,64 +698,3 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 
 // Backend says there is none.
 func (n *None) Backend() string { return "host" }
-
-// Bounds on the walk for git folders: a deeper or wider tree is not walked
-// further, and what lies past the bound is not protected.
-const (
-	gitWalkDepth   = 6
-	gitWalkEntries = 20000
-)
-
-// makeEmpty makes an empty folder or file at p, never replacing one.
-func makeEmpty(p string, dir bool) {
-	if dir {
-		_ = os.Mkdir(p, 0o755) // #nosec G301 -- git's own mode for hooks
-		return
-	}
-	if f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil { // #nosec G302 G304 -- git's own mode for config, in a git folder the walk found
-		_ = f.Close()
-	}
-}
-
-// GitProtected are the paths in ws that a git command runs programs from:
-// each git folder's config and hooks, made empty where missing, and each .git
-// file (a worktree's or a submodule's link to its git folder), at most
-// gitWalkDepth folders down.
-func GitProtected(ws string) []string {
-	var out []string
-	seen := 0
-	_ = filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // a folder that cannot be read is passed over, and the walk goes on
-		}
-		if seen++; seen > gitWalkEntries {
-			return filepath.SkipAll
-		}
-		rel, _ := filepath.Rel(ws, p)
-		depth := strings.Count(rel, string(filepath.Separator))
-		if strings.EqualFold(d.Name(), ".git") {
-			if d.IsDir() {
-				for _, f := range []string{"config", "hooks"} {
-					q := filepath.Join(p, f)
-					// A missing one is made empty as the person, so it can be bound read-only.
-					if _, err := os.Lstat(q); errors.Is(err, fs.ErrNotExist) {
-						makeEmpty(q, f == "hooks")
-					}
-					if _, err := os.Lstat(q); err == nil {
-						out = append(out, q)
-					}
-				}
-				return filepath.SkipDir
-			}
-			if d.Type().IsRegular() {
-				out = append(out, p)
-			}
-			return nil
-		}
-		if d.IsDir() && (depth >= gitWalkDepth || d.Name() == "node_modules" || strings.EqualFold(d.Name(), stateDir)) {
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return out
-}

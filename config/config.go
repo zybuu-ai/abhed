@@ -854,8 +854,8 @@ type SandboxConfig struct {
 	// WriteProtected are workspace paths commands may not write, set by the
 	// surface that runs the session, never by a file.
 	WriteProtected []string `json:"-"`
-	// ProtectGit write-protects every git folder's config and hooks in the
-	// workspace, at any depth; set as WriteProtected is.
+	// ProtectGit write-protects what git reads in every git folder in the
+	// workspace (config, hooks, commondir and the like); set as WriteProtected is.
 	ProtectGit bool `json:"-"`
 }
 

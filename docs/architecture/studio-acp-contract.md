@@ -1015,7 +1015,14 @@ Where the engine differs from the sections above:
    only paths that exist when a command starts, so a command there can still
    create a missing `.vscode`, `.devcontainer` or `.git` or a repository the
    search did not find; a git folder found then that lacks `hooks` or
-   `config` gets an empty one, bound read-only. A new `*.code-workspace` can
+   `config` gets an empty one, bound read-only. Commands are also kept from
+   writing `config.worktree`, `commondir`, `gitdir`, `info/attributes` and
+   `objects/info/alternates`, and the config and hooks of linked worktrees'
+   and submodules' git folders (`.git/worktrees/*`, `.git/modules/**`): on
+   macOS by pattern, made later too; on Linux those that exist, with an
+   empty `config.worktree` made where git would read one, and a `commondir`
+   in a git folder where git never writes one moved to the quarantine before
+   the next command, which is not run. A new `*.code-workspace` can
    be made by a command on every platform.
 9. **Modes (§5.1).** A mode changes only between prompts and while no
    background task runs (-32002 otherwise), since the policy engine is read
