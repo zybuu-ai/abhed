@@ -15,7 +15,8 @@ already allows). To keep the process tier, run Abhed as an ordinary user or turn
 the network off. As root the tier is also refused where it cannot mount a
 private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
 On the macOS process tier a command can no longer signal a process an earlier
-command left running; use `run_in_background` and `shell_kill`. With git
+command left running; use `run_in_background` and `shell_kill`. Nor can it run
+`open` or `osascript`; run those outside Abhed. With git
 protection on (Abhed Studio's sessions), git inside the sandbox fails at `git
 submodule update` on every tier, at `git worktree remove` on Linux and macOS,
 and on macOS also at `git worktree add` and at `git submodule add` or `update
@@ -76,6 +77,15 @@ in `secretstore` no longer compiles; see Go API.
   therefore no longer `kill`, or `kill -0`, a process an earlier command left
   running; use `run_in_background` and `shell_kill` for that. Affects 0.1.0
   to 1.2.6.
+- On the macOS process tier a command, or the workbench shell, could reach
+  LaunchServices and Apple events, so `open URL` had the browser, outside the
+  sandbox, fetch any host with workspace data in the URL, unrecorded, and
+  `open -a` or `osascript` could run an app outside the sandbox. With the
+  network off this leaked past `allow_network: false` in every earlier
+  release; under the new `network: "allowlist"` it went around the proxy. The
+  profile now denies `com.apple.coreservices.*` and `com.apple.lsd.*`, as the
+  stdio MCP server's does, on every network setting, so `open` and `osascript`
+  fail inside the sandbox; run them outside Abhed.
 - Abhed Studio's sessions kept a command from writing `.git/config` and
   `.git/hooks`, but a command could still write `.git/commondir`, pointing
   git at configuration and hooks of its own, or a submodule's config and

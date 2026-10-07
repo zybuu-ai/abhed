@@ -346,6 +346,9 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 	// which it could otherwise kill with kill $PPID, nor another command's,
 	// as bubblewrap's PID namespace keeps them apart on Linux.
 	b.WriteString(";; Signals stay inside this sandbox.\n(deny signal)\n(allow signal (target same-sandbox))\n\n")
+	// On every network setting: an app opened outside the sandbox has the
+	// network and the filesystem the command does not.
+	b.WriteString(";; No LaunchServices or Apple events.\n" + denyLaunchServices + "\n")
 
 	b.WriteString(";; Writes are confined to the workspace and standard temp dirs.\n")
 	b.WriteString("(deny file-write*)\n")
