@@ -123,7 +123,7 @@ func serverHides(sockDir, exe string) []string {
 			continue
 		}
 		seen[d] = true
-		if info, err := os.Stat(d); err == nil && info.IsDir() {
+		if info, err := os.Stat(d); err == nil && info.IsDir() { // #nosec G703 -- a stat of a run or temp folder, only to hide it
 			args = append(args, "--tmpfs", d)
 		}
 	}
