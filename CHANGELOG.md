@@ -15,9 +15,11 @@ already allows). To keep the process tier, run Abhed as an ordinary user or turn
 the network off. As root the tier is also refused where it cannot mount a
 private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
 On the macOS process tier a command can no longer signal a process an earlier
-command left running; use `run_in_background` and `shell_kill`. With git
-protection on (Abhed Studio's sessions and, new here, every session `abhed
-serve` runs), git inside the sandbox fails at `git
+command left running; use `run_in_background` and `shell_kill`. `open`, and
+`osascript` sending Apple events to another app, still run there but fail
+without launching anything; run those outside Abhed. With git protection on
+(Abhed Studio's sessions and, new here, every session `abhed serve` runs), git
+inside the sandbox fails at `git
 submodule update` on every tier, at `git worktree remove` on Linux and macOS,
 and on macOS also at `git worktree add` and at `git submodule add` or `update
 --init` for a submodule not yet checked out; run those outside Abhed. ACP
@@ -77,6 +79,19 @@ in `secretstore` no longer compiles; see Go API.
   therefore no longer `kill`, or `kill -0`, a process an earlier command left
   running; use `run_in_background` and `shell_kill` for that. Affects 0.1.0
   to 1.2.6.
+- On the macOS process tier a command, or the workbench shell, could reach
+  LaunchServices and Apple events, so `open URL` had the browser, outside the
+  sandbox, fetch any host with workspace data in the URL, unrecorded, and `open
+  -a` or `osascript` could run an app outside the sandbox. With the network off
+  this leaked past `allow_network: false` in every earlier release; under the
+  new `network: "allowlist"` it went around the proxy. The profile, and the
+  stdio MCP server's, now deny the LaunchServices and Apple event services
+  (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`,
+  the `coreservices` and `lsd` part matched in any case; the whole family is
+  denied, which also cuts Handoff's clipboard and the shared file lists), on
+  every network setting. `open` still runs inside the sandbox but exits non-zero
+  without opening the URL, file or app; `osascript` runs a script but cannot
+  send Apple events to another app. Run those outside Abhed.
 - Abhed Studio's sessions kept a command from writing `.git/config` and
   `.git/hooks`, but a command could still write `.git/commondir`, pointing
   git at configuration and hooks of its own, or a submodule's config and

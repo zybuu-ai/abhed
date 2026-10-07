@@ -203,6 +203,17 @@ workspace and a few shared folders, not only the workspace:
   with the rest of your machine, so a command can leave a file there that a
   program outside the sandbox later reads.
 
+`/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
+design: tools expect a shared temp area there, so keep nothing in them a command
+should not read or change.
+
+On macOS the profile denies the LaunchServices and Apple event services
+(`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, the `coreservices` and `lsd` part matched in any case; the whole family is denied, which also cuts Handoff's clipboard and the shared file lists), whatever the network
+setting, since an app they start runs outside the sandbox. `open` still runs
+there but exits non-zero without opening the URL, file or app, and `osascript`
+runs a script but cannot send Apple events to another app. Run those outside
+Abhed.
+
 Each command on the process tier is kept apart from every other: on Linux
 it has its own PID namespace, and on macOS the Seatbelt profile lets it
 signal only processes in its own sandbox, so `kill $PPID` cannot stop Abhed.

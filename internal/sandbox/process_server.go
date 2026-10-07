@@ -84,10 +84,13 @@ func serverProfile(port uint16) string {
 	b.WriteString("(deny sysctl-read (sysctl-name-prefix \"net.route\"))\n")
 	b.WriteString("(deny system-socket (socket-domain AF_ROUTE))\n")
 	b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.SystemConfiguration\") (global-name-prefix \"com.apple.network\"))\n")
-	// LaunchServices would open a URL or an app outside the sandbox for it.
-	b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.coreservices.\") (global-name-prefix \"com.apple.lsd.\"))\n")
+	b.WriteString(denyLaunchServices)
 	return b.String()
 }
+
+// denyLaunchServices keeps LaunchServices and Apple events from a profile, which would
+// open a URL or run an app outside it; the coreservices/lsd part in any case, as Seatbelt names are case-sensitive.
+const denyLaunchServices = `(deny mach-lookup (global-name-regex #"^com\.apple\.[cC][oO][rR][eE][sS][eE][rR][vV][iI][cC][eE][sS]\.") (global-name-regex #"^com\.apple\.[lL][sS][dD]\."))` + "\n"
 
 // serverEnvDropped are variables naming a session bus, an agent or a
 // container engine: ways out a server is not handed.
