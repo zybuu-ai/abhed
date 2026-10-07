@@ -230,6 +230,15 @@ asserted. Current state:
       container and vm tiers only, and `abhed doctor` warns when it is set on another
 - [x] **Tier honesty** — no silent downgrade; `Select` fails with what it tried
       (`TestSelectRefusesToDowngrade`)
+- [x] **Fence tier on a real kernel** — the CI job `fence` runs every fence package's tests,
+      the sandbox's `Fence`, `Mounts`, `Launch` and `Select` tests and the end-to-end
+      `Fence` CLI tests as an ordinary user in a delegated scope
+      (`systemd-run --user --scope -p Delegate=yes`) with `ABHED_REQUIRE_FENCE=1`, on
+      Ubuntu 24.04 for x86-64 and arm64 (`scripts/ci/fence-gated.sh`). It first checks for
+      Landlock ABI 3 or later, cgroup v2 and an ordinary user's user namespace. A test that
+      does not run and pass fails the job, except the two written for other platforms.
+      Ubuntu's limit on user namespaces is lifted only for the test binaries' directory, by
+      an AppArmor profile, not by the system-wide sysctl
 - [x] **Cross-tenant leakage** — session list and replay isolated (`server`)
 - [x] **MCP tool poisoning** — descriptions sanitized before reaching the model
       (`internal/mcp`)

@@ -6,6 +6,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- CI runs the fence tier's gated tests for real: a new job on Ubuntu 24.04,
+  x86-64 and arm64, runs them as an ordinary user in a delegated cgroup scope
+  with `ABHED_REQUIRE_FENCE=1`, so a skip fails the build. The end-to-end CLI
+  tests for the fence are no longer accepted as pending there.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
