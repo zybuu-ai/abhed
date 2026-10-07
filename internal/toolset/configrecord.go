@@ -23,6 +23,20 @@ func LocalPrincipal(agentWhy string) agent.Principal {
 	return p
 }
 
+// TrustState is what session.started says about the workspace file: the
+// trust the surface asked for (stored, trusted or untrusted) and what applied.
+func TrustState(choice config.TrustChoice, st config.WorkspaceTrust) map[string]any {
+	requested := string(choice)
+	if choice == config.TrustAsStored {
+		requested = "stored"
+	}
+	out := map[string]any{"requested": requested, "trusted": st.Trusted, "reason": st.Reason}
+	if st.SHA256 != "" {
+		out["sha256"] = st.SHA256
+	}
+	return out
+}
+
 // ConfigAttempts are cfg's settings that did not take effect as written, each
 // credited to p.
 func ConfigAttempts(cfg config.Config, p agent.Principal) []agent.ConfigAttempt {

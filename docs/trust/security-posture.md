@@ -17,7 +17,7 @@ whose strength is explicit and self-reporting (`internal/sandbox/sandbox.go`):
 | `process` | Process-level confinement: macOS `sandbox-exec`; on Linux, bubblewrap with its own PID, IPC, UTS and (with no network) network namespaces and a read-only view of the system. No seccomp filter or Landlock ruleset is applied | The minimum to set on any shared server: `sandbox.min_tier: "process"` |
 | `container` | OCI container: namespace isolation, shared kernel | |
 | `vm` | gVisor (`runsc`): a user-space kernel that intercepts system calls, run as a container runtime. Not a microVM; the name is kept for compatibility | Strongest tier implemented |
-| `fence` | Preview, Linux only, off unless `sandbox.tier: "fence"`: each command confined by Landlock and a seccomp filter, in a cgroup per tool call (`internal/sandbox/fence_linux.go`). Not a microVM; shares the host kernel | Counts as `process` for `min_tier`; fails closed, never falls back to another tier. Requirements and limits: [Configuration](../guide/02-configuration.md#the-fence-tier-preview-linux) |
+| `fence` | Preview, Linux only, off unless `sandbox.tier: "fence"`: each command confined by Landlock and a seccomp filter, in a cgroup per tool call (`internal/sandbox/fence_linux.go`). Where an ordinary user may make a user namespace (mode `mount_namespace`), each command also gets a mount namespace of its own: git's config and hooks and an editor's protected files bound read-only, the workspace's `.abhed` under an empty tmpfs (`internal/fence/mountns`). Without one (mode `landlock_only`) the command line runs fenced and `abhed serve` and Studio are refused. Not a microVM; shares the host kernel | Counts as `process` for `min_tier`; fails closed, never falls back to another tier, and records its mode in `fence.qualified`. Requirements and limits: [Configuration](../guide/02-configuration.md#the-fence-tier-preview-linux) |
 
 `Select` (`internal/sandbox/sandbox.go`) picks the strongest backend
 available that meets the configured `MinTier`, and **refuses to start** if
@@ -271,10 +271,25 @@ and cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
 profiles. Each is named both as given and with its links resolved, so a
 home reached through a link is covered. The list is a deny list: another
 file in home that holds a secret is readable, where Linux's bubblewrap
-leaves home out altogether. The shell can signal other processes running as
-the same user. The environment is an allowlist
+leaves home out altogether. Signals stay inside the sandbox: the profile
+allows a command or shell to signal only processes in its own Seatbelt
+sandbox (`(allow signal (target same-sandbox))`), so it cannot stop Abhed
+(`kill $PPID`), the server, or another command's processes, as bubblewrap's
+PID namespace keeps them apart on Linux (`TestSeatbeltSignalsStayInside`).
+One consequence: a command cannot stop a server an earlier command left
+running; Abhed's own stop for a background shell, sent from outside, does.
+The profile starts from `(allow default)`, and the only Mach lookups it
+denies are the network and system configuration services, with the network
+off or under the allowlist; other `mach-lookup` services stay reachable: a command can ask the user's per-session services
+(the pasteboard, Launch Services, which opens applications and URLs, and
+others) to act for it outside the sandbox. Linux has no equivalent. A
+deny-by-default profile for Mach services is not done yet. The environment is an allowlist
 (`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
-`ABHED_` settings. On the `none` tier the shell has the server's environment
+`ABHED_` settings. On macOS that does not keep them from a command: the
+kernel returns any same-user process's environment (`kern.procargs2`) unless
+it is a restricted program, as Apple's are, and Seatbelt cannot refuse it, so a
+command reads Abhed's environment and a concurrent command's
+(`TestSeatbeltProcArgsExposure`). On the `none` tier the shell has the server's environment
 without its `ABHED_` settings, which leaves anything else the operator
 exported, and nothing contains it.
 
@@ -360,7 +375,8 @@ Design and the classification of every setting:
 ## Data flow — what leaves the deployment
 
 **Nothing, by default.** The shell tool gets no network access unless
-`sandbox.allow_network` is set to true (verified by
+`sandbox.allow_network` is set to true or `sandbox.network` to `"allowlist"`
+(the default verified by
 `TestProcessSandboxBlocksNetworkByDefault` on both the macOS and the Linux
 backend — the Linux run needs a privileged CI job, since a hosted runner
 cannot unshare a network namespace — per `docs/architecture/03-security.md`
@@ -379,6 +395,25 @@ Programs that enumerate interfaces get an error rather than a loopback-only
 list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
 pytest are unaffected.
 
+**Under `sandbox.network: "allowlist"`**, set in the managed configuration,
+each session gets a proxy on loopback and the `egress` rules decide what
+leaves, default deny, each decision recorded as an `egress.decision` event
+with the call or session it came from, never bodies or credentials. Brokered
+this way: `bash` commands (only the process tier accepts the setting; on
+Linux a command reaches the proxy only through a relay in its own network
+namespace, on macOS Seatbelt allows only the proxy's port), the model
+client, `web_fetch`, `web_search` and MCP servers over HTTP (judged in
+Abhed's process, request by request), and stdio MCP servers' direct sockets
+(confined to a proxy of their own; not started where they cannot be, or as
+root on Linux). Not brokered: `ssh`, the `k8s_*` tools, remote RAG, a stdio
+server's files (it can plant something that runs later outside any
+sandbox), and requests system services make on a command's or server's
+behalf, outside the proxy and unrecorded: on macOS `trustd` fetches a
+certificate's AIA and OCSP URLs, and on Linux, for a stdio server, a
+resolver reached over a unix socket left visible looks names up. HTTPS is judged by host and port
+only; there is no TLS inspection. Details:
+`docs/guide/21-network-policy.md`.
+
 **`web_search` and `web_fetch`, when enabled**, are the two narrow,
 structured exceptions: a Go tool in the Abhed process makes the request, not
 the sandboxed shell. `web_search` sends a query to the configured provider.
@@ -393,8 +428,8 @@ and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
 enabled on its own, and neither enables shell networking. Both sections are
 managed only: only the managed configuration turns them on or names the
 provider, endpoint, key or hosts. The user's file, `-settings`, a workspace
-trusted or not, the SDK and the environment may only turn them off or narrow
-them, and each attempt that did not take effect is recorded as a
+trusted or not and the SDK may only turn them off or narrow them (no
+`ABHED_*` variable sets either), and each attempt that did not take effect is recorded as a
 `config.refused` event naming who made it (`config/websection.go`). `web_fetch`
 fetches only the URL policy has judged: it refuses schemes other than
 http and https, and any loopback, private, link-local, metadata or reserved

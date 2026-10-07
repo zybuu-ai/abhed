@@ -27,6 +27,7 @@ import (
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/mcp"
@@ -259,6 +260,9 @@ type Options struct {
 	SkillRegistry *skills.Registry
 	// Gateway holds the MCP connections, so a server can be added at runtime.
 	Gateway *mcp.Gateway
+	// Egress is the tool set's egress guard (internal: set by abhed serve, not
+	// outside this module); nil leaves loops on the installed guard, as before.
+	Egress *egress.Guard
 	// Extensions are the running extensions: each session's policy carries
 	// their veto, and compaction asks them for a summary. Nil runs none.
 	Extensions *extension.Host
@@ -275,6 +279,16 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// SessionEnded, when set, is told a session's id as the session leaves
+	// this process (deleted, or taken by another), so what the sandbox keeps
+	// for it, such as its egress proxy, goes with it.
+	SessionEnded func(id string)
+	// SessionBash, when set, gives each session a bash of its own in place of
+	// the registry's, such as one under the fence, whose cgroup is the
+	// session's; the function it returns releases it when the session goes.
+	// It is given the registry's bash to start from; a registry without one
+	// is left as it is.
+	SessionBash func(sessionID string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error)
 	// StreamRecheck is how often an open event or terminal stream is
 	// authorised again. Zero means the default; it can only be shortened, and
 	// anything above maxStreamRecheck is held to it.
@@ -400,6 +414,10 @@ type liveSession struct {
 	// fallback is a resumed session's move to the default because its recorded
 	// provider no longer resolves, written by its next turn; guarded by claimMu.
 	fallback *agent.ModelSwitched
+
+	// closeBash releases the session's own bash, when it has one.
+	closeBash     func() error
+	closeBashOnce sync.Once
 	// beatStop ends the heartbeat that keeps this node's claim on the session
 	// fresh while a run or a background child is live; guarded by mu.
 	beatStop func()
@@ -415,7 +433,9 @@ func (s *Server) sessionRedactor() agent.Redactor {
 	}); ok {
 		red, err := fresh.Session()
 		if err != nil {
-			s.log.Error("the session's event payloads will be withheld", "err", err)
+			s.log.Error("the session's event payloads will be withheld until the secrets store loads again", "err", err)
+		}
+		if red == nil {
 			return secrets.Withholding()
 		}
 		return red
@@ -457,6 +477,12 @@ func sharedSecretRules(opts Options) []string {
 // its values could not be redacted.
 func (s *Server) sessionSecrets(spec StartSpec) (*secrets.Store, agent.Redactor, error) {
 	if s.opts.SecretsFor == nil {
+		// Said at each session too: a warning given only at startup is lost
+		// in a long-running server's log by the time an account uses it.
+		if rules := sharedSecretRules(s.opts); len(rules) > 0 {
+			s.log.Warn("this session shares the operator's secrets store with every account on this server",
+				"user", spec.User, "tenant", spec.Tenant, "rules", rules)
+		}
 		return nil, s.sessionRedactor(), nil
 	}
 	v, err := s.opts.SecretsFor(spec.Tenant, spec.User)
@@ -495,6 +521,45 @@ func (c chained) Span() int {
 		n = max(n, r.Span())
 	}
 	return n
+}
+
+// FindInPath finds a stored value of any part in a path: by the part's own
+// FindInPath, or for a part without one, by whether redacting changes it.
+// The label is "" when a part cannot be read.
+func (c chained) FindInPath(path string) (string, bool) {
+	quoted, _ := json.Marshal(path)
+	for _, r := range c {
+		if f, ok := r.(interface{ FindInPath(string) (string, bool) }); ok {
+			if label, found := f.FindInPath(path); found {
+				return label, true
+			}
+			continue
+		}
+		switch out := r.Redact(quoted); {
+		case out == nil:
+			return "", true
+		case string(out) != string(quoted):
+			return "[secret]", true
+		}
+	}
+	return "", false
+}
+
+// Names are the names every part that can say them holds.
+func (c chained) Names() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range c {
+		if n, ok := r.(interface{ Names() []string }); ok {
+			for _, name := range n.Names() {
+				if !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func New(opts Options) *Server {
@@ -1493,6 +1558,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// The prompt, loop settings and budget as the CLI builds them. The prompt
 	// is set once the session's own tools are bound, so it names only those.
 	cfg := toolset.LoopConfig(s.opts.Config, "")
+	cfg.Egress = s.opts.Egress
 	toolset.Police(s.opts.Extensions, pol, sessionID)
 
 	var approver agent.Approver = live
@@ -1500,6 +1566,16 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		approver = agent.AutoApprove{Yes: false}
 	}
 	budget := toolset.Budget(s.opts.Config)
+	if s.opts.SessionBash != nil && registry != nil {
+		if t, ok := registry.Get("bash"); ok {
+			if shared, ok := t.(tools.Bash); ok {
+				bash, release := s.opts.SessionBash(sessionID, rec, shared)
+				registry = registry.Clone()
+				registry.Add(bash)
+				live.closeBash = release
+			}
+		}
+	}
 	if vault != nil && registry != nil {
 		registry = tools.BindStores(registry, vault)
 	}
@@ -3257,6 +3333,41 @@ func (s *Server) fence(live *liveSession) {
 	}
 	live.closeTerminals(closedWithSession)
 	live.Loop.Background.Close(agent.TermLeaseLost)
+	s.releaseBash(live)
+	s.sessionEnded(live.ID)
+}
+
+// sessionEnded tells the sandbox a session has left this process.
+func (s *Server) sessionEnded(id string) {
+	if s.opts.SessionEnded != nil {
+		s.opts.SessionEnded(id)
+	}
+}
+
+// releaseBash releases the session's own bash once, such as its fence's
+// cgroup, ending what its commands left running.
+func (s *Server) releaseBash(live *liveSession) {
+	if live.closeBash == nil {
+		return
+	}
+	live.closeBashOnce.Do(func() {
+		if err := live.closeBash(); err != nil {
+			s.log.Error("releasing the session's sandbox", "session", live.ID, "error", err)
+		}
+	})
+}
+
+// releaseBashes releases every live session's own bash, at shutdown.
+func (s *Server) releaseBashes() {
+	s.mu.RLock()
+	all := make([]*liveSession, 0, len(s.running))
+	for _, live := range s.running {
+		all = append(all, live)
+	}
+	s.mu.RUnlock()
+	for _, live := range all {
+		s.releaseBash(live)
+	}
 }
 
 // releaseNodeNow ends the hold whatever is live, for a session going away
@@ -3914,12 +4025,18 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	// draining lets the workbench leave a queued message where it is rather
 	// than withdraw it for a Send now the server would refuse.
-	WriteJSON(w, http.StatusOK, map[string]any{
+	h := map[string]any{
 		"status":   "ok",
 		"sessions": n,
 		"model":    s.opts.Adapter.Profile().Name,
 		"draining": s.draining.Load(),
-	})
+	}
+	// Sessions still start with a broken operator store, but record nothing
+	// but withheld payloads; a probe should see that, not a plain ok.
+	if l, ok := s.opts.Redact.(interface{ Loads() error }); ok && l.Loads() != nil {
+		h["status"], h["secrets_store"] = "degraded", "unreadable"
+	}
+	WriteJSON(w, http.StatusOK, h)
 }
 
 // claimNode records that this process holds the session, under its liveness
@@ -4334,6 +4451,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			s.log.Warn("shutdown did not complete cleanly", "err", err)
 		}
+		s.releaseBashes()
 	}()
 	s.log.Info("abhed server listening", "addr", s.opts.Addr, "workspace", s.opts.Workspace)
 	err := srv.ListenAndServe()

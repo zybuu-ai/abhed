@@ -535,12 +535,93 @@ The `write` and `edit` tools also refuse anything inside a `.git` folder, and
 a `.git` file, in any case and through a link, in every mode: a hook or a
 config line written there runs a program at the next git command, Abhed's
 own or yours. Git commands still change the repository. Commands are not
-held to this by the file tools. Abhed Studio's sessions also keep every
-`.git/config` and `.git/hooks` out of their commands' reach: on macOS by
-pattern, at any depth and for repositories made later; under bubblewrap and
-in a container by binding read-only those found when each command starts,
-an empty hooks folder or config file made first where a repository has none,
-down to six folders, past `node_modules` and `.abhed`.
+held to this by the file tools. Abhed Studio's sessions, and every session
+`abhed serve` runs (the web IDE and the API), also keep out of their
+commands' reach what git reads in a git folder as configuration or follows
+elsewhere: `config`, `config.worktree`, `hooks`, `commondir`, `gitdir`,
+`info/attributes` and `objects/info/alternates`, in every git folder, its
+linked worktrees' (`.git/worktrees/*`) and its submodules'
+(`.git/modules/**`). In a served session that covers the agent's commands,
+its background shells, `!` commands and the workbench terminal, in both of
+its modes. The terminal CLI, `abhed -p` and `abhed rpc` do not hold these
+files; there the sandbox tier is what contains a planted hook.
+
+On macOS this is by pattern, at any depth and for repositories and files
+made later. The folders holding those files (`modules` and each folder in
+it, `worktrees` and each folder in it, `info`, `objects`, `objects/info`)
+cannot be moved, removed or made by a command, though what they hold stays
+writable, so a command cannot move one aside and put a link to a copy in its
+place. Nor can a name be made beside a submodule's git folder named with
+slashes (`modules/lib/y` beside `modules/lib/x`) in the workspace's own
+repository; in a nested repository it can, as Abhed looks for those names
+only in the workspace's own. Git inside the sandbox therefore cannot make a
+linked worktree or a submodule's git folder: `git worktree add`, `git
+worktree remove` and `git submodule add` or `update --init` for a submodule
+not yet checked out fail there; run them yourself. A `hooks` (or other of
+those files) that is a link is held where it leads as well, as is the
+workspace's own `.git`, or a `modules` or `worktrees` folder or a folder in
+either, that is a link; a linked `.git` is then read-only throughout, so git
+cannot commit there. A nested repository's `.git` that is a link is not
+followed: the folder it leads to stays writable, so replace such a link with
+the folder itself.
+
+On every tier, plain `git submodule update` on a submodule already checked
+out fails inside the sandbox too, as git rewrites `core.worktree` in the
+submodule's protected config; run it yourself.
+
+Under bubblewrap and in a container (the vm tier too) it is by binding
+read-only those found when each command starts; an empty hooks folder or
+config file is made first where a repository has none, and an empty
+`config.worktree` where git would read one. The workspace's own git folder,
+its submodules' and its linked worktrees', with each one's `.git` file in
+the work tree, are found first; other repositories by a walk down six
+folders, past `node_modules` and `.abhed`, that enters at most 20,000
+folders and looks at each folder's `.git` before what the folder holds.
+Repositories a session has found stay protected after a command fills the
+workspace with folders; one past that bound and not found before is not
+protected, and reaching the bound is recorded once a session as
+`sandbox.git_walk_bounded`. Modules holding more than 20,000 entries refuse
+the command, as no repository has them. A `hooks` (or other of those files)
+that is a link cannot be bound, and a command could point it elsewhere, so
+each command is refused until it is replaced with what it points to; so is a
+`.git`, `modules` or `worktrees` folder, or a folder in either, that is a
+link. `git worktree remove` fails there, as the worktree's folder is bound.
+Git refuses an empty `commondir`, so none can stand in for a missing one: a
+`commondir` found where git never writes one, or a linked worktree's that
+names anything but its repository's git folder by `../..` or by its path,
+with no symbolic link on the way, is moved to `~/.abhed/quarantine`, that
+command is not run, its error says what was moved where, and the record
+gains `sandbox.git_planted`. Until the next command starts, git you run
+yourself in that repository would follow it. Binding holds only what exists
+when a command starts: within one command, a command can make a repository
+(`git init new`), give it a config naming an fsmonitor and add it to the
+parent as a submodule entry (`git add new`), or make a `.git/modules/<name>`
+that a later `git submodule update --init` reuses, and git run in the parent
+outside Abhed may then run that program. On macOS no `.git` can be made in
+the workspace, nor a folder under the workspace's own `modules` (a nested
+repository's slash-named submodules excepted, as above), but Seatbelt checks
+a rename only at its two ends, so the same gap is open there: a command can
+build a repository in the writable temp area, with a config naming an
+fsmonitor, move it into the workspace and add it as a submodule entry, or
+move it over a nested repository that is not a submodule. Moving a
+registered submodule's work tree is refused. Before running git in a
+workspace a session has used, check `git status` and `git diff --submodule`
+for submodule entries you did not add. A root status never enters a nested
+repository that is not a submodule, so before running git in one, check its
+`.git/config` for settings that run a program, such as `core.fsmonitor` and
+`core.hooksPath`.
+
+Abhed's own git on the host refuses to run while a `commondir` names
+anything but the repository's own git folder, by `../..` or its path
+through no symbolic link, while a work tree's `.git` file reaches its git
+folder through a symbolic link (`git worktree repair` writes it afresh),
+and where a `.git` is present but git cannot say where the git folder is.
+The fence holds the same files in its `mount_namespace` mode: each command's
+mount namespace binds them read-only and pins the folders holding them, a
+planted `commondir` is taken out before the next command, which is refused,
+and a linked git folder, or a held file with a second name, refuses the
+command. In `landlock_only` the fence cannot hold paths inside the writable
+workspace, so Studio and `abhed serve` are refused there.
 
 The command sandbox guards `.abhed/` by path, not by file: a hardlink to a
 state file elsewhere in the workspace is an ordinary path to it, which a
@@ -695,7 +776,8 @@ The model sees the **names**, and asks for one on a single command:
 ```
 
 That command, and only that command, runs with `GITHUB_TOKEN` in its
-environment. `k8s_login` names a token as `token_secret` and `ssh_connect` a
+environment. On the macOS process tier another command running at the same
+time can read that environment; see [Configuration](02-configuration.md#sandbox). `k8s_login` names a token as `token_secret` and `ssh_connect` a
 password as `password_secret`, and use it for that session's login only.
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
@@ -705,7 +787,8 @@ On a Community server that several accounts sign in to (local, proxy or OIDC
 authentication), every account shares the operator's one store. Any account
 can then use every secret an allow rule names, and can read it too: redaction
 hides the stored value, not a command that prints it reversed, encoded or
-split. The server logs a warning at startup when it finds such a rule. Give
+split. The server logs a warning at startup when it finds such a rule, and
+again as each session starts, naming its account. Give
 each person who must not see another's secrets their own server.
 
 A server embedding Abhed for several accounts can instead give each account
@@ -766,7 +849,10 @@ it as not ready. A missing store just means no secrets.
 
 `abhed serve` checks the store when it starts. If the store breaks while the
 server runs, each new or resumed session still starts, but every event payload
-it records is withheld, and the server logs why, until the file is fixed. The
+it records is withheld, and the server logs why, until the file is fixed: a
+session started meanwhile redacts again from then on. While the store cannot
+be loaded, `GET /v1/health` answers `"status": "degraded"` with
+`"secrets_store": "unreadable"`, still with code 200. The
 same happens for the next conversation in a terminal that is already running.
 
 Redaction follows the store for the whole session, as bash does: the store is

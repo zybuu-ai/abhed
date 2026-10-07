@@ -345,7 +345,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		sbox = sb
 		bash.Sandbox = sb.Command
-		bash.Isolation = tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}
+		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))
 		fence, _ = sb.(*sandbox.Fence)
 		if in, ok := sb.(sandbox.Interactive); ok {
 			bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
@@ -362,13 +362,17 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
 		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
-		Vault: secrets.Default(), Warn: opts.Warn,
+		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox,
 	})
 	// What New made is released on every error from here: the tools, and
 	// the sandbox's cgroup and private temp.
+	var release func() // lets go of the record once recordFor has opened it
 	fail := func(err error) (*Agent, error) {
 		set.Close()
 		_ = sandbox.Close(sbox)
+		if release != nil {
+			release()
+		}
 		return nil, err
 	}
 	// A skill's own directory is reachable, as it is from the command line.
@@ -388,6 +392,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return fail(err)
 	}
+	release = func() { (&Agent{store: store, id: id}).releaseRecord() }
 	// Every write goes through the forwarder, so OnEvent misses none, from the
 	// first event on.
 	fwd := newForwarder(store, opts.OnEvent != nil)
@@ -395,6 +400,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	rec.Redact = red
 
 	loopCfg := toolset.LoopConfig(cfg, "")
+	loopCfg.Egress = set.Guard()
 	// The file's max_turns binds an embedded agent when the organisation sets
 	// it, or when the caller asks for the configured limits.
 	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns
@@ -459,7 +465,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// A surface's new session says how it started, as the command line's does.
 	if x.Surface != "" && !x.Resume {
 		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
-			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg)}
+			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg),
+			"workspace_trust": toolset.TrustState(opts.WorkspaceTrust, cfg.Workspace)}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
 			return fail(fmt.Errorf("abhed: recording the session start: %w", err))
 		}

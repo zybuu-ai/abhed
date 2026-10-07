@@ -165,6 +165,11 @@ Accounts separate sessions, not the machine. Every account on one server:
 - draws on the **same secret store** (`abhed secret`). A secret an allow rule
   permits is available to every account's sessions, not only to the person
   who stored it.
+- under the fence tier on Linux older than 6.12 (Landlock ABI below 6), has
+  its **commands unseparated from other accounts' commands**: one session's
+  commands can signal another's and read their command lines in `/proc`.
+  Linux 6.12 and later keep signals within each command; command lines stay
+  readable either way.
 
 What is per account: sessions and their records, subagent records, approvals,
 and each session's terminals. People who must not see each other's files or

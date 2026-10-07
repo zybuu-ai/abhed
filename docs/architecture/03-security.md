@@ -39,14 +39,22 @@ the architecture assumes injection *sometimes succeeds* and constrains blast rad
  L1  Provenance      every observation tagged trusted | untrusted at ingest
  L2  Policy          evaluated on the ACTION, never on the text that motivated it
  L3  Isolation       strongest available tier per session; assume code inside is hostile
- L4  Egress          default-deny network; broker is the only path out
+ L4  Egress          default-deny network; an allowlist proxy is the only path out
  L5  Detection       log inspection + anomaly detection on action streams
  L6  Recovery        event-sourced replay; deterministic incident reconstruction
 ```
 
-Two layers are design, not code. L4 has no broker: egress is off by default, and the
-opt-in tools and MCP servers reach the network from the host (§5, §6, issue #44). L5 is not
-built: nothing watches the action stream for anomalies, and the monitor is not turned on.
+L4 is built in part. Egress is off by default. With `sandbox.network: "allowlist"` in the
+managed configuration, each session gets a proxy on loopback, and the `egress` rules decide
+every request that goes through it, each recorded as an `egress.decision` event: `bash`
+commands (the process tier enforces it; the other tiers refuse the setting), the model
+client, `web_fetch`, `web_search`, MCP servers over HTTP, and stdio MCP servers' direct
+sockets. Outside it stay `ssh`, the `k8s_*` tools, remote RAG, a stdio server's files, and
+requests system services make on a command's or server's behalf: `trustd` on macOS
+fetches a certificate's AIA and OCSP URLs, and on Linux, for a stdio server, a resolver
+reached over a unix socket left visible looks names up (§5, §6,
+[Network policy](../guide/21-network-policy.md)). L5 is not built: nothing watches the
+action stream for anomalies, and the monitor is not turned on.
 
 The key design decision is **L2**: policy never asks "does this look like a legitimate
 request?" It asks "is this action permitted for this session, regardless of why the model
@@ -94,6 +102,21 @@ What each tier bounds today:
 - **`process`.** Writes go to the workspace, plus temp folders and, on macOS, toolchain
   caches ([Configuration](../guide/02-configuration.md#sandbox) lists them). Processes are
   bounded by `max_procs` and each command by its timeout; memory, CPU and disk are not.
+  A command signals only its own processes: bubblewrap's PID namespace on Linux, a
+  Seatbelt `same-sandbox` signal rule on macOS, so `kill $PPID` does not reach Abhed. On
+  macOS, Mach service lookups other than the network and system configuration services
+  stay open under the profile's `(allow default)`
+  ([security posture](../trust/security-posture.md)).
+  When Abhed runs as root the command is given no capabilities (`--cap-drop ALL` in a user
+  namespace, `no_new_privs` kept) and the writable root-owned `/proc` files are bound
+  read-only (`core_pattern`, `modprobe`, `binfmt_misc` and the rest), so it cannot run code
+  as host root. It still runs as uid 0, so it keeps owner rights on the root-owned files it
+  can already write and a peer-credential check sees uid 0; it has no capability. The tier
+  fails closed if it cannot drop the capabilities, enumerate the writable `/proc` files, or
+  mount a private `/proc` and `/dev` (the host `/dev` fallback would expose block devices),
+  and it refuses `allow_network` as root, since without a private network namespace the
+  command would reach the host's abstract unix sockets, where services that trust uid 0
+  (iscsid and the like) take commands. As an ordinary user bubblewrap runs it unprivileged.
 - **No tier** puts a quota on the workspace's disk use.
 
 The aim is one VM per session, never reused across tenants, since reuse is how T6 happens.
@@ -102,7 +125,12 @@ That waits on I3.
 ### The fence tier (preview, Linux)
 
 `fence` is a preview, Linux only, and off unless `sandbox.tier: "fence"`. Each command is
-confined with Landlock and a seccomp filter and runs in a cgroup of its own tool call. For
+confined with Landlock and a seccomp filter and runs in a cgroup of its own tool call.
+Where the host lets an ordinary user make a user namespace, the launcher first gives the
+command a mount namespace of its own, binds the surface's protected paths (git's config
+and hooks, an editor's settings) read-only and covers the workspace's `.abhed` with an
+empty tmpfs, then drops the one capability it held for that; this mode, `mount_namespace`,
+is what `abhed serve` and Studio need, and without it they are refused. For
 `min_tier` it counts as `process`, and it fails closed: when the host lacks anything it
 needs, Abhed refuses to start and names the check, and never runs the command under another
 tier. It is not a microVM; the command shares the host kernel. Requirements and what it
@@ -123,7 +151,8 @@ Layered, because no single control is sufficient:
 4. **Sensitive-action confirmation.** Destructive filesystem ops, credential access, egress,
    and privilege changes require explicit approval regardless of mode — no mode auto-approves
    them.
-5. **Egress default-deny.** Even a fully injected agent has nowhere to send data.
+5. **Egress default-deny.** With the network off, a fully injected agent's commands have
+   nowhere to send data; under the allowlist, only to the destinations the rules allow.
 6. **Anomaly detection (not built).** The aim is to alert on action-sequence patterns
    inconsistent with the stated task (mass file reads, unexpected network attempts,
    credential-path access). Nothing does this yet.
@@ -148,14 +177,21 @@ What Abhed does today:
 
 What it does not do yet:
 
-- **No containment.** A stdio server is a process Abhed starts on the host, as your user,
-  outside the sandbox: it can read and write what you can and reach the network, whatever
-  the sandbox tier says. With no `env` it inherits Abhed's whole environment. Running
-  servers inside the sandbox is open work.
+- **No file containment.** A stdio server is a process Abhed starts on the host, as your
+  user: it can read and write what you can, so it can plant a LaunchAgent, a systemd unit
+  or a shell rc line that runs later outside any sandbox. With no `env` it inherits Abhed's
+  whole environment. Outside the allowlist it also reaches the network whatever the
+  sandbox tier says. Under `sandbox.network: "allowlist"` only its direct sockets are
+  confined, to an egress proxy of its own (Seatbelt on macOS; network and process
+  namespaces on Linux, never as root), and where that cannot be done it is not started.
+  On Linux it can still reach AF_UNIX sockets in folders left visible, and on macOS
+  `trustd` fetches certificate URLs for it outside the proxy.
 - **No signed registry and no pinning.** Any command or URL in the configuration can be a
   server, and `digest` is carried in the configuration but checked nowhere.
-- **No per-server network policy.** A server's only credentials are the `env` and headers
-  you give it, but nothing limits where it connects.
+- **No per-server network policy.** Under the allowlist the session's `egress` rules judge
+  every server's requests (MCP over HTTP in Abhed's process; a stdio server's through its
+  own proxy, recorded with `mcp_server`), but no rule names a server; outside the allowlist
+  nothing limits where a server connects.
 
 ## 6. Tool surface discipline
 
@@ -174,7 +210,10 @@ through the same policy engine.
 `bash` runs inside the configured sandbox tier. The opt-in network tools — `ssh`, the
 `k8s_*` tools, `web_search`, `web_fetch` and remote RAG — do not: they run in the host
 process with host network, so the Seatbelt, bubblewrap or gVisor boundary that contains
-`bash` does not contain them.
+`bash` does not contain them. Under `sandbox.network: "allowlist"`, `web_search` and
+`web_fetch` are judged by the `egress` rules in Abhed's process, request by request, and
+connect only to an address the rules allow; `ssh`, the `k8s_*` tools and remote RAG are
+not, and keep their own settings.
 
 All five are disabled unless configured, so the default posture of no egress is intact.
 Enabling one is a deliberate decision to move that execution and its egress outside the
@@ -193,10 +232,12 @@ sandbox boundary in the way. Argument-scoped policy rules (`deny k8s_get(secrets
 the control that applies, and they work — but whole-tool policy is otherwise the only
 thing mediating these tools.
 
-Routing network-bound tools through a broker egress path, so egress stays default-deny and
-auditable even when a tool is enabled, is tracked as outstanding work rather than shipped
-(issue #44). It is meant to carry `web_fetch` as well as the tools above; until it does,
-`web_fetch.allowed_hosts` is a per-machine list, not a broker.
+Under the allowlist, `web_fetch` and `web_search` go through the egress rules and are
+recorded as `egress.decision` events with `kind` `web_fetch` or `web_search`; `web_fetch`
+keeps its own checks after the rules', so it still never reaches an internal address.
+Outside the allowlist, `web_fetch.allowed_hosts` is a per-machine list, not a broker.
+Bringing `ssh`, the `k8s_*` tools and remote RAG under the same rules is outstanding work
+(issue #44).
 
 ## 7. Validation status
 
@@ -219,6 +260,25 @@ asserted. Current state:
       `TestEnclosingStateThroughALinkedWorkspaceIsRefused`), while another user's
       shared folder above it cannot block the start
       (`TestAncestorStateCountsOnlyWhatARunLoads`)
+- [x] **Fence, `mount_namespace`** — git's config and hooks and an editor's files stay
+      read-only, and the workspace's `.abhed` covered, through every path a command can
+      take: Abhed's own view in `/proc` (`TestFenceMountsProtectGit`,
+      `TestFenceMountsStateDoesNotPersist`), a second mount of the workspace's filesystem
+      such as an ostree host's `/sysroot` or a bind mount (`TestFenceMountsCoversAnAlias`,
+      `TestApplyCoversAliases`, which also refuses one whose path is shadowed or behind a
+      folder of the user's own, and leaves one behind another user's folder the user cannot
+      search; that one stays out of reach only while its owner keeps the folder closed,
+      and one opened during a command is reachable by that command until the next covers
+      it), and a
+      hard link to a held file or to a file in a held folder
+      (`TestFenceMountsRefusesAHardLinkedProtectedFile`,
+      `TestFenceMountsRefusesAHookLinkedOutside`); another fence closing does not uncover
+      a command's `.abhed` (`TestFenceMountsTwoFencesOnOneWorkspace`). Only mounts of the
+      workspace's own filesystem are found: a FUSE (bindfs), overlay or NFS view of the
+      workspace made before the session is not found or covered, and a command, holding
+      no capability, cannot make one. These run on Linux
+      with `ABHED_REQUIRE_FENCE=1`, the alias case on an ostree host or with
+      `ABHED_TEST_ALIAS`
 - [x] **Runaway commands** — a command is stopped at its timeout with everything it
       started, a `setsid` child included (`TestRunawayCommandEndsAtItsDeadline`,
       `TestBashTimeoutEndsADetachedChild`)
@@ -230,6 +290,17 @@ asserted. Current state:
       container and vm tiers only, and `abhed doctor` warns when it is set on another
 - [x] **Tier honesty** — no silent downgrade; `Select` fails with what it tried
       (`TestSelectRefusesToDowngrade`)
+- [x] **Fence tier on a real kernel** — the CI job `fence` runs every fence package's tests,
+      the sandbox's `Fence`, `Mounts`, `Launch` and `Select` tests and the end-to-end
+      `Fence` CLI tests as an ordinary user in a delegated scope
+      (`systemd-run --user --scope -p Delegate=yes`) with `ABHED_REQUIRE_FENCE=1`, on
+      Ubuntu 24.04 for x86-64 and arm64 (`scripts/ci/fence-gated.sh`). It first checks for
+      Landlock ABI 4 or later, cgroup v2 and an ordinary user's user namespace. Every test
+      gated on the fence, found by what it checks rather than by its name, must be in the
+      run and pass; only the two tests written for other platforms may skip, and the
+      network-on test, which needs the internet and runs in the job `fence-network`
+      instead. Ubuntu's limit on user namespaces is lifted only for the test binaries'
+      directory, by an AppArmor profile, not by the system-wide sysctl
 - [x] **Cross-tenant leakage** — session list and replay isolated (`server`)
 - [x] **MCP tool poisoning** — descriptions sanitized before reaching the model
       (`internal/mcp`)

@@ -1,6 +1,9 @@
 package sandbox
 
-import "os/exec"
+import (
+	"os/exec"
+	"time"
+)
 
 // A shell started on a terminal leads a session of its own, and what it left
 // running (a job out of its table, one ignoring the hang-up, one that keeps
@@ -21,6 +24,11 @@ var (
 // maxSweepPasses bounds the passes that stop a session's processes. Each
 // pass stops what it finds, so a job that forks is caught within a few.
 const maxSweepPasses = 50
+
+// sweepGrace bounds how long the sweep waits for the processes it killed to
+// go. One killed while starved of CPU stays listed, running, until it is next
+// scheduled, which on a loaded machine outlasts any fixed number of passes.
+var sweepGrace = 10 * time.Second
 
 // Leader is a session leader this process started: its pid and when it
 // started, which together name it even if the pid is later reused.
@@ -89,26 +97,48 @@ func (l Leader) sweep() string {
 			break
 		}
 	}
+	killed := map[int]bool{}
 	for pid := range stopped {
-		signalOne(pid, l.Pid, killSignal)
+		if signalOne(pid, l.Pid, killSignal) {
+			killed[pid] = true
+		}
 	}
 	// A stopped group can be continued by the kernel when a member exits, and
-	// a process continued in that instant may fork once more.
-	for range maxSweepPasses {
-		left := 0
+	// a process continued in that instant may fork once more. Every member is
+	// killed on every pass until none is left; a pass that finds only members
+	// killed before waits a moment for them to be scheduled and die, while one
+	// that finds a new member goes again at once. The wait doubles while
+	// passes find only those, so a member slow to die is not polled hard.
+	deadline := time.Now().Add(sweepGrace)
+	wait := sweepWaitMin
+	for {
+		left, fresh := 0, 0
 		for _, pid := range listMembers(l.Pid) {
 			if pid != l.Pid && signalOne(pid, l.Pid, killSignal) {
 				left++
+				if !killed[pid] {
+					killed[pid] = true
+					fresh++
+				}
 			}
 		}
 		if left == 0 {
 			return ""
 		}
-	}
-	for _, pid := range listMembers(l.Pid) {
-		if pid != l.Pid {
-			return "processes were still starting in the shell's session after every pass"
+		if time.Now().After(deadline) {
+			return "processes were still running in the shell's session after it was swept"
 		}
+		if fresh > 0 {
+			wait = sweepWaitMin
+			continue
+		}
+		time.Sleep(min(wait, time.Until(deadline)+time.Millisecond))
+		wait = min(2*wait, sweepWaitMax)
 	}
-	return ""
 }
+
+// sweepWaitMin and sweepWaitMax bound the wait between passes of a sweep that
+// find only members it has already killed.
+const sweepWaitMin = time.Millisecond
+
+var sweepWaitMax = 50 * time.Millisecond

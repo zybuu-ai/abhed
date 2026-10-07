@@ -23,8 +23,8 @@ type Settings struct {
 	User string
 	// Protect are workspace paths the agent's commands may read but not write.
 	Protect []string
-	// ProtectGit keeps commands from writing any git folder's config and
-	// hooks in the workspace, at any depth, where the sandbox can name them.
+	// ProtectGit keeps commands from writing what git reads in any git folder
+	// in the workspace: config, hooks, commondir and the like.
 	ProtectGit bool
 	// Surface names the entry point (acp, rpc); a new session records it in
 	// its session.started, with the mode it runs in.

@@ -12,6 +12,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
@@ -59,7 +60,7 @@ func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
 
 // WebSearchTool constructs the web search tool when enabled. Returns nil, nil
 // when the operator has left it off, which is the default.
-func WebSearchTool(cfg config.Config, vault *secrets.Store) (*websearch.Tool, error) {
+func WebSearchTool(cfg config.Config, vault *secrets.Store, guard *egress.Guard) (*websearch.Tool, error) {
 	if !cfg.WebSearch.Enabled {
 		return nil, nil
 	}
@@ -72,6 +73,7 @@ func WebSearchTool(cfg config.Config, vault *secrets.Store) (*websearch.Tool, er
 		APIKey:     key,
 		BaseURL:    cfg.WebSearch.BaseURL,
 		MaxResults: cfg.WebSearch.MaxResults,
+		Egress:     guard,
 	})
 	if err != nil {
 		return nil, err

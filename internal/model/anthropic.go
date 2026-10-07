@@ -77,15 +77,16 @@ func NewAnthropic(baseURL, apiKey, model string, p Profile) *Anthropic {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
-	return &Anthropic{
+	c := &Anthropic{
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
 		APIKey:  apiKey,
 		Model:   model,
 		Version: defaultAnthropicVersion,
-		HTTP:    timeoutClient(DefaultTimeouts()),
 		Retry:   DefaultRetry(),
 		profile: p,
 	}
+	c.HTTP = timeoutClient(DefaultTimeouts(), c.endpoints)
+	return c
 }
 
 func (c *Anthropic) Name() string     { return c.profile.Name }

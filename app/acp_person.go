@@ -266,7 +266,8 @@ func (c *acpConn) runLine(t *acpTerminal, line string) {
 	t.running = cancel
 	t.mu.Unlock()
 	start := time.Now()
-	result := tool.Run(ctx, t.sess, args)
+	// The line is the session's own call, so its egress decisions reach its record.
+	result := tool.Run(loop.LaunchContext(ctx, id), t.sess, args)
 	cancel()
 	t.mu.Lock()
 	t.running = nil

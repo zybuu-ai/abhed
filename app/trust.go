@@ -356,7 +356,8 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 				fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 				return 1
 			}
-			fmt.Fprintf(out, "Trusted the accounts in %s.\n", config.Printable(st.UsersFile))
+			fmt.Fprintf(out, "Trusted the accounts in %s. They stay trusted until `abhed trust revoke`; "+
+				"later changes to the file are read without asking.\n", config.Printable(st.UsersFile))
 			warnUsersTracked(out, st.Workspace)
 		}
 		if st.File != "" {
@@ -366,7 +367,10 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		if len(st.Agents) > 0 {
 			fmt.Fprintf(out, "Trusted %d agent definition(s) (sha256 %s).\n", len(st.Agents), st.AgentsSHA256[:12])
 		}
-		fmt.Fprintln(out, "A later change to the file or a definition makes it untrusted again.")
+		// Accounts trust is not tied to a hash, so only the config and definitions re-ask.
+		if st.File != "" || len(st.Agents) > 0 {
+			fmt.Fprintln(out, "A later change to the file or a definition makes it untrusted again.")
+		}
 		return 0
 	case "revoke":
 		had, err := config.RevokeTrust(dir)

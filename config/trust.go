@@ -608,6 +608,8 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
 	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
 	"fence":                         {nil, "tunes the fence tier's limits"},
+	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},
+	"egress":                        {nil, "managed only: names the destinations commands reach"},
 
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
 	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},

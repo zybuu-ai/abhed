@@ -203,9 +203,56 @@ workspace and a few shared folders, not only the workspace:
   with the rest of your machine, so a command can leave a file there that a
   program outside the sandbox later reads.
 
+`/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
+design: tools expect a shared temp area there, so keep nothing in them a command
+should not read or change.
+
+On macOS the profile denies the LaunchServices and Apple event services
+(`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, the `coreservices` and `lsd` part matched in any case; the whole family is denied, which also cuts Handoff's clipboard and the shared file lists), whatever the network
+setting, since an app they start runs outside the sandbox. `open` still runs
+there but exits non-zero without opening the URL, file or app, and `osascript`
+runs a script but cannot send Apple events to another app. Run those outside
+Abhed.
+
+Each command on the process tier is kept apart from every other: on Linux
+it has its own PID namespace, and on macOS the Seatbelt profile lets it
+signal only processes in its own sandbox, so `kill $PPID` cannot stop Abhed.
+One consequence, on macOS as on Linux: a command cannot `kill`, or check
+with `kill -0`, a process an earlier command left running, such as a server
+started with `&` in one call and stopped with `kill` in the next; the
+`kill` fails with "Operation not permitted". Start and stop it within one
+command, or run it with `run_in_background` and stop it with `shell_kill`.
+
+Environments are not kept apart on macOS. A command gets only an allowlist
+of variables, but the kernel returns the arguments and environment of any
+process of the same user (the `kern.procargs2` sysctl) that is not a
+restricted program, as Apple's own are, and Seatbelt has no rule that
+refuses it. So a command, a workbench terminal or a stdio MCP server can
+read Abhed's environment, a provider key exported to it included, an MCP
+server's, and what a concurrent command was handed: its egress token and
+its `secrets`. On macOS put a provider key in `api_key` in
+`~/.abhed/config.json`, which commands cannot read, rather than in Abhed's
+environment, and use the container or vm tier where commands must not see
+one another's secrets. On Linux each command's PID namespace hides other
+processes' environments.
+
 On the container and vm tiers a command writes only the workspace and a
 throwaway `/tmp`. The process tier is a boundary, not a jail: it is not
 sufficient for genuinely hostile code.
+
+When Abhed runs as root on Linux, the process tier drops every capability from
+the command (`--cap-drop ALL` in a user namespace, with `no_new_privs`) and
+binds the writable root-owned `/proc` files read-only (`core_pattern`,
+`modprobe`, `binfmt_misc` and the rest), so it cannot run code as host root. The
+command still runs as uid 0, so it keeps owner rights on the root-owned files it
+can already write (the workspace and temp dirs), and a peer-credential check
+sees uid 0; it holds no capability. The tier refuses to start if it cannot drop
+the capabilities, enumerate the writable `/proc` files, or mount a private
+`/proc` and `/dev` (binding the host `/dev` would expose block devices), and it
+refuses `allow_network` as root — with the network on, the command would share
+the host's network namespace and its abstract unix sockets, where host services
+that trust uid 0 take commands. Use the container or vm tier for those cases.
+Running Abhed as an ordinary user is still the recommendation.
 
 `"max_procs"` (512 by default) bounds how many more processes a command can
 start: on the process tier, as a limit of what your user runs plus this many
@@ -222,6 +269,13 @@ policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
+
+`"network": "allowlist"`, set only in the managed configuration, sends
+commands' traffic through a per-session proxy that reaches only what the
+`egress` rules allow, and records each decision; it takes the place of
+`allow_network`. Only the process tier enforces it. The `egress` section
+(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
+too. See [Network policy](21-network-policy.md).
 
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that
@@ -254,6 +308,10 @@ counts as the process tier.
   scope it runs in has `Delegate=yes`, and refuses when it does not; a
   cgroup you can merely write is not enough, since systemd still manages it.
 - An ordinary user. The fence refuses root in this release.
+- For `abhed serve` and Abhed Studio, a host that lets an ordinary user make
+  a user namespace (see the modes below). Ubuntu 24.04 and later restrict
+  this with AppArmor (`kernel.apparmor_restrict_unprivileged_userns`), and a
+  zero `user.max_user_namespaces` turns it off.
 
 **How to run it.** Start Abhed in a delegated scope:
 
@@ -265,9 +323,25 @@ systemd-run --user --scope -p Delegate=yes abhed ...
 configured: the kernel, Landlock, seccomp, no_new_privs, capabilities and the
 delegated cgroup, each pass or fail with what it measured.
 
+**Two modes.** The probe checks whether an ordinary user can have a user and
+mount namespace of its own (`userns_mounts` in `abhed doctor`), and the fence
+picks its mode from that; `fence.qualified` records it as `mode`, and each
+`process.launched` too.
+
+| Mode | When | What it adds | Surfaces |
+|---|---|---|---|
+| `mount_namespace` | the host allows unprivileged user namespaces | each command in a user and mount namespace of its own: git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
+| `landlock_only` | it does not | nothing: Landlock and seccomp alone | the command line and the SDK; Studio and `serve` are refused, saying why |
+
+The fence never moves from one mode to the other on its own: a surface that
+needs read-only paths is refused where the mounts are not available, and a
+command whose mounts cannot be made exits 126 having run nothing.
+
 **What it does.** Abhed re-executes itself as a small launcher for every
-command. In order, the launcher checks it holds no privileges and that this
-run's probe qualified the host, joins a cgroup made for the tool call, confines
+command. In order, the launcher checks that this run's probe qualified the
+host; in the `mount_namespace` mode, makes its mounts, with `CAP_SYS_ADMIN` in
+its own user namespace and nothing else, then drops that capability; checks
+it holds no privileges; joins a cgroup made for the tool call, confines
 itself with Landlock and a seccomp filter, reports what it applied, and waits.
 Abhed writes `process.launched` to the record, and only then lets the launcher
 run the command in its place. A launcher that cannot do any step exits 126
@@ -277,9 +351,78 @@ without running anything.
   `/lib`, `/etc`, `/opt` and the like) and `sandbox.read_only_paths`, reads
   `/proc` and `/sys`, and writes only the workspace and a private temp folder
   of the session's. `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and `npm_config_cache`
-  point into that folder. The rest of your home, `~/.abhed`, the record and
-  the secrets are out of reach.
-- **Abhed's state in the workspace.** Landlock cannot keep a command from
+  point into that folder. `~/.abhed/skills` and the folders in `skills.dirs`
+  are readable and their scripts run, but cannot be written, so a skill's
+  script works. A `skills.dirs` folder that holds or sits inside Abhed's state
+  (your home, say, or `~/.abhed/records`), or one inside the workspace, is
+  left out, and `fence.qualified` lists it under `skills_left_out`. The rest
+  of your home, `~/.abhed`, the record and the secrets are out of reach.
+- **Read-only paths in the workspace** (`mount_namespace` only). Abhed
+  Studio keeps git's config and hooks and its editor's files read-only; each
+  is bound read-only over itself in the command's namespace, and the folders
+  holding them (`.git`, `.vscode`) are bound over themselves, so they cannot
+  be renamed or removed to get around it. A command can still commit: only
+  the config and hooks are held. The protected paths are those that exist
+  when each command starts, and git folders are found then, as the process
+  tier finds them: one a command makes while it runs is not held during that
+  command, only from the next. A protected path that is a symbolic link, a
+  file with a second name (a hard link), or a protected folder holding a file
+  with a name outside it (a hook hard-linked to a file in the workspace, say)
+  refuses the command, since the file would stay writable through the other
+  name.
+- **Other mounts of the workspace's filesystem** (`mount_namespace` only).
+  The same files can be mounted at a second path: on an ostree host (Fedora
+  CoreOS, Silverblue, Kinoite) `/var`, and so `/home`, is also mounted at
+  the deployment's `var` folder under `/sysroot/ostree`, and a bind mount
+  does the same. The
+  launcher reads the namespace's mounts and applies the same read-only binds
+  and the same tmpfs at every other mount of the workspace's filesystem that
+  shows the workspace or part of it, so the protected files stay read-only
+  and `.abhed` stays covered through each; `fence.qualified` lists them as
+  `aliases`. One behind a folder you cannot search and do not own is left
+  as it is and listed as `aliases_unreachable`: a command, running as you,
+  cannot pass that folder either. It stays out of reach only while the
+  folder's owner (or root) keeps it closed. If they open it while a command
+  runs, that command can reach the real `.abhed` and the protected files
+  through it until it ends; the next command covers it. A long-lived
+  command (the terminal, `abhed serve`'s commands) is not checked again
+  while it runs: its namespace can be changed only from inside it, after it
+  has dropped every capability, and a mount made later would not take back
+  what it had already opened. One the fence cannot check, such as a second mount
+  whose path now leads somewhere else, refuses the fence when it qualifies,
+  or the command (exit 126) when it starts, saying which. Only mounts of the
+  same filesystem are found: a view of the workspace through another
+  filesystem that exists before the session, such as a FUSE mount (bindfs),
+  an overlay with the workspace as a lower folder, or an NFS export mounted
+  back, is not found or covered, and a command can read `.abhed` through it,
+  and write protected files where it lies under a writable folder. A command
+  cannot make such a mount itself: it holds no capability and cannot gain
+  one.
+- **Abhed's state in the workspace, `mount_namespace`.** The workspace's
+  `.abhed` is covered by an empty tmpfs in each command's namespace: what
+  Abhed keeps there is out of sight, and whatever a command writes there is
+  gone when it ends, so nothing it writes there ever reaches Abhed. Where the
+  workspace has no `.abhed`, the fence makes an empty one to mount over and
+  leaves it in place: other fences on the same workspace (two Studio tabs,
+  Studio beside the command line) mount over it too, and removing it would
+  uncover their commands; empty, it holds nothing. A `.abhed` that was
+  empty when the session started must stay empty while it runs: anything
+  that appears in it is taken out of it one entry at a time, each first
+  renamed inside that `.abhed`, where every fence's tmpfs still hides it,
+  then moved to `~/.abhed/quarantine/`, or removed where it cannot be moved
+  (one that can be neither stays there renamed, is reported as still
+  present, and refuses the next fence until you remove it);
+  the folder itself is left in place for the other fences, and a folder made again
+  in its place is taken out whole; either way the session runs no further
+  command. So put state there (`abhed user add`, say) before a fenced
+  session starts. A `.abhed` that cannot be listed when the session starts
+  refuses the fence, since it is not known to be empty. One that already
+  held state is Abhed's own, and stays covered. Abhed refuses to start with a state file
+  (`auth.users_file`, the secrets file) inside the workspace outside `.abhed`,
+  so there is none to hide; another configuration folder's `.abhed` inside
+  the workspace is covered as the workspace's is. A `.abhed` in another
+  spelling of its case is not covered, and is still taken out as below.
+- **Abhed's state in the workspace, `landlock_only`.** Landlock cannot keep a command from
   making a folder inside the writable workspace, so Abhed checks instead:
   after every command, before the next one and when the session closes. A
   `.abhed` at the top of the workspace, in any spelling of its case, is first
@@ -297,7 +440,8 @@ without running anything.
   completed, as it does for any failure to close the fence; remove it, or restore the folder's permissions and check
   it, before Abhed runs there again.
 
-  The check is not a guard. A file a command writes into the workspace's
+  In `mount_namespace` the same check runs as defence in depth, for the
+  spellings the tmpfs does not cover. In `landlock_only` the check is not a guard. A file a command writes into the workspace's
   `.abhed` is there while it runs and until the check that follows it, and
   Abhed can read it then (for example its users or memory files). After an unclean exit (Abhed killed,
   the machine down) nothing is checked or moved, so look for a `.abhed` in
@@ -321,13 +465,27 @@ without running anything.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
   refused, and Landlock refuses TCP as well. With it true, commands get the
   host's network, unfiltered. Unix sockets are refused either way.
+  `sandbox.network: "allowlist"` refuses the fence in both modes, since it
+  cannot keep a command's sockets to the egress proxy alone
+  ([Network policy](21-network-policy.md)).
 - **Limits.** Each session's commands share a cgroup bounded by
   `max_memory_mb` (with no swap), `max_procs` (processes and threads) and
   `fence.cpu_percent` (percent of one core; unset is unbounded), and each tool
   call gets a cgroup of its own with the same bounds. When a command exits,
   whatever it left running is ended.
-- **The record.** `fence.qualified` holds the probe's report at the start of
-  the session, `process.launched` each command's launch with its call id
+- **Sessions.** Each Studio session and each `abhed serve` session has a
+  fence of its own, with its own cgroup that its tool calls' cgroups sit
+  under, closed with the session. A served session qualifies its fence at
+  its first command, so a session opened only to be read records nothing.
+  Sessions are not kept apart from each other's processes below Landlock ABI
+  6 (Linux older than 6.12): there, one session's commands can signal
+  another session's commands, those of another account on the same server
+  included, and read their command lines in `/proc`. On Linux 6.12 or later
+  Landlock keeps each command's signals to its own processes; command lines
+  stay readable either way, since there is no PID namespace.
+- **The record.** `fence.qualified` holds the probe's report and the mode
+  at the start of the session (for `serve`, before the session's first
+  command), `process.launched` each command's launch with its call id
   before it runs, `fence.limit` a command that ran into its memory or
   process limit, and `fence.state_planted` a `.abhed` found in the workspace.
   `process.launched` names its `source`: `call` for a tool call or a `!`
@@ -345,10 +503,14 @@ processes' command lines in `/proc` (not their environment or memory). A hard
 link inside the workspace to a file of Abhed's state, made before the
 session, stays readable through the link: Landlock checks the path a file is
 opened by, and the fence makes no such link, but does not look for one. The
-planted-state check above has the limits it states: a file written into the
-workspace's `.abhed` is visible while its command runs, nothing is moved
-after an unclean exit, and a `.abhed` in a subfolder or an added folder is
-not checked.
+planted-state check above has the limits it states in `landlock_only`: a
+file written into the workspace's `.abhed` is visible while its command
+runs, nothing is moved after an unclean exit, and a `.abhed` in a subfolder
+or an added folder is not checked. In `mount_namespace` the first two do not
+arise, and a `.abhed` in a subfolder or an added folder is not covered. The
+mounts rely on Landlock's own scoping for one thing: a command cannot reach
+Abhed's view of the files through `/proc/<pid>/root`, since Landlock refuses
+a sandboxed process access to processes outside its domain.
 
 **What breaks under it.**
 
@@ -364,9 +526,14 @@ not checked.
 - Toolchains kept in your home (`~/go`, `~/.cargo`, `~/.nvm`) unless listed
   in `sandbox.read_only_paths`, and scripts that write a fixed path in `/tmp`.
 - Every kernel below 6.2, and below 6.7 with the network off.
-- A workspace with a `.abhed` folder, or a read-only path inside the
-  workspace (Abhed Studio's git and editor protections, `abhed serve`): the
-  fence cannot keep part of a writable folder read-only, so it refuses.
+- In `landlock_only`: a workspace with a `.abhed` folder (the empty one a
+  `mount_namespace` fence leaves included; remove it), and the surfaces
+  that keep paths inside the workspace read-only (Abhed Studio's git and
+  editor protections) or need the mounts (`abhed serve`). Landlock alone
+  cannot keep part of a writable folder read-only, so they are refused.
+- In `mount_namespace`: programs that expect files outside your own to show
+  their owners (they show as `nobody`), and anything that writes git's config,
+  such as `git config` without `--global` or a hook manager installing hooks.
 - A command Abhed runs outside any session, which is only `abhed doctor`'s
   check, runs fenced but leaves no `process.launched`, since there is no
   session record to write it to.
@@ -389,8 +556,8 @@ administrator's setting: **only the managed configuration**
 same holds for [`web_fetch`](#web-fetch).
 
 Every other layer, `~/.abhed/config.json`, `-settings`, a workspace's
-`.abhed/config.json` trusted or not, an SDK `ConfigDir` and the environment,
-may only turn it off or narrow it:
+`.abhed/config.json` trusted or not and an SDK `ConfigDir`, may only turn it
+off or narrow it. No `ABHED_*` variable sets either section:
 
 | Key | Below the managed file |
 |---|---|
@@ -499,8 +666,8 @@ file. A query holding a stored secret is refused before it is sent.
 aside, with a warning at startup, and the tool is no longer offered. Ask your
 administrator to turn it on in the managed configuration, or, on your own
 machine, run `sudo abhed admin web-search on` with the provider and endpoint
-you used (for web fetch, add the `web_fetch` section to
-`/etc/abhed/config.json` with sudo). Then remove the section from your own
+you used. Web fetch has no command: edit `/etc/abhed/config.json` by hand
+with sudo and add the `web_fetch` section. Then remove the section from your own
 file; a copy that only repeats the defaults, as `abhed init` writes, is
 quietly accepted.
 

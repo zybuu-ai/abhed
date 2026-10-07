@@ -531,7 +531,12 @@ func (b *Background) Tasks() []TaskInfo {
 // redactInfo redacts what a shell's listing shows of its command and output.
 func (b *Background) redactInfo(ti *TaskInfo) {
 	if ti.Kind == KindShell {
-		ti.Command, ti.LastLine = b.redacted(ti.Command), b.redacted(ti.LastLine)
+		ti.Command = b.redacted(ti.Command)
+		if ti.shellProc != nil {
+			ti.LastLine, ti.shellProc = b.lastLine(ti.shellProc), nil
+		} else {
+			ti.LastLine = b.redacted(ti.LastLine)
+		}
 	}
 }
 
@@ -573,6 +578,8 @@ type TaskInfo struct {
 	ExitCode    *int   `json:"exit_code,omitempty"`
 	OutputBytes int64  `json:"output_bytes,omitempty"`
 	LastLine    string `json:"last_line,omitempty"`
+
+	shellProc *tools.ShellProc // read for LastLine by redactInfo
 }
 
 func (t *bgTask) info() TaskInfo {

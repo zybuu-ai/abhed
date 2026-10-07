@@ -95,6 +95,10 @@ func TestTrustedWorkspaceAccountsSignIn(t *testing.T) {
 	if !strings.Contains(out.String(), "users.json") {
 		t.Fatalf("trust grant did not name the accounts: %s", out.String())
 	}
+	// Accounts trust is not tied to the file's content, so it must not say a change re-asks.
+	if s := out.String(); strings.Contains(s, "untrusted again") || !strings.Contains(s, "until `abhed trust revoke`") {
+		t.Fatalf("an accounts-only grant misdescribes how long it lasts: %s", s)
+	}
 	if _, err := localAuthFor(t, ws, config.TrustAsStored).Authenticate(context.Background(), "planted", "planted-pass-12345"); err != nil {
 		t.Fatalf("after trust grant: %v", err)
 	}

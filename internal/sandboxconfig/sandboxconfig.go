@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -36,6 +38,14 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 		p.MinTier = sandbox.Tier(cfg.Sandbox.MinTier)
 	}
 	p.AllowNetwork = cfg.Sandbox.AllowNetwork
+	if cfg.Sandbox.Network == config.NetworkAllowlist {
+		pol, err := egress.Compile(cfg.Egress)
+		if err != nil {
+			return sandbox.Policy{}, err
+		}
+		// The allowlist replaces allow_network: the proxy is the only way out.
+		p.Egress, p.AllowNetwork = pol, false
+	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.WriteProtected = cfg.Sandbox.WriteProtected
 	p.ProtectGit = cfg.Sandbox.ProtectGit
@@ -53,7 +63,28 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 	}
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
+	p.SkillDirs = skillDirs(cfg)
 	return p, nil
+}
+
+// skillDirs are the configured skills.dirs, made absolute as skills are
+// loaded from them: ~/ is the home folder, and a relative one is taken from
+// the folder Abhed runs in.
+func skillDirs(cfg config.Config) []string {
+	if cfg.Skills.Disabled {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	var out []string
+	for _, d := range cfg.Skills.Dirs {
+		if rest, ok := strings.CutPrefix(d, "~/"); ok && home != "" {
+			d = filepath.Join(home, rest)
+		}
+		if abs, err := filepath.Abs(d); err == nil {
+			out = append(out, abs)
+		}
+	}
+	return out
 }
 
 // StatePaths are the files holding Abhed's state that a configuration can put
@@ -231,4 +262,19 @@ func under(spellings, dirs []string) bool {
 		}
 	}
 	return false
+}
+
+// Isolation is what the bash tool tells the model of the sandbox of tier:
+// no network, any host, or, under the allowlist, only the destinations the
+// egress rules allow, through the session's proxy.
+func Isolation(cfg config.Config, tier string) tools.Isolation {
+	iso := tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork}
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return iso
+	}
+	iso.Network, iso.Allowlist = false, true
+	if pol, err := egress.Compile(cfg.Egress); err == nil {
+		iso.AllowedHosts, iso.DefaultAllow = pol.AllowedHosts(), pol.DefaultAllow()
+	}
+	return iso
 }

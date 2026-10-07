@@ -198,12 +198,13 @@ func run(a *App, workspace string, f *cliFlags) int {
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
 		Bash: tools.Bash{Sandbox: sb.Command,
-			Isolation: tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork},
+			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
-		Parts:  toolset.All,
-		Vault:  vault,
-		Warn:   warnf,
-		Agents: sessionDefs,
+		Parts:   toolset.All,
+		Vault:   vault,
+		Warn:    warnf,
+		Agents:  sessionDefs,
+		Sandbox: sb,
 	})
 	defer set.Close()
 	// A skill's own directory is reachable: its instructions reference files beside them.
@@ -214,6 +215,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 
 	// The prompt is set once the tools are known, so it names only those there.
 	loopCfg := toolset.LoopConfig(cfg, "")
+	loopCfg.Egress = set.Guard()
 
 	// Subagents share the parent's budget, so a fan-out cannot multiply spend
 	// invisibly. No Approver: a subagent answers to the approver of the loop
@@ -266,7 +268,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if err != nil {
 		fail(err)
 	}
-	closeAll := sync.OnceValue(func() error { return closeSandboxThenStore(sb, closeStore, os.Stderr) })
+	closeAll := sync.OnceValue(func() error {
+		set.CloseEgress()
+		return closeSandboxThenStore(sb, closeStore, os.Stderr)
+	})
 	defer func() { _ = closeAll() }()
 	factory.Store = store
 	// stdout is resolved on each write rather than captured here: the
@@ -318,6 +323,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions,
 		interactiveStart{first: f.task(), sandbox: sb, probe: probe, set: set, recordStart: func(rec *agent.Recorder, after int64) {
+			// Said, not fatal: the person is at the prompt already. The fence is
+			// closed, and a record that cannot be written ends the first turn
+			// before the model is asked, as Loop.Run refuses on it.
 			if err := recordStart(rec, resumedStart(start, after), attempts, fenceOf(sb)); err != nil {
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			}

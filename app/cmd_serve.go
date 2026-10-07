@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -48,25 +50,24 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 
-	// The fence preview runs the command line's commands; the server's
-	// sessions and terminals wait for a later release.
-	if cfg.Sandbox.Tier == string(sandbox.TierFence) {
-		fmt.Fprintln(os.Stderr, "abhed: sandbox.tier is fence, a preview the command line supports and serve does not yet; "+
-			"serve refuses rather than run commands under another tier. Unset sandbox.tier to serve.")
-		return 1
-	}
-	sb, err := buildSandbox(cfg, workspace)
+	cfg, sb, bash, err := serveSandbox(cfg, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
-	vault := openVault()
-	bash := tools.Bash{Sandbox: sb.Command,
-		Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}}
-	// The workbench terminal's shell runs under the same backend as the agent's commands.
-	if in, ok := sb.(sandbox.Interactive); ok {
-		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+	// Under the fence each session gets a fence of its own, with its own
+	// cgroup, qualified at its first command; this one qualifies the host at
+	// startup and confines nothing else.
+	fence := fenceOf(sb)
+	if fence != nil {
+		defer func() { _ = fence.Close() }()
+		if fence.Mode() != sandbox.FenceModeMounts {
+			fmt.Fprintln(os.Stderr, "abhed: sandbox.tier is fence, and serve needs its mount_namespace mode, which this host does not give an ordinary user; "+
+				"serve refuses rather than run commands under another tier. Unset sandbox.tier to serve, or run it where user namespaces are allowed.")
+			return 1
+		}
 	}
+	vault := openVault()
 	// Terminal containers a crashed run of this server left behind.
 	if sw, ok := sb.(interface{ SweepShells() }); ok {
 		go sw.SweepShells()
@@ -74,7 +75,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	// The CLI's tool set. The server shares its registry across sessions and
 	// binds each session's own subagents, todo list and skill tool to it.
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf,
+		Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb,
 	})
 	defer set.Close()
 
@@ -163,6 +164,8 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	defer closeStore()
+	// Before the store closes: the egress summaries still owed go to it.
+	defer set.CloseEgress()
 
 	// Taps on the event store: an exporter being slow or absent costs spans,
 	// never turns. Several are fanned in; each is unaware of the others.
@@ -204,9 +207,22 @@ func (a *App) serveCmd(workspace, addr string) int {
 		SkillRoots:    toolset.SkillRoots(cfg),
 		Agents:        set.Agents,
 		Gateway:       set.Gateway,
+		Egress:        set.Guard(),
 		Index:         set.Index,
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
+	}
+	// A session leaving this process takes its egress proxy, and what the
+	// guard of Abhed's own requests counts for it, with it.
+	opts.SessionEnded = set.EndSession
+	if es, ok := sb.(interface{ EndSession(string) error }); ok {
+		opts.SessionEnded = func(id string) {
+			set.EndSession(id)
+			_ = es.EndSession(id)
+		}
+	}
+	if fence != nil {
+		opts.SessionBash = fenceSessionBash(cfg, workspace)
 	}
 	for _, h := range a.serverOpts {
 		if err := h(cfg, &opts); err != nil {
@@ -215,6 +231,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 	srv := server.New(opts)
+	// Every session's egress proxy stops with the server, before the store
+	// closes, so the last summaries it records are kept.
+	if c, ok := sb.(io.Closer); ok {
+		defer func() { _ = c.Close() }()
+	}
 
 	stopper := cancelOnStop(stopDrains)
 	defer stopper.stop()
@@ -256,6 +277,24 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	return 0
+}
+
+// serveSandbox builds the sandbox and bash every served session's commands run
+// in, from cfg as serve uses it from then on. Served sessions hold git's files,
+// as Studio's do: a planted hook or fsmonitor would run at the person's next git command.
+func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.Sandbox, tools.Bash, error) {
+	cfg.Sandbox.ProtectGit = true
+	sb, err := buildSandbox(cfg, workspace)
+	if err != nil {
+		return cfg, nil, tools.Bash{}, err
+	}
+	bash := tools.Bash{Sandbox: sb.Command,
+		Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
+	// The workbench terminal's shell runs under the same backend as the agent's commands.
+	if in, ok := sb.(sandbox.Interactive); ok {
+		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+	}
+	return cfg, sb, bash, nil
 }
 
 // fanIn joins taps into one, or none, so the server never wraps its store

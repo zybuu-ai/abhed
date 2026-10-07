@@ -49,14 +49,15 @@ func NewGemini(baseURL, apiKey, model string, p Profile) *Gemini {
 	if baseURL == "" {
 		baseURL = "https://generativelanguage.googleapis.com/v1beta"
 	}
-	return &Gemini{
+	g := &Gemini{
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
 		APIKey:  apiKey,
 		Model:   model,
-		HTTP:    timeoutClient(DefaultTimeouts()),
 		Retry:   DefaultRetry(),
 		profile: p,
 	}
+	g.HTTP = timeoutClient(DefaultTimeouts(), g.endpoints)
+	return g
 }
 
 func (g *Gemini) Name() string     { return g.profile.Name }

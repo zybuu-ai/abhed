@@ -28,6 +28,10 @@ type Requirements struct {
 	// CgroupDir is the delegated cgroup v2 folder to test; empty means this
 	// process's own cgroup.
 	CgroupDir string
+	// Mounts requires a mount namespace of the command's own, for a surface
+	// that keeps paths inside the workspace read-only. Without it the check
+	// is still made, and reported, but does not refuse.
+	Mounts bool
 }
 
 // minABI is the Landlock ABI r asks for, never below the fence's floor.
@@ -53,6 +57,9 @@ const (
 	CheckLandlockTCP = "landlock_tcp"
 	CheckSeccomp     = "seccomp"
 	CheckCgroup      = "cgroup_v2"
+	// CheckMounts is whether a command can be given a user and mount
+	// namespace of its own, for read-only and hidden paths in the workspace.
+	CheckMounts = "userns_mounts"
 	// CheckDelegated is added by the caller that asked the cgroup's manager
 	// whether it delegated the cgroup; see Report.Add.
 	CheckDelegated = "cgroup_delegated"

@@ -14,9 +14,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/zybuu-ai/abhed/internal/fence/mountns"
 )
 
 // helperTimeout bounds each helper; every one does a few syscalls.
@@ -45,7 +48,7 @@ func Run(ctx context.Context, req Requirements) Report {
 	if abiErr != nil {
 		c.Reason += ": " + abiErr.Error()
 	}
-	r.Checks = append(r.Checks, c, landlockFSCheck(ctx, abi), landlockTCPCheck(ctx, abi, req), seccompCheck(ctx), cgroupCheck(req))
+	r.Checks = append(r.Checks, c, landlockFSCheck(ctx, abi), landlockTCPCheck(ctx, abi, req), seccompCheck(ctx), cgroupCheck(req), mountsCheck(ctx, req))
 	r.finish()
 	return r
 }
@@ -266,12 +269,53 @@ func ownCgroup() (string, error) {
 	return "", errors.New("this process is in no cgroup v2 (no 0:: line in /proc/self/cgroup)")
 }
 
+// mountsCheck starts a helper in a user and mount namespace of its own, as
+// the launcher would be, and has it hold a folder read-only, hide another and
+// drop its capabilities.
+func mountsCheck(ctx context.Context, req Requirements) Check {
+	c := Check{ID: CheckMounts, Required: req.Mounts}
+	dir, err := os.MkdirTemp("", "abhed-fence-probe-mounts-")
+	if err != nil {
+		c.Status, c.Reason = Fail, "making a folder to test in: "+err.Error()
+		return c
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	for _, d := range []string{"ro", "pin", "hidden"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o700); err != nil {
+			c.Status, c.Reason = Fail, "making a folder to test in: "+err.Error()
+			return c
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hidden", "secret"), []byte("x"), 0o600); err != nil {
+		c.Status, c.Reason = Fail, "making a folder to test in: "+err.Error()
+		return c
+	}
+	attr := &syscall.SysProcAttr{}
+	mountns.Attr(attr)
+	out, err := runHelperAttr(ctx, attr, stageMounts, dir)
+	switch {
+	case err != nil:
+		c.Status, c.Reason = Fail, "an ordinary user cannot have a user and mount namespace of its own here: "+err.Error()
+	case !out.OK:
+		c.Status, c.Reason = Fail, "a user and mount namespace was made, but could not hold paths read-only: "+out.Reason
+	default:
+		c.Status, c.Reason, c.Value = Pass, out.Reason, "mount_namespace"
+	}
+	return c
+}
+
 // runHelper runs one helper stage in a re-executed copy of this binary, with
 // an empty environment, and returns its answer.
 func runHelper(ctx context.Context, stage string, args ...string) (helperOut, error) {
+	return runHelperAttr(ctx, nil, stage, args...)
+}
+
+// runHelperAttr is runHelper, starting the helper with attr.
+func runHelperAttr(ctx context.Context, attr *syscall.SysProcAttr, stage string, args ...string) (helperOut, error) {
 	ctx, cancel := context.WithTimeout(ctx, helperTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", append([]string{HelperArg, stage}, args...)...) // #nosec G204 -- this binary, re-executed as the probe's helper
+	cmd.SysProcAttr = attr
 	cmd.Env = []string{}
 	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer

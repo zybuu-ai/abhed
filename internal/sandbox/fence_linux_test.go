@@ -57,6 +57,9 @@ func fenced(t *testing.T, mutate func(*Policy)) (*Fence, Policy) {
 	return f, p
 }
 
+// noMounts fences without a mount namespace, for the checks that mode relies on.
+func noMounts(p *Policy) { p.fenceNoMounts = true }
+
 // events collects what the fence records for one command.
 type events struct {
 	mu  sync.Mutex
@@ -274,7 +277,7 @@ func TestFencePlantedStateDoesNotPersist(t *testing.T) {
 		`mkdir .ABHED && echo '{"users":[]}' > .ABHED/users.json`,
 		`(sleep 1; mkdir .Abhed; echo '{}' > .Abhed/users.json) & echo started`,
 	} {
-		f, p := fenced(t, nil)
+		f, p := fenced(t, noMounts)
 		home, _ := os.UserHomeDir()
 		ev := &events{}
 		out, err := fenceRun(t, f, p.Workspace, plant, ev.record(nil), "call-plant")
@@ -321,7 +324,7 @@ func TestFencePlantedStateDoesNotPersist(t *testing.T) {
 // State that appears beside the session is found at Close, moved out and
 // recorded to the session's record.
 func TestFenceCloseQuarantinesState(t *testing.T) {
-	_, p := fenced(t, nil)
+	_, p := fenced(t, noMounts)
 	f := NewFence(p)
 	if ok, why := f.Available(); !ok {
 		t.Fatal(why)
@@ -370,7 +373,7 @@ func TestFenceUnlistableWorkspaceRefusesTheSession(t *testing.T) {
 		{"0600", true, true},
 		{"0400", true, true},
 	} {
-		_, p := fenced(t, nil)
+		_, p := fenced(t, noMounts)
 		t.Cleanup(func() { _ = os.Chmod(p.Workspace, 0o700) })
 		f, ev := fencedApart(t, p)
 		cmd := "chmod " + tc.mode + " ."
@@ -417,7 +420,7 @@ func TestFencePlantedStateOnAnotherFilesystem(t *testing.T) {
 		t.Skipf("no tmpfs at /dev/shm: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(ws) })
-	f, p := fenced(t, func(p *Policy) { p.Workspace = ws })
+	f, p := fenced(t, func(p *Policy) { p.Workspace, p.fenceNoMounts = ws, true })
 	var wst, hst unix.Stat_t
 	home, _ := os.UserHomeDir()
 	if unix.Stat(ws, &wst) != nil || unix.Stat(home, &hst) != nil || wst.Dev == hst.Dev {
@@ -680,7 +683,7 @@ func TestFenceRestoreOwnerAccessFollowsNoLink(t *testing.T) {
 // A .abhed found while another of the session's commands still runs ends
 // that command too: the session's cgroup is killed, and the event says so.
 func TestFencePlantedEndsRunningCommands(t *testing.T) {
-	f, p := fenced(t, nil)
+	f, p := fenced(t, noMounts)
 	ev := &events{}
 	ctx := WithLaunch(context.Background(), Launch{CallID: "call-planter", Record: ev.record(nil)})
 	planter := f.Command(ctx, p.Workspace, "sleep 1; mkdir .abhed && echo '{}' > .abhed/users.json; sleep 120")

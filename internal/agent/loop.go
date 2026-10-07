@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -190,6 +191,9 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
+	// outside the allowlist; nil names none. Subagents keep it.
+	Egress *egress.Guard
 	// MaxTurns ends a run once the conversation has used this many turns.
 	MaxTurns int
 	// TurnsPerMessage, when positive, gives each message a person sends its
@@ -770,7 +774,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(ctx, "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.withCaller(ctx), "auto", l.Config.SystemPrompt, l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -803,7 +807,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	used, _ := l.Adapter.CountTokens(model.Request{
 		System: l.Config.SystemPrompt, Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(ctx, "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.withCaller(ctx), "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -912,7 +916,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	callStart := time.Now()
-	stream, err := l.Adapter.Complete(ctx, req)
+	stream, err := l.Adapter.Complete(l.withCaller(ctx), req)
 	if err != nil {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
 		// model failure, just as for a stream cut part way.

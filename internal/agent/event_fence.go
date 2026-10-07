@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -21,6 +22,10 @@ const (
 	// workspace: where it was moved, and that the session's fence runs no
 	// further command.
 	EvFenceStatePlanted EventType = sandbox.EvFenceStatePlanted
+	// EvEgressDecision is one decision of the egress proxy under
+	// sandbox.network allowlist: the call, host, port, address, method and
+	// path for plain HTTP, the decision, the rule, and the bytes each way.
+	EvEgressDecision EventType = sandbox.EvEgressDecision
 )
 
 // SandboxRecord is rec as a sandbox writes to it: system events, trusted.
@@ -41,5 +46,22 @@ func (l *Loop) LaunchContext(ctx context.Context, callID string) context.Context
 // loop's record for the launch events it writes.
 func (l *Loop) withLaunch(ctx context.Context, callID string) context.Context {
 	ctx = WithCallID(ctx, callID)
-	return sandbox.WithLaunch(ctx, sandbox.Launch{CallID: CallIDOf(ctx), Record: SandboxRecord(l.Recorder)})
+	launch := sandbox.Launch{CallID: CallIDOf(ctx)}
+	if l.Recorder != nil {
+		launch.Session, launch.Record = l.Recorder.Root(), SandboxRecord(l.Recorder)
+	}
+	return egress.WithGuard(sandbox.WithLaunch(ctx, launch), l.Config.Egress)
+}
+
+// withCaller names the session and tool set the loop's own model requests
+// are made for, so its egress guard judges and records them.
+func (l *Loop) withCaller(ctx context.Context) context.Context {
+	c := egress.Caller{Guard: l.Config.Egress}
+	if c.Guard == nil {
+		c.Guard = egress.CallerOf(ctx).Guard
+	}
+	if l.Recorder != nil {
+		c.Session, c.Record = l.Recorder.Root(), SandboxRecord(l.Recorder)
+	}
+	return egress.WithCaller(ctx, c)
 }

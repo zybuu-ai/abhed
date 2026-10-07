@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +36,46 @@ type Process struct {
 	// refusing unshare) failed every command instead of the start-up check.
 	nsOnce sync.Once
 	nsErr  string
+
+	// Whether bwrap may grant the relay the capability to bind the
+	// resolver's port; a setuid bwrap refuses it to a user. Probed once.
+	dnsOnce sync.Once
+	dnsOK   bool
+
+	// egress is each session's proxy under sandbox.network allowlist.
+	egress egressSessions
+	// git is what the look for git folders keeps between commands.
+	git gitMemory
+	// Whether a sandboxed command is left no capabilities and no writable
+	// host-root path. Probed once; empty means it is, so the tier fails closed.
+	capsOnce sync.Once
+	capsErr  string
 }
+
+// rootCaps reports whether Abhed runs as uid 0, where bwrap keeps the host's full
+// capability set and the command stays uid 0; a test replaces it to build root's args.
+var rootCaps = func() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
+
+// rootWritableProc are /proc paths a uid-0 command could write by owner match;
+// they are bound read-only.
+var rootWritableProc = []string{
+	"/proc/sys", "/proc/sysrq-trigger", "/proc/dynamic_debug",
+	"/proc/latency_stats", "/proc/pressure", "/proc/scsi", "/proc/mtrr",
+}
+
+// rootEmptyProc get an empty read-only tmpfs rather than the host's copy, so a
+// host mount made there after start cannot propagate in writable.
+var rootEmptyProc = []string{"/proc/sys/fs/binfmt_misc", "/proc/fs", "/proc/acpi", "/proc/irq", "/proc/bus", "/proc/driver"}
+
+// capProbeCaps prints the five capability sets and NoNewPrivs, for any uid.
+const capProbeCaps = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; echo PROBE_DONE`
+
+// capProbeRoot, run once at startup, also lists writable /proc files outside
+// the command's own; markers print only if both finds exit 0 (POSIX sh).
+const capProbeRoot = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; ` +
+	`if c=$(find /proc/self/ -maxdepth 1 -name comm -writable 2>/dev/null) && ` +
+	`w=$(find /proc -xdev \( -path '/proc/[0-9]*' -o -path /proc/self -o -path /proc/thread-self \) -prune -o -writable -print 2>/dev/null); then ` +
+	`[ -n "$c" ] && echo PROC_CONTROL; [ -n "$w" ] && printf '%s\n' "$w" | sed 's/^/WRITABLE /'; echo PROC_SCANNED; fi; echo PROBE_DONE`
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
 var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -76,6 +114,22 @@ func (s *Process) Available() (bool, string) {
 		if why := s.bwrapNamespaces(); why != "" {
 			return false, why
 		}
+		// Network on means the host's netns and its abstract sockets, where
+		// services that trust uid 0 take commands; refuse it as root.
+		if rootCaps() && s.policy.AllowNetwork {
+			return false, "running as root, the process tier cannot allow network access: the command would share the host's abstract sockets; use the container or vm tier"
+		}
+		// As root the command would otherwise read the host's block devices
+		// through the bound /dev; refuse rather than take that fallback.
+		if rootCaps() && !s.bwrapFreshOK() {
+			return false, "running as root, bubblewrap needs a private /proc and /dev here, which the kernel refuses; use the container or vm tier"
+		}
+		if why := s.bwrapDropsCaps(); why != "" {
+			return false, why
+		}
+	}
+	if why := s.egressAvailable(); why != "" {
+		return false, why
 	}
 	return true, ""
 }
@@ -100,9 +154,123 @@ func (s *Process) bwrapNamespaces() string {
 	return s.nsErr
 }
 
+// rootCapArgs empty every capability set when Abhed runs as root: a user
+// namespace plus --cap-drop ALL. Off root bwrap already runs unprivileged.
+func rootCapArgs() []string {
+	if !rootCaps() {
+		return nil
+	}
+	return []string{"--unshare-user", "--cap-drop", "ALL"}
+}
+
+// rootProcCovers make root-owned /proc files unwritable to a uid-0 command;
+// they follow --proc, and the tmpfs covers only go where the path exists.
+func rootProcCovers() []string {
+	if !rootCaps() {
+		return nil
+	}
+	var args []string
+	for _, p := range rootWritableProc {
+		args = append(args, "--ro-bind-try", p, p)
+	}
+	for _, p := range rootEmptyProc {
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, "--tmpfs", p, "--remount-ro", p)
+		}
+	}
+	return args
+}
+
+// bwrapDropsCaps is why a command would keep a capability or a writable
+// host-root path, or "", probing once with /proc set up as wrap does.
+func (s *Process) bwrapDropsCaps() string {
+	s.capsOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		probe, scanned := capProbeCaps, false
+		if rootCaps() {
+			probe, scanned = capProbeRoot, true
+		}
+		// Mirror wrap: a fresh /proc and writable /dev only where they mount.
+		args := append(rootCapArgs(), "--ro-bind", "/", "/", "--unshare-pid")
+		if s.bwrapFreshOK() {
+			args = append(args, "--proc", "/proc", "--dev", "/dev")
+			args = append(args, rootProcCovers()...)
+		}
+		args = append(args, "/bin/sh", "-c", probe)
+		out, err := bwrapRun(ctx, args...)
+		if err != nil {
+			s.capsErr = "bubblewrap (bwrap) cannot confine a command here: " + firstLine(out, err)
+			return
+		}
+		s.capsErr = checkCapProbe(string(out), scanned)
+	})
+	return s.capsErr
+}
+
+// checkCapProbe fails closed unless every set is empty, NoNewPrivs is 1 and,
+// with requireScan, the /proc scan and its control both ran with nothing found.
+func checkCapProbe(out string, requireScan bool) string {
+	if !strings.Contains(out, "PROBE_DONE") {
+		return "bubblewrap (bwrap) confinement probe did not finish"
+	}
+	if requireScan && !strings.Contains(out, "PROC_SCANNED") {
+		return "bubblewrap (bwrap) could not enumerate writable /proc files"
+	}
+	if requireScan && !strings.Contains(out, "PROC_CONTROL") {
+		return "the writable-/proc scan missed its control file, so it cannot be trusted"
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, "WRITABLE "); ok {
+			return "a sandboxed command can still write " + strings.TrimSpace(rest)
+		}
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		switch k {
+		case "CapInh", "CapPrm", "CapEff", "CapAmb", "CapBnd":
+			if n, perr := strconv.ParseUint(v, 16, 64); perr != nil || n != 0 {
+				return "bubblewrap (bwrap) left a sandboxed command capabilities (" + k + " " + v + ")"
+			}
+			seen[k] = true
+		case "NoNewPrivs":
+			if v != "1" {
+				return "a sandboxed command can gain privileges (NoNewPrivs " + v + ")"
+			}
+			seen[k] = true
+		}
+	}
+	for _, k := range []string{"CapInh", "CapPrm", "CapEff", "CapAmb", "CapBnd", "NoNewPrivs"} {
+		if !seen[k] {
+			return "bubblewrap (bwrap) confinement probe did not report " + k
+		}
+	}
+	return ""
+}
+
+// refusedProcessCmd is a process-tier command that does not start, with the reason.
+func refusedProcessCmd(format string, a ...any) *exec.Cmd {
+	return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: "+format, a...)}
+}
+
+// firstLine is a command's first line of output, or its error when it printed none.
+func firstLine(out []byte, err error) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if first == "" && err != nil {
+		return err.Error()
+	}
+	return first
+}
+
 func (s *Process) Describe() string {
 	net := "no network"
-	if s.policy.AllowNetwork {
+	switch {
+	case s.policy.Egress != nil:
+		net = egressText(s.policy)
+	case s.policy.AllowNetwork:
 		net = "network allowed"
 	}
 	// Said only when one is set: with no count of the user's processes there
@@ -167,9 +335,20 @@ func WritableAreas() []string {
 	return append(out, cacheAreas()...)
 }
 
-func (s *Process) seatbeltProfile() string {
+func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
+
+// seatbeltProfileFor is the profile for a command whose session's egress
+// proxy holds port; 0 is none.
+func (s *Process) seatbeltProfileFor(port uint16) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
+	// A command signals only processes in its own sandbox: never Abhed,
+	// which it could otherwise kill with kill $PPID, nor another command's,
+	// as bubblewrap's PID namespace keeps them apart on Linux.
+	b.WriteString(";; Signals stay inside this sandbox.\n(deny signal)\n(allow signal (target same-sandbox))\n\n")
+	// On every network setting: an app opened outside the sandbox has the
+	// network and the filesystem the command does not.
+	b.WriteString(";; No LaunchServices or Apple events.\n" + denyLaunchServices + "\n")
 
 	b.WriteString(";; Writes are confined to the workspace and standard temp dirs.\n")
 	b.WriteString("(deny file-write*)\n")
@@ -227,10 +406,29 @@ func (s *Process) seatbeltProfile() string {
 		fmt.Fprintf(&b, "(deny file-write* (literal %q))\n", p)
 	}
 	if s.policy.ProtectGit {
-		// Every .git at any depth, and its config and hooks, in any case.
+		// Every .git at any depth, and what git reads in it as configuration
+		// or follows elsewhere, in any case, made later too.
 		for _, ws := range s.workspaces() {
-			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s/(%s|%s)(/|$)\"))\n", regexQuote(ws), anyCase(".git"), anyCase("config"), anyCase("hooks"))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitPattern(ws))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", gitFoldersPattern(ws))
 			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s$\"))\n", regexQuote(ws), anyCase(".git"))
+			// The folders holding a submodule's git folder named with slashes,
+			// which the patterns cannot tell from what a git folder holds.
+			g := scanOwnGit(ws)
+			for _, p := range holders([]string{ws}, g.protected) {
+				fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", anyCaseRegex(ws, p))
+				// Nor can a name be made beside one, which the patterns cannot tell from a folder's contents.
+				if modulesPrefix(ws, p) {
+					fmt.Fprintf(&b, "(deny file-write* (regex #\"%s/[^/]+$\"))\n", strings.TrimSuffix(anyCaseRegex(ws, p), "$"))
+				}
+			}
+			// Seatbelt matches the path a link resolves to, so what a linked
+			// pointer such as hooks names is held as well.
+			for _, l := range g.linked {
+				for _, t := range PathForms(RealPath(l)) {
+					fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", t)
+				}
+			}
 		}
 	}
 	for _, p := range s.statePaths() {
@@ -238,9 +436,15 @@ func (s *Process) seatbeltProfile() string {
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
 	}
 
-	if !s.policy.AllowNetwork {
+	if !s.policy.AllowNetwork || s.policy.Egress != nil {
 		b.WriteString("\n;; Egress denied: a successful injection has no channel out.\n")
 		b.WriteString("(deny network*)\n")
+		// Under the allowlist, the one way out is the session's proxy on
+		// loopback. Seatbelt names no address but "localhost", which is
+		// 127.0.0.1 and ::1, so the proxy holds the port on both.
+		if s.policy.Egress != nil && port != 0 {
+			fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", port)
+		}
 		// Nor a view of the host's network: its interfaces, addresses and
 		// routes, as bwrap's --unshare-net gives on Linux.
 		b.WriteString("(deny sysctl-read (sysctl-name-prefix \"net.route\"))\n")
@@ -311,15 +515,16 @@ func (s *Process) readableFiles() []string {
 	return out
 }
 
-// bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev in
-// this environment, probing once with a trivial command.
+// bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev here,
+// probing once with the real command's capability args.
 func (s *Process) bwrapFreshOK() bool {
 	s.freshOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "bwrap", "--unshare-pid", "--proc", "/proc", "--dev", "/dev",
+		args := append(rootCapArgs(), "--unshare-pid", "--proc", "/proc", "--dev", "/dev",
 			"--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
-			"--ro-bind-try", "/lib64", "/lib64", "/bin/true").CombinedOutput()
+			"--ro-bind-try", "/lib64", "/lib64", "/bin/true")
+		out, err := bwrapRun(ctx, args...)
 		s.freshOK = err == nil
 		if err != nil && !strings.Contains(string(out), "Can't mount") {
 			// Some other failure: keep the private mounts and let the real
@@ -331,23 +536,50 @@ func (s *Process) bwrapFreshOK() bool {
 }
 
 func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
-	return s.wrap(ctx, cwd, s.env(), "/bin/bash", "-c", command)
+	env, eg, err := s.commandEnv(ctx)
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
+	return s.wrapEgress(ctx, cwd, env, eg, "/bin/bash", "-c", command)
+}
+
+// commandEnv is env, with the egress proxy's variables under the allowlist,
+// and the session's proxy. A proxy that cannot start refuses the command:
+// never the open network.
+func (s *Process) commandEnv(ctx context.Context) ([]string, *egressState, error) {
+	env := s.env()
+	if s.policy.Egress == nil {
+		return env, nil, nil
+	}
+	pe, eg, err := s.egressEnv(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sandbox: the command was not run: the egress proxy is not available: %w", err)
+	}
+	return append(env, pe...), eg, nil
 }
 
 // Shell starts a long-lived interactive bash under the same confinement as
 // Command, for a person at a terminal.
 func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	return hangUp(s.wrap(ctx, cwd, append(s.env(), shellEnv(s.Tier())...), shellArgv...))
+	env, eg, err := s.commandEnv(ctx)
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
+	return hangUp(s.wrapEgress(ctx, cwd, append(env, shellEnv(s.Tier())...), eg, shellArgv...))
 }
 
 // Backend names the mechanism: sandbox-exec or bwrap.
 func (s *Process) Backend() string { return s.backend }
 
-// wrap runs argv inside the backend's confinement.
-func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...string) *exec.Cmd {
+// wrapEgress runs argv inside the backend's confinement; under the
+// allowlist eg is the session's proxy, its one way out.
+func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *egressState, argv ...string) *exec.Cmd {
+	if s.policy.Egress != nil && eg.port() == 0 {
+		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: the egress proxy has not started")}
+	}
 	switch s.backend {
 	case "sandbox-exec":
-		profile := s.seatbeltProfile()
+		profile := s.seatbeltProfileFor(eg.port())
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
 		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
@@ -360,15 +592,18 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			"--die-with-parent",
 			"--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		}
-		// A private /proc and /dev when the kernel allows them. Where it does
-		// not (a container that has dropped the capabilities), the host's
-		// /dev is bound instead and /proc is left out: the PID namespace still
-		// holds, and tools that read /proc see nothing rather than the host.
-		// That is the lesser loss — the alternative was no sandboxed command
-		// running at all.
-		if s.bwrapFreshOK() {
+		// As root bwrap keeps the host's full capability set and the command
+		// stays uid 0; empty the sets so it cannot escape the setup.
+		args = append(args, rootCapArgs()...)
+		// A private /proc and /dev with the writable /proc files covered after;
+		// the host-/dev fallback is refused as root (it exposes block devices).
+		switch {
+		case s.bwrapFreshOK():
 			args = append(args, "--proc", "/proc", "--dev", "/dev")
-		} else {
+			args = append(args, rootProcCovers()...)
+		case rootCaps():
+			return refusedProcessCmd("running as root, bubblewrap cannot mount a private /proc and /dev here, and the host /dev would expose block devices; use the container or vm tier")
+		default:
 			args = append(args, "--dev-bind", "/dev", "/dev")
 		}
 		args = append(args,
@@ -390,18 +625,31 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			"--tmpfs", filepath.Join(s.policy.Workspace, stateDir),
 			"--chdir", cwd,
 		)
-		if !s.policy.AllowNetwork {
+		if !s.policy.AllowNetwork || s.policy.Egress != nil {
 			args = append(args, "--unshare-net")
+		}
+		// Under the allowlist the sandbox has its own network namespace, with
+		// loopback only: a relay inside it, listening where the proxy
+		// variables point, joins each connection to the proxy's socket.
+		if s.policy.Egress != nil {
+			binds, wrapped := eg.relayArgs(argv)
+			args = append(args, binds...)
+			argv = wrapped
 		}
 		// A folder holding a protected path is bound onto itself first: a
 		// mount point cannot be renamed or removed, and stays writable. A
 		// .git file, which names the git folder, is bound read-only.
 		protected := s.protectedInside()
 		// Bubblewrap can bind only what exists, so each git folder found now
-		// has its config and hooks bound read-only; Seatbelt names them by pattern.
+		// has what git reads there bound read-only; Seatbelt names them by
+		// pattern. A commondir no bind could have stopped is taken out first.
 		if s.policy.ProtectGit {
 			for _, ws := range s.workspaces() {
-				protected = append(protected, GitProtected(ws)...)
+				found, err := gitGuard(ctx, ws, s.backend, &s.git)
+				if err != nil {
+					return &exec.Cmd{Err: err}
+				}
+				protected = append(protected, found...)
 			}
 		}
 		for _, p := range holders(s.workspaces(), protected) {
@@ -559,7 +807,14 @@ func NewNone(p Policy) *None { return &None{policy: p} }
 
 func (n *None) Tier() Tier { return TierNone }
 
-func (n *None) Available() (bool, string) { return true, "" }
+// Available refuses the allowlist: on the host nothing stops a command
+// going around the proxy.
+func (n *None) Available() (bool, string) {
+	if n.policy.Egress != nil {
+		return false, egressRefusal(TierNone)
+	}
+	return true, ""
+}
 
 func (n *None) Describe() string {
 	return "NO ISOLATION — commands run directly on the host. Trusted repositories only."
@@ -608,64 +863,3 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 
 // Backend says there is none.
 func (n *None) Backend() string { return "host" }
-
-// Bounds on the walk for git folders: a deeper or wider tree is not walked
-// further, and what lies past the bound is not protected.
-const (
-	gitWalkDepth   = 6
-	gitWalkEntries = 20000
-)
-
-// makeEmpty makes an empty folder or file at p, never replacing one.
-func makeEmpty(p string, dir bool) {
-	if dir {
-		_ = os.Mkdir(p, 0o755) // #nosec G301 -- git's own mode for hooks
-		return
-	}
-	if f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil { // #nosec G302 G304 -- git's own mode for config, in a git folder the walk found
-		_ = f.Close()
-	}
-}
-
-// GitProtected are the paths in ws that a git command runs programs from:
-// each git folder's config and hooks, made empty where missing, and each .git
-// file (a worktree's or a submodule's link to its git folder), at most
-// gitWalkDepth folders down.
-func GitProtected(ws string) []string {
-	var out []string
-	seen := 0
-	_ = filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // a folder that cannot be read is passed over, and the walk goes on
-		}
-		if seen++; seen > gitWalkEntries {
-			return filepath.SkipAll
-		}
-		rel, _ := filepath.Rel(ws, p)
-		depth := strings.Count(rel, string(filepath.Separator))
-		if strings.EqualFold(d.Name(), ".git") {
-			if d.IsDir() {
-				for _, f := range []string{"config", "hooks"} {
-					q := filepath.Join(p, f)
-					// A missing one is made empty as the person, so it can be bound read-only.
-					if _, err := os.Lstat(q); errors.Is(err, fs.ErrNotExist) {
-						makeEmpty(q, f == "hooks")
-					}
-					if _, err := os.Lstat(q); err == nil {
-						out = append(out, q)
-					}
-				}
-				return filepath.SkipDir
-			}
-			if d.Type().IsRegular() {
-				out = append(out, p)
-			}
-			return nil
-		}
-		if d.IsDir() && (depth >= gitWalkDepth || d.Name() == "node_modules" || strings.EqualFold(d.Name(), stateDir)) {
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return out
-}

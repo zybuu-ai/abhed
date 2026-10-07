@@ -3,6 +3,7 @@ package sandbox
 import (
 	"syscall"
 	"testing"
+	"time"
 )
 
 // fakeSession replaces the sweep's view of the system with a script: the
@@ -59,11 +60,53 @@ func TestSweepKillsWhatAppearsAfterTheKill(t *testing.T) {
 	}
 }
 
-// A session still growing after every pass is reported, so it is logged.
+// A session that keeps members past the grace is reported, so it is logged.
 func TestSweepSaysWhenMembersRemain(t *testing.T) {
+	saved := sweepGrace
+	sweepGrace = 50 * time.Millisecond
+	t.Cleanup(func() { sweepGrace = saved })
 	f := &fakeSession{listings: [][]int{{103}}}
 	f.install(t)
 	if named.sweep() == "" {
 		t.Fatal("members left after every pass went unreported")
+	}
+}
+
+// A killed member starved of CPU stays listed for longer than any fixed count
+// of passes before it dies; the sweep waits for it rather than report a
+// session it has in fact emptied. The macOS runners showed this under load.
+func TestSweepWaitsForKilledMembersToGo(t *testing.T) {
+	saved := sweepWaitMax
+	sweepWaitMax = time.Millisecond // the passes, not the waits, are under test
+	t.Cleanup(func() { sweepWaitMax = saved })
+	listings := [][]int{{101}, {101}} // stop passes
+	for range 4 * maxSweepPasses {
+		listings = append(listings, []int{101}) // killed, not yet scheduled
+	}
+	f := &fakeSession{listings: append(listings, []int{})}
+	f.install(t)
+	if why := named.sweep(); why != "" {
+		t.Fatalf("a member that was dying was reported as left: %s", why)
+	}
+}
+
+// While passes find only members already killed, the wait between them grows,
+// so a member slow to die is not polled hard for the whole grace.
+func TestSweepBacksOffWhileMembersDie(t *testing.T) {
+	saved := sweepGrace
+	sweepGrace = 300 * time.Millisecond
+	t.Cleanup(func() { sweepGrace = saved })
+	passes := 0
+	f := &fakeSession{listings: [][]int{{104}}}
+	f.install(t)
+	list := listMembers
+	listMembers = func(pid int) []int { passes++; return list(pid) }
+	if named.sweep() == "" {
+		t.Fatal("a member left past the grace went unreported")
+	}
+	// Doubling from 1ms to 50ms makes about a dozen passes in 300ms; a fixed
+	// 1ms wait makes hundreds.
+	if passes > 40 {
+		t.Fatalf("%d passes in %v: the sweep did not back off", passes, sweepGrace)
 	}
 }

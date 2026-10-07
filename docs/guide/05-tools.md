@@ -56,7 +56,17 @@ hides its environment; bubblewrap ends everything in its namespace. See
 - `shell_output` returns what the command wrote since the last read, with its
   state (`running`, or `exited` / `killed` and the exit code). One read returns
   at most the last 30,000 bytes of what is new; `wait_ms` waits up to that
-  long (at most ten minutes) for the command to end first.
+  long (at most ten minutes) for the command to end first. While secrets are
+  stored and the command is still running, a read holds back the last few
+  hundred bytes, a fixed length whatever they say, in case a secret goes on
+  in what comes next; they are shown once the command has written nothing
+  for a second, or when it ends. So a secret a program prints in two writes
+  more than a second apart can show its first part to a read between them;
+  a value printed whole is redacted as before. After a gap (output dropped,
+  or more than one read returns), the same length is skipped, and the read
+  says how many bytes were skipped after a gap; reads show nothing new until
+  twice that has arrived, or the command goes quiet or ends, so a secret
+  across the skip is seen whole.
 - `shell_kill` stops it and every process it started (its process group), and
   returns its last output.
 - A shell keeps the last 1 MiB of its output; a read that fell behind says how
@@ -69,10 +79,13 @@ hides its environment; bubblewrap ends everything in its namespace. See
 - Shells are listed with the background tasks (`/tasks`, `task_status`, the
   server's tasks endpoint, `_abhed/tasks/list` over ACP, the SDK's
   `Background()`), with `kind: "shell"`, the command, exit code, output size
-  and last output line, and stopped the same way. They end, process group and
-  all, when the session closes, on a stop of all background work, and when
-  Abhed exits. Output the agent reads is recorded as an `observation`, redacted
-  like any other; `shell.started` and `shell.ended` record the rest.
+  and last output line, and stopped the same way. In the CLI, server and SDK
+  listings, a running shell's last line is redacted but has no hold, so it
+  can show the first part of a secret the command has only partly written.
+  They end, process group and all, when the session closes, on a stop of all
+  background work, and when Abhed exits. Output the agent reads is recorded
+  as an `observation`, redacted like any other; `shell.started` and
+  `shell.ended` record the rest.
 - Once the shell's own command has ended, what it started and left running
   (`server &`, then the shell exits) is no longer reached: not by
   `shell_kill`, the session closing, a stop or Abhed exiting, nor by revoking

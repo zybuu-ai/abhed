@@ -83,6 +83,9 @@ type shellState struct {
 	// because a stored secret may continue in what comes next.
 	readMu sync.Mutex
 	carry  string
+	// gapCarry is output after a gap not yet shown or counted as skipped: the
+	// skip is decided once a value across its end would be whole in it.
+	gapCarry string
 }
 
 // shellHost is the ShellHost a tool call gets: the session's Background,
@@ -222,9 +225,10 @@ func (h shellHost) StartShell(ctx context.Context, req tools.ShellRequest) (stri
 		go func() {
 			select {
 			case <-sctx.Done():
-				proc.Stop()
 			case <-proc.Done():
 			}
+			// Ended by itself too: stopping releases the call's context, and with it the egress proxy.
+			proc.Stop()
 		}()
 	} else {
 		cmd, err := req.Build(sctx)
@@ -308,7 +312,7 @@ func (b *Background) watchShell(sctx context.Context, t *bgTask, stopDeadline fu
 		b.loop.record(EvShellEnded, ActorSystem, end)
 	}
 	n := Notice{TaskID: t.ID, Session: b.sessionID(), Description: t.Description, Kind: KindShell,
-		Status: state, Reason: reason, CallID: "bgn_" + newID(), Content: b.redacted(shellEndText(t, end, sh.proc))}
+		Status: state, Reason: reason, CallID: "bgn_" + newID(), Content: b.redacted(shellEndText(t, end, sh.proc.Unread(), b.lastLine(sh.proc)))}
 	b.mu.Lock()
 	quiet := sh.quiet || b.closed
 	b.mu.Unlock()
@@ -333,14 +337,14 @@ func (b *Background) forget(id string) {
 }
 
 // shellEndText is what the conversation is told when a shell ends.
-func shellEndText(t *bgTask, end ShellEnded, p *tools.ShellProc) string {
+func shellEndText(t *bgTask, end ShellEnded, unread int64, line string) string {
 	how := fmt.Sprintf("exited with code %d", end.ExitCode)
 	if end.State == ShellKilled {
 		how = "was killed (" + end.Reason + ")"
 	}
 	s := fmt.Sprintf("Background shell %s (%s) %s after %s; %d bytes of output, %d not yet read.",
-		t.ID, t.Description, how, (time.Duration(end.DurationMS) * time.Millisecond).String(), end.OutputBytes, p.Unread())
-	if line := p.LastLine(shellLastLine); line != "" {
+		t.ID, t.Description, how, (time.Duration(end.DurationMS) * time.Millisecond).String(), end.OutputBytes, unread)
+	if line != "" {
 		s += "\nLast line: " + line
 	}
 	return s + "\nRead its output with shell_output."
@@ -353,14 +357,27 @@ func (b *Background) sessionID() string {
 	return b.loop.sessionID()
 }
 
-// partials finds text that may be part of a stored value; secrets.Redactor has it.
-type partials interface {
-	Pending(s string) int
-	Partial(s string) int
+// shellQuietRelease is how long a running shell must have written nothing
+// before a read shows the tail it holds back.
+const shellQuietRelease = time.Second
+
+// shellHoldUnit rounds what a read holds back up to a multiple, so its size
+// says nothing of a stored value shorter than this; of a longer one, only
+// ceil(span/256).
+const shellHoldUnit = 256
+
+// shellHold is how many trailing bytes a read of a running shell holds back:
+// at least span-1, enough for a secret's start, fixed whatever the text says.
+func shellHold(span int) int {
+	return ((span-1)/shellHoldUnit + 1) * shellHoldUnit
 }
 
-// redactRead holds back output that may start a secret until the next read;
-// at a gap, text a cut secret could leave a part in is skipped. Holds readMu.
+// redactRead holds back the tail of a running shell's output until the next
+// read, or until the shell goes quiet, since a stored secret may continue in
+// what comes next; at a gap, the start a cut secret could leave a part in is
+// skipped. What is held depends only on lengths and timing, never on what the
+// text says, or a model could test guesses at a value it was not given by
+// seeing whether they are held. Holds readMu.
 func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (string, int64) {
 	var red Redactor
 	if b.loop != nil {
@@ -369,49 +386,78 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 	if red == nil || red.Span() == 0 {
 		return r.Text, r.Skipped
 	}
+	hold := shellHold(red.Span())
 	text, skipped := r.Text, r.Skipped
-	pt, precise := red.(partials)
+	quiet := final || r.Quiet >= shellQuietRelease
 	if r.Dropped > 0 || r.Skipped > 0 {
-		skipped += int64(len(sh.carry))
-		sh.carry = ""
-		n := red.Span() - 1
-		if precise {
-			n = pt.Partial(text)
-		}
-		n = min(n, len(text))
-		for n < len(text) && !utf8.RuneStart(text[n]) {
-			n++
-		}
-		text, skipped = text[n:], skipped+int64(n)
-	}
-	if !precise {
-		fb := fragmentBuffer{redact: red.Redact, span: red.Span(), carry: sh.carry}
-		out := fb.push(text)
-		if final {
-			out += fb.flush()
-		}
-		sh.carry = fb.carry
-		return out, skipped
+		skipped += int64(len(sh.carry) + len(sh.gapCarry))
+		sh.carry, sh.gapCarry = "", ""
+		text, skipped = sh.skipAfterGap(red, hold, text, skipped, quiet)
+	} else if sh.gapCarry != "" {
+		text, skipped = sh.skipAfterGap(red, hold, text, skipped, quiet)
 	}
 	raw := sh.carry + text
 	sh.carry = ""
-	if final {
+	if quiet {
 		return redactedText(red.Redact, raw), skipped
 	}
-	// Cut before a possible secret's start, and never inside a whole one.
+	// Cut a fixed length from the end, moved back only off a whole secret,
+	// which the redacted text names anyway.
 	whole := redactedText(red.Redact, raw)
-	cut := len(raw) - pt.Pending(raw)
-	for ; cut > 0; cut-- {
-		if cut < len(raw) && !utf8.RuneStart(raw[cut]) {
+	for cut := len(raw) - hold; cut > 0; cut-- {
+		if !utf8.RuneStart(raw[cut]) {
 			continue
 		}
-		if head := redactedText(red.Redact, raw[:cut]); cut == len(raw) || head+redactedText(red.Redact, raw[cut:]) == whole {
+		if head := redactedText(red.Redact, raw[:cut]); head+redactedText(red.Redact, raw[cut:]) == whole {
 			sh.carry = raw[cut:]
 			return head, skipped
 		}
 	}
 	sh.carry = raw
 	return "", skipped
+}
+
+// skipAfterGap skips the first hold bytes after a gap, moved on only past a
+// whole secret it would cut. It waits for twice the hold, so a value across
+// the skip point is whole when it is checked; a shell gone quiet or ended
+// decides with what there is. The wait depends only on lengths.
+func (sh *shellState) skipAfterGap(red Redactor, hold int, text string, skipped int64, quiet bool) (string, int64) {
+	all := sh.gapCarry + text
+	sh.gapCarry = ""
+	switch {
+	case quiet && len(all) < hold:
+		return "", skipped + int64(len(all))
+	case len(all) < 2*hold && !quiet:
+		sh.gapCarry = all
+		return "", skipped
+	}
+	whole := redactedText(red.Redact, all)
+	n := hold
+	for ; n < len(all); n++ {
+		// A value cut at the hold ends before hold+span; past that, no clean
+		// split means values run on, so skip the rest rather than show a part.
+		if n > hold+red.Span() {
+			n = len(all)
+			break
+		}
+		if !utf8.RuneStart(all[n]) {
+			continue
+		}
+		if redactedText(red.Redact, all[:n])+redactedText(red.Redact, all[n:]) == whole {
+			break
+		}
+	}
+	return all[n:], skipped + int64(n)
+}
+
+// lastLine is a shell's last line of output, redacted before it is clipped.
+func (b *Background) lastLine(p *tools.ShellProc) string {
+	if b.loop != nil {
+		if red := b.loop.Recorder.redactor(); red != nil {
+			return p.LastLine(shellLastLine, func(s string) string { return redactedText(red.Redact, s) }, red.Span())
+		}
+	}
+	return p.LastLine(shellLastLine, nil, 0)
 }
 
 // redacted is text as the session's record would keep it.
@@ -469,7 +515,8 @@ func (t *bgTask) shellInfo(ti *TaskInfo) {
 		ti.ExitCode = &code
 	}
 	ti.OutputBytes, _ = sh.proc.Size()
-	ti.LastLine = sh.proc.LastLine(shellLastLine)
+	// Its last line is read when it is redacted, outside b.mu.
+	ti.shellProc = sh.proc
 }
 
 // maxShellRead bounds one shell_output result, as a foreground command's is.
@@ -536,6 +583,7 @@ func shellReadResult(b *Background, t *bgTask) tools.Result {
 	}
 	t.shell.readMu.Lock()
 	r := p.ReadNew(maxShellRead)
+	limitSkipped := r.Skipped
 	r.Text, r.Skipped = t.shell.redactRead(b, r, ended)
 	t.shell.readMu.Unlock()
 	var sb strings.Builder
@@ -556,8 +604,11 @@ func shellReadResult(b *Background, t *bgTask) tools.Result {
 	if r.Dropped > 0 {
 		fmt.Fprintf(&sb, "\n[... %d bytes of earlier output were dropped: a shell keeps its last %d bytes ...]", r.Dropped, ringCap(b))
 	}
-	if r.Skipped > 0 {
+	switch {
+	case limitSkipped > 0:
 		fmt.Fprintf(&sb, "\n[... %d bytes not shown: one read returns the last %d ...]", r.Skipped, maxShellRead)
+	case r.Skipped > 0:
+		fmt.Fprintf(&sb, "\n[... %d bytes not shown: skipped after a gap ...]", r.Skipped)
 	}
 	switch {
 	case r.Text != "":

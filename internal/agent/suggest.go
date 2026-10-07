@@ -205,7 +205,7 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 			}
 		}
 	}()
-	cctx, cancel := context.WithTimeout(ctx, j.timeout)
+	cctx, cancel := context.WithTimeout(l.withCaller(ctx), j.timeout)
 	start := time.Now()
 	text, usage, err := suggestCall(cctx, j.adapter, j.req)
 	// A model that refuses the reasoning settings, or spends the whole

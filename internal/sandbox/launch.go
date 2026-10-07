@@ -4,6 +4,8 @@ import (
 	"context"
 	"os/exec"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Launch is what a command's caller tells a backend that records each launch
@@ -11,6 +13,10 @@ import (
 type Launch struct {
 	// CallID is the model's id for the tool call, as agent.CallIDOf gives it.
 	CallID string
+	// Session is the id of the session the call belongs to: the top-level
+	// session for a subagent's call. Backends that keep state per session,
+	// such as the egress proxy, key it by this.
+	Session string
 	// Record writes one event to the session's record and reports whether
 	// it was written. Nil when the command runs outside a session.
 	Record func(event string, payload map[string]any) error
@@ -18,8 +24,11 @@ type Launch struct {
 
 type launchKey struct{}
 
-// WithLaunch carries l to the backend that builds the command.
+// WithLaunch carries l to the backend that builds the command, and to
+// Abhed's own clients, whose requests are recorded for the same call.
 func WithLaunch(ctx context.Context, l Launch) context.Context {
+	ctx = egress.WithCaller(ctx, egress.Caller{Session: l.Session, CallID: l.CallID, Record: l.Record,
+		Guard: egress.CallerOf(ctx).Guard})
 	return context.WithValue(ctx, launchKey{}, l)
 }
 

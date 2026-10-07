@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -77,6 +78,9 @@ type Config struct {
 	Suggest SuggestConfig `json:"suggest,omitempty"`
 	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
 	Fence FenceConfig `json:"fence,omitempty"`
+	// Egress is the rules of the egress proxy that sandbox.network
+	// "allowlist" sends commands through. Managed only.
+	Egress egress.Config `json:"egress,omitempty"`
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
@@ -225,6 +229,10 @@ func (k SetAsideKey) String() string {
 	return fmt.Sprintf("%s sets %s, which is ignored: %s", Printable(k.File), k.Key, k.Reason)
 }
 
+// NetworkAllowlist is the sandbox.network value that sends commands through
+// the egress proxy.
+const NetworkAllowlist = "allowlist"
+
 // managedOnly are the settings only the managed configuration may make. The
 // same key in the user's file or a trusted workspace's is set aside.
 var managedOnly = map[string]string{
@@ -234,6 +242,12 @@ var managedOnly = map[string]string{
 	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
+	"sandbox.network":              "only the managed configuration turns on the egress allowlist",
+	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
+	"egress.default":               "only the managed configuration sets which destinations commands reach",
+	"egress.mode":                  "only the managed configuration sets the egress mode",
+	"egress.record_paths":          "only the managed configuration sets what the egress record keeps",
+	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
 }
 
 // ManagedOnly reports whether only the managed configuration may make the
@@ -258,6 +272,18 @@ func clearManagedOnly(c *Config, key string) {
 		c.Hooks.ManagedOnly = false
 	case "studio.disable_host_terminal":
 		c.Studio.DisableHostTerminal = false
+	case "sandbox.network":
+		c.Sandbox.Network = ""
+	case "egress.rules":
+		c.Egress.Rules = nil
+	case "egress.default":
+		c.Egress.Default = ""
+	case "egress.mode":
+		c.Egress.Mode = ""
+	case "egress.record_paths":
+		c.Egress.RecordPaths = nil
+	case "egress.idle_seconds":
+		c.Egress.IdleSeconds = 0
 	}
 }
 
@@ -808,8 +834,12 @@ type SandboxConfig struct {
 	MinTier string `json:"min_tier"` // none|process|container|vm
 	// Tier chooses the backend instead of the strongest available one:
 	// "fence", the Linux preview. Empty selects as before.
-	Tier          string   `json:"tier,omitempty"`
-	AllowNetwork  bool     `json:"allow_network"`
+	Tier         string `json:"tier,omitempty"`
+	AllowNetwork bool   `json:"allow_network"`
+	// Network "allowlist" sends commands' traffic through the session's
+	// egress proxy, which reaches only what the egress rules allow, in place
+	// of allow_network. Managed only.
+	Network       string   `json:"network,omitempty"`
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
 	// MaxMemoryMB applies on the container and vm tiers only; MaxProcs on
 	// every tier but none.
@@ -824,8 +854,8 @@ type SandboxConfig struct {
 	// WriteProtected are workspace paths commands may not write, set by the
 	// surface that runs the session, never by a file.
 	WriteProtected []string `json:"-"`
-	// ProtectGit write-protects every git folder's config and hooks in the
-	// workspace, at any depth; set as WriteProtected is.
+	// ProtectGit write-protects what git reads in every git folder in the
+	// workspace (config, hooks, commondir and the like); set as WriteProtected is.
 	ProtectGit bool `json:"-"`
 }
 
@@ -1179,6 +1209,14 @@ func (c Config) Validate() error {
 			return fmt.Errorf("cli.mode_cycle may only leave modes out of %s; %q is not one of them",
 				strings.Join(DefaultModeCycle, ", "), m)
 		}
+	}
+	switch c.Sandbox.Network {
+	case "", NetworkAllowlist:
+	default:
+		return fmt.Errorf("sandbox.network is %q; use %q, or leave it out and set sandbox.allow_network", c.Sandbox.Network, NetworkAllowlist)
+	}
+	if _, err := egress.Compile(c.Egress); err != nil {
+		return err
 	}
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)

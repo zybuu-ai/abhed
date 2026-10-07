@@ -24,8 +24,9 @@ of the file.
 
 A stdio server is a process Abhed starts on your machine, as you, **outside the
 sandbox**. It can read and write what your user can and reach the network,
-whatever the sandbox tier and `allow_network` say. A URL server runs wherever
-it is hosted. `digest` is accepted in the configuration but not checked yet.
+whatever the sandbox tier and `allow_network` say. The one exception is the
+network under `sandbox.network: "allowlist"`; see below. A URL server runs
+wherever it is hosted. `digest` is accepted in the configuration but not checked yet.
 Add a server as you would install any program: only one you trust.
 
 A stdio server does not inherit Abhed's environment, which holds model
@@ -36,6 +37,60 @@ Windows, also what a program needs to start, such as `SYSTEMROOT` and
 value, and a bare `"KEY"` passes your own value of `KEY`, as `GITHUB_TOKEN`
 above. Anything else a server needs, a proxy setting included, is listed
 there.
+
+### Under the egress allowlist
+
+With `sandbox.network: "allowlist"` (see
+[Network policy](21-network-policy.md)), MCP servers are held to the same
+`egress` rules as the agent's commands:
+
+- **URL servers** are judged in Abhed's own process: each request is
+  decided by the rules and recorded as an `egress.decision` event with
+  `kind: "mcp"`, in the record of the session whose tool call made it. A
+  server no rule allows does not connect.
+- **Stdio servers** start with their direct network sockets confined, on
+  the process tier only. On macOS a Seatbelt profile allows no network use
+  but the server's own egress proxy and denies it LaunchServices. On Linux
+  the server runs in its own network and process namespaces (bubblewrap)
+  behind a relay to that proxy, with the session bus, `/run/user`, the
+  container engines' sockets and a private temporary folder hidden, and
+  without `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK` and similar
+  variables. It is given `HTTP_PROXY` and `HTTPS_PROXY` for its proxy,
+  with a credential of its own, and on Linux the session resolver for
+  names. Under bubblewrap a stdio server is not started when Abhed runs as
+  root.
+  On Windows, and on any surface with no process-tier sandbox to confine
+  it, a stdio server is not started under the allowlist; the warning at
+  start-up and `/mcp` give the reason.
+
+**This confines a server's direct network use, not a hostile server.** Add
+only servers you trust, as before. What remains open to a server that
+means to get out:
+
+- **Its files are not confined.** It reads and writes what your user can,
+  so it can plant a LaunchAgent, a systemd user unit or a line in a shell
+  rc file that runs later, outside any sandbox, with your network.
+- **Unix sockets it can reach.** On Linux, any AF_UNIX socket in a folder
+  that is not hidden (under your home, `/var/tmp`, `/var/run/postgresql`,
+  and so on) can be connected to, and whatever listens there acts for it.
+  On macOS the profile refuses AF_UNIX connections, but `launchctl` can
+  still read launchd's state.
+- **Requests system services make on its behalf.** On macOS, verifying a
+  certificate asks `trustd`, which fetches the URLs a certificate names for
+  its issuer (AIA) and revocation (OCSP) itself, outside the proxy and
+  unrecorded: a server can present a certificate whose URL, path included,
+  points at any host. `trustd` is not denied, since every program that
+  verifies TLS through the system (Go programs among them) needs it. On
+  Linux, a resolver reachable over a Unix socket in a folder that is not
+  hidden would look names up for it, unrecorded; `/run/systemd/resolve` and
+  `/run/nscd` are hidden.
+
+A stdio server's decisions go to the record of the session whose call to
+it is in flight, with that call's id, or with none in flight, the session
+that called it last. Its traffic before any call, or while calls from two
+sessions to the same server are in flight at once (possible under
+`abhed serve`, where servers are shared), cannot be put to one session; it
+is written to Abhed's log instead of a record.
 
 ## From the command line
 

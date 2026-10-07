@@ -20,6 +20,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Tier is the isolation strength actually in force.
@@ -113,6 +115,11 @@ type Policy struct {
 	// successful prompt injection then has no channel to exfiltrate through
 	// (docs §03 L4).
 	AllowNetwork bool
+	// Egress, when set, is sandbox.network allowlist: commands reach the
+	// network only through the session's egress proxy, which applies this
+	// policy, and AllowNetwork is not read. Only the process tier holds it;
+	// every other tier refuses it.
+	Egress *egress.Policy
 	// ReadOnlyPaths are additional paths mounted read-only (toolchains, caches).
 	ReadOnlyPaths []string
 	// ReadableFiles are single files a command may read, and run, even where
@@ -127,10 +134,8 @@ type Policy struct {
 	// WriteProtected are paths inside the workspace a command may read but
 	// not write, such as an editor's own settings there.
 	WriteProtected []string
-	// ProtectGit write-protects the config and hooks of every git folder in
-	// the workspace, and each .git file. Seatbelt names them by pattern, at any
-	// depth and for folders made later; bubblewrap and the container bind those
-	// found when a command starts, down to gitWalkDepth folders.
+	// ProtectGit write-protects the gitPointers of every git folder in the
+	// workspace and each .git file; see gitprotect.go for how each backend does it.
 	ProtectGit bool
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
 	// container and vm tiers only, processes on those and the process tier.
@@ -142,6 +147,13 @@ type Policy struct {
 	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
 	// one CPU; zero leaves it unbounded.
 	CPUPercent int
+	// SkillDirs are the configured skills.dirs, absolute. The fence lets
+	// commands read and run them, as it does ~/.abhed/skills, but never one
+	// that holds or sits inside Abhed's state.
+	SkillDirs []string
+	// fenceNoMounts keeps the fence from giving commands a mount
+	// namespace of their own, for tests of the mode without one.
+	fenceNoMounts bool
 }
 
 func DefaultPolicy(workspace string) Policy {

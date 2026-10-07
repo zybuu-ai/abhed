@@ -6,12 +6,400 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+**Before you upgrade.** If Abhed runs as root on Linux with
+`sandbox.allow_network` on, the `process` tier is now refused. Abhed picks the
+`vm` or `container` tier when gVisor or a container runtime is installed;
+otherwise it stops with an error naming the refused tier, unless
+`sandbox.min_tier` is `none` (then commands run unsandboxed, as that setting
+already allows). To keep the process tier, run Abhed as an ordinary user or turn
+the network off. As root the tier is also refused where it cannot mount a
+private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
+On the macOS process tier a command can no longer signal a process an earlier
+command left running; use `run_in_background` and `shell_kill`. `open`, and
+`osascript` sending Apple events to another app, still run there but fail
+without launching anything; run those outside Abhed. With git protection on
+(Abhed Studio's sessions and, new here, every session `abhed serve` runs), git
+inside the sandbox fails at `git
+submodule update` on every tier, at `git worktree remove` on Linux and macOS,
+and on macOS also at `git worktree add` and at `git submodule add` or `update
+--init` for a submodule not yet checked out; run those outside Abhed. ACP
+clients: `session/load`, `session/resume`, `_abhed/session/fork` and
+`_abhed/doctor` now refuse with -32602 parameters 1.2.6 ignored, and these
+and `session/new` refuse a `_meta` with both the `zybuu.ai/abhed` and the
+legacy `abhed` key. `abhed -p` exits 1 when its record cannot take the
+session's start. Go code that called `Redactor.Pending` or `Redactor.Partial`
+in `secretstore` no longer compiles; see Go API.
+
+### Security
+
+- On the macOS process tier a command could read the arguments and
+  environment of Abhed and of every other process of the same user that is
+  not a restricted program, through the `kern.procargs2` sysctl: a provider
+  key exported to Abhed, an MCP server's environment, and the `secrets` and
+  egress token of a command running at the same time. Seatbelt cannot refuse
+  it, not even with a blanket `sysctl-read` denial, so it is not fixed; the
+  guide now says so, where it had said the system does not return another
+  process's environment. On macOS put a provider key in `api_key` in
+  `~/.abhed/config.json`, which commands cannot read, rather than in Abhed's
+  environment, and use the container or vm tier where commands must not see
+  one another's secrets. Linux is unaffected: each command has its own PID
+  namespace. Affects 0.1.0 to 1.2.6.
+- When Abhed itself ran as root on Linux, a command in the `process` tier
+  (bubblewrap) kept the host's full capability set (`CapPrm`, `CapEff` =
+  `000001ffffffffff`) and ran as uid 0, so it could `mknod`, `ptrace` or write
+  root-owned `/proc` files (`core_pattern`, `modprobe`) to run code as host
+  root, escaping the sandbox. The tier now runs such commands with
+  `--cap-drop ALL` in a user namespace (every capability set empty,
+  `no_new_privs` kept) and binds those writable `/proc` files read-only,
+  including an empty read-only cover over `binfmt_misc` so a host mount made
+  after start cannot propagate in. The command still runs as uid 0, so it keeps
+  owner rights on the root-owned files it can already write (the workspace and
+  temp dirs) but holds no capability. The tier refuses to start if it cannot
+  drop the capabilities, enumerate the writable `/proc` files, or mount a
+  private `/proc` and `/dev`, and it refuses `allow_network` as root (the
+  command would otherwise share the host's abstract unix sockets, where
+  services that trust uid 0 take commands). The `container`, `vm` and `fence`
+  tiers were unaffected (the first two always drop all capabilities; the fence
+  refuses root). Running Abhed as an ordinary user was never affected.
+  Affects 0.1.0 to 1.2.6.
+- A running background shell's output that ended in the first characters of
+  any stored secret was held back from `shell_output`, and output that
+  started after a gap with a secret's last characters was skipped. Both
+  depended on the stored values, so a model with no `secret(...)` rule could
+  print guesses and learn a value one character at a time from what was
+  held. Affects 1.2.3, which brought background shells, to 1.2.6. A read of
+  a running shell now holds back a fixed tail (the longest stored value,
+  rounded up to 256 bytes) whatever it says, and shows it once the shell has
+  written nothing for a second; at a gap, the same fixed length is skipped,
+  once twice that has arrived, so a secret across the skip is seen whole
+  even when the reads after the gap are short; the read says the bytes were
+  skipped after a gap rather than citing the read limit.
+  A secret a program prints in two writes more than a second apart can now
+  show its first part to a read between them; the whole value is redacted
+  as before.
+- The last line of a background shell's output, shown in the notice when the
+  shell ends and in the task listing (`TaskInfo.LastLine`), was clipped to
+  200 characters before it was redacted, so a stored secret across the clip,
+  or across the start of the 4 KiB tail the line is read from, showed its
+  first characters. Affects 1.2.3 to 1.2.6. The line is now redacted before
+  it is clipped, and a tail cut from longer output leaves out its first bytes,
+  where a part of a cut secret could be, and goes on past a whole secret that
+  would split.
+- On the macOS process tier a command, or the workbench shell, can signal
+  only processes in its own sandbox: `kill $PPID` no longer stops Abhed, and
+  one command cannot signal another's processes, as on Linux. A command can
+  therefore no longer `kill`, or `kill -0`, a process an earlier command left
+  running; use `run_in_background` and `shell_kill` for that. Affects 0.1.0
+  to 1.2.6.
+- On the macOS process tier a command, or the workbench shell, could reach
+  LaunchServices and Apple events, so `open URL` had the browser, outside the
+  sandbox, fetch any host with workspace data in the URL, unrecorded, and `open
+  -a` or `osascript` could run an app outside the sandbox. With the network off
+  this leaked past `allow_network: false` in every earlier release; under the
+  new `network: "allowlist"` it went around the proxy. The profile, and the
+  stdio MCP server's, now deny the LaunchServices and Apple event services
+  (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`,
+  the `coreservices` and `lsd` part matched in any case; the whole family is
+  denied, which also cuts Handoff's clipboard and the shared file lists), on
+  every network setting. `open` still runs inside the sandbox but exits non-zero
+  without opening the URL, file or app; `osascript` runs a script but cannot
+  send Apple events to another app. Run those outside Abhed.
+- Abhed Studio's sessions kept a command from writing `.git/config` and
+  `.git/hooks`, but a command could still write `.git/commondir`, pointing
+  git at configuration and hooks of its own, or a submodule's config and
+  hooks under `.git/modules`, or `config.worktree`, and the next `git
+  status` run on the host (yours, an editor's, or one a tool runs) ran the
+  program they named. Sessions `abhed serve` runs (the web IDE and the API)
+  had no git protection at all: the agent's commands, `!` commands and the
+  workbench terminal, in lines and as a shell, could set `core.fsmonitor` in
+  `.git/config`, write hooks, `commondir` and `info/attributes`, or move
+  `.git/hooks` aside. In Studio's and served sessions, commands are now kept
+  from writing everything git reads in a git folder as configuration or
+  follows elsewhere (`config`,
+  `config.worktree`, `hooks`, `commondir`, `gitdir`, `info/attributes`,
+  `objects/info/alternates`), in linked worktrees' and submodules' git
+  folders too: on macOS by pattern, including files not made yet; under
+  bubblewrap, a container and the vm tier by binding read-only those that
+  exist. On macOS the folders holding them (`modules` and each folder in it,
+  `worktrees` and each folder in it, `info`, `objects`, `objects/info`)
+  cannot be moved, removed or made by a command either, since a rename moved
+  one aside for a link to a planted copy, and in the workspace's own
+  repository no name can be made beside a submodule named with slashes; git
+  inside the macOS sandbox can therefore no longer run `git worktree add` or
+  `remove`, or `git submodule add` or `update --init` for a submodule not
+  yet checked out. On every tier, plain `git submodule update` on a
+  submodule already checked out fails inside the sandbox, as git rewrites
+  the protected config, and on Linux `git worktree remove` fails too. Git
+  refuses an empty `commondir`, so on Linux a `commondir` made where git
+  never writes one, or a linked worktree's naming anything but its
+  repository's git folder (by `../..` or its path, through no symbolic
+  link), is moved to `~/.abhed/quarantine` before the next command, which is
+  not run and is recorded as `sandbox.git_planted`; until then, git run
+  outside Abhed would follow it. On Linux, a folder of 20,000 entries
+  sorting before `.git` stopped the walk for git folders before it reached
+  the repository's own, leaving all of them writable: the workspace's own
+  git folder, its submodules' and linked worktrees' are now found before the
+  walk, which counts folders only and looks at each folder's `.git` first,
+  and repositories found earlier in a session stay protected after a command
+  floods the workspace; reaching the bound is recorded as
+  `sandbox.git_walk_bounded`. A linked `.git/hooks` made every bubblewrap
+  command fail to start with a mount error: it now refuses each command,
+  saying to replace the link, recorded as `sandbox.git_linked` with the
+  linked `paths`, and on macOS is held where it leads; so is a
+  `.git`, `modules` or `worktrees` folder, or a folder in either, that is a
+  link, which a command could repoint at a git folder of its own (on macOS,
+  a nested repository's linked `.git` is not followed). Binding holds only
+  what exists when a command starts, so on Linux a repository a command
+  makes and adds as a submodule entry in that same command, or a
+  `.git/modules/<name>` it makes for a later `git submodule update --init`,
+  is not protected. On macOS a command can likewise build a repository in
+  the temp area and move it into the workspace, since Seatbelt checks a
+  rename only at its two ends; check a nested repository's `.git/config`
+  before running git in it; see [Permissions](docs/guide/04-permissions.md).
+  Abhed's own git on the host now names the repository's common git folder
+  to git and refuses to run while a `commondir` names anything else or
+  reaches it through a link, since git reads refs through that file
+  regardless, or while a work tree's `.git` file reaches its git folder
+  through a link, or while a `.git` is present but git cannot say where its
+  git folder is. Affects 1.2.3 to 1.2.6.
+- An untrusted editor window could continue a chat with the folder's stored
+  trust. ACP `session/load` and `session/resume` ignored the
+  `_meta["zybuu.ai/abhed"].trust: "untrusted"` that `session/new` honours, so
+  Abhed Studio in Restricted Mode got the workspace's full
+  `.abhed/config.json`, loosening settings included, when it reopened a
+  session. Load, resume and `_abhed/session/fork` now take the field with the
+  same meaning, the session keeps it when it restarts for a changed workspace
+  file, and asking for an open, trusted session untrusted is refused until it
+  is closed. Each continuation now records a `session.resumed` event with
+  `workspace_trust` (the trust asked for and what applied, and the
+  workspace file's hash), so the record shows that later turns ran narrowed,
+  followed by `config.refused` for the managed-only keys the file set; a
+  new session's `session.started` carries `workspace_trust` too.
+  `_abhed/doctor` takes the same field. Affects 1.2.3, which brought
+  `session/load`, `session/resume` and `_abhed/session/fork`, to 1.2.6.
+- **Breaking for ACP clients.** `session/load`, `session/resume`,
+  `_abhed/session/fork` and `_abhed/doctor` now refuse with -32602 what 1.2.6
+  ignored: params that do not parse, a `_meta["zybuu.ai/abhed"]` block that is
+  not an object or has a field the engine does not know, `trust` other than
+  `"untrusted"` (`"trusted"` included), and a `_meta` carrying both the
+  `zybuu.ai/abhed` and the legacy `abhed` key (on `session/new` too). A client
+  that sends no `_meta` on these methods is unaffected.
+- A workspace trusted when its configuration loaded kept that trust for its
+  `.abhed/users.json` when its path was later replaced by a link to another
+  folder: Abhed resolved the path again and read the accounts of the folder
+  the link named. The trust now stays with the folder the load decided it
+  for, and a path that resolves elsewhere is decided afresh from the trust
+  store. Affects 1.2.6.
+
+### Added
+
+- An egress allowlist for the agent's shell commands, between the network off
+  and the network open. With `sandbox.network: "allowlist"` in the managed
+  configuration, each session gets a proxy on loopback that commands reach
+  through `HTTP_PROXY` and `HTTPS_PROXY`, each command with a token of its own
+  call. The `egress` rules (host, exact or `*.example.com`; ports; methods and
+  paths for plain HTTP; allow or deny, deny winning) decide each CONNECT by
+  host and port and each plain request by method and path too; the default is
+  deny, and `mode: "audit"` lets denials through and records them as
+  would_deny. The proxy resolves names itself, refuses loopback, private,
+  link-local, metadata and multicast addresses unless a rule names them in
+  `allow_ips`, and dials the address it checked. Every decision is recorded as
+  an `egress.decision` event with the call id, host, port, address, method and
+  path, the rule, and bytes each way; never bodies or credentials. The process
+  tier enforces it: on Linux the command keeps its own network namespace and
+  reaches the proxy through a relay over a unix socket, and on macOS Seatbelt
+  allows only the proxy's loopback port. The fence, container, vm and none
+  tiers refuse the setting rather than open the network. Under `abhed serve`
+  each session has its own proxy, and the workbench terminal and `!` commands
+  run as the session's own calls. The proxy and the resolver take the call id
+  from the call's own token, never from what the client sends, so a command
+  cannot put its traffic under another call; the token is revoked when the
+  call ends, and a process left running after its command is refused, recorded
+  under the ended call. A session's proxy stops when it is deleted or taken by
+  another node, at shutdown, and after 30 seconds with no command in flight,
+  reopening with the next command. The Studio terminal, in lines and
+  interactive mode, runs as the session's own calls too. A `;` in a path is
+  refused with 400. Denials and auth failures are rate-limited in the record
+  (the first 10 of a kind a minute, then a summary with `repeats`), allowed
+  decisions past 200 a minute are counted into summaries the same way, and
+  requests refused before they are read are recorded too.
+  `egress.record_paths: false` keeps paths out of the record and
+  `egress.idle_seconds` (default 300) closes idle connections. The `bash` tool
+  tells the model which destinations it may reach. `abhed doctor` shows the
+  egress state. See [Network policy](docs/guide/21-network-policy.md).
+- Under `sandbox.network: "allowlist"`, Abhed's own requests go through the
+  same `egress` rules: the model client, `web_fetch`, `web_search` and MCP
+  servers over HTTP are judged in Abhed's process, request by request (host,
+  port, method and path), connect only to an address the rules allow, and are
+  recorded as `egress.decision` events with `kind` `model`, `web_fetch`,
+  `web_search` or `mcp`, the session's id and the tool call's id, under the
+  same rate limits. The model's configured endpoint is allowed without a rule,
+  by the rule `model`. `web_fetch` keeps its own checks after the rules', so
+  it still never reaches an internal address. A guard that cannot compile the
+  rules refuses every one of these requests but the model's. The model client
+  no longer uses `HTTPS_PROXY` or `HTTP_PROXY` from Abhed's environment under
+  the allowlist: it connects directly, so the guard sees where each connection
+  goes, and a provider reachable only through a corporate proxy is not
+  reached. Outside the allowlist the model client is unchanged. Each tool set
+  has its own guard, so SDK agents in one process are judged by their own
+  rules, and one outside the allowlist is left alone. Stdio MCP servers start
+  with their direct network sockets confined to an egress proxy of their own
+  (Seatbelt, without LaunchServices, on macOS; network and process namespaces,
+  with the session bus, `/run/user`, container sockets and other sessions'
+  egress sockets hidden, on Linux, with the egress resolver and a credential
+  of their own; not as root) and are not started where they cannot be. This
+  confines a server's direct network, not a hostile server: its files are not
+  confined, so it can plant a LaunchAgent, systemd unit or rc file, and on
+  Linux it can reach AF_UNIX sockets in folders left visible. System services
+  can also make requests for it, outside the proxy and unrecorded: on macOS
+  `trustd` fetches a certificate's AIA and OCSP URLs, for commands as well as
+  servers. Outside the allowlist nothing changes. See [Network
+  policy](docs/guide/21-network-policy.md) and [MCP](docs/guide/08-mcp.md).
+- Name resolution under the egress allowlist is policy-controlled and
+  recorded. On Linux each command's network namespace gets the session's
+  resolver at `127.0.0.1:53`, through a generated `resolv.conf` bound into
+  the sandbox (the host's file is not touched). It answers only names an
+  allow rule could match, with an address from `198.18.0.0/15` held for the
+  session and a 30-second TTL; it never forwards a query, and any other name
+  gets NXDOMAIN and an `egress.decision` of kind `dns`, rate-limited like
+  other denials. Each lookup carries the call's own proxy credential, so one
+  without it is refused, and the command holds no capability, as root too.
+  A `CONNECT` or plain request to one of those addresses is judged on the
+  name it stands for, and the proxy resolves that name once and dials the
+  address it checked, as before. On macOS commands resolve nothing
+  themselves: Seatbelt refuses raw DNS and the system resolver, and the proxy
+  resolves names. A wildcard allow rule logs a one-time warning that it lets
+  a command carry data in DNS labels under its domain.
+
+### Changed
+
+- The fence preview now runs Abhed Studio (ACP) and `abhed serve`, where the
+  host lets an ordinary user make a user namespace. Each command then gets a
+  mount namespace of its own, made by the launcher before Landlock and
+  seccomp: git's config and hooks and the editor's protected files are bound
+  read-only, the folders holding them pinned, and the workspace's `.abhed` is
+  covered by an empty tmpfs, so nothing a command writes there persists.
+  The mode is recorded in `fence.qualified` and each `process.launched` as
+  `mount_namespace` or `landlock_only`, and `abhed doctor` shows the probe's
+  new `userns_mounts` check. Each Studio and served session has a fence and a
+  cgroup of its own. With git protection on, the fence holds git's pointers,
+  configuration and hooks as the process tier does: read-only in each
+  command's namespace, a planted `commondir` taken out and the next command
+  refused, and a linked git folder refusing the command.
+- Skill scripts in `~/.abhed/skills` and the `skills.dirs` folders run under
+  the fence, read and run but never written. A `skills.dirs` folder that
+  holds or sits inside Abhed's state, or sits in the workspace, is left out
+  and listed in `fence.qualified` as `skills_left_out`.
+- `abhed -p` exits 1 when its record cannot take `session.started` or the
+  `config.refused` and `config.narrowed` events, as the SDK's `New` already
+  failed; before, it warned and ran on. An interactive session still says so
+  and stays at the prompt, its fence closed, and its first message fails on
+  the same record before the model is asked. `abhed serve` logs it.
+- `New` in the SDK lets go of the session record it opened when it fails
+  after opening it, so another process may continue the session.
+- Where user namespaces are not allowed (Ubuntu's AppArmor restriction, a
+  zero `user.max_user_namespaces`), the fence runs as before in
+  `landlock_only`, and Studio and `serve` are refused with the reason; the
+  fence never moves between modes on its own.
+- In `mount_namespace`, a workspace's existing `.abhed` no longer refuses the
+  fence, and the fence makes an empty `.abhed` to mount over where there is
+  none, and leaves it in place, since other fences on the same workspace mount
+  over it too. One empty when a session starts must stay empty while it runs.
+  The planted-state check stays as defence in depth for other spellings of
+  `.abhed`. A `landlock_only` fence refuses a workspace holding one, as it
+  refuses any `.abhed`.
+- A file held read-only in `mount_namespace` that has a second name (a hard
+  link) refuses the command, and so does a held folder, such as git's hooks,
+  holding a file with a name outside it.
+- In `mount_namespace`, every other mount of the workspace's files gets the
+  same read-only binds and tmpfs as the workspace: on ostree hosts (Fedora
+  CoreOS, Silverblue) `/var` is also mounted under `/sysroot`, and a command
+  could write git's config or read `.abhed` there. They are listed in
+  `fence.qualified` as `aliases`, and one the fence cannot check refuses it.
+- Content that appears in a `.abhed` the fence covers is taken out of it,
+  and the folder stays, so other fences on the workspace stay covered. A
+  `.abhed` that cannot be listed when a session starts refuses the fence.
+- CI runs the fence tier's gated tests for real: a new required job on Ubuntu
+  24.04, x86-64 and arm64, runs them as an ordinary user in a delegated cgroup
+  scope with `ABHED_REQUIRE_FENCE=1`, so a skip fails the build. In that job
+  only the network-on end-to-end test may skip, as pending on `fencenet`, and
+  the no-user-namespace test once a run of its own has passed it; the
+  network-on test runs in a separate job that is not required, since it needs
+  PyPI and nodejs.org, and now checks the Node download against its
+  SHASUMS256. The job also bind-mounts a folder twice for the fence's alias
+  test, and runs the test of a host without user namespaces from outside the
+  folder AppArmor lets make them.
+
+### Fixed
+
+- A `shell_output` read that ended inside a multi-byte character showed it
+  as `�`, and the next read reported one byte not shown and, while secrets
+  were stored, skipped its start as after a gap. A character only partly
+  written is now left for the next read.
+- A server session started while the operator's secrets store could not be
+  loaded withheld every payload for good, though the docs said until the
+  store was fixed. It now redacts again once the store loads. While the
+  store cannot be loaded, `GET /v1/health` answers `"status": "degraded"`
+  and `"secrets_store": "unreadable"`, still with code 200.
+- A server that gives every account the operator's one secrets store, with
+  an allow rule naming a secret, logged its warning only at startup. It now
+  also logs it as each session starts, naming the account.
+- On a server embedding Abhed with `SecretsFor`, a value both the account's
+  store and the operator's hold is labelled with the account's name for it,
+  and an operator redactor of its own no longer drops the check that keeps
+  stored values out of file paths, or the secret names a suggestion is
+  checked against.
+- When a terminal shell ends, the sweep of what it left running gave up
+  after a fixed number of passes. On a loaded machine a process it had
+  already killed stays listed until the scheduler runs it, so the sweep could
+  report processes left in the shell's session, and stop looking, while they
+  were dying. It now kills every member on every pass until the session is
+  empty, waiting between passes that find only processes it already killed
+  (a wait that doubles from 1 ms to 50 ms), for up to ten seconds.
+
+### Go API
+
+Listed late from 1.2.6, all additive there:
+
+- `config`: `Attempt`, one setting loading did not take as written, which
+  `Config.Attempts` returns.
+- `config`: `Config.Fence` and `FenceConfig`, the fence tier's settings, and
+  `SandboxConfig.Tier`, which chooses the fence tier.
+
+New in this release, all additive:
+
+- `sdk`: `EvSessionResumed`, the event an ACP session continued from its
+  record writes in place of a second `session.started`.
+- `config`: `SandboxConfig.Network` and `NetworkAllowlist`, its one value,
+  which sends commands through the session's egress proxy; and
+  `Config.Egress`, the proxy's rules, whose type is internal, so code outside
+  the module reads it but cannot build one. Both are managed only.
+- `server`: `Options.Egress`, the tool set's egress guard (set by `abhed
+  serve`; its type is internal); `Options.SessionEnded`, told a session's id
+  as the session leaves the process, so what the sandbox keeps for it, such
+  as its egress proxy, goes with it; and `Options.SessionBash`, which gives
+  each session a bash of its own in place of the registry's, with a function
+  that releases it.
+- `secretstore`: `Store.Delete` removes a whole store under the lock `Set`
+  and `Remove` take, so an edition that forgets an account's store cannot
+  have a `Set` under way write it back.
+
+Removed in this release:
+
+- `secretstore`: `Redactor.Pending` and `Redactor.Partial`, reachable through
+  `Store.Redactor`, and the same methods of the `Fresh` that `Store.Session`
+  and `Store.Fresh` return. They answered whether text could start or end a
+  stored value, which is what let a running shell's read be probed; nothing
+  replaces them.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
-`~/.abhed/config.json`, `-settings`, a workspace's `.abhed/config.json`, an
-SDK `ConfigDir` or the environment are off after upgrading: re-enable them
-with `sudo abhed admin web-search on …`, or ask your administrator. Managed
+`~/.abhed/config.json`, `-settings`, a workspace's `.abhed/config.json` or an
+SDK `ConfigDir` are off after upgrading: re-enable web search with
+`sudo abhed admin web-search on …`, and web fetch by editing the `web_fetch`
+section of `/etc/abhed/config.json` by hand with sudo, which no command does
+for you; or ask your administrator. Managed
 deployments are unchanged. Accounts in a workspace's `.abhed/users.json` load
 only when that workspace is trusted (`abhed trust grant`), or move them to an
 `auth.users_file` outside the workspace. A nested `abhed -settings` or
@@ -124,8 +512,8 @@ by last activity. Details under Upgrading.
   switcher alone; ⌘P stays the full command palette.
 - Web search and web fetch are administrator settings. Only the managed
   configuration (`/etc/abhed/config.json`) turns them on. The user's file,
-  `-settings`, a workspace trusted or not, an SDK `ConfigDir` and the
-  environment may only turn them off, lower `max_results` or `max_chars`, or
+  `-settings`, a workspace trusted or not and an SDK `ConfigDir` may only
+  turn them off, lower `max_results` or `max_chars`, or
   keep fewer of the managed `allowed_hosts`; anything else is set aside with
   a startup warning.
 - New `abhed admin web-search on|off [--provider] [--base-url]
@@ -162,11 +550,12 @@ by last activity. Details under Upgrading.
 ### Upgrading
 
 - If you turned web search or web fetch on in `~/.abhed/config.json`, a
-  `-settings` file, a workspace's `.abhed/config.json`, an SDK `ConfigDir` or
-  the environment, it is now off, with a warning naming the setting. Ask your administrator to enable it in the
-  managed configuration, or on your own machine run
-  `sudo abhed admin web-search on` with your provider and endpoint (web
-  fetch: add the `web_fetch` section to `/etc/abhed/config.json` with sudo).
+  `-settings` file, a workspace's `.abhed/config.json` or an SDK `ConfigDir`,
+  it is now off, with a warning naming the setting. No `ABHED_*` variable
+  sets either. Ask your administrator to enable it in the managed
+  configuration, or on your own machine run `sudo abhed admin web-search on`
+  with your provider and endpoint. Web fetch has no command: edit
+  `/etc/abhed/config.json` by hand with sudo and add the `web_fetch` section.
   Then remove the section from your own file.
 - An agent's command that ran a nested `abhed -settings …` or
   `abhed -mcp-config …` is now refused. Narrow a nested run with

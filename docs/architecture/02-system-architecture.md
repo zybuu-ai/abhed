@@ -33,7 +33,8 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 │  ├ vLLM / SGLang / TensorRT-LLM  (GPU tiers)         │  │ sandbox pool  │
 │  ├ prefix cache (load-bearing, P8)                   │  │ per-session   │
 │  ├ guided decoding + per-family tool-call parsers    │  │ FS + net scope│
-│  └ embedding + rerank endpoints                      │  │ no egress     │
+│  └ embedding + rerank endpoints                      │  │ egress off or │
+│                                                      │  │ allowlisted   │
 └──────────────────────────────────────────────────────┘  └───────────────┘
                                   │
 ┌─────────────────────────────────▼────────────────────────────────────────┐
@@ -44,18 +45,25 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
                     ══════════ AIR-GAP BOUNDARY ══════════
                                   ╎
 ┌─────────────────────────────────▼────────────────────────────────────────┐
-│  EGRESS BROKER — target design (not yet built). Optional, default OFF;   │
-│  the only component that would talk outward. Separate host, separate     │
-│  netns, allowlist, full content audit.                                   │
+│  EGRESS. Off by default. With sandbox.network "allowlist", a proxy per   │
+│  session on loopback judges bash commands, the model client, web_fetch,  │
+│  web_search, MCP over HTTP and stdio servers' direct sockets against the │
+│  egress rules, and records every decision. A separate egress host with   │
+│  content audit is a target design, not yet built.                        │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Why this split:** the control plane is where the 7.80× harness variance lives (P1), so
 it must be independently versionable and testable. The inference plane is swappable by
-construction (P12). The execution plane is the blast radius. The egress broker, a
-target design not yet built, would be the only thing that crosses the air gap, so it would
-be the only thing that needs air-gap-grade review. Today egress is off by default and
-opt-in tools and MCP servers reach out from the host (03-security.md).
+construction (P12). The execution plane is the blast radius. Egress is off by default.
+With `sandbox.network: "allowlist"` each session gets a proxy on loopback, and the `egress`
+rules decide what leaves: `bash` commands (process tier only), the model client,
+`web_fetch`, `web_search`, MCP servers over HTTP, and stdio MCP servers' direct sockets.
+Every decision is an `egress.decision` event. Outside the allowlist's reach are `ssh`, the
+`k8s_*` tools, remote RAG, a stdio server's files, and requests system services make on a
+command's or server's behalf (`trustd` on macOS; on Linux, for a stdio server, a resolver
+reached over a unix socket left visible); see 03-security.md §5 and §6. A separate egress host, the only thing
+that would cross the air gap, with full content audit, is a target design not yet built.
 
 ## 2. The agent loop
 

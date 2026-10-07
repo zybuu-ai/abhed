@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/text/encoding/htmlindex"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -88,6 +89,9 @@ type Tool struct {
 	// permits nothing internal.
 	lookup func(ctx context.Context, host string) ([]netip.Addr, error)
 	permit func(netip.AddrPort) bool
+	// Guard is the egress guard of the tool set, egress.Unguarded outside
+	// the allowlist; nil uses the call's.
+	Guard *egress.Guard
 }
 
 func (*Tool) Name() string  { return "web_fetch" }
@@ -100,7 +104,7 @@ func (*Tool) FixedArgs() {}
 func (t *Tool) BindStore(v *secrets.Store) tools.Tool {
 	// Every field but the call count, which is the copy's own.
 	return &Tool{AllowedHosts: t.AllowedHosts, Secrets: v.LoadRedactor, MaxBytes: t.MaxBytes,
-		MaxChars: t.MaxChars, Timeout: t.Timeout, lookup: t.lookup, permit: t.permit}
+		MaxChars: t.MaxChars, Timeout: t.Timeout, lookup: t.lookup, permit: t.permit, Guard: t.Guard}
 }
 
 func (t *Tool) Description() string {
@@ -229,16 +233,18 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	var elsewhere *url.URL
 	hops := 0
 	client := &http.Client{
-		Transport: &http.Transport{
-			// Never a proxy from the environment: the address check must see
-			// where the connection really goes.
-			Proxy:                  nil,
-			DialContext:            t.dial,
-			DisableKeepAlives:      true,
-			TLSHandshakeTimeout:    dialTimeout,
-			ResponseHeaderTimeout:  timeout,
-			MaxResponseHeaderBytes: 64 << 10,
-			ForceAttemptHTTP2:      true,
+		// No proxy from the environment, so the address check sees where the
+		// connection goes; under the allowlist this tool's check follows the guard's.
+		Transport: &egress.Transport{
+			Kind: egress.KindWebFetch, Check: t.addrCheck, Guard: t.Guard,
+			Base: &http.Transport{
+				DialContext:            t.dial,
+				DisableKeepAlives:      true,
+				TLSHandshakeTimeout:    dialTimeout,
+				ResponseHeaderTimeout:  timeout,
+				MaxResponseHeaderBytes: 64 << 10,
+				ForceAttemptHTTP2:      true,
+			},
 		},
 		// Only a redirect to the same URL, or its upgrade to https, is
 		// followed; any other is handed back, so its target goes through
@@ -272,6 +278,10 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		var be *blockedError
 		if errors.As(err, &be) {
 			return fail("Not fetched: %v. Do not retry this address.", be)
+		}
+		var de *egress.DeniedError
+		if errors.As(err, &de) {
+			return fail("Not fetched: %v. The administrator's egress rules decide this; do not retry it.", de)
 		}
 		return fail("Fetch failed: %v", unwrapURLError(err))
 	}
