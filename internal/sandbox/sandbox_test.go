@@ -404,13 +404,47 @@ func TestProcessAvailableProbesBwrapNamespaces(t *testing.T) {
 		t.Fatalf("probed %d times with %v", calls, asked)
 	}
 	// A working bwrap: the namespaces probe passes, and the capability probe
-	// reports empty sets, no_new_privs and no writable /proc file.
+	// reports empty sets, no_new_privs, the /proc scan and no writable file.
 	bwrapRun = func(context.Context, ...string) ([]byte, error) {
 		return []byte("CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n" +
-			"CapAmb:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\nPROBE_DONE\n"), nil
+			"CapAmb:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\nPROC_SCANNED\nPROBE_DONE\n"), nil
 	}
-	if ok, why := (&Process{backend: "bwrap", policy: Policy{AllowNetwork: true}}).Available(); !ok {
+	if ok, why := (&Process{backend: "bwrap", policy: Policy{}}).Available(); !ok {
 		t.Fatalf("a working bwrap: %s", why)
+	}
+}
+
+// A non-root user whose kernel refuses a fresh /proc (the --dev-bind fallback
+// case) still gets the tier: the capability probe reads the host /proc through
+// --ro-bind / / and does not pass --proc, matching what wrap does.
+func TestProcessCapProbeWithoutFreshProc(t *testing.T) {
+	if rootCaps() {
+		t.Skip("this case is for non-root; as root the fallback is refused")
+	}
+	was := bwrapRun
+	t.Cleanup(func() { bwrapRun = was })
+	var capArgs []string
+	bwrapRun = func(_ context.Context, args ...string) ([]byte, error) {
+		j := strings.Join(args, " ")
+		switch {
+		case strings.Contains(j, "/bin/sh"): // the capability probe
+			capArgs = args
+			return []byte(clearCaps + "PROBE_DONE\n"), nil
+		case strings.Contains(j, "--dev"): // the fresh-/proc probe: kernel refuses it
+			return []byte("bwrap: Can't mount proc on /newroot/proc"), errors.New("exit status 1")
+		default: // the namespaces probe
+			return nil, nil
+		}
+	}
+	s := &Process{backend: "bwrap", policy: Policy{Workspace: t.TempDir()}}
+	if ok, why := s.Available(); !ok {
+		t.Fatalf("available without a fresh /proc: %s", why)
+	}
+	if s.bwrapFreshOK() {
+		t.Fatal("bwrapFreshOK should be false when the kernel cannot mount proc")
+	}
+	if slices.Contains(capArgs, "--proc") {
+		t.Fatalf("the probe passed --proc without a fresh /proc: %v", capArgs)
 	}
 }
 

@@ -49,22 +49,24 @@ type Process struct {
 func rootCaps() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
 
 // rootWritableProc are the /proc paths a uid-0 command would otherwise write
-// by owner match; core_pattern and modprobe run a chosen program as host root.
-// /proc is the only writable host-root surface the command can reach.
+// by owner match; core_pattern and modprobe run a program as host root.
 var rootWritableProc = []string{
 	"/proc/sys", "/proc/sysrq-trigger", "/proc/dynamic_debug",
 	"/proc/latency_stats", "/proc/pressure", "/proc/scsi",
+	"/proc/acpi", "/proc/fs", // known root-writable on x86 and with cifs; the probe backstops the rest
 }
 
-// capProbeCaps prints the capability sets, checked whatever the uid.
+// capProbeCaps prints the five capability sets and NoNewPrivs, for any uid.
 const capProbeCaps = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; echo PROBE_DONE`
 
-// capProbeProc also checks, read-only, that the dangerous root-owned /proc
-// files are not writable; only meaningful as uid 0, where the covers apply.
-// Non-root can write some of these (PSI triggers) harmlessly.
-const capProbeProc = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; ` +
-	`for f in /proc/sys/kernel/core_pattern /proc/sys/kernel/modprobe /proc/dynamic_debug/control /proc/latency_stats /proc/pressure/cpu; do ` +
-	`test -w "$f" && echo "WRITABLE $f"; done; echo PROBE_DONE`
+// capProbeRoot also lists every writable file left under /proc (outside the
+// command's own self, thread-self and pid dirs); any marks the tier unsafe, so
+// a per-kernel file the covers miss refuses rather than slips through.
+// Read-only: -writable is an access check.
+const capProbeRoot = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; ` +
+	`if command -v find >/dev/null 2>&1; then ` +
+	`find /proc -xdev -writable -not -path '/proc/[0-9]*' -not -path '/proc/self/*' -not -path '/proc/thread-self/*' 2>/dev/null ` +
+	`| sed 's/^/WRITABLE /'; echo PROC_SCANNED; fi; echo PROBE_DONE`
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
 var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
@@ -102,6 +104,12 @@ func (s *Process) Available() (bool, string) {
 	if s.backend == "bwrap" {
 		if why := s.bwrapNamespaces(); why != "" {
 			return false, why
+		}
+		// As root with the network on, the command shares the host's network
+		// namespace and so its abstract unix sockets, where host services that
+		// trust uid 0 (iscsid and the like) take commands. Refuse it.
+		if rootCaps() && s.policy.AllowNetwork {
+			return false, "running as root, the process tier cannot allow network access: the command would share the host's abstract sockets; use the container or vm tier"
 		}
 		// As root the command would otherwise read the host's block devices
 		// through the bound /dev; refuse rather than take that fallback.
@@ -144,9 +152,11 @@ func rootCapArgs() []string {
 	return []string{"--unshare-user", "--cap-drop", "ALL"}
 }
 
-// rootProcCovers bind the writable root-owned /proc files read-only, so the
-// still-uid-0 command cannot use owner rights to run code as host root. They
-// must follow --proc, which they override, and are moot off root.
+// rootProcCovers bind the writable root-owned /proc files read-only so the
+// still-uid-0 command cannot use owner rights to run code as host root; they
+// follow --proc, which they override. binfmt_misc is an autofs point, so a
+// host mount made after start would propagate in read-write: an empty
+// read-only tmpfs over it keeps register unreachable regardless.
 func rootProcCovers() []string {
 	if !rootCaps() {
 		return nil
@@ -155,38 +165,47 @@ func rootProcCovers() []string {
 	for _, p := range rootWritableProc {
 		args = append(args, "--ro-bind-try", p, p)
 	}
-	return args
+	return append(args, "--tmpfs", "/proc/sys/fs/binfmt_misc", "--remount-ro", "/proc/sys/fs/binfmt_misc")
 }
 
 // bwrapDropsCaps is why a sandboxed command would keep a capability or a
-// writable host-root path here, or "", probing once. It only reads, so it
-// runs whenever the backend is bwrap, not just as root.
+// writable host-root path here, or "", probing once. It sets up /proc exactly
+// as wrap does, so a non-root user without a private /proc still passes.
 func (s *Process) bwrapDropsCaps() string {
 	s.capsOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		probe := capProbeCaps
+		probe, scanned := capProbeCaps, false
 		if rootCaps() {
-			probe = capProbeProc
+			probe, scanned = capProbeRoot, true
 		}
-		args := append(rootCapArgs(), "--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc")
-		args = append(args, rootProcCovers()...)
+		// A writable /dev (as wrap gives) when there is a fresh /proc, so the
+		// probe's own redirects work; otherwise the host /dev through --ro-bind.
+		args := append(rootCapArgs(), "--ro-bind", "/", "/", "--unshare-pid")
+		if s.bwrapFreshOK() {
+			args = append(args, "--proc", "/proc", "--dev", "/dev")
+			args = append(args, rootProcCovers()...)
+		}
 		args = append(args, "/bin/sh", "-c", probe)
 		out, err := bwrapRun(ctx, args...)
 		if err != nil {
 			s.capsErr = "bubblewrap (bwrap) cannot confine a command here: " + firstLine(out, err)
 			return
 		}
-		s.capsErr = checkCapProbe(string(out))
+		s.capsErr = checkCapProbe(string(out), scanned)
 	})
 	return s.capsErr
 }
 
 // checkCapProbe fails closed unless all five capability sets and NoNewPrivs
-// were reported with safe values and no /proc file was writable.
-func checkCapProbe(out string) string {
+// were reported with safe values and no /proc file was writable; requireScan
+// also demands the writable-/proc enumeration ran.
+func checkCapProbe(out string, requireScan bool) string {
 	if !strings.Contains(out, "PROBE_DONE") {
 		return "bubblewrap (bwrap) confinement probe did not finish"
+	}
+	if requireScan && !strings.Contains(out, "PROC_SCANNED") {
+		return "bubblewrap (bwrap) could not enumerate writable /proc files"
 	}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
@@ -217,6 +236,11 @@ func checkCapProbe(out string) string {
 		}
 	}
 	return ""
+}
+
+// refusedProcessCmd is a process-tier command that does not start, with the reason.
+func refusedProcessCmd(format string, a ...any) *exec.Cmd {
+	return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: "+format, a...)}
 }
 
 // firstLine is a command's first line of output, or its error when it printed none.
@@ -449,7 +473,7 @@ func (s *Process) bwrapFreshOK() bool {
 		args := append(rootCapArgs(), "--unshare-pid", "--proc", "/proc", "--dev", "/dev",
 			"--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
 			"--ro-bind-try", "/lib64", "/lib64", "/bin/true")
-		out, err := exec.CommandContext(ctx, "bwrap", args...).CombinedOutput() // #nosec G204 -- fixed probe argv
+		out, err := bwrapRun(ctx, args...)
 		s.freshOK = err == nil
 		if err != nil && !strings.Contains(string(out), "Can't mount") {
 			// Some other failure: keep the private mounts and let the real
@@ -493,15 +517,14 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		// As root bwrap keeps the host's full capability set and the command
 		// stays uid 0; empty the sets so it cannot escape the setup.
 		args = append(args, rootCapArgs()...)
-		// A private /proc and /dev when the kernel allows them, with the
-		// writable root-owned /proc files bound read-only after. The host-/dev
-		// fallback is refused as root, where it would expose block devices.
+		// A private /proc and /dev with the writable /proc files covered after;
+		// the host-/dev fallback is refused as root (it exposes block devices).
 		switch {
 		case s.bwrapFreshOK():
 			args = append(args, "--proc", "/proc", "--dev", "/dev")
 			args = append(args, rootProcCovers()...)
 		case rootCaps():
-			return refusedCmd("running as root, bubblewrap cannot mount a private /proc and /dev here, and the host /dev would expose block devices; use the container or vm tier")
+			return refusedProcessCmd("running as root, bubblewrap cannot mount a private /proc and /dev here, and the host /dev would expose block devices; use the container or vm tier")
 		default:
 			args = append(args, "--dev-bind", "/dev", "/dev")
 		}

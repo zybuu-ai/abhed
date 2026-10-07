@@ -112,7 +112,6 @@ func assertNoCapabilities(t *testing.T, got map[string]string) {
 func bwrapProcess(t *testing.T, ws string) *Process {
 	t.Helper()
 	p := DefaultPolicy(ws)
-	p.AllowNetwork = true
 	s := NewProcess(p)
 	if s.Backend() != "bwrap" {
 		t.Skipf("the process sandbox here is not bubblewrap: %q", s.Backend())
@@ -138,13 +137,13 @@ func TestProcessSandboxCommandHoldsNoCapabilities(t *testing.T) {
 }
 
 // A sandboxed command cannot write the root-owned /proc files that would run
-// code as host root. core_pattern and modprobe are the escapes and are checked
-// whatever the uid (off root the wrong owner blocks them, as root the covers
-// do); the other covered files are checked as root, where they are bound.
+// code as host root: core_pattern, modprobe and binfmt_misc/register are the
+// escapes, checked whatever the uid (off root the wrong owner blocks them, as
+// root the covers do); the other covered files are checked as root.
 func TestProcessSandboxProcEscapesClosed(t *testing.T) {
 	ws := workspace(t)
 	s := bwrapProcess(t, ws)
-	files := []string{"/proc/sys/kernel/core_pattern", "/proc/sys/kernel/modprobe"}
+	files := []string{"/proc/sys/kernel/core_pattern", "/proc/sys/kernel/modprobe", "/proc/sys/fs/binfmt_misc/register"}
 	if rootCaps() {
 		files = append(files, "/proc/dynamic_debug/control", "/proc/latency_stats", "/proc/pressure/cpu")
 	}
@@ -158,5 +157,26 @@ func TestProcessSandboxProcEscapesClosed(t *testing.T) {
 	}
 	if strings.Contains(out, "WRITABLE") {
 		t.Fatalf("a sandboxed command can still write a host-root /proc file:\n%s", out)
+	}
+}
+
+// As root the process tier refuses network access rather than share the host's
+// abstract sockets; as an ordinary user it is allowed.
+func TestProcessTierNetworkAsRoot(t *testing.T) {
+	p := DefaultPolicy(workspace(t))
+	p.AllowNetwork = true
+	s := NewProcess(p)
+	if s.Backend() != "bwrap" {
+		t.Skipf("the process sandbox here is not bubblewrap: %q", s.Backend())
+	}
+	ok, why := s.Available()
+	if rootCaps() {
+		if ok || !strings.Contains(why, "abstract sockets") {
+			t.Fatalf("root with network on: available %v, why %q", ok, why)
+		}
+		return
+	}
+	if !ok && !strings.Contains(why, "namespace") {
+		t.Fatalf("non-root with network on: unexpectedly unavailable: %s", why)
 	}
 }

@@ -14,13 +14,17 @@ All notable changes to Abhed are recorded here. The format follows
   root-owned `/proc` files (`core_pattern`, `modprobe`) to run code as host
   root, escaping the sandbox. The tier now runs such commands with
   `--cap-drop ALL` in a user namespace (every capability set empty,
-  `no_new_privs` kept) and binds those writable `/proc` files read-only. The
-  command still runs as uid 0, so it keeps owner rights on the root-owned files
-  it can already write (the workspace and temp dirs) but holds no capability
-  and no path to the host. The tier refuses to start if it cannot drop the
-  capabilities or mount a private `/proc` and `/dev`. The `container`, `vm` and
-  `fence` tiers were unaffected (the first two always drop all capabilities;
-  the fence refuses root). Running Abhed as an ordinary user was never affected.
+  `no_new_privs` kept) and binds those writable `/proc` files read-only,
+  including an empty read-only cover over `binfmt_misc` so a host mount made
+  after start cannot propagate in. The command still runs as uid 0, so it keeps
+  owner rights on the root-owned files it can already write (the workspace and
+  temp dirs) but holds no capability. The tier refuses to start if it cannot
+  drop the capabilities, enumerate the writable `/proc` files, or mount a
+  private `/proc` and `/dev`, and it refuses `allow_network` as root (the
+  command would otherwise share the host's abstract unix sockets, where
+  services that trust uid 0 take commands). The `container`, `vm` and `fence`
+  tiers were unaffected (the first two always drop all capabilities; the fence
+  refuses root). Running Abhed as an ordinary user was never affected.
 
 ## [1.2.6] - 2026-10-06
 

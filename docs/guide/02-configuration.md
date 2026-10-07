@@ -210,12 +210,15 @@ sufficient for genuinely hostile code.
 When Abhed runs as root on Linux, the process tier drops every capability from
 the command (`--cap-drop ALL` in a user namespace, with `no_new_privs`) and
 binds the writable root-owned `/proc` files read-only (`core_pattern`,
-`modprobe` and the rest), so it cannot run code as host root. The command still
-runs as uid 0, so it keeps owner rights on the root-owned files it can already
-write (the workspace and temp dirs), and a peer-credential check sees uid 0; it
-holds no capability and no path to the host. The tier refuses to start if it
-cannot drop the capabilities or mount a private `/proc` and `/dev` (binding the
-host `/dev` would expose block devices) — use the container or vm tier there.
+`modprobe`, `binfmt_misc` and the rest), so it cannot run code as host root. The
+command still runs as uid 0, so it keeps owner rights on the root-owned files it
+can already write (the workspace and temp dirs), and a peer-credential check
+sees uid 0; it holds no capability. The tier refuses to start if it cannot drop
+the capabilities, enumerate the writable `/proc` files, or mount a private
+`/proc` and `/dev` (binding the host `/dev` would expose block devices), and it
+refuses `allow_network` as root — with the network on, the command would share
+the host's network namespace and its abstract unix sockets, where host services
+that trust uid 0 take commands. Use the container or vm tier for those cases.
 Running Abhed as an ordinary user is still the recommendation.
 
 `"max_procs"` (512 by default) bounds how many more processes a command can
