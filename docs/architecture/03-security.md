@@ -107,7 +107,12 @@ That waits on I3.
 ### The fence tier (preview, Linux)
 
 `fence` is a preview, Linux only, and off unless `sandbox.tier: "fence"`. Each command is
-confined with Landlock and a seccomp filter and runs in a cgroup of its own tool call. For
+confined with Landlock and a seccomp filter and runs in a cgroup of its own tool call.
+Where the host lets an ordinary user make a user namespace, the launcher first gives the
+command a mount namespace of its own, binds the surface's protected paths (git's config
+and hooks, an editor's settings) read-only and covers the workspace's `.abhed` with an
+empty tmpfs, then drops the one capability it held for that; this mode, `mount_namespace`,
+is what `abhed serve` and Studio need, and without it they are refused. For
 `min_tier` it counts as `process`, and it fails closed: when the host lacks anything it
 needs, Abhed refuses to start and names the check, and never runs the command under another
 tier. It is not a microVM; the command shares the host kernel. Requirements and what it
@@ -224,6 +229,25 @@ asserted. Current state:
       `TestEnclosingStateThroughALinkedWorkspaceIsRefused`), while another user's
       shared folder above it cannot block the start
       (`TestAncestorStateCountsOnlyWhatARunLoads`)
+- [x] **Fence, `mount_namespace`** — git's config and hooks and an editor's files stay
+      read-only, and the workspace's `.abhed` covered, through every path a command can
+      take: Abhed's own view in `/proc` (`TestFenceMountsProtectGit`,
+      `TestFenceMountsStateDoesNotPersist`), a second mount of the workspace's filesystem
+      such as an ostree host's `/sysroot` or a bind mount (`TestFenceMountsCoversAnAlias`,
+      `TestApplyCoversAliases`, which also refuses one whose path is shadowed or behind a
+      folder of the user's own, and leaves one behind another user's folder the user cannot
+      search; that one stays out of reach only while its owner keeps the folder closed,
+      and one opened during a command is reachable by that command until the next covers
+      it), and a
+      hard link to a held file or to a file in a held folder
+      (`TestFenceMountsRefusesAHardLinkedProtectedFile`,
+      `TestFenceMountsRefusesAHookLinkedOutside`); another fence closing does not uncover
+      a command's `.abhed` (`TestFenceMountsTwoFencesOnOneWorkspace`). Only mounts of the
+      workspace's own filesystem are found: a FUSE (bindfs), overlay or NFS view of the
+      workspace made before the session is not found or covered, and a command, holding
+      no capability, cannot make one. These run on Linux
+      with `ABHED_REQUIRE_FENCE=1`, the alias case on an ostree host or with
+      `ABHED_TEST_ALIAS`
 - [x] **Runaway commands** — a command is stopped at its timeout with everything it
       started, a `setsid` child included (`TestRunawayCommandEndsAtItsDeadline`,
       `TestBashTimeoutEndsADetachedChild`)

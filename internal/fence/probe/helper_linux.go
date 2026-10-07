@@ -14,6 +14,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/zybuu-ai/abhed/internal/fence/mountns"
 )
 
 // The helper answers before anything else in any binary linking this package,
@@ -31,6 +33,7 @@ const (
 	stageLandlock = "landlock" // <allowed> <denied>: the filesystem round trip
 	stageTCP      = "tcp"      // the TCP refusal round trip
 	stageSeccomp  = "seccomp"  // apply a trivial filter and see it act
+	stageMounts   = "mounts"   // <dir>: hold paths read-only in a namespace of its own
 )
 
 // helperOut is one stage's answer, a single JSON line on stdout.
@@ -64,6 +67,16 @@ func helperMain(args []string) int {
 		out = helperTCP()
 	case stageSeccomp:
 		out = helperSeccomp()
+	case stageMounts:
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "abhed: the fence probe's mounts stage needs a folder")
+			return 2
+		}
+		if v, err := mountns.SelfTest(args[1]); err != nil {
+			out = failed("%v", err)
+		} else {
+			out = helperOut{OK: true, Reason: v}
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "abhed: the fence probe helper has no stage %q\n", args[0])
 		return 2

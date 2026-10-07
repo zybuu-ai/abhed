@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"os"
 	"os/exec"
 
 	"github.com/zybuu-ai/abhed/internal/fence/probe"
@@ -35,4 +36,13 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 func (f *Fence) wrap(context.Context, string, []string, ...string) *exec.Cmd {
 	_, why := f.Available()
 	return refusedCmd("%s", why)
+}
+
+// folderIdentity is p's identity, not following a link.
+func folderIdentity(p string) (folderID, error) {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return folderID{}, err
+	}
+	return folderID{info: info, dir: info.IsDir()}, nil
 }

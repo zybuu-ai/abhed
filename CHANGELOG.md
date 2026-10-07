@@ -76,6 +76,21 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` shows the egress state. See
   [Network policy](docs/guide/21-network-policy.md).
 
+- The fence preview now runs Abhed Studio (ACP) and `abhed serve`, where the
+  host lets an ordinary user make a user namespace. Each command then gets a
+  mount namespace of its own, made by the launcher before Landlock and
+  seccomp: git's config and hooks and the editor's protected files are bound
+  read-only, the folders holding them pinned, and the workspace's `.abhed` is
+  covered by an empty tmpfs, so nothing a command writes there persists.
+  The mode is recorded in `fence.qualified` and each `process.launched` as
+  `mount_namespace` or `landlock_only`, and `abhed doctor` shows the probe's
+  new `userns_mounts` check. Each Studio and served session has a fence and a
+  cgroup of its own.
+- Skill scripts in `~/.abhed/skills` and the `skills.dirs` folders run under
+  the fence, read and run but never written. A `skills.dirs` folder that
+  holds or sits inside Abhed's state, or sits in the workspace, is left out
+  and listed in `fence.qualified` as `skills_left_out`.
+
 ### Changed
 
 - `abhed -p` exits 1 when its record cannot take `session.started` or the
@@ -85,6 +100,29 @@ All notable changes to Abhed are recorded here. The format follows
   the same record before the model is asked. `abhed serve` logs it.
 - `New` in the SDK lets go of the session record it opened when it fails
   after opening it, so another process may continue the session.
+
+- Where user namespaces are not allowed (Ubuntu's AppArmor restriction, a
+  zero `user.max_user_namespaces`), the fence runs as before in
+  `landlock_only`, and Studio and `serve` are refused with the reason; the
+  fence never moves between modes on its own.
+- In `mount_namespace`, a workspace's existing `.abhed` no longer refuses the
+  fence, and the fence makes an empty `.abhed` to mount over where there is
+  none, and leaves it in place, since other fences on the same workspace mount
+  over it too. One empty when a session starts must stay empty while it runs.
+  The planted-state check stays as defence in depth for other spellings of
+  `.abhed`. A `landlock_only` fence refuses a workspace holding one, as it
+  refuses any `.abhed`.
+- A file held read-only in `mount_namespace` that has a second name (a hard
+  link) refuses the command, and so does a held folder, such as git's hooks,
+  holding a file with a name outside it.
+- In `mount_namespace`, every other mount of the workspace's files gets the
+  same read-only binds and tmpfs as the workspace: on ostree hosts (Fedora
+  CoreOS, Silverblue) `/var` is also mounted under `/sysroot`, and a command
+  could write git's config or read `.abhed` there. They are listed in
+  `fence.qualified` as `aliases`, and one the fence cannot check refuses it.
+- Content that appears in a `.abhed` the fence covers is taken out of it,
+  and the folder stays, so other fences on the workspace stay covered. A
+  `.abhed` that cannot be listed when a session starts refuses the fence.
 
 ### Fixed
 
@@ -138,7 +176,6 @@ Removed in this release:
   and `Store.Fresh` return. They answered whether text could start or end a
   stored value, which is what let a running shell's read be probed; nothing
   replaces them.
-
 
 ## [1.2.6] - 2026-10-06
 

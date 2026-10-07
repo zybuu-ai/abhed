@@ -335,3 +335,26 @@ func TestAllowlistReplacesAllowNetwork(t *testing.T) {
 		t.Fatalf("the bash tool is told %+v with allow_network", iso)
 	}
 }
+
+// skills.dirs reach the policy absolute, ~/ as the home folder and a relative
+// folder from the one Abhed runs in, and none when skills are off.
+func TestPolicyCarriesSkillDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd, _ := os.Getwd()
+	cfg := config.Config{}
+	cfg.Skills.Dirs = []string{"~/team-skills", "rel/skills", "/opt/skills"}
+	p, err := Policy(cfg, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt, _ := filepath.Abs("/opt/skills")
+	want := []string{filepath.Join(home, "team-skills"), filepath.Join(cwd, "rel", "skills"), opt}
+	if !slices.Equal(p.SkillDirs, want) {
+		t.Errorf("skill dirs %v, want %v", p.SkillDirs, want)
+	}
+	cfg.Skills.Disabled = true
+	if p, err := Policy(cfg, t.TempDir()); err != nil || len(p.SkillDirs) != 0 {
+		t.Errorf("skills off: %v %v", p.SkillDirs, err)
+	}
+}

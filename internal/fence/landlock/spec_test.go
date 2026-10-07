@@ -189,3 +189,23 @@ func TestRestrictRefusesOffLinux(t *testing.T) {
 		t.Fatalf("Restrict() = %v, want ErrUnsupported", err)
 	}
 }
+
+// An exec grant named in Within may sit inside denied state, read and run
+// only; it may not hold the denied path, and it must be an exec grant.
+func TestValidateWithin(t *testing.T) {
+	ok := Spec{Exec: []string{"/usr", "/home/u/.abhed/skills"}, Deny: []string{"/home/u/.abhed"}, Within: []string{"/home/u/.abhed/skills"}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("skills inside state: %v", err)
+	}
+	for name, s := range map[string]Spec{
+		"not listed":    {Exec: []string{"/home/u/.abhed/skills"}, Deny: []string{"/home/u/.abhed"}},
+		"read grant":    {Read: []string{"/home/u/.abhed/skills"}, Deny: []string{"/home/u/.abhed"}, Within: []string{"/home/u/.abhed/skills"}},
+		"holds state":   {Exec: []string{"/home/u/.abhed"}, Deny: []string{"/home/u/.abhed/users.json"}, Within: []string{"/home/u/.abhed"}},
+		"write grant":   {Write: []string{"/home/u/.abhed/skills"}, Exec: []string{"/home/u/.abhed/skills"}, Deny: []string{"/home/u/.abhed"}, Within: []string{"/home/u/.abhed/skills"}},
+		"same as state": {Exec: []string{"/home/u/.abhed"}, Deny: []string{"/home/u/.abhed"}, Within: []string{"/home/u/.abhed"}},
+	} {
+		if err := s.Validate(); err == nil {
+			t.Errorf("%s: validated", name)
+		}
+	}
+}

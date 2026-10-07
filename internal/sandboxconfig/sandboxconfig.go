@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -62,7 +63,28 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 	}
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
+	p.SkillDirs = skillDirs(cfg)
 	return p, nil
+}
+
+// skillDirs are the configured skills.dirs, made absolute as skills are
+// loaded from them: ~/ is the home folder, and a relative one is taken from
+// the folder Abhed runs in.
+func skillDirs(cfg config.Config) []string {
+	if cfg.Skills.Disabled {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	var out []string
+	for _, d := range cfg.Skills.Dirs {
+		if rest, ok := strings.CutPrefix(d, "~/"); ok && home != "" {
+			d = filepath.Join(home, rest)
+		}
+		if abs, err := filepath.Abs(d); err == nil {
+			out = append(out, abs)
+		}
+	}
+	return out
 }
 
 // StatePaths are the files holding Abhed's state that a configuration can put

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -25,6 +26,10 @@ type Spec struct {
 	// Deny are Abhed's own state: its home folder, the record, secrets. No
 	// grant may cover them or sit inside them.
 	Deny []string `json:"deny,omitempty"`
+	// Within are Exec grants allowed to sit inside a denied path: a part of
+	// Abhed's state a command may read and run but never write, such as the
+	// skills in ~/.abhed/skills. Each must also be listed in Exec.
+	Within []string `json:"within,omitempty"`
 	// DenyTCP refuses every TCP connect and bind, for when the network is
 	// off. It needs ABI 4 (Linux 6.7) or later.
 	DenyTCP bool `json:"deny_tcp,omitempty"`
@@ -53,9 +58,17 @@ func (s Spec) Validate() error {
 			}
 		}
 	}
+	for _, w := range s.Within {
+		if !slices.Contains(s.Exec, w) {
+			return fmt.Errorf("%w: %q may sit inside denied state only as an exec grant", ErrSpec, w)
+		}
+	}
 	for _, d := range s.Deny {
 		for _, g := range s.grants() {
 			for _, p := range g.paths {
+				if g.name == "exec" && slices.Contains(s.Within, p) && !within(path.Clean(d), path.Clean(p)) && !within(resolve(d), resolve(p)) {
+					continue
+				}
 				if err := overlap(g.name, p, d, path.Clean(p), path.Clean(d)); err != nil {
 					return err
 				}

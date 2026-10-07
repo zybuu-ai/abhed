@@ -279,6 +279,12 @@ type Options struct {
 	// this process (deleted, or taken by another), so what the sandbox keeps
 	// for it, such as its egress proxy, goes with it.
 	SessionEnded func(id string)
+	// SessionBash, when set, gives each session a bash of its own in place of
+	// the registry's, such as one under the fence, whose cgroup is the
+	// session's; the function it returns releases it when the session goes.
+	// It is given the registry's bash to start from; a registry without one
+	// is left as it is.
+	SessionBash func(sessionID string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error)
 	// StreamRecheck is how often an open event or terminal stream is
 	// authorised again. Zero means the default; it can only be shortened, and
 	// anything above maxStreamRecheck is held to it.
@@ -404,6 +410,10 @@ type liveSession struct {
 	// fallback is a resumed session's move to the default because its recorded
 	// provider no longer resolves, written by its next turn; guarded by claimMu.
 	fallback *agent.ModelSwitched
+
+	// closeBash releases the session's own bash, when it has one.
+	closeBash     func() error
+	closeBashOnce sync.Once
 	// beatStop ends the heartbeat that keeps this node's claim on the session
 	// fresh while a run or a background child is live; guarded by mu.
 	beatStop func()
@@ -1551,6 +1561,16 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		approver = agent.AutoApprove{Yes: false}
 	}
 	budget := toolset.Budget(s.opts.Config)
+	if s.opts.SessionBash != nil && registry != nil {
+		if t, ok := registry.Get("bash"); ok {
+			if shared, ok := t.(tools.Bash); ok {
+				bash, release := s.opts.SessionBash(sessionID, rec, shared)
+				registry = registry.Clone()
+				registry.Add(bash)
+				live.closeBash = release
+			}
+		}
+	}
 	if vault != nil && registry != nil {
 		registry = tools.BindStores(registry, vault)
 	}
@@ -3308,6 +3328,7 @@ func (s *Server) fence(live *liveSession) {
 	}
 	live.closeTerminals(closedWithSession)
 	live.Loop.Background.Close(agent.TermLeaseLost)
+	s.releaseBash(live)
 	s.sessionEnded(live.ID)
 }
 
@@ -3315,6 +3336,32 @@ func (s *Server) fence(live *liveSession) {
 func (s *Server) sessionEnded(id string) {
 	if s.opts.SessionEnded != nil {
 		s.opts.SessionEnded(id)
+	}
+}
+
+// releaseBash releases the session's own bash once, such as its fence's
+// cgroup, ending what its commands left running.
+func (s *Server) releaseBash(live *liveSession) {
+	if live.closeBash == nil {
+		return
+	}
+	live.closeBashOnce.Do(func() {
+		if err := live.closeBash(); err != nil {
+			s.log.Error("releasing the session's sandbox", "session", live.ID, "error", err)
+		}
+	})
+}
+
+// releaseBashes releases every live session's own bash, at shutdown.
+func (s *Server) releaseBashes() {
+	s.mu.RLock()
+	all := make([]*liveSession, 0, len(s.running))
+	for _, live := range s.running {
+		all = append(all, live)
+	}
+	s.mu.RUnlock()
+	for _, live := range all {
+		s.releaseBash(live)
 	}
 }
 
@@ -4399,6 +4446,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			s.log.Warn("shutdown did not complete cleanly", "err", err)
 		}
+		s.releaseBashes()
 	}()
 	s.log.Info("abhed server listening", "addr", s.opts.Addr, "workspace", s.opts.Workspace)
 	err := srv.ListenAndServe()

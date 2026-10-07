@@ -294,6 +294,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		delete(s.running, id)
 		s.mu.Unlock()
+		s.releaseBash(live)
 	}
 
 	del, ok := s.under().(agent.SessionDeleter)
