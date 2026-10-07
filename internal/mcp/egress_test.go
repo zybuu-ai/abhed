@@ -116,3 +116,28 @@ func TestStdioServerDecisionsGoToTheCaller(t *testing.T) {
 		t.Fatalf("A: %v", recs["A"])
 	}
 }
+
+// A confined server that fails to start or to initialize has its context,
+// and with it its egress credential, ended.
+func TestConfinedServerFailureEndsItsContext(t *testing.T) {
+	for _, argv := range [][]string{{"/nonexistent/abhed-mcp"}, {"true"}} {
+		var got context.Context
+		g := NewGateway()
+		g.MustConfine = true
+		g.Confine = func(ctx context.Context, _ string, _, _ []string, _ func(string, map[string]any) error) (*exec.Cmd, error) {
+			got = ctx
+			return exec.CommandContext(ctx, argv[0]), nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if errs := g.Connect(ctx, []ServerConfig{{Name: "s", Command: argv[0], Enabled: true}}); len(errs) != 1 {
+			t.Fatalf("%v: %v", argv, errs)
+		}
+		select {
+		case <-got.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%v: the server's context outlived its failure", argv)
+		}
+		cancel()
+		g.Close()
+	}
+}

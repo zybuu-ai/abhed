@@ -75,6 +75,15 @@ means to get out:
   and so on) can be connected to, and whatever listens there acts for it.
   On macOS the profile refuses AF_UNIX connections, but `launchctl` can
   still read launchd's state.
+- **Requests system services make on its behalf.** On macOS, verifying a
+  certificate asks `trustd`, which fetches the URLs a certificate names for
+  its issuer (AIA) and revocation (OCSP) itself, outside the proxy and
+  unrecorded: a server can present a certificate whose URL, path included,
+  points at any host. `trustd` is not denied, since every program that
+  verifies TLS through the system (Go programs among them) needs it. On
+  Linux, a resolver reachable over a Unix socket in a folder that is not
+  hidden would look names up for it, unrecorded; `/run/systemd/resolve` and
+  `/run/nscd` are hidden.
 
 A stdio server's decisions go to the record of the session whose call to
 it is in flight, with that call's id, or with none in flight, the session

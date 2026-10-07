@@ -85,7 +85,7 @@ func serverProfile(port uint16) string {
 	b.WriteString("(deny system-socket (socket-domain AF_ROUTE))\n")
 	b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.SystemConfiguration\") (global-name-prefix \"com.apple.network\"))\n")
 	// LaunchServices would open a URL or an app outside the sandbox for it.
-	b.WriteString("(deny mach-lookup (global-name \"com.apple.coreservices.launchservicesd\") (global-name-prefix \"com.apple.lsd.\"))\n")
+	b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.coreservices.\") (global-name-prefix \"com.apple.lsd.\"))\n")
 	return b.String()
 }
 
@@ -109,12 +109,13 @@ func serverEnv(env []string) []string {
 	return out
 }
 
-// serverRunDirs hold the session bus, user services and container engines'
-// sockets; each is hidden under an empty tmpfs.
-var serverRunDirs = []string{"/run/user", "/run/dbus", "/run/podman", "/run/docker", "/run/containerd"}
+// serverRunDirs hold the session bus, user services, container engines' and
+// resolvers' sockets; each is hidden under an empty tmpfs.
+var serverRunDirs = []string{"/run/user", "/run/dbus", "/run/podman", "/run/docker", "/run/containerd",
+	"/run/systemd/resolve", "/run/nscd", "/run/cups", "/run/avahi-daemon"}
 
 // serverRunSockets are container engines' sockets, each hidden by /dev/null.
-var serverRunSockets = []string{"/run/docker.sock", "/run/podman.sock", "/run/containerd.sock"}
+var serverRunSockets = []string{"/run/docker.sock", "/run/podman.sock", "/run/containerd.sock", "/run/snapd.socket", "/run/snapd-snap.socket"}
 
 // serverHides hides the run folders, XDG_RUNTIME_DIR and the temp folder
 // (other sessions' egress sockets), binding the server's socket and relay back.

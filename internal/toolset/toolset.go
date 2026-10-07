@@ -138,9 +138,8 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		Agents: agent.BuiltinDefinitions(),
 	}
 	// In force before anything below connects, MCP servers included.
-	if s.Egress != nil {
-		s.uninstall = egress.Install(s.Egress)
-	}
+	// An unguarded set too, so a request naming no set amid a mix is refused.
+	s.uninstall = egress.Install(s.Guard())
 	if o.Parts&(Vetoes|ExtensionTools) != 0 {
 		s.Extensions = extension.NewHost(o.Warn)
 		specs := append(cfg.ExtensionSpecs(), cfg.NarrowHooks(o.Extensions)...)

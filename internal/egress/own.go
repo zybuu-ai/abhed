@@ -219,6 +219,9 @@ func (g *Guard) session(c Caller) *ownSession {
 	return s
 }
 
+// maxPools bounds the clients' pools a guard keeps.
+const maxPools = 64
+
 // maxOwnRoutes bounds the calls whose records a session's state remembers.
 const maxOwnRoutes = 4096
 
@@ -268,8 +271,8 @@ var installed struct {
 	list []*Guard
 }
 
-// Install puts g in force for requests that name no guard, until the
-// returned function is called: the fallback of a process with one tool set.
+// Install puts g, or Unguarded, in force for requests that name no guard
+// until the returned function is called: the fallback of one tool set.
 func Install(g *Guard) (uninstall func()) {
 	installed.mu.Lock()
 	installed.list = append(installed.list, g)
@@ -395,7 +398,8 @@ func (g *Guard) pool(t *Transport) *http.Transport {
 	c.Proxy = nil
 	c.DialContext = g.dial
 	c.DialTLSContext = nil
-	if g.closed {
+	// A pool that keeps no connection, as web_fetch's, a new one per call, is not kept.
+	if g.closed || c.DisableKeepAlives || len(g.pools) >= maxPools {
 		c.DisableKeepAlives = true
 		return c
 	}

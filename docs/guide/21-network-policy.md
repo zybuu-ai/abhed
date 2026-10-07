@@ -370,8 +370,8 @@ credential, revoked when the server stops:
 
 | Tier | Stdio MCP server under the allowlist |
 |---|---|
-| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker and containerd sockets under `/run`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Names resolve through the proxy's resolver, as for commands, where the relay can serve it. Where bubblewrap cannot mount a private `/proc`, or Abhed runs as root, the server is not started. |
-| process, macOS (Seatbelt) | **Direct sockets confined.** The profile denies all network use, AF_UNIX included, but outbound to the proxy's port on `localhost`, and denies LaunchServices, which would open a URL or an app outside the sandbox. Its filesystem is not confined. |
+| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker, containerd and snapd sockets under `/run`, the resolvers' `/run/systemd/resolve` and `/run/nscd`, `/run/cups`, `/run/avahi-daemon`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Names resolve through the proxy's resolver, as for commands, where the relay can serve it. Where bubblewrap cannot mount a private `/proc`, or Abhed runs as root, the server is not started. |
+| process, macOS (Seatbelt) | **Direct sockets confined.** The profile denies all network use, AF_UNIX included, but outbound to the proxy's port on `localhost`, and denies LaunchServices (`com.apple.coreservices.*`, `com.apple.lsd.*`), which would open a URL or an app outside the sandbox. `trustd` is reachable: TLS verification needs it, and it fetches a certificate's AIA and OCSP URLs outside the proxy. Its filesystem is not confined. |
 | fence, container, vm, none | Not reached: these tiers refuse the allowlist, so no session starts on them. |
 | Windows, or a surface with no process-tier sandbox | **Not started.** It cannot be confined, so it is refused with that reason. |
 
@@ -380,7 +380,13 @@ server that means to get out still can: its files are not confined, so it
 can plant a LaunchAgent, a systemd user unit or a shell rc line that runs
 later, outside any sandbox; and on Linux it can connect to any AF_UNIX
 socket in a folder that is not hidden, whose listener then acts for it.
-Add only servers you trust.
+System services also make requests on its behalf, outside the proxy and
+unrecorded: on macOS `trustd` fetches the issuer (AIA) and revocation
+(OCSP) URLs of a certificate it is asked to verify, so a crafted
+certificate reaches any host and path; on Linux a resolver reachable over
+a Unix socket in a folder that is not hidden would look names up for it
+(`/run/systemd/resolve` and `/run/nscd` are hidden). Add only servers you
+trust.
 
 The server is given `HTTP_PROXY` and `HTTPS_PROXY` pointing at its proxy.
 Its decisions are recorded in the record of the session whose tool call to
@@ -398,7 +404,7 @@ allowlist, naming why, rather than opening the network in its place.
 | Tier | Under the allowlist |
 |---|---|
 | process, Linux (bubblewrap) | **Enforced.** The command has its own network namespace with loopback only. A small relay inside it, Abhed's own binary, listens where the proxy variables point and passes each connection to the proxy's unix socket, which is bound into the sandbox, and serves the session's resolver (see Names). Nothing else leaves: a client that ignores the proxy variables has no route out. |
-| process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. Commands cannot resolve names themselves (see Names); the proxy resolves them. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. |
+| process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. System services are not: `trustd` fetches the issuer (AIA) and revocation (OCSP) URLs of a certificate a command asks it to verify, itself, outside the proxy and unrecorded, so a crafted certificate reaches any host and path. Commands cannot resolve names themselves (see Names); the proxy resolves them. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. |
 | fence (Linux preview) | **Refused.** Landlock limits TCP connects by port, not by address, and seccomp cannot read the address a socket connects to, so allowing the proxy's port would allow that port on any host. Leave `sandbox.tier` unset to use the process tier. |
 | container, vm | **Refused.** The proxy listens on the host's loopback, which the container's network cannot reach without opening more than the proxy. `Select` passes over them, so the process tier is chosen when `min_tier` allows it; with `min_tier` container or vm, the session does not start. |
 | none | **Refused.** Nothing stops a command on the host from ignoring the proxy variables. |

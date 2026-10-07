@@ -28,11 +28,20 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 		return NewStdioTransport(life, cfg.Command, cfg.Args, env)
 	}
 	argv := append([]string{cfg.Command}, cfg.Args...)
-	cmd, err := g.Confine(life, cfg.Name, argv, env, g.calls.recordFor(cfg.Name))
+	// The server's own life: ending it revokes its credential and lets its proxy go.
+	sctx, cancel := context.WithCancel(life)
+	cmd, err := g.Confine(sctx, cfg.Name, argv, env, g.calls.recordFor(cfg.Name))
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("confining the server's network under sandbox.network allowlist: %w", err)
 	}
-	return startStdio(cmd, cfg.Command)
+	t, err := startStdio(cmd, cfg.Command)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	t.cancel = cancel
+	return t, nil
 }
 
 // serverCallers are the calls in flight to each server, so its proxy's

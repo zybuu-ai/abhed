@@ -428,6 +428,8 @@ type StdioTransport struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	mu     sync.Mutex
+	// cancel ends a confined server's own context, revoking its egress credential.
+	cancel context.CancelFunc
 }
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
@@ -486,6 +488,9 @@ func (t *StdioTransport) Close() error {
 	_ = t.stdin.Close()
 	if t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
+	}
+	if t.cancel != nil {
+		t.cancel()
 	}
 	return nil
 }

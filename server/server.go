@@ -260,8 +260,8 @@ type Options struct {
 	SkillRegistry *skills.Registry
 	// Gateway holds the MCP connections, so a server can be added at runtime.
 	Gateway *mcp.Gateway
-	// Egress is the tool set's egress guard, egress.Unguarded outside the
-	// allowlist; each session's loop takes it.
+	// Egress is the tool set's egress guard (internal: set by abhed serve, not
+	// outside this module); nil leaves loops on the installed guard, as before.
 	Egress *egress.Guard
 	// Extensions are the running extensions: each session's policy carries
 	// their veto, and compaction asks them for a summary. Nil runs none.

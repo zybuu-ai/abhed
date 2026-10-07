@@ -380,3 +380,45 @@ func TestOwnCloseDropsPools(t *testing.T) {
 		t.Fatal("a closed guard kept a pool")
 	}
 }
+
+// A client whose pool keeps no connection, as web_fetch's, a new one per
+// call, leaves no pool in the guard; others are bounded.
+func TestOwnPoolsAreBounded(t *testing.T) {
+	_, port, _ := ownServer(t)
+	g := ownGuard(t, Config{Rules: []Rule{{Host: "allowed.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}}, GuardOptions{})
+	url := fmt.Sprintf("http://allowed.test:%d/", port)
+	for range 3 {
+		tr := &Transport{Kind: KindWebFetch, Guard: g, Base: &http.Transport{DisableKeepAlives: true}}
+		if _, err := ownGet(t, tr, context.Background(), url); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range maxPools + 5 {
+		if _, err := ownGet(t, &Transport{Kind: KindMCP, Guard: g}, context.Background(), url); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.pools) != maxPools {
+		t.Fatalf("%d pools kept", len(g.pools))
+	}
+}
+
+// An unguarded set installed beside a guarded one makes a request naming
+// neither ambiguous, so it is refused rather than misjudged.
+func TestOwnUnguardedInstalledIsAmbiguousBesideAGuard(t *testing.T) {
+	srv, _, hits := ownServer(t)
+	g := ownGuard(t, Config{}, GuardOptions{})
+	defer Install(Unguarded)()
+	if _, err := ownGet(t, &Transport{Kind: KindWebSearch}, context.Background(), srv.URL); err != nil {
+		t.Fatalf("one unguarded set: %v", err)
+	}
+	defer Install(g)()
+	if _, err := ownGet(t, &Transport{Kind: KindWebSearch}, context.Background(), srv.URL); !errors.Is(err, errAmbiguous) {
+		t.Fatalf("an unguarded and a guarded set: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("hits %d", hits.Load())
+	}
+}

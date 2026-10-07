@@ -96,7 +96,7 @@ func TestServerCommandNeedsTheAllowlist(t *testing.T) {
 // URL or an app outside the sandbox for it.
 func TestServerProfileDeniesLaunchServices(t *testing.T) {
 	p := serverProfile(4000)
-	for _, want := range []string{`(deny network*)`, `(remote ip "localhost:4000")`, `"com.apple.coreservices.launchservicesd"`, `"com.apple.lsd."`} {
+	for _, want := range []string{`(deny network*)`, `(remote ip "localhost:4000")`, `"com.apple.coreservices."`, `"com.apple.lsd."`} {
 		if !strings.Contains(p, want) {
 			t.Errorf("profile lacks %s:\n%s", want, p)
 		}

@@ -66,7 +66,10 @@ All notable changes to Abhed are recorded here. The format follows
   their own; not as root) and are not started where they cannot be. This
   confines a server's direct network, not a hostile server: its files are
   not confined, so it can plant a LaunchAgent, systemd unit or rc file, and
-  on Linux it can reach AF_UNIX sockets in folders left visible. Outside
+  on Linux it can reach AF_UNIX sockets in folders left visible. System
+  services can also make requests for it, outside the proxy and
+  unrecorded: on macOS `trustd` fetches a certificate's AIA and OCSP URLs,
+  for commands as well as servers. Outside
   the allowlist nothing changes. See
   [Network policy](docs/guide/21-network-policy.md) and
   [MCP](docs/guide/08-mcp.md).

@@ -228,9 +228,8 @@ func (s *Process) startEgress(e *egressState) error {
 	return nil
 }
 
-// route writes a decision to the record of its call, which the proxy took
-// from the call's own credential; a call no longer remembered, or none, goes
-// to the session's latest record, and with no record it is dropped and logged.
+// route writes a decision to its call's record, else the session's latest;
+// with neither it is dropped and logged.
 func (e *egressState) route(ev egress.Event) {
 	e.mu.Lock()
 	rec := e.routes[ev.CallID]
