@@ -205,6 +205,18 @@ func (s *Store) Remove(name string) error {
 	return s.save(m)
 }
 
+// Delete removes the whole store, under the lock Set and Remove take: a value
+// being stored lands in the file before it is removed, never in one written
+// back after. A missing store is not an error. A later Set makes a new one.
+func (s *Store) Delete() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // Names lists what is stored, without values.
 func (s *Store) Names() ([]string, error) {
 	s.mu.Lock()
@@ -305,13 +317,21 @@ func (s *Store) Live() *Live { return &Live{Redactor: s.Redactor(), store: s} }
 // Load reads the store again, as LoadRedactor does.
 func (l *Live) Load() (*Redactor, error) { return l.store.LoadRedactor() }
 
-// Session is a Fresh redactor for one session, starting from the store as it is now.
+// Session is a Fresh redactor for one session, starting from the store as it
+// is now. A store that cannot be loaded is an error, with a Fresh that
+// withholds every payload until the store loads again.
 func (l *Live) Session() (*Fresh, error) {
 	r, err := l.store.LoadRedactor()
 	if err != nil {
-		return nil, err
+		return l.store.Fresh(Withholding()), err
 	}
 	return l.store.Fresh(r), nil
+}
+
+// Loads reports whether the store can be loaded now.
+func (l *Live) Loads() error {
+	_, err := l.store.LoadRedactor()
+	return err
 }
 
 // Session is a Fresh redactor starting from the store as it is now; a store
@@ -411,12 +431,6 @@ func (f *Fresh) Span() int { return f.Current().Span() }
 // Names is Current().Names.
 func (f *Fresh) Names() []string { return f.Current().Names() }
 
-// Pending is Current().Pending.
-func (f *Fresh) Pending(s string) int { return f.Current().Pending(s) }
-
-// Partial is Current().Partial.
-func (f *Fresh) Partial(s string) int { return f.Current().Partial(s) }
-
 // FindSent is Current().FindSent.
 func (f *Fresh) FindSent(text string) (string, bool) { return f.Current().FindSent(text) }
 
@@ -430,7 +444,8 @@ func (r *Redactor) Current() *Redactor { return r }
 // as it is at the call; any part that cannot be loaded withholds every payload.
 type Joined []interface{ Current() *Redactor }
 
-// Current is the union of every part's values now.
+// Current is the union of every part's values now. A value two parts hold
+// is labelled by the earlier part, so a session's own name for it shows.
 func (j Joined) Current() *Redactor {
 	r := &Redactor{}
 	for _, p := range j {
@@ -438,7 +453,7 @@ func (j Joined) Current() *Redactor {
 		if c == nil || c.broken {
 			return Withholding()
 		}
-		r = c.union(r)
+		r = r.union(c)
 	}
 	return r
 }
@@ -451,12 +466,6 @@ func (j Joined) Span() int { return j.Current().Span() }
 
 // Names is Current().Names.
 func (j Joined) Names() []string { return j.Current().Names() }
-
-// Pending is Current().Pending.
-func (j Joined) Pending(s string) int { return j.Current().Pending(s) }
-
-// Partial is Current().Partial.
-func (j Joined) Partial(s string) int { return j.Current().Partial(s) }
 
 // FindSent is Current().FindSent.
 func (j Joined) FindSent(text string) (string, bool) { return j.Current().FindSent(text) }
@@ -586,36 +595,6 @@ func (r *Redactor) Names() []string {
 		}
 	}
 	return out
-}
-
-// Pending is how many bytes at the end of s could be the start of a stored
-// value, for a caller that holds them back until more text arrives.
-func (r *Redactor) Pending(s string) int {
-	n := 0
-	for _, p := range r.pairs {
-		for k := min(len(p.needle)-1, len(s)); k > n; k-- {
-			if strings.HasSuffix(s, p.needle[:k]) {
-				n = k
-				break
-			}
-		}
-	}
-	return n
-}
-
-// Partial is how many bytes at the start of s could be the end of a stored
-// value whose start was cut off.
-func (r *Redactor) Partial(s string) int {
-	n := 0
-	for _, p := range r.pairs {
-		for k := min(len(p.needle)-1, len(s)); k > n; k-- {
-			if strings.HasPrefix(s, p.needle[len(p.needle)-k:]) {
-				n = k
-				break
-			}
-		}
-	}
-	return n
 }
 
 // FindFold is Find with case ignored.

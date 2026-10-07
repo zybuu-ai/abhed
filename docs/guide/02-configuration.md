@@ -389,8 +389,8 @@ administrator's setting: **only the managed configuration**
 same holds for [`web_fetch`](#web-fetch).
 
 Every other layer, `~/.abhed/config.json`, `-settings`, a workspace's
-`.abhed/config.json` trusted or not, an SDK `ConfigDir` and the environment,
-may only turn it off or narrow it:
+`.abhed/config.json` trusted or not and an SDK `ConfigDir`, may only turn it
+off or narrow it. No `ABHED_*` variable sets either section:
 
 | Key | Below the managed file |
 |---|---|
@@ -499,8 +499,8 @@ file. A query holding a stored secret is refused before it is sent.
 aside, with a warning at startup, and the tool is no longer offered. Ask your
 administrator to turn it on in the managed configuration, or, on your own
 machine, run `sudo abhed admin web-search on` with the provider and endpoint
-you used (for web fetch, add the `web_fetch` section to
-`/etc/abhed/config.json` with sudo). Then remove the section from your own
+you used. Web fetch has no command: edit `/etc/abhed/config.json` by hand
+with sudo and add the `web_fetch` section. Then remove the section from your own
 file; a copy that only repeats the defaults, as `abhed init` writes, is
 quietly accepted.
 

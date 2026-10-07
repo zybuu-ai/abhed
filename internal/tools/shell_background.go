@@ -216,16 +216,26 @@ type ShellRead struct {
 	Dropped int64
 	// Skipped is output left out to keep this read within its size.
 	Skipped int64
+	// Quiet is how long the command had written nothing when it was read.
+	Quiet time.Duration
 }
 
 // ReadNew returns the output written since the last ReadNew, at most max
 // bytes of it: the latest, since the end of output is where errors are.
 func (p *ShellProc) ReadNew(max int) ShellRead {
+	// Until the command ends, a character it has only partly written is left
+	// for the next read.
+	ended := false
+	select {
+	case <-p.done:
+		ended = true
+	default:
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	text, dropped, skipped, next := p.out.since(p.cursor, max)
+	text, dropped, skipped, next, last := p.out.since(p.cursor, max, !ended)
 	p.cursor = next
-	return ShellRead{Text: text, Dropped: dropped, Skipped: skipped}
+	return ShellRead{Text: text, Dropped: dropped, Skipped: skipped, Quiet: time.Since(last)}
 }
 
 // Unread is how many bytes were written since the last ReadNew.
@@ -236,15 +246,51 @@ func (p *ShellProc) Unread() int64 {
 	return total - p.cursor
 }
 
-// LastLine is the last non-empty line of output, clipped to max runes.
-func (p *ShellProc) LastLine(max int) string {
-	tail := p.out.tail(4096)
+// LastLine is the last non-empty line of output, clipped to max runes. With
+// redact, the output is redacted before it is clipped, so a clip never cuts a
+// secret it would have hidden; span is the longest value redact hides, and a
+// tail cut from longer output drops its first span-1 bytes, where a part of a
+// cut value could be, moved on past a whole value that drop would cut.
+func (p *ShellProc) LastLine(max int, redact func(string) string, span int) string {
+	tail, cut := p.out.tail(4096)
+	if cut {
+		tail = tail[dropCutStart(tail, redact, span):]
+	}
+	tail = strings.ToValidUTF8(tail, "�")
+	if redact != nil {
+		tail = redact(tail)
+	}
 	lines := strings.Split(strings.TrimRight(tail, "\r\n \t"), "\n")
 	line := strings.TrimSpace(lines[len(lines)-1])
 	if r := []rune(line); len(r) > max {
 		line = string(r[:max]) + "…"
 	}
 	return line
+}
+
+// dropCutStart is how much of a tail cut from longer output to drop: the first
+// span-1 bytes, then on to a character start where redacting the two parts
+// apart gives what redacting the whole does, so no value is split.
+func dropCutStart(tail string, redact func(string) string, span int) int {
+	n := 0
+	if redact == nil || span <= 1 {
+		for n < utf8.UTFMax && n < len(tail) && !utf8.RuneStart(tail[n]) {
+			n++
+		}
+		return n
+	}
+	whole := redact(tail)
+	for n = min(span-1, len(tail)); n < len(tail); n++ {
+		// A value cut at span-1 ends before 2*span-1; past that, no clean split
+		// means values run on, so drop the rest rather than show a part.
+		if n > 2*span-1 {
+			return len(tail)
+		}
+		if utf8.RuneStart(tail[n]) && redact(tail[:n])+redact(tail[n:]) == whole {
+			break
+		}
+	}
+	return n
 }
 
 // EndBackgroundShells stops every background command this process started
@@ -276,6 +322,7 @@ type shellRing struct {
 	buf   []byte
 	base  int64 // the offset of buf[0] in everything written
 	total int64
+	last  time.Time // the latest write
 }
 
 func (r *shellRing) Write(b []byte) (int, error) {
@@ -283,6 +330,7 @@ func (r *shellRing) Write(b []byte) (int, error) {
 	defer r.mu.Unlock()
 	r.buf = append(r.buf, b...)
 	r.total += int64(len(b))
+	r.last = time.Now()
 	if len(r.buf) > 2*r.max {
 		cut := len(r.buf) - r.max
 		r.buf = append(r.buf[:0:0], r.buf[cut:]...)
@@ -303,31 +351,62 @@ func (r *shellRing) size() (total, dropped int64) {
 }
 
 // since returns the output from cursor on, at most limit bytes of its end, and
-// the offset the next read starts at.
-func (r *shellRing) since(cursor int64, limit int) (text string, dropped, skipped, next int64) {
+// the offset the next read starts at, and when it was last written. With
+// partial, a character only partly written is left for the next read, so a
+// read never ends inside one and the next never starts inside one.
+func (r *shellRing) since(cursor int64, limit int, partial bool) (text string, dropped, skipped, next int64, last time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	end := r.total
+	if partial {
+		if end -= int64(incompleteTail(r.buf)); end < cursor {
+			end = cursor
+		}
+	}
 	from := cursor
 	if k := r.kept(); from < k {
 		dropped, from = k-from, k
 	}
-	if limit > 0 && r.total-from > int64(limit) {
-		skipped = r.total - from - int64(limit)
+	if from > end {
+		from = end
+	}
+	cut := false
+	if limit > 0 && end-from > int64(limit) {
+		skipped = end - from - int64(limit)
 		from += skipped
+		cut = true
 	}
-	b := r.buf[from-r.base:]
-	// Start on a whole character: a cut never splits one.
-	for n := 0; n < utf8.UTFMax && len(b) > 0 && !utf8.RuneStart(b[0]); n++ {
-		b = b[1:]
-		skipped++
+	b := r.buf[from-r.base : end-r.base]
+	// Start on a whole character: a cut never splits one. A read from the
+	// cursor already starts on one, so it skips nothing.
+	if cut || dropped > 0 {
+		for n := 0; n < utf8.UTFMax && len(b) > 0 && !utf8.RuneStart(b[0]); n++ {
+			b = b[1:]
+			skipped++
+		}
 	}
-	return strings.ToValidUTF8(string(b), "�"), dropped, skipped, r.total
+	return strings.ToValidUTF8(string(b), "�"), dropped, skipped, end, r.last
 }
 
-// tail is the last n bytes held.
-func (r *shellRing) tail(n int) string {
+// incompleteTail is how many bytes at the end of b are the start of a
+// character not yet whole.
+func incompleteTail(b []byte) int {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax+1; i-- {
+		if utf8.RuneStart(b[i]) {
+			if utf8.FullRune(b[i:]) {
+				return 0
+			}
+			return len(b) - i
+		}
+	}
+	return 0
+}
+
+// tail is the last n bytes held, as written, and whether output came before
+// them.
+func (r *shellRing) tail(n int) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	from := max(r.kept(), r.total-int64(n))
-	return strings.ToValidUTF8(string(r.buf[from-r.base:]), "�")
+	return string(r.buf[from-r.base:]), from > 0
 }

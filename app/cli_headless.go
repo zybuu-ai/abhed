@@ -332,33 +332,35 @@ func recordResumedMode(rec *agent.Recorder, events []agent.Event, now, via strin
 // nothing before the first message, so a changed system prompt left no
 // trace in the record. The configuration changes that did not take effect
 // follow it, as the SDK records them. Under the fence it records what
-// qualified it and gives it the record; when that cannot be recorded it
-// closes the fence, so no command runs, and says why, as the SDK refuses to
-// build the agent.
+// qualified it and gives it the record. Any of these that cannot be recorded
+// is an error, as the SDK refuses to build the agent, and closes the fence so
+// no command runs.
 func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.ConfigAttempt, fence *sandbox.Fence) error {
+	var err error
 	if start != nil {
-		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: recording the session start: %v\n", err)
+		if _, e := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); e != nil {
+			err = fmt.Errorf("recording the session start: %w", e)
 		}
 	}
-	recordAttempts(rec, attempts)
+	if err == nil {
+		if e := toolset.RecordConfigAttempts(rec, attempts); e != nil {
+			err = fmt.Errorf("recording the configuration attempts: %w", e)
+		}
+	}
 	// What qualified the fence for this run's commands, after the start.
+	if fence != nil && err == nil {
+		if _, e := rec.Record(agent.EvFenceQualified, agent.ActorSystem, agent.Trusted, fence.Qualification()); e != nil {
+			err = fmt.Errorf("recording the fence's qualification: %w", e)
+		}
+	}
 	if fence != nil {
-		if _, err := rec.Record(agent.EvFenceQualified, agent.ActorSystem, agent.Trusted, fence.Qualification()); err != nil {
+		if err != nil {
 			_ = fence.Close()
-			return fmt.Errorf("recording the fence's qualification: %w; the fence is closed, so no command will run", err)
+			return fmt.Errorf("%w; the fence is closed, so no command will run", err)
 		}
 		fence.SetRecord(agent.SandboxRecord(rec))
 	}
-	return nil
-}
-
-// recordAttempts records the configuration changes loading set aside,
-// overrode or narrowed, after session.started.
-func recordAttempts(rec *agent.Recorder, attempts []agent.ConfigAttempt) {
-	if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: recording the configuration attempts: %v\n", err)
-	}
+	return err
 }
 
 // resultLine is the last line json and stream-json write: how the run ended.

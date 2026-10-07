@@ -705,7 +705,8 @@ On a Community server that several accounts sign in to (local, proxy or OIDC
 authentication), every account shares the operator's one store. Any account
 can then use every secret an allow rule names, and can read it too: redaction
 hides the stored value, not a command that prints it reversed, encoded or
-split. The server logs a warning at startup when it finds such a rule. Give
+split. The server logs a warning at startup when it finds such a rule, and
+again as each session starts, naming its account. Give
 each person who must not see another's secrets their own server.
 
 A server embedding Abhed for several accounts can instead give each account
@@ -766,7 +767,10 @@ it as not ready. A missing store just means no secrets.
 
 `abhed serve` checks the store when it starts. If the store breaks while the
 server runs, each new or resumed session still starts, but every event payload
-it records is withheld, and the server logs why, until the file is fixed. The
+it records is withheld, and the server logs why, until the file is fixed: a
+session started meanwhile redacts again from then on. While the store cannot
+be loaded, `GET /v1/health` answers `"status": "degraded"` with
+`"secrets_store": "unreadable"`, still with code 200. The
 same happens for the next conversation in a terminal that is already running.
 
 Redaction follows the store for the whole session, as bash does: the store is

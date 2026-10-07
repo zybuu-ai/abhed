@@ -366,9 +366,13 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	})
 	// What New made is released on every error from here: the tools, and
 	// the sandbox's cgroup and private temp.
+	var release func() // lets go of the record once recordFor has opened it
 	fail := func(err error) (*Agent, error) {
 		set.Close()
 		_ = sandbox.Close(sbox)
+		if release != nil {
+			release()
+		}
 		return nil, err
 	}
 	// A skill's own directory is reachable, as it is from the command line.
@@ -388,6 +392,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return fail(err)
 	}
+	release = func() { (&Agent{store: store, id: id}).releaseRecord() }
 	// Every write goes through the forwarder, so OnEvent misses none, from the
 	// first event on.
 	fwd := newForwarder(store, opts.OnEvent != nil)

@@ -2,11 +2,13 @@ package secrets
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStoreKeepsValuesPrivateAndByName(t *testing.T) {
@@ -377,10 +379,46 @@ func TestJoinedRedactsEveryPartAndFailsClosed(t *testing.T) {
 	if names := strings.Join(j.Names(), ","); !strings.Contains(names, "OWN") || !strings.Contains(names, "OP") {
 		t.Errorf("names: %s", names)
 	}
+	// A value both stores hold is named as the owner's store names it.
+	if err := op.Set("OP_SAME", "own-value-123"); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(j.Redact([]byte(`"own-value-123"`))); got != `"[secret:OWN]"` {
+		t.Errorf("a shared value took the operator's label: %s", got)
+	}
 	if err := os.WriteFile(op.Path(), []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := string(j.Redact([]byte(`"own-value-123"`))); strings.Contains(got, "own-value") {
+	// Withheld outright: even text holding no stored value is not passed on.
+	if got := j.Redact([]byte(`"own-value-123 and plain text"`)); got != nil {
 		t.Errorf("a part that cannot be loaded did not withhold: %s", got)
+	}
+}
+
+// Delete removes the store, and waits for a Set under way rather than let
+// it write the file back afterwards.
+func TestDeleteRemovesTheStoreUnderItsLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "acct.json")
+	s := Open(path)
+	if err := s.Set("TOKEN", "token-value-1234"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- Open(path).Delete() }()
+	select {
+	case err := <-done:
+		t.Fatalf("Delete ran while the store was locked: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.mu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the store is still there: %v", err)
+	}
+	if err := s.Delete(); err != nil {
+		t.Fatalf("deleting a missing store: %v", err)
 	}
 }

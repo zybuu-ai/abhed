@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -189,7 +190,8 @@ func allGone(pids []int) bool {
 func TestShellStartReadAndExit(t *testing.T) {
 	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
 	begun := time.Now()
-	id := r.start(t, "printf 'one\\n'; sleep 0.5; printf 'two\\n'; exit 3")
+	// The pause outlasts shellQuietRelease, so the first line shows on its own.
+	id := r.start(t, "printf 'one\\n'; sleep 2; printf 'two\\n'; exit 3")
 	if time.Since(begun) > 400*time.Millisecond {
 		t.Fatal("the start waited for the command")
 	}
@@ -515,34 +517,33 @@ func TestShellReadRedactsAcrossReads(t *testing.T) {
 		t.Fatalf("across reads: %q + %q", first, second)
 	}
 
+	// At a gap, a fixed length is skipped, enough for any cut secret's end.
 	gap := &shellState{carry: "sk-test-01"}
-	out, skipped := gap.redactRead(b, tools.ShellRead{Text: "23456789abcdef tail, and then more output\n", Dropped: 100}, true)
-	if out != " tail, and then more output\n" || skipped != int64(len("sk-test-01"))+int64(len("23456789abcdef")) {
+	tail := strings.Repeat("more output\n", 30)
+	out, skipped := gap.redactRead(b, tools.ShellRead{Text: "23456789abcdef " + tail, Dropped: 100}, true)
+	in := len("23456789abcdef ") + len(tail)
+	if strings.Contains(out, "abcdef") || out != ("23456789abcdef " + tail)[shellHold(len(secret)):] || skipped != int64(len("sk-test-01"))+int64(shellHold(len(secret))) || in-shellHold(len(secret)) != len(out) {
 		t.Fatalf("after a gap: %q, skipped %d", out, skipped)
 	}
 
-	// A redactor that cannot say what may be part of a value holds back a span.
-	l.Recorder.Redact = spanOnly{vault.Redactor()}
-	coarse := &shellState{}
-	first, _ = coarse.redactRead(b, tools.ShellRead{Text: "key: sk-test-0123"}, false)
-	second, _ = coarse.redactRead(b, tools.ShellRead{Text: "456789abcdef ok\n"}, true)
-	if got := first + second; strings.Contains(got, "0123") || !strings.Contains(got, "[secret:API_KEY] ok\n") {
-		t.Fatalf("span-only redactor across reads: %q + %q", first, second)
+	// While the shell runs, a read holds back a fixed tail, whatever it says;
+	// once the shell has gone quiet, the read shows it all.
+	running := &shellState{}
+	long := strings.Repeat("x", 300) + "server ready\n"
+	if out, _ := running.redactRead(b, tools.ShellRead{Text: long}, false); out != long[:len(long)-shellHold(len(secret))] {
+		t.Fatalf("running read: %q", out)
 	}
-	l.Recorder.Redact = vault.Redactor()
-
-	// Output that cannot start a secret is not held back while the shell runs.
+	if out, _ := running.redactRead(b, tools.ShellRead{Quiet: shellQuietRelease}, false); out != long[len(long)-shellHold(len(secret)):] {
+		t.Fatalf("quiet read: %q", out)
+	}
 	plain := &shellState{}
-	if out, _ := plain.redactRead(b, tools.ShellRead{Text: "server ready\n"}, false); out != "server ready\n" {
-		t.Fatalf("plain output held back: %q", out)
+	if out, _ := plain.redactRead(b, tools.ShellRead{Text: "server ready\n", Quiet: shellQuietRelease}, false); out != "server ready\n" {
+		t.Fatalf("plain output of a quiet shell held back: %q", out)
+	}
+	if out, _ := plain.redactRead(b, tools.ShellRead{Text: "key: sk-test-0123456789abcdef\n", Quiet: shellQuietRelease}, false); out != "key: [secret:API_KEY]\n" {
+		t.Fatalf("a quiet shell's secret: %q", out)
 	}
 }
-
-// spanOnly hides a redactor's Pending and Partial.
-type spanOnly struct{ r Redactor }
-
-func (s spanOnly) Redact(b []byte) []byte { return s.r.Redact(b) }
-func (s spanOnly) Span() int              { return s.r.Span() }
 
 // A command's output reaches the model redacted as the record keeps it, not
 // only in the record.
@@ -791,5 +792,185 @@ func TestMovableSubagentNotMovedReturnsItsSummary(t *testing.T) {
 	}
 	if len(l.Background.Tasks()) != 0 {
 		t.Fatal("a subagent not moved became a background task")
+	}
+}
+
+// After a gap, the skip never cuts through a whole stored value: one that
+// straddles the skip point is skipped whole or shown redacted, for any
+// lead-in length.
+func TestShellGapSkipKeepsWholeValues(t *testing.T) {
+	const standIn = "sv-standin-7b3d1e9f0a"
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("STAND_IN", standIn); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := suggestLoop(t, &suggestStub{})
+	l.Recorder.Redact = vault.Redactor()
+	b := &Background{loop: l}
+	tail := strings.Repeat("#", 300)
+	for lead := 200; lead <= 260; lead++ {
+		for _, final := range []bool{true, false} {
+			sh := &shellState{}
+			r := tools.ShellRead{Text: strings.Repeat(".", lead) + standIn + tail, Dropped: 1}
+			if !final {
+				r.Quiet = shellQuietRelease
+			}
+			out, _ := sh.redactRead(b, r, final)
+			shown := strings.ReplaceAll(out, "[secret:STAND_IN]", "")
+			for i := 0; i+3 <= len(standIn); i++ {
+				if strings.Contains(shown, standIn[i:i+3]) {
+					t.Fatalf("lead-in %d: part %q of the value shown in %q", lead, standIn[i:i+3], out)
+				}
+			}
+		}
+	}
+}
+
+// longStandIn is a stand-in value longer than a small read, of characters no
+// filler in these tests uses.
+func longStandIn(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	rng := rand.New(rand.NewSource(11))
+	b := []byte("lg-")
+	for len(b) < n {
+		b = append(b, alphabet[rng.Intn(len(alphabet))])
+	}
+	return string(b)
+}
+
+// shownPart is a part of value, k bytes or longer, that out shows and that
+// redacting all of stream would not.
+func shownPart(out, stream, value string, k int, redact func(string) string) string {
+	whole := redact(stream)
+	for j := 0; j+k <= len(value); j++ {
+		if part := value[j : j+k]; strings.Contains(out, part) && !strings.Contains(whole, part) {
+			return part
+		}
+	}
+	return ""
+}
+
+// A gap read shorter than the hold leaves the rest of the skip to the next
+// read, so the end of a value begun before the gap, or one that straddles
+// the hold point, is not shown in it.
+func TestShellGapSkipCarriesPastAShortRead(t *testing.T) {
+	standIn := longStandIn(200)
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("STAND_IN", standIn); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := suggestLoop(t, &suggestStub{})
+	l.Recorder.Redact = vault.Redactor()
+	b := &Background{loop: l}
+	redact := func(s string) string { return strings.ReplaceAll(s, standIn, "[secret:STAND_IN]") }
+	hold := shellHold(len(standIn))
+	pre, post := strings.Repeat(".", 300), strings.Repeat("#", 600)+"\n"
+	stream := pre + standIn + post
+	for start := 250; start < len(pre)+len(standIn); start += 7 {
+		for _, g := range []int{1, 40, 120, hold - 1} {
+			for _, mode := range []string{"final", "quiet", "running"} {
+				sh := &shellState{}
+				first := tools.ShellRead{Text: stream[start : start+g], Dropped: int64(start)}
+				second := tools.ShellRead{Text: stream[start+g:]}
+				if mode == "quiet" {
+					second.Quiet = shellQuietRelease
+				}
+				out1, skip1 := sh.redactRead(b, first, false)
+				out2, skip2 := sh.redactRead(b, second, mode == "final")
+				if out1 != "" || skip1 != 0 || len(sh.gapCarry) != 0 && mode != "running" {
+					t.Fatalf("start %d, gap read %d: first read %q skipped %d", start, g, out1, skip1)
+				}
+				for _, out := range []string{out1, out2} {
+					if part := shownPart(out, stream, standIn, 4, redact); part != "" {
+						t.Fatalf("start %d, gap read %d, %s: part %q of the value shown in %q", start, g, mode, part, out)
+					}
+				}
+				if skip1+skip2 < int64(hold) {
+					t.Fatalf("start %d, gap read %d: skipped %d in all, less than the hold", start, g, skip1+skip2)
+				}
+			}
+		}
+	}
+	// Reads after a gap wait, shown and counted as skipped by none, until the
+	// skip can see a value across its end whole.
+	sh := &shellState{}
+	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: standIn[100:150], Dropped: 1}, false); out != "" || skipped != 0 {
+		t.Fatalf("first short read: %q %d", out, skipped)
+	}
+	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: standIn[150:]}, false); out != "" || skipped != 0 || len(sh.gapCarry) != 100 {
+		t.Fatalf("second short read: %q %d", out, skipped)
+	}
+	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: post}, true); out != post[hold-100:] || skipped != int64(hold) {
+		t.Fatalf("read after the skip: %q %d", out, skipped)
+	}
+	// A shell gone quiet with less than the hold since the gap: what arrived
+	// is skipped and counted, not left waiting unreported.
+	sh = &shellState{}
+	sh.redactRead(b, tools.ShellRead{Text: standIn[:50], Dropped: 1}, false)
+	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: standIn[50:120], Quiet: shellQuietRelease}, false); out != "" || skipped != 120 || sh.gapCarry != "" {
+		t.Fatalf("quiet short read after a gap: %q %d, %d left", out, skipped, len(sh.gapCarry))
+	}
+	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: post}, false); skipped != 0 || out == "" {
+		t.Fatalf("read after a quiet skip: %q %d", out, skipped)
+	}
+	// A value across the skip point that a read ends inside of.
+	sh = &shellState{}
+	var outs string
+	for _, r := range []tools.ShellRead{{Text: pre[:100], Dropped: 1}, {Text: standIn[:180]}, {Text: standIn[180:] + post}} {
+		out, _ := sh.redactRead(b, r, false)
+		outs += out
+	}
+	out, _ := sh.redactRead(b, tools.ShellRead{}, true)
+	if outs += out; shownPart(outs, stream, standIn, 4, redact) != "" || !strings.HasSuffix(outs, post) {
+		t.Fatalf("a value across the skip point, read in two: %q", outs)
+	}
+}
+
+// A stream read in small pieces from a small ring, with values longer than
+// one read, never shows a part of a value redacting the whole would hide.
+func TestShellSmallReadsNeverShowAPart(t *testing.T) {
+	standIn := longStandIn(200)
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("STAND_IN", standIn); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := suggestLoop(t, &suggestStub{})
+	l.Recorder.Redact = vault.Redactor()
+	b := &Background{loop: l}
+	redact := func(s string) string { return strings.ReplaceAll(s, standIn, "[secret:STAND_IN]") }
+	rng := rand.New(rand.NewSource(5))
+	for i := range 400 {
+		limit, ringMax := 20+rng.Intn(150), 100+rng.Intn(500)
+		var stream []byte
+		for len(stream) < 3000 {
+			switch c := rng.Intn(10); {
+			case c < 3:
+				stream = append(stream, standIn...)
+			case c == 3:
+				stream = append(stream, standIn[:rng.Intn(len(standIn))]...)
+			default:
+				stream = append(stream, strings.Repeat(".#\n"[rng.Intn(3):][:1], rng.Intn(80))...)
+			}
+		}
+		// Reads as the ring gives them: at most limit bytes, from what it still
+		// holds. None is quiet: a quiet read shows a split write, as documented.
+		sh := &shellState{}
+		var cursor, written int
+		for written < len(stream) {
+			written = min(len(stream), written+rng.Intn(300))
+			final := written == len(stream)
+			from, r := cursor, tools.ShellRead{}
+			if kept := max(0, written-ringMax); from < kept {
+				r.Dropped, from = int64(kept-from), kept
+			}
+			if written-from > limit {
+				r.Skipped, from = int64(written-from-limit), written-limit
+			}
+			r.Text, cursor = string(stream[from:written]), written
+			out, _ := sh.redactRead(b, r, final)
+			if part := shownPart(out, string(stream), standIn, 8, redact); part != "" {
+				t.Fatalf("case %d (limit %d, ring %d): part %q shown in %q", i, limit, ringMax, part, out)
+			}
+		}
 	}
 }

@@ -6,12 +6,103 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- A running background shell's output that ended in the first characters of
+  any stored secret was held back from `shell_output`, and output that
+  started after a gap with a secret's last characters was skipped. Both
+  depended on the stored values, so a model with no `secret(...)` rule could
+  print guesses and learn a value one character at a time from what was
+  held. Affects 1.2.3, which brought background shells, to 1.2.6. A read of
+  a running shell now holds back a fixed tail (the longest stored value,
+  rounded up to 256 bytes) whatever it says, and shows it once the shell has
+  written nothing for a second; at a gap, the same fixed length is skipped,
+  once twice that has arrived, so a secret across the skip is seen whole
+  even when the reads after the gap are short; the read says the bytes were
+  skipped after a gap rather than citing the read limit.
+  A secret a program prints in two writes more than a second apart can now
+  show its first part to a read between them; the whole value is redacted
+  as before.
+- The last line of a background shell's output, shown in the notice when the
+  shell ends and in the task listing (`TaskInfo.LastLine`), was clipped to
+  200 characters before it was redacted, so a stored secret across the clip,
+  or across the start of the 4 KiB tail the line is read from, showed its
+  first characters. Affects 1.2.3 to 1.2.6. The line is now redacted before
+  it is clipped, and a tail cut from longer output leaves out its first bytes,
+  where a part of a cut secret could be, and goes on past a whole secret that
+  would split.
+
+### Changed
+
+- `abhed -p` exits 1 when its record cannot take `session.started` or the
+  `config.refused` and `config.narrowed` events, as the SDK's `New` already
+  failed; before, it warned and ran on. An interactive session still says so
+  and stays at the prompt, its fence closed, and its first message fails on
+  the same record before the model is asked. `abhed serve` logs it.
+- `New` in the SDK lets go of the session record it opened when it fails
+  after opening it, so another process may continue the session.
+
+### Fixed
+
+- A `shell_output` read that ended inside a multi-byte character showed it
+  as `�`, and the next read reported one byte not shown and, while secrets
+  were stored, skipped its start as after a gap. A character only partly
+  written is now left for the next read.
+
+- A server session started while the operator's secrets store could not be
+  loaded withheld every payload for good, though the docs said until the
+  store was fixed. It now redacts again once the store loads. While the
+  store cannot be loaded, `GET /v1/health` answers `"status": "degraded"`
+  and `"secrets_store": "unreadable"`, still with code 200.
+
+- A server that gives every account the operator's one secrets store, with
+  an allow rule naming a secret, logged its warning only at startup. It now
+  also logs it as each session starts, naming the account.
+- On a server embedding Abhed with `SecretsFor`, a value both the account's
+  store and the operator's hold is labelled with the account's name for it,
+  and an operator redactor of its own no longer drops the check that keeps
+  stored values out of file paths, or the secret names a suggestion is
+  checked against.
+
+- When a terminal shell ends, the sweep of what it left running gave up
+  after a fixed number of passes. On a loaded machine a process it had
+  already killed stays listed until the scheduler runs it, so the sweep could
+  report processes left in the shell's session, and stop looking, while they
+  were dying. It now kills every member on every pass until the session is
+  empty, waiting between passes that find only processes it already killed
+  (a wait that doubles from 1 ms to 50 ms), for up to ten seconds.
+
+### Go API
+
+Listed late from 1.2.6, all additive there:
+
+- `config`: `Attempt`, one setting loading did not take as written, which
+  `Config.Attempts` returns.
+- `config`: `Config.Fence` and `FenceConfig`, the fence tier's settings, and
+  `SandboxConfig.Tier`, which chooses the fence tier.
+
+New in this release:
+
+- `secretstore`: `Store.Delete` removes a whole store under the lock `Set`
+  and `Remove` take, so an edition that forgets an account's store cannot
+  have a `Set` under way write it back.
+
+Removed in this release:
+
+- `secretstore`: `Redactor.Pending` and `Redactor.Partial`, reachable through
+  `Store.Redactor`, and the same methods of the `Fresh` that `Store.Session`
+  and `Store.Fresh` return. They answered whether text could start or end a
+  stored value, which is what let a running shell's read be probed; nothing
+  replaces them.
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
-`~/.abhed/config.json`, `-settings`, a workspace's `.abhed/config.json`, an
-SDK `ConfigDir` or the environment are off after upgrading: re-enable them
-with `sudo abhed admin web-search on …`, or ask your administrator. Managed
+`~/.abhed/config.json`, `-settings`, a workspace's `.abhed/config.json` or an
+SDK `ConfigDir` are off after upgrading: re-enable web search with
+`sudo abhed admin web-search on …`, and web fetch by editing the `web_fetch`
+section of `/etc/abhed/config.json` by hand with sudo, which no command does
+for you; or ask your administrator. Managed
 deployments are unchanged. Accounts in a workspace's `.abhed/users.json` load
 only when that workspace is trusted (`abhed trust grant`), or move them to an
 `auth.users_file` outside the workspace. A nested `abhed -settings` or
@@ -124,8 +215,8 @@ by last activity. Details under Upgrading.
   switcher alone; ⌘P stays the full command palette.
 - Web search and web fetch are administrator settings. Only the managed
   configuration (`/etc/abhed/config.json`) turns them on. The user's file,
-  `-settings`, a workspace trusted or not, an SDK `ConfigDir` and the
-  environment may only turn them off, lower `max_results` or `max_chars`, or
+  `-settings`, a workspace trusted or not and an SDK `ConfigDir` may only
+  turn them off, lower `max_results` or `max_chars`, or
   keep fewer of the managed `allowed_hosts`; anything else is set aside with
   a startup warning.
 - New `abhed admin web-search on|off [--provider] [--base-url]
@@ -162,11 +253,12 @@ by last activity. Details under Upgrading.
 ### Upgrading
 
 - If you turned web search or web fetch on in `~/.abhed/config.json`, a
-  `-settings` file, a workspace's `.abhed/config.json`, an SDK `ConfigDir` or
-  the environment, it is now off, with a warning naming the setting. Ask your administrator to enable it in the
-  managed configuration, or on your own machine run
-  `sudo abhed admin web-search on` with your provider and endpoint (web
-  fetch: add the `web_fetch` section to `/etc/abhed/config.json` with sudo).
+  `-settings` file, a workspace's `.abhed/config.json` or an SDK `ConfigDir`,
+  it is now off, with a warning naming the setting. No `ABHED_*` variable
+  sets either. Ask your administrator to enable it in the managed
+  configuration, or on your own machine run `sudo abhed admin web-search on`
+  with your provider and endpoint. Web fetch has no command: edit
+  `/etc/abhed/config.json` by hand with sudo and add the `web_fetch` section.
   Then remove the section from your own file.
 - An agent's command that ran a nested `abhed -settings …` or
   `abhed -mcp-config …` is now refused. Narrow a nested run with

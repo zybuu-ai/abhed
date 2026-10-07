@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // A server built with no redactor, or a typed nil one, redacts with the
@@ -208,5 +210,45 @@ func TestServerSessionFollowsTheSecretsStore(t *testing.T) {
 	}
 	if out := string(red.Redact([]byte(`{"x":"fake-added-mid-session-5e1f"}`))); strings.Contains(out, "fake-added") {
 		t.Fatalf("a removed value was recorded: %s", out)
+	}
+}
+
+// A session started while the operator's store is broken withholds until the
+// store loads again, then redacts, rather than withholding for good; while it
+// is broken, /v1/health says so.
+func TestBrokenOperatorStoreRecovers(t *testing.T) {
+	const value = "fake-recover-value-51ac"
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := secrets.Open(path).Set("RECOVER_TOKEN", value); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(secrets.EnvFile, path)
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Redact: secrets.Open(path).Live()})
+	health := func() map[string]any {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/health", nil))
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return body
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	red := s.sessionRedactor()
+	if out := red.Redact([]byte(`"` + value + `"`)); out != nil {
+		t.Fatalf("a broken store did not withhold: %s", out)
+	}
+	if h := health(); h["status"] != "degraded" || h["secrets_store"] != "unreadable" {
+		t.Fatalf("health with a broken store: %v", h)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := string(red.Redact([]byte(`"` + value + `"`))); out != `"[secret:RECOVER_TOKEN]"` {
+		t.Fatalf("the session still withholds after the store was fixed: %s", out)
+	}
+	if h := health(); h["status"] != "ok" || h["secrets_store"] != nil {
+		t.Fatalf("health with the store fixed: %v", h)
 	}
 }

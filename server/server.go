@@ -415,7 +415,9 @@ func (s *Server) sessionRedactor() agent.Redactor {
 	}); ok {
 		red, err := fresh.Session()
 		if err != nil {
-			s.log.Error("the session's event payloads will be withheld", "err", err)
+			s.log.Error("the session's event payloads will be withheld until the secrets store loads again", "err", err)
+		}
+		if red == nil {
 			return secrets.Withholding()
 		}
 		return red
@@ -457,6 +459,12 @@ func sharedSecretRules(opts Options) []string {
 // its values could not be redacted.
 func (s *Server) sessionSecrets(spec StartSpec) (*secrets.Store, agent.Redactor, error) {
 	if s.opts.SecretsFor == nil {
+		// Said at each session too: a warning given only at startup is lost
+		// in a long-running server's log by the time an account uses it.
+		if rules := sharedSecretRules(s.opts); len(rules) > 0 {
+			s.log.Warn("this session shares the operator's secrets store with every account on this server",
+				"user", spec.User, "tenant", spec.Tenant, "rules", rules)
+		}
 		return nil, s.sessionRedactor(), nil
 	}
 	v, err := s.opts.SecretsFor(spec.Tenant, spec.User)
@@ -495,6 +503,45 @@ func (c chained) Span() int {
 		n = max(n, r.Span())
 	}
 	return n
+}
+
+// FindInPath finds a stored value of any part in a path: by the part's own
+// FindInPath, or for a part without one, by whether redacting changes it.
+// The label is "" when a part cannot be read.
+func (c chained) FindInPath(path string) (string, bool) {
+	quoted, _ := json.Marshal(path)
+	for _, r := range c {
+		if f, ok := r.(interface{ FindInPath(string) (string, bool) }); ok {
+			if label, found := f.FindInPath(path); found {
+				return label, true
+			}
+			continue
+		}
+		switch out := r.Redact(quoted); {
+		case out == nil:
+			return "", true
+		case string(out) != string(quoted):
+			return "[secret]", true
+		}
+	}
+	return "", false
+}
+
+// Names are the names every part that can say them holds.
+func (c chained) Names() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range c {
+		if n, ok := r.(interface{ Names() []string }); ok {
+			for _, name := range n.Names() {
+				if !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func New(opts Options) *Server {
@@ -3914,12 +3961,18 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	// draining lets the workbench leave a queued message where it is rather
 	// than withdraw it for a Send now the server would refuse.
-	WriteJSON(w, http.StatusOK, map[string]any{
+	h := map[string]any{
 		"status":   "ok",
 		"sessions": n,
 		"model":    s.opts.Adapter.Profile().Name,
 		"draining": s.draining.Load(),
-	})
+	}
+	// Sessions still start with a broken operator store, but record nothing
+	// but withheld payloads; a probe should see that, not a plain ok.
+	if l, ok := s.opts.Redact.(interface{ Loads() error }); ok && l.Loads() != nil {
+		h["status"], h["secrets_store"] = "degraded", "unreadable"
+	}
+	WriteJSON(w, http.StatusOK, h)
 }
 
 // claimNode records that this process holds the session, under its liveness

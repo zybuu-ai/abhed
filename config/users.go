@@ -45,7 +45,9 @@ func (c Config) UsersFile(workspace string) UsersSource {
 		return src
 	}
 	trusted := c.Workspace.UsersTrusted
-	if c.Workspace.Workspace == "" || canonical(c.Workspace.Workspace) != ws {
+	// Workspace was made canonical at load; resolving it again would follow a
+	// link swapped in since, and carry its trust to the new directory.
+	if c.Workspace.Workspace == "" || c.Workspace.Workspace != ws {
 		// Not loaded for this workspace: decide as a load would, from the store.
 		trusted, _ = decideUsers(WorkspaceTrust{Workspace: ws}, LoadOptions{})
 	}

@@ -8,6 +8,10 @@ import (
 	"testing"
 )
 
+// fenceHeading is the fence tier's section in the docs, matched exactly so
+// that no other section is let off by a heading that mentions it.
+const fenceHeading = "The fence tier (preview, Linux)"
+
 // claimFiles are where the process tier's mechanism is described to readers.
 var claimFiles = []string{
 	"sandbox.go",
@@ -41,7 +45,7 @@ func TestDocsClaimNoSyscallFilterTheSandboxLacks(t *testing.T) {
 		fence := false
 		for i, line := range strings.Split(string(data), "\n") {
 			if strings.HasSuffix(f, ".md") && strings.HasPrefix(line, "#") {
-				fence = strings.Contains(strings.ToLower(line), "fence tier")
+				fence = strings.TrimSpace(strings.TrimLeft(line, "#")) == fenceHeading
 			}
 			if fence || strings.Contains(line, "TierFence") || strings.HasPrefix(line, "| `fence` |") {
 				continue
