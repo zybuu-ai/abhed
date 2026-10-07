@@ -60,6 +60,22 @@ func fakeDNS(_ context.Context, host string) ([]netip.Addr, error) {
 	return nil, fmt.Errorf("no such host %s", host)
 }
 
+// issue is a credential for call on p, ended when the test ends.
+func issue(t *testing.T, p *Proxy, call string) *Call {
+	t.Helper()
+	c, err := p.Issue(call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.End)
+	return c
+}
+
+func callURL(t *testing.T, p *Proxy, call string) string {
+	t.Helper()
+	return issue(t, p, call).URL()
+}
+
 func startProxy(t *testing.T, c Config) (*Proxy, *recorder) {
 	t.Helper()
 	pol := mustCompile(t, c)
@@ -103,7 +119,7 @@ func TestProxyPlainHTTP(t *testing.T) {
 		{Host: "allowed.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}},
 		{Host: "internal.test", Ports: []int{port}, Decision: "allow"},
 	}})
-	c := client(t, p.URL("call-1"), nil)
+	c := client(t, callURL(t, p, "call-1"), nil)
 
 	resp, err := c.Get(fmt.Sprintf("http://allowed.test:%d/greet?token=secret", port))
 	if err != nil {
@@ -167,7 +183,7 @@ func TestProxyConnect(t *testing.T) {
 	// The deny wins over the allow; a second proxy allows.
 	tlsConf := srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	tlsConf.ServerName = "example.com"
-	if resp, err := client(t, p.URL("c"), tlsConf).Get(fmt.Sprintf("https://allowed.test:%d/", port)); err == nil {
+	if resp, err := client(t, callURL(t, p, "c"), tlsConf).Get(fmt.Sprintf("https://allowed.test:%d/", port)); err == nil {
 		_ = resp.Body.Close()
 		t.Fatal("the deny rule did not refuse the tunnel")
 	}
@@ -176,7 +192,7 @@ func TestProxyConnect(t *testing.T) {
 	}
 
 	p2, rec2 := startProxy(t, Config{Rules: []Rule{{Host: "allowed.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.0/8"}}}})
-	resp, err := client(t, p2.URL("c2"), tlsConf).Get(fmt.Sprintf("https://allowed.test:%d/", port))
+	resp, err := client(t, callURL(t, p2, "c2"), tlsConf).Get(fmt.Sprintf("https://allowed.test:%d/", port))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +232,7 @@ func TestProxyAuditModeLetsThrough(t *testing.T) {
 	defer srv.Close()
 	port := portOf(t, srv.URL)
 	p, rec := startProxy(t, Config{Mode: "audit", Rules: []Rule{{Host: "audit.test", Ports: []int{port}, Decision: "deny", AllowIPs: []string{"127.0.0.1"}}}})
-	resp, err := client(t, p.URL("a"), nil).Get(fmt.Sprintf("http://audit.test:%d/", port))
+	resp, err := client(t, callURL(t, p, "a"), nil).Get(fmt.Sprintf("http://audit.test:%d/", port))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +245,7 @@ func TestProxyAuditModeLetsThrough(t *testing.T) {
 	p2, rec2 := startProxy(t, Config{Mode: "audit", Rules: []Rule{
 		{Host: "audit.test", Ports: []int{port}, Methods: []string{"POST"}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}},
 		{Host: "audit.test", Ports: []int{port}, Methods: []string{"GET"}, Decision: "deny"}}})
-	resp, err = client(t, p2.URL("a"), nil).Get(fmt.Sprintf("http://audit.test:%d/", port))
+	resp, err = client(t, callURL(t, p2, "a"), nil).Get(fmt.Sprintf("http://audit.test:%d/", port))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +264,7 @@ func TestProxyAuditModeRecordsWouldDeny(t *testing.T) {
 	p, rec := startProxy(t, Config{Mode: "audit", Rules: []Rule{
 		{Host: "audit.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}},
 		{Host: "audit.test", Ports: []int{port}, Paths: []string{"/blocked"}, Decision: "deny"}}})
-	resp, err := client(t, p.URL("a"), nil).Get(fmt.Sprintf("http://audit.test:%d/blocked", port))
+	resp, err := client(t, callURL(t, p, "a"), nil).Get(fmt.Sprintf("http://audit.test:%d/blocked", port))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +280,7 @@ func TestProxyRefusesMixedAddressesAndItself(t *testing.T) {
 		{Host: "mixed.test", Decision: "allow"},
 		{Host: "127.0.0.1", Ports: []int{1, 65535}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}},
 	}})
-	resp, err := client(t, p.URL("m"), nil).Get("http://mixed.test/")
+	resp, err := client(t, callURL(t, p, "m"), nil).Get("http://mixed.test/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,13 +348,14 @@ func TestProxyMalformedRequests(t *testing.T) {
 
 func TestProxyEnv(t *testing.T) {
 	p, _ := startProxy(t, Config{})
-	env := strings.Join(p.Env("toolu_1"), "\n")
+	c := issue(t, p, "toolu_1")
+	env := strings.Join(c.Env(), "\n")
 	for _, k := range []string{"HTTP_PROXY=", "http_proxy=", "HTTPS_PROXY=", "https_proxy=", "NO_PROXY=", "no_proxy="} {
 		if !strings.Contains(env, k) {
 			t.Errorf("no %s", k)
 		}
 	}
-	if !strings.Contains(env, "toolu_1:"+p.Token()+"@"+p.Addr().String()) {
+	if !strings.Contains(env, "toolu_1:"+c.token+"@"+p.Addr().String()) {
 		t.Errorf("proxy URL: %s", env)
 	}
 }
@@ -346,7 +363,7 @@ func TestProxyEnv(t *testing.T) {
 // creds are the user name and password in the proxy's URL.
 func creds(t *testing.T, p *Proxy) (string, string) {
 	t.Helper()
-	u, err := url.Parse(p.URL("x"))
+	u, err := url.Parse(callURL(t, p, "x"))
 	if err != nil {
 		t.Fatal(err)
 	}

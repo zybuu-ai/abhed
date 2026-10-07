@@ -141,7 +141,8 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
 - An egress allowlist for the agent's shell commands, between the network
   off and the network open. With `sandbox.network: "allowlist"` in the
   managed configuration, each session gets a proxy on loopback that commands
-  reach through `HTTP_PROXY` and `HTTPS_PROXY`, with a per-session token. The
+  reach through `HTTP_PROXY` and `HTTPS_PROXY`, each command with a token of
+  its own call's. The
   `egress` rules (host, exact or `*.example.com`; ports; methods and paths for
   plain HTTP; allow or deny, deny winning) decide each CONNECT by host and
   port and each plain request by method and path too; the default is deny,
@@ -155,10 +156,12 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   namespace and reaches the proxy through a relay over a unix socket, and on
   macOS Seatbelt allows only the proxy's loopback port. The fence, container,
   vm and none tiers refuse the setting rather than open the network.
-  Under `abhed serve` each session has its own proxy and token, and the
-  workbench terminal and `!` commands run as the session's own calls; a
-  call id a session did not launch is recorded in its own record as
-  `unattributed`, never in another session's, and a session's proxy stops
+  Under `abhed serve` each session has its own proxy, and the workbench
+  terminal and `!` commands run as the session's own calls. The proxy and
+  the resolver take the call id from the call's own token, never from what
+  the client sends, so a command cannot put its traffic under another call;
+  the token is revoked when the call ends, and a process left running after
+  its command is refused, recorded under the ended call. A session's proxy stops
   when it is deleted or taken by another node, at shutdown, and after 30
   seconds with no command in flight, reopening with the next command. The
   Studio terminal, in lines and interactive mode, runs as the session's own
@@ -173,6 +176,56 @@ private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
   tool tells the model which destinations it may reach.
   `abhed doctor` shows the egress state. See
   [Network policy](docs/guide/21-network-policy.md).
+- Under `sandbox.network: "allowlist"`, Abhed's own requests go through the
+  same `egress` rules: the model client, `web_fetch`, `web_search` and MCP
+  servers over HTTP are judged in Abhed's process, request by request
+  (host, port, method and path), connect only to an address the rules
+  allow, and are recorded as `egress.decision` events with `kind` `model`,
+  `web_fetch`, `web_search` or `mcp`, the session's id and the tool call's
+  id, under the same rate limits. The model's configured endpoint is allowed
+  without a rule, by the rule `model`. `web_fetch` keeps its own checks
+  after the rules', so it still never reaches an internal address. A guard
+  that cannot compile the rules refuses every one of these requests but
+  the model's. Each tool set has its own guard, so SDK agents in one
+  process are judged by their own rules, and one outside the allowlist is
+  left alone. Stdio MCP servers start with their direct network sockets
+  confined to an egress proxy of their own (Seatbelt, without
+  LaunchServices, on macOS; network and process namespaces, with the
+  session bus, `/run/user`, container sockets and other sessions' egress
+  sockets hidden, on Linux, with the egress resolver and a credential of
+  their own; not as root) and are not started where they cannot be. This
+  confines a server's direct network, not a hostile server: its files are
+  not confined, so it can plant a LaunchAgent, systemd unit or rc file, and
+  on Linux it can reach AF_UNIX sockets in folders left visible. System
+  services can also make requests for it, outside the proxy and
+  unrecorded: on macOS `trustd` fetches a certificate's AIA and OCSP URLs,
+  for commands as well as servers. Outside
+  the allowlist nothing changes. See
+  [Network policy](docs/guide/21-network-policy.md) and
+  [MCP](docs/guide/08-mcp.md).
+
+- Name resolution under the egress allowlist is policy-controlled and
+  recorded. On Linux each command's network namespace gets the session's
+  resolver at `127.0.0.1:53`, through a generated `resolv.conf` bound into
+  the sandbox (the host's file is not touched). It answers only names an
+  allow rule could match, with an address from `198.18.0.0/15` held for the
+  session and a 30-second TTL; it never forwards a query, and any other name
+  gets NXDOMAIN and an `egress.decision` of kind `dns`, rate-limited like
+  other denials. Each lookup carries the session's proxy credential, so one
+  without it is refused, and the command holds no capability, as root too. A `CONNECT` or plain request to one of those addresses is
+  judged on the name it stands for, and the proxy resolves that name once and
+  dials the address it checked, as before. On macOS commands resolve nothing
+  themselves: Seatbelt refuses raw DNS and the system resolver, and the proxy
+  resolves names. A wildcard allow rule logs a one-time warning that it lets
+  a command carry data in DNS labels under its domain.
+
+### Changed
+
+- Under `sandbox.network: "allowlist"`, the model client no longer uses
+  `HTTPS_PROXY` or `HTTP_PROXY` from Abhed's environment: it connects
+  directly, so the egress guard sees where each connection goes. A
+  provider reachable only through a corporate proxy is not reached under
+  the allowlist. Outside the allowlist the model client is unchanged.
 
 - The fence preview now runs Abhed Studio (ACP) and `abhed serve`, where the
   host lets an ordinary user make a user namespace. Each command then gets a

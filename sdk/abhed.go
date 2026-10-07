@@ -362,7 +362,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
 		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
-		Vault: secrets.Default(), Warn: opts.Warn,
+		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox,
 	})
 	// What New made is released on every error from here: the tools, and
 	// the sandbox's cgroup and private temp.
@@ -400,6 +400,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	rec.Redact = red
 
 	loopCfg := toolset.LoopConfig(cfg, "")
+	loopCfg.Egress = set.Guard()
 	// The file's max_turns binds an embedded agent when the organisation sets
 	// it, or when the caller asks for the configured limits.
 	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns

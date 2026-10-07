@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Timeouts bound one request to a model: Call from sending it to the last byte
@@ -54,14 +56,22 @@ func (e *TimeoutError) Error() string {
 func (e *TimeoutError) Timeout() bool { return true }
 
 // SetTimeouts replaces each adapter's HTTP client with one bounded by t.
-func (c *Anthropic) SetTimeouts(t Timeouts)        { c.HTTP = timeoutClient(t) }
-func (c *OpenAICompatible) SetTimeouts(t Timeouts) { c.HTTP = timeoutClient(t) }
-func (g *Gemini) SetTimeouts(t Timeouts)           { g.HTTP = timeoutClient(t) }
-func (w *WatsonX) SetTimeouts(t Timeouts)          { w.client = timeoutClient(t) }
+func (c *Anthropic) SetTimeouts(t Timeouts)        { c.HTTP = timeoutClient(t, c.endpoints) }
+func (c *OpenAICompatible) SetTimeouts(t Timeouts) { c.HTTP = timeoutClient(t, c.endpoints) }
+func (g *Gemini) SetTimeouts(t Timeouts)           { g.HTTP = timeoutClient(t, g.endpoints) }
+func (w *WatsonX) SetTimeouts(t Timeouts)          { w.client = timeoutClient(t, w.endpoints) }
 
-// timeoutClient is an HTTP client whose every request is bounded by t.
-func timeoutClient(t Timeouts) *http.Client {
-	return &http.Client{Transport: &timeoutTransport{base: http.DefaultTransport, t: t.orDefault()}}
+// The endpoints each adapter reaches, which the egress allowlist allows implicitly.
+func (c *Anthropic) endpoints() []string        { return []string{c.BaseURL} }
+func (c *OpenAICompatible) endpoints() []string { return []string{c.BaseURL} }
+func (g *Gemini) endpoints() []string           { return []string{g.BaseURL} }
+func (w *WatsonX) endpoints() []string          { return []string{w.BaseURL, w.IAMURL} }
+
+// timeoutClient bounds every request by t; under the egress allowlist, a
+// request to a host other than endpoints is judged by the rules.
+func timeoutClient(t Timeouts, endpoints func() []string) *http.Client {
+	base := &egress.Transport{Kind: egress.KindModel, Model: endpoints}
+	return &http.Client{Transport: &timeoutTransport{base: base, t: t.orDefault()}}
 }
 
 // timeoutTransport ends a request that runs past its Timeouts with a

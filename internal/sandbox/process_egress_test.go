@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -236,9 +237,8 @@ func (s *Process) sessionProxy(id string) *egressState {
 	return s.egress.m[id]
 }
 
-// Two sessions of one server: each has its own proxy and token, a call id
-// session A forges never lands in session B's record, and a terminal's
-// traffic lands in its own session's record under its own call.
+// Two sessions of one server: each has its own proxy, a call id a command
+// claims is ignored for its credential's, and a terminal is its own call.
 func TestEgressSessionsAreKeptApart(t *testing.T) {
 	s, ws := egressProcess(t)
 	var recA, recB eventLog
@@ -248,10 +248,10 @@ func TestEgressSessionsAreKeptApart(t *testing.T) {
 	_ = runLaunched(t, s, ws, b, "curl -sS -m 20 -o /dev/null http://denied.test/b")
 	recB.waitFor(t, "B's own request", func(e map[string]any) bool { return e["call_id"] == "call-b" })
 	_ = runLaunched(t, s, ws, a, "curl -sS -m 20 -o /dev/null http://denied.test/a")
-	recA.waitFor(t, "A's own request", func(e map[string]any) bool { return e["call_id"] == "call-a" && e["unattributed"] == nil })
+	recA.waitFor(t, "A's own request", func(e map[string]any) bool { return e["call_id"] == "call-a" })
 
 	pa, pb := s.sessionProxy("sess-A").proxy, s.sessionProxy("sess-B").proxy
-	if pa == pb || pa.Addr() == pb.Addr() || pa.Token() == pb.Token() {
+	if pa == pb || pa.Addr() == pb.Addr() {
 		t.Fatal("the two sessions share a proxy or a token")
 	}
 
@@ -259,8 +259,21 @@ func TestEgressSessionsAreKeptApart(t *testing.T) {
 	forge := `curl -sS -m 20 -o /dev/null -x "$(printf %s "$HTTP_PROXY" | sed 's#//call-a:#//call-b:#')" http://denied.test/forged`
 	_ = runLaunched(t, s, ws, a, forge)
 	got := recA.waitFor(t, "the forged request in A's record", func(e map[string]any) bool { return e["path"] == "/forged" })
-	if got["call_id"] != "call-b" || got["unattributed"] != true {
-		t.Fatalf("forged request recorded as %v", got)
+	if got["call_id"] != "call-a" {
+		t.Fatalf("forged request recorded as %v, want under its credential's call-a", got)
+	}
+	// Another call's credential, taken after that call ended, is refused and
+	// recorded under the ended call.
+	var recA2 eventLog
+	a2 := Launch{CallID: "call-a2", Session: "sess-A", Record: recA2.record}
+	stolen := strings.TrimSpace(runLaunched(t, s, ws, a2, `printf %s "$HTTP_PROXY"`))
+	late := fmt.Sprintf(`curl -sS -m 20 -o /dev/null -w 'code=%%{http_code}' -x '%s' http://denied.test/stolen`, stolen)
+	if out := runLaunched(t, s, ws, a, late); !strings.Contains(out, "code=407") {
+		t.Fatalf("an ended call's credential was accepted: %s", out)
+	}
+	ended := recA2.waitFor(t, "the stolen credential's refusal", func(e map[string]any) bool { return e["kind"] == "auth" })
+	if ended["call_id"] != "call-a2" || ended["decision"] != "deny" {
+		t.Fatalf("stolen credential recorded as %v", ended)
 	}
 	// B's proxy, reached directly with A's token, refuses it.
 	cross := fmt.Sprintf(`curl -sS -m 20 -o /dev/null -w 'code=%%{http_code}' -x "$(printf %%s "$HTTP_PROXY" | sed 's#:[0-9]*$#:%d#')" http://denied.test/cross`, pb.Addr().Port())
@@ -279,7 +292,7 @@ func TestEgressSessionsAreKeptApart(t *testing.T) {
 		t.Fatalf("terminal: %v\n%s", err, out)
 	}
 	tev := recA.waitFor(t, "the terminal's request", func(e map[string]any) bool { return e["path"] == "/terminal" })
-	if tev["call_id"] != "term-1" || tev["unattributed"] != nil {
+	if tev["call_id"] != "term-1" {
 		t.Fatalf("terminal recorded as %v", tev)
 	}
 
@@ -314,8 +327,8 @@ func TestEgressSessionsAreKeptApart(t *testing.T) {
 	recA.waitFor(t, "A after B ended", func(e map[string]any) bool { return e["path"] == "/after" })
 	_ = runLaunched(t, s, ws, b, "curl -sS -m 20 -o /dev/null http://denied.test/b2")
 	recB.waitFor(t, "B's next proxy", func(e map[string]any) bool { return e["path"] == "/b2" })
-	if s.sessionProxy("sess-B").proxy.Token() == pb.Token() {
-		t.Fatal("B's new proxy kept the old token")
+	if s.sessionProxy("sess-B").proxy == pb {
+		t.Fatal("B kept its old proxy")
 	}
 }
 
@@ -482,7 +495,7 @@ func TestEgressProxyClosesWhenQuiet(t *testing.T) {
 	if a3 := proxyOf(t, s.Command(ctx3, ws, "true")); !listening(a3) {
 		t.Fatal("the next command's proxy does not listen")
 	}
-	if next := s.sessionProxy("sess-Q"); next == first || next.proxy.Token() == first.proxy.Token() {
+	if next := s.sessionProxy("sess-Q"); next == first || next.proxy == first.proxy {
 		t.Fatal("the next command reused the closed proxy")
 	}
 }
@@ -555,6 +568,59 @@ func TestEgressCloseStopsEveryProxy(t *testing.T) {
 		}
 		if v6[i] && listening(net.JoinHostPort("::1", fmt.Sprint(ap.Port()))) {
 			t.Errorf("proxy %d still listens on [::1]:%d after Close", i, ap.Port())
+		}
+	}
+}
+
+// With the resolver the relay gets its socket, ids and capability, and the
+// generated resolv.conf is bound over the sandbox's; without it, none of that.
+func TestEgressRelayArgsBindTheResolver(t *testing.T) {
+	p, err := egress.Start(egress.Options{Policy: egressPolicy(t, egress.Config{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	e := &egressState{proxy: p, exe: "/abhed", dir: "/d", dns: true}
+	binds, wrapped := e.relayArgs([]string{"/bin/bash", "-c", "x"})
+	b := strings.Join(binds, " ")
+	for _, want := range []string{"--ro-bind /d/resolv.conf /etc/resolv.conf", "--ro-bind /d/dns.sock " + relayDNS, "--cap-add CAP_NET_BIND_SERVICE"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("binds %q lack %q", b, want)
+		}
+	}
+	w := strings.Join(wrapped, " ")
+	if want := fmt.Sprintf("%s %s %d %d -- /bin/bash -c x", egress.DNSArg, relayDNS, os.Getuid(), os.Getgid()); !strings.HasSuffix(w, want) {
+		t.Errorf("wrapped %q, want it to end %q", w, want)
+	}
+	e.dns = false
+	binds, wrapped = e.relayArgs([]string{"/bin/true"})
+	if b := strings.Join(binds, " "); strings.Contains(b, "resolv.conf") || strings.Contains(b, "--cap-add") {
+		t.Errorf("binds without the resolver: %q", b)
+	}
+	if w := strings.Join(wrapped, " "); strings.Contains(w, egress.DNSArg) {
+		t.Errorf("wrapped without the resolver: %q", w)
+	}
+}
+
+// A process a command leaves running loses its way out when the command's
+// call ends: its traffic is refused, recorded under the ended call. On Linux
+// the sandbox's PID namespace ends it first, so nothing is recorded at all.
+func TestEgressOutlivingProcessIsRefused(t *testing.T) {
+	s, ws := egressProcess(t)
+	var rec eventLog
+	l := Launch{CallID: "call-left", Session: "sess-L", Record: rec.record}
+	_ = runLaunched(t, s, ws, l, `(sleep 1; curl -sS -m 10 -o /dev/null http://denied.test/late) >/dev/null 2>&1 &`)
+	time.Sleep(3 * time.Second)
+	if got := rec.find(func(e map[string]any) bool { return e["path"] == "/late" }); len(got) > 0 {
+		t.Fatalf("a process outliving its call was decided on: %v", got)
+	}
+	auth := rec.find(func(e map[string]any) bool { return e["kind"] == "auth" })
+	if runtime.GOOS == "darwin" && len(auth) == 0 {
+		t.Fatal("the left-over process's request was not recorded")
+	}
+	for _, e := range auth {
+		if e["call_id"] != "call-left" {
+			t.Fatalf("recorded as %v", e)
 		}
 	}
 }

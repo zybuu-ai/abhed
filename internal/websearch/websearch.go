@@ -20,6 +20,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Result is one search hit.
@@ -54,6 +56,9 @@ type Config struct {
 	// UserAgent identifies Abhed to upstream services. Some refuse an empty one.
 	UserAgent  string
 	HTTPClient *http.Client
+	// Egress is the tool set's egress guard for the default client,
+	// egress.Unguarded outside the allowlist; nil uses the call's.
+	Egress *egress.Guard
 }
 
 func (c *Config) applyDefaults() {
@@ -70,7 +75,8 @@ func (c *Config) applyDefaults() {
 		c.UserAgent = "Mozilla/5.0 (compatible; Abhed/0.1; +https://github.com/zybuu-ai/abhed)"
 	}
 	if c.HTTPClient == nil {
-		c.HTTPClient = &http.Client{Timeout: c.Timeout}
+		// Judged and recorded by the egress guard under the allowlist.
+		c.HTTPClient = &http.Client{Timeout: c.Timeout, Transport: &egress.Transport{Kind: egress.KindWebSearch, Guard: c.Egress}}
 	}
 }
 

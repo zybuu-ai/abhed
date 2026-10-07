@@ -428,13 +428,23 @@ type StdioTransport struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	mu     sync.Mutex
+	// cancel ends a confined server's own context, revoking its egress credential.
+	cancel context.CancelFunc
 }
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
 	// Never nil, which would inherit Abhed's whole environment and its keys.
 	cmd.Env = append([]string{}, env...)
+	return startStdio(cmd, command)
+}
 
+// startStdio starts cmd, built to run the server command, and speaks to it
+// over its stdin and stdout.
+func startStdio(cmd *exec.Cmd, command string) (*StdioTransport, error) {
+	if cmd.Env == nil {
+		cmd.Env = []string{}
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -478,6 +488,9 @@ func (t *StdioTransport) Close() error {
 	_ = t.stdin.Close()
 	if t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
+	}
+	if t.cancel != nil {
+		t.cancel()
 	}
 	return nil
 }

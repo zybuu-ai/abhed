@@ -62,7 +62,7 @@ func (r *recorder) waitFor(t *testing.T, what string, f func(Event) bool) Event 
 func proxyAuth(t *testing.T, p *Proxy, call string) string {
 	t.Helper()
 	r, _ := http.NewRequest("GET", "http://x", nil)
-	r.SetBasicAuth(call, p.Token())
+	r.SetBasicAuth(call, issue(t, p, call).token)
 	return r.Header.Get("Authorization")
 }
 
@@ -323,7 +323,7 @@ func TestProxyResolvesOnce(t *testing.T) {
 	p, rec := startWith(t, Config{Rules: []Rule{
 		{Host: "rebind.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}},
 	}}, Options{Resolve: resolve})
-	c := client(t, p.URL("call-rb"), nil)
+	c := client(t, callURL(t, p, "call-rb"), nil)
 	resp, err := c.Get(fmt.Sprintf("http://rebind.test:%d/", port))
 	if err != nil {
 		t.Fatal(err)

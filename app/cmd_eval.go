@@ -125,6 +125,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		rec.Redact = red
 
 		loopCfg := agent.DefaultConfig()
+		loopCfg.Egress = set.Guard()
 		if task.MaxTurns > 0 {
 			loopCfg.MaxTurns = task.MaxTurns
 		} else {

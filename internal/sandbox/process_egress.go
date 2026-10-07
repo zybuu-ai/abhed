@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ const (
 	relayDir    = "/run/abhed-egress"
 	relayBinary = relayDir + "/relay"
 	relaySocket = relayDir + "/proxy.sock"
+	relayDNS    = relayDir + "/dns.sock"
 )
 
 // egressResolve looks names up for the proxy; nil is the system resolver.
@@ -73,6 +76,7 @@ type egressState struct {
 	err      error
 	dir      string // the unix socket's folder, Linux only
 	exe      string // this binary, run as the relay, Linux only
+	dns      bool   // the session's resolver is served, Linux only
 
 	mu     sync.Mutex
 	routes map[string]recordFn
@@ -91,15 +95,15 @@ func egressRefusal(t Tier) string {
 		"the %s tier is not used for it, so the network is not opened in its place", t)
 }
 
-// egressFor is the proxy of the session ctx's launch names, started if
-// need be, with the launch's call remembered for its record.
-func (s *Process) egressFor(ctx context.Context) (*egressState, error) {
+// egressFor is the session's proxy, started if need be, and a credential for the launch's
+// call (mcp/<name> too) that lives exactly as long as ctx: one never cancelled keeps it all session.
+func (s *Process) egressFor(ctx context.Context) (*egressState, *egress.Call, error) {
 	l := LaunchOf(ctx)
 	ss := &s.egress
 	ss.mu.Lock()
 	if ss.closed {
 		ss.mu.Unlock()
-		return nil, errEgressClosed
+		return nil, nil, errEgressClosed
 	}
 	if ss.m == nil {
 		ss.m = map[string]*egressState{}
@@ -116,10 +120,16 @@ func (s *Process) egressFor(ctx context.Context) (*egressState, error) {
 	// proxy until the session ends.
 	context.AfterFunc(ctx, func() { s.egressDone(e) })
 	if err := s.startEgress(e); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	call, err := e.proxy.Issue(l.CallID)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The command's ctx outlives it when it runs on in the background, so the credential does too.
+	context.AfterFunc(ctx, call.End)
 	e.remember(l)
-	return e, nil
+	return e, call, nil
 }
 
 // egressDone notes that a command of e's session ended, and closes the
@@ -195,6 +205,15 @@ func (s *Process) startEgress(e *egressState) error {
 				return
 			}
 			e.dir, e.exe = dir, exe
+			if s.bwrapDNSOK(exe) {
+				if err := startResolver(p, dir); err != nil {
+					_ = p.Close()
+					_ = os.RemoveAll(dir)
+					e.err = fmt.Errorf("the egress resolver: %w", err)
+					return
+				}
+				e.dns = true
+			}
 		}
 		e.proxy = p
 	})
@@ -209,23 +228,16 @@ func (s *Process) startEgress(e *egressState) error {
 	return nil
 }
 
-// route writes a decision to the record of the call it names. A call id
-// this session did not launch, which a command can claim, goes to the
-// session's own record marked unattributed; with no record it is dropped
-// and logged. It never reaches another session: each has its own proxy
-// and token.
+// route writes a decision to its call's record, else the session's latest;
+// with neither it is dropped and logged.
 func (e *egressState) route(ev egress.Event) {
 	e.mu.Lock()
 	rec := e.routes[ev.CallID]
-	unattributed := rec == nil
-	if unattributed {
+	if rec == nil {
 		rec = e.own
 	}
 	e.mu.Unlock()
 	payload := ev.Payload()
-	if unattributed {
-		payload["unattributed"] = true
-	}
 	if rec == nil {
 		slog.Warn("egress decision dropped: the session has no record", "session", e.session,
 			"call_id", ev.CallID, "host", ev.Host, "decision", string(ev.Decision), "rule", ev.Rule)
@@ -271,11 +283,11 @@ func (e *egressState) close() error {
 // egressEnv is the proxy environment for a command of the call ctx names,
 // starting its session's proxy if need be.
 func (s *Process) egressEnv(ctx context.Context) ([]string, *egressState, error) {
-	e, err := s.egressFor(ctx)
+	e, call, err := s.egressFor(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	return e.proxy.Env(LaunchOf(ctx).CallID), e, nil
+	return call.Env(), e, nil
 }
 
 // port is the proxy's loopback port, or 0 with none.
@@ -286,13 +298,73 @@ func (e *egressState) port() uint16 {
 	return e.proxy.Addr().Port()
 }
 
-// relayArgs are the bwrap arguments that bind the relay and the proxy's
-// socket into the sandbox, and the argv that runs the command behind the relay.
+// relayArgs are the bwrap arguments binding the relay, the proxy's socket and, with the
+// resolver, its socket and resolv.conf; and the argv running the command behind the relay.
 func (e *egressState) relayArgs(argv []string) (binds, wrapped []string) {
 	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", filepath.Join(e.dir, "proxy.sock"), relaySocket}
 	listen := e.proxy.Addr().String()
-	wrapped = append([]string{relayBinary, egress.RelayArg, relaySocket, listen, "--"}, argv...)
-	return binds, wrapped
+	wrapped = []string{relayBinary, egress.RelayArg, relaySocket, listen}
+	if e.dns {
+		// Bound after the host's resolv.conf, so this one is what the command reads.
+		binds = append(binds, "--ro-bind", filepath.Join(e.dir, "dns.sock"), relayDNS,
+			"--ro-bind", filepath.Join(e.dir, "resolv.conf"), "/etc/resolv.conf")
+		binds = append(binds, relayCaps()...)
+		wrapped = append(wrapped, egress.DNSArg, relayDNS, strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()))
+	}
+	return binds, append(append(wrapped, "--"), argv...)
+}
+
+// relayCaps let the relay bind port 53: as root of the namespace that owns the network,
+// since bwrap's own nesting would leave it none there; the relay nests the command itself.
+func relayCaps() []string {
+	// As root the command is not nested, so the relay empties the bounding set (SETPCAP) before it starts.
+	if os.Getuid() == 0 {
+		return []string{"--cap-drop", "ALL", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETPCAP"}
+	}
+	return []string{"--uid", "0", "--gid", "0", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETFCAP"}
+}
+
+// resolvConf points a sandbox's lookups at the relay's resolver, and nowhere else; "search ."
+// stops glibc appending the hostname's domain, which would query, and deny, name.localdomain.
+const resolvConf = "# Written by Abhed: names resolve through the session's egress policy.\nnameserver 127.0.0.1\nsearch .\noptions timeout:2 attempts:2\n"
+
+// startResolver serves p's resolver beside its proxy socket in dir and writes
+// the resolv.conf bound over the sandbox's; the host's own file is not touched.
+func startResolver(p *egress.Proxy, dir string) error {
+	if err := p.ListenDNS(filepath.Join(dir, "dns.sock")); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "resolv.conf"), []byte(resolvConf), 0o644) // #nosec G306 -- read inside the sandbox
+}
+
+// bwrapDNSOK reports whether the relay can serve the resolver here: bind port
+// 53 and start a command as this user. Without it names stay unresolved.
+func (s *Process) bwrapDNSOK(exe string) bool {
+	s.dnsOnce.Do(func() {
+		if !s.bwrapFreshOK() { // the relay writes the command's id maps through /proc
+			slog.Warn("egress: no private /proc here, so names will not resolve inside the sandbox")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid", "--ro-bind", "/", "/",
+			"--proc", "/proc", "--dev", "/dev"}, relayCaps()...)
+		// The command must run as this user and hold no capability, or the resolver stays off.
+		sets := "Inh|Prm|Eff|Amb"
+		if os.Getuid() == 0 {
+			sets += "|Bnd" // a root command would regain its bounding set at exec
+		}
+		check := fmt.Sprintf(`test "$(id -u)" = %d && ! grep -qE '^Cap(%s):.*[1-9a-f]' /proc/self/status`, os.Getuid(), sets)
+		args = append(args, "--setenv", "HTTP_PROXY", "http://probe:probe@127.0.0.1:1", exe, egress.RelayArg, "/nonexistent", "127.0.0.1:0",
+			egress.DNSArg, "/nonexistent", strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), "--", "/bin/sh", "-c", check)
+		out, err := bwrapRun(ctx, args...)
+		s.dnsOK = err == nil
+		if err != nil {
+			slog.Warn("egress: the relay cannot serve the resolver here, so names will not resolve inside the sandbox",
+				"err", err, "output", strings.TrimSpace(string(out)))
+		}
+	})
+	return s.dnsOK
 }
 
 // EndSession stops the egress proxy of the session id, if it has one, and

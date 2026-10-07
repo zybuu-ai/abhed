@@ -81,7 +81,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	// The CLI's tool set. The server shares its registry across sessions and
 	// binds each session's own subagents, todo list and skill tool to it.
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf,
+		Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb,
 	})
 	defer set.Close()
 
@@ -170,6 +170,8 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	defer closeStore()
+	// Before the store closes: the egress summaries still owed go to it.
+	defer set.CloseEgress()
 
 	// Taps on the event store: an exporter being slow or absent costs spans,
 	// never turns. Several are fanned in; each is unaware of the others.
@@ -211,13 +213,19 @@ func (a *App) serveCmd(workspace, addr string) int {
 		SkillRoots:    toolset.SkillRoots(cfg),
 		Agents:        set.Agents,
 		Gateway:       set.Gateway,
+		Egress:        set.Guard(),
 		Index:         set.Index,
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 	}
-	// A session leaving this process takes its egress proxy with it.
+	// A session leaving this process takes its egress proxy, and what the
+	// guard of Abhed's own requests counts for it, with it.
+	opts.SessionEnded = set.EndSession
 	if es, ok := sb.(interface{ EndSession(string) error }); ok {
-		opts.SessionEnded = func(id string) { _ = es.EndSession(id) }
+		opts.SessionEnded = func(id string) {
+			set.EndSession(id)
+			_ = es.EndSession(id)
+		}
 	}
 	if fence != nil {
 		opts.SessionBash = fenceSessionBash(cfg, workspace)
