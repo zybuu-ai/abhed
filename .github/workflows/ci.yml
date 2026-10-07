@@ -260,11 +260,12 @@ jobs:
             grep -q -- "--- PASS: $t" limit.log || { echo "$t did not run and pass:"; cat limit.log; exit 1; }
           done
 
-  # The fence tier's kernel tests skip unless ABHED_REQUIRE_FENCE=1 in a
-  # delegated cgroup. Here they get one, as an ordinary user, and none may skip.
+  # The fence tier's gated tests, as an ordinary user in a delegated cgroup
+  # scope with ABHED_REQUIRE_FENCE=1; none may skip but the network-on test.
   fence:
     name: Fence tier on a real kernel (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -273,51 +274,19 @@ jobs:
       FENCE_DIR: /var/tmp/abhed-fence-ci
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
-
-      # The network-on end-to-end test makes a Python venv under the fence.
-      - name: Install python3-venv
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv
-
       - name: Build the test binaries
         run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
-
-      # Ubuntu 24.04 lets only binaries with an AppArmor profile make user
-      # namespaces. A profile for the test binaries' directory grants exactly
-      # that, where the sysctl would lift it for every process on the runner.
-      - name: Let the test binaries make user namespaces
-        run: |
-          set -euo pipefail
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ "$(cat "$knob" 2>/dev/null || echo 0)" = 1 ]; then
-            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
-              "profile abhed-fence-ci $FENCE_DIR/** flags=(unconfined) {" '  userns,' '}' \
-              | sudo tee /etc/apparmor.d/abhed-fence-ci > /dev/null
-            sudo apparmor_parser -r /etc/apparmor.d/abhed-fence-ci
-          fi
-
+      - name: Allow user namespaces to those binaries and start the user manager
+        run: scripts/ci/fence-gated.sh prepare "$FENCE_DIR"
       - name: The kernel offers what the fence needs
         run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
-
-      # systemd-run --user needs the runner user's own manager, which a
-      # service-started runner does not have until lingering starts it.
-      - name: Start the user's systemd manager
-        run: |
-          set -euo pipefail
-          sudo loginctl enable-linger "$(id -un)"
-          bus=/run/user/$(id -u)/bus
-          for _ in $(seq 50); do [ -S "$bus" ] && break; sleep 0.2; done
-          [ -S "$bus" ] || { echo "ENVIRONMENT: no user manager at $bus"; exit 1; }
-
       - name: Every gated fence test runs and passes in a delegated scope
         run: |
-          set -euo pipefail
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
-
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
@@ -325,6 +294,33 @@ jobs:
           path: |
             ${{ env.FENCE_DIR }}/*.log
             ${{ env.FENCE_DIR }}/*.json
+
+  # The network-on test needs PyPI and nodejs.org, so it is not a required
+  # check: it shows whether the feature works, while the boundary is tested above.
+  fence-network:
+    name: Fence tier with the network on (not required)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      FENCE_DIR: /var/tmp/abhed-fence-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+      - name: Install python3-venv
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv
+      - name: Build the test binaries
+        run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
+      - name: Allow user namespaces to those binaries and start the user manager
+        run: scripts/ci/fence-gated.sh prepare "$FENCE_DIR"
+      - name: The kernel offers what the fence needs
+        run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
+      - name: Name resolution and package installs work under the fence
+        run: |
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run-network "$FENCE_DIR"
 
   # Case-folding path tests skip on Linux; macOS folds case, so a skip here
   # means the check stopped running, and it fails the build.
