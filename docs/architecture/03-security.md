@@ -230,7 +230,10 @@ asserted. Current state:
       `TestFenceMountsStateDoesNotPersist`), a second mount of the workspace's filesystem
       such as an ostree host's `/sysroot` or a bind mount (`TestFenceMountsCoversAnAlias`,
       `TestApplyCoversAliases`, which also refuses one whose path is shadowed or behind a
-      folder of the user's own, and leaves one no user command can reach), and a
+      folder of the user's own, and leaves one behind another user's folder the user cannot
+      search; that one stays out of reach only while its owner keeps the folder closed,
+      and one opened during a command is reachable by that command until the next covers
+      it), and a
       hard link to a held file or to a file in a held folder
       (`TestFenceMountsRefusesAHardLinkedProtectedFile`,
       `TestFenceMountsRefusesAHookLinkedOutside`); another fence closing does not uncover

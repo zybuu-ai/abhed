@@ -67,9 +67,8 @@ func apply(p Plan, covered bool) error {
 	return nil
 }
 
-// Aliases are the other paths at which the workspace at root is mounted,
-// each checked to reach it now, and those no command can reach (unreachable).
-// One that cannot be checked is the error.
+// Aliases are the other mounts of the workspace at root, checked to reach it,
+// and those behind a folder no command can search; one unchecked is the error.
 func Aliases(root string) (found, unreachable []string, err error) {
 	fd, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {

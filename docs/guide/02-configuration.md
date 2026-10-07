@@ -324,9 +324,16 @@ without running anything.
   and the same tmpfs at every other mount of the workspace's filesystem that
   shows the workspace or part of it, so the protected files stay read-only
   and `.abhed` stays covered through each; `fence.qualified` lists them as
-  `aliases`. One behind a folder you cannot search and do not own, so that
-  neither you nor a command can reach it, is left as it is and listed as
-  `aliases_unreachable`. One the fence cannot check, such as a second mount
+  `aliases`. One behind a folder you cannot search and do not own is left
+  as it is and listed as `aliases_unreachable`: a command, running as you,
+  cannot pass that folder either. It stays out of reach only while the
+  folder's owner (or root) keeps it closed. If they open it while a command
+  runs, that command can reach the real `.abhed` and the protected files
+  through it until it ends; the next command covers it. A long-lived
+  command (the terminal, `abhed serve`'s commands) is not checked again
+  while it runs: its namespace can be changed only from inside it, after it
+  has dropped every capability, and a mount made later would not take back
+  what it had already opened. One the fence cannot check, such as a second mount
   whose path now leads somewhere else, refuses the fence when it qualifies,
   or the command (exit 126) when it starts, saying which. Only mounts of the
   same filesystem are found: a view of the workspace through another
@@ -347,7 +354,9 @@ without running anything.
   empty when the session started must stay empty while it runs: anything
   that appears in it is taken out of it one entry at a time, each first
   renamed inside that `.abhed`, where every fence's tmpfs still hides it,
-  then moved to `~/.abhed/quarantine/`, or removed where it cannot be moved;
+  then moved to `~/.abhed/quarantine/`, or removed where it cannot be moved
+  (one that can be neither stays there renamed, is reported as still
+  present, and refuses the next fence until you remove it);
   the folder itself is left in place for the other fences, and a folder made again
   in its place is taken out whole; either way the session runs no further
   command. So put state there (`abhed user add`, say) before a fenced

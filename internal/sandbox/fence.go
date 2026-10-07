@@ -53,7 +53,7 @@ type Fence struct {
 	// aliases are the other mounts of the workspace's filesystem, which each
 	// command's namespace covers as it covers the workspace.
 	aliases []string
-	// unreachableAliases lie behind a folder no command can search or chmod.
+	// unreachableAliases lie behind another user's folder no command can search.
 	unreachableAliases []string
 	// id names the session's cgroup; tmp is the commands' private temp.
 	id  string
@@ -221,7 +221,8 @@ func (f *Fence) Describe() string {
 			mode += ", the surface's protected paths (git's config and hooks, its editor settings) bound read-only, and a file in a read-only folder with a name outside it refused"
 		}
 		mode += ", the same done at every other mount of the workspace's filesystem (such as /sysroot on an ostree host, or a bind mount), or the command refused where it cannot be" +
-			" (a FUSE, bindfs, overlay or NFS view of the workspace that exists before the session is not found; commands cannot make one)"
+			" (a FUSE, bindfs, overlay or NFS view of the workspace that exists before the session is not found; commands cannot make one)" +
+			"; one behind another user's folder you cannot search is left, and stays out of reach only while that folder stays closed: opened during a command, it lets that command through, and the next command covers it"
 		mode += "; another spelling of .abhed a command makes is still taken out and ends the session"
 		planted = "a .abhed in a subfolder or an added folder (not covered)"
 	}
@@ -439,6 +440,14 @@ func (f *Fence) prepareStateMount() error {
 	if !id.dir {
 		return fmt.Errorf("the workspace's %s is not a folder, and the fence can cover only a folder", stateDir)
 	}
+	// An entry an earlier fence took out but could not move or remove is not state.
+	n, err := plantedEntry(p)
+	if err != nil {
+		return fmt.Errorf("the workspace's %s cannot be listed to tell whether it holds state (%w); restore its permissions, and the fence will cover it", stateDir, err)
+	}
+	if n != "" {
+		return fmt.Errorf("the workspace's %s holds %s, which an earlier fenced session found planted and could not take out; remove it, and the fence will cover the folder", stateDir, n)
+	}
 	// Not known to be empty is not taken for state: what appears in it
 	// later would then be accepted as Abhed's own.
 	holds, err := folderHolds(p, id)
@@ -485,6 +494,29 @@ func folderHolds(p string, id folderID) (bool, error) {
 		return true, err
 	}
 	return true, nil
+}
+
+// plantedEntry is the first entry of the folder p named as a taken-out entry.
+func plantedEntry(p string) (string, error) {
+	d, err := os.Open(p) // #nosec G304 -- the workspace's .abhed
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = d.Close() }()
+	for {
+		names, err := d.Readdirnames(512)
+		if errors.Is(err, io.EOF) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		for _, n := range names {
+			if strings.HasPrefix(n, plantedPrefix) {
+				return n, nil
+			}
+		}
+	}
 }
 
 // isSharedState is whether p is the workspace's .abhed each command's
@@ -691,6 +723,9 @@ func (f *Fence) checkPlanted(rec func(string, map[string]any) error, callID, whe
 		case plantRemoved:
 			done = append(done, name+" was removed")
 		default:
+			if r, ok := m["renamed_to"].(string); ok {
+				name += " (renamed to " + filepath.Join(filepath.Base(filepath.Dir(r)), filepath.Base(r)) + ")"
+			}
 			left = append(left, name)
 		}
 	}
@@ -745,9 +780,8 @@ func (f *Fence) checkPlanted(rec func(string, map[string]any) error, callID, whe
 	return errors.New("fence: " + why)
 }
 
-// takeOutContents takes out everything in the covered .abhed at p, renamed
-// inside it, where every fence's tmpfs still hides it, and leaves the folder.
-// It is false when the folder cannot be listed.
+// takeOutContents takes out each entry of the covered .abhed at p, renamed inside
+// it where every tmpfs hides it; false when p cannot be listed.
 func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 	restoreOwnerAccess(p)
 	d, err := os.Open(p) // #nosec G304 -- the workspace's .abhed
@@ -766,10 +800,8 @@ func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 	return out, true
 }
 
-// takeOut makes the planted entry p inert and says how: renamed into the
-// folder dir in the workspace, then moved to quarantine where it can be.
-// Where the rename fails, the entry is removed as a last resort, else it is
-// still present.
+// takeOut renames the planted entry p into dir, then quarantines it, and says
+// how; where the rename fails it is removed, else still present.
 func (f *Fence) takeOut(p, dir string) map[string]any { return f.takeOutTo(p, dir, false) }
 
 // takeOutTo is takeOut; with removeStuck, an entry quarantine cannot take is
@@ -789,17 +821,21 @@ func (f *Fence) takeOutTo(p, dir string, removeStuck bool) map[string]any {
 		return m
 	}
 	m["renamed_to"] = inert
-	// A folder the command left without write permission cannot be moved
-	// to another parent, nor later read or removed.
+	// A folder left without write permission cannot be moved, read or removed.
 	restoreOwnerAccess(inert)
 	dest, err := quarantine(inert, filepath.Base(p), f.id)
 	switch {
 	case err == nil:
 		m["outcome"], m["moved_to"] = plantMoved, dest
-	case removeStuck && os.RemoveAll(inert) == nil:
-		m["outcome"], m["reason"] = plantRemoved, err.Error()
-	default:
+	case !removeStuck:
 		m["outcome"], m["reason"] = plantRenamed, err.Error()
+	default:
+		if rerr := os.RemoveAll(inert); rerr != nil {
+			// Left in the covered .abhed: the user must remove it.
+			m["outcome"], m["error"] = plantRemaining, errors.Join(err, rerr).Error()
+			return m
+		}
+		m["outcome"], m["reason"] = plantRemoved, err.Error()
 	}
 	return m
 }
