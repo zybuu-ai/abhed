@@ -342,7 +342,9 @@ func TestOwnDeniedRequestBodyIsClosed(t *testing.T) {
 	for _, url := range []string{"http://denied.test/", "http://[::1%25x]/"} {
 		body := &closedBody{Reader: strings.NewReader("x")}
 		req, _ := http.NewRequest(http.MethodPost, url, body)
-		if _, err := (&Transport{Kind: KindMCP, Guard: g}).RoundTrip(req); err == nil {
+		resp, err := (&Transport{Kind: KindMCP, Guard: g}).RoundTrip(req)
+		if err == nil {
+			_ = resp.Body.Close()
 			t.Fatalf("%s was sent", url)
 		}
 		if !body.closed.Load() {
