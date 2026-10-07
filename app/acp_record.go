@@ -274,10 +274,16 @@ func (c *acpConn) recordContinued(s *acpSession, events []agent.Event, via strin
 	resumed := map[string]any{"surface": "acp", "via": via, "through_seq": last, "provider": loop.Provider,
 		"model": loop.Adapter.Profile().Name, "mode": string(loop.Policy.Mode), "web": toolset.WebState(cfg),
 		"workspace_trust": toolset.TrustState(config.GrantFor(s.trust, c.base, s.cwd), cfg.Workspace)}
-	if _, err := loop.Recorder.Record(agent.EvSessionResumed, agent.ActorSystem, agent.Trusted, resumed); err != nil {
+	if err := recordResumed(loop.Recorder, resumed); err != nil {
 		return err
 	}
 	return toolset.RecordConfigAttempts(loop.Recorder, toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand())))
+}
+
+// recordResumed writes a session.resumed; a test makes it fail.
+var recordResumed = func(rec *agent.Recorder, payload map[string]any) error {
+	_, err := rec.Record(agent.EvSessionResumed, agent.ActorSystem, agent.Trusted, payload)
+	return err
 }
 
 // recordOnly stands in for the agent of a session whose record failed
@@ -462,7 +468,9 @@ func (c *acpConn) forkSession(msg rpcMessage) {
 	}
 	if err := c.recordContinued(s, all, "fork"); err != nil {
 		c.dropSession(s)
-		c.reply(msg.ID, nil, refusal(errRecord, "the fork's start could not be recorded: %v", err))
+		// The copy is already written: it stays listed and loads like any other.
+		c.reply(msg.ID, nil, refusal(errRecord, "the fork's start could not be recorded: %v; "+
+			"the fork %s is kept in the session list and can be loaded", err, id))
 		return
 	}
 	res := c.sessionResult(s)
@@ -849,6 +857,10 @@ func (c *acpConn) restartForTrust(s *acpSession) {
 		s.readOnly = "the session could not restart after its workspace file changed"
 	} else if err := c.recordContinued(s, events, "restart"); err != nil {
 		s.readOnly = "the session could not record its restart: " + err.Error()
+	}
+	if s.readOnly != "" {
+		say(s.readOnly + "\n")
+		return
 	}
 	say("The workspace's configuration file changed; the session restarted under the decision about its new content.\n")
 }

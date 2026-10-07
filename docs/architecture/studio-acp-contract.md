@@ -307,7 +307,11 @@ interface SessionMeta {
   while it is open with the stored trust is refused with -32000, and Studio
   closes it and loads it again. Each records a `session.resumed` with `via`,
   `through_seq` and `workspace_trust` (§10), then the `config.refused` and
-  `config.narrowed` of the configuration it opened under.
+  `config.narrowed` of the configuration it opened under. When that event
+  cannot be recorded the session does not run: load, resume and fork answer
+  -32003 and close it, though a fork's copy is already written and stays in
+  the session list, loadable later; a restart leaves the session read-only
+  and says why.
   `_abhed/doctor` takes the same field, so a Restricted window's checks do not
   reach a provider only the trusted file names. A `_meta` with both the
   `zybuu.ai/abhed` and the legacy `abhed` key is -32602.

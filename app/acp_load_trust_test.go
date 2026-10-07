@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -298,4 +299,61 @@ func TestStudioMetaBothKeysAndDoctorTrust(t *testing.T) {
 		t.Fatalf("untrusted doctor: %v", c)
 	}
 	r.cl.refused(errParams, "_abhed/doctor", map[string]any{"cwd": r.ws, "_meta": map[string]any{acpMetaKey: map[string]any{"trust": "trusted"}}})
+}
+
+// When the trust a continued session opened under cannot be recorded, it does
+// not run unrecorded: load and fork refuse and drop it, and a restart leaves
+// it read-only and says so.
+func TestStudioContinuedSessionRefusesWhenItsTrustCannotBeRecorded(t *testing.T) {
+	failing := func(t *testing.T) {
+		t.Helper()
+		old := recordResumed
+		recordResumed = func(*agent.Recorder, map[string]any) error { return errors.New("disk full") }
+		t.Cleanup(func() { recordResumed = old })
+	}
+	for _, method := range []string{"session/load", "session/resume"} {
+		t.Run(method, func(t *testing.T) {
+			r, id := closedSession(t, true)
+			failing(t)
+			msg := r.cl.refused(errRecord, method, map[string]any{"sessionId": id, "cwd": r.ws})
+			if !strings.Contains(msg, "disk full") || r.cl.conn.session(id) != nil {
+				t.Fatalf("refusal %q, session left open: %v", msg, r.cl.conn.session(id) != nil)
+			}
+		})
+	}
+	t.Run("fork", func(t *testing.T) {
+		r, id := closedSession(t, true)
+		failing(t)
+		msg := r.cl.refused(errRecord, "_abhed/session/fork", map[string]any{"sessionId": id})
+		if !strings.Contains(msg, "disk full") || !strings.Contains(msg, "kept in the session list") {
+			t.Fatalf("refusal: %q", msg)
+		}
+		r.cl.conn.sessMu.Lock()
+		open := len(r.cl.conn.sessions)
+		r.cl.conn.sessMu.Unlock()
+		if open != 0 {
+			t.Fatalf("%d sessions left open after a failed fork", open)
+		}
+	})
+	t.Run("restart", func(t *testing.T) {
+		r, id := closedSession(t, true)
+		r.cl.ok("session/resume", map[string]any{"sessionId": id, "cwd": r.ws}, nil)
+		s := r.cl.conn.session(id)
+		failing(t)
+		from := r.cl.mark()
+		r.cl.conn.restartForTrust(s)
+		if !strings.Contains(s.readOnly, "could not record its restart") {
+			t.Fatalf("readOnly %q", s.readOnly)
+		}
+		r.cl.waitFor(from, "the restart's failure", func(m rpcMessage) bool {
+			return m.Method == "session/update" && strings.Contains(string(m.Params), "could not record its restart")
+		})
+		for _, u := range updates(r.cl.since(from)) {
+			content, _ := u["content"].(map[string]any)
+			if text, _ := content["text"].(string); strings.Contains(text, "restarted under") {
+				t.Fatalf("a failed restart said it restarted: %q", text)
+			}
+		}
+		r.cl.refused(errRecord, "session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "x"}}})
+	})
 }

@@ -651,7 +651,7 @@ func boundary(t agent.EventType) bool {
 	switch t {
 	case agent.EvSessionStarted, agent.EvUserMessage, agent.EvModelCall, agent.EvSessionEnded,
 		agent.EvForked, agent.EvFileRestored, agent.EvRecordRepaired, agent.EvSessionBranched,
-		agent.EvSessionNamed, agent.EvSessionWoken:
+		agent.EvSessionNamed, agent.EvSessionWoken, agent.EvSessionResumed:
 		return true
 	}
 	return false
