@@ -421,6 +421,8 @@ const (
 	// EvGitWalkBounded is the look for git folders stopping at a bound:
 	// repositories past it are not protected, or the command is not run.
 	EvGitWalkBounded = "sandbox.git_walk_bounded"
+	// EvGitLinked is a git folder part that is a symbolic link refusing the command.
+	EvGitLinked = "sandbox.git_linked"
 )
 
 // gitMemory is what one sandbox keeps between scans: whether the walk's bound
@@ -442,7 +444,8 @@ func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string
 	if mem.known == nil {
 		mem.known = map[string][]string{}
 	}
-	mem.known[ws] = g.gits
+	// Merged, not replaced: a concurrent scan cut short by a flood must not drop what another found.
+	mem.known[ws] = mergeKnown(mem.known[ws], g.gits)
 	mem.mu.Unlock()
 	launch := LaunchOf(ctx)
 	record := func(ev string, pay map[string]any) {
@@ -467,6 +470,7 @@ func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string
 		return nil, err
 	}
 	if len(g.linked) > 0 {
+		record(EvGitLinked, map[string]any{"paths": g.linked, "refused": true})
 		return nil, fmt.Errorf("sandbox: the command was not run: %s is a symbolic link, which this sandbox cannot hold read-only, "+
 			"and a command could point it at configuration or hooks of its own; replace it with what it points to "+
 			"(for hooks, a folder holding them)", strings.Join(g.linked, ", "))
@@ -487,7 +491,11 @@ func takeOutGitPlanted(planted []string) ([]map[string]any, error) {
 		if dest, err := quarantine(p, "commondir", "git-"); err == nil {
 			m["outcome"], m["moved_to"] = plantMoved, dest
 			parts = append(parts, p+" was moved to "+dest)
-		} else if rerr := os.Remove(p); rerr == nil {
+		} else if errors.Is(err, fs.ErrNotExist) {
+			// Another command's check took it out first.
+			m["outcome"] = plantRemoved
+			parts = append(parts, p+" was already taken out")
+		} else if rerr := os.Remove(p); rerr == nil || errors.Is(rerr, fs.ErrNotExist) {
 			m["outcome"] = plantRemoved
 			parts = append(parts, p+" was removed")
 		} else {
@@ -547,4 +555,20 @@ func anyCaseRegex(ws, p string) string {
 		return "^" + regexQuote(p) + "$"
 	}
 	return "^" + regexQuote(ws) + "/" + anyCase(filepath.ToSlash(rel)) + "$"
+}
+
+// mergeKnown is the .git entries of both lists that still exist, without repeats.
+func mergeKnown(old, found []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range append(append([]string{}, found...), old...) {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		if _, err := os.Lstat(p); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }

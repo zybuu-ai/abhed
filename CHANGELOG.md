@@ -182,8 +182,9 @@ All notable changes to Abhed are recorded here. The format follows
 - CI runs the fence tier's gated tests for real: a new required job on
   Ubuntu 24.04, x86-64 and arm64, runs them as an ordinary user in a delegated
   cgroup scope with `ABHED_REQUIRE_FENCE=1`, so a skip fails the build. In that
-  job only the network-on end-to-end test may skip, as pending on `fencenet`;
-  it runs in a separate job that is not required, since it needs PyPI and
+  job only the network-on end-to-end test may skip, as pending on `fencenet`,
+  and the no-user-namespace test once a run of its own has passed it; the
+  network-on test runs in a separate job that is not required, since it needs PyPI and
   nodejs.org, and now checks the Node download against its SHASUMS256. The
   job also bind-mounts a folder twice for the fence's alias test, and runs
   the test of a host without user namespaces from outside the folder

@@ -101,8 +101,12 @@ func TestFenceMountsRefusesALinkedWorktree(t *testing.T) {
 		}
 		p.ProtectGit = true
 	})
-	out, err := fenceRun(t, f, ws, "echo ran", (&events{}).record(nil), "call-linked")
+	ev := &events{}
+	out, err := fenceRun(t, f, ws, "echo ran", ev.record(nil), "call-linked")
 	if err == nil || !strings.Contains(err.Error()+out, "symbolic link") {
 		t.Fatalf("a linked worktree folder did not refuse the command: %v\n%s", err, out)
+	}
+	if got := ev.of(EvGitLinked); len(got) != 1 {
+		t.Errorf("%s: %v", EvGitLinked, got)
 	}
 }

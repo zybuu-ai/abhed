@@ -233,8 +233,8 @@ func TestFenceEndToEndPlantedStateDoesNotPersist(t *testing.T) {
 		}
 		// The mount mode keeps an empty .abhed of its own to cover; nothing
 		// planted may be in it, under any spelling.
-		inside, _ := os.ReadDir(filepath.Join(h.Workspace(), e.Name()))
-		if e.Name() != ".abhed" || len(inside) != 0 {
+		inside, err := os.ReadDir(filepath.Join(h.Workspace(), e.Name()))
+		if err != nil || !e.IsDir() || e.Name() != ".abhed" || len(inside) != 0 {
 			t.Fatalf("%s persists in the workspace holding %d entries", e.Name(), len(inside))
 		}
 	}

@@ -62,7 +62,8 @@ prepare() {
 	fi
 	# A second mount of a folder, for the test that the fence covers aliases.
 	install -d -m 0755 "$dir/alias-src" "$dir/alias-mirror"
-	sudo mount --bind "$dir/alias-src" "$dir/alias-mirror"
+	# The runner is thrown away after the job, which takes the mount with it.
+	mountpoint -q "$dir/alias-mirror" || sudo mount --bind "$dir/alias-src" "$dir/alias-mirror"
 	# A service-started runner has no user manager until lingering starts one.
 	sudo loginctl enable-linger "$(id -un)"
 	bus=/run/user/$(id -u)/bus
@@ -105,7 +106,8 @@ check() {
 off_linux=" TestDiscoverElsewhere TestRestrictRefusesOffLinux "
 
 # passed_all NAME DIR GATED fails unless every listed test passed, or skipped
-# off-Linux or pending on an item in FENCE_PENDING, and GATED is all listed.
+# off-Linux, pending on an item in FENCE_PENDING, or proven by a run of its own
+# (DIR/elsewhere), and GATED is all listed.
 passed_all() {
 	local name=$1 dir=$2 gated=$3 n=0 bad=0 t item
 	local log=$dir/$name.log
@@ -121,7 +123,7 @@ passed_all() {
 		if grep -q -- "--- SKIP: $t " "$log"; then
 			[[ $off_linux == *" $t "* ]] && continue
 			# Proven by a run of its own, under the condition it needs.
-			grep -qx -- "$t" "$dir/elsewhere" 2>/dev/null && continue
+			grep -qx -- "$name $t" "$dir/elsewhere" 2>/dev/null && continue
 			item=$(sed -n "/=== RUN   $t\$/,/--- SKIP: $t /s/^ *[^ ]*\.go:[0-9]*: clitest: pending (\([a-z]*\)):.*/\1/p" "$log" | head -1)
 			[[ $name == clitest && -n $item && " ${FENCE_PENDING:-} " == *" $item "* ]] && continue
 		fi
@@ -184,13 +186,14 @@ no_userns() {
 	echo "== $rel -run '^$t\$' outside $dir"
 	if (cd "$root/$rel" && ABHED_FENCE_NO_USERNS=1 "$bin/sandbox.test" -test.v -test.count=1 -test.run "^$t\$" < /dev/null) > "$dir/nouserns.log" 2>&1 &&
 		grep -q -- "--- PASS: $t " "$dir/nouserns.log"; then
-		echo "$t" >> "$dir/elsewhere"; rm -rf "$bin"; echo "1 passed"
+		echo "sandbox $t" >> "$dir/elsewhere"; rm -rf "$bin"; echo "1 passed"
 	else
 		cat "$dir/nouserns.log"; rm -rf "$bin"; return 1
 	fi
 }
 
-# run: every suite, offline. Only the network-on test may skip, as fencenet.
+# run: every suite, offline. Only the network-on test may skip, as fencenet,
+# and the no-user-namespace test once no_userns has passed it.
 run() {
 	local dir=$1 fail=0 ran=0 total name pkg pattern
 	in_scope || return 1
