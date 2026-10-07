@@ -60,12 +60,12 @@ var rootCaps = func() bool { return os.Getuid() == 0 || os.Geteuid() == 0 }
 // they are bound read-only.
 var rootWritableProc = []string{
 	"/proc/sys", "/proc/sysrq-trigger", "/proc/dynamic_debug",
-	"/proc/latency_stats", "/proc/pressure", "/proc/scsi",
+	"/proc/latency_stats", "/proc/pressure", "/proc/scsi", "/proc/mtrr",
 }
 
 // rootEmptyProc get an empty read-only tmpfs rather than the host's copy, so a
 // host mount made there after start cannot propagate in writable.
-var rootEmptyProc = []string{"/proc/sys/fs/binfmt_misc", "/proc/fs", "/proc/acpi"}
+var rootEmptyProc = []string{"/proc/sys/fs/binfmt_misc", "/proc/fs", "/proc/acpi", "/proc/irq", "/proc/bus", "/proc/driver"}
 
 // capProbeCaps prints the five capability sets and NoNewPrivs, for any uid.
 const capProbeCaps = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; echo PROBE_DONE`

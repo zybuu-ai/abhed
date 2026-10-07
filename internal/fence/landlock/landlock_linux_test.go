@@ -278,7 +278,14 @@ func TestRestrictRefusesTCPWhenNetworkOff(t *testing.T) {
 	if got := run(t, l.spec(t, true), "connect", addr); got != 1 {
 		t.Fatalf("connect with the network off: exit %d, want 1 (refused)", got)
 	}
-	if got := run(t, l.spec(t, true), "bind", "127.0.0.1:0"); got != 1 {
+	// A named port: newer kernels let port 0 bind under a TCP bind rule.
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := free.Addr().String()
+	_ = free.Close()
+	if got := run(t, l.spec(t, true), "bind", port); got != 1 {
 		t.Fatalf("bind with the network off: exit %d, want 1 (refused)", got)
 	}
 }
