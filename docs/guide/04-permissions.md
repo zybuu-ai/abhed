@@ -776,7 +776,8 @@ The model sees the **names**, and asks for one on a single command:
 ```
 
 That command, and only that command, runs with `GITHUB_TOKEN` in its
-environment. `k8s_login` names a token as `token_secret` and `ssh_connect` a
+environment. On the macOS process tier another command running at the same
+time can read that environment; see [Configuration](02-configuration.md#sandbox). `k8s_login` names a token as `token_secret` and `ssh_connect` a
 password as `password_secret`, and use it for that session's login only.
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules

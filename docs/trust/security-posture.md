@@ -285,7 +285,11 @@ off or under the allowlist; other `mach-lookup` services stay reachable: a comma
 others) to act for it outside the sandbox. Linux has no equivalent. A
 deny-by-default profile for Mach services is not done yet. The environment is an allowlist
 (`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
-`ABHED_` settings. On the `none` tier the shell has the server's environment
+`ABHED_` settings. On macOS that does not keep them from a command: the
+kernel returns any same-user process's environment (`kern.procargs2`) unless
+it is a restricted program, as Apple's are, and Seatbelt cannot refuse it, so a
+command reads Abhed's environment and a concurrent command's
+(`TestSeatbeltProcArgsExposure`). On the `none` tier the shell has the server's environment
 without its `ABHED_` settings, which leaves anything else the operator
 exported, and nothing contains it.
 
