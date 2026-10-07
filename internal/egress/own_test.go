@@ -247,7 +247,7 @@ func TestOwnAuditMode(t *testing.T) {
 
 // Without a guard in force the transport is the client's own, unchanged.
 func TestOwnUnchangedOutsideTheAllowlist(t *testing.T) {
-	if Installed() != nil {
+	if g, _ := Installed(); g != nil {
 		t.Skip("a guard is installed")
 	}
 	srv, _, hits := ownServer(t)
@@ -265,15 +265,15 @@ func TestOwnInstall(t *testing.T) {
 	g := ownGuard(t, Config{}, GuardOptions{})
 	undo := Install(g)
 	defer undo()
-	if Installed() != g {
+	if in, err := Installed(); in != g || err != nil {
 		t.Fatal("not installed")
 	}
 	if _, err := ownGet(t, &Transport{Kind: KindWebSearch}, context.Background(), fmt.Sprintf("http://127.0.0.1:%d/", port)); err == nil {
 		t.Fatal("the installed guard did not judge the request")
 	}
 	undo()
-	if Installed() != nil || hits.Load() != 0 {
-		t.Fatalf("installed %v, hits %d", Installed(), hits.Load())
+	if in, _ := Installed(); in != nil || hits.Load() != 0 {
+		t.Fatalf("installed %v, hits %d", in, hits.Load())
 	}
 }
 
@@ -298,5 +298,83 @@ func TestOwnRecordIsRateLimited(t *testing.T) {
 	got := p.all()
 	if len(got) != 3 || fmt.Sprint(got[2]["repeats"]) != "3" || got[2]["session"] != "s1" {
 		t.Fatalf("records: %v", got)
+	}
+}
+
+// A request naming a guard, or Unguarded, is judged by it whatever is
+// installed; one naming none is refused while two guards are installed.
+func TestOwnGuardFromTheRequest(t *testing.T) {
+	_, port, hits := ownServer(t)
+	allowing := ownGuard(t, Config{Rules: []Rule{{Host: "allowed.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}}, GuardOptions{})
+	denying := ownGuard(t, Config{}, GuardOptions{})
+	defer Install(denying)()
+	tr := &Transport{Kind: KindWebSearch}
+	url := fmt.Sprintf("http://allowed.test:%d/", port)
+	if _, err := ownGet(t, tr, WithGuard(context.Background(), allowing), url); err != nil {
+		t.Fatalf("the request's guard was not used: %v", err)
+	}
+	if _, err := ownGet(t, tr, WithGuard(context.Background(), Unguarded), fmt.Sprintf("http://127.0.0.1:%d/", port)); err != nil {
+		t.Fatalf("an unguarded request was judged: %v", err)
+	}
+	if _, err := ownGet(t, tr, context.Background(), url); err == nil {
+		t.Fatal("the installed guard did not judge a request naming none")
+	}
+	defer Install(allowing)()
+	if _, err := ownGet(t, tr, context.Background(), url); !errors.Is(err, errAmbiguous) {
+		t.Fatalf("a request naming no guard with two installed: %v", err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("hits %d", hits.Load())
+	}
+}
+
+// closedBody notes that a request body was closed.
+type closedBody struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (b *closedBody) Close() error { b.closed.Store(true); return nil }
+
+// A refused request's body is closed, as a RoundTripper must.
+func TestOwnDeniedRequestBodyIsClosed(t *testing.T) {
+	g := ownGuard(t, Config{}, GuardOptions{})
+	for _, url := range []string{"http://denied.test/", "http://[::1%25x]/"} {
+		body := &closedBody{Reader: strings.NewReader("x")}
+		req, _ := http.NewRequest(http.MethodPost, url, body)
+		if _, err := (&Transport{Kind: KindMCP, Guard: g}).RoundTrip(req); err == nil {
+			t.Fatalf("%s was sent", url)
+		}
+		if !body.closed.Load() {
+			t.Errorf("%s: the body was left open", url)
+		}
+	}
+}
+
+// Close drops the guard's pools: it holds none of a client's connections.
+func TestOwnCloseDropsPools(t *testing.T) {
+	_, port, _ := ownServer(t)
+	g := ownGuard(t, Config{Rules: []Rule{{Host: "allowed.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}}, GuardOptions{})
+	tr := &Transport{Kind: KindWebSearch, Guard: g}
+	if _, err := ownGet(t, tr, context.Background(), fmt.Sprintf("http://allowed.test:%d/", port)); err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock()
+	n := len(g.pools)
+	g.mu.Unlock()
+	g.Close()
+	g.mu.Lock()
+	after := len(g.pools)
+	g.mu.Unlock()
+	if n != 1 || after != 0 {
+		t.Fatalf("pools %d, after close %d", n, after)
+	}
+	if _, err := ownGet(t, tr, context.Background(), fmt.Sprintf("http://allowed.test:%d/", port)); err != nil {
+		t.Fatalf("after close: %v", err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.pools) != 0 {
+		t.Fatal("a closed guard kept a pool")
 	}
 }

@@ -395,6 +395,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	rec.Redact = red
 
 	loopCfg := toolset.LoopConfig(cfg, "")
+	loopCfg.Egress = set.Guard()
 	// The file's max_turns binds an embedded agent when the organisation sets
 	// it, or when the caller asks for the configured limits.
 	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns

@@ -53,12 +53,27 @@ All notable changes to Abhed are recorded here. The format follows
   without a rule, by the rule `model`. `web_fetch` keeps its own checks
   after the rules', so it still never reaches an internal address. A guard
   that cannot compile the rules refuses every one of these requests but
-  the model's. Stdio MCP servers start with their network confined to an
-  egress proxy of their own (Seatbelt on macOS, a network namespace on
-  Linux; their files are not confined) and are not started where they
-  cannot be. Outside the allowlist nothing changes. See
+  the model's. Each tool set has its own guard, so SDK agents in one
+  process are judged by their own rules, and one outside the allowlist is
+  left alone. Stdio MCP servers start with their direct network sockets
+  confined to an egress proxy of their own (Seatbelt, without
+  LaunchServices, on macOS; network and process namespaces, with the
+  session bus, `/run/user`, container sockets and other sessions' egress
+  sockets hidden, on Linux) and are not started where they cannot be. This
+  confines a server's direct network, not a hostile server: its files are
+  not confined, so it can plant a LaunchAgent, systemd unit or rc file, and
+  on Linux it can reach AF_UNIX sockets in folders left visible. Outside
+  the allowlist nothing changes. See
   [Network policy](docs/guide/21-network-policy.md) and
   [MCP](docs/guide/08-mcp.md).
+
+### Changed
+
+- Under `sandbox.network: "allowlist"`, the model client no longer uses
+  `HTTPS_PROXY` or `HTTP_PROXY` from Abhed's environment: it connects
+  directly, so the egress guard sees where each connection goes. A
+  provider reachable only through a corporate proxy is not reached under
+  the allowlist. Outside the allowlist the model client is unchanged.
 
 ### Security
 

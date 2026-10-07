@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -190,6 +191,9 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
+	// Egress is the guard of the tool set the loop runs with, egress.Unguarded
+	// outside the allowlist; nil names none. Subagents keep it.
+	Egress *egress.Guard
 	// MaxTurns ends a run once the conversation has used this many turns.
 	MaxTurns int
 	// TurnsPerMessage, when positive, gives each message a person sends its

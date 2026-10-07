@@ -27,7 +27,8 @@ type launchKey struct{}
 // WithLaunch carries l to the backend that builds the command, and to
 // Abhed's own clients, whose requests are recorded for the same call.
 func WithLaunch(ctx context.Context, l Launch) context.Context {
-	ctx = egress.WithCaller(ctx, egress.Caller{Session: l.Session, CallID: l.CallID, Record: l.Record})
+	ctx = egress.WithCaller(ctx, egress.Caller{Session: l.Session, CallID: l.CallID, Record: l.Record,
+		Guard: egress.CallerOf(ctx).Guard})
 	return context.WithValue(ctx, launchKey{}, l)
 }
 

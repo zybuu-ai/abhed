@@ -50,14 +50,18 @@ func (l *Loop) withLaunch(ctx context.Context, callID string) context.Context {
 	if l.Recorder != nil {
 		launch.Session, launch.Record = l.Recorder.Root(), SandboxRecord(l.Recorder)
 	}
-	return sandbox.WithLaunch(ctx, launch)
+	return egress.WithGuard(sandbox.WithLaunch(ctx, launch), l.Config.Egress)
 }
 
-// withCaller names the session the loop's own model requests are made for,
-// so the egress guard records them there.
+// withCaller names the session and tool set the loop's own model requests
+// are made for, so its egress guard judges and records them.
 func (l *Loop) withCaller(ctx context.Context) context.Context {
-	if l.Recorder == nil {
-		return ctx
+	c := egress.Caller{Guard: l.Config.Egress}
+	if c.Guard == nil {
+		c.Guard = egress.CallerOf(ctx).Guard
 	}
-	return egress.WithCaller(ctx, egress.Caller{Session: l.Recorder.Root(), Record: SandboxRecord(l.Recorder)})
+	if l.Recorder != nil {
+		c.Session, c.Record = l.Recorder.Root(), SandboxRecord(l.Recorder)
+	}
+	return egress.WithCaller(ctx, c)
 }

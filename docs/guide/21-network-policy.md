@@ -215,10 +215,21 @@ request as an `egress.decision` event:
 
 | Client | `kind` | Judged |
 |---|---|---|
-| the model provider | `model` | its configured endpoint (`base_url`, and watsonx's IAM URL) is allowed without a rule, by the rule `model`, loopback included, so the agent keeps working; any other host the model client is sent to is judged by the rules |
+| the model provider | `model` | its configured endpoint (`base_url`, and watsonx's IAM URL) is allowed without a rule, by the rule `model`, so the agent keeps working; any other host the model client is sent to is judged by the rules |
 | `web_fetch` | `web_fetch` | by the rules, then by `web_fetch`'s own checks as before (its `allowed_hosts`, and internal addresses, which it never reaches even when an egress rule names them in `allow_ips`) |
 | `web_search` | `web_search` | by the rules |
 | MCP over HTTP | `mcp` | by the rules |
+
+The `model` rule follows whatever provider configuration is in force: it
+skips the address check, so a `base_url` or IAM URL on loopback, a private
+address or a metadata address such as `169.254.169.254` is reached without
+a rule. The model cannot change it, but anyone who can set the provider can.
+
+Each tool set has its own guard: the rules of the configuration it was
+built from judge its tools' requests and its sessions' model requests,
+and a set outside the allowlist is left alone, even with another set in the
+same process under it (as with several SDK agents). A request that names
+no set is judged by the one guard in force, and refused if several are.
 
 Each request, not each connection, is decided, since Abhed builds the
 request itself: the host, port, method and path, for HTTPS too. A rule
@@ -257,10 +268,17 @@ of its own, apart from the sessions' proxies, with its own token:
 
 | Tier | Stdio MCP server under the allowlist |
 |---|---|
-| process, Linux (bubblewrap) | **Confined.** It runs in its own network namespace with loopback only, behind the same relay commands use. Its filesystem is not confined. |
-| process, macOS (Seatbelt) | **Confined.** The profile denies all network use but outbound to the proxy's port on `localhost`. Its filesystem is not confined. |
+| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker and containerd sockets under `/run`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Where bubblewrap cannot mount a private `/proc`, the server is not started. |
+| process, macOS (Seatbelt) | **Direct sockets confined.** The profile denies all network use, AF_UNIX included, but outbound to the proxy's port on `localhost`, and denies LaunchServices, which would open a URL or an app outside the sandbox. Its filesystem is not confined. |
 | fence, container, vm, none | Not reached: these tiers refuse the allowlist, so no session starts on them. |
 | Windows, or a surface with no process-tier sandbox | **Not started.** It cannot be confined, so it is refused with that reason. |
+
+This confines a server's direct network use, **not a hostile server**. A
+server that means to get out still can: its files are not confined, so it
+can plant a LaunchAgent, a systemd user unit or a shell rc line that runs
+later, outside any sandbox; and on Linux it can connect to any AF_UNIX
+socket in a folder that is not hidden, whose listener then acts for it.
+Add only servers you trust.
 
 The server is given `HTTP_PROXY` and `HTTPS_PROXY` pointing at its proxy.
 Its decisions are recorded in the record of the session whose tool call to

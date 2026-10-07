@@ -50,11 +50,13 @@ func TestServerCommandConfinesTheNetwork(t *testing.T) {
 
 	script := fmt.Sprintf(`curl -sS -m 20 http://allowed.test:%[1]d/allowed; echo
 curl -sS -m 20 -o /dev/null -w 'denied=%%{http_code}\n' http://denied.test:%[1]d/
-curl -sS -m 5 --noproxy '*' http://127.0.0.1:%[1]d/direct && echo REACHED || echo BLOCKED`, port)
+curl -sS -m 5 --noproxy '*' http://127.0.0.1:%[1]d/direct && echo REACHED || echo BLOCKED
+echo "bus=${DBUS_SESSION_BUS_ADDRESS:-none} rundirs=$(ls /run/user 2>/dev/null | wc -l | tr -d ' ')"`, port)
 	var log eventLog
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd, err := s.ServerCommand(ctx, "probe", []string{"/bin/sh", "-c", script}, []string{"PATH=/usr/bin:/bin"}, log.record)
+	cmd, err := s.ServerCommand(ctx, "probe", []string{"/bin/sh", "-c", script},
+		[]string{"PATH=/usr/bin:/bin", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1/bus"}, log.record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +71,9 @@ curl -sS -m 5 --noproxy '*' http://127.0.0.1:%[1]d/direct && echo REACHED || ech
 	if !strings.Contains(got, "BLOCKED") || strings.Contains(got, "REACHED") {
 		t.Fatalf("ESCAPE: a direct socket got out of a confined server:\n%s", got)
 	}
+	if !strings.Contains(got, "bus=none rundirs=0") {
+		t.Fatalf("the session bus was handed to the server:\n%s", got)
+	}
 	log.waitFor(t, "the allowed request", func(e map[string]any) bool {
 		return e["host"] == "allowed.test" && e["decision"] == "allow" && e["call_id"] == ServerKey("probe")
 	})
@@ -82,5 +87,20 @@ func TestServerCommandNeedsTheAllowlist(t *testing.T) {
 	s := NewProcess(DefaultPolicy(t.TempDir()))
 	if _, err := s.ServerCommand(context.Background(), "x", []string{"true"}, nil, nil); err == nil {
 		t.Fatal("a server was given a command with no egress policy")
+	}
+}
+
+// The macOS profile keeps LaunchServices from the server, which would open a
+// URL or an app outside the sandbox for it.
+func TestServerProfileDeniesLaunchServices(t *testing.T) {
+	p := serverProfile(4000)
+	for _, want := range []string{`(deny network*)`, `(remote ip "localhost:4000")`, `"com.apple.coreservices.launchservicesd"`, `"com.apple.lsd."`} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile lacks %s:\n%s", want, p)
+		}
+	}
+	env := serverEnv([]string{"PATH=/bin", "DBUS_SESSION_BUS_ADDRESS=x", "SSH_AUTH_SOCK=y", "https_proxy=z", "TOKEN=t"})
+	if strings.Join(env, " ") != "PATH=/bin TOKEN=t" {
+		t.Errorf("server env %v", env)
 	}
 }

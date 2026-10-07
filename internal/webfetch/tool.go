@@ -89,8 +89,9 @@ type Tool struct {
 	// permits nothing internal.
 	lookup func(ctx context.Context, host string) ([]netip.Addr, error)
 	permit func(netip.AddrPort) bool
-	// guard is the egress guard tests use; nil is the one installed.
-	guard *egress.Guard
+	// Guard is the egress guard of the tool set, egress.Unguarded outside
+	// the allowlist; nil uses the call's.
+	Guard *egress.Guard
 }
 
 func (*Tool) Name() string  { return "web_fetch" }
@@ -103,7 +104,7 @@ func (*Tool) FixedArgs() {}
 func (t *Tool) BindStore(v *secrets.Store) tools.Tool {
 	// Every field but the call count, which is the copy's own.
 	return &Tool{AllowedHosts: t.AllowedHosts, Secrets: v.LoadRedactor, MaxBytes: t.MaxBytes,
-		MaxChars: t.MaxChars, Timeout: t.Timeout, lookup: t.lookup, permit: t.permit, guard: t.guard}
+		MaxChars: t.MaxChars, Timeout: t.Timeout, lookup: t.lookup, permit: t.permit, Guard: t.Guard}
 }
 
 func (t *Tool) Description() string {
@@ -235,7 +236,7 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		// No proxy from the environment, so the address check sees where the
 		// connection goes; under the allowlist this tool's check follows the guard's.
 		Transport: &egress.Transport{
-			Kind: egress.KindWebFetch, Check: t.addrCheck, Guard: t.guard,
+			Kind: egress.KindWebFetch, Check: t.addrCheck, Guard: t.Guard,
 			Base: &http.Transport{
 				DialContext:            t.dial,
 				DisableKeepAlives:      true,

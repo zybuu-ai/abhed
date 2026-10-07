@@ -107,4 +107,12 @@ func TestStdioServerDecisionsGoToTheCaller(t *testing.T) {
 	if len(recs["B"]) != 1 || recs["B"][0]["host"] != "d" || recs["B"][0]["call_id"] != "" || recs["B"][0]["session"] != "B" {
 		t.Fatalf("B: %v", recs["B"])
 	}
+	// Two calls of one session: its record, naming neither call.
+	end1, end2 := s.begin("srv", caller("A", "a2")), s.begin("srv", caller("A", "a3"))
+	_ = rec(egress.EventName, map[string]any{"host": "e"})
+	end1()
+	end2()
+	if len(recs["A"]) != 2 || recs["A"][1]["host"] != "e" || recs["A"][1]["call_id"] != "" {
+		t.Fatalf("A: %v", recs["A"])
+	}
 }

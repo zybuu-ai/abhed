@@ -208,6 +208,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		SkillRoots:    toolset.SkillRoots(cfg),
 		Agents:        set.Agents,
 		Gateway:       set.Gateway,
+		Egress:        set.Guard(),
 		Index:         set.Index,
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,

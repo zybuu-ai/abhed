@@ -69,8 +69,8 @@ func (s *serverCallers) begin(server string, c egress.Caller) func() {
 	}
 }
 
-// pick is the caller a decision of server's is recorded for: the call in
-// flight, or with none the latest; calls of two sessions at once name none.
+// pick is who a decision of server's is recorded for: the call in flight
+// (no call id if several), or the latest; two sessions at once name none.
 func (s *serverCallers) pick(server string) (egress.Caller, bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,14 +81,19 @@ func (s *serverCallers) pick(server string) (egress.Caller, bool, bool) {
 	if len(cs.inflight) == 0 {
 		return cs.last, false, true
 	}
-	var one *egress.Caller
+	var one egress.Caller
+	first := true
 	for c := range cs.inflight {
-		if one != nil && one.Session != c.Session {
+		switch {
+		case first:
+			one, first = *c, false
+		case one.Session != c.Session:
 			return egress.Caller{}, false, false
+		case one.CallID != c.CallID:
+			one.CallID = "" // two calls of the session: neither is named
 		}
-		one = c
 	}
-	return *one, true, true
+	return one, true, true
 }
 
 // recordFor writes a decision of server's proxy to the record of its caller;

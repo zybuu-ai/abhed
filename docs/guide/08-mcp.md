@@ -48,17 +48,30 @@ With `sandbox.network: "allowlist"` (see
   decided by the rules and recorded as an `egress.decision` event with
   `kind: "mcp"`, in the record of the session whose tool call made it. A
   server no rule allows does not connect.
-- **Stdio servers** start with their network confined, on the process tier
-  only: on macOS a Seatbelt profile allows nothing but the server's own
-  egress proxy, and on Linux the server runs in its own network namespace
-  (bubblewrap) behind a relay to that proxy. The server is given
-  `HTTP_PROXY` and `HTTPS_PROXY` for it; a client that ignores them has no
-  route out. Only the network is confined: the server still reads and
-  writes what your user can, but cannot reach services on your machine's
-  loopback other than its proxy.
+- **Stdio servers** start with their direct network sockets confined, on
+  the process tier only. On macOS a Seatbelt profile allows no network use
+  but the server's own egress proxy and denies it LaunchServices. On Linux
+  the server runs in its own network and process namespaces (bubblewrap)
+  behind a relay to that proxy, with the session bus, `/run/user`, the
+  container engines' sockets and a private temporary folder hidden, and
+  without `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK` and similar
+  variables. It is given `HTTP_PROXY` and `HTTPS_PROXY` for its proxy.
   On Windows, and on any surface with no process-tier sandbox to confine
   it, a stdio server is not started under the allowlist; the warning at
   start-up and `/mcp` give the reason.
+
+**This confines a server's direct network use, not a hostile server.** Add
+only servers you trust, as before. What remains open to a server that
+means to get out:
+
+- **Its files are not confined.** It reads and writes what your user can,
+  so it can plant a LaunchAgent, a systemd user unit or a line in a shell
+  rc file that runs later, outside any sandbox, with your network.
+- **Unix sockets it can reach.** On Linux, any AF_UNIX socket in a folder
+  that is not hidden (under your home, `/var/tmp`, `/var/run/postgresql`,
+  and so on) can be connected to, and whatever listens there acts for it.
+  On macOS the profile refuses AF_UNIX connections, but `launchctl` can
+  still read launchd's state.
 
 A stdio server's decisions go to the record of the session whose call to
 it is in flight, with that call's id, or with none in flight, the session

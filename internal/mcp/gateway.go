@@ -70,7 +70,10 @@ type Gateway struct {
 	// confined; MustConfine refuses a stdio server when it cannot be.
 	Confine     Launcher
 	MustConfine bool
-	calls       serverCallers
+	// Egress is the tool set's egress guard for HTTP servers, egress.Unguarded
+	// outside the allowlist; nil uses the request's.
+	Egress *egress.Guard
+	calls  serverCallers
 }
 
 func NewGateway() *Gateway {
@@ -134,7 +137,7 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 				return fmt.Errorf("header %s: environment variable %s is not set", k, envVar)
 			}
 		}
-		transport, err = NewHTTPTransport(life, HTTPConfig{URL: cfg.URL, Headers: headers})
+		transport, err = NewHTTPTransport(life, HTTPConfig{URL: cfg.URL, Headers: headers, Egress: g.Egress})
 	} else {
 		transport, err = g.startStdio(life, cfg)
 	}

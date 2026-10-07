@@ -34,8 +34,8 @@ func TestWebFetchUnderTheAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool.guard = egress.NewGuard(egress.GuardOptions{Policy: pol, Resolve: tool.lookup})
-	t.Cleanup(tool.guard.Close)
+	tool.Guard = egress.NewGuard(egress.GuardOptions{Policy: pol, Resolve: tool.lookup})
+	t.Cleanup(tool.Guard.Close)
 
 	var got []map[string]any
 	ctx := egress.WithCaller(context.Background(), egress.Caller{Session: "s1", CallID: "call-f",

@@ -36,6 +36,23 @@ type Caller struct {
 	CallID  string
 	// Record writes one event to the session's record; nil outside a session.
 	Record func(event string, payload map[string]any) error
+	// Guard is the guard of the tool set the request is made for, Unguarded
+	// for a set outside the allowlist; nil names none.
+	Guard *Guard
+}
+
+// Unguarded marks a tool set outside the allowlist: its requests go out as
+// its clients send them.
+var Unguarded = &Guard{}
+
+// WithGuard names g, the guard of the tool set ctx's requests are made for.
+func WithGuard(ctx context.Context, g *Guard) context.Context {
+	if g == nil {
+		return ctx
+	}
+	c := CallerOf(ctx)
+	c.Guard = g
+	return WithCaller(ctx, c)
 }
 
 type callerKey struct{}
@@ -73,6 +90,7 @@ type Guard struct {
 
 	mu       sync.Mutex
 	sessions map[string]*ownSession
+	pools    map[*Transport]*http.Transport // each client's pool as this guard sends it
 	closed   bool
 	done     chan struct{}
 	wg       sync.WaitGroup
@@ -137,6 +155,9 @@ func (g *Guard) sweep() {
 
 // EndSession records what the session id's limiter still counts and lets it go.
 func (g *Guard) EndSession(id string) {
+	if g == Unguarded {
+		return
+	}
 	g.mu.Lock()
 	s := g.sessions[id]
 	delete(g.sessions, id)
@@ -146,15 +167,23 @@ func (g *Guard) EndSession(id string) {
 	}
 }
 
-// Close records what every session's limiter still counts; requests after
-// it are still judged, and recorded one by one.
+// Close records what every session's limiter still counts and drops its
+// pools; requests after it are still judged, recorded one by one.
 func (g *Guard) Close() {
+	if g == Unguarded {
+		return
+	}
 	g.once.Do(func() {
 		g.mu.Lock()
 		g.closed = true
 		all := g.sessions
 		g.sessions = map[string]*ownSession{}
+		pools := g.pools
+		g.pools = nil
 		g.mu.Unlock()
+		for _, c := range pools {
+			c.CloseIdleConnections()
+		}
 		close(g.done)
 		g.wg.Wait()
 		for _, s := range all {
@@ -233,14 +262,14 @@ func (g *Guard) record(c Caller, e Event) {
 	writeOwn(c.Session, c.Record, e)
 }
 
-// installed are the guards Install put in force, the latest last.
+// installed are the guards Install put in force, for requests that name none.
 var installed struct {
 	mu   sync.Mutex
 	list []*Guard
 }
 
-// Install puts g in force for every Transport that names no guard, until
-// the returned function is called.
+// Install puts g in force for requests that name no guard, until the
+// returned function is called: the fallback of a process with one tool set.
 func Install(g *Guard) (uninstall func()) {
 	installed.mu.Lock()
 	installed.list = append(installed.list, g)
@@ -260,14 +289,22 @@ func Install(g *Guard) (uninstall func()) {
 	}
 }
 
-// Installed is the guard in force, or nil outside the allowlist.
-func Installed() *Guard {
+// errAmbiguous is a request that names no guard while several are in force.
+var errAmbiguous = errors.New("abhed egress: the request names no tool set's egress guard and several are in force, so it is refused")
+
+// Installed is the guard in force for a request that names none: nil with
+// none, and errAmbiguous with more than one.
+func Installed() (*Guard, error) {
 	installed.mu.Lock()
 	defer installed.mu.Unlock()
-	if n := len(installed.list); n > 0 {
-		return installed.list[n-1]
+	var one *Guard
+	for _, g := range installed.list {
+		if one != nil && g != one {
+			return nil, errAmbiguous
+		}
+		one = g
 	}
-	return nil
+	return one, nil
 }
 
 // DeniedError is one of Abhed's own requests the egress policy refused.
@@ -295,11 +332,9 @@ type Transport struct {
 	Model func() []string
 	// Check is the client's own address check, applied after the policy's.
 	Check func(host string, a netip.AddrPort) error
-	// Guard is the guard to use; nil is the one installed.
+	// Guard is the guard of the client's tool set, Unguarded outside the
+	// allowlist; nil uses the request's, then the one installed.
 	Guard *Guard
-
-	mu      sync.Mutex
-	guarded map[*Guard]*http.Transport
 }
 
 func (t *Transport) base() http.RoundTripper {
@@ -309,40 +344,47 @@ func (t *Transport) base() http.RoundTripper {
 	return http.DefaultTransport
 }
 
-// RoundTrip sends req, judged by the guard in force if there is one.
+// RoundTrip sends req, judged by its tool set's guard: t's, the request's,
+// or the one installed. Several installed and none named refuses it.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	g := t.Guard
 	if g == nil {
-		g = Installed()
+		g = CallerOf(req.Context()).Guard
 	}
 	if g == nil {
+		var err error
+		if g, err = Installed(); err != nil {
+			closeBody(req)
+			return nil, err
+		}
+	}
+	if g == nil || g == Unguarded {
 		return t.base().RoundTrip(req)
 	}
 	return g.roundTrip(t, req)
 }
 
-// CloseIdleConnections closes the idle connections of every pool t holds.
+// closeBody closes a request's body that will not be sent, as a RoundTripper must.
+func closeBody(req *http.Request) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+}
+
+// CloseIdleConnections closes the idle connections of t's own pool.
 func (t *Transport) CloseIdleConnections() {
 	if c, ok := t.base().(interface{ CloseIdleConnections() }); ok {
 		c.CloseIdleConnections()
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for _, c := range t.guarded {
-		c.CloseIdleConnections()
-	}
 }
 
-// forGuard is Base as g sends through it: no proxy from the environment, so
-// the address check sees where the connection goes, and g's dialer.
-func (t *Transport) forGuard(g *Guard) *http.Transport {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if c := t.guarded[g]; c != nil {
+// pool is t's Base with g's dialer and no proxy from the environment, so the
+// address check sees where it goes; a closed guard keeps no pool.
+func (g *Guard) pool(t *Transport) *http.Transport {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if c := g.pools[t]; c != nil {
 		return c
-	}
-	if t.guarded == nil {
-		t.guarded = map[*Guard]*http.Transport{}
 	}
 	var c *http.Transport
 	if b, ok := t.base().(*http.Transport); ok {
@@ -353,7 +395,14 @@ func (t *Transport) forGuard(g *Guard) *http.Transport {
 	c.Proxy = nil
 	c.DialContext = g.dial
 	c.DialTLSContext = nil
-	t.guarded[g] = c
+	if g.closed {
+		c.DisableKeepAlives = true
+		return c
+	}
+	if g.pools == nil {
+		g.pools = map[*Transport]*http.Transport{}
+	}
+	g.pools[t] = c
 	return c
 }
 
@@ -557,6 +606,7 @@ func (g *Guard) roundTrip(t *Transport, req *http.Request) (*http.Response, erro
 	host, port, path, err := ownTarget(req.URL)
 	if err != nil {
 		ev.Host, ev.Decision, ev.Rule, ev.Reason = req.URL.Hostname(), Deny, "parse", err.Error()
+		closeBody(req)
 		g.record(c, ev)
 		return nil, &DeniedError{Host: ev.Host, Rule: ev.Rule, Reason: ev.Reason}
 	}
@@ -564,6 +614,7 @@ func (g *Guard) roundTrip(t *Transport, req *http.Request) (*http.Response, erro
 	v, model := g.decide(t, req.URL, host, port, req.Method, path)
 	ev.Decision, ev.Rule, ev.Reason = v.Decision, v.Rule, v.Reason
 	if !v.Allowed() {
+		closeBody(req)
 		g.record(c, ev)
 		return nil, &DeniedError{Host: host, Port: port, Rule: v.Rule, Reason: v.Reason}
 	}
@@ -573,7 +624,7 @@ func (g *Guard) roundTrip(t *Transport, req *http.Request) (*http.Response, erro
 	ov := &ownVerdict{host: host, allowIPs: v.AllowIPs, anyAddr: model, check: t.Check}
 	ctx := context.WithValue(req.Context(), verdictKey{}, ov)
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: ov.gotConn})
-	resp, err := t.forGuard(g).RoundTrip(req.WithContext(ctx))
+	resp, err := g.pool(t).RoundTrip(req.WithContext(ctx))
 	ov.mu.Lock()
 	refused, failed := ov.refused, ov.failed
 	ev.IP = ov.ip

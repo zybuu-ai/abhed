@@ -56,6 +56,9 @@ type Config struct {
 	// UserAgent identifies Abhed to upstream services. Some refuse an empty one.
 	UserAgent  string
 	HTTPClient *http.Client
+	// Egress is the tool set's egress guard for the default client,
+	// egress.Unguarded outside the allowlist; nil uses the call's.
+	Egress *egress.Guard
 }
 
 func (c *Config) applyDefaults() {
@@ -73,7 +76,7 @@ func (c *Config) applyDefaults() {
 	}
 	if c.HTTPClient == nil {
 		// Judged and recorded by the egress guard under the allowlist.
-		c.HTTPClient = &http.Client{Timeout: c.Timeout, Transport: &egress.Transport{Kind: egress.KindWebSearch}}
+		c.HTTPClient = &http.Client{Timeout: c.Timeout, Transport: &egress.Transport{Kind: egress.KindWebSearch, Guard: c.Egress}}
 	}
 }
 

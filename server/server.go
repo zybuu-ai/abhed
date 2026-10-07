@@ -27,6 +27,7 @@ import (
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/mcp"
@@ -259,6 +260,9 @@ type Options struct {
 	SkillRegistry *skills.Registry
 	// Gateway holds the MCP connections, so a server can be added at runtime.
 	Gateway *mcp.Gateway
+	// Egress is the tool set's egress guard, egress.Unguarded outside the
+	// allowlist; each session's loop takes it.
+	Egress *egress.Guard
 	// Extensions are the running extensions: each session's policy carries
 	// their veto, and compaction asks them for a summary. Nil runs none.
 	Extensions *extension.Host
@@ -1497,6 +1501,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// The prompt, loop settings and budget as the CLI builds them. The prompt
 	// is set once the session's own tools are bound, so it names only those.
 	cfg := toolset.LoopConfig(s.opts.Config, "")
+	cfg.Egress = s.opts.Egress
 	toolset.Police(s.opts.Extensions, pol, sessionID)
 
 	var approver agent.Approver = live

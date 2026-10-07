@@ -152,8 +152,10 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	// routes through the policy engine, since Abhed cannot know what it does.
 	if o.Parts&MCP != 0 {
 		s.Gateway = mcp.NewGateway()
+		s.Gateway.Egress = s.Guard()
 		ConfineMCP(s.Gateway, cfg, o.Sandbox)
-		for _, err := range s.Gateway.Connect(ctx, MCPConfigs(cfg)) {
+		// The servers' life: their start-up and streams are this set's requests.
+		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {
 			warn("%v", err)
 		}
 		for _, t := range s.Gateway.Tools() {
@@ -195,9 +197,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	var fetch *webfetch.Tool
 	if o.Parts&WebFetch != 0 {
 		fetch = WebFetchTool(cfg, o.Vault)
+		if fetch != nil {
+			fetch.Guard = s.Guard()
+		}
 	}
 	if o.Parts&WebSearch != 0 {
-		if t, err := WebSearchTool(cfg, o.Vault); err != nil {
+		if t, err := WebSearchTool(cfg, o.Vault, s.Guard()); err != nil {
 			warn("web search disabled: %v", err)
 		} else if t != nil {
 			// Results point at web_fetch only where it is offered.
@@ -244,6 +249,15 @@ func (s *Set) CloseEgress() {
 	if s != nil && s.Egress != nil {
 		s.Egress.Close()
 	}
+}
+
+// Guard is the set's egress guard, or egress.Unguarded outside the
+// allowlist; a loop's Config.Egress takes it.
+func (s *Set) Guard() *egress.Guard {
+	if s == nil || s.Egress == nil {
+		return egress.Unguarded
+	}
+	return s.Egress
 }
 
 // EndSession records what the egress guard still counts for session id.

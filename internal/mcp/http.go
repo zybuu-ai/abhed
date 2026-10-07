@@ -69,6 +69,8 @@ type HTTPConfig struct {
 	Headers map[string]string
 	Timeout time.Duration
 	Client  *http.Client
+	// Egress is the tool set's egress guard for the default client; nil uses the request's.
+	Egress *egress.Guard
 }
 
 // NewHTTPTransport connects to a remote MCP server.
@@ -88,10 +90,11 @@ func NewHTTPTransport(ctx context.Context, cfg HTTPConfig) (*HTTPTransport, erro
 			timeout = 120 * time.Second
 		}
 		// Judged and recorded by the egress guard under the allowlist.
-		client = &http.Client{Timeout: timeout, Transport: &egress.Transport{Kind: egress.KindMCP}}
+		client = &http.Client{Timeout: timeout, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: cfg.Egress}}
 	}
 
-	streamCtx, cancel := context.WithCancel(context.Background())
+	// Detached from ctx's end, but not its values: the stream keeps its set's guard.
+	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	t := &HTTPTransport{
 		url: cfg.URL, headers: cfg.Headers, client: client,
 		postURL:  cfg.URL,

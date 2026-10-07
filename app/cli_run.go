@@ -215,6 +215,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 
 	// The prompt is set once the tools are known, so it names only those there.
 	loopCfg := toolset.LoopConfig(cfg, "")
+	loopCfg.Egress = set.Guard()
 
 	// Subagents share the parent's budget, so a fan-out cannot multiply spend
 	// invisibly. No Approver: a subagent answers to the approver of the loop
