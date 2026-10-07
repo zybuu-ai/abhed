@@ -392,9 +392,9 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 	if r.Dropped > 0 || r.Skipped > 0 {
 		skipped += int64(len(sh.carry) + len(sh.gapCarry))
 		sh.carry, sh.gapCarry = "", ""
-		text, skipped = sh.skipAfterGap(red, hold, text, skipped, final, quiet)
+		text, skipped = sh.skipAfterGap(red, hold, text, skipped, quiet)
 	} else if sh.gapCarry != "" {
-		text, skipped = sh.skipAfterGap(red, hold, text, skipped, final, quiet)
+		text, skipped = sh.skipAfterGap(red, hold, text, skipped, quiet)
 	}
 	raw := sh.carry + text
 	sh.carry = ""
@@ -421,7 +421,7 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 // whole secret it would cut. It waits for twice the hold, so a value across
 // the skip point is whole when it is checked; a shell gone quiet or ended
 // decides with what there is. The wait depends only on lengths.
-func (sh *shellState) skipAfterGap(red Redactor, hold int, text string, skipped int64, final, quiet bool) (string, int64) {
+func (sh *shellState) skipAfterGap(red Redactor, hold int, text string, skipped int64, quiet bool) (string, int64) {
 	all := sh.gapCarry + text
 	sh.gapCarry = ""
 	switch {
