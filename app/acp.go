@@ -572,9 +572,14 @@ func (c *acpConn) requestedTrust(raw map[string]json.RawMessage) (config.TrustCh
 	case string(config.TrustRefused):
 		return config.TrustRefused, nil
 	}
+	// Name the key the client sent, the current one or the legacy one.
+	key := acpMetaKey
+	if _, ok := raw[acpMetaKey]; !ok {
+		key = acpLegacyMetaKey
+	}
 	// Trust is granted by the person, with abhed trust or the flag, never over the wire.
 	return "", refusal(errParams, `_meta[%q].trust may only be "untrusted"; `+
-		"trust a workspace with `abhed trust grant` or -trust-workspace", acpMetaKey)
+		"trust a workspace with `abhed trust grant` or -trust-workspace", key)
 }
 
 // openOptions say how a session is opened: new, or continued from the record.
