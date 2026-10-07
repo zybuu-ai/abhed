@@ -535,12 +535,16 @@ The `write` and `edit` tools also refuse anything inside a `.git` folder, and
 a `.git` file, in any case and through a link, in every mode: a hook or a
 config line written there runs a program at the next git command, Abhed's
 own or yours. Git commands still change the repository. Commands are not
-held to this by the file tools. Abhed Studio's sessions also keep out of
-their commands' reach what git reads in a git folder as configuration or
-follows elsewhere: `config`, `config.worktree`, `hooks`, `commondir`,
-`gitdir`, `info/attributes` and `objects/info/alternates`, in every git
-folder, its linked worktrees' (`.git/worktrees/*`) and its submodules'
-(`.git/modules/**`).
+held to this by the file tools. Abhed Studio's sessions, and every session
+`abhed serve` runs (the web IDE and the API), also keep out of their
+commands' reach what git reads in a git folder as configuration or follows
+elsewhere: `config`, `config.worktree`, `hooks`, `commondir`, `gitdir`,
+`info/attributes` and `objects/info/alternates`, in every git folder, its
+linked worktrees' (`.git/worktrees/*`) and its submodules'
+(`.git/modules/**`). In a served session that covers the agent's commands,
+its background shells, `!` commands and the workbench terminal, in both of
+its modes. The terminal CLI, `abhed -p` and `abhed rpc` do not hold these
+files; there the sandbox tier is what contains a planted hook.
 
 On macOS this is by pattern, at any depth and for repositories and files
 made later. The folders holding those files (`modules` and each folder in

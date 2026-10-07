@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -11,24 +10,10 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
-	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/server"
 )
-
-type doneAdapter struct{}
-
-func (doneAdapter) Name() string                           { return "done" }
-func (doneAdapter) Profile() model.Profile                 { return model.Profile{Name: "done", ContextWindow: 32000} }
-func (doneAdapter) CountTokens(model.Request) (int, error) { return 10, nil }
-func (doneAdapter) Complete(context.Context, model.Request) (<-chan model.Chunk, error) {
-	ch := make(chan model.Chunk, 2)
-	ch <- model.Chunk{Type: model.ChunkText, Text: "done"}
-	ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 10}}
-	close(ch)
-	return ch, nil
-}
 
 // Served sessions each run their commands under a fence of their own, in
 // its mount mode, with a cgroup of the session's: the record of each holds
@@ -51,7 +36,16 @@ func TestServeRunsEachSessionUnderItsOwnFence(t *testing.T) {
 	cfg.Auth.Mode = "proxy"
 	cfg.Sandbox.Tier = string(sandbox.TierFence)
 	cfg.Sandbox.MaxProcs, cfg.Sandbox.MaxMemoryMB = 128, 512
-	sb, err := buildSandbox(cfg, ws)
+	// Each session's fence holds git's files, as serve builds it.
+	if err := os.MkdirAll(filepath.Join(ws, ".git", "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for f, data := range map[string]string{"HEAD": "ref: refs/heads/main\n", "config": "[core]\n"} {
+		if err := os.WriteFile(filepath.Join(ws, ".git", f), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, sb, _, err := serveSandbox(cfg, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +86,7 @@ func TestServeRunsEachSessionUnderItsOwnFence(t *testing.T) {
 			}
 		}
 		eventually(func() bool { return do("GET", "/v1/sessions/"+id+"/replay", "").Code == 200 })
-		rec = do("POST", "/v1/sessions/"+id+"/exec", `{"command":"cat .abhed/users.json; echo planted > .abhed/users.json; echo ran"}`)
+		rec = do("POST", "/v1/sessions/"+id+"/exec", `{"command":"cat .abhed/users.json; echo planted > .abhed/users.json; echo planted > .git/config; echo planted > .git/hooks/post-checkout; echo ran"}`)
 		var out struct {
 			Output string `json:"output"`
 		}
@@ -130,5 +124,11 @@ func TestServeRunsEachSessionUnderItsOwnFence(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(ws, ".abhed", "users.json")); !strings.Contains(string(b), "owner") {
 		t.Fatalf("users.json changed: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, ".git", "config")); string(b) != "[core]\n" {
+		t.Errorf("a session's command wrote .git/config: %q", b)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, ".git", "hooks", "post-checkout")); err == nil {
+		t.Error("a session's command made a hook")
 	}
 }

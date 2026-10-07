@@ -16,7 +16,8 @@ the network off. As root the tier is also refused where it cannot mount a
 private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
 On the macOS process tier a command can no longer signal a process an earlier
 command left running; use `run_in_background` and `shell_kill`. With git
-protection on (Abhed Studio's sessions), git inside the sandbox fails at `git
+protection on (Abhed Studio's sessions and, new here, every session `abhed
+serve` runs), git inside the sandbox fails at `git
 submodule update` on every tier, at `git worktree remove` on Linux and macOS,
 and on macOS also at `git worktree add` and at `git submodule add` or `update
 --init` for a submodule not yet checked out; run those outside Abhed. ACP
@@ -81,8 +82,13 @@ in `secretstore` no longer compiles; see Go API.
   git at configuration and hooks of its own, or a submodule's config and
   hooks under `.git/modules`, or `config.worktree`, and the next `git
   status` run on the host (yours, an editor's, or one a tool runs) ran the
-  program they named. Commands are now kept from writing everything git
-  reads in a git folder as configuration or follows elsewhere (`config`,
+  program they named. Sessions `abhed serve` runs (the web IDE and the API)
+  had no git protection at all: the agent's commands, `!` commands and the
+  workbench terminal, in lines and as a shell, could set `core.fsmonitor` in
+  `.git/config`, write hooks, `commondir` and `info/attributes`, or move
+  `.git/hooks` aside. In Studio's and served sessions, commands are now kept
+  from writing everything git reads in a git folder as configuration or
+  follows elsewhere (`config`,
   `config.worktree`, `hooks`, `commondir`, `gitdir`, `info/attributes`,
   `objects/info/alternates`), in linked worktrees' and submodules' git
   folders too: on macOS by pattern, including files not made yet; under

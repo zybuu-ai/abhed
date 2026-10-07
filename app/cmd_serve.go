@@ -50,7 +50,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 
-	sb, err := buildSandbox(cfg, workspace)
+	cfg, sb, bash, err := serveSandbox(cfg, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -68,12 +68,6 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 	vault := openVault()
-	bash := tools.Bash{Sandbox: sb.Command,
-		Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
-	// The workbench terminal's shell runs under the same backend as the agent's commands.
-	if in, ok := sb.(sandbox.Interactive); ok {
-		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
-	}
 	// Terminal containers a crashed run of this server left behind.
 	if sw, ok := sb.(interface{ SweepShells() }); ok {
 		go sw.SweepShells()
@@ -283,6 +277,24 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	return 0
+}
+
+// serveSandbox builds the sandbox and bash every served session's commands run
+// in, from cfg as serve uses it from then on. Served sessions hold git's files,
+// as Studio's do: a planted hook or fsmonitor would run at the person's next git command.
+func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.Sandbox, tools.Bash, error) {
+	cfg.Sandbox.ProtectGit = true
+	sb, err := buildSandbox(cfg, workspace)
+	if err != nil {
+		return cfg, nil, tools.Bash{}, err
+	}
+	bash := tools.Bash{Sandbox: sb.Command,
+		Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
+	// The workbench terminal's shell runs under the same backend as the agent's commands.
+	if in, ok := sb.(sandbox.Interactive); ok {
+		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+	}
+	return cfg, sb, bash, nil
 }
 
 // fanIn joins taps into one, or none, so the server never wraps its store
