@@ -200,20 +200,13 @@ func runProbeScript(t *testing.T, fakeFind string) string {
 	return string(out)
 }
 
-// The /proc scan fails closed when find fails or silently matches nothing,
-// and its positive control is reported by a working find.
+// The /proc scan fails closed when find fails or silently matches nothing. The
+// real scan is covered as root through Available in every ProcessSandbox test.
 func TestCapProbeRootScriptFailsClosed(t *testing.T) {
 	if out := runProbeScript(t, "exit 1"); strings.Contains(out, "PROC_SCANNED") || checkCapProbe(out, true) == "" {
 		t.Fatalf("a failing find passed the scan:\n%s", out)
 	}
 	if out := runProbeScript(t, "exit 0"); strings.Contains(out, "PROC_CONTROL") || checkCapProbe(out, true) == "" {
 		t.Fatalf("a find that matches nothing passed the scan:\n%s", out)
-	}
-	// The real scan runs only as root, where every /proc dir is readable.
-	if _, err := exec.LookPath("find"); err != nil || !rootCaps() {
-		return
-	}
-	if out := runProbeScript(t, ""); !strings.Contains(out, "PROC_CONTROL") || !strings.Contains(out, "PROC_SCANNED") {
-		t.Fatalf("a working find did not report the control and finish:\n%s", out)
 	}
 }

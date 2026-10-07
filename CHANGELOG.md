@@ -7,11 +7,13 @@ All notable changes to Abhed are recorded here. The format follows
 ## [Unreleased]
 
 **Before you upgrade.** If Abhed runs as root on Linux with
-`sandbox.allow_network` on and no container runtime, the `process` tier is now
-refused: install Docker or Podman for the `container` tier, run Abhed as an
-ordinary user, or turn the network off. As root it also refuses to start where
-it cannot mount a private `/proc` and `/dev` or finds a writable `/proc` file it
-does not cover.
+`sandbox.allow_network` on, the `process` tier is now refused. Abhed picks the
+`vm` or `container` tier when gVisor or a container runtime is installed;
+otherwise it stops with an error naming the refused tier, unless
+`sandbox.min_tier` is `none` (then commands run unsandboxed, as that setting
+already allows). To keep the process tier, run Abhed as an ordinary user or turn
+the network off. As root the tier is also refused where it cannot mount a
+private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
 
 ### Security
 
