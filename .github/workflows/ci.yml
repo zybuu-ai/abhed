@@ -128,7 +128,8 @@ jobs:
       # cannot unshare a network namespace for the statusline; the sandbox
       # job below runs those tests and lets none skip. "fence" is the fence
       # tier's end-to-end tests, which need a delegated cgroup v2 user scope
-      # this runner lacks; the fence job below runs them and lets none skip.
+      # this runner lacks; the fence job below runs them all but the
+      # network-on test, which only the fence-network job runs.
       - name: End-to-end CLI tests actually ran
         env:
           ABHED_CLITEST_PENDING: "editor netns fence"
@@ -145,7 +146,7 @@ jobs:
       # for any other reason means a boundary stopped being checked, so the
       # build fails rather than let the count drift.
       # The fence tier's kernel tests need a delegated cgroup v2 user scope
-      # this runner lacks; the fence job below runs them and lets none skip.
+      # this runner lacks; the fence job below runs them, and none may skip there.
       - name: Sandbox boundary tests actually ran
         run: |
           set -euo pipefail
@@ -321,6 +322,13 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run-network "$FENCE_DIR"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fence-network-logs
+          path: |
+            ${{ env.FENCE_DIR }}/*.log
+            ${{ env.FENCE_DIR }}/*.json
 
   # Case-folding path tests skip on Linux; macOS folds case, so a skip here
   # means the check stopped running, and it fails the build.

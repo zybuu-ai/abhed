@@ -6,28 +6,33 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 mod=github.com/zybuu-ai/abhed
 
-# name|package|-run pattern. Fence packages run whole, so a new one is covered.
+# suites PKGS prints name|package|-run pattern. Fence packages run whole, so
+# a new one is covered.
 suites() {
-	(cd "$root" && go list ./internal/fence/...) | while read -r pkg; do
-		echo "fence-${pkg##*/}|$pkg|."
-	done
+	local pkg
+	for pkg in $1; do echo "fence-${pkg##*/}|$pkg|."; done
 	echo "sandbox|$mod/internal/sandbox|Fence|Mounts|Launch|Select"
 	echo "clitest|$mod/internal/clitest|Fence"
 }
 
 build() {
-	local dir=$1 all name pkg pattern files
+	local dir=$1 fence all name pkg pattern tests files
 	# The AppArmor profile trusts what is under DIR, so it must be new and ours.
 	[ ! -e "$dir" ] || { echo "$dir already exists"; return 1; }
 	install -d -m 0755 "$dir"
 	[ -O "$dir" ] || { echo "$dir is not owned by $(id -un)"; return 1; }
 	cd "$root"
 	python3 scripts/ci/fence-gated-tests.py --self-test
-	all=$(suites)
+	# On its own, so a failed go list stops the build rather than drop suites.
+	fence=$(go list ./internal/fence/...)
+	[ -n "$fence" ] || { echo "go list found no fence package"; return 1; }
+	all=$(suites "$fence")
 	: > "$dir/suites"
 	while IFS='|' read -r -u 3 name pkg pattern; do
-		files=$(go list -f '{{range .TestGoFiles}}{{$.Dir}}/{{.}} {{end}}{{range .XTestGoFiles}}{{$.Dir}}/{{.}} {{end}}' "$pkg")
-		[ -n "$files" ] || { echo "$pkg has no tests for this platform; nothing to run"; continue; }
+		tests=$(go list -f '{{range .TestGoFiles}}{{$.Dir}}/{{.}} {{end}}{{range .XTestGoFiles}}{{$.Dir}}/{{.}} {{end}}' "$pkg")
+		[ -n "$tests" ] || { echo "$pkg has no tests for this platform; nothing to run"; continue; }
+		# The package's own code too: a gate helper may live outside the tests.
+		files="$(go list -f '{{range .GoFiles}}{{$.Dir}}/{{.}} {{end}}' "$pkg") $tests"
 		go test -c -o "$dir/$name.test" "$pkg"
 		[ -x "$dir/$name.test" ] || { echo "$pkg has tests but built no binary"; return 1; }
 		# Gated by what the tests check, not by name: run must list every one.
@@ -103,6 +108,10 @@ passed_all() {
 	local log=$dir/$name.log
 	while read -r t; do
 		case $t in Test*) ;; *) continue ;; esac
+		if grep -q -- "--- SKIP: $t/" "$log"; then
+			echo "a subtest of $t skipped with ABHED_REQUIRE_FENCE=1:"; grep -- "--- SKIP: $t/" "$log"
+			bad=1; continue
+		fi
 		if grep -q -- "--- PASS: $t " "$log"; then
 			n=$((n + 1)); continue
 		fi
