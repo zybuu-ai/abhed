@@ -5,6 +5,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,6 +14,8 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // End to end: a shell given no secret prints a guess at a stored value's
@@ -129,5 +133,38 @@ func TestShellOutputSplitCharacterIsNoGap(t *testing.T) {
 	if strings.Contains(all, "not shown") || strings.Contains(all, "�") ||
 		!strings.Contains(reads[0], "ok ") || !strings.Contains(reads[1], "日 more output") {
 		t.Fatalf("a split character read as a gap:\n%s", all)
+	}
+}
+
+// A skip after a gap is reported as one, not with the read-limit wording.
+func TestShellReadNamesAGapSkip(t *testing.T) {
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("STAND_IN", "gs-standin-5c1e8a"); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := suggestLoop(t, &suggestStub{})
+	l.Recorder.Redact = vault.Redactor()
+	b := &Background{loop: l, policy: BackgroundPolicy{ShellOutputCap: 1000}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "head -c 3000 /dev/zero | tr '\\0' x; exec sleep 30")
+	p, err := tools.StartShellProc(cmd, cancel, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); <-p.Done() }()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if total, _ := p.Size(); total >= 3000 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the shell wrote too little")
+		}
+	}
+	time.Sleep(3 * shellQuietRelease / 2)
+	task := &bgTask{ID: "s1", Kind: KindShell, done: make(chan struct{}), shell: &shellState{proc: p}}
+	got := shellReadResult(b, task).Content
+	if !strings.Contains(got, "bytes not shown: skipped after a gap") || strings.Contains(got, "one read returns") {
+		t.Fatalf("a gap skip worded as:\n%s", got)
 	}
 }

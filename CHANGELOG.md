@@ -18,7 +18,8 @@ All notable changes to Abhed are recorded here. The format follows
   rounded up to 256 bytes) whatever it says, and shows it once the shell has
   written nothing for a second; at a gap, the same fixed length is skipped,
   once twice that has arrived, so a secret across the skip is seen whole
-  even when the reads after the gap are short.
+  even when the reads after the gap are short; the read says the bytes were
+  skipped after a gap rather than citing the read limit.
   A secret a program prints in two writes more than a second apart can now
   show its first part to a read between them; the whole value is redacted
   as before.

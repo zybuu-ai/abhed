@@ -63,9 +63,10 @@ hides its environment; bubblewrap ends everything in its namespace. See
   for a second, or when it ends. So a secret a program prints in two writes
   more than a second apart can show its first part to a read between them;
   a value printed whole is redacted as before. After a gap (output dropped,
-  or more than one read returns), the same length is skipped; reads show
-  nothing new until twice that has arrived, or the command goes quiet or
-  ends, so a secret across the skip is seen whole.
+  or more than one read returns), the same length is skipped, and the read
+  says how many bytes were skipped after a gap; reads show nothing new until
+  twice that has arrived, or the command goes quiet or ends, so a secret
+  across the skip is seen whole.
 - `shell_kill` stops it and every process it started (its process group), and
   returns its last output.
 - A shell keeps the last 1 MiB of its output; a read that fell behind says how

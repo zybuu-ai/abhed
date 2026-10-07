@@ -424,15 +424,21 @@ func (sh *shellState) skipAfterGap(red Redactor, hold int, text string, skipped 
 	all := sh.gapCarry + text
 	sh.gapCarry = ""
 	switch {
-	case final && len(all) < hold:
+	case quiet && len(all) < hold:
 		return "", skipped + int64(len(all))
-	case len(all) < hold || len(all) < 2*hold && !quiet:
+	case len(all) < 2*hold && !quiet:
 		sh.gapCarry = all
 		return "", skipped
 	}
 	whole := redactedText(red.Redact, all)
 	n := hold
 	for ; n < len(all); n++ {
+		// A value cut at the hold ends before hold+span; past that, no clean
+		// split means values run on, so skip the rest rather than show a part.
+		if n > hold+red.Span() {
+			n = len(all)
+			break
+		}
 		if !utf8.RuneStart(all[n]) {
 			continue
 		}
@@ -576,6 +582,7 @@ func shellReadResult(b *Background, t *bgTask) tools.Result {
 	}
 	t.shell.readMu.Lock()
 	r := p.ReadNew(maxShellRead)
+	limitSkipped := r.Skipped
 	r.Text, r.Skipped = t.shell.redactRead(b, r, ended)
 	t.shell.readMu.Unlock()
 	var sb strings.Builder
@@ -596,8 +603,11 @@ func shellReadResult(b *Background, t *bgTask) tools.Result {
 	if r.Dropped > 0 {
 		fmt.Fprintf(&sb, "\n[... %d bytes of earlier output were dropped: a shell keeps its last %d bytes ...]", r.Dropped, ringCap(b))
 	}
-	if r.Skipped > 0 {
+	switch {
+	case limitSkipped > 0:
 		fmt.Fprintf(&sb, "\n[... %d bytes not shown: one read returns the last %d ...]", r.Skipped, maxShellRead)
+	case r.Skipped > 0:
+		fmt.Fprintf(&sb, "\n[... %d bytes not shown: skipped after a gap ...]", r.Skipped)
 	}
 	switch {
 	case r.Text != "":

@@ -903,6 +903,16 @@ func TestShellGapSkipCarriesPastAShortRead(t *testing.T) {
 	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: post}, true); out != post[hold-100:] || skipped != int64(hold) {
 		t.Fatalf("read after the skip: %q %d", out, skipped)
 	}
+	// A shell gone quiet with less than the hold since the gap: what arrived
+	// is skipped and counted, not left waiting unreported.
+	sh = &shellState{}
+	sh.redactRead(b, tools.ShellRead{Text: standIn[:50], Dropped: 1}, false)
+	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: standIn[50:120], Quiet: shellQuietRelease}, false); out != "" || skipped != 120 || sh.gapCarry != "" {
+		t.Fatalf("quiet short read after a gap: %q %d, %d left", out, skipped, len(sh.gapCarry))
+	}
+	if out, skipped := sh.redactRead(b, tools.ShellRead{Text: post}, false); skipped != 0 || out == "" {
+		t.Fatalf("read after a quiet skip: %q %d", out, skipped)
+	}
 	// A value across the skip point that a read ends inside of.
 	sh = &shellState{}
 	var outs string

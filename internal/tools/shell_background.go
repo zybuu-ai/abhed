@@ -281,6 +281,11 @@ func dropCutStart(tail string, redact func(string) string, span int) int {
 	}
 	whole := redact(tail)
 	for n = min(span-1, len(tail)); n < len(tail); n++ {
+		// A value cut at span-1 ends before 2*span-1; past that, no clean split
+		// means values run on, so drop the rest rather than show a part.
+		if n > 2*span-1 {
+			return len(tail)
+		}
 		if utf8.RuneStart(tail[n]) && redact(tail[:n])+redact(tail[n:]) == whole {
 			break
 		}
