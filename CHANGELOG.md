@@ -6,8 +6,34 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+**Before you upgrade.** If Abhed runs as root on Linux with
+`sandbox.allow_network` on, the `process` tier is now refused. Abhed picks the
+`vm` or `container` tier when gVisor or a container runtime is installed;
+otherwise it stops with an error naming the refused tier, unless
+`sandbox.min_tier` is `none` (then commands run unsandboxed, as that setting
+already allows). To keep the process tier, run Abhed as an ordinary user or turn
+the network off. As root the tier is also refused where it cannot mount a
+private `/proc` and `/dev` or finds a writable `/proc` file it does not cover.
+
 ### Security
 
+- When Abhed itself ran as root on Linux, a command in the `process` tier
+  (bubblewrap) kept the host's full capability set (`CapPrm`, `CapEff` =
+  `000001ffffffffff`) and ran as uid 0, so it could `mknod`, `ptrace` or write
+  root-owned `/proc` files (`core_pattern`, `modprobe`) to run code as host
+  root, escaping the sandbox. The tier now runs such commands with
+  `--cap-drop ALL` in a user namespace (every capability set empty,
+  `no_new_privs` kept) and binds those writable `/proc` files read-only,
+  including an empty read-only cover over `binfmt_misc` so a host mount made
+  after start cannot propagate in. The command still runs as uid 0, so it keeps
+  owner rights on the root-owned files it can already write (the workspace and
+  temp dirs) but holds no capability. The tier refuses to start if it cannot
+  drop the capabilities, enumerate the writable `/proc` files, or mount a
+  private `/proc` and `/dev`, and it refuses `allow_network` as root (the
+  command would otherwise share the host's abstract unix sockets, where
+  services that trust uid 0 take commands). The `container`, `vm` and `fence`
+  tiers were unaffected (the first two always drop all capabilities; the fence
+  refuses root). Running Abhed as an ordinary user was never affected.
 - A running background shell's output that ended in the first characters of
   any stored secret was held back from `shell_output`, and output that
   started after a gap with a secret's last characters was skipped. Both
