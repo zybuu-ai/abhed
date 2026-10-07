@@ -14,9 +14,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// Inside the sandbox an allowed name resolves to a synthetic address the
-// proxy maps back, any other name fails and is recorded, the command holds
-// no capability, and UDP still has no way out.
+// An allowed name resolves to a synthetic address the proxy maps back, any other fails
+// and is recorded, the command holds no capability (as root too), and UDP has no way out.
 func TestEgressResolverInTheSandbox(t *testing.T) {
 	requireNetNS(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +71,14 @@ func TestEgressResolverInTheSandbox(t *testing.T) {
 	if out := runLaunched(t, s, ws, l, get); !strings.Contains(out, fmt.Sprintf("reached allowed.test:%d", port)) {
 		t.Fatalf("plain request to the synthetic address:\n%s", out)
 	}
-	out = runLaunched(t, s, ws, l, "grep -E '^Cap(Eff|Prm|Amb)' /proc/self/status; cat /etc/resolv.conf")
+	sets := "Inh|Prm|Eff|Amb"
+	if os.Getuid() == 0 {
+		sets += "|Bnd" // root regains its bounding set at exec
+	}
+	out = runLaunched(t, s, ws, l, "grep -E '^Cap("+sets+")' /proc/self/status; cat /etc/resolv.conf")
+	if n := strings.Count(out, "Cap"); n != strings.Count(sets, "|")+1 {
+		t.Fatalf("read %d capability sets, want %d:\n%s", n, strings.Count(sets, "|")+1, out)
+	}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "Cap") && !strings.HasSuffix(line, "0000000000000000") {
 			t.Errorf("the command holds a capability: %s", line)

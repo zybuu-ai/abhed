@@ -452,7 +452,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// loopback only: a relay inside it, listening where the proxy
 		// variables point, joins each connection to the proxy's socket.
 		if s.policy.Egress != nil {
-			binds, wrapped := eg.relayArgs(argv, LaunchOf(ctx).CallID)
+			binds, wrapped := eg.relayArgs(argv)
 			args = append(args, binds...)
 			argv = wrapped
 		}

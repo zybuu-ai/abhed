@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"encoding/binary"
 	"net/netip"
 	"sync"
 	"time"
@@ -14,6 +15,8 @@ var SynthPrefix = netip.MustParsePrefix("198.18.0.0/15")
 const (
 	// SynthTTL is the TTL of a synthetic answer.
 	SynthTTL = 30 * time.Second
+	// synthTTLSeconds is SynthTTL on the wire; a constant, so it cannot overflow.
+	synthTTLSeconds = uint32(SynthTTL / time.Second)
 	// synthHold keeps a mapping after its last answer for clients that cache past the TTL.
 	synthHold = 5 * time.Minute
 	// synthSize is how many addresses the pool hands out: the /15 less its first and last.
@@ -115,7 +118,6 @@ func (p *synthPool) drop(e *synthEntry) {
 // offsetAddr is the address off places after 198.18.0.0.
 func offsetAddr(off uint32) netip.Addr {
 	b := SynthPrefix.Addr().As4()
-	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-	v += off
-	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
+	binary.BigEndian.PutUint32(b[:], binary.BigEndian.Uint32(b[:])+off)
+	return netip.AddrFrom4(b)
 }

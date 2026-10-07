@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +32,8 @@ const (
 	// maxDNSMessage bounds a query read from a command; real ones are far smaller.
 	maxDNSMessage = 4096
 	dnsTimeout    = 10 * time.Second
-	maxCallID     = 128
+	// maxCredential bounds the credential frame: a call id of 128 and the token, encoded.
+	maxCredential = 512
 )
 
 // dnsQuery is the one question of a query, with what a reply echoes.
@@ -71,7 +74,8 @@ func parseQuery(m []byte) (q dnsQuery, rcode int, err error) {
 			break
 		}
 		// A compression pointer has no place in a question's name.
-		if n > 63 || i+1+n > len(m) || i-12+1+n > 255 {
+		// A name is at most 255 bytes on the wire, the root's zero byte included.
+		if n > 63 || i+1+n > len(m) || i-12+1+n > 254 {
 			return q, rcodeFormErr, nil
 		}
 		l := strings.ToLower(string(m[i+1 : i+1+n]))
@@ -93,7 +97,7 @@ func parseQuery(m []byte) (q dnsQuery, rcode int, err error) {
 }
 
 // dnsReply is the reply to q with rcode and, for A or AAAA, the answers.
-func dnsReply(q dnsQuery, rcode int, answers []netip.Addr, ttl time.Duration) []byte {
+func dnsReply(q dnsQuery, rcode int, answers []netip.Addr, ttl uint32) []byte {
 	flags := 0x8000 | q.flags&0x7900 | 0x0400 | 0x0080 | uint16(rcode&0xF) // #nosec G115 -- masked
 	qd := uint16(0)
 	if q.question != nil {
@@ -113,7 +117,7 @@ func dnsReply(q dnsQuery, rcode int, answers []netip.Addr, ttl time.Duration) []
 		out = append(out, 0xC0, 12) // the name, as the question spells it
 		out = binary.BigEndian.AppendUint16(out, typ)
 		out = binary.BigEndian.AppendUint16(out, dnsClassIN)
-		out = binary.BigEndian.AppendUint32(out, uint32(ttl/time.Second))
+		out = binary.BigEndian.AppendUint32(out, min(ttl, synthTTLSeconds))
 		b := a.AsSlice()
 		out = binary.BigEndian.AppendUint16(out, uint16(len(b))) // #nosec G115 -- 4 or 16
 		out = append(out, b...)
@@ -146,7 +150,7 @@ func (p *Proxy) answerDNS(callID string, m []byte) []byte {
 	}
 	// Loopback in the sandbox is its own, and no /etc/hosts is bound there.
 	if q.name == "localhost" || strings.HasSuffix(q.name, ".localhost") {
-		return dnsReply(q, rcodeOK, pick(q.qtype, netip.MustParseAddr("127.0.0.1"), netip.IPv6Loopback()), SynthTTL)
+		return dnsReply(q, rcodeOK, pick(q.qtype, netip.MustParseAddr("127.0.0.1"), netip.IPv6Loopback()), synthTTLSeconds)
 	}
 	name, err := CanonicalHost(q.name)
 	if err != nil || name != q.name {
@@ -169,7 +173,7 @@ func (p *Proxy) answerDNS(callID string, m []byte) []byte {
 		ev.IP = addr.String()
 		p.record(ev)
 	}
-	return dnsReply(q, rcodeOK, pick(q.qtype, addr, netip.Addr{}), SynthTTL)
+	return dnsReply(q, rcodeOK, pick(q.qtype, addr, netip.Addr{}), synthTTLSeconds)
 }
 
 // pick is the answer for qtype: v4 for A or ANY, v6 for AAAA, or none (no data).
@@ -195,10 +199,20 @@ func (p *Proxy) ListenDNS(path string) error {
 	return nil
 }
 
-// handleDNS serves one exchange: the call id, then a query, each length-prefixed.
+// handleDNS serves one exchange: the proxy credential, as Proxy-Authorization
+// carries it, then a query, each length-prefixed; a wrong credential is refused.
 func (p *Proxy) handleDNS(c net.Conn) {
+	// The socket is reachable from the command too, so it gets its own bound.
+	select {
+	case p.dnsSlots <- struct{}{}:
+		defer func() { <-p.dnsSlots }()
+	default:
+		p.record(Event{Kind: "dns", Decision: Deny, Rule: "cap",
+			Reason: fmt.Sprintf("refused before it was read: %d lookups are in flight, the most one session's resolver serves", maxDNSInFlight)})
+		return
+	}
 	_ = c.SetDeadline(time.Now().Add(dnsTimeout))
-	id, err := readFrame(c, maxCallID)
+	cred, err := readFrame(c, maxCredential)
 	if err != nil {
 		return
 	}
@@ -206,13 +220,27 @@ func (p *Proxy) handleDNS(c net.Conn) {
 	if err != nil {
 		return
 	}
-	callID := string(id)
-	if strings.ContainsFunc(callID, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		callID = "invalid"
+	callID, ok := p.authorize(string(cred))
+	if !ok {
+		p.record(Event{Kind: "dns", Decision: Deny, Rule: "auth", Reason: "missing or wrong proxy credentials"})
+		if q, _, err := parseQuery(m); err == nil {
+			_ = writeFrame(c, dnsReply(q, rcodeRefused, nil, 0))
+		}
+		return
 	}
 	if out := p.answerDNS(callID, m); out != nil {
 		_ = writeFrame(c, out)
 	}
+}
+
+// Credential reads the Proxy-Authorization value from a command's proxy
+// variable, for the relay's lookups; "" if there is none.
+func Credential(proxyURL string) string {
+	u, err := url.Parse(proxyURL)
+	if err != nil || u.User == nil {
+		return ""
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(u.User.String()))
 }
 
 // readFrame reads a message with a two-byte length before it, as DNS over TCP sends.
@@ -239,17 +267,14 @@ func writeFrame(w io.Writer, b []byte) error {
 }
 
 // exchangeDNS sends one query to the proxy's resolver socket and returns its reply.
-func exchangeDNS(sock, callID string, q []byte) ([]byte, error) {
+func exchangeDNS(sock, cred string, q []byte) ([]byte, error) {
 	c, err := net.DialTimeout("unix", sock, dnsTimeout)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(dnsTimeout))
-	if len(callID) > maxCallID {
-		callID = "invalid"
-	}
-	if err := writeFrame(c, []byte(callID)); err != nil {
+	if err := writeFrame(c, []byte(cred)); err != nil {
 		return nil, err
 	}
 	if err := writeFrame(c, q); err != nil {
@@ -263,7 +288,7 @@ const maxDNSInFlight = 64
 
 // ServeDNS answers queries on udp and tcp inside a sandbox by passing each to
 // the proxy's resolver socket, until both are closed.
-func ServeDNS(udp net.PacketConn, tcp net.Listener, sock, callID string) {
+func ServeDNS(udp net.PacketConn, tcp net.Listener, sock, cred string) {
 	slots := make(chan struct{}, maxDNSInFlight)
 	go func() {
 		for {
@@ -286,7 +311,7 @@ func ServeDNS(udp net.PacketConn, tcp net.Listener, sock, callID string) {
 					if err != nil {
 						return
 					}
-					out, err := exchangeDNS(sock, callID, q)
+					out, err := exchangeDNS(sock, cred, q)
 					if err != nil || writeFrame(c, out) != nil {
 						return
 					}
@@ -308,7 +333,7 @@ func ServeDNS(udp net.PacketConn, tcp net.Listener, sock, callID string) {
 		}
 		go func() {
 			defer func() { <-slots }()
-			if out, err := exchangeDNS(sock, callID, q); err == nil {
+			if out, err := exchangeDNS(sock, cred, q); err == nil {
 				_, _ = udp.WriteTo(out, from)
 			}
 		}()

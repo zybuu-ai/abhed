@@ -559,7 +559,7 @@ func TestEgressCloseStopsEveryProxy(t *testing.T) {
 	}
 }
 
-// With the resolver the relay gets its socket, call id and capability, and the
+// With the resolver the relay gets its socket, ids and capability, and the
 // generated resolv.conf is bound over the sandbox's; without it, none of that.
 func TestEgressRelayArgsBindTheResolver(t *testing.T) {
 	p, err := egress.Start(egress.Options{Policy: egressPolicy(t, egress.Config{})})
@@ -568,7 +568,7 @@ func TestEgressRelayArgsBindTheResolver(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 	e := &egressState{proxy: p, exe: "/abhed", dir: "/d", dns: true}
-	binds, wrapped := e.relayArgs([]string{"/bin/bash", "-c", "x"}, "call-9")
+	binds, wrapped := e.relayArgs([]string{"/bin/bash", "-c", "x"})
 	b := strings.Join(binds, " ")
 	for _, want := range []string{"--ro-bind /d/resolv.conf /etc/resolv.conf", "--ro-bind /d/dns.sock " + relayDNS, "--cap-add CAP_NET_BIND_SERVICE"} {
 		if !strings.Contains(b, want) {
@@ -576,11 +576,11 @@ func TestEgressRelayArgsBindTheResolver(t *testing.T) {
 		}
 	}
 	w := strings.Join(wrapped, " ")
-	if want := fmt.Sprintf("%s %s call-9 %d %d -- /bin/bash -c x", egress.DNSArg, relayDNS, os.Getuid(), os.Getgid()); !strings.HasSuffix(w, want) {
+	if want := fmt.Sprintf("%s %s %d %d -- /bin/bash -c x", egress.DNSArg, relayDNS, os.Getuid(), os.Getgid()); !strings.HasSuffix(w, want) {
 		t.Errorf("wrapped %q, want it to end %q", w, want)
 	}
 	e.dns = false
-	binds, wrapped = e.relayArgs([]string{"/bin/true"}, "call-9")
+	binds, wrapped = e.relayArgs([]string{"/bin/true"})
 	if b := strings.Join(binds, " "); strings.Contains(b, "resolv.conf") || strings.Contains(b, "--cap-add") {
 		t.Errorf("binds without the resolver: %q", b)
 	}

@@ -299,10 +299,9 @@ func (e *egressState) port() uint16 {
 	return e.proxy.Addr().Port()
 }
 
-// relayArgs are the bwrap arguments that bind the relay and the proxy's
-// socket into the sandbox, and the argv that runs the command behind the
-// relay; with the resolver, its socket and resolv.conf too.
-func (e *egressState) relayArgs(argv []string, callID string) (binds, wrapped []string) {
+// relayArgs are the bwrap arguments binding the relay, the proxy's socket and, with the
+// resolver, its socket and resolv.conf; and the argv running the command behind the relay.
+func (e *egressState) relayArgs(argv []string) (binds, wrapped []string) {
 	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", filepath.Join(e.dir, "proxy.sock"), relaySocket}
 	listen := e.proxy.Addr().String()
 	wrapped = []string{relayBinary, egress.RelayArg, relaySocket, listen}
@@ -311,7 +310,7 @@ func (e *egressState) relayArgs(argv []string, callID string) (binds, wrapped []
 		binds = append(binds, "--ro-bind", filepath.Join(e.dir, "dns.sock"), relayDNS,
 			"--ro-bind", filepath.Join(e.dir, "resolv.conf"), "/etc/resolv.conf")
 		binds = append(binds, relayCaps()...)
-		wrapped = append(wrapped, egress.DNSArg, relayDNS, callID, strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()))
+		wrapped = append(wrapped, egress.DNSArg, relayDNS, strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()))
 	}
 	return binds, append(append(wrapped, "--"), argv...)
 }
@@ -319,8 +318,9 @@ func (e *egressState) relayArgs(argv []string, callID string) (binds, wrapped []
 // relayCaps let the relay bind port 53: as root of the namespace that owns the network,
 // since bwrap's own nesting would leave it none there; the relay nests the command itself.
 func relayCaps() []string {
+	// As root the command is not nested, so the relay empties the bounding set (SETPCAP) before it starts.
 	if os.Getuid() == 0 {
-		return []string{"--cap-add", "CAP_NET_BIND_SERVICE"}
+		return []string{"--cap-drop", "ALL", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETPCAP"}
 	}
 	return []string{"--uid", "0", "--gid", "0", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETFCAP"}
 }
@@ -349,8 +349,14 @@ func (s *Process) bwrapDNSOK(exe string) bool {
 		defer cancel()
 		args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid", "--ro-bind", "/", "/",
 			"--proc", "/proc", "--dev", "/dev"}, relayCaps()...)
-		args = append(args, exe, egress.RelayArg, "/nonexistent", "127.0.0.1:0", egress.DNSArg, "/nonexistent", "probe",
-			strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), "--", "/bin/sh", "-c", `test "$(id -u)" = `+strconv.Itoa(os.Getuid()))
+		// The command must run as this user and hold no capability, or the resolver stays off.
+		sets := "Inh|Prm|Eff|Amb"
+		if os.Getuid() == 0 {
+			sets += "|Bnd" // a root command would regain its bounding set at exec
+		}
+		check := fmt.Sprintf(`test "$(id -u)" = %d && ! grep -qE '^Cap(%s):.*[1-9a-f]' /proc/self/status`, os.Getuid(), sets)
+		args = append(args, "--setenv", "HTTP_PROXY", "http://probe:probe@127.0.0.1:1", exe, egress.RelayArg, "/nonexistent", "127.0.0.1:0",
+			egress.DNSArg, "/nonexistent", strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), "--", "/bin/sh", "-c", check)
 		out, err := bwrapRun(ctx, args...)
 		s.dnsOK = err == nil
 		if err != nil {

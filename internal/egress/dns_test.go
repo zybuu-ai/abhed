@@ -275,7 +275,7 @@ func TestResolverDenialsAreRateLimited(t *testing.T) {
 // The resolver is reached over its socket, the call id travelling with the
 // query, and the relay's UDP and TCP listeners pass queries on.
 func TestResolverOverTheRelay(t *testing.T) {
-	_, rec, sock := dnsProxy(t, Config{Rules: []Rule{{Host: "allowed.test", Decision: "allow"}}}, Options{})
+	p, rec, sock := dnsProxy(t, Config{Rules: []Rule{{Host: "allowed.test", Decision: "allow"}}}, Options{})
 	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestResolverOverTheRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = udp.Close(); _ = tcp.Close() }()
-	go ServeDNS(udp, tcp, sock, "call-r")
+	go ServeDNS(udp, tcp, sock, Credential(p.URL("call-r")))
 
 	c, err := net.Dial("udp", udp.LocalAddr().String())
 	if err != nil {
@@ -412,9 +412,8 @@ func TestProxyWithoutResolverRefusesSyntheticRange(t *testing.T) {
 	}
 }
 
-// The proxy resolves a synthetic address's name once per connection and
-// dials the address it checked, so a name rebinding to an internal address
-// is refused as before.
+// A synthetic address's name is resolved once per connection and the checked
+// address dialled, so a name rebinding to an internal address is refused.
 func TestSyntheticAddressIsPinned(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
@@ -482,5 +481,77 @@ func TestWildcardWarnsOnce(t *testing.T) {
 	mustCompile(t, c)
 	if len(warned) != 1 || warned[0] != "*.warn-once.test" {
 		t.Fatalf("warned %v", warned)
+	}
+}
+
+// A frame without the session's credential, as a command dialling dns.sock
+// itself would send, is refused and recorded; the real one is answered.
+func TestResolverSocketNeedsTheCredential(t *testing.T) {
+	p, rec, sock := dnsProxy(t, Config{Rules: []Rule{{Host: "allowed.test", Decision: "allow"}}}, Options{})
+	forged := "Basic " + base64.StdEncoding.EncodeToString([]byte("call-x:not-the-token"))
+	for _, cred := range []string{"call-x", forged, ""} {
+		out, err := exchangeDNS(sock, cred, query(5, "allowed.test", dnsTypeA))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := parseReply(t, out); r.rcode != rcodeRefused || len(r.answers) != 0 {
+			t.Fatalf("credential %q answered: %+v", cred, r)
+		}
+	}
+	if e := rec.wait(t, ""); e.Kind != "dns" || e.Rule != "auth" || e.Decision != Deny {
+		t.Fatalf("forged frame recorded as %+v", e)
+	}
+	out, err := exchangeDNS(sock, Credential(p.URL("call-ok")), query(5, "allowed.test", dnsTypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := parseReply(t, out); len(r.answers) != 1 {
+		t.Fatalf("the real credential: %+v", r)
+	}
+	if e := rec.wait(t, "allowed.test"); e.CallID != "call-ok" {
+		t.Fatalf("recorded under %q", e.CallID)
+	}
+}
+
+// Connections straight to dns.sock are bounded: past the bound one is closed unread and recorded.
+func TestResolverSocketIsBounded(t *testing.T) {
+	p, rec, sock := dnsProxy(t, Config{}, Options{})
+	var held []net.Conn
+	defer func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	}()
+	for range maxDNSInFlight {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, c)
+	}
+	for deadline := time.Now().Add(5 * time.Second); len(p.dnsSlots) < maxDNSInFlight; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d held", len(p.dnsSlots), maxDNSInFlight)
+		}
+	}
+	if _, err := exchangeDNS(sock, Credential(p.URL("c")), query(1, "a.test", dnsTypeA)); err == nil {
+		t.Fatal("a lookup past the bound was answered")
+	}
+	if e := rec.wait(t, ""); e.Kind != "dns" || e.Rule != "cap" {
+		t.Fatalf("recorded %+v", e)
+	}
+}
+
+// A name is at most 255 bytes on the wire with its root: one byte more is malformed.
+func TestResolverNameLength(t *testing.T) {
+	p, _, _ := dnsProxy(t, Config{Default: "allow"}, Options{})
+	l63 := strings.Repeat("a", 63)
+	fits := strings.Join([]string{l63, l63, l63, strings.Repeat("b", 61)}, ".") // 255 on the wire
+	over := strings.Join([]string{l63, l63, l63, strings.Repeat("b", 62)}, ".")
+	if r := parseReply(t, p.answerDNS("c", query(1, fits, dnsTypeA))); r.rcode == rcodeFormErr {
+		t.Fatalf("a %d-character name was malformed", len(fits))
+	}
+	if r := parseReply(t, p.answerDNS("c", query(1, over, dnsTypeA))); r.rcode != rcodeFormErr {
+		t.Fatalf("a %d-character name: rcode %d, want FORMERR", len(over), r.rcode)
 	}
 }

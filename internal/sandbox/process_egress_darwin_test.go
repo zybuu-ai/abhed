@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"net"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -43,14 +44,20 @@ func TestSeatbeltAllowlistHasNoDNS(t *testing.T) {
 	l := Launch{CallID: "cd", Session: "sess-d", Record: rec.record}
 	for _, c := range []string{
 		// Raw DNS: a UDP socket to any server.
-		`/usr/bin/python3 -c 'import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.sendto(b"x",("8.8.8.8",53))'`,
+		`s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.sendto(b"x",("8.8.8.8",53))`,
 		// The system resolver's socket, which getaddrinfo uses.
-		`/usr/bin/python3 -c 'import socket;s=socket.socket(socket.AF_UNIX);s.connect("/var/run/mDNSResponder")'`,
-		`/usr/bin/python3 -c 'import socket;socket.getaddrinfo("example.com",443)'`,
+		`s=socket.socket(socket.AF_UNIX);s.connect("/var/run/mDNSResponder")`,
+		`socket.getaddrinfo("example.com",443)`,
 	} {
-		if out := runLaunched(t, s, ws, l, c+" && echo RESOLVED || echo REFUSED"); !strings.Contains(out, "REFUSED") {
-			t.Errorf("ESCAPE: %s worked under the allowlist:\n%s", c, out)
+		// STARTED shows python ran, so REFUSED is the sandbox and not a missing interpreter.
+		script := `/usr/bin/python3 -c 'import socket;print("STARTED",flush=True);` + c + `' && echo RESOLVED || echo REFUSED`
+		if out := runLaunched(t, s, ws, l, script); !strings.Contains(out, "STARTED") || !strings.Contains(out, "REFUSED") {
+			t.Errorf("ESCAPE or no control: %s under the allowlist:\n%s", c, out)
 		}
+	}
+	// The positive control: outside the sandbox the same lookup works.
+	if out, err := exec.Command("/usr/bin/python3", "-c", `import socket;socket.getaddrinfo("localhost",443);print("OK")`).CombinedOutput(); err != nil || !strings.Contains(string(out), "OK") {
+		t.Fatalf("getaddrinfo fails outside the sandbox too, so the test proves nothing: %v %s", err, out)
 	}
 	if out := runLaunched(t, s, ws, l, "dscacheutil -q host -a name example.org"); strings.Contains(out, "address") {
 		t.Errorf("ESCAPE: the directory service resolved a name under the allowlist:\n%s", out)

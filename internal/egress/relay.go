@@ -15,15 +15,20 @@ import (
 // the relay in front of a command; see RunRelay.
 const RelayArg = "__abhed_egress_relay"
 
-// DNSArg, after the relay's socket and address, names the resolver's socket,
-// the call id its queries are recorded under, and the uid and gid the command runs as.
+// DNSArg, after the relay's socket and address, names the resolver's socket
+// and the uid and gid the command runs as.
 const DNSArg = "--dns"
 
 // ResolverAddr is where the relay serves DNS inside the sandbox, as the generated resolv.conf names it.
 const ResolverAddr = "127.0.0.1:53"
 
-// relayDNS listens for DNS inside the sandbox and passes queries to sock.
-func relayDNS(sock, callID string) error {
+// relayDNS listens for DNS inside the sandbox and passes queries to sock, with
+// the proxy credential the command was given, so the proxy knows the call.
+func relayDNS(sock string) error {
+	cred := Credential(os.Getenv("HTTP_PROXY"))
+	if cred == "" {
+		return errors.New("no proxy credential in HTTP_PROXY")
+	}
 	udp, err := net.ListenPacket("udp", ResolverAddr)
 	if err != nil {
 		return err
@@ -33,7 +38,7 @@ func relayDNS(sock, callID string) error {
 		_ = udp.Close()
 		return err
 	}
-	go ServeDNS(udp, tcp, sock, callID)
+	go ServeDNS(udp, tcp, sock, cred)
 	return nil
 }
 
@@ -61,30 +66,31 @@ func Relay(ln net.Listener, sock string) {
 	}
 }
 
-// RunRelay is the relay process inside a sandbox's own network namespace:
-// it listens on the loopback address the command's proxy variables name,
-// joins each connection to the proxy's unix socket bound into the sandbox,
-// and runs the command as its child, passing on its signals and its exit
-// status. args are: socket, listen address, optionally DNSArg with the
-// resolver's socket, the call id, uid and gid, then "--" and argv.
+// RunRelay joins the command's proxy address to the proxy's socket inside the sandbox and runs
+// the command as its child. args: socket, listen address, [DNSArg dns-socket uid gid], "--", argv.
 func RunRelay(args []string) int {
 	var attr *syscall.SysProcAttr
-	dns := len(args) >= 7 && args[2] == DNSArg
+	dns := len(args) >= 6 && args[2] == DNSArg
 	if dns {
-		// The sandbox gave the relay the capability to bind port 53; the
-		// command runs in a user namespace of its own as uid and gid, holding none.
+		// Bind port 53 with the sandbox's grant, then let nothing reach the relay.
 		var err error
-		if attr, err = nestedUser(args[5], args[6]); err == nil {
-			err = relayDNS(args[3], args[4])
+		if attr, err = nestedUser(args[4], args[5]); err == nil {
+			if err = relayDNS(args[3]); err == nil {
+				err = undumpable()
+			}
+		}
+		// Not nested, the command execs as root: the bounding set goes too.
+		if err == nil && attr == nil {
+			err = dropCaps(true)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed egress relay: the resolver: %v\n", err)
 			return 126
 		}
-		args = append(args[:2:2], args[7:]...)
+		args = append(args[:2:2], args[6:]...)
 	}
 	if len(args) < 4 || args[2] != "--" {
-		fmt.Fprintln(os.Stderr, "abhed egress relay: usage: socket addr ["+DNSArg+" dns-socket call-id uid gid] -- command...")
+		fmt.Fprintln(os.Stderr, "abhed egress relay: usage: socket addr ["+DNSArg+" dns-socket uid gid] -- command...")
 		return 126
 	}
 	sock, addr, argv := args[0], args[1], args[3:]
@@ -112,8 +118,8 @@ func RunRelay(args []string) int {
 		fmt.Fprintf(os.Stderr, "abhed egress relay: %v\n", err)
 		return 127
 	}
-	// Writing the command's id maps needed the relay's capabilities; they go now.
-	if err := dropCaps(); err != nil {
+	// Writing the nested command's id maps needed the relay's capabilities; they go now.
+	if err := dropCapsAfter(dns, attr); err != nil {
 		_ = cmd.Process.Kill()
 		fmt.Fprintf(os.Stderr, "abhed egress relay: dropping capabilities: %v\n", err)
 		return 126
@@ -138,4 +144,12 @@ func RunRelay(args []string) int {
 		return 127
 	}
 	return 0
+}
+
+// dropCapsAfter drops what the relay still holds once a nested command has started.
+func dropCapsAfter(dns bool, attr *syscall.SysProcAttr) error {
+	if !dns || attr == nil {
+		return nil
+	}
+	return dropCaps(false)
 }

@@ -184,12 +184,21 @@ inside the sandbox; the host's file is not touched. The resolver:
 - answers `A` with an address from `198.18.0.0/15` (benchmarking space,
   never routed), one per name, held for the session, with a 30-second TTL.
   An address stays mapped for five minutes after its name was last
-  answered, so a client that caches past the TTL still connects. `AAAA` and
+  answered, so a client that caches past the TTL still connects. After
+  that the address may be given to another name; a client still holding
+  it then reaches that name, judged as that name. The pool holds 131,070
+  addresses per session; when every one is mapped, a new name gets
+  SERVFAIL, recorded, until a mapping expires; `AAAA` and
   other types of an allowed name get no data, so clients use the `A` answer;
 - answers every other name with NXDOMAIN (REFUSED for a class other than
   IN) and records it as an `egress.decision` with `kind: "dns"`;
 - answers `localhost` with loopback, since no `/etc/hosts` is bound;
-- never forwards a query anywhere, so a lookup alone carries nothing out.
+- never forwards a query anywhere, so a lookup alone carries nothing out;
+- takes each lookup with the session's proxy credential, which the relay
+  reads from the command's `HTTP_PROXY`, so it is recorded against the call.
+  A command that reaches the resolver's socket itself without the
+  credential is refused and recorded with rule `auth`. At most 64 lookups
+  are served at once; one more is closed unread and recorded with rule `cap`.
 
 The address the command gets is only a token for the name. A `CONNECT` or
 plain request to it is judged on the name it stands for, and the proxy
@@ -203,12 +212,18 @@ mapping, so a new proxy (after the session was quiet, say) starts afresh.
 Plain UDP and TCP other than the resolver and the proxy still have no
 route, so QUIC and DNS to any other server fail. To bind port 53 the relay
 starts as root of the sandbox's user namespace with
-`CAP_NET_BIND_SERVICE` (and `CAP_SETFCAP`, to map ids), then runs the
-command in a user namespace of its own as the user Abhed runs as, and drops
-every capability; the command holds none. Where that cannot work (bwrap
-installed setuid, no private `/proc`, or nested user namespaces refused),
-Abhed logs a warning once and commands resolve nothing, as before; the proxy
-still resolves the names it carries.
+`CAP_NET_BIND_SERVICE` (and `CAP_SETFCAP`, to map ids), makes itself
+undumpable, runs the command in a user namespace of its own as the user
+Abhed runs as, and drops every capability; the command holds none. When
+Abhed runs as root there is no nesting: bwrap drops every capability but
+`CAP_NET_BIND_SERVICE` and `CAP_SETPCAP`, and the relay empties all its
+sets, the bounding set included, before the command starts, so a root
+command gains none at exec. Before using the resolver Abhed checks once
+that a command started this way runs as its user with no capability. Where
+that fails (bwrap installed setuid, no private `/proc`, nested user
+namespaces refused, or a build with cgo, where capabilities cannot be
+dropped on every thread), Abhed logs a warning once and commands resolve
+nothing, as before; the proxy still resolves the names it carries.
 
 On **macOS** Seatbelt cannot redirect DNS, so there is no in-sandbox
 resolver and no `dns` record. The profile already refuses both ways a
@@ -233,7 +248,7 @@ event, once per connection (CONNECT) or request (plain HTTP), when it ends:
 | `synthetic` | the resolver's address the command connected to, when it stood for `host` |
 | `method`, `path` | plain HTTP only; the path without its query, left out with `record_paths: false` |
 | `decision` | `allow`, `deny` or `would_deny` |
-| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`, `dns` (a lookup refused before any rule, or a synthetic address not given out); and why |
+| `rule`, `reason` | the rule that decided (`rules[2] host`, or `default`), or `parse` (a malformed or over-large request head), `cap` (over the connection bound), `path` (a `;` in the path), `auth`, `dns` (a lookup refused before any rule, or a synthetic address not given out); and why. A `dns` lookup can also be refused with `auth` or `cap` |
 | `bytes_in`, `bytes_out` | bytes received from and sent to the destination |
 | `unattributed` | `true` when the call id is not one this session launched |
 | `repeats` | on a summary, how many denials like it were counted rather than recorded |

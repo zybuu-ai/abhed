@@ -50,7 +50,8 @@ All notable changes to Abhed are recorded here. The format follows
   allow rule could match, with an address from `198.18.0.0/15` held for the
   session and a 30-second TTL; it never forwards a query, and any other name
   gets NXDOMAIN and an `egress.decision` of kind `dns`, rate-limited like
-  other denials. A `CONNECT` or plain request to one of those addresses is
+  other denials. Each lookup carries the session's proxy credential, so one
+  without it is refused, and the command holds no capability, as root too. A `CONNECT` or plain request to one of those addresses is
   judged on the name it stands for, and the proxy resolves that name once and
   dials the address it checked, as before. On macOS commands resolve nothing
   themselves: Seatbelt refuses raw DNS and the system resolver, and the proxy

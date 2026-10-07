@@ -119,7 +119,8 @@ type Proxy struct {
 	once  sync.Once
 	limit *limiter
 	// synth is the resolver's address pool, once ListenDNS has started it.
-	synth atomic.Pointer[synthPool]
+	synth    atomic.Pointer[synthPool]
+	dnsSlots chan struct{}
 	// served counts connections handled, for tests and doctor.
 	served atomic.Int64
 }
@@ -144,7 +145,7 @@ func Start(opts Options) (*Proxy, error) {
 		return nil, err
 	}
 	p := &Proxy{opts: opts, token: hex.EncodeToString(b[:]), tcp: lns[0], conns: map[net.Conn]struct{}{},
-		slots: make(chan struct{}, opts.MaxConns)}
+		slots: make(chan struct{}, opts.MaxConns), dnsSlots: make(chan struct{}, maxDNSInFlight)}
 	p.limit = newLimiter(opts.Burst, opts.AllowBudget, opts.Interval, p.emit)
 	p.addr = lns[0].Addr().(*net.TCPAddr).AddrPort()
 	for _, ln := range lns {
@@ -358,7 +359,8 @@ func (p *Proxy) handle(raw net.Conn) {
 	ev := Event{CallID: callID, Kind: kindOf(t.Method), Host: t.Host, Port: t.Port}
 	// A resolver's address stands for its name: judged and dialled as that name.
 	if pool := p.synth.Load(); pool != nil {
-		if a, err := netip.ParseAddr(t.Host); err == nil && SynthPrefix.Contains(a) {
+		if a, err := netip.ParseAddr(t.Host); err == nil && SynthPrefix.Contains(a.Unmap()) {
+			a = a.Unmap()
 			name, ok := pool.lookup(a)
 			if !ok {
 				ev.Decision, ev.Rule = Deny, "dns"
