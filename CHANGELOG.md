@@ -338,7 +338,8 @@ New in this release, all additive:
   record writes in place of a second `session.started`.
 - `config`: `SandboxConfig.Network` and `NetworkAllowlist`, its one value,
   which sends commands through the session's egress proxy; and
-  `Config.Egress`, the proxy's rules. Both are managed only.
+  `Config.Egress`, the proxy's rules, whose type is internal, so code outside
+  the module reads it but cannot build one. Both are managed only.
 - `server`: `Options.Egress`, the tool set's egress guard (set by `abhed
   serve`; its type is internal); `Options.SessionEnded`, told a session's id
   as the session leaves the process, so what the sandbox keeps for it, such
