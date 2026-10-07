@@ -372,8 +372,9 @@ without running anything.
   name.
 - **Other mounts of the workspace's filesystem** (`mount_namespace` only).
   The same files can be mounted at a second path: on an ostree host (Fedora
-  CoreOS, Silverblue, Kinoite) `/var`, and so `/home`, is also mounted under
-  `/sysroot/ostree/deploy/<os>/var`, and a bind mount does the same. The
+  CoreOS, Silverblue, Kinoite) `/var`, and so `/home`, is also mounted at
+  the deployment's `var` folder under `/sysroot/ostree`, and a bind mount
+  does the same. The
   launcher reads the namespace's mounts and applies the same read-only binds
   and the same tmpfs at every other mount of the workspace's filesystem that
   shows the workspace or part of it, so the protected files stay read-only

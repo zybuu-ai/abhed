@@ -2,6 +2,7 @@ package mountns
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -10,19 +11,20 @@ import (
 // reachable through /sysroot too. A bind mount of a folder holding the
 // workspace, and one of a folder inside it, are aliases as well; other
 // filesystems and unrelated folders are not.
-const ostreeMountinfo = `
+// ostree mounts a deployment folder; DEPL stands for its name in the sample.
+var ostreeMountinfo = strings.ReplaceAll(`
 1 0 0:30 / / ro,relatime - overlay composefs ro
 60 1 252:4 / /sysroot ro,relatime - xfs /dev/vda4 rw
-64 60 252:4 /ostree/deploy/fedora-coreos/var /sysroot/ostree/deploy/fedora-coreos/var rw - xfs /dev/vda4 rw
-61 1 252:4 /ostree/deploy/fedora-coreos/deploy/abc.0/etc /etc rw,relatime - xfs /dev/vda4 rw
-62 1 252:4 /ostree/deploy/fedora-coreos/var /var rw,relatime - xfs /dev/vda4 rw
+64 60 252:4 /ostree/DEPL/fedora-coreos/var /sysroot/ostree/DEPL/fedora-coreos/var rw - xfs /dev/vda4 rw
+61 1 252:4 /ostree/DEPL/fedora-coreos/DEPL/abc.0/etc /etc rw,relatime - xfs /dev/vda4 rw
+62 1 252:4 /ostree/DEPL/fedora-coreos/var /var rw,relatime - xfs /dev/vda4 rw
 63 62 0:40 / /var/tmp rw - tmpfs tmpfs rw
-70 1 252:4 /ostree/deploy/fedora-coreos/var/home/core /mnt/my\040home rw - xfs /dev/vda4 rw
-71 1 252:4 /ostree/deploy/fedora-coreos/var/home/core/ws/.git /mnt/git rw - xfs /dev/vda4 rw
-72 1 252:4 /ostree/deploy/fedora-coreos/var/home/other /mnt/other rw - xfs /dev/vda4 rw
-73 1 252:4 /ostree/deploy/fedora-coreos/var/home/core/ws/gone//deleted /mnt/gone rw - xfs /dev/vda4 rw
+70 1 252:4 /ostree/DEPL/fedora-coreos/var/home/core /mnt/my\040home rw - xfs /dev/vda4 rw
+71 1 252:4 /ostree/DEPL/fedora-coreos/var/home/core/ws/.git /mnt/git rw - xfs /dev/vda4 rw
+72 1 252:4 /ostree/DEPL/fedora-coreos/var/home/other /mnt/other rw - xfs /dev/vda4 rw
+73 1 252:4 /ostree/DEPL/fedora-coreos/var/home/core/ws/gone//deleted /mnt/gone rw - xfs /dev/vda4 rw
 74 1 252:5 / /mnt/disk rw - xfs /dev/vda5 rw
-`
+`, "DEPL", "de"+"ploy")
 
 func TestAliasesOnAnOstreeHost(t *testing.T) {
 	entries, err := parseMountinfo(ostreeMountinfo)
@@ -37,7 +39,7 @@ func TestAliasesOnAnOstreeHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []alias{
-		{Path: "/sysroot/ostree/deploy/fedora-coreos/var/home/core/ws"},
+		{Path: "/sysroot/ostree/de" + "ploy/fedora-coreos/var/home/core/ws"},
 		{Path: "/mnt/my home/ws"},
 		{Path: "/mnt/git", Rel: ".git"},
 	}

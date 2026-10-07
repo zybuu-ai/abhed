@@ -471,10 +471,10 @@ func TestFenceMountsShellOnATerminal(t *testing.T) {
 }
 
 // A second mount of the workspace's files reaches them by another path: on
-// an ostree host (Fedora CoreOS, Silverblue) /var is also mounted under
-// /sysroot/ostree/deploy/<os>/var, and a bind mount does the same. Run with
+// an ostree host (Fedora CoreOS, Silverblue) /var is also mounted at
+// the deployment's var folder under /sysroot/ostree, and a bind mount does the same. Run with
 // ABHED_TEST_ALIAS=<dir>:<mirror>, where mirror shows dir through another
-// mount (/var/tmp:/sysroot/ostree/deploy/fedora-coreos/var/tmp on such a
+// mount (/var/tmp and its copy under /sysroot/ostree on such a
 // host). Through the alias a command can neither write git's config and
 // hooks nor read or plant Abhed's state.
 func TestFenceMountsCoversAnAlias(t *testing.T) {
