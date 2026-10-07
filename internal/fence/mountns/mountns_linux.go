@@ -343,7 +343,7 @@ func bindFD(fd int, reopen func() (int, error), ro bool) error {
 		return err
 	}
 	flags := uintptr(unix.MS_BIND | unix.MS_REMOUNT | unix.MS_RDONLY)
-	flags |= locked(st.Flags)
+	flags |= locked(int64(st.Flags)) //nolint:unconvert // Flags is uint32 on s390x
 	if err := unix.Mount("", fdPath(top), "", flags, ""); err != nil {
 		return fmt.Errorf("remounting read-only: %w", err)
 	}
@@ -419,7 +419,7 @@ func heldAlone(dir int, dev uint64) error {
 			case unix.S_IFREG:
 				k := [2]uint64{st.Dev, st.Ino}
 				if files[k] == nil {
-					files[k] = &file{name: p, nlink: uint64(st.Nlink)}
+					files[k] = &file{name: p, nlink: uint64(st.Nlink)} //nolint:unconvert // Nlink is uint32 on arm64 and s390x
 				}
 				files[k].names++
 			case unix.S_IFDIR:
