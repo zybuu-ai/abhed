@@ -335,7 +335,7 @@ func init() {
 // command, not the leader's, which may still hold the mounts' capability.
 func TestFenceCapabilityCheckReadsTheExecutingThread(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
-		t.Skip("set ABHED_REQUIRE_FENCE=1 where an ordinary user can make a user namespace")
+		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
 	}
 	cmd := exec.Command("/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(), threadCapsEnv+"=1")
@@ -394,6 +394,9 @@ func TestFenceRunsASkillScript(t *testing.T) {
 // the probe says so, a surface with protected paths is refused, naming why,
 // and the command line's fence runs in the landlock_only mode, saying so.
 func TestFenceWithoutUserNamespaces(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
+		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
+	}
 	if os.Getenv("ABHED_FENCE_NO_USERNS") != "1" {
 		t.Skip("set ABHED_FENCE_NO_USERNS=1 where an ordinary user cannot make a user namespace")
 	}
@@ -475,6 +478,9 @@ func TestFenceMountsShellOnATerminal(t *testing.T) {
 // host). Through the alias a command can neither write git's config and
 // hooks nor read or plant Abhed's state.
 func TestFenceMountsCoversAnAlias(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
+		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
+	}
 	spec := os.Getenv("ABHED_TEST_ALIAS")
 	if spec == "" {
 		t.Skip("set ABHED_TEST_ALIAS=<dir>:<mirror>, where mirror shows dir through another mount")
