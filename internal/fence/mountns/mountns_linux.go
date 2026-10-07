@@ -143,7 +143,7 @@ func findAliases(root int) (_ []aliasTarget, unreachable []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	found, deleted, err := aliases(entries, int(stx.Mnt_id), wsPath)
+	found, deleted, err := aliases(entries, int(stx.Mnt_id), wsPath) // #nosec G115 -- mount ids are small kernel counters
 	if err != nil {
 		return nil, nil, err
 	}
@@ -343,7 +343,7 @@ func bindFD(fd int, reopen func() (int, error), ro bool) error {
 		return err
 	}
 	flags := uintptr(unix.MS_BIND | unix.MS_REMOUNT | unix.MS_RDONLY)
-	flags |= locked(int64(st.Flags)) //nolint:unconvert // Flags is uint32 on s390x
+	flags |= locked(int64(st.Flags)) //nolint:unconvert // #nosec G115 -- Flags is uint32 on s390x; widening only
 	if err := unix.Mount("", fdPath(top), "", flags, ""); err != nil {
 		return fmt.Errorf("remounting read-only: %w", err)
 	}
@@ -419,7 +419,7 @@ func heldAlone(dir int, dev uint64) error {
 			case unix.S_IFREG:
 				k := [2]uint64{st.Dev, st.Ino}
 				if files[k] == nil {
-					files[k] = &file{name: p, nlink: uint64(st.Nlink)} //nolint:unconvert // Nlink is uint32 on arm64 and s390x
+					files[k] = &file{name: p, nlink: uint64(st.Nlink)} //nolint:unconvert // #nosec G115 -- Nlink is uint32 on arm64 and s390x; widening only
 				}
 				files[k].names++
 			case unix.S_IFDIR:
