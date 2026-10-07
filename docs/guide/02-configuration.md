@@ -223,6 +223,19 @@ started with `&` in one call and stopped with `kill` in the next; the
 `kill` fails with "Operation not permitted". Start and stop it within one
 command, or run it with `run_in_background` and stop it with `shell_kill`.
 
+Environments are not kept apart on macOS. A command gets only an allowlist
+of variables, but the kernel returns the arguments and environment of any
+process of the same user (the `kern.procargs2` sysctl) that is not a
+restricted program, as Apple's own are, and Seatbelt has no rule that
+refuses it. So a command, a workbench terminal or a stdio MCP server can
+read Abhed's environment, a provider key exported to it included, an MCP
+server's, and what a concurrent command was handed: its egress token and
+its `secrets`. On macOS put a provider key in `api_key` in
+`~/.abhed/config.json`, which commands cannot read, rather than in Abhed's
+environment, and use the container or vm tier where commands must not see
+one another's secrets. On Linux each command's PID namespace hides other
+processes' environments.
+
 On the container and vm tiers a command writes only the workspace and a
 throwaway `/tmp`. The process tier is a boundary, not a jail: it is not
 sufficient for genuinely hostile code.

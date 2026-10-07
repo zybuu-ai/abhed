@@ -32,6 +32,18 @@ in `secretstore` no longer compiles; see Go API.
 
 ### Security
 
+- On the macOS process tier a command could read the arguments and
+  environment of Abhed and of every other process of the same user that is
+  not a restricted program, through the `kern.procargs2` sysctl: a provider
+  key exported to Abhed, an MCP server's environment, and the `secrets` and
+  egress token of a command running at the same time. Seatbelt cannot refuse
+  it, not even with a blanket `sysctl-read` denial, so it is not fixed; the
+  guide now says so, where it had said the system does not return another
+  process's environment. On macOS put a provider key in `api_key` in
+  `~/.abhed/config.json`, which commands cannot read, rather than in Abhed's
+  environment, and use the container or vm tier where commands must not see
+  one another's secrets. Linux is unaffected: each command has its own PID
+  namespace. Affects 0.1.0 to 1.2.6.
 - When Abhed itself ran as root on Linux, a command in the `process` tier
   (bubblewrap) kept the host's full capability set (`CapPrm`, `CapEff` =
   `000001ffffffffff`) and ran as uid 0, so it could `mknod`, `ptrace` or write
