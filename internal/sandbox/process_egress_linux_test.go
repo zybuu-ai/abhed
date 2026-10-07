@@ -49,6 +49,13 @@ func TestEgressResolverInTheSandbox(t *testing.T) {
 	var rec eventLog
 	l := Launch{CallID: "call-dns", Session: "sess-dns", Record: rec.record}
 
+	if rootCaps() {
+		// The relay's capabilities must not undo the root covers over /proc.
+		got := runLaunched(t, s, ws, l, "for f in /proc/sys/kernel/core_pattern /proc/sys/kernel/modprobe; do test -w $f && echo WRITABLE $f; done; echo checked")
+		if strings.Contains(got, "WRITABLE") || !strings.Contains(got, "checked") {
+			t.Fatalf("as root under the resolver, /proc is not covered:\n%s", got)
+		}
+	}
 	out := runLaunched(t, s, ws, l, "getent hosts allowed.test")
 	f := strings.Fields(out)
 	if len(f) < 2 || f[1] != "allowed.test" {

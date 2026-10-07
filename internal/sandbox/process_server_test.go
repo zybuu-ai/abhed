@@ -59,6 +59,13 @@ echo "bus=${DBUS_SESSION_BUS_ADDRESS:-none} socket=$(test -S /run/user/$(id -u)/
 	defer cancel()
 	cmd, err := s.ServerCommand(ctx, "probe", []string{"/bin/sh", "-c", script},
 		[]string{"PATH=/usr/bin:/bin", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1/bus"}, log.record)
+	if rootCaps() && s.Backend() == "bwrap" {
+		// As root a server is refused outright; TestServerRefusedAsRoot covers the reason.
+		if err == nil {
+			t.Fatal("a stdio server started under bubblewrap as root")
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
