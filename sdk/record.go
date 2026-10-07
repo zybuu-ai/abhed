@@ -24,6 +24,7 @@ type (
 
 const (
 	EvSessionStarted  = agent.EvSessionStarted
+	EvSessionResumed  = agent.EvSessionResumed
 	EvUserMessage     = agent.EvUserMessage
 	EvAgentMessage    = agent.EvAgentMessage
 	EvAgentDelta      = agent.EvAgentDelta

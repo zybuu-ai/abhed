@@ -271,7 +271,11 @@ line per ignored setting.
   file, its hash, `trusted`, a `reason`, and the `applied` and `ignored`
   settings, so an editor can ask the person and then run `abhed trust grant`.
   An editor may send `_meta.abhed.trust: "untrusted"` to take only what
-  tightens. The wire cannot grant trust, and any other value is an error.
+  tightens, on `session/new`, `session/load`, `session/resume` and
+  `_abhed/session/fork` alike, and on `_abhed/doctor`; a continued session
+  keeps it across a restart. Sending both the `zybuu.ai/abhed` and the older
+  `abhed` key is refused.
+  The wire cannot grant trust, and any other value is an error.
 - `rpc`: the `ready` event carries `workspace_trust`.
 - SDK: `Options.WorkspaceTrust` sets the choice, and `Agent.WorkspaceTrust()`
   reports it. When the untrusted file's model settings were ignored and no
@@ -318,3 +322,10 @@ line per ignored setting.
   (`bash(*ABHED_TRUST_WORKSPACE*)`, `bash(*trust-workspace*)`). A
   configuration that replaces `permissions.ask` drops these defaults. Set the
   variable for a single CI step, not in a shell profile.
+- **Where `abhed acp` keeps its record** is read once, at startup, with the
+  folder's stored trust, before any editor says whether its window is
+  untrusted. It chooses a location only: `record.dir` is managed-only even
+  from a trusted file, so a trusted file can set only `storage.driver`
+  (`postgres` keeps the sessions in memory, which fails closed) and
+  `storage.tenant`, the label sessions are kept under. It cannot widen what a
+  session may do.

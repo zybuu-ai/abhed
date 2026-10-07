@@ -261,7 +261,7 @@ Studio consumes them through the methods below and builds neither.
 | Method | Shape |
 |---|---|
 | `session/list` (spec) | `{cwd?, cursor?}` → `{sessions: SessionInfo[], nextCursor?}` |
-| `session/load` (spec) | `{sessionId, cwd, mcpServers: []}` → replays the session as `session/update` notifications, then replies `{configOptions, modes, _meta}` |
+| `session/load` (spec) | `{sessionId, cwd, mcpServers: [], _meta?: {trust?: "untrusted"}}` → replays the session as `session/update` notifications, then replies `{configOptions, modes, _meta}` |
 | `session/resume` (spec) | same params → no replay; replies as `session/load` |
 | `session/close` (spec) | `{sessionId}` → `{}`: ends the engine's hold on the session; the record stays |
 | `_abhed/session/rename` | `{sessionId, name}` → `{}`, recorded `session.named` |
@@ -296,6 +296,25 @@ interface SessionMeta {
 - **One writer.** A session held by another Abhed process (the CLI) is
   refused with -32000 "open in another Abhed process"; Studio offers to fork
   it instead.
+- **Requested trust.** `session/load`, `session/resume` and
+  `_abhed/session/fork` take `meta.trust: "untrusted"` as `session/new` does
+  (§5.6): the session opens taking only the workspace settings that tighten,
+  whatever trust is stored for the folder, and keeps that choice when it
+  restarts for a changed workspace file. Studio must send it whenever the window
+  is in Restricted Mode. Any other value is -32602. Without the field the
+  session opens with the folder's stored trust, as before. A session already
+  open on the connection is never narrowed in place: asking for it untrusted
+  while it is open with the stored trust is refused with -32000, and Studio
+  closes it and loads it again. Each records a `session.resumed` with `via`,
+  `through_seq` and `workspace_trust` (§10), then the `config.refused` and
+  `config.narrowed` of the configuration it opened under. When that event
+  cannot be recorded the session does not run: load, resume and fork answer
+  -32003 and close it, though a fork's copy is already written and stays in
+  the session list, loadable later; a restart leaves the session read-only
+  and says why.
+  `_abhed/doctor` takes the same field, so a Restricted window's checks do not
+  reach a provider only the trusted file names. A `_meta` with both the
+  `zybuu.ai/abhed` and the legacy `abhed` key is -32602.
 - **Verification before trust.** `session/load` and `session/resume` verify
   the chain first. The reply's `meta.record = {verified: boolean, head,
   firstBad?}`. Studio shows "unverified" and asks before continuing a session
@@ -540,10 +559,10 @@ are sent, with `meta.hunksOnly: true`.
 
 | | |
 |---|---|
-| Wire today | `session/new` accepts `_meta.abhed.trust: "untrusted"` only (tighten-only; anything else is -32602) and returns `_meta.abhed.workspaceTrust = {workspace, file?, sha256?, trusted, reason, applied[], ignored[{key, value?, reason?}]}`. |
+| Wire today | `session/new`, `session/load`, `session/resume` and `_abhed/session/fork` accept `_meta.abhed.trust: "untrusted"` only (tighten-only; anything else is -32602) and return `_meta.abhed.workspaceTrust = {workspace, file?, sha256?, trusted, reason, applied[], ignored[{key, value?, reason?}]}`. |
 | Not implemented in 1.2.2 | Move both to the `zybuu.ai/abhed` key. `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
 | Studio | A banner, then a review editor built from `inspect`, then **Trust this exact file**, which asks in a native dialog raised by Studio's main process (path and SHA-256 shown) and then runs `abhed trust grant -sha256 <H> <dir>` with the bundled, hash-checked engine binary. |
-| Security | There is no grant method, now or later. A grant is pinned to the reviewed hash, so a file changed after review is not trusted. Studio's own Restricted Mode sends `trust: "untrusted"`. |
+| Security | There is no grant method, now or later. A grant is pinned to the reviewed hash, so a file changed after review is not trusted. Studio's own Restricted Mode must send `trust: "untrusted"` on every method that opens a session, a continued one included; up to 1.2.6 the engine ignored it on load and resume. |
 
 ---
 
@@ -838,7 +857,7 @@ forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 
 ### 8.1 Doctor
 
-`_abhed/doctor {cwd?}` → `{checks: {id, title, status: "ok" | "warn" | "fail",
+`_abhed/doctor {cwd?, _meta?: {trust?: "untrusted"}}` → `{checks: {id, title, status: "ok" | "warn" | "fail",
 detail}[]}`, the same checks as `abhed doctor --json`: configuration, trust,
 provider reachability (loopback only unless configured), sandbox tier,
 record store and verification, MCP, index, managed policy. Output is
@@ -884,6 +903,7 @@ them.
 | Type | Actor | Payload (main fields) |
 |---|---|---|
 | `session.started`, `session.ended` | system | reason on end |
+| `session.resumed` | system | `via`, `through_seq`, `workspace_trust` |
 | `user.message` | user | text; `steered?` |
 | `agent.message`, `agent.delta` | agent | text |
 | `agent.reasoning`, `agent.reasoning.delta` | agent | text |
