@@ -6,6 +6,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+
+## [1.2.7] - 2026-10-07
+
 **Before you upgrade.** If Abhed runs as root on Linux with
 `sandbox.allow_network` on, the `process` tier is now refused. Abhed picks the
 `vm` or `container` tier when gVisor or a container runtime is installed;
