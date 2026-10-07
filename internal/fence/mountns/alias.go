@@ -88,11 +88,8 @@ type alias struct {
 // errAlias is a mount of the workspace's files the fence cannot cover.
 var errAlias = errors.New("mountns: the workspace is also reachable elsewhere")
 
-// aliases finds every mount other than wsMount, on which the workspace at
-// wsPath sits, that shows the same filesystem's folders holding the
-// workspace or part of it, such as /sysroot on an ostree host or a bind
-// mount. Mounts whose root was unlinked are returned apart, by where they
-// are mounted, since what they show can no longer be named.
+// aliases finds every mount but wsMount of its filesystem showing the workspace
+// at wsPath or part of it; those whose root was unlinked come apart (deleted).
 func aliases(entries []mountEntry, wsMount int, wsPath string) (found []alias, deleted []string, err error) {
 	var ws *mountEntry
 	for i := range entries {
@@ -164,6 +161,3 @@ func rebase(p Plan, rel string) (sub Plan, whole string) {
 	}
 	return sub, ""
 }
-
-// isEmpty is whether a plan holds nothing to apply.
-func (p Plan) isEmpty() bool { return len(p.Pin)+len(p.ReadOnly)+len(p.Empty) == 0 }

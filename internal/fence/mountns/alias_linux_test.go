@@ -80,7 +80,7 @@ func aliasCase(name, dir string) error {
 				return fmt.Errorf("binding %s: %w", b.to, err)
 			}
 		}
-		got, err := Aliases(ws)
+		got, _, err := Aliases(ws)
 		if err != nil {
 			return err
 		}
@@ -123,7 +123,7 @@ func aliasCase(name, dir string) error {
 			return err
 		}
 		if err := Apply(p); err == nil || !errors.Is(err, errAlias) {
-			return fmt.Errorf("a shadowed alias: %v", err)
+			return fmt.Errorf("a shadowed alias: %w", err)
 		}
 		return nil
 	case "hardlink":
@@ -135,7 +135,49 @@ func aliasCase(name, dir string) error {
 			return err
 		}
 		if err := Apply(p); err == nil || !strings.Contains(err.Error(), "hard link") {
-			return fmt.Errorf("a hook with a second name outside the hooks folder: %v", err)
+			return fmt.Errorf("a hook with a second name outside the hooks folder: %w", err)
+		}
+		return nil
+	case "ownbarrier":
+		// An alias behind a folder of the user's own is refused: a command
+		// could chmod that folder and reach it.
+		own := filepath.Join(dir, "own")
+		if err := bind(ws, filepath.Join(own, "alias"), true); err != nil {
+			return err
+		}
+		if err := os.Chmod(own, 0); err != nil {
+			return err
+		}
+		defer func() { _ = os.Chmod(own, 0o700) }()
+		if err := Apply(p); !errors.Is(err, errAlias) {
+			return fmt.Errorf("an alias behind the user's own folder: %w", err)
+		}
+		return nil
+	case "barred":
+		// An alias behind another user's folder the user cannot search, here
+		// /root bound over its parent, is left and listed as unreachable.
+		alias := filepath.Join(dir, "b", "alias")
+		if err := bind(ws, alias, true); err != nil {
+			return err
+		}
+		if err := unix.Mount("/root", filepath.Join(dir, "b"), "", unix.MS_BIND, ""); err != nil {
+			return err
+		}
+		got, unreachable, err := Aliases(ws)
+		if err != nil {
+			return err
+		}
+		if slices.Contains(got, alias) || !slices.Contains(unreachable, alias) {
+			return fmt.Errorf("aliases %v, unreachable %v", got, unreachable)
+		}
+		if err := Apply(p); err != nil {
+			return err
+		}
+		if err := Drop(); err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(alias, ".abhed", "config.json")); !errors.Is(err, unix.EACCES) {
+			return fmt.Errorf("the unreachable alias: %w", err)
 		}
 		return nil
 	case "linkinside":
@@ -155,8 +197,11 @@ func TestApplyCoversAliases(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 where an ordinary user can make a user namespace")
 	}
-	for _, c := range []string{"covered", "shadowed", "hardlink", "linkinside"} {
+	for _, c := range []string{"covered", "shadowed", "hardlink", "linkinside", "ownbarrier", "barred"} {
 		t.Run(c, func(t *testing.T) {
+			if c == "barred" && unix.Access("/root", unix.X_OK) == nil {
+				t.Skip("/root is searchable here, so it cannot bar an alias")
+			}
 			cmd := exec.Command("/proc/self/exe", "-test.run=^$")
 			cmd.Env = append(os.Environ(), aliasCaseEnv+"="+c, "ABHED_TEST_MOUNTNS_DIR="+t.TempDir())
 			cmd.SysProcAttr = &syscall.SysProcAttr{}

@@ -685,6 +685,46 @@ func TestFenceStateMountKeepsTheSharedFolder(t *testing.T) {
 	}
 }
 
+// What appears in the covered .abhed and cannot be quarantined is removed,
+// never left in the workspace where another session's commands could read it.
+func TestFenceStateMountRemovesWhatCannotBeQuarantined(t *testing.T) {
+	p := fencePolicy(t)
+	state := filepath.Join(p.Workspace, ".abhed")
+	f := NewFence(p)
+	f.mounts = true
+	f.id = "1-test"
+	if err := f.prepareStateMount(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "users.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// ~/.abhed as a file: the quarantine folder cannot be made.
+	home, _ := os.UserHomeDir()
+	if err := os.WriteFile(filepath.Join(home, ".abhed"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	if err := f.checkPlanted(func(_ string, pay map[string]any) error { got = append(got, pay); return nil }, "", "after_command"); err == nil {
+		t.Fatal("not reported")
+	}
+	contents, _ := got[0]["entries"].([]map[string]any)[0]["contents"].([]map[string]any)
+	if len(contents) != 1 || contents[0]["outcome"] != plantRemoved {
+		t.Fatalf("contents: %v", contents)
+	}
+	for _, d := range []string{p.Workspace, state} {
+		names, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range names {
+			if n.Name() != ".abhed" {
+				t.Errorf("left in %s: %s", d, n.Name())
+			}
+		}
+	}
+}
+
 // A .abhed that cannot be listed when the fence qualifies is not known to
 // be empty, and is not taken for state the mounts cover: the fence refuses.
 func TestFenceStateMountRefusesAnUnlistableFolder(t *testing.T) {

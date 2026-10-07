@@ -5,6 +5,7 @@ package mountns
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,7 +51,7 @@ func apply(p Plan, covered bool) error {
 	// Found and opened before any mount, which could hide one's path.
 	var targets []aliasTarget
 	if covered {
-		if targets, err = findAliases(root); err != nil {
+		if targets, _, err = findAliases(root); err != nil {
 			return err
 		}
 	}
@@ -67,23 +68,24 @@ func apply(p Plan, covered bool) error {
 }
 
 // Aliases are the other paths at which the workspace at root is mounted,
-// each checked to reach it now. One that cannot be checked is the error.
-func Aliases(root string) ([]string, error) {
+// each checked to reach it now, and those no command can reach (unreachable).
+// One that cannot be checked is the error.
+func Aliases(root string) (found, unreachable []string, err error) {
 	fd, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = unix.Close(fd) }()
-	targets, err := findAliases(fd)
+	targets, unreachable, err := findAliases(fd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer closeAll(targets)
-	out := make([]string, 0, len(targets))
+	found = make([]string, 0, len(targets))
 	for _, t := range targets {
-		out = append(out, t.path)
+		found = append(found, t.path)
 	}
-	return out, nil
+	return found, unreachable, nil
 }
 
 // applyAt applies p's lists beneath root, named name in errors.
@@ -120,41 +122,38 @@ func closeAll(ts []aliasTarget) {
 	}
 }
 
-// findAliases reads this namespace's mounts and opens every other mount of
-// the workspace's filesystem that shows the workspace or part of it, each
-// by its path, checked to be the same folder or file the workspace holds
-// there. A path that reaches something else, or nothing, may be shadowed or
-// may have been moved, and refuses: the fence cannot tell which.
-func findAliases(root int) (_ []aliasTarget, err error) {
+// findAliases opens every other mount of the workspace's filesystem showing
+// it, checked by identity; a path that reaches something else refuses.
+func findAliases(root int) (_ []aliasTarget, unreachable []string, err error) {
 	var stx unix.Statx_t
 	if err := unix.Statx(root, "", unix.AT_EMPTY_PATH, unix.STATX_MNT_ID, &stx); err != nil {
-		return nil, fmt.Errorf("finding the workspace's mount: %w", err)
+		return nil, nil, fmt.Errorf("finding the workspace's mount: %w", err)
 	}
 	if stx.Mask&unix.STATX_MNT_ID == 0 {
-		return nil, errors.New("this kernel does not say which mount the workspace is on, so its other mounts cannot be found")
+		return nil, nil, errors.New("this kernel does not say which mount the workspace is on, so its other mounts cannot be found")
 	}
 	wsPath, err := os.Readlink(fdPath(root))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	data, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	entries, err := parseMountinfo(string(data))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	found, deleted, err := aliases(entries, int(stx.Mnt_id), wsPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(found) == 0 && len(deleted) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	slash, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = unix.Close(slash) }()
 	var out []aliasTarget
@@ -165,26 +164,54 @@ func findAliases(root int) (_ []aliasTarget, err error) {
 	}()
 	for _, point := range deleted {
 		if err := deadMount(slash, point); err != nil {
-			return nil, fmt.Errorf("%w: %s: %w", errAlias, point, err)
+			return nil, nil, fmt.Errorf("%w: %s: %w", errAlias, point, err)
 		}
 	}
 	for _, a := range found {
 		var want unix.Stat_t
 		if err := statBeneath(root, a.Rel, &want); err != nil {
-			return nil, fmt.Errorf("%w: %s shows %s of the workspace, which cannot be checked: %w", errAlias, a.Path, a.Rel, err)
+			return nil, nil, fmt.Errorf("%w: %s shows %s of the workspace, which cannot be checked: %w", errAlias, a.Path, a.Rel, err)
 		}
 		fd, err := beneath(slash, fromSlash(a.Path), 0)
+		if errors.Is(err, unix.EACCES) && barred(slash, a.Path) {
+			unreachable = append(unreachable, a.Path)
+			continue
+		}
 		if err != nil {
-			return nil, fmt.Errorf("%w: the workspace is also mounted at %s, which cannot be opened to cover it: %w", errAlias, a.Path, err)
+			return nil, nil, fmt.Errorf("%w: the workspace is also mounted at %s, which cannot be opened to cover it: %w", errAlias, a.Path, err)
 		}
 		var got unix.Stat_t
 		if err := unix.Fstat(fd, &got); err != nil || got.Dev != want.Dev || got.Ino != want.Ino {
 			_ = unix.Close(fd)
-			return nil, fmt.Errorf("%w: the workspace is also mounted at %s, and that path does not reach it now, so it cannot be covered", errAlias, a.Path)
+			return nil, nil, fmt.Errorf("%w: the workspace is also mounted at %s, and that path does not reach it now, so it cannot be covered", errAlias, a.Path)
 		}
 		out = append(out, aliasTarget{fd: fd, path: a.Path, rel: a.Rel})
 	}
-	return out, nil
+	return out, unreachable, nil
+}
+
+// barred is whether a folder on the way to p refuses this user search and is
+// not this user's, so a command, as this user, can neither pass nor chmod it.
+func barred(slash int, p string) bool {
+	cur, err := unix.Dup(slash)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = unix.Close(cur) }()
+	for _, c := range strings.Split(fromSlash(p), "/") {
+		next, err := beneath(cur, c, 0)
+		if errors.Is(err, unix.EACCES) {
+			var st unix.Stat_t
+			return unix.Fstat(cur, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR &&
+				int64(st.Uid) != int64(os.Geteuid())
+		}
+		if err != nil {
+			return false
+		}
+		_ = unix.Close(cur)
+		cur = next
+	}
+	return false
 }
 
 // statBeneath stats rel beneath root, or root itself when rel is "".
@@ -200,10 +227,8 @@ func statBeneath(root int, rel string, st *unix.Stat_t) error {
 	return unix.Fstat(fd, st)
 }
 
-// deadMount checks a mount whose root was unlinked shows nothing a command
-// could reach the workspace's files by: a removed folder holds nothing and
-// takes nothing new, a file with no name left is its own; a file that still
-// has another name may be one of the workspace's.
+// deadMount checks a mount whose root was unlinked is a removed folder or a
+// file with no name left; a file with another name may be the workspace's.
 func deadMount(slash int, point string) error {
 	var st unix.Stat_t
 	if err := statBeneath(slash, fromSlash(point), &st); err != nil {
@@ -256,6 +281,9 @@ func (t aliasTarget) cover(p Plan) error {
 	return applyAt(t.fd, t.path, sub)
 }
 
+// isEmpty is whether a plan holds nothing to apply.
+func (p Plan) isEmpty() bool { return len(p.Pin)+len(p.ReadOnly)+len(p.Empty) == 0 }
+
 // beneath opens rel under root by path alone, refusing a symbolic link at
 // any step and any escape from root; it crosses mounts, so a path opened
 // again after a mount reaches the mount.
@@ -279,11 +307,8 @@ func bindSelf(root int, rel string, ro bool) error {
 	return bindFD(fd, func() (int, error) { return beneath(root, rel, 0) }, ro)
 }
 
-// bindFD binds fd onto itself, and makes the new mount read-only when ro,
-// keeping the flags the mount below it is locked to; reopen opens its path
-// again, reaching the new mount. A file with another name is refused, as is
-// a held folder with a file named also outside it: the bind holds one name
-// read-only, and the file would stay writable through the other.
+// bindFD binds fd onto itself, read-only when ro; reopen reaches the new mount.
+// A file with a name outside the bind is refused: it would stay writable.
 func bindFD(fd int, reopen func() (int, error), ro bool) error {
 	var before unix.Stat_t
 	if err := unix.Fstat(fd, &before); err != nil {
@@ -340,10 +365,11 @@ func bindFD(fd int, reopen func() (int, error), ro bool) error {
 // refused rather than held unchecked.
 const heldWalkEntries = 20000
 
-// heldAlone walks the folder dir, just made read-only, and refuses a file
-// in it that also has a name outside it, which a command could write
-// through, and a mount inside it, which the read-only remount does not
-// reach. It never follows a link.
+// heldWalkBatch is how many names heldAlone reads from a folder at a time.
+const heldWalkBatch = 512
+
+// heldAlone refuses a file in the read-only folder dir with a name outside it,
+// or a mount inside it, either of which would stay writable.
 func heldAlone(dir int, dev uint64) error {
 	type file struct {
 		name         string
@@ -352,21 +378,36 @@ func heldAlone(dir int, dev uint64) error {
 	files := map[[2]uint64]*file{}
 	seen := 0
 	var walk func(fd int, at string, depth int) error
+	var visit func(d int, at string, depth int, names []string) error
 	walk = func(fd int, at string, depth int) error {
+		if depth > 64 {
+			return errors.New("it is deeper than 64 folders to check for files named elsewhere")
+		}
 		d, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if err != nil {
 			return err
 		}
 		f := os.NewFile(uintptr(d), at) // #nosec G115 -- a descriptor fits
 		defer func() { _ = f.Close() }()
-		names, err := f.Readdirnames(-1)
-		if err != nil {
-			return err
-		}
-		for _, n := range names {
-			if seen++; seen > heldWalkEntries || depth > 64 {
-				return fmt.Errorf("it holds more than %d entries, or is deeper than 64, to check for files named elsewhere", heldWalkEntries)
+		for {
+			// Read in batches, so a huge folder is refused before it is all in memory.
+			names, err := f.Readdirnames(heldWalkBatch)
+			if errors.Is(err, io.EOF) {
+				return nil
 			}
+			if err != nil {
+				return err
+			}
+			if seen += len(names); seen > heldWalkEntries {
+				return fmt.Errorf("it holds more than %d entries to check for files named elsewhere", heldWalkEntries)
+			}
+			if err := visit(d, at, depth, names); err != nil {
+				return err
+			}
+		}
+	}
+	visit = func(d int, at string, depth int, names []string) error {
+		for _, n := range names {
 			var st unix.Stat_t
 			if err := unix.Fstatat(d, n, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 				return err

@@ -50,9 +50,11 @@ type Fence struct {
 	stateID   *folderID
 	stateHeld bool
 	madeState bool
-	// aliases are the other mounts of the workspace's files, which each
+	// aliases are the other mounts of the workspace's filesystem, which each
 	// command's namespace covers as it covers the workspace.
 	aliases []string
+	// unreachableAliases lie behind a folder no command can search or chmod.
+	unreachableAliases []string
 	// id names the session's cgroup; tmp is the commands' private temp.
 	id  string
 	tmp string
@@ -218,7 +220,8 @@ func (f *Fence) Describe() string {
 		if f.needsMounts() {
 			mode += ", the surface's protected paths (git's config and hooks, its editor settings) bound read-only, and a file in a read-only folder with a name outside it refused"
 		}
-		mode += ", the same done at every other mount of the workspace's files (such as /sysroot on an ostree host, or a bind mount), or the command refused where it cannot be"
+		mode += ", the same done at every other mount of the workspace's filesystem (such as /sysroot on an ostree host, or a bind mount), or the command refused where it cannot be" +
+			" (a FUSE, bindfs, overlay or NFS view of the workspace that exists before the session is not found; commands cannot make one)"
 		mode += "; another spelling of .abhed a command makes is still taken out and ends the session"
 		planted = "a .abhed in a subfolder or an added folder (not covered)"
 	}
@@ -440,7 +443,7 @@ func (f *Fence) prepareStateMount() error {
 	// later would then be accepted as Abhed's own.
 	holds, err := folderHolds(p, id)
 	if err != nil {
-		return fmt.Errorf("the workspace's %s cannot be listed to tell whether it holds state (%v); restore its permissions, and the fence will cover it", stateDir, err)
+		return fmt.Errorf("the workspace's %s cannot be listed to tell whether it holds state (%w); restore its permissions, and the fence will cover it", stateDir, err)
 	}
 	f.stateID, f.stateHeld = &id, holds
 	return nil
@@ -644,8 +647,8 @@ func everySpelling(name string) []string {
 // workspace that can no longer be listed to look for one.
 const EvFenceStatePlanted = "fence.state_planted"
 
-// plantedPrefix begins the name a planted .abhed is renamed to in the
-// workspace, which no part of Abhed reads.
+// plantedPrefix begins the name a planted .abhed, or an entry of the covered
+// one, is renamed to; no part of Abhed reads it.
 const plantedPrefix = ".abhed-planted-"
 
 // What became of a planted entry, as fence.state_planted records it.
@@ -742,8 +745,8 @@ func (f *Fence) checkPlanted(rec func(string, map[string]any) error, callID, whe
 	return errors.New("fence: " + why)
 }
 
-// takeOutContents takes out everything in the covered .abhed at p, each
-// entry renamed to the top of the workspace first, and leaves the folder.
+// takeOutContents takes out everything in the covered .abhed at p, renamed
+// inside it, where every fence's tmpfs still hides it, and leaves the folder.
 // It is false when the folder cannot be listed.
 func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 	restoreOwnerAccess(p)
@@ -758,7 +761,7 @@ func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 	}
 	out := make([]map[string]any, 0, len(names))
 	for _, n := range names {
-		out = append(out, f.takeOut(filepath.Join(p, n), f.policy.Workspace))
+		out = append(out, f.takeOutTo(filepath.Join(p, n), p, true))
 	}
 	return out, true
 }
@@ -767,7 +770,11 @@ func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 // folder dir in the workspace, then moved to quarantine where it can be.
 // Where the rename fails, the entry is removed as a last resort, else it is
 // still present.
-func (f *Fence) takeOut(p, dir string) map[string]any {
+func (f *Fence) takeOut(p, dir string) map[string]any { return f.takeOutTo(p, dir, false) }
+
+// takeOutTo is takeOut; with removeStuck, an entry quarantine cannot take is
+// removed rather than left renamed in dir.
+func (f *Fence) takeOutTo(p, dir string, removeStuck bool) map[string]any {
 	m := map[string]any{"path": p}
 	var raw [6]byte
 	_, _ = rand.Read(raw[:])
@@ -785,9 +792,13 @@ func (f *Fence) takeOut(p, dir string) map[string]any {
 	// A folder the command left without write permission cannot be moved
 	// to another parent, nor later read or removed.
 	restoreOwnerAccess(inert)
-	if dest, err := quarantine(inert, filepath.Base(p), f.id); err == nil {
+	dest, err := quarantine(inert, filepath.Base(p), f.id)
+	switch {
+	case err == nil:
 		m["outcome"], m["moved_to"] = plantMoved, dest
-	} else {
+	case removeStuck && os.RemoveAll(inert) == nil:
+		m["outcome"], m["reason"] = plantRemoved, err.Error()
+	default:
 		m["outcome"], m["reason"] = plantRenamed, err.Error()
 	}
 	return m
@@ -901,6 +912,9 @@ func (f *Fence) Qualification() map[string]any {
 		out["state_folder_made"] = f.madeState
 		if len(f.aliases) > 0 {
 			out["aliases"] = f.aliases
+		}
+		if len(f.unreachableAliases) > 0 {
+			out["aliases_unreachable"] = f.unreachableAliases
 		}
 		out["protected"] = map[string]any{"git": f.policy.ProtectGit, "paths": f.policy.WriteProtected}
 	}

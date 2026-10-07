@@ -316,17 +316,26 @@ without running anything.
   with a name outside it (a hook hard-linked to a file in the workspace, say)
   refuses the command, since the file would stay writable through the other
   name.
-- **Other mounts of the workspace** (`mount_namespace` only). The same files
-  can be mounted at a second path: on an ostree host (Fedora CoreOS,
-  Silverblue, Kinoite) `/var`, and so `/home`, is also mounted under
+- **Other mounts of the workspace's filesystem** (`mount_namespace` only).
+  The same files can be mounted at a second path: on an ostree host (Fedora
+  CoreOS, Silverblue, Kinoite) `/var`, and so `/home`, is also mounted under
   `/sysroot/ostree/deploy/<os>/var`, and a bind mount does the same. The
   launcher reads the namespace's mounts and applies the same read-only binds
-  and the same tmpfs at every such path, so the protected files stay
-  read-only and `.abhed` stays covered whichever path a command takes;
-  `fence.qualified` lists them as `aliases`. One the fence cannot check,
-  such as a second mount whose path now leads somewhere else, refuses the
-  fence when it qualifies, or the command (exit 126) when it starts, saying
-  which.
+  and the same tmpfs at every other mount of the workspace's filesystem that
+  shows the workspace or part of it, so the protected files stay read-only
+  and `.abhed` stays covered through each; `fence.qualified` lists them as
+  `aliases`. One behind a folder you cannot search and do not own, so that
+  neither you nor a command can reach it, is left as it is and listed as
+  `aliases_unreachable`. One the fence cannot check, such as a second mount
+  whose path now leads somewhere else, refuses the fence when it qualifies,
+  or the command (exit 126) when it starts, saying which. Only mounts of the
+  same filesystem are found: a view of the workspace through another
+  filesystem that exists before the session, such as a FUSE mount (bindfs),
+  an overlay with the workspace as a lower folder, or an NFS export mounted
+  back, is not found or covered, and a command can read `.abhed` through it,
+  and write protected files where it lies under a writable folder. A command
+  cannot make such a mount itself: it holds no capability and cannot gain
+  one.
 - **Abhed's state in the workspace, `mount_namespace`.** The workspace's
   `.abhed` is covered by an empty tmpfs in each command's namespace: what
   Abhed keeps there is out of sight, and whatever a command writes there is
@@ -336,8 +345,10 @@ without running anything.
   Studio beside the command line) mount over it too, and removing it would
   uncover their commands; empty, it holds nothing. A `.abhed` that was
   empty when the session started must stay empty while it runs: anything
-  that appears in it is taken out of it as below, one entry at a time, the
-  folder itself left in place for the other fences, and a folder made again
+  that appears in it is taken out of it one entry at a time, each first
+  renamed inside that `.abhed`, where every fence's tmpfs still hides it,
+  then moved to `~/.abhed/quarantine/`, or removed where it cannot be moved;
+  the folder itself is left in place for the other fences, and a folder made again
   in its place is taken out whole; either way the session runs no further
   command. So put state there (`abhed user add`, say) before a fenced
   session starts. A `.abhed` that cannot be listed when the session starts

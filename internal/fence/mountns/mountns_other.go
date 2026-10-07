@@ -22,4 +22,4 @@ func Drop() error { return errLinux }
 func SelfTest(string) (string, error) { return "", errLinux }
 
 // Aliases refuses off Linux.
-func Aliases(string) ([]string, error) { return nil, errLinux }
+func Aliases(string) (found, unreachable []string, err error) { return nil, nil, errLinux }

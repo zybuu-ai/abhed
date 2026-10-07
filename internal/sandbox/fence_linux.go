@@ -257,13 +257,13 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 		return false, f.report.Summary
 	}
 	if f.mounts {
-		// Another mount of the workspace's files, such as /sysroot on an
+		// Another mount of the workspace's filesystem, such as /sysroot on an
 		// ostree host, is covered as the workspace is, or the fence refuses.
-		aliases, err := mountns.Aliases(f.policy.Workspace)
+		aliases, unreachable, err := mountns.Aliases(f.policy.Workspace)
 		if err != nil {
-			return false, "mode mount_namespace: " + err.Error() + "; the fence covers every other mount of the workspace's files, and refuses where it cannot"
+			return false, "mode mount_namespace: " + err.Error() + "; the fence covers every other mount of the workspace's filesystem, and refuses where it cannot"
 		}
-		f.aliases = aliases
+		f.aliases, f.unreachableAliases = aliases, unreachable
 		if err := f.prepareStateMount(); err != nil {
 			return false, err.Error()
 		}
