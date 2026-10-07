@@ -1,10 +1,12 @@
 package local
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,7 +82,9 @@ func TestKillMidAppendThenRepair(t *testing.T) {
 	for round := range 3 {
 		dir := t.TempDir()
 		cmd := startChild(t, "write", dir)
-		time.Sleep(time.Duration(150+round*70) * time.Millisecond)
+		// Wait for some lines first: a slow CI machine may write none in a fixed delay.
+		waitLines(t, dir, "s-child.jsonl", 3)
+		time.Sleep(time.Duration(round*70) * time.Millisecond)
 		if err := cmd.Process.Kill(); err != nil {
 			t.Fatal(err)
 		}
@@ -139,4 +143,26 @@ func TestAnotherProcessHoldsTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustVerify(t, s, "s-child")
+}
+
+// waitLines waits until a session file under dir holds at least n lines.
+func waitLines(t *testing.T, dir, name string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var found int
+		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && d.Name() == name {
+				if b, rerr := os.ReadFile(p); rerr == nil {
+					found = bytes.Count(b, []byte("\n"))
+				}
+			}
+			return nil
+		})
+		if found >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("the child wrote fewer than %d lines in 20s", n)
 }
