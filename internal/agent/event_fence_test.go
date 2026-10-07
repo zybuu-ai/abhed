@@ -82,9 +82,8 @@ func (s sessionSeer) Run(ctx context.Context, _ *tools.Session, _ json.RawMessag
 	return tools.Result{Content: "seen"}
 }
 
-// Spawned through the task tool, a subagent's and a grandchild's commands
-// are launched as the top-level session's, which keys the sandbox's state
-// for it, such as its egress proxy.
+// Subagents' and grandchildren's commands launch as the root session's, which
+// keys the sandbox's state for it, such as its egress proxy.
 func TestSubagentLaunchesAsItsRootSession(t *testing.T) {
 	seer := sessionSeer{mu: &sync.Mutex{}, seen: map[string]string{}}
 	store := NewMemStore()

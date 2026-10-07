@@ -38,10 +38,8 @@ func (l *launchLog) wait(t *testing.T, n int) []sandbox.Launch {
 	}
 }
 
-// The Studio terminal's commands, a line in lines mode and the interactive
-// shell, are the session's own calls: each is built with a Launch naming
-// the session, the call and the session's record, so the egress proxy
-// records their decisions there rather than dropping them.
+// Studio terminal commands, lines and shell, launch as the session's own calls,
+// so the egress proxy records their decisions rather than dropping them.
 func TestStudioTerminalCommandsAreBoundToTheirSession(t *testing.T) {
 	r := newStudioRig(t, "")
 	id := r.open()

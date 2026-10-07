@@ -442,9 +442,8 @@ func listening(addr string) bool {
 	return true
 }
 
-// A session's proxy stays while any of its commands is in flight, closes
-// once none has been for the quiet time, and the next command opens a
-// new one with a new token.
+// A session's proxy stays while a command is in flight, closes when quiet,
+// and the next command opens a new one with a new token.
 func TestEgressProxyClosesWhenQuiet(t *testing.T) {
 	s, ws := egressProcess(t)
 	s.egress.quiet = 100 * time.Millisecond

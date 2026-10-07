@@ -61,14 +61,11 @@ type egressSessions struct {
 	quiet time.Duration
 }
 
-// egressState is one session's egress proxy, started with its first
-// command and stopped when the session ends, the sandbox closes, or no
-// command has been in flight for egressQuiet.
+// egressState is one session's egress proxy; it stops with the session, the
+// sandbox, or after egressQuiet with no command in flight.
 type egressState struct {
 	session string
-	// inflight counts commands built and not yet ended; quiet changes with
-	// each command, so only the latest wait closes the proxy. Both are
-	// guarded by egressSessions.mu, which also hands e out.
+	// Under egressSessions.mu: quiet changes per command, so only the latest wait closes the proxy.
 	inflight int
 	quiet    uint64
 	once     sync.Once
@@ -142,9 +139,8 @@ func (s *Process) egressDone(e *egressState) {
 	time.AfterFunc(wait, func() { s.closeIfQuiet(e, gen) })
 }
 
-// closeIfQuiet closes e's proxy if no command was built since the wait
-// that gen names began. Removed from the map first, under the lock that
-// hands proxies out, so a new command starts a fresh proxy, never this one.
+// closeIfQuiet closes e's proxy if no command was built since wait gen began;
+// removed under the lock first, so a new command never gets a closing proxy.
 func (s *Process) closeIfQuiet(e *egressState, gen uint64) {
 	ss := &s.egress
 	ss.mu.Lock()
