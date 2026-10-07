@@ -310,8 +310,11 @@ func (p *Proxy) handle(raw net.Conn) {
 		return
 	}
 	_ = c.SetReadDeadline(time.Time{})
+	// The request's life: ending its call cancels the dial and closes the upstream.
+	life, endLife := context.WithCancel(context.Background())
+	defer endLife()
 	callID, key, err := p.authorize(req.Header.Get("Proxy-Authorization"))
-	if err == nil && !p.bind(key, raw) {
+	if err == nil && !p.bind(key, raw, endLife) {
 		err = errCallEnded
 	}
 	if err != nil {
@@ -354,10 +357,16 @@ func (p *Proxy) handle(raw net.Conn) {
 		writeStatus(c, http.StatusForbidden, fmt.Sprintf("abhed egress: %s refused by %s: %s\n", t.Authority(), v.Rule, v.Reason), nil)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), p.opts.DialTimeout)
+	ctx, cancel := context.WithTimeout(life, p.opts.DialTimeout)
 	up, ip, err := p.dial(ctx, t, v)
 	cancel()
 	ev.IP = ip
+	if err != nil && life.Err() != nil {
+		ev.Decision, ev.Reason = Deny, errCallEnded.Error()
+		p.record(ev)
+		writeStatus(c, http.StatusProxyAuthRequired, "abhed egress: "+errCallEnded.Error()+"\n", nil)
+		return
+	}
 	if err != nil {
 		var ref *refusal
 		if errors.As(err, &ref) {
@@ -372,6 +381,8 @@ func (p *Proxy) handle(raw net.Conn) {
 		return
 	}
 	cu := &counted{Conn: up, act: act}
+	stopUp := context.AfterFunc(life, func() { _ = cu.Close() })
+	defer stopUp()
 	if !p.track(cu) {
 		_ = cu.Close()
 		return

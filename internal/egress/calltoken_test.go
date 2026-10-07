@@ -1,11 +1,14 @@
 package egress
 
 import (
+	"bufio"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -155,5 +158,89 @@ func TestCredentialsConcurrently(t *testing.T) {
 		if want := strings.TrimSuffix(strings.TrimPrefix(e.Path, "/"), "-late"); e.CallID != want {
 			t.Fatalf("%s recorded under %q", e.Path, e.CallID)
 		}
+	}
+}
+
+// A request admitted while its call was live is stopped when the call ends:
+// a dial under way is cancelled, and the upstream is closed.
+func TestEndCancelsADialUnderWay(t *testing.T) {
+	started := make(chan struct{})
+	block := func(ctx context.Context, host string) ([]netip.Addr, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	p, rec := startWith(t, Config{Rules: []Rule{{Host: "slow.test", Decision: "allow"}}}, Options{Resolve: block, DialTimeout: time.Minute})
+	call := issue(t, p, "call-slow")
+	done := make(chan string, 1)
+	go func() {
+		done <- connectAsHost(t, p, basicFor("u", call), "slow.test")
+	}()
+	<-started
+	call.End()
+	select {
+	case st := <-done:
+		if strings.Contains(st, " 200 ") || strings.Contains(st, " 502 ") {
+			t.Fatalf("a request whose call ended mid-dial got %q", st)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the dial was not cancelled when its call ended")
+	}
+	e := rec.waitFor(t, "the cancelled request", func(e Event) bool { return e.Host == "slow.test" })
+	if e.Decision != Deny || !strings.Contains(e.Reason, "ended") || e.CallID != "call-slow" {
+		t.Fatalf("recorded %+v", e)
+	}
+}
+
+// connectAsHost sends a CONNECT for host:443 and returns the status line.
+func connectAsHost(t *testing.T, p *Proxy, auth, host string) string {
+	t.Helper()
+	return send(t, p, fmt.Sprintf("CONNECT %s:443 HTTP/1.1\r\nProxy-Authorization: %s\r\n\r\n", host, auth))
+}
+
+// Ending a call closes the upstream of a plain request still waiting on its
+// response, which closing the client's side alone does not reach.
+func TestEndClosesTheUpstream(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	got, closed := make(chan struct{}), make(chan struct{})
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		r := bufio.NewReader(c)
+		for {
+			l, err := r.ReadString('\n')
+			if err != nil || l == "\r\n" {
+				break
+			}
+		}
+		close(got)
+		_, _ = io.Copy(io.Discard, r) // never answers; returns when the proxy closes
+		close(closed)
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	p, _ := startProxy(t, Config{Rules: []Rule{{Host: "allowed.test", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}})
+	call := issue(t, p, "call-up")
+	c, err := net.Dial("tcp", p.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	fmt.Fprintf(c, "GET http://allowed.test:%d/wait HTTP/1.1\r\nHost: allowed.test\r\nProxy-Authorization: %s\r\n\r\n", port, basicFor("u", call))
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the upstream")
+	}
+	call.End()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream stayed open after the call ended")
 	}
 }

@@ -121,8 +121,10 @@ revoked when the command's call ends:
 
 - A process a command left running after the command ended is refused from
   then on (407, or REFUSED for a lookup), and the refusal is recorded under
-  the ended call with rule `auth`. Connections it opened with the token
-  while the call was live are closed when the call ends. On Linux the
+  the ended call with rule `auth`. Requests it made with the token while the
+  call was live are stopped when the call ends: a connection still being
+  dialled is cancelled, and both sides of an open one are closed. Bytes
+  already sent upstream before then cannot be recalled. On Linux the
   sandbox's PID namespace usually ends such a process first.
 - Run a server the agent needs with `run_in_background`, or move a command
   to the background with Ctrl-B: the call stays live while it runs, so its
@@ -134,7 +136,10 @@ revoked when the command's call ends:
 
 The proxy remembers the last 1,024 ended tokens, so their late traffic is
 recorded under the right call; an older one, or one never issued, is
-refused with no call id. A token lives only in its command's environment.
+refused with no call id. A token is given only in its command's environment,
+though a command can pass it on: one written to the workspace and read by a
+concurrent call makes that call's traffic recorded as the first call's, until
+the first call ends.
 On Linux each command has its own PID namespace, so no command can see
 another's environment. On macOS, `ps` is refused inside the sandbox and the
 system does not return another process's environment, so the same holds.

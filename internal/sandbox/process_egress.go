@@ -95,9 +95,8 @@ func egressRefusal(t Tier) string {
 		"the %s tier is not used for it, so the network is not opened in its place", t)
 }
 
-// egressFor is the proxy of the session ctx's launch names, started if need
-// be, and a credential for the launch's call that ends with ctx. Any launch
-// gets one this way, an MCP server's (mcp/<name>) as well, for as long as its ctx.
+// egressFor is the session's proxy, started if need be, and a credential for the launch's
+// call (mcp/<name> too) that lives exactly as long as ctx: one never cancelled keeps it all session.
 func (s *Process) egressFor(ctx context.Context) (*egressState, *egress.Call, error) {
 	l := LaunchOf(ctx)
 	ss := &s.egress

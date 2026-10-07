@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -26,7 +27,7 @@ var (
 type credential struct {
 	callID string
 	ended  bool
-	conns  map[net.Conn]struct{}
+	conns  map[net.Conn]context.CancelFunc
 }
 
 // Call is the credential a proxy issued to one call: the only proof of the
@@ -50,7 +51,7 @@ func (p *Proxy) Issue(callID string) (*Call, error) {
 	if p.creds == nil {
 		p.creds = map[[32]byte]*credential{}
 	}
-	p.creds[tokenKey(c.token)] = &credential{callID: callID, conns: map[net.Conn]struct{}{}}
+	p.creds[tokenKey(c.token)] = &credential{callID: callID, conns: map[net.Conn]context.CancelFunc{}}
 	p.mu.Unlock()
 	return c, nil
 }
@@ -69,9 +70,8 @@ func (c *Call) URL() string {
 	return u.String()
 }
 
-// Env is the environment that sends the call's HTTP clients through the
-// proxy, in both cases since clients read one or the other. Loopback is left
-// direct: on the sandbox tiers it is the sandbox's own.
+// Env sends the call's HTTP clients, upper and lower case, through the proxy;
+// loopback stays direct, as on the sandbox tiers it is the sandbox's own.
 func (c *Call) Env() []string {
 	u := c.URL()
 	const noProxy = "localhost,127.0.0.1,::1"
@@ -82,8 +82,8 @@ func (c *Call) Env() []string {
 	}
 }
 
-// End revokes the credential and closes the connections made with it; a
-// process left running after its call ended is refused from then on.
+// End revokes the credential, cancels each request's upstream dial or write and
+// closes its connection; a process left running is refused from then on.
 func (c *Call) End() {
 	c.once.Do(func() {
 		p := c.p
@@ -91,10 +91,11 @@ func (c *Call) End() {
 		p.mu.Lock()
 		cr := p.creds[key]
 		var open []net.Conn
+		var stop []context.CancelFunc
 		if cr != nil {
 			cr.ended = true
-			for k := range cr.conns {
-				open = append(open, k)
+			for k, cancel := range cr.conns {
+				open, stop = append(open, k), append(stop, cancel)
 			}
 			cr.conns = nil
 			p.ended = append(p.ended, key)
@@ -104,7 +105,8 @@ func (c *Call) End() {
 			}
 		}
 		p.mu.Unlock()
-		for _, k := range open {
+		for i, k := range open {
+			stop[i]()
 			_ = k.Close()
 		}
 	})
@@ -113,9 +115,8 @@ func (c *Call) End() {
 // tokenKey hashes a token, so the map lookup never compares the secret itself.
 func tokenKey(token string) [32]byte { return sha256.Sum256([]byte(token)) }
 
-// authorize reads the Basic credentials and returns the call id they were
-// issued for, whatever user name the client sent, and the token's key. An
-// ended call's credential names its call and errCallEnded.
+// authorize returns the call id the Basic credentials were issued for, whatever
+// user name the client sent, and the token's key; an ended call's names errCallEnded.
 func (p *Proxy) authorize(h string) (string, [32]byte, error) {
 	scheme, enc, ok := strings.Cut(h, " ")
 	if !ok || !strings.EqualFold(scheme, "Basic") {
@@ -142,16 +143,16 @@ func (p *Proxy) authorize(h string) (string, [32]byte, error) {
 	return cr.callID, key, nil
 }
 
-// bind counts c against the credential key, so ending the call closes it;
-// false if the call ended since it was authorised.
-func (p *Proxy) bind(key [32]byte, c net.Conn) bool {
+// bind counts c and its request's cancel against the credential key, so ending
+// the call stops both; false if the call ended since it was authorised.
+func (p *Proxy) bind(key [32]byte, c net.Conn, cancel context.CancelFunc) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cr := p.creds[key]
 	if cr == nil || cr.ended {
 		return false
 	}
-	cr.conns[c] = struct{}{}
+	cr.conns[c] = cancel
 	return true
 }
 
