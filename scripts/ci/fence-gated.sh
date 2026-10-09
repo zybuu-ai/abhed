@@ -77,7 +77,7 @@ check() {
 	if [ "$(id -u)" -eq 0 ]; then
 		echo "ENVIRONMENT: running as root; the fence refuses root"; bad=1
 	fi
-	# landlock_create_ruleset(NULL, 0, VERSION) is syscall 444 on x86-64 and arm64.
+	# landlock_create_ruleset(NULL, 0, VERSION) is syscall 444 on x86-64, arm64 and s390x.
 	if ! abi=$(python3 -c 'import ctypes; l=ctypes.CDLL(None, use_errno=True); l.syscall.restype=ctypes.c_long; print(l.syscall(444, None, ctypes.c_size_t(0), ctypes.c_uint32(1)))' 2>&1); then
 		echo "ENVIRONMENT: could not read the Landlock ABI: $abi"; abi=-1; bad=1
 	fi

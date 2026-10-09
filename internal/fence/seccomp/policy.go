@@ -11,7 +11,7 @@ import (
 const Profile = "command/3"
 
 // ErrUnsupported is returned by Install where the filter cannot be applied.
-var ErrUnsupported = errors.New("seccomp: the fence's system-call filter needs Linux on amd64 or arm64")
+var ErrUnsupported = errors.New("seccomp: the fence's system-call filter needs Linux on amd64, arm64 or s390x")
 
 // Policy is the filter for one command.
 type Policy struct {
@@ -68,6 +68,7 @@ const (
 	afInet6         = 10
 	afNetlink       = 16
 	netlinkRoute    = 0
+	sysSocket       = 1 // socketcall's call number for socket
 	prSetSeccomp    = 22
 	seccompGetOpMin = 2 // SECCOMP_GET_ACTION_AVAIL; lower ops install a filter or strict mode
 )
@@ -80,15 +81,21 @@ func eperm(group string, names ...string) []rule {
 	return rs
 }
 
-// rules is the profile, in the order the filter tests them.
-func (p Policy) rules() []rule {
+// rules is the profile on one architecture, in the order the filter tests
+// them.
+func (p Policy) rules(info archInfo) []rule {
 	var rs []rule
 	rs = append(rs, eperm("process tampering", "ptrace", "process_vm_readv", "process_vm_writev", "kcmp", "pidfd_getfd")...)
 	rs = append(rs, eperm("namespaces", "unshare", "setns")...)
 	rs = append(rs,
-		rule{group: "namespaces", name: "clone", errno: errEPERM, cond: maskSet, arg: 0, k: cloneNamespaceFlags, note: "clone with namespace flags"},
+		rule{group: "namespaces", name: "clone", errno: errEPERM, cond: maskSet, arg: info.cloneFlags, k: cloneNamespaceFlags, note: "clone with namespace flags"},
 		rule{group: "namespaces", name: "clone3", errno: errENOSYS, note: "clone3 with ENOSYS, so the C library falls back to clone"})
-	rs = append(rs, eperm("mounts", "mount", "umount2", "open_tree", "open_tree_attr", "move_mount",
+	mounts := []string{"mount", "umount2"}
+	if info.umount {
+		mounts = append(mounts, "umount")
+	}
+	rs = append(rs, eperm("mounts", mounts...)...)
+	rs = append(rs, eperm("mounts", "open_tree", "open_tree_attr", "move_mount",
 		"fsopen", "fsconfig", "fsmount", "fspick", "mount_setattr", "pivot_root", "chroot")...)
 	rs = append(rs, eperm("kernel interfaces", "bpf", "perf_event_open", "userfaultfd",
 		"io_uring_setup", "io_uring_enter", "io_uring_register")...)
@@ -119,15 +126,26 @@ func (p Policy) rules() []rule {
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM,
 			note: "socket for every family; socketpair allowed"})
 	}
+	if info.socketcall {
+		// Its arguments are behind a pointer the filter cannot read, so the
+		// family is unknown: refused in both modes.
+		rs = append(rs, rule{group: "sockets", name: "socketcall", errno: errEPERM, cond: equal, arg: 0, k: sysSocket,
+			note: "socketcall creating a socket of any family, whose family the filter cannot read"})
+	}
 	return rs
 }
 
-// Program assembles the policy's filter for a Go architecture, amd64 or arm64.
+// Program assembles the policy's filter for a Go architecture: amd64, arm64
+// or s390x.
 func (p Policy) Program(arch string) (Program, error) {
 	if p.Abhed <= 1 {
 		return nil, fmt.Errorf("seccomp: the filter needs Abhed's process id, not %d", p.Abhed)
 	}
-	return build(arch, p.rules())
+	info, ok := arches[arch]
+	if !ok {
+		return nil, fmt.Errorf("seccomp: no system-call table for %s", arch)
+	}
+	return build(arch, p.rules(info))
 }
 
 func build(arch string, rules []rule) (Program, error) {
@@ -160,19 +178,19 @@ func build(arch string, rules []rule) (Program, error) {
 			a.mark(next)
 			continue
 		case maskSet:
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			a.jump(opJset, r.k, deny, allow)
 		case below:
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			a.jump(opJge, r.k, allow, deny)
 		case equal:
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			a.jump(opJeq, r.k, deny, allow)
 		case oneOf:
 			if len(r.ks) == 0 {
 				return nil, fmt.Errorf("seccomp: rule %q compares with nothing", r.name)
 			}
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			for j, k := range r.ks {
 				if j == len(r.ks)-1 {
 					a.jump(opJeq, k, deny, allow)
@@ -181,11 +199,11 @@ func build(arch string, rules []rule) (Program, error) {
 				}
 			}
 		case family:
-			a.ld(offArg(0))
+			a.ld(info.argLow(0))
 			a.jump(opJeq, afInet, allow, "")
 			a.jump(opJeq, afInet6, allow, "")
 			a.jump(opJeq, afNetlink, "", deny)
-			a.ld(offArg(2))
+			a.ld(info.argLow(2))
 			a.jump(opJeq, netlinkRoute, allow, deny)
 		default:
 			return nil, fmt.Errorf("seccomp: rule %q has an unknown condition", r.name)
@@ -227,7 +245,7 @@ func (p Policy) describe(arch string) string {
 			groups = append(groups, group+" ("+strings.Join(names, ", ")+")")
 		}
 	}
-	for _, r := range p.rules() {
+	for _, r := range p.rules(arches[arch]) {
 		if r.group != group {
 			flush()
 			group, names = r.group, nil
@@ -242,6 +260,9 @@ func (p Policy) describe(arch string) string {
 	s := fmt.Sprintf("seccomp %s on linux/%s, network %s: kills other architectures", Profile, arch, network)
 	if arches[arch].x32 {
 		s += " and x32"
+	}
+	if arch == "s390x" {
+		s += ", 31-bit s390 included"
 	}
 	s += "; refuses with EPERM " + strings.Join(groups, "; ")
 	return s + fmt.Sprintf("; %d instructions, sha256 %s", len(prog), prog.Digest())

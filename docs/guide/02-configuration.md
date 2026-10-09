@@ -301,7 +301,8 @@ output that merely mentions such an error, a log being read, does not.
 ```
 
 The fence is a preview. It is off unless `sandbox.tier` is `"fence"`, it runs
-on Linux only (amd64 and arm64), and it fails closed: when anything it needs
+on Linux only (amd64, arm64 and s390x; see [Linux on Z](01-getting-started.md#linux-on-z-s390x)
+for what differs there), and it fails closed: when anything it needs
 is missing, Abhed refuses to start and names the check that failed. It never
 runs a command under another tier in its place. For `sandbox.min_tier` it
 counts as the process tier.
@@ -472,7 +473,9 @@ without running anything.
   names. Each command also runs in a process group apart from Abhed's.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
   refused, and Landlock refuses TCP as well. With it true, commands get the
-  host's network, unfiltered. Unix sockets are refused either way.
+  host's network, unfiltered. Unix sockets are refused either way. On s390x
+  the filter also refuses every socket made through `socketcall()`, which
+  is how glibc and Go make them there, so most programs get no network.
   `sandbox.network: "allowlist"` refuses the fence in both modes, since it
   cannot keep a command's sockets to the egress proxy alone
   ([Network policy](21-network-policy.md)).

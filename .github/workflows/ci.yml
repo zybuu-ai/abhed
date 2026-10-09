@@ -400,6 +400,54 @@ jobs:
           name: microvm-kvm-log
           path: ${{ runner.temp }}/mvm/kvm.log
 
+  # Linux on Z. There is no s390x runner, so this cross-builds and vets every
+  # package, then runs unit tests under qemu-user. That covers the seccomp
+  # table against x/sys, the filter's big-endian argument layout, and code
+  # that parses bytes; it cannot load a seccomp filter (qemu-user does not
+  # implement seccomp), so the fence's gated tests need a real s390x kernel.
+  s390x:
+    name: Linux on Z (s390x), cross-built and emulated
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOOS: linux
+      GOARCH: s390x
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+      - name: Install qemu-user for s390x
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-user-static
+          [ -e /proc/sys/fs/binfmt_misc/qemu-s390x ] || sudo systemctl restart systemd-binfmt
+          test -e /proc/sys/fs/binfmt_misc/qemu-s390x
+      - name: Embed the documentation
+        run: python3 scripts/docsite/build.py --embed-only
+      - name: go build
+        run: go build ./... && go build -o /tmp/abhed ./cmd/abhed && file /tmp/abhed | grep -q 'IBM S/390'
+      - name: go vet
+        run: go vet ./...
+      # Every package but app, whose terminal tests need a sandbox backend
+      # and take too long emulated. Skipped, each for a gap in the emulator
+      # or this runner, not in s390x, and each run natively in the test job:
+      # qemu-user 8.2 drops stat's nanoseconds (the change-time tests) and has
+      # no openat2 (TestBarred); timing budgets do not hold emulated; and
+      # bubblewrap is not installed here (the sandboxed-session tests).
+      - name: Unit tests under emulation
+        run: |
+          skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
+          skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestIndexScales'
+          skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
+          go test -count=1 -skip "$skip" $(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
+      - name: The s390x table was checked on s390x
+        run: |
+          go test -count=1 -v -run 'TestNativeTableMatchesUnix|TestTablesMatchXSys' ./internal/fence/seccomp/ > table.log 2>&1 || { cat table.log; exit 1; }
+          for t in TestNativeTableMatchesUnix TestTablesMatchXSys; do
+            grep -q -- "--- PASS: $t" table.log || { echo "$t did not run and pass:"; cat table.log; exit 1; }
+          done
+
   # Case-folding path tests skip on Linux; macOS folds case, so a skip here
   # means the check stopped running, and it fails the build.
   macos:

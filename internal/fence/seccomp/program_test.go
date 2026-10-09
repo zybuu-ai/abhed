@@ -19,14 +19,19 @@ type call struct {
 }
 
 // run interprets prog against c as the kernel would, failing the test on
-// anything the kernel's checker would refuse.
+// anything the kernel's checker would refuse. seccomp_data is laid out in the
+// byte order c.arch names, as the kernel lays it out for that architecture.
 func run(t *testing.T, prog Program, c call) uint32 {
 	t.Helper()
+	var order binary.ByteOrder = binary.BigEndian
+	if c.arch&auditArchLE != 0 {
+		order = binary.LittleEndian
+	}
 	var data [64]byte
-	binary.LittleEndian.PutUint32(data[0:], c.nr)
-	binary.LittleEndian.PutUint32(data[4:], c.arch)
+	order.PutUint32(data[0:], c.nr)
+	order.PutUint32(data[4:], c.arch)
 	for i, a := range c.args {
-		binary.LittleEndian.PutUint64(data[16+8*i:], a)
+		order.PutUint64(data[16+8*i:], a)
 	}
 	var acc uint32
 	for pc := 0; pc < len(prog); {
@@ -37,7 +42,7 @@ func run(t *testing.T, prog Program, c call) uint32 {
 			if in.K%4 != 0 || in.K+4 > uint32(len(data)) {
 				t.Fatalf("pc %d: load at %d", pc, in.K)
 			}
-			acc = binary.LittleEndian.Uint32(data[in.K:])
+			acc = order.Uint32(data[in.K:])
 		case opJeq, opJge, opJset:
 			var taken bool
 			switch in.Code {
@@ -82,7 +87,7 @@ func nr(t *testing.T, arch, name string) uint32 {
 	return n
 }
 
-var archNames = []string{"amd64", "arm64"}
+var archNames = []string{"amd64", "arm64", "s390x"}
 
 // The Abhed process and group the test programs guard; the goldens pin them.
 const (
@@ -192,7 +197,8 @@ func TestProgramShape(t *testing.T) {
 func TestArchitectureCheck(t *testing.T) {
 	for _, arch := range archNames {
 		prog := mustProgram(t, testCommand(true), arch)
-		for _, foreign := range []uint32{0x40000003 /* i386 */, 0xc000003e, 0xc00000b7, 0x40000028 /* arm */, 0} {
+		for _, foreign := range []uint32{0x40000003 /* i386 */, 0xc000003e, 0xc00000b7, 0x40000028, /* arm */
+			0x80000016, 0x16 /* 31-bit s390 */, 0} {
 			if foreign == arches[arch].audit {
 				continue
 			}
@@ -230,6 +236,7 @@ func TestCommandProfileDecisions(t *testing.T) {
 	allowedNr := map[string][]uint32{
 		"amd64": {0 /* read */, 1 /* write */, 2 /* open */, 59 /* execve */, 57 /* fork */, 58 /* vfork */, 257 /* openat */, 434 /* pidfd_open */, 53 /* socketpair */, 42 /* connect */},
 		"arm64": {63 /* read */, 64 /* write */, 56 /* openat */, 221 /* execve */, 434 /* pidfd_open */, 199 /* socketpair */, 203 /* connect */},
+		"s390x": {3 /* read */, 4 /* write */, 5 /* open */, 11 /* execve */, 2 /* fork */, 190 /* vfork */, 288 /* openat */, 434 /* pidfd_open */, 360 /* socketpair */, 362 /* connect */},
 	}
 	type tc struct {
 		name string
@@ -238,16 +245,22 @@ func TestCommandProfileDecisions(t *testing.T) {
 	}
 	for _, arch := range archNames {
 		audit := arches[arch].audit
+		// clone's flags, in the argument this architecture takes them in.
+		clone := func(flags uint64) [6]uint64 {
+			var a [6]uint64
+			a[arches[arch].cloneFlags] = flags
+			return a
+		}
 		for _, network := range []bool{false, true} {
 			prog := mustProgram(t, testCommand(network), arch)
 			cases := []tc{
-				{"clone", [6]uint64{0x3d0f00}, retAllow},                 // a pthread
-				{"clone", [6]uint64{0x01200011}, retAllow},               // fork
-				{"clone", [6]uint64{0x10000000 | 17}, eperm},             // CLONE_NEWUSER
-				{"clone", [6]uint64{0x00020000}, eperm},                  // CLONE_NEWNS
-				{"clone", [6]uint64{0x40000000}, eperm},                  // CLONE_NEWNET
-				{"clone", [6]uint64{0x02000000}, eperm},                  // CLONE_NEWCGROUP
-				{"clone", [6]uint64{0x1_0000_0000 | 0x3d0f00}, retAllow}, // high word ignored, as the kernel does
+				{"clone", clone(0x3d0f00), retAllow},                 // a pthread
+				{"clone", clone(0x01200011), retAllow},               // fork
+				{"clone", clone(0x10000000 | 17), eperm},             // CLONE_NEWUSER
+				{"clone", clone(0x00020000), eperm},                  // CLONE_NEWNS
+				{"clone", clone(0x40000000), eperm},                  // CLONE_NEWNET
+				{"clone", clone(0x02000000), eperm},                  // CLONE_NEWCGROUP
+				{"clone", clone(0x1_0000_0000 | 0x3d0f00), retAllow}, // high word ignored, as the kernel does
 				{"clone3", [6]uint64{}, enosys},
 				{"seccomp", [6]uint64{1}, eperm},      // SECCOMP_SET_MODE_FILTER
 				{"seccomp", [6]uint64{0}, eperm},      // SECCOMP_SET_MODE_STRICT
@@ -388,8 +401,74 @@ func TestDescribe(t *testing.T) {
 		if strings.Contains(off, " and x32") != (arch == "amd64") {
 			t.Errorf("%s: x32 wording: %s", arch, off)
 		}
+		s390 := strings.Contains(off, "31-bit s390 included") && strings.Contains(on, "mounts (mount, umount2, umount, open_tree") &&
+			strings.Contains(off, "socketcall creating a socket of any family") && strings.Contains(on, "socketcall creating a socket of any family")
+		if s390 != (arch == "s390x") {
+			t.Errorf("%s: s390x wording:\n%s\n%s", arch, off, on)
+		}
 	}
 	if d := testCommand(false).Describe(); d == "" {
 		t.Error("empty description")
+	}
+}
+
+// An argument's low word is its first on a little-endian machine and its
+// second on s390x, which is big-endian.
+func TestArgumentLowWord(t *testing.T) {
+	for arch, want := range map[string][3]uint32{"amd64": {16, 24, 32}, "arm64": {16, 24, 32}, "s390x": {20, 28, 36}} {
+		for i, w := range want {
+			if got := arches[arch].argLow(uint32(i)); got != w { // #nosec G115 -- 0 to 2
+				t.Errorf("%s argument %d: offset %d, want %d", arch, i, got, w)
+			}
+		}
+	}
+	// A filter reading the high word on s390x would take this kill of Abhed
+	// for a kill of process 0's group, and the next for a kill of Abhed.
+	prog := mustProgram(t, testCommand(false), "s390x")
+	kill := nr(t, "s390x", "kill")
+	if got := run(t, prog, call{arch: arches["s390x"].audit, nr: kill, args: [6]uint64{testAbhed, 9}}); got != retErrno|errEPERM {
+		t.Errorf("s390x: kill of Abhed gave %s", retName(got))
+	}
+	if got := run(t, prog, call{arch: arches["s390x"].audit, nr: kill, args: [6]uint64{testAbhed << 32, 9}}); got != retAllow {
+		t.Errorf("s390x: kill of process 0 with Abhed in the high word gave %s", retName(got))
+	}
+}
+
+// On s390x clone takes the stack first and the flags second, glibc and Go
+// create sockets through socketcall, and the old umount still exists.
+func TestS390xSpecifics(t *testing.T) {
+	const eperm = retErrno | errEPERM
+	audit := arches["s390x"].audit
+	type tc struct {
+		name string
+		args [6]uint64
+		want uint32
+	}
+	for _, network := range []bool{false, true} {
+		prog := mustProgram(t, testCommand(network), "s390x")
+		cases := []tc{
+			{"clone", [6]uint64{0x7fff_0000, 0x10000000 | 17}, eperm},      // CLONE_NEWUSER in the flags
+			{"clone", [6]uint64{0x10000000 | 0x20000, 0x3d0f00}, retAllow}, // namespace bits in the stack mean nothing
+			{"socketcall", [6]uint64{1 /* SYS_SOCKET */, 0x7fff_0000}, eperm},
+			{"socketcall", [6]uint64{0x1_0000_0000 | 1, 0x7fff_0000}, eperm}, // high word ignored, as the kernel does
+			{"socketcall", [6]uint64{8 /* SYS_SOCKETPAIR */, 0x7fff_0000}, retAllow},
+			{"socketcall", [6]uint64{3 /* SYS_CONNECT */, 0x7fff_0000}, retAllow},
+			{"socketcall", [6]uint64{2 /* SYS_BIND */, 0x7fff_0000}, retAllow},
+			{"umount", [6]uint64{}, eperm},
+			{"umount2", [6]uint64{}, eperm},
+		}
+		for _, c := range cases {
+			if got := run(t, prog, call{arch: audit, nr: nr(t, "s390x", c.name), args: c.args}); got != c.want {
+				t.Errorf("network=%v: %s%v gave %s, want %s", network, c.name, c.args[:2], retName(got), retName(c.want))
+			}
+		}
+	}
+	// The other architectures have neither, and their programs name neither.
+	for _, arch := range []string{"amd64", "arm64"} {
+		for _, name := range []string{"socketcall", "umount"} {
+			if _, ok := arches[arch].nr[name]; ok {
+				t.Errorf("%s has %s in its table", arch, name)
+			}
+		}
 	}
 }
