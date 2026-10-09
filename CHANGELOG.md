@@ -6,6 +6,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- On macOS a command could read Abhed's environment, a provider key exported
+  to it included, through the `kern.procargs2` sysctl, which Seatbelt cannot
+  refuse. Abhed now runs itself again as it starts, under the same process
+  id, with only a short list of non-secret variables (`PATH`, `HOME`,
+  `LANG` and the like) in the environment the kernel shows, and takes the
+  rest back through a pipe. MCP servers and extensions Abhed starts still
+  inherit its environment, and a concurrent command's `secrets` and egress
+  token, and every process's arguments, stay readable: keep a provider key
+  in `api_key` in `~/.abhed/config.json`, and use the container or vm tier
+  where commands must not see one another's secrets. `ABHED_SHOW_ENV=1`
+  turns the restart off. Go programs embedding Abhed call
+  `app.HideEnvironment()` first in `main` to get the same.
+
 ### Changed
 
 - The fence's account of its Landlock layer says "TCP connect and bind

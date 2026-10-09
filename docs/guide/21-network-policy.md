@@ -148,8 +148,9 @@ but the kernel returns the arguments and environment of any process of the
 same user (the `kern.procargs2` sysctl) that is not a restricted program, as
 Apple's own are, and Seatbelt has no rule that refuses it. So a command, a
 workbench terminal or a stdio MCP server can read a concurrent command's
-token while that call is live, and the environment of Abhed and of an MCP
-server it started, keys included; see
+token while that call is live, and the environment of an MCP server or
+extension Abhed started, keys included. Abhed's own environment is hidden
+from it (it restarts itself with only a few variables in view); see
 [Configuration](02-configuration.md#sandbox).
 
 - **HTTPS** goes through `CONNECT` and is decided by host and port only: the
