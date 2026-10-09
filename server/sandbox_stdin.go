@@ -260,34 +260,37 @@ func stdinShell(command string) bool {
 var durationWord = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]?$`)
 
 // shellReadsStdin reports whether a shell given args reads its commands
-// from stdin: options only, or -s and its positional parameters.
+// from stdin. Only options known to leave that so are accepted, since a shell
+// keeps parsing options after -s; anything else, a -c above all, is false.
 func shellReadsStdin(args []string) bool {
+	positional := false // -s: words after the options are its positional parameters
 	for j := 0; j < len(args); j++ {
 		a := args[j]
 		switch {
 		case a == "-" || a == "--":
-			return j+1 == len(args)
-		case a == "--login" || a == "--norc" || a == "--noprofile" || a == "--posix" || a == "--noediting":
-		case strings.HasPrefix(a, "--"):
-			return false
-		case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
-			// A c anywhere in the bundle runs a command string, as sh -sc does.
-			if strings.ContainsRune(a[1:], 'c') {
-				return false
-			}
+			return positional || j+1 == len(args)
+		case len(a) > 1 && a[0] == '-' && a[1] != '-' || len(a) > 1 && a[0] == '+':
 			for _, o := range a[1:] {
-				switch o {
-				case 's':
-					if a[0] == '-' {
-						return true // the rest are its positional parameters
+				switch {
+				case o == 's' && a[0] == '-':
+					positional = true
+				case o == 'o':
+					if j++; j >= len(args) || !stdinShellSetOptions[args[j]] {
+						return false
 					}
-				case 'o', 'O':
-					j++
+				case o == 'e' || o == 'u' || o == 'x' || o == 'v':
+				default:
+					return false
 				}
 			}
+		case strings.HasPrefix(a, "-") || a == "+":
+			return false // a long option, which may name a file to run
 		default:
-			return false // a script file
+			return positional // else a script file
 		}
 	}
 	return true
 }
+
+// stdinShellSetOptions are the -o names a stdin shell may be given.
+var stdinShellSetOptions = map[string]bool{"errexit": true, "nounset": true, "xtrace": true, "verbose": true, "pipefail": true}
