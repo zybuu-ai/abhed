@@ -1387,7 +1387,9 @@ async function loadSessions(){
 // The list is in order of last activity: a session just continued comes first.
 const sessionTime = s => s.updated || s.created || '';
 function sortSessions(list){
-  return (list || []).slice().sort((a, b) => String(sessionTime(b)).localeCompare(String(sessionTime(a))) || (a.id < b.id ? 1 : -1));
+  // By instant, not text: two times in different offsets do not sort as strings.
+  const t = s => Date.parse(sessionTime(s)) || 0;
+  return (list || []).slice().sort((a, b) => t(b) - t(a) || (a.id < b.id ? 1 : -1));
 }
 // matchSession is the filter: every word in the title or the first message, as written and as shown.
 function matchSession(s, q){

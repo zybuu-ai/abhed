@@ -8,6 +8,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A bare `/ide` could open an older session instead of the latest:
+  `GET /v1/sessions` wrote a live session's times in the server's local
+  offset and a recorded one's in UTC, and the workbench sorted them as text.
+  The list now writes every time in UTC and the workbench sorts by instant.
 - `abhed -settings FILE doctor` ignored `-settings` and checked the
   configuration without it. The doctor, and `doctor --json`, now load it as a
   run would and name it on a `settings` line.

@@ -106,6 +106,13 @@ func writeSessionPage(w http.ResponseWriter, all []sessionSummary, p listPage) {
 	out := all[:0]
 	for _, s := range all {
 		if p.matches(s) && (p.cursor == nil || p.cursor.before(s)) {
+			// The record's times are UTC and a live session's local; one zone keeps them comparable as text.
+			s.Created, s.Updated = s.Created.UTC(), s.Updated.UTC()
+			if s.PendingAsk != nil {
+				a := *s.PendingAsk
+				a.Since = a.Since.UTC()
+				s.PendingAsk = &a
+			}
 			out = append(out, s)
 		}
 	}
