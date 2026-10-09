@@ -87,10 +87,35 @@ func skillDirs(cfg config.Config) []string {
 	return out
 }
 
+// ControlPlaneDB is the SQLite file serve's control plane keeps sandboxes
+// in, or "" when it keeps none: the control plane is off or uses Postgres.
+func ControlPlaneDB(cfg config.Config) string {
+	if !cfg.ControlPlane.Enabled || cfg.Storage.Driver == "postgres" {
+		return ""
+	}
+	if p := cfg.ControlPlane.SQLitePath; p != "" {
+		return filepath.Clean(p)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, tools.StateDir, "controlplane", "sandboxes.db")
+}
+
+// controlPlaneFiles are the database and the files SQLite keeps beside it.
+func controlPlaneFiles(cfg config.Config) []string {
+	db := ControlPlaneDB(cfg)
+	if db == "" {
+		return nil
+	}
+	return []string{db, db + "-wal", db + "-shm", db + "-journal"}
+}
+
 // StatePaths are the files holding Abhed's state that a configuration can put
 // outside .abhed: the local accounts, the secrets store, the per-account
-// stores and a managed record directory. The tools, the server and the
-// sandbox all refuse them.
+// stores, a managed record directory and the control plane's database. The
+// tools, the server and the sandbox all refuse them.
 func StatePaths(cfg config.Config, workspace string) []string {
 	users := cfg.Auth.UsersFile
 	if users == "" {
@@ -122,6 +147,7 @@ func StatePaths(cfg config.Config, workspace string) []string {
 			out = append(out, real)
 		}
 	}
+	out = append(out, controlPlaneFiles(cfg)...)
 	return append(out, cfg.Record.Also...)
 }
 
@@ -135,12 +161,12 @@ func StatePaths(cfg config.Config, workspace string) []string {
 func CheckStatePaths(cfg config.Config, workspace string, stateRoots ...string) error {
 	// A .abhed is a shield only where it really is: not a link to a folder
 	// elsewhere, which the sandbox's rule for it would not cover.
-	var shielded []string
+	var shielded, homeShield []string
 	bases := []string{workspace}
 	if home, err := os.UserHomeDir(); err == nil {
 		bases = append(bases, home)
 	}
-	for _, b := range bases {
+	for i, b := range bases {
 		abs, err := filepath.Abs(b)
 		if err != nil {
 			continue
@@ -148,25 +174,43 @@ func CheckStatePaths(cfg config.Config, workspace string, stateRoots ...string) 
 		want := filepath.Join(tools.RealPath(abs), ".abhed")
 		if tools.RealPath(filepath.Join(abs, ".abhed")) == want {
 			shielded = append(shielded, want)
+			if i == 1 {
+				homeShield = []string{want}
+			}
 		}
 	}
 	areas := append([]string{workspace}, cfg.AdditionalDirs...)
 	areas = append(areas, sandbox.WritableAreas()...)
+	if cfg.ControlPlane.Enabled && cfg.ControlPlane.WorkspaceRoot != "" {
+		// Every sandbox's own folder is somewhere its commands write.
+		areas = append(areas, cfg.ControlPlane.WorkspaceRoot)
+	}
+	db := controlPlaneFiles(cfg)
+	if len(db) > 0 && !filepath.IsAbs(db[0]) {
+		return fmt.Errorf("refusing to start: control_plane.sqlite_path %q is not an absolute path", db[0])
+	}
 	for _, p := range StatePaths(cfg, workspace) {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return err
 		}
 		real := tools.RealPath(abs)
-		if inside(real, shielded) {
+		// The control plane's database stays out of every workspace, its
+		// .abhed included; only the home directory's shields it.
+		shields := shielded
+		if slices.Contains(db, p) {
+			shields = homeShield
+		}
+		if inside(real, shields) {
 			continue
 		}
 		for _, a := range areas {
 			if under([]string{abs, real}, []string{a}) {
 				return fmt.Errorf("refusing to start: the state file %s is inside %s, where commands "+
-					"can write and could move it or replace it. Keep auth.users_file and "+
-					"ABHED_SECRETS_FILE outside the workspace, added directories, temp folders and "+
-					"caches, or under the workspace's or the home directory's .abhed", p, a)
+					"can write and could move it or replace it. Keep auth.users_file, "+
+					"ABHED_SECRETS_FILE and control_plane.sqlite_path outside the workspace, added "+
+					"directories, sandbox folders, temp folders and caches, or under the workspace's "+
+					"or the home directory's .abhed (the home directory's only, for the database)", p, a)
 			}
 		}
 	}

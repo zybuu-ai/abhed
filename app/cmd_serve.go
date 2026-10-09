@@ -190,12 +190,15 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if cfg.ControlPlane.Enabled {
 		live := openVault().Live()
 		var label string
-		cp, label, err = buildControlPlane(context.Background(), cfg, workspace, eventStore,
+		var closeCP func()
+		cp, label, closeCP, err = buildControlPlane(context.Background(), cfg, workspace, eventStore,
 			func(text string) string { return string(live.Redact([]byte(text))) })
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
+		// Deferred before the reconciler's stop, so it runs after the reconciler has ended.
+		defer closeCP()
 		fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", label)
 	}
 
