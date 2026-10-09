@@ -8,6 +8,8 @@ import (
 	"context"
 	"io"
 	"net"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -310,3 +312,38 @@ func (f *Fake) Restore(_ context.Context, id string, ref driver.SnapshotRef) err
 	}
 	return nil
 }
+
+// Command runs req with /bin/sh in the instance's workspace, unconfined; a
+// shell is sh -i. It is for tests of code that runs commands it is handed.
+func (f *Fake) Command(ctx context.Context, id string, req driver.CommandRequest) (*exec.Cmd, error) {
+	f.mu.Lock()
+	err := f.enter("command")
+	spec := f.specs[id]
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if err := f.running(id); err != nil {
+		return nil, err
+	}
+	dir := req.Cwd
+	if dir == "" {
+		dir = spec.Workspace
+	} else if !filepath.IsAbs(dir) {
+		dir = filepath.Join(spec.Workspace, dir)
+	}
+	if rel, err := filepath.Rel(spec.Workspace, dir); spec.Workspace == "" || err != nil || !filepath.IsLocal(rel) && rel != "." {
+		return nil, driver.Errorf(driver.ErrInvalid, "cwd %s is outside the workspace", dir)
+	}
+	args := []string{"-c", req.Command}
+	if req.Shell {
+		args = []string{"-i"}
+	}
+	cmd := exec.CommandContext(ctx, "/bin/sh", args...)
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + spec.Workspace, "ABHED_SANDBOX=" + id}
+	return cmd, nil
+}
+
+// ForwardEnv leaves cmd alone: its environment already reaches the shell.
+func (f *Fake) ForwardEnv(*exec.Cmd, []string) {}

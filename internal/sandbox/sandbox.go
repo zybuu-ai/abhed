@@ -134,6 +134,10 @@ type Policy struct {
 	// WriteProtected are paths inside the workspace a command may read but
 	// not write, such as an editor's own settings there.
 	WriteProtected []string
+	// Hidden are folders commands can neither read nor write, apart from the
+	// workspace when it lies inside one: the folder holding other sandboxes'
+	// workspaces beside this one's.
+	Hidden []string
 	// ProtectGit write-protects the gitPointers of every git folder in the
 	// workspace and each .git file; see gitprotect.go for how each backend does it.
 	ProtectGit bool
@@ -188,6 +192,9 @@ type Sandbox interface {
 // error naming what was tried. A sandbox that quietly weakens itself is worse
 // than no sandbox, because the operator stops checking.
 func Select(p Policy) (Sandbox, error) {
+	if err := checkHidden(p); err != nil {
+		return nil, err
+	}
 	if p.Tier != "" {
 		return selectChosen(p)
 	}
@@ -216,6 +223,26 @@ func Select(p Policy) (Sandbox, error) {
 			"Install gVisor (runsc) or a container runtime, or lower sandbox.min_tier "+
 			"in config — but do not run untrusted repositories below tier %q",
 		p.MinTier, strings.Join(tried, "; "), TierProcess)
+}
+
+// checkHidden refuses a hidden folder that a read-only path or a skills
+// folder would show to commands, on the tiers that mount what they show.
+func checkHidden(p Policy) error {
+	for _, h := range p.Hidden {
+		for _, shown := range append(append([]string{}, p.ReadOnlyPaths...), p.SkillDirs...) {
+			for _, hf := range PathForms(h) {
+				for _, sf := range PathForms(shown) {
+					if _, in := Within(hf, sf); in {
+						return fmt.Errorf("%s is shown to commands (read_only_paths or skills), so the sandboxes in %s cannot be kept apart", shown, h)
+					}
+					if _, in := Within(sf, hf); in {
+						return fmt.Errorf("%s lies among other sandboxes' folders in %s, which commands may not see", shown, h)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // selectChosen builds the one tier the configuration chose, or refuses

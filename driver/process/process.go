@@ -40,6 +40,9 @@ type Options struct {
 	SnapshotDir string
 	// Record receives snapshot, restore and forward events.
 	Record driver.Recorder
+	// Hide are folders no instance's commands may read or write, apart from
+	// the instance's own workspace inside one: where sibling sandboxes live.
+	Hide []string
 }
 
 // Driver runs instances under the configured sandbox tier.
@@ -82,7 +85,15 @@ func New(cfg config.Config) *Driver {
 // NewWithOptions is New with the operator's options.
 func NewWithOptions(cfg config.Config, opts Options) *Driver {
 	return newDriverWith(func(spec driver.Spec) (sandbox.Sandbox, error) {
-		return sandboxconfig.Build(cfg, spec.Workspace)
+		if len(opts.Hide) == 0 {
+			return sandboxconfig.Build(cfg, spec.Workspace)
+		}
+		p, err := sandboxconfig.Policy(cfg, spec.Workspace)
+		if err != nil {
+			return nil, err
+		}
+		p.Hidden = slices.Clone(opts.Hide)
+		return sandbox.Select(p)
 	}, opts)
 }
 
@@ -95,7 +106,7 @@ func newDriverWith(build func(driver.Spec) (sandbox.Sandbox, error), opts Option
 }
 
 func (d *Driver) Info() driver.Info {
-	caps := []driver.Capability{driver.CapAttach, driver.CapForward}
+	caps := []driver.Capability{driver.CapAttach, driver.CapForward, driver.CapCommand}
 	if d.opts.SnapshotDir != "" {
 		caps = append(caps, driver.CapSnapshot)
 	}
@@ -429,6 +440,37 @@ func result(ctx context.Context, cmd *exec.Cmd, err error) (driver.ExecResult, e
 	}
 	return driver.ExecResult{ExitCode: code}, nil
 }
+
+// Command builds a command, or the interactive shell, under the instance's
+// sandbox for the caller to run. It counts as running until ctx ends, and
+// ends when the instance stops.
+func (d *Driver) Command(ctx context.Context, id string, req driver.CommandRequest) (*exec.Cmd, error) {
+	in, cctx, done, err := d.begin(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := cwd(in.spec.Workspace, req.Cwd)
+	if err != nil {
+		done()
+		return nil, err
+	}
+	var cmd *exec.Cmd
+	if req.Shell {
+		sh, ok := in.sb.(sandbox.Interactive)
+		if !ok {
+			done()
+			return nil, driver.Errorf(driver.ErrUnsupported, "the %s tier here has no interactive shell", in.sb.Tier())
+		}
+		cmd = sh.Shell(cctx, dir)
+	} else {
+		cmd = in.sb.Command(cctx, dir, req.Command)
+	}
+	context.AfterFunc(cctx, done)
+	return cmd, nil
+}
+
+// ForwardEnv passes named variables into a container-tier command.
+func (d *Driver) ForwardEnv(cmd *exec.Cmd, names []string) { sandbox.ForwardEnv(cmd, names) }
 
 // Attach runs the sandbox's interactive shell on a terminal.
 func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest) (driver.ExecResult, error) {

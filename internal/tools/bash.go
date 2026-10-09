@@ -57,6 +57,9 @@ type Bash struct {
 	// RanUnder, when set, is the tier a command ran under, for a sandbox
 	// chosen after start-up; Isolation.Tier is then the weakest it can be.
 	RanUnder func() string
+	// Forward, when set, passes named variables already in a command's Env
+	// into what Sandbox built, in place of sandbox.ForwardEnv.
+	Forward func(cmd *exec.Cmd, names []string)
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -543,7 +546,11 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 			}
 		}
 		// A container sees only what is forwarded to it by name.
-		sandbox.ForwardEnv(cmd, names)
+		if b.Forward != nil {
+			b.Forward(cmd, names)
+		} else {
+			sandbox.ForwardEnv(cmd, names)
+		}
 	}
 	return cmd, nil
 }

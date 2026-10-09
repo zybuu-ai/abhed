@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"time"
 )
 
@@ -25,6 +26,9 @@ const (
 	CapCopy     Capability = "copy"
 	CapForward  Capability = "forward"
 	CapSnapshot Capability = "snapshot"
+	// CapCommand hands out a command as a process the caller starts; only
+	// in-process drivers can, so the out-of-process protocol never carries it.
+	CapCommand Capability = "command"
 )
 
 // Info describes a driver.
@@ -188,6 +192,28 @@ type Snapshotter interface {
 	Restore(ctx context.Context, id string, ref SnapshotRef) error
 }
 
+// CommandRequest is one command, or an interactive shell, a Commander builds.
+type CommandRequest struct {
+	// Command is a shell command line; empty with Shell set.
+	Command string
+	// Shell starts an interactive shell for a terminal instead.
+	Shell bool
+	// Cwd is a folder inside the instance's workspace; empty is its root.
+	Cwd string
+}
+
+// Commander is implemented by drivers declaring CapCommand. It builds the
+// process running req in an instance for the caller to start, wait on and
+// kill, as a session's bash tool and terminal do with their commands. The
+// process ends when ctx does or the instance stops. Its exit status is the
+// command's, or the engine's own failure where an engine runs it.
+type Commander interface {
+	Command(ctx context.Context, id string, req CommandRequest) (*exec.Cmd, error)
+	// ForwardEnv makes the named variables, already in cmd.Env, reach a
+	// command this driver built, without their values in its arguments.
+	ForwardEnv(cmd *exec.Cmd, names []string)
+}
+
 // Lifetime is implemented by drivers that can say when an instance's
 // current incarnation ends, so what is bound to it (a forward, an exposed
 // service) closes with it. Done fails for an instance that is not running.
@@ -231,6 +257,8 @@ func Check(d Driver) error {
 			_, ok = d.(Forwarder)
 		case CapSnapshot:
 			_, ok = d.(Snapshotter)
+		case CapCommand:
+			_, ok = d.(Commander)
 		default:
 			return Errorf(ErrInvalid, "driver %s declares unknown capability %q", info.Name, c)
 		}
@@ -282,6 +310,18 @@ func Forward(ctx context.Context, d Driver, id string, port int) (io.ReadWriteCl
 		return nil, Errorf(ErrInvalid, "port %d is out of range", port)
 	}
 	return f.Forward(ctx, id, port)
+}
+
+// Command builds req's process in an instance when d declares CapCommand.
+func Command(ctx context.Context, d Driver, id string, req CommandRequest) (*exec.Cmd, error) {
+	c, ok := d.(Commander)
+	if !ok || !d.Info().Has(CapCommand) {
+		return nil, unsupported(d, CapCommand)
+	}
+	if req.Shell != (req.Command == "") {
+		return nil, Errorf(ErrInvalid, "exactly one of a command and a shell must be asked for")
+	}
+	return c.Command(ctx, id, req)
 }
 
 // Snapshot takes a snapshot when d declares CapSnapshot.
