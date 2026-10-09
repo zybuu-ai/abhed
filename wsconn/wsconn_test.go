@@ -359,3 +359,24 @@ func TestCloseCodeRange(t *testing.T) {
 		t.Fatal("trim split a character")
 	}
 }
+
+// A peer that stops reading holds a write only until WriteTimeout; then the
+// connection is closed, so other writers and a reader are not held behind it.
+func TestWriteTimeoutAborts(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := newConn(a, nil, false, Limits{WriteTimeout: 50 * time.Millisecond}, "")
+	start := time.Now()
+	if err := c.WriteMessage(Binary, []byte("nobody reads this")); err == nil {
+		t.Fatal("a write no one read succeeded")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("the write took %s", time.Since(start))
+	}
+	if err := c.WriteMessage(Binary, []byte("x")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("after the timeout: %v", err)
+	}
+	if _, _, err := c.ReadMessage(); err == nil {
+		t.Fatal("a read on an aborted connection")
+	}
+}

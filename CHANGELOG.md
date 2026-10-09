@@ -466,6 +466,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- A client that stopped reading a sandbox stream held the server's writes,
+  and its answers to pings, until the connection broke. Each write on a
+  stream now has 30 seconds; past that the stream is closed and ends as
+  any lost client's does. `wsconn.Limits.WriteTimeout` sets the bound.
 - A server shutting down now ends its open `:attach`, `:exec`, `:forward`
   and `:ssh` streams, which the HTTP server's own shutdown does not close,
   records how each ended (code `unavailable`), and opens no new one.

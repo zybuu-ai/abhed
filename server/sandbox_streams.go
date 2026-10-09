@@ -54,8 +54,9 @@ const (
 	SSHRelayProtocol = protoSSH
 )
 
-// streamLimits bound what a client sends on a stream.
-var streamLimits = wsconn.Limits{MaxFrame: 1 << 20, MaxMessage: 1 << 20}
+// streamLimits bound what a client sends on a stream, and how long one
+// that stops reading may hold a write before its stream is closed.
+var streamLimits = wsconn.Limits{MaxFrame: 1 << 20, MaxMessage: 1 << 20, WriteTimeout: 30 * time.Second}
 
 // streamSlots counts open streams per caller, and ends them all at shutdown:
 // a hijacked connection is not one the HTTP server's Shutdown closes.

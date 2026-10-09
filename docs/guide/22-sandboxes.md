@@ -483,7 +483,8 @@ longer see the sandbox, the stream ends. It also ends when the sandbox
 stops, is deleted or starts as a new generation, when the client stops
 answering pings for a minute, after twelve hours, and when the server
 shuts down (`{"type": "error"}` with code `unavailable`; each stream's end
-is recorded first, and no new one opens). One caller may have
+is recorded first, and no new one opens). A client that stops reading for
+30 seconds while the server writes to it is taken to be gone. One caller may have
 16 streams open at once; each opening counts against `exec_per_minute`.
 Messages are at most 1 MiB.
 
