@@ -266,7 +266,7 @@ gets, and every admission rule, is in [Container drivers](23-container-drivers.m
 | `binary` | managed only | The engine's program; found on `PATH` by its name when unset. |
 | `images` | managed only | Further images a sandbox may ask for in `Config["image"]`. |
 | `mounts` | managed only | Host folders every sandbox gets: `{"host", "target", "rw"?, "relabel"?}`. |
-| `mount_roots` | managed only | Folders under which a sandbox may ask for its own mounts: `{"path", "rw"?, "relabel"?}`. |
+| `mount_roots` | managed only | Folders under which a sandbox may ask for its own mounts: `{"path", "rw"?, "relabel"?}`. `abhed serve` does not start with one that overlaps the folder holding sandbox workspaces or the snapshot folder. |
 | `gpus` | managed only | CDI device names a sandbox may ask for, such as `nvidia.com/gpu=all`. |
 | `cpus` | managed only | CPUs each sandbox may use, 2 when unset. |
 | `seccomp_profile` | managed only | A seccomp profile file in place of the engine's default; `unconfined` is refused. |
