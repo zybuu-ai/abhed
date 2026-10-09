@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -622,5 +623,44 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	obs, _ := r.recorded(id, agent.EvObservation)
 	if !strings.Contains(obs[len(obs)-1]["content"].(string), "interactive Abhed terminal") {
 		t.Fatalf("the shell's end: %v", obs[len(obs)-1])
+	}
+}
+
+// Only a managed file that sets deny rules forces line mode on Studio's
+// terminal; one that only turns web search on leaves it interactive.
+func TestStudioInteractiveTerminalUnderManagedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, managedBody string
+		refused           bool
+	}{
+		{"managed deny", `{"permissions":{"deny":["bash(*curl*)"]}}`, true},
+		{"managed web search", `{"web_search":{"enabled":true}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newStudioRig(t, "")
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(tc.managedBody), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			old := managed.ConfigFile
+			managed.ConfigFile = path
+			t.Cleanup(func() { managed.ConfigFile = old })
+			id := r.open()
+			params := map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}
+			if tc.refused {
+				if msg := r.cl.refused(errPolicy, "_abhed/terminal/create", params); !strings.Contains(msg, "lines mode") {
+					t.Fatalf("refusal does not name lines mode: %q", msg)
+				}
+				return
+			}
+			var term struct {
+				TerminalID string `json:"terminalId"`
+			}
+			r.cl.ok("_abhed/terminal/create", params, &term)
+			if term.TerminalID == "" {
+				t.Fatal("no interactive terminal opened")
+			}
+			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
+		})
 	}
 }

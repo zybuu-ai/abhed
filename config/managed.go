@@ -120,6 +120,7 @@ func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
 // ManagedScreens reports whether the managed file itself sets the deny rules
 // or the extensions, so a refusal they make is the organisation's to hold.
+// Like Apply, it is only as good as ManagedKeys: a hand-built Config has none.
 func (c Config) ManagedScreens() bool {
 	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions"))
 }

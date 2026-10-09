@@ -6,6 +6,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `config.Config.ManagedScreens` reports whether the managed file itself sets
+  the deny rules or the extensions, which is when a terminal must judge each
+  line.
+
 ### Fixed
 
 - A managed configuration that set nothing about permissions — for example one
