@@ -290,12 +290,21 @@ func (s *Server) sandboxCallerFunc() func(r *http.Request) (controlplane.Caller,
 	}
 }
 
-// sandboxPolicy is what a person's commands in a sandbox are judged by:
-// the server's rules and its extensions' hooks, as the workbench's terminal.
-func (s *Server) sandboxPolicy(id string) *policy.Engine {
+// sandboxPolicy is what a person's commands in a sandbox are judged by: the
+// server's rules, its extensions' hooks and the caller's policy layer, as
+// the workbench's terminal. A layer that cannot be had refuses the call.
+func (s *Server) sandboxPolicy(ctx context.Context, id string) (*policy.Engine, error) {
 	pol := s.newPolicy(policy.ModeDefault)
 	toolset.Police(s.opts.Extensions, pol, "sandbox:"+id)
-	return pol
+	layer, err := s.sessionLayer(StartSpec{Tenant: TenantOf(ctx), User: UserOf(ctx)})
+	if err == nil {
+		err = applyLayer(pol, layer)
+	}
+	if err != nil {
+		s.log.Error("sandbox call refused: its policy layer", "sandbox", id, "user", UserOf(ctx), "error", err)
+		return nil, fmt.Errorf("%w: %w", controlplane.ErrUnavailable, err)
+	}
+	return pol, nil
 }
 
 // denied refuses a command line a deny rule or hook refuses. line judges it

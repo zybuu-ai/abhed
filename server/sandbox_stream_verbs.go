@@ -39,7 +39,11 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 		return
 	}
 	defer st.release()
-	pol := s.sandboxPolicy(call.id)
+	pol, err := s.sandboxPolicy(r.Context(), call.id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
 	if why := s.terminalRefusal(pol); why != "" {
 		writeCPError(w, http.StatusForbidden, "forbidden", why)
 		return
@@ -143,6 +147,11 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		s.failCP(w, r, fmt.Errorf("%w: sandbox %s is %s; only Ready takes exec", controlplane.ErrInvalidTransition, call.id, st.sb.State))
 		return
 	}
+	pol, err := s.sandboxPolicy(r.Context(), call.id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
 	ws, err := accept(w, r, st.proto)
 	if err != nil {
 		return
@@ -188,7 +197,6 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 			_, _ = pw.Write(msg)
 		}
 	}()
-	pol := s.sandboxPolicy(call.id)
 	var wait func() error
 	res, _, err := s.opts.ControlPlane.Exec(ctx, call.caller, call.id, "", req, controlplane.ExecIO{
 		Stdin: pr, Stdout: prefixed{ws, 1}, Stderr: prefixed{ws, 2},
@@ -383,10 +391,15 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 		return
 	}
 	defer st.release()
+	pol, err := s.sandboxPolicy(r.Context(), call.id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var ws *wsconn.Conn
-	_, err := s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "ssh"},
+	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "ssh"},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {
 			var err error
 			if ws, err = accept(w, r, st.proto); err != nil {
@@ -399,7 +412,7 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 			conn.touch()
 			wait := s.watchStream(ctx, cancel, r, sb, d, ws,
 				streamBounds{max: maxSession, idle: vals.Seconds(controlplane.SetSSHIdle), active: conn.last})
-			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: s.sandboxPolicy(sb.ID), until: time.Now().Add(maxSession)}
+			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: pol, until: time.Now().Add(maxSession)}
 			stats, err := sshrelay.Serve(ctx, conn, sshrelay.Config{HostKey: key, Log: s.log}, h)
 			if why := wait(); why != nil {
 				err = why

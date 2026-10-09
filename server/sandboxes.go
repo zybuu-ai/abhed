@@ -559,7 +559,11 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request, call verbCa
 		writeCPError(w, http.StatusBadRequest, "invalid", ":exec with stdin is a WebSocket: GET the same path with an upgrade to "+protoExec)
 		return
 	}
-	pol := s.sandboxPolicy(call.id)
+	pol, err := s.sandboxPolicy(r.Context(), call.id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
 	fw := &frameWriter{w: w, enc: json.NewEncoder(w)}
 	started := false
 	idem := controlplane.Idempotency{Store: s.opts.ControlPlane.Store()}

@@ -8,6 +8,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- An edition's per-person policy layer (`server.Options.SessionPolicy`,
+  such as a Team workspace's rules) now judges that person's sandbox
+  commands (`:exec`, either form) and every line typed into `:attach` and
+  an SSH shell, as it judges their sessions and the workbench's terminal.
+  The layer is asked for per caller when the call or connection opens; one
+  that cannot be read or applied refuses the call with `503` instead of
+  running it under fewer rules.
 - A sandbox command fed stdin (the `:exec` WebSocket, an SSH exec request,
   `abhed sandbox exec -i`) that is a shell or interpreter, such as `sh` or
   `python3`, is refused with `403` while any deny or ask rule for `bash` or
