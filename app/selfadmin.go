@@ -57,6 +57,11 @@ func selfAdmin(rest []string) string {
 		if slices.Contains([]string{"use", "rm", "remove"}, verb) {
 			return "abhed profile " + verb
 		}
+	case "sandbox":
+		// Nor reach a server's sandboxes with it.
+		if verb == "connect" {
+			return "abhed sandbox connect"
+		}
 	case "migrate":
 		return "abhed migrate"
 	case "admin":

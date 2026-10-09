@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
@@ -210,6 +212,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	// The sandbox control plane, only when the configuration turns it on.
 	var cp *controlplane.Service
 	var exposed *expose.Server
+	var sshKey ssh.Signer
 	if cfg.ControlPlane.Enabled {
 		live := openVault().Live()
 		built, err := buildControlPlane(context.Background(), cfg, workspace, eventStore,
@@ -218,7 +221,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
-		cp, exposed = built.svc, built.expose
+		cp, exposed, sshKey = built.svc, built.expose, built.sshKey
 		// Deferred before the reconciler's stop, so it runs after the reconciler has ended.
 		defer built.close()
 		if exposed != nil {
@@ -228,21 +231,22 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 
 	opts := server.Options{
-		ControlPlane: cp,
-		Expose:       exposed,
-		Addr:         addr,
-		Workspace:    workspace,
-		HomeURL:      cfg.Server.HomeURL,
-		EventTap:     fanIn(taps),
-		Config:       cfg,
-		Adapter:      buildAdapter(provider),
-		Registry:     set.Registry,
-		Redact:       openVault().Live(),
-		SkillListing: set.SkillListing,
-		SkillDirs:    set.SkillDirs(),
-		Extensions:   set.Extensions,
-		Store:        eventStore,
-		Auth:         authMW,
+		ControlPlane:  cp,
+		Expose:        exposed,
+		SandboxSSHKey: sshKey,
+		Addr:          addr,
+		Workspace:     workspace,
+		HomeURL:       cfg.Server.HomeURL,
+		EventTap:      fanIn(taps),
+		Config:        cfg,
+		Adapter:       buildAdapter(provider),
+		Registry:      set.Registry,
+		Redact:        openVault().Live(),
+		SkillListing:  set.SkillListing,
+		SkillDirs:     set.SkillDirs(),
+		Extensions:    set.Extensions,
+		Store:         eventStore,
+		Auth:          authMW,
 		// The live objects behind the settings surface. Passing the registries
 		// rather than only their rendered output is what lets a change reach
 		// the next session without a restart.
