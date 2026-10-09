@@ -27,8 +27,9 @@ import (
 //	    "OK <port>\n"; joins a guest connection to a port in guest_ports to
 //	    a new connection to that port's socket, and refuses the guest any
 //	    other port; writes the guest console to stdout; exits when the VM
-//	    stops, and stops the VM when it is killed. It refuses a key it
-//	    does not know.
+//	    stops, and stops the VM and exits when it is killed or its standard
+//	    input ends, which is how a driver that dies takes its VMs with it.
+//	    It refuses a key it does not know.
 type Helper struct {
 	// Path is the helper's absolute path; empty until one is installed.
 	Path string `json:"path,omitempty"`
@@ -171,8 +172,19 @@ func (h *helper) boot(_ context.Context, b bootSpec) (machine, error) {
 	}
 	cmd := exec.Command(h.h.Path, "run", "--config", filepath.Join(run, "vm.json"))
 	cmd.Env = append([]string{}, h.env...)
-	m, err := startMachine(cmd, sock, lns, nil, cleanup)
+	// Only this process holds the write end: when it exits, the helper's
+	// stdin ends and the helper stops its VM.
+	life, hold, err := os.Pipe()
 	if err != nil {
+		closeAll(lns)
+		_ = cleanup()
+		return nil, err
+	}
+	cmd.Stdin = life
+	m, err := startMachine(cmd, sock, lns, func() error { return hold.Close() }, cleanup)
+	_ = life.Close()
+	if err != nil {
+		_ = hold.Close()
 		_ = cleanup()
 		return nil, err
 	}

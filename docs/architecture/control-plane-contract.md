@@ -294,6 +294,9 @@ installed. A backend whose requirements are missing fails `Create` with
   and kills the VM's cgroup after it. `Start` boots from a fresh chroot; the
   workspace image survives until `Delete`.
 - Declares `attach` only.
+- `Recover`, run once when the driver process starts, takes the state
+  folder's lock and ends the VMs a killed run of the same state folder
+  left, found by the marker beside each chroot.
 - The jailer needs root, so on Linux the driver runs as its own root process
   (`cmd/abhed-microvm`) behind the out-of-process protocol, with its socket
   owned by the server's user, and builds workspace images as that user.

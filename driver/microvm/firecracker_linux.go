@@ -96,11 +96,19 @@ func killCgroup(parent, vmID string) error {
 	return err
 }
 
-// removeCgroup removes the VM's cgroup once it is empty.
+// removeCgroup removes the VM's cgroup, waiting a little for processes
+// just killed to leave it.
 func removeCgroup(parent, vmID string) error {
-	err := unix.Rmdir(cgroupDir(parent, vmID))
-	if err == nil || errors.Is(err, unix.ENOENT) {
-		return nil
+	var err error
+	for range 50 {
+		err = unix.Rmdir(cgroupDir(parent, vmID))
+		if err == nil || errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		if !errors.Is(err, unix.EBUSY) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("removing the cgroup of %s: %w", vmID, err)
 }

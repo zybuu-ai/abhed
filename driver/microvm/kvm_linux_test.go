@@ -136,6 +136,7 @@ func TestFirecrackerOnKVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("egress", func(t *testing.T) { kvmEgress(ctx, t, o) })
+	t.Run("recover", func(t *testing.T) { kvmRecover(ctx, t, o) })
 	fc := d.be.(*firecracker)
 	if _, err := os.Stat(fc.jailDir("sbx-0123456789abcdef")); !os.IsNotExist(err) {
 		t.Fatalf("the chroot outlived the instance: %v", err)
@@ -188,5 +189,45 @@ func kvmEgress(ctx context.Context, t *testing.T, o Options) {
 	}
 	if code, _ := get("denied.test"); code == 0 {
 		t.Fatal("a destination outside the allowlist was reached")
+	}
+}
+
+// kvmRecover kills a driver's VM the way a restarted driver does after the
+// first one was killed: by its marker and cgroup alone.
+func kvmRecover(ctx context.Context, t *testing.T, o Options) {
+	o.StateDir = filepath.Join(filepath.Dir(o.StateDir), "state3")
+	fc := *o.Firecracker
+	fc.ChrootBase = filepath.Join(filepath.Dir(fc.ChrootBase), "jail3")
+	o.Firecracker = &fc
+	first, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const id3 = "sbx_3"
+	if _, err := first.Create(ctx, driver.Spec{ID: id3}); err != nil {
+		t.Fatal(err)
+	}
+	m := first.insts[id3].m
+	// Killed: its lock goes with it, and nothing else is cleaned up.
+	first.unlock()
+	second, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close(context.Background()) })
+	cleaned, err := second.Recover(ctx)
+	if err != nil || !strings.Contains(strings.Join(cleaned, ","), "VM "+id3) {
+		t.Fatalf("recover: %q %v", cleaned, err)
+	}
+	select {
+	case <-m.done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the left VM is still running")
+	}
+	if _, err := os.Stat(cgroupDir(fc.ParentCgroup, "sbx-3")); !os.IsNotExist(err) {
+		t.Fatalf("the left VM's cgroup remains: %v", err)
 	}
 }

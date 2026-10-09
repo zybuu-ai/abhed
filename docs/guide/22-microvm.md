@@ -38,10 +38,15 @@ Not isolated, or not yet:
   extra tools, setuid binaries or kernel modules gives commands more to work
   with inside the VM.
 - A command can power its own VM off. That ends its own sandbox, nothing else.
-- If the driver process is killed, its VMs keep running until an operator
-  ends them (each is in its own cgroup under the configured parent, so
-  `cgroup.kill` there ends it). A driver that exits normally deletes every
-  instance it started.
+- If the driver process is killed, its VMs keep running until it starts
+  again. On start, `abhed-microvm` takes its `state_dir`'s lock (a second
+  driver on the same `state_dir` refuses to start), then ends every VM a
+  killed run of it left and removes their chroots, cgroups and workspace
+  images. It recognises its own by a marker it writes beside each VM's
+  chroot naming its `state_dir`; a VM of another driver, a folder without
+  the marker, or a link, is left alone. Changes in a VM it ends this way
+  that were not yet copied back are lost. A macOS helper's VM ends as soon
+  as the driver that started it does.
 - Snapshots, copy in and out and port forwarding are not implemented; the
   driver declares only `attach`.
 - No DNS inside the guest. Names are resolved by the egress proxy for

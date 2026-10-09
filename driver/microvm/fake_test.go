@@ -51,6 +51,11 @@ func fakeHelper(args []string) int {
 	if json.Unmarshal(b, &cfg) != nil || cfg.Network != "none" {
 		return 4
 	}
+	// The helper protocol: the VM ends when the driver's end of stdin does.
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}()
 	ports := map[uint32]string{}
 	for _, p := range cfg.GuestPorts {
 		ports[p.Port] = p.Socket
@@ -139,7 +144,9 @@ type fakeBackend struct {
 }
 
 func (f *fakeBackend) name() string { return "fake" }
-func (f *fakeBackend) check() error { f.mu.Lock(); defer f.mu.Unlock(); return f.err }
+
+func (f *fakeBackend) recover(context.Context) ([]string, error) { return nil, nil }
+func (f *fakeBackend) check() error                              { f.mu.Lock(); defer f.mu.Unlock(); return f.err }
 
 func (f *fakeBackend) boot(_ context.Context, b bootSpec) (machine, error) {
 	time.Sleep(f.delay)

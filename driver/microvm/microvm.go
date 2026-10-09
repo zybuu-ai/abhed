@@ -111,6 +111,8 @@ type backend interface {
 	// check reports why the backend cannot run here, or nil.
 	check() error
 	boot(ctx context.Context, b bootSpec) (machine, error)
+	// recover ends and removes what a killed driver left; see Recover.
+	recover(ctx context.Context) ([]string, error)
 }
 
 // bootSpec is one boot of one instance.
@@ -157,6 +159,8 @@ type Driver struct {
 	mu    sync.Mutex
 	insts map[string]*instance
 	slots map[int]string
+	// unlock releases the state folder's lock Recover took.
+	unlock func()
 }
 
 type instance struct {
@@ -578,6 +582,12 @@ func (d *Driver) Close(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	d.mu.Lock()
+	if d.unlock != nil {
+		d.unlock()
+		d.unlock = nil
+	}
+	d.mu.Unlock()
 	return errors.Join(errs...)
 }
 

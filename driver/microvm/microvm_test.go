@@ -463,3 +463,5 @@ func TestStopCopiesChangesBack(t *testing.T) {
 		t.Fatal("a change was lost at stop")
 	}
 }
+
+func driverSpec() driver.Spec { return driver.Spec{ID: id} }

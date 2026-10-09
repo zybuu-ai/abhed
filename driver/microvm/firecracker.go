@@ -53,6 +53,8 @@ type firecracker struct {
 	chown  func(path string, uid, gid int) error
 	lchown func(path string, uid, gid int) error
 	env    []string
+	// The VM's cgroup, through these so tests need no cgroup tree.
+	cgKill, cgRemove func(parent, vmID string) error
 }
 
 func newFirecracker(o *Options) (*firecracker, error) {
@@ -93,7 +95,8 @@ func newFirecracker(o *Options) (*firecracker, error) {
 		return nil, fmt.Errorf("microvm: firecracker.parent_cgroup %q is not a plain folder name", fc.ParentCgroup)
 	}
 	o.Firecracker = &fc
-	return &firecracker{o: o, fc: fc, probe: func() error { return probeFirecracker(o, fc) }, chown: os.Chown, lchown: os.Lchown}, nil
+	return &firecracker{o: o, fc: fc, probe: func() error { return probeFirecracker(o, fc) }, chown: os.Chown, lchown: os.Lchown,
+		cgKill: killCgroup, cgRemove: removeCgroup}, nil
 }
 
 func (f *firecracker) name() string { return "firecracker" }
@@ -175,7 +178,7 @@ func (f *firecracker) boot(_ context.Context, b bootSpec) (machine, error) {
 	root := filepath.Join(jail, "root")
 	uid, gid := f.ids(b.slot)
 	cleanup := func() error {
-		return errors.Join(os.RemoveAll(jail), removeCgroup(f.fc.ParentCgroup, b.vmID))
+		return errors.Join(os.RemoveAll(jail), f.cgRemove(f.fc.ParentCgroup, b.vmID))
 	}
 	// A boot always starts from a fresh chroot, never one a VM wrote to.
 	if err := cleanup(); err != nil {
@@ -184,7 +187,10 @@ func (f *firecracker) boot(_ context.Context, b bootSpec) (machine, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	err := f.layout(b, root, uid, gid)
+	err := writeMarker(jail, f.o.StateDir, b.id)
+	if err == nil {
+		err = f.layout(b, root, uid, gid)
+	}
 	// Firecracker sends the guest's connection to port P to the socket
 	// "<uds_path>_P"; made here, while the chroot is still root's alone.
 	var lns map[uint32]net.Listener
@@ -206,7 +212,7 @@ func (f *firecracker) boot(_ context.Context, b bootSpec) (machine, error) {
 	cmd.Env = append([]string{}, f.env...)
 	cmd.SysProcAttr = vmmProcAttr()
 	m, err := startMachine(cmd, filepath.Join(root, chVsock), lns,
-		func() error { return killCgroup(f.fc.ParentCgroup, b.vmID) }, cleanup)
+		func() error { return f.cgKill(f.fc.ParentCgroup, b.vmID) }, cleanup)
 	if err != nil {
 		_ = cleanup()
 		return nil, err

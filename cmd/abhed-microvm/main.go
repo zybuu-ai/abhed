@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -56,13 +57,24 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// VMs a killed run of this driver left are ended before any is started.
+	cleaned, err := d.Recover(context.Background())
+	for _, c := range cleaned {
+		slog.Info("abhed-microvm: cleaned up after an earlier run", "what", c)
+	}
+	if err != nil {
+		_ = d.Close(context.Background())
+		return err
+	}
 	l, err := plugin.Listen(*socket)
 	if err != nil {
+		_ = d.Close(context.Background())
 		return err
 	}
 	if root {
 		if err := os.Chown(*socket, *uid, *gid); err != nil {
 			_ = l.Close()
+			_ = d.Close(context.Background())
 			return err
 		}
 	}
