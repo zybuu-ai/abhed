@@ -62,6 +62,9 @@ type Gateway struct {
 	// overlaps are remote tools left out because another server's tools are
 	// named the same way, keyed by full name.
 	overlaps map[string]string
+	// refused are servers not started because their names overlap another's;
+	// another server's tools named as theirs would be are still left out.
+	refused map[string]bool
 	// life is the context Connect was given: a server process lives as long
 	// as it, whatever context a later Restart was called with.
 	life context.Context
@@ -80,7 +83,7 @@ type Gateway struct {
 }
 
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}}
+	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]bool{}}
 }
 
 // Connect starts and initializes the enabled servers. A server that fails to
@@ -107,6 +110,10 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 			continue
 		}
 		if other := OverlappedBy(cfg.Name, enabled); other != "" {
+			// Kept, so the other server's tools named as this one's would be are left out too.
+			g.mu.Lock()
+			g.refused[cfg.Name] = true
+			g.mu.Unlock()
 			errs = append(errs, fmt.Errorf("mcp server %q is not started: its name begins with that of server %q and \"__\", "+
 				"so a tool named mcp__%s__… could be either server's and a rule for one would reach the other; rename one of them", cfg.Name, other, cfg.Name))
 			continue
@@ -380,7 +387,7 @@ func OverlappedBy(name string, others []string) string {
 // claimedBy is another configured server whose tools' names begin as full
 // does, or "". The caller holds g.mu.
 func (g *Gateway) claimedBy(full, server string) string {
-	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs)} {
+	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs), g.refused} {
 		for o := range names {
 			if o != server && strings.HasPrefix(full, "mcp__"+o+"__") {
 				return o
