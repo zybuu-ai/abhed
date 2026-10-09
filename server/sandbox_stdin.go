@@ -182,6 +182,110 @@ var stdinShells = map[string]bool{"sh": true, "bash": true, "dash": true, "ksh":
 var stdinShellWrappers = map[string]bool{"env": true, "nice": true, "timeout": true, "exec": true, "nohup": true,
 	"stdbuf": true, "setsid": true, "command": true}
 
+// wrapperProgram is the index of the program a wrapper at words[i-1] runs,
+// past the options and assignments it is known to take harmlessly, or -1 for
+// anything else: env -S, which builds a new command line, an option of
+// unknown arity, or a variable a shell runs on its own.
+func wrapperProgram(wrapper string, words []string, i int) int {
+	value := func(w, short, long string) (int, bool) { // how many words an option with a value takes
+		switch {
+		case w == short || w == long:
+			return 2, true
+		case strings.HasPrefix(w, short) && len(w) > len(short) || strings.HasPrefix(w, long+"="):
+			return 1, true
+		}
+		return 0, false
+	}
+	for ; i < len(words); i++ {
+		w := words[i]
+		if w == "--" || w == "-" && wrapper == "env" { // env's - is -i and ends its options
+			i++
+			break
+		}
+		if !strings.HasPrefix(w, "-") || w == "-" {
+			break
+		}
+		n := 1
+		switch wrapper {
+		case "env":
+			if w == "-i" || w == "--ignore-environment" {
+				break
+			}
+			var ok bool
+			if n, ok = value(w, "-u", "--unset"); !ok {
+				return -1
+			}
+		case "nice":
+			if d, ok := value(w, "-n", "--adjustment"); ok {
+				n = d
+			} else if !niceWord.MatchString(w) {
+				return -1
+			}
+		case "timeout":
+			if w == "--preserve-status" || w == "--foreground" || w == "-v" || w == "--verbose" {
+				break
+			}
+			d, ok := value(w, "-s", "--signal")
+			if !ok {
+				if d, ok = value(w, "-k", "--kill-after"); !ok {
+					return -1
+				}
+			}
+			n = d
+		case "stdbuf":
+			d, ok := value(w, "-i", "--input")
+			if !ok {
+				if d, ok = value(w, "-o", "--output"); !ok {
+					if d, ok = value(w, "-e", "--error"); !ok {
+						return -1
+					}
+				}
+			}
+			n = d
+		case "exec": // -a and -l would make a login shell, which reads profile files
+			if w != "-c" {
+				return -1
+			}
+		case "setsid":
+			if w != "-w" && w != "--wait" {
+				return -1
+			}
+		case "command":
+			if w != "-p" {
+				return -1
+			}
+		default:
+			return -1
+		}
+		i += n - 1
+	}
+	if wrapper == "env" {
+		for ; i < len(words); i++ {
+			name, _, ok := strings.Cut(words[i], "=")
+			if !ok {
+				break
+			}
+			// A name no shell variable has may be an exported function, BASH_FUNC_f%%.
+			if shellStartFiles[name] || !envName.MatchString(name) || strings.HasPrefix(name, "BASH_FUNC_") {
+				return -1
+			}
+		}
+	}
+	if wrapper == "timeout" {
+		if i >= len(words) || !durationWord.MatchString(words[i]) {
+			return -1
+		}
+		i++
+	}
+	return i
+}
+
+// niceWord is nice's -N adjustment; envName a variable name.
+var (
+	niceWord = regexp.MustCompile(`^-[0-9]+$`)
+	envName  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
 // shellStartFiles are variables naming files or text a shell runs on its
 // own, unseen by the statement screen.
 var shellStartFiles = map[string]bool{"BASH_ENV": true, "ENV": true, "ZDOTDIR": true, "SHELLOPTS": true, "BASHOPTS": true,
@@ -225,20 +329,8 @@ func stdinShell(command string) bool {
 	}
 	i := 0
 	for i < len(words) && stdinShellWrappers[programName(words[i])] {
-		for i++; i < len(words); i++ {
-			w := words[i]
-			if name, _, ok := strings.Cut(w, "="); ok && !strings.HasPrefix(w, "-") {
-				if shellStartFiles[name] {
-					return false
-				}
-				continue
-			}
-			if !strings.HasPrefix(w, "-") && !durationWord.MatchString(w) {
-				break
-			}
-			if w == "-n" || w == "-s" || w == "-k" || w == "-u" || w == "-a" || w == "-C" || w == "--signal" || w == "--kill-after" {
-				i++ // the option's value
-			}
+		if i = wrapperProgram(programName(words[i]), words, i+1); i < 0 {
+			return false
 		}
 	}
 	if i >= len(words) {
