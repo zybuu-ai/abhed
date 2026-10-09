@@ -69,8 +69,8 @@ func CheckManagedJSON(data []byte) error {
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		var ute *json.UnmarshalTypeError
-		if errors.As(err, &ute) && ute.Value == "number" {
-			return fmt.Errorf("it holds a number too large to read (%s)", ute.Value)
+		if errors.As(err, &ute) && strings.HasPrefix(ute.Value, "number") {
+			return fmt.Errorf("it holds a number too large to read (%s)", strings.TrimPrefix(ute.Value, "number "))
 		}
 		return err
 	}

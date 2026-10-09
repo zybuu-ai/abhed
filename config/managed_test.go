@@ -247,6 +247,14 @@ func TestManagedFileReadTwoWaysIsRefused(t *testing.T) {
 	}
 }
 
+// The refusal of an over-large number says so in plain words.
+func TestManagedFileNumberTooLargeIsNamed(t *testing.T) {
+	err := CheckManagedJSON([]byte(`{"_comment":1e400}`))
+	if err == nil || !strings.Contains(err.Error(), "number too large to read (1e400)") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 // A managed Config with nothing known of what it set screens; an empty managed file does not.
 func TestManagedScreensFailsSafe(t *testing.T) {
 	hand := Default()
