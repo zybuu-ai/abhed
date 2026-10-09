@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/filelock"
 )
 
 // CLITokenPrefix begins every token `abhed login` holds for a local account,
@@ -42,7 +44,10 @@ type CLITokens struct {
 
 	mu      sync.Mutex
 	revoked map[string]int64 // token id -> expiry, unix seconds
-	now     func() time.Time
+	// seen is the revoked file as last read, so another server's sign-out
+	// is picked up on the next request; nil when there was none.
+	seen os.FileInfo
+	now  func() time.Time
 }
 
 type cliClaims struct {
@@ -208,10 +213,15 @@ func (t *CLITokens) Verify(ctx context.Context, token string) (*Identity, error)
 		return nil, err
 	}
 	t.mu.Lock()
+	rerr := t.refreshRevoked()
 	_, ended := t.revoked[c.ID]
 	t.mu.Unlock()
 	if ended {
 		return nil, ErrCLITokenEnded
+	}
+	if rerr != nil {
+		// A sign-out that cannot be read is not permission to proceed.
+		return nil, ErrAccountUnchecked
 	}
 	u, err := t.Local.Store.Get(ctx, c.Sub)
 	if errors.Is(err, ErrNoSuchUser) || (err == nil && u == nil) {
@@ -237,7 +247,9 @@ func (t *CLITokens) Verify(ctx context.Context, token string) (*Identity, error)
 }
 
 // Revoke ends one token before its expiry. A token that does not verify
-// needs no revoking and is not an error, so logout is idempotent.
+// needs no revoking and is not an error, so logout is idempotent. The file
+// is read, changed and written under a lock, so servers sharing it never
+// drop each other's sign-outs.
 func (t *CLITokens) Revoke(token string) error {
 	c, err := t.parse(token)
 	if err != nil {
@@ -245,6 +257,15 @@ func (t *CLITokens) Revoke(token string) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	unlock, err := filelock.Lock(t.revokedPath+".lock", 5*time.Second, "%s is held by another abhed (waited %s); the token was not signed out")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	t.seen = nil
+	if err := t.refreshRevoked(); err != nil {
+		return err
+	}
 	now := t.now().Unix()
 	for id, exp := range t.revoked {
 		if exp <= now {
@@ -256,16 +277,37 @@ func (t *CLITokens) Revoke(token string) error {
 }
 
 func (t *CLITokens) loadRevoked() error {
-	b, err := os.ReadFile(t.revokedPath)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.refreshRevoked()
+}
+
+// refreshRevoked reads the revoked file again when it is not the one last
+// read. Every write replaces it by rename, so any change is a new file.
+// t.mu is held.
+func (t *CLITokens) refreshRevoked() error {
+	fi, err := os.Stat(t.revokedPath)
 	if errors.Is(err, os.ErrNotExist) {
+		if t.seen != nil {
+			t.revoked, t.seen = map[string]int64{}, nil
+		}
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(b, &t.revoked); err != nil {
+	if t.seen != nil && os.SameFile(fi, t.seen) && fi.ModTime().Equal(t.seen.ModTime()) && fi.Size() == t.seen.Size() {
+		return nil
+	}
+	b, err := os.ReadFile(t.revokedPath)
+	if err != nil {
+		return err
+	}
+	revoked := map[string]int64{}
+	if err := json.Unmarshal(b, &revoked); err != nil {
 		return fmt.Errorf("%s: %w", t.revokedPath, err)
 	}
+	t.revoked, t.seen = revoked, fi
 	return nil
 }
 
@@ -286,7 +328,13 @@ func (t *CLITokens) saveRevoked() error {
 	if werr != nil {
 		return werr
 	}
-	return os.Rename(f.Name(), t.revokedPath)
+	if err := os.Rename(f.Name(), t.revokedPath); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(t.revokedPath); err == nil {
+		t.seen = fi
+	}
+	return nil
 }
 
 // Verifiers asks each verifier in turn. One that answers ErrNotCLIToken, or

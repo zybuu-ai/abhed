@@ -239,3 +239,69 @@ func TestVerifierChainTriesCLITokensFirst(t *testing.T) {
 		t.Errorf("only CLI tokens: %v", err)
 	}
 }
+
+// Two servers sharing the key and its revoked file: a sign-out on one ends
+// the token on the other at once, and concurrent sign-outs keep each other.
+func TestCLITokenRevokeIsSharedBetweenInstances(t *testing.T) {
+	_, one, key := newTokens(t)
+	two, err := OpenCLITokens(one.Local, key, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	issue := func() string {
+		s, _, err := one.Issue(ctx, "ada")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	first := issue()
+	if _, err := two.Verify(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := one.Revoke(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := two.Verify(ctx, first); !errors.Is(err, ErrCLITokenEnded) {
+		t.Fatalf("signed out on one, still valid on the other: %v", err)
+	}
+	var mine, theirs []string
+	for range 20 {
+		mine, theirs = append(mine, issue()), append(theirs, issue())
+	}
+	done := make(chan error, 2)
+	for _, w := range []struct {
+		tok  *CLITokens
+		list []string
+	}{{one, mine}, {two, theirs}} {
+		go func() {
+			for _, s := range w.list {
+				if err := w.tok.Revoke(s); err != nil {
+					done <- err
+					return
+				}
+			}
+			done <- nil
+		}()
+	}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, s := range append(append([]string{first}, mine...), theirs...) {
+		for _, tok := range []*CLITokens{one, two} {
+			if _, err := tok.Verify(ctx, s); !errors.Is(err, ErrCLITokenEnded) {
+				t.Fatalf("a sign-out was lost: %v", err)
+			}
+		}
+	}
+	reopened, err := OpenCLITokens(one.Local, key, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(reopened.revoked); n != 41 {
+		t.Fatalf("the revoked file holds %d sign-outs, want 41", n)
+	}
+}

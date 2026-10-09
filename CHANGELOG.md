@@ -439,6 +439,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `abhed logout` is seen by every server sharing `auth.cli.key_file`'s folder
+  on its next request, and sign-outs made at once on two servers no longer
+  overwrite each other.
+
 - `abhed sandbox cp`: a folder that does not exist, in the sandbox or on
   this machine, is named plainly instead of as a host `lstat` error that
   showed the server's path to the workspace; a copy out that fails part way
