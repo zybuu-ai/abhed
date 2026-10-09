@@ -251,9 +251,10 @@ A server with it off starts on the older schema as before.
 
 ### Changed
 
-- A link in an archive copied into or out of a sandbox, or restored from a
-  snapshot, that points into a `.abhed` folder is refused, as an entry
-  inside one already was.
+- A link that points into a `.abhed` folder is left out of a snapshot and
+  of what `abhed sandbox cp` sends, and refused in an archive copied into or
+  out of a sandbox or restored from a snapshot, as an entry inside one
+  already was.
 - `abhed sandbox` is refused inside an agent's command for every
   subcommand, not only `connect`.
 - Every sandbox `:exec` is judged by the server's deny rules and extension
