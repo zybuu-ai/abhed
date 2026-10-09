@@ -101,6 +101,9 @@ const (
 	// EvSandboxBound links the session to the control-plane sandbox its
 	// commands run in, before the first of them in this process.
 	EvSandboxBound EventType = "sandbox.bound"
+	// EvPolicyLayer records the permission rules an edition added to the
+	// session's policy as a layer of their own, such as a workspace's.
+	EvPolicyLayer EventType = "policy.layer"
 )
 
 type Actor string

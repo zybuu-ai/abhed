@@ -782,6 +782,19 @@ behaves as the sections above describe.
   refused one `403`; a gate that fails `503`, and the request keeps waiting.
   `Server.PendingAsks` lists the requests waiting in sessions this process
   runs, arguments redacted as the record keeps them.
+- **SessionPolicy.** `server.Options.SessionPolicy(ctx, req)` gives the
+  permission rules an edition adds to a session of `req.User` in
+  `req.Tenant` as a layer of its own (`server.PolicyLayer`: a name, a
+  revision, deny, ask and allow rules). It is asked when a session is
+  started, opened at the workbench or continued. Deny and ask rules are
+  added and hold in every mode; allow rules are set aside under a managed
+  configuration that sets the permissions. An error, or a layer
+  `PolicyLayer.Validate` refuses (rules `policy.ParseRule` cannot read, a
+  name the configuration's own layers use, more than 500 rules), refuses
+  the session with `503`. The layer is recorded as `policy.layer`, and the
+  decisions its rules make carry `layer`. `PolicyLayer.Decide(tool, args)`
+  applies a layer's deny and ask rules to one call outside a session, such
+  as a guard checking an exec's command.
 - **Credential sources.** `secretstore.OpenSource(name, src)` is a secrets
   store whose values a driver keeps (load whole, set and remove by name)
   instead of a file. It hands out and redacts values as a file store does;

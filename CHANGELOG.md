@@ -72,6 +72,16 @@ All notable changes to Abhed are recorded here. The format follows
   before the connection is taken over, and an open stream ends when the
   sign-in does. The WebSocket implementation is Abhed's own, in the public
   package `wsconn`, with no new dependency.
+- Policy layers from an edition: `server.Options.SessionPolicy` lets an
+  edition add deny, ask and allow rules to every session of a person, as a
+  layer of its own (the Team edition's workspace policy uses it). Deny and
+  ask rules hold in every mode; allow rules are set aside under a managed
+  configuration that sets the permissions. A layer that cannot be read or
+  parsed refuses the session. The layer is recorded as `policy.layer`, each
+  decision its rules make carries `layer`, HawkEYE reports each layer and
+  what it decided, and `GET /v1/sessions/{id}/permissions` lists a running
+  session's rules with their layers. `PolicyLayer.Decide` applies a layer
+  to one call outside a session, for a guard.
 
 - `abhed serve` can manage sandboxes over `/v1/sandboxes` when
   `control_plane.enabled` is set (off by default; with it off nothing

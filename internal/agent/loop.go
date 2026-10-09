@@ -1358,7 +1358,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 					why = answer.Reason + ": " + decision.Reason
 				}
 			}
-			denied := map[string]string{"call_id": call.ID, "reason": why, "step": decision.Step, "by": by}
+			denied := withRule(map[string]string{"call_id": call.ID, "reason": why, "step": decision.Step, "by": by}, decision)
 			if answer.Approver != "" {
 				denied["approver"] = answer.Approver
 			}
@@ -1428,11 +1428,14 @@ func (l *Loop) deniedOwnerGone(callID string) (bool, tools.Result, TerminalReaso
 	return false, tools.Result{Content: "Denied: " + ownerGoneReason + ".", IsError: true}, TermOwnerInactive
 }
 
-// withRule adds the rule that decided, when one did, so an approval or
-// denial by policy names what made it.
+// withRule adds the rule that decided, when one did, and the policy layer
+// it came from, so an approval or denial names what made it.
 func withRule(p map[string]string, d policy.Result) map[string]string {
 	if d.Rule != "" {
 		p["rule"] = d.Rule
+	}
+	if d.Layer != "" {
+		p["layer"] = d.Layer
 	}
 	return p
 }

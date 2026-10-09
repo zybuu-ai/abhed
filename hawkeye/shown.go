@@ -14,6 +14,7 @@ func shown(r Report) Report {
 		c.CallID, c.Tool, c.Args, c.Subject, c.Decision, c.Step = v(c.CallID), v(c.Tool), v(c.Args), v(c.Subject), v(c.Decision), v(c.Step)
 		c.By, c.Scope, c.Approver, c.GrantedScope, c.Reason = v(c.By), v(c.Scope), v(c.Approver), v(c.GrantedScope), v(c.Reason)
 		c.Actor, c.Via, c.Output = v(c.Actor), v(c.Via), ui.VisibleOutput(c.Output)
+		c.Rule, c.Layer = v(c.Rule), v(c.Layer)
 		return c
 	})
 	if r.Policy.ByStep != nil {
@@ -23,6 +24,18 @@ func shown(r Report) Report {
 		}
 		r.Policy.ByStep = by
 	}
+	if r.Policy.ByLayer != nil {
+		by := make(map[string]int, len(r.Policy.ByLayer))
+		for k, n := range r.Policy.ByLayer {
+			by[v(k)] += n
+		}
+		r.Policy.ByLayer = by
+	}
+	r.PolicyLayers = each(r.PolicyLayers, func(l PolicyLayer) PolicyLayer {
+		l.Name, l.Revision, l.SHA256 = v(l.Name), v(l.Revision), v(l.SHA256)
+		l.Deny, l.Ask, l.Allow, l.SetAside = each(l.Deny, v), each(l.Ask, v), each(l.Allow, v), each(l.SetAside, v)
+		return l
+	})
 	if r.Network != nil {
 		n := *r.Network
 		n.Refusals = each(n.Refusals, func(f NetworkRefusal) NetworkRefusal {
