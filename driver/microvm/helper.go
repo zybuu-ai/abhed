@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 )
 
 // Helper runs each instance through abhed-vmhelper, a separate program built
@@ -160,6 +161,35 @@ func runHelperCheck(ctx context.Context, path string) error {
 		return fmt.Errorf("%s cannot run a VM here: %s", path, c.Reason)
 	}
 	return nil
+}
+
+// helperFolderSafe refuses a helper another user could replace: its folder
+// must be writable by its owner only, and no folder above it writable by
+// others unless sticky, so the file checked is the file run.
+func helperFolderSafe(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(real)
+	for first := true; ; first = false {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return err
+		}
+		perm := fi.Mode()
+		if perm.Perm()&0o022 != 0 && (first || perm&os.ModeSticky == 0) {
+			return fmt.Errorf("the helper %s is in %s, which others may write (mode %v); keep it in a folder only its owner writes", path, dir, perm.Perm())
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
+	}
 }
 
 func guestPortPath(run string, p uint32) string {
