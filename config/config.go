@@ -530,6 +530,8 @@ type AuthConfig struct {
 	// ProxyLogoutURL is the authenticating proxy's own sign-out, in proxy
 	// mode. Without it the console offers no sign-out, since the proxy owns it.
 	ProxyLogoutURL string `json:"proxy_logout_url,omitempty"`
+	// CLI is command-line sign-in (abhed login) against local accounts.
+	CLI CLILoginConfig `json:"cli,omitempty"`
 	// GitHub restricts GitHub sign-in, which only the paid editions provide.
 	// The Community Edition validates these keys and otherwise ignores them.
 	GitHub GitHubAuthConfig `json:"github,omitempty"`
@@ -647,6 +649,57 @@ type ServerConfig struct {
 	// to drain to. Turns still running when the budget is spent are recorded
 	// as a shutdown and can be resumed elsewhere.
 	DrainSeconds int `json:"drain_seconds,omitempty"`
+	// TLS makes `abhed serve` terminate TLS itself instead of behind a proxy.
+	// Unset, the server speaks plain HTTP as it always has.
+	TLS ServerTLSConfig `json:"tls,omitempty"`
+}
+
+// ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
+// resolved against the workspace, as auth.users_file is.
+type ServerTLSConfig struct {
+	CertFile string `json:"cert_file,omitempty"`
+	KeyFile  string `json:"key_file,omitempty"`
+	// AdditionalCertificates are served by SNI name and key type: an RSA
+	// certificate beside an ECDSA one, or the next certificate during a
+	// rotation. The first that suits the client wins; cert_file is first.
+	AdditionalCertificates []CertificatePair `json:"additional_certificates,omitempty"`
+	// MinVersion is "1.2" (the default) or "1.3".
+	MinVersion string `json:"min_version,omitempty"`
+	// ClientCAFile turns on client certificates, verified against this CA.
+	ClientCAFile string `json:"client_ca_file,omitempty"`
+	// ClientAuth is "require" (the default once client_ca_file is set), or
+	// "optional" to let a browser without a certificate use another sign-in.
+	ClientAuth string `json:"client_auth,omitempty"`
+	// ClientCertAccounts signs a local account in from a verified client
+	// certificate whose common name is its username. Needs auth.mode local.
+	ClientCertAccounts bool `json:"client_cert_accounts,omitempty"`
+	// ReloadSeconds is how often the files are checked for a change; 10 when unset.
+	ReloadSeconds int `json:"reload_seconds,omitempty"`
+}
+
+// CertificatePair is one certificate chain file and its key file.
+type CertificatePair struct {
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+}
+
+// Enabled reports whether any TLS setting is made, so serve terminates TLS
+// and refuses to start without a usable certificate.
+func (t ServerTLSConfig) Enabled() bool {
+	return t.CertFile != "" || t.KeyFile != "" || len(t.AdditionalCertificates) > 0 ||
+		t.ClientCAFile != "" || t.ClientAuth != "" || t.ClientCertAccounts || t.MinVersion != ""
+}
+
+// CLILoginConfig is command-line sign-in (`abhed login`) for local accounts.
+type CLILoginConfig struct {
+	// Enabled serves the device-code and browser (PKCE) sign-in endpoints.
+	Enabled bool `json:"enabled,omitempty"`
+	// TokenHours is how long a command-line token lasts; 168 (a week) when unset.
+	TokenHours int `json:"token_hours,omitempty"`
+	// KeyFile holds the key tokens are signed with; ~/.abhed/cli-token.key
+	// when unset. Servers sharing an account store share it, or each
+	// accepts only the tokens it issued.
+	KeyFile string `json:"key_file,omitempty"`
 }
 
 // RetrievalConfig controls the on-prem index. Retrieval is an accelerator over
@@ -1278,6 +1331,12 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
 	}
+	if err := c.validateTLS(); err != nil {
+		return err
+	}
+	if err := c.validateCLILogin(); err != nil {
+		return err
+	}
 	if c.Auth.Mode == "oidc" && c.Auth.Issuer == "" && c.Auth.Provider == "" {
 		return fmt.Errorf("auth.mode is oidc but neither auth.issuer nor " +
 			"auth.provider (google, microsoft) is set")
@@ -1470,4 +1529,52 @@ func validHostPattern(h string) bool {
 		}
 	}
 	return true
+}
+
+// validateTLS checks server.tls for what can be told without reading a file.
+func (c Config) validateTLS() error {
+	t := c.Server.TLS
+	if !t.Enabled() {
+		return nil
+	}
+	if t.CertFile == "" || t.KeyFile == "" {
+		return fmt.Errorf("server.tls needs both cert_file and key_file")
+	}
+	for i, p := range t.AdditionalCertificates {
+		if p.CertFile == "" || p.KeyFile == "" {
+			return fmt.Errorf("server.tls.additional_certificates[%d] needs both cert_file and key_file", i)
+		}
+	}
+	switch t.MinVersion {
+	case "", "1.2", "1.3":
+	default:
+		return fmt.Errorf("server.tls.min_version is %q; use 1.2 or 1.3", t.MinVersion)
+	}
+	switch t.ClientAuth {
+	case "", "require", "optional":
+	default:
+		return fmt.Errorf("server.tls.client_auth is %q; use require or optional", t.ClientAuth)
+	}
+	if (t.ClientAuth != "" || t.ClientCertAccounts) && t.ClientCAFile == "" {
+		return fmt.Errorf("server.tls.client_auth and client_cert_accounts need server.tls.client_ca_file")
+	}
+	if t.ClientCertAccounts && c.Auth.Mode != "local" {
+		return fmt.Errorf("server.tls.client_cert_accounts signs local accounts in, so it needs auth.mode local")
+	}
+	if t.ReloadSeconds < 0 || t.ReloadSeconds > 3600 {
+		return fmt.Errorf("server.tls.reload_seconds is %d; use 1 to 3600, or 0 for 10", t.ReloadSeconds)
+	}
+	return nil
+}
+
+// validateCLILogin checks auth.cli.
+func (c Config) validateCLILogin() error {
+	l := c.Auth.CLI
+	if l.TokenHours < 0 || l.TokenHours > 24*90 {
+		return fmt.Errorf("auth.cli.token_hours is %d; use 1 to %d, or 0 for a week", l.TokenHours, 24*90)
+	}
+	if l.Enabled && c.Auth.Mode != "local" {
+		return fmt.Errorf("auth.cli.enabled signs local accounts in from the command line, so it needs auth.mode local")
+	}
+	return nil
 }
