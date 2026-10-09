@@ -6,6 +6,25 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A Helm chart for Kubernetes and OpenShift**, in `deploy/helm/abhed`
+  ([Running on Kubernetes](docs/guide/27-kubernetes.md)). It runs `abhed serve`
+  as one replica by default, held to the restricted Pod Security level
+  (non-root, every capability dropped, seccomp `RuntimeDefault`, a read-only
+  root filesystem, no service-account token), with the configuration mounted
+  as the managed file, a volume for the workspace and `~/.abhed`, liveness on
+  `/v1/health`, readiness on `/v1/ready`, and `abhed serve -check` as an init
+  container so a pod that could not serve never starts. Optional: an Ingress,
+  an OpenShift Route, TLS from a Secret, Postgres from a Secret, pulling by
+  digest, a NetworkPolicy that denies egress except DNS, the model endpoints
+  and Postgres you list, a PodDisruptionBudget, and a namespace per workspace
+  with restricted Pod Security labels, a quota and a limit range. The chart
+  never creates a Secret, refuses a secret written into its configuration,
+  and validates every value against a schema. `scripts/ci/helm-check.sh` and a
+  CI job lint and render it for a matrix of values and validate the result
+  against the Kubernetes 1.30 and 1.33 schemas with pinned, checksummed tools.
+
 
 ## [1.2.7] - 2026-10-07
 
