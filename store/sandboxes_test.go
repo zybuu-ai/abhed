@@ -150,3 +150,26 @@ func TestSandboxFenceRefusesInTheWritesTransaction(t *testing.T) {
 		t.Fatalf("fence calls %s", got)
 	}
 }
+
+// An idempotent request through the Postgres store replays, with the
+// scope the server builds from a principal, method and path.
+func TestSandboxIdempotencyThroughPostgres(t *testing.T) {
+	q := sandboxStore(t)
+	idem := controlplane.Idempotency{Store: q}
+	ran := 0
+	op := func() (controlplane.Response, error) {
+		ran++
+		return controlplane.Response{Status: 201, Body: []byte(`{"id":"sbx_1"}`)}, nil
+	}
+	ctx := context.Background()
+	if _, replayed, err := idem.Do(ctx, "oidc:alice", "POST", "/v1/sandboxes", "k-1", []byte("{}"), op); err != nil || replayed {
+		t.Fatalf("first: %v %v", replayed, err)
+	}
+	resp, replayed, err := idem.Do(ctx, "oidc:alice", "POST", "/v1/sandboxes", "k-1", []byte("{}"), op)
+	if err != nil || !replayed || resp.Status != 201 || ran != 1 {
+		t.Fatalf("repeat: %+v %v %v (ran %d)", resp, replayed, err, ran)
+	}
+	if _, replayed, err := idem.Do(ctx, "oidc:bob", "POST", "/v1/sandboxes", "k-1", []byte("{}"), op); err != nil || replayed || ran != 2 {
+		t.Fatalf("another principal's key replayed: %v %v", replayed, err)
+	}
+}
