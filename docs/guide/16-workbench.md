@@ -552,7 +552,7 @@ way only misses the note; it never moves the next one.
 A `cd` in a command that failed is not followed either. The agent's
 commands follow `cd` by the same rule, and its result carries the same note.
 A managed file (`/etc/abhed/config.json`) that itself sets `permissions.deny`
-or `extensions` gets that mode without asking, when deny rules for `bash` or
+or a non-empty `extensions` list gets that mode without asking, when deny rules for `bash` or
 for every tool (`*`), or an extension's hook, are then in force, because a managed rule is an organisation's statement that
 it holds, and a hook may refuse any command. Deny rules from the defaults, the
 user or the workspace do not, even when an unrelated managed file is present

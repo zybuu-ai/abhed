@@ -122,7 +122,7 @@ func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 // or the extensions, so a refusal they make is the organisation's to hold.
 // Like Apply, it is only as good as ManagedKeys: a hand-built Config has none.
 func (c Config) ManagedScreens() bool {
-	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions"))
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && len(c.Extensions) > 0)
 }
 
 // dropLockedAllow sets aside the allow rules the user's and the workspace's

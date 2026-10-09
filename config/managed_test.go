@@ -222,7 +222,7 @@ func TestAllowRefusedUnderAnyManagedPermission(t *testing.T) {
 // Only a managed file that sets deny rules or extensions makes their refusals
 // the organisation's; one that turns on web search alone does not.
 func TestManagedScreensOnlyForManagedDenyOrExtensions(t *testing.T) {
-	for _, keys := range [][]string{{"permissions.deny"}, {"permissions"}, {"extensions"}} {
+	for _, keys := range [][]string{{"permissions.deny"}, {"permissions"}} {
 		if !managedCfg(keys...).ManagedScreens() {
 			t.Errorf("%v: not screening", keys)
 		}
@@ -231,6 +231,15 @@ func TestManagedScreensOnlyForManagedDenyOrExtensions(t *testing.T) {
 		if managedCfg(keys...).ManagedScreens() {
 			t.Errorf("%v: screening", keys)
 		}
+	}
+	// An empty managed extensions list runs no hook, so it screens nothing.
+	if managedCfg("extensions").ManagedScreens() {
+		t.Error("an empty managed extensions list screened")
+	}
+	withExt := managedCfg("extensions")
+	withExt.Extensions = []ExtensionConfig{{Name: "x"}}
+	if !withExt.ManagedScreens() {
+		t.Error("a managed extension did not screen")
 	}
 	unmanaged := Default()
 	unmanaged.ManagedKeys = []string{"permissions.deny"}
