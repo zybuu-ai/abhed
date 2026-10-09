@@ -82,7 +82,9 @@ memory store holds one tenant. Nothing in the object carries a tenant a client
 could change.
 
 Condition types the server sets: `DriverReady`, `PolicyApplied`,
-`IsolationVerified` (the reported tier meets the policy's minimum),
+`IsolationVerified` (the reported tier meets the policy's minimum; its
+message names the tier and what it lacks on this host, as in
+`tier process (no /proc)`),
 `DeleteFailed`, `RestartScheduled` (True while a restart waits out its
 backoff; False with reason `LimitReached` once the budget is spent). Drivers may add their own under a `<driver>.` prefix.
 

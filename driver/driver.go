@@ -97,6 +97,8 @@ type Status struct {
 	Tier    string `json:"tier"`
 	Backend string `json:"backend,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Caveat is what the tier lacks on this host, such as "no /proc".
+	Caveat string `json:"caveat,omitempty"`
 }
 
 // ExecRequest runs one command in an instance. Exactly one of Argv and

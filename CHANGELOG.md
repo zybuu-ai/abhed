@@ -105,7 +105,8 @@ All notable changes to Abhed are recorded here. The format follows
   `pivot_root`. Under it bubblewrap cannot mount a fresh `/proc`, so
   commands run without one; `abhed serve -check`, `abhed doctor` and
   Studio's health now show the sandbox as `process (no /proc)` wherever
-  that is so, instead of a plain `process`.
+  that is so, instead of a plain `process`, and so does a control-plane
+  sandbox's `IsolationVerified` condition (`tier process (no /proc)`).
 - `control_plane.kubernetes`: the Kubernetes driver's options as one JSON
   object in the managed configuration, for the editions that carry the
   driver. It is managed only; a user's or workspace's copy is set aside with
@@ -658,6 +659,9 @@ on. A server with it off starts on the older schema as before.
   `OriginSession` for the server's own work on a session's sandbox and warm
   pool (`WithOrigin`, `OriginOf`), so a guard need not hold it for
   approval.
+- `driver.Status.Caveat` names what the reported tier lacks on this host,
+  such as `no /proc`, and the control plane adds it to the `IsolationVerified`
+  condition; `drivertest.Fake.Caveat` reports one.
 
 ## [1.2.7] - 2026-10-07
 

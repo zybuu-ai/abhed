@@ -131,7 +131,7 @@ func status(id string, in *instance) driver.Status {
 		st.Phase = driver.PhaseStopped
 	}
 	if in.sb != nil {
-		st.Tier, st.Message = string(in.sb.Tier()), in.sb.Describe()
+		st.Tier, st.Message, st.Caveat = string(in.sb.Tier()), in.sb.Describe(), sandbox.Caveat(in.sb)
 		if i, ok := in.sb.(sandbox.Interactive); ok {
 			st.Backend = i.Backend()
 		}

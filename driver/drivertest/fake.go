@@ -32,6 +32,8 @@ type Fake struct {
 	AttachFunc func(ctx context.Context, id string, req driver.AttachRequest) (driver.ExecResult, error)
 	// Tier is the tier every instance reports; "process" when empty.
 	Tier string
+	// Caveat is what every instance reports its tier lacks, such as "no /proc".
+	Caveat string
 	// Errs, when set for a method name ("create", "start", "stop",
 	// "delete", "status"), is what that method returns instead of acting.
 	Errs map[string]error
@@ -73,7 +75,7 @@ func (f *Fake) tier() string {
 }
 
 func (f *Fake) status(id string, p driver.Phase) driver.Status {
-	return driver.Status{ID: id, Phase: p, Tier: f.tier(), Backend: "fake"}
+	return driver.Status{ID: id, Phase: p, Tier: f.tier(), Backend: "fake", Caveat: f.Caveat}
 }
 
 // SetPhase puts an instance in phase p, as if it had exited or failed.

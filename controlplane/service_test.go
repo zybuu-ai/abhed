@@ -535,3 +535,19 @@ func TestUpdatePatch(t *testing.T) {
 		t.Fatalf("a global setting was set per sandbox: %v", err)
 	}
 }
+
+// A tier that lacks something here says so in its condition, as doctor does:
+// "tier process (no /proc)", not a plain "tier process".
+func TestIsolationConditionNamesTheTiersCaveat(t *testing.T) {
+	r := newRig(t, nil, nil)
+	r.fake.Caveat = "no /proc"
+	sb := r.ready(t)
+	if c, _ := sb.Condition(cp.CondIsolationVerified); c.Status != cp.ConditionTrue || c.Message != "tier process (no /proc)" || sb.Tier != "process" {
+		t.Fatalf("condition %+v, tier %q", c, sb.Tier)
+	}
+	r.fake.Caveat = ""
+	sb = r.ready(t)
+	if c, _ := sb.Condition(cp.CondIsolationVerified); c.Message != "tier process" {
+		t.Fatalf("condition %+v", c)
+	}
+}

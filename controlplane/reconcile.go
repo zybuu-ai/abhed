@@ -341,8 +341,13 @@ func (s *Service) settle(ctx context.Context, sb Sandbox, st driver.Status, err 
 		if serr := cur.SetCondition(Condition{Type: CondDriverReady, Status: ConditionTrue, Reason: reason}, now); serr != nil {
 			return serr
 		}
+		msg := "tier " + st.Tier
+		if st.Caveat != "" {
+			// Said as doctor says it: "tier process (no /proc)".
+			msg += " (" + st.Caveat + ")"
+		}
 		return cur.SetCondition(Condition{Type: CondIsolationVerified, Status: ConditionTrue, Reason: "TierMeetsPolicy",
-			Message: "tier " + st.Tier}, now)
+			Message: msg}, now)
 	})
 	if werr != nil {
 		return werr

@@ -168,7 +168,8 @@ does not run commands unsandboxed: the default `sandbox.min_tier` is
   mount a fresh `/proc` (the runtime masks the pod's), so commands run with
   no `/proc`: `ps`, `top` and anything reading `/proc/self` fail. Preflight
   and `abhed doctor` say so, showing the sandbox as `process (no /proc)`
-  rather than plain `process`;
+  rather than plain `process`, and a control-plane sandbox's
+  `IsolationVerified` condition reads `tier process (no /proc)`;
 - `sandbox.min_tier: none` in `config`, which makes the pod's own isolation
   the only boundary around the agent's commands;
 - the Kubernetes driver in the Team edition, which runs each sandbox as its

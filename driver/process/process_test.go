@@ -25,7 +25,10 @@ type fakeSandbox struct {
 	tier   sandbox.Tier
 	closed *atomic.Int32
 	refuse error
+	caveat string
 }
+
+func (f fakeSandbox) Caveat() string { return f.caveat }
 
 func (f fakeSandbox) Tier() sandbox.Tier        { return f.tier }
 func (f fakeSandbox) Available() (bool, string) { return true, "" }
@@ -360,5 +363,28 @@ func TestConfigIsRefused(t *testing.T) {
 	}
 	if _, err := d.Status(ctx, "a"); !errors.Is(err, driver.ErrNotFound) {
 		t.Fatal("a refused create left an instance")
+	}
+}
+
+// The driver reports what the sandbox lacks here, such as bubblewrap with no /proc.
+func TestStatusCarriesTheSandboxCaveat(t *testing.T) {
+	ctx := context.Background()
+	var closed atomic.Int32
+	for _, caveat := range []string{"no /proc", ""} {
+		d := newDriver(func(driver.Spec) (sandbox.Sandbox, error) {
+			return fakeSandbox{tier: sandbox.TierProcess, closed: &closed, caveat: caveat}, nil
+		})
+		ws, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := d.Create(ctx, driver.Spec{ID: "sbx_caveat", Workspace: ws})
+		if err != nil || st.Caveat != caveat {
+			t.Fatalf("create: %+v %v, want caveat %q", st, err, caveat)
+		}
+		if st, err = d.Status(ctx, "sbx_caveat"); err != nil || st.Caveat != caveat {
+			t.Fatalf("status: %+v %v, want caveat %q", st, err, caveat)
+		}
+		_ = d.Delete(ctx, "sbx_caveat")
 	}
 }
