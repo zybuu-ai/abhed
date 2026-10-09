@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -135,20 +136,39 @@ func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref
 		return Sandbox{}, err
 	}
 	defer release()
-	err = driver.Restore(ctx, d, id, ref)
-	var out Sandbox
-	if err == nil {
-		out, err = Mutate(ctx, s.cfg.Store, id, "", func(cur *Sandbox) error {
-			if err := cur.Restore(s.now()); err != nil {
-				return err
+	// The move to Starting is made first, against the version checked
+	// above, and the reconciler is held off until the files are in: no
+	// start or other change can land while the workspace is replaced.
+	unhold, err := s.holdPass(ctx, id)
+	if err != nil {
+		s.outcome(ctx, ev, err)
+		return Sandbox{}, err
+	}
+	defer unhold()
+	out, err := Mutate(ctx, s.cfg.Store, id, ETag(sb.ResourceVersion), func(cur *Sandbox) error {
+		if err := cur.Restore(s.now()); err != nil {
+			return err
+		}
+		cur.Restarts, cur.NextRestart = 0, nil
+		// What an interceptor admitted for the start: its labels and settings.
+		cur.Labels, cur.Settings = adm.Object.Labels, adm.Object.Settings
+		return nil
+	})
+	if err != nil {
+		err = storeErr(err)
+	} else {
+		if err = driver.Restore(ctx, d, id, ref); err != nil {
+			// Nothing ran as the new generation, held off as it was, so the
+			// sandbox goes back to the state it was in; the generation never
+			// goes down, so it keeps the one that did not run.
+			if _, rerr := Mutate(context.WithoutCancel(ctx), s.cfg.Store, id, ETag(out.ResourceVersion), func(cur *Sandbox) error {
+				cur.State, cur.Restarts, cur.NextRestart = sb.State, sb.Restarts, sb.NextRestart
+				cur.Labels, cur.Settings, cur.UpdatedAt = sb.Labels, sb.Settings, s.now()
+				return nil
+			}); rerr != nil {
+				err = errors.Join(err, storeErr(rerr))
 			}
-			cur.Restarts, cur.NextRestart = 0, nil
-			// What an interceptor admitted for the start: its labels and settings.
-			cur.Labels, cur.Settings = adm.Object.Labels, adm.Object.Settings
-			return nil
-		})
-		if err != nil {
-			err = storeErr(err)
+			out = Sandbox{}
 		} else {
 			ev.Generation = out.Generation
 		}
@@ -158,7 +178,6 @@ func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref
 	if err != nil {
 		return Sandbox{}, err
 	}
-	s.Kick(id)
 	return out, nil
 }
 

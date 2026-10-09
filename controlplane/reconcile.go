@@ -166,18 +166,40 @@ func (s *Service) Reconcile(ctx context.Context, id string) error {
 	}
 	s.inflight[id] = true
 	s.mu.Unlock()
-	defer func() {
-		// A kick that arrived during this pass asked for another; Run makes it.
-		s.mu.Lock()
-		again := s.again[id]
-		delete(s.inflight, id)
-		delete(s.again, id)
-		s.mu.Unlock()
-		if again {
-			s.Kick(id)
-		}
-	}()
+	defer s.unhold(id, false)
 	return s.reconcile(ctx, id)
+}
+
+// unhold ends a hold on id's passes. A kick that arrived meanwhile asked
+// for another pass, and Run makes it; kick asks for one regardless.
+func (s *Service) unhold(id string, kick bool) {
+	s.mu.Lock()
+	again := s.again[id]
+	delete(s.inflight, id)
+	delete(s.again, id)
+	s.mu.Unlock()
+	if again || kick {
+		s.Kick(id)
+	}
+}
+
+// holdPass waits until no pass over id runs, then keeps one from starting
+// until the returned function runs, which asks for a pass.
+func (s *Service) holdPass(ctx context.Context, id string) (func(), error) {
+	for {
+		s.mu.Lock()
+		if !s.inflight[id] {
+			s.inflight[id] = true
+			s.mu.Unlock()
+			return func() { s.unhold(id, true) }, nil
+		}
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 func (s *Service) reconcile(ctx context.Context, id string) error {

@@ -176,7 +176,7 @@ last `:`; ids never contain one.
 | `POST …:expose` | `{port, ttl_seconds}` | `{url, expires_at}` | Off unless the operator enables it. Served by `server/expose` under `/v1/exposed/`, to the same principal and tenant only. |
 | `POST …:cp` | `{direction: in\|out, path}` + tar body or tar response | `200` | Paths confined to the workspace; archive entries validated (no `..`, no absolute paths, no links out). |
 | `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | `snapshot` carries the content `digest`. |
-| `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. |
+| `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. The sandbox is `Starting` before any file is replaced, so nothing else starts it meanwhile; a restore the driver refuses puts it back in its state, keeping the new `generation`. |
 | `GET …:events?after=&limit=` | — | `200 {items, next}` | The sandbox's record, oldest first, to whoever may see it; `next` is the last `seq` returned while more remain. |
 
 `:snapshot`, `:restore`, `:cp` and `:expose` are implemented
