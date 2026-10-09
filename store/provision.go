@@ -166,31 +166,44 @@ var privilegeList = func() *regexp.Regexp {
 	return regexp.MustCompile(`^\s*` + item + `(?:\s*,\s*` + item + `)*\s*$`)
 }()
 
-// recordExposure reports how the connected role could alter the event record,
-// or "" when it cannot. It is asked of the database rather than assumed from
-// configuration: what matters is what this connection is able to do.
+// recordTables are the append-only records: the session events and the
+// control plane's sandbox audit, which an older schema does not have yet.
+var recordTables = []string{"events", "sandbox_audit"}
+
+// recordExposure reports how the connected role could alter an append-only
+// record, or "" when it cannot. It is asked of the database rather than
+// assumed from configuration: what matters is what this connection is able to do.
 func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
-	var owns, canUpdate, canDelete, canTruncate bool
-	err := pool.QueryRow(ctx, `
-		SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
-		       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
-		       has_table_privilege(current_user, c.oid, 'DELETE'),
-		       has_table_privilege(current_user, c.oid, 'TRUNCATE')
-		FROM pg_class c WHERE c.oid = to_regclass('public.events')`).
-		Scan(&owns, &canUpdate, &canDelete, &canTruncate)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", errNoSchema
-	}
-	if err != nil {
-		return "", fmt.Errorf("check record privileges: %w", err)
-	}
 	var how []string
-	if owns {
-		how = append(how, "owns the events table, so it can disable the append-only triggers or drop it")
-	}
-	for name, can := range map[string]bool{"UPDATE": canUpdate, "DELETE": canDelete, "TRUNCATE": canTruncate} {
-		if can && !owns {
-			how = append(how, "holds "+name+" on events")
+	for _, table := range recordTables {
+		var owns, canUpdate, canDelete, canTruncate bool
+		err := pool.QueryRow(ctx, `
+			SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
+			       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
+			       has_table_privilege(current_user, c.oid, 'DELETE'),
+			       has_table_privilege(current_user, c.oid, 'TRUNCATE')
+			FROM pg_class c WHERE c.oid = to_regclass('public.' || $1)`, table).
+			Scan(&owns, &canUpdate, &canDelete, &canTruncate)
+		if errors.Is(err, pgx.ErrNoRows) {
+			if table == "events" {
+				return "", errNoSchema
+			}
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("check record privileges: %w", err)
+		}
+		if owns {
+			how = append(how, "owns the "+table+" table, so it can disable the append-only triggers or drop it")
+			continue
+		}
+		for _, p := range []struct {
+			name string
+			can  bool
+		}{{"UPDATE", canUpdate}, {"DELETE", canDelete}, {"TRUNCATE", canTruncate}} {
+			if p.can {
+				how = append(how, "holds "+p.name+" on "+table)
+			}
 		}
 	}
 	return strings.Join(how, "; "), nil
