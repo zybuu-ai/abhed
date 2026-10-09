@@ -132,8 +132,8 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		}
 	}
 	if t.shell == nil {
-		// Input echoes under t.mu, so held until the first prompt is out it
-		// cannot land ahead of the prompt it was typed at.
+		// Input works out its echo under t.mu and writes it after, so with
+		// t.mu held until the prompt is written no echo can come before it.
 		t.mu.Lock()
 	}
 	c.termMu.Lock()
