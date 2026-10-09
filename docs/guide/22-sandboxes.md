@@ -504,7 +504,8 @@ cannot be asked: each line you enter is rebuilt from your keys, put to the
 deny rules at its Enter, and recorded (`attach.input`, without its text
 when the terminal did not show it as typed). A line the rules refuse never
 reaches the shell: the terminal says why and the line is dropped, and the
-refusal is recorded (`attach.refused`). This is best effort: the shell
+refusal is recorded (`attach.refused`, with the line and the reason through
+your secrets redaction, as a rule or hook may quote the line). This is best effort: the shell
 decides what a line means, so the sandbox is the boundary. When the
 server's terminal must judge every line (`sandbox.terminal` is
 `"lines"`), or the managed configuration sets deny rules or extensions

@@ -270,7 +270,8 @@ func TestSandboxAttachRoundTrip(t *testing.T) {
 		t.Fatalf("the refused line reached the shell: %q", got)
 	}
 	ref := waitAudit(t, r.cpRig, sb.ID, "attach.refused", controlplane.OutcomeFailed)
-	if ref.Principal != "alice" || !strings.Contains(ref.Detail["reason"], "denied") {
+	// The reason goes through the redaction, as the line does: this rig's is a digest.
+	if ref.Principal != "alice" || !strings.HasPrefix(ref.Detail["reason"], "sha256:") || ref.Detail["reason"] == ref.Detail["line"] {
 		t.Fatalf("refusal record %+v", ref)
 	}
 	// Resizes reach the driver.

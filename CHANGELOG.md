@@ -466,6 +466,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- An `attach.refused` record kept the refusal's reason as given, and a
+  hook's reason may quote the refused line; the reason now goes through the
+  secrets redaction, as the line does.
 - A command run over the `:exec` WebSocket that was slow to read its stdin
   stopped the server reading the stream at all, pongs included, so after a
   minute the stream ended as if the client had gone. Stdin now waits in a

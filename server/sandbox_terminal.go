@@ -148,12 +148,13 @@ func (t *sandboxTerminal) input(data []byte) error {
 	return nil
 }
 
-// refused records and shows a line the deny rules refused. One that cannot
-// be recorded is refused all the same.
+// refused records and shows a line the deny rules refused, its reason
+// redacted too, since a rule or hook may quote the line. One that cannot be
+// recorded is refused all the same.
 func (t *sandboxTerminal) refused(line string, why error) {
 	detail := map[string]string{"terminal": t.id, "line": line, "reason": why.Error()}
 	if err := t.s.opts.ControlPlane.Note(context.WithoutCancel(t.ctx), t.caller, t.sb, "attach.refused", controlplane.OutcomeFailed,
-		detail, "line"); err != nil {
+		detail, "line", "reason"); err != nil {
 		t.s.log.Warn("a refused line could not be recorded", "sandbox", t.sb.ID, "terminal", t.id, "error", err)
 	}
 	t.say("Denied: " + strings.TrimPrefix(why.Error(), controlplane.ErrForbidden.Error()+": "))
