@@ -109,6 +109,8 @@ type Config struct {
 	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
+	// managedDeny is the managed file's own deny list, which it adds to the others.
+	managedDeny map[string]bool
 }
 
 // SettingsSource names a -settings file and the hash of what was merged.

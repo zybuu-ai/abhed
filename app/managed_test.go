@@ -63,7 +63,7 @@ func TestManagedConfigBindsTheFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Permissions.Mode != "plan" || cfg.Limits.MaxTurns != 5 ||
-		!slices.Equal(cfg.Permissions.Deny, []string{"bash(curl*)", "bash(wget*)"}) {
+		!slices.Equal(cfg.Permissions.Deny, append(append([]string{"bash(curl*)"}, config.Default().Permissions.Deny...), "bash(wget*)")) {
 		t.Errorf("tightening flags not applied: mode %q turns %d deny %v",
 			cfg.Permissions.Mode, cfg.Limits.MaxTurns, cfg.Permissions.Deny)
 	}

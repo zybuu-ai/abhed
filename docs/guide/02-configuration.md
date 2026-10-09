@@ -967,9 +967,14 @@ session would send the code or its queries to. A nested run narrows with
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
 key it sets replaces what the user and project files said. A list it sets,
-such as `permissions.deny`, replaces the lower files' list; so does a map
-entry, such as one provider under `model.providers`. Its presence makes the
-policy engine managed: `bypass` mode is refused wherever it comes from.
+such as `permissions.ask`, replaces the lower files' list; so does a map
+entry, such as one provider under `model.providers`. `permissions.deny` is
+the exception: the managed rules are added to the deny rules already in
+force (the built-in ones, `~/.abhed/config.json`, `-settings` and a trusted
+workspace's file), so a managed file can add a deny rule but never take one
+away. `/permissions` shows each rule with the layer it came from. Its
+presence makes the policy engine managed: `bypass` mode is refused wherever
+it comes from.
 
 When the managed file sets any `permissions` setting but not
 `permissions.allow`, the allow rules `~/.abhed/config.json` and a trusted

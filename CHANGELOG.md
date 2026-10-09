@@ -8,6 +8,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- A managed `permissions.deny` list now adds to the deny rules already in
+  force instead of replacing them: the built-in rules and those from
+  `~/.abhed/config.json`, `-settings` and a trusted workspace's file stay,
+  each shown with its own layer, and none is recorded as overridden. A
+  managed file could otherwise remove a deny rule the person had set.
 - HawkEYE reads the egress allowlist's `egress.decision` events. A session
   whose commands the allowlist refused used to report them as ran, with 0
   denied. The report now has a `network` summary (allowed, refused, and in

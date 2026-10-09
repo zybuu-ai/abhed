@@ -343,3 +343,61 @@ func TestDedupeKeepsFirstTrimmed(t *testing.T) {
 		t.Fatalf("dedupe = %q, want %q", got, want)
 	}
 }
+
+// A managed deny list adds to the deny rules of the user's file, -settings, a
+// trusted workspace and the built-in ones; it never takes one away. Each rule
+// keeps its own layer, and none is recorded as overridden.
+func TestManagedDenyAddsToTheOthers(t *testing.T) {
+	const managedDeny = `{"permissions":{"deny":["bash(curl*)","bash(wget*)"]}}`
+	for _, c := range []struct {
+		name, user, ws, settings string
+		rule, layer              string
+	}{
+		{name: "user", user: `{"permissions":{"deny":["bash(nc *)","bash(wget*)"]}}`, rule: "bash(nc *)", layer: LayerUser},
+		{name: "settings", settings: `{"permissions":{"deny":["bash(scp *)"]}}`, rule: "bash(scp *)", layer: LayerSettings},
+		{name: "trusted workspace", ws: `{"permissions":{"deny":["read(secrets/**)"]}}`, rule: "read(secrets/**)", layer: LayerWorkspace},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			withManaged(t, managedDeny)
+			_, ws := trustHome(t, c.user, c.ws)
+			o := LoadOptions{Trust: TrustGranted, Quiet: true}
+			if c.settings != "" {
+				o.Settings, o.SettingsName = []byte(c.settings), "-settings (inline)"
+			}
+			cfg, err := LoadWith(ws, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rule, layer := range map[string]string{"bash(curl*)": LayerManaged, "bash(wget*)": LayerManaged, c.rule: c.layer} {
+				if !slices.Contains(cfg.Permissions.Deny, rule) || cfg.RuleLayer("deny", rule) != layer {
+					t.Errorf("%s: deny %v, layer %s, want %s", rule, cfg.Permissions.Deny, cfg.RuleLayer("deny", rule), layer)
+				}
+			}
+			if cfg.Permissions.Deny[0] != "bash(curl*)" || len(cfg.Permissions.Deny) != 3 {
+				t.Errorf("deny %v: want the managed rules first, each rule once", cfg.Permissions.Deny)
+			}
+			for _, o := range cfg.Overridden {
+				if o.Key == "permissions.deny" {
+					t.Errorf("a deny list recorded as overridden: %+v", o)
+				}
+			}
+		})
+	}
+
+	// With no lower list the built-in deny rules stay beside the managed ones.
+	withManaged(t, managedDeny)
+	_, ws := trustHome(t, "", "")
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range Default().Permissions.Deny {
+		if !slices.Contains(cfg.Permissions.Deny, r) || cfg.RuleLayer("deny", r) != LayerDefault {
+			t.Errorf("built-in %s: deny %v, layer %s", r, cfg.Permissions.Deny, cfg.RuleLayer("deny", r))
+		}
+	}
+	// So does a program that loads only the managed file.
+	if m, err := LoadManaged(); err != nil || !slices.Contains(m.Permissions.Deny, "bash(*mkfs*)") || !slices.Contains(m.Permissions.Deny, "bash(curl*)") {
+		t.Errorf("LoadManaged deny %v (%v)", m.Permissions.Deny, err)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -131,6 +132,10 @@ func TestUntrustedWorkspaceIgnoresWhatWidens(t *testing.T) {
 		{"syntax check off", "tools.syntax_check", `{"tools":{"syntax_check":"off"}}`, func(c Config) bool { return c.Tools.SyntaxCheck == "off" }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			// Unmanaged, whatever this machine's managed file turns on.
+			old := managed.ConfigFile
+			managed.ConfigFile = filepath.Join(t.TempDir(), "absent.json")
+			t.Cleanup(func() { managed.ConfigFile = old })
 			_, ws := trustHome(t, "", c.file)
 			cfg, _ := LoadWith(ws, LoadOptions{Quiet: true})
 			if cfg.Workspace.Trusted || c.took(cfg) {
