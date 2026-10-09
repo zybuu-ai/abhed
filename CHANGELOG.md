@@ -31,7 +31,10 @@ All notable changes to Abhed are recorded here. The format follows
   made against a stale version. Every change is recorded with who asked, in
   an append-only `sandbox_audit` table on Postgres. `:attach`, `:ssh`,
   `:forward`, `:expose`, `:cp`, `:snapshot` and `:restore` answer `501` for
-  now. See [Sandboxes over the API](docs/guide/22-sandboxes.md).
+  now. Each sandbox works in a folder of its own, outside the server's
+  workspace and `~/.abhed`, unless `control_plane.shared_workspace` asks for
+  the server's workspace. See [Sandboxes over the
+  API](docs/guide/22-sandboxes.md).
 - Restart policies (`never`, `on-failure`, `always`) with doubling backoff
   and a restart budget; each restart is a new generation.
 - A settings registry: `exec.timeout_seconds`, `exec.output_bytes`, the

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -15,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/builtin"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -40,14 +42,83 @@ func controlPlaneStore(ctx context.Context, events server.EventStore) (controlpl
 	return q, q, "postgres (tenant " + pg.Tenant() + ")", nil
 }
 
+// controlPlaneStateDir is where serve keeps the control plane's own folders
+// unless configured otherwise: outside ~/.abhed, which no sandbox may read,
+// and outside any workspace.
+func controlPlaneStateDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("the control plane's state folder: %w", err)
+	}
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "Abhed", "control-plane"), nil
+	}
+	if x := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(x) {
+		return filepath.Join(x, "abhed", "control-plane"), nil
+	}
+	return filepath.Join(home, ".local", "state", "abhed", "control-plane"), nil
+}
+
+// checkSandboxRoot refuses a folder for sandbox workspaces that another
+// sandbox, a session or Abhed's state would share: inside the server's
+// workspace, inside any .abhed, or one others may write.
+func checkSandboxRoot(key, root, workspace string) error {
+	if !filepath.IsAbs(root) {
+		return fmt.Errorf("%s %q is not an absolute path", key, root)
+	}
+	root = filepath.Clean(root)
+	for _, c := range strings.Split(filepath.ToSlash(root), "/") {
+		if strings.EqualFold(c, tools.StateDir) {
+			return fmt.Errorf("%s %q is inside Abhed's state", key, root)
+		}
+	}
+	for _, ws := range []string{workspace, sandbox.RealPath(workspace)} {
+		if ws != "" && (within(root, ws) || within(ws, root)) {
+			return fmt.Errorf("%s %q overlaps the server's workspace %s; sandboxes get folders of their own", key, root, workspace)
+		}
+	}
+	return nil
+}
+
+// ownFolder makes dir mode 0700 if it is missing, and refuses one that is
+// a link or that others may write.
+func ownFolder(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a folder", dir)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s may be written by others (mode %v); make it 0700", dir, fi.Mode().Perm())
+	}
+	return nil
+}
+
 // sandboxWorkspaces gives each sandbox its folder: one of its own under
-// root, or the server's workspace when root is empty.
-func sandboxWorkspaces(root, workspace string) (get func(string) (string, error), release func(string) error, err error) {
-	if root == "" {
+// control_plane.workspace_root, or under the control plane's state folder
+// when that is unset; the server's workspace only with shared_workspace.
+func sandboxWorkspaces(cp config.ControlPlaneConfig, workspace string) (get func(string) (string, error), release func(string) error, err error) {
+	if cp.SharedWorkspace {
+		if cp.WorkspaceRoot != "" {
+			return nil, nil, errors.New("control_plane.shared_workspace and control_plane.workspace_root are both set; choose one")
+		}
 		return func(string) (string, error) { return workspace, nil }, nil, nil
 	}
-	if !filepath.IsAbs(root) {
-		return nil, nil, fmt.Errorf("control_plane.workspace_root %q is not an absolute path", root)
+	root, key := cp.WorkspaceRoot, "control_plane.workspace_root"
+	if root == "" {
+		state, err := controlPlaneStateDir()
+		if err != nil {
+			return nil, nil, err
+		}
+		root, key = filepath.Join(state, "sandboxes"), "the default sandbox folder"
+	}
+	if err := checkSandboxRoot(key, root, workspace); err != nil {
+		return nil, nil, err
 	}
 	dir := func(id string) (string, error) {
 		if !controlplane.ValidID(id) {
@@ -58,6 +129,9 @@ func sandboxWorkspaces(root, workspace string) (get func(string) (string, error)
 	get = func(id string) (string, error) {
 		d, err := dir(id)
 		if err != nil {
+			return "", err
+		}
+		if err := ownFolder(root); err != nil {
 			return "", err
 		}
 		return d, os.MkdirAll(d, 0o700)
@@ -105,7 +179,7 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return nil, "", fmt.Errorf("control_plane: %w", err)
 	}
-	get, release, err := sandboxWorkspaces(cfg.ControlPlane.WorkspaceRoot, workspace)
+	get, release, err := sandboxWorkspaces(cfg.ControlPlane, workspace)
 	if err != nil {
 		return nil, "", err
 	}

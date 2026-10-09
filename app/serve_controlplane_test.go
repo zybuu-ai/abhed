@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -88,18 +89,25 @@ func TestServeCheckFails(t *testing.T) {
 
 func TestSandboxWorkspaces(t *testing.T) {
 	ws := t.TempDir()
-	get, release, err := sandboxWorkspaces("", ws)
+	// Shared only when asked for, and never together with a root.
+	get, release, err := sandboxWorkspaces(config.ControlPlaneConfig{SharedWorkspace: true}, ws)
 	if err != nil || release != nil {
 		t.Fatal(err)
 	}
 	if d, _ := get("sbx_0123456789abcdef"); d != ws {
 		t.Fatalf("shared workspace %q", d)
 	}
-	if _, _, err := sandboxWorkspaces("relative/root", ws); err == nil {
-		t.Fatal("a relative root was accepted")
+	if _, _, err := sandboxWorkspaces(config.ControlPlaneConfig{SharedWorkspace: true, WorkspaceRoot: t.TempDir()}, ws); err == nil {
+		t.Fatal("shared_workspace with a root was accepted")
 	}
-	root := t.TempDir()
-	get, release, err = sandboxWorkspaces(root, ws)
+	for _, bad := range []string{"relative/root", ws, filepath.Join(ws, "sandboxes"), filepath.Dir(ws),
+		filepath.Join(t.TempDir(), ".abhed", "sandboxes"), filepath.Join(t.TempDir(), ".ABHED")} {
+		if _, _, err := sandboxWorkspaces(config.ControlPlaneConfig{WorkspaceRoot: bad}, ws); err == nil {
+			t.Errorf("root %q was accepted", bad)
+		}
+	}
+	root := filepath.Join(t.TempDir(), "sandboxes")
+	get, release, err = sandboxWorkspaces(config.ControlPlaneConfig{WorkspaceRoot: root}, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +115,10 @@ func TestSandboxWorkspaces(t *testing.T) {
 	if err != nil || d != filepath.Join(root, "sbx_0123456789abcdef") {
 		t.Fatalf("%q %v", d, err)
 	}
-	if fi, err := os.Stat(d); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("workspace %v %v", fi, err)
+	for _, p := range []string{root, d} {
+		if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Fatalf("%s: %v %v", p, fi, err)
+		}
 	}
 	for _, bad := range []string{"../escape", "sbx_0123456789abcdef/..", ""} {
 		if _, err := get(bad); err == nil {
@@ -123,6 +133,42 @@ func TestSandboxWorkspaces(t *testing.T) {
 	}
 	if _, err := os.Stat(d); !os.IsNotExist(err) {
 		t.Fatalf("not removed: %v", err)
+	}
+	// A root others may write is refused when a sandbox needs it.
+	if err := os.Chmod(root, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := get("sbx_0123456789abcdef"); err == nil || !strings.Contains(err.Error(), "written by others") {
+		t.Fatalf("a world-writable root: %v", err)
+	}
+}
+
+// Unset, each sandbox gets a folder of its own in the control plane's state
+// folder, never the server's workspace or ~/.abhed.
+func TestSandboxWorkspacesDefaultToTheirOwn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	ws := t.TempDir()
+	get, release, err := sandboxWorkspaces(config.ControlPlaneConfig{}, ws)
+	if err != nil || release == nil {
+		t.Fatal(err)
+	}
+	d, err := get("sbx_0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(state, "abhed", "control-plane", "sandboxes", "sbx_0123456789abcdef")
+	if runtime.GOOS == "darwin" {
+		want = filepath.Join(home, "Library", "Application Support", "Abhed", "control-plane", "sandboxes", "sbx_0123456789abcdef")
+	}
+	if d != want || within(d, ws) || within(d, filepath.Join(home, ".abhed")) {
+		t.Fatalf("default folder %q, want %q", d, want)
+	}
+	other, _ := get("sbx_fedcba9876543210")
+	if other == d {
+		t.Fatal("two sandboxes share a folder")
 	}
 }
 

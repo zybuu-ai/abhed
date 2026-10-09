@@ -637,9 +637,13 @@ type ControlPlaneConfig struct {
 	// Enabled serves /v1/sandboxes and runs the reconciler. Off leaves serve
 	// exactly as it was.
 	Enabled bool `json:"enabled,omitempty"`
-	// WorkspaceRoot, when set, gives each sandbox a folder of its own under
-	// it. Empty shares the server's workspace, as sessions do.
+	// WorkspaceRoot is where each sandbox gets a folder of its own. Empty
+	// means a folder in the control plane's state folder, outside ~/.abhed
+	// and the server's workspace.
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	// SharedWorkspace gives every sandbox the server's workspace instead, as
+	// sessions have; WorkspaceRoot must then be unset.
+	SharedWorkspace bool `json:"shared_workspace,omitempty"`
 	// ExecTimeoutSeconds bounds one :exec.
 	ExecTimeoutSeconds int `json:"exec_timeout_seconds,omitempty"`
 	// ExecOutputBytes bounds what one :exec may write, stdout and stderr together.

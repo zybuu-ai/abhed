@@ -27,7 +27,8 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Serve `/v1/sandboxes` and run the reconciler. |
-| `workspace_root` | the server's workspace | Gives each sandbox a folder of its own, `<root>/<id>`, removed when the sandbox is deleted. Unset, every sandbox works in the server's workspace, as sessions do. Must be absolute. |
+| `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. |
+| `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
 | `exec_timeout_seconds` | 600 | Longest one `:exec` may run. |
 | `exec_output_bytes` | 16 MiB | Most output one `:exec` may write, stdout and stderr together. |
 | `restart_policy` | `never` | `never`, `on-failure` or `always`; see [restarts](#restarts-and-generations). |
