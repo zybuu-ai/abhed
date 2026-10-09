@@ -171,10 +171,18 @@ func (s *Server) answerHere(w http.ResponseWriter, r *http.Request, live *liveSe
 	}
 	live.mu.Lock()
 	state, durableID := p.state, p.DurableID
+	ans := ApprovalAnswer{Tenant: live.Tenant, SessionID: live.ID, Owner: live.User, Request: requestKey(p),
+		Tool: p.Tool, Reason: p.Reason, Since: p.Since, By: UserOf(r.Context()), Approved: req.Approved, Scope: req.Scope}
 	live.mu.Unlock()
 	if state != askWaiting {
 		refuse(w, state)
 		return
+	}
+	if s.opts.ApprovalGate != nil {
+		ans.Args = redactedArgs(live, p.Args)
+		if !s.gateAnswer(w, r, ans) {
+			return
+		}
 	}
 
 	// The store's row is the one arbiter between answers: the first to

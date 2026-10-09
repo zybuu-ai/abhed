@@ -41,7 +41,7 @@ type cpRig struct {
 	fake  *drivertest.Fake
 }
 
-func newCPRig(t *testing.T, values map[string]string) *cpRig {
+func newCPRig(t *testing.T, values map[string]string, mods ...func(*Options)) *cpRig {
 	t.Helper()
 	st, err := controlplane.NewSettings(values, nil)
 	if err != nil {
@@ -66,9 +66,15 @@ func newCPRig(t *testing.T, values map[string]string) *cpRig {
 		"bob":   {Subject: "bob", Tenant: "default"},
 		"admin": {Subject: "root", Tenant: "default", Groups: []string{DefaultAdminGroup}},
 		"eve":   {Subject: "eve", Tenant: "other"},
+		"carol": {Subject: "carol", Tenant: "default"},
+		"dave":  {Subject: "dave", Tenant: "default"},
 	}}
-	srv := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
-		Registry: tools.NewRegistry(tools.Read{}), Auth: mw, ControlPlane: svc})
+	opts := Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Auth: mw, ControlPlane: svc}
+	for _, mod := range mods {
+		mod(&opts)
+	}
+	srv := New(opts)
 	return &cpRig{srv: srv, h: srv.Handler(), svc: svc, store: mem, fake: fake}
 }
 

@@ -74,6 +74,8 @@ func cpStatus(err error) (int, string) {
 	switch code {
 	case "not_found":
 		return http.StatusNotFound, code
+	case "forbidden", "approval_required", "quota_exceeded":
+		return http.StatusForbidden, code
 	case "invalid":
 		return http.StatusBadRequest, code
 	case "conflict":
@@ -90,6 +92,9 @@ func cpStatus(err error) (int, string) {
 
 func (s *Server) failCP(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := cpStatus(err)
+	if need := new(controlplane.ApprovalNeeded); errors.As(err, &need) {
+		w.Header().Set(approvalHeader, need.ID)
+	}
 	msg := err.Error()
 	if code == "internal" {
 		// Fails closed, and says nothing about why to the caller.
@@ -107,14 +112,27 @@ func (s *Server) cpTenant() string {
 	return "default"
 }
 
+// approvalHeader names the approval a request is sent again with, and the
+// one a refusal asks to be approved.
+const approvalHeader = "Abhed-Approval"
+
 // sandboxCaller resolves who is asking, or answers and returns false. The
-// store is opened for one tenant, so a request in another is refused.
-func (s *Server) sandboxCaller(w http.ResponseWriter, r *http.Request) (controlplane.Caller, bool) {
+// store is opened for one tenant, so a request in another is refused. The
+// returned request carries the approval the caller named, for the guard.
+func (s *Server) sandboxCaller(w http.ResponseWriter, r *http.Request) (controlplane.Caller, *http.Request, bool) {
 	if TenantOf(r.Context()) != s.cpTenant() {
 		writeCPError(w, http.StatusForbidden, "forbidden", "sandboxes on this server belong to another tenant")
-		return controlplane.Caller{}, false
+		return controlplane.Caller{}, r, false
 	}
-	return controlplane.Caller{Principal: UserOf(r.Context()), Admin: s.IsAdmin(r)}, true
+	c := controlplane.Caller{Principal: UserOf(r.Context()), Admin: s.IsAdmin(r)}
+	if s.opts.SandboxCaller != nil {
+		var err error
+		if c, err = s.opts.SandboxCaller(r, c); err != nil {
+			s.failCP(w, r, err)
+			return controlplane.Caller{}, r, false
+		}
+	}
+	return c, r.WithContext(controlplane.WithApproval(r.Context(), r.Header.Get(approvalHeader))), true
 }
 
 // cpRateWindow is the window the per-minute settings count in.
@@ -153,7 +171,7 @@ func splitTarget(target string) (id, verb string) {
 }
 
 func (s *Server) sandboxTarget(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.sandboxCaller(w, r)
+	c, r, ok := s.sandboxCaller(w, r)
 	if !ok {
 		return
 	}
@@ -258,7 +276,7 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, c controlpla
 }
 
 func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.sandboxCaller(w, r)
+	c, r, ok := s.sandboxCaller(w, r)
 	if !ok || !cpLimit(s.cpMutations, w, c) {
 		return
 	}
@@ -283,7 +301,7 @@ type sandboxList struct {
 }
 
 func (s *Server) listSandboxes(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.sandboxCaller(w, r)
+	c, r, ok := s.sandboxCaller(w, r)
 	if !ok {
 		return
 	}
