@@ -546,6 +546,9 @@ on. A server with it off starts on the older schema as before.
   `ListTemplates`, `DeleteTemplate` and `Service.Events`;
   `server.AttachProtocol`, `ExecProtocol` and `ForwardProtocol` beside
   `SSHRelayProtocol`. `drivertest.Fake` snapshots carry a digest.
+- `wsconn`, `profiles`, `server/sshrelay` and `store/sqlite` are
+  experimental APIs until 2.0, as `driver` and `controlplane` are: they may
+  change in a minor release.
 - `controlplane.IdempotencyStore` gains `Renew`, and `Complete` and
   `Release` take the claim's token (`IdemRecord.Token`): a running request
   renews its claim, and only the request holding it can finish it.

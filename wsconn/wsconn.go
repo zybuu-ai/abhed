@@ -8,6 +8,8 @@
 // limits and minimal length encodings; frames and messages are bounded in
 // size, text is checked to be UTF-8, and any protocol error closes the
 // connection with the code RFC 6455 names for it.
+//
+// It is an experimental API until 2.0, and may change in a minor release.
 package wsconn
 
 import (

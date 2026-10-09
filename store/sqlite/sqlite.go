@@ -1,6 +1,8 @@
 // Package sqlite is the control plane's store on one host: sandboxes,
 // idempotency records and the append-only audit record in one SQLite file.
 // It uses a pure-Go SQLite, so the binary needs no cgo.
+//
+// It is an experimental API until 2.0, and may change in a minor release.
 package sqlite
 
 import (
