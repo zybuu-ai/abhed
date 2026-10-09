@@ -168,7 +168,7 @@ last `:`; ids never contain one.
 | `DELETE /v1/sandboxes/{id}` | — | `202` sandbox in `Deleting` | `If-Match` honoured. |
 | `POST …:start` / `:stop` | `{grace_seconds?}` | `202` sandbox | `If-Match` honoured. |
 | `POST …:exec` | `{argv \| command, cwd?, env?}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. With `"stdin": true`, `400`: stdin is the WebSocket form. `argv` runs, is screened and is recorded as one line with each word quoted for a POSIX shell (`driver.QuoteArgv`); a word with a NUL is `400`. |
-| `GET …:exec` | first message: the `POST` body | WebSocket `abhed.exec.v1` | One command with stdin (§4.3). While a deny or ask rule for `bash` or a hook is in force, a shell or interpreter that could read commands from stdin is `forbidden` (as is an SSH exec); see the sandboxes guide for the rule. |
+| `GET …:exec` | first message: the `POST` body | WebSocket `abhed.exec.v1` | One command with stdin (§4.3). While a deny or ask rule for `bash` or a hook is in force, a shell reading its commands from stdin has each statement judged before it is sent (a refused one ends the input, recorded as `exec.refused`, and the stream ends `forbidden`), and any other command that could read commands from stdin is `forbidden`; the same holds for an SSH exec. See the sandboxes guide. |
 | `GET …:attach?rows=&cols=&cwd=` | — | WebSocket `abhed.attach.v1` | PTY; resize as a control message. Carries `generation`. |
 | `POST …:ssh` | — | `{host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` | What a client needs for the relay; no credential is minted, since the relay authenticates the caller. |
 | `GET …:ssh` | — | WebSocket `abhed.ssh.v1` | The SSH relay: raw SSH in binary messages. |
@@ -599,7 +599,9 @@ on (it needs `control_plane.enabled` and refuses `shared_workspace`):
   there. The bash tool, background commands and the workbench terminal get
   their process from `Service.Command` (driver capability `command`, §5),
   which records an `exec` with `detail.via=session` and puts it to the guard
-  and interceptor as an exec; the bash tool's timeout and output handling
+  and interceptor as an exec (the workbench's interactive shell as the
+  command `:shell` with `Admission.Exec.Stdin` set, so an edition can tell a
+  shell that reads its input from one command); the bash tool's timeout and output handling
   apply instead of `exec.timeout_seconds` and `exec.output_bytes`. The
   session's record gets `sandbox.bound` before the first command this
   process runs in it; a record that cannot be written runs nothing.
@@ -794,7 +796,9 @@ behaves as the sections above describe.
   `requested` record and before the store or a driver is touched; its
   refusal is recorded as the `failed` outcome with its code. It sees the
   caller, the object now, what a create or update would make of it, an
-  exec's command, a stop's grace, and the approval the request names. On a
+  exec's command (with `Exec.Stdin` set for one that reads its input, such
+  as a session's interactive shell), a stop's grace, and the approval the
+  request names. On a
   create it may tighten settings, which are checked against the registry
   again. An error that is not one of the contract's is `unavailable`: a
   guard that cannot decide refuses. The release it returns runs once the
@@ -817,7 +821,11 @@ behaves as the sections above describe.
   `PolicyLayer.Validate` refuses (rules `policy.ParseRule` cannot read, a
   name the configuration's own layers use, more than 500 rules), refuses
   the session with `503`. The layer is recorded as `policy.layer`, and the
-  decisions its rules make carry `layer`. `PolicyLayer.Decide(tool, args)`
+  decisions its rules make carry `layer`. It is asked again when the
+  workbench terminal opens: a deny or ask rule in it for `bash` or `*` gives
+  the line-by-line terminal, judged with the layer; an error refuses the
+  terminal with `503`, and such rules missing from the session's own layer
+  with `409`. `PolicyLayer.Decide(tool, args)`
   applies a layer's deny and ask rules to one call outside a session, such
   as a guard checking an exec's command.
 - **Credential sources.** `secretstore.OpenSource(name, src)` is a secrets

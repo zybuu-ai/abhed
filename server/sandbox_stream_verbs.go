@@ -201,10 +201,13 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		}
 	}()
 	var wait func() error
+	stdin := s.newStdinScreen(ctx, pol, call.caller, st.sb, pr)
 	res, _, err := s.opts.ControlPlane.Exec(ctx, call.caller, call.id, "", req, controlplane.ExecIO{
-		Stdin: pr, Stdout: prefixed{ws, 1}, Stderr: prefixed{ws, 2},
-		Screen: func(command string) error { return s.screenStdinExec(pol, command) },
+		Stdin: stdin, Stdout: prefixed{ws, 1}, Stderr: prefixed{ws, 2},
+		Screen:  func(command string) error { return s.screenStdinExec(pol, command, stdin) },
+		Refused: stdin.refused,
 		Started: func(sb controlplane.Sandbox) {
+			stdin.sb = sb
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
 			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{busy: in.full})
 		}})
@@ -582,9 +585,11 @@ func (h *sshSandbox) Exec(ctx context.Context, command string, sess sshrelay.Ses
 	if left <= 0 {
 		return 1, fmt.Errorf("%w: the SSH connection has reached ssh.max_session_seconds", controlplane.ErrUnavailable)
 	}
+	stdin := h.s.newStdinScreen(ctx, h.pol, h.caller, h.sb, sess.Stdin)
 	res, _, err := h.s.opts.ControlPlane.Exec(ctx, h.caller, h.sb.ID, "", controlplane.ExecRequest{Command: command, Stdin: true},
-		controlplane.ExecIO{Stdin: sess.Stdin, Stdout: sess.Stdout, Stderr: sess.Stderr, Timeout: left,
-			Screen: func(command string) error { return h.s.screenStdinExec(h.pol, command) }})
+		controlplane.ExecIO{Stdin: stdin, Stdout: sess.Stdout, Stderr: sess.Stderr, Timeout: left,
+			Screen:  func(command string) error { return h.s.screenStdinExec(h.pol, command, stdin) },
+			Refused: stdin.refused, Started: func(sb controlplane.Sandbox) { stdin.sb = sb }})
 	return res.ExitCode, err
 }
 

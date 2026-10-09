@@ -146,8 +146,10 @@ func screensStdin(pol *policy.Engine) bool {
 }
 
 // screenStdinExec judges a command fed stdin: the deny rules and hooks, then
-// whether it could run commands from its stdin that they never see.
-func (s *Server) screenStdinExec(pol *policy.Engine, command string) error {
+// whether it could run commands from its stdin that they never see. A shell
+// reading its commands from stdin is let through with in turned on, so each
+// statement it is given is judged first; any other reader is refused.
+func (s *Server) screenStdinExec(pol *policy.Engine, command string, in *stdinScreen) error {
 	if err := denied(pol, command, false); err != nil {
 		return err
 	}
@@ -158,10 +160,132 @@ func (s *Server) screenStdinExec(pol *policy.Engine, command string) error {
 	if what == "" {
 		return nil
 	}
-	instead := "open :attach (or an SSH shell), which judges each line, or pass the commands in the command line"
+	if in != nil && stdinShell(command) {
+		in.on = true
+		return nil
+	}
+	instead := "open :attach (or an SSH shell), which judges each line, feed the commands to sh, whose input is judged statement by statement, or pass the commands in the command line"
 	if s.terminalRefusal(pol) != "" {
-		instead = "pass each command in its own command line"
+		instead = "feed the commands to sh, whose input is judged statement by statement, or pass each command in its own command line"
 	}
 	return fmt.Errorf("%w: %s reading commands from stdin cannot be checked against the rules and hooks in force; %s",
 		controlplane.ErrForbidden, what, instead)
+}
+
+// stdinShells are the shells whose input is judged statement by statement.
+// zsh is not one: =cmd and glob qualifiers run what a bash parser reads as
+// plain words, so its statements cannot be judged as it reads them.
+var stdinShells = map[string]bool{"sh": true, "bash": true, "dash": true, "ksh": true, "mksh": true, "ash": true,
+	"yash": true, "posh": true}
+
+// stdinShellWrappers run the shell after them with the same input.
+var stdinShellWrappers = map[string]bool{"env": true, "nice": true, "timeout": true, "exec": true, "nohup": true,
+	"stdbuf": true, "setsid": true, "command": true}
+
+// shellStartFiles are variables naming files or text a shell runs on its
+// own, unseen by the statement screen.
+var shellStartFiles = map[string]bool{"BASH_ENV": true, "ENV": true, "ZDOTDIR": true, "SHELLOPTS": true, "BASHOPTS": true,
+	"PS0": true, "PS1": true, "PS2": true, "PS3": true, "PS4": true, "PROMPT_COMMAND": true, "BASH_LOADABLES_PATH": true,
+	"BASH_XTRACEFD": true, "EXECIGNORE": true}
+
+// stdinShell reports whether command is only a shell reading its commands
+// from stdin, such as sh, bash -s -- a b, env A=1 nice sh or busybox ash:
+// one simple command of literal words, run directly or through wrappers,
+// with no script file, no -c and no redirect of its input.
+func stdinShell(command string) bool {
+	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
+	if err != nil || len(f.Stmts) != 1 {
+		return false
+	}
+	st := f.Stmts[0]
+	call, ok := st.Cmd.(*syntax.CallExpr)
+	if !ok || st.Background || st.Coprocess || len(call.Args) == 0 {
+		return false
+	}
+	for _, r := range st.Redirs {
+		if r.N == nil || r.N.Value == "0" {
+			switch r.Op {
+			case syntax.RdrIn, syntax.RdrInOut, syntax.DplIn, syntax.WordHdoc, syntax.Hdoc, syntax.DashHdoc:
+				return false
+			}
+		}
+	}
+	for _, a := range call.Assigns {
+		if shellStartFiles[a.Name.Value] {
+			return false
+		}
+	}
+	words := make([]string, len(call.Args))
+	for i, w := range call.Args {
+		text, lit := literalWord(w)
+		if !lit {
+			return false
+		}
+		words[i] = text
+	}
+	i := 0
+	for i < len(words) && stdinShellWrappers[programName(words[i])] {
+		for i++; i < len(words); i++ {
+			w := words[i]
+			if name, _, ok := strings.Cut(w, "="); ok && !strings.HasPrefix(w, "-") {
+				if shellStartFiles[name] {
+					return false
+				}
+				continue
+			}
+			if !strings.HasPrefix(w, "-") && !durationWord.MatchString(w) {
+				break
+			}
+			if w == "-n" || w == "-s" || w == "-k" || w == "-u" || w == "-a" || w == "-C" || w == "--signal" || w == "--kill-after" {
+				i++ // the option's value
+			}
+		}
+	}
+	if i >= len(words) {
+		return false
+	}
+	name := programName(words[i])
+	if name == "busybox" && i+1 < len(words) {
+		i++
+		if name = programName(words[i]); name != "sh" && name != "ash" && name != "hush" {
+			return false
+		}
+	} else if !stdinShells[name] {
+		return false
+	}
+	return shellReadsStdin(words[i+1:])
+}
+
+// durationWord is a number, or a duration as timeout takes it.
+var durationWord = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]?$`)
+
+// shellReadsStdin reports whether a shell given args reads its commands
+// from stdin: options only, or -s and its positional parameters.
+func shellReadsStdin(args []string) bool {
+	for j := 0; j < len(args); j++ {
+		a := args[j]
+		switch {
+		case a == "-" || a == "--":
+			return j+1 == len(args)
+		case a == "--login" || a == "--norc" || a == "--noprofile" || a == "--posix" || a == "--noediting":
+		case strings.HasPrefix(a, "--"):
+			return false
+		case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
+			for _, o := range a[1:] {
+				switch o {
+				case 'c':
+					return false
+				case 's':
+					if a[0] == '-' {
+						return true // the rest are its positional parameters
+					}
+				case 'o', 'O':
+					j++
+				}
+			}
+		default:
+			return false // a script file
+		}
+	}
+	return true
 }

@@ -578,6 +578,9 @@ type ExecIO struct {
 	// Screen, when set, judges the command line once the request is
 	// recorded and before the guard; a refusal is recorded and returned.
 	Screen func(command string) error
+	// Refused, when set, is asked once the command has ended whether its
+	// input was cut short by a refusal; one is the exec's error.
+	Refused func() error
 	// Timeout, when set, replaces exec.timeout_seconds: for a command a
 	// caller bounds otherwise, as an SSH session's is by its own limits.
 	Timeout time.Duration
@@ -671,6 +674,9 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	case err != nil && ctx.Err() != nil:
 		// Why the caller ended it, such as a shutdown, rather than only that it did.
 		err = context.Cause(ctx)
+	}
+	if err == nil && eio.Refused != nil {
+		err = eio.Refused()
 	}
 	if err == nil {
 		ev.Detail["exit_code"] = strconv.Itoa(res.ExitCode)

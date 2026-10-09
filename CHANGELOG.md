@@ -44,18 +44,33 @@ All notable changes to Abhed are recorded here. The format follows
   The layer is asked for per caller when the call or connection opens; one
   that cannot be read or applied refuses the call with `503` instead of
   running it under fewer rules.
-- A sandbox command fed stdin (the `:exec` WebSocket, an SSH exec request,
-  `abhed sandbox exec -i`) that is a shell or interpreter, such as `sh` or
-  `python3`, is refused with `403` while any deny or ask rule for `bash` or
-  any hook is in force (the default deny rules included): the commands it
-  would read from stdin are never put to the rules. The message points to
-  `:attach` or an SSH shell, which judge each line. A word naming a shell,
-  an interpreter or a program that runs what it reads (`awk`, `sed`,
-  `xargs`, `eval`, `ssh` …) anywhere in the line, a program named by an
-  expansion, and a line that does not parse are refused; the sandboxes
-  guide lists the rule. Editors that start their server over SSH by sending
-  a script to a shell need a server whose rules and hooks do not screen
-  `bash`.
+- A session's workbench terminal opened an interactive shell even when the
+  session's edition policy layer (a Team workspace's rules) had deny or ask
+  rules for commands, so those rules were not applied to what was typed.
+  Such a layer now gives the line-by-line terminal, each line judged with
+  it, with the reason "your workspace's rules". The layer is read again when
+  the terminal opens: one that cannot be read opens no terminal (`503`), and
+  one that gained such rules since the session opened answers `409` until
+  the session is opened again. A session's terminal shell now reaches a
+  guard with `Admission.Exec.Stdin` set.
+- A shell fed its commands on stdin in a sandbox (the `:exec` WebSocket, an
+  SSH exec request such as `ssh host sh < script`, `abhed sandbox exec -i ID
+  -- sh`) has that input judged statement by statement while any deny or
+  ask rule for `bash` or any hook is in force (the default deny rules and a
+  Team workspace's rules included): lines are held until they make a
+  complete statement, which is judged whole by the rules, hooks and policy
+  layer, recorded as `exec.input`, and only then sent. A refused statement
+  is recorded as `exec.refused`, never sent, and ends the input, so nothing
+  after it runs; the exec ends `403`. A statement that would let the shell
+  run what no rule read (an interpreter reading the shell's own input, a
+  here-document fed to another interpreter, `eval` of text built when it
+  runs, a file the script wrote, a program named by a variable the script
+  set to unknown text, an alias) is refused as uncheckable, as is one that
+  cannot be parsed. Scripts that set up a server the way editors do over
+  SSH now run. Any other command that could read commands from stdin, such
+  as `python3 -`, `cat | sh` or `sh -c '…'`, is still refused with `403`;
+  the sandboxes guide lists both rules. With no such rule or hook, stdin
+  passes through untouched.
 - A sandbox command given as `argv` (`POST :exec`, the `:exec` WebSocket,
   and `abhed sandbox exec ID -- COMMAND ARG...`) is judged by the deny rules
   and recorded as the line the process and container drivers run, each word

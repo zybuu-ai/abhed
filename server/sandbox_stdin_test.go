@@ -44,9 +44,10 @@ func TestStdinReader(t *testing.T) {
 	}
 }
 
-// A shell or interpreter fed stdin is refused while a rule or hook could
-// refuse some commands, on the WebSocket :exec and an SSH exec; other
-// commands, and any command where nothing screens, run.
+// An interpreter that is not a shell, or a shell whose input is not the
+// stdin given, is refused fed stdin while a rule or hook could refuse some
+// commands, on the WebSocket :exec and an SSH exec; other commands, and any
+// command where nothing screens, run.
 func TestSandboxStdinInterpreterRefused(t *testing.T) {
 	rules := map[string]func(*Options){
 		"deny": func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)"} },
@@ -56,7 +57,7 @@ func TestSandboxStdinInterpreterRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := newWSRig(t, nil, []driver.Capability{driver.CapAttach}, mod, func(o *Options) { o.SandboxSSHKey = testHostKey(t) })
 			sb := r.ready(t, "alice")
-			for _, req := range []string{`{"command":"bash"}`, `{"argv":["/usr/bin/python3","-"]}`, `{"command":"cat | sh -s"}`} {
+			for _, req := range []string{`{"command":"perl"}`, `{"argv":["/usr/bin/python3","-"]}`, `{"command":"cat | sh -s"}`} {
 				ws, err := r.dial(t, "alice", "/v1/sandboxes/"+sb.ID+":exec", protoExec)
 				if err != nil {
 					t.Fatal(err)
@@ -73,8 +74,8 @@ func TestSandboxStdinInterpreterRefused(t *testing.T) {
 			s, _ := client.NewSession()
 			var errOut bytes.Buffer
 			s.Stderr = &errOut
-			if err := s.Run("bash -s"); err == nil || !strings.Contains(errOut.String(), "stdin") {
-				t.Fatalf("ssh exec bash: %v %q", err, errOut.String())
+			if err := s.Run("python3 -"); err == nil || !strings.Contains(errOut.String(), "stdin") {
+				t.Fatalf("ssh exec python3: %v %q", err, errOut.String())
 			}
 			if r.fake.Calls("exec") != 0 {
 				t.Fatal("a refused command ran")
