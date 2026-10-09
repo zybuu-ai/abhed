@@ -502,7 +502,6 @@ on. A server with it off starts on the older schema as before.
 - `abhed logout` is seen by every server sharing `auth.cli.key_file`'s folder
   on its next request, and sign-outs made at once on two servers no longer
   overwrite each other.
-
 - An `attach.refused` record kept the refusal's reason as given, and a
   hook's reason may quote the refused line; the reason now goes through the
   secrets redaction, as the line does.
