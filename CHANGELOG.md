@@ -639,9 +639,12 @@ on. A server with it off starts on the older schema as before.
 - `wsconn`, `profiles`, `server/sshrelay` and `store/sqlite` are
   experimental APIs until 2.0, as `driver` and `controlplane` are: they may
   change in a minor release.
-- `controlplane.IdempotencyStore` gains `Renew`, and `Complete` and
-  `Release` take the claim's token (`IdemRecord.Token`): a running request
-  renews its claim, and only the request holding it can finish it.
+- Breaking for code that implements or calls `controlplane.IdempotencyStore`:
+  the `Complete` and `Release` signatures changed (each now takes the
+  claim's token, `IdemRecord.Token`), and the interface gained `Renew`. A
+  store written for 1.2.7 no longer compiles until it adds both. A running
+  request renews its claim, and only the request holding it can finish it.
+  `controlplane` is experimental until 2.0, so this lands in a minor release.
 - `wsconn`: a small WebSocket (RFC 6455) server upgrade, client and byte
   stream, size-limited and fuzzed, for the sandbox streams and for drivers
   that speak WebSockets. `server/sshrelay`: the SSH server behind the `:ssh`
