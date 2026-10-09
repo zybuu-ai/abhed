@@ -345,10 +345,10 @@ func lineResult(r tools.Result) []byte {
 	if r.ExitCode == nil || !ok || !strings.HasPrefix(head, "exit ") {
 		return crlf(r.Content)
 	}
-	if body == "[no output]" {
-		body = ""
+	if r.NoOutput {
+		// The tool's own text: the placeholder, then any notes after a blank line.
+		body = strings.TrimPrefix(strings.TrimPrefix(body, "[no output]"), "\n\n")
 	}
-	body = strings.TrimLeft(body, "\n")
 	out := crlf(body)
 	return append(out, "\x1b[2m"+head+"\x1b[0m\r\n"...)
 }

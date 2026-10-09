@@ -487,7 +487,8 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		cdNote = s.FollowCd(a.Command)
 	}
 
-	if content == "" {
+	noOutput := content == ""
+	if noOutput {
 		content = "[no output]"
 	}
 	if bgNote != "" {
@@ -511,6 +512,7 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		Content:   header + "\n" + content,
 		Truncated: truncated,
 		ExitCode:  &exitCode,
+		NoOutput:  noOutput,
 	}
 }
 

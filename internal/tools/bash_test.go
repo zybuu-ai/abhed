@@ -23,6 +23,17 @@ func TestBashRunsAndReportsExit(t *testing.T) {
 	}
 }
 
+// An empty result is marked, so a terminal need not read the placeholder as output.
+func TestBashMarksNoOutput(t *testing.T) {
+	s, _ := setup(t)
+	if res := run(t, Bash{}, s, bashArgs{Command: "true", Description: "nothing"}); !res.NoOutput {
+		t.Fatalf("empty output not marked: %q", res.Content)
+	}
+	if res := run(t, Bash{}, s, bashArgs{Command: "echo '[no output]'", Description: "text"}); res.NoOutput {
+		t.Fatalf("real output marked empty: %q", res.Content)
+	}
+}
+
 // A failing command is an observation, not a tool error - the model must be
 // able to reason about a failing test run.
 func TestBashNonZeroExitIsNotAnError(t *testing.T) {
