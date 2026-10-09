@@ -271,10 +271,12 @@ func shellReadsStdin(args []string) bool {
 		case strings.HasPrefix(a, "--"):
 			return false
 		case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
+			// A c anywhere in the bundle runs a command string, as sh -sc does.
+			if strings.ContainsRune(a[1:], 'c') {
+				return false
+			}
 			for _, o := range a[1:] {
 				switch o {
-				case 'c':
-					return false
 				case 's':
 					if a[0] == '-' {
 						return true // the rest are its positional parameters
