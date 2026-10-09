@@ -36,7 +36,11 @@ func TestControlPlaneTablesAreOneSchemaVersion(t *testing.T) {
 	if n := strings.Count(schemaSQL, "INSERT INTO schema_version (version) VALUES (7)"); n != 1 {
 		t.Fatalf("schema version 7 recorded %d times", n)
 	}
-	v7 := schemaSQL[strings.Index(schemaSQL, "-- Schema version 7"):]
+	at := strings.Index(schemaSQL, "-- Schema version 7")
+	if at < 0 {
+		t.Fatal("schema.sql has no schema version 7")
+	}
+	v7 := schemaSQL[at:]
 	for _, m := range regexp.MustCompile(`(?m)^CREATE TABLE IF NOT EXISTS (\w+)`).FindAllStringSubmatch(v7, -1) {
 		if !slices.ContainsFunc(sandboxColumns, func(c [2]string) bool { return c[0] == m[1] }) {
 			t.Errorf("%s is not among the columns the control plane checks for", m[1])

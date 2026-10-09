@@ -25,14 +25,14 @@ func TestPerSessionConfigIsChecked(t *testing.T) {
 		t.Fatalf("off: %v", err)
 	}
 	for name, edit := range map[string]func(*config.ControlPlaneConfig){
-		"control_plane.enabled":   func(c *config.ControlPlaneConfig) { c.Enabled = false },
-		"shared_workspace":        func(c *config.ControlPlaneConfig) { c.SharedWorkspace = true },
-		"sessions.scope":          func(c *config.ControlPlaneConfig) { c.Sessions.Scope = "tenant" },
-		"sessions.retention":      func(c *config.ControlPlaneConfig) { c.Sessions.Retention = "archive" },
-		"sessions.warm_pool":      func(c *config.ControlPlaneConfig) { c.Sessions.WarmPool = 17 },
-		"sessions.template":       func(c *config.ControlPlaneConfig) { c.Sessions.Template = "has space" },
-		"sessions.driver":         func(c *config.ControlPlaneConfig) { c.Sessions.Driver = "Bad Name" },
-		"sessions.ready_seconds ": func(c *config.ControlPlaneConfig) { c.Sessions.ReadySeconds = -1 },
+		"control_plane.enabled":  func(c *config.ControlPlaneConfig) { c.Enabled = false },
+		"shared_workspace":       func(c *config.ControlPlaneConfig) { c.SharedWorkspace = true },
+		"sessions.scope":         func(c *config.ControlPlaneConfig) { c.Sessions.Scope = "tenant" },
+		"sessions.retention":     func(c *config.ControlPlaneConfig) { c.Sessions.Retention = "archive" },
+		"sessions.warm_pool":     func(c *config.ControlPlaneConfig) { c.Sessions.WarmPool = 17 },
+		"sessions.template":      func(c *config.ControlPlaneConfig) { c.Sessions.Template = "has space" },
+		"sessions.driver":        func(c *config.ControlPlaneConfig) { c.Sessions.Driver = "Bad Name" },
+		"sessions.ready_seconds": func(c *config.ControlPlaneConfig) { c.Sessions.ReadySeconds = -1 },
 	} {
 		cfg := ok
 		edit(&cfg.ControlPlane)

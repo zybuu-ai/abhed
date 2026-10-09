@@ -391,7 +391,7 @@ func Revoke(ctx context.Context, c *http.Client, p *Profile) error {
 	req = req.WithContext(ctx)
 	resp, err := c.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrLogoutNotRecorded, err)
+		return fmt.Errorf("%w: %w", ErrLogoutNotRecorded, err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 500 {
@@ -415,7 +415,7 @@ func Logout(ctx context.Context, c *http.Client, p *Profile, attempts int, first
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("%w: %v", ErrLogoutNotRecorded, ctx.Err())
+				return fmt.Errorf("%w: %w", ErrLogoutNotRecorded, ctx.Err())
 			case <-time.After(wait):
 			}
 			wait *= 2
@@ -427,7 +427,7 @@ func Logout(ctx context.Context, c *http.Client, p *Profile, attempts int, first
 	if errors.Is(err, ErrLogoutNotRecorded) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", ErrLogoutNotRecorded, err)
+	return fmt.Errorf("%w: %w", ErrLogoutNotRecorded, err)
 }
 
 // SignOut forgets name's token after the server has recorded the sign-out,
@@ -521,7 +521,7 @@ func (p *Profile) Do(ctx context.Context, c *http.Client, build func() (*http.Re
 		return resp, err
 	}
 	if rerr := refresh(); rerr != nil {
-		return resp, nil
+		return resp, nil //nolint:nilerr // the 401 stands when the token cannot be renewed
 	}
 	_ = resp.Body.Close()
 	return send()

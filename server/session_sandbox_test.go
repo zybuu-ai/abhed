@@ -38,14 +38,14 @@ type perSessionRig struct {
 	root string
 }
 
-func newPerSessionRig(t *testing.T, mod func(*sessionsandbox.Config)) *perSessionRig {
+func newPerSessionRig(t *testing.T) *perSessionRig {
 	t.Helper()
-	return newPerSessionRigWith(t, mod, nil)
+	return newPerSessionRigWith(t, nil)
 }
 
 // newPerSessionRigWith is newPerSessionRig with what an edition adds to the
 // server's options, given the control plane it serves.
-func newPerSessionRigWith(t *testing.T, mod func(*sessionsandbox.Config), edition func(*Options)) *perSessionRig {
+func newPerSessionRigWith(t *testing.T, edition func(*Options)) *perSessionRig {
 	t.Helper()
 	st, err := controlplane.NewSettings(nil, nil)
 	if err != nil {
@@ -69,9 +69,6 @@ func newPerSessionRigWith(t *testing.T, mod func(*sessionsandbox.Config), editio
 	}
 	mc := sessionsandbox.Config{Service: svc, Tenant: "default", Workspace: folder, Ready: 10 * time.Second,
 		Isolation: func(sb controlplane.Sandbox) tools.Isolation { return tools.Isolation{Tier: sb.Tier} }}
-	if mod != nil {
-		mod(&mc)
-	}
 	mgr, err := sessionsandbox.New(mc)
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +127,7 @@ func runTool(t *testing.T, live *liveSession, name string, args any) tools.Resul
 // Each session works in its own sandbox's folder, never the server's, and
 // neither user's session can see or write the other's.
 func TestPerSessionSandboxesKeepSessionsApart(t *testing.T) {
-	r := newPerSessionRig(t, nil)
+	r := newPerSessionRig(t)
 	aliceID, alice := r.open(t, "alice")
 	bobID, bob := r.open(t, "bob")
 	aws, bws := r.srv.workspaceOf(alice), r.srv.workspaceOf(bob)
@@ -205,7 +202,7 @@ func TestPerSessionSandboxesKeepSessionsApart(t *testing.T) {
 
 // The record links the session to its sandbox, and the sandbox to the session.
 func TestPerSessionRecordLinksTheSandbox(t *testing.T) {
-	r := newPerSessionRig(t, nil)
+	r := newPerSessionRig(t)
 	id, live := r.open(t, "alice")
 	runTool(t, live, "bash", map[string]string{"command": "true", "description": "x"})
 	evs, err := r.srv.store.Events(id)
@@ -233,7 +230,7 @@ func TestPerSessionRecordLinksTheSandbox(t *testing.T) {
 }
 
 func TestDeletingASessionDeletesItsSandbox(t *testing.T) {
-	r := newPerSessionRig(t, nil)
+	r := newPerSessionRig(t)
 	id, live := r.open(t, "alice")
 	sbID := filepath.Base(r.srv.workspaceOf(live))
 	if rec := r.call(t, "DELETE", "/v1/sessions/"+id, "alice", ""); rec.Code != http.StatusNoContent {
@@ -250,7 +247,7 @@ func TestDeletingASessionDeletesItsSandbox(t *testing.T) {
 // A session in a tenant other than the control plane's is refused, and no
 // sandbox is made for it.
 func TestPerSessionRefusesAnotherTenant(t *testing.T) {
-	r := newPerSessionRig(t, nil)
+	r := newPerSessionRig(t)
 	if rec := r.call(t, "POST", "/v1/sessions", "eve", `{"workbench":true}`); rec.Code != http.StatusForbidden {
 		t.Fatalf("another tenant's session: %d %s", rec.Code, rec.Body)
 	}
@@ -260,7 +257,7 @@ func TestPerSessionRefusesAnotherTenant(t *testing.T) {
 }
 
 func TestPerSessionUploadsGoToTheSessionsFolder(t *testing.T) {
-	r := newPerSessionRig(t, nil)
+	r := newPerSessionRig(t)
 	id, live := r.open(t, "alice")
 	upload := func(sessionPath string) *httptest.ResponseRecorder {
 		var body bytes.Buffer
@@ -346,7 +343,7 @@ func (g *workspaceGuard) Admit(ctx context.Context, a *controlplane.Admission) (
 // the workspace's policy layer judges the commands typed in it.
 func TestPerSessionSandboxesTakeTheEditionsScope(t *testing.T) {
 	g := &workspaceGuard{quota: 1}
-	r := newPerSessionRigWith(t, nil, func(o *Options) {
+	r := newPerSessionRigWith(t, func(o *Options) {
 		g.svc = o.ControlPlane
 		if err := o.ControlPlane.SetGuard(g); err != nil {
 			t.Fatal(err)

@@ -323,11 +323,6 @@ func isProbablyBinary(data []byte) bool {
 	return false
 }
 
-// createUpload writes a new upload under the workspace root.
-func (s *Server) createUpload(dest string, data []byte) error {
-	return s.createUploadIn(s.opts.Workspace, dest, data)
-}
-
 // createUploadIn writes a new upload under the workspace ws.
 func (s *Server) createUploadIn(ws, dest string, data []byte) error {
 	root, err := filepath.EvalSymlinks(ws)

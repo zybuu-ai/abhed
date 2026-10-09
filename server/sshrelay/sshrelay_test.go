@@ -47,7 +47,7 @@ func (f *fakeHandler) Shell(ctx context.Context, s Session) (int, error) {
 			_, _ = s.Stdout.Write(buf[:n])
 		}
 		if err != nil {
-			return 0, nil
+			return 0, nil //nolint:nilerr // stdin closing ends the shell normally
 		}
 	}
 }

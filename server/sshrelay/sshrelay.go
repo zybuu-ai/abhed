@@ -240,7 +240,7 @@ func winSize(cols, rows uint32) driver.WinSize {
 func serveSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, h Handler, log *slog.Logger) {
 	// The channel's requests are always read, so the connection never stalls on them.
 	defer func() { go ssh.DiscardRequests(reqs) }()
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 	// The session ends when the client closes its channel.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

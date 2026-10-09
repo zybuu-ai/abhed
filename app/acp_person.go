@@ -325,9 +325,10 @@ func (e *escState) drop(b byte) bool {
 		*e = escNone
 		return true
 	case escString:
-		if b == 0x07 {
+		switch b {
+		case 0x07:
 			*e = escNone
-		} else if b == 0x1b {
+		case 0x1b:
 			*e = escStringEsc
 		}
 		return true

@@ -56,7 +56,7 @@ func clientFrame(fin bool, op byte, p []byte) []byte {
 	return appendFrame(nil, fin, op, p, &[4]byte{1, 2, 3, 4})
 }
 
-func serverFrame(fin bool, op byte, p []byte) []byte { return appendFrame(nil, fin, op, p, nil) }
+func serverFrame(op byte, p []byte) []byte { return appendFrame(nil, true, op, p, nil) }
 
 func closeCode(t *testing.T, err error) int {
 	t.Helper()
@@ -74,7 +74,7 @@ func TestFrameRules(t *testing.T) {
 		data []byte
 		code int
 	}{
-		{"unmasked from a client", serverFrame(true, opBinary, []byte("x")), CloseProtocolError},
+		{"unmasked from a client", serverFrame(opBinary, []byte("x")), CloseProtocolError},
 		{"reserved bits", append([]byte{0xC2}, clientFrame(true, opBinary, []byte("x"))[1:]...), CloseProtocolError},
 		{"unknown opcode", clientFrame(true, 0x3, nil), CloseProtocolError},
 		{"fragmented ping", clientFrame(false, opPing, nil), CloseProtocolError},
@@ -129,7 +129,7 @@ func TestFragmentsPingAndClose(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	// The ping was answered with a pong carrying its payload, and the close echoed.
 	got := out.Bytes()
-	if !bytes.HasPrefix(got, serverFrame(true, opPong, []byte("p"))) || !bytes.Contains(got, serverFrame(true, opClose, []byte{0x03, 0xE8})) {
+	if !bytes.HasPrefix(got, serverFrame(opPong, []byte("p"))) || !bytes.Contains(got, serverFrame(opClose, []byte{0x03, 0xE8})) {
 		t.Fatalf("answers %x", got)
 	}
 	if err := ws.WriteMessage(Binary, []byte("x")); !errors.Is(err, ErrClosed) {
@@ -141,7 +141,7 @@ func TestFragmentsPingAndClose(t *testing.T) {
 // panics, nothing over the limits is returned, and text is UTF-8.
 func FuzzReadMessage(f *testing.F) {
 	f.Add(clientFrame(true, opText, []byte("hi")), false)
-	f.Add(serverFrame(true, opBinary, []byte{0, 1, 2}), true)
+	f.Add(serverFrame(opBinary, []byte{0, 1, 2}), true)
 	f.Add(append(clientFrame(false, opBinary, []byte("a")), clientFrame(true, opContinuation, []byte("b"))...), false)
 	f.Add(clientFrame(true, opClose, []byte{0x03, 0xE8, 'x'}), false)
 	f.Add([]byte{0x82, 0xFF, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, false)
@@ -169,7 +169,7 @@ func FuzzReadMessage(f *testing.F) {
 // FuzzReadFrame checks the frame parser alone against what it accepts.
 func FuzzReadFrame(f *testing.F) {
 	f.Add(clientFrame(true, opPing, []byte("x")), true)
-	f.Add(serverFrame(true, opBinary, bytes.Repeat([]byte("z"), 300)), false)
+	f.Add(serverFrame(opBinary, bytes.Repeat([]byte("z"), 300)), false)
 	f.Fuzz(func(t *testing.T, data []byte, masked bool) {
 		fr, err := readFrame(bytes.NewReader(data), masked, 1024)
 		if err != nil {
