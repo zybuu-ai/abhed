@@ -1,0 +1,18 @@
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  hosts:
+    - host: abhed.example.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: abhed-ingress-tls
+      hosts: [abhed.example.internal]
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx

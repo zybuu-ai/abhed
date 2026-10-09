@@ -1,0 +1,67 @@
+{{- if .Values.workspaceNamespaces.enabled }}
+{{- $ws := .Values.workspaceNamespaces }}
+{{- range $ws.workspaces }}
+{{- $name := printf "%s%s" $ws.prefix .name | trunc 63 | trimSuffix "-" }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "abhed.labels" $ | nindent 4 }}
+    abhed.dev/workspace: {{ .name | quote }}
+    pod-security.kubernetes.io/enforce: {{ $ws.podSecurity.level }}
+    pod-security.kubernetes.io/enforce-version: {{ $ws.podSecurity.version }}
+    pod-security.kubernetes.io/audit: {{ $ws.podSecurity.level }}
+    pod-security.kubernetes.io/audit-version: {{ $ws.podSecurity.version }}
+    pod-security.kubernetes.io/warn: {{ $ws.podSecurity.level }}
+    pod-security.kubernetes.io/warn-version: {{ $ws.podSecurity.version }}
+    {{- with $ws.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if $ws.keep }}
+  annotations:
+    # A workspace's namespace holds its sandboxes and volumes; uninstalling
+    # the chart does not delete them.
+    helm.sh/resource-policy: keep
+  {{- end }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: abhed-workspace
+  namespace: {{ $name }}
+  labels:
+    {{- include "abhed.labels" $ | nindent 4 }}
+spec:
+  {{- toYaml (default $ws.resourceQuota .resourceQuota) | nindent 2 }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: abhed-workspace
+  namespace: {{ $name }}
+  labels:
+    {{- include "abhed.labels" $ | nindent 4 }}
+spec:
+  {{- toYaml (default $ws.limitRange .limitRange) | nindent 2 }}
+{{- if $ws.defaultDenyNetworkPolicy }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: abhed-default-deny
+  namespace: {{ $name }}
+  labels:
+    {{- include "abhed.labels" $ | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- end }}
+{{- end }}
+{{- end }}

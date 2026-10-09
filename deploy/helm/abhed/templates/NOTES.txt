@@ -1,0 +1,18 @@
+Abhed {{ .Chart.AppVersion }} is starting as {{ include "abhed.fullname" . }} in {{ .Release.Namespace }}.
+
+Watch it become ready (readiness is GET /v1/ready):
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "abhed.fullname" . }}
+
+{{- if .Values.preflight.enabled }}
+If a pod stays in Init, the preflight check says why:
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "abhed.fullname" . }} -c preflight
+{{- end }}
+
+Reach it from your machine:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "abhed.fullname" . }} 8860:{{ .Values.service.port }}
+  then open {{ ternary "https" "http" .Values.tls.enabled }}://127.0.0.1:8860/
+{{- if .Values.postgres.enabled }}
+
+Postgres: run `abhed migrate` as the owning role before the first start and
+after each upgrade; the server runs as the role in {{ .Values.postgres.existingSecret }}.
+{{- end }}

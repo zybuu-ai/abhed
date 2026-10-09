@@ -1,0 +1,278 @@
+{{- include "abhed.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "abhed.fullname" . }}
+  labels:
+    {{- include "abhed.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 5
+  {{- if .Values.strategy }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  {{- else if and .Values.persistence.enabled (not (has "ReadWriteMany" .Values.persistence.accessModes)) }}
+  # A ReadWriteOnce volume cannot be attached to the old and new pod at once.
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "abhed.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include "abhed.config" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "abhed.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "abhed.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      # A Service named abhed would otherwise put ABHED_* variables in the environment.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- if .Values.openshift.enabled }}
+        {{- toYaml (omit .Values.podSecurityContext "runAsUser" "runAsGroup" "fsGroup" "fsGroupChangePolicy") | nindent 8 }}
+        {{- else }}
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.secretFiles .Values.podConfig .Values.preflight.enabled .Values.extraInitContainers }}
+      initContainers:
+        {{- if .Values.secretFiles }}
+        # abhed refuses a key file anyone but its owner can read, and a Secret
+        # volume with fsGroup is group-readable, so each key is copied into
+        # memory, mode 0400, owned by the server's user.
+        - name: secret-files
+          image: {{ include "abhed.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              umask 077
+              {{- range $i, $f := .Values.secretFiles }}
+              cp /run/abhed/secret-sources/{{ $i }}/value /run/abhed/secrets/{{ $f.path }}
+              chmod 0400 /run/abhed/secrets/{{ $f.path }}
+              {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          volumeMounts:
+            - name: secret-files
+              mountPath: /run/abhed/secrets
+            {{- range $i, $f := .Values.secretFiles }}
+            - name: secret-source-{{ $i }}
+              mountPath: /run/abhed/secret-sources/{{ $i }}
+              readOnly: true
+            {{- end }}
+        {{- end }}
+        {{- if .Values.podConfig }}
+        # Settings that differ per pod; Kubernetes expands $(POD_NAME) and the
+        # others in ABHED_POD_CONFIG before the shell sees it.
+        - name: pod-config
+          image: {{ include "abhed.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - umask 077 && printf '%s\n' "$ABHED_POD_CONFIG" > /home/abhed/.abhed/config.json
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: ABHED_POD_CONFIG
+              value: {{ toJson .Values.podConfig | quote }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          volumeMounts:
+            - name: home
+              mountPath: /home/abhed
+            - name: data
+              mountPath: /home/abhed/.abhed
+              subPath: state
+        {{- end }}
+        {{- if .Values.preflight.enabled }}
+        # What serve would refuse to start over, found before it starts.
+        - name: preflight
+          image: {{ include "abhed.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "-check", "-addr", "0.0.0.0:{{ .Values.server.port }}"]
+          workingDir: /workspace
+          env:
+            {{- include "abhed.env" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml (default .Values.resources .Values.preflight.resources) | nindent 12 }}
+          volumeMounts:
+            {{- include "abhed.mounts" . | nindent 12 }}
+        {{- end }}
+        {{- with .Values.extraInitContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: abhed
+          image: {{ include "abhed.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - -addr
+            - 0.0.0.0:{{ .Values.server.port }}
+            {{- range .Values.server.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          workingDir: /workspace
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+          env:
+            {{- include "abhed.env" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          startupProbe:
+            {{- include "abhed.probe" (list . "/v1/health") | trim | nindent 12 }}
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          livenessProbe:
+            {{- include "abhed.probe" (list . "/v1/health") | trim | nindent 12 }}
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- include "abhed.probe" (list . "/v1/ready") | trim | nindent 12 }}
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "abhed.mounts" . | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "abhed.fullname" . }}
+            defaultMode: 0444
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "abhed.fullname" .) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: home
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmp.sizeLimit }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.tls.certKey }}
+                path: {{ .Values.tls.certKey }}
+              - key: {{ .Values.tls.keyKey }}
+                path: {{ .Values.tls.keyKey }}
+              {{- with .Values.tls.caKey }}
+              - key: {{ . }}
+                path: {{ . }}
+              {{- end }}
+        {{- if .Values.tls.clientCA.existingSecret }}
+        - name: client-ca
+          secret:
+            secretName: {{ .Values.tls.clientCA.existingSecret }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.tls.clientCA.key }}
+                path: {{ .Values.tls.clientCA.key }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.secretFiles }}
+        - name: secret-files
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+        {{- range $i, $f := .Values.secretFiles }}
+        - name: secret-source-{{ $i }}
+          secret:
+            secretName: {{ $f.secretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ $f.key }}
+                path: value
+        {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.affinity .Values.podAntiAffinity }}
+      affinity:
+        {{- with .Values.affinity }}
+        {{- toYaml (omit . "podAntiAffinity") | nindent 8 }}
+        {{- end }}
+        {{- if eq .Values.podAntiAffinity "hard" }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: {{ .Values.antiAffinityTopologyKey }}
+              labelSelector:
+                matchLabels:
+                  {{- include "abhed.selectorLabels" . | nindent 18 }}
+        {{- else if eq .Values.podAntiAffinity "soft" }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: {{ .Values.antiAffinityTopologyKey }}
+                labelSelector:
+                  matchLabels:
+                    {{- include "abhed.selectorLabels" . | nindent 20 }}
+        {{- else if and .Values.affinity .Values.affinity.podAntiAffinity }}
+        podAntiAffinity:
+          {{- toYaml .Values.affinity.podAntiAffinity | nindent 10 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

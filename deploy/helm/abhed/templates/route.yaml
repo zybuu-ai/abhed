@@ -1,0 +1,35 @@
+{{- if .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "abhed.fullname" . }}
+  labels:
+    {{- include "abhed.labels" . | nindent 4 }}
+  {{- with .Values.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.route.host }}
+  host: {{ . | quote }}
+  {{- end }}
+  path: {{ .Values.route.path }}
+  to:
+    kind: Service
+    name: {{ include "abhed.fullname" . }}
+    weight: 100
+  port:
+    targetPort: {{ ternary "https" "http" .Values.tls.enabled }}
+  tls:
+    termination: {{ .Values.route.tls.termination }}
+    {{- if ne .Values.route.tls.termination "passthrough" }}
+    insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy }}
+    {{- else }}
+    insecureEdgeTerminationPolicy: {{ ternary "None" .Values.route.tls.insecureEdgeTerminationPolicy (eq .Values.route.tls.insecureEdgeTerminationPolicy "Allow") }}
+    {{- end }}
+    {{- if and (eq .Values.route.tls.termination "reencrypt") .Values.route.tls.destinationCACertificate }}
+    destinationCACertificate: |
+      {{- .Values.route.tls.destinationCACertificate | nindent 6 }}
+    {{- end }}
+  wildcardPolicy: None
+{{- end }}
