@@ -26,6 +26,9 @@ type Report struct {
 	Turns  []Turn      `json:"turns"`
 	Calls  []Call      `json:"calls"`
 	Policy PolicyStats `json:"policy"`
+	// PolicyLayers are the policy layers an edition added to the session, as
+	// its policy.layer events recorded them, in order.
+	PolicyLayers []PolicyLayer `json:"policy_layers,omitempty"`
 	// Network is what the egress allowlist decided; nil when the record has no decision.
 	Network     *NetworkStats `json:"network,omitempty"`
 	Compactions []Compaction  `json:"compactions,omitempty"`
@@ -95,7 +98,11 @@ type Call struct {
 	Subject  string `json:"subject"`
 	Decision string `json:"decision"` // allowed | denied | pending
 	Step     string `json:"step,omitempty"`
-	By       string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
+	// Rule is the rule that decided, and Layer the policy layer it came from
+	// when an edition added it.
+	Rule  string `json:"rule,omitempty"`
+	Layer string `json:"layer,omitempty"`
+	By    string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
 	// Scope is the remembered "always allow" rule that let it through, when By is session-scope.
 	Scope string `json:"scope,omitempty"`
 	// Approver is the signed-in person who answered, when the record names one.
@@ -128,6 +135,21 @@ type PolicyStats struct {
 	Denied   int            `json:"denied"`
 	Reviewer int            `json:"asked_reviewer"`
 	ByStep   map[string]int `json:"by_step"`
+	// ByLayer counts the decisions a policy layer's rules made, by layer.
+	ByLayer map[string]int `json:"by_layer,omitempty"`
+}
+
+// PolicyLayer is one policy.layer event: the rules an edition added.
+type PolicyLayer struct {
+	Seq      int64    `json:"seq"`
+	Name     string   `json:"layer"`
+	Revision string   `json:"revision,omitempty"`
+	SHA256   string   `json:"sha256,omitempty"`
+	Deny     []string `json:"deny,omitempty"`
+	Ask      []string `json:"ask,omitempty"`
+	Allow    []string `json:"allow,omitempty"`
+	SetAside []string `json:"set_aside,omitempty"`
+	Removed  bool     `json:"removed,omitempty"`
 }
 
 // NetworkStats counts egress.decision events, each summary by what it covers.

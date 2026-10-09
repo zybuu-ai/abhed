@@ -404,6 +404,37 @@ A malformed rule is **refused at startup** rather than silently matching
 nothing — for a deny rule, quietly accepting one that can never fire tells you
 that you are protected when you are not.
 
+### Policy layers from an edition
+
+On a server people sign in to, an edition can add rules of its own to every
+session of a person, as one more layer: the Team edition adds the rules of
+the workspace the session's owner belongs to. Such a layer only tightens
+what the configuration allows:
+
+- Its deny and ask rules are added to the configured ones and hold in every
+  mode, bypass included, as configured ones do. A session rule or a "don't
+  ask again" answer cannot lift them.
+- Its allow rules are added only where the managed configuration leaves
+  allow rules open. Under a managed file that sets any `permissions`
+  setting they are set aside, and the record says so.
+- Every rule is read with the same parser as a configured one. A layer the
+  server cannot read, or whose rules do not parse, refuses the session
+  (`503`): a session never runs with fewer rules than its layer holds.
+- The layer is recorded as a `policy.layer` event right after
+  `session.started`, with its name, revision, the SHA-256 of its rules, the
+  rules applied and those set aside. A continued session records it again
+  before its next turn when it has changed. A decision one of its rules
+  made carries `layer` beside `rule`, its reason names the layer
+  (`denied by workspace pay rule bash(curl*)`), and HawkEYE counts the
+  decisions each layer made.
+- `GET /v1/sessions/{id}/permissions` is the server's `/permissions`: the
+  session's mode and every rule in force, each with its layer (`managed`,
+  the edition's layer, `user`, `workspace`, `flag`, `default`, `session`,
+  `session (always allow)`), and the layer's rules set aside.
+
+An edition supplies the layer through `server.Options.SessionPolicy`
+([control-plane contract, §12](../architecture/control-plane-contract.md#12-extension-points-for-workspaces-implemented)).
+
 ## The order
 
 Every call goes through the same steps, and the order is the design:

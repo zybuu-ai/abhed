@@ -99,6 +99,13 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			order = append(order, a.CallID)
 			touch(files, a.Tool, a.Args)
 
+		case agent.EvPolicyLayer:
+			var l PolicyLayer
+			if json.Unmarshal(e.Payload, &l) == nil {
+				l.Seq = e.Seq
+				r.PolicyLayers = append(r.PolicyLayers, l)
+			}
+
 		case agent.EvActionApproved, agent.EvActionDenied:
 			var d map[string]string
 			_ = json.Unmarshal(e.Payload, &d)
@@ -107,6 +114,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
+			c.Rule, c.Layer = d["rule"], d["layer"]
 			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
 			c.Decision = "allowed"
 			if e.Type == agent.EvActionDenied {
@@ -290,6 +298,12 @@ func (r *Report) totals(ended agent.SessionEnded) {
 		}
 		if c.Step != "" {
 			r.Policy.ByStep[c.Step]++
+		}
+		if c.Layer != "" {
+			if r.Policy.ByLayer == nil {
+				r.Policy.ByLayer = map[string]int{}
+			}
+			r.Policy.ByLayer[c.Layer]++
 		}
 	}
 	for _, turn := range r.Turns {

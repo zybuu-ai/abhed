@@ -318,6 +318,11 @@ type Options struct {
 	// approvals and when an answer settles one. Nil: the session's owner
 	// answers, and the first answer settles it.
 	ApprovalGate ApprovalGate
+	// SessionPolicy, when set, gives each session started, opened or
+	// continued the permission rules its owner's edition layer adds, such as
+	// a workspace's; nil for none. An error, or a layer that does not
+	// validate, refuses the session. See PolicyLayer.
+	SessionPolicy func(ctx context.Context, req SessionPolicyRequest) (*PolicyLayer, error)
 	// SandboxRouter, when set, relays each call that acts on a sandbox to the
 	// replica that owns it. Nil handles every call here.
 	SandboxRouter SandboxRouter
@@ -446,6 +451,11 @@ type liveSession struct {
 	// fallback is a resumed session's move to the default because its recorded
 	// provider no longer resolves, written by its next turn; guarded by claimMu.
 	fallback *agent.ModelSwitched
+	// layer is the edition's policy layer the session runs under, nil for
+	// none. layerNote is a continued session's policy.layer event, owed to
+	// its record and written by its next turn; guarded by claimMu.
+	layer     *appliedLayer
+	layerNote map[string]any
 
 	// closeBash releases the session's own bash, when it has one.
 	closeBash     func() error
@@ -730,6 +740,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/wake", s.setWake)
 	mux.HandleFunc("GET /v1/sessions/{id}/queue", s.listQueue)
 	mux.HandleFunc("GET /v1/sessions/{id}/state", s.sessionState)
+	mux.HandleFunc("GET /v1/sessions/{id}/permissions", s.sessionPermissions)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/queue/{qid}", s.cancelQueued)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -1292,6 +1303,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			writeHoldFailed(w)
 		case errors.Is(err, errBadMode):
 			WriteError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, ErrPolicyLayer):
+			s.log.Error("session refused: its policy layer", "user", spec.User, "error", err)
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
 		case strings.HasPrefix(err.Error(), "provider:"):
 			WriteError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "provider: "))
 		default:
@@ -1348,6 +1363,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	rec.Redact = red
 	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, vault, rec)
 	if err != nil {
+		s.forgetUnstarted(sessionID)
 		return "", err
 	}
 	// Names the provider, so a resume cannot mistake it for another serving the same model.
@@ -1357,6 +1373,10 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}); err != nil {
 		s.forgetUnstarted(sessionID)
 		return "", fmt.Errorf("record session start: %w", err)
+	}
+	if err := recordLayer(rec, live.layer); err != nil {
+		s.forgetUnstarted(sessionID)
+		return "", err
 	}
 	s.recordConfigAttempts(rec, spec.User)
 
@@ -1490,6 +1510,12 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 		}
 		return "", fmt.Errorf("record session start: %w", err)
 	}
+	if err := recordLayer(rec, live.layer); err != nil {
+		if del, ok := s.under().(agent.SessionDeleter); ok {
+			_ = del.DeleteSession(sessionID)
+		}
+		return "", err
+	}
 	s.recordConfigAttempts(rec, spec.User)
 	s.mu.Lock()
 	if s.draining.Load() {
@@ -1572,6 +1598,13 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 
 	pol := s.newPolicy(policy.Mode(mode))
 	pol.Roots = sess.PolicyRoots
+	layer, err := s.sessionLayer(spec)
+	if err == nil {
+		err = applyLayer(pol, layer)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
 	undo := agent.NewUndoLog(sess.RestoreFile, sess.RemoveFile)
 	// The server reads only each file's baseline, so one copy per file is kept, not one per edit.
 	undo.KeepFirst = true
@@ -1585,6 +1618,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		allowed: map[string]bool{},
 		durable: s.approvalStore(),
 		undo:    undo,
+		layer:   layer,
 		// A spec with no provider runs on the configured default.
 		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
 		model:    adapter.Profile().Name,
@@ -1865,6 +1899,9 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if err != nil {
 		return nil, err
 	}
+	// A change of the layer since the record last named it is written by the
+	// next turn, as a change of model is.
+	live.layerNote = layerChange(events, live.layer)
 	if lost {
 		// Recorded by the next turn, once claimed: opening a session to view it writes nothing.
 		live.fallback = &agent.ModelSwitched{Provider: s.opts.Config.Model.Default,
@@ -2812,6 +2849,11 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", "5")
 			WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
 			return
+		case errors.Is(err, ErrPolicyLayer):
+			s.log.Error("resume refused: its policy layer", "session", id, "error", err)
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "the session was not continued: "+err.Error())
+			return
 		case err != nil:
 			s.log.Error("resume failed", "session", id, "error", err)
 			WriteError(w, http.StatusInternalServerError, "could not continue the session")
@@ -2859,6 +2901,14 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		live.fallback = nil
+	}
+	if live.layerNote != nil {
+		if _, err := live.Loop.Recorder.Record(agent.EvPolicyLayer, agent.ActorSystem, agent.Trusted, live.layerNote); err != nil {
+			s.log.Error("policy layer not recorded", "session", id, "error", err)
+			WriteError(w, http.StatusInternalServerError, "could not continue the session: its policy layer could not be recorded")
+			return
+		}
+		live.layerNote = nil
 	}
 
 	// The hold, with its liveness, comes before the run: a process that

@@ -98,6 +98,9 @@ const (
 	// EvSessionResumed marks an editor continuing a recorded session in a new
 	// agent: the trust it opened under, before the settings it refused.
 	EvSessionResumed EventType = "session.resumed"
+	// EvPolicyLayer records the permission rules an edition added to the
+	// session's policy as a layer of their own, such as a workspace's.
+	EvPolicyLayer EventType = "policy.layer"
 )
 
 type Actor string

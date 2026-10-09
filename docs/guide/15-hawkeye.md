@@ -87,6 +87,7 @@ capture does not say it left any out.
 | Summary | outcome (how the session ended; `running` with no end recorded; `no agent run` for a session only people worked in, at the workbench's terminal or editor), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window, and, when the [egress allowlist](21-network-policy.md) was on, how many connections and requests it allowed and refused (`network` in the JSON) |
 | Findings | rules over the record, each naming its evidence by sequence number |
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
+| Policy layers | the rules an edition added to the session as a layer of their own, such as a Team workspace's ([Policy layers](04-permissions.md#policy-layers-from-an-edition)), from its `policy.layer` events: name, revision, rules, allow rules set aside, and how many decisions the layer's rules made (`policy_layers` and `policy.by_layer` in the JSON) |
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of, or whose connections the egress allowlist refused (`network_denied`), is marked `!` |
 | Turns | per-turn tokens, time to first token, total latency |
 | Files | what the file tools read and wrote |
@@ -111,6 +112,7 @@ The policy step is one of `hook`, `deny`, `destructive`, `screen`, `ask`, `mode`
 `allow` or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that
 decided. Counting them shows which part of a policy is doing the work: a
 session where everything lands on `default` has rules that never match.
+A call a policy layer's rule decided also names the rule and the layer.
 
 ## Findings
 

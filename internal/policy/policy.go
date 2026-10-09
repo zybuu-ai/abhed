@@ -11,6 +11,7 @@ package policy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -56,6 +57,9 @@ type Result struct {
 	// Rule is the rule that decided, as written, for the deny, ask and allow
 	// steps; "" when no rule did.
 	Rule string
+	// Layer is the policy layer the deciding rule came from when an edition
+	// added it with AddLayer; "" for configured and session rules.
+	Layer string
 }
 
 // Offer is the scope a person may "always allow", and the only one a
@@ -81,6 +85,8 @@ type Rule struct {
 	nfc *regexp.Regexp
 	// session marks a rule a person added for this session; see Overlay.
 	session bool
+	// layer names the policy layer an edition added the rule under; see AddLayer.
+	layer string
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -264,6 +270,9 @@ func hasNonASCII(s string) bool {
 
 func (r Rule) String() string { return r.raw }
 
+// Layer is the policy layer an edition added the rule under, "" for others.
+func (r Rule) Layer() string { return r.layer }
+
 // Tool is the tool name the rule is for, "*" for any.
 func (r Rule) Tool() string { return r.tool }
 
@@ -271,6 +280,9 @@ func (r Rule) Tool() string { return r.tool }
 func (r Rule) named() string {
 	if r.session {
 		return "session rule " + r.raw
+	}
+	if r.layer != "" {
+		return r.layer + " rule " + r.raw
 	}
 	return "rule " + r.raw
 }
@@ -336,6 +348,31 @@ func (e *Engine) AllowGitExtensions(names ...string) error {
 func (e *Engine) AddDeny(patterns ...string) error  { return addAll(&e.Deny, patterns) }
 func (e *Engine) AddAsk(patterns ...string) error   { return addAll(&e.Ask, patterns) }
 func (e *Engine) AddAllow(patterns ...string) error { return addAll(&e.Allow, patterns) }
+
+// AddLayer adds the deny, ask and allow rules of one policy layer an edition
+// supplies, such as a workspace's, named so a reason and Result.Layer say
+// where the deciding rule came from. Every rule is parsed first, so one that
+// does not parse adds none of them.
+func (e *Engine) AddLayer(layer string, deny, ask, allow []string) error {
+	if strings.TrimSpace(layer) == "" {
+		return errors.New("a policy layer needs a name")
+	}
+	var parsed [3][]Rule
+	for i, list := range [][]string{deny, ask, allow} {
+		for _, p := range list {
+			r, err := ParseRule(p)
+			if err != nil {
+				return fmt.Errorf("policy layer %s: %w", layer, err)
+			}
+			r.layer = layer
+			parsed[i] = append(parsed[i], r)
+		}
+	}
+	e.Deny = append(e.Deny, parsed[0]...)
+	e.Ask = append(e.Ask, parsed[1]...)
+	e.Allow = append(e.Allow, parsed[2]...)
+	return nil
+}
 
 func addAll(dst *[]Rule, patterns []string) error {
 	for _, p := range patterns {
@@ -663,7 +700,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	denyRules, askRules, allowRules := e.rules()
 	for _, r := range denyRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw}
+			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw, Layer: r.layer}
 		}
 	}
 	// A program named by an expansion with an operator, ${x%/} or ${x//_/ },
@@ -711,7 +748,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	// offer no scope: a remembered one would stop them asking.
 	for _, r := range askRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw}
+			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw, Layer: r.layer}
 		}
 	}
 
@@ -761,7 +798,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	// 5. Allow rules.
 	for _, r := range allowRules {
 		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
-			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw}
+			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw, Layer: r.layer}
 		}
 	}
 

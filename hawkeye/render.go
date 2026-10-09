@@ -67,6 +67,20 @@ func Text(r Report) string {
 	}
 	fmt.Fprintf(&b, "  policy    %d allowed · %d denied · %d asked a reviewer   %s\n",
 		r.Policy.Allowed, r.Policy.Denied, r.Policy.Reviewer, steps(r.Policy.ByStep))
+	for _, l := range r.PolicyLayers {
+		what := fmt.Sprintf("%d deny · %d ask · %d allow", len(l.Deny), len(l.Ask), len(l.Allow))
+		if l.Removed {
+			what = "removed"
+		}
+		fmt.Fprintf(&b, "  layer     %s%s at #%d: %s", l.Name, revision(l.Revision), l.Seq, what)
+		if n := r.Policy.ByLayer[l.Name]; n > 0 {
+			fmt.Fprintf(&b, "   decided %d call(s)", n)
+		}
+		if len(l.SetAside) > 0 {
+			fmt.Fprintf(&b, "   %d allow rule(s) set aside under the managed configuration", len(l.SetAside))
+		}
+		b.WriteString("\n")
+	}
 	if n := r.Network; n != nil {
 		fmt.Fprintf(&b, "  network   %d allowed · %d refused", n.Allowed, n.Denied)
 		if n.WouldDeny > 0 {
@@ -210,4 +224,11 @@ func short(n int) string {
 		return fmt.Sprintf("%dk", n/1000)
 	}
 	return fmt.Sprint(n)
+}
+
+func revision(r string) string {
+	if r == "" {
+		return ""
+	}
+	return " (revision " + r + ")"
 }
