@@ -279,25 +279,34 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		before[t.Name()] = true
 	}
 
-	if errs := gw.Connect(ctx, []mcp.ServerConfig{{
+	errs := gw.Connect(ctx, []mcp.ServerConfig{{
 		Name: req.Name, Command: req.Command, Args: req.Args,
 		URL: req.URL, Enabled: true,
-	}}); len(errs) > 0 {
-		WriteError(w, http.StatusBadRequest, errs[0].Error())
-		return
-	}
+	}})
 
 	// Only the tools this server brought are added, so a reconnect of one
-	// server does not disturb another's.
+	// server does not disturb another's. A tool the gateway no longer offers,
+	// one whose name a refused server now claims, is taken out.
 	added := []string{}
+	now := map[string]bool{}
 	s.state.swapTools(func(reg *tools.Registry) {
 		for _, t := range gw.Tools() {
-			if !before[t.Name()] {
+			now[t.Name()] = true
+			if !before[t.Name()] && len(errs) == 0 {
 				reg.Add(t)
 				added = append(added, t.Name())
 			}
 		}
+		for name := range before {
+			if !now[name] {
+				reg.Remove(name)
+			}
+		}
 	})
+	if len(errs) > 0 {
+		WriteError(w, http.StatusBadRequest, errs[0].Error())
+		return
+	}
 
 	s.adminAudit(r, "mcp.added", req.Name, mcpAuditDetail(req, added))
 	WriteJSON(w, http.StatusOK, map[string]any{

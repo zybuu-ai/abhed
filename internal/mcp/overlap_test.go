@@ -40,7 +40,7 @@ func TestOverlappingServerIsNotStarted(t *testing.T) {
 	})
 	var overlap int
 	for _, err := range errs {
-		if strings.Contains(err.Error(), "is not started: its name begins with that of server") {
+		if strings.Contains(err.Error(), "is not started: its name and server") {
 			overlap++
 			if !strings.Contains(err.Error(), `"a__b"`) || !strings.Contains(err.Error(), `"a"`) {
 				t.Errorf("error %v", err)

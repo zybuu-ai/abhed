@@ -109,13 +109,25 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
 			continue
 		}
-		if other := OverlappedBy(cfg.Name, enabled); other != "" {
-			// Kept, so the other server's tools named as this one's would be are left out too.
-			g.mu.Lock()
-			g.refused[cfg.Name] = true
-			g.mu.Unlock()
-			errs = append(errs, fmt.Errorf("mcp server %q is not started: its name begins with that of server %q and \"__\", "+
-				"so a tool named mcp__%s__… could be either server's and a rule for one would reach the other; rename one of them", cfg.Name, other, cfg.Name))
+		other := OverlappedBy(cfg.Name, enabled)
+		longer := other != ""
+		if other == "" {
+			// A server added while others run is checked against them, either way round.
+			other, longer = g.overlapsRunning(cfg.Name)
+		}
+		if other != "" {
+			if longer {
+				// Kept, so the other server's tools named as this one's would be are left out too.
+				g.mu.Lock()
+				g.refused[cfg.Name] = true
+				g.mu.Unlock()
+			}
+			long, short := cfg.Name, other
+			if !longer {
+				long, short = other, cfg.Name
+			}
+			errs = append(errs, fmt.Errorf("mcp server %q is not started: its name and server %q's overlap (%q begins with %q and \"__\"), "+
+				"so a tool named mcp__%s__… could be either server's and a rule for one would reach the other; rename one of them", cfg.Name, other, long, short, long))
 			continue
 		}
 		if err := g.connectOne(ctx, ctx, cfg); err != nil {
@@ -382,6 +394,24 @@ func OverlappedBy(name string, others []string) string {
 		}
 	}
 	return ""
+}
+
+// overlapsRunning is a server already configured or connected whose name
+// overlaps name, and whether name is the longer of the two.
+func (g *Gateway) overlapsRunning(name string) (other string, longer bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs)} {
+		for o := range names {
+			if OverlappedBy(name, []string{o}) != "" {
+				return o, true
+			}
+			if OverlappedBy(o, []string{name}) != "" {
+				return o, false
+			}
+		}
+	}
+	return "", false
 }
 
 // claimedBy is another configured server whose tools' names begin as full
