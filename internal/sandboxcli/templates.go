@@ -47,7 +47,8 @@ func oneName(pos []string, what string) (string, error) {
 const templateHeader = "NAME\tDRIVER\tLABELS\tSETTINGS\tDESCRIPTION\n"
 
 func templateRow(tw *tabwriter.Writer, t controlplane.Template) {
-	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.Name, orDash(t.Driver), joinMap(t.Labels), joinMap(t.Settings), orDash(t.Description))
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", clean(t.Name, 0), clean(orDash(t.Driver), 0), joinMap(t.Labels), joinMap(t.Settings),
+		clean(orDash(t.Description), 60))
 }
 
 type templateList struct {
@@ -120,7 +121,7 @@ func (r *runner) templateGet(args []string) error {
 		return err
 	}
 	return r.emit(t, func(tw *tabwriter.Writer) {
-		row := func(k, v string) { fmt.Fprintf(tw, "%s:\t%s\n", k, v) }
+		row := func(k, v string) { fmt.Fprintf(tw, "%s:\t%s\n", k, clean(v, 0)) }
 		row("Name", t.Name)
 		row("Description", orDash(t.Description))
 		row("Driver", orDash(t.Driver))

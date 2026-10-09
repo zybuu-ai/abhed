@@ -239,6 +239,11 @@ func TestExec(t *testing.T) {
 	if res.code != 3 || res.out != "out\nstdin=from the person\n" || res.err != "err\n" {
 		t.Fatalf("exec -i: %+v", res)
 	}
+	// Flags may follow the id; the command starts after them.
+	res = r.runWith(t, runOpts{in: strings.NewReader("x")}, "exec", sb.ID, "-i", "--", "cat", "-n")
+	if res.code != 3 || res.out != "out\nstdin=x\n" {
+		t.Fatalf("exec ID -i: %+v", res)
+	}
 	// The server's deny rules hold, on both paths, and nothing runs.
 	execs := r.fake.Calls("exec")
 	for _, args := range [][]string{{"exec", sb.ID, "--", "rm", "-rf", "/"}, {"exec", "-i", sb.ID, "--", "rm", "-rf", "/"}} {
@@ -284,6 +289,12 @@ func TestConnect(t *testing.T) {
 	}
 	if ev := r.audit(t, sb.ID, "attach"); ev.Detail["rows"] != "24" || ev.Detail["cols"] != "80" {
 		t.Fatalf("attach record %+v", ev)
+	}
+	// What the shell wrote reaches the record; printed back, it cannot
+	// drive the terminal.
+	logs := r.must(t, "logs", sb.ID)
+	if strings.ContainsAny(logs.out, "\r\x1b") || !strings.Contains(logs.out, `size 30x100\n`) {
+		t.Fatalf("logs printed raw control characters: %q", logs.out)
 	}
 	// Ctrl-] leaves; what came before it is sent.
 	res = r.runWith(t, runOpts{in: io.MultiReader(strings.NewReader("ab"), slowReader{"\x1dcd"})}, "connect", sb.ID)
@@ -355,8 +366,16 @@ func TestForward(t *testing.T) {
 	if res := <-done; res.code != 0 || !strings.Contains(res.out, "Forwarding 127.0.0.1:") {
 		t.Fatalf("forward's end: %+v", res)
 	}
-	if ev := r.audit(t, sb.ID, "forward"); ev.Detail["port"] != "5432" || ev.Principal != "alice" {
-		t.Fatalf("forward record %+v", ev)
+	// Each connection was its own stream, opened as alice.
+	evs, _ := r.store.AuditFor(context.Background(), sb.ID)
+	opened := 0
+	for _, ev := range evs {
+		if ev.Action == "forward" && ev.Outcome == controlplane.OutcomeRequested && ev.Principal == "alice" && ev.Detail["port"] == "5432" {
+			opened++
+		}
+	}
+	if opened != 2 {
+		t.Fatalf("forward streams opened: %d in %+v", opened, evs)
 	}
 	// Anything but loopback is said out loud before it listens.
 	res := r.run(t, "forward", sb.ID, "8080:80", "-address", "192.0.2.1")
@@ -739,5 +758,22 @@ func TestRefusedInAgent(t *testing.T) {
 	}
 	if n := r.requests.Load() - before; n != 0 {
 		t.Fatalf("%d requests reached the server", n)
+	}
+}
+
+func TestClean(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":              "plain",
+		"a\x1b]0;title\x07b": `a\x1b]0;title\x07b`,
+		"line\nnext\r":       `line\nnext\x0d`,
+		"\u009bcsi":          `\x9bcsi`,
+		"ünïcode":            "ünïcode",
+	} {
+		if got := clean(in, 0); got != want {
+			t.Errorf("clean(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := clean("abcdef", 3); got != "abc…" {
+		t.Errorf("bounded: %q", got)
 	}
 }

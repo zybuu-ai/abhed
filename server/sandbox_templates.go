@@ -11,7 +11,8 @@ import (
 
 // Sandbox templates (control-plane-contract.md §4.4): named defaults a
 // sandbox is created from. Every caller of the tenant reads them; only an
-// administrator of the whole tenant creates or removes one.
+// administrator of the whole tenant creates or removes one, or anyone on a
+// server with no sign-in.
 
 type templateList struct {
 	Items []controlplane.Template `json:"items"`
@@ -39,11 +40,22 @@ func writeTemplate(w http.ResponseWriter, status int, t controlplane.Template) {
 	WriteJSON(w, status, t)
 }
 
+// templateWriter is the caller as one who may change templates: on a
+// server with no sign-in, whoever reaches it administers it, as it does
+// everything else there.
+func (s *Server) templateWriter(c controlplane.Caller) controlplane.Caller {
+	if !s.multiUser() && len(c.Scope) == 0 {
+		c.Admin = true
+	}
+	return c
+}
+
 func (s *Server) createTemplate(w http.ResponseWriter, r *http.Request) {
 	c, r, ok := s.sandboxCaller(w, r)
 	if !ok || !cpLimit(s.cpMutations, w, c) {
 		return
 	}
+	c = s.templateWriter(c)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		badCPBody(w, err)
@@ -109,6 +121,7 @@ func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 	if !ok || !cpLimit(s.cpMutations, w, c) {
 		return
 	}
+	c = s.templateWriter(c)
 	name := r.PathValue("name")
 	s.idempotentAny(w, r, c, nil, func() (int, any, error) {
 		err := s.opts.ControlPlane.DeleteTemplate(r.Context(), c, name, r.Header.Get("If-Match"))

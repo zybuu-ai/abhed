@@ -16,6 +16,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 )
 
 // Exit codes every subcommand uses. exec, connect and ssh exit with the
@@ -178,7 +179,7 @@ func (r *runner) exitFor(err error) int {
 		}
 		return ExitUsage
 	}
-	fmt.Fprintf(r.Err, "abhed: %v\n", err)
+	fmt.Fprintf(r.Err, "abhed: %s\n", clean(err.Error(), 0))
 	var ae *apiError
 	if errors.As(err, &ae) {
 		switch ae.status {
@@ -210,8 +211,8 @@ func (r *runner) flags(name, args string) *flag.FlagSet {
 }
 
 // parse reads flags wherever they are among the arguments, up to "--" or,
-// when stopAfter is above zero, the stopAfter-th argument that is not a
-// flag; what follows is returned as it was given.
+// when stopAfter is above zero, the first argument that is not a flag after
+// the stopAfter-th; what follows is returned as it was given.
 func (r *runner) parse(fs *flag.FlagSet, args []string, stopAfter int) ([]string, error) {
 	var pos []string
 	for {
@@ -232,10 +233,15 @@ func (r *runner) parse(fs *flag.FlagSet, args []string, stopAfter int) ([]string
 		pos = append(pos, args[0])
 		args = args[1:]
 		if stopAfter > 0 && len(pos) == stopAfter {
-			if len(args) > 0 && args[0] == "--" {
-				args = args[1:]
+			// Flags may still follow; the first word after them, or after
+			// "--", starts what is passed on as given.
+			if err := fs.Parse(args); err != nil {
+				if errors.Is(err, flag.ErrHelp) {
+					return nil, err
+				}
+				return nil, usageError{errUsagePrinted}
 			}
-			pos = append(pos, args...)
+			pos = append(pos, fs.Args()...)
 			break
 		}
 	}
@@ -298,7 +304,33 @@ func pairs(flagName string, vals []string) (map[string]string, error) {
 	return out, nil
 }
 
-// joinMap writes a map as k=v,k=v in key order.
+// clean makes text from the server safe to print on a terminal: control
+// characters, which could move the cursor or retitle the window, are
+// written as escapes. max, when above zero, bounds its length.
+func clean(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if max > 0 && n >= max {
+			b.WriteString("…")
+			break
+		}
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == utf8.RuneError:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteRune(r)
+		}
+		n++
+	}
+	return b.String()
+}
+
+// joinMap writes a map as k=v,k=v in key order, each value cleaned.
 func joinMap(m map[string]string) string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -307,7 +339,7 @@ func joinMap(m map[string]string) string {
 	sort.Strings(keys)
 	parts := make([]string, len(keys))
 	for i, k := range keys {
-		parts[i] = k + "=" + m[k]
+		parts[i] = clean(k, 0) + "=" + clean(m[k], 80)
 	}
 	if len(parts) == 0 {
 		return "-"

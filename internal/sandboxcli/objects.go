@@ -74,7 +74,8 @@ func sandboxRow(tw *tabwriter.Writer, sb controlplane.Sandbox) {
 	if tier == "" {
 		tier = "-"
 	}
-	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, sb.State, tier, sb.Driver, sb.Template, joinMap(sb.Labels), age(sb.CreatedAt))
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, clean(string(sb.State), 0), clean(tier, 0), clean(sb.Driver, 0),
+		clean(sb.Template, 0), joinMap(sb.Labels), age(sb.CreatedAt))
 }
 
 const sandboxHeader = "ID\tSTATE\tTIER\tDRIVER\tTEMPLATE\tLABELS\tAGE\n"
@@ -259,7 +260,7 @@ func (r *runner) get(args []string) error {
 }
 
 func sandboxDetail(tw *tabwriter.Writer, sb controlplane.Sandbox) {
-	row := func(k, v string) { fmt.Fprintf(tw, "%s:\t%s\n", k, v) }
+	row := func(k, v string) { fmt.Fprintf(tw, "%s:\t%s\n", clean(k, 0), clean(v, 0)) }
 	row("ID", sb.ID)
 	row("State", string(sb.State))
 	row("Template", sb.Template)
@@ -617,8 +618,8 @@ func (r *runner) logs(args []string) error {
 			if ev.Code != "" {
 				outcome += " (" + ev.Code + ")"
 			}
-			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%d\t%s\t%s\n", ev.Seq, ev.At.Local().Format(time.RFC3339), ev.Principal,
-				ev.Action, ev.Generation, outcome, joinMap(ev.Detail))
+			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%d\t%s\t%s\n", ev.Seq, ev.At.Local().Format(time.RFC3339), clean(ev.Principal, 0),
+				clean(ev.Action, 0), ev.Generation, clean(outcome, 0), joinMap(ev.Detail))
 		}
 	})
 }

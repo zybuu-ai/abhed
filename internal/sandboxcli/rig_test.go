@@ -100,7 +100,9 @@ func newRig(t *testing.T) *rig {
 	mem := controlplane.NewMemory()
 	ws := t.TempDir()
 	svc, err := controlplane.New(controlplane.Config{Store: mem, Audit: mem, Drivers: reg, Settings: st,
-		Workspace: func(string) (string, error) { return ws, nil }})
+		Workspace: func(string) (string, error) { return ws, nil },
+		// Kept as typed, so what a shell wrote reaches the record as it was.
+		Redact: func(s string) string { return s }})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -135,7 +135,7 @@ func (r *runner) execPost(id string, req controlplane.ExecRequest) error {
 		_ = resp.Body.Close()
 		if done {
 			if err != nil {
-				fmt.Fprintf(r.Err, "abhed: %v\n", err)
+				fmt.Fprintf(r.Err, "abhed: %s\n", clean(err.Error(), 0))
 				return exitStatus(ExitRemote)
 			}
 			return exitStatus(code)
@@ -227,7 +227,7 @@ func (r *runner) execStream(id string, req controlplane.ExecRequest) error {
 				return exitStatus(*c.Code)
 			}
 		case "error":
-			fmt.Fprintf(r.Err, "abhed: %v\n", remoteError(c))
+			fmt.Fprintf(r.Err, "abhed: %s\n", clean(remoteError(c).Error(), 0))
 			return exitStatus(ExitRemote)
 		}
 	}
@@ -361,7 +361,7 @@ func (r *runner) connect(args []string) error {
 			}
 		case "error":
 			if restoreErr := remoteError(c); restoreErr != nil {
-				fmt.Fprintf(r.Err, "\r\nabhed: %v\r\n", restoreErr)
+				fmt.Fprintf(r.Err, "\r\nabhed: %s\r\n", clean(restoreErr.Error(), 0))
 			}
 			return exitStatus(ExitRemote)
 		}
@@ -482,7 +482,7 @@ func (r *runner) forward(args []string) error {
 			defer wg.Done()
 			defer func() { _ = conn.Close() }()
 			if err := r.forwardOne(conn, path); err != nil {
-				fmt.Fprintf(r.Err, "abhed: forward from %s: %v\n", conn.RemoteAddr(), err)
+				fmt.Fprintf(r.Err, "abhed: forward from %s: %s\n", conn.RemoteAddr(), clean(err.Error(), 0))
 			}
 		}()
 	}

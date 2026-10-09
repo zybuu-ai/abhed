@@ -131,3 +131,15 @@ func TestSandboxEvents(t *testing.T) {
 }
 
 func jsonInt(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+// On a server with no sign-in, whoever reaches it changes templates, as
+// they change everything else there.
+func TestSandboxTemplatesWithoutSignIn(t *testing.T) {
+	r := newCPRig(t, nil, func(o *Options) { o.Config.Auth.Mode = "none" })
+	if rec := r.do(t, cpCall{method: "POST", path: "/v1/sandbox-templates", token: "alice", body: `{"name":"web"}`}); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := r.do(t, cpCall{method: "DELETE", path: "/v1/sandbox-templates/web", token: "alice"}); rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+}

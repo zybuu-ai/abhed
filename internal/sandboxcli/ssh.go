@@ -266,7 +266,7 @@ func (r *runner) sshConfig(args []string) error {
 		if i > 0 {
 			fmt.Fprintln(tw)
 		}
-		fmt.Fprintf(tw, "# abhed sandbox %s (%s)\n", h.SandboxID, h.Fingerprint)
+		fmt.Fprintf(tw, "# abhed sandbox %s (%s)\n", h.SandboxID, clean(h.Fingerprint, 80))
 		fmt.Fprintf(tw, "Host %s\n", h.Host)
 		fmt.Fprintf(tw, "  HostKeyAlias %s\n", h.Host)
 		fmt.Fprintf(tw, "  User %s\n", h.User)
