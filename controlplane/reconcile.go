@@ -166,7 +166,17 @@ func (s *Service) Reconcile(ctx context.Context, id string) error {
 	}
 	s.inflight[id] = true
 	s.mu.Unlock()
-	defer s.forget(id)
+	defer func() {
+		// A kick that arrived during this pass asked for another; Run makes it.
+		s.mu.Lock()
+		again := s.again[id]
+		delete(s.inflight, id)
+		delete(s.again, id)
+		s.mu.Unlock()
+		if again {
+			s.Kick(id)
+		}
+	}()
 	return s.reconcile(ctx, id)
 }
 
