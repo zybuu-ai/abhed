@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -52,6 +53,8 @@ type ServerConfig struct {
 	Digest string `json:"digest,omitempty"`
 }
 
+var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
+
 // refusal is a server not started for its name, and why.
 type refusal struct {
 	cfg ServerConfig
@@ -73,6 +76,8 @@ type Gateway struct {
 	refused map[string]refusal
 	// pending are servers being connected, whose names are already taken.
 	pending map[string]bool
+	// closed is set by Close; a connection finishing after it is closed, not kept.
+	closed bool
 	// life is the first Connect's context without its cancellation: a server
 	// process lives as long as it, whatever context a later Connect or
 	// Restart was called with.
@@ -188,6 +193,12 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 	}
 
 	g.mu.Lock()
+	if g.closed {
+		// Closed while this one connected: it would outlive the gateway.
+		g.mu.Unlock()
+		_ = client.Close()
+		return errGatewayClosed
+	}
 	old := g.clients[cfg.Name]
 	g.clients[cfg.Name] = client
 	g.configs[cfg.Name] = cfg
@@ -383,6 +394,7 @@ func allowed(cfg ServerConfig, tool string) bool {
 func (g *Gateway) Close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.closed = true
 	for _, c := range g.clients {
 		_ = c.Close()
 	}
