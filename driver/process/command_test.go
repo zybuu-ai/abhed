@@ -106,8 +106,19 @@ func TestHiddenSiblingsOnTheRealSandbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the host's sandbox")
 	}
+	// Under a temp area too, where commands may otherwise write.
+	t.Run("local", func(t *testing.T) { hiddenSiblings(t, localDir(t)) })
+	t.Run("temp", func(t *testing.T) {
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		hiddenSiblings(t, root)
+	})
+}
+
+func hiddenSiblings(t *testing.T, root string) {
 	ctx := context.Background()
-	root := localDir(t)
 	a, b := filepath.Join(root, "sbx_a"), filepath.Join(root, "sbx_b")
 	for _, dir := range []string{a, b} {
 		if err := os.Mkdir(dir, 0o700); err != nil {

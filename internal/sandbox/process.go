@@ -391,6 +391,18 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", c)
 	}
 
+	// Again after the temp and cache allows, which may hold the siblings' folder.
+	if hidden := formsOf(s.policy.Hidden); len(hidden) > 0 {
+		for _, h := range hidden {
+			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", h)
+		}
+		for _, ws := range s.workspaces() {
+			if insideAny(ws, hidden) {
+				fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", ws)
+			}
+		}
+	}
+
 	// The harness's own state is out of reach for commands, as it is for the
 	// file tools: the later rule wins, so this holds inside the workspace allow.
 	b.WriteString("\n;; Abhed's own configuration, users and keys.\n")

@@ -19,6 +19,14 @@ func TestSeatbeltHidesSiblingFolders(t *testing.T) {
 	if deny < 0 || allow < deny || state < allow {
 		t.Fatalf("order deny %d, allow %d, state %d in\n%s", deny, allow, state, prof)
 	}
+	// Writes too, after the temp and cache allows that may hold the folder.
+	wdeny := strings.LastIndex(prof, fmt.Sprintf("(deny file-write* (subpath %q))", root))
+	wallow := strings.LastIndex(prof, fmt.Sprintf("(allow file-write* (subpath %q))", ws))
+	temp := strings.LastIndex(prof, `(allow file-write* (subpath "/tmp"))`)
+	wstate := strings.Index(prof, fmt.Sprintf("(deny file-write* (subpath %q))", filepath.Join(ws, stateDir)))
+	if temp < 0 || wdeny < temp || wallow < wdeny || wstate < wallow {
+		t.Fatalf("write order temp %d, deny %d, allow %d, state %d in\n%s", temp, wdeny, wallow, wstate, prof)
+	}
 	if strings.Contains(NewProcess(Policy{Workspace: ws}).seatbeltProfile(), "Other sandboxes") {
 		t.Fatal("a policy hiding nothing hides something")
 	}
