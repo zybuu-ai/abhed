@@ -155,10 +155,17 @@ var tierNames = map[string]sandbox.Tier{
 	"container": sandbox.TierContainer, "vm": sandbox.TierVM,
 }
 
+// microVMTier is the tier only the microvm driver provides: known, so not
+// invalid, but out of a container's reach.
+const microVMTier = "microvm"
+
 // checkTier refuses a floor a container cannot meet.
 func checkTier(min string) error {
 	if min == "" {
 		return nil
+	}
+	if min == microVMTier {
+		return driver.Errorf(driver.ErrUnavailable, "a container is tier %s, weaker than the required %s; use the microvm driver", sandbox.TierContainer, min)
 	}
 	t, ok := tierNames[min]
 	if !ok {

@@ -495,7 +495,7 @@ func TestImages(t *testing.T) {
 func TestMinTierAndChosenTier(t *testing.T) {
 	f := &fakeRunner{podman: true}
 	d, ws := testDriver(t, f, Options{}, nil)
-	for tier, want := range map[string]error{"vm": driver.ErrUnavailable, "bogus": driver.ErrInvalid} {
+	for tier, want := range map[string]error{"vm": driver.ErrUnavailable, "microvm": driver.ErrUnavailable, "bogus": driver.ErrInvalid} {
 		s := spec(ws)
 		s.MinTier = tier
 		if _, err := d.Create(context.Background(), s); !errors.Is(err, want) {
