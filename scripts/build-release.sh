@@ -7,7 +7,7 @@
 set -euo pipefail
 VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 OUTDIR="dist"
-PLATFORMS="linux/amd64 linux/arm64 darwin/arm64 darwin/amd64"
+PLATFORMS="linux/amd64 linux/arm64 linux/s390x darwin/arm64 darwin/amd64"
 while getopts "v:o:p:h" opt; do
   case $opt in
     v) VERSION="$OPTARG" ;;

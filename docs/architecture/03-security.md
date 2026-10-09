@@ -300,7 +300,11 @@ asserted. Current state:
       run and pass; only the two tests written for other platforms may skip, and the
       network-on test, which needs the internet and runs in the job `fence-network`
       instead. Ubuntu's limit on user namespaces is lifted only for the test binaries'
-      directory, by an AppArmor profile, not by the system-wide sysctl
+      directory, by an AppArmor profile, not by the system-wide sysctl. Not yet on
+      s390x: the job `s390x` cross-builds and vets for it and runs the unit tests under
+      emulation, which checks the filter's s390x table against `golang.org/x/sys` and
+      its programs in an interpreter laid out as s390x lays out a call, but cannot load
+      a filter, so the fence's gated tests have not run on an s390x kernel
 - [x] **Cross-tenant leakage** — session list and replay isolated (`server`)
 - [x] **MCP tool poisoning** — descriptions sanitized before reaching the model
       (`internal/mcp`)

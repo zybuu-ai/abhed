@@ -14,6 +14,42 @@ to the model endpoint you configure, plus anything you enable explicitly (web
 search, web fetch, MCP servers, remote tools); copy the binary and a config into an
 enclave and it works there.
 
+### Linux on Z (s390x)
+
+Abhed runs on Linux on Z (s390x): Red Hat Enterprise Linux, SUSE Linux
+Enterprise Server and Ubuntu. Each release has a `linux-s390x` binary beside
+the others, and the container image has a `linux/s390x` variant. The binary is
+static, so it does not depend on the distribution's C library. To build it on
+another machine:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=s390x go build -o abhed ./cmd/abhed
+```
+
+Sandbox tiers on s390x:
+
+- **process** (bubblewrap) and **container** (Podman or Docker) work as on
+  other Linux hosts.
+- **vm** is not available: gVisor, which it runs on, has no s390x build.
+- **fence** has the same kernel requirements as elsewhere
+  ([The fence tier](02-configuration.md#the-fence-tier-preview-linux)). By
+  kernel version, RHEL 10, SLES 16 and Ubuntu 24.04 meet them, and RHEL 9 and
+  SLES 15 do not. A distribution kernel can differ from its version number,
+  so check with `abhed doctor`. The fence refuses to start when a check fails.
+
+Two things differ under the fence on s390x. A 31-bit program is ended at its
+first system call, as another architecture's program is on any host. And
+with `allow_network` on, most programs still cannot open a socket: glibc and
+Go open sockets through `socketcall()`, the filter cannot see which kind of
+socket that asks for, and so it refuses all of them. Programs that call
+`socket()` directly, such as those built with musl, get the network. If
+commands need the network, use the container tier.
+
+CI builds and vets every package for s390x and runs the unit tests under
+emulation (qemu-user). Emulation cannot load a seccomp filter, so the fence's
+kernel-level tests have not run on an s390x kernel, and the fence on s390x is
+less proven than on amd64 and arm64.
+
 ## Point it at a model
 
 Abhed does not ship a model. It needs an endpoint, and the fastest one to get

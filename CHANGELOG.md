@@ -6,6 +6,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Linux on Z (s390x): a `linux-s390x` release binary and a `linux/s390x`
+  container image, for Red Hat Enterprise Linux, SUSE Linux Enterprise Server
+  and Ubuntu. The fence tier accepts s390x with its own system-call table:
+  the filter compares arguments by their low word, which s390x stores second;
+  reads clone's flags from its second argument, where s390x passes them;
+  refuses the old `umount` as well as `umount2`; and ends a 31-bit program at
+  its first call. glibc and Go make sockets through `socketcall()` on s390x,
+  whose family the filter cannot read, so it refuses every socket made that
+  way: with `allow_network` on, most programs still get no network under the
+  fence there. The `vm` tier is not available, since gVisor has no s390x
+  build. CI cross-builds and vets for s390x and runs the unit tests under
+  emulation; the fence's kernel-level tests have not yet run on an s390x
+  kernel. See [Linux on Z](docs/guide/01-getting-started.md#linux-on-z-s390x).
+
+### Changed
+
+- The fence probe's `seccomp` check now also installs the fence's own filter
+  in its helper and requires a signal to Abhed to be refused and one to the
+  helper itself allowed, so a kernel that reads the filter's system-call
+  numbers or argument layout differently fails the check instead of running
+  commands under a filter that does not hold.
+- The container image compiles Abhed on the build machine for each target
+  platform instead of under emulation.
+
 
 ## [1.2.7] - 2026-10-07
 
