@@ -283,6 +283,7 @@ share the sign-in endpoints' rate limit.
 | `auth.cli.key_file` | `~/.abhed/cli-token.key` | the token signing key |
 | `auth.cli.client_id` | `auth.client_id` | with `auth.mode` `oidc`: the identity provider's client the command line signs in through (Team edition) |
 | `auth.workload.*` | — | workload identity and token exchange (Enterprise edition); the Community Edition refuses `enabled` |
+| `auth.workload.grants[].allow_reusable_svid` | `false` | accept that workload's JWT-SVIDs without a `jti` (Enterprise edition) |
 
 `server` and `auth` are deployment settings: an untrusted workspace file that
 sets them stops `abhed serve` rather than being ignored, and the managed

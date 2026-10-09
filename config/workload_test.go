@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +12,13 @@ func workloadOK() WorkloadAuthConfig {
 	return WorkloadAuthConfig{Enabled: true, TrustDomain: "example.org", Audience: "abhed",
 		JWTBundleFile: "bundle.json",
 		Grants:        []WorkloadGrant{{SPIFFEID: "spiffe://example.org/ci/*", Scopes: []string{"sandboxes:read"}}}}
+}
+
+func TestWorkloadGrantReadsReusable(t *testing.T) {
+	var g WorkloadGrant
+	if err := json.Unmarshal([]byte(`{"spiffe_id":"spiffe://example.org/x","scopes":["s"],"allow_reusable_svid":true}`), &g); err != nil || !g.AllowReusableSVID {
+		t.Fatalf("allow_reusable_svid not read: %+v %v", g, err)
+	}
 }
 
 func TestWorkloadValidation(t *testing.T) {

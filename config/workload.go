@@ -46,6 +46,10 @@ type WorkloadGrant struct {
 	Scopes []string `json:"scopes"`
 	// Tenant is the tenant it acts in; auth.default_tenant when unset.
 	Tenant string `json:"tenant,omitempty"`
+	// AllowReusableSVID accepts its JWT-SVIDs without a jti, which can then
+	// be exchanged more than once until they expire. Off: a JWT-SVID needs a
+	// jti and is exchanged once.
+	AllowReusableSVID bool `json:"allow_reusable_svid,omitempty"`
 }
 
 var trustDomainRe = regexp.MustCompile(`^[a-z0-9._-]{1,255}$`)
