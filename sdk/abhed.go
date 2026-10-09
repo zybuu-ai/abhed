@@ -352,7 +352,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 	}
 	// A users or secrets file kept outside .abhed is state all the same.
-	for _, p := range sandboxconfig.StatePaths(cfg, opts.Workspace) {
+	for _, p := range sandboxconfig.ToolStatePaths(cfg, opts.Workspace) {
 		tools.AddStatePath(p)
 	}
 

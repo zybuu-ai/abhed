@@ -92,7 +92,7 @@ func NewWithOptions(cfg config.Config, opts Options) *Driver {
 		if err != nil {
 			return nil, err
 		}
-		p.Hidden = slices.Clone(opts.Hide)
+		p.Hidden = append(p.Hidden, opts.Hide...)
 		return sandbox.Select(p)
 	}, opts)
 }

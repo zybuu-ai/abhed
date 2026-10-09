@@ -55,6 +55,15 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 			p.StatePaths = append(p.StatePaths, filepath.Join(r, tools.StateDir))
 		}
 	}
+	// A control-plane sandbox's own folder may lie in the state folder: the
+	// rest of it is hidden around that folder, as its siblings are.
+	for _, f := range ControlPlaneFolders(cfg) {
+		if holds(f, workspace) {
+			p.Hidden = append(p.Hidden, f)
+		} else {
+			p.StatePaths = append(p.StatePaths, f)
+		}
+	}
 	if cfg.Sandbox.MaxMemoryMB > 0 {
 		p.MaxMemoryMB = cfg.Sandbox.MaxMemoryMB
 	}
@@ -110,6 +119,48 @@ func controlPlaneFiles(cfg config.Config) []string {
 		return nil
 	}
 	return []string{db, db + "-wal", db + "-shm", db + "-journal"}
+}
+
+// ControlPlaneFolders are the control plane's state folder, which holds the
+// relay's host key, snapshots and the sandboxes' own folders, and a
+// snapshot_dir configured elsewhere. No command may read or write them,
+// apart from its own sandbox's folder inside one.
+func ControlPlaneFolders(cfg config.Config) []string {
+	var out []string
+	if d, err := config.ControlPlaneStateDir(); err == nil {
+		out = append(out, d)
+	}
+	if cfg.ControlPlane.SnapshotDir != "" {
+		if d, err := cfg.SnapshotDir(); err == nil {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// ToolStatePaths are StatePaths with the control plane's secrets in its
+// state folder, the relay's host key and the snapshots, for the file tools
+// and the server's readers to refuse. The folder itself is not one: a
+// per-session sandbox's workspace lies in it.
+func ToolStatePaths(cfg config.Config, workspace string) []string {
+	out := StatePaths(cfg, workspace)
+	if p, err := cfg.SSHHostKeyFile(); err == nil {
+		out = append(out, p)
+	}
+	if p, err := cfg.SnapshotDir(); err == nil {
+		out = append(out, p)
+	}
+	return out
+}
+
+// holds reports whether dir is or holds path, either as written or with
+// links followed.
+func holds(dir, path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	return under([]string{abs, tools.RealPath(abs)}, []string{dir})
 }
 
 // StatePaths are the files holding Abhed's state that a configuration can put
