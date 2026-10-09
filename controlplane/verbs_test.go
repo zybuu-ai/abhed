@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -299,5 +300,32 @@ func TestRestoreMovesBeforeReplacingFiles(t *testing.T) {
 	}
 	if out := r.reconcile(t, sb.ID); out.State != cp.StateReady || out.Generation != stopped.Generation+1 {
 		t.Fatalf("after restore: %s generation %d", out.State, out.Generation)
+	}
+}
+
+// A NUL or control character in a snapshot name, a snapshot reference or a
+// copy path is refused as invalid before anything is recorded or asked of
+// the driver.
+func TestVerbsRefuseControlCharacters(t *testing.T) {
+	r := newCapRig(t, nil, driver.CapSnapshot, driver.CapCopy)
+	sb := r.ready(t)
+	ctx := context.Background()
+	before := len(actions(t, r, sb.ID))
+	for _, bad := range []string{"a\x00b", "line\nbreak", "esc\x1b[2J", "del\x7f"} {
+		if _, _, err := r.svc.Snapshot(ctx, alice, sb.ID, "", bad); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("snapshot name %q: %v", bad, err)
+		}
+		if _, err := r.svc.Restore(ctx, alice, sb.ID, "", driver.SnapshotRef{ID: bad, Digest: "sha256:00"}); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("snapshot id %q: %v", bad, err)
+		}
+		if _, err := r.svc.CopyIn(ctx, alice, sb.ID, bad, strings.NewReader("")); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("copy in to %q: %v", bad, err)
+		}
+		if _, err := r.svc.CopyOut(ctx, alice, sb.ID, bad, io.Discard, nil); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("copy out of %q: %v", bad, err)
+		}
+	}
+	if got := actions(t, r, sb.ID); len(got) != before {
+		t.Fatalf("a refused verb was recorded: %v", got[before:])
 	}
 }

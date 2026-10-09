@@ -89,6 +89,9 @@ func settled(st State) bool { return st == StateReady || CanRestore(st) }
 // Snapshot asks the sandbox's driver for a snapshot. Ready sandboxes are
 // snapshotted while commands may write; a stopped one gives a consistent one.
 func (s *Service) Snapshot(ctx context.Context, c Caller, id, ifMatch, name string) (driver.SnapshotRef, Sandbox, error) {
+	if err := plainText("snapshot name", name); err != nil {
+		return driver.SnapshotRef{}, Sandbox{}, err
+	}
 	sb, d, err := s.prepare(ctx, c, id, ifMatch, "snapshot", settled, driver.CapSnapshot)
 	if err != nil {
 		return driver.SnapshotRef{}, sb, err
@@ -119,6 +122,9 @@ func (s *Service) Snapshot(ctx context.Context, c Caller, id, ifMatch, name stri
 // and starts it as a new generation. The driver checks the ref is this
 // sandbox's and that its content matches the digest.
 func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref driver.SnapshotRef) (Sandbox, error) {
+	if err := errors.Join(plainText("snapshot id", ref.ID), plainText("snapshot digest", ref.Digest)); err != nil {
+		return Sandbox{}, err
+	}
 	sb, d, err := s.prepare(ctx, c, id, ifMatch, "restore", CanRestore, driver.CapSnapshot)
 	if err != nil {
 		return Sandbox{}, err
@@ -181,9 +187,23 @@ func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref
 	return out, nil
 }
 
+// plainText refuses a NUL or other control character in what a caller
+// names: no path or file name holds one, and the record could not keep it.
+func plainText(what, v string) error {
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%w: the %s holds a control character", ErrInvalid, what)
+		}
+	}
+	return nil
+}
+
 // CopyIn unpacks a tar stream into a Ready sandbox at dst, which the
 // driver confines to the workspace.
 func (s *Service) CopyIn(ctx context.Context, c Caller, id, dst string, tar io.Reader) (Sandbox, error) {
+	if err := plainText("path", dst); err != nil {
+		return Sandbox{}, err
+	}
 	sb, d, err := s.prepare(ctx, c, id, "", "cp", AcceptsWork, driver.CapCopy)
 	if err != nil {
 		return sb, err
@@ -208,6 +228,9 @@ func (s *Service) CopyIn(ctx context.Context, c Caller, id, dst string, tar io.R
 // past the sandbox's exec.output_bytes. started runs once every check has
 // passed, before the first byte: an error before it sent nothing.
 func (s *Service) CopyOut(ctx context.Context, c Caller, id, src string, w io.Writer, started func(Sandbox)) (Sandbox, error) {
+	if err := plainText("path", src); err != nil {
+		return Sandbox{}, err
+	}
 	sb, d, err := s.prepare(ctx, c, id, "", "cp", AcceptsWork, driver.CapCopy)
 	if err != nil {
 		return sb, err
