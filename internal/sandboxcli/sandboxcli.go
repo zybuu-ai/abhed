@@ -366,9 +366,9 @@ func age(t time.Time) string {
 
 // confirm asks a yes-or-no question on the terminal; without one, the
 // command must be given -y.
-func (r *runner) confirm(q string) error {
+func (r *runner) confirm(cmd, q string) error {
 	if r.Term == nil {
-		return usageError{fmt.Errorf("%s needs -y when not run at a terminal", q)}
+		return usageError{fmt.Errorf("%s asks before it acts; away from a terminal, pass -y", cmd)}
 	}
 	fmt.Fprintf(r.Err, "%s [y/N] ", q)
 	line, err := bufio.NewReader(r.In).ReadString('\n')

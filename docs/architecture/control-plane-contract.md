@@ -63,7 +63,7 @@ minor release, and each change is listed in the changelog.
 | `id` | server | `sbx_` plus 16 lowercase hex characters. Never reused. Never contains `:` (the REST surface splits on it). |
 | `generation` | server | The incarnation counter. Starts at 1 on create and goes up by one each time the instance is started again (Stopped, Completed or Error → Starting), restored, or its `template` changes. Anything bound to a running instance (a sandbox token, an attach session, a forward) carries the generation and is refused once it no longer matches. |
 | `resource_version` | store | Goes up on every write to the object, by a store-wide counter. It is the `ETag`, and `If-Match` compares against it. |
-| `template` | client | The template the sandbox was built from (P3-04). Changing it bumps `generation` and needs a restart to take effect. |
+| `template` | client | The template the sandbox was built from (§4.4). Changing it bumps `generation` and needs a restart to take effect; what the template gave at create stays. |
 | `policy_rev` | server | The policy revision in force. Policy reload is live, so a new revision does not bump `generation`; it is recorded as a `PolicyApplied` condition and in the event record. |
 | `driver` | client, default from template | The registered driver name. Immutable after create. |
 | `state` | server | One of the states in §3. Clients never write it directly; they call a verb. |
@@ -174,6 +174,7 @@ last `:`; ids never contain one.
 | `POST …:cp` | `{direction: in\|out, path}` + tar body or tar response | `200` | Paths confined to the workspace; archive entries validated (no `..`, no absolute paths, no links out). |
 | `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | `snapshot` carries the content `digest`. |
 | `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. |
+| `GET …:events?after=&limit=` | — | `200 {items, next}` | The sandbox's record, oldest first, to whoever may see it; `next` is the last `seq` returned while more remain. |
 
 `:snapshot`, `:restore`, `:cp` and `:expose` are implemented
 (`server/sandbox_verbs.go`, over `controlplane.Service`'s `Snapshot`,
@@ -302,6 +303,30 @@ link, and a state path no tool may read). `app`'s `abhed sandbox connect
 
 In HA (§13) a `SandboxRouter` must carry the upgrade to the owning replica;
 the replicas also need one host key between them.
+
+### 4.4 Templates (Implemented: `controlplane.Template`, `server/sandbox_templates.go`)
+
+A template is a named set of defaults: `{name, description, driver, labels,
+settings}` with `owner`, `resource_version` and `created_at` set by the
+server. Names are 1–63 characters from `[A-Za-z0-9._-]`, starting with a
+letter or digit.
+
+| Method and path | Body | Result | Notes |
+|---|---|---|---|
+| `POST /v1/sandbox-templates` | `{name, description?, driver?, labels?, settings?}` | `201` template | Administrators of the whole tenant only (any caller where `auth.mode` is `none`). Idempotency key honoured. |
+| `GET /v1/sandbox-templates?selector=&limit=&after=` | — | `200 {items, next}` | Every caller of the tenant. |
+| `GET /v1/sandbox-templates/{name}` | — | `200` template, `ETag` | |
+| `DELETE /v1/sandbox-templates/{name}` | — | `200` | Administrators only; `If-Match` honoured. |
+
+A create naming a template the store holds is filled from it before the
+guard and interceptor see it: the template's driver is the sandbox's (a
+create naming another is `400`), its labels are given to the sandbox under
+the create's own, and its settings are the sandbox's unless the create
+tightens one; a looser one is `400` (`Settings.NoLooser`, per key the
+template sets). Nothing is applied again later. A name with no template
+object is kept as a plain name. Template writes are recorded as
+`template.create` and `template.delete` with no sandbox id. The `abhed
+sandbox` command line (P3-04) is built on §4 and this section.
 
 ## 5. The driver interface (Implemented: package `driver`)
 
@@ -551,6 +576,13 @@ type Store interface {
     IdempotencyStore // Claim(rec, now), Complete, Release
 }
 
+type TemplateStore interface { // memory, SQLite and Postgres implement it beside Store
+    CreateTemplate(ctx, Template) (Template, error)          // ErrExists
+    GetTemplate(ctx, name string) (Template, error)          // ErrNotFound
+    ListTemplates(ctx, TemplateListOptions) ([]Template, string, error)
+    DeleteTemplate(ctx, name string, expect int64) error     // ErrVersionMismatch
+}
+
 func Mutate(ctx, Store, id, ifMatch string, fn func(*Sandbox) error) (Sandbox, error)
 ```
 
@@ -573,9 +605,11 @@ client sent `If-Match` and a retry when it did not.
   one writer connection whose every write is a `BEGIN IMMEDIATE`
   transaction; triggers refuse `UPDATE`, `DELETE` and `INSERT OR REPLACE`
   on `sandbox_audit`) and Postgres for servers (implemented:
-  `store.Postgres.Sandboxes`, tables `sandboxes`, `sandbox_idempotency` and
-  the append-only `sandbox_audit`, schema version 7, applied by `abhed
-  migrate`). `abhed serve` uses Postgres when `storage.driver` is
+  `store.Postgres.Sandboxes`, tables `sandboxes`, `sandbox_idempotency`,
+  `sandbox_templates` and the append-only `sandbox_audit`, schema version 7,
+  applied by `abhed migrate`). Templates take their `resource_version` from
+  the same counter as sandboxes; a store that does not implement
+  `TemplateStore` answers the template routes with `501`. `abhed serve` uses Postgres when `storage.driver` is
   `postgres` and SQLite otherwise, never memory. Both SQL backends run the
   same conformance tests as the memory store (`controlplane/storetest`).
 - The SQLite file is the server's state: `0600` in a `0700` folder,
@@ -591,7 +625,7 @@ client sent `If-Match` and a retry when it did not.
 | Sandbox object, lifecycle, REST, idempotency, `If-Match`, labels | Community |
 | Driver interface, out-of-process protocol, process/docker/podman/microVM drivers | Community |
 | Memory, SQLite and Postgres stores | Community |
-| Per-session sandboxes, warm pool, CLI | Community |
+| Per-session sandboxes, warm pool, templates, `abhed sandbox` CLI | Community |
 | Kubernetes driver | Team (private module, via `app.WithDriver`) |
 | Workspaces, roles, quotas, four-eyes approvals on sandboxes (via §12) | Team |
 | Admission interceptors on every mutation, HA ownership and leases | Enterprise |

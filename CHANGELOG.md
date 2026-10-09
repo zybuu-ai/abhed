@@ -26,6 +26,38 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- **`abhed sandbox`**: a server's sandboxes from the command line, as the
+  profile `abhed login` saved (`-profile`, the current one, or `-server URL`):
+  `create` (from a template, with labels, settings, a minimum tier, a
+  driver, `-wait`), `list` (label selectors, state, pages), `get`, `update`
+  (sent with `If-Match`), `exec` (exits with the command's status; `-i`
+  sends stdin), `connect` (an interactive shell in raw mode that follows
+  the terminal's size; Ctrl-] leaves), `ssh` and `ssh-config` (OpenSSH
+  through the relay, with the server's host key kept in
+  `sandbox_known_hosts` beside the profiles file and checked strictly),
+  `cp` (in and out as tar; what comes out is checked entry by entry and
+  written through an `os.Root`, never outside the target folder, into
+  `.abhed`, or over an existing file), `forward` (loopback by default; a
+  wider `-address` is warned about), `expose`, `logs`, `stop`, `start`,
+  `delete` (asks first unless `-y`), `snapshot`, `restore` and `template
+  list | get | create | rm`. Output is a table or `-o json`; exit status 0,
+  1 failed, 2 usage, 3 not signed in or not allowed, 4 not found, 5
+  conflict, and the remote status for `exec`, `connect` and `ssh`. Every
+  mutating call carries an `Idempotency-Key`, the same one when it is sent
+  again after a lost answer, so the server acts once; a token near its
+  expiry, or refused with `401`, is renewed with the profile's refresh
+  token and saved. Tokens are never printed, text from the server is
+  printed with control characters escaped, and every command is refused
+  inside an agent's command. See
+  [Sandboxes over the API](docs/guide/22-sandboxes.md#from-the-command-line-abhed-sandbox).
+- **Sandbox templates**: named defaults (a driver, labels and settings) a
+  sandbox is created from, at `/v1/sandbox-templates`, kept per tenant in
+  the same store as sandboxes. A create from one gets its driver (another is
+  refused), its labels under the create's own, and its settings, which the
+  create may tighten but not loosen. Everyone in the tenant reads them; an
+  administrator creates and removes them, and each change is recorded.
+- `GET /v1/sandboxes/{id}:events` reads a sandbox's record back, oldest
+  first, in pages, to whoever may see the sandbox.
 - Sandboxes over the API take streams, as WebSockets: `:attach` opens the
   sandbox's interactive shell (each line judged by the deny rules at its
   Enter and recorded, as in the workbench's terminal; refused where only a
@@ -212,12 +244,18 @@ All notable changes to Abhed are recorded here. The format follows
   CI job lint and render it for a matrix of values and validate the result
   against the Kubernetes 1.30 and 1.33 schemas with pinned, checksummed tools.
 
-**Upgrading with Postgres.** The control plane's tables come with schema
-version 7; run `abhed migrate` before turning `control_plane.enabled` on.
+**Upgrading with Postgres.** The control plane's tables (`sandbox_templates`
+among them) come with schema version 7; run `abhed migrate` before turning
+`control_plane.enabled` on.
 A server with it off starts on the older schema as before.
 
 ### Changed
 
+- A link in an archive copied into or out of a sandbox, or restored from a
+  snapshot, that points into a `.abhed` folder is refused, as an entry
+  inside one already was.
+- `abhed sandbox` is refused inside an agent's command for every
+  subcommand, not only `connect`.
 - Every sandbox `:exec` is judged by the server's deny rules and extension
   hooks, as the workbench's terminal is: a refused command is `403
   forbidden` and recorded, and never runs. `POST :exec` with `"stdin":
@@ -297,6 +335,12 @@ A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `internal/sandboxcli` is `abhed sandbox`. `controlplane.Template`,
+  `TemplateStore` (implemented by the memory, SQLite and Postgres stores and
+  required by `storetest.Run`), `Service.CreateTemplate`, `GetTemplate`,
+  `ListTemplates`, `DeleteTemplate` and `Service.Events`;
+  `server.AttachProtocol`, `ExecProtocol` and `ForwardProtocol` beside
+  `SSHRelayProtocol`. `drivertest.Fake` snapshots carry a digest.
 - `wsconn`: a small WebSocket (RFC 6455) server upgrade, client and byte
   stream, size-limited and fuzzed, for the sandbox streams and for drivers
   that speak WebSockets. `server/sshrelay`: the SSH server behind the `:ssh`

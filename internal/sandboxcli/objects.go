@@ -441,7 +441,7 @@ func (r *runner) delete(args []string) error {
 			if *yes {
 				return nil
 			}
-			return r.confirm("Delete sandbox " + id + " and everything in it?")
+			return r.confirm("delete", "Delete sandbox " + id + " and everything in it?")
 		}})
 }
 
