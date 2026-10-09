@@ -180,6 +180,13 @@ func list(t *testing.T, st controlplane.Store) {
 	if err != nil || len(got) != 0 {
 		t.Fatalf("state filter: %d %v", len(got), err)
 	}
+	got, next, err = st.List(ctx, controlplane.ListOptions{Labels: map[string]string{"team": "a"}, Owner: "alice", Limit: 1})
+	if err != nil || len(got) != 1 || next == "" || got[0].Labels["team"] != "a" || got[0].Owner != "alice" {
+		t.Fatalf("label filter: %d items, next %q, %v", len(got), next, err)
+	}
+	if got, _, _ = st.List(ctx, controlplane.ListOptions{Labels: map[string]string{"team": ""}}); len(got) != 0 {
+		t.Fatalf("an empty label value matched %d", len(got))
+	}
 
 	seen := map[string]bool{}
 	after, last := "", ""
