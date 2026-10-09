@@ -396,3 +396,19 @@ func TestDoctorReportsSessionHours(t *testing.T) {
 		t.Fatalf("doctor accepted a negative session_hours (%d): %s", code, msg)
 	}
 }
+
+// caveatSandbox is a sandbox that works but lacks something here.
+type caveatSandbox struct{ sandbox.Sandbox }
+
+func (caveatSandbox) Tier() sandbox.Tier { return sandbox.TierProcess }
+func (caveatSandbox) Caveat() string     { return "no /proc" }
+
+// doctor and serve -check name what the tier lacks beside it.
+func TestTierLabelNamesACaveat(t *testing.T) {
+	if got := tierLabel(caveatSandbox{}); got != "process (no /proc)" {
+		t.Fatalf("label %q", got)
+	}
+	if got := tierLabel(&sandbox.None{}); got != "none" {
+		t.Fatalf("label %q", got)
+	}
+}

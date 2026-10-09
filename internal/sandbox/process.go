@@ -279,8 +279,21 @@ func (s *Process) Describe() string {
 	if s.procLimit() > 0 {
 		procs = fmt.Sprintf("at most %d more processes per command", s.policy.MaxProcs)
 	}
-	return fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · memory, CPU and disk not bounded",
+	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · memory, CPU and disk not bounded",
 		s.backend, net, procs)
+	if s.Caveat() != "" {
+		d += " · no /proc: bubblewrap cannot mount one here, so commands that read it fail"
+	}
+	return d
+}
+
+// Caveat is "no /proc" where bubblewrap cannot mount a fresh one, as under
+// a seccomp profile that allows user namespaces but not that mount.
+func (s *Process) Caveat() string {
+	if s.backend == "bwrap" && !s.bwrapFreshOK() && !rootCaps() {
+		return "no /proc"
+	}
+	return ""
 }
 
 // seatbeltProfile renders a macOS Seatbelt profile.

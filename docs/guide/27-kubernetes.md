@@ -146,9 +146,24 @@ does not run commands unsandboxed: the default `sandbox.min_tier` is
 `process`, so preflight fails on its `sandbox` check and the pod stays in
 `Init`. Your choices:
 
-- a `Localhost` seccomp profile that allows user namespaces, installed on
-  the nodes and named in `podSecurityContext.seccompProfile` and
-  `securityContext.seccompProfile` (restricted allows `Localhost`);
+- a `Localhost` seccomp profile that allows what bubblewrap needs, installed
+  on the nodes and named in `podSecurityContext.seccompProfile` and
+  `securityContext.seccompProfile` (restricted allows `Localhost`). User
+  namespaces alone are not enough: bubblewrap also calls `mount`, `umount2`
+  and `pivot_root` inside the namespace it makes. The chart ships one,
+  `files/seccomp-bwrap.json`: the Docker engine's default profile (moby
+  v28.0.1, Apache-2.0) plus one rule allowing `unshare`, `clone`, `setns`,
+  `mount`, `umount2` and `pivot_root`, for x86-64, arm64 and s390x. Copy it
+  to each node's kubelet seccomp folder (by default
+  `/var/lib/kubelet/seccomp/`) as `abhed/seccomp-bwrap.json` and set
+  `seccompProfile: {type: Localhost, localhostProfile: abhed/seccomp-bwrap.json}`
+  in both places. It widens what the kernel accepts from the pod: user
+  namespaces are kernel attack surface, and a cluster whose policy forbids
+  them should use one of the other choices. Under it bubblewrap still cannot
+  mount a fresh `/proc` (the runtime masks the pod's), so commands run with
+  no `/proc`: `ps`, `top` and anything reading `/proc/self` fail. Preflight
+  and `abhed doctor` say so, showing the sandbox as `process (no /proc)`
+  rather than plain `process`;
 - `sandbox.min_tier: none` in `config`, which makes the pod's own isolation
   the only boundary around the agent's commands;
 - the Kubernetes driver in the Team edition, which runs each sandbox as its

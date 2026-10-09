@@ -186,6 +186,15 @@ type Sandbox interface {
 	Describe() string
 }
 
+// Caveat is what a working sandbox lacks on this host, such as "no /proc",
+// or "" when it lacks nothing it would normally give a command.
+func Caveat(sb Sandbox) string {
+	if c, ok := sb.(interface{ Caveat() string }); ok {
+		return c.Caveat()
+	}
+	return ""
+}
+
 // Select returns the strongest available backend meeting policy.MinTier.
 //
 // It never silently downgrades: if nothing meets the minimum, it returns an

@@ -152,6 +152,17 @@ func (l *lazySandbox) Command(ctx context.Context, cwd, command string) *exec.Cm
 	return sb.Command(ctx, cwd, command)
 }
 
+// Caveat is the resolved sandbox's, "" until it is resolved.
+func (l *lazySandbox) Caveat() string {
+	if !l.Resolved() {
+		return ""
+	}
+	if sb, err := l.wait(); err == nil {
+		return sandbox.Caveat(sb)
+	}
+	return ""
+}
+
 func (l *lazySandbox) Describe() string {
 	if sb, err := l.wait(); err == nil {
 		return sb.Describe()

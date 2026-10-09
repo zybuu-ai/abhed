@@ -71,7 +71,7 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			}
 		}()
-		label := string(sb.Tier())
+		label := tierLabel(sb)
 		if sb.Tier() == sandbox.TierNone {
 			label += "  ⚠"
 		}
@@ -552,4 +552,12 @@ func sessionLine(cfg config.Config) string {
 		return ""
 	}
 	return fmt.Sprintf("a sign-in lasts %d hours (auth.session_hours)", h)
+}
+
+// tierLabel is the sandbox's tier, with what it lacks here: "process (no /proc)".
+func tierLabel(sb sandbox.Sandbox) string {
+	if c := sandbox.Caveat(sb); c != "" {
+		return string(sb.Tier()) + " (" + c + ")"
+	}
+	return string(sb.Tier())
 }

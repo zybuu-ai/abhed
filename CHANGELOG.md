@@ -36,6 +36,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The Helm chart ships `files/seccomp-bwrap.json`, a `Localhost` seccomp
+  profile for runtimes whose default refuses bubblewrap: the Docker engine's
+  default plus `unshare`, `clone`, `setns`, `mount`, `umount2` and
+  `pivot_root`. Under it bubblewrap cannot mount a fresh `/proc`, so
+  commands run without one; `abhed serve -check`, `abhed doctor` and
+  Studio's health now show the sandbox as `process (no /proc)` wherever
+  that is so, instead of a plain `process`.
 - `control_plane.kubernetes`: the Kubernetes driver's options as one JSON
   object in the managed configuration, for the editions that carry the
   driver. It is managed only; a user's or workspace's copy is set aside with

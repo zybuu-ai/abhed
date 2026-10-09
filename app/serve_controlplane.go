@@ -533,7 +533,7 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 
 	cfg, sb, _, err := serveSandbox(cfg, workspace)
 	if err == nil {
-		detail := string(sb.Tier())
+		detail := tierLabel(sb)
 		if f := fenceOf(sb); f != nil && f.Mode() != sandbox.FenceModeMounts {
 			err = errors.New("sandbox.tier is fence and this host does not give serve its mount_namespace mode")
 		}

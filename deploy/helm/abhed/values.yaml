@@ -143,7 +143,10 @@ podAnnotations: {}
 podLabels: {}
 
 # The restricted Pod Security level. On OpenShift set openshift.enabled so
-# the SCC picks the user and group.
+# the SCC picks the user and group. Where the runtime's default seccomp
+# profile refuses bubblewrap, files/seccomp-bwrap.json is a Localhost
+# profile that allows it (see the Kubernetes guide); set it here and in
+# securityContext.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001

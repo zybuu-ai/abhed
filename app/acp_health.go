@@ -83,6 +83,8 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 			add("sandbox", "Sandbox", "fail", fmt.Sprintf("the %s tier could not run a command", sb.Tier()))
 		case sb.Tier() == sandbox.TierNone:
 			add("sandbox", "Sandbox", "warn", "commands run on the host, with no sandbox")
+		case sandbox.Caveat(sb) != "":
+			add("sandbox", "Sandbox", "warn", "commands run under the "+tierLabel(sb)+" tier")
 		default:
 			add("sandbox", "Sandbox", "ok", "commands run under the "+string(sb.Tier())+" tier")
 		}
