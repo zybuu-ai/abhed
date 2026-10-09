@@ -176,8 +176,10 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	pr, pw := io.Pipe()
+	in := newStdinQueue(pw)
 	var gone atomic.Bool
 	go func() {
+		defer in.end()
 		for {
 			typ, msg, err := ws.ReadMessage()
 			if err != nil {
@@ -189,12 +191,13 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 			if typ == wsconn.Text {
 				var c streamControl
 				if json.Unmarshal(msg, &c) == nil && c.Type == "eof" {
-					_ = pw.Close()
+					in.end()
 				}
 				continue
 			}
-			// Stdin the command stopped reading is dropped.
-			_, _ = pw.Write(msg)
+			if !in.put(ctx, msg) {
+				return
+			}
 		}
 	}()
 	var wait func() error
@@ -203,7 +206,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		Screen: func(command string) error { return s.screenStdinExec(pol, command) },
 		Started: func(sb controlplane.Sandbox) {
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
-			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{})
+			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{busy: in.full})
 		}})
 	_ = pr.Close()
 	if wait != nil {
@@ -220,6 +223,59 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 	}
 	endStreamWith(ws, err)
 }
+
+// stdinQueue carries an exec's stdin from the WebSocket's reader to the
+// command, so the reader goes on reading, and answering pings, while the
+// command is slow to take it. It holds at most stdinQueued chunks; past that
+// the reader waits for the command, as TCP would, rather than drop input,
+// and full says so, for the client is not the one that stopped. Stdin the
+// command no longer reads at all, once it closed it, is dropped.
+type stdinQueue struct {
+	ch     chan []byte
+	once   sync.Once
+	isFull atomic.Bool
+}
+
+const (
+	stdinChunk  = 32 << 10
+	stdinQueued = 32
+)
+
+func newStdinQueue(pw *io.PipeWriter) *stdinQueue {
+	q := &stdinQueue{ch: make(chan []byte, stdinQueued)}
+	go func() {
+		for b := range q.ch {
+			_, _ = pw.Write(b)
+		}
+		_ = pw.Close()
+	}()
+	return q
+}
+
+// put queues msg, false when ctx ended first.
+func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
+	for off := 0; off < len(msg); off += stdinChunk {
+		b := msg[off:min(off+stdinChunk, len(msg))]
+		select {
+		case q.ch <- b:
+			continue
+		default:
+		}
+		q.isFull.Store(true)
+		select {
+		case q.ch <- b:
+			q.isFull.Store(false)
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
+// end is stdin's end, once everything queued has gone.
+func (q *stdinQueue) end() { q.once.Do(func() { close(q.ch) }) }
+
+func (q *stdinQueue) full() bool { return q.isFull.Load() }
 
 // counted is a sandbox stream counting its bytes each way, closed once.
 type counted struct {

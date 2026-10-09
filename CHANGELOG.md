@@ -466,6 +466,12 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- A command run over the `:exec` WebSocket that was slow to read its stdin
+  stopped the server reading the stream at all, pongs included, so after a
+  minute the stream ended as if the client had gone. Stdin now waits in a
+  bounded queue (1 MiB) while the reader goes on; only with the queue full
+  does the reader wait for the command, and then a quiet client is not
+  taken to be gone. No stdin is dropped while the command may still read it.
 - A client that stopped reading a sandbox stream held the server's writes,
   and its answers to pings, until the connection broke. Each write on a
   stream now has 30 seconds; past that the stream is closed and ends as

@@ -54,6 +54,10 @@ const (
 	SSHRelayProtocol = protoSSH
 )
 
+// streamQuiet is how long a client may send nothing, pongs included,
+// before its stream is taken to be gone.
+var streamQuiet = 3 * streamPing
+
 // streamLimits bound what a client sends on a stream, and how long one
 // that stops reading may hold a write before its stream is closed.
 var streamLimits = wsconn.Limits{MaxFrame: 1 << 20, MaxMessage: 1 << 20, WriteTimeout: 30 * time.Second}
@@ -255,7 +259,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 	every := min(s.streamRecheck(), streamPing)
 	tick := time.NewTicker(every)
 	deadline := time.NewTimer(b.max)
-	shutdown := s.cpStreams.ending()
+	shutdown, quiet := s.cpStreams.ending(), streamQuiet
 	var why error
 	done := make(chan struct{})
 	go func() {
@@ -306,7 +310,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 					return
 				}
 				if ws != nil {
-					if time.Since(ws.LastRead()) > 3*streamPing {
+					if time.Since(ws.LastRead()) > quiet && (b.busy == nil || !b.busy()) {
 						stop(fmt.Errorf("%w: the client stopped answering", controlplane.ErrUnavailable))
 						return
 					}
@@ -329,6 +333,9 @@ type streamBounds struct {
 	// idle, with active, ends a stream with no traffic for that long.
 	idle   time.Duration
 	active func() time.Time
+	// busy, while true, says the server is not reading the client for
+	// reasons of its own, so a quiet client is not taken to be gone.
+	busy func() bool
 }
 
 // sandboxCallerFunc works out who a request acts as, as sandboxCaller does,
