@@ -182,7 +182,17 @@ abhed profile rm staging
 the server URL, the account, the token and its expiry, and the paths of any
 CA or client certificate. The file is written mode 600; it is refused if
 other users can read it or if it is a link, and refused inside the workspace
-(other than its `.abhed`), where the agent's commands could read it. Tokens
+(other than its `.abhed`), where the agent's commands could read it.
+
+**A sign-out is never quietly lost.** `abhed logout` stops using the token
+at once. If the server cannot be reached, or answers that it could not
+record the sign-out (a `5xx`, such as `503` while its database is down), it
+tries again three more times, waiting half a second, then twice as long each
+time. If the server still has not recorded it, `abhed logout` says so and
+exits non-zero, `abhed profile list` shows the profile as signed out here but
+not yet on the server, and the token is kept in the profiles file under
+`pending_logouts` and sent again at the start of every `abhed login`,
+`logout` and `profile` command until the server records it. Tokens
 are never printed. `abhed login`, `abhed logout`, `abhed profile use` and
 `abhed profile rm` are refused when run by the agent.
 

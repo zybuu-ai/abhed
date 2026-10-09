@@ -48,6 +48,9 @@ type Profile struct {
 	CAFile   string `json:"ca_file,omitempty"`
 	CertFile string `json:"cert_file,omitempty"`
 	KeyFile  string `json:"key_file,omitempty"`
+	// PendingLogout marks a profile signed out here whose server has not
+	// yet recorded the sign-out; the token waits in PendingLogouts.
+	PendingLogout bool `json:"pending_logout,omitempty"`
 }
 
 // SignedIn reports whether the profile holds a token that has not expired.
@@ -60,6 +63,9 @@ type File struct {
 	Version  int                 `json:"version"`
 	Current  string              `json:"current,omitempty"`
 	Profiles map[string]*Profile `json:"profiles"`
+	// PendingLogouts are tokens signed out here whose server has not yet
+	// recorded it; each is told again until it does.
+	PendingLogouts []*Profile `json:"pending_logouts,omitempty"`
 }
 
 // Names lists the profiles in order.

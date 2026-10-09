@@ -52,6 +52,11 @@ All notable changes to Abhed are recorded here. The format follows
   refresh token: before a request once a tenth or less of the token's life is
   left, and once after a `401`, sending the request again (`Profile.Do`;
   `Whoami` uses it). Profiles record when their token was issued.
+- `abhed logout` retries a server that could not record the sign-out, with
+  backoff, and when it still has not, says so and keeps the token as a pending
+  sign-out, sent again at the next `login`, `logout` or `profile` command until
+  the server records it. Before, the token was dropped here and stayed valid
+  on the server.
 
 ### Go API
 

@@ -3,6 +3,7 @@ package profiles
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,5 +138,33 @@ func TestApplyRecordsIssueTime(t *testing.T) {
 	p.Apply(&Token{AccessToken: "a", ExpiresIn: 100}, now)
 	if !p.IssuedAt.Equal(now) || !p.ExpiresAt.Equal(now.Add(100*time.Second)) {
 		t.Fatalf("%v %v", p.IssuedAt, p.ExpiresAt)
+	}
+}
+
+// Logout retries a server error with backoff and reports one it never got
+// past; a client error is the server's answer, not a failure.
+func TestLogoutRetries(t *testing.T) {
+	var n int
+	codes := []int{503, 502, 200}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(codes[min(n, len(codes)-1)])
+		n++
+	}))
+	defer srv.Close()
+	p := &Profile{URL: srv.URL, Token: "t", RevocationEndpoint: srv.URL + "/logout"}
+	if err := Logout(context.Background(), http.DefaultClient, p, 3, time.Millisecond); err != nil || n != 3 {
+		t.Fatalf("= %v after %d tries", err, n)
+	}
+	n, codes = 0, []int{503}
+	if err := Logout(context.Background(), http.DefaultClient, p, 2, time.Millisecond); !errors.Is(err, ErrLogoutNotRecorded) || n != 2 {
+		t.Fatalf("= %v after %d tries", err, n)
+	}
+	n, codes = 0, []int{401}
+	if err := Logout(context.Background(), http.DefaultClient, p, 3, time.Millisecond); err != nil || n != 1 {
+		t.Fatalf("a token the server does not know = %v after %d tries", err, n)
+	}
+	srv.Close()
+	if err := Logout(context.Background(), http.DefaultClient, p, 1, time.Millisecond); !errors.Is(err, ErrLogoutNotRecorded) {
+		t.Fatalf("an unreachable server = %v", err)
 	}
 }
