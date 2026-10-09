@@ -26,7 +26,7 @@ is a separate test that needs a KVM host (see "Testing on KVM").
 | Kernel | The guest runs its own Linux kernel. A command that exploits a kernel bug compromises the guest kernel, not the host's. |
 | Network | The VM has **no network device**. The only interface in the guest is loopback. Commands reach nothing outside the VM. Egress through Abhed's host-side broker is not built yet, so a sandbox that needs the network cannot use this driver today. |
 | Host channel | One vsock connection to the guest agent. The host side is a Unix socket in the VM's chroot; the driver opens it without following a symlink, so a compromised VMM cannot point it elsewhere. |
-| Files | The workspace is **copied** into an ext4 image when the sandbox is created, and mounted at `/workspace`. Changes inside the VM stay in the image: they do not reach the host folder. Copying files back is not built yet. The root filesystem is shared between VMs and mounted read-only. |
+| Files | The workspace is copied into an ext4 image when the sandbox is created and mounted at `/workspace`. After every command, and before the VM stops, what changed in it is copied back to the host workspace (see "Copying changes back"). Changes made on the host after create do not reach the VM. The root filesystem is shared between VMs and mounted read-only. |
 | Inside the guest | Commands run as an unprivileged user (uid 1000), not as root, so they cannot signal or replace the agent that reports their exit codes. The agent and init run as root inside the guest. |
 | The VMM process (Linux) | The jailer chroots Firecracker into a folder of its own, runs it as a uid and gid no other VM shares, in a cgroup v2 leaf with CPU, memory (guest memory plus 256 MiB, no swap) and process limits and a file descriptor limit, with Firecracker's seccomp filters. Filters are never turned off; an operator may supply a stricter compiled filter. |
 | Devices | Two block devices (root, workspace), vsock, and a serial console whose output is kept only as a short, printable tail for diagnosing a failed boot. No NIC, no shared folders, no GPU. |
@@ -44,6 +44,38 @@ Not isolated, or not yet:
   instance it started.
 - Snapshots, copy in and out, port forwarding and network egress are not
   implemented; the driver declares only `attach`.
+
+## Copying changes back
+
+When a command ends, the guest agent sends the host what changed in
+`/workspace` since the last copy: the paths deleted, then every file,
+folder and symlink created or changed. The guest is untrusted, so the host
+checks each entry before it touches anything:
+
+- Only plain relative paths below the workspace. `..`, absolute paths and
+  paths not in plain form are refused.
+- Every folder on the way is opened without following links. A path through
+  a link on the host is refused; a link at the end is replaced, never
+  written through. Nothing on another filesystem is entered.
+- A file is written beside its destination and renamed over it, so a hard
+  link to the old file, inside or outside the workspace, keeps its content.
+  Hard links from the guest are not copied back.
+- Never written or deleted: `.abhed` at any depth, git's configuration,
+  hooks and pointers in any git folder (`config`, `config.worktree`,
+  `commondir`, `gitdir`, `hooks/`, `info/attributes`,
+  `objects/info/alternates`, and a `.git` file), and the paths the server
+  marks write-protected. A folder holding one of these is never removed or
+  replaced.
+- Symlinks come back only when they point inside the workspace and at
+  nothing protected. Devices, pipes and sockets stay in the VM. Permission
+  bits come back; setuid, setgid and sticky bits do not.
+- Run as root, the driver writes only into folders the workspace's user
+  owns, and gives what it creates to that user.
+
+What was refused is listed on the command's stderr, so the agent sees it.
+A command whose changes could not be copied back at all fails with an
+error, even though it ran. Copies are last-writer-wins: a file edited both
+on the host and in the VM ends up as the VM left it.
 
 ## Linux requirements
 

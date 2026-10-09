@@ -30,6 +30,8 @@ type Server struct {
 	Credential *syscall.Credential
 	// PowerOff is called after a shutdown request has been acknowledged.
 	PowerOff func()
+	// Workspace, when set, answers sync requests.
+	Workspace *Tracker
 }
 
 // ServeConn answers one call on rw and closes it.
@@ -53,6 +55,16 @@ func (s *Server) ServeConn(rw io.ReadWriteCloser) {
 	}
 	switch {
 	case f.Type == tPing:
+		_ = c.write(frame{Type: tOK})
+	case f.Type == tSync:
+		if s.Workspace == nil {
+			_ = c.write(frame{Type: tError, Message: "this guest has no workspace"})
+			return
+		}
+		if err := s.Workspace.export(c); err != nil {
+			_ = c.write(frame{Type: tError, Message: err.Error()})
+			return
+		}
 		_ = c.write(frame{Type: tOK})
 	case f.Type == tShutdown:
 		if c.write(frame{Type: tOK}) == nil && s.PowerOff != nil {

@@ -89,6 +89,7 @@ type frame struct {
 	Cols    uint16       `json:"cols,omitempty"`
 	Code    *int         `json:"code,omitempty"`
 	Message string       `json:"message,omitempty"`
+	Path    string       `json:"path,omitempty"`
 }
 
 var errProtocol = errors.New("guest protocol error")

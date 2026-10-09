@@ -27,7 +27,10 @@ All notable changes to Abhed are recorded here. The format follows
   runs as the guest's init and runs commands as an unprivileged user with
   exit codes, output and terminals. `abhed-microvm` serves it to an
   unprivileged server over the out-of-process driver protocol. The
-  workspace is copied into the VM, not shared back. It refuses to run, and
+  workspace is copied into the VM, and what commands change there is copied
+  back after each command and at stop: never through a link, never outside
+  the workspace, never into `.abhed`, git's configuration and hooks or a
+  write-protected path, and as the workspace's user. It refuses to run, and
   says why, without KVM, root, cgroup v2, Firecracker 1.5 or the jailer.
   On macOS it needs a Virtualization.framework helper signed with the
   virtualization entitlement, which is not shipped, so there it refuses

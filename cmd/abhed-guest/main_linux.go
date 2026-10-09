@@ -143,8 +143,14 @@ func loopbackUp() error {
 
 func agent() error {
 	dir, home := "/tmp", "/tmp"
+	var tracker *guest.Tracker
 	if mounted(workspace) {
 		dir, home = workspace, workspace
+		t, err := guest.NewTracker(workspace)
+		if err != nil {
+			return fmt.Errorf("reading the workspace: %w", err)
+		}
+		tracker = t
 	}
 	s := &guest.Server{
 		Env: []string{
@@ -155,6 +161,7 @@ func agent() error {
 		Shell:      "/bin/sh",
 		Credential: &syscall.Credential{Uid: cmdUID, Gid: cmdGID, Groups: []uint32{}},
 		PowerOff:   powerOff,
+		Workspace:  tracker,
 	}
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {

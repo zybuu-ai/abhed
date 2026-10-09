@@ -15,6 +15,9 @@ package microvm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -138,6 +141,9 @@ type machine interface {
 type Driver struct {
 	opts Options
 	be   backend
+	// image builds a workspace image; tests replace it, as mkfs.ext4 may
+	// not be there.
+	image func(ctx context.Context, mkfs, src, dir string, sizeMiB int, as *Credential) (string, error)
 
 	mu    sync.Mutex
 	insts map[string]*instance
@@ -150,6 +156,10 @@ type instance struct {
 	vcpus  int
 	memMiB int
 	image  string
+	// ws is the host workspace with its links resolved, where changes in
+	// the VM are copied back; syncMu runs one copy at a time.
+	ws     string
+	syncMu sync.Mutex
 	m      machine
 	// stopped is set by Stop; a machine that ends without it has failed.
 	stopped bool
@@ -185,7 +195,7 @@ func newBackend(o *Options) (backend, error) {
 }
 
 func newDriver(opts Options, be backend) *Driver {
-	return &Driver{opts: opts, be: be, insts: map[string]*instance{}, slots: map[int]string{}}
+	return &Driver{opts: opts, be: be, image: buildImage, insts: map[string]*instance{}, slots: map[int]string{}}
 }
 
 func (d *Driver) Info() driver.Info {
@@ -236,6 +246,15 @@ func (d *Driver) Create(ctx context.Context, spec driver.Spec) (driver.Status, e
 	if err != nil {
 		return driver.Status{}, err
 	}
+	var ws string
+	if spec.Workspace != "" {
+		if ws, err = filepath.EvalSymlinks(spec.Workspace); err != nil {
+			return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: the workspace: %v", err)
+		}
+		if fi, err := os.Stat(ws); err != nil || !fi.IsDir() {
+			return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: the workspace %s is not a folder", ws)
+		}
+	}
 	if err := d.be.check(); err != nil {
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "microvm: %v", err)
 	}
@@ -250,7 +269,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.Spec) (driver.Status, e
 		d.mu.Unlock()
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "microvm: every instance slot is in use")
 	}
-	in := &instance{spec: spec, slot: slot, vcpus: vcpus, memMiB: mem, stopped: true}
+	in := &instance{spec: spec, slot: slot, vcpus: vcpus, memMiB: mem, ws: ws, stopped: true}
 	d.insts[spec.ID], d.slots[slot] = in, spec.ID
 	d.mu.Unlock()
 
@@ -305,7 +324,7 @@ func (d *Driver) prepare(ctx context.Context, in *instance) error {
 	if fi, err := os.Stat(d.opts.StateDir); d.opts.ImageUser != nil && (err != nil || fi.Mode().Perm()&0o001 == 0) {
 		return driver.Errorf(driver.ErrUnavailable, "microvm: state_dir %s must be mode 0711, so the image user can reach its build folder", d.opts.StateDir)
 	}
-	img, err := buildImage(ctx, d.opts.MkfsExt4, in.spec.Workspace, dir, d.opts.WorkspaceMiB, d.opts.ImageUser)
+	img, err := d.image(ctx, d.opts.MkfsExt4, in.ws, dir, d.opts.WorkspaceMiB, d.opts.ImageUser)
 	if err != nil {
 		return driver.Errorf(driver.ErrUnavailable, "microvm: %v", err)
 	}
@@ -474,6 +493,10 @@ func (d *Driver) Stop(ctx context.Context, id string, grace time.Duration) (driv
 	<-drained
 	if left := time.Until(deadline); left > 0 && !exited(m) {
 		sctx, cancel := context.WithTimeout(ctx, left)
+		// What the last commands left is copied back before the VM goes.
+		if err := d.syncBack(sctx, in, m, nil); err != nil {
+			slog.Warn("microvm: copying the workspace back before stopping", "id", id, "err", err)
+		}
 		if c, err := m.dial(sctx); err == nil && guest.Shutdown(sctx, c) == nil {
 			select {
 			case <-m.done():
@@ -538,23 +561,23 @@ func (d *Driver) Close(ctx context.Context) error {
 }
 
 // begin admits one call to a running instance; done must be called after.
-func (d *Driver) begin(ctx context.Context, id string) (machine, context.Context, func(), error) {
+func (d *Driver) begin(ctx context.Context, id string) (*instance, machine, context.Context, func(), error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	in, err := d.get(id)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if in.stopped || in.m == nil {
-		return nil, nil, nil, driver.Errorf(driver.ErrConflict, "instance %s is stopped", id)
+		return nil, nil, nil, nil, driver.Errorf(driver.ErrConflict, "instance %s is stopped", id)
 	}
 	if exited(in.m) {
-		return nil, nil, nil, driver.Errorf(driver.ErrConflict, "instance %s has failed: its VM exited", id)
+		return nil, nil, nil, nil, driver.Errorf(driver.ErrConflict, "instance %s has failed: its VM exited", id)
 	}
 	in.running.Add(1)
 	cctx, cancel := context.WithCancel(ctx)
 	unhook := context.AfterFunc(in.runCtx, cancel)
-	return in.m, cctx, func() { unhook(); cancel(); in.running.Done() }, nil
+	return in, in.m, cctx, func() { unhook(); cancel(); in.running.Done() }, nil
 }
 
 func (d *Driver) Exec(ctx context.Context, id string, req driver.ExecRequest) (driver.ExecResult, error) {
@@ -595,7 +618,7 @@ func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest
 }
 
 func (d *Driver) run(ctx context.Context, id string, req guest.ExecRequest, s guest.Streams) (driver.ExecResult, error) {
-	m, cctx, done, err := d.begin(ctx, id)
+	in, m, cctx, done, err := d.begin(ctx, id)
 	if err != nil {
 		return driver.ExecResult{}, err
 	}
@@ -613,6 +636,14 @@ func (d *Driver) run(ctx context.Context, id string, req guest.ExecRequest, s gu
 			return driver.ExecResult{}, driver.Errorf(driver.ErrUnavailable, "microvm: the guest did not run the command: %s", ge.Message)
 		}
 		return driver.ExecResult{}, driver.Errorf(driver.ErrUnavailable, "microvm: the command did not report an exit: %v", err)
+	}
+	notes := s.Stderr
+	if notes == nil {
+		notes = s.Stdout
+	}
+	if err := d.syncBack(cctx, in, m, notes); err != nil {
+		return driver.ExecResult{}, driver.Errorf(driver.ErrUnavailable,
+			"microvm: the command exited %d, but its changes to the workspace could not be copied back: %v", code, err)
 	}
 	return driver.ExecResult{ExitCode: code}, nil
 }
@@ -635,4 +666,39 @@ func vmID(id string) (string, error) {
 		}
 	}
 	return string(b), nil
+}
+
+// maxNotes bounds the lines saying what was not copied back.
+const maxNotes = 20
+
+// syncBack copies the guest's workspace changes since the last copy into
+// the host workspace, and writes to notes what it refused and why.
+func (d *Driver) syncBack(ctx context.Context, in *instance, m machine, notes io.Writer) error {
+	if in.ws == "" {
+		return nil
+	}
+	in.syncMu.Lock()
+	defer in.syncMu.Unlock()
+	a, err := openApplier(in.ws, d.opts.ImageUser, in.spec.WriteProtected, int64(d.opts.WorkspaceMiB)<<21)
+	if err != nil {
+		return err
+	}
+	defer a.close()
+	c, err := m.dial(ctx)
+	if err != nil {
+		return err
+	}
+	if err := guest.SyncWith(ctx, c, a.apply); err != nil {
+		return err
+	}
+	if len(a.refused) > 0 && notes != nil {
+		for i, r := range a.refused {
+			if i == maxNotes {
+				fmt.Fprintf(notes, "abhed: and %d more not copied back\n", len(a.refused)-maxNotes)
+				break
+			}
+			fmt.Fprintf(notes, "abhed: not copied back from the microVM: %s\n", r)
+		}
+	}
+	return nil
 }

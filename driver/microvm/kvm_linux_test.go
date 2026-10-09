@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -60,6 +61,15 @@ func TestFirecrackerOnKVM(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("from the host\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The workspace is the image user's, as a real one is the server user's.
+	for _, p := range []string{ws, filepath.Join(ws, "hello.txt"), filepath.Join(ws, ".abhed")} {
+		if err := os.Chown(p, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -98,6 +108,18 @@ func TestFirecrackerOnKVM(t *testing.T) {
 	}
 	if code, _ := run("kill -9 1"); code == 0 {
 		t.Fatal("a command could signal the guest's init")
+	}
+	// Changes come back to the host as the workspace's user; .abhed never does.
+	run("echo vm > made-in-vm.txt; echo bad > .abhed/config.json || true")
+	made := filepath.Join(ws, "made-in-vm.txt")
+	if b, err := os.ReadFile(made); err != nil || string(b) != "vm\n" {
+		t.Fatalf("a change in the VM did not come back: %q %v", b, err)
+	}
+	if fi, err := os.Stat(made); err != nil || fi.Sys().(*syscall.Stat_t).Uid != 65534 {
+		t.Fatalf("the copied-back file is not the workspace user's: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".abhed", "config.json")); err == nil {
+		t.Fatal(".abhed was written from the VM")
 	}
 
 	if _, err := d.Stop(ctx, id, 10*time.Second); err != nil {

@@ -282,7 +282,9 @@ installed. A backend whose requirements are missing fails `Create` with
   Its protocol is `driver/microvm/guest`: one call per connection, JSON
   Lines, an exit code only when the guest sent one.
 - `Spec.Workspace` is copied into an ext4 image at `Create` and mounted at
-  `/workspace`; nothing is copied back. `Spec.Config` accepts only `vcpus`
+  `/workspace`. After each command and before a stop, the guest's changes
+  are copied back, never onto `.abhed`, git's configuration and hooks, or
+  `Spec.WriteProtected`. `Spec.Config` accepts only `vcpus`
   and `memory_mib`, within the operator's maxima.
 - `Stop` lets commands finish within the grace, asks the guest to power off,
   and kills the VM's cgroup after it. `Start` boots from a fresh chroot; the

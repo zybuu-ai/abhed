@@ -52,6 +52,9 @@ type Spec struct {
 	PolicyRev  string `json:"policy_rev,omitempty"`
 	// Workspace is the host folder the sandbox works on, when it has one.
 	Workspace string `json:"workspace,omitempty"`
+	// WriteProtected are paths in the workspace commands may read but not
+	// write. A driver that copies a workspace back never writes them.
+	WriteProtected []string `json:"write_protected,omitempty"`
 	// MinTier is the weakest isolation acceptable; a driver that cannot meet
 	// it fails Create with ErrUnavailable rather than build something weaker.
 	MinTier string            `json:"min_tier,omitempty"`

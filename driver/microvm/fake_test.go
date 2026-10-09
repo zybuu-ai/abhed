@@ -112,6 +112,12 @@ type bufConn struct {
 
 func (b bufConn) Read(p []byte) (int, error) { return b.r.Read(p) }
 
+// copyImage stands in for buildImage: the "image" is a copy of the folder.
+func copyImage(_ context.Context, _, src, dir string, _ int, _ *Credential) (string, error) {
+	dst := filepath.Join(dir, "guestws")
+	return dst, os.CopyFS(dst, os.DirFS(src))
+}
+
 // fakeBackend boots machines in this process.
 type fakeBackend struct {
 	mu       sync.Mutex
@@ -131,6 +137,14 @@ func (f *fakeBackend) boot(_ context.Context, b bootSpec) (machine, error) {
 	defer f.mu.Unlock()
 	m := &fakeMachine{exited: make(chan struct{}), silent: f.silent, dir: os.TempDir()}
 	m.srv = &guest.Server{Env: []string{"PATH=/usr/bin:/bin"}, Dir: m.dir, Shell: "/bin/sh", PowerOff: m.powerOff}
+	// The fake image is a copy of the workspace, standing in for the guest's.
+	if b.workspace != "" {
+		tr, err := guest.NewTracker(b.workspace)
+		if err != nil {
+			return nil, err
+		}
+		m.dir, m.srv.Dir, m.srv.Workspace = b.workspace, b.workspace, tr
+	}
 	f.boots = append(f.boots, b)
 	f.machines = append(f.machines, m)
 	return m, nil

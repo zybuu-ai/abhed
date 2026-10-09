@@ -24,6 +24,7 @@ func newFake(t *testing.T) (*Driver, *fakeBackend) {
 	t.Helper()
 	be := &fakeBackend{}
 	d := newDriver(testOptions(t), be)
+	d.image = copyImage
 	if err := driver.Check(d); err != nil {
 		t.Fatal(err)
 	}
@@ -270,6 +271,7 @@ func TestSlotsRunOut(t *testing.T) {
 
 func TestWorkspaceNeedsMkfs(t *testing.T) {
 	d, be := newFake(t)
+	d.image = buildImage
 	d.opts.MkfsExt4 = "/no/such/mkfs.ext4"
 	_, err := d.Create(context.Background(), driver.Spec{ID: id, Workspace: t.TempDir()})
 	if !errors.Is(err, driver.ErrUnavailable) || !strings.Contains(err.Error(), "mkfs.ext4") {
@@ -396,7 +398,68 @@ func TestWorkspaceMustBeAFolder(t *testing.T) {
 	d, _ := newFake(t)
 	f := filepath.Join(t.TempDir(), "file")
 	_ = os.WriteFile(f, nil, 0o600)
-	if _, err := d.Create(context.Background(), driver.Spec{ID: id, Workspace: f}); !errors.Is(err, driver.ErrUnavailable) || !strings.Contains(err.Error(), "not a folder") {
+	if _, err := d.Create(context.Background(), driver.Spec{ID: id, Workspace: f}); !errors.Is(err, driver.ErrInvalid) || !strings.Contains(err.Error(), "not a folder") {
 		t.Fatalf("a file as the workspace: %v", err)
+	}
+}
+
+func TestExecCopiesChangesBack(t *testing.T) {
+	ws, outside := sandboxPair(t)
+	for p, body := range map[string]string{"a.txt": "a", ".abhed/config.json": "{}", ".git/config": "[core]\n", "locked.txt": "locked"} {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(ws, p)), 0o755)
+		if err := os.WriteFile(filepath.Join(ws, p), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, _ := newFake(t)
+	if _, err := d.Create(context.Background(), driver.Spec{ID: id, Workspace: ws, WriteProtected: []string{filepath.Join(ws, "locked.txt")}}); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	res, err := d.Exec(context.Background(), id, driver.ExecRequest{Stderr: &stderr, Command: `set -e
+echo new > b.txt; rm a.txt; mkdir -p d/e; echo deep > d/e/f
+echo '{"permissions":{"mode":"bypass"}}' > .abhed/config.json
+mkdir -p .git/hooks; echo evil > .git/hooks/pre-commit; echo evil > .git/config
+echo evil > locked.txt
+ln -s ../outside/secret escape; ln -s /etc/passwd abs
+exit 3`})
+	if err != nil || res.ExitCode != 3 {
+		t.Fatalf("exec: %+v %v", res, err)
+	}
+	for p, want := range map[string]string{"b.txt": "new\n", "d/e/f": "deep\n", ".abhed/config.json": "{}", ".git/config": "[core]\n", "locked.txt": "locked"} {
+		if got := read(t, filepath.Join(ws, p)); got != want {
+			t.Errorf("%s = %q, want %q", p, got, want)
+		}
+	}
+	for _, p := range []string{"a.txt", ".git/hooks/pre-commit", "escape", "abs"} {
+		if _, err := os.Lstat(filepath.Join(ws, p)); err == nil {
+			t.Errorf("%s exists on the host", p)
+		}
+	}
+	if read(t, filepath.Join(outside, "secret")) != "untouched" {
+		t.Fatal("wrote outside the workspace")
+	}
+	for _, want := range []string{".abhed/config.json", ".git/hooks/pre-commit", ".git/config", "locked.txt", "escape", "abs"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("the refusal of %s was not reported: %q", want, stderr.String())
+		}
+	}
+}
+
+func TestStopCopiesChangesBack(t *testing.T) {
+	ws, _ := sandboxPair(t)
+	d, be := newFake(t)
+	if _, err := d.Create(context.Background(), driver.Spec{ID: id, Workspace: ws}); err != nil {
+		t.Fatal(err)
+	}
+	// Left by something still running after its command returned.
+	if err := os.WriteFile(filepath.Join(be.last().dir, "late.txt"), []byte("late"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Stop(context.Background(), id, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(ws, "late.txt")) != "late" {
+		t.Fatal("a change was lost at stop")
 	}
 }
