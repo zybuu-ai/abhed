@@ -48,6 +48,10 @@ All notable changes to Abhed are recorded here. The format follows
   refuses `enabled`. Their key files and trust bundles are state the agent
   cannot reach. Every public endpoint under `/v1/cli/`, and `/v1/token`, share
   the sign-in rate limit.
+- The `profiles` client refreshes a token by itself when the profile holds a
+  refresh token: before a request once a tenth or less of the token's life is
+  left, and once after a `401`, sending the request again (`Profile.Do`;
+  `Whoami` uses it). Profiles record when their token was issued.
 
 ### Go API
 

@@ -29,11 +29,14 @@ type Profile struct {
 	// AuthMode is the server's auth.mode when last signed in.
 	AuthMode string `json:"auth_mode,omitempty"`
 	// Method is the sign-in method used: "local", or an identity provider's.
-	Method       string    `json:"method,omitempty"`
-	Username     string    `json:"username,omitempty"`
-	Token        string    `json:"token,omitempty"`
-	TokenType    string    `json:"token_type,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitzero"`
+	Method    string    `json:"method,omitempty"`
+	Username  string    `json:"username,omitempty"`
+	Token     string    `json:"token,omitempty"`
+	TokenType string    `json:"token_type,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// IssuedAt is when the token was received, to tell how much of its life
+	// is left.
+	IssuedAt     time.Time `json:"issued_at,omitzero"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	// TokenEndpoint and ClientID refresh a token that came with a refresh
 	// token; RevocationEndpoint is told the token at logout.

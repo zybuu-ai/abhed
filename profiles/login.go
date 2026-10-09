@@ -359,7 +359,7 @@ func Refresh(ctx context.Context, c *http.Client, p *Profile) error {
 
 // Apply stores a token response on the profile.
 func (p *Profile) Apply(t *Token, now time.Time) {
-	p.Token, p.TokenType = t.AccessToken, t.TokenType
+	p.Token, p.TokenType, p.IssuedAt = t.AccessToken, t.TokenType, now
 	if t.RefreshToken != "" {
 		p.RefreshToken = t.RefreshToken
 	}
@@ -399,13 +399,62 @@ func Revoke(ctx context.Context, c *http.Client, p *Profile) error {
 	return nil
 }
 
-// Whoami asks the server who p's token signs in.
-func Whoami(ctx context.Context, c *http.Client, p *Profile) (map[string]any, error) {
-	req, err := p.NewRequest(http.MethodGet, "/v1/cli/whoami", nil)
-	if err != nil {
-		return nil, err
+// NearExpiry reports whether p's token has a tenth of its life or less left
+// at now. A token with no expiry never is.
+func (p *Profile) NearExpiry(now time.Time) bool {
+	if p.Token == "" || p.ExpiresAt.IsZero() {
+		return false
 	}
-	resp, err := c.Do(req.WithContext(ctx))
+	if p.IssuedAt.IsZero() || !p.IssuedAt.Before(p.ExpiresAt) {
+		return !now.Before(p.ExpiresAt)
+	}
+	return !now.Before(p.ExpiresAt.Add(-p.ExpiresAt.Sub(p.IssuedAt) / 10))
+}
+
+// Do sends the request build makes with p's token. With a refresh token it
+// refreshes first when the token is near its expiry, and once more if the
+// server answers 401, sending the request again; saved, when set, is called
+// after each refresh so the new tokens are kept. build is called once per
+// attempt, so a request body can be read again.
+func (p *Profile) Do(ctx context.Context, c *http.Client, build func() (*http.Request, error), saved func(*Profile) error) (*http.Response, error) {
+	refresh := func() error {
+		if err := Refresh(ctx, c, p); err != nil {
+			return err
+		}
+		if saved != nil {
+			return saved(p)
+		}
+		return nil
+	}
+	refreshed := false
+	if p.RefreshToken != "" && p.NearExpiry(time.Now()) {
+		// A failed refresh still sends the token it has; the server decides.
+		refreshed = refresh() == nil
+	}
+	send := func() (*http.Response, error) {
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		return c.Do(req.WithContext(ctx))
+	}
+	resp, err := send()
+	if err != nil || resp.StatusCode != http.StatusUnauthorized || p.RefreshToken == "" || refreshed {
+		return resp, err
+	}
+	if rerr := refresh(); rerr != nil {
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	return send()
+}
+
+// Whoami asks the server who p's token signs in, refreshing it as Do does;
+// the caller saves p if it changed.
+func Whoami(ctx context.Context, c *http.Client, p *Profile) (map[string]any, error) {
+	resp, err := p.Do(ctx, c, func() (*http.Request, error) {
+		return p.NewRequest(http.MethodGet, "/v1/cli/whoami", nil)
+	}, nil)
 	if err != nil {
 		return nil, err
 	}

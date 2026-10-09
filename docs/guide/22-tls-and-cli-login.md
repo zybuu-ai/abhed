@@ -244,7 +244,10 @@ a token endpoint, and optionally a revocation endpoint, a client id, scopes
 and an issuer; endpoints may be absolute URLs on an identity provider (https
 only). `abhed login -method NAME` uses it with the same device and PKCE
 flows, sending standard form-encoded requests, and keeps a refresh token
-when one is given (`profiles.Refresh` exchanges it). The middleware's `Verifier` must accept the
+when one is given. `Profile.Do` sends a request with the profile's token
+and, when it holds a refresh token, refreshes it first if a tenth or less of
+its life is left, and once more if the server answers `401`, then sends the
+request again; `profiles.Refresh` does it by hand. The middleware's `Verifier` must accept the
 tokens it leads to; `auth.ChainVerifier` joins a verifier to the command-line
 token verifier, which recognises its own tokens by their prefix and passes
 every other token on.
