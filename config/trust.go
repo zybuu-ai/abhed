@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -260,6 +261,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	st.Trusted, st.Reason = decide(st, o)
 	if st.Trusted {
 		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
+		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
@@ -267,6 +269,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		// setting, may only turn auto memory off, and may only import less deep.
 		setAside(cfg, path, LayerWorkspace, data)
 		noteOrigins(cfg, path, LayerWorkspace, data)
+		keepHA(cfg, path, data, ha, before, prior)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -282,6 +285,32 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		return st, nil
 	}
 	return st, tighten(cfg, path, data, &st)
+}
+
+// keepHA restores control_plane.ha as it was before a trusted workspace's
+// file: only an operator's file joins the server to other replicas and
+// names the relay's key, never one that arrives with a repository.
+func keepHA(cfg *Config, path string, data []byte, ha HAConfig, before []string, prior map[string]origin) {
+	var raw any
+	if json.Unmarshal(data, &raw) != nil {
+		return
+	}
+	walkSet("", raw, reflect.TypeFor[Config](), func(k string, v any) {
+		if k != "control_plane.ha" && !strings.HasPrefix(k, "control_plane.ha.") {
+			return
+		}
+		cfg.ControlPlane.HA = ha
+		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Layer: LayerWorkspace, Key: k,
+			Value: RedactValue(k, v), Reason: "a workspace never joins the server to replicas"})
+		if !slices.Contains(before, k) {
+			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(s string) bool { return s == k })
+		}
+		if o, ok := prior[k]; ok {
+			cfg.origins[k] = o
+		} else {
+			delete(cfg.origins, k)
+		}
+	})
 }
 
 // decide applies a caller's choice, then TrustEnv, then the stored decision.
@@ -678,7 +707,9 @@ var workspaceRules = map[string]fieldRule{
 	"schedules":        {nil, "prompts the server runs on its own"},
 	"auth":             {nil, "who may sign in"},
 
-	"control_plane.kubernetes": {nil, "only the managed configuration sets it"},
+	"control_plane.kubernetes":   {nil, "only the managed configuration sets it"},
+	"control_plane.interceptors": {nil, "only the managed configuration sets it"},
+	"control_plane.ha":           {nil, "never from a workspace, trusted or not: joins the server to replicas"},
 }
 
 func union(field func(*Config) *[]string) func(dst, ws *Config) bool {

@@ -259,6 +259,7 @@ var managedOnly = map[string]string{
 	"egress.record_paths":          "only the managed configuration sets what the egress record keeps",
 	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
 	"control_plane.kubernetes":     "only the managed configuration configures the Kubernetes driver",
+	"control_plane.interceptors":   "only the managed configuration sets what admits sandbox calls",
 }
 
 // containerManagedOnly are the container drivers' settings that reach more
@@ -319,6 +320,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Egress.IdleSeconds = 0
 	case "control_plane.kubernetes":
 		c.ControlPlane.Kubernetes = nil
+	case "control_plane.interceptors":
+		c.ControlPlane.Interceptors = nil
 	}
 	for engine, cc := range map[string]*ContainerDriverConfig{"docker": &c.ControlPlane.Docker, "podman": &c.ControlPlane.Podman} {
 		switch key {

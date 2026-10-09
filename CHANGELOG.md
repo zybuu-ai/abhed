@@ -8,6 +8,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `control_plane.interceptors`, the admission hooks every mutating sandbox
+  call passes, is now managed only, as `control_plane.kubernetes` is: a copy
+  in `~/.abhed/config.json` or a trusted workspace's `.abhed/config.json` is
+  set aside with a warning. `control_plane.ha` still comes from the user's
+  own file or the managed one, but never from a workspace's file, trusted or
+  not, however its keys are spelled; that copy is set aside with a warning.
 - A permission rule naming a built-in tool in another case than Abhed's
   lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
   `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's
