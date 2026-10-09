@@ -129,3 +129,25 @@ func TestOverlapsAreRebuiltEachCall(t *testing.T) {
 		t.Fatalf("a stale overlap is still reported: %q", o)
 	}
 }
+
+// The refusal says what overlaps without claiming a "__" a trailing underscore lacks.
+func TestOverlapRefusalWording(t *testing.T) {
+	g := NewGateway()
+	errs := g.Connect(context.Background(), []ServerConfig{
+		{Name: "a", Command: "/nonexistent/abhed-test", Enabled: true},
+		{Name: "a_", Command: "/nonexistent/abhed-test", Enabled: true},
+	})
+	var msg string
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "not started") {
+			msg = err.Error()
+		}
+	}
+	want := `mcp server "a_" is not started: its name and server "a"'s overlap, so a tool named mcp__a___… could be server "a"'s or server "a_"'s`
+	if !strings.HasPrefix(msg, want) || strings.Contains(msg, "begins with") {
+		t.Fatalf("message %q", msg)
+	}
+	if st := g.Servers(); len(st) != 2 || st[1].Name != "a_" || st[1].Err == nil || !st[1].NameRefused || !strings.Contains(st[1].Err.Error(), "overlap") {
+		t.Fatalf("servers %+v", st)
+	}
+}

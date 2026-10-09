@@ -232,6 +232,9 @@ type ServerStatus struct {
 	// Refused are the tools it offers that were left out for their names, as
 	// it sent them: untrusted text, for showing escaped.
 	Refused []string
+	// NameRefused is set for a server not started because its name overlaps
+	// another's; Err says which. A restart would not start it.
+	NameRefused bool
 }
 
 // Servers reports every enabled server, connected or not, by name.
@@ -259,7 +262,7 @@ func (g *Gateway) Servers() []ServerStatus {
 		if _, listed := g.configs[name]; listed {
 			continue
 		}
-		st := ServerStatus{Name: name, Transport: "stdio", Err: r.why}
+		st := ServerStatus{Name: name, Transport: "stdio", Err: r.why, NameRefused: true}
 		if r.cfg.URL != "" {
 			st.Transport = "http"
 		}
