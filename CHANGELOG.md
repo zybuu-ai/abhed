@@ -6,6 +6,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- HawkEYE reads the egress allowlist's `egress.decision` events. A session
+  whose commands the allowlist refused used to report them as ran, with 0
+  denied. The report now has a `network` summary (allowed, refused, and in
+  monitor mode would be refused), marks a call whose connections were refused
+  with `!` (`network_denied` in the JSON), and raises a `network-denied` or
+  `network-would-deny` finding per call and destination. The workbench's
+  HawkEYE panel shows the counts.
+
 ### Fixed
 
 - A bare `/ide` could open an older session instead of the latest:

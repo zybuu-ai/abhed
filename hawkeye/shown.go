@@ -23,6 +23,15 @@ func shown(r Report) Report {
 		}
 		r.Policy.ByStep = by
 	}
+	if r.Network != nil {
+		n := *r.Network
+		n.Refusals = each(n.Refusals, func(f NetworkRefusal) NetworkRefusal {
+			f.CallID, f.Kind, f.Host, f.Method, f.Path = v(f.CallID), v(f.Kind), v(f.Host), v(f.Method), v(f.Path)
+			f.Decision, f.Rule, f.Reason = v(f.Decision), v(f.Rule), v(f.Reason)
+			return f
+		})
+		r.Network = &n
+	}
 	r.Compactions = each(r.Compactions, func(c Compaction) Compaction { c.Trigger = v(c.Trigger); return c })
 	r.Subagents = each(r.Subagents, func(s Subagent) Subagent {
 		s.Description, s.Type, s.Reason, s.Session = v(s.Description), v(s.Type), v(s.Reason), v(s.Session)

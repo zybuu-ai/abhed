@@ -1357,7 +1357,7 @@ async function loadHawkeye(){
   clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
   [['Outcome', visible(r.outcome)],['Model', visible((r.models || []).join(' → ')) || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
    ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
-   ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'],['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
+   ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'], ...(r.network ? [['Network', r.network.allowed + ' ok · ' + r.network.denied + ' refused']] : []),['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
    .forEach(([k, v]) => { const d = el('div'); d.appendChild(el('dt', '', k)); d.appendChild(el('dd', '', String(v))); dl.appendChild(d); });
   box.appendChild(dl);
   const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => visible(k) + ' ' + v).join(' · ');

@@ -139,6 +139,9 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			c.Truncated, c.DurationMS = o.Truncated, o.DurationMS
 			c.Output, c.OutputLen = clip(o.Content, outputKeep), len(o.Content)
 
+		case agent.EvEgressDecision:
+			network(&r, calls, e)
+
 		case agent.EvCompactDone:
 			var k agent.Compaction
 			if json.Unmarshal(e.Payload, &k) == nil && k.BeforeTokens > 0 {
@@ -213,6 +216,60 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	r.totals(ended)
 	r.Findings = findings(r, evs, opt)
 	return r
+}
+
+// network counts one egress.decision and keeps a refusal once per call and
+// destination. The call's id is the proxy's claim, so it marks a call only
+// when the record holds one by that id.
+func network(r *Report, calls map[string]*Call, e agent.Event) {
+	var d struct {
+		CallID   string `json:"call_id"`
+		Kind     string `json:"kind"`
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Method   string `json:"method"`
+		Path     string `json:"path"`
+		Decision string `json:"decision"`
+		Rule     string `json:"rule"`
+		Reason   string `json:"reason"`
+		Repeats  int64  `json:"repeats"`
+	}
+	if json.Unmarshal(e.Payload, &d) != nil {
+		return
+	}
+	if r.Network == nil {
+		r.Network = &NetworkStats{}
+	}
+	// A summary stands for the decisions it says were not recorded one by one.
+	n := 1
+	if d.Repeats > 0 {
+		n = int(d.Repeats)
+	}
+	switch d.Decision {
+	case "allow":
+		r.Network.Allowed += n
+		return
+	case "would_deny":
+		r.Network.WouldDeny += n
+	default:
+		// Anything but allow or would_deny was not let through.
+		d.Decision = "deny"
+		r.Network.Denied += n
+		if c := calls[d.CallID]; c != nil && d.CallID != "" {
+			c.NetworkDenied += n
+		}
+	}
+	for i := range r.Network.Refusals {
+		f := &r.Network.Refusals[i]
+		if f.CallID == d.CallID && f.Host == d.Host && f.Port == d.Port && f.Decision == d.Decision {
+			f.Count += n
+			return
+		}
+	}
+	r.Network.Refusals = append(r.Network.Refusals, NetworkRefusal{
+		Seq: e.Seq, CallID: d.CallID, Kind: d.Kind, Host: d.Host, Port: d.Port, Method: d.Method,
+		Path: clip(d.Path, 200), Decision: d.Decision, Rule: d.Rule, Reason: clip(d.Reason, 300), Count: n,
+	})
 }
 
 func (r *Report) totals(ended agent.SessionEnded) {

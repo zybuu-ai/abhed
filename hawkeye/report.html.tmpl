@@ -83,6 +83,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
     <div><dt>Tokens in</dt><dd>{{n .Totals.TokensIn}}</dd><small>{{pct .Totals.CacheHitRate}} cached · {{n .Totals.TokensOut}} out</small></div>
     <div><dt>Peak context</dt><dd>{{n .Totals.PeakContext}}</dd><small>{{if .Totals.Window}}of {{n .Totals.Window}} window · {{end}}{{len .Compactions}} compactions · {{len .Offloads}} offloads · {{.Totals.Recalls}} recalls</small></div>
     <div><dt>Policy</dt><dd>{{.Policy.Allowed}} / {{.Policy.Denied}}</dd><small>allowed / denied · {{.Policy.Reviewer}} asked a reviewer</small></div>
+    {{with .Network}}<div><dt>Network</dt><dd>{{.Allowed}} / {{.Denied}}</dd><small>allowed / refused by the allowlist{{if .WouldDeny}} · {{.WouldDeny}} would be refused (monitor){{end}}</small></div>{{end}}
     <div><dt>Record</dt><dd class="{{if .Integrity.Gaps}}denied{{else}}allowed{{end}}">{{if .Integrity.Gaps}}gaps{{else}}whole{{end}}</dd><small>#{{.Integrity.FirstSeq}}–#{{.Integrity.LastSeq}} · {{.Totals.Untrusted}} untrusted observations</small></div>
   </dl>
 </section>
@@ -121,7 +122,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
       <span class="seq">#{{.Seq}}</span>
       <span>{{.Tool}}</span>
       <span class="subj">{{.Subject}}</span>
-      <span class="step {{.Decision}}">{{.Decision}}{{if and (eq .Decision "allowed") (not .Ran)}} <span class="err">· not run</span>{{end}}{{if .IsError}} <span class="err">· err</span>{{end}}{{if .SandboxDenied}} <span class="err">· sandbox refused</span>{{end}}</span>
+      <span class="step {{.Decision}}">{{.Decision}}{{if and (eq .Decision "allowed") (not .Ran)}} <span class="err">· not run</span>{{end}}{{if .IsError}} <span class="err">· err</span>{{end}}{{if .SandboxDenied}} <span class="err">· sandbox refused</span>{{end}}{{if .NetworkDenied}} <span class="err">· network refused {{.NetworkDenied}}</span>{{end}}</span>
       <span class="t seq">{{ms .DurationMS}}</span>
     </summary>
     <div class="body">
