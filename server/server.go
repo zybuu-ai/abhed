@@ -895,7 +895,7 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v1/signin", "/v1/signup", "/v1/password":
 			rateLimit(s.signinLimiter, trustProxy, next).ServeHTTP(w, r)
-		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath:
+		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath, TokenExchangePath:
 			rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
 		case "/v1/sessions":
 			// Creating a session starts an agent loop, which is the most
@@ -908,6 +908,11 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		default:
+			// An edition's command-line sign-in lives under /v1/cli/ too.
+			if strings.HasPrefix(r.URL.Path, "/v1/cli/") && r.URL.Path != "/v1/cli/whoami" {
+				rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
+				return
+			}
 			next.ServeHTTP(w, r)
 		}
 	})

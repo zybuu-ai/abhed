@@ -85,6 +85,11 @@ func OpenCLITokens(local *LocalAuth, keyFile string, ttl time.Duration) (*CLITok
 	return t, nil
 }
 
+// LoadCLIKey reads, or creates, a signing key file as OpenCLITokens does:
+// 32 or more random bytes, hex-encoded, mode 600, never a link. An edition
+// that signs tokens of its own with the same key file uses it.
+func LoadCLIKey(path string) ([]byte, error) { return loadKey(path) }
+
 func loadKey(path string) ([]byte, error) {
 	if path == "" {
 		return nil, errors.New("no key file for command-line tokens")

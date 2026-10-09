@@ -208,6 +208,7 @@ var paidFeatures = map[string]string{
 	"oidc":      "Team",
 	"schedules": "Team",
 	"telemetry": "Enterprise",
+	"workload":  "Enterprise",
 }
 
 // EditionError is a config key this binary cannot honour.
@@ -249,6 +250,9 @@ func (a *App) checkEdition(cfg config.Config) error {
 	}
 	if len(cfg.Schedules) > 0 && !a.features["schedules"] {
 		return &EditionError{Key: "schedules", Feature: "schedules", Edition: a.edition}
+	}
+	if cfg.Auth.Workload.Enabled && !a.features["workload"] {
+		return &EditionError{Key: "auth.workload.enabled", Feature: "workload", Edition: a.edition}
 	}
 	return nil
 }

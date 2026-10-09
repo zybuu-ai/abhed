@@ -530,8 +530,12 @@ type AuthConfig struct {
 	// ProxyLogoutURL is the authenticating proxy's own sign-out, in proxy
 	// mode. Without it the console offers no sign-out, since the proxy owns it.
 	ProxyLogoutURL string `json:"proxy_logout_url,omitempty"`
-	// CLI is command-line sign-in (abhed login) against local accounts.
+	// CLI is command-line sign-in (abhed login): against local accounts, or
+	// through the identity provider in an edition that serves auth.mode oidc.
 	CLI CLILoginConfig `json:"cli,omitempty"`
+	// Workload is workload identity (SPIFFE) and token exchange, which the
+	// Enterprise edition serves. The Community Edition refuses enabled.
+	Workload WorkloadAuthConfig `json:"workload,omitempty"`
 	// GitHub restricts GitHub sign-in, which only the paid editions provide.
 	// The Community Edition validates these keys and otherwise ignores them.
 	GitHub GitHubAuthConfig `json:"github,omitempty"`
@@ -700,6 +704,10 @@ type CLILoginConfig struct {
 	// when unset. Servers sharing an account store share it, or each
 	// accepts only the tokens it issued.
 	KeyFile string `json:"key_file,omitempty"`
+	// ClientID is the identity provider's client the command line signs in
+	// through with auth.mode oidc, in an edition that serves it; auth.client_id
+	// when unset. It must allow the device grant and loopback redirects.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // RetrievalConfig controls the on-prem index. Retrieval is an accelerator over
@@ -1337,6 +1345,9 @@ func (c Config) Validate() error {
 	if err := c.validateCLILogin(); err != nil {
 		return err
 	}
+	if err := c.Auth.Workload.validate(); err != nil {
+		return err
+	}
 	if c.Auth.Mode == "oidc" && c.Auth.Issuer == "" && c.Auth.Provider == "" {
 		return fmt.Errorf("auth.mode is oidc but neither auth.issuer nor " +
 			"auth.provider (google, microsoft) is set")
@@ -1573,8 +1584,8 @@ func (c Config) validateCLILogin() error {
 	if l.TokenHours < 0 || l.TokenHours > 24*90 {
 		return fmt.Errorf("auth.cli.token_hours is %d; use 1 to %d, or 0 for a week", l.TokenHours, 24*90)
 	}
-	if l.Enabled && c.Auth.Mode != "local" {
-		return fmt.Errorf("auth.cli.enabled signs local accounts in from the command line, so it needs auth.mode local")
+	if l.Enabled && c.Auth.Mode != "local" && c.Auth.Mode != "oidc" {
+		return fmt.Errorf("auth.cli.enabled signs accounts in from the command line, so it needs auth.mode local (or oidc, in an edition that serves it)")
 	}
 	return nil
 }

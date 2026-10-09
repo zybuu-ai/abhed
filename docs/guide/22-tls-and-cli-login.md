@@ -249,6 +249,24 @@ tokens it leads to; `auth.ChainVerifier` joins a verifier to the command-line
 token verifier, which recognises its own tokens by their prefix and passes
 every other token on.
 
+With `auth.mode: "oidc"` there are no local accounts, so `auth.cli.enabled`
+is served by the edition's provider alone: serve refuses it unless a provider
+advertises a method. `auth.cli.client_id` names the identity provider's client
+for the command line (one that allows the device grant and loopback
+redirects); the edition reads it. `auth.LoadCLIKey` reads or creates a token
+key file with the same checks as `auth.cli.key_file`; an edition keeps state of
+its own beside the key, in `<key_file>.edition`, which is refused to the agent
+as the key is.
+
+`auth.Middleware.Authorize`, when an edition sets it, runs on every request
+after the caller is identified and `Check` has passed, with the request
+itself, and again whenever a stream rechecks its caller. An error answers
+`403` with its text and ends no session. It is for a credential that is good
+for some requests only, such as a token scoped to one sandbox.
+
+Public endpoints an edition serves under `/v1/cli/`, and `POST /v1/token`,
+share the sign-in endpoints' rate limit.
+
 ## Settings
 
 | Key | Default | |
@@ -263,6 +281,8 @@ every other token on.
 | `auth.cli.enabled` | `false` | serve `abhed login` for local accounts |
 | `auth.cli.token_hours` | `168` | 1 to 2160 |
 | `auth.cli.key_file` | `~/.abhed/cli-token.key` | the token signing key |
+| `auth.cli.client_id` | `auth.client_id` | with `auth.mode` `oidc`: the identity provider's client the command line signs in through (Team edition) |
+| `auth.workload.*` | — | workload identity and token exchange (Enterprise edition); the Community Edition refuses `enabled` |
 
 `server` and `auth` are deployment settings: an untrusted workspace file that
 sets them stops `abhed serve` rather than being ignored, and the managed

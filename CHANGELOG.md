@@ -37,6 +37,17 @@ All notable changes to Abhed are recorded here. The format follows
   its own sign-in method through `auth.CLILoginAdvertiser`.
 - `GET /v1/cli` (public) says how a command line signs in; `GET
   /v1/cli/whoami` answers for a bearer token too.
+- Extension points for an edition's sign-in: `auth.Middleware.Authorize`
+  sees each request after the caller is identified and may refuse it (403,
+  no session ended), for a credential that covers some requests only;
+  `auth.LoadCLIKey` reads a token key file as command-line sign-in does.
+  `auth.cli.enabled` is accepted with `auth.mode: "oidc"` when the edition's
+  identity provider serves `abhed login` (`auth.cli.client_id` names the
+  provider's client for it), and `auth.workload` holds the Enterprise
+  edition's workload identity settings: the Community Edition checks them and
+  refuses `enabled`. Their key files and trust bundles are state the agent
+  cannot reach. Every public endpoint under `/v1/cli/`, and `/v1/token`, share
+  the sign-in rate limit.
 
 ### Go API
 
