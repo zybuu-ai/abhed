@@ -176,7 +176,8 @@ sandbox id, generation and the outcome. Errors are
 - Scoped to `(principal, method, path)`: another principal's key never
   replays.
 - The first request with a key claims it and stores a hash of the body.
-  While it runs, a repeat gets `409` with code `conflict`. When it ends, its
+  While it runs, a repeat gets `409` with code `conflict`. The claim is a
+  5-minute lease, so a server that dies mid-request frees the key. When it ends, its
   status and body are stored and a repeat with the same body gets the same
   response with `Idempotent-Replayed: true`. A repeat with a different body
   gets `422` with code `invalid`.
@@ -347,9 +348,15 @@ type Store interface {
     List(ctx, ListOptions) ([]Sandbox, string, error)       // selector, state, owner, limit, after
     Update(ctx, Sandbox, expect int64) (Sandbox, error)     // ErrConflict on version mismatch
     Delete(ctx, id string, expect int64) error
-    IdempotencyStore
+    IdempotencyStore // Claim(rec, now), Complete, Release
 }
+
+func Mutate(ctx, Store, id, ifMatch string, fn func(*Sandbox) error) (Sandbox, error)
 ```
+
+`Mutate` is how every verb writes: read, check `If-Match`, apply `fn` to a
+copy, update guarded by the version read. Losing a race is `412` when the
+client sent `If-Match` and a retry when it did not.
 
 - The store assigns `resource_version` from one counter per store, so a list
   can be resumed and, later, watched.

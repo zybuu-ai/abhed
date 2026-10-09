@@ -6,6 +6,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Go API
+
+- Experimental public Go packages for the sandbox control plane, the base
+  for `/v1/sandboxes` and per-session sandboxes: `driver` (the driver
+  interface, capability flags and registry), `driver/plugin` (drivers in a
+  separate process, over JSON Lines on a Unix socket with version
+  negotiation), `driver/process` (today's sandbox tiers as the built-in
+  `process` driver, confining commands exactly as before) and `controlplane`
+  (the sandbox object, its lifecycle, labels and selectors, a store interface
+  with an in-memory store, `Idempotency-Key` handling and `If-Match`
+  resource versions). Nothing uses them yet; the contract is
+  `docs/architecture/control-plane-contract.md`. They may change in a minor
+  release until 2.0.
 
 ## [1.2.7] - 2026-10-07
 
