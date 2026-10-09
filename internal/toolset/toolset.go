@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -224,11 +225,22 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			s.Registry.Add(&index.SearchTool{Index: ix})
 		}
 	}
-	for _, m := range CaseOnlyRules(cfg, s.Registry.Names()) {
-		warn("%s", m)
-	}
+	warnCaseOnly(cfg, s.Registry.Names(), warn)
 	return s
 }
+
+// warnCaseOnly warns of each CaseOnlyRules finding once per process: a server
+// builds a set per session.
+func warnCaseOnly(cfg config.Config, names []string, warn func(string, ...any)) {
+	for _, m := range CaseOnlyRules(cfg, names) {
+		if _, seen := caseWarned.LoadOrStore(m, true); !seen {
+			warn("%s", m)
+		}
+	}
+}
+
+// caseWarned holds the case-only rule warnings already given.
+var caseWarned sync.Map
 
 // caseOnlyServer reports whether an mcp__server__* rule names tool's server
 // only in another case.

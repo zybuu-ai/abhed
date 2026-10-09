@@ -64,3 +64,15 @@ func TestCaseOnlyRulesForServerWildcards(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestCaseOnlyRulesAreWarnedOncePerProcess(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Deny = []string{"mcp__once__Probe"}
+	n := 0
+	count := func(string, ...any) { n++ }
+	warnCaseOnly(cfg, []string{"mcp__once__probe"}, count)
+	warnCaseOnly(cfg, []string{"mcp__once__probe"}, count)
+	if n != 1 {
+		t.Fatalf("warned %d times, want 1", n)
+	}
+}

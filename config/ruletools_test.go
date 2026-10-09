@@ -234,3 +234,12 @@ func TestRuleLayerIsManagedOnlyWhereTheFileListsIt(t *testing.T) {
 		t.Errorf("managed rule: %v %q", err, cfg.RuleLayer("deny", "bash(curl *)"))
 	}
 }
+
+// A managed allow rule naming no tool only allows less: a warning, not a doctor failure.
+func TestManagedAllowFindingDoesNotFailTheDoctor(t *testing.T) {
+	for list, want := range map[string]bool{"allow": false, "ask": true, "deny": true} {
+		if got := (RuleFinding{List: list, Layer: LayerManaged}).FailsDoctor(); got != want {
+			t.Errorf("%s: %v, want %v", list, got, want)
+		}
+	}
+}

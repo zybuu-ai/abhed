@@ -71,7 +71,7 @@ func (c *acpConn) agentMeta() map[string]any {
 
 // managed reports whether a managed configuration is in force.
 func (c *acpConn) managed() bool {
-	// A managed file whose deny rule can never match is still managed.
+	// Still managed when loading refuses the file's misnamed deny rule.
 	cfg, _ := config.LoadManaged()
 	return cfg.Managed
 }
