@@ -23,6 +23,9 @@ type Fake struct {
 	// ExecFunc, when set, runs each Exec. The default writes the command to
 	// stdout, copies stdin to stdout after it, and exits 0.
 	ExecFunc func(ctx context.Context, id string, req driver.ExecRequest) (driver.ExecResult, error)
+	// AttachFunc, when set, runs each Attach once the instance is found
+	// running. The default echoes stdin to stdout and notes each resize.
+	AttachFunc func(ctx context.Context, id string, req driver.AttachRequest) (driver.ExecResult, error)
 	// Tier is the tier every instance reports; "process" when empty.
 	Tier string
 	// Errs, when set for a method name ("create", "start", "stop",
@@ -221,6 +224,9 @@ func (f *Fake) Exec(ctx context.Context, id string, req driver.ExecRequest) (dri
 func (f *Fake) Attach(ctx context.Context, id string, req driver.AttachRequest) (driver.ExecResult, error) {
 	if err := f.running(id); err != nil {
 		return driver.ExecResult{}, err
+	}
+	if f.AttachFunc != nil {
+		return f.AttachFunc(ctx, id, req)
 	}
 	done := make(chan struct{})
 	go func() {

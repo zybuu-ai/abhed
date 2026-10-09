@@ -558,6 +558,9 @@ type ExecIO struct {
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Started        func(Sandbox)
+	// Screen, when set, judges the command line once the request is
+	// recorded and before the guard; a refusal is recorded and returned.
+	Screen func(command string) error
 }
 
 // Exec runs one command in a Ready sandbox, stopped past exec.output_bytes
@@ -603,6 +606,12 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	}
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return driver.ExecResult{}, sb, err
+	}
+	if eio.Screen != nil {
+		if err := eio.Screen(command); err != nil {
+			s.outcome(ctx, ev, err)
+			return driver.ExecResult{}, sb, err
+		}
 	}
 	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &req})
 	if err != nil {
