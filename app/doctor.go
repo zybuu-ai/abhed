@@ -378,7 +378,10 @@ func egressLabel(cfg config.Config) string {
 // printDrivers shows the sandbox drivers beyond the default, when the
 // configuration names one, and reports whether one cannot be reached.
 func printDrivers(w io.Writer, cfg config.Config) bool {
-	if cfg.Sandbox.MicroVMSocket == "" {
+	if cfg.ControlPlane.PerSession {
+		fmt.Fprintf(w, "sessions    each gets a sandbox: %s\n", perSessionLabel(cfg))
+	}
+	if cfg.Sandbox.MicroVMSocket == "" && !cfg.ControlPlane.Docker.Enabled && !cfg.ControlPlane.Podman.Enabled {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

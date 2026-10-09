@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -49,6 +50,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	if err := vaultLoads(); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if err := checkPerSessionConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
@@ -210,6 +215,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	// The sandbox control plane, only when the configuration turns it on.
 	var cp *controlplane.Service
 	var exposed *expose.Server
+	var perSession *sessionsandbox.Manager
 	if cfg.ControlPlane.Enabled {
 		live := openVault().Live()
 		built, err := buildControlPlane(context.Background(), cfg, workspace, eventStore,
@@ -225,6 +231,13 @@ func (a *App) serveCmd(workspace, addr string) int {
 			defer exposed.Close()
 		}
 		fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", built.label)
+		if cfg.ControlPlane.PerSession {
+			if perSession, err = buildSessionSandboxes(cfg, built); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+			fmt.Printf("sessions    each gets a sandbox: %s\n", perSessionLabel(cfg))
+		}
 	}
 
 	opts := server.Options{
@@ -257,6 +270,8 @@ func (a *App) serveCmd(workspace, addr string) int {
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 		CLILogin:      cliLogin,
+		// Nil unless control_plane.per_session: sessions then share sb as before.
+		SessionSandboxes: perSession,
 	}
 	if tlsL != nil {
 		opts.TLS = tlsL.Config()
@@ -270,7 +285,8 @@ func (a *App) serveCmd(workspace, addr string) int {
 			_ = es.EndSession(id)
 		}
 	}
-	if fence != nil {
+	// Under per-session sandboxes each session's sandbox is a fence of its own already.
+	if fence != nil && perSession == nil {
 		opts.SessionBash = fenceSessionBash(cfg, workspace)
 	}
 	for _, h := range a.serverOpts {
@@ -301,6 +317,25 @@ func (a *App) serveCmd(workspace, addr string) int {
 		defer func() {
 			cpStop()
 			<-cpDone
+		}()
+	}
+	if perSession != nil {
+		// Runs before the reconciler stops: the warm pool stops filling, then
+		// the sessions' sandboxes get their retention and the pool drains.
+		poolCtx, poolStop := context.WithCancel(ctx)
+		poolDone := make(chan struct{})
+		go func() {
+			defer close(poolDone)
+			perSession.Run(poolCtx)
+		}()
+		defer func() {
+			poolStop()
+			<-poolDone
+			closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := perSession.Close(closeCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: stopping the sessions' sandboxes: %v\n", err)
+			}
 		}()
 	}
 
