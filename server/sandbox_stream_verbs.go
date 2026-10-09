@@ -54,8 +54,8 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 		return
 	}
 	cwd := r.URL.Query().Get("cwd")
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	var ws *wsconn.Conn
 	detail := map[string]string{"rows": strconv.Itoa(int(size.Rows)), "cols": strconv.Itoa(int(size.Cols))}
 	if cwd != "" {
@@ -78,7 +78,7 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 					typ, msg, err := ws.ReadMessage()
 					if err != nil {
 						gone.Store(true)
-						cancel()
+						cancel(nil)
 						return
 					}
 					if typ == wsconn.Binary {
@@ -173,8 +173,8 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		return
 	}
 	req.Stdin = true
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	pr, pw := io.Pipe()
 	in := newStdinQueue(pw)
 	var gone atomic.Bool
@@ -185,7 +185,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 			if err != nil {
 				gone.Store(true)
 				_ = pw.CloseWithError(io.ErrUnexpectedEOF)
-				cancel()
+				cancel(nil)
 				return
 			}
 			if typ == wsconn.Text {
@@ -339,8 +339,8 @@ func (s *Server) forwardSandbox(w http.ResponseWriter, r *http.Request, call ver
 		writeCPError(w, http.StatusBadRequest, "invalid", "port must be a whole number from 1 to 65535")
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	var ws *wsconn.Conn
 	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "forward",
 		Capability: driver.CapForward, Detail: map[string]string{"port": strconv.Itoa(port)}},
@@ -452,8 +452,8 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 		s.failCP(w, r, err)
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	var ws *wsconn.Conn
 	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "ssh"},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {

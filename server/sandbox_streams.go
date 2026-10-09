@@ -233,9 +233,10 @@ func accept(w http.ResponseWriter, r *http.Request, proto string) (*wsconn.Conn,
 
 // watchStream ends a stream, by cancelling it, when its caller may no
 // longer see the sandbox, when the sandbox stops or starts a new
-// generation, when the client has gone quiet, or after streamMax. It
+// generation, when the client has gone quiet, when the server shuts down or
+// this replica stops owning the sandbox, or after streamMax. It
 // returns why it ended the stream, once it has stopped.
-func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *http.Request,
+func (s *Server) watchStream(ctx context.Context, cancel context.CancelCauseFunc, r *http.Request,
 	sb controlplane.Sandbox, d driver.Driver, ws *wsconn.Conn, b streamBounds) (wait func() error) {
 	if b.max <= 0 {
 		b.max = streamMax
@@ -260,6 +261,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 	tick := time.NewTicker(every)
 	deadline := time.NewTimer(b.max)
 	shutdown, quiet := s.cpStreams.ending(), streamQuiet
+	lost := s.opts.ControlPlane.OwnershipLost(ctx, sb.ID)
 	var why error
 	done := make(chan struct{})
 	go func() {
@@ -267,7 +269,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 		defer guard.stop()
 		defer tick.Stop()
 		defer deadline.Stop()
-		stop := func(err error) { why = err; cancel() }
+		stop := func(err error) { why = err; cancel(err) }
 		current := func() error {
 			gen, ready, err := s.opts.ControlPlane.Current(context.WithoutCancel(ctx), sb.ID)
 			switch {
@@ -287,6 +289,9 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 				return
 			case <-shutdown:
 				stop(fmt.Errorf("%w: the server is shutting down", controlplane.ErrUnavailable))
+				return
+			case <-lost:
+				stop(fmt.Errorf("%w: %w: another replica owns sandbox %s now", controlplane.ErrUnavailable, controlplane.ErrOwnershipLost, sb.ID))
 				return
 			case <-deadline.C:
 				stop(fmt.Errorf("%w: the stream was open for %s, the longest one may be", controlplane.ErrUnavailable, b.max))
@@ -320,7 +325,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 		}
 	}()
 	return func() error {
-		cancel()
+		cancel(nil)
 		<-done
 		return why
 	}

@@ -842,6 +842,7 @@ amounts to. They also check ownership as a change does.
 |---|---|---|
 | `controlplane.Config.Interceptor` | `controlplane.Interceptor` | Admission of every mutating call |
 | `controlplane.Config.Ownership` | `controlplane.Ownership` | Which sandboxes this replica acts on |
+| the same, optionally | `controlplane.OwnershipWatcher` | Ends this replica's open streams on a sandbox it stops owning |
 | `controlplane.Config.NodeID` | string | Names the replica in every event it records (`detail.node`) |
 | `store.Sandboxes.WithFence` | `store.Fence` | Refuses a write, in its transaction, from a replica that lost its lease |
 | `server.Options.SandboxRouter` | `server.SandboxRouter` | Relays a call to the replica that owns the sandbox |
@@ -877,3 +878,13 @@ sandbox this replica does not own, or whose ownership it cannot read, is
 Reads (`GET` of an object or a list) are served by any replica from the
 shared store; every other call on a sandbox goes through `SandboxRouter`
 first, after the caller is authenticated and its tenant checked.
+
+An `Ownership` that also implements `OwnershipWatcher` is asked, as each
+stream opens (`:attach`, `:exec` with stdin, `:forward`, `:ssh`), for a
+channel closed once this replica no longer owns the sandbox
+(`Watch(ctx, id)`, watched for as long as the stream lasts; nil when it
+cannot be lost). When it closes the stream ends as the other ends do: the
+client gets `{"type": "error"}` with code `unavailable`, and the stream's
+record, and that of an exec it ran, is `failed` with code `unavailable` and
+`detail.reason` `ownership lost` (`controlplane.ErrOwnershipLost`). Without
+it, a stream runs on until one of its own bounds ends it.

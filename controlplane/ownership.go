@@ -18,6 +18,30 @@ type Ownership interface {
 	Owns(ctx context.Context, id string) (bool, error)
 }
 
+// ErrOwnershipLost ends a long-lived call, such as a stream, on a sandbox
+// this replica stopped owning while it ran. It is wrapped in ErrUnavailable,
+// and the call's record names it as its reason.
+var ErrOwnershipLost = errors.New("ownership lost")
+
+// OwnershipWatcher is an Ownership that can tell when this replica stops
+// owning a sandbox, so its open streams end rather than run on beside the
+// new owner. An Ownership that does not implement it changes nothing.
+type OwnershipWatcher interface {
+	// Watch returns a channel closed once this replica no longer owns id;
+	// nil when it cannot lose it. Watching stops when ctx ends.
+	Watch(ctx context.Context, id string) <-chan struct{}
+}
+
+// OwnershipLost is closed once this replica stops owning id, for as long as
+// ctx lasts; nil when nothing can tell, which never fires.
+func (s *Service) OwnershipLost(ctx context.Context, id string) <-chan struct{} {
+	w, ok := s.cfg.Ownership.(OwnershipWatcher)
+	if !ok {
+		return nil
+	}
+	return w.Watch(ctx, id)
+}
+
 // owned refuses a call for a sandbox this replica does not own.
 func (s *Service) owned(ctx context.Context, id string) error {
 	if s.cfg.Ownership == nil {

@@ -598,6 +598,10 @@ on. A server with it off starts on the older schema as before.
   `drivertest.Fake.AttachFunc` stands in for a shell.
   `driver.ExecRequest.Line` and `driver.QuoteArgv` give the one shell line
   an exec runs, as the drivers run it and the control plane judges it.
+  `controlplane.OwnershipWatcher`, which an `Ownership` may also
+  implement, ends a replica's open sandbox streams when it stops owning the
+  sandbox, recorded with `ErrOwnershipLost` as the reason; long-lived calls
+  record why their context was cancelled (`context.Cause`).
 - Experimental public Go packages for the sandbox control plane, the base
   for `/v1/sandboxes` and per-session sandboxes: `driver` (the driver
   interface, capability flags and registry), `driver/plugin` (drivers in a
