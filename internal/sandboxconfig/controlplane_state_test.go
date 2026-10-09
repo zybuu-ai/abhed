@@ -135,3 +135,25 @@ func TestSessionCannotReachControlPlaneState(t *testing.T) {
 		}
 	}
 }
+
+// The client CA serve reloads is state: in the workspace it is refused at
+// start, elsewhere commands can neither read nor write it.
+func TestClientCAIsState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Server.TLS = config.ServerTLSConfig{CertFile: "/srv/tls/c.pem", KeyFile: "/srv/tls/k.pem",
+		ClientCAFile: "/srv/tls/clients.pem", ClientAuth: "require"}
+	cfg.ControlPlane.HA = config.HAConfig{Enabled: true, RelayKeyFile: "/srv/ha/relay.key", RelayCAFile: "/srv/ha/ca.pem"}
+	got := StatePaths(cfg, ws)
+	for _, want := range []string{"/srv/tls/clients.pem", "/srv/ha/relay.key", "/srv/ha/ca.pem"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s is not among the state paths %v", want, got)
+		}
+	}
+	cfg.Server.TLS.ClientCAFile = "certs/clients.pem"
+	if err := CheckStatePaths(cfg, ws); err == nil || !strings.Contains(err.Error(), "clients.pem") {
+		t.Errorf("a client CA in the workspace: %v", err)
+	}
+}
