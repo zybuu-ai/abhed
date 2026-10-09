@@ -48,6 +48,17 @@ A server with it off starts on the older schema as before.
   registry and audit record; `store.Postgres.Sandboxes` is the Postgres
   store. The contract is `docs/architecture/control-plane-contract.md`.
   They may change in a minor release until 2.0.
+- Seams for the Enterprise module's admission interceptors and HA, all off
+  unless set: `controlplane.Interceptor` (admits every create, update,
+  start, stop, delete and exec; may only tighten settings and change
+  unreserved labels, and fails closed), `controlplane.Ownership` (the
+  reconciler, changes and execs act only on sandboxes this replica owns),
+  `controlplane.Config.NodeID` (names the replica in each recorded event),
+  `store.Sandboxes.WithFence` (a check inside every sandbox write's
+  transaction), `server.SandboxRouter` (relays a call to the owning
+  replica) and `app.WithControlPlane`. A call an interceptor refuses
+  answers `403` with code `forbidden`. The keys `control_plane.ha` and
+  `control_plane.interceptors` are refused by a Community binary, by name.
 
 ## [1.2.7] - 2026-10-07
 
