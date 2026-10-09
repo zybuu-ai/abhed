@@ -218,43 +218,11 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 		args = append(args, "--pids-limit", strconv.Itoa(c.policy.MaxProcs))
 	}
 
-	// The workspace is the only writable host path. Mounted at the same path
-	// inside so the model's absolute paths stay valid across the boundary.
-	args = append(args, "-v", c.policy.Workspace+":"+c.policy.Workspace)
-	for _, p := range c.policy.ReadOnlyPaths {
-		args = append(args, "-v", p+":"+p+":ro")
+	mounts, err := mountArgs(ctx, c.policy, string(c.Tier()), &c.git)
+	if err != nil {
+		return nil, err
 	}
-	// Mounted over the workspace's own, so only the paths that exist can be.
-	// A folder holding one is mounted onto itself, so it cannot be renamed.
-	ws := PathForms(c.policy.Workspace)
-	var protected []string
-	for _, p := range formsOf(c.policy.WriteProtected) {
-		if insideAny(p, ws) {
-			protected = append(protected, p)
-		}
-	}
-	// The git folders found now, as on bubblewrap, after a planted
-	// commondir is taken out.
-	if c.policy.ProtectGit {
-		found, err := gitGuard(ctx, c.policy.Workspace, string(c.Tier()), &c.git)
-		if err != nil {
-			return nil, err
-		}
-		protected = append(protected, found...)
-	}
-	for _, p := range holders(ws, protected) {
-		if info, err := os.Lstat(p); err == nil && info.IsDir() {
-			args = append(args, "-v", p+":"+p)
-		} else if err == nil && info.Mode().IsRegular() {
-			args = append(args, "-v", p+":"+p+":ro")
-		}
-	}
-	for _, p := range protected {
-		if _, err := os.Stat(p); err == nil {
-			args = append(args, "-v", p+":"+p+":ro")
-		}
-	}
-	args = append(args, c.stateMounts()...)
+	args = append(args, mounts...)
 
 	workdir := cwd
 	if workdir == "" {
@@ -270,6 +238,60 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 
 	args = append(args, "-e", "ABHED_SANDBOX="+string(c.Tier()))
 	return args, nil
+}
+
+// mountArgs are a container's host mounts for p: the workspace, the
+// read-only paths, the write-protected and git paths, and Abhed's state
+// hidden. backend names the tier in records; mem is what the git look keeps.
+func mountArgs(ctx context.Context, p Policy, backend string, mem *gitMemory) ([]string, error) {
+	var args []string
+	// The workspace is the only writable host path. Mounted at the same path
+	// inside so the model's absolute paths stay valid across the boundary.
+	args = append(args, "-v", p.Workspace+":"+p.Workspace)
+	for _, ro := range p.ReadOnlyPaths {
+		args = append(args, "-v", ro+":"+ro+":ro")
+	}
+	// Mounted over the workspace's own, so only the paths that exist can be.
+	// A folder holding one is mounted onto itself, so it cannot be renamed.
+	ws := PathForms(p.Workspace)
+	var protected []string
+	for _, wp := range formsOf(p.WriteProtected) {
+		if insideAny(wp, ws) {
+			protected = append(protected, wp)
+		}
+	}
+	// The git folders found now, as on bubblewrap, after a planted
+	// commondir is taken out.
+	if p.ProtectGit {
+		found, err := gitGuard(ctx, p.Workspace, backend, mem)
+		if err != nil {
+			return nil, err
+		}
+		protected = append(protected, found...)
+	}
+	for _, h := range holders(ws, protected) {
+		if info, err := os.Lstat(h); err == nil && info.IsDir() {
+			args = append(args, "-v", h+":"+h)
+		} else if err == nil && info.Mode().IsRegular() {
+			args = append(args, "-v", h+":"+h+":ro")
+		}
+	}
+	for _, pp := range protected {
+		if _, err := os.Stat(pp); err == nil {
+			args = append(args, "-v", pp+":"+pp+":ro")
+		}
+	}
+	return append(args, stateMounts(p)...), nil
+}
+
+// ContainerMounts gives a long-lived container the mounts the container
+// tier gives each command, with its own memory of the git folders found.
+type ContainerMounts struct{ git gitMemory }
+
+// Args are the mounts for p now; backend names the sandbox in records. An
+// error is why no command may start.
+func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([]string, error) {
+	return mountArgs(ctx, p, backend, &m.git)
 }
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
@@ -406,29 +428,29 @@ func ForwardEnv(cmd *exec.Cmd, names []string) {
 // stateMounts hide Abhed's own state that the mounts above would show: an
 // empty throwaway folder over the workspace's .abhed, as the process tier
 // mounts, and the same over a state folder, /dev/null over a state file.
-func (c *Container) stateMounts() []string {
-	ws := c.policy.Workspace
+func stateMounts(p Policy) []string {
+	ws := p.Workspace
 	dir := filepath.Join(ws, stateDir)
 	// Made here as the person, or the engine would make it as root.
 	_ = os.Mkdir(dir, 0o700)
 	var args []string
-	tmpfs := func(p string) {
-		args = append(args, "--tmpfs", p+":rw,noexec,nosuid,nodev,size=16m,mode=0700")
+	tmpfs := func(path string) {
+		args = append(args, "--tmpfs", path+":rw,noexec,nosuid,nodev,size=16m,mode=0700")
 	}
 	// On a disk that ignores case, .ABHED reaches the same folder by another
 	// name the engine's own kernel keeps apart, so each spelling is covered.
 	for _, name := range caseSpellings(ws, stateDir) {
 		tmpfs(filepath.Join(ws, name))
 	}
-	visible := append(PathForms(ws), formsOf(c.policy.ReadOnlyPaths)...)
-	for _, p := range formsOf(c.policy.StatePaths) {
-		if !insideAny(p, visible) {
+	visible := append(PathForms(ws), formsOf(p.ReadOnlyPaths)...)
+	for _, sp := range formsOf(p.StatePaths) {
+		if !insideAny(sp, visible) {
 			continue
 		}
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
-			tmpfs(p)
+		if info, err := os.Stat(sp); err == nil && info.IsDir() {
+			tmpfs(sp)
 		} else if err == nil {
-			args = append(args, "-v", "/dev/null:"+p+":ro")
+			args = append(args, "-v", "/dev/null:"+sp+":ro")
 		}
 	}
 	return args
