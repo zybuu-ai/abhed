@@ -143,4 +143,11 @@ Off unless the operator sets `Enabled`; then:
 `abhed serve` turns this on with `control_plane.expose`: `POST
 /v1/sandboxes/{id}:expose` calls `Expose` with the authenticated identity
 and returns `{id, url, path, expires_at}`, and `Options.Current` follows the
-sandbox's generation.
+sandbox's generation. Every request to the exposure also makes the check
+`GET /v1/sandboxes/{id}` makes, so a caller who loses the sandbox loses its
+exposures at once.
+
+An exposure lives in the memory of the server that made it. With several
+servers behind a load balancer, a request for it that reaches another one is
+`404`: route `/v1/exposed/` with session affinity, or to one server. A
+restart ends every exposure.

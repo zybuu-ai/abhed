@@ -178,9 +178,29 @@ func (s *Server) sandboxRoutes(mux *http.ServeMux) {
 	// Registered per method: a method-less pattern would clash with "GET /".
 	if s.opts.Expose != nil {
 		for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
-			mux.Handle(m+" "+s.opts.Expose.Prefix(), s.opts.Expose)
+			mux.Handle(m+" "+s.opts.Expose.Prefix(), s.opts.Expose.Guard(s.mayUseExposure))
 		}
 	}
+}
+
+// mayUseExposure is the read check GET /v1/sandboxes/{id} makes, made on
+// every request to an exposure: a caller who lost the sandbox loses it too.
+func (s *Server) mayUseExposure(r *http.Request, sandboxID string) bool {
+	if s.opts.ControlPlane == nil {
+		return true
+	}
+	if TenantOf(r.Context()) != s.cpTenant() {
+		return false
+	}
+	c := controlplane.Caller{Principal: UserOf(r.Context()), Admin: s.IsAdmin(r)}
+	if s.opts.SandboxCaller != nil {
+		var err error
+		if c, err = s.opts.SandboxCaller(r, c); err != nil {
+			return false
+		}
+	}
+	_, err := s.opts.ControlPlane.Get(r.Context(), c, sandboxID)
+	return err == nil
 }
 
 // splitTarget splits "sbx_…:verb" at its last ':'.
