@@ -120,6 +120,9 @@ func TestCreateRefusesBadSpecs(t *testing.T) {
 		"too much mem":  {ID: id, Config: map[string]string{"memory_mib": "999999"}},
 		"tiny mem":      {ID: id, Config: map[string]string{"memory_mib": "16"}},
 		"not a number":  {ID: id, Config: map[string]string{"vcpus": "two"}},
+		"cpus too many": {ID: id, Config: map[string]string{"cpus": "64"}},
+		"cpus negative": {ID: id, Config: map[string]string{"cpus": "-1"}},
+		"memory_mb low": {ID: id, Config: map[string]string{"memory_mb": "16"}},
 	} {
 		if _, err := d.Create(context.Background(), spec); !errors.Is(err, driver.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
@@ -127,6 +130,18 @@ func TestCreateRefusesBadSpecs(t *testing.T) {
 	}
 	if len(be.boots) != 0 {
 		t.Fatal("a refused spec booted")
+	}
+}
+
+// The control plane's size keys, as the container drivers read them, are
+// read here too: fractional CPUs round up to whole vCPUs.
+func TestControlPlaneSizeKeys(t *testing.T) {
+	d, be := newFake(t)
+	if _, err := d.Create(context.Background(), driver.Spec{ID: id, Config: map[string]string{"cpus": "1.5", "memory_mb": "384"}}); err != nil {
+		t.Fatal(err)
+	}
+	if b := be.boots[0]; b.vcpus != 2 || b.memMiB != 384 {
+		t.Fatalf("boot %+v", b)
 	}
 }
 

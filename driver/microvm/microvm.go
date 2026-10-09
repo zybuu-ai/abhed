@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -221,13 +222,29 @@ func (d *Driver) Info() driver.Info {
 var knownTiers = map[string]bool{"none": true, "process": true, "fence": true, "container": true, "vm": true, Tier: true}
 
 // resources reads the sizes a spec asks for, within the operator's maxima.
+// The control plane's keys are cpus (rounded up to whole vCPUs) and
+// memory_mb (MiB); vcpus and memory_mib are the driver's own.
 func (d *Driver) resources(cfg map[string]string) (vcpus, mem int, err error) {
 	vcpus, mem = d.opts.VCPUs, d.opts.MemoryMiB
 	for k, v := range cfg {
-		n, perr := strconv.Atoi(v)
-		switch {
-		case k != "vcpus" && k != "memory_mib":
+		var n int
+		var perr error
+		switch k {
+		case "cpus":
+			f, ferr := strconv.ParseFloat(v, 64)
+			if ferr != nil || f <= 0 || f > float64(d.opts.MaxVCPUs) {
+				return 0, 0, driver.Errorf(driver.ErrInvalid, "microvm: cpus %q must be a positive number no higher than %d", v, d.opts.MaxVCPUs)
+			}
+			n, k = int(math.Ceil(f)), "vcpus"
+		case "memory_mb":
+			n, perr = strconv.Atoi(v)
+			k = "memory_mib"
+		case "vcpus", "memory_mib":
+			n, perr = strconv.Atoi(v)
+		default:
 			return 0, 0, driver.Errorf(driver.ErrInvalid, "microvm: unknown config key %q", k)
+		}
+		switch {
 		case perr != nil || n < 1:
 			return 0, 0, driver.Errorf(driver.ErrInvalid, "microvm: %s must be a positive integer", k)
 		case k == "vcpus" && n > d.opts.MaxVCPUs:

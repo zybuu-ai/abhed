@@ -207,8 +207,11 @@ and can list and read nothing else there. The kernel and root filesystem must be
 readable by every user, since every VM's user reads them. Unknown keys in
 the file are refused.
 
-A sandbox may ask for fewer resources than the maxima through its template's
-driver config, `vcpus` and `memory_mib`; any other key is refused.
+A sandbox may ask for resources up to the maxima through its driver config:
+`vcpus` and `memory_mib`, or the control plane's sizes (`resources.cpus`,
+rounded up to whole vCPUs, and `resources.memory_mb`), which reach the
+driver as `cpus` and `memory_mb`, as they do the container drivers. Any
+other key is refused.
 
 ## The guest agent and root filesystem
 
