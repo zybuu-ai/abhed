@@ -120,6 +120,16 @@ func TestSandboxExposeRoute(t *testing.T) {
 	if rec := r.do(t, cpCall{method: "GET", path: e.Path}); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("nobody: %d", rec.Code)
 	}
+	// Bob's exposure of his own sandbox is his alone, too.
+	bobs := r.ready(t, "bob")
+	rec = r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + bobs.ID + ":expose", token: "bob", body: `{"port":8000}`})
+	var be exposeResult
+	if rec.Code != http.StatusCreated || json.Unmarshal(rec.Body.Bytes(), &be) != nil {
+		t.Fatalf("bob's expose: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := r.do(t, cpCall{method: "GET", path: be.Path, token: "alice"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("alice on bob's exposure: %d", rec.Code)
+	}
 	// The owner's request goes through the driver's forward; the fake
 	// echoes rather than answering HTTP, so the proxy says so.
 	if rec := r.do(t, cpCall{method: "GET", path: e.Path, token: "alice"}); rec.Code != http.StatusBadGateway {

@@ -230,7 +230,7 @@ func (s Store) Restore(ctx context.Context, sandboxID string, ref driver.Snapsho
 	if err != nil {
 		return archive.Stats{}, driver.Errorf(driver.ErrUnavailable, "the workspace: %v", err)
 	}
-	defer ws.Close()
+	defer func() { _ = ws.Close() }()
 	staging := stagingPrefix + hex.EncodeToString(randBytes(6))
 	if err := ws.Mkdir(staging, 0o700); err != nil {
 		return archive.Stats{}, driver.Errorf(driver.ErrUnavailable, "the workspace: %v", err)
@@ -245,7 +245,7 @@ func (s Store) Restore(ctx context.Context, sandboxID string, ref driver.Snapsho
 	if err != nil {
 		return archive.Stats{}, driver.Errorf(driver.ErrUnavailable, "the workspace: %v", err)
 	}
-	defer stage.Close()
+	defer func() { _ = stage.Close() }()
 
 	// The second pass hashes what it unpacks; the swap happens only if
 	// that, too, is the snapshot the ref names.

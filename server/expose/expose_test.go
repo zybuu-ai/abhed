@@ -110,9 +110,9 @@ func get(t *testing.T, s *Server, path, sub, tenant string) *httptest.ResponseRe
 	return w
 }
 
-func expose(t *testing.T, s *Server, d driver.Driver, gen int64) Exposure {
+func expose(t *testing.T, s *Server, d driver.Driver) Exposure {
 	t.Helper()
-	e, err := s.Expose(context.Background(), Request{Driver: d, SandboxID: "sbx_1", Generation: gen, Port: 8000,
+	e, err := s.Expose(context.Background(), Request{Driver: d, SandboxID: "sbx_1", Generation: 1, Port: 8000,
 		Owner: auth.LocalOwner("alice"), Tenant: "t1"})
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestProxyIsOwnerScopedAndStripsCredentials(t *testing.T) {
 	rec := &recorder{}
 	s := New(Options{Enabled: true, Record: rec.record})
 	defer s.Close()
-	e := expose(t, s, d, 1)
+	e := expose(t, s, d)
 	if !strings.HasPrefix(e.Path, DefaultPrefix+"exp_") || !strings.HasSuffix(e.Path, "/") {
 		t.Fatalf("path %q", e.Path)
 	}
@@ -181,21 +181,21 @@ func TestExposureEnds(t *testing.T) {
 		Current: func(context.Context, string) (int64, bool, error) { return gen, true, nil }})
 	defer s.Close()
 
-	e := expose(t, s, d, 1)
+	e := expose(t, s, d)
 	now = now.Add(2 * time.Hour)
 	if w := get(t, s, e.Path, "alice", "t1"); w.Code != http.StatusNotFound {
 		t.Fatalf("expired: %d", w.Code)
 	}
 	now = time.Now()
 
-	e = expose(t, s, d, 1)
+	e = expose(t, s, d)
 	gen = 2
 	if w := get(t, s, e.Path, "alice", "t1"); w.Code != http.StatusNotFound {
 		t.Fatalf("a stale generation: %d", w.Code)
 	}
 	gen = 1
 
-	e = expose(t, s, d, 1)
+	e = expose(t, s, d)
 	close(d.done)
 	deadline := time.Now().Add(5 * time.Second)
 	for len(s.List("sbx_1")) > 0 && time.Now().Before(deadline) {
@@ -206,7 +206,7 @@ func TestExposureEnds(t *testing.T) {
 	}
 
 	d.done = make(chan struct{})
-	e = expose(t, s, d, 1)
+	e = expose(t, s, d)
 	if !s.Revoke(e.ID) || s.Revoke(e.ID) {
 		t.Fatal("revoke")
 	}

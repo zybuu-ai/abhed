@@ -123,7 +123,7 @@ func Pack(ctx context.Context, dir string, w io.Writer, lim Limits, skip func(na
 	if err != nil {
 		return Stats{}, driver.Errorf(driver.ErrUnavailable, "opening %s: %v", dir, err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	fsys := root.FS()
 	tw := tar.NewWriter(w)
 	var st Stats
@@ -166,7 +166,7 @@ func Pack(ctx context.Context, dir string, w io.Writer, lim Limits, skip func(na
 			}
 			if Link(name, target) != nil {
 				st.Skipped++
-				return nil
+				return nil //nolint:nilerr // a link out of the tree is left out and counted, not an error
 			}
 			h.Typeflag, h.Linkname = tar.TypeSymlink, target
 		default:
@@ -222,7 +222,7 @@ func packFile(root *os.Root, tw *tar.Writer, h *tar.Header, st *Stats, lim Limit
 		return err
 	}
 	if n, err := io.CopyN(tw, f, h.Size); err != nil {
-		if n < h.Size && (err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF)) {
+		if n < h.Size && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
 			return driver.Errorf(driver.ErrConflict, "%s changed while it was read; stop the sandbox for a consistent snapshot", h.Name)
 		}
 		return driver.Errorf(driver.ErrUnavailable, "reading %s: %v", h.Name, err)

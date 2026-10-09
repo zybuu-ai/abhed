@@ -81,7 +81,7 @@ func Listen(ctx context.Context, d driver.Driver, id string, port int, opts List
 		case <-lctx.Done():
 		case <-ended:
 		}
-		l.Close()
+		_ = l.Close()
 	}()
 	go l.accept()
 	return l, nil
@@ -132,7 +132,7 @@ func (l *Listener) accept() {
 	for {
 		c, err := l.ln.Accept()
 		if err != nil {
-			l.Close()
+			_ = l.Close()
 			return
 		}
 		l.conns.Add(1)
@@ -142,11 +142,11 @@ func (l *Listener) accept() {
 
 func (l *Listener) serve(c net.Conn) {
 	defer l.conns.Done()
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	rwc, err := driver.Forward(l.ctx, l.d, l.id, l.port)
 	if err != nil {
 		if errors.Is(err, driver.ErrNotFound) || errors.Is(err, driver.ErrConflict) {
-			l.Close()
+			_ = l.Close()
 		}
 		return
 	}

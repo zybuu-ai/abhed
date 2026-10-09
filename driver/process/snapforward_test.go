@@ -168,21 +168,19 @@ func TestUnrecordedSnapshotIsNotKept(t *testing.T) {
 }
 
 // echoServer answers each line with "echo:" and the line.
-func echoServer(t *testing.T) (int, *atomic.Int32) {
+func echoServer(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	var conns atomic.Int32
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			conns.Add(1)
 			go func() {
 				defer c.Close()
 				sc := bufio.NewScanner(c)
@@ -192,7 +190,7 @@ func echoServer(t *testing.T) (int, *atomic.Int32) {
 			}()
 		}
 	}()
-	return ln.Addr().(*net.TCPAddr).Port, &conns
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // A forward reaches the port through a relay run as a sandboxed command,
@@ -200,7 +198,7 @@ func echoServer(t *testing.T) (int, *atomic.Int32) {
 func TestForwardThroughTheSandbox(t *testing.T) {
 	ctx := context.Background()
 	d, ev, ws := withOptions(t)
-	port, _ := echoServer(t)
+	port := echoServer(t)
 	if _, err := d.Create(ctx, driver.Spec{ID: "sbx_a", Generation: 1, Workspace: ws}); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +263,7 @@ func TestForwardToAClosedPortFails(t *testing.T) {
 func TestListenerClosesWithTheSandbox(t *testing.T) {
 	ctx := context.Background()
 	d, ev, ws := withOptions(t)
-	port, _ := echoServer(t)
+	port := echoServer(t)
 	if _, err := d.Create(ctx, driver.Spec{ID: "sbx_a", Workspace: ws}); err != nil {
 		t.Fatal(err)
 	}
