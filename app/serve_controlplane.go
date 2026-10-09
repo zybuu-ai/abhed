@@ -259,7 +259,7 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 		return builtControlPlane{}, err
 	}
 	record := controlplane.DriverRecorder(audit, nil)
-	popts := process.Options{SnapshotDir: snaps, Record: record}
+	popts := process.Options{SnapshotDir: snaps, Record: record, StateWorkspace: workspace}
 	if root != "" {
 		// Each sandbox's commands are kept out of the others' folders beside it.
 		popts.Hide = []string{root}

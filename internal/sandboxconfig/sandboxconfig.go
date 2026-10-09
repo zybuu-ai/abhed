@@ -30,8 +30,30 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 // Policy is the sandbox policy a configuration asks for, after checking its
 // state paths. Build selects a backend for it.
 func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Policy, error) {
-	if err := CheckStatePaths(cfg, workspace, stateRoots...); err != nil {
+	return policy(cfg, workspace, workspace, stateRoots)
+}
+
+// InstancePolicy is Policy for a control-plane sandbox working in its own
+// folder, workspace, beside serve's serveWorkspace: state and secret paths
+// are resolved against serve's workspace, as serve reads them, and its
+// .abhed is denied too.
+func InstancePolicy(cfg config.Config, workspace, serveWorkspace string) (sandbox.Policy, error) {
+	if serveWorkspace == "" {
+		serveWorkspace = workspace
+	}
+	return policy(cfg, workspace, serveWorkspace, []string{serveWorkspace})
+}
+
+// policy is Policy with the state paths resolved against base.
+func policy(cfg config.Config, workspace, base string, stateRoots []string) (sandbox.Policy, error) {
+	if err := CheckStatePaths(cfg, base, stateRoots...); err != nil {
 		return sandbox.Policy{}, err
+	}
+	if base != workspace {
+		// The links in the sandbox's own folder are checked as well.
+		if err := checkLinks(cfg, base, []string{workspace}); err != nil {
+			return sandbox.Policy{}, err
+		}
 	}
 	p := sandbox.DefaultPolicy(workspace)
 	if cfg.Sandbox.MinTier != "" {
@@ -49,7 +71,7 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.WriteProtected = cfg.Sandbox.WriteProtected
 	p.ProtectGit = cfg.Sandbox.ProtectGit
-	p.StatePaths = StatePaths(cfg, workspace)
+	p.StatePaths = StatePaths(cfg, base)
 	for _, r := range stateRoots {
 		if filepath.Clean(r) != filepath.Clean(workspace) {
 			p.StatePaths = append(p.StatePaths, filepath.Join(r, tools.StateDir))

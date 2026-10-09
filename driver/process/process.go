@@ -43,6 +43,10 @@ type Options struct {
 	// Hide are folders no instance's commands may read or write, apart from
 	// the instance's own workspace inside one: where sibling sandboxes live.
 	Hide []string
+	// StateWorkspace is serve's workspace: state and secret paths are
+	// resolved against it, and its .abhed is denied to every instance.
+	// Empty is each instance's own folder.
+	StateWorkspace string
 }
 
 // Driver runs instances under the configured sandbox tier.
@@ -85,10 +89,7 @@ func New(cfg config.Config) *Driver {
 // NewWithOptions is New with the operator's options.
 func NewWithOptions(cfg config.Config, opts Options) *Driver {
 	return newDriverWith(func(spec driver.Spec) (sandbox.Sandbox, error) {
-		if len(opts.Hide) == 0 {
-			return sandboxconfig.Build(cfg, spec.Workspace)
-		}
-		p, err := sandboxconfig.Policy(cfg, spec.Workspace)
+		p, err := sandboxconfig.InstancePolicy(cfg, spec.Workspace, opts.StateWorkspace)
 		if err != nil {
 			return nil, err
 		}
