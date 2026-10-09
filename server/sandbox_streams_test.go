@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -771,5 +772,62 @@ func TestSandboxSSHIdleAndMaxSession(t *testing.T) {
 		case <-time.After(8 * time.Second):
 			t.Fatal("a busy SSH connection outlived ssh.max_session_seconds")
 		}
+	}
+}
+
+// endingGuard hands over the Cancel of each stream it admits.
+type endingGuard struct{ cancels chan func(error) }
+
+func (g endingGuard) Admit(_ context.Context, a *controlplane.Admission) (func(), error) {
+	if a.Exec != nil && strings.HasPrefix(a.Exec.Command, ":") {
+		g.cancels <- a.Cancel
+	}
+	return nil, nil
+}
+
+// A stream its guard ends tells the client why, and is recorded as the
+// guard's end, not the client's.
+func TestGuardEndingAStreamTellsTheClient(t *testing.T) {
+	for _, c := range []struct{ action, path, proto string }{
+		{"attach", ":attach", protoAttach},
+		{"forward", ":forward?port=8080", protoForward},
+		{"ssh", ":ssh", protoSSH},
+	} {
+		t.Run(c.action, func(t *testing.T) {
+			r := newWSRig(t, nil, []driver.Capability{driver.CapAttach, driver.CapForward},
+				func(o *Options) { o.SandboxSSHKey = testHostKey(t) })
+			shellFake(r.cpRig)
+			sb := r.ready(t, "alice")
+			g := endingGuard{cancels: make(chan func(error), 1)}
+			if err := r.svc.SetGuard(g); err != nil {
+				t.Fatal(err)
+			}
+			ws, err := r.dial(t, "alice", "/v1/sandboxes/"+sb.ID+c.path, c.proto)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cancel func(error)
+			select {
+			case cancel = <-g.cancels:
+			case <-time.After(5 * time.Second):
+				t.Fatal("not admitted")
+			}
+			if c.action != "ssh" {
+				if got, _ := control(t, ws); got.Type != "started" {
+					t.Fatalf("first message %+v", got)
+				}
+			}
+			cancel(fmt.Errorf("%w: the slot lapsed", controlplane.ErrQuotaExceeded))
+			// SSH has no text messages: its connection just ends, and the record says why.
+			if c.action != "ssh" {
+				if got, _ := control(t, ws); got.Type != "error" || got.Error == nil || got.Error.Code != "quota_exceeded" {
+					t.Fatalf("the client was told %+v", got)
+				}
+			}
+			ev := waitAudit(t, r.cpRig, sb.ID, c.action, controlplane.OutcomeFailed)
+			if ev.Code != "quota_exceeded" || ev.Detail["ended_by"] != "" || ev.Detail["reason"] == "" {
+				t.Fatalf("recorded as %+v", ev)
+			}
+		})
 	}
 }

@@ -29,6 +29,15 @@ func clientEnded(gone *atomic.Bool, err error) bool {
 	return gone.Load() && (err == nil || errors.Is(err, context.Canceled))
 }
 
+// guardEnded is the guard's reason when it ended the stream ctx belongs to,
+// which the client is told rather than a normal end.
+func guardEnded(ctx context.Context) error {
+	if cause := context.Cause(ctx); errors.Is(cause, controlplane.ErrEndedByGuard) {
+		return cause
+	}
+	return nil
+}
+
 // attachSandbox opens the sandbox's interactive shell over a WebSocket
 // (abhed.attach.v1): binary messages are keys one way and the terminal's
 // output the other; {"type":"resize","rows","cols"} changes its size; the
@@ -100,7 +109,9 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 			}()
 			term := s.newSandboxTerminal(ctx, call.caller, sb, pol, wsconn.NewStream(ws))
 			out, err := term.run(ctx, d, cwd, size, keys, resize)
-			if why := wait(); why != nil {
+			if why := wait(); guardEnded(ctx) != nil {
+				err = guardEnded(ctx)
+			} else if why != nil {
 				err = why
 			} else if clientEnded(&gone, err) {
 				out["ended_by"], err = "client", nil
@@ -390,7 +401,9 @@ func (s *Server) forwardSandbox(w http.ResponseWriter, r *http.Request, call ver
 			_, _ = io.Copy(stream, rwc)
 			_ = rwc.Close()
 			err = wait()
-			if gone.Load() && err != nil && errors.Is(err, context.Canceled) {
+			if why := guardEnded(ctx); why != nil {
+				err = why
+			} else if gone.Load() && err != nil && errors.Is(err, context.Canceled) {
 				err = nil
 			}
 			endStreamWith(ws, err)
@@ -473,7 +486,9 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 				streamBounds{max: maxSession, idle: vals.Seconds(controlplane.SetSSHIdle), active: conn.last})
 			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: pol, until: time.Now().Add(maxSession)}
 			stats, err := sshrelay.Serve(ctx, conn, sshrelay.Config{HostKey: key, Log: s.log}, h)
-			if why := wait(); why != nil {
+			if why := wait(); guardEnded(ctx) != nil {
+				err = guardEnded(ctx)
+			} else if why != nil {
 				err = why
 			}
 			endStreamWith(ws, err)

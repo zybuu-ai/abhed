@@ -643,7 +643,9 @@ on. A server with it off starts on the older schema as before.
   admitted, such as one whose quota slot lapsed; the record keeps the
   guard's cause, wrapped in `controlplane.ErrEndedByGuard`.
   `StreamRequest.End` is how a stream's caller lets the guard end it, and
-  the server's `:attach`, `:forward` and `:ssh` pass it. A guard that never
+  the server's `:attach`, `:forward` and `:ssh` pass it: an `:attach` or
+  `:forward` client gets an `error` message with the cause's code, and an
+  `:ssh` connection ends at once, even mid-handshake. A guard that never
   calls it changes nothing.
 - `controlplane.AdmissionRequest` gains `Stdin`, `Cwd` and `EnvNames` for an
   exec (from `Service.Exec` and `Service.Command`, a session's `:shell`

@@ -101,7 +101,13 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config, h Handler) (Stats, er
 	}
 	sc.AddHostKey(cfg.HostKey)
 	_ = conn.SetDeadline(time.Now().Add(cfg.HandshakeTimeout))
+	// An end that comes during the handshake ends it now, not at its timeout.
+	stopHandshake := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, sc)
+	if !stopHandshake() && err == nil {
+		_ = sconn.Close()
+		err = ctx.Err()
+	}
 	if err != nil {
 		return st, fmt.Errorf("sshrelay: handshake: %w", err)
 	}
