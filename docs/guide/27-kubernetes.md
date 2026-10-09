@@ -21,7 +21,7 @@ what it renders: each one is a Secret you create, which the chart names.
 |---|---|
 | Deployment | One replica by default, running `abhed serve -addr 0.0.0.0:8080` from `/workspace`. |
 | ConfigMap | Your `config` values as `config.json`, mounted read-only at the managed path `/etc/abhed/config.json`. |
-| PersistentVolumeClaim | One volume with two folders: `workspace` at `/workspace`, and `state` at `~/.abhed` (accounts, keys, trust decisions, the SQLite store), which the agent cannot reach. Kept when the release is uninstalled. |
+| PersistentVolumeClaim | One volume with three folders: `workspace` at `/workspace`; `state` at `~/.abhed` (accounts, keys, trust decisions, the SQLite store), which the agent cannot reach; and `local-state` at `~/.local/state` (`XDG_STATE_HOME`), where the control plane keeps its relay host key, sandbox folders and snapshots. Kept when the release is uninstalled. |
 | Service | The server's port. |
 | ServiceAccount | With no API token mounted. |
 | NetworkPolicy | Ingress to the server's port only; egress denied except DNS, the endpoints you list, Postgres and the other replicas. |
@@ -98,10 +98,15 @@ needs no Secret on one replica: Abhed creates it, mode 600, in `~/.abhed` on
 the volume at the first start.
 
 The control plane's `:ssh` relay presents a host key, which each pod would
-otherwise make for itself. Give every replica one key from a Secret with
-`controlPlane.sshHostKey`; the chart copies it in the same way and sets
-`control_plane.ssh_host_key` to it. It needs `config.control_plane.enabled`,
-and the chart refuses `config.control_plane.ssh_host_key` set by hand.
+otherwise make for itself. Set `controlPlane.sshHostKey.existingSecret` on
+every install with the control plane, one replica or several: the key then
+lives in a Secret you back up and rotate, not only on the volume. The chart
+copies it in the same way and sets `control_plane.ssh_host_key` to it. It
+needs `config.control_plane.enabled`, and the chart refuses
+`config.control_plane.ssh_host_key` set by hand. Without it the server makes
+a key under `~/.local/state/abhed/control-plane` on the volume, which lasts
+as long as the claim; with persistence off it changes on every restart, and
+clients that check host keys strictly are refused.
 
 ```yaml
 config:
@@ -174,7 +179,17 @@ does not run commands unsandboxed: the default `sandbox.min_tier` is
 `persistence.enabled` (on by default) makes one `ReadWriteOnce` claim and
 the Deployment uses the `Recreate` strategy, since the old and new pod cannot
 share the volume. `persistence.existingClaim` uses a claim you made.
-With persistence off, both folders are `emptyDir` and lost with the pod.
+With persistence off, every folder is an `emptyDir` and lost with the pod.
+
+The chart sets `XDG_STATE_HOME` to `~/.local/state`, a folder on the volume,
+so the control plane's state outlives a pod restart: its relay host key
+(unless it comes from `controlPlane.sshHostKey`), each sandbox's folder
+under `abhed/control-plane/sandboxes`, and snapshots under
+`abhed/control-plane/snapshots`. Abhed makes these folders mode `0700` and
+refuses one that others may write. `control_plane.workspace_root` and
+`control_plane.snapshot_dir` in `config` move the sandbox folders or the
+snapshots elsewhere; keep them on the volume too, or the sandboxes the store
+still lists lose their files when the pod restarts.
 
 ## Postgres
 

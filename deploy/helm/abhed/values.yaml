@@ -116,6 +116,9 @@ controlPlane:
 # Plain environment variables (no secrets).
 extraEnv: []
 
+# One volume for the workspace, ~/.abhed and the control plane's state
+# (XDG_STATE_HOME: relay host key, sandbox folders, snapshots), so a
+# restarted pod keeps them. Off, each is an emptyDir lost with the pod.
 persistence:
   enabled: true
   existingClaim: ""

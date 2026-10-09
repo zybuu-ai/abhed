@@ -96,6 +96,12 @@ httpGet:
 {{- toPrettyJson $cfg }}
 {{- end }}
 
+{{/* XDG_STATE_HOME, a folder on the volume: Abhed keeps the control plane's
+state under abhed/control-plane in it, mode 0700. */}}
+{{- define "abhed.stateHome" -}}
+/home/abhed/.local/state
+{{- end }}
+
 {{/* Where the relay's host key is copied, under /run/abhed/secrets. */}}
 {{- define "abhed.sshHostKeyPath" -}}
 ssh_host_ed25519_key
@@ -178,6 +184,10 @@ ssh_host_ed25519_key
   value: /home/abhed
 - name: ABHED_IN_CONTAINER
   value: "1"
+# The control plane's state (relay host key, sandbox folders, snapshots) is
+# kept on the volume, so a restarted pod keeps them.
+- name: XDG_STATE_HOME
+  value: {{ include "abhed.stateHome" . }}
 {{- if .Values.postgres.enabled }}
 - name: ABHED_DATABASE_URL
   valueFrom:
@@ -211,6 +221,9 @@ ssh_host_ed25519_key
 - name: data
   mountPath: /home/abhed/.abhed
   subPath: state
+- name: data
+  mountPath: {{ include "abhed.stateHome" . }}
+  subPath: local-state
 - name: tmp
   mountPath: /tmp
 {{- if .Values.tls.enabled }}

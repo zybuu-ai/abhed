@@ -167,4 +167,16 @@ for want in 'chmod 0400 /run/abhed/secrets/ssh_host_ed25519_key' \
   fi
 done
 
+# The control plane's state is on the volume in the server and the preflight
+# check, so a restarted pod keeps its host key, sandbox folders and snapshots.
+"$HELM" template abhed "$CHART" --namespace abhed --set config.control_plane.enabled=true \
+  --show-only templates/deployment.yaml >"$out/state-check.yaml"
+for want in 'name: XDG_STATE_HOME' 'value: /home/abhed/.local/state' \
+  'mountPath: /home/abhed/.local/state' 'subPath: local-state'; do
+  if [ "$(grep -cF -- "$want" "$out/state-check.yaml")" -ne 2 ]; then
+    echo "FAIL: the control plane's state: $want is not in both the server and preflight" >&2
+    failed=1
+  fi
+done
+
 exit $failed

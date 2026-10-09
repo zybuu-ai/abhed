@@ -342,7 +342,9 @@ All notable changes to Abhed are recorded here. The format follows
   as one replica by default, held to the restricted Pod Security level
   (non-root, every capability dropped, seccomp `RuntimeDefault`, a read-only
   root filesystem, no service-account token), with the configuration mounted
-  as the managed file, a volume for the workspace and `~/.abhed`, liveness on
+  as the managed file, a volume for the workspace, `~/.abhed` and the control
+  plane's state (`XDG_STATE_HOME`: its relay host key, sandbox folders and
+  snapshots, so a restarted pod keeps them), liveness on
   `/v1/health`, readiness on `/v1/ready`, and `abhed serve -check` as an init
   container so a pod that could not serve never starts. Optional: an Ingress,
   an OpenShift Route, TLS from a Secret, Postgres from a Secret, pulling by
