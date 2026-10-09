@@ -40,10 +40,10 @@ func oneID(pos []string, what string) (string, error) {
 
 // settingsFlags are the settings shortcuts create and template create share.
 type settingsFlags struct {
-	set              multi
-	minTier, cpus    string
-	memoryMB         int
-	labels, unlabels multi
+	set           multi
+	minTier, cpus string
+	memoryMB      int
+	labels        multi
 }
 
 func (s *settingsFlags) values() (map[string]string, error) {
@@ -441,7 +441,7 @@ func (r *runner) delete(args []string) error {
 			if *yes {
 				return nil
 			}
-			return r.confirm("delete", "Delete sandbox " + id + " and everything in it?")
+			return r.confirm("delete", "Delete sandbox "+id+" and everything in it?")
 		}})
 }
 

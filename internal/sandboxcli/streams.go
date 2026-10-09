@@ -57,24 +57,24 @@ var codeStatus = map[string]int{
 }
 
 // started reads the stream's first message, which must be "started".
-func started(ws *wsconn.Conn) (control, error) {
+func started(ws *wsconn.Conn) error {
 	_ = ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 	defer func() { _ = ws.SetReadDeadline(time.Time{}) }()
 	typ, msg, err := ws.ReadMessage()
 	if err != nil {
-		return control{}, fmt.Errorf("the stream ended before it started: %w", err)
+		return fmt.Errorf("the stream ended before it started: %w", err)
 	}
 	var c control
 	if typ != wsconn.Text || json.Unmarshal(msg, &c) != nil {
-		return control{}, errors.New("the server's stream did not start as the contract says")
+		return errors.New("the server's stream did not start as the contract says")
 	}
 	switch c.Type {
 	case "started":
-		return c, nil
+		return nil
 	case "error":
-		return c, remoteError(c)
+		return remoteError(c)
 	}
-	return c, fmt.Errorf("the stream began with %q", c.Type)
+	return fmt.Errorf("the stream began with %q", c.Type)
 }
 
 func (r *runner) exec(args []string) error {
@@ -185,7 +185,7 @@ func (r *runner) execStream(id string, req controlplane.ExecRequest) error {
 	if err := ws.WriteMessage(wsconn.Text, first); err != nil {
 		return err
 	}
-	if _, err := started(ws); err != nil {
+	if err := started(ws); err != nil {
 		return err
 	}
 	go func() {
@@ -286,7 +286,7 @@ func (r *runner) connect(args []string) error {
 		return err
 	}
 	defer ws.Abort()
-	if _, err := started(ws); err != nil {
+	if err := started(ws); err != nil {
 		return err
 	}
 	if r.Term != nil {
@@ -495,7 +495,7 @@ func (r *runner) forwardOne(conn net.Conn, path string) error {
 		return err
 	}
 	defer ws.Abort()
-	if _, err := started(ws); err != nil {
+	if err := started(ws); err != nil {
 		return err
 	}
 	stop := context.AfterFunc(r.Ctx, ws.Abort)

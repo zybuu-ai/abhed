@@ -186,7 +186,7 @@ func (r *runner) templateRm(args []string) error {
 		return err
 	}
 	if !*yes {
-		if err := r.confirm("template rm", "Remove template " + name + "? Sandboxes made from it keep what it gave them."); err != nil {
+		if err := r.confirm("template rm", "Remove template "+name+"? Sandboxes made from it keep what it gave them."); err != nil {
 			return err
 		}
 	}
