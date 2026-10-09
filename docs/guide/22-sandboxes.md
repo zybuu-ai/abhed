@@ -415,8 +415,9 @@ comma-separated, all of which must hold.
 **Idempotency.** Send `Idempotency-Key` on any `POST`, `PATCH` or `DELETE`
 and a repeat with the same body gets the first response again with
 `Idempotent-Replayed: true`; with a different body, `422`; while the first is
-still running, `409`. A request refused before it changed anything frees its
-key. A repeated `:exec` does not run again: it gets the last frame of the
+still running, `409`, for as long as it runs. A server that stops mid-request
+frees the key five minutes later. A request refused before it changed
+anything frees its key. A repeated `:exec` does not run again: it gets the last frame of the
 first run.
 
 **Versions.** Every sandbox response carries `ETag: "<resource_version>"`.

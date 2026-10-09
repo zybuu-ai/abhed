@@ -307,6 +307,7 @@ CREATE TABLE IF NOT EXISTS sandbox_idempotency (
   expires_at   TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (tenant_id, scope, key)
 );
+ALTER TABLE sandbox_idempotency ADD COLUMN IF NOT EXISTS claim_token TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS sandbox_audit (
   seq         BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

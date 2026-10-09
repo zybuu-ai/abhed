@@ -227,7 +227,9 @@ bytes have been sent, and the stream ends with an error frame of code
   replays.
 - The first request with a key claims it and stores a hash of the body.
   While it runs, a repeat gets `409` with code `conflict`. The claim is a
-  5-minute lease, so a server that dies mid-request frees the key. When it ends, its
+  5-minute lease the running request renews, so a long `:exec` keeps its key
+  while a server that dies mid-request frees it. Only the request holding the
+  claim can complete or release it. When it ends, its
   status and body are stored and a repeat with the same body gets the same
   response with `Idempotent-Replayed: true`. A repeat with a different body
   gets `422` with code `invalid`.

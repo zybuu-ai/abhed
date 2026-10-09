@@ -73,6 +73,11 @@ CREATE TABLE sandbox_templates (
   object           TEXT    NOT NULL
 ) STRICT;
 `,
+	// 3: the token naming an idempotency claim, so only the request that
+	// holds it renews, completes or releases it.
+	`
+ALTER TABLE sandbox_idempotency ADD COLUMN claim_token TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // SchemaVersion is the newest version this build knows.

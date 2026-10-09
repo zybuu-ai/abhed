@@ -322,7 +322,8 @@ func TestOlderSchemaMigratesInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.w.Exec(`DROP TABLE sandbox_templates; DELETE FROM schema_version WHERE version > 1`); err != nil {
+	if _, err := s.w.Exec(`DROP TABLE sandbox_templates; ALTER TABLE sandbox_idempotency DROP COLUMN claim_token;
+		DELETE FROM schema_version WHERE version > 1`); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()
@@ -348,5 +349,12 @@ func TestOlderSchemaMigratesInOrder(t *testing.T) {
 	}
 	if _, err := s.CreateTemplate(ctx, controlplane.Template{Name: "base", Driver: "process"}); err != nil {
 		t.Fatalf("templates after the upgrade: %v", err)
+	}
+	rec := controlplane.IdemRecord{Scope: "s", Key: "k", RequestHash: "h", ExpiresAt: time.Now().Add(time.Minute), Token: "t"}
+	if _, ok, err := s.Claim(ctx, rec, time.Now()); err != nil || !ok {
+		t.Fatalf("claim after the upgrade: %v %v", ok, err)
+	}
+	if err := s.Complete(ctx, "s", "k", "t", 200, nil, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("complete after the upgrade: %v", err)
 	}
 }

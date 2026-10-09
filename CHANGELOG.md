@@ -542,6 +542,9 @@ on. A server with it off starts on the older schema as before.
   `ListTemplates`, `DeleteTemplate` and `Service.Events`;
   `server.AttachProtocol`, `ExecProtocol` and `ForwardProtocol` beside
   `SSHRelayProtocol`. `drivertest.Fake` snapshots carry a digest.
+- `controlplane.IdempotencyStore` gains `Renew`, and `Complete` and
+  `Release` take the claim's token (`IdemRecord.Token`): a running request
+  renews its claim, and only the request holding it can finish it.
 - `wsconn`: a small WebSocket (RFC 6455) server upgrade, client and byte
   stream, size-limited and fuzzed, for the sandbox streams and for drivers
   that speak WebSockets. `server/sshrelay`: the SSH server behind the `:ssh`

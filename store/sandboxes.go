@@ -71,7 +71,7 @@ func (q *Sandboxes) fenced(ctx context.Context, tx pgx.Tx, op FenceOp, id string
 // cannot add them, so their absence is found before the first request.
 var sandboxColumns = [][2]string{
 	{"sandboxes", "object"}, {"sandboxes", "resource_version"},
-	{"sandbox_idempotency", "request_hash"}, {"sandbox_audit", "principal"},
+	{"sandbox_idempotency", "request_hash"}, {"sandbox_idempotency", "claim_token"}, {"sandbox_audit", "principal"},
 	{"sandbox_templates", "object"},
 }
 
@@ -314,9 +314,9 @@ func (q *Sandboxes) Claim(ctx context.Context, rec controlplane.IdemRecord, now 
 		return controlplane.IdemRecord{}, false, fmt.Errorf("claim idempotency key: %w", err)
 	}
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO sandbox_idempotency (tenant_id, scope, key, request_hash, state, status, body, expires_at)
-		VALUES ($1, $2, $3, $4, $5, 0, NULL, $6) ON CONFLICT DO NOTHING`,
-		q.tenant, rec.Scope, rec.Key, rec.RequestHash, string(controlplane.IdemPending), rec.ExpiresAt)
+		INSERT INTO sandbox_idempotency (tenant_id, scope, key, request_hash, state, status, body, expires_at, claim_token)
+		VALUES ($1, $2, $3, $4, $5, 0, NULL, $6, $7) ON CONFLICT DO NOTHING`,
+		q.tenant, rec.Scope, rec.Key, rec.RequestHash, string(controlplane.IdemPending), rec.ExpiresAt, rec.Token)
 	if err != nil {
 		return controlplane.IdemRecord{}, false, fmt.Errorf("claim idempotency key: %w", err)
 	}
@@ -340,13 +340,27 @@ func (q *Sandboxes) Claim(ctx context.Context, rec controlplane.IdemRecord, now 
 	return cur, false, tx.Commit(ctx)
 }
 
-func (q *Sandboxes) Complete(ctx context.Context, scope, key string, status int, body []byte, expires time.Time) error {
+func (q *Sandboxes) Renew(ctx context.Context, scope, key, token string, expires time.Time) error {
+	tag, err := q.pool.Exec(ctx, `
+		UPDATE sandbox_idempotency SET expires_at = $4
+		WHERE tenant_id = $1 AND scope = $2 AND key = $3 AND state = $5 AND claim_token = $6 AND claim_token <> ''`,
+		q.tenant, scope, key, expires, string(controlplane.IdemPending), token)
+	return heldOne(tag, err, "renew", key)
+}
+
+func (q *Sandboxes) Complete(ctx context.Context, scope, key, token string, status int, body []byte, expires time.Time) error {
 	tag, err := q.pool.Exec(ctx, `
 		UPDATE sandbox_idempotency SET state = $4, status = $5, body = $6, expires_at = $7
-		WHERE tenant_id = $1 AND scope = $2 AND key = $3 AND state = $8`,
-		q.tenant, scope, key, string(controlplane.IdemDone), status, body, expires, string(controlplane.IdemPending))
+		WHERE tenant_id = $1 AND scope = $2 AND key = $3 AND state = $8 AND claim_token = $9 AND claim_token <> ''`,
+		q.tenant, scope, key, string(controlplane.IdemDone), status, body, expires, string(controlplane.IdemPending), token)
+	return heldOne(tag, err, "complete", key)
+}
+
+// heldOne is ErrNotFound when an update guarded by a claim token changed
+// nothing: the claim expired or another request holds it.
+func heldOne(tag pgconn.CommandTag, err error, verb, key string) error {
 	if err != nil {
-		return fmt.Errorf("complete idempotency key: %w", err)
+		return fmt.Errorf("%s idempotency key: %w", verb, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%w: no pending request for idempotency key %q", controlplane.ErrNotFound, key)
@@ -354,9 +368,11 @@ func (q *Sandboxes) Complete(ctx context.Context, scope, key string, status int,
 	return nil
 }
 
-func (q *Sandboxes) Release(ctx context.Context, scope, key string) error {
-	if _, err := q.pool.Exec(ctx, `DELETE FROM sandbox_idempotency WHERE tenant_id = $1 AND scope = $2 AND key = $3 AND state = $4`,
-		q.tenant, scope, key, string(controlplane.IdemPending)); err != nil {
+func (q *Sandboxes) Release(ctx context.Context, scope, key, token string) error {
+	if _, err := q.pool.Exec(ctx, `
+		DELETE FROM sandbox_idempotency
+		WHERE tenant_id = $1 AND scope = $2 AND key = $3 AND state = $4 AND claim_token = $5 AND claim_token <> ''`,
+		q.tenant, scope, key, string(controlplane.IdemPending), token); err != nil {
 		return fmt.Errorf("release idempotency key: %w", err)
 	}
 	return nil
