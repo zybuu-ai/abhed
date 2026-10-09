@@ -114,6 +114,7 @@ func RegistryWith(ctx context.Context, cfg config.Config, opts Options) (*driver
 func ContainerOptions(sec config.ContainerDriverConfig, base container.Options) container.Options {
 	o := base
 	o.Binary, o.Image, o.Images, o.GPUs, o.CPUs, o.SeccompProfile = sec.Binary, sec.Image, sec.Images, sec.GPUs, sec.CPUs, sec.SeccompProfile
+	o.NamePrefix = sec.NamePrefix
 	o.Mounts, o.MountRoots = nil, nil
 	for _, m := range sec.Mounts {
 		o.Mounts = append(o.Mounts, container.Mount{Host: m.Host, Target: m.Target, Writable: m.Writable, Relabel: m.Relabel})

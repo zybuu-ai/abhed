@@ -270,6 +270,7 @@ gets, and every admission rule, is in [Container drivers](23-container-drivers.m
 | `gpus` | managed only | CDI device names a sandbox may ask for, such as `nvidia.com/gpu=all`. |
 | `cpus` | managed only | CPUs each sandbox may use, 2 when unset. |
 | `seccomp_profile` | managed only | A seccomp profile file in place of the engine's default; `unconfined` is refused. |
+| `name_prefix` | any configuration | What every container's name starts with, `abhed-sbx-` when unset: letters, digits, `_`, `.` and `-`, starting with a letter or digit, at most 64; anything else stops `abhed serve` at start. Two servers sharing one engine, such as a test run beside a real one, keep apart by it. Containers made under an earlier prefix are not found under a new one. |
 
 Each managed-only key widens what a sandbox can reach or loosens a bound, so
 a user's or workspace's file that sets one is set aside and named, as for

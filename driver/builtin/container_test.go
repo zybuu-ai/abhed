@@ -84,16 +84,26 @@ func TestContainerOptionsAreChecked(t *testing.T) {
 	if _, _, err := Registry(context.Background(), cfg); err == nil {
 		t.Fatal("an unconfined seccomp profile was accepted")
 	}
+	for _, p := range []string{"-x", "a b", "x/y", "a;rm", strings.Repeat("a", 70)} {
+		cfg.ControlPlane.Podman = config.ContainerDriverConfig{Enabled: true, Binary: engine(t, podmanAnswers), NamePrefix: p}
+		if _, _, err := Registry(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "name prefix") {
+			t.Errorf("name prefix %q: %v", p, err)
+		}
+	}
+	cfg.ControlPlane.Podman = config.ContainerDriverConfig{Enabled: true, Binary: engine(t, podmanAnswers), NamePrefix: "ci-sbx-"}
+	if _, _, err := Registry(context.Background(), cfg); err != nil {
+		t.Errorf("a valid name prefix: %v", err)
+	}
 }
 
 func TestContainerOptionsFromConfig(t *testing.T) {
 	sec := config.ContainerDriverConfig{Binary: "/usr/bin/podman", Image: "alpine:3", Images: []string{"python:3.12"},
 		Mounts:     []config.ContainerMount{{Host: "/srv/ref", Target: "/ref", Relabel: true}},
 		MountRoots: []config.ContainerMountRoot{{Path: "/srv/data", Writable: true}},
-		GPUs:       []string{"nvidia.com/gpu=all"}, CPUs: 4, SeccompProfile: "/etc/abhed/seccomp.json"}
+		GPUs:       []string{"nvidia.com/gpu=all"}, CPUs: 4, SeccompProfile: "/etc/abhed/seccomp.json", NamePrefix: "ci-sbx-"}
 	o := ContainerOptions(sec, container.Options{SnapshotDir: "/snaps"})
 	if o.Binary != sec.Binary || o.Image != sec.Image || !slices.Equal(o.Images, sec.Images) || o.CPUs != 4 ||
-		o.SeccompProfile != sec.SeccompProfile || !slices.Equal(o.GPUs, sec.GPUs) || o.SnapshotDir != "/snaps" {
+		o.SeccompProfile != sec.SeccompProfile || !slices.Equal(o.GPUs, sec.GPUs) || o.SnapshotDir != "/snaps" || o.NamePrefix != "ci-sbx-" {
 		t.Fatalf("options %+v", o)
 	}
 	if len(o.Mounts) != 1 || o.Mounts[0] != (container.Mount{Host: "/srv/ref", Target: "/ref", Relabel: true}) ||

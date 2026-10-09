@@ -36,6 +36,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `control_plane.docker.name_prefix` and `control_plane.podman.name_prefix`
+  set what the container drivers' container names start with
+  (`abhed-sbx-` by default), so two servers can share one engine; a prefix
+  that cannot start a container name stops `abhed serve` at start.
 - The Helm chart ships `files/seccomp-bwrap.json`, a `Localhost` seccomp
   profile for runtimes whose default refuses bubblewrap: the Docker engine's
   default plus `unshare`, `clone`, `setns`, `mount`, `umount2` and

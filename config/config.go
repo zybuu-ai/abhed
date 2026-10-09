@@ -796,6 +796,9 @@ type ContainerDriverConfig struct {
 	// SeccompProfile is a profile file in place of the engine's default;
 	// "unconfined" is refused. Managed only.
 	SeccompProfile string `json:"seccomp_profile,omitempty"`
+	// NamePrefix starts every container's name, "abhed-sbx-" when empty;
+	// letters, digits, '_', '.' and '-', starting with a letter or digit.
+	NamePrefix string `json:"name_prefix,omitempty"`
 }
 
 // ContainerMount is a host folder every container sandbox sees.
