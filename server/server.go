@@ -324,6 +324,9 @@ type Options struct {
 	// SessionSandboxes it is also asked for each session's sandbox, with a
 	// POST /v1/sandboxes request carrying the session's tenant and user and
 	// no headers; its scope is stamped on the sandbox and its warm pool.
+	// It must build on the c it is given, whose Principal and Admin the
+	// server resolved: r may be one the server made for a session, with no
+	// headers, so who is asking comes from c, never from r's headers.
 	SandboxCaller func(r *http.Request, c controlplane.Caller) (controlplane.Caller, error)
 	// ApprovalGate, when set, decides who may answer a session's pending
 	// approvals and when an answer settles one. Nil: the session's owner
