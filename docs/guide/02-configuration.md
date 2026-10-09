@@ -1099,6 +1099,11 @@ server open.
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
   list` lists every decision.
 
+The prompt and `abhed trust` list a managed-only setting the file makes, such
+as `sandbox.network` or the `egress` rules, apart from the rest, under "Not
+applied whether or not you trust it", with the reason: trusting the file does
+not apply it.
+
 A workspace's subagent definitions in `.abhed/agents/*.md` are covered by the
 same decision, with a hash of their own: until you trust them they are not
 loaded, and the warning names each one as `agents/<name>`. A definition can

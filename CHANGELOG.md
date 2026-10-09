@@ -23,6 +23,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The workspace-trust prompt and `abhed trust` listed a workspace file's
+  `sandbox.network` and `egress` settings, and other managed-only ones, under
+  what trusting it would let it set, though trust never applies them. They
+  are now listed apart, under "Not applied whether or not you trust it", with
+  the reason; Studio and ACP's trust report carry the same `reason`.
 - A bare `/ide` could open an older session instead of the latest:
   `GET /v1/sessions` wrote a live session's times in the server's local
   offset and a recorded one's in UTC, and the workbench sorted them as text.
