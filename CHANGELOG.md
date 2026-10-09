@@ -53,7 +53,7 @@ All notable changes to Abhed are recorded here. The format follows
   as root, to the unprivileged server over the out-of-process driver
   protocol. It refuses to run, and says why, without KVM, root, cgroup v2,
   Firecracker 1.5 or the jailer. This is not the `vm` tier, which is gVisor
-  and is unchanged. See [The microVM driver](docs/guide/22-microvm.md).
+  and is unchanged. See [The microVM driver](docs/guide/24-microvm.md).
   - The workspace is copied into the VM, and what commands change there is
     copied back after each command and before a stop: never through a link
     or onto another filesystem, never outside the workspace, never into
@@ -84,7 +84,7 @@ All notable changes to Abhed are recorded here. The format follows
   falls back to plain HTTP. Plain HTTP stays the default. TLS keys are state,
   refused to the agent and refused inside the workspace. Session cookies are
   `Secure` whenever serve terminates TLS. See [TLS and command-line
-  sign-in](docs/guide/22-tls-and-cli-login.md).
+  sign-in](docs/guide/26-tls-and-cli-login.md).
 - Client certificates: `server.tls.client_ca_file`, with `client_auth`
   `require` (the default) or `optional`. With local accounts,
   `client_cert_accounts: true` signs in the account a verified certificate's
@@ -214,7 +214,7 @@ A server with it off starts on the older schema as before.
   allowlist the egress proxy stays on the host and the container reaches it
   through a relay on its own loopback, on a Linux host with a local engine;
   elsewhere the sandbox is refused. The per-command container tier is
-  unchanged. See `docs/guide/22-container-drivers.md`.
+  unchanged. See `docs/guide/23-container-drivers.md`.
 - Snapshots, forwarding and exposed services for the `process`, `docker`
   and `podman` drivers. A snapshot is the workspace, without `.abhed`, as a
   gzip tar named by its SHA-256 (plus a committed image on the container
@@ -230,7 +230,7 @@ A server with it off starts on the older schema as before.
   default, with the viewer's credentials stripped and a sandboxing CSP on
   every response. Every snapshot, restore, forward and exposure is recorded
   with the sandbox id and generation. See
-  `docs/guide/23-snapshots-and-forwarding.md`.
+  `docs/guide/25-snapshots-and-forwarding.md`.
 - `driver.Spec` gains `WriteProtected` (paths a driver that copies a
   workspace back never writes) and `Egress` (the session's egress proxy, an
   instance's only way out).

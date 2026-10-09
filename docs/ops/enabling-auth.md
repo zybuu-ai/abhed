@@ -360,7 +360,7 @@ than no link.
 For a person at a terminal, `abhed login` signs the command line in to a
 server with local accounts and keeps a token in a profile, once
 `auth.cli.enabled` is on; a client certificate can also sign an account in.
-See [TLS and command-line sign-in](../guide/22-tls-and-cli-login.md). A
+See [TLS and command-line sign-in](../guide/26-tls-and-cli-login.md). A
 script without either signs in with a password and sends the session cookie
 back:
 

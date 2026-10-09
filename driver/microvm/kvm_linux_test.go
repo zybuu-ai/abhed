@@ -24,7 +24,7 @@ import (
 //	ABHED_TEST_FC_KERNEL  uncompressed guest kernel with virtio-blk and vsock
 //	ABHED_TEST_FC_ROOTFS  ext4 root filesystem from scripts/microvm/build-rootfs.sh
 //
-// docs/guide/22-microvm.md describes the CI job that sets these.
+// docs/guide/24-microvm.md describes the CI job that sets these.
 func TestFirecrackerOnKVM(t *testing.T) {
 	if os.Getenv("ABHED_TEST_FIRECRACKER") != "1" {
 		t.Skip("set ABHED_TEST_FIRECRACKER=1 on a KVM host to boot a real microVM")

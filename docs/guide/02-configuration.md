@@ -39,8 +39,8 @@ configuration](#trusting-the-workspace-configuration).
 | `fence` | `cpu_percent`: the fence tier's CPU bound — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy — [Sandboxes over the API](22-sandboxes.md) |
-| `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](22-tls-and-cli-login.md) |
-| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain — [TLS and command-line sign-in](22-tls-and-cli-login.md), [below](#stopping-the-server) |
+| `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
+| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
@@ -296,7 +296,7 @@ too. See [Network policy](21-network-policy.md).
 an `abhed-microvm` driver. With it, a sandbox may ask for the `microvm`
 driver by name; the default driver stays `process`, and nothing else
 changes. `abhed doctor` shows whether the driver answers, and is not ready
-when it does not. See [The microVM driver](22-microvm.md).
+when it does not. See [The microVM driver](24-microvm.md).
 
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that

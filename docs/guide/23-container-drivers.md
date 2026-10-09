@@ -133,7 +133,7 @@ runs in a VM (Docker Desktop, Podman on macOS and Windows) or elsewhere
 | `Stop` | refuses new commands, then stops the container with the grace given |
 | `Start` | a fresh container from fresh mounts; `/tmp` starts empty, the workspace is as it was |
 | `Forward` | a byte stream to a port on the container's loopback, through `exec`; the container gets no network for it |
-| `Snapshot`, `Restore` | with `Options.SnapshotDir` set: the workspace archived and the container committed; see [snapshots](23-snapshots-and-forwarding.md) |
+| `Snapshot`, `Restore` | with `Options.SnapshotDir` set: the workspace archived and the container committed; see [snapshots](25-snapshots-and-forwarding.md) |
 | `Delete` | removes the container, the egress proxy, and the sandbox's snapshots and their images |
 
 A cancelled command is ended inside the container too: its wrapper leaves
@@ -150,7 +150,7 @@ say it is this driver's sandbox of that id.
 
 Forwarding a port is always declared; snapshots only with
 `Options.SnapshotDir`. Both are in
-[Snapshots and forwarding](23-snapshots-and-forwarding.md).
+[Snapshots and forwarding](25-snapshots-and-forwarding.md).
 
 ## Testing on a real engine
 

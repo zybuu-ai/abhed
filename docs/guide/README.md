@@ -12,10 +12,10 @@ model you point it at, and records everything it does.
 | [Models and providers](03-providers.md) | the twenty providers, sampling parameters, subscriptions |
 | [Permissions and safety](04-permissions.md) | what the agent may do, and how you decide |
 | [Network policy](21-network-policy.md) | the egress allowlist: which destinations commands reach, and the record of each |
-| [The microVM driver](22-microvm.md) | experimental: sandboxes as Firecracker microVMs on Linux with KVM; what is and is not isolated |
+| [The microVM driver](24-microvm.md) | experimental: sandboxes as Firecracker microVMs on Linux with KVM; what is and is not isolated |
 | [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |
 | [The terminal](20-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
-| [TLS and command-line sign-in](22-tls-and-cli-login.md) | `serve` over HTTPS with reload and two certificates, client certificates, `abhed pki`, `abhed login` and profiles |
+| [TLS and command-line sign-in](26-tls-and-cli-login.md) | `serve` over HTTPS with reload and two certificates, client certificates, `abhed pki`, `abhed login` and profiles |
 
 ## Extending it
 
@@ -37,8 +37,8 @@ model you point it at, and records everything it does.
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
 | [Sandboxes over the API](22-sandboxes.md) | `/v1/sandboxes`: create, run commands in, stop and restart sandboxes; `serve -check`; `/v1/ready` |
-| [Container drivers](22-container-drivers.md) | the `docker` and `podman` sandbox drivers: flags, mounts, GPUs, the allowlist |
-| [Snapshots and forwarding](23-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |
+| [Container drivers](23-container-drivers.md) | the `docker` and `podman` sandbox drivers: flags, mounts, GPUs, the allowlist |
+| [Snapshots and forwarding](25-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |

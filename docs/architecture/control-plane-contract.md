@@ -285,7 +285,7 @@ Snapshots, forwards and lifetimes (Implemented: `driver/snapshot`,
 - Events `sandbox.snapshot`, `sandbox.restore`, `sandbox.forward`,
   `sandbox.forward_listen` and `sandbox.expose` go to the record with the
   sandbox id and generation. Details in
-  `docs/guide/23-snapshots-and-forwarding.md`.
+  `docs/guide/25-snapshots-and-forwarding.md`.
 
 Registration: `driver.Registry` maps names (`[a-z][a-z0-9-]{0,31}`) to drivers.
 `driver/builtin.Registry` builds the one a configuration describes: `process`
@@ -332,7 +332,7 @@ container; `Stop` stops it with the grace given. Capabilities: `attach`,
 `copy`, `forward` (a relay through `exec`, so the container never gets a
 network), and `snapshot` with `Options.SnapshotDir` (the workspace archived
 and the container committed). Details and every admission rule are in
-`docs/guide/22-container-drivers.md`.
+`docs/guide/23-container-drivers.md`.
 
 `ExecRequest.Env` may add variables but never replace one the sandbox set
 (`PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables), and `Cwd` must be
