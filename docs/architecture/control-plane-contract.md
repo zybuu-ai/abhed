@@ -159,9 +159,9 @@ last `:`; ids never contain one.
 | `GET …:attach` | — | WebSocket | PTY; resize as a control frame. Carries `generation`. |
 | `POST …:ssh` | — | `{host, port, user, known_hosts, expires_at}` | Short-lived credentials for the relay (P3-05). |
 | `POST …:forward` | `{port}` | WebSocket | Byte stream to a port inside the sandbox. Loopback-only on the client side. |
-| `POST …:expose` | `{port, ttl_seconds}` | `{url, expires_at}` | Off unless the policy allows it. |
+| `POST …:expose` | `{port, ttl_seconds}` | `{url, expires_at}` | Off unless the operator enables it. Served by `server/expose` under `/v1/exposed/`, to the same principal and tenant only. |
 | `POST …:cp` | `{direction: in\|out, path}` + tar body or tar response | `200` | Paths confined to the workspace; archive entries validated (no `..`, no absolute paths, no links out). |
-| `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | |
+| `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | `snapshot` carries the content `digest`. |
 | `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. |
 
 Every mutating call becomes an event in the record with the principal, the
@@ -241,6 +241,24 @@ Rules every driver keeps:
 - **No policy widening.** A driver receives the policy the control plane
   computed and may only narrow it.
 
+Snapshots, forwards and lifetimes (Implemented: `driver/snapshot`,
+`driver/forward`, `server/expose`):
+
+- `SnapshotRef.Digest` is the archive's `sha256:<hex>`; a restore refuses
+  content that does not match it, a ref of another sandbox, and any entry a
+  copy would refuse or that lies in `.abhed`. `Restore` needs a stopped
+  instance; the control plane moves the object to `Starting`
+  (`Sandbox.Restore`), which bumps `generation`. A driver bumps its own
+  count on every start from stopped, so its records agree.
+- `Forward` reaches a port only through the driver's channel into the
+  sandbox, never by widening its network. Forwards close when the instance
+  stops; a driver implementing `driver.Lifetime` says when, so host
+  listeners and exposures close with it.
+- Events `sandbox.snapshot`, `sandbox.restore`, `sandbox.forward`,
+  `sandbox.forward_listen` and `sandbox.expose` go to the record with the
+  sandbox id and generation. Details in
+  `docs/guide/23-snapshots-and-forwarding.md`.
+
 Registration: `driver.Registry` maps names (`[a-z][a-z0-9-]{0,31}`) to drivers.
 `Register` runs `Check` and refuses duplicates. `app.WithDriver` (later work)
 adds one to the server's registry, which is how the Team module adds the
@@ -254,7 +272,9 @@ confined: `Create` builds the sandbox the configuration selects
 `sandbox.tier` is `fence`), `Exec` runs a command through that sandbox's
 `Command`, and `Attach` runs its interactive shell on a PTY. `Stop` refuses
 further commands; `Start` builds the sandbox again; `Delete` closes it, which
-releases the fence's cgroup. Copy, forward and snapshot are not declared.
+releases the fence's cgroup. `Forward` runs a relay inside the sandbox to
+its own loopback; snapshot is declared when `Options.SnapshotDir` is set
+(workspace only). Copy is not declared.
 
 Because it reuses today's selection, the `process` driver also yields the
 container or gVisor tier where configuration and host pick one, and says so in
@@ -276,8 +296,10 @@ fence` fail with `ErrUnavailable`. Under the network allowlist the proxy
 stays on the host and a relay inside the container's own network namespace
 reaches it over a bound Unix socket; where the engine is not local to a
 Linux host this fails with `ErrUnavailable`. `Start` builds a fresh
-container; `Stop` stops it with the grace given. Capabilities: `attach` and
-`copy`. Details and every admission rule are in
+container; `Stop` stops it with the grace given. Capabilities: `attach`,
+`copy`, `forward` (a relay through `exec`, so the container never gets a
+network), and `snapshot` with `Options.SnapshotDir` (the workspace archived
+and the container committed). Details and every admission rule are in
 `docs/guide/22-container-drivers.md`.
 
 `ExecRequest.Env` may add variables but never replace one the sandbox set

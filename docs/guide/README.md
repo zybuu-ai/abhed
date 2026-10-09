@@ -35,6 +35,7 @@ model you point it at, and records everything it does.
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
 | [Container drivers](22-container-drivers.md) | the `docker` and `podman` sandbox drivers: flags, mounts, GPUs, the allowlist |
+| [Snapshots and forwarding](23-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
