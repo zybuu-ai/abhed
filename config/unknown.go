@@ -24,9 +24,10 @@ type UnknownKey struct {
 }
 
 func (u UnknownKey) String() string {
-	s := fmt.Sprintf("%s: unknown key %s is ignored", u.File, u.Path)
+	// The key is the file's own text, which may hold control bytes.
+	s := fmt.Sprintf("%s: unknown key %s is ignored", Printable(u.File), Printable(u.Path))
 	if u.Suggest != "" {
-		s += fmt.Sprintf(" (did you mean %s?)", u.Suggest)
+		s += fmt.Sprintf(" (did you mean %s?)", Printable(u.Suggest))
 	}
 	if u.Managed {
 		s += "; this is the managed configuration, which whoever manages it must correct"
@@ -73,7 +74,7 @@ func warnNeverAllows(rules []string) {
 		if id := "allow\x00" + r; !warned[id] && policy.NeverAllows(r) {
 			warned[id] = true
 			fmt.Fprintf(warnOut, "abhed: warning: allow rule %s never matches: "+
-				"an allow rule approves only a single command without ; & | ( ) < > $( ${ ` or a newline, so such a command is asked about\n", r)
+				"an allow rule approves only a single command without ; & | ( ) < > $( ${ ` or a newline, so such a command is asked about\n", Printable(r))
 		}
 	}
 }

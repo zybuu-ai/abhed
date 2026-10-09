@@ -166,6 +166,9 @@ func (w WorkspaceTrust) Warning() string {
 	if len(ignored) == 0 {
 		return ""
 	}
+	for i, k := range ignored {
+		ignored[i] = Printable(k)
+	}
 	why := "is not trusted"
 	switch reason {
 	case "changed":

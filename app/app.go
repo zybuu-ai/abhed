@@ -175,7 +175,7 @@ func OnServe(h ServeHook) Option {
 
 // subcommands are the ones Main dispatches itself, as its usage lists them.
 // subcommand is one Main dispatches itself. trust marks those that load the
-// workspace configuration and so take -trust-workspace right after the name.
+// workspace configuration and so take -trust-workspace after the name too.
 type subcommand struct {
 	name, about string
 	trust       bool

@@ -225,6 +225,15 @@ func Main(args []string, opts ...Option) int {
 		}
 		return 2
 	}
+	// The command line's own flags may follow a subcommand too.
+	if len(f.sub) > 0 {
+		sub, err := hoistGlobalFlags(fs, f.sub)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 2
+		}
+		f.sub = sub
+	}
 
 	if f.showVer || (len(f.sub) > 0 && f.sub[0] == "version") {
 		// --json is the handshake's block, for an editor checking the engine first.
@@ -267,11 +276,7 @@ func Main(args []string, opts ...Option) int {
 	if err != nil {
 		fail(err)
 	}
-	// Also accepted after the subcommand, as in `abhed serve -trust-workspace`.
 	rest := f.sub
-	if len(rest) > 1 {
-		rest = leadingTrustFlag(rest, &f.trustWS)
-	}
 	if f.trustWS {
 		a.trust = config.TrustGranted
 	}
@@ -436,28 +441,6 @@ func (f *cliFlags) permission() (string, error) {
 var permissionModes = map[string]string{
 	"default": "default", "acceptEdits": "accept-edits", "accept-edits": "accept-edits",
 	"plan": "plan", "auto": "auto", "bypassPermissions": "bypass", "bypass": "bypass",
-}
-
-// leadingTrustFlag takes -trust-workspace when it is the first argument
-// after a subcommand the registry marks as loading the workspace
-// configuration; for any other, an edition's included, it is left alone.
-// serve, eval and resolve also parse it among their own flags.
-func leadingTrustFlag(args []string, trust *bool) []string {
-	takes := false
-	for _, c := range subcommands {
-		if c.name == args[0] {
-			takes = c.trust
-		}
-	}
-	if !takes {
-		return args
-	}
-	switch args[1] {
-	case "-trust-workspace", "--trust-workspace", "-trust-workspace=true", "--trust-workspace=true":
-		*trust = true
-		return append(args[:1:1], args[2:]...)
-	}
-	return args
 }
 
 // ownsHelp are the subcommands that print their own usage for -h.

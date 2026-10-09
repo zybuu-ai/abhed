@@ -80,13 +80,13 @@ func (w WorkloadAuthConfig) validate() error {
 	for _, g := range w.Grants {
 		id := strings.TrimSuffix(g.SPIFFEID, "/*")
 		if !strings.HasPrefix(id, prefix) || len(id) == len(prefix) {
-			return fmt.Errorf("auth.workload.grants: %q is not a workload in trust domain %s", g.SPIFFEID, w.TrustDomain)
+			return fmt.Errorf("auth.workload.grants: %q is not a workload in trust domain %s", g.SPIFFEID, Printable(w.TrustDomain))
 		}
 		if strings.Contains(id, "*") {
 			return fmt.Errorf("auth.workload.grants: %q may end in /* and have no other wildcard", g.SPIFFEID)
 		}
 		if len(g.Scopes) == 0 {
-			return fmt.Errorf("auth.workload.grants: %s names no scopes", g.SPIFFEID)
+			return fmt.Errorf("auth.workload.grants: %s names no scopes", Printable(g.SPIFFEID))
 		}
 	}
 	return nil
