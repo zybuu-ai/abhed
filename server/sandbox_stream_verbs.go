@@ -192,7 +192,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 	var wait func() error
 	res, _, err := s.opts.ControlPlane.Exec(ctx, call.caller, call.id, "", req, controlplane.ExecIO{
 		Stdin: pr, Stdout: prefixed{ws, 1}, Stderr: prefixed{ws, 2},
-		Screen: func(command string) error { return denied(pol, command, false) },
+		Screen: func(command string) error { return s.screenStdinExec(pol, command) },
 		Started: func(sb controlplane.Sandbox) {
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
 			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{})
@@ -515,7 +515,7 @@ func (h *sshSandbox) Exec(ctx context.Context, command string, sess sshrelay.Ses
 	}
 	res, _, err := h.s.opts.ControlPlane.Exec(ctx, h.caller, h.sb.ID, "", controlplane.ExecRequest{Command: command, Stdin: true},
 		controlplane.ExecIO{Stdin: sess.Stdin, Stdout: sess.Stdout, Stderr: sess.Stderr, Timeout: left,
-			Screen: func(command string) error { return denied(h.pol, command, false) }})
+			Screen: func(command string) error { return h.s.screenStdinExec(h.pol, command) }})
 	return res.ExitCode, err
 }
 

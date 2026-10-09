@@ -8,6 +8,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A sandbox command fed stdin (the `:exec` WebSocket, an SSH exec request,
+  `abhed sandbox exec -i`) that is a shell or interpreter, such as `sh` or
+  `python3`, is refused with `403` while any deny or ask rule for `bash` or
+  any hook is in force (the default deny rules included): the commands it
+  would read from stdin are never put to the rules. The message points to
+  `:attach` or an SSH shell, which judge each line. A word naming a shell,
+  an interpreter or a program that runs what it reads (`awk`, `sed`,
+  `xargs`, `eval`, `ssh` …) anywhere in the line, a program named by an
+  expansion, and a line that does not parse are refused; the sandboxes
+  guide lists the rule. Editors that start their server over SSH by sending
+  a script to a shell need a server whose rules and hooks do not screen
+  `bash`.
 - A sandbox command given as `argv` (`POST :exec`, the `:exec` WebSocket,
   and `abhed sandbox exec ID -- COMMAND ARG...`) is judged by the deny rules
   and recorded as the line the process and container drivers run, each word

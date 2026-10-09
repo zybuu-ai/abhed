@@ -513,6 +513,36 @@ back as binary messages whose first byte says the stream (1 stdout, 2
 stderr). The command is judged, bounded and recorded as a `POST` one is.
 `POST …:exec` with `"stdin": true` answers `400`, naming the WebSocket form.
 
+A shell or interpreter fed stdin would run commands no rule ever sees. So
+while any deny or ask rule for `bash` or any hook is in force (the default
+configuration's deny rules count, as do a Team workspace's rules), a command
+fed stdin that could read commands from it is refused with `403` and code
+`forbidden`, and recorded: use `:attach` or an SSH shell, which judge each
+line, or pass the commands in the command line. This covers `:exec` with
+stdin, an SSH exec request and `abhed sandbox exec -i`. The rule is checked
+on every simple command anywhere in the line, pipelines, lists,
+substitutions and functions included:
+
+- a word naming a shell or interpreter refuses it, by its base name in any
+  case with a version suffix ignored (`/usr/bin/python3.12` is `python`):
+  shells (`sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `csh`, `busybox` …),
+  language interpreters (`python`, `perl`, `ruby`, `node`, `php`, `lua`,
+  `tclsh` …), programs that run what they read or build commands from it
+  (`awk`, `sed`, `xargs`, `parallel`, `ed`, `vim`, `gdb`, `sqlite3`, `psql`,
+  `mysql`, `ssh` …), and `eval`, `source` and `.`. It counts wherever it
+  stands, as `kubectl exec -i pod -- sh` would run one; a name that is also
+  a common argument (`.`, `r`, `ed`, `make`) counts only as the program or
+  after a wrapper;
+- a program named by an expansion, a glob or `$'…'` refuses it, and so does
+  such a word after a wrapper that runs the program after it (`env`,
+  `nice`, `timeout`, `nohup`, `sudo`, `find` …);
+- a line that cannot be parsed is refused.
+
+A false match only refuses a command that could have run without stdin. A
+script file the command runs is judged by its name, as on every exec.
+Editors that start their server over SSH by sending a script to `sh` need a
+server whose rules and hooks do not screen `bash`.
+
 **`:forward?port=N`** carries a byte stream to `127.0.0.1:N` inside the
 sandbox, through the driver's own channel (see [Snapshots and
 forwarding](25-snapshots-and-forwarding.md#forwarding-a-port)): binary
@@ -545,7 +575,8 @@ write the host key and these lines for you.
 
 Each SSH session is its own recorded call, judged as the verb it amounts
 to: a shell is an `:attach` (`via: ssh` in the record; refused where
-`:attach` is), a command is an `:exec` (judged by the deny rules, its
+`:attach` is), a command is an `:exec` with stdin (judged by the deny rules
+and refused when it is a shell or interpreter, as above, its
 output held to `exec.output_bytes` on its channel, and run without a
 terminal even when one was asked for), and a `direct-tcpip` channel to
 `127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
