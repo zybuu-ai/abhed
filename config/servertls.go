@@ -78,5 +78,9 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 			}
 		}
 	}
+	// Whoever reads the relay's host key can pose as every sandbox's SSH server.
+	if c.ControlPlane.Enabled && c.ControlPlane.SSHHostKey != "" {
+		out = append(out, c.ControlPlane.SSHHostKey)
+	}
 	return out
 }

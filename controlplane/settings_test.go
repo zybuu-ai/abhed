@@ -97,3 +97,34 @@ func TestTierMeets(t *testing.T) {
 		}
 	}
 }
+
+// The SSH bounds default generously, read the nested keys, and a managed
+// value is a ceiling a sandbox may only tighten.
+func TestSSHSessionSettings(t *testing.T) {
+	st, err := cp.SettingsFromConfig(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := st.For(nil); v.Int(cp.SetSSHIdle) != 3600 || v.Int(cp.SetSSHMaxSession) != 43200 {
+		t.Fatalf("defaults %v", v)
+	}
+	cfg := config.Default()
+	cfg.ControlPlane.SSH.IdleTimeoutSeconds = 600
+	cfg.ControlPlane.SSH.MaxSessionSeconds = 7200
+	cfg.ManagedKeys = []string{"control_plane.ssh"}
+	if st, err = cp.SettingsFromConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if v := st.For(nil); v.Int(cp.SetSSHIdle) != 600 || v.Int(cp.SetSSHMaxSession) != 7200 {
+		t.Fatalf("configured %v", v)
+	}
+	if err := st.Check(map[string]string{cp.SetSSHMaxSession: "86400"}); !errors.Is(err, cp.ErrInvalid) {
+		t.Fatalf("looser than managed: %v", err)
+	}
+	if err := st.Check(map[string]string{cp.SetSSHIdle: "60", cp.SetSSHMaxSession: "3600"}); err != nil {
+		t.Fatalf("tighter: %v", err)
+	}
+	if err := st.Check(map[string]string{cp.SetSSHIdle: "0"}); err == nil {
+		t.Fatal("a zero idle timeout was taken")
+	}
+}

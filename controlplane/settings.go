@@ -38,6 +38,10 @@ const (
 	// driver; set, a driver that cannot hold a sandbox to it refuses it.
 	SetCPUs     = "resources.cpus"
 	SetMemoryMB = "resources.memory_mb"
+	// SSH connections through the relay are bounded by these, not by
+	// exec.timeout_seconds.
+	SetSSHIdle       = "ssh.idle_timeout_seconds"
+	SetSSHMaxSession = "ssh.max_session_seconds"
 )
 
 // cpusPattern is a CPU count with at most three decimals, as "0.5" or "2".
@@ -203,6 +207,13 @@ var Registry = []Setting{
 			return intRank(16, 4<<20, true)(v)
 		},
 		value: func(c config.Config) string { return itoa(c.ControlPlane.SandboxMemoryMB) }},
+	{Key: SetSSHIdle, Scope: ScopeSandbox, Config: "control_plane.ssh.idle_timeout_seconds", Default: "3600",
+		Doc: "an SSH connection with no traffic for this long is closed", rank: intRank(1, 7*86400, true),
+		value: func(c config.Config) string { return itoa(c.ControlPlane.SSH.IdleTimeoutSeconds) }},
+	{Key: SetSSHMaxSession, Scope: ScopeSandbox, Config: "control_plane.ssh.max_session_seconds", Default: "43200",
+		Doc:   "longest an SSH connection stays open; its commands are bounded by this, not exec.timeout_seconds",
+		rank:  intRank(1, 7*86400, true),
+		value: func(c config.Config) string { return itoa(c.ControlPlane.SSH.MaxSessionSeconds) }},
 	{Key: SetMutationsPerMin, Scope: ScopeGlobal, Config: "control_plane.mutations_per_minute", Default: "120",
 		Doc: "changes to sandboxes one caller may make a minute", rank: intRank(1, 100000, true),
 		value: func(c config.Config) string { return itoa(c.ControlPlane.MutationsPerMinute) }},

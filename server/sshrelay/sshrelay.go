@@ -337,8 +337,8 @@ func LoadOrCreateHostKey(path string) (ssh.Signer, error) {
 	return LoadHostKey(path)
 }
 
-// LoadHostKey reads the server's SSH host key from path, never making one.
-// A key others may read, or a path that is a link, is refused.
+// LoadHostKey reads a host key the operator provides at path, refusing one
+// that is missing, a link, not a regular file, or readable by others.
 func LoadHostKey(path string) (ssh.Signer, error) {
 	fi, err := os.Lstat(path)
 	switch {

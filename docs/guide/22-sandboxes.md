@@ -36,9 +36,11 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. A sandbox's commands can neither read nor write the other folders under the root (on macOS the `process` driver's profile denies them; on Linux they are never mounted in), so a root inside a `sandbox.read_only_paths` entry or a skills folder, which would show them, is refused. |
 | `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
 | `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace. |
+| `ssh.idle_timeout_seconds` | 3600 | An SSH connection with no traffic either way for this long is closed. |
+| `ssh.max_session_seconds` | 43200 | Longest an SSH connection stays open. Its commands are bounded by this, not by `exec_timeout_seconds`. |
+| `ssh_host_key` | a key the server makes | The `:ssh` relay's host key file, so several servers can share one key; see [SSH](#streams-attach-exec-with-stdin-forward-and-ssh). |
 | `expose` | `false` | Lets `:expose` publish a sandbox's port to whoever asked; see [exposed services](#the-api). |
 | `expose_max_ttl_seconds` | 3600 | Longest an exposure lives. |
-| `ssh_host_key` | unset | The `:ssh` relay's host key file, an absolute path, read and never made, so several servers present one key; see [SSH](#streams-attach-exec-with-stdin-forward-and-ssh). |
 | `sqlite_path` | `~/.abhed/controlplane/sandboxes.db` | The SQLite file sandboxes are kept in when `storage.driver` is not `postgres`; see [where sandboxes are kept](#where-sandboxes-are-kept). Must be absolute. |
 | `exec_timeout_seconds` | 600 | Longest one `:exec` may run. |
 | `exec_output_bytes` | 16 MiB | Most output one `:exec` may write, stdout and stderr together. |
@@ -286,6 +288,8 @@ be set on one sandbox, under `settings` with its registry name:
 | `isolation.min_tier` | `sandbox.min_tier` |
 | `resources.cpus` | `control_plane.sandbox_cpus` |
 | `resources.memory_mb` | `control_plane.sandbox_memory_mb` |
+| `ssh.idle_timeout_seconds` | `control_plane.ssh.idle_timeout_seconds` |
+| `ssh.max_session_seconds` | `control_plane.ssh.max_session_seconds` |
 | `rate.mutations_per_minute` | `control_plane.mutations_per_minute` (server only) |
 | `rate.exec_per_minute` | `control_plane.exec_per_minute` (server only) |
 | `reconcile.interval_seconds` | `control_plane.reconcile_seconds` (server only) |
@@ -517,11 +521,20 @@ write the host key and these lines for you.
 
 Each SSH session is its own recorded call, judged as the verb it amounts
 to: a shell is an `:attach` (`via: ssh` in the record; refused where
-`:attach` is), a command is an `:exec` (judged by the deny rules, bounded
-by `exec.timeout_seconds` and `exec.output_bytes`, and run without a
+`:attach` is), a command is an `:exec` (judged by the deny rules, its
+output held to `exec.output_bytes` on its channel, and run without a
 terminal even when one was asked for), and a `direct-tcpip` channel to
 `127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
-is recorded as `ssh`, with its sessions, forwards and refusals. Everything
+is recorded as `ssh`, with its sessions, forwards and refusals.
+
+An SSH connection has limits of its own, so a server an editor starts
+over SSH keeps running: it closes after `ssh.idle_timeout_seconds` with
+no traffic either way (an hour by default; a client's keepalives count)
+and `ssh.max_session_seconds` after it opened (twelve hours by default),
+and a command run over it is bounded by what is left of that, not by
+`exec.timeout_seconds` (the record notes the bound as `timeout_seconds`).
+Both can be set per sandbox, and a managed value is a ceiling a sandbox
+may only tighten. Each SSH session also counts against `exec_per_minute`. Everything
 else is refused: remote forwarding, agent and X11 forwarding, environment
 variables, signals, and subsystems.
 
@@ -538,14 +551,19 @@ A key file that others may read, or that is a link, leaves the relay off:
 the server says so when it starts, and `:ssh` answers `501`. No command or
 file tool may read it.
 
-Several servers behind one address (replicas) each make their own key,
-and a client checking the host key strictly is refused by all but one.
-Give them one key instead with `control_plane.ssh_host_key`: an absolute
-path to an OpenSSH private key that only the server's user can read. It is
-read, never made; a key that is missing, unreadable, readable by others or
-a link refuses the start (and `abhed serve -check`), since a key made in
-its place would not be the one clients trust. The Helm chart mounts one
-from a Secret with `controlPlane.sshHostKey`.
+Several servers behind one name (Kubernetes replicas, or a server whose
+state folder does not survive a restart) should share one key, set with
+`control_plane.ssh_host_key`: an absolute path to an OpenSSH private key
+(`ssh-keygen -t ed25519 -N '' -f relay_key`) owned by the server's user,
+readable by that user alone (`0600` or `0400`), not a link, and outside every workspace, added directory,
+sandbox folder, temp folder and cache. A configured key that cannot be read
+refuses the start instead of leaving the relay off. It is a protected state
+file like the TLS key. From a Kubernetes Secret, mount the one file with
+`subPath` (the Secret volume's own files are links) and `defaultMode: 0400`
+under a `runAsUser` that owns it, or copy it into place with an init
+container. `abhed serve -check` and `abhed doctor` name the key in use and
+its fingerprint. The Helm chart copies one in from a Secret with
+`controlPlane.sshHostKey`; see [Running on Kubernetes](27-kubernetes.md#files-that-must-be-private).
 
 ## Templates
 

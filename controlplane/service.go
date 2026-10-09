@@ -571,6 +571,9 @@ type ExecIO struct {
 	// Screen, when set, judges the command line once the request is
 	// recorded and before the guard; a refusal is recorded and returned.
 	Screen func(command string) error
+	// Timeout, when set, replaces exec.timeout_seconds: for a command a
+	// caller bounds otherwise, as an SSH session's is by its own limits.
+	Timeout time.Duration
 }
 
 // Exec runs one command in a Ready sandbox, stopped past exec.output_bytes
@@ -636,7 +639,12 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 		return driver.ExecResult{}, sb, err
 	}
 	vals := s.cfg.Settings.For(sb.Settings)
-	ctx, cancel := context.WithTimeout(ctx, vals.Seconds(SetExecTimeout))
+	timeout := vals.Seconds(SetExecTimeout)
+	if eio.Timeout > 0 {
+		timeout = eio.Timeout
+		ev.Detail["timeout_seconds"] = strconv.Itoa(int(timeout.Seconds()))
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	limit := driver.NewOutputLimit(vals.Int(SetExecOutput))
 	limit.OnExceed = cancel
@@ -651,7 +659,7 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	case err == nil && ctx.Err() != nil:
 		err = ctx.Err()
 	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
-		err = fmt.Errorf("%w: the command ran past %s and was stopped", context.DeadlineExceeded, vals.Seconds(SetExecTimeout))
+		err = fmt.Errorf("%w: the command ran past %s and was stopped", context.DeadlineExceeded, timeout)
 	}
 	if err == nil {
 		ev.Detail["exit_code"] = strconv.Itoa(res.ExitCode)

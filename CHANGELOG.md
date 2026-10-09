@@ -31,11 +31,6 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- `control_plane.ssh_host_key`: the `:ssh` relay's host key from a file,
-  read and never made, so several servers present one key; a key that is
-  missing or readable by others refuses the start. The Helm chart mounts it
-  from a Secret with `controlPlane.sshHostKey`, copied in at `0400`. See
-  [Running on Kubernetes](docs/guide/27-kubernetes.md#files-that-must-be-private).
 - **`abhed sandbox`**: a server's sandboxes from the command line, as the
   profile `abhed login` saved (`-profile`, the current one, or `-server URL`):
   `create` (from a template, with labels, settings, a minimum tier, a
@@ -81,7 +76,16 @@ All notable changes to Abhed are recorded here. The format follows
   the sign-in, the page's origin and the caller's sight of the sandbox
   before the connection is taken over, and an open stream ends when the
   sign-in does. The WebSocket implementation is Abhed's own, in the public
-  package `wsconn`, with no new dependency.
+  package `wsconn`, with no new dependency. `control_plane.ssh_host_key`
+  names a host key file replicas share (`0600`, not a link, outside every
+  workspace, and a protected state file; the Helm chart copies one in
+  from a Secret, at `0400`, with `controlPlane.sshHostKey`); `abhed serve -check` and
+  `abhed doctor` report the key in use. SSH connections have their own
+  limits, `control_plane.ssh.idle_timeout_seconds` (an hour) and
+  `max_session_seconds` (twelve hours), settable per sandbox with managed
+  values as ceilings; a command run over SSH is bounded by them rather than
+  by `exec_timeout_seconds`, so an editor's server keeps running, and its
+  output is still capped per channel.
 - Policy layers from an edition: `server.Options.SessionPolicy` lets an
   edition add deny, ask and allow rules to every session of a person, as a
   layer of its own (the Team edition's workspace policy uses it). Deny and
@@ -407,6 +411,8 @@ on. A server with it off starts on the older schema as before.
   through the same checks, record, guard and interceptor as a verb, with
   `StreamRequest.Screen`; `ExecIO.Screen` judges an exec's command line;
   `Service.Note` records what happens inside an admitted call;
+  `ExecIO.Timeout` replaces `exec.timeout_seconds` for a caller that bounds
+  a command otherwise;
   `server.Options.SandboxSSHKey` turns the relay on;
   `drivertest.Fake.AttachFunc` stands in for a shell.
 - Experimental public Go packages for the sandbox control plane, the base

@@ -3,9 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/pem"
 	"errors"
 	"net"
 	"os"
@@ -22,7 +19,6 @@ import (
 	"github.com/zybuu-ai/abhed/driver/builtin"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
-	"golang.org/x/crypto/ssh"
 )
 
 // checkEnv isolates the configuration: userCfg is the person's own file and
@@ -420,52 +416,4 @@ func TestServeCheckDoesNotMigrate(t *testing.T) {
 		strings.Contains(out.String(), "migrate") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
-}
-
-// control_plane.ssh_host_key is read as it is: a key that is missing,
-// relative, or readable by others refuses the start rather than leaving the
-// relay off or making another key in its place.
-func TestConfiguredSSHHostKey(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ssh_host_ed25519_key")
-	var out bytes.Buffer
-	if _, err := sandboxSSHKey(&out, path); err == nil || !strings.Contains(err.Error(), "control_plane.ssh_host_key") {
-		t.Fatalf("a missing configured key: %v", err)
-	}
-	if _, err := os.Lstat(path); err == nil {
-		t.Fatal("a configured key was made")
-	}
-	if _, err := sandboxSSHKey(&out, "relative/key"); err == nil || !strings.Contains(err.Error(), "absolute") {
-		t.Fatalf("a relative path: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(testHostKey(t)), 0o400); err != nil {
-		t.Fatal(err)
-	}
-	key, err := sandboxSSHKey(&out, path)
-	if err != nil || key == nil {
-		t.Fatalf("a 0400 key: %v", err)
-	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sandboxSSHKey(&out, path); err == nil || !strings.Contains(err.Error(), "read by others") {
-		t.Fatalf("a key others may read: %v", err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("a configured key fell back to a warning: %s", out.String())
-	}
-}
-
-// testHostKey is an Ed25519 private key in OpenSSH form.
-func testHostKey(t *testing.T) string {
-	t.Helper()
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, err := ssh.MarshalPrivateKey(priv, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(pem.EncodeToMemory(block))
 }

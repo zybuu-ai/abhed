@@ -293,17 +293,21 @@ sets deny rules or extensions that screen `bash`, attach is `403`.
 **SSH** (`server/sshrelay`, `golang.org/x/crypto/ssh`): the server's SSH
 server has no listener; the relay hands it one authenticated connection,
 so SSH accepts the `none` method. A `shell` is a `Service.Stream` attach
-(`via=ssh`), an `exec` is `Service.Exec` (no PTY), a `direct-tcpip` channel
+(`via=ssh`), an `exec` is `Service.Exec` (no PTY; bounded by what is left
+of `ssh.max_session_seconds` through `ExecIO.Timeout` instead of
+`exec.timeout_seconds`, output still capped per channel), a `direct-tcpip` channel
 to `127.0.0.1`, `::1` or `localhost` is a forward; global requests, other
 channel types, `env`, signals and subsystems are refused. SFTP is not
 served: drivers move files as tar (`:cp`), and SFTP over that would copy
 whole trees to list them. The host key is Ed25519, per server, in the
 control plane's state folder (`0600`, refused if readable by others or a
-link, and a state path no tool may read). `app`'s `abhed sandbox connect
+link, and a state path no tool may read), or the file
+`control_plane.ssh_host_key` names, which replicas share; a configured key
+that cannot be read refuses the start. `app`'s `abhed sandbox connect
 --stdio ID` is the `ProxyCommand` end.
 
-In HA (§13) a `SandboxRouter` must carry the upgrade to the owning replica;
-the replicas also need one host key between them.
+In HA (§13) a `SandboxRouter` must carry the upgrade to the owning replica,
+and the replicas share one host key through `control_plane.ssh_host_key`.
 
 ### 4.4 Templates (Implemented: `controlplane.Template`, `server/sandbox_templates.go`)
 
@@ -725,7 +729,8 @@ wraps `controlplane.Store`. The Community module never imports the private one.
 configured default a sandbox may override in `settings`:
 `exec.timeout_seconds`, `exec.output_bytes`, `restart.policy`,
 `restart.max_restarts`, `restart.backoff_seconds`, `isolation.min_tier`,
-`resources.cpus`, `resources.memory_mb`). A size in force reaches the driver
+`resources.cpus`, `resources.memory_mb`, `ssh.idle_timeout_seconds`,
+`ssh.max_session_seconds`). A size in force reaches the driver
 as `Spec.Config` keys `cpus` and `memory_mb`; unset passes nothing. A driver
 that cannot hold a sandbox to a size refuses the Spec (`process` does).
 Every setting orders its values from loosest to tightest. A value the

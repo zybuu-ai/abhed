@@ -691,3 +691,84 @@ func TestSandboxSSHSessionsAreRateLimited(t *testing.T) {
 		t.Fatalf("over the rate: %v %q", err, errOut.String())
 	}
 }
+
+// A command over SSH is bounded by the connection's own limits, not by
+// exec.timeout_seconds, while its output is still capped per channel.
+func TestSandboxSSHCommandsOutliveTheExecTimeout(t *testing.T) {
+	r := newWSRig(t, map[string]string{controlplane.SetExecTimeout: "1", controlplane.SetExecOutput: "1024"},
+		[]driver.Capability{driver.CapAttach}, func(o *Options) { o.SandboxSSHKey = testHostKey(t) })
+	r.fake.ExecFunc = func(ctx context.Context, _ string, req driver.ExecRequest) (driver.ExecResult, error) {
+		if req.Command == "flood" {
+			_, err := req.Stdout.Write(make([]byte, 4096))
+			return driver.ExecResult{}, err
+		}
+		select {
+		case <-time.After(1500 * time.Millisecond):
+		case <-ctx.Done():
+			return driver.ExecResult{}, ctx.Err()
+		}
+		_, _ = req.Stdout.Write([]byte("served"))
+		return driver.ExecResult{}, nil
+	}
+	sb := r.ready(t, "alice")
+	// Without SSH the same command is stopped at exec.timeout_seconds.
+	rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", token: "alice", body: `{"command":"serve"}`})
+	if !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("POST exec outlived its timeout: %s", rec.Body.String())
+	}
+	c := sshClient(t, r, sb.ID)
+	s, _ := c.NewSession()
+	if out, err := s.Output("serve"); err != nil || string(out) != "served" {
+		t.Fatalf("ssh exec past the exec timeout: %q %v", out, err)
+	}
+	ev := waitAudit(t, r.cpRig, sb.ID, "exec", controlplane.OutcomeOK)
+	if ev.Detail["timeout_seconds"] == "" {
+		t.Fatalf("the SSH command's bound is not recorded: %+v", ev)
+	}
+	s, _ = c.NewSession()
+	if out, err := s.Output("flood"); err == nil || len(out) > 1024 {
+		t.Fatalf("ssh output past the cap: %d bytes, %v", len(out), err)
+	}
+}
+
+func TestSandboxSSHIdleAndMaxSession(t *testing.T) {
+	r := newWSRig(t, map[string]string{controlplane.SetSSHIdle: "1"}, []driver.Capability{driver.CapAttach},
+		func(o *Options) { o.SandboxSSHKey = testHostKey(t) })
+	sb := r.ready(t, "alice")
+	c := sshClient(t, r, sb.ID)
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an idle SSH connection was not closed")
+	}
+	if ev := waitAudit(t, r.cpRig, sb.ID, "ssh", controlplane.OutcomeFailed); ev.Code != "unavailable" {
+		t.Fatalf("idle close record %+v", ev)
+	}
+
+	// A busy connection still ends at ssh.max_session_seconds, which a
+	// sandbox may set tighter.
+	if rec := r.do(t, cpCall{method: "PATCH", path: "/v1/sandboxes/" + sb.ID, token: "alice", body: `{"settings":{"ssh.max_session_seconds":"2","ssh.idle_timeout_seconds":"60"}}`,
+		header: map[string]string{"If-Match": "*"}}); rec.Code != http.StatusOK {
+		t.Fatalf("patch: %d %s", rec.Code, rec.Body.String())
+	}
+	c = sshClient(t, r, sb.ID)
+	start := time.Now()
+	go func() { done <- c.Wait() }()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			if d := time.Since(start); d < 1500*time.Millisecond || d > 6*time.Second {
+				t.Fatalf("closed after %s", d)
+			}
+			return
+		case <-tick.C:
+			_, _, _ = c.SendRequest("keepalive@openssh.com", true, nil)
+		case <-time.After(8 * time.Second):
+			t.Fatal("a busy SSH connection outlived ssh.max_session_seconds")
+		}
+	}
+}

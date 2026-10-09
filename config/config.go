@@ -694,10 +694,6 @@ type ControlPlaneConfig struct {
 	Expose bool `json:"expose,omitempty"`
 	// ExposeMaxTTLSeconds bounds an exposure's life. Zero means an hour.
 	ExposeMaxTTLSeconds int `json:"expose_max_ttl_seconds,omitempty"`
-	// SSHHostKey is the :ssh relay's host key file, an absolute path, read
-	// and never made, so replicas can share one key. Empty keeps the one made
-	// in the control plane's state folder.
-	SSHHostKey string `json:"ssh_host_key,omitempty"`
 	// SQLitePath is the database file sandboxes are kept in when storage is
 	// not Postgres. Empty is ~/.abhed/controlplane/sandboxes.db. Must be
 	// absolute, in a folder only the server's user can enter, outside any
@@ -718,6 +714,13 @@ type ControlPlaneConfig struct {
 	ExecPerMinute      int `json:"exec_per_minute,omitempty"`
 	// ReconcileSeconds is how often every sandbox is checked against its driver.
 	ReconcileSeconds int `json:"reconcile_seconds,omitempty"`
+	// SSHHostKey is the :ssh relay's host key file, so replicas can share one
+	// key from a secret. Empty means a key the server makes in the control
+	// plane's state folder. Absolute, readable by its owner only, not a link,
+	// outside every workspace; read, never made.
+	SSHHostKey string `json:"ssh_host_key,omitempty"`
+	// SSH bounds the sessions reached through the :ssh relay.
+	SSH SSHSessionConfig `json:"ssh,omitempty"`
 	// SandboxCPUs and SandboxMemoryMB size every sandbox that does not set
 	// its own; zero leaves the size to the driver.
 	SandboxCPUs     float64 `json:"sandbox_cpus,omitempty"`
@@ -797,6 +800,18 @@ type ContainerMountRoot struct {
 	Path     string `json:"path"`
 	Writable bool   `json:"rw,omitempty"`
 	Relabel  bool   `json:"relabel,omitempty"`
+}
+
+// SSHSessionConfig bounds an SSH connection to a sandbox. Its commands are
+// bounded by these rather than by exec_timeout_seconds, so a long-lived
+// server an editor starts over SSH keeps running.
+type SSHSessionConfig struct {
+	// IdleTimeoutSeconds closes a connection with no traffic either way for
+	// this long. Zero means an hour.
+	IdleTimeoutSeconds int `json:"idle_timeout_seconds,omitempty"`
+	// MaxSessionSeconds closes a connection this long after it opened. Zero
+	// means twelve hours.
+	MaxSessionSeconds int `json:"max_session_seconds,omitempty"`
 }
 
 // HAConfig makes this server one of several replicas sharing a Postgres

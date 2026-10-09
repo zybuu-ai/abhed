@@ -190,6 +190,13 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		fmt.Printf("storage     %s for serve\n            %s for the command line\n", serveStorageLabel(cfg), storageLabel(cfg))
 	}
 	fmt.Printf("sandboxes   %s\n", controlPlaneLabel(cfg))
+	if cfg.ControlPlane.Enabled {
+		if label, err := sshKeyLabel(cfg); err != nil {
+			fmt.Printf("ssh relay   UNAVAILABLE — %v\n", err)
+		} else {
+			fmt.Printf("ssh relay   host key %s\n", label)
+		}
+	}
 	if cfg.Retrieval.Enabled {
 		if ix, err := toolset.OpenIndex(context.Background(), cfg, workspace); err == nil {
 			d, t, v, _ := ix.Stats()
