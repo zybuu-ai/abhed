@@ -56,6 +56,11 @@ trust](../architecture/workspace-trust.md).
 }
 ```
 
+`session_hours` is how long a browser sign-in lasts: 12 when unset, at most
+8760 (a year). A negative value or one above that stops every command from
+loading the configuration, and `abhed doctor` names it; `abhed doctor` also
+shows the length in force under `auth`.
+
 Create the first account from the CLI:
 
 ```bash

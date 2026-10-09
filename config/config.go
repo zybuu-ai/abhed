@@ -234,6 +234,9 @@ func (k SetAsideKey) String() string {
 	return fmt.Sprintf("%s sets %s, which is ignored: %s", Printable(k.File), k.Key, k.Reason)
 }
 
+// MaxSessionHours bounds auth.session_hours at a year.
+const MaxSessionHours = 8760
+
 // NetworkAllowlist is the sandbox.network value that sends commands through
 // the egress proxy.
 const NetworkAllowlist = "allowlist"
@@ -591,7 +594,8 @@ type AuthConfig struct {
 	Scopes        []string `json:"scopes,omitempty"`
 	// CookieSecure should be true anywhere but local HTTP development.
 	CookieSecure bool `json:"cookie_secure,omitempty"`
-	SessionHours int  `json:"session_hours,omitempty"`
+	// SessionHours is how long a browser sign-in lasts, 0 to MaxSessionHours.
+	SessionHours int `json:"session_hours,omitempty"`
 	// ProxyLogoutURL is the authenticating proxy's own sign-out, in proxy
 	// mode. Without it the console offers no sign-out, since the proxy owns it.
 	ProxyLogoutURL string `json:"proxy_logout_url,omitempty"`
@@ -1595,6 +1599,9 @@ func (c Config) Validate() error {
 	}
 	if o := c.Context.OffloadAt; o != nil && (*o < 0 || *o >= c.Context.CompactAt) {
 		return fmt.Errorf("context.offload_at must be 0 (off) or below compact_at (%v), got %v", c.Context.CompactAt, *o)
+	}
+	if h := c.Auth.SessionHours; h < 0 || h > MaxSessionHours {
+		return fmt.Errorf("auth.session_hours is %d; use a number of hours up to %d (a year), or 0 for the default", h, MaxSessionHours)
 	}
 	switch c.Auth.Mode {
 	case "none", "proxy", "oidc", "local", "":

@@ -98,6 +98,9 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		findings.authDown = true
 	} else {
 		fmt.Printf("auth        %s\n", authLabel(cfg, mw))
+		if line := sessionLine(cfg); line != "" {
+			fmt.Printf("            %s\n", line)
+		}
 		// A provider that can prove itself does so here, so a misconfigured
 		// issuer is a doctor finding rather than the first user's error page.
 		for _, p := range mw.Providers {
@@ -535,4 +538,18 @@ func managedLine(cfg config.Config) string {
 		return ""
 	}
 	return fmt.Sprintf("%s (sets %d setting(s))", config.Printable(managed.ConfigFile), len(cfg.ManagedKeys))
+}
+
+// sessionLine says how long a browser sign-in lasts, when one does.
+func sessionLine(cfg config.Config) string {
+	h := cfg.Auth.SessionHours
+	switch {
+	case cfg.Auth.Mode != "local" && cfg.Auth.Mode != "oidc":
+		return ""
+	case h == 0 && cfg.Auth.Mode == "local":
+		h = int(auth.DefaultSessionTTL.Hours())
+	case h == 0:
+		return ""
+	}
+	return fmt.Sprintf("a sign-in lasts %d hours (auth.session_hours)", h)
 }

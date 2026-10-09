@@ -246,9 +246,12 @@ func (l *LocalAuth) changed(username string) {
 	}
 }
 
+// DefaultSessionTTL is how long a local sign-in lasts when nothing sets it.
+const DefaultSessionTTL = 12 * time.Hour
+
 func NewLocalAuth(store UserStore, ttl time.Duration, secure bool) *LocalAuth {
 	if ttl == 0 {
-		ttl = 12 * time.Hour
+		ttl = DefaultSessionTTL
 	}
 	l := &LocalAuth{
 		Store: store, CookieName: "abhed_session",

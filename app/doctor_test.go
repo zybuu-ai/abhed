@@ -372,3 +372,27 @@ func TestDoctorHonoursSettingsFlag(t *testing.T) {
 		t.Fatalf("an unreadable -settings file: exit %d, want 2", code)
 	}
 }
+
+// The doctor names how long a sign-in lasts, and fails on a negative length.
+func TestDoctorReportsSessionHours(t *testing.T) {
+	out, code := doctorWith(t, `"auth":{"mode":"local","session_hours":48},`)
+	if !strings.Contains(out, "a sign-in lasts 48 hours (auth.session_hours)") {
+		t.Fatalf("doctor did not name the sign-in length (%d):\n%s", code, out)
+	}
+	if out, _ := doctorWith(t, `"auth":{"mode":"local"},`); !strings.Contains(out, "a sign-in lasts 12 hours") {
+		t.Fatalf("doctor did not name the default sign-in length:\n%s", out)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	_, code = doctorWith(t, `"auth":{"mode":"local","session_hours":-5},`)
+	os.Stderr = old
+	_ = w.Close()
+	msg, _ := io.ReadAll(r)
+	if code == 0 || !strings.Contains(string(msg), "auth.session_hours is -5") {
+		t.Fatalf("doctor accepted a negative session_hours (%d): %s", code, msg)
+	}
+}

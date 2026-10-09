@@ -314,6 +314,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- `auth.session_hours` must be from 0 (the default of 12) to 8760. A
+  negative value, which made every sign-in expire at once, is now refused
+  when the configuration loads, and `abhed doctor` shows the sign-in length
+  in force.
 - The fence probe's `seccomp` check now also installs the fence's own filter
   in its helper and requires a signal to Abhed to be refused and one to the
   helper itself allowed, so a kernel that reads the filter's system-call
