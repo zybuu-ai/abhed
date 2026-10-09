@@ -538,3 +538,47 @@ jobs:
         with:
           name: security-scans
           path: scans/
+
+  # The macOS microVM helper is built, signed ad hoc with its entitlement and
+  # the hardened runtime, and its protocol, refusals and signature checks are
+  # tested against the real binary. Hosted macOS runners are VMs without
+  # nested virtualization, so Virtualization.framework cannot start a VM on
+  # them: the boot test (TestVZHelperBootsAMicroVM) runs on a real Mac, and
+  # this job says so rather than claiming it ran.
+  macos-vmhelper:
+    name: macOS microVM helper (build, sign, protocol)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+      - name: Build without warnings, then build and sign ad hoc
+        run: |
+          set -euo pipefail
+          xcrun swift --version
+          xcrun swift build --package-path macos/abhed-vmhelper -c release -Xswiftc -warnings-as-errors
+          scripts/macos/build-vmhelper.sh -o "$RUNNER_TEMP/abhed-vmhelper"
+      - name: The helper speaks protocol 1, refuses what it must, and is checked before use
+        run: |
+          set -euo pipefail
+          ABHED_TEST_VZ_HELPER="$RUNNER_TEMP/abhed-vmhelper" go test -race -count=1 -v ./driver/microvm/ 2>&1 | tee "$RUNNER_TEMP/vmhelper.log"
+          for t in TestVZHelperWithoutBooting TestHelperSignatureIsChecked TestHelperBackendWithFakeHelper TestHelperRefusedWithoutAHelper TestHelperEndsWithItsDriver TestEgressThroughFakeHelper; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/vmhelper.log" || { echo "::error::$t did not run and pass"; exit 1; }
+          done
+      - name: Whether this runner can boot a VM
+        run: |
+          set -euo pipefail
+          answer="$("$RUNNER_TEMP/abhed-vmhelper" check)"
+          echo "$answer"
+          echo "$answer" | grep -q '"protocol":1' || { echo "::error::check did not answer protocol 1"; exit 1; }
+          if echo "$answer" | grep -q 'entitlement'; then
+            echo "::error::the ad-hoc signed helper does not hold its entitlement"; exit 1
+          fi
+          echo "::notice::the boot test is not run on hosted macOS runners (no nested virtualization); run it on a Mac with ABHED_TEST_VZ=1"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: macos-vmhelper-log
+          path: ${{ runner.temp }}/vmhelper.log
