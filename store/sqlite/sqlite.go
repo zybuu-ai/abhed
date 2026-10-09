@@ -142,6 +142,12 @@ func privateDir(dir string) (string, error) {
 			return "", fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
+	return checkDir(dir)
+}
+
+// checkDir refuses an existing folder another user owns or others may
+// enter, and returns it with links resolved.
+func checkDir(dir string) (string, error) {
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return "", err

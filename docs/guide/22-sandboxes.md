@@ -50,7 +50,9 @@ restart of the server, in one of two places:
   `events`.
 - **SQLite**, otherwise: one file on the server's host,
   `~/.abhed/controlplane/sandboxes.db` for the user `abhed serve` runs as,
-  or `control_plane.sqlite_path`. It suits one server on one host; several
+  or `control_plane.sqlite_path`. A server run as a system service should set
+`sqlite_path`, for example to `/var/lib/abhed/sandboxes.db`, rather than
+rely on its user's home directory. It suits one server on one host; several
   servers sharing sandboxes need Postgres. The file is created when the
   server first starts with the control plane on, and its tables are
   created and upgraded by the server itself, so there is no `abhed migrate`
@@ -96,8 +98,10 @@ is on (naming its store, `sqlite (<path>)` or `postgres (tenant …)`, and
 listing every setting, where its value came from, and which are
 ceilings) and binds the listen address once to release it. It serves nothing.
 Each check prints `ok` or `FAIL`; the exit status is 0 only when all pass.
-With the control plane on and no database yet, the check creates the SQLite
-file, as serving would. `abhed doctor` names the store too, on its
+The check creates, migrates and writes nothing: with no SQLite file yet it
+says where serving would create it (after checking the folder), and for an
+existing file it reads the schema version and says whether serving will
+migrate it. `abhed doctor` names the store too, on its
 `sandboxes` line, without opening it.
 
 ## Settings: global and per sandbox

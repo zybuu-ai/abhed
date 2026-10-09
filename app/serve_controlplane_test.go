@@ -50,12 +50,13 @@ func TestServeCheckPasses(t *testing.T) {
 	if code != 0 || !strings.Contains(out.String(), "Ready to serve.") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
+	// The check creates nothing: the folder and file are only named.
 	db := filepath.Join(os.Getenv("HOME"), ".abhed", "controlplane", "sandboxes.db")
-	if info, err := os.Stat(db); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("the database: %v %v", info, err)
+	if _, err := os.Lstat(filepath.Dir(db)); !os.IsNotExist(err) {
+		t.Fatalf("serve -check created the database's folder: %v", err)
 	}
 	for _, want := range []string{
-		"control plane", "on, store sqlite (",
+		"control plane", "on, store sqlite (would be created at " + db + ")",
 		"exec.timeout_seconds", "120 (configured)",
 		"restart.policy", "on-failure (managed, ceiling)",
 	} {
@@ -211,5 +212,47 @@ func TestControlPlaneLabel(t *testing.T) {
 		if got := controlPlaneLabel(cfg); got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
+	}
+}
+
+// serve -check reads an existing database and says whether a migration is
+// due, applying none; once it is current it says so.
+func TestServeCheckDoesNotMigrate(t *testing.T) {
+	ws := checkEnv(t, `{"control_plane":{"enabled":true}}`, "")
+	db := filepath.Join(os.Getenv("HOME"), ".abhed", "controlplane", "sandboxes.db")
+	if err := os.MkdirAll(filepath.Dir(db), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(db, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := newApp().serveCheck(&out, ws, "127.0.0.1:0"); code != 0 || !strings.Contains(out.String(), "schema version 0; serve will migrate it to") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if info, err := os.Stat(db); err != nil || info.Size() != 0 {
+		t.Fatalf("serve -check wrote to the database: %v %v", info, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(db)); len(entries) != 1 {
+		t.Fatalf("serve -check left files beside the database: %v", entries)
+	}
+
+	cfg, err := newApp().loadConfig(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, closeCP, err := buildControlPlane(context.Background(), cfg, ws, agent.NewMemStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeCP()
+	real, err := filepath.EvalSymlinks(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := newApp().serveCheck(&out, ws, "127.0.0.1:0"); code != 0 || !strings.Contains(out.String(), "on, store sqlite ("+real+", schema version ") ||
+		strings.Contains(out.String(), "migrate") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }

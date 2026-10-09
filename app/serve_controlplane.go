@@ -140,6 +140,49 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	return svc, label, closeStore, nil
 }
 
+// checkControlPlane is buildControlPlane for serve -check: the same
+// refusals, with nothing created, migrated or written. An SQLite file that
+// is missing or due a migration is reported, not made.
+func checkControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore) (
+	*controlplane.Settings, string, error) {
+	settings, err := controlplane.SettingsFromConfig(cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("control_plane: %w", err)
+	}
+	if _, _, err := sandboxWorkspaces(cfg.ControlPlane.WorkspaceRoot, workspace); err != nil {
+		return settings, "", err
+	}
+	var pg *store.Postgres
+	switch st := events.(type) {
+	case *store.Postgres:
+		pg = st
+	case *store.Held:
+		pg = st.Postgres
+	}
+	if pg != nil {
+		q, err := pg.Sandboxes(ctx)
+		if err == nil {
+			_, _, err = q.List(ctx, controlplane.ListOptions{Limit: 1})
+		}
+		return settings, "postgres (tenant " + pg.Tenant() + ")", err
+	}
+	if cfg.Storage.Driver == "postgres" {
+		return settings, "", errors.New("control_plane: storage.driver is postgres but the event store is not")
+	}
+	path := sandboxconfig.ControlPlaneDB(cfg)
+	if path == "" {
+		return settings, "", errors.New("control_plane: no place for the database: set control_plane.sqlite_path")
+	}
+	if err := sandboxconfig.CheckStatePaths(cfg, workspace); err != nil {
+		return settings, "", fmt.Errorf("control_plane: %w", err)
+	}
+	probe, err := sqlite.Inspect(ctx, path)
+	if err != nil {
+		return settings, "", fmt.Errorf("control_plane: %w", err)
+	}
+	return settings, "sqlite (" + probe.String() + ")", nil
+}
+
 // checkLine is one preflight result.
 type checkLine struct {
 	name, detail string
@@ -219,14 +262,10 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		if events == nil {
 			add("control plane", errors.New("needs the event store, which did not open"), "")
 		} else {
-			svc, label, closeCP, err := buildControlPlane(context.Background(), cfg, workspace, events, nil)
-			if err == nil {
-				defer closeCP()
-				_, _, err = svc.Store().List(context.Background(), controlplane.ListOptions{Limit: 1})
-			}
+			settings, label, err := checkControlPlane(context.Background(), cfg, workspace, events)
 			add("control plane", err, "on, store "+label)
-			if svc != nil {
-				for _, s := range svc.Settings().List() {
+			if settings != nil {
+				for _, s := range settings.List() {
 					detail := s.Value
 					if detail == "" {
 						detail = "(none)"

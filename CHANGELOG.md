@@ -33,7 +33,8 @@ All notable changes to Abhed are recorded here. The format follows
   `~/.abhed/controlplane/sandboxes.db` or `control_plane.sqlite_path`
   (`0600` in a `0700` folder; refused when it is a link, has a second name,
   is open to other users or sits where commands can write). `abhed serve
-  -check` and `abhed doctor` name the store in use. With `storage.driver`
+  -check` and `abhed doctor` name the store in use; the check creates and
+  migrates nothing, and says when serving would. With `storage.driver`
   `postgres` nothing changes.
 
 **Upgrading with Postgres.** The control plane's tables come with schema
