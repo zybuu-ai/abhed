@@ -6,6 +6,33 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `abhed serve` can manage sandboxes over `/v1/sandboxes` when
+  `control_plane.enabled` is set (off by default; with it off nothing
+  changes): create, list with label selectors, get, patch, delete, `:start`,
+  `:stop` and `:exec` with its output streamed as NDJSON. `Idempotency-Key`
+  replays a request instead of repeating it, and `If-Match` refuses a change
+  made against a stale version. Every change is recorded with who asked, in
+  an append-only `sandbox_audit` table on Postgres. `:attach`, `:ssh`,
+  `:forward`, `:expose`, `:cp`, `:snapshot` and `:restore` answer `501` for
+  now. See [Sandboxes over the API](docs/guide/22-sandboxes.md).
+- Restart policies (`never`, `on-failure`, `always`) with doubling backoff
+  and a restart budget; each restart is a new generation.
+- A settings registry: `exec.timeout_seconds`, `exec.output_bytes`, the
+  restart settings and `isolation.min_tier` can be set per sandbox, and a
+  value the managed file sets is a ceiling a sandbox may only tighten.
+- `abhed serve -check` checks everything serve needs, then exits without
+  serving.
+- `GET /v1/ready`, a readiness probe that fails while the server drains or
+  its database, secrets store or control plane cannot serve. `/v1/health` is
+  unchanged.
+- Rate limits per caller on the sandbox routes.
+
+**Upgrading with Postgres.** The control plane's tables come with schema
+version 7; run `abhed migrate` before turning `control_plane.enabled` on.
+A server with it off starts on the older schema as before.
+
 ### Go API
 
 - Experimental public Go packages for the sandbox control plane, the base
@@ -16,9 +43,11 @@ All notable changes to Abhed are recorded here. The format follows
   `process` driver, confining commands exactly as before) and `controlplane`
   (the sandbox object, its lifecycle, labels and selectors, a store interface
   with an in-memory store, `Idempotency-Key` handling and `If-Match`
-  resource versions). Nothing uses them yet; the contract is
-  `docs/architecture/control-plane-contract.md`. They may change in a minor
-  release until 2.0.
+  resource versions). `controlplane.Service` is the one path to sandboxes
+  for the REST API and in-process callers, with its reconciler, settings
+  registry and audit record; `store.Postgres.Sandboxes` is the Postgres
+  store. The contract is `docs/architecture/control-plane-contract.md`.
+  They may change in a minor release until 2.0.
 
 ## [1.2.7] - 2026-10-07
 

@@ -38,6 +38,7 @@ configuration](#trusting-the-workspace-configuration).
 | `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
 | `fence` | `cpu_percent`: the fence tier's CPU bound — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
+| `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |

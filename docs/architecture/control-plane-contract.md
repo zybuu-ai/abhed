@@ -1,9 +1,10 @@
 # Control plane and drivers: the contract
 
 Status: 2026-10-09, contract version 1, draft for 1.2.8. The Go packages
-`driver`, `driver/plugin`, `driver/process` and `controlplane` implement the
-parts marked **Implemented**; everything else on this page is the contract the
-REST, CLI, per-session and container-driver work builds against.
+`driver`, `driver/plugin`, `driver/process`, `controlplane`, `store` (the
+Postgres store) and `server` (the REST surface) implement the parts marked
+**Implemented**; everything else on this page is the contract the CLI,
+per-session and container-driver work builds against.
 
 This page defines the sandbox object, its lifecycle, the `/v1/sandboxes` REST
 surface, the driver interface and its out-of-process protocol, how `abhed
@@ -48,6 +49,9 @@ minor release, and each change is listed in the changelog.
   "labels": {"team": "payments", "abhed.dev/session": "s_91"},
   "owner": "alice",
   "tier": "process",
+  "settings": {"restart.policy": "on-failure"},
+  "restarts": 1,
+  "next_restart": "2026-10-09T10:05:00Z",
   "created_at": "2026-10-09T09:58:11Z",
   "updated_at": "2026-10-09T10:00:00Z"
 }
@@ -66,6 +70,9 @@ minor release, and each change is listed in the changelog.
 | `labels` | client | `key: value`, selectable with the selector syntax in §2.1. Keys under `abhed.dev/` are reserved for the server. |
 | `owner` | server | The authenticated principal that created it. Authorization checks use it; clients cannot set it. |
 | `tier` | driver | The isolation the driver reports it actually provides (`process`, `fence`, `container`, `vm`, `none`). Never the one requested. |
+| `settings` | client | Per-sandbox values from the settings registry (§11). Validated against it; never looser than a ceiling. |
+| `restarts` | server | Restarts the restart policy made since the sandbox last ran stably (10 minutes Ready) or a client started it. |
+| `next_restart` | server | When the restart policy starts it again; absent when no restart is scheduled. |
 
 Tenancy is a store concern, as for sessions today: a Postgres store is opened
 for one tenant and row-level security scopes every statement; an SQLite or
@@ -74,7 +81,8 @@ could change.
 
 Condition types the server sets: `DriverReady`, `PolicyApplied`,
 `IsolationVerified` (the reported tier meets the policy's minimum),
-`DeleteFailed`. Drivers may add their own under a `<driver>.` prefix.
+`DeleteFailed`, `RestartScheduled` (True while a restart waits out its
+backoff; False with reason `LimitReached` once the budget is spent). Drivers may add their own under a `<driver>.` prefix.
 
 ### 2.1 Labels and selectors (Implemented)
 
@@ -139,9 +147,9 @@ Rules:
 - A transition and the write that records it are one store update guarded by
   the resource version, so two racing verbs cannot both win.
 
-## 4. REST surface
+## 4. REST surface (Implemented: `server/sandboxes.go`, except the verbs marked later)
 
-All under `/v1`, JSON, authenticated by the server's existing auth modes.
+Served by `abhed serve` when `control_plane.enabled` is set. All under `/v1`, JSON, authenticated by the server's existing auth modes.
 Verbs are custom methods on the resource, `POST /v1/sandboxes/{id}:verb`.
 Go's `ServeMux` cannot match a wildcard and a literal in one segment, so the
 handler registers `POST /v1/sandboxes/{target}` and splits `target` on its
@@ -152,10 +160,10 @@ last `:`; ids never contain one.
 | `POST /v1/sandboxes` | `{template, driver?, labels?}` | `201` sandbox | Starts in `Provisioning`. Idempotency key honoured. |
 | `GET /v1/sandboxes?selector=&state=&limit=&after=` | — | `200 {items, next}` | Owner-filtered unless the caller is an admin. |
 | `GET /v1/sandboxes/{id}` | — | `200` sandbox, `ETag` | |
-| `PATCH /v1/sandboxes/{id}` | `{labels?, template?}` (JSON merge patch) | `200` sandbox | `If-Match` required. |
+| `PATCH /v1/sandboxes/{id}` | `{labels?, template?, settings?}` (JSON merge patch) | `200` sandbox | `If-Match` required; `428` without it. |
 | `DELETE /v1/sandboxes/{id}` | — | `202` sandbox in `Deleting` | `If-Match` honoured. |
 | `POST …:start` / `:stop` | `{grace_seconds?}` | `202` sandbox | `If-Match` honoured. |
-| `POST …:exec` | `{argv \| command, cwd?, env?, stdin?: bool}` | stream | NDJSON frames `{stdout\|stderr\|exit}`; WebSocket when `stdin` is true. |
+| `POST …:exec` | `{argv \| command, cwd?, env?, stdin?: bool}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. WebSocket when `stdin` is true (P3-05; `501` until then). |
 | `GET …:attach` | — | WebSocket | PTY; resize as a control frame. Carries `generation`. |
 | `POST …:ssh` | — | `{host, port, user, known_hosts, expires_at}` | Short-lived credentials for the relay (P3-05). |
 | `POST …:forward` | `{port}` | WebSocket | Byte stream to a port inside the sandbox. Loopback-only on the client side. |
@@ -164,10 +172,28 @@ last `:`; ids never contain one.
 | `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | |
 | `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. |
 
+`:attach`, `:ssh`, `:forward`, `:expose` and `:cp` (P3-05, P3-06) and
+`:snapshot` and `:restore` (P3-08) are routed and answer `501` with code
+`unsupported` until their work lands; the seam is `sandboxVerbs` in
+`server/sandboxes.go`. They check the caller may see the sandbox first.
+
 Every mutating call becomes an event in the record with the principal, the
-sandbox id, generation and the outcome. Errors are
+sandbox id, generation and the outcome: one `requested` event before it acts
+(a request that cannot be recorded is refused with `503` and changes
+nothing) and one `ok` or `failed` after. The reconciler records its
+transitions and restarts as `system:reconciler`. An `:exec`'s command line is
+redacted with the secrets store before it is recorded. Errors are
 `{"error": {"code", "message"}}` with codes `invalid`, `not_found`,
-`conflict`, `precondition_failed`, `unsupported`, `unavailable`, `internal`.
+`conflict`, `precondition_failed`, `unsupported`, `unavailable`, `forbidden`,
+`internal`. `forbidden` (`403`) is a request acting in a tenant other than
+the one the server's store was opened for. A rate limit spent is `429` with
+`Retry-After` and code `unavailable`. A store or driver fault is `503` or
+`500`, never success.
+
+Output of an `:exec` is bounded in total, not only per frame: past the
+sandbox's `exec.output_bytes` the command is cancelled, exactly that many
+bytes have been sent, and the stream ends with an error frame of code
+`invalid`. `driver.OutputLimit` is the shared budget any streaming verb uses.
 
 ### 4.1 Idempotency-Key (Implemented: `controlplane.Idempotency`)
 
@@ -183,6 +209,8 @@ sandbox id, generation and the outcome. Errors are
   gets `422` with code `invalid`.
 - A request that fails before any side effect (validation, auth) releases
   its claim. Records expire after 24 hours.
+- An `:exec` is not run again on a repeat: the repeat gets the stream's last
+  frame (`{"exit": n}` or `{"error": …}`) as one NDJSON line.
 
 ### 4.2 If-Match and resource versions (Implemented)
 
@@ -363,7 +391,9 @@ client sent `If-Match` and a retry when it did not.
 - `Update` and `Delete` succeed only when the stored version equals `expect`.
 - Idempotency claims are atomic: two concurrent claims of one key, one wins.
 - Backends: memory (implemented), SQLite for a single host, Postgres for
-  servers. SQLite must be a pure-Go driver, so the binary stays static with no
+  servers (implemented: `store.Postgres.Sandboxes`, tables `sandboxes`,
+  `sandbox_idempotency` and the append-only `sandbox_audit`, schema version
+  7, applied by `abhed migrate`). SQLite must be a pure-Go driver, so the binary stays static with no
   cgo; the dependency is a founder decision and is not added yet. Both SQL
   backends run the same conformance tests as the memory store
   (`controlplane/storetest`).
@@ -397,3 +427,40 @@ wraps `controlplane.Store`. The Community module never imports the private one.
   the credential path, by placeholder.
 - The agent inside a sandbox cannot reach the control plane's state, the
   store, or a driver's socket.
+
+## 11. Settings, restart policy and readiness (Implemented: `controlplane`)
+
+**Settings registry** (`controlplane.Registry`). Each setting has a scope:
+*global* (server configuration only: `rate.mutations_per_minute`,
+`rate.exec_per_minute`, `reconcile.interval_seconds`) or *sandbox* (a
+configured default a sandbox may override in `settings`:
+`exec.timeout_seconds`, `exec.output_bytes`, `restart.policy`,
+`restart.max_restarts`, `restart.backoff_seconds`, `isolation.min_tier`).
+Every setting orders its values from loosest to tightest. A value the
+managed configuration sets is a **ceiling**: a sandbox may set a tighter
+value and is refused (`400`) for a looser one, and a ceiling tightened
+later holds existing sandboxes when their settings are read. `isolation.min_tier`
+is always a floor from `sandbox.min_tier`, managed or not.
+
+**Restart policy and generations.** `never`, `on-failure` (restarts
+`Error`) or `always` (restarts `Error` and `Completed`). A sandbox a client
+stopped is never restarted. The reconciler schedules restart n+1 at
+`restart.backoff_seconds × 2ⁿ` (at most an hour), then moves the sandbox to
+`Starting`, which bumps `generation`. After `restart.max_restarts` it stays
+in `Error`. A client's `:start` resets the count; so do ten minutes Ready.
+
+**Reconciler** (`Service.Run`). Every `reconcile.interval_seconds`, and at
+once when a verb asks, each sandbox not `Stopped` gets one pass, at most one
+pass per sandbox at a time: `Provisioning` and `Starting` call `Create` or
+`Start` (an instance the driver lost is created again), `Stopping` calls
+`Stop`, `Deleting` calls `Delete` then removes the object, `Ready` compares
+`Status` with the object, and `Error`/`Completed` apply the restart policy.
+Every write is guarded on the state and generation the pass started from.
+It ends with its context and waits for the passes it started.
+
+**Readiness.** `GET /v1/ready` is `200` when the server is not draining,
+its secrets store reads, its event store answers and, with the control
+plane on, the reconciler runs and the store answers; else `503`. It names
+its checks with `ok` or `failed` and nothing more. `/v1/health` keeps its
+shape. `abhed serve -check` runs the start-up checks without serving.
+

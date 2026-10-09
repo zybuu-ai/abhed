@@ -376,9 +376,13 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
 		serveAddr := serveFlags.String("addr", listenAddr, "listen address")
 		serveTrust := serveFlags.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
+		serveCheck := serveFlags.Bool("check", false, "check everything serve needs, then exit without serving")
 		_ = serveFlags.Parse(rest[1:])
 		if *serveTrust {
 			a.trust = config.TrustGranted
+		}
+		if *serveCheck {
+			return a.serveCheck(os.Stdout, workspace, *serveAddr)
 		}
 		return a.serveCmd(workspace, *serveAddr)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/k8s"
@@ -184,7 +185,22 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 
+	// The sandbox control plane, only when the configuration turns it on.
+	var cp *controlplane.Service
+	if cfg.ControlPlane.Enabled {
+		live := openVault().Live()
+		var label string
+		cp, label, err = buildControlPlane(context.Background(), cfg, workspace, eventStore,
+			func(text string) string { return string(live.Redact([]byte(text))) })
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 1
+		}
+		fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", label)
+	}
+
 	opts := server.Options{
+		ControlPlane: cp,
 		Addr:         addr,
 		Workspace:    workspace,
 		HomeURL:      cfg.Server.HomeURL,
@@ -240,6 +256,19 @@ func (a *App) serveCmd(workspace, addr string) int {
 	stopper := cancelOnStop(stopDrains)
 	defer stopper.stop()
 	ctx := stopper.ctx
+
+	if cp != nil {
+		cpCtx, cpStop := context.WithCancel(ctx)
+		cpDone := make(chan struct{})
+		go func() {
+			defer close(cpDone)
+			_ = cp.Run(cpCtx)
+		}()
+		defer func() {
+			cpStop()
+			<-cpDone
+		}()
+	}
 
 	for _, h := range a.serveHooks {
 		stopHook, err := h(ctx, srv, cfg)
