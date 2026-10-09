@@ -50,6 +50,13 @@ func selfAdmin(rest []string) string {
 		if slices.Contains([]string{"add", "remove", "rm"}, verb) {
 			return "abhed mcp " + verb
 		}
+	case "login", "logout":
+		// A session must not hold, or end, the person's sign-in to a server.
+		return "abhed " + rest[0]
+	case "profile":
+		if slices.Contains([]string{"use", "rm", "remove"}, verb) {
+			return "abhed profile " + verb
+		}
 	case "migrate":
 		return "abhed migrate"
 	case "admin":

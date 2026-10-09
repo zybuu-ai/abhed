@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -98,6 +99,18 @@ func (a *App) doctor(workspace string) int {
 				} else {
 					fmt.Printf("            %s ready\n", p.Name())
 				}
+			}
+		}
+	}
+	// The same checks serve makes before it listens.
+	if cfg.Server.TLS.Enabled() {
+		if l, err := buildTLS(cfg, workspace, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+			fmt.Printf("tls         UNAVAILABLE — %v\n", err)
+			findings.tlsDown = true
+		} else {
+			fmt.Printf("tls         %s\n", tlsLabel(cfg, l))
+			for _, w := range l.Warnings() {
+				fmt.Printf("            ⚠ %s\n", w)
 			}
 		}
 	}
@@ -379,6 +392,8 @@ type configCheck struct {
 	// storeDown and authDown report an event store or sign-in doctor could
 	// not open, as before `abhed migrate`.
 	storeDown, authDown bool
+	// tlsDown is server.tls that serve would refuse to start with.
+	tlsDown bool
 }
 
 // configFindings lists both kinds of key and reports which there were.
@@ -406,6 +421,9 @@ func doctorVerdict(w io.Writer, f configCheck) int {
 	if len(down) > 0 {
 		fmt.Fprintf(w, "Not ready: %s could not be opened (see above). If the database has no Abhed schema yet, run `abhed migrate`.\n",
 			strings.Join(down, " and "))
+	}
+	if f.tlsDown {
+		fmt.Fprintln(w, "Not ready: server.tls cannot be used (see above), so serve will not start.")
 	}
 	if f.unknown {
 		fmt.Fprintln(w, "Not ready: the configuration has keys nothing reads (listed above). Correct or remove them.")

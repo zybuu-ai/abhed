@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -87,7 +88,27 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	// Unusable TLS stops here, before anything listens: never plain HTTP instead.
+	tlsL, err := buildTLS(cfg, workspace, slog.Default())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	cliLogin, err := buildCLILogin(cfg, workspace, authMW)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
 	fmt.Printf("auth        %s\n", authLabel(cfg, authMW))
+	fmt.Printf("tls         %s\n", tlsLabel(cfg, tlsL))
+	if tlsL != nil {
+		for _, w := range tlsL.Warnings() {
+			fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", w)
+		}
+	}
+	if cliLogin != nil {
+		fmt.Printf("cli login   abhed login, by device code or browser; tokens last %d hours\n", orDefaultInt(cfg.Auth.CLI.TokenHours, 168))
+	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
 	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
 	if line, failed := extensionsLabel(cfg, set); line != "" {
@@ -211,6 +232,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Index:         set.Index,
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
+		CLILogin:      cliLogin,
+	}
+	if tlsL != nil {
+		opts.TLS = tlsL.Config()
 	}
 	// A session leaving this process takes its egress proxy, and what the
 	// guard of Abhed's own requests counts for it, with it.
@@ -240,6 +265,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	stopper := cancelOnStop(stopDrains)
 	defer stopper.stop()
 	ctx := stopper.ctx
+	runTLS(ctx, tlsL)
 
 	for _, h := range a.serveHooks {
 		stopHook, err := h(ctx, srv, cfg)
@@ -256,7 +282,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 
 	bs := ui.NewStyle(os.Stdout)
 	fmt.Printf("%s %s %s  %s\n", bs.Accent(ui.Glyph),
-		bs.Bold("ABHED"), bs.Dim(a.version), browsableURL(addr))
+		bs.Bold("ABHED"), bs.Dim(a.version), serveURL(addr, tlsL != nil))
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
@@ -265,7 +291,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	switch {
 	case docsite.Available():
-		fmt.Printf("  docs      %s/docs\n", browsableURL(addr))
+		fmt.Printf("  docs      %s/docs\n", serveURL(addr, tlsL != nil))
 	case docsite.PublicURL != "":
 		// Not embedded in this build; say where the same pages are, once,
 		// here — never from a page, which must stay usable with no route out.
@@ -332,6 +358,22 @@ func browsableURL(addr string) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
+// serveURL is browsableURL with the scheme the listener speaks.
+func serveURL(addr string, tls bool) string {
+	u := browsableURL(addr)
+	if tls {
+		return "https://" + strings.TrimPrefix(u, "http://")
+	}
+	return u
+}
+
+func orDefaultInt(v, def int) int {
+	if v == 0 {
+		return def
+	}
+	return v
+}
+
 // buildAuth constructs the identity layer from the registered builders.
 //
 // Local accounts and an identity provider are independent capabilities, not
@@ -374,10 +416,13 @@ func (a *App) buildAuth(ctx context.Context, cfg config.Config, workspace string
 			public = append(public, p.PublicPaths()...)
 		}
 		if v != nil {
-			mw.Verifier = v
+			mw.Verifier = auth.ChainVerifier(mw.Verifier, v)
 		}
 	}
 	mw.PublicPaths = public
+	if err := addClientCertAuth(cfg, mw); err != nil {
+		return nil, err
+	}
 	return mw, nil
 }
 
