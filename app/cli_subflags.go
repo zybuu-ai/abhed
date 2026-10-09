@@ -104,7 +104,7 @@ func hoistGlobalFlags(fs *flag.FlagSet, sub []string) ([]string, error) {
 			}
 		}
 		if err := fs.Set(flagName, value); err != nil {
-			return nil, fmt.Errorf("-%s: %v", flagName, err)
+			return nil, fmt.Errorf("-%s: %w", flagName, err)
 		}
 	}
 	return left, nil
