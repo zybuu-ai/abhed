@@ -391,17 +391,29 @@ func TestSandboxVerbsAndExecStream(t *testing.T) {
 			t.Errorf("exec %s: %d", body, rec.Code)
 		}
 	}
-	// Seams owned by later work, and capabilities the driver lacks, answer
-	// 501 with the contract's code.
+	// The streaming verbs are WebSockets: a plain request is told so.
+	for _, c := range []struct {
+		call cpCall
+		code int
+	}{
+		{cpCall{method: "GET", path: "/v1/sandboxes/" + sb.ID + ":attach"}, http.StatusUpgradeRequired},
+		{cpCall{method: "GET", path: "/v1/sandboxes/" + sb.ID + ":forward?port=80"}, http.StatusUpgradeRequired},
+		{cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":forward", body: `{"port":80}`}, http.StatusMethodNotAllowed},
+		{cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", body: `{"command":"cat","stdin":true}`}, http.StatusBadRequest},
+	} {
+		c.call.token = "alice"
+		if rec := r.do(t, c.call); rec.Code != c.code || errCode(t, rec) != "invalid" {
+			t.Errorf("%s %s: %d %s", c.call.method, c.call.path, rec.Code, rec.Body.String())
+		}
+	}
+	// Capabilities the driver lacks, and SSH without a host key, answer 501
+	// with the contract's code.
 	for _, c := range []cpCall{
-		{method: "GET", path: "/v1/sandboxes/" + sb.ID + ":attach"},
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":ssh"},
-		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":forward", body: `{"port":80}`},
 		// The fake declares neither copy nor snapshot, nor is exposing on.
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":cp?direction=out&path=f"},
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":snapshot"},
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":expose", body: `{"port":80}`},
-		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", body: `{"command":"cat","stdin":true}`},
 	} {
 		c.token = "alice"
 		if rec := r.do(t, c); rec.Code != http.StatusNotImplemented || errCode(t, rec) != "unsupported" {

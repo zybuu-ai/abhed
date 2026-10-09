@@ -29,9 +29,11 @@ type SandboxRouter interface {
 }
 
 // sandboxVerb is one custom method, POST or GET /v1/sandboxes/{id}:verb.
+// A verb with ws also takes a GET that upgrades to a WebSocket.
 type sandboxVerb struct {
 	method string
 	handle func(s *Server, w http.ResponseWriter, r *http.Request, call verbCall)
+	ws     func(s *Server, w http.ResponseWriter, r *http.Request, call verbCall)
 }
 
 // verbCall is what a verb handler is given once the caller is known.
@@ -42,19 +44,20 @@ type verbCall struct {
 	body   []byte
 }
 
-// sandboxVerbs is the routing seam. Verbs owned by later work answer 501
-// until their handler is set here; :forward waits on its stream transport.
+// sandboxVerbs is the routing seam. :attach and :forward are WebSockets
+// only; :exec and :ssh also take a WebSocket GET (exec with stdin, and the
+// SSH relay).
 var sandboxVerbs = map[string]sandboxVerb{
-	"start":    {http.MethodPost, (*Server).startSandbox},
-	"stop":     {http.MethodPost, (*Server).stopSandbox},
-	"exec":     {http.MethodPost, (*Server).execSandbox},
-	"attach":   {http.MethodGet, unsupportedVerb},
-	"ssh":      {http.MethodPost, unsupportedVerb},
-	"forward":  {http.MethodPost, unsupportedVerb},
-	"expose":   {http.MethodPost, (*Server).exposeSandbox},
-	"cp":       {http.MethodPost, (*Server).cpSandbox},
-	"snapshot": {http.MethodPost, (*Server).snapshotSandbox},
-	"restore":  {http.MethodPost, (*Server).restoreSandbox},
+	"start":    {method: http.MethodPost, handle: (*Server).startSandbox},
+	"stop":     {method: http.MethodPost, handle: (*Server).stopSandbox},
+	"exec":     {method: http.MethodPost, handle: (*Server).execSandbox, ws: (*Server).execStream},
+	"attach":   {method: http.MethodGet, ws: (*Server).attachSandbox},
+	"ssh":      {method: http.MethodPost, handle: (*Server).sshInfo, ws: (*Server).sshRelay},
+	"forward":  {method: http.MethodGet, ws: (*Server).forwardSandbox},
+	"expose":   {method: http.MethodPost, handle: (*Server).exposeSandbox},
+	"cp":       {method: http.MethodPost, handle: (*Server).cpSandbox},
+	"snapshot": {method: http.MethodPost, handle: (*Server).snapshotSandbox},
+	"restore":  {method: http.MethodPost, handle: (*Server).restoreSandbox},
 }
 
 // cpError is the contract's error body.
@@ -219,9 +222,17 @@ func (s *Server) sandboxTarget(w http.ResponseWriter, r *http.Request) {
 		writeCPError(w, http.StatusNotFound, "not_found", "no verb :"+verb)
 		return
 	}
+	if v.ws != nil && r.Method == http.MethodGet {
+		v.ws(s, w, r, verbCall{id: id, verb: verb, caller: c})
+		return
+	}
 	if r.Method != v.method {
-		w.Header().Set("Allow", v.method)
-		writeCPError(w, http.StatusMethodNotAllowed, "invalid", ":"+verb+" takes "+v.method)
+		allow := v.method
+		if v.ws != nil && v.method != http.MethodGet {
+			allow += ", GET"
+		}
+		w.Header().Set("Allow", allow)
+		writeCPError(w, http.StatusMethodNotAllowed, "invalid", ":"+verb+" takes "+allow)
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -472,16 +483,6 @@ func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request, call verbCa
 	})
 }
 
-// unsupportedVerb answers 501 after the usual visibility check, so it says
-// nothing about a sandbox the caller may not see.
-func unsupportedVerb(s *Server, w http.ResponseWriter, r *http.Request, call verbCall) {
-	if _, err := s.opts.ControlPlane.Get(r.Context(), call.caller, call.id); err != nil {
-		s.failCP(w, r, err)
-		return
-	}
-	writeCPError(w, http.StatusNotImplemented, "unsupported", ":"+call.verb+" is not available in this build")
-}
-
 // execFrame is one line of an :exec stream. Byte payloads are base64.
 type execFrame struct {
 	Stdout []byte   `json:"stdout,omitempty"`
@@ -553,9 +554,10 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request, call verbCa
 			s.failCP(w, r, err)
 			return
 		}
-		writeCPError(w, http.StatusNotImplemented, "unsupported", ":exec with stdin is not available in this build")
+		writeCPError(w, http.StatusBadRequest, "invalid", ":exec with stdin is a WebSocket: GET the same path with an upgrade to "+protoExec)
 		return
 	}
+	pol := s.sandboxPolicy(call.id)
 	fw := &frameWriter{w: w, enc: json.NewEncoder(w)}
 	started := false
 	idem := controlplane.Idempotency{Store: s.opts.ControlPlane.Store()}
@@ -563,6 +565,7 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request, call verbCa
 		func() (controlplane.Response, error) {
 			res, _, err := s.opts.ControlPlane.Exec(r.Context(), call.caller, call.id, r.Header.Get("If-Match"), req, controlplane.ExecIO{
 				Stdout: streamOut{f: fw}, Stderr: streamOut{f: fw, stderr: true},
+				Screen: func(command string) error { return denied(pol, command, false) },
 				Started: func(sb controlplane.Sandbox) {
 					started = true
 					w.Header().Set("Content-Type", "application/x-ndjson")

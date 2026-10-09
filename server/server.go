@@ -24,6 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
@@ -321,6 +323,9 @@ type Options struct {
 	// SandboxRouter, when set, relays each call that acts on a sandbox to the
 	// replica that owns it. Nil handles every call here.
 	SandboxRouter SandboxRouter
+	// SandboxSSHKey is the host key of the SSH server sandboxes are reached
+	// by through :ssh. Nil leaves :ssh answering 501.
+	SandboxSSHKey ssh.Signer
 }
 
 // Server holds live sessions and serves the API.
@@ -351,6 +356,8 @@ type Server struct {
 	// Per-caller limits on the sandbox routes, from the settings registry.
 	cpMutations *limiter
 	cpExec      *limiter
+	// cpStreams counts the attach, exec, forward and SSH streams open, per caller.
+	cpStreams streamSlots
 
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
@@ -1143,6 +1150,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.wrote = true
 	r.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap lets http.ResponseController reach the connection, so a
+// WebSocket upgrade can take it over.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // Flush lets SSE writes reach the client through the wrapper.
 func (r *statusRecorder) Flush() {

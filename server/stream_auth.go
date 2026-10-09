@@ -33,6 +33,9 @@ var errStreamIdentity = errors.New("the sign-in behind this stream has changed")
 // errStreamSession refuses a stream whose caller no longer owns the session.
 var errStreamSession = errors.New("session not found")
 
+// errStreamSandbox refuses a stream whose caller may no longer see the sandbox.
+var errStreamSandbox = errors.New("sandbox not found")
+
 // errStreamMustChange refuses a stream whose account must change its password.
 var errStreamMustChange = errors.New("password change required")
 
@@ -62,6 +65,9 @@ type streamGuard struct {
 	// first, so nothing is written after that call returns unchecked.
 	wake  chan struct{}
 	stale chan struct{}
+	// may, when set, replaces the session check: a sandbox's stream asks
+	// whether the caller may still see the sandbox.
+	may func(r *http.Request) bool
 }
 
 // guardStream registers a guard for r's stream of sessionID. The caller must
@@ -172,7 +178,11 @@ func (g *streamGuard) check() error {
 	if g.read {
 		may = g.s.mayRead
 	}
-	if !may(g.r.WithContext(ctx), g.sessionID) {
+	if g.may != nil {
+		if !g.may(g.r.WithContext(ctx)) {
+			return errStreamSandbox
+		}
+	} else if !may(g.r.WithContext(ctx), g.sessionID) {
 		return errStreamSession
 	}
 	g.last = time.Now()
