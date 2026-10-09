@@ -7,10 +7,12 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -289,6 +291,12 @@ type Options struct {
 	// It is given the registry's bash to start from; a registry without one
 	// is left as it is.
 	SessionBash func(sessionID string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error)
+	// TLS, when set, is served on Addr instead of plain HTTP. Its
+	// certificates are read per handshake, so a reload needs no restart.
+	TLS *tls.Config
+	// CLILogin, when set, serves command-line sign-in for local accounts:
+	// the device and PKCE endpoints and the page that approves them.
+	CLILogin *auth.CLILogin
 	// StreamRecheck is how often an open event or terminal stream is
 	// authorised again. Zero means the default; it can only be shortened, and
 	// anything above maxStreamRecheck is held to it.
@@ -319,6 +327,7 @@ type Server struct {
 	// Throttles for the endpoints reachable before authentication succeeds.
 	signinLimiter  *limiter
 	sessionLimiter *limiter
+	cliLimiter     *limiter
 
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
@@ -619,6 +628,9 @@ func New(opts Options) *Server {
 		// password needs, and far below what makes guessing viable.
 		signinLimiter:  newLimiter(10, time.Minute),
 		sessionLimiter: newLimiter(60, time.Minute),
+		// A terminal polls every five seconds while it waits; this leaves room
+		// for a few at once behind one address and none for guessing codes.
+		cliLimiter: newLimiter(30, 30*time.Second),
 		state: &mutable{
 			registry: opts.Registry,
 			skills:   opts.SkillRegistry,
@@ -717,6 +729,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/interrupt", s.interruptSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/approve", s.approveAction)
 	mux.HandleFunc("GET /v1/health", s.health)
+	s.cliRoutes(mux)
 
 	// Each provider registers the routes it owns: local accounts and an
 	// identity provider are not mutually exclusive, and the server does not
@@ -824,7 +837,7 @@ func (s *Server) Handler() http.Handler {
 // PublicPaths answer before anyone signs in, whichever providers are
 // configured; each provider adds the paths it owns. Kept short on purpose.
 func PublicPaths() []string {
-	return []string{"/", "/v1/health", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg"}
+	return []string{"/", "/v1/health", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg", CLIDiscoveryPath}
 }
 
 // Mount adds routes for the next Handler call, for a caller that has the
@@ -882,6 +895,8 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v1/signin", "/v1/signup", "/v1/password":
 			rateLimit(s.signinLimiter, trustProxy, next).ServeHTTP(w, r)
+		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath:
+			rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
 		case "/v1/sessions":
 			// Creating a session starts an agent loop, which is the most
 			// expensive thing this server does. It is authenticated, so the
@@ -4417,8 +4432,21 @@ func badBody(w http.ResponseWriter, err error, msg string) {
 	WriteError(w, http.StatusBadRequest, msg)
 }
 
-// ListenAndServe starts the HTTP server.
+// ListenAndServe starts the HTTP server. With Options.TLS set every
+// connection is a TLS one.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	return s.serve(ctx, func() (net.Listener, error) { return net.Listen("tcp", s.opts.Addr) })
+}
+
+// Serve is ListenAndServe on a listener the caller opened; it closes ln.
+// Connections may queue on ln while the startup sweep runs.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	return s.serve(ctx, func() (net.Listener, error) { return ln, nil })
+}
+
+// serve opens its listener only after the startup sweep, so nothing is
+// accepted, even into the backlog, before it has finished.
+func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error)) error {
 	srv := &http.Server{
 		Addr:              s.opts.Addr,
 		Handler:           s.Handler(),
@@ -4439,6 +4467,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// a crashed process left open reconciled, before anything is served; then
 	// again every stale window, by staleness alone.
 	s.RecoverOwnAtStart(ctx)
+	ln, err := listen()
+	if err != nil {
+		return err
+	}
+	srv.Addr = ln.Addr().String()
 	go s.sweepOrphans(ctx, nodeStale)
 	stopped := make(chan struct{})
 	go func() {
@@ -4453,8 +4486,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		s.releaseBashes()
 	}()
-	s.log.Info("abhed server listening", "addr", s.opts.Addr, "workspace", s.opts.Workspace)
-	err := srv.ListenAndServe()
+	s.log.Info("abhed server listening", "addr", srv.Addr, "workspace", s.opts.Workspace, "tls", s.opts.TLS != nil)
+	if s.opts.TLS != nil {
+		srv.TLSConfig = s.opts.TLS
+		err = srv.ServeTLS(ln, "", "")
+	} else {
+		err = srv.Serve(ln)
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		// Serve returns as soon as Shutdown begins. Returning then would let
 		// the process exit before cancelled turns record how they ended.
