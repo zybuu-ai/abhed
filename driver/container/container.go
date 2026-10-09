@@ -264,13 +264,28 @@ func (d *Driver) start(ctx context.Context, in *instance, eng engineInfo) (drive
 		}
 		in.egress = e
 	}
+	// A stopped container this driver left for the id, as a server that
+	// restarted finds one, would hold the name; it is removed first.
+	if ours, running, err := d.leftover(ctx, in); err == nil && ours && !running {
+		if err := d.remove(in.name); err != nil {
+			_ = d.teardown(in)
+			return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "removing the stopped container left for %s: %v", in.spec.ID, err)
+		}
+	}
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	if _, err := d.r.output(rctx, d.runArgs(in), nil); err != nil {
-		_ = d.teardown(in)
 		if nameInUse(err) {
+			// Someone else's container keeps its name and is never removed.
+			if ours, _, lerr := d.leftover(ctx, in); lerr == nil && ours {
+				_ = d.teardown(in)
+			} else {
+				_ = in.egress.close()
+				in.egress = nil
+			}
 			return driver.Status{}, driver.Errorf(driver.ErrExists, "a container named %s already exists", in.name)
 		}
+		_ = d.teardown(in)
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "starting the container: %v", err)
 	}
 	if err := d.verify(ctx, in); err != nil {
@@ -515,6 +530,23 @@ func (d *Driver) Delete(ctx context.Context, id string) error {
 	}
 	in.egress = nil
 	return nil
+}
+
+// leftover reports whether a container holds in's name with this driver's
+// labels for in's id, and whether it runs; err is the engine's, or not found.
+func (d *Driver) leftover(ctx context.Context, in *instance) (ours, running bool, err error) {
+	ictx, cancel := context.WithTimeout(ctx, engineWait)
+	defer cancel()
+	out, err := d.r.output(ictx, []string{"container", "inspect", "--format",
+		`{{index .Config.Labels "abhed.sandbox"}} {{index .Config.Labels "abhed.driver"}} {{.State.Running}}`, in.name}, nil)
+	if err != nil {
+		return false, false, err
+	}
+	f := strings.Fields(string(out))
+	if len(f) != 3 {
+		return false, false, nil
+	}
+	return f[0] == in.spec.ID && f[1] == d.name, f[2] == "true", nil
 }
 
 func (d *Driver) deleteLeftover(ctx context.Context, id string) error {

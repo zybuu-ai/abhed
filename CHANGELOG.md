@@ -352,6 +352,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- Reopening a session after the server restarted failed once with "a
+  container named abhed-sbx-… already exists". The docker and podman
+  drivers now remove a stopped container they left for that sandbox id
+  before creating it. A container under that name with another driver's or
+  id's labels is no longer removed when the create fails.
 - The docker and podman drivers, and per-session sandboxes on them, refused
   every container on hosts with the ipip, sit, gre or vti modules loaded,
   since the kernel's idle fallback tunnel devices (`tunl0` and the like)

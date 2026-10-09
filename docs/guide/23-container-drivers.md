@@ -158,7 +158,11 @@ sandbox is restarted; the restart protects it.
 
 A container this process did not create, such as one left by a crash, is
 reported by `Status` without a tier and removed by `Delete` when its labels
-say it is this driver's sandbox of that id.
+say it is this driver's sandbox of that id. `Create` removes such a
+container first when it is stopped, as a session reopened after the server
+restarted finds one; one still running, or one whose labels name another
+driver or id, keeps its name, and `Create` fails with `exists` without
+touching it.
 
 Forwarding a port is always declared; snapshots only with
 `Options.SnapshotDir`. Both are in
