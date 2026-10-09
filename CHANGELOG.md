@@ -6,6 +6,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A managed configuration that set nothing about permissions — for example one
+  that only turns on web search — made every interactive terminal, in Studio
+  and the web IDE, fall back to line-by-line. Only a managed file that sets the
+  deny rules or the extensions does that now.
+- Studio's line-by-line terminal shows a prompt with the folder, prints the
+  typed command in bold, and puts each `exit N · time` line after the command's
+  output instead of before it.
 
 ## [1.2.7] - 2026-10-07
 
