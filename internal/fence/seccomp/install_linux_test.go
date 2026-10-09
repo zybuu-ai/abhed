@@ -242,6 +242,9 @@ func socketChecks() []outcome {
 	}{
 		{"socket(AF_INET stream)", unix.AF_INET, unix.SOCK_STREAM, 0},
 		{"socket(AF_INET datagram)", unix.AF_INET, unix.SOCK_DGRAM, 0},
+		// Landlock's TCP rules do not cover these; with the network off only this filter stops them.
+		{"socket(AF_INET MPTCP)", unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP},
+		{"socket(AF_INET SCTP)", unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_SCTP},
 		{"socket(NETLINK_ROUTE)", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE},
 		{"socket(AF_UNIX stream)", unix.AF_UNIX, unix.SOCK_STREAM, 0},
 		{"socket(AF_UNIX datagram)", unix.AF_UNIX, unix.SOCK_DGRAM, 0},
@@ -551,6 +554,7 @@ func TestFilterRefusesEachFamily(t *testing.T) {
 		"finit_module": "EPERM", "kexec_load": "EPERM", "keyctl": "EPERM", "add_key": "EPERM",
 		"seccomp(SET_MODE_FILTER)": "EPERM", "prctl(PR_SET_SECCOMP)": "EPERM",
 		"socket(AF_INET stream)": "EPERM", "socket(AF_INET datagram)": "EPERM", "socket(NETLINK_ROUTE)": "EPERM",
+		"socket(AF_INET MPTCP)": "EPERM", "socket(AF_INET SCTP)": "EPERM",
 		"socket(AF_UNIX stream)": "EPERM", "socket(AF_UNIX datagram)": "EPERM",
 		"socket(AF_PACKET)": "EPERM", "socket(AF_VSOCK)": "EPERM",
 		"socket(NETLINK_AUDIT)": "EPERM", "socket(NETLINK_KOBJECT_UEVENT)": "EPERM",

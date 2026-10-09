@@ -8,6 +8,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- The fence's account of its Landlock layer says "TCP connect and bind
+  refused (TCP only, not MPTCP)". Since Landlock's erratum 1 (Linux 6.14, and
+  stable kernels with the fix) its TCP rules leave MPTCP, SCTP and SMC
+  sockets alone, and Go listens over MPTCP by default, which is why a bind
+  got through on Linux 6.15. Nothing changes for commands: with the network
+  off the fence's seccomp layer refuses every `socket()`, MPTCP and SCTP
+  included, and its tests now check both.
 - A managed `permissions.deny` list now adds to the deny rules already in
   force instead of replacing them: the built-in rules and those from
   `~/.abhed/config.json`, `-settings` and a trusted workspace's file stay,

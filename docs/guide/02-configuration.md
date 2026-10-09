@@ -463,7 +463,9 @@ without running anything.
   and `pidfd_send_signal` altogether, since a filter cannot see whom a pidfd
   names. Each command also runs in a process group apart from Abhed's.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
-  refused, and Landlock refuses TCP as well. With it true, commands get the
+  refused, and Landlock refuses TCP as well (plain TCP only: since Linux 6.14
+  Landlock leaves MPTCP and SCTP alone, so the `socket()` refusal is what
+  stops those). With it true, commands get the
   host's network, unfiltered. Unix sockets are refused either way.
   `sandbox.network: "allowlist"` refuses the fence in both modes, since it
   cannot keep a command's sockets to the egress proxy alone
