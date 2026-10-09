@@ -353,9 +353,10 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	_, _, cfg := s.state.snapshot()
 	// The edition's layer for the session's owner, read now: one that cannot
 	// be read opens no terminal at all.
-	layer, err := s.sessionLayer(StartSpec{Tenant: live.Tenant, User: live.User})
+	owner := s.ownerOf(live)
+	layer, err := s.sessionLayer(StartSpec{Tenant: live.Tenant, User: owner})
 	if err != nil {
-		s.log.Error("terminal refused: the session's policy layer", "session", live.ID, "user", live.User, "error", err)
+		s.log.Error("terminal refused: the session's policy layer", "session", live.ID, "user", owner, "error", err)
 		WriteError(w, http.StatusServiceUnavailable, "the terminal was not opened: "+err.Error())
 		return
 	}
