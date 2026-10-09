@@ -29,6 +29,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/driver"
+	"github.com/zybuu-ai/abhed/driver/forward"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 )
@@ -77,6 +78,9 @@ type instance struct {
 	stopped bool
 	// running counts commands in flight; a stop waits for them up to its grace.
 	running sync.WaitGroup
+	// forwards are this incarnation's open forwards; done closes when it stops.
+	forwards *forward.Set
+	done     chan struct{}
 }
 
 // NewDocker returns the docker driver building each sandbox's policy from cfg.
@@ -110,7 +114,11 @@ func newDriver(name string, opts Options, r runner, policy func(string) (sandbox
 }
 
 func (d *Driver) Info() driver.Info {
-	return driver.Info{Name: d.name, Version: "1", Capabilities: []driver.Capability{driver.CapAttach, driver.CapCopy}}
+	caps := []driver.Capability{driver.CapAttach, driver.CapCopy, driver.CapForward}
+	if d.opts.SnapshotDir != "" {
+		caps = append(caps, driver.CapSnapshot)
+	}
+	return driver.Info{Name: d.name, Version: "1", Capabilities: caps}
 }
 
 // engine probes the engine once it answers; until then every call asks again.
@@ -263,6 +271,7 @@ func (d *Driver) start(ctx context.Context, in *instance, eng engineInfo) (drive
 		_ = d.teardown(in)
 		return driver.Status{}, err
 	}
+	in.forwards, in.done = &forward.Set{}, make(chan struct{})
 	return d.status(in, eng, driver.PhaseRunning), nil
 }
 
@@ -431,6 +440,8 @@ func (d *Driver) Start(ctx context.Context, id string) (driver.Status, error) {
 	if err := d.teardown(in); err != nil {
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "removing the stopped container: %v", err)
 	}
+	// Starting again is a new incarnation, as the control plane counts it.
+	in.spec.Generation++
 	st, err := d.start(ctx, in, eng)
 	if err != nil {
 		return driver.Status{}, err
@@ -458,6 +469,7 @@ func (d *Driver) Stop(ctx context.Context, id string, grace time.Duration) (driv
 	d.mu.Unlock()
 	in.life.Lock()
 	defer in.life.Unlock()
+	in.endIncarnation()
 	secs := int((grace + time.Second - 1) / time.Second)
 	sctx, cancel := context.WithTimeout(context.Background(), grace+engineWait)
 	defer cancel()
@@ -489,8 +501,12 @@ func (d *Driver) Delete(ctx context.Context, id string) error {
 	d.mu.Unlock()
 	in.life.Lock()
 	defer in.life.Unlock()
+	in.endIncarnation()
 	if err := d.remove(in.name); err != nil {
 		return driver.Errorf(driver.ErrUnavailable, "removing the container: %v", err)
+	}
+	if err := d.removeSnapshots(ctx, id); err != nil {
+		return err
 	}
 	// The commands end with their container; their proxy goes after them.
 	in.running.Wait()
@@ -521,7 +537,7 @@ func (d *Driver) deleteLeftover(ctx context.Context, id string) error {
 	if err := d.remove(name); err != nil {
 		return driver.Errorf(driver.ErrUnavailable, "removing the container: %v", err)
 	}
-	return nil
+	return d.removeSnapshots(ctx, id)
 }
 
 // begin admits one command to a running instance; done must be called after.

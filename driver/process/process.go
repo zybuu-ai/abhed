@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,8 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/driver"
+	"github.com/zybuu-ai/abhed/driver/forward"
+	"github.com/zybuu-ai/abhed/driver/snapshot"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 )
@@ -28,9 +31,20 @@ import (
 // Name is the driver's registered name.
 const Name = "process"
 
+// Options are the operator's settings for the process driver.
+type Options struct {
+	// SnapshotDir holds workspace snapshots, outside every workspace; the
+	// driver declares snapshot only when it is set.
+	SnapshotDir string
+	// Record receives snapshot, restore and forward events.
+	Record driver.Recorder
+}
+
 // Driver runs instances under the configured sandbox tier.
 type Driver struct {
 	build func(spec driver.Spec) (sandbox.Sandbox, error)
+	opts  Options
+	snaps snapshot.Store
 
 	mu    sync.Mutex
 	insts map[string]*instance
@@ -44,21 +58,46 @@ type instance struct {
 	runCtx  context.Context
 	stopRun context.CancelFunc
 	running sync.WaitGroup
+	// forwards are the open forwards of this incarnation; done closes when
+	// it stops.
+	forwards *forward.Set
+	done     chan struct{}
+	// restoring holds off a start while the workspace is replaced.
+	restoring bool
+}
+
+// begun starts a new incarnation's run context, forwards and done signal.
+func (in *instance) begun() {
+	in.runCtx, in.stopRun = context.WithCancel(context.Background())
+	in.forwards, in.done = &forward.Set{}, make(chan struct{})
 }
 
 // New returns the driver building sandboxes from cfg, as a session does.
 func New(cfg config.Config) *Driver {
-	return newDriver(func(spec driver.Spec) (sandbox.Sandbox, error) {
+	return NewWithOptions(cfg, Options{})
+}
+
+// NewWithOptions is New with the operator's options.
+func NewWithOptions(cfg config.Config, opts Options) *Driver {
+	return newDriverWith(func(spec driver.Spec) (sandbox.Sandbox, error) {
 		return sandboxconfig.Build(cfg, spec.Workspace)
-	})
+	}, opts)
 }
 
 func newDriver(build func(driver.Spec) (sandbox.Sandbox, error)) *Driver {
-	return &Driver{build: build, insts: map[string]*instance{}}
+	return newDriverWith(build, Options{})
+}
+
+func newDriverWith(build func(driver.Spec) (sandbox.Sandbox, error), opts Options) *Driver {
+	return &Driver{build: build, opts: opts, snaps: snapshot.Store{Dir: opts.SnapshotDir}, insts: map[string]*instance{}}
 }
 
 func (d *Driver) Info() driver.Info {
-	return driver.Info{Name: Name, Version: "1", Capabilities: []driver.Capability{driver.CapAttach}}
+	caps := []driver.Capability{driver.CapAttach, driver.CapForward}
+	if d.opts.SnapshotDir != "" {
+		caps = append(caps, driver.CapSnapshot)
+	}
+	return driver.Info{Name: Name, Version: "1", Capabilities: caps}
 }
 
 // tiers are the names Spec.MinTier may use; anything else is refused, since
@@ -130,7 +169,7 @@ func (d *Driver) Create(_ context.Context, spec driver.Spec) (driver.Status, err
 		return driver.Status{}, err
 	}
 	in.sb, in.stopped = sb, false
-	in.runCtx, in.stopRun = context.WithCancel(context.Background())
+	in.begun()
 	return status(spec.ID, in), nil
 }
 
@@ -165,6 +204,10 @@ func (d *Driver) Start(_ context.Context, id string) (driver.Status, error) {
 		d.mu.Unlock()
 		return st, nil
 	}
+	if in.restoring {
+		d.mu.Unlock()
+		return driver.Status{}, driver.Errorf(driver.ErrConflict, "instance %s is being restored", id)
+	}
 	spec := in.spec
 	d.mu.Unlock()
 
@@ -174,12 +217,14 @@ func (d *Driver) Start(_ context.Context, id string) (driver.Status, error) {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if cur, ok := d.insts[id]; !ok || cur != in || !in.stopped || in.sb != nil {
+	if cur, ok := d.insts[id]; !ok || cur != in || !in.stopped || in.sb != nil || in.restoring {
 		_ = sandbox.Close(sb)
 		return driver.Status{}, driver.Errorf(driver.ErrConflict, "instance %s changed while starting", id)
 	}
+	// Starting again is a new incarnation, as the control plane counts it.
+	in.spec.Generation++
 	in.sb, in.stopped = sb, false
-	in.runCtx, in.stopRun = context.WithCancel(context.Background())
+	in.begun()
 	return status(id, in), nil
 }
 
@@ -198,8 +243,11 @@ func (d *Driver) Stop(_ context.Context, id string, grace time.Duration) (driver
 		return st, nil
 	}
 	in.stopped = true
-	sb, stopRun := in.sb, in.stopRun
+	sb, stopRun, fw, done := in.sb, in.stopRun, in.forwards, in.done
 	d.mu.Unlock()
+	// What is bound to this incarnation ends first, and does not wait out the grace.
+	close(done)
+	fw.Close()
 
 	drained := make(chan struct{})
 	go func() { in.running.Wait(); close(drained) }()
@@ -231,6 +279,10 @@ func (d *Driver) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	delete(d.insts, id)
+	if d.opts.SnapshotDir != "" {
+		// A sandbox's snapshots restore only into it, so they go with it.
+		return d.snaps.RemoveAll(id)
+	}
 	return nil
 }
 
@@ -432,4 +484,166 @@ func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest
 	case <-time.After(time.Second):
 	}
 	return result(ctx, cmd, werr)
+}
+
+// record appends an event, or warns when the driver has no record.
+func (d *Driver) record(event string, payload map[string]any) error {
+	if d.opts.Record == nil {
+		slog.Warn("sandbox event not recorded: the process driver has no record", "event", event, "sandbox_id", payload["sandbox_id"])
+		return nil
+	}
+	return d.opts.Record(event, payload)
+}
+
+// Done is closed when the instance's current incarnation stops.
+func (d *Driver) Done(id string) (<-chan struct{}, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	in, err := d.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if in.stopped {
+		return nil, driver.Errorf(driver.ErrConflict, "instance %s is stopped", id)
+	}
+	return in.done, nil
+}
+
+// Forward runs a relay inside the sandbox that connects to port on the
+// sandbox's own loopback, so it reaches only what the sandbox could. The
+// stream lives until it is closed or the instance stops; ctx bounds only
+// the connecting.
+func (d *Driver) Forward(ctx context.Context, id string, port int) (io.ReadWriteCloser, error) {
+	if port < 1 || port > 65535 {
+		return nil, driver.Errorf(driver.ErrInvalid, "port %d is out of range", port)
+	}
+	d.mu.Lock()
+	in, err := d.get(id)
+	if err != nil {
+		d.mu.Unlock()
+		return nil, err
+	}
+	if in.stopped || in.sb == nil {
+		d.mu.Unlock()
+		return nil, driver.Errorf(driver.ErrConflict, "instance %s is stopped", id)
+	}
+	sb, gen, fw, runCtx := in.sb, in.spec.Generation, in.forwards, in.runCtx
+	in.running.Add(1)
+	d.mu.Unlock()
+
+	fctx, cancel := context.WithCancel(runCtx)
+	cmd := sb.Command(fctx, in.spec.Workspace, forward.RelayLine(port))
+	if cmd.Err != nil {
+		cancel()
+		sandbox.Release(cmd)
+		in.running.Done()
+		return nil, driver.Errorf(driver.ErrUnavailable, "the relay was not started: %v", cmd.Err)
+	}
+	sandbox.EndWithCommand(cmd)
+	base := map[string]any{"sandbox_id": id, "generation": gen, "port": port}
+	if err := d.record(driver.EventForward, with(base, "action", "open")); err != nil {
+		cancel()
+		sandbox.Release(cmd)
+		in.running.Done()
+		return nil, driver.Errorf(driver.ErrUnavailable, "recording the forward: %v", err)
+	}
+	var st *forward.Stream
+	st, err = forward.Open(ctx, cmd, port, cancel, func(bin, bout int64) {
+		cancel()
+		if st != nil {
+			fw.Remove(st)
+		}
+		in.running.Done()
+		_ = d.record(driver.EventForward, with(base, "action", "close", "bytes_in", bin, "bytes_out", bout))
+	})
+	if err != nil {
+		sandbox.Release(cmd)
+		return nil, err
+	}
+	if err := fw.Add(st); err != nil {
+		return nil, err
+	}
+	return st, nil
+}
+
+// with is base and the pairs kv added.
+func with(base map[string]any, kv ...any) map[string]any {
+	out := make(map[string]any, len(base)+len(kv)/2)
+	for k, v := range base {
+		out[k] = v
+	}
+	for i := 0; i+1 < len(kv); i += 2 {
+		out[kv[i].(string)] = kv[i+1]
+	}
+	return out
+}
+
+// Snapshot archives the instance's workspace, without Abhed's state, and
+// records it. A snapshot of a running instance is taken while commands may
+// write; stop it first for a consistent one.
+func (d *Driver) Snapshot(ctx context.Context, id, name string) (driver.SnapshotRef, error) {
+	if d.opts.SnapshotDir == "" {
+		return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnsupported, "the process driver has no snapshot folder")
+	}
+	d.mu.Lock()
+	in, err := d.get(id)
+	if err != nil {
+		d.mu.Unlock()
+		return driver.SnapshotRef{}, err
+	}
+	if in.restoring {
+		d.mu.Unlock()
+		return driver.SnapshotRef{}, driver.Errorf(driver.ErrConflict, "instance %s is being restored", id)
+	}
+	ws, gen := in.spec.Workspace, in.spec.Generation
+	d.mu.Unlock()
+	ref, st, err := d.snaps.Take(ctx, id, gen, name, ws)
+	if err != nil {
+		return driver.SnapshotRef{}, err
+	}
+	if err := d.record(driver.EventSnapshot, snapshot.Payload(id, gen, ref, st)); err != nil {
+		// A snapshot the record does not hold is not kept.
+		_ = d.snaps.Remove(id, ref)
+		return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnavailable, "recording the snapshot: %v", err)
+	}
+	return ref, nil
+}
+
+// Restore replaces a stopped instance's workspace with the snapshot, once
+// its digest matches; Abhed's state is left as it is. The next start is a
+// new generation.
+func (d *Driver) Restore(ctx context.Context, id string, ref driver.SnapshotRef) error {
+	if d.opts.SnapshotDir == "" {
+		return driver.Errorf(driver.ErrUnsupported, "the process driver has no snapshot folder")
+	}
+	d.mu.Lock()
+	in, err := d.get(id)
+	if err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	if !in.stopped || in.sb != nil || in.restoring {
+		d.mu.Unlock()
+		return driver.Errorf(driver.ErrConflict, "instance %s must be stopped to restore it", id)
+	}
+	in.restoring = true
+	ws, gen := in.spec.Workspace, in.spec.Generation
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		in.restoring = false
+		d.mu.Unlock()
+	}()
+	st, err := d.snaps.Restore(ctx, id, ref, ws)
+	payload := snapshot.Payload(id, gen, ref, st)
+	if err != nil {
+		payload["outcome"], payload["error"] = "refused", err.Error()
+		_ = d.record(driver.EventRestore, payload)
+		return err
+	}
+	payload["outcome"] = "restored"
+	if err := d.record(driver.EventRestore, payload); err != nil {
+		return driver.Errorf(driver.ErrUnavailable, "the workspace was restored but the record refused it: %v", err)
+	}
+	return nil
 }

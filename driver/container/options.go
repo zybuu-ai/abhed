@@ -41,8 +41,12 @@ type Options struct {
 	// NamePrefix starts every container's name; "abhed-sbx-" when empty.
 	NamePrefix string
 	// Record receives the egress decisions of a sandbox under the network
-	// allowlist, with the sandbox's id in the payload.
+	// allowlist, and its snapshots, restores and forwards, with the
+	// sandbox's id in the payload.
 	Record func(event string, payload map[string]any) error
+	// SnapshotDir holds workspace snapshots, outside every workspace; the
+	// driver declares snapshot only when it is set.
+	SnapshotDir string
 }
 
 // Mount is an extra host folder seen inside the sandbox. It is read-only

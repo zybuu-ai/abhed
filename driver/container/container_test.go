@@ -773,7 +773,7 @@ func TestCreateValidatesAndIsIdempotent(t *testing.T) {
 	if err := driver.Check(d); err != nil {
 		t.Errorf("capabilities: %v", err)
 	}
-	if info := d.Info(); !info.Has(driver.CapAttach) || !info.Has(driver.CapCopy) || info.Has(driver.CapForward) || info.Has(driver.CapSnapshot) {
+	if info := d.Info(); !info.Has(driver.CapAttach) || !info.Has(driver.CapCopy) || !info.Has(driver.CapForward) || info.Has(driver.CapSnapshot) {
 		t.Errorf("capabilities %v", info.Capabilities)
 	}
 	// A leftover container of the same name is an existing instance.
