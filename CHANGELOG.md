@@ -37,6 +37,33 @@ All notable changes to Abhed are recorded here. The format follows
   set aside with a warning. `control_plane.ha` still comes from the user's
   own file or the managed one, but never from a workspace's file, trusted or
   not, however its keys are spelled; that copy is set aside with a warning.
+- An edition's per-person policy layer (`server.Options.SessionPolicy`,
+  such as a Team workspace's rules) now judges that person's sandbox
+  commands (`:exec`, either form) and every line typed into `:attach` and
+  an SSH shell, as it judges their sessions and the workbench's terminal.
+  The layer is asked for per caller when the call or connection opens; one
+  that cannot be read or applied refuses the call with `503` instead of
+  running it under fewer rules.
+- A sandbox command fed stdin (the `:exec` WebSocket, an SSH exec request,
+  `abhed sandbox exec -i`) that is a shell or interpreter, such as `sh` or
+  `python3`, is refused with `403` while any deny or ask rule for `bash` or
+  any hook is in force (the default deny rules included): the commands it
+  would read from stdin are never put to the rules. The message points to
+  `:attach` or an SSH shell, which judge each line. A word naming a shell,
+  an interpreter or a program that runs what it reads (`awk`, `sed`,
+  `xargs`, `eval`, `ssh` …) anywhere in the line, a program named by an
+  expansion, and a line that does not parse are refused; the sandboxes
+  guide lists the rule. Editors that start their server over SSH by sending
+  a script to a shell need a server whose rules and hooks do not screen
+  `bash`.
+- A sandbox command given as `argv` (`POST :exec`, the `:exec` WebSocket,
+  and `abhed sandbox exec ID -- COMMAND ARG...`) is judged by the deny rules
+  and recorded as the line the process and container drivers run, each word
+  quoted for a POSIX shell, rather than as the words joined by spaces, which
+  let quotes inside the words hide a command from the rules
+  (`env "A='" sh -c "curl …" "B='"` passed `Bash(curl *)`). One quoting,
+  `driver.QuoteArgv`, serves the screen, the record and both drivers; a
+  word holding a NUL byte is refused with `400`.
 - A permission rule naming a built-in tool in another case than Abhed's
   lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
   `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's
@@ -476,6 +503,22 @@ on. A server with it off starts on the older schema as before.
   on its next request, and sign-outs made at once on two servers no longer
   overwrite each other.
 
+- An `attach.refused` record kept the refusal's reason as given, and a
+  hook's reason may quote the refused line; the reason now goes through the
+  secrets redaction, as the line does.
+- A command run over the `:exec` WebSocket that was slow to read its stdin
+  stopped the server reading the stream at all, pongs included, so after a
+  minute the stream ended as if the client had gone. Stdin now waits in a
+  bounded queue (1 MiB) while the reader goes on; only with the queue full
+  does the reader wait for the command, and then a quiet client is not
+  taken to be gone. No stdin is dropped while the command may still read it.
+- A client that stopped reading a sandbox stream held the server's writes,
+  and its answers to pings, until the connection broke. Each write on a
+  stream now has 30 seconds; past that the stream is closed and ends as
+  any lost client's does. `wsconn.Limits.WriteTimeout` sets the bound.
+- A server shutting down now ends its open `:attach`, `:exec`, `:forward`
+  and `:ssh` streams, which the HTTP server's own shutdown does not close,
+  records how each ended (code `unavailable`), and opens no new one.
 - `abhed sandbox cp`: a folder that does not exist, in the sandbox or on
   this machine, is named plainly instead of as a host `lstat` error that
   showed the server's path to the workspace; a copy out that fails part way
@@ -596,6 +639,12 @@ on. A server with it off starts on the older schema as before.
   a command otherwise;
   `server.Options.SandboxSSHKey` turns the relay on;
   `drivertest.Fake.AttachFunc` stands in for a shell.
+  `driver.ExecRequest.Line` and `driver.QuoteArgv` give the one shell line
+  an exec runs, as the drivers run it and the control plane judges it.
+  `controlplane.OwnershipWatcher`, which an `Ownership` may also
+  implement, ends a replica's open sandbox streams when it stops owning the
+  sandbox, recorded with `ErrOwnershipLost` as the reason; long-lived calls
+  record why their context was cancelled (`context.Cause`).
 - Experimental public Go packages for the sandbox control plane, the base
   for `/v1/sandboxes` and per-session sandboxes: `driver` (the driver
   interface, capability flags and registry), `driver/plugin` (drivers in a

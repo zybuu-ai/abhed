@@ -54,23 +54,71 @@ const (
 	SSHRelayProtocol = protoSSH
 )
 
-// streamLimits bound what a client sends on a stream.
-var streamLimits = wsconn.Limits{MaxFrame: 1 << 20, MaxMessage: 1 << 20}
+// streamQuiet is how long a client may send nothing, pongs included,
+// before its stream is taken to be gone.
+var streamQuiet = 3 * streamPing
 
-// streamSlots counts open streams per caller.
+// streamLimits bound what a client sends on a stream, and how long one
+// that stops reading may hold a write before its stream is closed.
+var streamLimits = wsconn.Limits{MaxFrame: 1 << 20, MaxMessage: 1 << 20, WriteTimeout: 30 * time.Second}
+
+// streamSlots counts open streams per caller, and ends them all at shutdown:
+// a hijacked connection is not one the HTTP server's Shutdown closes.
 type streamSlots struct {
-	mu    sync.Mutex
-	open  map[string]int
-	total int
+	mu      sync.Mutex
+	open    map[string]int
+	total   int
+	closing bool
+	end     chan struct{}
 }
 
+// ending is closed when the server shuts down.
+func (l *streamSlots) ending() <-chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.end == nil {
+		l.end = make(chan struct{})
+	}
+	return l.end
+}
+
+// closed reports whether shutdown has begun.
+func (l *streamSlots) closed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closing
+}
+
+// shutdown ends every open stream and waits up to wait for them to record
+// how they ended. No stream opens after it.
+func (l *streamSlots) shutdown(wait time.Duration) {
+	l.ending()
+	l.mu.Lock()
+	if !l.closing {
+		l.closing = true
+		close(l.end)
+	}
+	l.mu.Unlock()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		l.mu.Lock()
+		n := l.total
+		l.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// take holds a slot for one stream, none once shutdown has begun.
 func (l *streamSlots) take(principal string) (func(), bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.open == nil {
 		l.open = map[string]int{}
 	}
-	if l.total >= maxStreams || l.open[principal] >= maxStreamsPerCaller {
+	if l.closing || l.total >= maxStreams || l.open[principal] >= maxStreamsPerCaller {
 		return nil, false
 	}
 	l.open[principal]++
@@ -161,7 +209,12 @@ func (s *Server) openStream(w http.ResponseWriter, r *http.Request, call verbCal
 		return streamStart{}, false
 	}
 	release, ok := s.cpStreams.take(call.caller.Principal)
-	if !ok {
+	switch {
+	case !ok && s.cpStreams.closed():
+		w.Header().Set("Retry-After", "5")
+		writeCPError(w, http.StatusServiceUnavailable, "unavailable", "the server is shutting down; try again")
+		return streamStart{}, false
+	case !ok:
 		w.Header().Set("Retry-After", "30")
 		writeCPError(w, http.StatusTooManyRequests, "unavailable", "too many streams are open; close one and try again")
 		return streamStart{}, false
@@ -180,9 +233,10 @@ func accept(w http.ResponseWriter, r *http.Request, proto string) (*wsconn.Conn,
 
 // watchStream ends a stream, by cancelling it, when its caller may no
 // longer see the sandbox, when the sandbox stops or starts a new
-// generation, when the client has gone quiet, or after streamMax. It
+// generation, when the client has gone quiet, when the server shuts down or
+// this replica stops owning the sandbox, or after streamMax. It
 // returns why it ended the stream, once it has stopped.
-func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *http.Request,
+func (s *Server) watchStream(ctx context.Context, cancel context.CancelCauseFunc, r *http.Request,
 	sb controlplane.Sandbox, d driver.Driver, ws *wsconn.Conn, b streamBounds) (wait func() error) {
 	if b.max <= 0 {
 		b.max = streamMax
@@ -206,6 +260,8 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 	every := min(s.streamRecheck(), streamPing)
 	tick := time.NewTicker(every)
 	deadline := time.NewTimer(b.max)
+	shutdown, quiet := s.cpStreams.ending(), streamQuiet
+	lost := s.opts.ControlPlane.OwnershipLost(ctx, sb.ID)
 	var why error
 	done := make(chan struct{})
 	go func() {
@@ -213,7 +269,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 		defer guard.stop()
 		defer tick.Stop()
 		defer deadline.Stop()
-		stop := func(err error) { why = err; cancel() }
+		stop := func(err error) { why = err; cancel(err) }
 		current := func() error {
 			gen, ready, err := s.opts.ControlPlane.Current(context.WithoutCancel(ctx), sb.ID)
 			switch {
@@ -230,6 +286,12 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 				return
 			case <-ended:
 				stop(fmt.Errorf("%w: the sandbox stopped", controlplane.ErrInvalidTransition))
+				return
+			case <-shutdown:
+				stop(fmt.Errorf("%w: the server is shutting down", controlplane.ErrUnavailable))
+				return
+			case <-lost:
+				stop(fmt.Errorf("%w: %w: another replica owns sandbox %s now", controlplane.ErrUnavailable, controlplane.ErrOwnershipLost, sb.ID))
 				return
 			case <-deadline.C:
 				stop(fmt.Errorf("%w: the stream was open for %s, the longest one may be", controlplane.ErrUnavailable, b.max))
@@ -253,7 +315,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 					return
 				}
 				if ws != nil {
-					if time.Since(ws.LastRead()) > 3*streamPing {
+					if time.Since(ws.LastRead()) > quiet && (b.busy == nil || !b.busy()) {
 						stop(fmt.Errorf("%w: the client stopped answering", controlplane.ErrUnavailable))
 						return
 					}
@@ -263,7 +325,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 		}
 	}()
 	return func() error {
-		cancel()
+		cancel(nil)
 		<-done
 		return why
 	}
@@ -276,6 +338,9 @@ type streamBounds struct {
 	// idle, with active, ends a stream with no traffic for that long.
 	idle   time.Duration
 	active func() time.Time
+	// busy, while true, says the server is not reading the client for
+	// reasons of its own, so a quiet client is not taken to be gone.
+	busy func() bool
 }
 
 // sandboxCallerFunc works out who a request acts as, as sandboxCaller does,
@@ -290,12 +355,21 @@ func (s *Server) sandboxCallerFunc() func(r *http.Request) (controlplane.Caller,
 	}
 }
 
-// sandboxPolicy is what a person's commands in a sandbox are judged by:
-// the server's rules and its extensions' hooks, as the workbench's terminal.
-func (s *Server) sandboxPolicy(id string) *policy.Engine {
+// sandboxPolicy is what a person's commands in a sandbox are judged by: the
+// server's rules, its extensions' hooks and the caller's policy layer, as
+// the workbench's terminal. A layer that cannot be had refuses the call.
+func (s *Server) sandboxPolicy(ctx context.Context, id string) (*policy.Engine, error) {
 	pol := s.newPolicy(policy.ModeDefault)
 	toolset.Police(s.opts.Extensions, pol, "sandbox:"+id)
-	return pol
+	layer, err := s.sessionLayer(StartSpec{Tenant: TenantOf(ctx), User: UserOf(ctx)})
+	if err == nil {
+		err = applyLayer(pol, layer)
+	}
+	if err != nil {
+		s.log.Error("sandbox call refused: its policy layer", "sandbox", id, "user", UserOf(ctx), "error", err)
+		return nil, fmt.Errorf("%w: %w", controlplane.ErrUnavailable, err)
+	}
+	return pol, nil
 }
 
 // denied refuses a command line a deny rule or hook refuses. line judges it

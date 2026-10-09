@@ -163,6 +163,13 @@ func (s *Service) outcome(ctx context.Context, ev AuditEvent, err error) {
 	if err != nil {
 		ev.Outcome, ev.Code = OutcomeFailed, ErrorCode(err)
 	}
+	if errors.Is(err, ErrOwnershipLost) {
+		ev.Detail = maps.Clone(ev.Detail)
+		if ev.Detail == nil {
+			ev.Detail = map[string]string{}
+		}
+		ev.Detail["reason"] = ErrOwnershipLost.Error()
+	}
 	_ = s.record(ctx, ev)
 }
 
@@ -608,9 +615,10 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 		defer end()
 		dreq.Env = append(slices.Clone(dreq.Env), env...)
 	}
-	command := req.Command
-	if command == "" {
-		command = strings.Join(req.Argv, " ")
+	// The line the driver runs, so the screen and the record see that and not a looser join.
+	command, err := dreq.Line()
+	if err != nil {
+		return driver.ExecResult{}, sb, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	ev := AuditEvent{Principal: c.Principal, Action: "exec", SandboxID: id, Generation: sb.Generation,
 		Detail: map[string]string{"command": s.redact(command)}}
@@ -657,9 +665,12 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	case limit.Exceeded():
 		err = fmt.Errorf("%w: the command wrote more than %d bytes and was stopped", driver.ErrOutputLimit, vals.Int(SetExecOutput))
 	case err == nil && ctx.Err() != nil:
-		err = ctx.Err()
+		err = context.Cause(ctx)
 	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
 		err = fmt.Errorf("%w: the command ran past %s and was stopped", context.DeadlineExceeded, timeout)
+	case err != nil && ctx.Err() != nil:
+		// Why the caller ended it, such as a shutdown, rather than only that it did.
+		err = context.Cause(ctx)
 	}
 	if err == nil {
 		ev.Detail["exit_code"] = strconv.Itoa(res.ExitCode)

@@ -167,8 +167,8 @@ last `:`; ids never contain one.
 | `PATCH /v1/sandboxes/{id}` | `{labels?, template?, settings?}` (JSON merge patch) | `200` sandbox | `If-Match` required; `428` without it. |
 | `DELETE /v1/sandboxes/{id}` | — | `202` sandbox in `Deleting` | `If-Match` honoured. |
 | `POST …:start` / `:stop` | `{grace_seconds?}` | `202` sandbox | `If-Match` honoured. |
-| `POST …:exec` | `{argv \| command, cwd?, env?}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. With `"stdin": true`, `400`: stdin is the WebSocket form. |
-| `GET …:exec` | first message: the `POST` body | WebSocket `abhed.exec.v1` | One command with stdin (§4.3). |
+| `POST …:exec` | `{argv \| command, cwd?, env?}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. With `"stdin": true`, `400`: stdin is the WebSocket form. `argv` runs, is screened and is recorded as one line with each word quoted for a POSIX shell (`driver.QuoteArgv`); a word with a NUL is `400`. |
+| `GET …:exec` | first message: the `POST` body | WebSocket `abhed.exec.v1` | One command with stdin (§4.3). While a deny or ask rule for `bash` or a hook is in force, a shell or interpreter that could read commands from stdin is `forbidden` (as is an SSH exec); see the sandboxes guide for the rule. |
 | `GET …:attach?rows=&cols=&cwd=` | — | WebSocket `abhed.attach.v1` | PTY; resize as a control message. Carries `generation`. |
 | `POST …:ssh` | — | `{host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` | What a client needs for the relay; no credential is minted, since the relay authenticates the caller. |
 | `GET …:ssh` | — | WebSocket `abhed.ssh.v1` | The SSH relay: raw SSH in binary messages. |
@@ -844,6 +844,7 @@ amounts to. They also check ownership as a change does.
 |---|---|---|
 | `controlplane.Config.Interceptor` | `controlplane.Interceptor` | Admission of every mutating call |
 | `controlplane.Config.Ownership` | `controlplane.Ownership` | Which sandboxes this replica acts on |
+| the same, optionally | `controlplane.OwnershipWatcher` | Ends this replica's open streams on a sandbox it stops owning |
 | `controlplane.Config.NodeID` | string | Names the replica in every event it records (`detail.node`) |
 | `store.Sandboxes.WithFence` | `store.Fence` | Refuses a write, in its transaction, from a replica that lost its lease |
 | `server.Options.SandboxRouter` | `server.SandboxRouter` | Relays a call to the replica that owns the sandbox |
@@ -879,3 +880,13 @@ sandbox this replica does not own, or whose ownership it cannot read, is
 Reads (`GET` of an object or a list) are served by any replica from the
 shared store; every other call on a sandbox goes through `SandboxRouter`
 first, after the caller is authenticated and its tenant checked.
+
+An `Ownership` that also implements `OwnershipWatcher` is asked, as each
+stream opens (`:attach`, `:exec` with stdin, `:forward`, `:ssh`), for a
+channel closed once this replica no longer owns the sandbox
+(`Watch(ctx, id)`, watched for as long as the stream lasts; nil when it
+cannot be lost). When it closes the stream ends as the other ends do: the
+client gets `{"type": "error"}` with code `unavailable`, and the stream's
+record, and that of an exec it ran, is `failed` with code `unavailable` and
+`detail.reason` `ownership lost` (`controlplane.ErrOwnershipLost`). Without
+it, a stream runs on until one of its own bounds ends it.

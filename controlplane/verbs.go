@@ -320,6 +320,9 @@ func (s *Service) Stream(ctx context.Context, c Caller, id string, req StreamReq
 	}
 	defer release()
 	more, err := fn(d, sb)
+	if err != nil && ctx.Err() != nil {
+		err = context.Cause(ctx)
+	}
 	if len(more) > 0 {
 		if ev.Detail == nil {
 			ev.Detail = map[string]string{}

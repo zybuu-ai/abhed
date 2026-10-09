@@ -73,6 +73,10 @@ type Limits struct {
 	MaxFrame int64
 	// MaxMessage is the largest message, all its fragments together.
 	MaxMessage int64
+	// WriteTimeout, when set, bounds each frame's write: a peer that stops
+	// reading has its connection closed at once, rather than holding every
+	// writer (and the reader's answer to a ping) behind the write lock.
+	WriteTimeout time.Duration
 }
 
 func (l Limits) orDefault() Limits {
@@ -451,10 +455,11 @@ func (c *Conn) write(op byte, p []byte) error {
 	if c.sentClose || c.closed.Load() {
 		return ErrClosed
 	}
-	return c.writeLocked(op, p)
+	return c.writeLocked(op, p, c.limits.WriteTimeout)
 }
 
-func (c *Conn) writeLocked(op byte, p []byte) error {
+// writeLocked writes one frame within wait, when wait is set.
+func (c *Conn) writeLocked(op byte, p []byte, wait time.Duration) error {
 	var key *[4]byte
 	if c.client {
 		key = new([4]byte)
@@ -463,7 +468,15 @@ func (c *Conn) writeLocked(op byte, p []byte) error {
 		}
 	}
 	buf := appendFrame(make([]byte, 0, len(p)+14), true, op, p, key)
+	if wait > 0 {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(wait))
+		defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
+	}
 	_, err := c.conn.Write(buf)
+	if ne := net.Error(nil); errors.As(err, &ne) && ne.Timeout() {
+		// The peer stopped reading, and part of a frame may have gone.
+		c.finish()
+	}
 	return err
 }
 
@@ -479,10 +492,7 @@ func (c *Conn) sendClose(code int, reason string) error {
 		reason = trimUTF8(reason, maxControl-2)
 	}
 	p := binary.BigEndian.AppendUint16(nil, uint16(code)) // #nosec G115 -- close codes fit in 16 bits
-	_ = c.conn.SetWriteDeadline(time.Now().Add(closeWait))
-	err := c.writeLocked(opClose, append(p, reason...))
-	_ = c.conn.SetWriteDeadline(time.Time{})
-	return err
+	return c.writeLocked(opClose, append(p, reason...), closeWait)
 }
 
 // trimUTF8 cuts s to at most n bytes without splitting a character.

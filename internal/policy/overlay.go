@@ -162,6 +162,12 @@ func (e *Engine) DenyRules() []Rule {
 	return deny
 }
 
+// AskRules are every ask rule in force, configured and the session's.
+func (e *Engine) AskRules() []Rule {
+	_, ask, _ := e.rules()
+	return ask
+}
+
 // IsBroad reports whether an allow rule would approve every call to a tool:
 // a bare tool name, any tool (*), or a pattern of only wildcards and slashes,
 // such as bash(*) or write(**).

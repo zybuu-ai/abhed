@@ -39,7 +39,11 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 		return
 	}
 	defer st.release()
-	pol := s.sandboxPolicy(call.id)
+	pol, err := s.sandboxPolicy(r.Context(), call.id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
 	if why := s.terminalRefusal(pol); why != "" {
 		writeCPError(w, http.StatusForbidden, "forbidden", why)
 		return
@@ -50,8 +54,8 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 		return
 	}
 	cwd := r.URL.Query().Get("cwd")
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	var ws *wsconn.Conn
 	detail := map[string]string{"rows": strconv.Itoa(int(size.Rows)), "cols": strconv.Itoa(int(size.Cols))}
 	if cwd != "" {
@@ -74,7 +78,7 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 					typ, msg, err := ws.ReadMessage()
 					if err != nil {
 						gone.Store(true)
-						cancel()
+						cancel(nil)
 						return
 					}
 					if typ == wsconn.Binary {
@@ -143,6 +147,11 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		s.failCP(w, r, fmt.Errorf("%w: sandbox %s is %s; only Ready takes exec", controlplane.ErrInvalidTransition, call.id, st.sb.State))
 		return
 	}
+	pol, err := s.sandboxPolicy(r.Context(), call.id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
 	ws, err := accept(w, r, st.proto)
 	if err != nil {
 		return
@@ -164,38 +173,40 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		return
 	}
 	req.Stdin = true
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	pr, pw := io.Pipe()
+	in := newStdinQueue(pw)
 	var gone atomic.Bool
 	go func() {
+		defer in.end()
 		for {
 			typ, msg, err := ws.ReadMessage()
 			if err != nil {
 				gone.Store(true)
 				_ = pw.CloseWithError(io.ErrUnexpectedEOF)
-				cancel()
+				cancel(nil)
 				return
 			}
 			if typ == wsconn.Text {
 				var c streamControl
 				if json.Unmarshal(msg, &c) == nil && c.Type == "eof" {
-					_ = pw.Close()
+					in.end()
 				}
 				continue
 			}
-			// Stdin the command stopped reading is dropped.
-			_, _ = pw.Write(msg)
+			if !in.put(ctx, msg) {
+				return
+			}
 		}
 	}()
-	pol := s.sandboxPolicy(call.id)
 	var wait func() error
 	res, _, err := s.opts.ControlPlane.Exec(ctx, call.caller, call.id, "", req, controlplane.ExecIO{
 		Stdin: pr, Stdout: prefixed{ws, 1}, Stderr: prefixed{ws, 2},
-		Screen: func(command string) error { return denied(pol, command, false) },
+		Screen: func(command string) error { return s.screenStdinExec(pol, command) },
 		Started: func(sb controlplane.Sandbox) {
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
-			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{})
+			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{busy: in.full})
 		}})
 	_ = pr.Close()
 	if wait != nil {
@@ -212,6 +223,59 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 	}
 	endStreamWith(ws, err)
 }
+
+// stdinQueue carries an exec's stdin from the WebSocket's reader to the
+// command, so the reader goes on reading, and answering pings, while the
+// command is slow to take it. It holds at most stdinQueued chunks; past that
+// the reader waits for the command, as TCP would, rather than drop input,
+// and full says so, for the client is not the one that stopped. Stdin the
+// command no longer reads at all, once it closed it, is dropped.
+type stdinQueue struct {
+	ch     chan []byte
+	once   sync.Once
+	isFull atomic.Bool
+}
+
+const (
+	stdinChunk  = 32 << 10
+	stdinQueued = 32
+)
+
+func newStdinQueue(pw *io.PipeWriter) *stdinQueue {
+	q := &stdinQueue{ch: make(chan []byte, stdinQueued)}
+	go func() {
+		for b := range q.ch {
+			_, _ = pw.Write(b)
+		}
+		_ = pw.Close()
+	}()
+	return q
+}
+
+// put queues msg, false when ctx ended first.
+func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
+	for off := 0; off < len(msg); off += stdinChunk {
+		b := msg[off:min(off+stdinChunk, len(msg))]
+		select {
+		case q.ch <- b:
+			continue
+		default:
+		}
+		q.isFull.Store(true)
+		select {
+		case q.ch <- b:
+			q.isFull.Store(false)
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
+// end is stdin's end, once everything queued has gone.
+func (q *stdinQueue) end() { q.once.Do(func() { close(q.ch) }) }
+
+func (q *stdinQueue) full() bool { return q.isFull.Load() }
 
 // counted is a sandbox stream counting its bytes each way, closed once.
 type counted struct {
@@ -275,8 +339,8 @@ func (s *Server) forwardSandbox(w http.ResponseWriter, r *http.Request, call ver
 		writeCPError(w, http.StatusBadRequest, "invalid", "port must be a whole number from 1 to 65535")
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	var ws *wsconn.Conn
 	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "forward",
 		Capability: driver.CapForward, Detail: map[string]string{"port": strconv.Itoa(port)}},
@@ -383,10 +447,15 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 		return
 	}
 	defer st.release()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	pol, err := s.sandboxPolicy(r.Context(), call.id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	var ws *wsconn.Conn
-	_, err := s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "ssh"},
+	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "ssh"},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {
 			var err error
 			if ws, err = accept(w, r, st.proto); err != nil {
@@ -399,7 +468,7 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 			conn.touch()
 			wait := s.watchStream(ctx, cancel, r, sb, d, ws,
 				streamBounds{max: maxSession, idle: vals.Seconds(controlplane.SetSSHIdle), active: conn.last})
-			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: s.sandboxPolicy(sb.ID), until: time.Now().Add(maxSession)}
+			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: pol, until: time.Now().Add(maxSession)}
 			stats, err := sshrelay.Serve(ctx, conn, sshrelay.Config{HostKey: key, Log: s.log}, h)
 			if why := wait(); why != nil {
 				err = why
@@ -515,7 +584,7 @@ func (h *sshSandbox) Exec(ctx context.Context, command string, sess sshrelay.Ses
 	}
 	res, _, err := h.s.opts.ControlPlane.Exec(ctx, h.caller, h.sb.ID, "", controlplane.ExecRequest{Command: command, Stdin: true},
 		controlplane.ExecIO{Stdin: sess.Stdin, Stdout: sess.Stdout, Stderr: sess.Stderr, Timeout: left,
-			Screen: func(command string) error { return denied(h.pol, command, false) }})
+			Screen: func(command string) error { return h.s.screenStdinExec(h.pol, command) }})
 	return res.ExitCode, err
 }
 

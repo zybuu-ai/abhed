@@ -476,9 +476,16 @@ it ended. The command line itself goes through your secrets redaction first.
 A command a deny rule or an extension's hook refuses (your
 `permissions.deny`, as for the agent's `bash` and the workbench's
 terminal) is refused with `403` and code `forbidden`, and the refusal is
-recorded. Only a refusal stops a command here: rules that would ask the
+recorded. Where an edition gives each person a policy layer of their own,
+such as the rules of the Team workspace they belong to, its deny rules
+judge their commands here too, and the lines they type into `:attach` and
+an SSH shell; when the layer cannot be read the call is refused with `503`
+rather than run under fewer rules. Only a refusal stops a command here: rules that would ask the
 agent first do not ask a person who runs a command themselves. A command
-given as `argv` is judged as its words joined by spaces.
+given as `argv` runs as one shell line with each word quoted, so the shell
+splits it back into exactly those words; that quoted line is what the rules
+judge and the record keeps. A word with a NUL byte cannot be passed and is
+refused with `400`.
 
 ### Streams: attach, exec with stdin, forward and SSH
 
@@ -499,7 +506,10 @@ While a stream is open the caller is authorised again every few seconds
 (as the workbench's streams are): once their sign-in ends, or they can no
 longer see the sandbox, the stream ends. It also ends when the sandbox
 stops, is deleted or starts as a new generation, when the client stops
-answering pings for a minute, and after twelve hours. One caller may have
+answering pings for a minute, after twelve hours, and when the server
+shuts down (`{"type": "error"}` with code `unavailable`; each stream's end
+is recorded first, and no new one opens). A client that stops reading for
+30 seconds while the server writes to it is taken to be gone. One caller may have
 16 streams open at once; each opening counts against `exec_per_minute`.
 Messages are at most 1 MiB.
 
@@ -519,7 +529,8 @@ cannot be asked: each line you enter is rebuilt from your keys, put to the
 deny rules at its Enter, and recorded (`attach.input`, without its text
 when the terminal did not show it as typed). A line the rules refuse never
 reaches the shell: the terminal says why and the line is dropped, and the
-refusal is recorded (`attach.refused`). This is best effort: the shell
+refusal is recorded (`attach.refused`, with the line and the reason through
+your secrets redaction, as a rule or hook may quote the line). This is best effort: the shell
 decides what a line means, so the sandbox is the boundary. When the
 server's terminal must judge every line (`sandbox.terminal` is
 `"lines"`), or the managed configuration sets deny rules or extensions
@@ -534,6 +545,36 @@ binary messages are stdin, and `{"type": "eof"}` closes it. Output comes
 back as binary messages whose first byte says the stream (1 stdout, 2
 stderr). The command is judged, bounded and recorded as a `POST` one is.
 `POST …:exec` with `"stdin": true` answers `400`, naming the WebSocket form.
+
+A shell or interpreter fed stdin would run commands no rule ever sees. So
+while any deny or ask rule for `bash` or any hook is in force (the default
+configuration's deny rules count, as do a Team workspace's rules), a command
+fed stdin that could read commands from it is refused with `403` and code
+`forbidden`, and recorded: use `:attach` or an SSH shell, which judge each
+line, or pass the commands in the command line. This covers `:exec` with
+stdin, an SSH exec request and `abhed sandbox exec -i`. The rule is checked
+on every simple command anywhere in the line, pipelines, lists,
+substitutions and functions included:
+
+- a word naming a shell or interpreter refuses it, by its base name in any
+  case with a version suffix ignored (`/usr/bin/python3.12` is `python`):
+  shells (`sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `csh`, `busybox` …),
+  language interpreters (`python`, `perl`, `ruby`, `node`, `php`, `lua`,
+  `tclsh` …), programs that run what they read or build commands from it
+  (`awk`, `sed`, `xargs`, `parallel`, `ed`, `vim`, `gdb`, `sqlite3`, `psql`,
+  `mysql`, `ssh` …), and `eval`, `source` and `.`. It counts wherever it
+  stands, as `kubectl exec -i pod -- sh` would run one; a name that is also
+  a common argument (`.`, `r`, `ed`, `make`) counts only as the program or
+  after a wrapper;
+- a program named by an expansion, a glob or `$'…'` refuses it, and so does
+  such a word after a wrapper that runs the program after it (`env`,
+  `nice`, `timeout`, `nohup`, `sudo`, `find` …);
+- a line that cannot be parsed is refused.
+
+A false match only refuses a command that could have run without stdin. A
+script file the command runs is judged by its name, as on every exec.
+Editors that start their server over SSH by sending a script to `sh` need a
+server whose rules and hooks do not screen `bash`.
 
 **`:forward?port=N`** carries a byte stream to `127.0.0.1:N` inside the
 sandbox, through the driver's own channel (see [Snapshots and
@@ -567,7 +608,8 @@ write the host key and these lines for you.
 
 Each SSH session is its own recorded call, judged as the verb it amounts
 to: a shell is an `:attach` (`via: ssh` in the record; refused where
-`:attach` is), a command is an `:exec` (judged by the deny rules, its
+`:attach` is), a command is an `:exec` with stdin (judged by the deny rules
+and refused when it is a shell or interpreter, as above, its
 output held to `exec.output_bytes` on its channel, and run without a
 terminal even when one was asked for), and a `direct-tcpip` channel to
 `127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
