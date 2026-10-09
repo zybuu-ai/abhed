@@ -206,7 +206,9 @@ written in another case; or an MCP server or knowledge base that the managed
 configuration itself sets, written in another case. A bash pattern ending in
 `:*`, another tool's way of writing a prefix, is read literally (a colon, then
 anything) and is listed too: write `bash(npm test *)` for `Bash(npm test:*)`.
-The `-allowedTools` and `-disallowedTools` flags still translate `:*` for you.
+The `-allowedTools` and `-disallowedTools` flags still translate `:*` for you. `-disallowedTools`
+denies an MCP or extension tool both as written and in lower case, as it
+always lowered names; `-allowedTools` allows it only as written.
 
 `*` matches anything, newlines included; the pattern is matched against the
 command or path, or for a tool with neither, the first of its `pattern`,

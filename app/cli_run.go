@@ -84,7 +84,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return 2
 	}
 	modeFlagGiven = f.mode != ""
-	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinRules(f.deny, f.disallowedTools), f.addDirs); err != nil {
+	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinDenyRules(f.deny, f.disallowedTools), f.addDirs); err != nil {
 		fail(err)
 	}
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {

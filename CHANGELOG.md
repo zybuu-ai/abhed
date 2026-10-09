@@ -50,9 +50,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
-- `-allowedTools` and `-disallowedTools` no longer lower-case an MCP or
-  extension tool's name, which made a rule for a server or tool with a capital
-  letter match nothing; built-in names are still folded.
+- `-allowedTools` no longer lower-cases an MCP or extension tool's name,
+  which made an allow rule for a server or tool with a capital letter match
+  nothing. `-disallowedTools` adds the name as written beside the lower-cased
+  spelling it has always added, so an existing deny keeps matching and one for
+  a capitalised name now does too. Built-in names are still folded.
 
 
 ## [1.2.7] - 2026-10-07

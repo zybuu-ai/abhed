@@ -565,6 +565,24 @@ func joinRules(abhed, familiar string) string {
 	return strings.Join(append(splitTop(abhed), toolRules(familiar)...), ",")
 }
 
+// joinDenyRules is joinRules for deny rules. Up to 1.2.7 the flag lowered
+// every tool name, so a deny for an MCP or extension tool also keeps that
+// spelling: a deny only ever gains a match. Allow rules stay exact.
+func joinDenyRules(abhed, familiar string) string {
+	rules := splitTop(abhed)
+	for _, r := range toolRules(familiar) {
+		rules = append(rules, r)
+		name, rest, found := strings.Cut(r, "(")
+		if lower := strings.ToLower(name); lower != name {
+			if found {
+				lower += "(" + rest
+			}
+			rules = append(rules, lower)
+		}
+	}
+	return strings.Join(rules, ",")
+}
+
 // budgetFlag applies -max-budget-tokens. Under a managed budget it may only
 // lower it.
 func budgetFlag(cfg config.Config, tokens int) (config.Config, error) {

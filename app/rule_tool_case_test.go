@@ -1,12 +1,15 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // doctorWithRules runs the doctor and its JSON on a workspace whose configuration
@@ -81,5 +84,31 @@ func TestToolRuleKeepsMCPNames(t *testing.T) {
 		if got := toolRule(in); got != want {
 			t.Errorf("%s: %s, want %s", in, got, want)
 		}
+	}
+}
+
+// -disallowedTools lowered every tool name up to 1.2.7, so a deny for an MCP
+// tool keeps matching the lowered spelling as well as its own; an allow from
+// -allowedTools stays exact.
+func TestDisallowedToolsKeepsTheLoweredSpelling(t *testing.T) {
+	cfg, err := applyFlags(config.Default(), "", 0,
+		joinRules("", "mcp__GitHub__list"), joinDenyRules("", "mcp__GitHub__create_issue(*),Bash(curl:*)"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := policy.New(policy.ModeBypass)
+	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"mcp__github__create_issue", "mcp__GitHub__create_issue"} {
+		if d := pol.Evaluate(tool, true, json.RawMessage(`{}`)); d.Decision != policy.Deny {
+			t.Errorf("%s: %s, want deny (rules %q)", tool, d.Decision, cfg.Permissions.Deny)
+		}
+	}
+	if slices.Contains(cfg.Permissions.Allow, "mcp__github__list") || !slices.Contains(cfg.Permissions.Allow, "mcp__GitHub__list") {
+		t.Errorf("allow rules %q", cfg.Permissions.Allow)
+	}
+	if n := len(cfg.Permissions.Deny) - len(config.Default().Permissions.Deny); n != 3 {
+		t.Errorf("deny rules %q", cfg.Permissions.Deny)
 	}
 }
