@@ -138,14 +138,14 @@ func TestCodes(t *testing.T) {
 	for _, k := range []error{driver.ErrUnsupported, driver.ErrNotFound, driver.ErrExists, driver.ErrConflict,
 		driver.ErrInvalid, driver.ErrUnavailable, driver.ErrVersion, driver.ErrInternal} {
 		err := fmt.Errorf("wrapped: %w", driver.Errorf(k, "x"))
-		if got := driver.KindOf(driver.Code(err)); got != k {
+		if got := driver.KindOf(driver.Code(err)); !errors.Is(got, k) {
 			t.Errorf("%v round-trips to %v", k, got)
 		}
 	}
 	if driver.Code(errors.New("plain")) != "internal" {
 		t.Error("a plain error must be internal")
 	}
-	if driver.KindOf("made-up") != driver.ErrInternal {
+	if !errors.Is(driver.KindOf("made-up"), driver.ErrInternal) {
 		t.Error("an unknown code must be internal")
 	}
 }

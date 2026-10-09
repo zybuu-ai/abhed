@@ -207,7 +207,7 @@ func (f *Fake) Forward(_ context.Context, id string, _ int) (io.ReadWriteCloser,
 	}
 	a, b := net.Pipe()
 	go func() {
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 		_, _ = io.Copy(b, b)
 	}()
 	return a, nil

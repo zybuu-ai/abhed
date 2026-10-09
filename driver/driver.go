@@ -312,7 +312,8 @@ func ValidName(s string) bool {
 	}
 	for i := 1; i < len(s); i++ {
 		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+		lower, digit := c >= 'a' && c <= 'z', c >= '0' && c <= '9'
+		if !lower && !digit && c != '-' {
 			return false
 		}
 	}
