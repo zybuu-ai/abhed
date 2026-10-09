@@ -4671,6 +4671,9 @@ func (s *Server) drain() {
 	idleClosed := make(chan struct{})
 	go func() { defer close(idleClosed); s.closeIdle() }()
 	defer func() { <-idleClosed }()
+	streamsEnded := make(chan struct{})
+	go func() { defer close(streamsEnded); s.cpStreams.shutdown(turnEndWait) }()
+	defer func() { <-streamsEnded }()
 
 	if s.opts.DrainTimeout > 0 {
 		deadline := time.NewTimer(s.opts.DrainTimeout)

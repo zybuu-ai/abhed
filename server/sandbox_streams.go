@@ -57,20 +57,63 @@ const (
 // streamLimits bound what a client sends on a stream.
 var streamLimits = wsconn.Limits{MaxFrame: 1 << 20, MaxMessage: 1 << 20}
 
-// streamSlots counts open streams per caller.
+// streamSlots counts open streams per caller, and ends them all at shutdown:
+// a hijacked connection is not one the HTTP server's Shutdown closes.
 type streamSlots struct {
-	mu    sync.Mutex
-	open  map[string]int
-	total int
+	mu      sync.Mutex
+	open    map[string]int
+	total   int
+	closing bool
+	end     chan struct{}
 }
 
+// ending is closed when the server shuts down.
+func (l *streamSlots) ending() <-chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.end == nil {
+		l.end = make(chan struct{})
+	}
+	return l.end
+}
+
+// closed reports whether shutdown has begun.
+func (l *streamSlots) closed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closing
+}
+
+// shutdown ends every open stream and waits up to wait for them to record
+// how they ended. No stream opens after it.
+func (l *streamSlots) shutdown(wait time.Duration) {
+	l.ending()
+	l.mu.Lock()
+	if !l.closing {
+		l.closing = true
+		close(l.end)
+	}
+	l.mu.Unlock()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		l.mu.Lock()
+		n := l.total
+		l.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// take holds a slot for one stream, none once shutdown has begun.
 func (l *streamSlots) take(principal string) (func(), bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.open == nil {
 		l.open = map[string]int{}
 	}
-	if l.total >= maxStreams || l.open[principal] >= maxStreamsPerCaller {
+	if l.closing || l.total >= maxStreams || l.open[principal] >= maxStreamsPerCaller {
 		return nil, false
 	}
 	l.open[principal]++
@@ -161,7 +204,12 @@ func (s *Server) openStream(w http.ResponseWriter, r *http.Request, call verbCal
 		return streamStart{}, false
 	}
 	release, ok := s.cpStreams.take(call.caller.Principal)
-	if !ok {
+	switch {
+	case !ok && s.cpStreams.closed():
+		w.Header().Set("Retry-After", "5")
+		writeCPError(w, http.StatusServiceUnavailable, "unavailable", "the server is shutting down; try again")
+		return streamStart{}, false
+	case !ok:
 		w.Header().Set("Retry-After", "30")
 		writeCPError(w, http.StatusTooManyRequests, "unavailable", "too many streams are open; close one and try again")
 		return streamStart{}, false
@@ -206,6 +254,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 	every := min(s.streamRecheck(), streamPing)
 	tick := time.NewTicker(every)
 	deadline := time.NewTimer(b.max)
+	shutdown := s.cpStreams.ending()
 	var why error
 	done := make(chan struct{})
 	go func() {
@@ -230,6 +279,9 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 				return
 			case <-ended:
 				stop(fmt.Errorf("%w: the sandbox stopped", controlplane.ErrInvalidTransition))
+				return
+			case <-shutdown:
+				stop(fmt.Errorf("%w: the server is shutting down", controlplane.ErrUnavailable))
 				return
 			case <-deadline.C:
 				stop(fmt.Errorf("%w: the stream was open for %s, the longest one may be", controlplane.ErrUnavailable, b.max))

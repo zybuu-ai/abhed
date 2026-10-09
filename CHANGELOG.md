@@ -466,6 +466,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- A server shutting down now ends its open `:attach`, `:exec`, `:forward`
+  and `:ssh` streams, which the HTTP server's own shutdown does not close,
+  records how each ended (code `unavailable`), and opens no new one.
 - `abhed sandbox cp`: a folder that does not exist, in the sandbox or on
   this machine, is named plainly instead of as a host `lstat` error that
   showed the server's path to the workspace; a copy out that fails part way
