@@ -219,8 +219,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 }
 
 // network counts one egress.decision and keeps a refusal once per call and
-// destination. The call's id is the proxy's claim, so it marks a call only
-// when the record holds one by that id.
+// destination; it marks a call only when the record holds one by that id.
 func network(r *Report, calls map[string]*Call, e agent.Event) {
 	var d struct {
 		CallID   string `json:"call_id"`

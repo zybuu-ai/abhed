@@ -31,11 +31,8 @@ func shownVar(kv string) bool {
 	return shownEnv[k] || strings.HasPrefix(k, "LC_")
 }
 
-// HideEnvironment keeps Abhed's environment out of kern.procargs2, which
-// Seatbelt cannot refuse: it re-executes Abhed with only shownEnv in its exec
-// environment and hands the rest over a pipe, back into Go's environment.
-// The process keeps its id. A program's main calls it first; it returns at
-// once when there is nothing to hide, or when the re-exec cannot be made.
+// HideEnvironment keeps Abhed's environment out of kern.procargs2: it re-executes
+// with only shownEnv and takes the rest back over a pipe. Call it first in main.
 func HideEnvironment() {
 	if v, ok := os.LookupEnv(hiddenEnvFD); ok {
 		restoreHidden(v)

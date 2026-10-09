@@ -340,9 +340,8 @@ const (
 )
 
 // noteRuleLayer credits the permission rules and extensions not yet
-// credited to layer. The managed layer takes every entry of a list it sets,
-// since it replaced that list, but of deny only its own, since it adds to that
-// one; the others take only entries new to it.
+// credited to layer. The managed layer takes every entry of a list it replaced,
+// and of deny, which it adds to, only its own; the others take only new entries.
 func (c *Config) noteRuleLayer(layer string) {
 	if c.ruleLayers == nil {
 		c.ruleLayers = map[string]string{}
