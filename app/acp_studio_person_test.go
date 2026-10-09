@@ -164,6 +164,50 @@ func TestStudioTerminalLinesDropEscapeSequences(t *testing.T) {
 	}
 }
 
+// Ctrl-C while a line runs stops it and drops the lines typed ahead of the
+// prompt, as a shell flushes its input on an interrupt, and says so.
+func TestStudioTerminalLinesCtrlCDropsTypedAhead(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	input := func(data string) {
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": data}, nil)
+	}
+	input("sleep 30\r")
+	r.cl.conn.termMu.Lock()
+	at := r.cl.conn.terms[term.TerminalID]
+	r.cl.conn.termMu.Unlock()
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		at.mu.Lock()
+		running := at.running != nil
+		at.mu.Unlock()
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the line never started")
+		}
+	}
+	input("echo typed-ahead\r")
+	input("\x03")
+	waitOutput(r.cl, from, term.TerminalID, "abhed: 1 typed-ahead line was not run\r\n")
+	input("echo after\r")
+	waitOutput(r.cl, from, term.TerminalID, "\r\nafter\r\n")
+	var ran []string
+	reqs, _ := r.recorded(id, agent.EvActionRequested)
+	for _, q := range reqs {
+		ran = append(ran, q["args"].(map[string]any)["command"].(string))
+	}
+	if want := []string{"sleep 30", "echo after"}; !slices.Equal(ran, want) {
+		t.Fatalf("lines run: %q, want %q", ran, want)
+	}
+}
+
 func TestLineResultPutsTheStatusLast(t *testing.T) {
 	code := 1
 	got := string(lineResult(tools.Result{Content: "exit 1 · 12ms\nboom\nbang", ExitCode: &code}))

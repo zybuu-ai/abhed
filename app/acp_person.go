@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -67,8 +68,10 @@ type acpTerminal struct {
 	mu      sync.Mutex
 	line    []byte
 	// esc is where typed input stands within an escape sequence.
-	esc    escState
-	queue  chan string
+	esc   escState
+	queue chan queuedLine
+	// gen counts the Ctrl-Cs; a line queued before the last one is not run.
+	gen    uint64
 	ctx    context.Context
 	cancel context.CancelFunc
 	// running cancels the command running now; nil when none is.
@@ -118,7 +121,7 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
-	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan string, 16), ctx: ctx, cancel: cancel}
+	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel}
 	if p.Mode == "interactive" {
 		if e := c.startShell(t, parts, bash, iso, p.Cols, p.Rows); e != nil {
 			cancel()
@@ -180,13 +183,18 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	}
 	var lines []string
 	var echo lineEcho
+	dropped := 0
 	t.mu.Lock()
 	for _, b := range []byte(p.Data) {
 		if t.esc.drop(b) {
 			continue
 		}
 		switch {
-		case b == 0x03: // Ctrl-C stops the command running and drops the line
+		case b == 0x03:
+			// Ctrl-C stops the command running and drops the line, and the
+			// lines typed ahead, as a shell flushes its input on an interrupt.
+			dropped += t.flushLocked(lines)
+			lines = lines[:0]
 			if t.running != nil {
 				t.running()
 			} else {
@@ -217,16 +225,53 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	if t.esc == escStart {
 		t.esc = escNone
 	}
+	gen := t.gen
 	t.mu.Unlock()
+	if dropped > 0 {
+		what := "line was"
+		if dropped > 1 {
+			what = "lines were"
+		}
+		echo.control(fmt.Sprintf("abhed: %d typed-ahead %s not run\r\n", dropped, what))
+	}
 	c.output(t, echo.bytes())
 	for _, l := range lines {
 		select {
-		case t.queue <- l:
+		case t.queue <- queuedLine{line: l, gen: gen}:
 		default:
 			c.output(t, []byte("abhed: too many lines waiting; this one was not run\r\n"))
 		}
 	}
 	c.reply(msg.ID, map[string]any{}, nil)
+}
+
+// queuedLine is a line waiting to run, with the Ctrl-C count when it was entered.
+type queuedLine struct {
+	line string
+	gen  uint64
+}
+
+// flushLocked drops the lines waiting to run, and pending, the lines of this
+// input before the Ctrl-C, and returns how many were commands. The caller
+// holds t.mu.
+func (t *acpTerminal) flushLocked(pending []string) int {
+	t.gen++
+	n := 0
+	for _, l := range pending {
+		if l != "" {
+			n++
+		}
+	}
+	for {
+		select {
+		case q := <-t.queue:
+			if q.line != "" {
+				n++
+			}
+		default:
+			return n
+		}
+	}
 }
 
 // escState follows an escape sequence through typed input. Arrow and
@@ -307,7 +352,15 @@ func (c *acpConn) runTerminal(t *acpTerminal) {
 		select {
 		case <-t.ctx.Done():
 			return
-		case line := <-t.queue:
+		case q := <-t.queue:
+			t.mu.Lock()
+			stale := q.gen != t.gen
+			t.mu.Unlock()
+			if stale {
+				// Taken as a Ctrl-C flushed the rest.
+				continue
+			}
+			line := q.line
 			if ahead {
 				// Typed while the last line ran: its echo is above, so show it at its prompt.
 				var e lineEcho

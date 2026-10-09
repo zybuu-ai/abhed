@@ -250,6 +250,10 @@ A server with it off starts on the older schema as before.
   sequences, the arrows, Home, End, function keys and Alt with a key, and a
   paste's bracketed-paste markers, are now dropped whole; up and down do not
   recall earlier lines.
+- In Studio's line-by-line terminal, Ctrl-C stopped the line running but the
+  lines typed behind it still ran afterwards. Ctrl-C now drops them too, as a
+  shell flushes its input on an interrupt, and the terminal says how many
+  were not run.
 
 ### Dependencies
 

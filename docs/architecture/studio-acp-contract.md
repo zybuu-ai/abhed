@@ -793,7 +793,10 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   Home, End, function keys, Alt with a key, a paste's bracketed-paste
   markers, a terminal's replies) is dropped whole, never typed. There is no
   history or cursor movement; an Esc alone at the end of an input is the Esc
-  key, and a line break ends a sequence left unfinished.
+  key, and a line break ends a sequence left unfinished. Lines entered while
+  one runs wait their turn; Ctrl-C stops the one running and drops those
+  waiting, as a shell flushes its input on an interrupt, and the terminal
+  says `abhed: N typed-ahead lines were not run`.
 - Studio's ACP `terminal` client capability stays `false`: the agent never
   runs commands in Studio's terminals.
 
