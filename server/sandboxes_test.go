@@ -42,14 +42,19 @@ type cpRig struct {
 	fake  *drivertest.Fake
 }
 
-func newCPRig(t *testing.T, values map[string]string) *cpRig {
+func newCPRig(t *testing.T, values map[string]string, mods ...func(*Options)) *cpRig {
 	t.Helper()
-	return newCPRigWith(t, values, nil, driver.CapAttach)
+	return buildCPRig(t, values, nil, []driver.Capability{driver.CapAttach}, mods...)
 }
 
 // newCPRigWith is newCPRig with the fake declaring caps and, when ex is
 // set, exposures served from it.
 func newCPRigWith(t *testing.T, values map[string]string, ex *expose.Server, caps ...driver.Capability) *cpRig {
+	t.Helper()
+	return buildCPRig(t, values, ex, caps)
+}
+
+func buildCPRig(t *testing.T, values map[string]string, ex *expose.Server, caps []driver.Capability, mods ...func(*Options)) *cpRig {
 	t.Helper()
 	st, err := controlplane.NewSettings(values, nil)
 	if err != nil {
@@ -74,9 +79,15 @@ func newCPRigWith(t *testing.T, values map[string]string, ex *expose.Server, cap
 		"bob":   {Subject: "bob", Tenant: "default"},
 		"admin": {Subject: "root", Tenant: "default", Groups: []string{DefaultAdminGroup}},
 		"eve":   {Subject: "eve", Tenant: "other"},
+		"carol": {Subject: "carol", Tenant: "default"},
+		"dave":  {Subject: "dave", Tenant: "default"},
 	}}
-	srv := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
-		Registry: tools.NewRegistry(tools.Read{}), Auth: mw, ControlPlane: svc, Expose: ex})
+	opts := Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Auth: mw, ControlPlane: svc, Expose: ex}
+	for _, mod := range mods {
+		mod(&opts)
+	}
+	srv := New(opts)
 	return &cpRig{srv: srv, h: srv.Handler(), svc: svc, store: mem, fake: fake}
 }
 

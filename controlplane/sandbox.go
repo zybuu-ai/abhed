@@ -229,4 +229,11 @@ var (
 	// ErrUnavailable is a store, record or driver that cannot be reached
 	// (503); nothing was changed.
 	ErrUnavailable = errors.New("unavailable")
+	// ErrForbidden is a caller that may not do this (403).
+	ErrForbidden = errors.New("forbidden")
+	// ErrApprovalRequired is an operation that waits on other people's
+	// approval (403); see ApprovalNeeded.
+	ErrApprovalRequired = errors.New("approval required")
+	// ErrQuotaExceeded is an operation past a quota (403).
+	ErrQuotaExceeded = errors.New("quota exceeded")
 )

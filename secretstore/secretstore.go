@@ -31,3 +31,13 @@ func AccountsDir() (string, error) { return secrets.AccountsDir() }
 
 // ValidName reports whether name is one a secret can be stored under.
 func ValidName(name string) bool { return secrets.ValidName(name) }
+
+// Source keeps a store's values in a credential driver, such as Vault or
+// Kubernetes Secrets, in place of a file. See OpenSource.
+type Source = secrets.Source
+
+// OpenSource is a store whose values src keeps. It reads, redacts and hands
+// out values as a file store does; a source that cannot be reached fails
+// closed: no value is handed out and every payload it would redact is
+// withheld. name labels the store in messages.
+func OpenSource(name string, src Source) *Store { return secrets.OpenSource(name, src) }

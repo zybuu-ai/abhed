@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/driver"
@@ -21,11 +22,17 @@ import (
 // Caller is who asks for an operation.
 type Caller struct {
 	Principal string
-	// Admin sees and acts on every sandbox in the tenant, not only its own.
+	// Admin sees and acts on every sandbox in its scope, not only its own.
 	Admin bool
+	// Scope, when set, confines the caller to sandboxes carrying each of
+	// these labels, and stamps them on every sandbox it creates. The keys are
+	// reserved, so no client can set or change them on a sandbox.
+	Scope map[string]string
 }
 
-func (c Caller) may(s Sandbox) bool { return c.Admin || (c.Principal != "" && s.Owner == c.Principal) }
+func (c Caller) may(s Sandbox) bool {
+	return scoped(c.Scope, s.Labels) && (c.Admin || (c.Principal != "" && s.Owner == c.Principal))
+}
 
 // Config is what a Service is built from.
 type Config struct {
@@ -80,6 +87,7 @@ type Service struct {
 	running  bool
 	work     sync.WaitGroup
 	slots    chan struct{}
+	guard    atomic.Pointer[guardBox]
 	// probe, when set by a test, runs before each driver call of a pass.
 	probe func(id string, st State)
 }
@@ -160,6 +168,12 @@ func ErrorCode(err error) string {
 		return ""
 	case errors.Is(err, ErrNotFound), errors.Is(err, driver.ErrNotFound):
 		return "not_found"
+	case errors.Is(err, ErrApprovalRequired):
+		return "approval_required"
+	case errors.Is(err, ErrQuotaExceeded):
+		return "quota_exceeded"
+	case errors.Is(err, ErrForbidden):
+		return "forbidden"
 	case errors.Is(err, ErrPreconditionFailed):
 		return "precondition_failed"
 	case errors.Is(err, ErrInvalidTransition), errors.Is(err, ErrExists), errors.Is(err, ErrVersionMismatch),
@@ -196,17 +210,44 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 	if err := s.cfg.Settings.Check(req.Settings); err != nil {
 		return Sandbox{}, err
 	}
+	if err := checkScope(c.Scope); err != nil {
+		return Sandbox{}, err
+	}
 	sb, err := NewSandbox(c.Principal, req.Template, name, req.Labels, s.now())
 	if err != nil {
 		return Sandbox{}, err
 	}
 	sb.Settings = maps.Clone(req.Settings)
+	if len(c.Scope) > 0 {
+		if sb.Labels == nil {
+			sb.Labels = map[string]string{}
+		}
+		maps.Copy(sb.Labels, c.Scope)
+		if err := ValidateLabels(sb.Labels, true); err != nil {
+			return Sandbox{}, err
+		}
+	}
 	ev := AuditEvent{Principal: c.Principal, Action: "create", SandboxID: sb.ID, Generation: sb.Generation,
 		Detail: map[string]string{"template": sb.Template, "driver": sb.Driver}}
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
 	}
+	next := sb.Clone()
+	release, err := s.admit(ctx, &Admission{Action: ActionCreate, Caller: c, Next: &next})
+	if err == nil {
+		// The guard may only have tightened settings; anything it made
+		// invalid or looser than a ceiling is refused here.
+		sb.Settings = next.Settings
+		if err = s.cfg.Settings.Check(sb.Settings); err != nil {
+			release()
+		}
+	}
+	if err != nil {
+		s.outcome(ctx, ev, err)
+		return Sandbox{}, err
+	}
 	out, err := s.cfg.Store.Create(ctx, sb)
+	release()
 	s.outcome(ctx, ev, err)
 	if err != nil {
 		return Sandbox{}, storeErr(err)
@@ -252,6 +293,12 @@ func (s *Service) List(ctx context.Context, c Caller, o ListOptions) ([]Sandbox,
 			return nil, "", nil
 		}
 	}
+	if len(c.Scope) > 0 {
+		if err := checkScope(c.Scope); err != nil {
+			return nil, "", err
+		}
+		o.Labels = maps.Clone(c.Scope)
+	}
 	items, next, err := s.cfg.Store.List(ctx, o)
 	if err != nil {
 		return nil, "", storeErr(err)
@@ -273,7 +320,7 @@ type Patch struct {
 // mutate runs fn under Mutate after checking the caller may act, and
 // records the request and its outcome.
 func (s *Service) mutate(ctx context.Context, c Caller, id, ifMatch, action string, detail map[string]string,
-	fn func(*Sandbox) error) (Sandbox, error) {
+	adm Admission, fn func(*Sandbox) error) (Sandbox, error) {
 	cur, err := s.Get(ctx, c, id)
 	if err != nil {
 		return Sandbox{}, err
@@ -285,6 +332,22 @@ func (s *Service) mutate(ctx context.Context, c Caller, id, ifMatch, action stri
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
 	}
+	adm.Action, adm.Caller, adm.Sandbox = action, c, cur
+	if action == ActionUpdate {
+		// What the guard judges is what the patch makes of the object now.
+		next := cur.Clone()
+		if err := fn(&next); err != nil {
+			s.outcome(ctx, ev, err)
+			return Sandbox{}, err
+		}
+		adm.Next = &next
+	}
+	release, err := s.admit(ctx, &adm)
+	if err != nil {
+		s.outcome(ctx, ev, err)
+		return Sandbox{}, err
+	}
+	defer release()
 	out, err := Mutate(ctx, s.cfg.Store, id, ifMatch, func(sb *Sandbox) error {
 		if !c.may(*sb) {
 			return fmt.Errorf("%w: sandbox %s", ErrNotFound, id)
@@ -314,7 +377,7 @@ func (s *Service) Update(ctx context.Context, c Caller, id, ifMatch string, p Pa
 	if p.Settings != nil || p.ClearSettings {
 		detail["settings"] = "changed"
 	}
-	return s.mutate(ctx, c, id, ifMatch, "update", detail, func(sb *Sandbox) error {
+	return s.mutate(ctx, c, id, ifMatch, ActionUpdate, detail, Admission{}, func(sb *Sandbox) error {
 		if sb.State == StateDeleting {
 			return fmt.Errorf("%w: sandbox %s is being deleted", ErrInvalidTransition, sb.ID)
 		}
@@ -383,7 +446,7 @@ func (s *Service) Update(ctx context.Context, c Caller, id, ifMatch string, p Pa
 // Start starts a Stopped, Completed or Error sandbox again, as a new
 // generation. A client's start resets the restart count.
 func (s *Service) Start(ctx context.Context, c Caller, id, ifMatch string) (Sandbox, error) {
-	out, err := s.mutate(ctx, c, id, ifMatch, "start", nil, func(sb *Sandbox) error {
+	out, err := s.mutate(ctx, c, id, ifMatch, ActionStart, nil, Admission{}, func(sb *Sandbox) error {
 		if err := sb.Transition(StateStarting, s.now()); err != nil {
 			return err
 		}
@@ -401,8 +464,8 @@ func (s *Service) Stop(ctx context.Context, c Caller, id, ifMatch string, grace 
 	if grace < 0 || grace > time.Hour {
 		return Sandbox{}, fmt.Errorf("%w: grace_seconds must be from 0 to 3600", ErrInvalid)
 	}
-	out, err := s.mutate(ctx, c, id, ifMatch, "stop", map[string]string{"grace_seconds": strconv.Itoa(int(grace.Seconds()))},
-		func(sb *Sandbox) error { return sb.Transition(StateStopping, s.now()) })
+	out, err := s.mutate(ctx, c, id, ifMatch, ActionStop, map[string]string{"grace_seconds": strconv.Itoa(int(grace.Seconds()))},
+		Admission{Grace: grace}, func(sb *Sandbox) error { return sb.Transition(StateStopping, s.now()) })
 	if err == nil {
 		s.mu.Lock()
 		s.graces[id] = grace
@@ -426,7 +489,7 @@ func (s *Service) Delete(ctx context.Context, c Caller, id, ifMatch string) (San
 		s.Kick(id)
 		return cur, nil
 	}
-	out, err := s.mutate(ctx, c, id, ifMatch, "delete", nil, func(sb *Sandbox) error {
+	out, err := s.mutate(ctx, c, id, ifMatch, ActionDelete, nil, Admission{}, func(sb *Sandbox) error {
 		return sb.Transition(StateDeleting, s.now())
 	})
 	if err == nil {
@@ -493,6 +556,12 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return driver.ExecResult{}, sb, err
 	}
+	release, err := s.admit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &req})
+	if err != nil {
+		s.outcome(ctx, ev, err)
+		return driver.ExecResult{}, sb, err
+	}
+	defer release()
 	vals := s.cfg.Settings.For(sb.Settings)
 	ctx, cancel := context.WithTimeout(ctx, vals.Seconds(SetExecTimeout))
 	defer cancel()

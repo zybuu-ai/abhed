@@ -34,7 +34,16 @@ type Fake struct {
 	files     map[string][]byte
 	snapshots map[string]driver.SnapshotRef
 	calls     map[string]int
+	specs     map[string]driver.Spec
 	Resizes   []driver.WinSize
+}
+
+// Spec is the Spec the instance id was last created from.
+func (f *Fake) Spec(id string) (driver.Spec, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.specs[id]
+	return s, ok
 }
 
 // New returns a fake named name declaring caps.
@@ -113,6 +122,10 @@ func (f *Fake) Create(_ context.Context, spec driver.Spec) (driver.Status, error
 		return driver.Status{}, driver.Errorf(driver.ErrExists, "instance %s exists", spec.ID)
 	}
 	f.instances[spec.ID] = driver.PhaseRunning
+	if f.specs == nil {
+		f.specs = map[string]driver.Spec{}
+	}
+	f.specs[spec.ID] = spec
 	return f.status(spec.ID, driver.PhaseRunning), nil
 }
 

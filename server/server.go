@@ -309,6 +309,15 @@ type Options struct {
 	// Expose serves the control plane's :expose and the exposed services'
 	// path; nil, or off, and :expose answers 501.
 	Expose *expose.Server
+	// SandboxCaller, when set, refines who a sandbox request acts as, from
+	// the caller the server worked out: an edition confines it to a scope,
+	// such as a workspace, or changes what it may administer. An error
+	// refuses the request (controlplane.ErrForbidden is 403).
+	SandboxCaller func(r *http.Request, c controlplane.Caller) (controlplane.Caller, error)
+	// ApprovalGate, when set, decides who may answer a session's pending
+	// approvals and when an answer settles one. Nil: the session's owner
+	// answers, and the first answer settles it.
+	ApprovalGate ApprovalGate
 }
 
 // Server holds live sessions and serves the API.
@@ -2449,20 +2458,6 @@ func (s *Server) listOwned(ctx context.Context, user string, limit int) ([]store
 	return s.sessions.ListSessions(ctx, limit)
 }
 
-// ownsStored reports whether the caller owns a session this node is not
-// running, found by id where the store can, so an older session is not missed.
-func (s *Server) ownsStored(r *http.Request, id string) bool {
-	g, ok := s.sessions.(sessionGetter)
-	if !ok {
-		return s.mayAccess(r, id)
-	}
-	rec, err := g.GetSession(r.Context(), id)
-	if err != nil {
-		return false
-	}
-	return ownsSession(rec.Tenant, rec.User, TenantOf(r.Context()), UserOf(r.Context()))
-}
-
 // ownsSession reports whether a caller may see a session.
 //
 // One definition used by both the list and the single-session lookup, because
@@ -3597,6 +3592,9 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	}
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
+		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	}
+	if !ok {
 		// The session is not here. If the store holds the approval, answer it
 		// anyway: the waiting node polls for the result, so the reviewer's
 		// decision still arrives. This is the case sticky routing exists to
@@ -4213,7 +4211,8 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 	}
 	// The same owner check the local path makes, against the stored row:
 	// without it anyone signed in could answer another person's card.
-	if !s.ownsStored(r, sessionID) {
+	tenant, owner, mayAnswer := s.storedAnswerer(r, sessionID)
+	if !mayAnswer {
 		return false
 	}
 	pending, found, err := d.PendingApproval(r.Context(), sessionID)
@@ -4229,6 +4228,11 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 	}
 	if req.Scope != "" && req.Scope != pending.Scope {
 		WriteError(w, http.StatusBadRequest, "scope must be empty or the scope this request offered")
+		return true
+	}
+	if !s.gateAnswer(w, r, ApprovalAnswer{Tenant: tenant, SessionID: sessionID, Owner: owner, Request: pending.ID,
+		Tool: pending.Tool, Args: withheldArgs(pending.Args), Reason: pending.Reason, Since: pending.AskedAt,
+		By: UserOf(r.Context()), Approved: req.Approved, Scope: req.Scope}) {
 		return true
 	}
 	answered, err := d.AnswerApproval(r.Context(), pending.ID, req.Approved, req.Scope, UserOf(r.Context()))

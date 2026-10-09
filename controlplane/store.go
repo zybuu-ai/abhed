@@ -34,6 +34,8 @@ type ListOptions struct {
 	// State and Owner, when set, must match exactly.
 	State State
 	Owner string
+	// Labels, when set, must each be on the sandbox with the same value.
+	Labels map[string]string
 	// Limit is the page size: DefaultLimit when zero, at most MaxLimit.
 	Limit int
 	// After is the cursor from the previous page.
@@ -58,7 +60,8 @@ func (o ListOptions) PageSize() int {
 
 // Matches reports whether s passes o's filters (not its paging).
 func (o ListOptions) Matches(s Sandbox) bool {
-	return (o.State == "" || s.State == o.State) && (o.Owner == "" || s.Owner == o.Owner) && o.Selector.Matches(s.Labels)
+	return (o.State == "" || s.State == o.State) && (o.Owner == "" || s.Owner == o.Owner) &&
+		(len(o.Labels) == 0 || scoped(o.Labels, s.Labels)) && o.Selector.Matches(s.Labels)
 }
 
 // IdemState is where an idempotent request is.

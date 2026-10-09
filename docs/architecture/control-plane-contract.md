@@ -191,8 +191,12 @@ transitions and restarts as `system:reconciler`. An `:exec`'s command line is
 redacted with the secrets store before it is recorded. Errors are
 `{"error": {"code", "message"}}` with codes `invalid`, `not_found`,
 `conflict`, `precondition_failed`, `unsupported`, `unavailable`, `forbidden`,
-`internal`. `forbidden` (`403`) is a request acting in a tenant other than
-the one the server's store was opened for. A rate limit spent is `429` with
+`approval_required`, `quota_exceeded`, `internal`. `forbidden` (`403`) is a
+request acting in a tenant other than the one the server's store was opened
+for, or one a guard (§12) refuses; `approval_required` and `quota_exceeded`
+are `403` from a guard, the first with the approval to ask for in the
+`Abhed-Approval` response header. A request sent again with
+`Abhed-Approval: <id>` names that approval to the guard. A rate limit spent is `429` with
 `Retry-After` and code `unavailable`. A store or driver fault is `503` or
 `500`, never success.
 
@@ -504,7 +508,7 @@ client sent `If-Match` and a retry when it did not.
 | Memory, SQLite and Postgres stores | Community |
 | Per-session sandboxes, warm pool, CLI | Community |
 | Kubernetes driver | Team (private module, via `app.WithDriver`) |
-| Workspaces, roles, quotas on sandboxes | Team |
+| Workspaces, roles, quotas, four-eyes approvals on sandboxes (via §12) | Team |
 | Admission interceptors on every mutation, HA ownership and leases | Enterprise |
 
 The control-plane and driver packages are public, not `internal/`, because the
@@ -532,7 +536,10 @@ wraps `controlplane.Store`. The Community module never imports the private one.
 `rate.exec_per_minute`, `reconcile.interval_seconds`) or *sandbox* (a
 configured default a sandbox may override in `settings`:
 `exec.timeout_seconds`, `exec.output_bytes`, `restart.policy`,
-`restart.max_restarts`, `restart.backoff_seconds`, `isolation.min_tier`).
+`restart.max_restarts`, `restart.backoff_seconds`, `isolation.min_tier`,
+`resources.cpus`, `resources.memory_mb`). A size in force reaches the driver
+as `Spec.Config` keys `cpus` and `memory_mb`; unset passes nothing. A driver
+that cannot hold a sandbox to a size refuses the Spec (`process` does).
 Every setting orders its values from loosest to tightest. A value the
 managed configuration sets is a **ceiling**: a sandbox may set a tighter
 value and is refused (`400`) for a looser one, and a ceiling tightened
@@ -561,3 +568,43 @@ plane on, the reconciler runs and the store answers; else `503`. It names
 its checks with `ok` or `failed` and nothing more. `/v1/health` keeps its
 shape. `abhed serve -check` runs the start-up checks without serving.
 
+
+## 12. Extension points for workspaces (Implemented)
+
+The Team edition adds workspaces, roles, quotas and four-eyes approvals
+through these seams. Each is a no-op when unset, so the Community server
+behaves as the sections above describe.
+
+- **Caller scope.** `Caller.Scope` is a set of reserved labels
+  (`abhed.dev/…`, each with a value). A scoped caller sees, changes and runs
+  only sandboxes carrying all of them, an admin included, and every sandbox
+  it creates carries them. Labels under the reserved prefix cannot be set or
+  patched by a client, so a sandbox never leaves its scope. A scope that is
+  not reserved labels with values is refused (`forbidden`).
+- **SandboxCaller.** `server.Options.SandboxCaller(r, caller)` refines the
+  caller the server worked out (principal, admin) before any sandbox route
+  acts: an edition sets the scope and what it may administer. An error
+  refuses the request.
+- **Guard.** `Service.SetGuard(g)`, once, before serving. `g.Admit` is
+  asked about every create, update, start, stop, delete and exec after the
+  `requested` record and before the store or a driver is touched; its
+  refusal is recorded as the `failed` outcome with its code. It sees the
+  caller, the object now, what a create or update would make of it, an
+  exec's command, a stop's grace, and the approval the request names. On a
+  create it may tighten settings, which are checked against the registry
+  again. An error that is not one of the contract's is `unavailable`: a
+  guard that cannot decide refuses. The release it returns runs once the
+  operation has ended, so it can hold a lock or a slot across it.
+- **ApprovalGate.** `server.Options.ApprovalGate` decides who besides a
+  session's owner may answer its pending approvals (`MayAnswer`) and whether
+  an answer settles the request or is held as one of several it needs
+  (`Answer`, told of every answer before it is recorded on the approval
+  row). A held answer is `202 {"recorded": true, "settled": false}`; a
+  refused one `403`; a gate that fails `503`, and the request keeps waiting.
+  `Server.PendingAsks` lists the requests waiting in sessions this process
+  runs, arguments redacted as the record keeps them.
+- **Credential sources.** `secretstore.OpenSource(name, src)` is a secrets
+  store whose values a driver keeps (load whole, set and remove by name)
+  instead of a file. It hands out and redacts values as a file store does;
+  a source that cannot be reached hands out nothing, refuses a session, and
+  withholds every payload until it answers again.

@@ -667,6 +667,10 @@ type ControlPlaneConfig struct {
 	ExecPerMinute      int `json:"exec_per_minute,omitempty"`
 	// ReconcileSeconds is how often every sandbox is checked against its driver.
 	ReconcileSeconds int `json:"reconcile_seconds,omitempty"`
+	// SandboxCPUs and SandboxMemoryMB size every sandbox that does not set
+	// its own; zero leaves the size to the driver.
+	SandboxCPUs     float64 `json:"sandbox_cpus,omitempty"`
+	SandboxMemoryMB int     `json:"sandbox_memory_mb,omitempty"`
 }
 
 // ServerConfig holds the settings that only matter once `abhed serve` is

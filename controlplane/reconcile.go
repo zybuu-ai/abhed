@@ -254,7 +254,8 @@ func (s *Service) spec(sb Sandbox) (driver.Spec, error) {
 		minTier = ""
 	}
 	spec := driver.Spec{ID: sb.ID, Generation: sb.Generation, Template: sb.Template, PolicyRev: sb.PolicyRev,
-		Workspace: ws, WriteProtected: slices.Clone(s.cfg.WriteProtected), MinTier: minTier, Labels: sb.Labels}
+		Workspace: ws, WriteProtected: slices.Clone(s.cfg.WriteProtected), MinTier: minTier, Labels: sb.Labels,
+		Config: resourceConfig(vals)}
 	if s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver) {
 		// Without its proxy the sandbox is not built, rather than built with no way out it was promised.
 		eg, err := s.cfg.Egress.Open(sb.ID)
@@ -519,4 +520,19 @@ func (s *Service) remove(ctx, call context.Context, sb Sandbox, d driver.Driver,
 	_ = s.record(ctx, AuditEvent{Principal: SystemPrincipal, Action: "reconcile", SandboxID: sb.ID,
 		Generation: sb.Generation, Outcome: OutcomeOK, Detail: map[string]string{"from": string(StateDeleting), "to": "removed"}})
 	return nil
+}
+
+// resourceConfig is the size in force as the driver keys it, nil when the
+// sandbox leaves its size to the driver.
+func resourceConfig(vals Values) map[string]string {
+	var out map[string]string
+	for key, as := range map[string]string{SetCPUs: "cpus", SetMemoryMB: "memory_mb"} {
+		if v := vals[key]; v != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[as] = v
+		}
+	}
+	return out
 }

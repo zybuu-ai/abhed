@@ -10,8 +10,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -151,6 +153,13 @@ func (d *Driver) Create(_ context.Context, spec driver.Spec) (driver.Status, err
 	}
 	if _, ok := tiers[spec.MinTier]; spec.MinTier != "" && !ok {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "unknown tier %q", spec.MinTier)
+	}
+	// Nothing here can hold one sandbox to a size or any other setting, so
+	// a Spec asking for one is refused rather than run without it.
+	if len(spec.Config) > 0 {
+		return driver.Status{}, driver.Errorf(driver.ErrInvalid,
+			"the process driver cannot apply %s; use a driver that bounds each sandbox",
+			strings.Join(slices.Sorted(maps.Keys(spec.Config)), ", "))
 	}
 	d.mu.Lock()
 	if _, ok := d.insts[spec.ID]; ok {
