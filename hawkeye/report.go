@@ -22,16 +22,18 @@ type Report struct {
 	// calls, so a switch and a switch back both show.
 	Models []string `json:"models,omitempty"`
 
-	Totals      Totals       `json:"totals"`
-	Turns       []Turn       `json:"turns"`
-	Calls       []Call       `json:"calls"`
-	Policy      PolicyStats  `json:"policy"`
-	Compactions []Compaction `json:"compactions,omitempty"`
-	Offloads    []Offload    `json:"offloads,omitempty"`
-	Subagents   []Subagent   `json:"subagents,omitempty"`
-	Files       []FileTouch  `json:"files,omitempty"`
-	Findings    []Finding    `json:"findings"`
-	Integrity   Integrity    `json:"integrity"`
+	Totals Totals      `json:"totals"`
+	Turns  []Turn      `json:"turns"`
+	Calls  []Call      `json:"calls"`
+	Policy PolicyStats `json:"policy"`
+	// Network is what the egress allowlist decided; nil when the record has no decision.
+	Network     *NetworkStats `json:"network,omitempty"`
+	Compactions []Compaction  `json:"compactions,omitempty"`
+	Offloads    []Offload     `json:"offloads,omitempty"`
+	Subagents   []Subagent    `json:"subagents,omitempty"`
+	Files       []FileTouch   `json:"files,omitempty"`
+	Findings    []Finding     `json:"findings"`
+	Integrity   Integrity     `json:"integrity"`
 
 	// offTurn are the model calls outside the conversation (a suggestion):
 	// no turn, but their tokens and time count in the totals.
@@ -109,7 +111,10 @@ type Call struct {
 	// Ran is set only when the record holds the call's result.
 	Ran bool `json:"ran"`
 	// SandboxDenied marks a command the sandbox refused part of.
-	SandboxDenied bool   `json:"sandbox_denied,omitempty"`
+	SandboxDenied bool `json:"sandbox_denied,omitempty"`
+	// NetworkDenied counts the connections and requests of this call the
+	// egress allowlist refused, from its egress.decision events.
+	NetworkDenied int    `json:"network_denied,omitempty"`
 	IsError       bool   `json:"is_error"`
 	ExitCode      *int   `json:"exit_code,omitempty"`
 	Truncated     bool   `json:"truncated"`
@@ -123,6 +128,32 @@ type PolicyStats struct {
 	Denied   int            `json:"denied"`
 	Reviewer int            `json:"asked_reviewer"`
 	ByStep   map[string]int `json:"by_step"`
+}
+
+// NetworkStats counts egress.decision events, each summary by what it covers.
+type NetworkStats struct {
+	Allowed   int `json:"allowed"`
+	Denied    int `json:"denied"`
+	WouldDeny int `json:"would_deny,omitempty"`
+	// Refusals are the denied and would-deny decisions, one per call and
+	// destination, the first seen with how many more were like it.
+	Refusals []NetworkRefusal `json:"refusals,omitempty"`
+}
+
+// NetworkRefusal is one destination the egress allowlist refused, or in
+// monitor mode would have refused, for one call.
+type NetworkRefusal struct {
+	Seq      int64  `json:"seq"`
+	CallID   string `json:"call_id,omitempty"`
+	Kind     string `json:"kind"`
+	Host     string `json:"host"`
+	Port     int    `json:"port,omitempty"`
+	Method   string `json:"method,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Decision string `json:"decision"`
+	Rule     string `json:"rule,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Count    int    `json:"count"`
 }
 
 type Compaction struct {

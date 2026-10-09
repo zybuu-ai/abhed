@@ -230,13 +230,26 @@ of variables, but the kernel returns the arguments and environment of any
 process of the same user (the `kern.procargs2` sysctl) that is not a
 restricted program, as Apple's own are, and Seatbelt has no rule that
 refuses it. So a command, a workbench terminal or a stdio MCP server can
-read Abhed's environment, a provider key exported to it included, an MCP
-server's, and what a concurrent command was handed: its egress token and
-its `secrets`. On macOS put a provider key in `api_key` in
-`~/.abhed/config.json`, which commands cannot read, rather than in Abhed's
-environment, and use the container or vm tier where commands must not see
-one another's secrets. On Linux each command's PID namespace hides other
-processes' environments.
+read an MCP server's or an extension's environment, which holds Abhed's,
+and what a concurrent command was handed: its egress token and its
+`secrets`, and any process's arguments, Abhed's included (an inline
+`-settings` among them).
+
+Abhed hides its own environment: as it starts on macOS it runs itself
+again with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `PWD`,
+`TERM`, `TERM_PROGRAM`, `COLORTERM`, `LANG`, `LC_*`, `TZ`, `NO_COLOR`,
+`__CF_USER_TEXT_ENCODING` and the Go runtime's `GODEBUG`, `GOGC`,
+`GOMAXPROCS`, `GOMEMLIMIT` and `GOTRACEBACK` in the environment the kernel
+shows, under the same
+process id, and takes the rest back through a pipe, so a provider key
+exported to it is no longer readable there. `ABHED_SHOW_ENV=1` turns this
+off; Abhed also leaves its environment as it is when the rest is over
+16 KiB, and warns when it cannot run itself again. Still, put a provider
+key in `api_key` in `~/.abhed/config.json`, which commands cannot read,
+rather than in the environment, since the MCP servers and extensions Abhed
+starts inherit it, and use the container or vm tier where commands must not
+see one another's secrets. On Linux each command's PID namespace hides
+other processes' environments.
 
 On the container and vm tiers a command writes only the workspace and a
 throwaway `/tmp`. The process tier is a boundary, not a jail: it is not
@@ -472,10 +485,12 @@ without running anything.
   and `pidfd_send_signal` altogether, since a filter cannot see whom a pidfd
   names. Each command also runs in a process group apart from Abhed's.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
-  refused, and Landlock refuses TCP as well. With it true, commands get the
-  host's network, unfiltered. Unix sockets are refused either way. On s390x
-  the filter also refuses every socket made through `socketcall()`, which
-  is how glibc and Go make them there, so most programs get no network.
+  refused, and Landlock refuses TCP as well (plain TCP only: since Linux 6.14
+  Landlock leaves MPTCP and SCTP alone, so the `socket()` refusal is what
+  stops those). With it true, commands get the host's network, unfiltered.
+  Unix sockets are refused either way. On s390x the filter also refuses
+  every socket made through `socketcall()`, which is how glibc and Go make
+  them there, so most programs get no network.
   `sandbox.network: "allowlist"` refuses the fence in both modes, since it
   cannot keep a command's sockets to the egress proxy alone
   ([Network policy](21-network-policy.md)).
@@ -978,9 +993,14 @@ session would send the code or its queries to. A nested run narrows with
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
 key it sets replaces what the user and project files said. A list it sets,
-such as `permissions.deny`, replaces the lower files' list; so does a map
-entry, such as one provider under `model.providers`. Its presence makes the
-policy engine managed: `bypass` mode is refused wherever it comes from.
+such as `permissions.ask`, replaces the lower files' list; so does a map
+entry, such as one provider under `model.providers`. `permissions.deny` is
+the exception: the managed rules are added to the deny rules already in
+force (the built-in ones, `~/.abhed/config.json`, `-settings` and a trusted
+workspace's file), so a managed file can add a deny rule but never take one
+away. `/permissions` shows each rule with the layer it came from. Its
+presence makes the policy engine managed: `bypass` mode is refused wherever
+it comes from.
 
 When the managed file sets any `permissions` setting but not
 `permissions.allow`, the allow rules `~/.abhed/config.json` and a trusted
@@ -1104,6 +1124,11 @@ server open.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
   list` lists every decision.
+
+The prompt and `abhed trust` list a managed-only setting the file makes, such
+as `sandbox.network` or the `egress` rules, apart from the rest, under "Not
+applied whether or not you trust it", with the reason: trusting the file does
+not apply it.
 
 A workspace's subagent definitions in `.abhed/agents/*.md` are covered by the
 same decision, with a hash of their own: until you trust them they are not

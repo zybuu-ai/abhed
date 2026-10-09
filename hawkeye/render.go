@@ -67,6 +67,13 @@ func Text(r Report) string {
 	}
 	fmt.Fprintf(&b, "  policy    %d allowed · %d denied · %d asked a reviewer   %s\n",
 		r.Policy.Allowed, r.Policy.Denied, r.Policy.Reviewer, steps(r.Policy.ByStep))
+	if n := r.Network; n != nil {
+		fmt.Fprintf(&b, "  network   %d allowed · %d refused", n.Allowed, n.Denied)
+		if n.WouldDeny > 0 {
+			fmt.Fprintf(&b, " · %d would be refused (monitor)", n.WouldDeny)
+		}
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "  record    #%d–#%d", r.Integrity.FirstSeq, r.Integrity.LastSeq)
 	if len(r.Integrity.Gaps) > 0 {
 		fmt.Fprintf(&b, "   GAPS at %v", r.Integrity.Gaps)
@@ -92,7 +99,7 @@ func Text(r Report) string {
 	}
 
 	if len(r.Calls) > 0 {
-		b.WriteString("\n  Calls   ✓ ran · ! failed or refused by the sandbox · ✗ denied · - not run\n")
+		b.WriteString("\n  Calls   ✓ ran · ! failed, or refused by the sandbox or the network · ✗ denied · - not run\n")
 		for _, c := range r.Calls {
 			mark := "✓"
 			switch {
@@ -100,7 +107,7 @@ func Text(r Report) string {
 				mark = "✗"
 			case !c.Ran:
 				mark = "-"
-			case c.IsError || c.SandboxDenied:
+			case c.IsError || c.SandboxDenied || c.NetworkDenied > 0:
 				mark = "!"
 			}
 			fmt.Fprintf(&b, "  %s #%-4d %-6s %-52s %-8s %s\n", mark, c.Seq, c.Tool, clip(oneLine(c.Subject), 52), c.Step, dur(c.DurationMS))

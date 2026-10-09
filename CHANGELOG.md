@@ -173,6 +173,69 @@ A server with it off starts on the older schema as before.
   commands under a filter that does not hold.
 - The container image compiles Abhed on the build machine for each target
   platform instead of under emulation.
+- The fence's account of its Landlock layer says "TCP connect and bind
+  refused (TCP only, not MPTCP)". Since Landlock's erratum 1 (Linux 6.14, and
+  stable kernels with the fix) its TCP rules leave MPTCP, SCTP and SMC
+  sockets alone, and Go listens over MPTCP by default, which is why a bind
+  got through on Linux 6.15. Nothing changes for commands: with the network
+  off the fence's seccomp layer refuses every `socket()`, MPTCP and SCTP
+  included, and its tests now check both.
+- A managed `permissions.deny` list now adds to the deny rules already in
+  force instead of replacing them: the built-in rules and those from
+  `~/.abhed/config.json`, `-settings` and a trusted workspace's file stay,
+  each shown with its own layer, and none is recorded as overridden. A
+  managed file could otherwise remove a deny rule the person had set.
+- HawkEYE reads the egress allowlist's `egress.decision` events. A session
+  whose commands the allowlist refused used to report them as ran, with 0
+  denied. The report now has a `network` summary (allowed, refused, and in
+  monitor mode would be refused), marks a call whose connections were refused
+  with `!` (`network_denied` in the JSON), and raises a `network-denied` or
+  `network-would-deny` finding per call and destination. The workbench's
+  HawkEYE panel shows the counts.
+
+### Security
+
+- On macOS a command could read Abhed's environment, a provider key exported
+  to it included, through the `kern.procargs2` sysctl, which Seatbelt cannot
+  refuse. Abhed now runs itself again as it starts, under the same process
+  id, with only a short list of non-secret variables (`PATH`, `HOME`,
+  `LANG` and the like) in the environment the kernel shows, and takes the
+  rest back through a pipe. MCP servers and extensions Abhed starts still
+  inherit its environment, and a concurrent command's `secrets` and egress
+  token, and every process's arguments, stay readable: keep a provider key
+  in `api_key` in `~/.abhed/config.json`, and use the container or vm tier
+  where commands must not see one another's secrets. `ABHED_SHOW_ENV=1`
+  turns the restart off. Go programs embedding Abhed call
+  `app.HideEnvironment()` first in `main` to get the same.
+
+### Fixed
+
+- The fence's refusal off Linux read "darwin  arm64", with two spaces where
+  there is no kernel version.
+- `abhed doctor` says where git protection is on: in `abhed serve`'s and
+  Studio's sessions, not in the terminal's.
+- A managed-only setting set aside from `~/.abhed/config.json`, `-settings`
+  or a trusted workspace's file, such as `sandbox.network` or `egress.rules`,
+  was recorded as `config.refused` with an empty value. The event and the
+  startup warning now carry the value asked for, redacted as other values
+  are. An untrusted workspace's managed-only settings, which were recorded
+  only for the web keys, are now recorded too, as `ignored_untrusted`.
+- The workspace-trust prompt and `abhed trust` listed a workspace file's
+  `sandbox.network` and `egress` settings, and other managed-only ones, under
+  what trusting it would let it set, though trust never applies them. They
+  are now listed apart, under "Not applied whether or not you trust it", with
+  the reason; Studio and ACP's trust report carry the same `reason`.
+- A bare `/ide` could open an older session instead of the latest:
+  `GET /v1/sessions` wrote a live session's times in the server's local
+  offset and a recorded one's in UTC, and the workbench sorted them as text.
+  The list now writes every time in UTC and the workbench sorts by instant.
+- `abhed -settings FILE doctor` ignored `-settings` and checked the
+  configuration without it. The doctor, and `doctor --json`, now load it as a
+  run would and name it on a `settings` line.
+- An ACP request whose params did not decode was refused with -32602 and the
+  Go decoder's message, Go type names included. The message now names the
+  field and the JSON kind it takes, such as `"sessionId" must be a string,
+  not number`.
 
 ## [1.2.7] - 2026-10-07
 

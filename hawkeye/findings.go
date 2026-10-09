@@ -150,6 +150,8 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 		}
 	}
 
+	out = append(out, networkFindings(r)...)
+
 	for _, a := range r.SubagentActions {
 		who := a.By
 		if a.Approver != "" {
@@ -286,4 +288,49 @@ func hosts(s string) []string {
 
 func local(h string) bool {
 	return h == "localhost" || strings.HasPrefix(h, "127.") || h == "0.0.0.0"
+}
+
+// networkFindings names each destination the egress allowlist refused, or in
+// monitor mode would have refused, with the call that tried it.
+func networkFindings(r Report) []Finding {
+	if r.Network == nil {
+		return nil
+	}
+	byID := map[string]Call{}
+	for _, c := range r.Calls {
+		byID[c.CallID] = c
+	}
+	var out []Finding
+	for _, f := range r.Network.Refusals {
+		dest := f.Host
+		if f.Port > 0 {
+			dest = fmt.Sprintf("%s:%d", f.Host, f.Port)
+		}
+		who := fmt.Sprintf("Abhed's own %s request", f.Kind)
+		if c, ok := byID[f.CallID]; ok && f.CallID != "" {
+			who = fmt.Sprintf("%s %s", c.Tool, clip(c.Subject, 160))
+		} else if f.CallID != "" {
+			who = fmt.Sprintf("a command (call %q, not in this record)", f.CallID)
+		} else if f.Kind == "connect" || f.Kind == "http" || f.Kind == "summary" {
+			who = "commands in this session"
+		}
+		what := f.Kind
+		if f.Method != "" {
+			what += " " + f.Method + " " + f.Path
+		}
+		times := ""
+		if f.Count > 1 {
+			times = fmt.Sprintf(" %d times.", f.Count)
+		}
+		if f.Decision == "would_deny" {
+			out = append(out, Finding{Severity: Info, Code: "network-would-deny", Seq: f.Seq,
+				Title:  "The network allowlist would have refused " + dest,
+				Detail: fmt.Sprintf("%s — %s, rule %q: %s. Monitor mode let it through.%s", who, what, f.Rule, f.Reason, times)})
+			continue
+		}
+		out = append(out, Finding{Severity: Info, Code: "network-denied", Seq: f.Seq,
+			Title:  "The network allowlist refused " + dest,
+			Detail: fmt.Sprintf("%s — %s, rule %q: %s.%s The call may report success; the connection did not happen.", who, what, f.Rule, f.Reason, times)})
+	}
+	return out
 }

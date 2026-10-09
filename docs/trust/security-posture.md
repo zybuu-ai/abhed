@@ -288,8 +288,15 @@ deny-by-default profile for Mach services is not done yet. The environment is an
 `ABHED_` settings. On macOS that does not keep them from a command: the
 kernel returns any same-user process's environment (`kern.procargs2`) unless
 it is a restricted program, as Apple's are, and Seatbelt cannot refuse it, so a
-command reads Abhed's environment and a concurrent command's
-(`TestSeatbeltProcArgsExposure`). On the `none` tier the shell has the server's environment
+command reads a concurrent command's environment and that of an MCP server or
+extension Abhed started, which inherit Abhed's
+(`TestSeatbeltProcArgsExposure`). Abhed's own is hidden: it re-executes itself
+with a short list of variables in its exec environment and reads the rest
+from a pipe (`app.HideEnvironment`, `TestHideEnvironmentKeepsItFromProcArgs`).
+Signing Abhed restricted (`codesign -o restrict`) would also hide its
+environment, since the kernel omits a restricted process's, but not its
+arguments, its children's, or an unsigned build's, and it changes how the
+binary loads; releases are not signed that way. On the `none` tier the shell has the server's environment
 without its `ABHED_` settings, which leaves anything else the operator
 exported, and nothing contains it.
 

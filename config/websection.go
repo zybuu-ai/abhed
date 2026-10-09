@@ -335,9 +335,13 @@ func (c Config) Attempts() []Attempt {
 	add(c.Overridden, "overridden")
 	add(c.Narrowed, "narrowed")
 	for _, k := range c.Workspace.Ignored {
-		if WebKey(k.Key) {
+		switch {
+		case WebKey(k.Key):
 			out = append(out, Attempt{Layer: LayerWorkspace, Source: c.Workspace.File, Key: k.Key, Value: k.Value,
 				Decision: "ignored_untrusted", Reason: "the workspace configuration is not trusted, and " + webReason})
+		case ManagedOnly(k.Key):
+			out = append(out, Attempt{Layer: LayerWorkspace, Source: c.Workspace.File, Key: k.Key, Value: k.Value,
+				Decision: "ignored_untrusted", Reason: "the workspace configuration is not trusted, and " + k.Reason})
 		}
 	}
 	if a, ok := c.usersAttempt(); ok {

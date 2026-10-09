@@ -159,7 +159,7 @@ func TestAskTrustAnswers(t *testing.T) {
 // longer once it is trusted.
 func TestDoctorNamesIgnoredSettings(t *testing.T) {
 	_, ws := trustWorkspace(t, `{"permissions":{"mode":"bypass","allow":["bash(*)"],"deny":["bash(curl*)"]}}`)
-	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 	for _, w := range []string{"trust       NOT TRUSTED — " + filepath.Join(ws, ".abhed", "config.json"),
 		`⚠ ignored permissions.mode "bypass"`, `⚠ ignored permissions.allow ["bash(*)"]`, "abhed trust grant"} {
 		if !strings.Contains(out, w) {
@@ -173,7 +173,7 @@ func TestDoctorNamesIgnoredSettings(t *testing.T) {
 	if err := config.GrantTrust(ws, st.SHA256); err != nil {
 		t.Fatal(err)
 	}
-	out, _ = stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, _ = stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 	if !strings.Contains(out, "trust       trusted — ") || strings.Contains(out, "ignored") || !strings.Contains(out, "mode        bypass") {
 		t.Fatalf("doctor after a grant:\n%s", out)
 	}
@@ -440,4 +440,44 @@ func TestAskTrustNamesTheAccountsFile(t *testing.T) {
 	if code := trustCmd(ws, []string{"grant"}, &grant); code != 0 || !strings.Contains(grant.String(), "tracked by git") {
 		t.Fatalf("trust grant = %d:\n%s", code, grant.String())
 	}
+}
+
+// Settings only the managed configuration makes, such as the egress
+// allowlist's, are listed apart: trusting the file would not apply them.
+func TestTrustListsManagedOnlyKeysApart(t *testing.T) {
+	_, ws := trustWorkspace(t, `{"permissions":{"allow":["bash(make*)"]},"sandbox":{"network":"allowlist"},`+
+		`"egress":{"default":"allow","rules":[{"host":"evil.example","decision":"allow"}]}}`)
+	cfg, err := config.LoadWith(ws, config.LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(label, out, widensHead, refusedHead string) {
+		t.Helper()
+		w, r := strings.Index(out, widensHead), strings.Index(out, refusedHead)
+		if w < 0 || r < w {
+			t.Fatalf("%s: headings missing or out of order:\n%s", label, out)
+		}
+		widens, refused := out[w:r], out[r:]
+		if !strings.Contains(widens, "permissions.allow") {
+			t.Errorf("%s: the allow rule is not offered:\n%s", label, out)
+		}
+		for _, k := range []string{"sandbox.network", "egress.default", "egress.rules"} {
+			if strings.Contains(widens, k) || !strings.Contains(refused, k) {
+				t.Errorf("%s: %s is offered as something trust would set:\n%s", label, k, out)
+			}
+		}
+		if !strings.Contains(refused, "refused: only the managed configuration") {
+			t.Errorf("%s: no reason given:\n%s", label, out)
+		}
+	}
+	var out bytes.Buffer
+	if _, err := askTrust(strings.NewReader("1\n"), &out, cfg.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	check("prompt", out.String(), "Trusting it would let it set:", "Not applied whether or not you trust it:")
+	out.Reset()
+	if code := trustCmd(ws, nil, &out); code != 0 {
+		t.Fatalf("trust show exited %d", code)
+	}
+	check("show", out.String(), "Ignored until you trust it", "Not applied whether or not you trust it:")
 }

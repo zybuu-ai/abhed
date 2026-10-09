@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,9 @@ import (
 // helper process keeps the home its parent test prepared, as does a session
 // helper, whose record the parent reads afterwards.
 func TestMain(m *testing.M) {
+	// No test reads this machine's managed file; a test that needs one sets its own.
+	none := filepath.Join(os.TempDir(), fmt.Sprintf("abhed-no-managed-%d", os.Getpid()))
+	managed.ConfigFile, managed.AgentsDir = filepath.Join(none, "config.json"), filepath.Join(none, "agents")
 	// Tests re-run this binary as their own helpers; only a test that sets it
 	// sees itself inside an agent's command.
 	inAgentCommand = func() string { return "" }

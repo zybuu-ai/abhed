@@ -37,6 +37,7 @@ func mergeManaged(cfg *Config) error {
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
+	below := slices.Clone(cfg.Permissions.Deny)
 	data, err := readMerge(cfg, path)
 	if err != nil {
 		return err
@@ -46,6 +47,15 @@ func mergeManaged(cfg *Config) error {
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	if cfg.ManagedSets("permissions.deny") {
+		// Its deny rules join the others: a managed file may add a deny rule, never take one away.
+		cfg.managedDeny = map[string]bool{}
+		for _, r := range cfg.Permissions.Deny {
+			cfg.managedDeny[strings.TrimSpace(r)] = true
+		}
+		cfg.Permissions.Deny = dedupe(append(slices.Clone(cfg.Permissions.Deny), below...))
+		delete(cfg.origins, "permissions.deny")
+	}
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
 		cfg.Unknown[i].Managed = cfg.Unknown[i].File == path
@@ -330,8 +340,8 @@ const (
 )
 
 // noteRuleLayer credits the permission rules and extensions not yet
-// credited to layer. The managed layer takes every entry of a list it sets,
-// since it replaced that list; the others take only entries new to it.
+// credited to layer. The managed layer takes every entry of a list it replaced,
+// and of deny, which it adds to, only its own; the others take only new entries.
 func (c *Config) noteRuleLayer(layer string) {
 	if c.ruleLayers == nil {
 		c.ruleLayers = map[string]string{}
@@ -343,7 +353,8 @@ func (c *Config) noteRuleLayer(layer string) {
 		replaced := layer == LayerManaged && c.ManagedSets("permissions."+list)
 		for _, r := range rules {
 			k := list + "\x00" + strings.TrimSpace(r)
-			if _, have := c.ruleLayers[k]; !have || replaced {
+			mine := replaced && (list != "deny" || c.managedDeny[strings.TrimSpace(r)])
+			if _, have := c.ruleLayers[k]; !have || mine {
 				c.ruleLayers[k] = layer
 			}
 		}

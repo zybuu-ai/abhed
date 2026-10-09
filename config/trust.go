@@ -92,7 +92,8 @@ type WorkspaceTrust struct {
 type IgnoredKey struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
-	// Reason is set when the value was refused rather than merely not trusted.
+	// Reason is set when the value was refused rather than merely not
+	// trusted: trusting the file would not apply it either.
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -261,7 +262,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		}
 		// Trust does not reach these: a workspace never makes a managed-only
 		// setting, may only turn auto memory off, and may only import less deep.
-		setAside(cfg, path, LayerWorkspace)
+		setAside(cfg, path, LayerWorkspace, data)
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
@@ -370,7 +371,9 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 			noteOrigin(cfg, path, LayerWorkspace, s.key, s.val)
 			continue
 		}
-		st.Ignored = append(st.Ignored, IgnoredKey{Key: Printable(s.key), Value: shortJSON(redact(s.key, s.val))})
+		// Trust would not apply a managed-only setting either; say so rather than offer it.
+		why := managedOnly[s.key]
+		st.Ignored = append(st.Ignored, IgnoredKey{Key: Printable(s.key), Value: shortJSON(redact(s.key, s.val)), Reason: why})
 	}
 	sort.SliceStable(st.Ignored, func(i, j int) bool { return st.Ignored[i].Key < st.Ignored[j].Key })
 	return nil

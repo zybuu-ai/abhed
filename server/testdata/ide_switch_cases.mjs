@@ -14,6 +14,11 @@ sessionList = sortSessions([
   {id:'s-c', prompt:'release notes draft', created:iso(90e3), state:'idle'},
 ]);
 check('the list is in order of last activity', sessionList.map(s => s.id).join() === 's-a,s-c,s-b');
+// The same order whatever offset each time is written in: 10:00Z is after 14:00+05:30.
+check('times in different offsets sort by instant', sortSessions([
+  {id:'s-old', updated:'2026-10-07T14:00:00.123+05:30'},
+  {id:'s-new', updated:'2026-10-07T10:00:00Z'},
+]).map(s => s.id).join() === 's-new,s-old');
 
 // The Sessions view.
 current = 's-c';

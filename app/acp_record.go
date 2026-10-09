@@ -173,7 +173,7 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		c.reply(msg.ID, nil, badParams("", err))
 		return
 	}
 	trust, terr := c.requestedTrust(p.Meta)
@@ -408,7 +408,7 @@ func (c *acpConn) forkSession(msg rpcMessage) {
 		Meta       map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		c.reply(msg.ID, nil, badParams("", err))
 		return
 	}
 	trust, terr := c.requestedTrust(p.Meta)

@@ -11,8 +11,10 @@ The agent's shell commands have three network settings:
 The allowlist is set by the administrator. `sandbox.network` and the whole
 `egress` section are **managed only**: they are read from the managed
 configuration (`/etc/abhed/config.json`) and set aside, with a warning, in
-`~/.abhed/config.json`, `-settings` or a workspace's file. With the allowlist
-on, `allow_network` is not read.
+`~/.abhed/config.json`, `-settings` or a workspace's file. Each one set aside
+is recorded as a `config.refused` event with the value asked for (an
+untrusted workspace's with the decision `ignored_untrusted`). With the
+allowlist on, `allow_network` is not read.
 
 Under the allowlist the same rules also judge Abhed's own requests: the
 model client, `web_fetch`, `web_search`, MCP servers over HTTP, and the
@@ -146,8 +148,9 @@ but the kernel returns the arguments and environment of any process of the
 same user (the `kern.procargs2` sysctl) that is not a restricted program, as
 Apple's own are, and Seatbelt has no rule that refuses it. So a command, a
 workbench terminal or a stdio MCP server can read a concurrent command's
-token while that call is live, and the environment of Abhed and of an MCP
-server it started, keys included; see
+token while that call is live, and the environment of an MCP server or
+extension Abhed started, keys included. Abhed's own environment is hidden
+from it (it restarts itself with only a few variables in view); see
 [Configuration](02-configuration.md#sandbox).
 
 - **HTTPS** goes through `CONNECT` and is decided by host and port only: the

@@ -30,8 +30,8 @@ import (
 
 // doctor verifies the endpoint actually works before the user debugs it
 // through a failing agent run.
-func (a *App) doctor(workspace string) int {
-	cfg, err := a.loadConfig(workspace)
+func (a *App) doctor(workspace string, set flagSettings) int {
+	cfg, err := a.loadConfigWith(workspace, set)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		var ed *EditionError
@@ -55,6 +55,9 @@ func (a *App) doctor(workspace string) int {
 	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)
+	}
+	if cfg.Settings.Name != "" {
+		fmt.Printf("settings    %s\n", config.Printable(cfg.Settings.Name))
 	}
 	printDoctorTrust(os.Stdout, cfg.Workspace)
 	// A managed definition named with another case is silently not read.
@@ -80,6 +83,7 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
 	fmt.Printf("egress      %s\n", egressLabel(cfg))
+	fmt.Println("git         held read-only from commands in `abhed serve`'s and Studio's sessions; not in the terminal's (docs/guide/04-permissions.md)")
 	if printDrivers(os.Stdout, cfg) {
 		findings.driverDown = true
 	}

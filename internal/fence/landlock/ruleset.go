@@ -63,7 +63,7 @@ func (r *Ruleset) Describe() string {
 	add("devices", r.spec.Devices)
 	add("denied", r.spec.Deny)
 	if r.spec.DenyTCP {
-		parts = append(parts, "TCP connect and bind refused")
+		parts = append(parts, "TCP connect and bind refused (TCP only, not MPTCP)")
 	} else {
 		parts = append(parts, "TCP not restricted by Landlock")
 	}

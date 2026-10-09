@@ -84,10 +84,10 @@ capture does not say it left any out.
 
 | Section | What it tells you |
 |---|---|
-| Summary | outcome (how the session ended; `running` with no end recorded; `no agent run` for a session only people worked in, at the workbench's terminal or editor), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window |
+| Summary | outcome (how the session ended; `running` with no end recorded; `no agent run` for a session only people worked in, at the workbench's terminal or editor), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window, and, when the [egress allowlist](21-network-policy.md) was on, how many connections and requests it allowed and refused (`network` in the JSON) |
 | Findings | rules over the record, each naming its evidence by sequence number |
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
-| Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of is marked `!` |
+| Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of, or whose connections the egress allowlist refused (`network_denied`), is marked `!` |
 | Turns | per-turn tokens, time to first token, total latency |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
@@ -133,6 +133,8 @@ and none of them is a model's opinion.
 | `denied` | info | a call was refused; the detail says by whom, from the event's `by` (policy, reviewer, the person, headless, or system for a request that ended unanswered), and names the `approver` where the record does |
 | `subagent-denied` | info | a subagent's call was refused, from the parent's `subagent.action`; the detail says by whom and names the subagent's session |
 | `sandbox-denied` | info | a `bash` command ran under a sandbox tier (its observation's `sandbox` is not `none`) but the sandbox refused an operation in it, whatever its exit status says; records without the tier do not raise it |
+| `network-denied` | info | the egress allowlist refused a connection or request, from its `egress.decision` events, not from the command's output; one finding per call and destination, naming the call (or Abhed's own model, web or MCP request), the rule and how many times. A command can still exit 0 |
+| `network-would-deny` | info | in `monitor` mode, the allowlist let through what it would have refused |
 | `truncated` | info | tool results were cut before the model saw them |
 | `slow-tool` | info | a tool call ran longer than a minute |
 | `cold-cache` | info | under 20% of the prompt was cached across five or more turns whose provider reported a cache figure |

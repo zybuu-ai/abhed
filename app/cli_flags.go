@@ -285,7 +285,7 @@ func Main(args []string, opts ...Option) int {
 			}
 			return 1
 		}
-		return a.subcommand(workspace, rest, f.listenAddr)
+		return a.subcommand(workspace, rest, &f)
 	}
 	if len(f.words) > 0 && !f.print.on && !f.dashed {
 		// An edition's own subcommand.
@@ -306,7 +306,7 @@ func Main(args []string, opts ...Option) int {
 }
 
 // subcommand runs a built-in subcommand; rest[0] is its name.
-func (a *App) subcommand(workspace string, rest []string, listenAddr string) int {
+func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 	// `abhed index -h` used to build the index and `abhed init -h` to write
 	// a config: a command that reads no flags of its own answers help here.
 	if len(rest) > 1 && isHelpArg(rest[1]) && !ownsHelp[rest[0]] {
@@ -327,10 +327,19 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 	case "trust":
 		return trustCmd(workspace, rest[1:], os.Stdout)
 	case "doctor":
-		if len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
-			return a.doctorJSON(os.Stdout, workspace)
+		// Checked as a run with the same -settings would load it.
+		var set flagSettings
+		if f.settings != "" {
+			var err error
+			if set.data, set.name, err = newFlagFiles(workspace, a.trust).read("-settings", f.settings); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 2
+			}
 		}
-		return a.doctor(workspace)
+		if len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
+			return a.doctorJSON(os.Stdout, workspace, set)
+		}
+		return a.doctor(workspace, set)
 	case "providers":
 		return providersCmd()
 	case "record":
@@ -382,7 +391,7 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		// Re-parse the remaining args so `abhed serve -addr :9000` works: Go's
 		// flag package stops at the first non-flag argument.
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
-		serveAddr := serveFlags.String("addr", listenAddr, "listen address")
+		serveAddr := serveFlags.String("addr", f.listenAddr, "listen address")
 		serveTrust := serveFlags.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
 		serveCheck := serveFlags.Bool("check", false, "check everything serve needs, then exit without serving")
 		_ = serveFlags.Parse(rest[1:])

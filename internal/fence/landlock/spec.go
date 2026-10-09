@@ -31,7 +31,7 @@ type Spec struct {
 	// skills in ~/.abhed/skills. Each must also be listed in Exec.
 	Within []string `json:"within,omitempty"`
 	// DenyTCP refuses every TCP connect and bind, for when the network is
-	// off. It needs ABI 4 (Linux 6.7) or later.
+	// off. It needs ABI 4 (Linux 6.7) or later, and does not cover MPTCP.
 	DenyTCP bool `json:"deny_tcp,omitempty"`
 }
 

@@ -68,6 +68,8 @@ temporary folder, so name only files you wrote or have read.
   laid over it, a managed-only setting in it is ignored with a warning, and
   when the managed file sets any `permissions` setting its allow rules are
   left out, as yours are. `/permissions` shows its rules as `settings`.
+  `abhed -settings FILE doctor` checks the configuration a run with the same
+  flag would load and names the file on its `settings` line.
 - **`-mcp-config`** (repeatable) adds MCP servers, in the
   `{"mcpServers": {"name": {"command": …}}}` shape or Abhed's
   `{"mcp": {"servers": […]}}`. Naming the file is your consent, so each of its
