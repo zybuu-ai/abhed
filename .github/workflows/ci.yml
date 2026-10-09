@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
 
       # The process tier is bubblewrap on Linux. Without it the sandbox tests
       # skip, and the filesystem, egress and credential boundaries the trust
@@ -197,7 +197,7 @@ jobs:
     name: Linux sandbox boundaries
     runs-on: ubuntu-latest
     container:
-      image: golang:1.26
+      image: golang:1.26.9
       options: --privileged
     steps:
       - uses: actions/checkout@v4
@@ -280,7 +280,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Build the test binaries
         run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
       - name: Allow user namespaces to those binaries, mount the alias, start the user manager
@@ -312,7 +312,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Install python3-venv
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv
       - name: Build the test binaries
@@ -353,7 +353,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: The runner offers KVM
         run: |
           if [ ! -c /dev/kvm ]; then
@@ -417,7 +417,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Install qemu-user for s390x
         run: |
           sudo apt-get update && sudo apt-get install -y qemu-user-static
@@ -458,7 +458,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
 
       - name: Path rules hold on a disk that folds case
         run: |
@@ -503,7 +503,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Pull the sandbox image
         run: docker pull docker.io/library/debian:bookworm-slim
       - name: The container tier's boundaries hold on Docker
@@ -525,7 +525,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Pull the sandbox image
         run: ${{ matrix.engine }} pull docker.io/library/debian:bookworm-slim
       - name: The drivers' boundaries hold on ${{ matrix.engine }}
@@ -557,7 +557,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
 
       - name: Embed the documentation
         run: python3 scripts/docsite/build.py --embed-only
@@ -631,7 +631,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Build without warnings, then build and sign ad hoc
         run: |
           set -euo pipefail

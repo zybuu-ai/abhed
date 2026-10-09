@@ -20,7 +20,7 @@
 # on a day the floating tag happens to resolve differently.
 # It runs on the builder's own platform and cross-compiles, so a multi-arch
 # build does not compile Go under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm AS build
 
 WORKDIR /src
 

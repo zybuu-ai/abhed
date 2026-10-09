@@ -8,6 +8,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Built with Go 1.26.9, which fixes 13 standard-library advisories that
+  `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
+  pin it.
 - On macOS a command could read Abhed's environment, a provider key exported
   to it included, through the `kern.procargs2` sysctl, which Seatbelt cannot
   refuse. Abhed now runs itself again as it starts, under the same process
