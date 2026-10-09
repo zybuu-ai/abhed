@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/zybuu-ai/abhed/internal/fence/mountns"
+	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
 )
 
 // The helper answers before anything else in any binary linking this package,
@@ -32,7 +33,7 @@ const (
 	stageChild    = "child"    // report this process's ids, capabilities and flags
 	stageLandlock = "landlock" // <allowed> <denied>: the filesystem round trip
 	stageTCP      = "tcp"      // the TCP refusal round trip
-	stageSeccomp  = "seccomp"  // apply a trivial filter and see it act
+	stageSeccomp  = "seccomp"  // apply a trivial filter, then the fence's own, and see both act
 	stageMounts   = "mounts"   // <dir>: hold paths read-only in a namespace of its own
 )
 
@@ -286,23 +287,23 @@ func tcpBind() error {
 
 // seccompArch is the audit architecture of this build, which a filter checks
 // before trusting a syscall number.
-func seccompArch() (uint32, bool) {
-	switch runtime.GOARCH {
-	case "amd64":
-		return unix.AUDIT_ARCH_X86_64, true
-	case "arm64":
-		return unix.AUDIT_ARCH_AARCH64, true
-	}
-	return 0, false
-}
+func seccompArch() (uint32, bool) { return seccomp.AuditArch(runtime.GOARCH) }
 
 // probeErrno is what the trivial filter makes getppid return: an errno that
 // call never gives on its own.
 const probeErrno = unix.EXDEV
 
 // helperSeccomp applies a filter refusing getppid with probeErrno and
-// requires the next getppid to be refused.
+// requires the next getppid to be refused. It then installs the fence's own
+// filter guarding its parent, and requires a signal to the parent to be
+// refused and one to itself allowed: that takes this kernel reading the
+// architecture's system-call numbers and argument layout as the filter does.
 func helperSeccomp() helperOut {
+	parent, self := unix.Getppid(), unix.Getpid()
+	group, err := unix.Getpgid(parent)
+	if err != nil {
+		return failed("reading the parent's process group: %v", err)
+	}
 	before, err := unix.PrctlRetInt(unix.PR_GET_SECCOMP, 0, 0, 0, 0)
 	if err != nil {
 		return failed("reading the seccomp mode: %v", err)
@@ -331,6 +332,16 @@ func helperSeccomp() helperOut {
 		return failed("the seccomp filter did not act: getppid gave errno %d, not %d", errno, probeErrno)
 	}
 	after, _ := unix.PrctlRetInt(unix.PR_GET_SECCOMP, 0, 0, 0, 0)
-	return helperOut{OK: true, Reason: "a seccomp filter applied and refused the call it names",
-		Value: fmt.Sprintf("mode %d before, %d after; getppid refused (EXDEV)", before, after)}
+	if err := seccomp.Install(seccomp.Command(false, parent, group)); err != nil {
+		return failed("installing the fence's filter: %v", err)
+	}
+	if err := unix.Kill(parent, 0); !errors.Is(err, unix.EPERM) {
+		return failed("the fence's filter did not refuse a signal to its guarded process (got %v)", err)
+	}
+	if err := unix.Kill(self, 0); err != nil {
+		return failed("the fence's filter refused a signal the command may send itself: %v", err)
+	}
+	return helperOut{OK: true, Reason: "seccomp filters applied and refused the calls they name",
+		Value: fmt.Sprintf("mode %d before, %d after; getppid refused (EXDEV); %s refused a signal to its guarded process (EPERM) and allowed one to itself",
+			before, after, seccomp.Profile)}
 }

@@ -1,4 +1,4 @@
-//go:build linux && (amd64 || arm64)
+//go:build linux && (amd64 || arm64 || s390x)
 
 package seccomp
 
@@ -27,6 +27,7 @@ func TestNativeTableMatchesUnix(t *testing.T) {
 		"rt_sigqueueinfo": unix.SYS_RT_SIGQUEUEINFO, "rt_tgsigqueueinfo": unix.SYS_RT_TGSIGQUEUEINFO,
 		"pidfd_send_signal": unix.SYS_PIDFD_SEND_SIGNAL,
 	}
+	addS390x(want)
 	got := arches[runtime.GOARCH].nr
 	if len(got) != len(want) {
 		t.Errorf("the %s table has %d calls, the check %d", runtime.GOARCH, len(got), len(want))
@@ -36,7 +37,7 @@ func TestNativeTableMatchesUnix(t *testing.T) {
 			t.Errorf("%s on %s: table %d, unix %d", name, runtime.GOARCH, got[name], n)
 		}
 	}
-	audit := map[string]uint32{"amd64": unix.AUDIT_ARCH_X86_64, "arm64": unix.AUDIT_ARCH_AARCH64}[runtime.GOARCH]
+	audit := map[string]uint32{"amd64": unix.AUDIT_ARCH_X86_64, "arm64": unix.AUDIT_ARCH_AARCH64, "s390x": unix.AUDIT_ARCH_S390X}[runtime.GOARCH]
 	if arches[runtime.GOARCH].audit != audit {
 		t.Errorf("audit arch %#x, want %#x", arches[runtime.GOARCH].audit, audit)
 	}

@@ -56,7 +56,7 @@ func Run(ctx context.Context, req Requirements) Report {
 func platformCheck(r Report) Check {
 	c := Check{ID: CheckPlatform, Required: true, Value: strings.TrimSpace("Linux " + r.Kernel + " " + r.Machine)}
 	if _, ok := seccompArch(); !ok {
-		c.Status, c.Reason = Fail, "the fence supports amd64 and arm64, not "+runtime.GOARCH
+		c.Status, c.Reason = Fail, "the fence supports amd64, arm64 and s390x, not "+runtime.GOARCH
 		return c
 	}
 	c.Status, c.Reason = Pass, "Linux on "+runtime.GOARCH

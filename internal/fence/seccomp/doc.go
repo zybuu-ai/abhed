@@ -7,10 +7,11 @@
 //
 // Command returns the one profile, "command/3", built for one Abhed process
 // and its process group. Its Program is classic BPF,
-// assembled here in pure Go for amd64 and arm64 from per-architecture
+// assembled here in pure Go for amd64, arm64 and s390x from per-architecture
 // system-call tables: it first checks the architecture and kills the process
-// on any other one (x32 included, on amd64), then matches the call number and
-// returns allow or an errno. Refusals are EPERM, except clone3, which gets
+// on any other one (x32 included, on amd64; 31-bit s390 included, on s390x),
+// then matches the call number and returns allow or an errno. Arguments are
+// compared by their low word, which s390x, being big-endian, stores second. Refusals are EPERM, except clone3, which gets
 // ENOSYS so the C library falls back to clone, whose flags the filter can
 // read.
 //
@@ -26,6 +27,10 @@
 // sockets are refused in both modes, so a command cannot reach a host daemon
 // such as a container engine, a session bus or an ssh or gpg agent.
 // socketpair() is always allowed, so processes can still talk to each other.
+// On s390x a socket can also be made through socketcall(), whose family sits
+// in memory the filter cannot read: socketcall's socket is refused in both
+// modes, and since glibc and Go make sockets that way there, most programs
+// get no socket even with the network on.
 //
 // What breaks under the filter: debuggers and tracers such as strace and gdb
 // (no ptrace); tools that install their own seccomp sandbox, such as a
