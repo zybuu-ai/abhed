@@ -213,7 +213,7 @@ func (s *Service) reconcile(ctx context.Context, id string) error {
 		return s.settle(ctx, sb, st, err)
 	case StateStopping:
 		if derr != nil {
-			return s.observe(ctx, sb, StateError, CondDriverReady, ConditionFalse, "DriverMissing", derr.Error())
+			return s.observe(ctx, sb, StateError, ConditionFalse, "DriverMissing", derr.Error())
 		}
 		s.mu.Lock()
 		grace, ok := s.graces[id]
@@ -224,14 +224,14 @@ func (s *Service) reconcile(ctx context.Context, id string) error {
 		}
 		_, err := d.Stop(call, id, grace)
 		if err != nil && !errors.Is(err, driver.ErrNotFound) {
-			return s.observe(ctx, sb, StateError, CondDriverReady, ConditionFalse, driver.Code(err), err.Error())
+			return s.observe(ctx, sb, StateError, ConditionFalse, driver.Code(err), err.Error())
 		}
-		return s.observe(ctx, sb, StateStopped, CondDriverReady, ConditionFalse, "Stopped", "")
+		return s.observe(ctx, sb, StateStopped, ConditionFalse, "Stopped", "")
 	case StateDeleting:
 		return s.remove(ctx, call, sb, d, derr)
 	case StateReady:
 		if derr != nil {
-			return s.observe(ctx, sb, StateError, CondDriverReady, ConditionFalse, "DriverMissing", derr.Error())
+			return s.observe(ctx, sb, StateError, ConditionFalse, "DriverMissing", derr.Error())
 		}
 		st, err := d.Status(call, id)
 		return s.watch(ctx, sb, st, err)
@@ -245,7 +245,7 @@ func (s *Service) reconcile(ctx context.Context, id string) error {
 func (s *Service) spec(sb Sandbox) (driver.Spec, error) {
 	ws, err := s.cfg.Workspace(sb.ID)
 	if err != nil {
-		return driver.Spec{}, fmt.Errorf("%w: the sandbox's workspace: %v", driver.ErrUnavailable, err)
+		return driver.Spec{}, fmt.Errorf("%w: the sandbox's workspace: %w", driver.ErrUnavailable, err)
 	}
 	vals := s.cfg.Settings.For(sb.Settings)
 	minTier := vals[SetMinTier]
@@ -335,9 +335,9 @@ func (s *Service) settle(ctx context.Context, sb Sandbox, st driver.Status, err 
 	return nil
 }
 
-// observe moves sb to state with one condition, when it is still where the
+// observe moves sb to state with its DriverReady condition, when it is still where the
 // pass found it.
-func (s *Service) observe(ctx context.Context, sb Sandbox, to State, cond string, status ConditionStatus, reason, msg string) error {
+func (s *Service) observe(ctx context.Context, sb Sandbox, to State, status ConditionStatus, reason, msg string) error {
 	now := s.now()
 	out, err := s.guarded(ctx, sb, func(cur *Sandbox) error {
 		if cur.State != to {
@@ -345,7 +345,7 @@ func (s *Service) observe(ctx context.Context, sb Sandbox, to State, cond string
 				return err
 			}
 		}
-		return cur.SetCondition(Condition{Type: cond, Status: status, Reason: reason, Message: msg}, now)
+		return cur.SetCondition(Condition{Type: CondDriverReady, Status: status, Reason: reason, Message: msg}, now)
 	})
 	if err != nil {
 		return err
@@ -361,23 +361,23 @@ func (s *Service) observe(ctx context.Context, sb Sandbox, to State, cond string
 func (s *Service) watch(ctx context.Context, sb Sandbox, st driver.Status, err error) error {
 	switch {
 	case errors.Is(err, driver.ErrNotFound):
-		return s.observe(ctx, sb, StateError, CondDriverReady, ConditionFalse, "InstanceLost", err.Error())
+		return s.observe(ctx, sb, StateError, ConditionFalse, "InstanceLost", err.Error())
 	case err != nil:
 		// The driver cannot tell: the condition says so, and nothing that
 		// accepts work is assumed either way.
 		if c, ok := sb.Condition(CondDriverReady); ok && c.Status == ConditionUnknown {
 			return err
 		}
-		if oerr := s.observe(ctx, sb, StateReady, CondDriverReady, ConditionUnknown, "StatusFailed", err.Error()); oerr != nil {
+		if oerr := s.observe(ctx, sb, StateReady, ConditionUnknown, "StatusFailed", err.Error()); oerr != nil {
 			return oerr
 		}
 		return err
 	case st.Phase == driver.PhaseExited:
-		return s.observe(ctx, sb, StateCompleted, CondDriverReady, ConditionFalse, "Exited", st.Message)
+		return s.observe(ctx, sb, StateCompleted, ConditionFalse, "Exited", st.Message)
 	case st.Phase == driver.PhaseFailed:
-		return s.observe(ctx, sb, StateError, CondDriverReady, ConditionFalse, "Failed", st.Message)
+		return s.observe(ctx, sb, StateError, ConditionFalse, "Failed", st.Message)
 	case st.Phase != driver.PhaseRunning:
-		return s.observe(ctx, sb, StateError, CondDriverReady, ConditionFalse, "StoppedOutsideControlPlane",
+		return s.observe(ctx, sb, StateError, ConditionFalse, "StoppedOutsideControlPlane",
 			"the driver reports the instance "+string(st.Phase))
 	case !TierMeets(st.Tier, s.cfg.Settings.For(sb.Settings)[SetMinTier]):
 		return s.settle(ctx, sb, st, nil)
@@ -448,7 +448,7 @@ func (s *Service) restart(ctx context.Context, sb Sandbox) error {
 	}
 	ev := AuditEvent{Principal: SystemPrincipal, Action: "restart", SandboxID: sb.ID, Generation: sb.Generation,
 		Detail: map[string]string{"policy": vals[SetRestartPolicy], "restarts": fmt.Sprint(sb.Restarts + 1), "from": string(sb.State)}}
-	if err := s.record(ctx, withOutcome(ev, OutcomeRequested)); err != nil {
+	if err := s.record(ctx, requested(ev)); err != nil {
 		return err
 	}
 	out, err := s.guarded(ctx, sb, func(cur *Sandbox) error {

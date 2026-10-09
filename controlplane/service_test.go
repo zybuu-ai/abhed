@@ -72,9 +72,9 @@ func (r *rig) reconcile(t *testing.T, id string) cp.Sandbox {
 	return sb
 }
 
-func (r *rig) ready(t *testing.T, settings map[string]string) cp.Sandbox {
+func (r *rig) ready(t *testing.T) cp.Sandbox {
 	t.Helper()
-	sb, err := r.svc.Create(context.Background(), alice, cp.CreateRequest{Template: "default", Settings: settings})
+	sb, err := r.svc.Create(context.Background(), alice, cp.CreateRequest{Template: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func (r *rig) ready(t *testing.T, settings map[string]string) cp.Sandbox {
 func TestLifecycleThroughTheReconciler(t *testing.T) {
 	r := newRig(t, nil, nil)
 	ctx := context.Background()
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	if c, _ := sb.Condition(cp.CondIsolationVerified); c.Status != cp.ConditionTrue || sb.Tier != "process" {
 		t.Fatalf("isolation not verified: %+v", sb)
 	}
@@ -170,21 +170,21 @@ func TestWeakerTierIsRefused(t *testing.T) {
 
 func TestReadyThatFailsGoesToErrorAndTierDropIsCaught(t *testing.T) {
 	r := newRig(t, nil, nil)
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	r.fake.SetPhase(sb.ID, driver.PhaseFailed)
 	if sb = r.reconcile(t, sb.ID); sb.State != cp.StateError {
 		t.Fatalf("a failed instance stayed %s", sb.State)
 	}
 
 	r = newRig(t, map[string]string{cp.SetMinTier: "process"}, nil)
-	sb = r.ready(t, nil)
+	sb = r.ready(t)
 	r.fake.SetTier("none")
 	if sb = r.reconcile(t, sb.ID); sb.State != cp.StateError {
 		t.Fatalf("a tier that dropped below the minimum stayed %s", sb.State)
 	}
 
 	r = newRig(t, nil, nil)
-	sb = r.ready(t, nil)
+	sb = r.ready(t)
 	r.fake.SetErr("status", errors.New("engine hiccup"))
 	sb = r.reconcile(t, sb.ID)
 	if c, _ := sb.Condition(cp.CondDriverReady); sb.State != cp.StateReady || c.Status != cp.ConditionUnknown {
@@ -203,7 +203,7 @@ func TestReadyThatFailsGoesToErrorAndTierDropIsCaught(t *testing.T) {
 func TestDeleteFailureStaysDeletingAndRetries(t *testing.T) {
 	r := newRig(t, nil, nil)
 	ctx := context.Background()
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	r.fake.SetErr("delete", driver.Errorf(driver.ErrUnavailable, "busy"))
 	if _, err := r.svc.Delete(ctx, alice, sb.ID, ""); err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestDeleteFailureStaysDeletingAndRetries(t *testing.T) {
 
 func TestRestartPolicyBackoffAndGenerations(t *testing.T) {
 	r := newRig(t, map[string]string{cp.SetRestartPolicy: cp.RestartOnFailure, cp.SetMaxRestarts: "2", cp.SetRestartBackoff: "10"}, nil)
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	gen := sb.Generation
 	for i := range 2 {
 		r.fake.SetPhase(sb.ID, driver.PhaseFailed)
@@ -295,7 +295,7 @@ func TestRestartPolicies(t *testing.T) {
 		{cp.RestartAlways, driver.PhaseExited, true},
 	} {
 		r := newRig(t, map[string]string{cp.SetRestartPolicy: c.policy, cp.SetRestartBackoff: "1"}, nil)
-		sb := r.ready(t, nil)
+		sb := r.ready(t)
 		r.fake.SetPhase(sb.ID, c.phase)
 		r.reconcile(t, sb.ID)
 		r.reconcile(t, sb.ID)
@@ -307,7 +307,7 @@ func TestRestartPolicies(t *testing.T) {
 	}
 	// A sandbox a client stopped is never restarted.
 	r := newRig(t, map[string]string{cp.SetRestartPolicy: cp.RestartAlways, cp.SetRestartBackoff: "1"}, nil)
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	if _, err := r.svc.Stop(context.Background(), alice, sb.ID, "", 0); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestRestartPolicies(t *testing.T) {
 
 func TestStableRunResetsRestarts(t *testing.T) {
 	r := newRig(t, map[string]string{cp.SetRestartPolicy: cp.RestartOnFailure, cp.SetRestartBackoff: "1"}, nil)
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	r.fake.SetPhase(sb.ID, driver.PhaseFailed)
 	r.reconcile(t, sb.ID)
 	r.reconcile(t, sb.ID)
@@ -392,7 +392,7 @@ func TestRunStopsWithItsContext(t *testing.T) {
 func TestOwnersAndAdmins(t *testing.T) {
 	r := newRig(t, nil, nil)
 	ctx := context.Background()
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	bob := cp.Caller{Principal: "bob"}
 	if _, err := r.svc.Get(ctx, bob, sb.ID); !errors.Is(err, cp.ErrNotFound) {
 		t.Fatalf("another owner read it: %v", err)
@@ -415,7 +415,7 @@ func TestOwnersAndAdmins(t *testing.T) {
 func TestExecCapsTotalOutputAndTime(t *testing.T) {
 	r := newRig(t, map[string]string{cp.SetExecOutput: "2048"}, nil)
 	ctx := context.Background()
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	stopped := make(chan struct{})
 	r.fake.ExecFunc = func(ctx context.Context, _ string, req driver.ExecRequest) (driver.ExecResult, error) {
 		chunk := bytes.Repeat([]byte("x"), 512)
@@ -446,7 +446,7 @@ func TestExecCapsTotalOutputAndTime(t *testing.T) {
 	}
 
 	r = newRig(t, map[string]string{cp.SetExecTimeout: "1"}, nil)
-	sb = r.ready(t, nil)
+	sb = r.ready(t)
 	r.fake.ExecFunc = func(ctx context.Context, _ string, _ driver.ExecRequest) (driver.ExecResult, error) {
 		<-ctx.Done()
 		return driver.ExecResult{}, ctx.Err()
@@ -459,7 +459,7 @@ func TestExecCapsTotalOutputAndTime(t *testing.T) {
 func TestExecRecordsNoSecret(t *testing.T) {
 	r := newRig(t, nil, nil)
 	ctx := context.Background()
-	sb := r.ready(t, nil)
+	sb := r.ready(t)
 	if _, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "curl -H 'token: hunter2'"}, cp.ExecIO{}); err != nil {
 		t.Fatal(err)
 	}

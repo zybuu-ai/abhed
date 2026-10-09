@@ -9,10 +9,8 @@ const MaxBackoff = time.Hour
 // to start again from zero.
 const StableAfter = 10 * time.Minute
 
-// RestartDue reports whether the restart policy starts a sandbox that has
-// ended in state: on-failure restarts Error, always restarts Error and
-// Completed, and never restarts nothing. A sandbox a client stopped is
-// never restarted.
+// RestartDue reports whether policy restarts a sandbox ended in state:
+// on-failure restarts Error, always also Completed; Stopped never restarts.
 func RestartDue(policy string, state State) bool {
 	switch policy {
 	case RestartAlways:

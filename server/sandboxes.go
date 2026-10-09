@@ -16,11 +16,8 @@ import (
 	"github.com/zybuu-ai/abhed/driver"
 )
 
-// The sandbox control plane's REST surface, per
-// docs/architecture/control-plane-contract.md §4. Everything here goes
-// through controlplane.Service, which records each mutation with the
-// caller; this file does HTTP: identity, tenant, idempotency, If-Match,
-// rate limits and the error shape.
+// The control plane's REST surface (control-plane-contract.md §4); the
+// recording and lifecycle live in controlplane.Service, the HTTP here.
 
 // sandboxVerb is one custom method, POST or GET /v1/sandboxes/{id}:verb.
 type sandboxVerb struct {
@@ -111,8 +108,7 @@ func (s *Server) cpTenant() string {
 }
 
 // sandboxCaller resolves who is asking, or answers and returns false. The
-// control plane's store is opened for one tenant, so a request acting in
-// another is refused rather than served from it.
+// store is opened for one tenant, so a request in another is refused.
 func (s *Server) sandboxCaller(w http.ResponseWriter, r *http.Request) (controlplane.Caller, bool) {
 	if TenantOf(r.Context()) != s.cpTenant() {
 		writeCPError(w, http.StatusForbidden, "forbidden", "sandboxes on this server belong to another tenant")
@@ -120,6 +116,9 @@ func (s *Server) sandboxCaller(w http.ResponseWriter, r *http.Request) (controlp
 	}
 	return controlplane.Caller{Principal: UserOf(r.Context()), Admin: s.IsAdmin(r)}, true
 }
+
+// cpRateWindow is the window the per-minute settings count in.
+var cpRateWindow = time.Minute
 
 // cpLimit applies a per-caller rate limit, answering 429 when it is spent.
 func cpLimit(l *limiter, w http.ResponseWriter, c controlplane.Caller) bool {
@@ -211,7 +210,7 @@ func decodeStrict(body []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("%w: the body is not valid JSON for this call: %v", controlplane.ErrInvalid, err)
+		return fmt.Errorf("%w: the body is not valid JSON for this call: %w", controlplane.ErrInvalid, err)
 	}
 	if dec.More() {
 		return fmt.Errorf("%w: the body holds more than one JSON value", controlplane.ErrInvalid)
@@ -225,9 +224,8 @@ func writeSandbox(w http.ResponseWriter, status int, sb controlplane.Sandbox) {
 	WriteJSON(w, status, sb)
 }
 
-// idempotent runs a mutation once per Idempotency-Key. op returns an error
-// only when it changed nothing; the response it returns is what a repeat
-// with the same key and body gets again.
+// idempotent runs a mutation once per Idempotency-Key. op errs only when it
+// changed nothing; its response is what a repeat gets.
 func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, c controlplane.Caller, body []byte,
 	op func() (int, controlplane.Sandbox, error)) {
 	idem := controlplane.Idempotency{Store: s.opts.ControlPlane.Store()}
@@ -435,9 +433,8 @@ func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request, call verbCa
 	})
 }
 
-// unsupportedVerb answers a verb this build does not serve yet, after the
-// same visibility check as any other, so a 501 says nothing about a sandbox
-// the caller may not see.
+// unsupportedVerb answers 501 after the usual visibility check, so it says
+// nothing about a sandbox the caller may not see.
 func unsupportedVerb(s *Server, w http.ResponseWriter, r *http.Request, call verbCall) {
 	if _, err := s.opts.ControlPlane.Get(r.Context(), call.caller, call.id); err != nil {
 		s.failCP(w, r, err)
@@ -501,9 +498,8 @@ func (o streamOut) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// execSandbox runs one command and streams its output as NDJSON frames,
-// ending with {"exit": n}, or {"error": …} when the command did not run to
-// an exit code. The stream counts against exec.output_bytes.
+// execSandbox streams one command's output as NDJSON frames, ending with
+// {"exit": n} or, when it did not run to an exit code, {"error": …}.
 func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request, call verbCall) {
 	if !cpLimit(s.cpExec, w, call.caller) {
 		return

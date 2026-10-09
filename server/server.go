@@ -639,8 +639,8 @@ func New(opts Options) *Server {
 	}
 	if cp := opts.ControlPlane; cp != nil {
 		v := cp.Settings().For(nil)
-		s.cpMutations = newLimiter(int(v.Int(controlplane.SetMutationsPerMin)), time.Minute)
-		s.cpExec = newLimiter(int(v.Int(controlplane.SetExecPerMin)), time.Minute)
+		s.cpMutations = newLimiter(int(v.Int(controlplane.SetMutationsPerMin)), cpRateWindow)
+		s.cpExec = newLimiter(int(v.Int(controlplane.SetExecPerMin)), cpRateWindow)
 	}
 	srv = s
 	s.reportConfigAttempts()

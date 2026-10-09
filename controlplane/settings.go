@@ -172,9 +172,8 @@ type Settings struct {
 	source  map[string]string
 }
 
-// NewSettings resolves the registry from configured values (key → value,
-// missing keys take the default). A key in ceilings caps what a sandbox may
-// ask for: a sandbox may set a tighter value, never a looser one.
+// NewSettings resolves the registry from configured values. A key in
+// ceilings caps a sandbox: it may set a tighter value, never a looser one.
 func NewSettings(values map[string]string, ceilings map[string]bool) (*Settings, error) {
 	st := &Settings{global: map[string]string{}, ceiling: map[string]bool{}, source: map[string]string{}}
 	for k := range values {
@@ -190,7 +189,7 @@ func NewSettings(values map[string]string, ceilings map[string]bool) (*Settings,
 			st.source[def.Key] = "default"
 		}
 		if _, err := def.rank(v); err != nil {
-			return nil, fmt.Errorf("%w: %s (%s) is %q; use %v", ErrInvalid, def.Key, def.Config, v, err)
+			return nil, fmt.Errorf("%w: %s (%s) is %q; use %w", ErrInvalid, def.Key, def.Config, v, err)
 		}
 		st.global[def.Key] = v
 		if ceilings[def.Key] {
@@ -241,7 +240,7 @@ func (st *Settings) Check(sb map[string]string) error {
 		}
 		r, err := def.rank(v)
 		if err != nil {
-			return fmt.Errorf("%w: %s is %q; use %v", ErrInvalid, k, v, err)
+			return fmt.Errorf("%w: %s is %q; use %w", ErrInvalid, k, v, err)
 		}
 		if st.ceiling[k] {
 			cr, _ := def.rank(st.global[k])

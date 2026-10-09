@@ -72,9 +72,8 @@ func sandboxWorkspaces(root, workspace string) (get func(string) (string, error)
 	return get, release, nil
 }
 
-// buildControlPlane builds the control plane serve runs when
-// control_plane.enabled is set: the process driver over the configured
-// sandbox, the store beside the event store, and the settings registry.
+// buildControlPlane builds serve's control plane: the process driver, the
+// store beside the event store, and the settings registry.
 func buildControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore,
 	redact func(string) string) (*controlplane.Service, string, error) {
 	settings, err := controlplane.SettingsFromConfig(cfg)
@@ -107,9 +106,8 @@ type checkLine struct {
 	ok           bool
 }
 
-// serveCheck is `abhed serve -check`: everything serve would refuse to
-// start over, found without serving. It binds the listen address only to
-// release it, and starts nothing.
+// serveCheck is `abhed serve -check`: what serve would refuse to start
+// over, found without serving. It binds the address only to release it.
 func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 	var lines []checkLine
 	add := func(name string, err error, detail string) {
@@ -178,10 +176,9 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 	}
 
 	if cfg.ControlPlane.Enabled {
-		switch {
-		case events == nil:
+		if events == nil {
 			add("control plane", errors.New("needs the event store, which did not open"), "")
-		default:
+		} else {
 			svc, label, err := buildControlPlane(context.Background(), cfg, workspace, events, nil)
 			if err == nil {
 				_, _, err = svc.Store().List(context.Background(), controlplane.ListOptions{Limit: 1})

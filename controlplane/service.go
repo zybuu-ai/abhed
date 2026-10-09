@@ -46,9 +46,8 @@ type Config struct {
 	Log    *slog.Logger
 }
 
-// Service is the control plane's operations. The REST API and in-process
-// callers use the same methods, so both take one path to the store, the
-// record and the drivers.
+// Service is the control plane's operations: the REST API and in-process
+// callers share it, so both take one path to the store, record and drivers.
 type Service struct {
 	cfg Config
 
@@ -183,7 +182,7 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 	sb.Settings = maps.Clone(req.Settings)
 	ev := AuditEvent{Principal: c.Principal, Action: "create", SandboxID: sb.ID, Generation: sb.Generation,
 		Detail: map[string]string{"template": sb.Template, "driver": sb.Driver}}
-	if err := s.record(ctx, withOutcome(ev, OutcomeRequested)); err != nil {
+	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
 	}
 	out, err := s.cfg.Store.Create(ctx, sb)
@@ -195,8 +194,8 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 	return out, nil
 }
 
-func withOutcome(ev AuditEvent, o string) AuditEvent {
-	ev.Outcome = o
+func requested(ev AuditEvent) AuditEvent {
+	ev.Outcome = OutcomeRequested
 	return ev
 }
 
@@ -209,7 +208,7 @@ func storeErr(err error) error {
 			return err
 		}
 	}
-	return fmt.Errorf("%w: the store failed: %v", ErrUnavailable, err)
+	return fmt.Errorf("%w: the store failed: %w", ErrUnavailable, err)
 }
 
 // Get returns the sandbox, if the caller may see it.
@@ -262,7 +261,7 @@ func (s *Service) mutate(ctx context.Context, c Caller, id, ifMatch, action stri
 		return Sandbox{}, err
 	}
 	ev := AuditEvent{Principal: c.Principal, Action: action, SandboxID: id, Generation: cur.Generation, Detail: detail}
-	if err := s.record(ctx, withOutcome(ev, OutcomeRequested)); err != nil {
+	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
 	}
 	out, err := Mutate(ctx, s.cfg.Store, id, ifMatch, func(sb *Sandbox) error {
@@ -424,24 +423,20 @@ type ExecRequest struct {
 	Stdin   bool     `json:"stdin,omitempty"`
 }
 
-// ExecIO is where an exec's streams go. Started, when set, runs once the
-// request has passed every check and the driver is about to run it: an
-// error before then changed nothing. It is given the sandbox as checked.
+// ExecIO is where an exec's streams go. Started runs once every check has
+// passed, just before the driver runs: an error before it changed nothing.
 type ExecIO struct {
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Started        func(Sandbox)
 }
 
-// Exec runs one command in a Ready sandbox, writing its output to stdout
-// and stderr. Output past the sandbox's exec.output_bytes stops the command
-// and fails with driver.ErrOutputLimit; past exec.timeout_seconds it fails
-// with context.DeadlineExceeded. The result is returned only when the
-// command ran to an exit code.
+// Exec runs one command in a Ready sandbox, stopped past exec.output_bytes
+// or exec.timeout_seconds. A result comes back only with a real exit code.
 func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req ExecRequest, eio ExecIO) (driver.ExecResult, Sandbox, error) {
 	dreq := driver.ExecRequest{Argv: req.Argv, Command: req.Command, Cwd: req.Cwd, Env: req.Env, Stdin: eio.Stdin}
 	if err := dreq.Validate(); err != nil {
-		return driver.ExecResult{}, Sandbox{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return driver.ExecResult{}, Sandbox{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	sb, err := s.Get(ctx, c, id)
 	if err != nil {
@@ -463,7 +458,7 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	}
 	ev := AuditEvent{Principal: c.Principal, Action: "exec", SandboxID: id, Generation: sb.Generation,
 		Detail: map[string]string{"command": s.redact(command)}}
-	if err := s.record(ctx, withOutcome(ev, OutcomeRequested)); err != nil {
+	if err := s.record(ctx, requested(ev)); err != nil {
 		return driver.ExecResult{}, sb, err
 	}
 	vals := s.cfg.Settings.For(sb.Settings)

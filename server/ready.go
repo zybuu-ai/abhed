@@ -14,11 +14,8 @@ type pinger interface {
 // readyTimeout bounds the checks one readiness probe makes.
 const readyTimeout = 3 * time.Second
 
-// ready answers whether this server should be sent work now: it is not
-// draining, its secrets store reads, its database answers and, when the
-// control plane is on, its reconciler runs. /v1/health says the process is
-// up; this says it can serve. Each check is named with ok or failed only,
-// since the route is public.
+// ready says whether this server can serve now, where /v1/health says it is
+// up. The route is public, so each check reports only ok or failed.
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), readyTimeout)
 	defer cancel()

@@ -10,9 +10,8 @@ import (
 // protocol bounds each frame; this bounds the whole call.
 var ErrOutputLimit = errors.New("output limit reached")
 
-// OutputLimit is one byte budget shared by every writer it wraps, so stdout
-// and stderr together cannot pass it. The write that crosses the limit
-// keeps what fits, fails with ErrOutputLimit, and calls OnExceed once.
+// OutputLimit is one byte budget shared by the writers it wraps. The write
+// that crosses it keeps what fits, fails, and calls OnExceed once.
 type OutputLimit struct {
 	mu       sync.Mutex
 	left     int64
