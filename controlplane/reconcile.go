@@ -177,6 +177,14 @@ func (s *Service) reconcile(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// Under HA only the owner acts; a sandbox no live replica holds is
+	// taken here, and its driver's Status says whether the instance survived.
+	if s.cfg.Ownership != nil {
+		mine, err := s.cfg.Ownership.Owns(ctx, id)
+		if err != nil || !mine {
+			return err
+		}
+	}
 	if s.probe != nil {
 		s.probe(id, sb.State)
 	}
