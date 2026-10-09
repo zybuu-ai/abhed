@@ -12,6 +12,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/driver/builtin"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -78,6 +79,9 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
 	fmt.Printf("egress      %s\n", egressLabel(cfg))
+	if printDrivers(os.Stdout, cfg) {
+		findings.driverDown = true
+	}
 	if cfg.Sandbox.Tier == string(sandbox.TierFence) {
 		printFenceProbe(os.Stdout, cfg, workspace)
 	}
@@ -353,6 +357,34 @@ func egressLabel(cfg config.Config) string {
 		"each decision recorded as %s; direct sockets blocked on the process tier only", pol.Rules(), def, mode, sandbox.EvEgressDecision)
 }
 
+// printDrivers shows the sandbox drivers beyond the default, when the
+// configuration names one, and reports whether one cannot be reached.
+func printDrivers(w io.Writer, cfg config.Config) bool {
+	if cfg.Sandbox.MicroVMSocket == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, entries, err := builtin.Registry(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(w, "drivers     UNAVAILABLE — %v\n", err)
+		return true
+	}
+	down := false
+	for _, e := range entries {
+		if e.Name == builtin.Default {
+			continue
+		}
+		if e.Err != nil {
+			fmt.Fprintf(w, "%-11s UNAVAILABLE — %s: %v\n", e.Name, e.Detail, e.Err)
+			down = true
+			continue
+		}
+		fmt.Fprintf(w, "%-11s ready — %s; sandboxes may choose it by name, the default stays %s\n", e.Name, e.Detail, builtin.Default)
+	}
+	return down
+}
+
 // printFenceProbe shows the fence's probe, check by check, when the
 // configuration chose the fence tier.
 func printFenceProbe(w io.Writer, cfg config.Config, workspace string) {
@@ -379,6 +411,8 @@ type configCheck struct {
 	// storeDown and authDown report an event store or sign-in doctor could
 	// not open, as before `abhed migrate`.
 	storeDown, authDown bool
+	// driverDown is a configured sandbox driver that cannot be reached.
+	driverDown bool
 }
 
 // configFindings lists both kinds of key and reports which there were.
@@ -402,6 +436,9 @@ func doctorVerdict(w io.Writer, f configCheck) int {
 	}
 	if f.authDown {
 		down = append(down, "sign-in")
+	}
+	if f.driverDown {
+		fmt.Fprintln(w, "Not ready: a configured sandbox driver cannot be reached (see above); sandboxes asking for it are refused.")
 	}
 	if len(down) > 0 {
 		fmt.Fprintf(w, "Not ready: %s could not be opened (see above). If the database has no Abhed schema yet, run `abhed migrate`.\n",

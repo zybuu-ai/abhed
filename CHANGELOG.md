@@ -19,26 +19,42 @@ All notable changes to Abhed are recorded here. The format follows
   resource versions). Nothing uses them yet; the contract is
   `docs/architecture/control-plane-contract.md`. They may change in a minor
   release until 2.0.
+- `driver.Spec` gains `WriteProtected` (paths a driver that copies a
+  workspace back never writes) and `Egress` (the session's egress proxy, an
+  instance's only way out).
+
+### Added
+
 - Experimental `driver/microvm`: a `microvm` driver that runs each sandbox
   in its own virtual machine with its own kernel, reporting the new tier
   `microvm`. On Linux it uses Firecracker under its jailer on KVM (a chroot,
-  a uid and gid per VM, cgroup v2 limits, Firecracker's seccomp filters), no
-  network device ever, and a vsock channel to `abhed-guest`, a static agent that
-  runs as the guest's init and runs commands as an unprivileged user with
-  exit codes, output and terminals. `abhed-microvm` serves it to an
-  unprivileged server over the out-of-process driver protocol. The
-  workspace is copied into the VM, and what commands change there is copied
-  back after each command and at stop: never through a link, never outside
-  the workspace, never into `.abhed`, git's configuration and hooks or a
-  write-protected path, and as the workspace's user. With the egress
-  allowlist on, the session's egress proxy is reached over vsock, with the
-  same per-call credentials and record; with it off there is no path out. It refuses to run, and
-  says why, without KVM, root, cgroup v2, Firecracker 1.5 or the jailer.
-  On macOS it needs a Virtualization.framework helper signed with the
-  virtualization entitlement, which is not shipped, so there it refuses
-  every sandbox. Not used by `abhed serve` yet. This is not the `vm` tier,
-  which is gVisor and is unchanged. See [The microVM
-  driver](docs/guide/22-microvm.md).
+  a uid and gid per VM, cgroup v2 limits, Firecracker's seccomp filters),
+  never a network device, and a vsock channel to `abhed-guest`, a static
+  agent that runs as the guest's init and runs commands as an unprivileged
+  user with exit codes, output and terminals. `abhed-microvm` serves it,
+  as root, to the unprivileged server over the out-of-process driver
+  protocol. It refuses to run, and says why, without KVM, root, cgroup v2,
+  Firecracker 1.5 or the jailer. This is not the `vm` tier, which is gVisor
+  and is unchanged. See [The microVM driver](docs/guide/22-microvm.md).
+  - The workspace is copied into the VM, and what commands change there is
+    copied back after each command and before a stop: never through a link
+    or onto another filesystem, never outside the workspace, never into
+    `.abhed`, git's configuration and hooks or a write-protected path, and
+    as the workspace's user. What was refused is listed on stderr.
+  - With the egress allowlist on, the session's egress proxy is the only
+    way out, over vsock, with the same per-call credentials and record;
+    with it off there is no path out at all.
+  - On start, `abhed-microvm` takes its state folder's lock and ends the
+    VMs a killed run of it left, recognised by a marker beside each chroot.
+  - `sandbox.microvm_socket` (managed only) adds the driver to the registry
+    Abhed builds from its configuration (`driver/builtin`), so a sandbox can
+    choose it by name; the default stays `process`. `abhed doctor` shows
+    whether it answers.
+  - A CI job boots real microVMs on KVM with a pinned, checksummed
+    Firecracker, guest kernel and Alpine base.
+  - On macOS it needs a Virtualization.framework helper signed with the
+    virtualization entitlement, which is not shipped, so there it refuses
+    every sandbox.
 
 ## [1.2.7] - 2026-10-07
 

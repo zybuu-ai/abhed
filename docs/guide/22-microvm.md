@@ -11,13 +11,14 @@ sandbox tier. The `vm` tier is gVisor: a user-space kernel in front of a
 container, sharing the host kernel. Neither is described as the other
 anywhere in Abhed.
 
-**Status: experimental, not yet used by `abhed serve`.** The driver
-implements the driver interface (`docs/architecture/control-plane-contract.md`)
-and can be served to a server over the out-of-process driver protocol, but
-nothing in Abhed creates microVM sandboxes yet; per-session sandboxes come
-with the control plane work. The driver's process handling, files and wire
-are tested on every platform against a stand-in VMM; booting a real microVM
-is a separate test that needs a KVM host (see "Testing on KVM").
+**Status: experimental.** The driver implements the driver interface
+(`docs/architecture/control-plane-contract.md`) and is served to the Abhed
+server over the out-of-process driver protocol. When the managed
+configuration sets `sandbox.microvm_socket`, the driver registry Abhed
+builds from its configuration includes `microvm`, so a sandbox can choose it
+by name; the default stays `process`. The driver's process handling, files and wire are tested
+on every platform against a stand-in VMM, and real microVMs are booted on
+KVM in CI (see "Testing on KVM").
 
 ## What is isolated, and what is not
 
@@ -158,6 +159,16 @@ sudo abhed-microvm -config /etc/abhed-microvm.json \
   -socket /run/abhed-microvm/driver.sock \
   -client-uid "$(id -u abhed)" -client-gid "$(id -g abhed)"
 ```
+
+Then point Abhed at it in the managed configuration
+(`/etc/abhed/config.json`):
+
+```json
+{ "sandbox": { "microvm_socket": "/run/abhed-microvm/driver.sock" } }
+```
+
+`abhed doctor` then shows `microvm ready`, or `UNAVAILABLE` with the reason,
+and is not ready while the driver cannot be reached.
 
 Keep `state_dir` and `chroot_base` on one filesystem, so images are linked
 into each chroot rather than copied. `state_dir` is mode `0711`: the

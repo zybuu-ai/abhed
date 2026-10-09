@@ -609,6 +609,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
 	"fence":                         {nil, "tunes the fence tier's limits"},
 	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},
+	"sandbox.microvm_socket":        {nil, "managed only: names the microVM driver"},
 	"egress":                        {nil, "managed only: names the destinations commands reach"},
 
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},

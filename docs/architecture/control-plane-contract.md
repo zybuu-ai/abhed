@@ -242,6 +242,10 @@ Rules every driver keeps:
   computed and may only narrow it.
 
 Registration: `driver.Registry` maps names (`[a-z][a-z0-9-]{0,31}`) to drivers.
+`driver/builtin.Registry` builds the one a configuration describes: `process`
+always, and `microvm` when the managed `sandbox.microvm_socket` names an
+`abhed-microvm` socket (registered even when it cannot be reached, refusing
+every call with `ErrUnavailable`, so choosing it never falls through).
 `Register` runs `Check` and refuses duplicates. `app.WithDriver` (later work)
 adds one to the server's registry, which is how the Team module adds the
 Kubernetes driver without CE importing it.

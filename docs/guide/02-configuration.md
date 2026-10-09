@@ -277,6 +277,12 @@ commands' traffic through a per-session proxy that reaches only what the
 (`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
 too. See [Network policy](21-network-policy.md).
 
+`"microvm_socket"`, set only in the managed configuration, is the socket of
+an `abhed-microvm` driver. With it, a sandbox may ask for the `microvm`
+driver by name; the default driver stays `process`, and nothing else
+changes. `abhed doctor` shows whether the driver answers, and is not ready
+when it does not. See [The microVM driver](22-microvm.md).
+
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that
 reason (a name that does not resolve, no route to a host) ends with a note

@@ -243,6 +243,7 @@ var managedOnly = map[string]string{
 	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
 	"sandbox.network":              "only the managed configuration turns on the egress allowlist",
+	"sandbox.microvm_socket":       "only the managed configuration names the microVM driver",
 	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
 	"egress.default":               "only the managed configuration sets which destinations commands reach",
 	"egress.mode":                  "only the managed configuration sets the egress mode",
@@ -274,6 +275,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Studio.DisableHostTerminal = false
 	case "sandbox.network":
 		c.Sandbox.Network = ""
+	case "sandbox.microvm_socket":
+		c.Sandbox.MicroVMSocket = ""
 	case "egress.rules":
 		c.Egress.Rules = nil
 	case "egress.default":
@@ -857,6 +860,9 @@ type SandboxConfig struct {
 	// ProtectGit write-protects what git reads in every git folder in the
 	// workspace (config, hooks, commondir and the like); set as WriteProtected is.
 	ProtectGit bool `json:"-"`
+	// MicroVMSocket is the socket of an abhed-microvm driver; when set, the
+	// control plane can choose the microvm driver by name. Managed only.
+	MicroVMSocket string `json:"microvm_socket,omitempty"`
 }
 
 type LimitsConfig struct {
