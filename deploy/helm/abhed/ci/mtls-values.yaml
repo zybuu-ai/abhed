@@ -1,0 +1,6 @@
+# Client certificates required: the probes fall back to TCP.
+tls:
+  enabled: true
+  existingSecret: abhed-tls
+  clientCA:
+    existingSecret: abhed-client-ca

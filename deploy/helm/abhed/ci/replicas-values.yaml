@@ -1,0 +1,17 @@
+replicaCount: 3
+postgres:
+  enabled: true
+  existingSecret: abhed-db
+persistence:
+  accessModes: [ReadWriteMany]
+podAntiAffinity: hard
+podDisruptionBudget:
+  minAvailable: 2
+  maxUnavailable: ""
+service:
+  sessionAffinity: ClientIP
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx

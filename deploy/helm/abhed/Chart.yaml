@@ -1,0 +1,20 @@
+apiVersion: v2
+name: abhed
+description: Abhed's server (abhed serve) on Kubernetes and OpenShift, held to the restricted Pod Security level.
+type: application
+# The chart's own version; appVersion is the Abhed release whose image it runs.
+version: 0.1.0
+appVersion: "1.2.8"
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/zybuu-ai/abhed
+sources:
+  - https://github.com/zybuu-ai/abhed
+keywords:
+  - agent
+  - sandbox
+  - audit
+maintainers:
+  - name: Zybuu
+    url: https://github.com/zybuu-ai
+annotations:
+  licenses: Apache-2.0

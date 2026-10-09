@@ -1,0 +1,15 @@
+# Pull by digest, keys copied in at 0400, per-pod settings, no volume.
+image:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+persistence:
+  enabled: false
+secretFiles:
+  - secretName: abhed-secrets-store
+    key: secrets.json
+    path: secrets.json
+extraEnv:
+  - name: ABHED_SECRETS_FILE
+    value: /run/abhed/secrets/secrets.json
+podConfig:
+  _pod: $(POD_NAME) on $(POD_IP)
+podAntiAffinity: soft

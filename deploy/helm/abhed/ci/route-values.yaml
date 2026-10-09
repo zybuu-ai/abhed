@@ -1,0 +1,18 @@
+openshift:
+  enabled: true
+route:
+  enabled: true
+  host: abhed.apps.example.internal
+networkPolicy:
+  dns:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: openshift-dns
+    podSelector:
+      matchLabels:
+        dns.operator.openshift.io/daemonset-dns: default
+    ports:
+      - port: 5353
+        protocol: UDP
+      - port: 5353
+        protocol: TCP

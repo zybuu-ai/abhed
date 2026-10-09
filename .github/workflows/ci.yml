@@ -549,6 +549,19 @@ jobs:
       - name: The image runs and reports its version
         run: docker run --rm --entrypoint /usr/local/bin/abhed abhed:ci -version | grep -F v0.0.0-ci
 
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Lint, render every values file in the chart's ci/ folder, validate the
+      # result against the Kubernetes schemas, and check the refusals; helm
+      # and kubeconform are pinned and checksummed by the script.
+      - name: Lint, render and validate the chart
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/helm-tools
+        run: scripts/ci/helm-check.sh deploy/helm/abhed
+
   security:
     name: CVE scans and report
     runs-on: ubuntu-latest

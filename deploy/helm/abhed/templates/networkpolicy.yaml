@@ -1,0 +1,84 @@
+{{- if .Values.networkPolicy.enabled }}
+# Ingress only to the server's port; egress denied except DNS, the model
+# endpoints and Postgres named in the values, and other replicas.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "abhed.fullname" . }}
+  labels:
+    {{- include "abhed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "abhed.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: http
+          protocol: TCP
+      {{- with .Values.networkPolicy.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- if and .Values.networkPolicy.ingressFrom (gt (int .Values.replicaCount) 1) }}
+    # Replicas relay calls to each other.
+    - ports:
+        - port: http
+          protocol: TCP
+      from:
+        - podSelector:
+            matchLabels:
+              {{- include "abhed.selectorLabels" . | nindent 14 }}
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 12 }}
+      ports:
+        {{- toYaml .Values.networkPolicy.dns.ports | nindent 8 }}
+    {{- range .Values.networkPolicy.modelEndpoints }}
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr }}
+      ports:
+        {{- range (default (list 443) .ports) }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- if .Values.postgres.enabled }}
+    {{- $pg := .Values.postgres.networkPolicy }}
+    {{- if or $pg.cidrs $pg.podSelector $pg.namespaceSelector }}
+    - to:
+        {{- range $pg.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- if or $pg.podSelector $pg.namespaceSelector }}
+        {{- $peer := dict }}
+        {{- with $pg.podSelector }}{{ $_ := set $peer "podSelector" . }}{{ end }}
+        {{- with $pg.namespaceSelector }}{{ $_ := set $peer "namespaceSelector" . }}{{ end }}
+        {{- toYaml (list $peer) | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: {{ $pg.port }}
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+    {{- if gt (int .Values.replicaCount) 1 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "abhed.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.server.port }}
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
