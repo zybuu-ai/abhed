@@ -431,6 +431,9 @@ on. A server with it off starts on the older schema as before.
   nothing. `-disallowedTools` adds the name as written beside the lower-cased
   spelling it has always added, so an existing deny keeps matching and one for
   a capitalised name now does too. Built-in names are still folded.
+- The Kubernetes guide now says that with `sandbox.min_tier: none` the pod is
+  the only boundary: a command can read and write `~/.abhed` and the control
+  plane's state.
 
 ### Fixed
 

@@ -171,7 +171,12 @@ does not run commands unsandboxed: the default `sandbox.min_tier` is
   rather than plain `process`, and a control-plane sandbox's
   `IsolationVerified` condition reads `tier process (no /proc)`;
 - `sandbox.min_tier: none` in `config`, which makes the pod's own isolation
-  the only boundary around the agent's commands;
+  the only boundary around the agent's commands. They then run as the
+  server's own user with nothing between them and its files: a command can
+  read and write `~/.abhed` (accounts, keys, trust decisions, the SQLite
+  store), which every sandbox tier keeps out of its reach, and the control
+  plane's state, its relay host key included. Use it only where nothing in
+  the pod must be kept from the agent;
 - the Kubernetes driver in the Team edition, which runs each sandbox as its
   own restricted pod.
 
