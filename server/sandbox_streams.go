@@ -182,7 +182,7 @@ func accept(w http.ResponseWriter, r *http.Request, proto string) (*wsconn.Conn,
 // longer see the sandbox, when the sandbox stops or starts a new
 // generation, when the client has gone quiet, or after streamMax. It
 // returns why it ended the stream, once it has stopped.
-func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *http.Request, c controlplane.Caller,
+func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *http.Request,
 	sb controlplane.Sandbox, d driver.Driver, ws *wsconn.Conn) (wait func() error) {
 	guard := s.newStreamGuard(r, "", false)
 	caller := s.sandboxCallerFunc()

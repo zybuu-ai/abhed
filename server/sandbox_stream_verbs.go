@@ -63,7 +63,7 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 			if ws, err = accept(w, r, st.proto); err != nil {
 				return nil, err
 			}
-			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws)
+			wait := s.watchStream(ctx, cancel, r, sb, d, ws)
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
 			var gone atomic.Bool
 			keys, resize := make(chan []byte, 16), make(chan driver.WinSize, 4)
@@ -194,7 +194,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		Screen: func(command string) error { return denied(pol, command, false) },
 		Started: func(sb controlplane.Sandbox) {
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
-			wait = s.watchStream(ctx, cancel, r, call.caller, sb, nil, ws)
+			wait = s.watchStream(ctx, cancel, r, sb, nil, ws)
 		}})
 	_ = pr.Close()
 	if wait != nil {
@@ -286,11 +286,11 @@ func (s *Server) forwardSandbox(w http.ResponseWriter, r *http.Request, call ver
 				return nil, err
 			}
 			rwc := newCounted(raw)
-			defer rwc.Close()
+			defer func() { _ = rwc.Close() }()
 			if ws, err = accept(w, r, st.proto); err != nil {
 				return nil, err
 			}
-			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws)
+			wait := s.watchStream(ctx, cancel, r, sb, d, ws)
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
 			stop := context.AfterFunc(ctx, func() { _ = rwc.Close() })
 			defer stop()
@@ -384,7 +384,7 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 			if ws, err = accept(w, r, st.proto); err != nil {
 				return nil, err
 			}
-			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws)
+			wait := s.watchStream(ctx, cancel, r, sb, d, ws)
 			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: s.sandboxPolicy(sb.ID)}
 			stats, err := sshrelay.Serve(ctx, wsconn.NewStream(ws), sshrelay.Config{HostKey: key, Log: s.log}, h)
 			if why := wait(); why != nil {
