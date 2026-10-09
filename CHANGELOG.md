@@ -67,7 +67,8 @@ All notable changes to Abhed are recorded here. The format follows
   to that request: its process ended once the request was answered, and a
   later restart reused the ended context. The request now only bounds the
   connection; the server lives as long as the gateway, as configured servers
-  do.
+  do. Affects 0.1.0 to 1.2.7 (the stdio server ended with the request since
+  0.1.0; the restart reusing the ended context since 1.2.4).
 
 ### Changed
 
