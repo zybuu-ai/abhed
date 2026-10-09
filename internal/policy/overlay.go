@@ -39,7 +39,7 @@ func (o *Overlay) Add(list, pattern string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if slices.ContainsFunc(*dst, func(have Rule) bool { return have.raw == r.raw }) {
+	if slices.ContainsFunc(*dst, func(have Rule) bool { return have.Canonical() == r.Canonical() }) {
 		return false, nil
 	}
 	*dst = append(*dst, r)
@@ -49,6 +49,11 @@ func (o *Overlay) Add(list, pattern string) (bool, error) {
 // Remove takes pattern out of list and reports whether it was there.
 func (o *Overlay) Remove(list, pattern string) (bool, error) {
 	pattern = strings.TrimSpace(pattern)
+	// Bash(x) takes out bash(x), as it would have been refused as a duplicate.
+	canonical := pattern
+	if r, err := ParseRule(pattern); err == nil {
+		canonical = r.Canonical()
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	dst, err := o.list(list)
@@ -56,7 +61,7 @@ func (o *Overlay) Remove(list, pattern string) (bool, error) {
 		return false, err
 	}
 	n := len(*dst)
-	*dst = slices.DeleteFunc(*dst, func(r Rule) bool { return r.raw == pattern })
+	*dst = slices.DeleteFunc(*dst, func(r Rule) bool { return r.raw == pattern || r.Canonical() == canonical })
 	return len(*dst) != n, nil
 }
 

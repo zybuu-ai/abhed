@@ -1027,6 +1027,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	warnSetAside(cfg.SetAside)
 	warnNotYetInEffect(cfg)
 	warnNeverAllows(cfg.Permissions.Allow)
+	warnRuleFindings(cfg.RuleFindings())
 	if !o.Quiet {
 		warnUntrusted(cfg.Workspace)
 	}
@@ -1263,6 +1264,9 @@ func (c Config) Validate() error {
 				return fmt.Errorf("permissions.%s: %w", l.name, err)
 			}
 		}
+	}
+	if err := managedNeverDenies(c.RuleFindings()); err != nil {
+		return err
 	}
 	if err := new(policy.Engine).AllowGitExtensions(c.Permissions.GitExtensions...); err != nil {
 		return fmt.Errorf("permissions.git_extensions: %w", err)

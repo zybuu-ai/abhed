@@ -6,6 +6,42 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- A permission rule naming a built-in tool in another case than Abhed's
+  lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
+  `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's
+  `.abhed/config.json`, was accepted without a word and matched nothing, so a
+  deny rule copied in that style from another tool never fired and `curl` ran.
+  `abhed doctor` said nothing. Only the `-allowedTools` and `-disallowedTools`
+  flags folded case. A built-in tool's name (and an action's, such as
+  `secret`, `delete` or `forge_pr`) is now matched in any case everywhere a
+  rule is read: deny, ask and allow rules from every file and flag,
+  `/permissions` session rules, an extension's `match` rules, and the
+  `/permissions explain` and Studio dry runs. This widens an allow rule
+  written that way to the tool its author evidently meant (`Read` now allows
+  `read`); it never widens one to another tool, and it only ever adds matches
+  to a deny or ask rule. Affects 0.1.0 to 1.2.7.
+- A rule whose tool name names no tool is now reported: a startup warning,
+  a `rules` line in `abhed doctor`, `/doctor` and Abhed Studio's checks, with
+  the name it was probably meant to be. A managed rule that can never match
+  fails `abhed doctor`, and a managed deny rule that can never match (an
+  unknown name with no extension that may provide tools, or an MCP server
+  named in another case than it is configured) stops Abhed from starting,
+  naming the rule and the file. MCP, knowledge-base and extension tool names
+  are still compared exactly, case included; a rule that differs from one of
+  the session's tools only in case is warned of when the tools are loaded.
+  A bash pattern ending in `:*` is read literally and is now listed.
+- An extension may no longer provide a tool named like a built-in tool, in
+  any case: such a tool is refused with a warning. It could take a rule meant
+  for the built-in, and one named exactly as a built-in replaced it.
+
+### Changed
+
+- `-allowedTools` and `-disallowedTools` no longer lower-case an MCP or
+  extension tool's name, which made a rule for a server or tool with a capital
+  letter match nothing; built-in names are still folded.
+
 
 ## [1.2.7] - 2026-10-07
 

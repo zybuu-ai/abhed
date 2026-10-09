@@ -71,8 +71,9 @@ func (c *acpConn) agentMeta() map[string]any {
 
 // managed reports whether a managed configuration is in force.
 func (c *acpConn) managed() bool {
-	cfg, err := config.LoadManaged()
-	return err == nil && cfg.Managed
+	// A managed file whose deny rule can never match is still managed.
+	cfg, _ := config.LoadManaged()
+	return cfg.Managed
 }
 
 func (c *acpConn) initialize(msg rpcMessage) {

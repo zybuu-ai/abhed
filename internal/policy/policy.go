@@ -126,7 +126,20 @@ func ParseRule(s string) (Rule, error) {
 			}
 		}
 	}
+	// Bash(curl *) is bash(curl *): a built-in name in another case used to
+	// match no tool, so a deny rule copied in that style never fired.
+	if name := strings.TrimSpace(r.tool); ReservedToolName(name) {
+		r.tool = CanonicalTool(name)
+	}
 	return r, nil
+}
+
+// Canonical is the rule with its tool name as Abhed spells it.
+func (r Rule) Canonical() string {
+	if r.pattern == nil {
+		return r.tool
+	}
+	return r.tool + "(" + r.glob + ")"
 }
 
 func globToRegexp(glob string) (*regexp.Regexp, error) {

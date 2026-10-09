@@ -376,6 +376,9 @@ type configCheck struct {
 	// unknown is a key nothing reads; notInEffect a key this version reads
 	// but does not act on yet.
 	unknown, notInEffect bool
+	// rules is a permission rule that names no tool as written; neverManaged
+	// one from the managed configuration that can match nothing here.
+	rules, neverManaged bool
 	// storeDown and authDown report an event store or sign-in doctor could
 	// not open, as before `abhed migrate`.
 	storeDown, authDown bool
@@ -384,7 +387,24 @@ type configCheck struct {
 // configFindings lists both kinds of key and reports which there were.
 func configFindings(w io.Writer, cfg config.Config) configCheck {
 	unknown := printUnknown(w, cfg)
-	return configCheck{unknown: unknown, notInEffect: printNotInEffect(w, cfg)}
+	c := configCheck{unknown: unknown, notInEffect: printNotInEffect(w, cfg)}
+	c.rules, c.neverManaged = printRuleFindings(w, cfg)
+	return c
+}
+
+// printRuleFindings lists the permission rules that name no tool as written,
+// and reports whether there were any, and whether a managed one never matches.
+func printRuleFindings(w io.Writer, cfg config.Config) (found, neverManaged bool) {
+	for i, f := range cfg.RuleFindings() {
+		label := "            "
+		if i == 0 {
+			label = "rules       "
+		}
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, f)
+		found = true
+		neverManaged = neverManaged || (f.Managed() && f.Never)
+	}
+	return found, neverManaged
 }
 
 // doctorVerdict ends a doctor run whose checks all passed: ready, unless the
@@ -413,6 +433,15 @@ func doctorVerdict(w io.Writer, f configCheck) int {
 	if f.notInEffect {
 		fmt.Fprintln(w, "Not ready: the configuration sets keys this version does not act on yet (listed above), "+
 			"so the controls they name are not in force. Remove them, or run a version that acts on them.")
+	}
+	if f.neverManaged {
+		fmt.Fprintln(w, "Not ready: the managed configuration has a permission rule that can never match (listed above), "+
+			"so the control it names is not in force. Whoever manages it must correct the rule.")
+	}
+	if f == (configCheck{rules: true}) {
+		// Only rules of the person's own that may match nothing: said above, not a failure.
+		fmt.Fprintln(w, "Ready, with the rule warnings above.")
+		return 0
 	}
 	return 1
 }

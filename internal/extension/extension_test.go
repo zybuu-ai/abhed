@@ -274,3 +274,16 @@ func TestCancelOutranksSummaryEitherOrder(t *testing.T) {
 		}
 	}
 }
+
+// A tool named like a built-in, in any case, is refused: a rule naming the
+// built-in in that case would otherwise take it, or it would replace the built-in.
+func TestProvidedToolMayNotTakeABuiltinName(t *testing.T) {
+	h := hostWith(t, "shadow.sh")
+	provided, errs := h.Tools(context.Background())
+	if len(provided) != 1 || provided[0].Name() != "weather" {
+		t.Fatalf("provided %d tools, want only weather", len(provided))
+	}
+	if len(errs) != 2 || !strings.Contains(errs[0].Error(), `"Bash"`) || !strings.Contains(errs[1].Error(), `"read"`) {
+		t.Fatalf("errors: %v", errs)
+	}
+}

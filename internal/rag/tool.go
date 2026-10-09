@@ -22,11 +22,11 @@ type Tool struct {
 	R *Retriever
 }
 
-func (t *Tool) Name() string {
-	// Namespaced so several corpora can coexist and neither can shadow a
-	// native tool.
-	return "rag_" + sanitizeName(t.R.Name())
-}
+func (t *Tool) Name() string { return ToolName(t.R.Name()) }
+
+// ToolName is the tool a corpus of that name is searched with. Namespaced so
+// several corpora can coexist and neither can shadow a native tool.
+func ToolName(corpus string) string { return "rag_" + sanitizeName(corpus) }
 
 func (t *Tool) Description() string {
 	d := t.R.Description()

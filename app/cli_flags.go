@@ -542,9 +542,12 @@ var toolNames = map[string]string{
 
 func toolRule(s string) string {
 	name, pattern, hasPattern := strings.Cut(s, "(")
-	name = strings.ToLower(strings.TrimSpace(name))
-	if mapped, ok := toolNames[name]; ok {
+	name = strings.TrimSpace(name)
+	// Only Abhed's own names are folded: an MCP tool's name keeps its case.
+	if mapped, ok := toolNames[strings.ToLower(name)]; ok {
 		name = mapped
+	} else {
+		name = policy.CanonicalTool(name)
 	}
 	if !hasPattern {
 		return name

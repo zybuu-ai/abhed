@@ -108,7 +108,8 @@ permissions without its own `permissions.allow`.
   `/permissions remove <rule>` takes one out again.
 - `/clear` and `/resume` end the session's rules.
 
-`/permissions explain <tool> <command, path or url>` is a dry run: it prints
+`/permissions explain <tool> <command, path or url>` (the tool name in any
+case) is a dry run: it prints
 the decision, the step, the rule and the reason policy would give, for
 example `deny · step deny · bash(curl *) · denied by rule bash(curl *)`.
 Hooks are not asked, since that would show them a call that is not being made.
@@ -158,6 +159,35 @@ A rule is a tool name, optionally followed by a pattern:
   "ask":   ["bash(git push*)"]
 }
 ```
+
+The tool name of a built-in tool, or of an action such as `secret`, `delete`
+or `forge_pr`, may be written in any case: `Bash(curl *)`, `BASH(curl *)` and
+`bash(curl *)` are the same rule, as are `Read(**/.env)` and `read(**/.env)`,
+so a rule copied from another tool's settings holds. This applies to allow
+rules too, so `Read` allows `read`, as it was evidently meant to. Only the
+tool name is folded: the pattern keeps its case, and a rule never moves to
+another tool. An extension may not provide a tool named like a built-in in any
+case; such a tool is refused with a warning. MCP tool names
+(`mcp__server__tool`), knowledge-base tools (`rag_name`) and extension tools
+are compared exactly, case included, because their own protocols and
+configuration tell `GitHub` from `github`.
+
+A rule whose tool name names no tool is not silent. Abhed warns of it at
+startup, and `abhed doctor` (and `/doctor`, and Abhed Studio's checks) lists
+it, with the name it was probably meant to be (`WebFetch` → `web_fetch`). This
+covers a name that is no built-in, an MCP rule for a configured server written
+in another case (`mcp__GitHub__x` when the server is `github`), and, once the
+session's tools are known, an MCP or extension tool written in another case.
+A rule for an MCP server that is not configured, or an unknown name while an
+extension that may provide tools is configured, is listed but may still match
+later, since an organisation may deny ahead. A rule from your own files is a
+warning only. In the managed configuration, a rule that can never match fails
+`abhed doctor`, and a deny rule that can never match stops Abhed from starting,
+with a message naming the rule and the file: Abhed does not run while the
+organisation believes a deny rule holds that cannot. A bash pattern ending in
+`:*`, another tool's way of writing a prefix, is read literally (a colon, then
+anything) and is listed too: write `bash(npm test *)` for `Bash(npm test:*)`.
+The `-allowedTools` and `-disallowedTools` flags still translate `:*` for you.
 
 `*` matches anything, newlines included; the pattern is matched against the
 command or path, or for a tool with neither, the first of its `pattern`,

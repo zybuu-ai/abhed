@@ -35,6 +35,8 @@ func slashDoctor(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 		cfgResult = "keys nothing reads"
 	case f.notInEffect:
 		cfgResult = "keys this version does not act on yet"
+	case f.rules:
+		cfgResult = "rules that name no tool as written"
 	}
 	rows = append(rows, []string{"configuration", cfgResult}, []string{"trust", trustLine(st.appCfg.Workspace)})
 	if st.sandbox != nil {

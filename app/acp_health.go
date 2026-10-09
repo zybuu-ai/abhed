@@ -52,6 +52,16 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	default:
 		add("config", "Configuration", "ok", "loaded")
 	}
+	if findings := cfg.RuleFindings(); len(findings) > 0 {
+		status, lines := "warn", make([]string, 0, len(findings))
+		for _, f := range findings {
+			if f.Managed() && f.Never {
+				status = "fail"
+			}
+			lines = append(lines, f.String())
+		}
+		add("rules", "Permission rules", status, strings.Join(lines, "\n"))
+	}
 	ws := cfg.Workspace
 	switch {
 	case ws.File == "":

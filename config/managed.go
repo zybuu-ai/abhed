@@ -19,13 +19,17 @@ import (
 // applied: what a program that keeps no config file of its own runs under.
 func LoadManaged() (Config, error) {
 	cfg := Default()
+	cfg.noteRuleLayer(LayerDefault)
 	if err := mergeManaged(&cfg); err != nil {
 		return cfg, err
 	}
+	cfg.noteRuleLayer(LayerManaged)
 	warnUnknown(cfg.Unknown)
 	warnNeverAllows(cfg.Permissions.Allow)
 	warnNotYetInEffect(cfg)
-	return cfg, nil
+	findings := cfg.RuleFindings()
+	warnRuleFindings(findings)
+	return cfg, managedNeverDenies(findings)
 }
 
 // mergeManaged applies the managed file, if there is one, over cfg and
@@ -293,6 +297,9 @@ func (c Config) Apply(o Overrides) (Config, error) {
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)
 	c.noteRuleLayer(LayerFlag)
+	if len(o.Allow)+len(o.Deny) > 0 {
+		warnRuleFindings(c.RuleFindings())
+	}
 	// Copied, so the result never shares a list with the configuration it came from.
 	c.AdditionalDirs = append(append([]string{}, c.AdditionalDirs...), o.AdditionalDirs...)
 	return c, nil

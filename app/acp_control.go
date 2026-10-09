@@ -177,6 +177,8 @@ func (c *acpConn) explain(msg rpcMessage) {
 	if len(p.Args) == 0 {
 		p.Args = json.RawMessage(`{}`)
 	}
+	// Asked as a rule names it: a built-in in any case.
+	p.Tool = policy.CanonicalTool(p.Tool)
 	mutates := true
 	if t, ok := parts.Loop.Tools.Get(p.Tool); ok {
 		mutates = t.Mutates()

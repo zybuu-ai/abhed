@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -78,6 +79,13 @@ func (h *Host) Tools(ctx context.Context) ([]tools.Tool, []error) {
 		for _, def := range reply.Tools {
 			if def.Name == "" {
 				errs = append(errs, fmt.Errorf("extension %s: a tool with no name", e.Name()))
+				continue
+			}
+			if policy.ReservedToolName(def.Name) {
+				// A rule names a built-in in any case, so a tool spelled like one
+				// would take a rule meant for the built-in, or replace it.
+				errs = append(errs, fmt.Errorf(
+					"extension %s: tool %q is refused: it is the name of a built-in tool, in any case", e.Name(), def.Name))
 				continue
 			}
 			if owner, dup := seen[def.Name]; dup {
