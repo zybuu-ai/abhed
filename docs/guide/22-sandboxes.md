@@ -453,7 +453,10 @@ A command a deny rule or an extension's hook refuses (your
 terminal) is refused with `403` and code `forbidden`, and the refusal is
 recorded. Only a refusal stops a command here: rules that would ask the
 agent first do not ask a person who runs a command themselves. A command
-given as `argv` is judged as its words joined by spaces.
+given as `argv` runs as one shell line with each word quoted, so the shell
+splits it back into exactly those words; that quoted line is what the rules
+judge and the record keeps. A word with a NUL byte cannot be passed and is
+refused with `400`.
 
 ### Streams: attach, exec with stdin, forward and SSH
 

@@ -608,9 +608,10 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 		defer end()
 		dreq.Env = append(slices.Clone(dreq.Env), env...)
 	}
-	command := req.Command
-	if command == "" {
-		command = strings.Join(req.Argv, " ")
+	// The line the driver runs, so the screen and the record see that and not a looser join.
+	command, err := dreq.Line()
+	if err != nil {
+		return driver.ExecResult{}, sb, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	ev := AuditEvent{Principal: c.Principal, Action: "exec", SandboxID: id, Generation: sb.Generation,
 		Detail: map[string]string{"command": s.redact(command)}}

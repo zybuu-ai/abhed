@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/driver"
@@ -345,21 +344,6 @@ func cwd(workspace, dir string) (string, error) {
 	return dir, nil
 }
 
-func commandLine(req driver.ExecRequest) (string, error) {
-	if req.Command != "" {
-		return req.Command, nil
-	}
-	parts := make([]string, len(req.Argv))
-	for i, a := range req.Argv {
-		q, err := syntax.Quote(a, syntax.LangBash)
-		if err != nil {
-			return "", driver.Errorf(driver.ErrInvalid, "argv[%d] cannot be quoted: %v", i, err)
-		}
-		parts[i] = q
-	}
-	return strings.Join(parts, " "), nil
-}
-
 // addEnv appends env to cmd, refusing a variable the sandbox already set:
 // a caller may add to the environment, never replace what confines it.
 func addEnv(cmd *exec.Cmd, env []string) error {
@@ -392,7 +376,7 @@ func (d *Driver) Exec(ctx context.Context, id string, req driver.ExecRequest) (d
 	if err := req.Validate(); err != nil {
 		return driver.ExecResult{}, err
 	}
-	line, err := commandLine(req)
+	line, err := req.Line()
 	if err != nil {
 		return driver.ExecResult{}, err
 	}

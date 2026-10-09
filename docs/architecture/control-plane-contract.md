@@ -167,7 +167,7 @@ last `:`; ids never contain one.
 | `PATCH /v1/sandboxes/{id}` | `{labels?, template?, settings?}` (JSON merge patch) | `200` sandbox | `If-Match` required; `428` without it. |
 | `DELETE /v1/sandboxes/{id}` | — | `202` sandbox in `Deleting` | `If-Match` honoured. |
 | `POST …:start` / `:stop` | `{grace_seconds?}` | `202` sandbox | `If-Match` honoured. |
-| `POST …:exec` | `{argv \| command, cwd?, env?}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. With `"stdin": true`, `400`: stdin is the WebSocket form. |
+| `POST …:exec` | `{argv \| command, cwd?, env?}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. With `"stdin": true`, `400`: stdin is the WebSocket form. `argv` runs, is screened and is recorded as one line with each word quoted for a POSIX shell (`driver.QuoteArgv`); a word with a NUL is `400`. |
 | `GET …:exec` | first message: the `POST` body | WebSocket `abhed.exec.v1` | One command with stdin (§4.3). |
 | `GET …:attach?rows=&cols=&cwd=` | — | WebSocket `abhed.attach.v1` | PTY; resize as a control message. Carries `generation`. |
 | `POST …:ssh` | — | `{host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` | What a client needs for the relay; no credential is minted, since the relay authenticates the caller. |

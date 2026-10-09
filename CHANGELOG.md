@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A sandbox command given as `argv` (`POST :exec`, the `:exec` WebSocket,
+  and `abhed sandbox exec ID -- COMMAND ARG...`) is judged by the deny rules
+  and recorded as the line the process and container drivers run, each word
+  quoted for a POSIX shell, rather than as the words joined by spaces, which
+  let quotes inside the words hide a command from the rules
+  (`env "A='" sh -c "curl …" "B='"` passed `Bash(curl *)`). One quoting,
+  `driver.QuoteArgv`, serves the screen, the record and both drivers; a
+  word holding a NUL byte is refused with `400`.
 - A permission rule naming a built-in tool in another case than Abhed's
   lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
   `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's
@@ -553,6 +561,8 @@ on. A server with it off starts on the older schema as before.
   a command otherwise;
   `server.Options.SandboxSSHKey` turns the relay on;
   `drivertest.Fake.AttachFunc` stands in for a shell.
+  `driver.ExecRequest.Line` and `driver.QuoteArgv` give the one shell line
+  an exec runs, as the drivers run it and the control plane judges it.
 - Experimental public Go packages for the sandbox control plane, the base
   for `/v1/sandboxes` and per-session sandboxes: `driver` (the driver
   interface, capability flags and registry), `driver/plugin` (drivers in a

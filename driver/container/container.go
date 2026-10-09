@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/driver"
@@ -633,21 +632,6 @@ func cwd(workspace, dir string) (string, error) {
 	return dir, nil
 }
 
-func commandLine(req driver.ExecRequest) (string, error) {
-	if req.Command != "" {
-		return req.Command, nil
-	}
-	parts := make([]string, len(req.Argv))
-	for i, a := range req.Argv {
-		q, err := syntax.Quote(a, syntax.LangPOSIX)
-		if err != nil {
-			return "", driver.Errorf(driver.ErrInvalid, "argv[%d] cannot be quoted: %v", i, err)
-		}
-		parts[i] = q
-	}
-	return strings.Join(parts, " "), nil
-}
-
 // fixedEnv are the variables the sandbox sets, which a caller cannot replace.
 var fixedEnv = []string{"PATH", "HOME", "ABHED_SANDBOX", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
 	"http_proxy", "https_proxy", "no_proxy", "all_proxy", "LD_PRELOAD", "LD_LIBRARY_PATH"}
@@ -721,7 +705,7 @@ func (d *Driver) Exec(ctx context.Context, id string, req driver.ExecRequest) (d
 	if err := req.Validate(); err != nil {
 		return driver.ExecResult{}, err
 	}
-	line, err := commandLine(req)
+	line, err := req.Line()
 	if err != nil {
 		return driver.ExecResult{}, err
 	}
