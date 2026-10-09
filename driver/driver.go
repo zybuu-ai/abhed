@@ -52,12 +52,27 @@ type Spec struct {
 	PolicyRev  string `json:"policy_rev,omitempty"`
 	// Workspace is the host folder the sandbox works on, when it has one.
 	Workspace string `json:"workspace,omitempty"`
+	// WriteProtected are paths in the workspace commands may read but not
+	// write. A driver that copies a workspace back never writes them.
+	WriteProtected []string `json:"write_protected,omitempty"`
+	// Egress, when set, is the session's egress proxy, the instance's only
+	// way out; when nil the instance has no network path at all.
+	Egress *Egress `json:"egress,omitempty"`
 	// MinTier is the weakest isolation acceptable; a driver that cannot meet
 	// it fails Create with ErrUnavailable rather than build something weaker.
 	MinTier string            `json:"min_tier,omitempty"`
 	Labels  map[string]string `json:"labels,omitempty"`
 	// Config is driver-specific settings, passed through unread.
 	Config map[string]string `json:"config,omitempty"`
+}
+
+// Egress is where an instance's commands reach the network: the egress
+// proxy's Unix socket, served by the control plane's user, and the loopback
+// port the commands' proxy URLs name. Each command's per-call credential
+// travels in its ExecRequest.Env, as on the process tier.
+type Egress struct {
+	Socket string `json:"socket"`
+	Port   uint16 `json:"port"`
 }
 
 // Phase is an instance's runtime phase as the driver sees it.

@@ -69,7 +69,7 @@ minor release, and each change is listed in the changelog.
 | `conditions` | server | Observations, each `{type, status: True\|False\|Unknown, reason, message, observed_generation, last_transition}`. `last_transition` changes only when `status` changes. |
 | `labels` | client | `key: value`, selectable with the selector syntax in §2.1. Keys under `abhed.dev/` are reserved for the server. |
 | `owner` | server | The authenticated principal that created it. Authorization checks use it; clients cannot set it. |
-| `tier` | driver | The isolation the driver reports it actually provides (`process`, `fence`, `container`, `vm`, `none`). Never the one requested. |
+| `tier` | driver | The isolation the driver reports it actually provides (`process`, `fence`, `container`, `vm`, `microvm`, `none`). Never the one requested. `vm` is gVisor, a user-space kernel; `microvm` is a hardware-virtualized guest with its own kernel, from the `microvm` driver only. |
 | `settings` | client | Per-sandbox values from the settings registry (§11). Validated against it; never looser than a ceiling. |
 | `restarts` | server | Restarts the restart policy made since the sandbox last ran stably (10 minutes Ready) or a client started it. |
 | `next_restart` | server | When the restart policy starts it again; absent when no restart is scheduled. |
@@ -288,6 +288,10 @@ Snapshots, forwards and lifetimes (Implemented: `driver/snapshot`,
   `docs/guide/23-snapshots-and-forwarding.md`.
 
 Registration: `driver.Registry` maps names (`[a-z][a-z0-9-]{0,31}`) to drivers.
+`driver/builtin.Registry` builds the one a configuration describes: `process`
+always, and `microvm` when the managed `sandbox.microvm_socket` names an
+`abhed-microvm` socket (registered even when it cannot be reached, refusing
+every call with `ErrUnavailable`, so choosing it never falls through).
 `Register` runs `Check` and refuses duplicates. `app.WithDriver` (later work)
 adds one to the server's registry, which is how the Team module adds the
 Kubernetes driver without CE importing it.
@@ -333,6 +337,42 @@ and the container committed). Details and every admission rule are in
 `ExecRequest.Env` may add variables but never replace one the sandbox set
 (`PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables), and `Cwd` must be
 inside the workspace.
+
+### 5.3 The `microvm` driver (Implemented: `driver/microvm`, experimental)
+
+Each instance is a virtual machine with its own guest kernel, reporting the
+tier `microvm`; a `MinTier` of any known tier is met, and the `process`
+driver answers a `MinTier` of `microvm` with `ErrUnavailable`. Backends: on
+Linux, Firecracker under its jailer on KVM (chroot, a uid and gid per VM,
+cgroup v2 limits, Firecracker's seccomp filters); on macOS, a separate
+Virtualization.framework helper speaking the protocol in
+`driver/microvm/helper.go`, not shipped, so the backend refuses until one is
+installed. A backend whose requirements are missing fails `Create` with
+`ErrUnavailable`.
+
+- No network device. With `Spec.Egress` set (the session's egress proxy
+  socket and port), the guest's loopback port is carried over vsock to the
+  proxy, which applies the allowlist and per-call credentials as on the
+  process tier; with it nil there is no path out. The host reaches the
+  guest only over vsock, where
+  `cmd/abhed-guest` (the guest's init) runs commands as an unprivileged user.
+  Its protocol is `driver/microvm/guest`: one call per connection, JSON
+  Lines, an exit code only when the guest sent one.
+- `Spec.Workspace` is copied into an ext4 image at `Create` and mounted at
+  `/workspace`. After each command and before a stop, the guest's changes
+  are copied back, never onto `.abhed`, git's configuration and hooks, or
+  `Spec.WriteProtected`. `Spec.Config` accepts only `vcpus`
+  and `memory_mib`, within the operator's maxima.
+- `Stop` lets commands finish within the grace, asks the guest to power off,
+  and kills the VM's cgroup after it. `Start` boots from a fresh chroot; the
+  workspace image survives until `Delete`.
+- Declares `attach` only.
+- `Recover`, run once when the driver process starts, takes the state
+  folder's lock and ends the VMs a killed run of the same state folder
+  left, found by the marker beside each chroot.
+- The jailer needs root, so on Linux the driver runs as its own root process
+  (`cmd/abhed-microvm`) behind the out-of-process protocol, with its socket
+  owned by the server's user, and builds workspace images as that user.
 
 ## 6. Out-of-process drivers (Implemented: package `driver/plugin`)
 

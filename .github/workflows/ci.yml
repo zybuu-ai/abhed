@@ -333,6 +333,73 @@ jobs:
             ${{ env.FENCE_DIR }}/*.log
             ${{ env.FENCE_DIR }}/*.json
 
+  # The microVM driver boots real Firecracker VMs here, so the boundary its
+  # docs describe is tested, not only the stand-in the unit tests use. The
+  # runner must offer KVM: without /dev/kvm the job fails rather than skips.
+  # Firecracker, the guest kernel and the Alpine base are fetched by
+  # checksum, and the root filesystem is built with the script operators use.
+  microvm-kvm:
+    name: microVM driver on KVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FC_VERSION: v1.17.0
+      FC_SHA256: 06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
+      KERNEL_URL: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155
+      KERNEL_SHA256: e20e46d0c36c55c0d1014eb20576171b3f3d922260d9f792017aeff53af3d4f2
+      ALPINE_URL: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.2-x86_64.tar.gz
+      ALPINE_SHA256: c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+      - name: The runner offers KVM
+        run: |
+          if [ ! -c /dev/kvm ]; then
+            echo "::error::/dev/kvm is missing: this runner cannot boot a microVM"
+            exit 1
+          fi
+          ls -l /dev/kvm
+      - name: Fetch Firecracker, the guest kernel and the Alpine base by checksum
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mvm" && cd "$RUNNER_TEMP/mvm"
+          curl -fsSL -o fc.tgz "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-x86_64.tgz"
+          echo "${FC_SHA256}  fc.tgz" | sha256sum -c -
+          curl -fsSL -o vmlinux "$KERNEL_URL"
+          echo "${KERNEL_SHA256}  vmlinux" | sha256sum -c -
+          curl -fsSL -o alpine.tar.gz "$ALPINE_URL"
+          echo "${ALPINE_SHA256}  alpine.tar.gz" | sha256sum -c -
+          tar -xzf fc.tgz
+          sudo install -o root -g root -m 0755 "release-${FC_VERSION}-x86_64/firecracker-${FC_VERSION}-x86_64" /usr/local/bin/firecracker
+          sudo install -o root -g root -m 0755 "release-${FC_VERSION}-x86_64/jailer-${FC_VERSION}-x86_64" /usr/local/bin/jailer
+          chmod 0644 vmlinux
+      - name: Build the guest agent and the root filesystem
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/mvm/abhed-guest" ./cmd/abhed-guest
+          sudo scripts/microvm/build-rootfs.sh -b "$RUNNER_TEMP/mvm/alpine.tar.gz" -g "$RUNNER_TEMP/mvm/abhed-guest" -o "$RUNNER_TEMP/mvm/rootfs.ext4"
+      - name: Real microVMs boot, run, copy back, reach only the proxy, and are recovered
+        run: |
+          set -euo pipefail
+          go test -c -o "$RUNNER_TEMP/mvm/mvm.test" ./driver/microvm/
+          cd /tmp
+          sudo ABHED_TEST_FIRECRACKER=1 \
+            ABHED_TEST_FC_BINARY=/usr/local/bin/firecracker \
+            ABHED_TEST_FC_JAILER=/usr/local/bin/jailer \
+            ABHED_TEST_FC_KERNEL="$RUNNER_TEMP/mvm/vmlinux" \
+            ABHED_TEST_FC_ROOTFS="$RUNNER_TEMP/mvm/rootfs.ext4" \
+            "$RUNNER_TEMP/mvm/mvm.test" -test.run '^TestFirecrackerOnKVM$' -test.count=1 -test.v 2>&1 | tee "$RUNNER_TEMP/mvm/kvm.log"
+          for t in TestFirecrackerOnKVM TestFirecrackerOnKVM/egress TestFirecrackerOnKVM/recover; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/mvm/kvm.log" || { echo "::error::$t did not run and pass"; exit 1; }
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: microvm-kvm-log
+          path: ${{ runner.temp }}/mvm/kvm.log
+
   # Case-folding path tests skip on Linux; macOS folds case, so a skip here
   # means the check stopped running, and it fails the build.
   macos:
