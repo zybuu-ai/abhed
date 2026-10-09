@@ -312,3 +312,41 @@ func TestCancelledWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A file written before migration 2 is brought up in order: each version is
+// recorded once, with no gap, and the newer table works.
+func TestOlderSchemaMigratesInOrder(t *testing.T) {
+	ctx := context.Background()
+	path := dbPath(t)
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.w.Exec(`DROP TABLE sandbox_templates; DELETE FROM schema_version WHERE version > 1`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	s = open(t, path)
+	rows, err := s.r.Query(`SELECT version FROM schema_version ORDER BY version`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := 1
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		if v != want {
+			t.Fatalf("schema version %d recorded where %d was due", v, want)
+		}
+		want++
+	}
+	if want-1 != SchemaVersion {
+		t.Fatalf("recorded up to %d, build is at %d", want-1, SchemaVersion)
+	}
+	if _, err := s.CreateTemplate(ctx, controlplane.Template{Name: "base", Driver: "process"}); err != nil {
+		t.Fatalf("templates after the upgrade: %v", err)
+	}
+}
