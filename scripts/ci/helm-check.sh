@@ -144,5 +144,22 @@ refuse "root" "runAsUser" --set podSecurityContext.runAsUser=0
 refuse "an unknown value" "replicas" --set replicas=2
 refuse "a secret file path that leaves the folder" "path" \
   --set 'secretFiles[0].secretName=s' --set 'secretFiles[0].key=k' --set 'secretFiles[0].path=../x'
+refuse "the relay host key set as a path in config" "controlPlane.sshHostKey" \
+  --set config.control_plane.enabled=true --set config.control_plane.ssh_host_key=/keys/k
+refuse "a relay host key without the control plane" "needs config.control_plane.enabled" \
+  --set controlPlane.sshHostKey.existingSecret=k
+refuse "a secret file at the relay host key's path" "used twice" \
+  --set config.control_plane.enabled=true --set controlPlane.sshHostKey.existingSecret=k \
+  --set 'secretFiles[0].secretName=s' --set 'secretFiles[0].key=k' --set 'secretFiles[0].path=ssh_host_ed25519_key'
+
+# The relay host key is copied in at 0400 and named in the config.
+"$HELM" template abhed "$CHART" --namespace abhed -f "$CHART/ci/ssh-host-key-values.yaml" >"$out/ssh-check.yaml"
+for want in 'chmod 0400 /run/abhed/secrets/ssh_host_ed25519_key' \
+  '"ssh_host_key": "/run/abhed/secrets/ssh_host_ed25519_key"' 'secretName: abhed-ssh-host-key'; do
+  if ! grep -qF "$want" "$out/ssh-check.yaml"; then
+    echo "FAIL: the relay host key: no $want" >&2
+    failed=1
+  fi
+done
 
 exit $failed

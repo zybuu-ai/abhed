@@ -50,9 +50,10 @@ spec:
         {{- else }}
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
         {{- end }}
-      {{- if or .Values.secretFiles .Values.podConfig .Values.preflight.enabled .Values.extraInitContainers }}
+      {{- $secretFiles := include "abhed.secretFiles" . | fromJsonArray }}
+      {{- if or $secretFiles .Values.podConfig .Values.preflight.enabled .Values.extraInitContainers }}
       initContainers:
-        {{- if .Values.secretFiles }}
+        {{- if $secretFiles }}
         # abhed refuses a key file anyone but its owner can read, and a Secret
         # volume with fsGroup is group-readable, so each key is copied into
         # memory, mode 0400, owned by the server's user.
@@ -63,7 +64,7 @@ spec:
           args:
             - |
               umask 077
-              {{- range $i, $f := .Values.secretFiles }}
+              {{- range $i, $f := $secretFiles }}
               cp /run/abhed/secret-sources/{{ $i }}/value /run/abhed/secrets/{{ $f.path }}
               chmod 0400 /run/abhed/secrets/{{ $f.path }}
               {{- end }}
@@ -79,7 +80,7 @@ spec:
           volumeMounts:
             - name: secret-files
               mountPath: /run/abhed/secrets
-            {{- range $i, $f := .Values.secretFiles }}
+            {{- range $i, $f := $secretFiles }}
             - name: secret-source-{{ $i }}
               mountPath: /run/abhed/secret-sources/{{ $i }}
               readOnly: true
@@ -220,12 +221,12 @@ spec:
                 path: {{ .Values.tls.clientCA.key }}
         {{- end }}
         {{- end }}
-        {{- if .Values.secretFiles }}
+        {{- if $secretFiles }}
         - name: secret-files
           emptyDir:
             medium: Memory
             sizeLimit: 8Mi
-        {{- range $i, $f := .Values.secretFiles }}
+        {{- range $i, $f := $secretFiles }}
         - name: secret-source-{{ $i }}
           secret:
             secretName: {{ $f.secretName }}

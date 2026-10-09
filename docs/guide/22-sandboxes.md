@@ -38,6 +38,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace. |
 | `expose` | `false` | Lets `:expose` publish a sandbox's port to whoever asked; see [exposed services](#the-api). |
 | `expose_max_ttl_seconds` | 3600 | Longest an exposure lives. |
+| `ssh_host_key` | unset | The `:ssh` relay's host key file, an absolute path, read and never made, so several servers present one key; see [SSH](#streams-attach-exec-with-stdin-forward-and-ssh). |
 | `sqlite_path` | `~/.abhed/controlplane/sandboxes.db` | The SQLite file sandboxes are kept in when `storage.driver` is not `postgres`; see [where sandboxes are kept](#where-sandboxes-are-kept). Must be absolute. |
 | `exec_timeout_seconds` | 600 | Longest one `:exec` may run. |
 | `exec_output_bytes` | 16 MiB | Most output one `:exec` may write, stdout and stderr together. |
@@ -536,6 +537,15 @@ The host key is an Ed25519 key in the control plane's state folder
 A key file that others may read, or that is a link, leaves the relay off:
 the server says so when it starts, and `:ssh` answers `501`. No command or
 file tool may read it.
+
+Several servers behind one address (replicas) each make their own key,
+and a client checking the host key strictly is refused by all but one.
+Give them one key instead with `control_plane.ssh_host_key`: an absolute
+path to an OpenSSH private key that only the server's user can read. It is
+read, never made; a key that is missing, unreadable, readable by others or
+a link refuses the start (and `abhed serve -check`), since a key made in
+its place would not be the one clients trust. The Helm chart mounts one
+from a Secret with `controlPlane.sshHostKey`.
 
 ## Templates
 

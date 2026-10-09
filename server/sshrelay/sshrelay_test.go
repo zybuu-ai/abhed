@@ -251,3 +251,27 @@ func TestHostKey(t *testing.T) {
 		t.Fatal("a key through a link was read")
 	}
 }
+
+// A configured key is read, never made: a missing one is an error and
+// nothing appears at its path.
+func TestLoadHostKeyNeverMakesOne(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "k")
+	if _, err := LoadHostKey(path); err == nil {
+		t.Fatal("a missing key was loaded")
+	}
+	if _, err := os.Lstat(path); err == nil {
+		t.Fatal("LoadHostKey made a key")
+	}
+	k, err := LoadOrCreateHostKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	again, err := LoadHostKey(path)
+	if err != nil || !bytes.Equal(k.PublicKey().Marshal(), again.PublicKey().Marshal()) {
+		t.Fatalf("a 0400 key: %v", err)
+	}
+}

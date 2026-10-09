@@ -88,7 +88,29 @@ httpGet:
 {{- $_ := set $storage "driver" "postgres" }}
 {{- $_ := set $cfg "storage" $storage }}
 {{- end }}
+{{- if .Values.controlPlane.sshHostKey.existingSecret }}
+{{- $cp := default (dict) (get $cfg "control_plane") }}
+{{- $_ := set $cp "ssh_host_key" (printf "/run/abhed/secrets/%s" (include "abhed.sshHostKeyPath" .)) }}
+{{- $_ := set $cfg "control_plane" $cp }}
+{{- end }}
 {{- toPrettyJson $cfg }}
+{{- end }}
+
+{{/* Where the relay's host key is copied, under /run/abhed/secrets. */}}
+{{- define "abhed.sshHostKeyPath" -}}
+ssh_host_ed25519_key
+{{- end }}
+
+{{/* secretFiles with the relay's host key added, as a JSON array. */}}
+{{- define "abhed.secretFiles" -}}
+{{- $files := list }}
+{{- range .Values.secretFiles }}
+{{- $files = append $files . }}
+{{- end }}
+{{- with .Values.controlPlane.sshHostKey.existingSecret }}
+{{- $files = append $files (dict "secretName" . "key" $.Values.controlPlane.sshHostKey.key "path" (include "abhed.sshHostKeyPath" $)) }}
+{{- end }}
+{{- toJson $files }}
 {{- end }}
 
 {{/* Refuse values that would put a secret in the ConfigMap or run the chart in a shape that cannot work. */}}
@@ -128,6 +150,20 @@ httpGet:
 {{- end }}
 {{- if and .Values.route.enabled .Values.tls.enabled (eq .Values.route.tls.termination "edge") }}
 {{- fail "route.tls.termination edge sends plain HTTP to a pod that serves TLS: use passthrough or reencrypt with tls.enabled." }}
+{{- end }}
+{{- $cpCfg := default (dict) (get (default (dict) .Values.config) "control_plane") }}
+{{- if hasKey $cpCfg "ssh_host_key" }}
+{{- fail "config.control_plane.ssh_host_key is set: use controlPlane.sshHostKey.existingSecret, so the key is copied in from a Secret, mode 0400." }}
+{{- end }}
+{{- if and .Values.controlPlane.sshHostKey.existingSecret (not (get $cpCfg "enabled")) }}
+{{- fail "controlPlane.sshHostKey needs config.control_plane.enabled: the key is for the control plane's :ssh relay." }}
+{{- end }}
+{{- $paths := dict }}
+{{- range (include "abhed.secretFiles" . | fromJsonArray) }}
+{{- if hasKey $paths .path }}
+{{- fail (printf "secretFiles: path %s is used twice (controlPlane.sshHostKey takes %s)" .path (include "abhed.sshHostKeyPath" $)) }}
+{{- end }}
+{{- $_ := set $paths .path true }}
 {{- end }}
 {{- end }}
 
@@ -182,7 +218,7 @@ httpGet:
   readOnly: true
 {{- end }}
 {{- end }}
-{{- if .Values.secretFiles }}
+{{- if include "abhed.secretFiles" . | fromJsonArray }}
 - name: secret-files
   mountPath: /run/abhed/secrets
   readOnly: true

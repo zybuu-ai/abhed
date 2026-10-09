@@ -102,6 +102,17 @@ secretEnv: []
 #     path: secrets.json
 secretFiles: []
 
+# The control plane's :ssh relay host key, from an existing Secret holding
+# an OpenSSH private key, so every replica presents the same key. It is
+# copied in like a secretFiles entry, mode 0400, and named in the config as
+# control_plane.ssh_host_key. Needs config.control_plane.enabled.
+#   kubectl create secret generic abhed-ssh-host-key \
+#     --from-file=ssh_host_ed25519_key=./ssh_host_ed25519_key
+controlPlane:
+  sshHostKey:
+    existingSecret: ""
+    key: ssh_host_ed25519_key
+
 # Plain environment variables (no secrets).
 extraEnv: []
 

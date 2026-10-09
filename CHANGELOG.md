@@ -26,6 +26,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `control_plane.ssh_host_key`: the `:ssh` relay's host key from a file,
+  read and never made, so several servers present one key; a key that is
+  missing or readable by others refuses the start. The Helm chart mounts it
+  from a Secret with `controlPlane.sshHostKey`, copied in at `0400`. See
+  [Running on Kubernetes](docs/guide/27-kubernetes.md#files-that-must-be-private).
 - **`abhed sandbox`**: a server's sandboxes from the command line, as the
   profile `abhed login` saved (`-profile`, the current one, or `-server URL`):
   `create` (from a template, with labels, settings, a minimum tier, a

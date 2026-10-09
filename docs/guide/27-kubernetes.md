@@ -97,6 +97,26 @@ pods after rotating one. The command-line token key (`auth.cli.key_file`)
 needs no Secret on one replica: Abhed creates it, mode 600, in `~/.abhed` on
 the volume at the first start.
 
+The control plane's `:ssh` relay presents a host key, which each pod would
+otherwise make for itself. Give every replica one key from a Secret with
+`controlPlane.sshHostKey`; the chart copies it in the same way and sets
+`control_plane.ssh_host_key` to it. It needs `config.control_plane.enabled`,
+and the chart refuses `config.control_plane.ssh_host_key` set by hand.
+
+```yaml
+config:
+  control_plane:
+    enabled: true
+controlPlane:
+  sshHostKey:
+    existingSecret: abhed-ssh-host-key   # an OpenSSH private key
+    key: ssh_host_ed25519_key
+```
+
+Make one with `ssh-keygen -t ed25519 -N '' -f ssh_host_ed25519_key` and
+`kubectl create secret generic abhed-ssh-host-key
+--from-file=ssh_host_ed25519_key`.
+
 ## Checks before and while serving
 
 - **Preflight.** An init container runs `abhed serve -check` with the same

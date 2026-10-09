@@ -694,6 +694,10 @@ type ControlPlaneConfig struct {
 	Expose bool `json:"expose,omitempty"`
 	// ExposeMaxTTLSeconds bounds an exposure's life. Zero means an hour.
 	ExposeMaxTTLSeconds int `json:"expose_max_ttl_seconds,omitempty"`
+	// SSHHostKey is the :ssh relay's host key file, an absolute path, read
+	// and never made, so replicas can share one key. Empty keeps the one made
+	// in the control plane's state folder.
+	SSHHostKey string `json:"ssh_host_key,omitempty"`
 	// SQLitePath is the database file sandboxes are kept in when storage is
 	// not Postgres. Empty is ~/.abhed/controlplane/sandboxes.db. Must be
 	// absolute, in a folder only the server's user can enter, outside any

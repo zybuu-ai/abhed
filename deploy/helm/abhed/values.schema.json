@@ -362,6 +362,25 @@
         }
       }
     },
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sshHostKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "pattern": "^[-._a-zA-Z0-9]+$"
+            }
+          }
+        }
+      }
+    },
     "extraEnv": {
       "type": "array",
       "items": {
