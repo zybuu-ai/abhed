@@ -208,3 +208,29 @@ func TestManagedDenyRefusalIsForEvidentMistakesOnly(t *testing.T) {
 		}
 	}
 }
+
+// A rule is credited to the managed file only where that file lists it: one
+// setting another permissions key does not make a person's rule its own, nor
+// let that rule stop startup.
+func TestRuleLayerIsManagedOnlyWhereTheFileListsIt(t *testing.T) {
+	withManaged(t, `{"permissions":{"deny":null}}`)
+	dir := filepath.Join(os.Getenv("HOME"), ".abhed")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"permissions":{"deny":["Shell(x)"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("a person's own rule stopped startup: %v", err)
+	}
+	if l := cfg.RuleLayer("deny", "Shell(x)"); l != LayerUser {
+		t.Errorf("layer %q, want user", l)
+	}
+	withManaged(t, `{"permissions":{"deny":["bash(curl *)"]}}`)
+	cfg, err = Load(t.TempDir())
+	if err != nil || cfg.RuleLayer("deny", "bash(curl *)") != LayerManaged {
+		t.Errorf("managed rule: %v %q", err, cfg.RuleLayer("deny", "bash(curl *)"))
+	}
+}
