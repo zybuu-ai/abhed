@@ -359,7 +359,7 @@ func Refresh(ctx context.Context, c *http.Client, p *Profile) error {
 
 // Apply stores a token response on the profile.
 func (p *Profile) Apply(t *Token, now time.Time) {
-	p.Token, p.TokenType = t.AccessToken, t.TokenType
+	p.Token, p.TokenType, p.IssuedAt = t.AccessToken, t.TokenType, now
 	if t.RefreshToken != "" {
 		p.RefreshToken = t.RefreshToken
 	}
@@ -372,8 +372,9 @@ func (p *Profile) Apply(t *Token, now time.Time) {
 	}
 }
 
-// Revoke tells the server to end p's token. A server that no longer knows it,
-// or cannot be reached, leaves nothing to undo here.
+// Revoke tells the server to end p's token, once. A server that no longer
+// knows it has nothing to end; one that cannot be reached or answers with an
+// error of its own is ErrLogoutNotRecorded, and the token stays valid there.
 func Revoke(ctx context.Context, c *http.Client, p *Profile) error {
 	if p.Token == "" || p.RevocationEndpoint == "" {
 		return nil
@@ -390,22 +391,148 @@ func Revoke(ctx context.Context, c *http.Client, p *Profile) error {
 	req = req.WithContext(ctx)
 	resp, err := c.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrLogoutNotRecorded, err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 500 {
-		return fmt.Errorf("the server could not record the sign-out: %s", resp.Status)
+		return fmt.Errorf("%w: %s", ErrLogoutNotRecorded, resp.Status)
 	}
 	return nil
 }
 
-// Whoami asks the server who p's token signs in.
-func Whoami(ctx context.Context, c *http.Client, p *Profile) (map[string]any, error) {
-	req, err := p.NewRequest(http.MethodGet, "/v1/cli/whoami", nil)
-	if err != nil {
-		return nil, err
+// ErrLogoutNotRecorded is a sign-out the server did not record: it could not
+// be reached, or it answered that it could not keep it. The token stays
+// valid there until it is told again.
+var ErrLogoutNotRecorded = errors.New("the server could not record the sign-out")
+
+// Logout tells the server to end p's token, trying up to attempts times and
+// waiting first, then twice as long, between tries. A server that answers
+// anything but an error of its own has ended it, or never knew it.
+func Logout(ctx context.Context, c *http.Client, p *Profile, attempts int, first time.Duration) error {
+	var err error
+	wait := first
+	for i := 0; i < max(attempts, 1); i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("%w: %v", ErrLogoutNotRecorded, ctx.Err())
+			case <-time.After(wait):
+			}
+			wait *= 2
+		}
+		if err = Revoke(ctx, c, p); err == nil {
+			return nil
+		}
 	}
-	resp, err := c.Do(req.WithContext(ctx))
+	if errors.Is(err, ErrLogoutNotRecorded) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrLogoutNotRecorded, err)
+}
+
+// SignOut forgets name's token after the server has recorded the sign-out,
+// or, when it has not, keeps the token in PendingLogouts and marks the
+// profile, so the sign-out is not lost. The caller saves f.
+func (f *File) SignOut(name string, err error) {
+	p := f.Profiles[name]
+	if p == nil {
+		return
+	}
+	if err != nil {
+		pending := *p
+		pending.PendingLogout = false
+		f.PendingLogouts = append(f.PendingLogouts, &pending)
+	}
+	p.Token, p.RefreshToken, p.TokenType, p.ExpiresAt, p.IssuedAt = "", "", "", time.Time{}, time.Time{}
+	p.PendingLogout = err != nil
+}
+
+// RetryLogouts tells each server with a pending sign-out again, once. It
+// returns the URLs whose sign-out is now recorded; the caller saves f.
+func (f *File) RetryLogouts(ctx context.Context, client func(*Profile) (*http.Client, error)) []string {
+	var done []string
+	keep := f.PendingLogouts[:0]
+	for _, p := range f.PendingLogouts {
+		c, err := client(p)
+		if err == nil {
+			err = Revoke(ctx, c, p)
+		}
+		if err != nil {
+			keep = append(keep, p)
+			continue
+		}
+		done = append(done, p.URL)
+	}
+	f.PendingLogouts = keep
+	for _, prof := range f.Profiles {
+		if !prof.PendingLogout {
+			continue
+		}
+		still := false
+		for _, p := range keep {
+			still = still || p.URL == prof.URL
+		}
+		prof.PendingLogout = still
+	}
+	return done
+}
+
+// NearExpiry reports whether p's token has a tenth of its life or less left
+// at now. A token with no expiry never is.
+func (p *Profile) NearExpiry(now time.Time) bool {
+	if p.Token == "" || p.ExpiresAt.IsZero() {
+		return false
+	}
+	if p.IssuedAt.IsZero() || !p.IssuedAt.Before(p.ExpiresAt) {
+		return !now.Before(p.ExpiresAt)
+	}
+	return !now.Before(p.ExpiresAt.Add(-p.ExpiresAt.Sub(p.IssuedAt) / 10))
+}
+
+// Do sends the request build makes with p's token. With a refresh token it
+// refreshes first when the token is near its expiry, and once more if the
+// server answers 401, sending the request again; saved, when set, is called
+// after each refresh so the new tokens are kept. build is called once per
+// attempt, so a request body can be read again.
+func (p *Profile) Do(ctx context.Context, c *http.Client, build func() (*http.Request, error), saved func(*Profile) error) (*http.Response, error) {
+	refresh := func() error {
+		if err := Refresh(ctx, c, p); err != nil {
+			return err
+		}
+		if saved != nil {
+			return saved(p)
+		}
+		return nil
+	}
+	refreshed := false
+	if p.RefreshToken != "" && p.NearExpiry(time.Now()) {
+		// A failed refresh still sends the token it has; the server decides.
+		refreshed = refresh() == nil
+	}
+	send := func() (*http.Response, error) {
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		return c.Do(req.WithContext(ctx))
+	}
+	resp, err := send()
+	if err != nil || resp.StatusCode != http.StatusUnauthorized || p.RefreshToken == "" || refreshed {
+		return resp, err
+	}
+	if rerr := refresh(); rerr != nil {
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	return send()
+}
+
+// Whoami asks the server who p's token signs in, refreshing it as Do does;
+// the caller saves p if it changed.
+func Whoami(ctx context.Context, c *http.Client, p *Profile) (map[string]any, error) {
+	resp, err := p.Do(ctx, c, func() (*http.Request, error) {
+		return p.NewRequest(http.MethodGet, "/v1/cli/whoami", nil)
+	}, nil)
 	if err != nil {
 		return nil, err
 	}

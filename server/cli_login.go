@@ -10,6 +10,10 @@ import (
 // command line in. It is public: it says what the sign-in page would.
 const CLIDiscoveryPath = "/v1/cli"
 
+// TokenExchangePath is where an edition serves token exchange (RFC 8693);
+// it shares the sign-in endpoints' rate limit.
+const TokenExchangePath = "/v1/token" // #nosec G101 -- a URL path, not a credential
+
 // cliRoutes registers command-line sign-in when it is configured, and the
 // discovery document always, so a client can tell "no sign-in needed" from
 // "not offered here".

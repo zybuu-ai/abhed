@@ -120,6 +120,7 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	retryLogouts(path, reg, errOut)
 	if *name == "" {
 		*name = profileName(base)
 		for n, p := range reg.Profiles {
@@ -265,6 +266,7 @@ func logoutCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	retryLogouts(path, reg, errOut)
 	n, p, err := reg.Get(*name)
 	if err != nil {
 		return fail(err)
@@ -273,21 +275,51 @@ func logoutCmd(workspace string, args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(out, "Profile %s is not signed in.\n", n)
 		return 0
 	}
-	// The token is forgotten here whatever the server says; telling it
-	// first ends the token there too.
-	if client, err := p.HTTPClient(); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		if err := profiles.Revoke(ctx, client, p); err != nil {
-			fmt.Fprintf(errOut, "abhed: warning: %v; the token is removed here but stays valid on the server until it expires\n", err)
-		}
+	// The token is not used here again either way. A sign-out the server did
+	// not record is kept and sent again, so it is never quietly lost.
+	client, rerr := p.HTTPClient()
+	if rerr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		rerr = profiles.Logout(ctx, client, p, logoutAttempts, logoutBackoff)
 		cancel()
 	}
-	p.Token, p.RefreshToken, p.TokenType, p.ExpiresAt = "", "", "", time.Time{}
+	reg.SignOut(n, rerr)
 	if err := profiles.Save(path, reg); err != nil {
 		return fail(err)
 	}
+	if rerr != nil {
+		fmt.Fprintf(errOut, "abhed: %s could not record the sign-out (%v). The token is no longer used here, but it stays valid on the server; abhed will tell the server again on your next login, logout or profile command.\n", p.URL, rerr)
+		return 1
+	}
 	fmt.Fprintf(out, "Signed out of %s (profile %s).\n", p.URL, n)
 	return 0
+}
+
+// How abhed logout retries a server that could not record the sign-out.
+var (
+	logoutAttempts = 4
+	logoutBackoff  = 500 * time.Millisecond
+)
+
+// retryLogouts tells servers again about sign-outs they did not record,
+// saving the profiles file when one now has.
+func retryLogouts(path string, reg *profiles.File, out io.Writer) {
+	if len(reg.PendingLogouts) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := reg.RetryLogouts(ctx, (*profiles.Profile).HTTPClient)
+	if len(done) == 0 {
+		return
+	}
+	if err := profiles.Save(path, reg); err != nil {
+		fmt.Fprintf(out, "abhed: %v\n", err)
+		return
+	}
+	for _, u := range done {
+		fmt.Fprintf(out, "%s has now recorded the earlier sign-out.\n", u)
+	}
 }
 
 func profileCmd(workspace string, args []string, out, errOut io.Writer) int {
@@ -307,6 +339,7 @@ func profileCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	retryLogouts(path, reg, errOut)
 	switch args[0] {
 	case "list", "ls":
 		if len(args) != 1 {
@@ -327,6 +360,8 @@ func profileCmd(workspace string, args []string, out, errOut io.Writer) int {
 			switch {
 			case p.AuthMode == "none":
 				status = "no sign-in needed"
+			case p.PendingLogout:
+				status = "signed out here; the server has not recorded it yet"
 			case p.SignedIn(now) && p.ExpiresAt.IsZero():
 				status = "signed in as " + p.Username
 			case p.SignedIn(now):

@@ -95,14 +95,18 @@ func localAuthOf(mw *auth.Middleware) *auth.LocalAuth {
 
 // buildCLILogin serves `abhed login` for local accounts when auth.cli asks:
 // its tokens join the middleware's verifiers and its start and token
-// endpoints become public.
+// endpoints become public. With no local accounts, an edition's provider
+// that advertises a sign-in method of its own serves it instead.
 func buildCLILogin(cfg config.Config, workspace string, mw *auth.Middleware) (*auth.CLILogin, error) {
 	if !cfg.Auth.CLI.Enabled {
 		return nil, nil
 	}
 	local := localAuthOf(mw)
 	if local == nil {
-		return nil, errors.New("auth.cli.enabled needs local accounts (auth.mode local)")
+		if advertised(mw) {
+			return nil, nil
+		}
+		return nil, errors.New("auth.cli.enabled needs local accounts (auth.mode local), or an edition whose identity provider serves command-line sign-in")
 	}
 	key, err := cfg.CLIKeyFile(workspace)
 	if err != nil {
@@ -116,6 +120,19 @@ func buildCLILogin(cfg config.Config, workspace string, mw *auth.Middleware) (*a
 	mw.Verifier = auth.ChainVerifier(mw.Verifier, tokens)
 	mw.PublicPaths = append(mw.PublicPaths, login.PublicPaths()...)
 	return login, nil
+}
+
+// advertised reports whether a provider offers command-line sign-in itself.
+func advertised(mw *auth.Middleware) bool {
+	if mw == nil {
+		return false
+	}
+	for _, p := range mw.Providers {
+		if _, ok := p.(auth.CLILoginAdvertiser); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // runTLS rereads the certificates until ctx ends.

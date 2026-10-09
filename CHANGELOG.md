@@ -157,6 +157,26 @@ All notable changes to Abhed are recorded here. The format follows
   its own sign-in method through `auth.CLILoginAdvertiser`.
 - `GET /v1/cli` (public) says how a command line signs in; `GET
   /v1/cli/whoami` answers for a bearer token too.
+- Extension points for an edition's sign-in: `auth.Middleware.Authorize`
+  sees each request after the caller is identified and may refuse it (403,
+  no session ended), for a credential that covers some requests only;
+  `auth.LoadCLIKey` reads a token key file as command-line sign-in does.
+  `auth.cli.enabled` is accepted with `auth.mode: "oidc"` when the edition's
+  identity provider serves `abhed login` (`auth.cli.client_id` names the
+  provider's client for it), and `auth.workload` holds the Enterprise
+  edition's workload identity settings: the Community Edition checks them and
+  refuses `enabled`. Their key files and trust bundles are state the agent
+  cannot reach. Every public endpoint under `/v1/cli/`, and `/v1/token`, share
+  the sign-in rate limit.
+- The `profiles` client refreshes a token by itself when the profile holds a
+  refresh token: before a request once a tenth or less of the token's life is
+  left, and once after a `401`, sending the request again (`Profile.Do`;
+  `Whoami` uses it). Profiles record when their token was issued.
+- `abhed logout` retries a server that could not record the sign-out, with
+  backoff, and when it still has not, says so and keeps the token as a pending
+  sign-out, sent again at the next `login`, `logout` or `profile` command until
+  the server records it. Before, the token was dropped here and stayed valid
+  on the server.
 - Linux on Z (s390x): a `linux-s390x` release binary and a `linux/s390x`
   container image, for Red Hat Enterprise Linux, SUSE Linux Enterprise Server
   and Ubuntu. The fence tier accepts s390x with its own system-call table:

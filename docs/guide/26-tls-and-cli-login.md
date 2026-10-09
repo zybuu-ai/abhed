@@ -182,10 +182,19 @@ abhed profile rm staging
 the server URL, the account, the token and its expiry, and the paths of any
 CA or client certificate. The file is written mode 600; it is refused if
 other users can read it or if it is a link, and refused inside the workspace
-(other than its `.abhed`), where the agent's commands could read it. Tokens
+(other than its `.abhed`), where the agent's commands could read it.
+
+**A sign-out is never quietly lost.** `abhed logout` stops using the token
+at once. If the server cannot be reached, or answers that it could not
+record the sign-out (a `5xx`, such as `503` while its database is down), it
+tries again three more times, waiting half a second, then twice as long each
+time. If the server still has not recorded it, `abhed logout` says so and
+exits non-zero, `abhed profile list` shows the profile as signed out here but
+not yet on the server, and the token is kept in the profiles file under
+`pending_logouts` and sent again at the start of every `abhed login`,
+`logout` and `profile` command until the server records it. Tokens
 are never printed. `abhed login`, `abhed logout`, `abhed profile use`,
-`abhed profile rm` and `abhed sandbox connect` are refused when run by the
-agent.
+`abhed profile rm` and `abhed sandbox` are refused when run by the agent.
 
 **Plain http** is refused for any host but this machine, since the token
 would cross the network in clear; `-allow-http` overrides that on a network
@@ -245,10 +254,31 @@ a token endpoint, and optionally a revocation endpoint, a client id, scopes
 and an issuer; endpoints may be absolute URLs on an identity provider (https
 only). `abhed login -method NAME` uses it with the same device and PKCE
 flows, sending standard form-encoded requests, and keeps a refresh token
-when one is given (`profiles.Refresh` exchanges it). The middleware's `Verifier` must accept the
+when one is given. `Profile.Do` sends a request with the profile's token
+and, when it holds a refresh token, refreshes it first if a tenth or less of
+its life is left, and once more if the server answers `401`, then sends the
+request again; `profiles.Refresh` does it by hand. The middleware's `Verifier` must accept the
 tokens it leads to; `auth.ChainVerifier` joins a verifier to the command-line
 token verifier, which recognises its own tokens by their prefix and passes
 every other token on.
+
+With `auth.mode: "oidc"` there are no local accounts, so `auth.cli.enabled`
+is served by the edition's provider alone: serve refuses it unless a provider
+advertises a method. `auth.cli.client_id` names the identity provider's client
+for the command line (one that allows the device grant and loopback
+redirects); the edition reads it. `auth.LoadCLIKey` reads or creates a token
+key file with the same checks as `auth.cli.key_file`; an edition keeps state of
+its own beside the key, in `<key_file>.edition`, which is refused to the agent
+as the key is.
+
+`auth.Middleware.Authorize`, when an edition sets it, runs on every request
+after the caller is identified and `Check` has passed, with the request
+itself, and again whenever a stream rechecks its caller. An error answers
+`403` with its text and ends no session. It is for a credential that is good
+for some requests only, such as a token scoped to one sandbox.
+
+Public endpoints an edition serves under `/v1/cli/`, and `POST /v1/token`,
+share the sign-in endpoints' rate limit.
 
 ## Settings
 
@@ -264,6 +294,9 @@ every other token on.
 | `auth.cli.enabled` | `false` | serve `abhed login` for local accounts |
 | `auth.cli.token_hours` | `168` | 1 to 2160 |
 | `auth.cli.key_file` | `~/.abhed/cli-token.key` | the token signing key |
+| `auth.cli.client_id` | `auth.client_id` | with `auth.mode` `oidc`: the identity provider's client the command line signs in through (Team edition) |
+| `auth.workload.*` | — | workload identity and token exchange (Enterprise edition); the Community Edition refuses `enabled` |
+| `auth.workload.grants[].allow_reusable_svid` | `false` | accept that workload's JWT-SVIDs without a `jti` (Enterprise edition) |
 
 `server` and `auth` are deployment settings: an untrusted workspace file that
 sets them stops `abhed serve` rather than being ignored, and the managed

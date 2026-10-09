@@ -314,6 +314,29 @@ func TestServeAuthWiring(t *testing.T) {
 	}
 }
 
+type advertisingProvider struct{ auth.Provider }
+
+func (advertisingProvider) CLILoginMethods() []auth.CLILoginMethod {
+	return []auth.CLILoginMethod{{Name: "sso", TokenEndpoint: "/v1/cli/sso/token"}}
+}
+
+// With auth.mode oidc there are no local accounts: an edition's provider that
+// advertises its own method serves abhed login, and without one serve refuses.
+func TestCLILoginWithoutLocalAccounts(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode, cfg.Auth.CLI.Enabled = "oidc", true
+	mw := &auth.Middleware{Providers: []auth.Provider{advertisingProvider{}}}
+	if l, err := buildCLILogin(cfg, t.TempDir(), mw); l != nil || err != nil {
+		t.Fatalf("an advertising provider = %v %v", l, err)
+	}
+	if mw.Verifier != nil || len(mw.PublicPaths) != 0 {
+		t.Errorf("the local sign-in was wired anyway: %v %v", mw.Verifier, mw.PublicPaths)
+	}
+	if _, err := buildCLILogin(cfg, t.TempDir(), &auth.Middleware{}); err == nil || !strings.Contains(err.Error(), "auth.cli.enabled") {
+		t.Fatalf("no provider serves it: %v", err)
+	}
+}
+
 func TestServeURLScheme(t *testing.T) {
 	if got := serveURL(":8443", true); got != "https://localhost:8443" {
 		t.Errorf("serveURL = %q", got)

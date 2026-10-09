@@ -41,9 +41,14 @@ func (c Config) CLIKeyFile(workspace string) (string, error) {
 	return filepath.Join(home, ".abhed", "cli-token.key"), nil
 }
 
+// CLIEditionStateSuffix names the file beside a token key where an edition
+// keeps state of its own, such as tokens it signed out early.
+const CLIEditionStateSuffix = ".edition"
+
 // ServerSecretFiles are the private files serve reads that commands must not
-// reach: the TLS keys and, with command-line sign-in, its token key and the
-// list of tokens signed out early.
+// reach: the TLS keys; with command-line sign-in, its token key and the
+// list of tokens signed out early; with workload identity, its token key and
+// the trust bundles.
 func (c Config) ServerSecretFiles(workspace string) []string {
 	var out []string
 	if c.Server.TLS.Enabled() {
@@ -59,7 +64,18 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 	}
 	if c.Auth.CLI.Enabled {
 		if p, err := c.CLIKeyFile(workspace); err == nil {
-			out = append(out, p, p+".revoked")
+			out = append(out, p, p+".revoked", p+CLIEditionStateSuffix)
+		}
+	}
+	// Whoever could replace a trust bundle could mint workload identities.
+	if w := c.ResolvedWorkload(workspace); w.Enabled {
+		if p, err := c.WorkloadKeyFile(workspace); err == nil {
+			out = append(out, p, p+CLIEditionStateSuffix)
+		}
+		for _, p := range []string{w.JWTBundleFile, w.X509BundleFile} {
+			if p != "" {
+				out = append(out, p)
+			}
 		}
 	}
 	return out
