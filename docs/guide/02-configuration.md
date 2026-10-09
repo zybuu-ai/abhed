@@ -38,7 +38,8 @@ configuration](#trusting-the-workspace-configuration).
 | `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
 | `fence` | `cpu_percent`: the fence tier's CPU bound — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
-| `auth` | who may use a server deployment |
+| `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](22-tls-and-cli-login.md) |
+| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain — [TLS and command-line sign-in](22-tls-and-cli-login.md), [below](#stopping-the-server) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
