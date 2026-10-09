@@ -150,6 +150,24 @@ removed by editing that file. `internal/tools/state_test.go`,
 `internal/sandbox/state_test.go` and `server/state_paths_test.go` try the
 spellings, links, swaps and hardlinks, and fail if any succeeds.
 
+The server's other private files are state the same way: the TLS keys, the
+client CA `abhed serve` reloads (whoever rewrites it can mint a certificate
+for any account), the command-line token key, the workload identity key and
+trust bundles, the replicas' relay key and CA, and a configured
+`control_plane.ssh_host_key`; each is refused where commands can write and
+denied to them. So are the command line's profiles file wherever
+`ABHED_PROFILES_FILE` puts it, and the client certificate, key and CA each
+profile names (`abhed login -cert`, `-key`, `-ca`); those are denied by path
+and not checked for placement, so keep them out of any workspace. The control
+plane's state folder (`~/Library/Application Support/Abhed/control-plane` on
+macOS, `$XDG_STATE_HOME/abhed/control-plane` elsewhere), which holds the
+relay's host key, snapshots and the sandboxes' own folders, and a configured
+`control_plane.snapshot_dir`, are denied to every session's commands; a
+control-plane sandbox keeps only its own folder there. A `process` driver
+sandbox resolves these paths against serve's workspace, as serve does, and
+is denied that workspace's `.abhed` as well (`internal/sandboxconfig`,
+`driver/process`).
+
 Abhed's own git commands run on the host, outside the sandbox, in a repository
 the agent can write: the branch and change count in each prompt, worktrees for
 parallel runs, and a resolved issue's commit and push. They switch off, in

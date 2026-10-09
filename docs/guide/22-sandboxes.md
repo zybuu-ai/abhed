@@ -35,7 +35,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `enabled` | `false` | Serve `/v1/sandboxes` and run the reconciler. |
 | `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. A sandbox's commands can neither read nor write the other folders under the root (on macOS the `process` driver's profile denies them; on Linux they are never mounted in), so a root inside a `sandbox.read_only_paths` entry or a skills folder, which would show them, is refused. |
 | `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
-| `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace. |
+| `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace; no command can read or write it ([the state folder](#the-state-folder-snapshots-and-the-host-key)). |
 | `ssh.idle_timeout_seconds` | 3600 | An SSH connection with no traffic either way for this long is closed. |
 | `ssh.max_session_seconds` | 43200 | Longest an SSH connection stays open. Its commands are bounded by this, not by `exec_timeout_seconds`. |
 | `ssh_host_key` | a key the server makes | The `:ssh` relay's host key file, so several servers can share one key; see [SSH](#streams-attach-exec-with-stdin-forward-and-ssh). |
@@ -115,6 +115,30 @@ any `-wal` file beside it.
 
 The memory store in the Go API (`controlplane.NewMemory`) is for tests;
 `abhed serve` never falls back to it.
+
+### The state folder, snapshots and the host key
+
+The control plane keeps its own files in its state folder,
+`~/Library/Application Support/Abhed/control-plane` on macOS and
+`$XDG_STATE_HOME/abhed/control-plane` (`~/.local/state/…` without it)
+elsewhere, which is where the Helm chart's volume puts them too: the
+`:ssh` relay's host key, `snapshots` and the default `sandboxes` root.
+
+- No command reads or writes that folder: not a session's, and not a
+  sandbox's, which keeps only its own folder under `sandboxes`. The same
+  holds for a `snapshot_dir` set elsewhere and for a configured
+  `ssh_host_key`. On macOS the Seatbelt profile denies them; under
+  bubblewrap and the fence they are never mounted or granted, and one that
+  a `read_only_paths` entry or the workspace would show is hidden or
+  refused.
+- The agent's file tools and the server's readers refuse the host key and
+  the snapshots.
+- A `process` driver sandbox resolves `auth.users_file`, the TLS files, the
+  command-line token key and the workload key against the server's
+  workspace, as the server reads them, not against its own folder, and its
+  commands cannot read the server's workspace's `.abhed`.
+- `ssh_host_key` and `snapshot_dir` must be absolute; a relative one stops
+  the configuration loading.
 
 ## Check before you serve
 
