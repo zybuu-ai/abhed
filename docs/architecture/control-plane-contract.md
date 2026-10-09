@@ -194,10 +194,11 @@ redacted with the secrets store before it is recorded. Errors are
 `conflict`, `precondition_failed`, `unsupported`, `unavailable`, `forbidden`,
 `approval_required`, `quota_exceeded`, `internal`. `forbidden` (`403`) is a
 request acting in a tenant other than the one the server's store was opened
-for, or one a guard (§12) refuses; `approval_required` and `quota_exceeded`
-are `403` from a guard, the first with the approval to ask for in the
-`Abhed-Approval` response header. A request sent again with
-`Abhed-Approval: <id>` names that approval to the guard. A rate limit spent is `429` with
+for, one a guard (§12) refuses, or a call an admission interceptor refused
+(§13); `approval_required` and `quota_exceeded` are `403` from a guard, the
+first with the approval to ask for in the `Abhed-Approval` response header.
+A request sent again with `Abhed-Approval: <id>` names that approval to the
+guard. A rate limit spent is `429` with
 `Retry-After` and code `unavailable`. A store or driver fault is `503` or
 `500`, never success.
 
@@ -492,6 +493,10 @@ client sent `If-Match` and a retry when it did not.
   can be resumed and, later, watched.
 - `Update` and `Delete` succeed only when the stored version equals `expect`.
 - Idempotency claims are atomic: two concurrent claims of one key, one wins.
+- `store.Sandboxes.WithFence(f)` runs `f` inside the transaction of every
+  `Create`, `Update` and `Delete`, before it commits; an error from it
+  leaves the write undone. It is how HA holds writes to the replica whose
+  lease is current (§13).
 - Backends: memory (implemented, for tests), SQLite for a single host
   (implemented: `store/sqlite`, the pure-Go `modernc.org/sqlite`, so the
   binary stays static with no cgo; the same three tables, migrated by the
@@ -521,6 +526,12 @@ client sent `If-Match` and a retry when it did not.
 | Kubernetes driver | Team (private module, via `app.WithDriver`) |
 | Workspaces, roles, quotas, four-eyes approvals on sandboxes (via §12) | Team |
 | Admission interceptors on every mutation, HA ownership and leases | Enterprise |
+
+The Community module carries only the seams these use (§12, §13); with none of
+them set, which is every Community build, nothing behaves differently. The
+configuration keys `control_plane.ha` and `control_plane.interceptors` are in
+every edition's schema, and a Community binary refuses to start with them set,
+naming the key and the edition, rather than run without them.
 
 The control-plane and driver packages are public, not `internal/`, because the
 Team and Enterprise module can only use public packages: the Kubernetes driver
@@ -619,3 +630,50 @@ behaves as the sections above describe.
   instead of a file. It hands out and redacts values as a file store does;
   a source that cannot be reached hands out nothing, refuses a session, and
   withholds every payload until it answers again.
+
+## 13. Extension points for interceptors and HA (Implemented)
+
+The Enterprise module adds admission interceptors and multi-replica HA
+through these public seams. Each is nil or empty by default, and then
+changes nothing. On every call a guard (§12) is asked first and the
+interceptors after it, so an interceptor sees what the guard admitted.
+
+| Seam | Where | Used for |
+|---|---|---|
+| `controlplane.Config.Interceptor` | `controlplane.Interceptor` | Admission of every mutating call |
+| `controlplane.Config.Ownership` | `controlplane.Ownership` | Which sandboxes this replica acts on |
+| `controlplane.Config.NodeID` | string | Names the replica in every event it records (`detail.node`) |
+| `store.Sandboxes.WithFence` | `store.Fence` | Refuses a write, in its transaction, from a replica that lost its lease |
+| `server.Options.SandboxRouter` | `server.SandboxRouter` | Relays a call to the replica that owns the sandbox |
+| `app.WithControlPlane` | `app.ControlPlaneHook` | Sets the above before the service is built |
+
+**Interceptors.** `Admit` is called for `create`, `update`, `start`, `stop`,
+`delete` and `exec`, after the call's `requested` event and before anything
+is written or run; `Committed` after its outcome. The request carries the
+operation, the caller, the sandbox before (absent on create) and as the call
+would leave it, and for an exec its command line already redacted for the
+record. Rules the service enforces whatever the interceptor is:
+
+- An error refuses the call: `ErrDenied` answers `403 forbidden`; anything
+  else, including a timeout, is `503 unavailable`. Nothing is written or run.
+- The object `Admit` returns may differ from the proposed one only in labels
+  outside `abhed.dev/` and in settings, and every setting must be as tight or
+  tighter than before (`Settings.NoLooser`), within the ceilings (§11). A
+  template, state, owner, driver, tier, policy revision or reserved label
+  change is refused as `403`, as is any change to an exec. The patched
+  object is validated again before it is written.
+- Every decision is an `admission` event with the caller's principal, the
+  operation, hook, phase and decision, and `fail_open` when a hook's error
+  was let through. A decision the record cannot keep refuses the call.
+- Calls the reconciler makes as `system:reconciler` are not admitted: they
+  carry out what an admitted call asked for.
+
+**Ownership.** With `Ownership` set, the reconciler acts on a sandbox only
+when `Owns` says this replica owns it, which takes ownership when no live
+replica holds it; then the driver's `Status` decides whether the instance
+survived (adopted) or was lost (`InstanceLost`). A change or exec on a
+sandbox this replica does not own, or whose ownership it cannot read, is
+`503` and changes nothing. Creates are owned by the replica that makes them.
+Reads (`GET` of an object or a list) are served by any replica from the
+shared store; every other call on a sandbox goes through `SandboxRouter`
+first, after the caller is authenticated and its tenant checked.

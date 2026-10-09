@@ -56,6 +56,14 @@ type Config struct {
 	// Redact rewrites text before it reaches the record. Nil records a
 	// digest of it instead, so nothing unredacted is ever kept.
 	Redact func(string) string
+	// Interceptor, when set, admits every mutating call before it is
+	// committed (Enterprise). Nil admits every call.
+	Interceptor Interceptor
+	// Ownership, when set, limits this replica to the sandboxes it owns:
+	// only they are reconciled, changed or run in here (Enterprise HA).
+	Ownership Ownership
+	// NodeID names this replica in every event it records; empty on one node.
+	NodeID string
 	Now    func() time.Time
 	Log    *slog.Logger
 }
@@ -134,6 +142,12 @@ func (s *Service) record(ctx context.Context, ev AuditEvent) error {
 		ev.At = s.now()
 	}
 	ev.Detail = maps.Clone(ev.Detail)
+	if s.cfg.NodeID != "" {
+		if ev.Detail == nil {
+			ev.Detail = map[string]string{}
+		}
+		ev.Detail["node"] = s.cfg.NodeID
+	}
 	if err := s.cfg.Audit.Append(context.WithoutCancel(ctx), ev); err != nil {
 		s.cfg.Log.Error("control plane: the record could not be written", "action", ev.Action,
 			"sandbox", ev.SandboxID, "outcome", ev.Outcome, "err", err)
@@ -166,6 +180,8 @@ func ErrorCode(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, ErrDenied):
+		return "forbidden"
 	case errors.Is(err, ErrNotFound), errors.Is(err, driver.ErrNotFound):
 		return "not_found"
 	case errors.Is(err, ErrApprovalRequired):
@@ -233,7 +249,7 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 		return Sandbox{}, err
 	}
 	next := sb.Clone()
-	release, err := s.admit(ctx, &Admission{Action: ActionCreate, Caller: c, Next: &next})
+	release, err := s.guardAdmit(ctx, &Admission{Action: ActionCreate, Caller: c, Next: &next})
 	if err == nil {
 		// The guard may only have tightened settings; anything it made
 		// invalid or looser than a ceiling is refused here.
@@ -242,13 +258,22 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 			release()
 		}
 	}
+	adm := AdmissionRequest{Operation: OpCreate, Caller: c, SandboxID: sb.ID, Object: sb}
+	if err == nil {
+		// Then the interceptor, which may tighten what the guard admitted.
+		if sb, err = s.admit(ctx, adm); err != nil {
+			release()
+		}
+	}
 	if err != nil {
 		s.outcome(ctx, ev, err)
 		return Sandbox{}, err
 	}
+	adm.Object = sb
 	out, err := s.cfg.Store.Create(ctx, sb)
 	release()
 	s.outcome(ctx, ev, err)
+	s.committed(ctx, adm, out, err)
 	if err != nil {
 		return Sandbox{}, storeErr(err)
 	}
@@ -265,7 +290,7 @@ func requested(ev AuditEvent) AuditEvent {
 // store into ErrUnavailable, so a store fault never reads as success.
 func storeErr(err error) error {
 	for _, known := range []error{ErrNotFound, ErrExists, ErrInvalid, ErrVersionMismatch, ErrPreconditionFailed,
-		ErrInvalidTransition, ErrUnavailable} {
+		ErrInvalidTransition, ErrUnavailable, ErrDenied} {
 		if errors.Is(err, known) {
 			return err
 		}
@@ -328,6 +353,9 @@ func (s *Service) mutate(ctx context.Context, c Caller, id, ifMatch, action stri
 	if err := CheckIfMatch(ifMatch, cur.ResourceVersion); err != nil {
 		return Sandbox{}, err
 	}
+	if err := s.owned(ctx, id); err != nil {
+		return Sandbox{}, err
+	}
 	ev := AuditEvent{Principal: c.Principal, Action: action, SandboxID: id, Generation: cur.Generation, Detail: detail}
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
@@ -342,22 +370,39 @@ func (s *Service) mutate(ctx context.Context, c Caller, id, ifMatch, action stri
 		}
 		adm.Next = &next
 	}
-	release, err := s.admit(ctx, &adm)
+	release, err := s.guardAdmit(ctx, &adm)
 	if err != nil {
 		s.outcome(ctx, ev, err)
 		return Sandbox{}, err
 	}
 	defer release()
+	iadm := AdmissionRequest{Operation: action, Caller: c, SandboxID: id}
+	admitted := false
 	out, err := Mutate(ctx, s.cfg.Store, id, ifMatch, func(sb *Sandbox) error {
 		if !c.may(*sb) {
 			return fmt.Errorf("%w: sandbox %s", ErrNotFound, id)
 		}
-		return fn(sb)
+		before := sb.Clone()
+		if err := fn(sb); err != nil {
+			return err
+		}
+		iadm.Old, iadm.Object = &before, *sb
+		next, err := s.admit(ctx, iadm)
+		if err != nil {
+			return err
+		}
+		*sb = next
+		iadm.Object, admitted = next, true
+		return nil
 	})
 	if err == nil {
 		ev.Generation = out.Generation
 	}
 	s.outcome(ctx, ev, err)
+	// Post-commit hooks hear only of calls that were admitted.
+	if admitted {
+		s.committed(ctx, iadm, out, err)
+	}
 	if err != nil {
 		return Sandbox{}, storeErr(err)
 	}
@@ -553,15 +598,24 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	}
 	ev := AuditEvent{Principal: c.Principal, Action: "exec", SandboxID: id, Generation: sb.Generation,
 		Detail: map[string]string{"command": s.redact(command)}}
+	if err := s.owned(ctx, id); err != nil {
+		return driver.ExecResult{}, sb, err
+	}
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return driver.ExecResult{}, sb, err
 	}
-	release, err := s.admit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &req})
+	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &req})
 	if err != nil {
 		s.outcome(ctx, ev, err)
 		return driver.ExecResult{}, sb, err
 	}
 	defer release()
+	old := sb.Clone()
+	adm := AdmissionRequest{Operation: OpExec, Caller: c, SandboxID: id, Old: &old, Object: sb, Command: ev.Detail["command"]}
+	if _, err := s.admit(ctx, adm); err != nil {
+		s.outcome(ctx, ev, err)
+		return driver.ExecResult{}, sb, err
+	}
 	vals := s.cfg.Settings.For(sb.Settings)
 	ctx, cancel := context.WithTimeout(ctx, vals.Seconds(SetExecTimeout))
 	defer cancel()
@@ -584,6 +638,7 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 		ev.Detail["exit_code"] = strconv.Itoa(res.ExitCode)
 	}
 	s.outcome(ctx, ev, err)
+	s.committed(ctx, adm, sb, err)
 	if err != nil {
 		return driver.ExecResult{}, sb, err
 	}

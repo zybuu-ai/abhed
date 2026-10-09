@@ -213,7 +213,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if cfg.ControlPlane.Enabled {
 		live := openVault().Live()
 		built, err := buildControlPlane(context.Background(), cfg, workspace, eventStore,
-			func(text string) string { return string(live.Redact([]byte(text))) })
+			func(text string) string { return string(live.Redact([]byte(text))) }, a.cpHooks...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1

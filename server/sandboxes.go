@@ -19,6 +19,15 @@ import (
 // The control plane's REST surface (control-plane-contract.md §4); the
 // recording and lifecycle live in controlplane.Service, the HTTP here.
 
+// SandboxRouter sends a call for a sandbox another replica owns to that
+// replica (Enterprise HA). The request is already authenticated here, and
+// the owner authenticates it again.
+type SandboxRouter interface {
+	// Route answers the request itself, by relaying or refusing it, and
+	// reports true; false means this process handles it.
+	Route(w http.ResponseWriter, r *http.Request, id string) bool
+}
+
 // sandboxVerb is one custom method, POST or GET /v1/sandboxes/{id}:verb.
 type sandboxVerb struct {
 	method string
@@ -185,6 +194,11 @@ func (s *Server) sandboxTarget(w http.ResponseWriter, r *http.Request) {
 	id, verb := splitTarget(r.PathValue("target"))
 	if !controlplane.ValidID(id) {
 		writeCPError(w, http.StatusNotFound, "not_found", "no sandbox "+id)
+		return
+	}
+	// A call that acts on the sandbox goes to the replica that owns it; a
+	// plain read is answered here from the shared store.
+	if rt := s.opts.SandboxRouter; rt != nil && (verb != "" || r.Method != http.MethodGet) && rt.Route(w, r, id) {
 		return
 	}
 	if verb == "" {

@@ -190,6 +190,12 @@ func (f *Fake) running(id string) error {
 }
 
 func (f *Fake) Exec(ctx context.Context, id string, req driver.ExecRequest) (driver.ExecResult, error) {
+	f.mu.Lock()
+	err := f.enter("exec")
+	f.mu.Unlock()
+	if err != nil {
+		return driver.ExecResult{}, err
+	}
 	if err := req.Validate(); err != nil {
 		return driver.ExecResult{}, err
 	}

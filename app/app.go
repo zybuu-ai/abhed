@@ -17,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -39,6 +40,7 @@ type App struct {
 	taps       []TapBuilder
 	serverOpts []ServerOptionsHook
 	serveHooks []ServeHook
+	cpHooks    []ControlPlaneHook
 	// trust is -trust-workspace: the say the command line gives over the
 	// workspace's own configuration file.
 	trust config.TrustChoice
@@ -148,6 +150,17 @@ func WithServerOptions(h ServerOptionsHook) Option {
 	return func(a *App) { a.serverOpts = append(a.serverOpts, h) }
 }
 
+// ControlPlaneHook adjusts the sandbox control plane's configuration before
+// the service is built, when control_plane.enabled is set: to add an
+// interceptor, an ownership rule, a fenced store or the replica's node id.
+// An error is a startup refusal.
+type ControlPlaneHook func(ctx context.Context, cfg config.Config, c *controlplane.Config) error
+
+// WithControlPlane registers a hook on the control plane's configuration.
+func WithControlPlane(h ControlPlaneHook) Option {
+	return func(a *App) { a.cpHooks = append(a.cpHooks, h) }
+}
+
 // ServeHook runs after the server is built and before it listens, with the
 // context that ends at shutdown. It is where something that needs the
 // running server — a scheduler that starts sessions on it — is bound and
@@ -205,9 +218,11 @@ var builtinCommands = func() map[string]bool {
 
 // paidFeatures maps each gated feature to the tier that includes it.
 var paidFeatures = map[string]string{
-	"oidc":      "Team",
-	"schedules": "Team",
-	"telemetry": "Enterprise",
+	"oidc":         "Team",
+	"schedules":    "Team",
+	"telemetry":    "Enterprise",
+	"ha":           "Enterprise",
+	"interceptors": "Enterprise",
 }
 
 // EditionError is a config key this binary cannot honour.
@@ -249,6 +264,12 @@ func (a *App) checkEdition(cfg config.Config) error {
 	}
 	if len(cfg.Schedules) > 0 && !a.features["schedules"] {
 		return &EditionError{Key: "schedules", Feature: "schedules", Edition: a.edition}
+	}
+	if cfg.ControlPlane.HA.Enabled && !a.features["ha"] {
+		return &EditionError{Key: "control_plane.ha.enabled", Feature: "ha", Edition: a.edition}
+	}
+	if len(cfg.ControlPlane.Interceptors) > 0 && !a.features["interceptors"] {
+		return &EditionError{Key: "control_plane.interceptors", Feature: "interceptors", Edition: a.edition}
 	}
 	return nil
 }

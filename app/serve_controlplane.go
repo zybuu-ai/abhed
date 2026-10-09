@@ -234,7 +234,7 @@ type builtControlPlane struct {
 // own events (snapshots, restores, forwards, exposures) in the control
 // plane's record.
 func buildControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore,
-	redact func(string) string) (builtControlPlane, error) {
+	redact func(string) string, hooks ...ControlPlaneHook) (builtControlPlane, error) {
 	settings, err := controlplane.SettingsFromConfig(cfg)
 	if err != nil {
 		return builtControlPlane{}, fmt.Errorf("control_plane: %w", err)
@@ -264,9 +264,15 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return fail(err)
 	}
-	svc, err := controlplane.New(controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
+	c := controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
 		DefaultDriver: builtin.Default, Workspace: get, ReleaseWorkspace: release, Redact: redact,
-		WriteProtected: cfg.Sandbox.WriteProtected, Egress: eg})
+		WriteProtected: cfg.Sandbox.WriteProtected, Egress: eg}
+	for _, h := range hooks {
+		if err := h(ctx, cfg, &c); err != nil {
+			return fail(fmt.Errorf("control_plane: %w", err))
+		}
+	}
+	svc, err := controlplane.New(c)
 	if err != nil {
 		return fail(err)
 	}
@@ -286,12 +292,19 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 
 // checkControlPlane is buildControlPlane for serve -check: the same
 // refusals, with nothing created, migrated or written. An SQLite file that
-// is missing or due a migration is reported, not made.
-func checkControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore) (
-	*controlplane.Settings, string, error) {
+// is missing or due a migration is reported, not made. The hooks run on a
+// configuration without a store, so they can refuse what they cannot use.
+func checkControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore,
+	hooks ...ControlPlaneHook) (*controlplane.Settings, string, error) {
 	settings, err := controlplane.SettingsFromConfig(cfg)
 	if err != nil {
 		return nil, "", fmt.Errorf("control_plane: %w", err)
+	}
+	c := controlplane.Config{Settings: settings, DefaultDriver: builtin.Default, WriteProtected: cfg.Sandbox.WriteProtected}
+	for _, h := range hooks {
+		if err := h(ctx, cfg, &c); err != nil {
+			return settings, "", fmt.Errorf("control_plane: %w", err)
+		}
 	}
 	if _, err := snapshotDir(cfg.ControlPlane); err != nil {
 		return settings, "", err
@@ -412,7 +425,7 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		if events == nil {
 			add("control plane", errors.New("needs the event store, which did not open"), "")
 		} else {
-			settings, label, err := checkControlPlane(context.Background(), cfg, workspace, events)
+			settings, label, err := checkControlPlane(context.Background(), cfg, workspace, events, a.cpHooks...)
 			add("control plane", err, "on, store "+label)
 			if settings != nil {
 				for _, s := range settings.List() {

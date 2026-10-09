@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -53,9 +54,11 @@ func ValidKey(key string) bool {
 }
 
 // Scope is the space a key is valid in. Another principal's key, or the
-// same key on another route, never replays.
+// same key on another route, never replays. The principal is length-prefixed
+// so no name can run into the method, and nothing in it is a byte Postgres
+// text refuses.
 func Scope(principal, method, path string) string {
-	return principal + "\x00" + method + "\x00" + path
+	return strconv.Itoa(len(principal)) + ":" + principal + " " + method + " " + path
 }
 
 // Do runs fn once for key. A repeat after fn finished gets fn's response

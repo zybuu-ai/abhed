@@ -64,8 +64,8 @@ func (s *Service) SetGuard(g Guard) error {
 
 type guardBox struct{ Guard }
 
-// admit asks the installed guard, if any, about a.
-func (s *Service) admit(ctx context.Context, a *Admission) (func(), error) {
+// guardAdmit asks the installed guard, if any, about a.
+func (s *Service) guardAdmit(ctx context.Context, a *Admission) (func(), error) {
 	box := s.guard.Load()
 	if box == nil {
 		return func() {}, nil

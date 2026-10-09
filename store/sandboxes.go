@@ -21,6 +21,7 @@ import (
 type Sandboxes struct {
 	pool   *pgxpool.Pool
 	tenant string
+	fence  Fence
 
 	mu    sync.Mutex
 	swept time.Time
@@ -31,6 +32,40 @@ var (
 	_ controlplane.AuditLog    = (*Sandboxes)(nil)
 	_ controlplane.AuditReader = (*Sandboxes)(nil)
 )
+
+// FenceOp is the write a Fence is asked about.
+type FenceOp string
+
+const (
+	FenceCreate FenceOp = "create"
+	FenceUpdate FenceOp = "update"
+	FenceDelete FenceOp = "delete"
+)
+
+// Fence runs inside the transaction of every sandbox write, before it
+// commits, and refuses it by returning an error; the write then changes
+// nothing. Enterprise HA uses it to hold a write to the replica whose lease
+// on the sandbox is current, so a replica that lost it writes nothing.
+type Fence func(ctx context.Context, tx pgx.Tx, op FenceOp, id string) error
+
+// WithFence returns the store with every Create, Update and Delete checked
+// by f in its own transaction.
+func (q *Sandboxes) WithFence(f Fence) *Sandboxes {
+	return &Sandboxes{pool: q.pool, tenant: q.tenant, fence: f}
+}
+
+// Pool is the connection pool, for an edition's tables beside these.
+func (q *Sandboxes) Pool() *pgxpool.Pool { return q.pool }
+
+// Tenant is the tenant the store was opened for.
+func (q *Sandboxes) Tenant() string { return q.tenant }
+
+func (q *Sandboxes) fenced(ctx context.Context, tx pgx.Tx, op FenceOp, id string) error {
+	if q.fence == nil {
+		return nil
+	}
+	return q.fence(ctx, tx, op, id)
+}
 
 // sandboxColumns are what this build reads and writes; the runtime role
 // cannot add them, so their absence is found before the first request.
@@ -91,8 +126,13 @@ func (q *Sandboxes) Create(ctx context.Context, s controlplane.Sandbox) (control
 	if err != nil {
 		return controlplane.Sandbox{}, err
 	}
+	tx, err := q.pool.Begin(ctx)
+	if err != nil {
+		return controlplane.Sandbox{}, fmt.Errorf("create sandbox: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	var rv int64
-	err = q.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO sandboxes (tenant_id, id, owner, state, resource_version, object)
 		VALUES ($1, $2, $3, $4, nextval('sandbox_resource_version'), $5)
 		RETURNING resource_version`, q.tenant, s.ID, s.Owner, string(s.State), raw).Scan(&rv)
@@ -101,6 +141,12 @@ func (q *Sandboxes) Create(ctx context.Context, s controlplane.Sandbox) (control
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return controlplane.Sandbox{}, fmt.Errorf("%w: sandbox %s", controlplane.ErrExists, s.ID)
 		}
+		return controlplane.Sandbox{}, fmt.Errorf("create sandbox: %w", err)
+	}
+	if err := q.fenced(ctx, tx, FenceCreate, s.ID); err != nil {
+		return controlplane.Sandbox{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return controlplane.Sandbox{}, fmt.Errorf("create sandbox: %w", err)
 	}
 	s = s.Clone()
@@ -197,6 +243,9 @@ func (q *Sandboxes) Update(ctx context.Context, s controlplane.Sandbox, expect i
 	if err := controlplane.CheckImmutable(cur, s); err != nil {
 		return controlplane.Sandbox{}, err
 	}
+	if err := q.fenced(ctx, tx, FenceUpdate, s.ID); err != nil {
+		return controlplane.Sandbox{}, err
+	}
 	var rv int64
 	if err := tx.QueryRow(ctx, `
 		UPDATE sandboxes SET state = $3, object = $4, resource_version = nextval('sandbox_resource_version')
@@ -212,14 +261,26 @@ func (q *Sandboxes) Update(ctx context.Context, s controlplane.Sandbox, expect i
 }
 
 func (q *Sandboxes) Delete(ctx context.Context, id string, expect int64) error {
-	tag, err := q.pool.Exec(ctx, `DELETE FROM sandboxes WHERE tenant_id = $1 AND id = $2 AND resource_version = $3`,
+	tx, err := q.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("delete sandbox: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	tag, err := tx.Exec(ctx, `DELETE FROM sandboxes WHERE tenant_id = $1 AND id = $2 AND resource_version = $3`,
 		q.tenant, id, expect)
 	if err != nil {
 		return fmt.Errorf("delete sandbox: %w", err)
 	}
 	if tag.RowsAffected() == 1 {
+		if err := q.fenced(ctx, tx, FenceDelete, id); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("delete sandbox: %w", err)
+		}
 		return nil
 	}
+	_ = tx.Rollback(ctx)
 	cur, err := q.Get(ctx, id)
 	if err != nil {
 		return err

@@ -318,6 +318,9 @@ type Options struct {
 	// approvals and when an answer settles one. Nil: the session's owner
 	// answers, and the first answer settles it.
 	ApprovalGate ApprovalGate
+	// SandboxRouter, when set, relays each call that acts on a sandbox to the
+	// replica that owns it. Nil handles every call here.
+	SandboxRouter SandboxRouter
 }
 
 // Server holds live sessions and serves the API.
