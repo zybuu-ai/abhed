@@ -66,9 +66,11 @@ type acpTerminal struct {
 	sess    *tools.Session
 	mu      sync.Mutex
 	line    []byte
-	queue   chan string
-	ctx     context.Context
-	cancel  context.CancelFunc
+	// esc is where typed input stands within an escape sequence.
+	esc    escState
+	queue  chan string
+	ctx    context.Context
+	cancel context.CancelFunc
 	// running cancels the command running now; nil when none is.
 	running context.CancelFunc
 	// shell is set for an interactive terminal.
@@ -180,6 +182,9 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	var echo lineEcho
 	t.mu.Lock()
 	for _, b := range []byte(p.Data) {
+		if t.esc.drop(b) {
+			continue
+		}
 		switch {
 		case b == 0x03: // Ctrl-C stops the command running and drops the line
 			if t.running != nil {
@@ -207,6 +212,11 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 			}
 		}
 	}
+	// An Esc on its own at the end of an input is the Esc key, not the start
+	// of a sequence the next input finishes.
+	if t.esc == escStart {
+		t.esc = escNone
+	}
 	t.mu.Unlock()
 	c.output(t, echo.bytes())
 	for _, l := range lines {
@@ -217,6 +227,72 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 		}
 	}
 	c.reply(msg.ID, map[string]any{}, nil)
+}
+
+// escState follows an escape sequence through typed input. Arrow and
+// function keys, bracketed-paste markers and a terminal's replies are keys
+// for a program, never text for a line, so each is dropped whole.
+type escState uint8
+
+const (
+	escNone      escState = iota
+	escStart              // after ESC
+	escCSI                // ESC [, up to its final byte
+	escSS3                // ESC O, one more byte
+	escString             // OSC, DCS, SOS, PM or APC, up to BEL or ESC \
+	escStringEsc          // an ESC within one of those
+)
+
+// drop reports whether b belongs to an escape sequence. A line break or
+// Ctrl-C ends an unfinished one, so it never swallows the line.
+func (e *escState) drop(b byte) bool {
+	if b == '\r' || b == '\n' || b == 0x03 {
+		*e = escNone
+		return false
+	}
+	switch *e {
+	case escStart:
+		switch b {
+		case '[':
+			*e = escCSI
+		case 'O':
+			*e = escSS3
+		case ']', 'P', 'X', '^', '_':
+			*e = escString
+		case 0x1b: // Alt with a key that sends a sequence of its own
+		default: // Alt with a key
+			*e = escNone
+		}
+		return true
+	case escCSI:
+		if b < 0x20 || b > 0x7e {
+			// Not part of a sequence: the sequence was cut short.
+			*e = escNone
+			return false
+		}
+		if b >= 0x40 {
+			*e = escNone
+		}
+		return true
+	case escSS3:
+		*e = escNone
+		return true
+	case escString:
+		if b == 0x07 {
+			*e = escNone
+		} else if b == 0x1b {
+			*e = escStringEsc
+		}
+		return true
+	case escStringEsc:
+		*e = escNone
+		return true
+	}
+	if b == 0x1b {
+		*e = escStart
+		return true
+	}
+	return false
 }
 
 // runTerminal runs the terminal's lines one at a time until it is killed,

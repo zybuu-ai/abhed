@@ -788,7 +788,12 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
 - `confirm` is answered only from a modal whose default is No.
 - In `lines` mode the engine draws the prompt (the workspace folder and the
   path under it, then `$`), echoes typed text in bold, and shows each line's
-  output followed by its dimmed `exit N · time`.
+  output followed by its dimmed `exit N · time`. It edits the line itself:
+  Backspace deletes, and a key that sends an escape sequence (the arrows,
+  Home, End, function keys, Alt with a key, a paste's bracketed-paste
+  markers, a terminal's replies) is dropped whole, never typed. There is no
+  history or cursor movement; an Esc alone at the end of an input is the Esc
+  key, and a line break ends a sequence left unfinished.
 - Studio's ACP `terminal` client capability stays `false`: the agent never
   runs commands in Studio's terminals.
 

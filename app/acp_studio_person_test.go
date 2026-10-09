@@ -129,6 +129,41 @@ func TestStudioTerminalLinesShowOutputBeforeTheStatus(t *testing.T) {
 	}
 }
 
+// Keys that send escape sequences, an arrow or a bracketed paste's markers,
+// are dropped whole in lines mode; none leaves its tail to run as a command.
+func TestStudioTerminalLinesDropEscapeSequences(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	for _, in := range []string{
+		"\x1b[A\r",                              // an arrow alone
+		"\x1b[Aecho one\x1bOB\r",                // CSI and SS3 arrows around a line
+		"\x1b[200~echo two\x1b[201~\r",          // a bracketed paste
+		"\x1b]0;title\x07\x1b[1;5Decho three\r", // a terminal's reply and Ctrl-Left
+		"\x1b[1;5", "Cecho four\r",              // a sequence split across inputs
+		"\x1b", "echo five\r", // the Esc key on its own
+	} {
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": in}, nil)
+	}
+	waitOutput(r.cl, from, term.TerminalID, "\r\nfive\r\n")
+	var ran []string
+	reqs, _ := r.recorded(id, agent.EvActionRequested)
+	for _, q := range reqs {
+		ran = append(ran, q["args"].(map[string]any)["command"].(string))
+	}
+	if want := []string{"echo one", "echo two", "echo three", "echo four", "echo five"}; !slices.Equal(ran, want) {
+		t.Fatalf("lines run: %q, want %q", ran, want)
+	}
+	if out := terminalOutput(r.cl.since(from), term.TerminalID); strings.Contains(out, "not found") {
+		t.Fatalf("part of a key sequence ran: %q", out)
+	}
+}
+
 func TestLineResultPutsTheStatusLast(t *testing.T) {
 	code := 1
 	got := string(lineResult(tools.Result{Content: "exit 1 · 12ms\nboom\nbang", ExitCode: &code}))
