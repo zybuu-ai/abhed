@@ -183,6 +183,11 @@ func TestExecRefusals(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// A bare entry may be a secret's value: the refusal gives its position only.
+	if _, err := d.Exec(ctx, "a", driver.ExecRequest{Command: "true", Env: []string{"A=1", "ghp_secretvalue"}}); err == nil ||
+		strings.Contains(err.Error(), "ghp_") || !strings.Contains(err.Error(), "entry 2") {
+		t.Errorf("a bare entry: %v", err)
+	}
 	var out bytes.Buffer
 	if _, err := d.Exec(ctx, "a", driver.ExecRequest{Command: "echo $EXTRA", Cwd: ".", Env: []string{"EXTRA=1"}, Stdout: &out}); err != nil || out.String() != "1\n" {
 		t.Fatalf("added env %q %v", out.String(), err)

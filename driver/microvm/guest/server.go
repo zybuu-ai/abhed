@@ -5,6 +5,7 @@ package guest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -102,10 +103,11 @@ func (s *Server) env(extra []string) ([]string, error) {
 		set[k] = true
 	}
 	out := append([]string(nil), s.Env...)
-	for _, kv := range extra {
+	for i, kv := range extra {
 		k, _, ok := strings.Cut(kv, "=")
 		if !ok || k == "" {
-			return nil, errors.New("env entry " + kv + " is not NAME=value")
+			// By position only: a bare entry may be a secret's value.
+			return nil, fmt.Errorf("env entry %d is not NAME=value", i+1)
 		}
 		if set[k] {
 			return nil, errors.New("env " + k + " is set by the guest and cannot be replaced")

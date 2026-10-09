@@ -646,10 +646,11 @@ var fixedEnv = []string{"PATH", "HOME", "ABHED_SANDBOX", "HTTP_PROXY", "HTTPS_PR
 // callerEnv checks env and returns its names, for forwarding by name.
 func callerEnv(env []string) ([]string, error) {
 	var names []string
-	for _, kv := range env {
+	for i, kv := range env {
 		k, _, ok := strings.Cut(kv, "=")
 		if !ok || k == "" || strings.ContainsAny(k, " \t\n=") {
-			return nil, driver.Errorf(driver.ErrInvalid, "env entry %q is not NAME=value", kv)
+			// By position only: a bare entry may be a secret's value.
+			return nil, driver.Errorf(driver.ErrInvalid, "env entry %d is not NAME=value", i+1)
 		}
 		for _, f := range fixedEnv {
 			if strings.EqualFold(k, f) {

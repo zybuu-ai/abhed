@@ -617,6 +617,11 @@ func TestExecArgvAndEnvironment(t *testing.T) {
 			t.Errorf("env %v: %v", env, err)
 		}
 	}
+	// A bare entry may be a secret's value: the refusal gives its position only.
+	if _, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true", Env: []string{"A=1", "ghp_secretvalue"}}); err == nil ||
+		strings.Contains(err.Error(), "ghp_") || !strings.Contains(err.Error(), "entry 2") {
+		t.Errorf("a bare entry: %v", err)
+	}
 	for _, dir := range []string{"..", "/etc", ws + "/../x"} {
 		if _, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true", Cwd: dir}); !errors.Is(err, driver.ErrInvalid) {
 			t.Errorf("cwd %s: %v", dir, err)

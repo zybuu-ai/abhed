@@ -101,6 +101,11 @@ func TestExecEnvAddsButNeverReplaces(t *testing.T) {
 	if !errors.As(err, &ge) || !strings.Contains(ge.Message, "PATH") {
 		t.Fatalf("replacing PATH: %v", err)
 	}
+	// A bare entry may be a secret's value: the refusal gives its position only.
+	_, _, _, err = run(t, s, ExecRequest{Command: "true", Env: []string{"A=1", "ghp_secretvalue"}}, nil)
+	if !errors.As(err, &ge) || strings.Contains(ge.Message, "ghp_") || !strings.Contains(ge.Message, "entry 2") {
+		t.Fatalf("a bare entry: %v", err)
+	}
 }
 
 func TestExecMissingCommandIsAnError(t *testing.T) {

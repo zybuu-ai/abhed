@@ -357,10 +357,11 @@ func addEnv(cmd *exec.Cmd, env []string) error {
 		set[k] = true
 	}
 	names := make([]string, 0, len(env))
-	for _, kv := range env {
+	for i, kv := range env {
 		k, _, ok := strings.Cut(kv, "=")
 		if !ok || k == "" {
-			return driver.Errorf(driver.ErrInvalid, "env entry %q is not NAME=value", kv)
+			// By position only: a bare entry may be a secret's value.
+			return driver.Errorf(driver.ErrInvalid, "env entry %d is not NAME=value", i+1)
 		}
 		if set[k] {
 			return driver.Errorf(driver.ErrInvalid, "env %s is set by the sandbox and cannot be replaced", k)
