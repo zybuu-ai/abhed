@@ -77,6 +77,8 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 			p.StatePaths = append(p.StatePaths, filepath.Join(r, tools.StateDir))
 		}
 	}
+	// The command line's sign-in tokens and client keys, wherever kept.
+	p.StatePaths = append(p.StatePaths, config.ProfileFiles()...)
 	// A control-plane sandbox's own folder may lie in the state folder: the
 	// rest of it is hidden around that folder, as its siblings are.
 	for _, f := range ControlPlaneFolders(cfg) {
@@ -160,12 +162,13 @@ func ControlPlaneFolders(cfg config.Config) []string {
 	return out
 }
 
-// ToolStatePaths are StatePaths with the control plane's secrets in its
-// state folder, the relay's host key and the snapshots, for the file tools
+// ToolStatePaths are StatePaths with the command line's profiles and client
+// keys, and the control plane's secrets in its state folder, the relay's
+// host key and the snapshots, for the file tools
 // and the server's readers to refuse. The folder itself is not one: a
 // per-session sandbox's workspace lies in it.
 func ToolStatePaths(cfg config.Config, workspace string) []string {
-	out := StatePaths(cfg, workspace)
+	out := append(StatePaths(cfg, workspace), config.ProfileFiles()...)
 	if p, err := cfg.SSHHostKeyFile(); err == nil {
 		out = append(out, p)
 	}
