@@ -81,17 +81,33 @@ func Name(name string) (string, error) {
 // Link refuses a symbolic link whose target is absolute, resolves above
 // the folder the archive is unpacked into, or lies in Abhed's state.
 func Link(name, target string) error {
-	if target == "" || strings.HasPrefix(target, "/") || strings.ContainsRune(target, 0) {
-		return driver.Errorf(driver.ErrInvalid, "link %s points to %q, outside the folder", name, target)
+	resolved, err := Target(name, target)
+	if err != nil {
+		return err
 	}
-	joined := path.Clean(path.Join(path.Dir(name), target))
-	if joined == ".." || strings.HasPrefix(joined, "../") {
-		return driver.Errorf(driver.ErrInvalid, "link %s points to %q, outside the folder", name, target)
-	}
-	if InState(joined) {
+	if InState(resolved) {
 		return driver.Errorf(driver.ErrInvalid, "link %s points into Abhed's state", name)
 	}
 	return nil
+}
+
+// Target is where the link name pointing at target lands, judged on its
+// text alone. That holds only for a target in plain form whose ".." parts
+// all lead and number no more than the folders above name: a ".." after
+// another link would climb from wherever that link leads instead.
+func Target(name, target string) (string, error) {
+	if target == "" || strings.HasPrefix(target, "/") || strings.ContainsRune(target, 0) || path.Clean(target) != target {
+		return "", driver.Errorf(driver.ErrInvalid, "link %s points to %q, outside the folder", name, target)
+	}
+	parts := strings.Split(target, "/")
+	ups := 0
+	for ups < len(parts) && parts[ups] == ".." {
+		ups++
+	}
+	if slices.Contains(parts[ups:], "..") || ups > strings.Count(path.Clean(name), "/") {
+		return "", driver.Errorf(driver.ErrInvalid, "link %s points to %q, outside the folder", name, target)
+	}
+	return path.Join(path.Dir(name), target), nil
 }
 
 // InState reports whether a slash-separated name is, or is inside, a
@@ -341,6 +357,11 @@ func Unpack(ctx context.Context, src io.Reader, root *os.Root, lim Limits, own *
 		if err := mkdirAll(root, path.Dir(l.name)); err != nil {
 			return st, err
 		}
+		// A link is judged from where its name says it sits, so no folder
+		// on the way to it may itself be a link.
+		if err := noLinkAbove(root, l.name); err != nil {
+			return st, err
+		}
 		if err := root.Symlink(l.target, l.name); err != nil {
 			return st, driver.Errorf(driver.ErrInvalid, "link %s: %v", l.name, err)
 		}
@@ -365,6 +386,19 @@ func Unpack(ctx context.Context, src io.Reader, root *os.Root, lim Limits, own *
 		_ = root.Chtimes(d.name, d.mtime, d.mtime)
 	}
 	return st, nil
+}
+
+func noLinkAbove(root *os.Root, name string) error {
+	for dir := path.Dir(name); dir != "."; dir = path.Dir(dir) {
+		info, err := root.Lstat(dir)
+		if err != nil {
+			return driver.Errorf(driver.ErrInvalid, "link %s: %v", name, err)
+		}
+		if !info.IsDir() {
+			return driver.Errorf(driver.ErrInvalid, "link %s sits under the link %s", name, dir)
+		}
+	}
+	return nil
 }
 
 func mkdirAll(root *os.Root, name string) error {

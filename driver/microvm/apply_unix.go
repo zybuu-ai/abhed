@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/zybuu-ai/abhed/driver/archive"
 	"github.com/zybuu-ai/abhed/driver/microvm/guest"
 )
 
@@ -439,10 +440,12 @@ func (a *applier) symlink(comps []string, target string) error {
 	}
 	// A link may only name something inside the workspace, and nothing
 	// protected, so no later write through it on the host escapes.
-	if target == "" || path.IsAbs(target) || strings.ContainsRune(target, 0) {
+	// Parents are opened without following links, so the link sits where
+	// its name says and its target can be judged on text.
+	resolved, err := archive.Target(rel, target)
+	if err != nil {
 		return a.skip(rel, "a link to "+target+" points outside the workspace")
 	}
-	resolved := path.Join(path.Dir(rel), target)
 	tcomps, err := cleanRel(resolved)
 	if err != nil {
 		return a.skip(rel, "a link to "+target+" points outside the workspace")

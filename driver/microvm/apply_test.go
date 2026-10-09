@@ -279,6 +279,28 @@ func TestApplyRefusesLinksOut(t *testing.T) {
 	}
 }
 
+// A ".." after another link climbs from where that link leads: the
+// chained links below would reach outside, or into .abhed.
+func TestApplyRefusesChainedLinks(t *testing.T) {
+	ws, _ := sandboxPair(t)
+	a := applierFor(t, ws)
+	mustApply(t, a, linkChange("d1/d2/L", ".."))
+	mustApply(t, a, linkChange("d1/d2/d3/L", "../.."))
+	if len(a.refused) != 0 {
+		t.Fatalf("an inside link was refused: %q", a.refused)
+	}
+	mustApply(t, a, linkChange("d1/d2/E", "L/../../../outside/secret"))
+	mustApply(t, a, linkChange("d1/d2/F", "L/../../secret"))
+	mustApply(t, a, linkChange("d1/d2/d3/G", "../../../../outside"))
+	mustApply(t, a, linkChange("d1/H", "d2/L/../.abhed"))
+	refusedOnly(t, a, 4, "points")
+	for _, n := range []string{"d1/d2/E", "d1/d2/F", "d1/d2/d3/G", "d1/H"} {
+		if _, err := os.Lstat(filepath.Join(ws, n)); err == nil {
+			t.Fatalf("%s was made", n)
+		}
+	}
+}
+
 func TestApplyRefusesSpecialFilesAndBounds(t *testing.T) {
 	ws, _ := sandboxPair(t)
 	a := applierFor(t, ws)
