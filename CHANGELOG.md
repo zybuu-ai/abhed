@@ -12,6 +12,14 @@ All notable changes to Abhed are recorded here. The format follows
   the deny rules or the extensions, which is when a terminal must judge each
   line.
 
+### Security
+
+- A managed `/etc/abhed/config.json` with a key repeated in one object, or a
+  number too large for a generic JSON decode, is now refused at startup. Such a
+  file could be read one way for the rules in force and another way for which
+  settings the managed file makes, so a managed rule could fail to lock allow
+  rules or to force line-by-line terminals.
+
 ### Fixed
 
 - A managed configuration that set nothing about permissions — for example one

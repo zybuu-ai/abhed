@@ -96,7 +96,7 @@ func TestLoadManagedReadsOnlyTheManagedFile(t *testing.T) {
 func managedCfg(keys ...string) Config {
 	c := Default()
 	c.Managed = true
-	c.ManagedKeys = keys
+	c.ManagedKeys = append([]string{}, keys...)
 	return c
 }
 
@@ -216,6 +216,43 @@ func TestAllowRefusedUnderAnyManagedPermission(t *testing.T) {
 	if got, err := c.Apply(Overrides{Allow: []string{"bash(touch *)"}}); err != nil || c.AllowLocked() ||
 		!strings.Contains(strings.Join(got.Permissions.Allow, " "), "bash(touch *)") {
 		t.Errorf("a managed file without permissions refused an allow rule: %v", err)
+	}
+}
+
+// A managed file the config decode and the key walk could read differently is
+// refused: a repeated key, or a value only one of them can hold.
+func TestManagedFileReadTwoWaysIsRefused(t *testing.T) {
+	for name, body := range map[string]string{
+		"repeated, then empty":  `{"permissions":{"deny":["bash(*touch *)"]},"permissions":{}}`,
+		"repeated, then null":   `{"permissions":{"deny":["bash(*touch *)"]},"permissions":null}`,
+		"repeated nested":       `{"permissions":{"deny":["bash(curl *)"],"deny":[]}}`,
+		"number past float64":   `{"_comment":1e400,"permissions":{"deny":["bash(*touch *)"]}}`,
+		"number past float64 2": `{"$note":-1e999,"extensions":[{"name":"x","command":"x"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			old := managed.ConfigFile
+			managed.ConfigFile = path
+			t.Cleanup(func() { managed.ConfigFile = old })
+			if _, err := LoadManaged(); err == nil {
+				t.Fatalf("loaded %s", body)
+			}
+		})
+	}
+}
+
+// A managed Config with nothing known of what it set screens; an empty managed file does not.
+func TestManagedScreensFailsSafe(t *testing.T) {
+	hand := Default()
+	hand.Managed = true
+	if !hand.ManagedScreens() {
+		t.Error("a hand-built managed config did not screen")
+	}
+	if managedCfg().ManagedScreens() {
+		t.Error("a managed file that sets nothing screened")
 	}
 }
 
