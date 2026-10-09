@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // fakeMCP is an MCP server over HTTP offering the named tools.
@@ -140,5 +142,39 @@ func TestConcurrentMCPAddsOfOverlappingNames(t *testing.T) {
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("codes %v: registered %q, want %q", codes, got, want)
+	}
+}
+
+// remoteStub is a registered MCP tool of a server the gateway is not offering
+// at this moment, as one being restarted.
+type remoteStub struct{ server, name string }
+
+func (r remoteStub) Name() string          { return "mcp__" + r.server + "__" + r.name }
+func (remoteStub) Description() string     { return "" }
+func (remoteStub) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (remoteStub) Mutates() bool           { return true }
+func (r remoteStub) ServerName() string    { return r.server }
+func (r remoteStub) RemoteName() string    { return r.name }
+func (remoteStub) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
+	return tools.Result{}
+}
+
+// Adding a server leaves another server's tools alone even while the gateway
+// is not offering them, as during that server's restart.
+func TestRuntimeMCPAddLeavesOtherServersTools(t *testing.T) {
+	gw := mcp.NewGateway()
+	t.Cleanup(gw.Close)
+	g := newHookRig(t, nil, func(o *Options) {
+		o.Gateway = gw
+		o.Registry = tools.NewRegistry(tools.Read{}, remoteStub{"restarting", "t"})
+	})
+	alice := g.signIn(t, "alice")
+	body, _ := json.Marshal(map[string]string{"name": "new", "url": fakeMCP(t, "x")})
+	if rec := g.do(alice, "POST", "/v1/admin/mcp", string(body)); rec.Code != http.StatusOK {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body)
+	}
+	names := g.srv.state.toolRegistry().Names()
+	if !slices.Contains(names, "mcp__restarting__t") || !slices.Contains(names, "mcp__new__x") {
+		t.Fatalf("registered %v", names)
 	}
 }

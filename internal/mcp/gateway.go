@@ -504,6 +504,14 @@ func (g *Gateway) Overlaps() []string {
 	return out
 }
 
+// OverlappedNames are the full names of the tools Tools left out because
+// another server's tools are named the same way.
+func (g *Gateway) OverlappedNames() map[string]bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return keysOf(g.overlaps)
+}
+
 // remoteTool adapts an MCP tool to Abhed's tool interface.
 type remoteTool struct {
 	// gw is asked for the server's connection at each call, so a restart

@@ -281,25 +281,29 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 
 	// The registry is brought in line with what the gateway offers now, tool
 	// by tool as server and remote name, not by full name: two servers' tools
-	// can share one. Every gateway tool it no longer offers is taken out, and
-	// this server's new ones are added.
+	// can share one. A tool of this server it no longer offers, or one left
+	// out for its name, is taken out; another server's, perhaps mid-restart,
+	// is left alone. This server's new tools are added.
 	added := []string{}
 	s.state.swapTools(func(reg *tools.Registry) {
 		offered := map[string]tools.Tool{}
 		for _, t := range gw.Tools() {
 			offered[mcpIdentity(t)] = t
 		}
+		leftOut := gw.OverlappedNames()
 		have := map[string]bool{}
 		for _, t := range reg.All() {
 			id := mcpIdentity(t)
 			if id == "" {
 				continue
 			}
-			if _, ok := offered[id]; !ok {
-				reg.Remove(t.Name())
+			if _, ok := offered[id]; ok {
+				have[id] = true
 				continue
 			}
-			have[id] = true
+			if n, _ := t.(mcpNamed); n.ServerName() == req.Name || leftOut[t.Name()] {
+				reg.Remove(t.Name())
+			}
 		}
 		if len(errs) > 0 {
 			return
