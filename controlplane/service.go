@@ -245,6 +245,12 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 	}
 	ev := AuditEvent{Principal: c.Principal, Action: "create", SandboxID: sb.ID, Generation: sb.Generation,
 		Detail: map[string]string{"template": sb.Template, "driver": sb.Driver}}
+	// The record links a session's sandbox to the session it was made for.
+	for _, k := range []string{LabelSession, LabelSessionUser, LabelPool} {
+		if v, ok := sb.Labels[k]; ok {
+			ev.Detail[strings.TrimPrefix(k, ReservedPrefix)] = v
+		}
+	}
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
 	}
