@@ -172,6 +172,17 @@ case; such a tool is refused with a warning. MCP tool names
 are compared exactly, case included, because their own protocols and
 configuration tell `GitHub` from `github`.
 
+`mcp__<server>__*` as the tool name names every tool of that one MCP server,
+as it does in an agent definition's tool list: `"deny": ["mcp__github__*"]`
+refuses every tool the `github` server offers, and may take a pattern too,
+`mcp__github__*(repo/*)`. The server name is compared exactly. It is the only
+wildcard in a tool name; any other `*`, `?` or space in an MCP tool name, or
+an MCP rule with no tool part (`mcp__github`), never matches and is reported
+as below. A server whose name begins with another's and `__`, such as
+`github__ent` beside `github`, is also covered by `mcp__github__*`, which is
+reported too. Spaces around a tool name are ignored: `bash (curl *)` is
+`bash(curl *)`.
+
 A rule whose tool name names no tool is not silent. Abhed warns of it at
 startup, and `abhed doctor` (and `/doctor`, and Abhed Studio's checks) lists
 it, with the name it was probably meant to be (`WebFetch` → `web_fetch`). This

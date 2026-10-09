@@ -230,6 +230,13 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	return s
 }
 
+// caseOnlyServer reports whether an mcp__server__* rule names tool's server
+// only in another case.
+func caseOnlyServer(rule, tool string) bool {
+	prefix, ok := policy.MCPServerWildcard(rule)
+	return ok && len(tool) > len(prefix) && strings.EqualFold(tool[:len(prefix)], prefix)
+}
+
 // CaseOnlyRules names each permission rule whose tool is one of names only
 // in another case: an MCP or extension tool, whose name is compared exactly,
 // so the rule never matches it.
@@ -238,11 +245,11 @@ func CaseOnlyRules(cfg config.Config, names []string) []string {
 	for list, rules := range map[string][]string{"deny": cfg.Permissions.Deny, "ask": cfg.Permissions.Ask, "allow": cfg.Permissions.Allow} {
 		for _, raw := range rules {
 			r, err := policy.ParseRule(raw)
-			if err != nil || r.Tool() == "*" || slices.Contains(names, r.Tool()) {
+			if err != nil || slices.ContainsFunc(names, r.ForTool) {
 				continue
 			}
 			for _, n := range names {
-				if strings.EqualFold(n, r.Tool()) {
+				if strings.EqualFold(n, r.Tool()) || caseOnlyServer(r.Tool(), n) {
 					out = append(out, fmt.Sprintf("permissions.%s rule %s never matches: the tool is %s, and its name is compared exactly, case included",
 						list, config.Printable(raw), config.Printable(n)))
 					break

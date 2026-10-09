@@ -91,23 +91,50 @@ func (c Config) ruleToolProblem(tool string) (never bool, why string) {
 	return true, why + ", and no extension provides tools, so the rule never matches"
 }
 
-// mcpProblem checks an MCP tool name, mcp__server__tool, against the
-// configured servers. Server and tool names are compared exactly, as MCP does.
+// mcpProblem checks an MCP tool name, mcp__server__tool or mcp__server__*,
+// against the configured servers. Server and tool names are compared
+// exactly, as MCP does.
 func (c Config) mcpProblem(tool string) (never bool, why string) {
-	for _, s := range c.MCP.Servers {
-		if strings.HasPrefix(tool, "mcp__"+s.Name+"__") && len(tool) > len("mcp__"+s.Name+"__") {
+	wild, wildcard := policy.MCPServerWildcard(tool)
+	if !wildcard && strings.ContainsAny(tool, "*? \t") {
+		return true, "the only wildcard in an MCP tool name is a whole tool part, mcp__server__*, so the rule never matches"
+	}
+	if wildcard {
+		configured := false
+		for _, s := range c.MCP.Servers {
+			configured = configured || "mcp__"+s.Name+"__" == wild
+		}
+		for _, s := range c.MCP.Servers {
+			if other := "mcp__" + s.Name + "__"; configured && other != wild && strings.HasPrefix(other, wild) {
+				return false, fmt.Sprintf("it also covers every tool of the MCP server %q, whose tools are named %s…", s.Name, other)
+			}
+		}
+		if configured {
 			return false, ""
 		}
 	}
 	for _, s := range c.MCP.Servers {
-		if prefix := "mcp__" + s.Name + "__"; strings.HasPrefix(strings.ToLower(tool), strings.ToLower(prefix)) {
+		prefix := "mcp__" + s.Name + "__"
+		switch {
+		case tool == "mcp__"+s.Name || tool == prefix:
+			return true, fmt.Sprintf("it names the MCP server %q but no tool of it; write %s<tool> for one tool, or %s* for all of them", s.Name, prefix, prefix)
+		case !wildcard && strings.HasPrefix(tool, prefix):
+			return false, ""
+		}
+	}
+	lower := strings.ToLower(tool)
+	for _, s := range c.MCP.Servers {
+		if prefix := strings.ToLower("mcp__" + s.Name + "__"); strings.HasPrefix(lower, prefix) || lower == strings.TrimSuffix(prefix, "__") {
 			return true, fmt.Sprintf("the MCP server is configured as %q, and MCP tool names are compared exactly, case included, so the rule never matches", s.Name)
 		}
 	}
 	if !strings.HasPrefix(tool, "mcp__") {
 		return !c.extensionsMayProvideTools(), "MCP tools are named mcp__server__tool in lower-case mcp__, so the rule names no MCP tool"
 	}
-	server, _, _ := strings.Cut(strings.TrimPrefix(tool, "mcp__"), "__")
+	server, name, _ := strings.Cut(strings.TrimPrefix(tool, "mcp__"), "__")
+	if name == "" {
+		return true, "it names no tool: write mcp__<server>__<tool>, or mcp__<server>__* for every tool of a server"
+	}
 	return false, fmt.Sprintf("no MCP server %q is configured here, so the rule matches nothing until one is", server)
 }
 

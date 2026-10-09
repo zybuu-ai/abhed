@@ -128,10 +128,18 @@ func ParseRule(s string) (Rule, error) {
 	}
 	// Bash(curl *) is bash(curl *): a built-in name in another case used to
 	// match no tool, so a deny rule copied in that style never fired.
-	if name := strings.TrimSpace(r.tool); ReservedToolName(name) {
-		r.tool = CanonicalTool(name)
-	}
+	r.tool = CanonicalTool(strings.TrimSpace(r.tool))
 	return r, nil
+}
+
+// ForTool reports whether the rule is for tool: it names it, any tool (*), or
+// every tool of the MCP server tool belongs to (mcp__server__*).
+func (r Rule) ForTool(tool string) bool {
+	if r.tool == tool || r.tool == "*" {
+		return true
+	}
+	prefix, ok := MCPServerWildcard(r.tool)
+	return ok && strings.HasPrefix(tool, prefix) && len(tool) > len(prefix)
 }
 
 // Canonical is the rule with its tool name as Abhed spells it.
@@ -164,7 +172,7 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 }
 
 func (r Rule) Matches(tool string, subject string) bool {
-	if r.tool != tool && r.tool != "*" {
+	if !r.ForTool(tool) {
 		return false
 	}
 	if r.pattern == nil {
@@ -215,7 +223,7 @@ func (e *Engine) rulesSeeParts(tool string) bool {
 // patterned reports whether any of rules has a pattern for tool.
 func patterned(rules []Rule, tool string) bool {
 	for _, r := range rules {
-		if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+		if r.ForTool(tool) && r.pattern != nil {
 			return true
 		}
 	}
@@ -248,7 +256,7 @@ func (r Rule) matchesPathAny(tool string, subjects []string) bool {
 	if r.matchesAny(tool, subjects) {
 		return true
 	}
-	if r.tool != tool && r.tool != "*" {
+	if !r.ForTool(tool) {
 		return false
 	}
 	for _, s := range subjects {
@@ -369,7 +377,7 @@ func (e *Engine) Screens(tool string) bool {
 		return true
 	}
 	for _, r := range e.DenyRules() {
-		if r.tool == tool || r.tool == "*" {
+		if r.ForTool(tool) {
 			return true
 		}
 	}
@@ -545,7 +553,7 @@ func (e *Engine) pathRules(tool string) bool {
 	deny, ask, allow := e.rules()
 	for _, rules := range [][]Rule{deny, ask, allow} {
 		for _, r := range rules {
-			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+			if r.ForTool(tool) && r.pattern != nil {
 				return true
 			}
 		}
@@ -668,7 +676,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 			if r.matchesAny(tool, subjects) {
 				return true
 			}
-			return (r.tool == tool || r.tool == "*") && r.pattern != nil && globsMeet(r.glob, subject)
+			return r.ForTool(tool) && r.pattern != nil && globsMeet(r.glob, subject)
 		}
 	}
 

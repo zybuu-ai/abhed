@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -50,6 +51,23 @@ func CanonicalTool(name string) string {
 	}
 	return name
 }
+
+// MCPServerWildcard is the prefix every tool of one MCP server shares, for a
+// rule tool written mcp__server__*; ok is false for any other name.
+func MCPServerWildcard(tool string) (prefix string, ok bool) {
+	server, found := strings.CutPrefix(tool, "mcp__")
+	if !found || !strings.HasSuffix(server, "__*") {
+		return "", false
+	}
+	server = strings.TrimSuffix(server, "__*")
+	if !mcpServerName.MatchString(server) {
+		return "", false
+	}
+	return "mcp__" + server + "__", true
+}
+
+// mcpServerName is the form an MCP server's configured name must take.
+var mcpServerName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // asciiLower lowers an ASCII name; a name with any other character is not
 // folded, so a look-alike letter never stands for a built-in name.

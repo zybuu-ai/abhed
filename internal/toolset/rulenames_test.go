@@ -55,3 +55,12 @@ func containsAll(s string, subs ...string) bool {
 	}
 	return true
 }
+
+func TestCaseOnlyRulesForServerWildcards(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Deny = []string{"mcp__GitHub__*", "mcp__github__*"}
+	got := CaseOnlyRules(cfg, []string{"mcp__github__create_issue"})
+	if len(got) != 1 || !strings.Contains(got[0], "mcp__GitHub__*") {
+		t.Fatalf("got %q", got)
+	}
+}

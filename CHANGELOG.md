@@ -32,6 +32,15 @@ All notable changes to Abhed are recorded here. The format follows
   are still compared exactly, case included; a rule that differs from one of
   the session's tools only in case is warned of when the tools are loaded.
   A bash pattern ending in `:*` is read literally and is now listed.
+- A rule naming every tool of one MCP server, `mcp__<server>__*`, as agent
+  definitions name them, matched no tool: rules compared tool names exactly,
+  so a managed `"deny": ["mcp__github__*"]` allowed every `github` tool and
+  `abhed doctor` said nothing. `mcp__<server>__*` now names every tool of
+  that server (the server compared exactly) in deny, ask and allow rules and
+  in an extension's `match`. Any other wildcard or space in an MCP tool name,
+  or an MCP rule with no tool part, is reported as never matching. Space
+  around any rule's tool name is now ignored. Affects 0.1.0 to 1.2.7; the
+  agent-definition guide has taught the form since 1.2.3.
 - An extension may no longer provide a tool named like a built-in tool, in
   any case: such a tool is refused with a warning. It could take a rule meant
   for the built-in, and one named exactly as a built-in replaced it.

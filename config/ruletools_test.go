@@ -135,3 +135,29 @@ func TestUnknownToolRuleWithExtensions(t *testing.T) {
 		t.Fatalf("with an extension: %+v", f)
 	}
 }
+
+// MCP rule shapes that can never match are named as such; a server wildcard
+// for a configured server is no finding.
+func TestMCPRuleShapes(t *testing.T) {
+	cfg := Default()
+	cfg.MCP.Servers = []MCPServerConfig{{Name: "github", Command: "true"}, {Name: "github__ent", Command: "true"}}
+	for rule, want := range map[string]string{
+		"mcp__github__*":      "also covers every tool of the MCP server \"github__ent\"",
+		"mcp__github__x (*)":  "",
+		"mcp__github__create": "",
+		"mcp__github":         "names the MCP server \"github\" but no tool",
+		"mcp__github__x*":     "the only wildcard",
+		"mcp__GitHub__*":      "configured as \"github\"",
+		"mcp__gitlab__create": "no MCP server \"gitlab\"",
+		"mcp__github__ent__*": "",
+	} {
+		cfg.Permissions.Deny = []string{rule}
+		f := cfg.RuleFindings()
+		switch {
+		case want == "" && len(f) != 0:
+			t.Errorf("%s: %v", rule, f)
+		case want != "" && (len(f) != 1 || !strings.Contains(f[0].Why, want)):
+			t.Errorf("%s: %+v, want %q", rule, f, want)
+		}
+	}
+}

@@ -113,3 +113,39 @@ func TestSuggestTool(t *testing.T) {
 		}
 	}
 }
+
+// mcp__server__* names every tool of one server, as agent definitions teach;
+// a deny rule written so used to match no tool and allowed them all.
+func TestMCPServerWildcardRules(t *testing.T) {
+	e := New(ModeBypass)
+	if err := e.AddDeny("mcp__github__*", "mcp__fs__x (*)"); err != nil {
+		t.Fatal(err)
+	}
+	none := json.RawMessage(`{}`)
+	for _, tool := range []string{"mcp__github__create_issue", "mcp__github__a__b", "mcp__fs__x"} {
+		if d := e.Evaluate(tool, true, none); d.Decision != Deny {
+			t.Errorf("%s: %s, want deny", tool, d.Decision)
+		}
+	}
+	for _, tool := range []string{"mcp__githubx__a", "mcp__GitHub__create_issue", "mcp__github__", "bash"} {
+		if d := e.Evaluate(tool, true, cmd("ls")); d.Decision == Deny {
+			t.Errorf("%s was denied by a rule for another server", tool)
+		}
+	}
+	a := New(ModeDefault)
+	if err := a.AddAllow("mcp__github__*"); err != nil {
+		t.Fatal(err)
+	}
+	if d := a.Evaluate("mcp__github__list", true, none); d.Decision != Allow {
+		t.Errorf("allow wildcard: %s", d.Decision)
+	}
+	if d := a.Evaluate("mcp__gitlab__list", true, none); d.Decision == Allow {
+		t.Error("allow wildcard reached another server")
+	}
+	for name, want := range map[string]bool{"mcp__github__*": true, "mcp__a-b_c__*": true, "mcp____*": false,
+		"mcp__a b__*": false, "mcp__github__x*": false, "MCP__github__*": false} {
+		if _, ok := MCPServerWildcard(name); ok != want {
+			t.Errorf("%s: %v, want %v", name, ok, want)
+		}
+	}
+}
