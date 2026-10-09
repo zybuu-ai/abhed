@@ -58,6 +58,7 @@ var sandboxVerbs = map[string]sandboxVerb{
 	"cp":       {method: http.MethodPost, handle: (*Server).cpSandbox},
 	"snapshot": {method: http.MethodPost, handle: (*Server).snapshotSandbox},
 	"restore":  {method: http.MethodPost, handle: (*Server).restoreSandbox},
+	"events":   {method: http.MethodGet, handle: (*Server).sandboxEvents},
 }
 
 // cpError is the contract's error body.
@@ -172,6 +173,7 @@ func (s *Server) sandboxRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sandboxes/{target}", s.sandboxTarget)
 	mux.HandleFunc("PATCH /v1/sandboxes/{target}", s.sandboxTarget)
 	mux.HandleFunc("DELETE /v1/sandboxes/{target}", s.sandboxTarget)
+	s.templateRoutes(mux)
 	// Exposed services, behind the same sign-in; each answers its owner only.
 	// Registered per method: a method-less pattern would clash with "GET /".
 	if s.opts.Expose != nil {

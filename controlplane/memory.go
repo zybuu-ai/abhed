@@ -16,6 +16,7 @@ type Memory struct {
 	idem      map[idemKey]IdemRecord
 	swept     time.Time
 	audit     []AuditEvent
+	templates map[string]Template
 	auditSeq  int64
 }
 

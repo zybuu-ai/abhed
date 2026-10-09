@@ -25,6 +25,7 @@ func Run(t *testing.T, open func(t *testing.T) controlplane.Store) {
 	t.Run("Isolation", func(t *testing.T) { isolation(t, open(t)) })
 	t.Run("IdempotencyClaims", func(t *testing.T) { claims(t, open(t)) })
 	t.Run("IdempotencyConcurrentClaim", func(t *testing.T) { concurrentClaim(t, open(t)) })
+	t.Run("Templates", func(t *testing.T) { templates(t, open(t)) })
 }
 
 var t0 = time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)

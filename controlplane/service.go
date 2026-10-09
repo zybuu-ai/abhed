@@ -216,6 +216,10 @@ type CreateRequest struct {
 
 // Create records a new sandbox in Provisioning; the reconciler builds it.
 func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sandbox, error) {
+	req, err := s.applyTemplate(ctx, req)
+	if err != nil {
+		return Sandbox{}, err
+	}
 	name := req.Driver
 	if name == "" {
 		name = s.cfg.DefaultDriver

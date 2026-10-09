@@ -353,4 +353,20 @@ CREATE POLICY sandbox_audit_tenant_isolation ON sandbox_audit
   USING (tenant_id = current_setting('app.tenant_id', true))
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 
+-- Sandbox templates: named defaults a sandbox is created from, versioned
+-- from the same sequence as sandboxes.
+CREATE TABLE IF NOT EXISTS sandbox_templates (
+  tenant_id        TEXT   NOT NULL,
+  name             TEXT   NOT NULL,
+  resource_version BIGINT NOT NULL,
+  object           JSONB  NOT NULL,
+  PRIMARY KEY (tenant_id, name)
+);
+ALTER TABLE sandbox_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_templates FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sandbox_templates_tenant_isolation ON sandbox_templates;
+CREATE POLICY sandbox_templates_tenant_isolation ON sandbox_templates
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
 INSERT INTO schema_version (version) VALUES (7) ON CONFLICT DO NOTHING;
