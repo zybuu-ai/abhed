@@ -255,6 +255,15 @@ confined: `Create` builds the sandbox the configuration selects
 further commands; `Start` builds the sandbox again; `Delete` closes it, which
 releases the fence's cgroup. Copy, forward and snapshot are not declared.
 
+Because it reuses today's selection, the `process` driver also yields the
+container or gVisor tier where configuration and host pick one, and says so in
+`Status.Tier`. When the docker and podman drivers land (P3-07), whether
+`process` is narrowed to the process and fence tiers is decided there.
+
+`ExecRequest.Env` may add variables but never replace one the sandbox set
+(`PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables), and `Cwd` must be
+inside the workspace.
+
 ## 6. Out-of-process drivers (Implemented: package `driver/plugin`)
 
 An out-of-process driver is a separate binary the operator installs, listening
@@ -283,13 +292,15 @@ differs from the name it was registered under.
 **A call.**
 
 ```
-client → {"type":"call","method":"create","params":{…Spec…}}
+client → {"type":"call","method":"create","params":{"spec":{…Spec…}}}
 driver → {"type":"result","result":{…Status…}}        or
 driver → {"type":"error","error":{"code":"unavailable","message":"…"}}
 ```
 
 Methods: `create`, `start`, `stop`, `delete`, `status`, `exec`, `attach`,
-`copy_in`, `copy_out`, `forward`, `snapshot`, `restore`.
+`copy_in`, `copy_out`, `forward`, `snapshot`, `restore`. `params` is one
+object with the fields a method uses: `id`, `spec`, `grace_ms`, `exec`,
+`attach`, `path`, `port`, `name`, `ref`.
 
 **Streams.** After `call` for `exec` and `attach` the client sends `stdin`
 frames, then `stdin_eof`; `attach` may also send `resize` `{rows, cols}`. The
