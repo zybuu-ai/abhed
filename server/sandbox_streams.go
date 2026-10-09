@@ -46,9 +46,13 @@ const (
 	streamFirstWait = 30 * time.Second
 )
 
-// SSHRelayProtocol is the subprotocol of the :ssh relay, which a client
-// such as abhed sandbox connect offers.
-const SSHRelayProtocol = protoSSH
+// The subprotocols a client such as abhed sandbox offers for each stream.
+const (
+	AttachProtocol   = protoAttach
+	ExecProtocol     = protoExec
+	ForwardProtocol  = protoForward
+	SSHRelayProtocol = protoSSH
+)
 
 // streamLimits bound what a client sends on a stream.
 var streamLimits = wsconn.Limits{MaxFrame: 1 << 20, MaxMessage: 1 << 20}

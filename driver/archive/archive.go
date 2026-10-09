@@ -76,8 +76,8 @@ func Name(name string) (string, error) {
 	return clean, nil
 }
 
-// Link refuses a symbolic link whose target is absolute or resolves above
-// the folder the archive is unpacked into.
+// Link refuses a symbolic link whose target is absolute, resolves above
+// the folder the archive is unpacked into, or lies in Abhed's state.
 func Link(name, target string) error {
 	if target == "" || strings.HasPrefix(target, "/") || strings.ContainsRune(target, 0) {
 		return driver.Errorf(driver.ErrInvalid, "link %s points to %q, outside the folder", name, target)
@@ -85,6 +85,9 @@ func Link(name, target string) error {
 	joined := path.Clean(path.Join(path.Dir(name), target))
 	if joined == ".." || strings.HasPrefix(joined, "../") {
 		return driver.Errorf(driver.ErrInvalid, "link %s points to %q, outside the folder", name, target)
+	}
+	if InState(joined) {
+		return driver.Errorf(driver.ErrInvalid, "link %s points into Abhed's state", name)
 	}
 	return nil
 }

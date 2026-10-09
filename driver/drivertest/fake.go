@@ -6,6 +6,8 @@ package drivertest
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
 	"strings"
@@ -300,7 +302,8 @@ func (f *Fake) Snapshot(_ context.Context, id, name string) (driver.SnapshotRef,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ref := driver.SnapshotRef{ID: id + "@" + name, Name: name}
+	sum := sha256.Sum256([]byte(id + "@" + name))
+	ref := driver.SnapshotRef{ID: id + "@" + name, Name: name, Digest: "sha256:" + hex.EncodeToString(sum[:])}
 	f.snapshots[ref.ID] = ref
 	return ref, nil
 }

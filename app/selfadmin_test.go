@@ -95,6 +95,7 @@ func TestSelfAdminNamesOnlyChanges(t *testing.T) {
 		"admin web-search on": true, "admin web-search off": true,
 		"login https://a.test": true, "logout": true, "profile use a": true, "profile rm a": true,
 		"profile list": false, "pki init": false, "sandbox connect --stdio sbx_0123456789abcdef": true,
+		"sandbox list": true, "sandbox get sbx_0123456789abcdef": true, "sandbox template list": true, "sandbox -h": false,
 	} {
 		if got := selfAdmin(strings.Fields(args)) != ""; got != want {
 			t.Errorf("selfAdmin(%q) = %v, want %v", args, got, want)

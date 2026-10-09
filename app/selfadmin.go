@@ -59,8 +59,8 @@ func selfAdmin(rest []string) string {
 		}
 	case "sandbox":
 		// Nor reach a server's sandboxes with it.
-		if verb == "connect" {
-			return "abhed sandbox connect"
+		if verb != "" && verb != "-h" && verb != "--help" && verb != "help" {
+			return "abhed sandbox " + verb
 		}
 	case "migrate":
 		return "abhed migrate"
