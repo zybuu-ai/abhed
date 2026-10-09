@@ -837,3 +837,36 @@ func TestSSHConfigRefusesListedBadIDs(t *testing.T) {
 		}
 	}
 }
+
+// What the server names (ids, the next page, snapshot fields, an exposure's
+// URL) reaches the terminal with its control characters escaped.
+func TestServerTextIsCleanedOnTheTerminal(t *testing.T) {
+	r := newRig(t)
+	esc := "\x1b]0;owned\x07"
+	id := "sbx_0123456789abcdef"
+	r.setWrap(func(w http.ResponseWriter, req *http.Request, next http.Handler) bool {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/sandboxes":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{{"id": "sbx_" + esc, "state": "Ready"}}, "next": esc})
+		case strings.HasSuffix(req.URL.Path, ":snapshot"):
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"snapshot": map[string]any{"id": "snap" + esc, "name": esc, "digest": esc}, "generation": 1})
+		case strings.HasSuffix(req.URL.Path, ":expose"):
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"url": "http://x/" + esc, "path": "/v1/exposed/x/"})
+		default:
+			return false
+		}
+		return true
+	})
+	for _, args := range [][]string{{"list"}, {"snapshot", id, "-name", "n"}, {"expose", id, "8000"}} {
+		res := r.run(t, args...)
+		if strings.ContainsAny(res.out+res.err, "\x1b\x07") {
+			t.Errorf("%v printed a raw control character: %q %q", args, res.out, res.err)
+		}
+		if !strings.Contains(res.out+res.err, `\x1b`) {
+			t.Errorf("%v did not show the escaped text: %q %q", args, res.out, res.err)
+		}
+	}
+}
