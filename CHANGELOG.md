@@ -26,12 +26,12 @@ All notable changes to Abhed are recorded here. The format follows
   a `rules` line in `abhed doctor`, `/doctor` and Abhed Studio's checks, with
   the name it was probably meant to be. A managed deny or ask rule so listed
   fails `abhed doctor`; a managed allow rule is a warning. A managed deny rule
-  whose tool name is evidently a mistake (`Shell`, `WebFetch`, a near-miss of
-  a built-in with no extension that may provide tools, look-alike letters,
-  `MCP__`, or an MCP server or knowledge base the managed file sets, written
-  in another case) stops Abhed from starting, naming the rule and the file.
-  A name that may be meant ahead, an MCP server, knowledge base or extension
-  tool not set up here, does not. MCP, knowledge-base and extension tool names
+  whose tool name is evidently a mistake (`Shell`, `WebFetch`, look-alike
+  letters, `MCP__`, or an MCP server or knowledge base the managed file sets,
+  written in another case) stops Abhed from starting, naming the rule and the
+  file. A name that may be meant ahead, such as a name close to a built-in
+  (`git`, `sql`) or an MCP server, knowledge base or extension tool not set up
+  here, fails the doctor and does not stop startup. MCP, knowledge-base and extension tool names
   are still compared exactly, case included; a rule that differs from one of
   the session's tools only in case is warned of when the tools are loaded. A
   bash pattern ending in `:*` is read literally and is now listed.

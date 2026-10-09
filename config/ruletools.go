@@ -21,8 +21,8 @@ type RuleFinding struct {
 	Layer string `json:"layer,omitempty"`
 	// Never is set when no call in this configuration can match the rule.
 	Never bool `json:"never"`
-	// Mistake is set when the name is evidently another's misspelt: a
-	// built-in's other name, or a built-in, server or corpus in another
+	// Mistake is set when the name is evidently another's: another harness's
+	// name for a built-in, or a built-in, managed server or corpus in another
 	// case or in look-alike letters. A managed deny rule so written stops startup.
 	Mistake bool   `json:"mistake,omitempty"`
 	Why     string `json:"why"`
@@ -110,7 +110,8 @@ func (c Config) ruleToolProblem(tool, list string) problem {
 	}
 	if alt != "" {
 		why += fmt.Sprintf(" (did you mean %s?)", alt)
-		evident = evident || policy.FamiliarName(tool) || !ext
+		// A near miss such as git or sql may be a tool meant ahead: a finding, not a refusal.
+		evident = evident || policy.FamiliarName(tool)
 	}
 	if ext {
 		return problem{mistake: evident, why: why + "; it matches only a tool an extension provides under exactly that name"}

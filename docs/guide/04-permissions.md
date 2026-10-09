@@ -205,11 +205,12 @@ rule names may be set up later or on another machine. Only a managed deny
 rule whose tool name is evidently a mistake stops Abhed from starting, with a
 message naming the rule and the file, since Abhed should not run while the
 organisation believes such a rule holds. Evidently a mistake means: another
-tool's name for a built-in (`Shell`, `WebFetch`, `MultiEdit`); a name a
-letter or two from a built-in (`bsh`) when no extension may provide tools; a
+tool's name for a built-in (`Shell`, `WebFetch`, `MultiEdit`); a
 built-in written with look-alike letters (the Kelvin sign for `k`); `MCP__`
 written in another case; or an MCP server or knowledge base that the managed
-configuration itself sets, written in another case. A bash pattern ending in
+configuration itself sets, written in another case. A name merely close to a
+built-in, such as `git`, `sql` or `bsh`, may be a tool set up later: it fails
+`abhed doctor`, with the built-in it may mean, but does not stop startup. A bash pattern ending in
 `:*`, another tool's way of writing a prefix, is read literally (a colon, then
 anything) and is listed too: write `bash(npm test *)` for `Bash(npm test:*)`.
 The `-allowedTools` and `-disallowedTools` flags still translate `:*` for you. `-disallowedTools`
