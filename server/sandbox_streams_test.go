@@ -436,6 +436,37 @@ func TestSandboxForwardRoundTripAndCloseOnStop(t *testing.T) {
 	}
 }
 
+// After the client's end of input the forward still reads the WebSocket,
+// so a client that goes away is noticed at once, not at the idle check.
+func TestSandboxForwardNoticesAClientGoneAfterEOF(t *testing.T) {
+	r := newWSRig(t, nil, []driver.Capability{driver.CapForward})
+	sb := r.ready(t, "alice")
+	ws, err := r.dial(t, "alice", "/v1/sandboxes/"+sb.ID+":forward?port=8080", protoForward)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := control(t, ws); c.Type != "started" {
+		t.Fatalf("first message %+v", c)
+	}
+	_ = ws.WriteMessage(wsconn.Binary, []byte("ping"))
+	readUntil(t, ws, "ping")
+	_ = ws.WriteMessage(wsconn.Text, []byte(`{"type":"eof"}`))
+	// The sandbox's side stays open; the client vanishes without a close.
+	time.Sleep(50 * time.Millisecond)
+	ws.Abort()
+	deadline := time.Now().Add(streamPing / 2)
+	for time.Now().Before(deadline) {
+		if ev, ok := auditDetail(t, r.cpRig, sb.ID, "forward", ""); ok && ev.Outcome != controlplane.OutcomeRequested {
+			if ev.Detail["bytes_in"] != "4" {
+				t.Fatalf("forward record %+v", ev)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the forward outlived its client")
+}
+
 func TestSandboxStreamRateAndSlots(t *testing.T) {
 	r := newWSRig(t, map[string]string{controlplane.SetExecPerMin: "1"}, []driver.Capability{driver.CapAttach})
 	sb := r.ready(t, "alice")

@@ -307,7 +307,14 @@ func (s *Server) forwardSandbox(w http.ResponseWriter, r *http.Request, call ver
 				_, err := io.Copy(rwc, stream)
 				if errors.Is(err, errClientEOF) {
 					_ = rwc.CloseWrite()
-					return
+					// Still read, for the client's close or its connection
+					// going, so a vanished client ends the forward now rather
+					// than at the idle check; nothing it sends now is carried.
+					for {
+						if _, _, err := ws.ReadMessage(); err != nil {
+							break
+						}
+					}
 				}
 				gone.Store(true)
 				_ = rwc.Close()
