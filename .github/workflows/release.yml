@@ -2,8 +2,13 @@
 # platform with the documentation embedded, the microVM driver's
 # abhed-microvm and abhed-guest for Linux, a checksum file covering all of
 # them, and a multi-arch container image, and publishes them as a GitHub
-# Release. Nothing is built by
-# hand, so a release is reproducible from its tag.
+# Release. Nothing is built by hand, so a release is reproducible from its
+# tag.
+#
+# abhed-vmhelper, the macOS microVM helper, is deliberately not published
+# yet: a copy others can run must be signed and notarized with the
+# project's Developer ID (scripts/macos/sign-vmhelper.sh), whose
+# certificate is not in this workflow. Add it here once it is.
 name: Release
 
 on:

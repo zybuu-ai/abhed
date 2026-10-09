@@ -7,6 +7,6 @@ import (
 	"runtime"
 )
 
-func probeHelper(string) error {
+func probeHelper(string, string) error {
 	return fmt.Errorf("the Virtualization.framework helper backend runs only on macOS; this host runs %s", runtime.GOOS)
 }

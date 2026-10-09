@@ -359,10 +359,11 @@ Each instance is a virtual machine with its own guest kernel, reporting the
 tier `microvm`; a `MinTier` of any known tier is met, and the `process`
 driver answers a `MinTier` of `microvm` with `ErrUnavailable`. Backends: on
 Linux, Firecracker under its jailer on KVM (chroot, a uid and gid per VM,
-cgroup v2 limits, Firecracker's seccomp filters); on macOS, a separate
-Virtualization.framework helper speaking the protocol in
-`driver/microvm/helper.go`, not shipped, so the backend refuses until one is
-installed. A backend whose requirements are missing fails `Create` with
+cgroup v2 limits, Firecracker's seccomp filters); on macOS, `abhed-vmhelper`
+(`macos/abhed-vmhelper`), a separate Virtualization.framework program
+speaking the protocol in `driver/microvm/helper.go`, whose code signature,
+entitlement and hardened runtime the driver checks before running it, and
+which it refuses while missing or wrongly signed. A backend whose requirements are missing fails `Create` with
 `ErrUnavailable`.
 
 - No network device. With `Spec.Egress` set (the session's egress proxy

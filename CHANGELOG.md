@@ -83,9 +83,25 @@ All notable changes to Abhed are recorded here. The format follows
     `arm64` and `s390x`, in `SHA256SUMS` with the rest. The guest kernel and
     root filesystem are not shipped; `scripts/microvm/build-rootfs.sh -g`
     builds the root filesystem around the released agent.
-  - On macOS it needs a Virtualization.framework helper signed with the
-    virtualization entitlement, which is not shipped, so there it refuses
-    every sandbox.
+  - On macOS each sandbox is a VM on Virtualization.framework, run by
+    `abhed-vmhelper` (`macos/abhed-vmhelper`, Swift, Apple frameworks
+    only): the kernel and command line, a read-only root and the workspace
+    as virtio disks, vsock bridged to the driver, an entropy device and a
+    write-only console; never a network device, shared folders, clipboard,
+    sound, USB or graphics. It stops the VM and exits when the driver's end
+    of its standard input closes. The driver looks for it beside
+    `abhed-microvm` (or at `helper.path`) and refuses it unless it is
+    signed, unchanged, carries its identifier, the
+    `com.apple.security.virtualization` entitlement and the hardened
+    runtime, and, with `helper.team_id` set, a Developer ID of that team.
+    `scripts/macos/build-vmhelper.sh` builds and signs it ad hoc for the
+    Mac that built it; `scripts/macos/sign-vmhelper.sh` signs, notarizes
+    and staples a distributable copy with your Developer ID.
+    `scripts/macos/guest-image.sh` fetches a pinned, checksummed arm64
+    guest kernel and Alpine base and builds the root filesystem. A test
+    boots real VMs on a Mac (`ABHED_TEST_VZ=1`); a CI job builds, signs and
+    tests the helper without booting, as hosted macOS runners cannot run a
+    VM.
 - `abhed serve` can terminate TLS itself: `server.tls.cert_file` and
   `key_file`, TLS 1.2 or later (`min_version: "1.3"` to refuse 1.2) with
   forward-secret AEAD suites only, HTTP/2. `additional_certificates` serves a

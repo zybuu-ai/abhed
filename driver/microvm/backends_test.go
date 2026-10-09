@@ -236,17 +236,21 @@ func TestFirecrackerBootTimeoutKillsTheJailer(t *testing.T) {
 	}
 }
 
+// signFakeHelper returns the fake helper signed as a real one must be, on
+// macOS where the probe checks the signature.
+var signFakeHelper = func(_ *testing.T, path string) string { return path }
+
 func TestHelperBackendWithFakeHelper(t *testing.T) {
 	o := testOptions(t)
-	o.Helper = &Helper{Path: fakeVMM(t, "helper")}
+	o.Helper = &Helper{Path: signFakeHelper(t, fakeVMM(t, "helper"))}
 	d, err := New(o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := d.be.(*helper)
 	h.env = []string{"ABHED_FAKE_VMM=helper"}
-	// The real probe runs `check`, which the fake answers; elsewhere than
-	// macOS the backend is refused before that.
+	// The real probe checks the signature and runs `check`, which the fake
+	// answers; elsewhere than macOS the backend is refused before that.
 	if runtime.GOOS != "darwin" {
 		h.probe = func() error { return runHelperCheck(context.Background(), h.h.Path) }
 	}
@@ -294,6 +298,32 @@ func TestHelperCheckAnswers(t *testing.T) {
 	}
 }
 
+func TestHelperOptions(t *testing.T) {
+	o := testOptions(t)
+	o.Helper = &Helper{}
+	h, err := newHelper(&o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, _ := os.Executable()
+	exe, _ = filepath.EvalSymlinks(exe)
+	if want := filepath.Join(filepath.Dir(exe), HelperName); h.h.Path != want {
+		t.Fatalf("default helper path %q, want %q", h.h.Path, want)
+	}
+	for _, team := range []string{"abcdefghij", "ABCDEFGHI", "ABCDEFGHIJK", `ABCDE"FGHI`} {
+		o := testOptions(t)
+		o.Helper = &Helper{TeamID: team}
+		if _, err := newHelper(&o); err == nil || !strings.Contains(err.Error(), "team_id") {
+			t.Errorf("team id %q accepted: %v", team, err)
+		}
+	}
+	o = testOptions(t)
+	o.Helper = &Helper{TeamID: "AB12CD34EF"}
+	if _, err := newHelper(&o); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHelperRefusedWithoutAHelper(t *testing.T) {
 	o := testOptions(t)
 	o.Helper = &Helper{}
@@ -306,7 +336,9 @@ func TestHelperRefusedWithoutAHelper(t *testing.T) {
 		t.Fatalf("create without a helper: %v", err)
 	}
 	if runtime.GOOS == "darwin" {
-		if !strings.Contains(err.Error(), "com.apple.security.virtualization") {
+		// It names what is missing and where it was looked for.
+		h := d.be.(*helper)
+		if !strings.Contains(err.Error(), "com.apple.security.virtualization") || !strings.Contains(err.Error(), h.h.Path) {
 			t.Fatalf("the refusal does not say what is missing: %v", err)
 		}
 	} else if !strings.Contains(err.Error(), "only on macOS") {

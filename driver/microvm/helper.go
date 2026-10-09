@@ -8,18 +8,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 )
 
-// Helper runs each instance through a separate program built on Apple's
-// Virtualization.framework. The program is not part of Abhed: it has to be
-// code-signed with the com.apple.security.virtualization entitlement.
+// Helper runs each instance through abhed-vmhelper, a separate program built
+// on Apple's Virtualization.framework (macos/abhed-vmhelper). The framework
+// runs only a program code-signed with the com.apple.security.virtualization
+// entitlement, so the helper is a signed binary of its own; the driver checks
+// that signature before it runs it.
 //
 // The helper protocol, version 1:
 //
 //	<helper> check
 //	    prints one JSON line {"protocol":1,"supported":bool,"reason":"…"};
 //	    supported is true only when the framework can run a VM here and the
-//	    helper holds the entitlement.
+//	    helper holds the entitlement. It exits 0 whatever the answer.
 //	<helper> run --config <file>
 //	    boots the VM the file describes (helperConfig), with no network
 //	    device and no shared folders; listens on vsock_socket (mode 0600)
@@ -29,23 +32,39 @@ import (
 //	    other port; writes the guest console to stdout; exits when the VM
 //	    stops, and stops the VM and exits when it is killed or its standard
 //	    input ends, which is how a driver that dies takes its VMs with it.
-//	    It refuses a key it does not know.
+//	    It refuses a key it does not know. It exits 0 when the VM stopped
+//	    (the guest powered off, or the helper stopped it), 1 when the VM
+//	    could not start or stopped with an error, and 2 when it refused the
+//	    command line or the configuration and ran no VM.
 type Helper struct {
-	// Path is the helper's absolute path; empty until one is installed.
+	// Path is the helper's absolute path. When empty, it is abhed-vmhelper
+	// in the folder of the program running the driver.
 	Path string `json:"path,omitempty"`
+	// TeamID, when set, is the Apple Developer team whose Developer ID
+	// certificate must have signed the helper. Unset, any valid signature
+	// with the helper's identifier, the entitlement and the hardened
+	// runtime is accepted, including an ad-hoc one made on this Mac.
+	TeamID string `json:"team_id,omitempty"`
 }
 
 // HelperProtocol is the helper protocol version this driver speaks.
 const HelperProtocol = 1
 
+// HelperName is the helper's file name, and HelperIdentifier the code-signing
+// identifier it must carry.
+const (
+	HelperName       = "abhed-vmhelper"
+	HelperIdentifier = "com.zybuu.abhed.vmhelper"
+)
+
 const defaultHelperBootArgs = "console=hvc0 root=/dev/vda ro init=" + GuestInit
 
-// ErrNoHelper is why the macOS backend is unavailable until a signed helper
-// is installed.
-var ErrNoHelper = errors.New("the macOS microVM backend needs a Virtualization.framework helper, " +
-	"a separate program that is not part of this release: it must be code-signed with the " +
-	"com.apple.security.virtualization entitlement and set as helper.path. Until then the microvm " +
-	"driver is unavailable on macOS; the process tier is unchanged")
+// ErrNoHelper is why the macOS backend is unavailable without its helper.
+var ErrNoHelper = errors.New("the macOS microVM backend needs abhed-vmhelper, the Virtualization.framework " +
+	"helper, code-signed with the com.apple.security.virtualization entitlement; install it beside " +
+	"abhed-microvm or set helper.path. Until then the microvm driver is unavailable on macOS; the process tier is unchanged")
+
+var teamID = regexp.MustCompile(`^[A-Z0-9]{10}$`)
 
 type helperDisk struct {
 	Path     string `json:"path"`
@@ -97,8 +116,27 @@ func newHelper(o *Options) (*helper, error) {
 	if h.h.Path != "" && !filepath.IsAbs(h.h.Path) {
 		return nil, fmt.Errorf("microvm: helper.path must be an absolute path")
 	}
-	h.probe = func() error { return probeHelper(h.h.Path) }
+	if h.h.TeamID != "" && !teamID.MatchString(h.h.TeamID) {
+		return nil, fmt.Errorf("microvm: helper.team_id %q is not an Apple Developer team id (ten letters and digits)", h.h.TeamID)
+	}
+	if h.h.Path == "" {
+		h.h.Path = defaultHelperPath()
+	}
+	h.probe = func() error { return probeHelper(h.h.Path, h.h.TeamID) }
 	return h, nil
+}
+
+// defaultHelperPath is abhed-vmhelper beside the running program, or empty
+// when that program's path is unknown.
+func defaultHelperPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	return filepath.Join(filepath.Dir(exe), HelperName)
 }
 
 func (h *helper) name() string { return "vz-helper" }
