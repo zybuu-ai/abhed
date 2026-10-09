@@ -79,6 +79,10 @@ All notable changes to Abhed are recorded here. The format follows
     answers.
   - A CI job boots real microVMs on KVM with a pinned, checksummed
     Firecracker, guest kernel and Alpine base.
+  - Releases carry `abhed-microvm` and `abhed-guest` for Linux on `amd64`,
+    `arm64` and `s390x`, in `SHA256SUMS` with the rest. The guest kernel and
+    root filesystem are not shipped; `scripts/microvm/build-rootfs.sh -g`
+    builds the root filesystem around the released agent.
   - On macOS it needs a Virtualization.framework helper signed with the
     virtualization entitlement, which is not shipped, so there it refuses
     every sandbox.

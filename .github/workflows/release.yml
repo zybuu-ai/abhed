@@ -1,6 +1,8 @@
 # A release is a tag. Pushing v<major>.<minor>.<patch> builds one archive per
-# platform with the documentation embedded, a checksum file, and a multi-arch
-# container image, and publishes them as a GitHub Release. Nothing is built by
+# platform with the documentation embedded, the microVM driver's
+# abhed-microvm and abhed-guest for Linux, a checksum file covering all of
+# them, and a multi-arch container image, and publishes them as a GitHub
+# Release. Nothing is built by
 # hand, so a release is reproducible from its tag.
 name: Release
 

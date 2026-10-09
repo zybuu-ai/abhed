@@ -134,6 +134,25 @@ thing missing, unless all of these hold. Nothing falls back to a weaker tier.
 - An unused range of uids and gids for the VMs (`uid_base`, `gid_base`,
   `slots`).
 
+## Getting the binaries
+
+Each release carries `abhed-microvm-<version>-linux-<arch>` and
+`abhed-guest-<version>-linux-<arch>` for `amd64`, `arm64` and `s390x`, beside
+the `abhed` archives and listed in the same `SHA256SUMS`:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+sudo install -m 0755 abhed-microvm-<version>-linux-amd64 /usr/local/bin/abhed-microvm
+```
+
+Firecracker itself runs on `x86_64` and `aarch64` only, so on `s390x` the
+driver refuses every sandbox; those two binaries are there for building and
+testing. The guest kernel and the root filesystem are not shipped: build the
+root filesystem with the release's `abhed-guest` (below), and take a guest
+kernel from a source you trust, checking its checksum as the CI job does.
+A root filesystem is not reproducible byte for byte (`mkfs.ext4` stamps a
+fresh UUID and times), so record the checksum of the one you built.
+
 ## Running it
 
 `abhed-microvm` serves the driver on a Unix socket that only the server's
@@ -201,6 +220,9 @@ verified, with the agent installed:
 
 ```sh
 sudo scripts/microvm/build-rootfs.sh -b alpine-minirootfs.tar.gz -o rootfs.ext4 -a amd64
+# or with the release's agent instead of building one:
+sudo scripts/microvm/build-rootfs.sh -b alpine-minirootfs.tar.gz -o rootfs.ext4 \
+  -g abhed-guest-<version>-linux-amd64
 ```
 
 ## macOS
