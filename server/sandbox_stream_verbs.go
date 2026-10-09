@@ -61,7 +61,7 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 	if cwd != "" {
 		detail["cwd"] = s.opts.ControlPlane.Redact(cwd)
 	}
-	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "attach",
+	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "attach", End: cancel,
 		Capability: driver.CapAttach, Detail: detail, Screen: func() error { return denied(pol, "bash -i", false) }},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {
 			var err error
@@ -345,7 +345,7 @@ func (s *Server) forwardSandbox(w http.ResponseWriter, r *http.Request, call ver
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
 	var ws *wsconn.Conn
-	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "forward",
+	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "forward", End: cancel,
 		Capability: driver.CapForward, Detail: map[string]string{"port": strconv.Itoa(port)}},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {
 			// Opened before the upgrade, so nothing listening is an HTTP answer.
@@ -458,7 +458,7 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
 	var ws *wsconn.Conn
-	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "ssh"},
+	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "ssh", End: cancel},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {
 			var err error
 			if ws, err = accept(w, r, st.proto); err != nil {

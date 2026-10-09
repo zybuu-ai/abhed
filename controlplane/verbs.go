@@ -58,11 +58,11 @@ func (s *Service) prepare(ctx context.Context, c Caller, id, ifMatch, verb strin
 // So a guard or interceptor that refuses an exec is not gone round by
 // another verb. On error the verb's outcome is recorded; release runs once
 // the verb has ended.
-func (s *Service) admitVerb(ctx context.Context, ev AuditEvent, c Caller, sb Sandbox, op, command string) (
+func (s *Service) admitVerb(ctx context.Context, ev AuditEvent, c Caller, sb Sandbox, op, command string, cancel func(error)) (
 	release func(), adm AdmissionRequest, err error) {
 	old := sb.Clone()
 	adm = AdmissionRequest{Operation: op, Caller: c, SandboxID: sb.ID, Old: &old, Object: sb}
-	ga := &Admission{Action: op, Caller: c, Sandbox: sb}
+	ga := &Admission{Action: op, Caller: c, Sandbox: sb, Cancel: cancel}
 	if op == OpExec {
 		ga.Exec = &ExecRequest{Command: command}
 		adm.Command = s.redact(command)
@@ -101,7 +101,7 @@ func (s *Service) Snapshot(ctx context.Context, c Caller, id, ifMatch, name stri
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return driver.SnapshotRef{}, sb, err
 	}
-	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":snapshot "+name)
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":snapshot "+name, nil)
 	if err != nil {
 		return driver.SnapshotRef{}, sb, err
 	}
@@ -137,7 +137,7 @@ func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
 	}
-	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpStart, "")
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpStart, "", nil)
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -213,7 +213,7 @@ func (s *Service) CopyIn(ctx context.Context, c Caller, id, dst string, tar io.R
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return sb, err
 	}
-	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":cp in "+dst)
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":cp in "+dst, nil)
 	if err != nil {
 		return sb, err
 	}
@@ -240,7 +240,7 @@ func (s *Service) CopyOut(ctx context.Context, c Caller, id, src string, w io.Wr
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return sb, err
 	}
-	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":cp out "+src)
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":cp out "+src, nil)
 	if err != nil {
 		return sb, err
 	}
@@ -288,6 +288,9 @@ type StreamRequest struct {
 	// Screen, when set, judges the call once it is recorded and before the
 	// guard; a refusal is recorded and returned.
 	Screen func() error
+	// End, when set, cancels the ctx Stream is given; the guard ends the
+	// stream with it (Admission.Cancel). Without it the guard cannot.
+	End context.CancelCauseFunc
 }
 
 // Stream runs fn with a Ready sandbox's driver, checked, recorded,
@@ -314,14 +317,18 @@ func (s *Service) Stream(ctx context.Context, c Caller, id string, req StreamReq
 	for _, k := range slices.Sorted(maps.Keys(req.Detail)) {
 		command += " " + k + "=" + req.Detail[k]
 	}
-	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, command)
+	var cancel func(error)
+	if req.End != nil {
+		cancel = guardCancel(req.End)
+	}
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, command, cancel)
 	if err != nil {
 		return sb, err
 	}
 	defer release()
 	more, err := fn(d, sb)
-	if err != nil && ctx.Err() != nil {
-		err = context.Cause(ctx)
+	if cause := context.Cause(ctx); cause != nil && (err != nil || errors.Is(cause, ErrEndedByGuard)) {
+		err = cause
 	}
 	if len(more) > 0 {
 		if ev.Detail == nil {

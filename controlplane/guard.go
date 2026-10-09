@@ -58,6 +58,25 @@ type Admission struct {
 	// sandbox and its warm pool, "" for a request a caller made. Only the
 	// server sets it; no request can.
 	Origin string
+	// Cancel ends the operation once admitted, such as an exec whose quota
+	// slot lapsed, with cause in its record (ErrEndedByGuard wraps it). It
+	// is never nil, safe from any goroutine, and does nothing once the
+	// operation has ended or for one that ends as it is admitted.
+	Cancel func(cause error)
+}
+
+// ErrEndedByGuard is an admitted operation its guard ended (Admission.Cancel).
+var ErrEndedByGuard = errors.New("ended by the guard")
+
+// guardCancel is an Admission.Cancel that ends what end cancels.
+func guardCancel(end context.CancelCauseFunc) func(error) {
+	return func(cause error) {
+		if cause == nil {
+			end(ErrEndedByGuard)
+			return
+		}
+		end(fmt.Errorf("%w: %w", ErrEndedByGuard, cause))
+	}
 }
 
 // OriginSession marks an operation the server makes for a session's sandbox.
@@ -98,6 +117,9 @@ func (s *Service) guardAdmit(ctx context.Context, a *Admission) (func(), error) 
 	}
 	a.Approval = ApprovalOf(ctx)
 	a.Origin = OriginOf(ctx)
+	if a.Cancel == nil {
+		a.Cancel = func(error) {}
+	}
 	release, err := box.Admit(ctx, a)
 	if err != nil {
 		if release != nil {

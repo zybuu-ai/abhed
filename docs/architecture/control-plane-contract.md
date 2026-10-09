@@ -803,6 +803,13 @@ behaves as the sections above describe.
   again. An error that is not one of the contract's is `unavailable`: a
   guard that cannot decide refuses. The release it returns runs once the
   operation has ended, so it can hold a lock or a slot across it.
+  `Admission.Cancel(cause)` ends an operation it admitted, from any
+  goroutine, such as an exec whose quota slot lapsed: an exec, or a stream
+  whose caller passed `StreamRequest.End`, stops and is recorded `failed`
+  with `detail.reason` (redacted) naming `controlplane.ErrEndedByGuard` and
+  the cause, and the cause's code (`forbidden` when it has none of the
+  contract's). For an operation that ends as it is admitted, a session's
+  `Service.Command` included, or one already ended, it does nothing.
 - **ApprovalGate.** `server.Options.ApprovalGate` decides who besides a
   session's owner may answer its pending approvals (`MayAnswer`) and whether
   an answer settles the request or is held as one of several it needs

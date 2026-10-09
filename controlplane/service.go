@@ -163,12 +163,23 @@ func (s *Service) outcome(ctx context.Context, ev AuditEvent, err error) {
 	if err != nil {
 		ev.Outcome, ev.Code = OutcomeFailed, ErrorCode(err)
 	}
-	if errors.Is(err, ErrOwnershipLost) {
+	switch {
+	case errors.Is(err, ErrOwnershipLost):
 		ev.Detail = maps.Clone(ev.Detail)
 		if ev.Detail == nil {
 			ev.Detail = map[string]string{}
 		}
 		ev.Detail["reason"] = ErrOwnershipLost.Error()
+	case errors.Is(err, ErrEndedByGuard):
+		ev.Detail = maps.Clone(ev.Detail)
+		if ev.Detail == nil {
+			ev.Detail = map[string]string{}
+		}
+		r := err.Error()
+		if len(r) > maxReason {
+			r = r[:maxReason]
+		}
+		ev.Detail["reason"] = s.redact(r)
 	}
 	_ = s.record(ctx, ev)
 }
@@ -209,6 +220,8 @@ func ErrorCode(err error) string {
 		return "unsupported"
 	case errors.Is(err, ErrUnavailable), errors.Is(err, driver.ErrUnavailable), errors.Is(err, context.DeadlineExceeded):
 		return "unavailable"
+	case errors.Is(err, ErrEndedByGuard):
+		return "forbidden"
 	}
 	return "internal"
 }
@@ -637,7 +650,9 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 			return driver.ExecResult{}, sb, err
 		}
 	}
-	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &req})
+	ctx, end := context.WithCancelCause(ctx)
+	defer end(nil)
+	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &req, Cancel: guardCancel(end)})
 	if err != nil {
 		s.outcome(ctx, ev, err)
 		return driver.ExecResult{}, sb, err

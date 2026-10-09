@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -307,4 +308,66 @@ func TestCallerScope(t *testing.T) {
 			t.Fatalf("scope %v on get: %v", scope, err)
 		}
 	}
+}
+
+// A guard ends an exec and a stream it admitted, as a quota guard does when
+// a slot lapses; the record names its cause and the call fails with it.
+func TestGuardEndsWhatItAdmitted(t *testing.T) {
+	ctx := context.Background()
+	r := newRigWith(t, nil, func(c *cp.Config) { c.Redact = func(s string) string { return s } })
+	sb := r.ready(t)
+	started := make(chan struct{}, 1)
+	r.fake.ExecFunc = func(ctx context.Context, _ string, _ driver.ExecRequest) (driver.ExecResult, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return driver.ExecResult{}, ctx.Err()
+	}
+	lapsed := fmt.Errorf("%w: the workspace's exec slot lapsed", cp.ErrQuotaExceeded)
+	cancels := make(chan func(error), 1)
+	guarded(t, r, func(a *cp.Admission) (func(), error) {
+		cancels <- a.Cancel
+		return nil, nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "sleep 600"}, cp.ExecIO{})
+		done <- err
+	}()
+	cancel := <-cancels
+	<-started
+	cancel(lapsed)
+	err := <-done
+	if !errors.Is(err, cp.ErrEndedByGuard) || !errors.Is(err, cp.ErrQuotaExceeded) {
+		t.Fatalf("exec ended with %v", err)
+	}
+	evs, _ := r.store.AuditFor(ctx, sb.ID)
+	last := evs[len(evs)-1]
+	if last.Action != "exec" || last.Outcome != cp.OutcomeFailed || last.Code != "quota_exceeded" ||
+		!strings.Contains(last.Detail["reason"], "slot lapsed") {
+		t.Fatalf("exec recorded as %+v", last)
+	}
+	cancel(lapsed) // once the exec has ended, nothing
+
+	// A stream the guard ends, though fn itself returns no error.
+	sctx, end := context.WithCancelCause(ctx)
+	defer end(nil)
+	_, err = r.svc.Stream(sctx, alice, sb.ID, cp.StreamRequest{Action: "attach", Capability: driver.CapAttach, End: end},
+		func(driver.Driver, cp.Sandbox) (map[string]string, error) {
+			(<-cancels)(nil)
+			<-sctx.Done()
+			return nil, nil
+		})
+	if !errors.Is(err, cp.ErrEndedByGuard) {
+		t.Fatalf("stream ended with %v", err)
+	}
+	evs, _ = r.store.AuditFor(ctx, sb.ID)
+	if last := evs[len(evs)-1]; last.Action != "attach" || last.Code != "forbidden" || last.Detail["reason"] != cp.ErrEndedByGuard.Error() {
+		t.Fatalf("stream recorded as %+v", last)
+	}
+
+	// Verbs that end as they are admitted get a Cancel that does nothing.
+	if _, err := r.svc.Stop(ctx, alice, sb.ID, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	(<-cancels)(lapsed)
 }
