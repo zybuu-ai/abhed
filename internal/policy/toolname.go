@@ -98,7 +98,12 @@ func SuggestTool(name string) string {
 	if t, ok := familiarTools[lower]; ok {
 		return t
 	}
-	best, bestD := "", 3
+	// One edit, or two for a name of five letters or more: closer guesses only.
+	limit := 1
+	if len(lower) >= 5 {
+		limit = 2
+	}
+	best, bestD := "", limit+1
 	for _, n := range BuiltinTools() {
 		if d := editDistance(lower, n); d < bestD {
 			best, bestD = n, d

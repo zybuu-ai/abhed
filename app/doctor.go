@@ -448,7 +448,8 @@ func doctorVerdict(w io.Writer, f configCheck) int {
 		fmt.Fprintln(w, "Not ready: two MCP servers' names overlap (listed above), so one is not started. Rename one of them.")
 	}
 	if f == (configCheck{rules: true}) {
-		// Only rules of the person's own that may match nothing: said above, not a failure.
+		// Only rule warnings nothing relies on, a person's own rules or a managed
+		// allow rule: said above, not a failure.
 		fmt.Fprintln(w, "Ready, with the rule warnings above.")
 		return 0
 	}

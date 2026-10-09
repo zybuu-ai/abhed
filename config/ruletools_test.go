@@ -186,6 +186,7 @@ func TestManagedDenyRefusalIsForEvidentMistakesOnly(t *testing.T) {
 		{`{"permissions":{"deny":["git(push *)"]}}`, "", false},
 		{`{"permissions":{"deny":["sql"]}}`, "", false},
 		{`{"permissions":{"deny":["MCP__github__x"]}}`, "", true},
+		{`{"permissions":{"deny":["MCP__github__x"]},"extensions":[{"name":"x","command":"true"}]}`, "", false},
 		{`{"permissions":{"deny":["rag_docs"]}}`, "", false},
 		{`{"permissions":{"deny":["jira_create"]}}`, "", false},
 		{`{"permissions":{"deny":["Shell(curl *)"]},"extensions":[{"name":"x","command":"true"}]}`, "", true},

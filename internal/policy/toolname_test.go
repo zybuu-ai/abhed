@@ -107,7 +107,8 @@ func TestSessionRulesCompareTheirCanonicalForm(t *testing.T) {
 }
 
 func TestSuggestTool(t *testing.T) {
-	for in, want := range map[string]string{"WebFetch": "web_fetch", "MultiEdit": "edit", "bsh": "bash", "zzzzzzzz": ""} {
+	for in, want := range map[string]string{"WebFetch": "web_fetch", "MultiEdit": "edit", "bsh": "bash", "zzzzzzzz": "",
+		"sql": "", "git": "", "sed": "", "writ": "write", "secrets": "secret", "taskz": "task", "tests": "tasks"} {
 		if got := SuggestTool(in); got != want {
 			t.Errorf("%s: %q, want %q", in, got, want)
 		}

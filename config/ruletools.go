@@ -167,7 +167,8 @@ func (c Config) mcpProblem(tool, list string) problem {
 		}
 	}
 	if !strings.HasPrefix(tool, "mcp__") {
-		return problem{never: !c.extensionsMayProvideTools(), mistake: true,
+		ext := c.extensionsMayProvideTools()
+		return problem{never: !ext, mistake: !ext,
 			why: "MCP tools are named mcp__server__tool in lower-case mcp__, so the rule names no MCP tool"}
 	}
 	server, name, _ := strings.Cut(strings.TrimPrefix(tool, "mcp__"), "__")
