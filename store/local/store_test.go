@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -783,5 +784,31 @@ func TestIndexActiveFromAnOlderIndex(t *testing.T) {
 	})
 	if got[0].Active.Format(timeFormat) != at {
 		t.Fatalf("an end after active lines counted as activity: %+v", got)
+	}
+}
+
+// A subscription ended while events are being appended is never sent to
+// after it is closed: the send and the close are ordered.
+func TestUnsubscribeDuringAppends(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	rec := record(t, s, "sub-race")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			if _, err := rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: strconv.Itoa(i)}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		ch := s.Subscribe("sub-race")
+		s.Unsubscribe("sub-race", ch)
 	}
 }

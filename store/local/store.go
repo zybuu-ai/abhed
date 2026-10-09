@@ -740,10 +740,11 @@ func (s *Store) systemEvent(h *session, t agent.EventType, payload any) agent.Ev
 }
 
 func (s *Store) publish(ev agent.Event) {
+	// Sent under the lock, so Unsubscribe cannot close a channel mid-send;
+	// the sends never block.
 	s.mu.Lock()
-	subs := append([]chan agent.Event(nil), s.subs[ev.SessionID]...)
-	s.mu.Unlock()
-	for _, ch := range subs {
+	defer s.mu.Unlock()
+	for _, ch := range s.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
 		default: // never block a writer on a slow reader
