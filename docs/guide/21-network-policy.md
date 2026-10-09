@@ -11,8 +11,10 @@ The agent's shell commands have three network settings:
 The allowlist is set by the administrator. `sandbox.network` and the whole
 `egress` section are **managed only**: they are read from the managed
 configuration (`/etc/abhed/config.json`) and set aside, with a warning, in
-`~/.abhed/config.json`, `-settings` or a workspace's file. With the allowlist
-on, `allow_network` is not read.
+`~/.abhed/config.json`, `-settings` or a workspace's file. Each one set aside
+is recorded as a `config.refused` event with the value asked for (an
+untrusted workspace's with the decision `ignored_untrusted`). With the
+allowlist on, `allow_network` is not read.
 
 Under the allowlist the same rules also judge Abhed's own requests: the
 model client, `web_fetch`, `web_search`, MCP servers over HTTP, and the

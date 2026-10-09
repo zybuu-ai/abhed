@@ -58,3 +58,40 @@ func TestEgressValidation(t *testing.T) {
 		t.Fatalf("egress.mode: %v", err)
 	}
 }
+
+// A set-aside egress setting is recorded with the value it was given, from
+// the user's file or a trusted workspace's; an untrusted workspace's is
+// recorded as ignored, with the same value.
+func TestRefusedEgressValuesAreRecorded(t *testing.T) {
+	file := `{"sandbox":{"network":"allowlist"},"egress":{"default":"allow","rules":[{"host":"evil.example","decision":"allow"}]}}`
+	want := map[string]string{"sandbox.network": `"allowlist"`, "egress.default": `"allow"`, "egress.rules": "evil.example"}
+	check := func(label string, cfg Config, decision string) {
+		t.Helper()
+		got := map[string]string{}
+		for _, a := range cfg.Attempts() {
+			if _, ok := want[a.Key]; ok && a.Decision == decision {
+				got[a.Key] = a.Value
+			}
+		}
+		for k, v := range want {
+			if !strings.Contains(got[k], v) {
+				t.Errorf("%s: %s recorded as %q, want it to hold %s (%v)", label, k, got[k], v, cfg.Attempts())
+			}
+		}
+	}
+	_, ws := trustHome(t, file, "")
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("user", cfg, "set_aside")
+	_, ws = trustHome(t, "", file)
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true, Trust: TrustGranted}); err != nil {
+		t.Fatal(err)
+	}
+	check("trusted workspace", cfg, "set_aside")
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true}); err != nil {
+		t.Fatal(err)
+	}
+	check("untrusted workspace", cfg, "ignored_untrusted")
+}

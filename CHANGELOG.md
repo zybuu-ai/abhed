@@ -23,6 +23,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A managed-only setting set aside from `~/.abhed/config.json`, `-settings`
+  or a trusted workspace's file, such as `sandbox.network` or `egress.rules`,
+  was recorded as `config.refused` with an empty value. The event and the
+  startup warning now carry the value asked for, redacted as other values
+  are. An untrusted workspace's managed-only settings, which were recorded
+  only for the web keys, are now recorded too, as `ignored_untrusted`.
 - The workspace-trust prompt and `abhed trust` listed a workspace file's
   `sandbox.network` and `egress` settings, and other managed-only ones, under
   what trusting it would let it set, though trust never applies them. They

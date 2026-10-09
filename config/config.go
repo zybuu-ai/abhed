@@ -292,18 +292,34 @@ func clearManagedOnly(c *Config, key string) {
 // setAside leaves out the managed-only settings the files merged so far
 // made, crediting them to file. It runs before the managed file is merged,
 // so every managed-only value present came from a lower layer.
-func setAside(c *Config, file, layer string) {
+func setAside(c *Config, file, layer string, data []byte) {
 	setAsideWeb(c, file, layer)
 	kept := c.SetKeys[:0:0]
 	for _, k := range c.SetKeys {
 		if why, ok := managedOnly[k]; ok {
 			clearManagedOnly(c, k)
-			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Reason: why})
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
 			continue
 		}
 		kept = append(kept, k)
 	}
 	c.SetKeys = kept
+}
+
+// valueIn is the value data gives the setting at key, as a record shows it,
+// or "" when data does not set it.
+func valueIn(data []byte, key string) string {
+	var raw any
+	if json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	out := ""
+	walkSet("", raw, reflect.TypeFor[Config](), func(p string, v any) {
+		if p == key {
+			out = RedactValue(p, v)
+		}
+	})
+	return out
 }
 
 // warnSetAside writes each set-aside setting once per process.
@@ -993,7 +1009,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		if err != nil {
 			return cfg, err
 		}
-		setAside(&cfg, userFile, LayerUser)
+		setAside(&cfg, userFile, LayerUser, data)
 		noteOrigins(&cfg, userFile, LayerUser, data)
 		cfg.noteRuleLayer(LayerUser)
 	}
@@ -1001,7 +1017,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		if _, err := mergeData(&cfg, o.SettingsName, o.Settings); err != nil {
 			return cfg, err
 		}
-		setAside(&cfg, o.SettingsName, LayerSettings)
+		setAside(&cfg, o.SettingsName, LayerSettings, o.Settings)
 		noteOrigins(&cfg, o.SettingsName, LayerSettings, o.Settings)
 		cfg.noteRuleLayer(LayerSettings)
 		sum := sha256.Sum256(o.Settings)

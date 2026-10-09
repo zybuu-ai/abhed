@@ -262,7 +262,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		}
 		// Trust does not reach these: a workspace never makes a managed-only
 		// setting, may only turn auto memory off, and may only import less deep.
-		setAside(cfg, path, LayerWorkspace)
+		setAside(cfg, path, LayerWorkspace, data)
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
