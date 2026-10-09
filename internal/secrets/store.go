@@ -9,6 +9,7 @@
 package secrets
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,9 @@ func ValidName(name string) bool { return validName.MatchString(name) }
 type Store struct {
 	path string
 	mu   *sync.Mutex
+	// src, when set, holds the values in place of the file at path.
+	src  Source
+	name string
 }
 
 var pathLocks sync.Map // cleaned absolute path -> *sync.Mutex
@@ -98,6 +102,9 @@ func (s *Store) Path() string { return s.path }
 const MaxFileSize = 1 << 20
 
 func (s *Store) load() (map[string]string, error) {
+	if s.src != nil {
+		return s.loadSource()
+	}
 	// Judged only on the open file, so what is checked is what is read.
 	f, err := openStore(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -144,7 +151,7 @@ const fixHint = "Fix the file (a JSON object of NAME: value, chmod 600) or remov
 func (s *Store) loadFixable() (map[string]string, error) {
 	m, err := s.load()
 	if err != nil {
-		return nil, fmt.Errorf("the secrets store cannot be loaded: %w. %s", err, fixHint)
+		return nil, fmt.Errorf("the secrets store cannot be loaded: %w. %s", err, s.hint())
 	}
 	return m, nil
 }
@@ -185,6 +192,9 @@ func (s *Store) Set(name, value string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.src != nil {
+		return s.srcCall(func(ctx context.Context) error { return s.src.Set(ctx, name, value) })
+	}
 	m, err := s.loadFixable()
 	if err != nil {
 		return err
@@ -197,6 +207,9 @@ func (s *Store) Set(name, value string) error {
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.src != nil {
+		return s.srcCall(func(ctx context.Context) error { return s.src.Remove(ctx, name) })
+	}
 	m, err := s.loadFixable()
 	if err != nil {
 		return err
@@ -211,6 +224,9 @@ func (s *Store) Remove(name string) error {
 func (s *Store) Delete() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.src != nil {
+		return fmt.Errorf("%s is kept by its driver; remove its secrets by name", s.name)
+	}
 	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -360,6 +376,8 @@ type freshStamp struct {
 	size    int64
 	inode   uint64
 	ctime   int64
+	// digest stands for a source's values, which have no file to stat.
+	digest [32]byte
 }
 
 // Fresh returns a redactor over the store that starts from first, the
@@ -371,6 +389,9 @@ func (s *Store) Fresh(first *Redactor) *Fresh {
 }
 
 func (f *Fresh) stat() freshStamp {
+	if f.store.src != nil {
+		return f.store.sourceStamp()
+	}
 	fi, err := os.Stat(f.store.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -483,7 +504,7 @@ func (s *Store) LoadRedactor() (*Redactor, error) {
 	m, err := s.load()
 	s.mu.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("refusing to start: the secrets store cannot be loaded, so stored values could not be redacted: %w. %s", err, fixHint)
+		return nil, fmt.Errorf("refusing to start: the secrets store cannot be loaded, so stored values could not be redacted: %w. %s", err, s.hint())
 	}
 	if len(m) == 0 {
 		return &Redactor{}, nil
