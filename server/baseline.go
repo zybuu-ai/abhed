@@ -74,7 +74,7 @@ func (s *Server) acceptChange(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "the request is malformed")
 		return
 	}
-	v, err := s.openView()
+	v, err := s.openView(s.workspaceOf(live))
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "workspace is not readable")
 		return

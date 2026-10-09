@@ -18,6 +18,7 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/builtin"
+	"github.com/zybuu-ai/abhed/driver/container"
 	"github.com/zybuu-ai/abhed/driver/process"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -146,23 +147,34 @@ func ownFolder(dir string) error {
 // control_plane.workspace_root, or under the control plane's state folder
 // when that is unset; the server's workspace only with shared_workspace.
 func sandboxWorkspaces(cp config.ControlPlaneConfig, workspace string) (get func(string) (string, error), release func(string) error, err error) {
+	get, release, _, err = sandboxFolders(cp, workspace)
+	return get, release, err
+}
+
+// sandboxFolders is sandboxWorkspaces with the folder that holds every
+// sandbox's own, "" with shared_workspace.
+func sandboxFolders(cp config.ControlPlaneConfig, workspace string) (get func(string) (string, error), release func(string) error, root string, err error) {
 	if cp.SharedWorkspace {
 		if cp.WorkspaceRoot != "" {
-			return nil, nil, errors.New("control_plane.shared_workspace and control_plane.workspace_root are both set; choose one")
+			return nil, nil, "", errors.New("control_plane.shared_workspace and control_plane.workspace_root are both set; choose one")
 		}
-		return func(string) (string, error) { return workspace, nil }, nil, nil
+		if cp.PerSession {
+			return nil, nil, "", errors.New("control_plane.per_session gives each session a folder of its own; it cannot be combined with control_plane.shared_workspace")
+		}
+		return func(string) (string, error) { return workspace, nil }, nil, "", nil
 	}
 	root, key := cp.WorkspaceRoot, "control_plane.workspace_root"
 	if root == "" {
 		state, err := controlPlaneStateDir()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		root, key = filepath.Join(state, "sandboxes"), "the default sandbox folder"
 	}
 	if err := checkSandboxRoot(key, root, workspace); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
+	root = filepath.Clean(root)
 	dir := func(id string) (string, error) {
 		if !controlplane.ValidID(id) {
 			return "", fmt.Errorf("sandbox id %q", id)
@@ -186,23 +198,29 @@ func sandboxWorkspaces(cp config.ControlPlaneConfig, workspace string) (get func
 		}
 		return os.RemoveAll(d)
 	}
-	return get, release, nil
+	return get, release, root, nil
 }
 
 // controlPlaneDrivers is the registry the configuration describes
 // (driver/builtin). A configured driver that cannot be reached is
 // registered refusing every sandbox, and said on w.
 func controlPlaneDrivers(ctx context.Context, w io.Writer, cfg config.Config, opts builtin.Options) (*driver.Registry, error) {
+	r, _, err := controlPlaneDriverEntries(ctx, w, cfg, opts)
+	return r, err
+}
+
+// controlPlaneDriverEntries is controlPlaneDrivers with how each stands.
+func controlPlaneDriverEntries(ctx context.Context, w io.Writer, cfg config.Config, opts builtin.Options) (*driver.Registry, []builtin.Entry, error) {
 	drivers, entries, err := builtin.RegistryWith(ctx, cfg, opts)
 	if err != nil {
-		return nil, fmt.Errorf("control_plane: %w", err)
+		return nil, nil, fmt.Errorf("control_plane: %w", err)
 	}
 	for _, e := range entries {
 		if e.Err != nil && w != nil {
 			fmt.Fprintf(w, "abhed: sandbox driver %s is unavailable (%s): %v\n", e.Name, e.Detail, e.Err)
 		}
 	}
-	return drivers, nil
+	return drivers, entries, nil
 }
 
 // snapshotDir is where the process driver keeps snapshots.
@@ -223,6 +241,11 @@ func snapshotDir(cp config.ControlPlaneConfig) (string, error) {
 // builtControlPlane is serve's control plane and what it serves beside it.
 type builtControlPlane struct {
 	svc *controlplane.Service
+	// drivers and entries are the registry and how each configured driver stands.
+	drivers *driver.Registry
+	entries []builtin.Entry
+	// workspace is each sandbox's folder.
+	workspace func(string) (string, error)
 	// expose serves :expose and the exposed services' path.
 	expose *expose.Server
 	// sshKey is the host key of the :ssh relay; nil leaves it off.
@@ -248,7 +271,7 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return builtControlPlane{}, err
 	}
-	get, release, err := sandboxWorkspaces(cfg.ControlPlane, workspace)
+	get, release, root, err := sandboxFolders(cfg.ControlPlane, workspace)
 	if err != nil {
 		return builtControlPlane{}, err
 	}
@@ -261,7 +284,13 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 		return builtControlPlane{}, err
 	}
 	record := controlplane.DriverRecorder(audit, nil)
-	drivers, err := controlPlaneDrivers(ctx, os.Stderr, cfg, builtin.Options{Process: process.Options{SnapshotDir: snaps, Record: record}})
+	popts := process.Options{SnapshotDir: snaps, Record: record}
+	if root != "" {
+		// Each sandbox's commands are kept out of the others' folders beside it.
+		popts.Hide = []string{root}
+	}
+	drivers, entries, err := controlPlaneDriverEntries(ctx, os.Stderr, cfg, builtin.Options{Process: popts,
+		Container: container.Options{SnapshotDir: snaps, Record: record}})
 	if err != nil {
 		return fail(err)
 	}
@@ -281,7 +310,7 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return fail(err)
 	}
-	out := builtControlPlane{svc: svc, label: label, close: closeStore}
+	out := builtControlPlane{svc: svc, drivers: drivers, entries: entries, workspace: get, label: label, close: closeStore}
 	if se, ok := eg.(*sandboxEgress); ok {
 		out.close = func() {
 			se.closeAll()
@@ -376,6 +405,41 @@ func checkControlPlane(ctx context.Context, cfg config.Config, workspace string,
 		return settings, "", fmt.Errorf("control_plane: %w", err)
 	}
 	return settings, "sqlite (" + probe.String() + ")", nil
+}
+
+// driverChecks are serve -check's lines for the configured drivers beyond
+// the default, and for per-session sandboxes when they are on. A driver
+// whose engine does not answer fails the check, though serve would start
+// with it refusing every sandbox; the per-session driver stops serve.
+func driverChecks(ctx context.Context, cfg config.Config) []checkLine {
+	var lines []checkLine
+	perr := checkPerSessionConfig(cfg)
+	drivers, entries, err := builtin.RegistryWith(ctx, cfg, builtin.Options{})
+	if err != nil {
+		lines = append(lines, checkLine{name: "drivers", detail: err.Error()})
+		return lines
+	}
+	for _, e := range entries {
+		if e.Name == builtin.Default {
+			continue
+		}
+		l := checkLine{name: "driver " + e.Name, ok: e.Err == nil, detail: "ready (" + e.Detail + ")"}
+		if e.Err != nil {
+			l.detail = "unavailable (" + e.Detail + "): " + e.Err.Error()
+		}
+		lines = append(lines, l)
+	}
+	if cfg.ControlPlane.PerSession {
+		if perr == nil {
+			perr = checkPerSessionDriver(cfg, drivers, entries)
+		}
+		l := checkLine{name: "per-session sandboxes", ok: perr == nil, detail: perSessionLabel(cfg)}
+		if perr != nil {
+			l.detail = perr.Error()
+		}
+		lines = append(lines, l)
+	}
+	return lines
 }
 
 // checkLine is one preflight result.
@@ -475,6 +539,9 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		}
 	} else {
 		add("control plane", nil, "off (control_plane.enabled)")
+	}
+	if cfg.ControlPlane.Enabled || cfg.ControlPlane.PerSession {
+		lines = append(lines, driverChecks(context.Background(), cfg)...)
 	}
 
 	ln, err := net.Listen("tcp", addr)

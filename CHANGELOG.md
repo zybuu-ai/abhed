@@ -244,6 +244,31 @@ All notable changes to Abhed are recorded here. The format follows
   CI job lint and render it for a matrix of values and validate the result
   against the Kubernetes 1.30 and 1.33 schemas with pinned, checksummed tools.
 
+- `abhed serve` can give each session a sandbox of its own with
+  `control_plane.per_session` (off by default; off, sessions share one
+  sandbox and the server's workspace exactly as before). Each session, or
+  each user with `control_plane.sessions.scope: "user"`, gets a control-plane
+  sandbox from a template on the `process`, `docker` or `podman` driver, and
+  works in that sandbox's folder: the file tools, workbench views, uploads
+  and downloads are there, and the bash tool, background commands and the
+  terminal run in the sandbox, each recorded as an `exec` by the session's
+  user. The session's record gets `sandbox.bound`; the sandbox carries the
+  session's label. Continuing a session restarts its sandbox with its folder;
+  deleting the session deletes it; `control_plane.sessions.retention` says
+  whether the server's stop stops, deletes or keeps them; a start removes the
+  sandboxes of sessions that are gone. An optional warm pool
+  (`control_plane.sessions.warm_pool`, at most 16) keeps Ready sandboxes that
+  a new session claims in one guarded update, refilled in the background and
+  drained at stop. A session is refused, never moved to the shared sandbox,
+  when its sandbox cannot be made Ready, has no isolation, or would be in
+  another tenant. See [Sandboxes over the API](docs/guide/22-sandboxes.md#per-session-sandboxes).
+- `control_plane.docker` and `control_plane.podman` register the container
+  drivers in `abhed serve`. Their `binary`, `images`, `mounts`,
+  `mount_roots`, `gpus`, `cpus` and `seccomp_profile` are managed only. An
+  engine that does not answer leaves its driver registered and refusing
+  every sandbox; `abhed serve -check` and `abhed doctor` show each driver's
+  line, and an unreachable per-session driver stops `abhed serve`.
+
 **Upgrading with Postgres.** The control plane's tables (`sandbox_templates`
 among them) come with schema version 7; run `abhed migrate` before turning
 `control_plane.enabled` on.
@@ -261,6 +286,12 @@ A server with it off starts on the older schema as before.
   hooks, as the workbench's terminal is: a refused command is `403
   forbidden` and recorded, and never runs. `POST :exec` with `"stdin":
   true` answers `400` naming the WebSocket form instead of `501`.
+- Under a `control_plane.workspace_root` (or the default sandbox folder), a
+  sandbox's commands on the `process` driver can no longer read or write the
+  other sandboxes' folders beside its own; on macOS the Seatbelt profile
+  denies them, also where the root lies in a temp or cache folder. A root
+  inside `sandbox.read_only_paths` or a skills folder, which would show them,
+  is refused when the sandbox is built.
 - The fence probe's `seccomp` check now also installs the fence's own filter
   in its helper and requires a signal to Abhed to be refused and one to the
   helper itself allowed, so a kernel that reads the filter's system-call
@@ -445,6 +476,15 @@ A server with it off starts on the older schema as before.
   `control_plane.interceptors` are refused by a Community binary, by name. A
   guard and an interceptor see `:restore` as a start and `:snapshot`, `:cp`
   and `:expose` as an exec naming the verb.
+- `driver.Commander` (capability `command`) hands out a command's process
+  for the caller to run; `process`, `docker` and `podman` implement it and
+  the plugin protocol never offers it. `controlplane.Service.Command`,
+  `WaitReady`, `Settle`, `StopNow` and `DeleteNow`; `controlplane.Pool`
+  (`NewPool`, `Fill`, `Claim`, `Drain`, `Run`); the labels
+  `controlplane.LabelSession`, `LabelSessionUser` and `LabelPool` and the
+  owner `controlplane.SessionsPrincipal`. `server.Options.SessionSandboxes`.
+  `process.Options.Hide` and `builtin.Options.Container`. A sandbox's
+  `create` record names its session.
 
 ## [1.2.7] - 2026-10-07
 

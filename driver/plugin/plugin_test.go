@@ -429,3 +429,20 @@ func TestServeRefusesDishonestDriver(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// A process handle cannot cross the socket, so a served driver that can
+// hand one out is offered without that capability, and still registers.
+func TestCommandIsNeverOffered(t *testing.T) {
+	ctx := context.Background()
+	fake := drivertest.New("fake", driver.CapAttach, driver.CapCommand)
+	cl, err := Dial(ctx, "fake", serve(t, fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cl.Info(); got.Has(driver.CapCommand) || !got.Has(driver.CapAttach) {
+		t.Fatalf("info %+v", got)
+	}
+	if err := driver.NewRegistry().Register(cl); err != nil {
+		t.Fatal(err)
+	}
+}

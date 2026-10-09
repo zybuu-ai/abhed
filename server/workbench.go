@@ -52,10 +52,10 @@ type workspaceView struct {
 	conf  *tools.Confined
 }
 
-func (s *Server) openView() (*workspaceView, error) {
+func (s *Server) openView(workspace string) (*workspaceView, error) {
 	// A fresh session rather than the live one: it carries no additional
 	// roots, so the viewer is confined to the workspace itself.
-	sess, err := tools.NewSession(s.opts.Workspace)
+	sess, err := tools.NewSession(workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (s *Server) openView() (*workspaceView, error) {
 	}
 	// The mode decides how a mutation gets approved, and a viewer makes none.
 	// What is left of the evaluation is the hooks and the deny and ask rules.
-	return &workspaceView{sess: sess, pol: s.newPolicy(policy.ModeDefault), root: root, state: sess.FreezeState()}, nil
+	return &workspaceView{sess: sess, pol: s.newPolicyIn(policy.ModeDefault, workspace), root: root, state: sess.FreezeState()}, nil
 }
 
 func (v *workspaceView) Close() {
@@ -190,7 +190,12 @@ func (s *Server) view(w http.ResponseWriter, r *http.Request) (*workspaceView, b
 		WriteError(w, http.StatusNotFound, "session not found")
 		return nil, false
 	}
-	v, err := s.openView()
+	ws, err := s.sessionWorkspace(r.Context(), id)
+	if err != nil {
+		WriteError(w, http.StatusNotFound, "the session's workspace is gone")
+		return nil, false
+	}
+	v, err := s.openView(ws)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "workspace is not readable")
 		return nil, false

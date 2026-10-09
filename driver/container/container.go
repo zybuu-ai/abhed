@@ -114,7 +114,7 @@ func newDriver(name string, opts Options, r runner, policy func(string) (sandbox
 }
 
 func (d *Driver) Info() driver.Info {
-	caps := []driver.Capability{driver.CapAttach, driver.CapCopy, driver.CapForward}
+	caps := []driver.Capability{driver.CapAttach, driver.CapCopy, driver.CapForward, driver.CapCommand}
 	if d.opts.SnapshotDir != "" {
 		caps = append(caps, driver.CapSnapshot)
 	}
@@ -139,6 +139,12 @@ func (d *Driver) engine(ctx context.Context) (engineInfo, error) {
 	}
 	d.eng, d.probed = eng, true
 	return eng, nil
+}
+
+// Probe reports whether the engine answers as the engine this driver drives.
+func (d *Driver) Probe(ctx context.Context) error {
+	_, err := d.engine(ctx)
+	return err
 }
 
 // tierNames are the tiers Spec.MinTier may name; anything else is refused,
@@ -740,6 +746,57 @@ func (d *Driver) result(ctx context.Context, in *instance, cmd *exec.Cmd, err er
 		}
 	}
 	return driver.ExecResult{ExitCode: code}, nil
+}
+
+// Command builds an engine exec running a command, or the interactive shell,
+// in the container for the caller to run. Under the allowlist its proxy
+// credential is revoked when ctx ends; a cancelled command is ended inside
+// the container too.
+func (d *Driver) Command(ctx context.Context, id string, req driver.CommandRequest) (*exec.Cmd, error) {
+	in, done, err := d.begin(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := cwd(in.pol.Workspace, req.Cwd)
+	if err != nil {
+		done()
+		return nil, err
+	}
+	line, fixed := req.Command, []string(nil)
+	if req.Shell {
+		line, fixed = shellLine, []string{"TERM=xterm-256color", `PS1=(sandbox: container) \W \$ `, "HISTFILE=", "ABHED_TERMINAL=1"}
+	}
+	p, err := d.prepare(ctx, in, req.Shell, dir, line, nil, fixed)
+	// Not counted as running: the caller owns it, and stopping the container ends it.
+	done()
+	if err != nil {
+		return nil, err
+	}
+	cmd := p.cmd
+	cmd.Cancel = func() error { d.kill(in, p.pidFile); return cmd.Process.Kill() }
+	cmd.WaitDelay = 2 * time.Second
+	context.AfterFunc(ctx, p.end)
+	return cmd, nil
+}
+
+// ForwardEnv adds `-e NAME` for each name before the container's name, so
+// the engine passes the value from its own environment.
+func (d *Driver) ForwardEnv(cmd *exec.Cmd, names []string) {
+	at := -1
+	for i := len(cmd.Args) - 1; i >= 4; i-- {
+		if cmd.Args[i] == execWrapper && cmd.Args[i-1] == "-c" && cmd.Args[i-2] == "/bin/sh" {
+			at = i - 3
+			break
+		}
+	}
+	if at < 1 || len(names) == 0 {
+		return
+	}
+	extra := make([]string, 0, 2*len(names))
+	for _, n := range names {
+		extra = append(extra, "-e", n)
+	}
+	cmd.Args = append(append(append([]string{}, cmd.Args[:at]...), extra...), cmd.Args[at:]...)
 }
 
 // Attach runs an interactive shell on a terminal in the container.

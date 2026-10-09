@@ -255,6 +255,26 @@ var managedOnly = map[string]string{
 	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
 }
 
+// containerManagedOnly are the container drivers' settings that reach more
+// of the host or loosen a bound, under each engine's section.
+var containerManagedOnly = map[string]string{
+	"binary":          "only the managed configuration names the engine's program",
+	"images":          "only the managed configuration adds images a sandbox may run",
+	"mounts":          "only the managed configuration mounts host folders into sandboxes",
+	"mount_roots":     "only the managed configuration lets sandboxes mount host folders",
+	"gpus":            "only the managed configuration gives sandboxes devices",
+	"cpus":            "only the managed configuration sets the CPU bound",
+	"seccomp_profile": "only the managed configuration replaces the seccomp profile",
+}
+
+func init() {
+	for _, engine := range []string{"docker", "podman"} {
+		for k, why := range containerManagedOnly {
+			managedOnly["control_plane."+engine+"."+k] = why
+		}
+	}
+}
+
 // ManagedOnly reports whether only the managed configuration may make the
 // setting at path.
 func ManagedOnly(path string) bool {
@@ -291,6 +311,24 @@ func clearManagedOnly(c *Config, key string) {
 		c.Egress.RecordPaths = nil
 	case "egress.idle_seconds":
 		c.Egress.IdleSeconds = 0
+	}
+	for engine, cc := range map[string]*ContainerDriverConfig{"docker": &c.ControlPlane.Docker, "podman": &c.ControlPlane.Podman} {
+		switch key {
+		case "control_plane." + engine + ".binary":
+			cc.Binary = ""
+		case "control_plane." + engine + ".images":
+			cc.Images = nil
+		case "control_plane." + engine + ".mounts":
+			cc.Mounts = nil
+		case "control_plane." + engine + ".mount_roots":
+			cc.MountRoots = nil
+		case "control_plane." + engine + ".gpus":
+			cc.GPUs = nil
+		case "control_plane." + engine + ".cpus":
+			cc.CPUs = 0
+		case "control_plane." + engine + ".seccomp_profile":
+			cc.SeccompProfile = ""
+		}
 	}
 }
 
@@ -680,10 +718,81 @@ type ControlPlaneConfig struct {
 	// its own; zero leaves the size to the driver.
 	SandboxCPUs     float64 `json:"sandbox_cpus,omitempty"`
 	SandboxMemoryMB int     `json:"sandbox_memory_mb,omitempty"`
+	// PerSession gives each served session a control-plane sandbox of its
+	// own, made as Sessions says, in place of the one sandbox every session
+	// shares. Needs Enabled. Off leaves sessions exactly as they were.
+	PerSession bool `json:"per_session,omitempty"`
+	// Sessions shapes the sandboxes PerSession makes.
+	Sessions SessionSandboxConfig `json:"sessions,omitempty"`
+	// Docker and Podman register the container drivers by those names.
+	Docker ContainerDriverConfig `json:"docker,omitempty"`
+	Podman ContainerDriverConfig `json:"podman,omitempty"`
 	// HA runs several replicas of serve on one Postgres (Enterprise).
 	HA HAConfig `json:"ha,omitempty"`
 	// Interceptors admit every mutating sandbox call, in order (Enterprise).
 	Interceptors []InterceptorConfig `json:"interceptors,omitempty"`
+}
+
+// SessionSandboxConfig is how control_plane.per_session gives sessions
+// their sandboxes.
+type SessionSandboxConfig struct {
+	// Scope is "session", a sandbox per session (the default), or "user",
+	// one per user that all of that user's sessions share.
+	Scope string `json:"scope,omitempty"`
+	// Template is the template each sandbox is made from; "session" when empty.
+	Template string `json:"template,omitempty"`
+	// Driver is the registered driver each runs under; the default when empty.
+	Driver string `json:"driver,omitempty"`
+	// Retention is what a session's sandbox does when the server stops:
+	// "stop" (the default), "delete" or "keep". Deleting a session always
+	// deletes a sandbox of its own.
+	Retention string `json:"retention,omitempty"`
+	// WarmPool keeps this many Ready sandboxes for new sessions to claim;
+	// zero keeps none, at most 16.
+	WarmPool int `json:"warm_pool,omitempty"`
+	// ReadySeconds bounds how long a session waits for its sandbox; 120 when zero.
+	ReadySeconds int `json:"ready_seconds,omitempty"`
+}
+
+// ContainerDriverConfig registers the docker or podman driver. Every key
+// that lets a sandbox reach more of the host, or loosens a bound, is
+// managed only.
+type ContainerDriverConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// Binary is the engine's CLI, found on PATH by the engine's name when
+	// empty. Managed only.
+	Binary string `json:"binary,omitempty"`
+	// Image is the default image; ABHED_SANDBOX_IMAGE or the container
+	// tier's when empty.
+	Image string `json:"image,omitempty"`
+	// Images are further images a sandbox may ask for. Managed only.
+	Images []string `json:"images,omitempty"`
+	// Mounts are host folders every sandbox gets. Managed only.
+	Mounts []ContainerMount `json:"mounts,omitempty"`
+	// MountRoots are where a sandbox's own mounts may come from. Managed only.
+	MountRoots []ContainerMountRoot `json:"mount_roots,omitempty"`
+	// GPUs are the CDI device names a sandbox may ask for. Managed only.
+	GPUs []string `json:"gpus,omitempty"`
+	// CPUs bounds each sandbox's CPU; 2 when zero. Managed only.
+	CPUs float64 `json:"cpus,omitempty"`
+	// SeccompProfile is a profile file in place of the engine's default;
+	// "unconfined" is refused. Managed only.
+	SeccompProfile string `json:"seccomp_profile,omitempty"`
+}
+
+// ContainerMount is a host folder every container sandbox sees.
+type ContainerMount struct {
+	Host     string `json:"host"`
+	Target   string `json:"target"`
+	Writable bool   `json:"rw,omitempty"`
+	Relabel  bool   `json:"relabel,omitempty"`
+}
+
+// ContainerMountRoot is a host folder under which a sandbox may ask for mounts.
+type ContainerMountRoot struct {
+	Path     string `json:"path"`
+	Writable bool   `json:"rw,omitempty"`
+	Relabel  bool   `json:"relabel,omitempty"`
 }
 
 // HAConfig makes this server one of several replicas sharing a Postgres

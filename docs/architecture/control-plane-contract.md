@@ -3,7 +3,8 @@
 Status: 2026-10-09, contract version 1, draft for 1.2.8. The Go packages
 `driver`, `driver/plugin`, `driver/process`, `driver/container`,
 `controlplane`, `store` (the Postgres store), `store/sqlite` (the
-single-host store) and `server` (the REST surface) implement the parts
+single-host store), `server` (the REST surface) and
+`internal/sessionsandbox` (per-session sandboxes) implement the parts
 marked **Implemented**; everything else on this page is the contract the
 CLI and per-session work builds against.
 
@@ -353,7 +354,19 @@ type Copier     interface { CopyIn(ctx, id, dst string, tar io.Reader) error    
 type Forwarder  interface { Forward(ctx, id string, port int) (io.ReadWriteCloser, error) } // CapForward
 type Snapshotter interface { Snapshot(ctx, id, name string) (SnapshotRef, error)       // CapSnapshot
                              Restore(ctx, id string, ref SnapshotRef) error }
+type Commander  interface { Command(ctx, id, CommandRequest) (*exec.Cmd, error)      // CapCommand
+                            ForwardEnv(cmd *exec.Cmd, names []string) }
 ```
+
+`Command` hands the caller the process for a command or an interactive
+shell in an instance, to start, wait on and kill itself: a session's bash
+tool and terminal, whose background, detach and kill run on a process
+handle. Only in-process drivers can (`process`, `docker`, `podman`); the
+out-of-process protocol never offers it, and a driver claiming it over the
+socket fails `Check`. The process ends with the caller's context or when
+the instance stops; its exit status is the command's, or the engine's own
+failure where an engine runs it. `ForwardEnv` passes variables already in
+the process's environment into it by name, never as an argument.
 
 Rules every driver keeps:
 
@@ -395,9 +408,14 @@ Snapshots, forwards and lifetimes (Implemented: `driver/snapshot`,
 
 Registration: `driver.Registry` maps names (`[a-z][a-z0-9-]{0,31}`) to drivers.
 `driver/builtin.Registry` builds the one a configuration describes: `process`
-always, and `microvm` when the managed `sandbox.microvm_socket` names an
-`abhed-microvm` socket (registered even when it cannot be reached, refusing
-every call with `ErrUnavailable`, so choosing it never falls through).
+always; `docker` and `podman` when `control_plane.docker` or
+`control_plane.podman` is enabled (their binary, extra images, mounts,
+mount roots, GPUs, CPU bound and seccomp profile are managed-only keys; an
+engine that does not answer leaves the driver registered and refusing each
+sandbox with `ErrUnavailable` until it does); and `microvm` when the managed
+`sandbox.microvm_socket` names an `abhed-microvm` socket (registered even
+when it cannot be reached, refusing every call with `ErrUnavailable`, so
+choosing it never falls through).
 `abhed serve`'s control plane builds its registry this way, and says at
 startup which configured driver cannot be reached. `Register` runs `Check` and refuses duplicates. `app.WithDriver` (later work)
 adds one to the server's registry, which is how the Team module adds the
@@ -409,7 +427,8 @@ An adapter over the existing sandbox tiers, with no change to how commands are
 confined: `Create` builds the sandbox the configuration selects
 (`sandboxconfig.Build`, so Seatbelt or bubblewrap, or the fence when
 `sandbox.tier` is `fence`), `Exec` runs a command through that sandbox's
-`Command`, and `Attach` runs its interactive shell on a PTY. `Stop` refuses
+`Command`, `Attach` runs its interactive shell on a PTY, and `Command` (the
+driver capability) hands either out for the caller to run. `Stop` refuses
 further commands; `Start` builds the sandbox again; `Delete` closes it, which
 releases the fence's cgroup. `Forward` runs a relay inside the sandbox to
 its own loopback; snapshot is declared when `Options.SnapshotDir` is set
@@ -437,8 +456,9 @@ reaches it over a bound Unix socket; where the engine is not local to a
 Linux host this fails with `ErrUnavailable`. `Start` builds a fresh
 container; `Stop` stops it with the grace given. Capabilities: `attach`,
 `copy`, `forward` (a relay through `exec`, so the container never gets a
-network), and `snapshot` with `Options.SnapshotDir` (the workspace archived
-and the container committed). Details and every admission rule are in
+network), `command` (the same exec handed to the caller), and `snapshot`
+with `Options.SnapshotDir` (the workspace archived and the container
+committed). Details and every admission rule are in
 `docs/guide/23-container-drivers.md`.
 
 `ExecRequest.Env` may add variables but never replace one the sandbox set
@@ -546,23 +566,57 @@ exit code. `copy_in` sends `data` frames then `eof`; `copy_out` receives them.
 - Every call has the caller's deadline; on cancel the client closes the
   connection and the driver must kill what the call started.
 
-## 7. Per-session sandboxes in `serve`
+## 7. Per-session sandboxes in `serve` (Implemented: `internal/sessionsandbox`)
 
-Today `serve` builds one sandbox at start-up and every session's commands run
-in it, except under the fence, where each session already gets a fence of its
-own (`app/sessionfence.go`). Under this contract (P3-03):
+Unless `control_plane.per_session` is on, `serve` builds one sandbox at
+start-up and every session's commands run in it, except under the fence,
+where each session gets a fence of its own (`app/sessionfence.go`). With it
+on (it needs `control_plane.enabled` and refuses `shared_workspace`):
 
-- A session creates a sandbox object from the server's default template, with
-  labels `abhed.dev/session=<session id>` and `abhed.dev/owner=<principal>`,
-  through the same code path as `POST /v1/sandboxes`.
-- The session's bash tool and workbench terminal call the driver through the
-  control plane (`Exec`, `Attach`) instead of holding an `exec.Cmd` builder.
-- Closing the session deletes the sandbox; a server restart finds sandboxes
-  whose session is gone by label and deletes them.
-- The process driver keeps today's behaviour exactly, including the fence's
-  per-session cgroup and its refusal to run under another tier.
-- A warm pool, when added, holds `Ready` sandboxes from a template with no
-  session label and claims one by an update guarded on its resource version.
+- A session is bound to a sandbox when it is built, new or continued. Scope
+  `session` names it by the label `abhed.dev/session=<session id>`, scope
+  `user` by `abhed.dev/session-user=<digest of tenant and user>`. The one
+  its label names is used, started again (`Starting`, a new generation)
+  when it is `Stopped`, `Error` or `Completed`; else one is claimed from
+  the warm pool; else one is created from `control_plane.sessions.template`
+  through `Service.Create`, as `POST /v1/sandboxes` does. Every session
+  sandbox, pooled or not, is owned by `system:sessions`, so ownership never
+  moves; the session's user acts on it as a caller scoped to its label.
+- The session waits until the sandbox is `Ready` (`ready_seconds`) and is
+  refused, never moved to the shared sandbox, when it is not, when the
+  reported tier is `none`, or when the session's tenant is not the store's.
+  A sandbox made for a refused bind is deleted.
+- The session's workspace is the sandbox's folder: the file tools, the
+  workbench's views, saves, uploads and downloads, and path rules resolve
+  there. The bash tool, background commands and the workbench terminal get
+  their process from `Service.Command` (driver capability `command`, §5),
+  which records an `exec` with `detail.via=session` and puts it to the guard
+  and interceptor as an exec; the bash tool's timeout and output handling
+  apply instead of `exec.timeout_seconds` and `exec.output_bytes`. The
+  session's record gets `sandbox.bound` before the first command this
+  process runs in it; a record that cannot be written runs nothing.
+- Deleting a session deletes a `session`-scoped sandbox and its folder.
+  Stopping the server applies `control_plane.sessions.retention`: `stop`
+  (default), `delete` or `keep`. A server that starts deletes the
+  `session`-scoped sandboxes made before it whose session its store says is
+  gone; one it cannot judge is left.
+- The process driver keeps today's confinement, including the fence's own
+  cgroup per sandbox, and with a `workspace_root` hides that root from each
+  instance's commands but for the instance's own folder
+  (`sandbox.Policy.Hidden`).
+- A warm pool (`warm_pool`, at most 16) holds `Ready` sandboxes from the
+  template, owned by `system:sessions` and labelled `abhed.dev/pool=<template>`.
+  A claim is one update guarded on the member's resource version that
+  removes the pool label, adds the session's, and bumps `generation`; it is
+  recorded as `claim` by the session's user and put to the guard and
+  interceptor as an update. A claimed sandbox never returns to the pool.
+  The pool is refilled after each claim and every reconcile interval,
+  replaces members in `Error`, `Completed` or `Stopped`, and is drained when
+  the server stops. It lives in the store, which holds one tenant.
+- Not yet: the microvm driver cannot hand out a process, so it cannot be
+  the session driver; under HA a `process` sandbox lives in the replica
+  that made it; an edition's `SandboxCaller` scope is not applied to a
+  session's sandbox.
 
 ## 8. Store (Implemented: `controlplane.Store`, memory, SQLite, Postgres)
 

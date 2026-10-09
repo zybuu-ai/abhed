@@ -4,8 +4,10 @@ The `docker` and `podman` drivers run each sandbox as one long-lived
 container. They implement the driver interface in
 [the control-plane contract](../architecture/control-plane-contract.md), in the
 Go package `driver/container`, and are an experimental API until 2.0.
-Nothing in `abhed` or `abhed serve` uses them yet: they are the drivers the
-`/v1/sandboxes` API and per-session sandboxes will create.
+`abhed serve` registers them when `control_plane.docker` or
+`control_plane.podman` is enabled ([Sandboxes over the
+API](22-sandboxes.md#the-docker-and-podman-drivers)), for `/v1/sandboxes`
+and for [per-session sandboxes](22-sandboxes.md#per-session-sandboxes).
 
 They are separate from the container **tier** that `sandbox.min_tier:
 container` selects today, which starts a fresh container for every command.
@@ -129,6 +131,7 @@ runs in a VM (Docker Desktop, Podman on macOS and Windows) or elsewhere
 | `Create` | checks the spec and the mounts, starts the container, verifies it |
 | `Exec` | `exec` as the sandbox's user, in a folder inside the workspace; `Env` may add variables but not replace `PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables or `LD_*` |
 | `Attach` | an interactive shell on a terminal, with resize |
+| `Command` | the same `exec`, or the shell, handed to the caller to run: a session's bash tool and terminal; under the allowlist its credential is revoked when the caller's context ends, and a cancelled one is ended inside the container |
 | `CopyIn`, `CopyOut` | a tar stream through the engine's `cp`, to or from a folder inside the workspace; every entry is checked (no absolute names, no `..`, no links out, no devices), owners become the sandbox's user and setuid bits are dropped |
 | `Stop` | refuses new commands, then stops the container with the grace given |
 | `Start` | a fresh container from fresh mounts; `/tmp` starts empty, the workspace is as it was |

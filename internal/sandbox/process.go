@@ -350,6 +350,22 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 	// network and the filesystem the command does not.
 	b.WriteString(";; No LaunchServices or Apple events.\n" + denyLaunchServices + "\n")
 
+	// Other sandboxes' folders beside this one's: before the workspace's own
+	// rules, so its .abhed stays denied after the read allowed here.
+	if hidden := formsOf(s.policy.Hidden); len(hidden) > 0 {
+		b.WriteString(";; Other sandboxes' folders.\n")
+		for _, h := range hidden {
+			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
+			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+		}
+		for _, ws := range s.workspaces() {
+			if insideAny(ws, hidden) {
+				fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", ws)
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	b.WriteString(";; Writes are confined to the workspace and standard temp dirs.\n")
 	b.WriteString("(deny file-write*)\n")
 	for _, ws := range s.workspaces() {
@@ -373,6 +389,18 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 	// agent errors rather than sandbox errors.
 	for _, c := range cacheAreas() {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", c)
+	}
+
+	// Again after the temp and cache allows, which may hold the siblings' folder.
+	if hidden := formsOf(s.policy.Hidden); len(hidden) > 0 {
+		for _, h := range hidden {
+			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", h)
+		}
+		for _, ws := range s.workspaces() {
+			if insideAny(ws, hidden) {
+				fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", ws)
+			}
+		}
 	}
 
 	// The harness's own state is out of reach for commands, as it is for the

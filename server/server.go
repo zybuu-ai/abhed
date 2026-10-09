@@ -40,6 +40,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
@@ -295,6 +296,11 @@ type Options struct {
 	// It is given the registry's bash to start from; a registry without one
 	// is left as it is.
 	SessionBash func(sessionID string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error)
+	// SessionSandboxes, when set, gives each session a control-plane sandbox
+	// of its own (control_plane.per_session): its commands, terminals and
+	// file tools work in that sandbox and its folder, never in Workspace.
+	// Nil keeps the one sandbox every session shares, exactly as before.
+	SessionSandboxes *sessionsandbox.Manager
 	// TLS, when set, is served on Addr instead of plain HTTP. Its
 	// certificates are read per handshake, so a reload needs no restart.
 	TLS *tls.Config
@@ -454,6 +460,9 @@ type liveSession struct {
 	// provider no longer resolves, written by its next turn; guarded by claimMu.
 	fallback *agent.ModelSwitched
 
+	// workspace is the folder the session works in: its own sandbox's under
+	// per-session sandboxes, else empty for the server's workspace.
+	workspace string
 	// closeBash releases the session's own bash, when it has one.
 	closeBash     func() error
 	closeBashOnce sync.Once
@@ -1310,6 +1319,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusForbidden, err.Error())
 		case strings.HasPrefix(err.Error(), "provider:"):
 			WriteError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "provider: "))
+		case errors.Is(err, controlplane.ErrForbidden):
+			WriteError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, controlplane.ErrUnavailable):
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, err.Error())
 		default:
 			WriteError(w, http.StatusInternalServerError, err.Error())
 		}
@@ -1368,7 +1382,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 	// Names the provider, so a resume cannot mistake it for another serving the same model.
 	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]any{
-		"origin": "chat", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
+		"origin": "chat", "workspace": s.workspaceOf(live), "model": adapter.Profile().Name, "mode": mode,
 		"provider": live.provider, "web": toolset.WebState(s.opts.Config),
 	}); err != nil {
 		s.forgetUnstarted(sessionID)
@@ -1497,7 +1511,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	live.State = "idle"
 	// The first event, so the session has a record to be resumed from.
 	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]any{
-		"origin": "workbench", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
+		"origin": "workbench", "workspace": s.workspaceOf(live), "model": adapter.Profile().Name, "mode": mode,
 		"provider": live.provider, "web": toolset.WebState(s.opts.Config),
 	}); err != nil {
 		// An empty session left listed would be one nobody can open.
@@ -1545,10 +1559,15 @@ func (s *Server) forgetUnstarted(sessionID string) {
 // newPolicy builds the engine from the operator's rules. One constructor, so
 // a rule cannot bind the agent and not the endpoints that serve files.
 func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
+	return s.newPolicyIn(mode, s.opts.Workspace)
+}
+
+// newPolicyIn is newPolicy with path rules relative to workspace, a
+// session's own folder under per-session sandboxes.
+func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine {
 	pol := policy.New(mode)
 	pol.Managed = s.opts.Config.Managed
 	// Path rules relative to the workspace; buildLive gives a session its own roots.
-	workspace := s.opts.Workspace
 	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
@@ -1565,11 +1584,27 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
 	registry *tools.Registry, skillReg *skills.Registry, vault *secrets.Store, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
 
-	sess, err := tools.NewSession(s.opts.Workspace)
+	workspace := s.opts.Workspace
+	var bound *sessionsandbox.Bound
+	if s.opts.SessionSandboxes != nil {
+		b, err := s.bindSandbox(sessionID, spec, registry, rec)
+		if err != nil {
+			return nil, nil, err
+		}
+		bound, workspace = &b, b.Workspace
+	}
+	release := func() {
+		if bound != nil {
+			s.opts.SessionSandboxes.Release(sessionID)
+		}
+	}
+	sess, err := tools.NewSession(workspace)
 	if err != nil {
+		release()
 		return nil, nil, err
 	}
 	if sess.Syntax, err = tools.ParseSyntaxMode(s.opts.Config.Tools.SyntaxCheck); err != nil {
+		release()
 		return nil, nil, err
 	}
 	// Extra roots come from the operator's config, applied to every session.
@@ -1582,6 +1617,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	dirs = append(dirs, s.opts.SkillDirs...)
 	for _, dir := range dirs {
 		if err := sess.AddRoot(dir); err != nil {
+			release()
 			return nil, nil, fmt.Errorf("additional_dirs: %w", err)
 		}
 	}
@@ -1594,7 +1630,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	sess.Checkpoint = undo.Record
 
 	live := &liveSession{
-		ID: sessionID, User: spec.User, Tenant: spec.Tenant,
+		ID: sessionID, User: spec.User, Tenant: spec.Tenant, workspace: workspace,
 		Created: time.Now(), Prompt: spec.Prompt, State: "running",
 		// Replaced when a turn starts; a session opened idle has nothing to cancel.
 		Cancel:  func() {},
@@ -1627,7 +1663,15 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		approver = agent.AutoApprove{Yes: false}
 	}
 	budget := toolset.Budget(s.opts.Config)
-	if s.opts.SessionBash != nil && registry != nil {
+	if bound != nil {
+		if registry != nil {
+			if _, ok := registry.Get("bash"); ok {
+				registry = registry.Clone()
+				registry.Add(bound.Bash)
+			}
+		}
+		live.closeBash = func() error { release(); return nil }
+	} else if s.opts.SessionBash != nil && registry != nil {
 		if t, ok := registry.Get("bash"); ok {
 			if shared, ok := t.(tools.Bash); ok {
 				bash, release := s.opts.SessionBash(sessionID, rec, shared)
@@ -1641,7 +1685,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		registry = tools.BindStores(registry, vault)
 	}
 	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
-	cfg.SystemPrompt = toolset.SystemPrompt(s.opts.Workspace, adapter, s.skillListing(skillReg), own.Names())
+	cfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, s.skillListing(skillReg), own.Names())
 	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
 	// Background children belong to the session. An unattended run has
 	// nobody to come back to it, so its children are joined: it waits for
@@ -1711,7 +1755,7 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 	f := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol, Session: sess, Budget: budget, Config: cfg,
 		Workspace: sess.Root, Redact: rec.Redact, Background: true,
-		Store:       s.subagentStore(sessionID, spec, mode),
+		Store:       s.subagentStoreIn(sessionID, spec, mode, s.workspaceOfSess(sess)),
 		Definitions: s.state.agentDefs(),
 		// Only a provider this server offers sessions, by name, as the
 		// console's model picker; a subagent never falls back to another.
@@ -1725,10 +1769,15 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 // naming the session that spawned it, so a child is served only to whoever may
 // see its parent, is left out of lists, and is deleted with it.
 func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) agent.Store {
+	return s.subagentStoreIn(sessionID, spec, mode, s.opts.Workspace)
+}
+
+// subagentStoreIn is subagentStore naming workspace on each child's row.
+func (s *Server) subagentStoreIn(sessionID string, spec StartSpec, mode, workspace string) agent.Store {
 	if s.sessions == nil {
 		return s.store
 	}
-	tenant, user, workspace := storeTenant(s.opts.Config, spec.Tenant), spec.User, s.opts.Workspace
+	tenant, user := storeTenant(s.opts.Config, spec.Tenant), spec.User
 	return subSessions{EventStore: s.store, owns: func(ctx context.Context, childID, parentID string) (bool, error) {
 		// A resume is only for the session that started the child, as its owner.
 		getter, ok := s.sessions.(interface {
@@ -4508,6 +4557,15 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	// a crashed process left open reconciled, before anything is served; then
 	// again every stale window, by staleness alone.
 	s.RecoverOwnAtStart(ctx)
+	if s.opts.SessionSandboxes != nil {
+		// Sandboxes whose session is gone, as a restart finds them; none made from now on.
+		since := time.Now()
+		go func() {
+			if err := s.opts.SessionSandboxes.Sweep(ctx, since, s.sessionExists); err != nil && ctx.Err() == nil {
+				s.log.Warn("removing the sandboxes of deleted sessions", "error", err)
+			}
+		}()
+	}
 	ln, err := listen()
 	if err != nil {
 		return err

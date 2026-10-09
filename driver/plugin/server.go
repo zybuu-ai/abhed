@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -88,6 +89,8 @@ func serveConn(parent context.Context, c *conn, d driver.Driver) {
 		return
 	}
 	info := d.Info()
+	// A process handle cannot cross the socket, so command is never offered.
+	info.Capabilities = slices.DeleteFunc(slices.Clone(info.Capabilities), func(c driver.Capability) bool { return c == driver.CapCommand })
 	if err := c.write(frame{Type: tHello, Version: v, Info: &info}); err != nil {
 		return
 	}

@@ -98,6 +98,9 @@ const (
 	// EvSessionResumed marks an editor continuing a recorded session in a new
 	// agent: the trust it opened under, before the settings it refused.
 	EvSessionResumed EventType = "session.resumed"
+	// EvSandboxBound links the session to the control-plane sandbox its
+	// commands run in, before the first of them in this process.
+	EvSandboxBound EventType = "sandbox.bound"
 )
 
 type Actor string

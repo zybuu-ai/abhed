@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"mime"
 	"net/http"
@@ -50,11 +51,16 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "path is required")
 		return
 	}
+	ws, err := s.sessionWorkspace(r.Context(), id)
+	if err != nil {
+		WriteError(w, http.StatusNotFound, "file not found")
+		return
+	}
 
-	abs, err := s.resolveInWorkspace(rel)
+	abs, err := s.resolveIn(ws, rel)
 	// The same message whether the path escaped, is withheld or simply is not
 	// there: a distinct reply would confirm what exists behind the boundary.
-	if err != nil || !s.mayServe(abs) || tools.IsState(s.requested(rel), s.opts.Workspace) {
+	if err != nil || !s.mayServe(ws, abs) || tools.IsState(s.requested(ws, rel), ws) {
 		WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
@@ -62,12 +68,12 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	// The path was judged before this open, and a link can be swapped in
 	// between; so the file is opened under the workspace held open as a root,
 	// and what was opened is judged again.
-	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+	root, err := filepath.EvalSymlinks(ws)
 	if err != nil {
 		WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
-	c, err := tools.NewStateSet(s.opts.Workspace).Confine(root, s.opts.Workspace)
+	c, err := tools.NewStateSet(ws).Confine(root, ws)
 	if err != nil {
 		WriteError(w, http.StatusNotFound, "file not found")
 		return
@@ -109,8 +115,8 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 // rule kept from the agent.
 //
 // abs is already symlink-resolved, so a link is judged by what it points at.
-func (s *Server) mayServe(abs string) bool {
-	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+func (s *Server) mayServe(ws, abs string) bool {
+	root, err := filepath.EvalSymlinks(ws)
 	if err != nil {
 		return false
 	}
@@ -120,22 +126,22 @@ func (s *Server) mayServe(abs string) bool {
 	}
 	// The server's own state is never a deliverable, whatever the rules say,
 	// under any spelling or link that reaches it.
-	if !filepath.IsLocal(rel) || tools.IsState(abs, root, s.opts.Workspace) {
+	if !filepath.IsLocal(rel) || tools.IsState(abs, root, ws) {
 		return false
 	}
 	// Then the operator's rules, asked the way the agent's read is asked.
 	// Anything short of allow is a refusal: nobody can answer a prompt here.
 	args, _ := json.Marshal(map[string]string{"path": abs})
-	return s.newPolicy(policy.ModeDefault).Evaluate("read", false, args).Decision == policy.Allow
+	return s.newPolicyIn(policy.ModeDefault, ws).Evaluate("read", false, args).Decision == policy.Allow
 }
 
 // requested is the path a client named, joined to the workspace but with no
 // link followed, so the state check sees the spelling as well as the target.
-func (s *Server) requested(rel string) string {
+func (s *Server) requested(ws, rel string) string {
 	if filepath.IsAbs(rel) {
 		return filepath.Clean(rel)
 	}
-	return filepath.Join(s.opts.Workspace, rel)
+	return filepath.Join(ws, rel)
 }
 
 // resolveInWorkspace turns a client-supplied path into an absolute one that is
@@ -147,7 +153,12 @@ func (s *Server) requested(rel string) string {
 // read something outside it. filepath.Join alone would CLEAN a "..", which
 // resolves the traversal instead of refusing it.
 func (s *Server) resolveInWorkspace(rel string) (string, error) {
-	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+	return s.resolveIn(s.opts.Workspace, rel)
+}
+
+// resolveIn is resolveInWorkspace in the workspace ws.
+func (s *Server) resolveIn(ws, rel string) (string, error) {
+	root, err := filepath.EvalSymlinks(ws)
 	if err != nil {
 		return "", err
 	}
@@ -156,7 +167,7 @@ func (s *Server) resolveInWorkspace(rel string) (string, error) {
 	// prints, since the second is what a user will copy out of the transcript.
 	clean := rel
 	if filepath.IsAbs(clean) {
-		if r, err := filepath.Rel(s.opts.Workspace, clean); err == nil {
+		if r, err := filepath.Rel(ws, clean); err == nil {
 			clean = r
 		}
 	}
@@ -197,7 +208,12 @@ func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+	ws, err := s.sessionWorkspace(r.Context(), id)
+	if err != nil {
+		WriteJSON(w, http.StatusOK, []downloadEntry{})
+		return
+	}
+	root, err := filepath.EvalSymlinks(ws)
 	if err != nil {
 		WriteJSON(w, http.StatusOK, []downloadEntry{})
 		return
@@ -306,6 +322,14 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	if err := del.DeleteSession(id); err != nil {
 		WriteError(w, http.StatusInternalServerError, "delete failed")
 		return
+	}
+	// A sandbox of the session's own goes with it, its folder too.
+	if s.opts.SessionSandboxes != nil {
+		// The rows are gone, so the sandbox goes too even if the caller stops waiting.
+		if err := s.opts.SessionSandboxes.SessionDeleted(context.WithoutCancel(r.Context()), id, UserOf(r.Context()),
+			storeTenant(s.opts.Config, TenantOf(r.Context()))); err != nil {
+			s.log.Error("deleting the session's sandbox", "session", id, "error", err)
+		}
 	}
 
 	s.log.Info("session deleted", "session", id, "user", UserOf(r.Context()))

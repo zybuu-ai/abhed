@@ -5,11 +5,17 @@ commands in it, stop it, start it again, delete it, all over `/v1/sandboxes`.
 Each sandbox is confined exactly as a session's commands are today (the
 `process` driver, the default, builds it from your `sandbox` settings), and
 every change to one is recorded with who asked for it. A sandbox may name
-another driver the configuration registers: `microvm`, when the managed
+another driver the configuration registers: `docker` or `podman`, when
+`control_plane.docker` or `control_plane.podman` is enabled
+([below](#the-docker-and-podman-drivers)), and `microvm`, when the managed
 `sandbox.microvm_socket` is set ([The microVM driver](24-microvm.md)). A
 configured driver that cannot be reached is named when `abhed serve` starts,
 and sandboxes asking for it fail with `unavailable` rather than running
 under another.
+
+`abhed serve` can also give every session a sandbox of its own, in place of
+the one sandbox all sessions share: see [per-session
+sandboxes](#per-session-sandboxes).
 
 This is the control plane. It is off unless you turn it on, and with it off
 `abhed serve` behaves exactly as before. The full contract, including the
@@ -27,7 +33,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Serve `/v1/sandboxes` and run the reconciler. |
-| `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. |
+| `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. A sandbox's commands can neither read nor write the other folders under the root (on macOS the `process` driver's profile denies them; on Linux they are never mounted in), so a root inside a `sandbox.read_only_paths` entry or a skills folder, which would show them, is refused. |
 | `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
 | `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace. |
 | `expose` | `false` | Lets `:expose` publish a sandbox's port to whoever asked; see [exposed services](#the-api). |
@@ -51,6 +57,10 @@ rather than run unbounded; use a driver that bounds each sandbox.
 
 The weakest isolation a sandbox may run under is your existing
 `sandbox.min_tier`.
+
+| `per_session` | `false` | Give each session of `abhed serve` a sandbox of its own; see [per-session sandboxes](#per-session-sandboxes). |
+| `sessions` | | How those sandboxes are made; see below. |
+| `docker`, `podman` | off | Register the container drivers; see [below](#the-docker-and-podman-drivers). |
 
 ## Where sandboxes are kept
 
@@ -120,6 +130,137 @@ says where serving would create it (after checking the folder), and for an
 existing file it reads the schema version and says whether serving will
 migrate it. `abhed doctor` names the store too, on its
 `sandboxes` line, without opening it.
+
+## Per-session sandboxes
+
+By default every session `abhed serve` runs shares one sandbox and the
+server's workspace. With `per_session` on, each session gets a control-plane
+sandbox of its own instead, made from a template, and works in that
+sandbox's folder:
+
+```json
+"control_plane": {
+  "enabled": true,
+  "per_session": true,
+  "sessions": {"scope": "session", "driver": "podman", "retention": "stop", "warm_pool": 2}
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `sessions.scope` | `session` | `session`: one sandbox per session. `user`: one per user, which all of that user's sessions share. |
+| `sessions.template` | `session` | The template each sandbox is made from. Letters, digits, `.`, `_` and `-`. |
+| `sessions.driver` | `process` | The driver each runs under: `process`, `docker` or `podman`. `microvm` cannot run a session's commands yet and is refused. |
+| `sessions.retention` | `stop` | What happens to the sandboxes when the server stops: `stop` them, `delete` them (and their folders), or `keep` them running. |
+| `sessions.warm_pool` | 0 | Ready sandboxes kept for new sessions to claim, at most 16. |
+| `sessions.ready_seconds` | 120 | How long a new or continued session waits for its sandbox before it is refused. |
+
+What changes for a session:
+
+- **Its workspace is its sandbox's folder**, `<workspace_root>/<id>`, never
+  the server's workspace. The agent's file tools, the workbench's tree,
+  file views, saves, uploads and downloads, and the folder `session.started`
+  names are all that folder. Another session's folder is outside it, by
+  path or through a link.
+- **Its commands run in its sandbox.** The bash tool, background commands
+  and the workbench terminal go through the control plane to the sandbox's
+  driver, with git protection, `.abhed` hidden, and the network as the
+  driver builds it. Each command is in the control plane's record as an
+  `exec` by the session's user (with `"via": "session"`), put to a guard
+  and interceptors as any `:exec` is. The bash tool's own timeout applies,
+  not `exec_timeout_seconds`.
+- **The record links them.** The sandbox carries the reserved label
+  `abhed.dev/session=<session id>` (or `abhed.dev/session-user=<digest>`
+  per user), is owned by `system:sessions`, and its `create` or `claim`
+  event names the session. The session's record gets `sandbox.bound`,
+  with the sandbox's id, generation, driver, tier and folder, before the
+  first command this server runs in it.
+- **Continuing a session reattaches.** A stopped sandbox, or one a restart
+  of the server lost, is started again as a new generation, with its
+  folder as it was. A session whose sandbox is gone gets a new, empty one.
+- **Deleting a session deletes its sandbox** and its folder. A per-user
+  sandbox stays for the user's other sessions.
+- **A restart of the server removes the sandboxes of sessions that no
+  longer exist**, found by their label.
+
+A session is refused rather than run with less: when its sandbox cannot be
+made `Ready` in `ready_seconds`, when its driver reports no isolation
+(tier `none`), or when the session is in a tenant other than the one the
+control plane's store was opened for. A sandbox made for a session that was
+then refused is deleted.
+
+With per-session sandboxes, a file attached before a session exists has no
+folder to go to, so `POST /v1/uploads` answers `409`; start the session,
+then attach it.
+
+**Warm pool.** With `warm_pool` above 0, the server keeps that many `Ready`
+sandboxes made from the template, owned by `system:sessions` and labelled
+`abhed.dev/pool=<template>`. A new session claims one in a single update
+guarded on its resource version, so two sessions never get the same one;
+the claim relabels it for the session, raises its generation (nothing tied
+to it in the pool carries over) and is recorded as `claim` by the session's
+user, put to a guard as an update. A claimed sandbox never goes back to the
+pool. The pool is refilled in the background, failed members are replaced,
+it never holds more than `warm_pool`, and it is drained (its sandboxes
+deleted) when the server stops. The pool is in the control plane's store,
+which holds one tenant, so it is never shared across tenants. When the pool
+is empty a session gets a new sandbox.
+
+**Isolation.** Under the `process` driver each session's commands can
+neither read nor write the other sessions' folders; under `docker` and
+`podman` only the session's own folder, of all the sandboxes' folders, is
+mounted. Under the fence tier each
+sandbox is a fence of its own, with its own cgroup. Folders in
+`additional_dirs` and skills folders are added to every session, as before,
+so they are shared; so are MCP servers and extensions, which belong to the
+server.
+
+**Not yet.** Under several replicas (Enterprise HA) a `process` sandbox
+lives in the replica that made it, so per-session sandboxes need a driver
+every replica reaches. The microVM driver cannot hand a session's commands
+out yet. Workspace scopes from an edition's sandbox caller are not applied
+to a session's sandbox.
+
+`abhed serve -check` checks all of this: a `per-session sandboxes` line
+fails when the session driver is not registered, cannot be reached or
+cannot run a session's commands. `abhed doctor` names the setting on its
+`sessions` line. With `per_session` off, sessions behave exactly as before.
+
+## The docker and podman drivers
+
+```json
+"control_plane": {
+  "enabled": true,
+  "podman": {"enabled": true, "image": "ghcr.io/example/dev:1"}
+}
+```
+
+Each sandbox on them is one long-lived container; what every container
+gets, and every admission rule, is in [Container drivers](23-container-drivers.md).
+
+| Key (under `docker` or `podman`) | Who may set it | Meaning |
+|---|---|---|
+| `enabled` | any configuration | Register the driver. |
+| `image` | any configuration | The default image; `ABHED_SANDBOX_IMAGE` or the container tier's when unset. |
+| `binary` | managed only | The engine's program; found on `PATH` by its name when unset. |
+| `images` | managed only | Further images a sandbox may ask for in `Config["image"]`. |
+| `mounts` | managed only | Host folders every sandbox gets: `{"host", "target", "rw"?, "relabel"?}`. |
+| `mount_roots` | managed only | Folders under which a sandbox may ask for its own mounts: `{"path", "rw"?, "relabel"?}`. |
+| `gpus` | managed only | CDI device names a sandbox may ask for, such as `nvidia.com/gpu=all`. |
+| `cpus` | managed only | CPUs each sandbox may use, 2 when unset. |
+| `seccomp_profile` | managed only | A seccomp profile file in place of the engine's default; `unconfined` is refused. |
+
+Each managed-only key widens what a sandbox can reach or loosens a bound, so
+a user's or workspace's file that sets one is set aside and named, as for
+other managed-only settings. Options that could never be admitted (a raw
+device path for a GPU, an unconfined profile) stop `abhed serve` at start.
+
+An engine that does not answer leaves its driver registered: every sandbox
+on it fails with `unavailable` until the engine answers, and none is handed
+to another driver. `abhed serve` names it at start, `abhed doctor` shows it
+as `UNAVAILABLE`, and `abhed serve -check` fails its `driver docker` or
+`driver podman` line. When it is the per-session driver, `abhed serve`
+refuses to start.
 
 ## Settings: global and per sandbox
 
