@@ -7,7 +7,7 @@
 //
 //	host  → {"type":"hello","version":1}
 //	guest → {"type":"hello","version":1}
-//	host  → {"type":"exec","exec":{…}}, {"type":"ping"} or {"type":"shutdown"}
+//	host  → {"type":"exec","exec":{…}}, ping, net, sync or shutdown
 //	host  → stdin, stdin_eof, resize frames   (exec only)
 //	guest → stdout, stderr frames, then {"type":"exit","code":N} or an error
 //
@@ -43,6 +43,7 @@ const (
 	tExec     = "exec"
 	tShutdown = "shutdown"
 	tPing     = "ping"
+	tNet      = "net"
 	tStdin    = "stdin"
 	tStdinEOF = "stdin_eof"
 	tResize   = "resize"
@@ -90,6 +91,7 @@ type frame struct {
 	Code    *int         `json:"code,omitempty"`
 	Message string       `json:"message,omitempty"`
 	Path    string       `json:"path,omitempty"`
+	Port    uint16       `json:"port,omitempty"`
 }
 
 var errProtocol = errors.New("guest protocol error")

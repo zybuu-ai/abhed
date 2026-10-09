@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -50,7 +51,11 @@ func fakeHelper(args []string) int {
 	if json.Unmarshal(b, &cfg) != nil || cfg.Network != "none" {
 		return 4
 	}
-	return serveVsock(cfg.VsockSocket)
+	ports := map[uint32]string{}
+	for _, p := range cfg.GuestPorts {
+		ports[p.Port] = p.Socket
+	}
+	return serveVsock(cfg.VsockSocket, func(p uint32) string { return ports[p] })
 }
 
 func fakeJailer(args []string) int {
@@ -73,11 +78,13 @@ func fakeJailer(args []string) int {
 	if os.Getenv("ABHED_FAKE_VMM_HANG") != "" {
 		time.Sleep(time.Hour)
 	}
-	return serveVsock(filepath.Join(root, chVsock))
+	return serveVsock(filepath.Join(root, chVsock), func(p uint32) string {
+		return filepath.Join(root, fmt.Sprintf("%s_%d", chVsock, p))
+	})
 }
 
 // serveVsock answers the hybrid vsock handshake, then the guest protocol.
-func serveVsock(sock string) int {
+func serveVsock(sock string, guestPort func(uint32) string) int {
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		return 6
@@ -86,6 +93,9 @@ func serveVsock(sock string) int {
 	dir, _ := os.Getwd()
 	s := &guest.Server{Env: []string{"PATH=/usr/bin:/bin", "ABHED_SANDBOX=microvm"}, Dir: dir, Shell: "/bin/sh",
 		PowerOff: func() { os.Exit(0) }}
+	if _, err := os.Stat(guestPort(guest.EgressPort)); err == nil {
+		s.Network = fakeNetwork(guestPort)
+	}
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -145,9 +155,38 @@ func (f *fakeBackend) boot(_ context.Context, b bootSpec) (machine, error) {
 		}
 		m.dir, m.srv.Dir, m.srv.Workspace = b.workspace, b.workspace, tr
 	}
+	if len(b.guestPorts) > 0 {
+		dir, err := os.MkdirTemp("/tmp", "mvmg")
+		if err != nil {
+			return nil, err
+		}
+		lns, err := listenGuestPorts(b.guestPorts, func(p uint32) string { return filepath.Join(dir, strconv.Itoa(int(p))) }, nil)
+		if err != nil {
+			return nil, err
+		}
+		m.guest, m.guestDir = lns, dir
+		m.srv.Network = fakeNetwork(func(p uint32) string { return filepath.Join(dir, strconv.Itoa(int(p))) })
+	}
 	f.boots = append(f.boots, b)
 	f.machines = append(f.machines, m)
 	return m, nil
+}
+
+// fakeNetwork stands in for the guest agent's forwarder: the "guest"
+// shares this host's loopback, and reaches the host side's socket directly.
+func fakeNetwork(path func(uint32) string) func(uint16) error {
+	var mu sync.Mutex
+	var started bool
+	return func(port uint16) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if started {
+			return nil
+		}
+		_, err := guest.Forward(port, func() (io.ReadWriteCloser, error) { return net.Dial("unix", path(guest.EgressPort)) })
+		started = err == nil
+		return err
+	}
 }
 
 func (f *fakeBackend) last() *fakeMachine {
@@ -157,9 +196,11 @@ func (f *fakeBackend) last() *fakeMachine {
 }
 
 type fakeMachine struct {
-	srv    *guest.Server
-	dir    string
-	silent bool
+	srv      *guest.Server
+	dir      string
+	silent   bool
+	guest    map[uint32]net.Listener
+	guestDir string
 
 	mu       sync.Mutex
 	exited   chan struct{}
@@ -202,10 +243,16 @@ func (m *fakeMachine) exit() {
 func (m *fakeMachine) done() <-chan struct{} { return m.exited }
 func (m *fakeMachine) console() string       { return "fake console" }
 
+func (m *fakeMachine) guestListener(port uint32) net.Listener { return m.guest[port] }
+
 func (m *fakeMachine) kill() error {
 	m.mu.Lock()
 	m.killed++
 	m.mu.Unlock()
+	closeAll(m.guest)
+	if m.guestDir != "" {
+		_ = os.RemoveAll(m.guestDir)
+	}
 	m.exit()
 	return nil
 }

@@ -24,7 +24,9 @@ import (
 //	    boots the VM the file describes (helperConfig), with no network
 //	    device and no shared folders; listens on vsock_socket (mode 0600)
 //	    and bridges "CONNECT <port>\n" to that guest vsock port, answering
-//	    "OK <port>\n"; writes the guest console to stdout; exits when the VM
+//	    "OK <port>\n"; joins a guest connection to a port in guest_ports to
+//	    a new connection to that port's socket, and refuses the guest any
+//	    other port; writes the guest console to stdout; exits when the VM
 //	    stops, and stops the VM when it is killed. It refuses a key it
 //	    does not know.
 type Helper struct {
@@ -58,7 +60,14 @@ type helperConfig struct {
 	MemoryMiB   int          `json:"memory_mib"`
 	Disks       []helperDisk `json:"disks"`
 	VsockSocket string       `json:"vsock_socket"`
+	GuestPorts  []helperPort `json:"guest_ports,omitempty"`
 	Network     string       `json:"network"`
+}
+
+// helperPort is a vsock port the guest may connect to on the host.
+type helperPort struct {
+	Port   uint32 `json:"port"`
+	Socket string `json:"socket"`
 }
 
 type helperCheck struct {
@@ -114,14 +123,22 @@ func runHelperCheck(ctx context.Context, path string) error {
 	return nil
 }
 
+func guestPortPath(run string, p uint32) string {
+	return filepath.Join(run, fmt.Sprintf("g%d.sock", p))
+}
+
 func (h *helper) config(b bootSpec, sock string) helperConfig {
 	disks := []helperDisk{{Path: b.rootfs, ReadOnly: true}}
 	if b.workspace != "" {
 		disks = append(disks, helperDisk{Path: b.workspace})
 	}
+	var ports []helperPort
+	for _, p := range b.guestPorts {
+		ports = append(ports, helperPort{Port: p, Socket: guestPortPath(filepath.Dir(sock), p)})
+	}
 	return helperConfig{
 		Protocol: HelperProtocol, Kernel: b.kernel, BootArgs: b.bootArgs,
-		CPUs: b.vcpus, MemoryMiB: b.memMiB, Disks: disks, VsockSocket: sock, Network: "none",
+		CPUs: b.vcpus, MemoryMiB: b.memMiB, Disks: disks, VsockSocket: sock, GuestPorts: ports, Network: "none",
 	}
 }
 
@@ -147,9 +164,14 @@ func (h *helper) boot(_ context.Context, b bootSpec) (machine, error) {
 		_ = cleanup()
 		return nil, err
 	}
+	lns, err := listenGuestPorts(b.guestPorts, func(p uint32) string { return guestPortPath(run, p) }, nil)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
 	cmd := exec.Command(h.h.Path, "run", "--config", filepath.Join(run, "vm.json"))
 	cmd.Env = append([]string{}, h.env...)
-	m, err := startMachine(cmd, sock, nil, cleanup)
+	m, err := startMachine(cmd, sock, lns, nil, cleanup)
 	if err != nil {
 		_ = cleanup()
 		return nil, err

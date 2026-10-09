@@ -23,14 +23,16 @@ All notable changes to Abhed are recorded here. The format follows
   in its own virtual machine with its own kernel, reporting the new tier
   `microvm`. On Linux it uses Firecracker under its jailer on KVM (a chroot,
   a uid and gid per VM, cgroup v2 limits, Firecracker's seccomp filters), no
-  network device, and a vsock channel to `abhed-guest`, a static agent that
+  network device ever, and a vsock channel to `abhed-guest`, a static agent that
   runs as the guest's init and runs commands as an unprivileged user with
   exit codes, output and terminals. `abhed-microvm` serves it to an
   unprivileged server over the out-of-process driver protocol. The
   workspace is copied into the VM, and what commands change there is copied
   back after each command and at stop: never through a link, never outside
   the workspace, never into `.abhed`, git's configuration and hooks or a
-  write-protected path, and as the workspace's user. It refuses to run, and
+  write-protected path, and as the workspace's user. With the egress
+  allowlist on, the session's egress proxy is reached over vsock, with the
+  same per-call credentials and record; with it off there is no path out. It refuses to run, and
   says why, without KVM, root, cgroup v2, Firecracker 1.5 or the jailer.
   On macOS it needs a Virtualization.framework helper signed with the
   virtualization entitlement, which is not shipped, so there it refuses

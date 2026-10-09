@@ -277,7 +277,11 @@ Virtualization.framework helper speaking the protocol in
 installed. A backend whose requirements are missing fails `Create` with
 `ErrUnavailable`.
 
-- No network device. The host reaches the guest only over vsock, where
+- No network device. With `Spec.Egress` set (the session's egress proxy
+  socket and port), the guest's loopback port is carried over vsock to the
+  proxy, which applies the allowlist and per-call credentials as on the
+  process tier; with it nil there is no path out. The host reaches the
+  guest only over vsock, where
   `cmd/abhed-guest` (the guest's init) runs commands as an unprivileged user.
   Its protocol is `driver/microvm/guest`: one call per connection, JSON
   Lines, an exit code only when the guest sent one.

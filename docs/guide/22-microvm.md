@@ -24,7 +24,7 @@ is a separate test that needs a KVM host (see "Testing on KVM").
 | | |
 |---|---|
 | Kernel | The guest runs its own Linux kernel. A command that exploits a kernel bug compromises the guest kernel, not the host's. |
-| Network | The VM has **no network device**. The only interface in the guest is loopback. Commands reach nothing outside the VM. Egress through Abhed's host-side broker is not built yet, so a sandbox that needs the network cannot use this driver today. |
+| Network | The VM has **no network device**, ever. The only interface in the guest is loopback. With the network off, the host listens on no port for the guest and the guest forwards nothing: there is no path out. With the egress allowlist on, the session's egress proxy is the only way out (see "Network"). |
 | Host channel | One vsock connection to the guest agent. The host side is a Unix socket in the VM's chroot; the driver opens it without following a symlink, so a compromised VMM cannot point it elsewhere. |
 | Files | The workspace is copied into an ext4 image when the sandbox is created and mounted at `/workspace`. After every command, and before the VM stops, what changed in it is copied back to the host workspace (see "Copying changes back"). Changes made on the host after create do not reach the VM. The root filesystem is shared between VMs and mounted read-only. |
 | Inside the guest | Commands run as an unprivileged user (uid 1000), not as root, so they cannot signal or replace the agent that reports their exit codes. The agent and init run as root inside the guest. |
@@ -42,8 +42,10 @@ Not isolated, or not yet:
   ends them (each is in its own cgroup under the configured parent, so
   `cgroup.kill` there ends it). A driver that exits normally deletes every
   instance it started.
-- Snapshots, copy in and out, port forwarding and network egress are not
-  implemented; the driver declares only `attach`.
+- Snapshots, copy in and out and port forwarding are not implemented; the
+  driver declares only `attach`.
+- No DNS inside the guest. Names are resolved by the egress proxy for
+  requests sent through it; a program that resolves names itself fails.
 
 ## Copying changes back
 
@@ -76,6 +78,31 @@ What was refused is listed on the command's stderr, so the agent sees it.
 A command whose changes could not be copied back at all fails with an
 error, even though it ran. Copies are last-writer-wins: a file edited both
 on the host and in the VM ends up as the VM left it.
+
+## Network
+
+The microVM never gets a network device. When the sandbox's policy is
+`sandbox.network: "allowlist"`, the control plane gives the driver the
+session's egress proxy: its Unix socket and the loopback port commands are
+told to use. The driver then:
+
+- listens on one host-side vsock port for the guest (Firecracker's
+  `v.sock_1025` in the VM's chroot), made before the VM starts;
+- has the guest agent listen on `127.0.0.1:<port>` inside the guest and
+  carry each connection over vsock to that port;
+- joins each to a new connection to the proxy's socket. Running as root,
+  it first checks the socket is served by the server's user, so a socket
+  path cannot point the guest at anything else on the host.
+
+Each command's per-call credential comes in its environment
+(`HTTP_PROXY`, `HTTPS_PROXY` and the lower-case forms), exactly as on the
+process tier, so the allowlist, the per-call credentials and the record of
+each decision are the proxy's, unchanged. A request without the call's
+credential is refused by the proxy.
+
+With the network off, or `allow_network` without the allowlist, the driver
+listens on no port for the guest and the guest forwards nothing. The microVM
+driver never opens the network directly.
 
 ## Linux requirements
 

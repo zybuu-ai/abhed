@@ -23,19 +23,25 @@ type procMachine struct {
 	// the boot's files once it has exited. Either may be nil.
 	reap, cleanup func() error
 
+	// guest are the listeners for the guest's connections, by vsock port.
+	guest map[uint32]net.Listener
+
 	once    sync.Once
 	killErr error
 }
 
+func (m *procMachine) guestListener(port uint32) net.Listener { return m.guest[port] }
+
 // startMachine starts cmd, whose output is the guest console.
-func startMachine(cmd *exec.Cmd, sock string, reap, cleanup func() error) (*procMachine, error) {
+func startMachine(cmd *exec.Cmd, sock string, guestLns map[uint32]net.Listener, reap, cleanup func() error) (*procMachine, error) {
 	out := &tailBuffer{max: 8 << 10}
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
+		closeAll(guestLns)
 		return nil, err
 	}
-	m := &procMachine{cmd: cmd, sock: sock, exited: make(chan struct{}), out: out, reap: reap, cleanup: cleanup}
+	m := &procMachine{cmd: cmd, sock: sock, exited: make(chan struct{}), out: out, reap: reap, cleanup: cleanup, guest: guestLns}
 	go func() { _ = cmd.Wait(); close(m.exited) }()
 	return m, nil
 }
@@ -65,6 +71,7 @@ func (m *procMachine) dial(ctx context.Context) (net.Conn, error) {
 
 func (m *procMachine) kill() error {
 	m.once.Do(func() {
+		closeAll(m.guest)
 		if m.cmd.Process != nil {
 			_ = m.cmd.Process.Kill()
 		}
@@ -118,4 +125,30 @@ func (t *tailBuffer) String() string {
 		}
 		return -1
 	}, strings.TrimSpace(s))
+}
+
+func closeAll(lns map[uint32]net.Listener) {
+	for _, l := range lns {
+		_ = l.Close()
+	}
+}
+
+// listenGuestPorts listens at path(port) for each port, before the VM is
+// started; own gives each socket to the user the VMM runs as.
+func listenGuestPorts(ports []uint32, path func(uint32) string, own func(string) error) (map[uint32]net.Listener, error) {
+	lns := map[uint32]net.Listener{}
+	for _, p := range ports {
+		ln, err := net.Listen("unix", path(p))
+		if err == nil && own != nil {
+			if err = own(path(p)); err != nil {
+				_ = ln.Close()
+			}
+		}
+		if err != nil {
+			closeAll(lns)
+			return nil, err
+		}
+		lns[p] = ln
+	}
+	return lns, nil
 }

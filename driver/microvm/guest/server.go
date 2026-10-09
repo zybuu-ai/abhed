@@ -32,6 +32,9 @@ type Server struct {
 	PowerOff func()
 	// Workspace, when set, answers sync requests.
 	Workspace *Tracker
+	// Network, when set, starts forwarding 127.0.0.1:port to the host's
+	// egress broker. Without it the guest refuses, and has no way out.
+	Network func(port uint16) error
 }
 
 // ServeConn answers one call on rw and closes it.
@@ -55,6 +58,16 @@ func (s *Server) ServeConn(rw io.ReadWriteCloser) {
 	}
 	switch {
 	case f.Type == tPing:
+		_ = c.write(frame{Type: tOK})
+	case f.Type == tNet:
+		if s.Network == nil {
+			_ = c.write(frame{Type: tError, Message: "this guest has no network"})
+			return
+		}
+		if err := s.Network(f.Port); err != nil {
+			_ = c.write(frame{Type: tError, Message: err.Error()})
+			return
+		}
 		_ = c.write(frame{Type: tOK})
 	case f.Type == tSync:
 		if s.Workspace == nil {

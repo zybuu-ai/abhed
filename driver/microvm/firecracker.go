@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,9 +49,10 @@ type firecracker struct {
 	fc Firecracker
 	// probe, chown and env are replaced in tests, which cannot run the
 	// jailer as root.
-	probe func() error
-	chown func(path string, uid, gid int) error
-	env   []string
+	probe  func() error
+	chown  func(path string, uid, gid int) error
+	lchown func(path string, uid, gid int) error
+	env    []string
 }
 
 func newFirecracker(o *Options) (*firecracker, error) {
@@ -91,7 +93,7 @@ func newFirecracker(o *Options) (*firecracker, error) {
 		return nil, fmt.Errorf("microvm: firecracker.parent_cgroup %q is not a plain folder name", fc.ParentCgroup)
 	}
 	o.Firecracker = &fc
-	return &firecracker{o: o, fc: fc, probe: func() error { return probeFirecracker(o, fc) }, chown: os.Chown}, nil
+	return &firecracker{o: o, fc: fc, probe: func() error { return probeFirecracker(o, fc) }, chown: os.Chown, lchown: os.Lchown}, nil
 }
 
 func (f *firecracker) name() string { return "firecracker" }
@@ -183,8 +185,18 @@ func (f *firecracker) boot(_ context.Context, b bootSpec) (machine, error) {
 		return nil, err
 	}
 	err := f.layout(b, root, uid, gid)
+	// Firecracker sends the guest's connection to port P to the socket
+	// "<uds_path>_P"; made here, while the chroot is still root's alone.
+	var lns map[uint32]net.Listener
 	if err == nil {
-		err = f.chown(root, uid, gid)
+		lns, err = listenGuestPorts(b.guestPorts,
+			func(p uint32) string { return filepath.Join(root, fmt.Sprintf("%s_%d", chVsock, p)) },
+			func(p string) error { return f.lchown(p, uid, gid) })
+	}
+	if err == nil {
+		if err = f.chown(root, uid, gid); err != nil {
+			closeAll(lns)
+		}
 	}
 	if err != nil {
 		_ = cleanup()
@@ -193,7 +205,7 @@ func (f *firecracker) boot(_ context.Context, b bootSpec) (machine, error) {
 	cmd := exec.Command(f.fc.Jailer, f.jailerArgs(b)...)
 	cmd.Env = append([]string{}, f.env...)
 	cmd.SysProcAttr = vmmProcAttr()
-	m, err := startMachine(cmd, filepath.Join(root, chVsock),
+	m, err := startMachine(cmd, filepath.Join(root, chVsock), lns,
 		func() error { return killCgroup(f.fc.ParentCgroup, b.vmID) }, cleanup)
 	if err != nil {
 		_ = cleanup()

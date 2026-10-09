@@ -5,6 +5,7 @@ package microvm
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,11 +135,58 @@ func TestFirecrackerOnKVM(t *testing.T) {
 	if err := d.Delete(ctx, id); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("egress", func(t *testing.T) { kvmEgress(ctx, t, o) })
 	fc := d.be.(*firecracker)
 	if _, err := os.Stat(fc.jailDir("sbx-0123456789abcdef")); !os.IsNotExist(err) {
 		t.Fatalf("the chroot outlived the instance: %v", err)
 	}
 	if _, err := os.Stat(cgroupDir(fc.fc.ParentCgroup, "sbx-0123456789abcdef")); !os.IsNotExist(err) {
 		t.Fatalf("the cgroup outlived the instance: %v", err)
+	}
+}
+
+// kvmEgress runs a VM whose only way out is the session's egress proxy,
+// with the proxy URL a command gets on the process tier, unchanged. The
+// proxy here is served by root, so root is the user its socket is checked
+// against.
+func kvmEgress(ctx context.Context, t *testing.T, o Options) {
+	port := origin(t)
+	p, sock, evs := session(t, port)
+	o.ImageUser = &Credential{UID: 0, GID: 0}
+	o.StateDir = filepath.Join(filepath.Dir(o.StateDir), "state2")
+	fc := *o.Firecracker
+	fc.ChrootBase = filepath.Join(filepath.Dir(fc.ChrootBase), "jail2")
+	o.Firecracker = &fc
+	d, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close(context.Background()) })
+	const id2 = "sbx_2"
+	if _, err := d.Create(ctx, driver.Spec{ID: id2, Egress: &driver.Egress{Socket: sock, Port: p.Addr().Port()}}); err != nil {
+		t.Fatal(err)
+	}
+	call, err := p.Issue("kvm-call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.End()
+	get := func(host string) (int, string) {
+		var out bytes.Buffer
+		res, err := d.Exec(ctx, id2, driver.ExecRequest{Env: call.Env(), Stdout: &out, Stderr: &out,
+			Command: fmt.Sprintf("wget -q -T 5 -O - http://%s:%d/", host, port)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.ExitCode, out.String()
+	}
+	if code, out := get("allowed.test"); code != 0 || out != "ok" {
+		t.Fatalf("allowed through the proxy: %d %q", code, out)
+	}
+	if ev, ok := evs.find("allowed.test"); !ok || ev.CallID != "kvm-call" {
+		t.Fatalf("not recorded under the call: %+v", ev)
+	}
+	if code, _ := get("denied.test"); code == 0 {
+		t.Fatal("a destination outside the allowlist was reached")
 	}
 }

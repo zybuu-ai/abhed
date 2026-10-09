@@ -96,6 +96,9 @@ func (o *Options) defaults() {
 	}
 }
 
+// euid is the driver's user; tests stand in for root.
+var euid = os.Geteuid
+
 // Credential is a user and group id.
 type Credential struct {
 	UID uint32 `json:"uid"`
@@ -122,6 +125,9 @@ type bootSpec struct {
 	workspace string // the ext4 image, or empty
 	bootArgs  string
 	stateDir  string
+	// guestPorts are the vsock ports the guest may connect to on the host;
+	// the boot listens on each before the VM starts, and on no other.
+	guestPorts []uint32
 }
 
 // machine is a booted VM.
@@ -135,6 +141,9 @@ type machine interface {
 	kill() error
 	// console is the end of the guest's console output, for diagnosis.
 	console() string
+	// guestListener is where the guest's connections to port arrive, or nil
+	// when the boot did not listen on it.
+	guestListener(port uint32) net.Listener
 }
 
 // Driver runs instances as microVMs.
@@ -156,6 +165,7 @@ type instance struct {
 	vcpus  int
 	memMiB int
 	image  string
+	egress *driver.Egress
 	// ws is the host workspace with its links resolved, where changes in
 	// the VM are copied back; syncMu runs one copy at a time.
 	ws     string
@@ -255,6 +265,9 @@ func (d *Driver) Create(ctx context.Context, spec driver.Spec) (driver.Status, e
 			return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: the workspace %s is not a folder", ws)
 		}
 	}
+	if eg := spec.Egress; eg != nil && (!filepath.IsAbs(eg.Socket) || eg.Port == 0) {
+		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: egress needs an absolute socket path and a port")
+	}
 	if err := d.be.check(); err != nil {
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "microvm: %v", err)
 	}
@@ -269,7 +282,7 @@ func (d *Driver) Create(ctx context.Context, spec driver.Spec) (driver.Status, e
 		d.mu.Unlock()
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "microvm: every instance slot is in use")
 	}
-	in := &instance{spec: spec, slot: slot, vcpus: vcpus, memMiB: mem, ws: ws, stopped: true}
+	in := &instance{spec: spec, slot: slot, vcpus: vcpus, memMiB: mem, ws: ws, egress: spec.Egress, stopped: true}
 	d.insts[spec.ID], d.slots[slot] = in, spec.ID
 	d.mu.Unlock()
 
@@ -318,7 +331,7 @@ func (d *Driver) prepare(ctx context.Context, in *instance) error {
 	if in.spec.Workspace == "" {
 		return nil
 	}
-	if d.opts.ImageUser == nil && os.Geteuid() == 0 {
+	if d.opts.ImageUser == nil && euid() == 0 {
 		return driver.Errorf(driver.ErrUnavailable, "microvm: a driver running as root copies a workspace only as the user asking for it; set image_user")
 	}
 	if fi, err := os.Stat(d.opts.StateDir); d.opts.ImageUser != nil && (err != nil || fi.Mode().Perm()&0o001 == 0) {
@@ -409,6 +422,10 @@ func (d *Driver) Start(ctx context.Context, id string) (driver.Status, error) {
 		bootArgs: d.opts.BootArgs, stateDir: filepath.Join(d.opts.StateDir, id),
 	}
 	b.vmID, _ = vmID(id)
+	eg := in.egress
+	if eg != nil {
+		b.guestPorts = []uint32{guest.EgressPort}
+	}
 	d.mu.Unlock()
 	if old != nil {
 		_ = old.kill()
@@ -416,7 +433,11 @@ func (d *Driver) Start(ctx context.Context, id string) (driver.Status, error) {
 
 	m, err := d.be.boot(ctx, b)
 	if err == nil {
-		if err = d.waitReady(ctx, m); err != nil {
+		err = d.waitReady(ctx, m)
+		if err == nil && eg != nil {
+			err = d.openEgress(ctx, m, *eg)
+		}
+		if err != nil {
 			_ = m.kill()
 		}
 	} else {
@@ -701,4 +722,79 @@ func (d *Driver) syncBack(ctx context.Context, in *instance, m machine, notes io
 		}
 	}
 	return nil
+}
+
+// maxEgressConns bounds one instance's open connections to the broker.
+const maxEgressConns = 128
+
+// openEgress joins the guest's connections to the egress port to the
+// session's proxy, then has the guest forward its loopback port to them.
+func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) error {
+	ln := m.guestListener(guest.EgressPort)
+	if ln == nil {
+		return driver.Errorf(driver.ErrInternal, "microvm: the VM was booted without its egress port")
+	}
+	go d.serveEgress(ln, eg.Socket)
+	c, err := m.dial(ctx)
+	if err == nil {
+		err = guest.Network(ctx, c, eg.Port)
+	}
+	if err != nil {
+		return driver.Errorf(driver.ErrUnavailable, "microvm: starting the guest's egress: %v", err)
+	}
+	return nil
+}
+
+func (d *Driver) serveEgress(ln net.Listener, socket string) {
+	sem := make(chan struct{}, maxEgressConns)
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			_ = c.Close()
+			continue
+		}
+		go func() {
+			defer func() { <-sem }()
+			up, err := d.dialEgress(socket)
+			if err != nil {
+				slog.Warn("microvm: reaching the egress proxy", "err", err)
+				_ = c.Close()
+				return
+			}
+			guest.Join(c, up)
+		}()
+	}
+}
+
+// dialEgress connects to the egress proxy's socket. Running for another
+// user, the driver checks the socket is served by that user, so a socket
+// path cannot point the guest at anything else the driver could reach.
+func (d *Driver) dialEgress(socket string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := dialUnix(ctx, socket)
+	if err != nil {
+		return nil, err
+	}
+	owner := d.opts.ImageUser
+	if owner == nil && euid() == 0 {
+		_ = c.Close()
+		return nil, errors.New("a driver running as root uses an egress socket only with image_user set, to check who serves it")
+	}
+	if owner != nil {
+		uid, err := peerUID(c)
+		if err == nil && uid != owner.UID {
+			err = fmt.Errorf("%s is served by uid %d, not %d", socket, uid, owner.UID)
+		}
+		if err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+	}
+	return c, nil
 }

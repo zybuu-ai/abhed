@@ -11,10 +11,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -162,6 +164,7 @@ func agent() error {
 		Credential: &syscall.Credential{Uid: cmdUID, Gid: cmdGID, Groups: []uint32{}},
 		PowerOff:   powerOff,
 		Workspace:  tracker,
+		Network:    network,
 	}
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -183,6 +186,42 @@ func agent() error {
 		}
 		go s.ServeConn(os.NewFile(uintptr(nfd), "vsock"))
 	}
+}
+
+var (
+	fwdMu   sync.Mutex
+	fwdPort uint16
+)
+
+// network forwards 127.0.0.1:port to the host's egress broker, once. The
+// host asks only for a sandbox allowed the network; otherwise nothing
+// listens on the host's side and a connection to it is refused.
+func network(port uint16) error {
+	fwdMu.Lock()
+	defer fwdMu.Unlock()
+	if fwdPort != 0 {
+		if port == fwdPort {
+			return nil
+		}
+		return fmt.Errorf("already forwarding port %d", fwdPort)
+	}
+	if _, err := guest.Forward(port, dialHost); err != nil {
+		return err
+	}
+	fwdPort = port
+	return nil
+}
+
+func dialHost() (io.ReadWriteCloser, error) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: guest.EgressPort}); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), "vsock-egress"), nil
 }
 
 func mounted(p string) bool {
