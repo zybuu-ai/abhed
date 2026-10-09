@@ -104,7 +104,7 @@ func dupKeys(dec *json.Decoder, path string) error {
 			}
 			key, _ := k.(string)
 			if seen[key] {
-				return fmt.Errorf("the key %q appears twice in %s", key, orRoot(path))
+				return fmt.Errorf("the key \"%s\" appears twice in %s", Printable(key), Printable(orRoot(path)))
 			}
 			seen[key] = true
 			if err := dupKeys(dec, join(path, key)); err != nil {
@@ -313,7 +313,7 @@ type ManagedError struct {
 }
 
 func (e *ManagedError) Error() string {
-	return fmt.Sprintf("%s %s is refused: %s (set in %s)", e.Key, e.Value, e.Reason, e.File)
+	return fmt.Sprintf("%s %s is refused: %s (set in %s)", Printable(e.Key), Printable(e.Value), e.Reason, Printable(e.File))
 }
 
 // refuse builds a ManagedError naming the managed file.

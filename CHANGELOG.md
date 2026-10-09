@@ -341,6 +341,11 @@ on. A server with it off starts on the older schema as before.
   stops with exit code 2 and names it. A subcommand's own flags of the same
   name, such as `serve -addr` or `record list -n`, stay its own, and a
   command passed on as given (`mcp add`, `sandbox exec`) is left as written.
+- A configuration key holding control bytes, such as NUL, ESC or BEL, was
+  printed as it was in the unknown-key warning, so a file could write to the
+  terminal. Keys and values from a file are now shown in visible form there,
+  in the managed file's repeated-key refusal, the managed-setting refusal,
+  the untrusted-workspace warning and the never-matching allow rule warning.
 - The fence's refusal off Linux read "darwin  arm64", with two spaces where
   there is no kernel version.
 - `abhed doctor` says where git protection is on: in `abhed serve`'s and
