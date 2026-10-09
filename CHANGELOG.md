@@ -313,6 +313,10 @@ All notable changes to Abhed are recorded here. The format follows
   refuses `enabled`. Their key files and trust bundles are state the agent
   cannot reach. Every public endpoint under `/v1/cli/`, and `/v1/token`, share
   the sign-in rate limit.
+- `auth.workload.grants[].allow_reusable_svid` (off by default) lets one
+  workload's JWT-SVIDs carry no `jti`, for issuers that leave it out. It
+  weakens replay protection for that grant only: such an SVID can be
+  exchanged again and again until it expires, so keep its lifetime short.
 - The `profiles` client refreshes a token by itself when the profile holds a
   refresh token: before a request once a tenth or less of the token's life is
   left, and once after a `401`, sending the request again (`Profile.Do`;
