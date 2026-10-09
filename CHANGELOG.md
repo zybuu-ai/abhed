@@ -69,8 +69,10 @@ All notable changes to Abhed are recorded here. The format follows
   other control characters are still dropped.
   Affects the workbench's terminal from 1.1.0 and Studio's from 1.2.3, to
   1.2.7.
-- A managed `/etc/abhed/config.json` with a key repeated in one object, or a
-  number too large for a generic JSON decode, is now refused at startup. Such a
+- A managed `/etc/abhed/config.json` with a key repeated in one object (also
+  when written in different cases, such as `permissions` and `PERMISSIONS`,
+  which name the same setting), or a number too large for a generic JSON
+  decode, is now refused at startup, with the reason in plain words. Such a
   file could be read one way for the rules in force and another way for which
   settings the managed file makes, so a managed rule could fail to lock allow
   rules or to force line-by-line terminals.
