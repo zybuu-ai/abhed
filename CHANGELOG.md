@@ -19,6 +19,21 @@ All notable changes to Abhed are recorded here. The format follows
   resource versions). Nothing uses them yet; the contract is
   `docs/architecture/control-plane-contract.md`. They may change in a minor
   release until 2.0.
+- Experimental `driver/microvm`: a `microvm` driver that runs each sandbox
+  in its own virtual machine with its own kernel, reporting the new tier
+  `microvm`. On Linux it uses Firecracker under its jailer on KVM (a chroot,
+  a uid and gid per VM, cgroup v2 limits, Firecracker's seccomp filters), no
+  network device, and a vsock channel to `abhed-guest`, a static agent that
+  runs as the guest's init and runs commands as an unprivileged user with
+  exit codes, output and terminals. `abhed-microvm` serves it to an
+  unprivileged server over the out-of-process driver protocol. The
+  workspace is copied into the VM, not shared back. It refuses to run, and
+  says why, without KVM, root, cgroup v2, Firecracker 1.5 or the jailer.
+  On macOS it needs a Virtualization.framework helper signed with the
+  virtualization entitlement, which is not shipped, so there it refuses
+  every sandbox. Not used by `abhed serve` yet. This is not the `vm` tier,
+  which is gVisor and is unchanged. See [The microVM
+  driver](docs/guide/22-microvm.md).
 
 ## [1.2.7] - 2026-10-07
 

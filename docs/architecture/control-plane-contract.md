@@ -65,7 +65,7 @@ minor release, and each change is listed in the changelog.
 | `conditions` | server | Observations, each `{type, status: True\|False\|Unknown, reason, message, observed_generation, last_transition}`. `last_transition` changes only when `status` changes. |
 | `labels` | client | `key: value`, selectable with the selector syntax in §2.1. Keys under `abhed.dev/` are reserved for the server. |
 | `owner` | server | The authenticated principal that created it. Authorization checks use it; clients cannot set it. |
-| `tier` | driver | The isolation the driver reports it actually provides (`process`, `fence`, `container`, `vm`, `none`). Never the one requested. |
+| `tier` | driver | The isolation the driver reports it actually provides (`process`, `fence`, `container`, `vm`, `microvm`, `none`). Never the one requested. `vm` is gVisor, a user-space kernel; `microvm` is a hardware-virtualized guest with its own kernel, from the `microvm` driver only. |
 
 Tenancy is a store concern, as for sessions today: a Postgres store is opened
 for one tenant and row-level security scopes every statement; an SQLite or
@@ -264,6 +264,33 @@ container or gVisor tier where configuration and host pick one, and says so in
 `ExecRequest.Env` may add variables but never replace one the sandbox set
 (`PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables), and `Cwd` must be
 inside the workspace.
+
+### 5.2 The `microvm` driver (Implemented: `driver/microvm`, experimental)
+
+Each instance is a virtual machine with its own guest kernel, reporting the
+tier `microvm`; a `MinTier` of any known tier is met, and the `process`
+driver answers a `MinTier` of `microvm` with `ErrUnavailable`. Backends: on
+Linux, Firecracker under its jailer on KVM (chroot, a uid and gid per VM,
+cgroup v2 limits, Firecracker's seccomp filters); on macOS, a separate
+Virtualization.framework helper speaking the protocol in
+`driver/microvm/helper.go`, not shipped, so the backend refuses until one is
+installed. A backend whose requirements are missing fails `Create` with
+`ErrUnavailable`.
+
+- No network device. The host reaches the guest only over vsock, where
+  `cmd/abhed-guest` (the guest's init) runs commands as an unprivileged user.
+  Its protocol is `driver/microvm/guest`: one call per connection, JSON
+  Lines, an exit code only when the guest sent one.
+- `Spec.Workspace` is copied into an ext4 image at `Create` and mounted at
+  `/workspace`; nothing is copied back. `Spec.Config` accepts only `vcpus`
+  and `memory_mib`, within the operator's maxima.
+- `Stop` lets commands finish within the grace, asks the guest to power off,
+  and kills the VM's cgroup after it. `Start` boots from a fresh chroot; the
+  workspace image survives until `Delete`.
+- Declares `attach` only.
+- The jailer needs root, so on Linux the driver runs as its own root process
+  (`cmd/abhed-microvm`) behind the out-of-process protocol, with its socket
+  owned by the server's user, and builds workspace images as that user.
 
 ## 6. Out-of-process drivers (Implemented: package `driver/plugin`)
 
