@@ -165,7 +165,8 @@ func hiddenSiblings(t *testing.T, root string) {
 		t.Fatal("a file was planted in the other sandbox's folder")
 	}
 	// The workspace's own .abhed stays denied after its read is allowed.
-	if err := os.Mkdir(filepath.Join(a, ".abhed"), 0o700); err != nil {
+	// Bubblewrap has made it already, as the point its tmpfs is mounted on.
+	if err := os.MkdirAll(filepath.Join(a, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(a, ".abhed", "state"), []byte("kept"), 0o600); err != nil {
