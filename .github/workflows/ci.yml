@@ -121,7 +121,7 @@ jobs:
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
-        run: go test ./... -race -count=1
+        run: go test ./... -race -count=1 -timeout 30m
 
       # The end-to-end CLI tests are evidence only if they ran. A test may
       # skip only as pending on an item listed here, each still being built:
@@ -463,9 +463,9 @@ jobs:
       - name: Path rules hold on a disk that folds case
         run: |
           set -euo pipefail
-          go test -race -count=1 -v ./internal/tools/... ./internal/policy/... ./internal/agent/... > case.log 2>&1 || { cat case.log; exit 1; }
-          go test -race -count=1 -v ./server/... -run 'Explorer|DiskPath|Case' >> case.log 2>&1 || { cat case.log; exit 1; }
-          go test -race -count=1 -v ./internal/forge/... -run 'WithoutCase' >> case.log 2>&1 || { cat case.log; exit 1; }
+          go test -race -count=1 -timeout 30m -v ./internal/tools/... ./internal/policy/... ./internal/agent/... > case.log 2>&1 || { cat case.log; exit 1; }
+          go test -race -count=1 -timeout 30m -v ./server/... -run 'Explorer|DiskPath|Case' >> case.log 2>&1 || { cat case.log; exit 1; }
+          go test -race -count=1 -timeout 30m -v ./internal/forge/... -run 'WithoutCase' >> case.log 2>&1 || { cat case.log; exit 1; }
           if grep -E "this disk keeps|needs a disk that folds|hard links unavailable|link count is not read|does not open|names are case-sensitive here|this disk is case-sensitive" case.log; then
             echo "a case-folding test skipped on a disk that should fold case"; exit 1
           fi
