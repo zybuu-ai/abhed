@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
@@ -86,17 +87,23 @@ func dupKeys(dec *json.Decoder, path string) error {
 	}
 	switch tok {
 	case json.Delim('{'):
-		seen := map[string]bool{}
+		// Keyed folded: the config decode matches keys regardless of case, so
+		// "PERMISSIONS" after "permissions" is the same setting written twice.
+		seen := map[string]string{}
 		for dec.More() {
 			k, err := dec.Token()
 			if err != nil {
 				return err
 			}
 			key, _ := k.(string)
-			if seen[key] {
-				return fmt.Errorf("the key %q appears twice in %s", key, orRoot(path))
+			fold := foldKey(key)
+			if first, ok := seen[fold]; ok {
+				if first == key {
+					return fmt.Errorf("the key %q appears twice in %s", key, orRoot(path))
+				}
+				return fmt.Errorf("the keys %q and %q in %s are the same setting", first, key, orRoot(path))
 			}
-			seen[key] = true
+			seen[fold] = key
 			if err := dupKeys(dec, join(path, key)); err != nil {
 				return err
 			}
@@ -113,6 +120,21 @@ func dupKeys(dec *json.Decoder, path string) error {
 		return err
 	}
 	return nil
+}
+
+// foldKey is a key as encoding/json compares it to a field name: by simple
+// case folding, so "permiſſions" and "PERMISSIONS" both fold to "permissions".
+func foldKey(k string) string {
+	var b strings.Builder
+	for _, r := range k {
+		// The smallest rune of r's fold orbit stands for the whole orbit.
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		b.WriteRune(least)
+	}
+	return b.String()
 }
 
 func orRoot(path string) string {
