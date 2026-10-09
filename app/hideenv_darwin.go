@@ -24,6 +24,9 @@ var shownEnv = map[string]bool{
 	"PATH": true, "HOME": true, "USER": true, "LOGNAME": true, "SHELL": true, "TMPDIR": true, "PWD": true,
 	"TERM": true, "TERM_PROGRAM": true, "COLORTERM": true, "LANG": true, "TZ": true, "NO_COLOR": true,
 	"__CF_USER_TEXT_ENCODING": true,
+	// Read before main runs: by the Go runtime, and by a test build's managed paths.
+	"GODEBUG": true, "GOGC": true, "GOMAXPROCS": true, "GOMEMLIMIT": true, "GOTRACEBACK": true,
+	"ABHED_CLITEST_MANAGED_DIR": true,
 }
 
 func shownVar(kv string) bool {

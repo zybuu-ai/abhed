@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,7 +27,8 @@ func TestHideEnvHelper(t *testing.T) {
 		return
 	}
 	HideEnvironment()
-	os.Stdout.WriteString("ready " + os.Getenv("ABHED_TEST_HIDE_CANARY") + " " + strconv.Itoa(len(os.Getenv(hiddenEnvFD))) + "\n")
+	os.Stdout.WriteString("ready " + os.Getenv("ABHED_TEST_HIDE_CANARY") + " " + strconv.Itoa(len(os.Getenv(hiddenEnvFD))) +
+		" " + strconv.Itoa(runtime.GOMAXPROCS(0)) + "\n")
 	time.Sleep(20 * time.Second)
 }
 
@@ -35,7 +37,8 @@ func TestHideEnvHelper(t *testing.T) {
 // the same process id.
 func TestHideEnvironmentKeepsItFromProcArgs(t *testing.T) {
 	c := exec.Command(os.Args[0], "-test.run=^TestHideEnvHelper$") // #nosec G204 -- the test binary
-	c.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "ABHED_TEST_HIDE_ROLE=hold", hideCanary}
+	// GOMAXPROCS is read before main, so it stays in view.
+	c.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "GOMAXPROCS=3", "ABHED_TEST_HIDE_ROLE=hold", hideCanary}
 	out, err := c.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +51,7 @@ func TestHideEnvironmentKeepsItFromProcArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the helper said nothing: %v", err)
 	}
-	if line != "ready harmless-canary-value 0\n" {
+	if line != "ready harmless-canary-value 0 3\n" {
 		t.Fatalf("the helper lost its environment or kept the descriptor variable: %q", line)
 	}
 	args := readProcArgs(t, c.Process.Pid)

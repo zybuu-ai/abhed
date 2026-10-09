@@ -235,8 +235,10 @@ and what a concurrent command was handed: its egress token and its
 
 Abhed hides its own environment: as it starts on macOS it runs itself
 again with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `PWD`,
-`TERM`, `TERM_PROGRAM`, `COLORTERM`, `LANG`, `LC_*`, `TZ`, `NO_COLOR` and
-`__CF_USER_TEXT_ENCODING` in the environment the kernel shows, under the same
+`TERM`, `TERM_PROGRAM`, `COLORTERM`, `LANG`, `LC_*`, `TZ`, `NO_COLOR`,
+`__CF_USER_TEXT_ENCODING` and the Go runtime's `GODEBUG`, `GOGC`,
+`GOMAXPROCS`, `GOMEMLIMIT` and `GOTRACEBACK` in the environment the kernel
+shows, under the same
 process id, and takes the rest back through a pipe, so a provider key
 exported to it is no longer readable there. `ABHED_SHOW_ENV=1` turns this
 off; Abhed also leaves its environment as it is when the rest is over
