@@ -546,15 +546,87 @@ back as binary messages whose first byte says the stream (1 stdout, 2
 stderr). The command is judged, bounded and recorded as a `POST` one is.
 `POST …:exec` with `"stdin": true` answers `400`, naming the WebSocket form.
 
-A shell or interpreter fed stdin would run commands no rule ever sees. So
-while any deny or ask rule for `bash` or any hook is in force (the default
-configuration's deny rules count, as do a Team workspace's rules), a command
-fed stdin that could read commands from it is refused with `403` and code
-`forbidden`, and recorded: use `:attach` or an SSH shell, which judge each
-line, or pass the commands in the command line. This covers `:exec` with
-stdin, an SSH exec request and `abhed sandbox exec -i`. The rule is checked
-on every simple command anywhere in the line, pipelines, lists,
-substitutions and functions included:
+A shell or interpreter fed stdin runs commands the command line does not
+show. So while any deny or ask rule for `bash` or any hook is in force (the
+default configuration's deny rules count, as do a Team workspace's rules),
+a command fed stdin is handled by what reads it. This covers `:exec` with
+stdin, an SSH exec request (`ssh host sh < script`) and `abhed sandbox
+exec -i`. With no such rule or hook, stdin passes through untouched. The
+command line itself is judged first, as on every exec.
+
+**A shell is screened statement by statement.** When the command is only a
+shell reading its commands from stdin (`sh`, `bash`, `dash`, `ksh`, `mksh`,
+`ash`, `yash`, `posh` or `busybox sh`/`ash`, with options, `-s` and its
+parameters, run directly or through `env`, `nice`, `timeout`, `exec`,
+`nohup`, `stdbuf`, `setsid` or `command`), it runs, and what it is fed is
+held back and judged before the shell sees any of it. `zsh` is not among
+them, as it runs words a bash parser reads as plain text (`=cmd`, glob
+qualifiers), so `zsh` fed stdin is refused as below:
+
+- lines are gathered until the parser reads a complete statement: a line
+  ending in a backslash, an open quote, an `if`, `for`, `while` or `case`
+  block, a function body or a here-document waits for the lines that finish
+  it. Several statements on one line are one unit;
+- each statement is judged whole, as a command line is: the deny and ask
+  rules, the hooks and your policy layer, and the checks on expansions,
+  `eval`, IFS and text no rule can read. A statement an ask rule or a hook
+  would put to a person is refused too, as no one is there to answer it.
+  Where the script set a variable to known text earlier, the rules also see
+  the statement with it put in, so `C=curl` then `$C …` is judged as `curl
+  …`;
+- a statement that passes is recorded as `exec.input` (redacted, with its
+  number) and only then sent to the shell;
+- a statement that is refused is recorded as `exec.refused` with the reason,
+  never sent, and ends the shell's input there: the shell finishes the
+  statements it was given and nothing after the refused one runs. The exec
+  ends with `403` and code `forbidden` (`abhed sandbox exec -i` exits with
+  255, as for any command that did not end with a status), and its record
+  is `failed`.
+
+A statement is refused as uncheckable when it would let the shell run
+something no rule read:
+
+- it cannot be parsed, holds a NUL byte, is longer than 64 KiB, or the input
+  ends inside it; the whole input is held to 8 MiB;
+- a program that runs what it reads (a shell, `python`, `perl`, `node`,
+  `awk`, `sed`, `xargs`, `ssh` … as in the list below), or a program named
+  by an expansion, would read the shell's own input, which holds the
+  statements that follow. A command reads it unless its input is
+  redirected (`< file`, a here-document, `</dev/null`) or it is on the
+  reading side of a pipe; a command substitution and a function body read
+  it, and so does a command run in the background. Add `</dev/null` to a
+  command that does not need its input;
+- a here-document fed to a program that is not a shell, a here-document
+  fed to a shell that has expansions in it, and a copy of the shell's input
+  made for a command (`exec 3<&0`) or given to an interpreter by name
+  (`/dev/stdin`, `/proc/$$/fd/0`); `exec` with a new input; a here-document
+  fed to a shell is itself judged statement by statement;
+- `eval` or `trap` of text built when it runs, `source` or `.` of a file
+  named when it runs, inline code (`sh -c`, `python3 -c` …) built when it
+  runs, and an `alias`;
+- a file the script wrote (by a redirect, `tee`, `cp`, `mv`, `ln`,
+  `install`, `dd of=`, `curl -o` or `wget -O`), run by its base name or
+  path, sourced, or given to an interpreter;
+- a program named by a variable the script set to text that is not known,
+  such as from `read` or a command substitution, or by a positional
+  parameter (`"$1"`, `"$@"`). A name whose last path element is known, as in
+  `"$SERVER_DIR/bin/server"`, is judged by that name;
+- setting a variable a shell runs or reads as commands on its own
+  (`BASH_ENV`, `ENV`, `PS1` to `PS4`, `PROMPT_COMMAND`, `SHELLOPTS` …).
+
+A script that sets up a server the way an editor does over SSH (makes
+folders, unpacks a tar, writes a settings file with a here-document,
+`chmod`, `test`, `echo`, `if`/`else`, `case`, starts the server in the
+background) passes under the default rules. A script file the shell runs,
+or a program it unpacks and starts, is judged by its name, as on every
+exec.
+
+**Anything else that reads commands from stdin is refused.** A command fed
+stdin that is not such a shell but could read commands from it is refused
+with `403` and code `forbidden`, and recorded: pass the commands in the
+command line, feed them to `sh`, or use `:attach` or an SSH shell, which
+judge each line. The rule is checked on every simple command anywhere in
+the line, pipelines, lists, substitutions and functions included:
 
 - a word naming a shell or interpreter refuses it, by its base name in any
   case with a version suffix ignored (`/usr/bin/python3.12` is `python`):
@@ -571,10 +643,9 @@ substitutions and functions included:
   `nice`, `timeout`, `nohup`, `sudo`, `find` …);
 - a line that cannot be parsed is refused.
 
-A false match only refuses a command that could have run without stdin. A
-script file the command runs is judged by its name, as on every exec.
-Editors that start their server over SSH by sending a script to `sh` need a
-server whose rules and hooks do not screen `bash`.
+So `python3 -`, `cat | sh`, `sh -c '…'` and `sh script.sh` fed stdin are
+refused, while `sh` and `bash -s` are screened. A false match only refuses
+a command that could have run without stdin.
 
 **`:forward?port=N`** carries a byte stream to `127.0.0.1:N` inside the
 sandbox, through the driver's own channel (see [Snapshots and
@@ -608,8 +679,9 @@ write the host key and these lines for you.
 
 Each SSH session is its own recorded call, judged as the verb it amounts
 to: a shell is an `:attach` (`via: ssh` in the record; refused where
-`:attach` is), a command is an `:exec` with stdin (judged by the deny rules
-and refused when it is a shell or interpreter, as above, its
+`:attach` is), a command is an `:exec` with stdin (judged by the deny rules, a
+shell's input screened statement by statement and another interpreter
+refused, as above, its
 output held to `exec.output_bytes` on its channel, and run without a
 terminal even when one was asked for), and a `direct-tcpip` channel to
 `127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
