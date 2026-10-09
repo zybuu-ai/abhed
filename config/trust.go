@@ -98,9 +98,9 @@ type IgnoredKey struct {
 
 // deploymentSections decide who may sign in and where the record goes, so
 // leaving them out opens a server rather than narrowing it.
-var deploymentSections = []string{"auth", "storage", "server"}
+var deploymentSections = []string{"auth", "storage", "server", "control_plane"}
 
-// IgnoredDeployment lists the ignored settings under auth, storage or server.
+// IgnoredDeployment lists the ignored settings under the deployment sections.
 func (w WorkspaceTrust) IgnoredDeployment() []string {
 	var out []string
 	for _, k := range w.Ignored {
@@ -666,6 +666,7 @@ var workspaceRules = map[string]fieldRule{
 	"extensions":       {nil, "an extension is a process"},
 	"storage":          {nil, "where the record goes and with which credentials"},
 	"server":           {nil, "deployment settings for serve"},
+	"control_plane":    {nil, "turns on an API that runs commands, and sets its limits"},
 	"schedules":        {nil, "prompts the server runs on its own"},
 	"auth":             {nil, "who may sign in"},
 }

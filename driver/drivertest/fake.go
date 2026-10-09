@@ -25,11 +25,15 @@ type Fake struct {
 	ExecFunc func(ctx context.Context, id string, req driver.ExecRequest) (driver.ExecResult, error)
 	// Tier is the tier every instance reports; "process" when empty.
 	Tier string
+	// Errs, when set for a method name ("create", "start", "stop",
+	// "delete", "status"), is what that method returns instead of acting.
+	Errs map[string]error
 
 	mu        sync.Mutex
 	instances map[string]driver.Phase
 	files     map[string][]byte
 	snapshots map[string]driver.SnapshotRef
+	calls     map[string]int
 	Resizes   []driver.WinSize
 }
 
@@ -56,9 +60,52 @@ func (f *Fake) status(id string, p driver.Phase) driver.Status {
 	return driver.Status{ID: id, Phase: p, Tier: f.tier(), Backend: "fake"}
 }
 
+// SetPhase puts an instance in phase p, as if it had exited or failed.
+func (f *Fake) SetPhase(id string, p driver.Phase) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.instances[id] = p
+}
+
+// SetTier changes the tier instances report from now on.
+func (f *Fake) SetTier(tier string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Tier = tier
+}
+
+// SetErr makes method return err until it is set to nil.
+func (f *Fake) SetErr(method string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Errs == nil {
+		f.Errs = map[string]error{}
+	}
+	f.Errs[method] = err
+}
+
+// Calls counts the calls made of each method.
+func (f *Fake) Calls(method string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[method]
+}
+
+// enter counts a call and returns the error set for it, under f.mu.
+func (f *Fake) enter(method string) error {
+	if f.calls == nil {
+		f.calls = map[string]int{}
+	}
+	f.calls[method]++
+	return f.Errs[method]
+}
+
 func (f *Fake) Create(_ context.Context, spec driver.Spec) (driver.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.enter("create"); err != nil {
+		return driver.Status{}, err
+	}
 	if spec.ID == "" {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "spec has no id")
 	}
@@ -69,9 +116,12 @@ func (f *Fake) Create(_ context.Context, spec driver.Spec) (driver.Status, error
 	return f.status(spec.ID, driver.PhaseRunning), nil
 }
 
-func (f *Fake) set(id string, p driver.Phase) (driver.Status, error) {
+func (f *Fake) set(method, id string, p driver.Phase) (driver.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.enter(method); err != nil {
+		return driver.Status{}, err
+	}
 	if _, ok := f.instances[id]; !ok {
 		return driver.Status{}, driver.Errorf(driver.ErrNotFound, "no instance %s", id)
 	}
@@ -80,16 +130,19 @@ func (f *Fake) set(id string, p driver.Phase) (driver.Status, error) {
 }
 
 func (f *Fake) Start(_ context.Context, id string) (driver.Status, error) {
-	return f.set(id, driver.PhaseRunning)
+	return f.set("start", id, driver.PhaseRunning)
 }
 
 func (f *Fake) Stop(_ context.Context, id string, _ time.Duration) (driver.Status, error) {
-	return f.set(id, driver.PhaseStopped)
+	return f.set("stop", id, driver.PhaseStopped)
 }
 
 func (f *Fake) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.enter("delete"); err != nil {
+		return err
+	}
 	if _, ok := f.instances[id]; !ok {
 		return driver.Errorf(driver.ErrNotFound, "no instance %s", id)
 	}
@@ -100,6 +153,9 @@ func (f *Fake) Delete(_ context.Context, id string) error {
 func (f *Fake) Status(_ context.Context, id string) (driver.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.enter("status"); err != nil {
+		return driver.Status{}, err
+	}
 	p, ok := f.instances[id]
 	if !ok {
 		return driver.Status{}, driver.Errorf(driver.ErrNotFound, "no instance %s", id)

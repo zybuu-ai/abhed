@@ -150,6 +150,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
+| `control_plane` | ignored, and `serve`, `user` and `migrate` refuse to run (below): it turns on an API that runs commands and sets that API's limits |
 | `schedules` | ignored: prompts that the server runs on its own |
 | `commands.dirs`, `rules.dirs` | ignored: a custom command or a rule is instructions to the agent |
 | `statusline` | ignored: a statusline command is a process |
@@ -169,7 +170,9 @@ For most settings, leaving the file's value out keeps the safer default. For
 `auth`, `storage` and `server` the default is the loosest value: no sign-in,
 an in-memory record, no group restriction. Ignoring an untrusted `auth`
 section would therefore start `serve` as an open console. So when an
-untrusted file sets anything under these three sections, `serve`, `user` and
+untrusted file sets anything under these three sections, or under
+`control_plane`, whose limits would otherwise fall back to looser defaults,
+`serve`, `user` and
 `migrate` refuse to start. The error names the settings and says how to go
 on: `abhed trust grant`, `abhed -trust-workspace serve`, or moving the
 settings to `~/.abhed/config.json` or the managed file. Commands that do not

@@ -15,6 +15,8 @@ type Memory struct {
 	sandboxes map[string]Sandbox
 	idem      map[idemKey]IdemRecord
 	swept     time.Time
+	audit     []AuditEvent
+	auditSeq  int64
 }
 
 type idemKey struct{ scope, key string }
@@ -91,7 +93,7 @@ func (m *Memory) Update(_ context.Context, s Sandbox, expect int64) (Sandbox, er
 	if cur.ResourceVersion != expect {
 		return Sandbox{}, fmt.Errorf("%w: sandbox %s is at %d, not %d", ErrVersionMismatch, s.ID, cur.ResourceVersion, expect)
 	}
-	if err := immutable(cur, s); err != nil {
+	if err := CheckImmutable(cur, s); err != nil {
 		return Sandbox{}, err
 	}
 	m.rv++
@@ -101,8 +103,9 @@ func (m *Memory) Update(_ context.Context, s Sandbox, expect int64) (Sandbox, er
 	return s.Clone(), nil
 }
 
-// immutable refuses an update that changes what never changes after create.
-func immutable(cur, next Sandbox) error {
+// CheckImmutable refuses an update that changes what never changes after
+// create. Every store applies it.
+func CheckImmutable(cur, next Sandbox) error {
 	switch {
 	case next.Owner != cur.Owner:
 		return fmt.Errorf("%w: owner cannot change", ErrInvalid)

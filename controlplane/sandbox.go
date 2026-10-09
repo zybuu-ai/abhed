@@ -38,15 +38,28 @@ type Sandbox struct {
 	// Owner is the principal that created it; clients never set it.
 	Owner string `json:"owner"`
 	// Tier is the isolation the driver reports it provides.
-	Tier      string    `json:"tier,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Tier string `json:"tier,omitempty"`
+	// Settings are this sandbox's values from the settings registry; they
+	// may tighten what the server allows, never loosen a managed value.
+	Settings map[string]string `json:"settings,omitempty"`
+	// Restarts counts the restarts the server made since a client last
+	// started the sandbox or it last ran stably.
+	Restarts int `json:"restarts,omitempty"`
+	// NextRestart, when set, is when the restart policy starts it again.
+	NextRestart *time.Time `json:"next_restart,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // Clone returns a copy sharing no maps or slices with s.
 func (s Sandbox) Clone() Sandbox {
 	s.Conditions = slices.Clone(s.Conditions)
 	s.Labels = maps.Clone(s.Labels)
+	s.Settings = maps.Clone(s.Settings)
+	if s.NextRestart != nil {
+		t := *s.NextRestart
+		s.NextRestart = &t
+	}
 	return s
 }
 
@@ -65,6 +78,9 @@ const (
 	CondPolicyApplied     = "PolicyApplied"
 	CondIsolationVerified = "IsolationVerified"
 	CondDeleteFailed      = "DeleteFailed"
+	// CondRestartScheduled is True while a restart waits out its backoff,
+	// and False once the restart budget is spent.
+	CondRestartScheduled = "RestartScheduled"
 )
 
 // Condition is one observation about a sandbox.
@@ -123,8 +139,8 @@ func NewSandbox(owner, template, driverName string, labels map[string]string, no
 	if !driver.ValidName(driverName) {
 		return Sandbox{}, fmt.Errorf("%w: driver name %q", ErrInvalid, driverName)
 	}
-	if template == "" {
-		return Sandbox{}, fmt.Errorf("%w: a sandbox needs a template", ErrInvalid)
+	if err := validTemplate(template); err != nil {
+		return Sandbox{}, err
 	}
 	if owner == "" {
 		return Sandbox{}, fmt.Errorf("%w: a sandbox needs an owner", ErrInvalid)
@@ -145,12 +161,29 @@ func NewSandbox(owner, template, driverName string, labels map[string]string, no
 // SetTemplate changes the template, which takes effect at the next start,
 // and so bumps the generation.
 func (s *Sandbox) SetTemplate(t string) error {
-	if t == "" {
-		return fmt.Errorf("%w: a sandbox needs a template", ErrInvalid)
+	if err := validTemplate(t); err != nil {
+		return err
 	}
 	if t != s.Template {
 		s.Template = t
 		s.Generation++
+	}
+	return nil
+}
+
+// validTemplate refuses an empty template name, or one that is long or
+// holds anything but printable ASCII.
+func validTemplate(t string) error {
+	if t == "" {
+		return fmt.Errorf("%w: a sandbox needs a template", ErrInvalid)
+	}
+	if len(t) > 253 {
+		return fmt.Errorf("%w: a template name is at most 253 characters", ErrInvalid)
+	}
+	for i := 0; i < len(t); i++ {
+		if t[i] < 0x21 || t[i] > 0x7e {
+			return fmt.Errorf("%w: template name %q", ErrInvalid, t)
+		}
 	}
 	return nil
 }
@@ -193,4 +226,7 @@ var (
 	ErrIdempotencyInFlight = errors.New("a request with this idempotency key is in progress")
 	// ErrIdempotencyMismatch is a key reused with a different body (422).
 	ErrIdempotencyMismatch = errors.New("idempotency key reused with a different request")
+	// ErrUnavailable is a store, record or driver that cannot be reached
+	// (503); nothing was changed.
+	ErrUnavailable = errors.New("unavailable")
 )

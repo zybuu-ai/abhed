@@ -81,6 +81,8 @@ type Config struct {
 	// Egress is the rules of the egress proxy that sandbox.network
 	// "allowlist" sends commands through. Managed only.
 	Egress egress.Config `json:"egress,omitempty"`
+	// ControlPlane serves /v1/sandboxes from `abhed serve`. Off by default.
+	ControlPlane ControlPlaneConfig `json:"control_plane,omitempty"`
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
@@ -602,6 +604,34 @@ type StorageConfig struct {
 	// and not against the server's own credentials. The server refuses such a
 	// connection unless this is set.
 	SingleRole bool `json:"single_role,omitempty"`
+}
+
+// ControlPlaneConfig turns on the sandbox control plane in `abhed serve` and
+// sets the global values of the settings registry (controlplane.Settings).
+// A value the managed file sets is a ceiling a sandbox may only tighten.
+// Zero values mean the registry's defaults.
+type ControlPlaneConfig struct {
+	// Enabled serves /v1/sandboxes and runs the reconciler. Off leaves serve
+	// exactly as it was.
+	Enabled bool `json:"enabled,omitempty"`
+	// WorkspaceRoot, when set, gives each sandbox a folder of its own under
+	// it. Empty shares the server's workspace, as sessions do.
+	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	// ExecTimeoutSeconds bounds one :exec.
+	ExecTimeoutSeconds int `json:"exec_timeout_seconds,omitempty"`
+	// ExecOutputBytes bounds what one :exec may write, stdout and stderr together.
+	ExecOutputBytes int64 `json:"exec_output_bytes,omitempty"`
+	// RestartPolicy is never, on-failure or always.
+	RestartPolicy string `json:"restart_policy,omitempty"`
+	// MaxRestarts is how often the policy restarts a sandbox before giving up.
+	MaxRestarts *int `json:"max_restarts,omitempty"`
+	// RestartBackoffSeconds is the first restart's delay; each next one doubles.
+	RestartBackoffSeconds int `json:"restart_backoff_seconds,omitempty"`
+	// MutationsPerMinute and ExecPerMinute limit each caller on the sandbox routes.
+	MutationsPerMinute int `json:"mutations_per_minute,omitempty"`
+	ExecPerMinute      int `json:"exec_per_minute,omitempty"`
+	// ReconcileSeconds is how often every sandbox is checked against its driver.
+	ReconcileSeconds int `json:"reconcile_seconds,omitempty"`
 }
 
 // ServerConfig holds the settings that only matter once `abhed serve` is

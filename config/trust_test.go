@@ -475,10 +475,10 @@ func TestMalformedRules(t *testing.T) {
 // Settings that decide who signs in and where the record goes are refused
 // outright by the server-side commands when untrusted.
 func TestDeploymentSettingsAreNamed(t *testing.T) {
-	_, ws := trustHome(t, "", `{"auth":{"mode":"local","require_group":"eng"},"storage":{"driver":"memory"},"server":{"trust_proxy":true},"permissions":{"mode":"bypass"}}`)
+	_, ws := trustHome(t, "", `{"auth":{"mode":"local","require_group":"eng"},"storage":{"driver":"memory"},"server":{"trust_proxy":true},"control_plane":{"exec_per_minute":5},"permissions":{"mode":"bypass"}}`)
 	cfg, _ := LoadWith(ws, LoadOptions{Quiet: true})
 	err := cfg.Workspace.DeploymentError("serve")
-	for _, w := range []string{"auth.mode", "auth.require_group", "storage.driver", "server.trust_proxy", "abhed trust grant", "abhed -trust-workspace serve"} {
+	for _, w := range []string{"auth.mode", "auth.require_group", "storage.driver", "server.trust_proxy", "control_plane.exec_per_minute", "abhed trust grant", "abhed -trust-workspace serve"} {
 		if err == nil || !strings.Contains(err.Error(), w) {
 			t.Fatalf("the refusal lacks %q: %v", w, err)
 		}
