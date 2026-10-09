@@ -215,7 +215,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 	stdin := s.newStdinScreen(ctx, pol, call.caller, st.sb, pr)
 	res, _, err := s.opts.ControlPlane.Exec(ctx, call.caller, call.id, "", req, controlplane.ExecIO{
 		Stdin: stdin, Stdout: prefixed{ws, 1}, Stderr: prefixed{ws, 2},
-		Screen:  func(command string) error { return s.screenStdinExec(pol, command, stdin) },
+		Screen:  func(command string) error { return s.screenStdinExec(pol, command, req.Env, stdin) },
 		Refused: stdin.refused,
 		Started: func(sb controlplane.Sandbox) {
 			stdin.sb = sb
@@ -603,7 +603,7 @@ func (h *sshSandbox) Exec(ctx context.Context, command string, sess sshrelay.Ses
 	stdin := h.s.newStdinScreen(ctx, h.pol, h.caller, h.sb, sess.Stdin)
 	res, _, err := h.s.opts.ControlPlane.Exec(ctx, h.caller, h.sb.ID, "", controlplane.ExecRequest{Command: command, Stdin: true},
 		controlplane.ExecIO{Stdin: stdin, Stdout: sess.Stdout, Stderr: sess.Stderr, Timeout: left,
-			Screen:  func(command string) error { return h.s.screenStdinExec(h.pol, command, stdin) },
+			Screen:  func(command string) error { return h.s.screenStdinExec(h.pol, command, nil, stdin) },
 			Refused: stdin.refused, Started: func(sb controlplane.Sandbox) { stdin.sb = sb }})
 	return res.ExitCode, err
 }

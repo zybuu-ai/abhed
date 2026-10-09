@@ -614,6 +614,14 @@ something no rule read:
 - setting a variable a shell runs or reads as commands on its own
   (`BASH_ENV`, `ENV`, `PS1` to `PS4`, `PROMPT_COMMAND`, `SHELLOPTS` …).
 
+The exec's own variables (`env` in the request) are held to the same list
+while any such rule or hook is in force, for every exec and not only one fed
+stdin, since `BASH_ENV` runs a file even for a judged `bash -c`: setting one
+of those, an exported function (`BASH_FUNC_…`) or a name that is not an
+identifier is refused with `403` and code `forbidden`. For a shell fed
+stdin, `IFS` is refused too, and the shell is refused as uncheckable rather
+than judged statement by statement.
+
 A script that sets up a server the way an editor does over SSH (makes
 folders, unpacks a tar, writes a settings file with a here-document,
 `chmod`, `test`, `echo`, `if`/`else`, `case`, starts the server in the

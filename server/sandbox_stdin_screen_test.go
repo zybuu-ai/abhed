@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,7 +127,7 @@ func (s *screenRig) run(t *testing.T, script string) (string, error) {
 		t.Fatal(err)
 	}
 	q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader(script))
-	if err := s.r.srv.screenStdinExec(pol, "sh", q); err != nil || !q.on {
+	if err := s.r.srv.screenStdinExec(pol, "sh", nil, q); err != nil || !q.on {
 		t.Fatalf("sh fed stdin: %v, screened %v", err, q.on)
 	}
 	out, err := io.ReadAll(q)
@@ -402,5 +403,58 @@ func TestSandboxSSHExecShellScreened(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "before")); err != nil {
 		t.Fatal("the statement before the refused one did not run")
+	}
+}
+
+// A variable the exec sets itself that a shell runs or reads on its own
+// leaves no shell fed stdin to be judged statement by statement.
+func TestStdinShellRefusedForItsOwnStartupVariables(t *testing.T) {
+	s := newScreenRig(t, func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)"} })
+	pol, err := s.r.srv.sandboxPolicy(context.Background(), s.sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		command string
+		env     []string
+	}{
+		{"bash", []string{"BASH_ENV=/tmp/x"}},
+		{"sh", []string{"ENV=/tmp/x"}},
+		{"sh", []string{"MODE=1", "IFS=/"}},
+		{"bash -s", []string{"PS4=$(curl x)", "SHELLOPTS=xtrace"}},
+		{"bash", []string{"BASH_FUNC_echo%%=() { curl x; }"}},
+		{"sh", []string{"A-B=1"}},
+		{"env IFS=/ sh", nil},
+		{"IFS=/ sh", nil},
+	} {
+		q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader("echo hi\n"))
+		err := s.r.srv.screenStdinExec(pol, c.command, c.env, q)
+		if !errors.Is(err, controlplane.ErrForbidden) || q.on || !strings.Contains(err.Error(), "reading commands from stdin cannot be checked") {
+			t.Errorf("%s with %q: %v, screened %v", c.command, c.env, err, q.on)
+		}
+	}
+	q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader("echo hi\n"))
+	if err := s.r.srv.screenStdinExec(pol, "sh", []string{"MODE=1"}, q); err != nil || !q.on {
+		t.Fatalf("sh with a plain variable: %v, screened %v", err, q.on)
+	}
+}
+
+// BASH_ENV and its kind run unjudged commands even for a judged bash -c, so
+// under rules an exec may not set them; a plain variable it may.
+func TestExecRefusesShellStartupVariablesUnderRules(t *testing.T) {
+	for _, env := range []string{`"BASH_ENV=/tmp/x"`, `"ENV=/tmp/x"`, `"BASH_FUNC_echo%%=() { curl x; }"`, `"SHELLOPTS=xtrace"`, `"PS4=$(curl x)"`} {
+		r := buildCPRig(t, nil, nil, nil, func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)"} })
+		sb := r.ready(t, "alice")
+		rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", token: "alice",
+			body: `{"command":"bash -c 'echo hi'","env":[` + env + `]}`})
+		if rec.Code != http.StatusForbidden || r.fake.Calls("exec") != 0 {
+			t.Fatalf("env %s: %d %s, %d execs", env, rec.Code, rec.Body.String(), r.fake.Calls("exec"))
+		}
+	}
+	r := buildCPRig(t, nil, nil, nil, func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)"} })
+	sb := r.ready(t, "alice")
+	if rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", token: "alice",
+		body: `{"command":"bash -c 'echo hi'","env":["MODE=fast"]}`}); rec.Code != http.StatusOK || r.fake.Calls("exec") != 1 {
+		t.Fatalf("a plain variable: %d %s", rec.Code, rec.Body.String())
 	}
 }

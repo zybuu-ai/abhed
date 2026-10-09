@@ -149,7 +149,7 @@ func screensStdin(pol *policy.Engine) bool {
 // whether it could run commands from its stdin that they never see. A shell
 // reading its commands from stdin is let through with in turned on, so each
 // statement it is given is judged first; any other reader is refused.
-func (s *Server) screenStdinExec(pol *policy.Engine, command string, in *stdinScreen) error {
+func (s *Server) screenStdinExec(pol *policy.Engine, command string, env []string, in *stdinScreen) error {
 	if err := denied(pol, command, false); err != nil {
 		return err
 	}
@@ -158,9 +158,9 @@ func (s *Server) screenStdinExec(pol *policy.Engine, command string, in *stdinSc
 	}
 	what := stdinReader(command)
 	if what == "" {
-		return nil
+		return execEnvRefused(env)
 	}
-	if in != nil && stdinShell(command) {
+	if in != nil && stdinShell(command) && shellEnvVar(env, true) == "" {
 		in.on = true
 		return nil
 	}
@@ -170,6 +170,45 @@ func (s *Server) screenStdinExec(pol *policy.Engine, command string, in *stdinSc
 	}
 	return fmt.Errorf("%w: %s reading commands from stdin cannot be checked against the rules and hooks in force; %s",
 		controlplane.ErrForbidden, what, instead)
+}
+
+// screenExec judges a command run without stdin: the deny rules and hooks,
+// then the variables the exec sets itself.
+func screenExec(pol *policy.Engine, command string, env []string) error {
+	if err := denied(pol, command, false); err != nil {
+		return err
+	}
+	if !screensStdin(pol) {
+		return nil
+	}
+	return execEnvRefused(env)
+}
+
+// execEnvRefused refuses an exec's own variable that has any shell it starts
+// run commands no rule sees, as BASH_ENV does even for a judged bash -c.
+func execEnvRefused(env []string) error {
+	if name := shellEnvVar(env, false); name != "" {
+		return fmt.Errorf("%w: %s in the exec's environment has a shell run or read commands no rule or hook sees; leave it out",
+			controlplane.ErrForbidden, name)
+	}
+	return nil
+}
+
+// shellEnvVar names the first of env a shell would act on unjudged: one in
+// shellStartFiles, an exported function, or a name no variable has. A stdin
+// shell also takes IFS, which changes how its statements split from how they
+// were judged.
+func shellEnvVar(env []string, stdin bool) string {
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		switch {
+		case !envName.MatchString(name):
+			return "a variable whose name is not an identifier"
+		case shellStartFiles[name] || strings.HasPrefix(name, "BASH_FUNC_") || stdin && name == "IFS":
+			return name
+		}
+	}
+	return ""
 }
 
 // stdinShells are the shells whose input is judged statement by statement.
@@ -261,12 +300,10 @@ func wrapperProgram(wrapper string, words []string, i int) int {
 	}
 	if wrapper == "env" {
 		for ; i < len(words); i++ {
-			name, _, ok := strings.Cut(words[i], "=")
-			if !ok {
+			if !strings.Contains(words[i], "=") {
 				break
 			}
-			// A name no shell variable has may be an exported function, BASH_FUNC_f%%.
-			if shellStartFiles[name] || !envName.MatchString(name) || strings.HasPrefix(name, "BASH_FUNC_") {
+			if shellEnvVar(words[i:i+1], true) != "" {
 				return -1
 			}
 		}
@@ -315,7 +352,7 @@ func stdinShell(command string) bool {
 		}
 	}
 	for _, a := range call.Assigns {
-		if shellStartFiles[a.Name.Value] {
+		if shellEnvVar([]string{a.Name.Value + "="}, true) != "" {
 			return false
 		}
 	}

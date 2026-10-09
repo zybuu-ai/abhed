@@ -66,7 +66,11 @@ All notable changes to Abhed are recorded here. The format follows
   here-document fed to another interpreter, `eval` of text built when it
   runs, a file the script wrote, a program named by a variable the script
   set to unknown text, an alias) is refused as uncheckable, as is one that
-  cannot be parsed. Scripts that set up a server the way editors do over
+  cannot be parsed. Under those rules an exec may not set, in its own
+  `env`, a variable a shell runs or reads on its own (`BASH_ENV`, `ENV`,
+  `PS1`–`PS4`, `PROMPT_COMMAND`, `SHELLOPTS` …), an exported function
+  (`BASH_FUNC_…`) or a name that is not an identifier, and a shell fed stdin
+  may not be given `IFS`. Scripts that set up a server the way editors do over
   SSH now run. Any other command that could read commands from stdin, such
   as `python3 -`, `cat | sh` or `sh -c '…'`, is still refused with `403`;
   the sandboxes guide lists both rules. With no such rule or hook, stdin

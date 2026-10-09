@@ -591,7 +591,7 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request, call verbCa
 		func() (controlplane.Response, error) {
 			res, _, err := s.opts.ControlPlane.Exec(r.Context(), call.caller, call.id, r.Header.Get("If-Match"), req, controlplane.ExecIO{
 				Stdout: streamOut{f: fw}, Stderr: streamOut{f: fw, stderr: true},
-				Screen: func(command string) error { return denied(pol, command, false) },
+				Screen: func(command string) error { return screenExec(pol, command, req.Env) },
 				Started: func(sb controlplane.Sandbox) {
 					started = true
 					w.Header().Set("Content-Type", "application/x-ndjson")
