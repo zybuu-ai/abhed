@@ -241,6 +241,30 @@ func TestStudioTerminalLinesCtrlCDropsTypedAhead(t *testing.T) {
 	}
 }
 
+// A line sent the moment create answers is echoed at the terminal's first
+// prompt, not ahead of it, with its output on the line after.
+func TestStudioTerminalLinesPromptComesFirst(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	for i := 0; i < 20; i++ {
+		var term struct {
+			TerminalID string `json:"terminalId"`
+		}
+		from := r.cl.mark()
+		r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "x"}, nil)
+		var got strings.Builder
+		r.cl.waitFor(from, "the echo of x", func(m rpcMessage) bool {
+			got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+			return strings.Contains(got.String(), "\x1b[1mx")
+		})
+		if want := "\x1b[1mx\x1b[0m"; !strings.HasPrefix(got.String(), "\x1b[2m") || !strings.HasSuffix(got.String(), " $\x1b[0m "+want) {
+			t.Fatalf("attempt %d: %q, want the prompt then the echo", i, got.String())
+		}
+		r.cl.ok("_abhed/terminal/kill", map[string]any{"terminalId": term.TerminalID}, nil)
+	}
+}
+
 // A session let go of, by session/close or the editor going away, records
 // its end, after its terminals' last lines, so its report has one; one a
 // run ended keeps that run's totals.

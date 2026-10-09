@@ -131,6 +131,11 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 			return
 		}
 	}
+	if t.shell == nil {
+		// Input echoes under t.mu, so held until the first prompt is out it
+		// cannot land ahead of the prompt it was typed at.
+		t.mu.Lock()
+	}
 	c.termMu.Lock()
 	c.terms[t.id] = t
 	c.termMu.Unlock()
@@ -141,6 +146,10 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		go c.runTerminal(t)
 	}
 	c.reply(msg.ID, map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true}, nil)
+	if t.shell == nil {
+		c.output(t, linePrompt(t.sess))
+		t.mu.Unlock()
+	}
 }
 
 func (c *acpConn) terminal(params json.RawMessage) (*acpTerminal, *rpcError) {
@@ -354,7 +363,6 @@ func (c *acpConn) runTerminal(t *acpTerminal) {
 		c.notification("_abhed/terminal/exit", map[string]any{"terminalId": t.id, "code": 0})
 		close(t.done)
 	}()
-	c.output(t, linePrompt(t.sess))
 	ahead := false
 	for {
 		select {
