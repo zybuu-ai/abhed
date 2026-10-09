@@ -38,7 +38,7 @@ configuration](#trusting-the-workspace-configuration).
 | `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
 | `fence` | `cpu_percent`: the fence tier's CPU bound — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
-| `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy — [Sandboxes over the API](22-sandboxes.md) |
+| `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
 | `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
@@ -979,9 +979,11 @@ Later sources win, except that an org-managed file cannot be overridden:
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
 `hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
-`studio.disable_host_terminal`, and the whole of `web_search` and
-`web_fetch`, which a lower layer may only turn off or narrow
-([Web search](#web-search)). A lower layer's value the managed file replaces
+`studio.disable_host_terminal`, every key under `control_plane.docker` and
+`control_plane.podman` but `enabled` and `image`
+([Sandboxes over the API](22-sandboxes.md#the-docker-and-podman-drivers)),
+and the whole of `web_search` and `web_fetch`, which a lower layer may only
+turn off or narrow ([Web search](#web-search)). A lower layer's value the managed file replaces
 is recorded too, as `config.refused` with the decision `overridden`.
 
 Inside an agent's command, a nested `abhed` refuses `-settings` and
