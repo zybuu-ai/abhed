@@ -606,6 +606,12 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	if err := dreq.Validate(); err != nil {
 		return driver.ExecResult{}, Sandbox{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	// Refused here, not by the driver, so a bare value never reaches an interceptor as a name.
+	for i, kv := range req.Env {
+		if k, _, ok := strings.Cut(kv, "="); !ok || k == "" {
+			return driver.ExecResult{}, Sandbox{}, fmt.Errorf("%w: env entry %d is not NAME=value", ErrInvalid, i+1)
+		}
+	}
 	sb, err := s.Get(ctx, c, id)
 	if err != nil {
 		return driver.ExecResult{}, Sandbox{}, err

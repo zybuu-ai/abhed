@@ -373,6 +373,18 @@ func TestExecAdmissionCarriesStdinCwdAndEnvNames(t *testing.T) {
 	if s := fmt.Sprintf("%+v", got); strings.Contains(s, "hunter2") || strings.Contains(s, "fast") {
 		t.Fatalf("a variable's value reached the interceptor: %s", s)
 	}
+	// An entry that is not NAME=value is refused before any interceptor sees it, and not echoed.
+	n := len(h.seen)
+	for _, env := range [][]string{{"ghp_secretvalue"}, {"MODE=fast", "=ghp_secretvalue"}} {
+		_, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "true", Env: env}, cp.ExecIO{})
+		if !errors.Is(err, cp.ErrInvalid) || strings.Contains(err.Error(), "ghp_") {
+			t.Fatalf("env %q: %v", env, err)
+		}
+	}
+	if h.mu.Lock(); len(h.seen) != n || r.fake.Calls("exec") != 1 {
+		t.Fatalf("a refused env reached the interceptor or the driver: %+v", h.seen[n:])
+	}
+	h.mu.Unlock()
 	if _, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "true"}, cp.ExecIO{}); err != nil {
 		t.Fatal(err)
 	}
