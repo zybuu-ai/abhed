@@ -297,6 +297,9 @@ type Options struct {
 	// ControlPlane, when set, serves /v1/sandboxes from it and joins the
 	// readiness check. Nil leaves the routes unregistered.
 	ControlPlane *controlplane.Service
+	// SandboxRouter, when set, relays each call that acts on a sandbox to the
+	// replica that owns it. Nil handles every call here.
+	SandboxRouter SandboxRouter
 }
 
 // Server holds live sessions and serves the API.
