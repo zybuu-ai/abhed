@@ -176,6 +176,10 @@ var subcommands = []subcommand{
 	{name: "providers", about: "list the model provider types this build supports"},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
 	{name: "secret", about: "manage stored secrets: set, list, rm"},
+	{name: "login", about: "sign this command line in to an Abhed server and save it as a profile"},
+	{name: "logout", about: "sign the current profile (or -profile NAME) out"},
+	{name: "profile", about: "the servers this command line knows: list, use, rm"},
+	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
 	{name: "record", about: "the local record: list, show, verify, export, prune", trust: true},
@@ -274,5 +278,6 @@ func registerState(cfg config.Config, workspace string) {
 // itself, for a deployment with no identity provider.
 func buildLocal(_ context.Context, cfg config.Config, _ string, users auth.UserStore) (auth.Provider, auth.TokenVerifier, error) {
 	ttl := time.Duration(cfg.Auth.SessionHours) * time.Hour
-	return auth.NewLocalAuth(users, ttl, cfg.Auth.CookieSecure), nil, nil
+	// A server terminating TLS itself never sends its session cookie in clear.
+	return auth.NewLocalAuth(users, ttl, cfg.Auth.CookieSecure || cfg.Server.TLS.Enabled()), nil, nil
 }

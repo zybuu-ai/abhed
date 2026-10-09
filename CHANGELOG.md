@@ -58,6 +58,35 @@ All notable changes to Abhed are recorded here. The format follows
   - On macOS it needs a Virtualization.framework helper signed with the
     virtualization entitlement, which is not shipped, so there it refuses
     every sandbox.
+- `abhed serve` can terminate TLS itself: `server.tls.cert_file` and
+  `key_file`, TLS 1.2 or later (`min_version: "1.3"` to refuse 1.2) with
+  forward-secret AEAD suites only, HTTP/2. `additional_certificates` serves a
+  second certificate chosen by SNI name and key type (RSA beside ECDSA, or
+  the next certificate during a rotation). The files are checked every
+  `reload_seconds` (10) and a change is served from the next connection
+  without a restart; a change that does not load keeps the certificates in
+  use. A TLS setting that cannot be used stops serve at startup; it never
+  falls back to plain HTTP. Plain HTTP stays the default. TLS keys are state,
+  refused to the agent and refused inside the workspace. Session cookies are
+  `Secure` whenever serve terminates TLS. See [TLS and command-line
+  sign-in](docs/guide/22-tls-and-cli-login.md).
+- Client certificates: `server.tls.client_ca_file`, with `client_auth`
+  `require` (the default) or `optional`. With local accounts,
+  `client_cert_accounts: true` signs in the account a verified certificate's
+  common name names.
+- `abhed pki init | server | client`: a private CA, server certificates and
+  client certificates, keys mode 600, never printed, nothing overwritten
+  without `-force`.
+- `abhed login URL` signs the command line in to a server with local accounts,
+  by device code (RFC 8628) or a browser on this machine (PKCE, RFC 7636),
+  approved by a person signed in to the console; turn it on with
+  `auth.cli.enabled`. Tokens last `auth.cli.token_hours` (a week) and end at
+  `abhed logout`, sign-out everywhere, a password change or reset, or the
+  account's removal. `abhed profile list | use | rm` keeps one profile per
+  server in `~/.abhed/profiles.json` (mode 600). A Team edition provider adds
+  its own sign-in method through `auth.CLILoginAdvertiser`.
+- `GET /v1/cli` (public) says how a command line signs in; `GET
+  /v1/cli/whoami` answers for a bearer token too.
 
 **Upgrading with Postgres.** The control plane's tables come with schema
 version 7; run `abhed migrate` before turning `control_plane.enabled` on.
@@ -112,6 +141,15 @@ A server with it off starts on the older schema as before.
 - `driver.Spec` gains `WriteProtected` (paths a driver that copies a
   workspace back never writes) and `Egress` (the session's egress proxy, an
   instance's only way out).
+- `server.Options.TLS` serves TLS on `Addr`; `server.Options.CLILogin` serves
+  command-line sign-in; `Server.Serve(ctx, net.Listener)` serves on a listener
+  the caller opened.
+- `auth.CLITokens`, `auth.CLILogin`, `auth.ClientCertAuth`,
+  `auth.CLILoginMethod`, `auth.CLILoginAdvertiser`, `auth.Verifiers` and
+  `auth.ChainVerifier`. Verifiers from several auth builders are now chained
+  rather than the last one replacing the others.
+- New package `profiles`: the profiles file, an HTTP client carrying a
+  profile's token and TLS settings, and the device and PKCE flows.
 
 ## [1.2.7] - 2026-10-07
 

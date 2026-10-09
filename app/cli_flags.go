@@ -354,6 +354,14 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "login":
+		return loginCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "logout":
+		return logoutCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "profile":
+		return profileCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "pki":
+		return pkiCmd(rest[1:], os.Stdout, os.Stderr)
 	case "admin":
 		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
@@ -444,7 +452,7 @@ func leadingTrustFlag(args []string, trust *bool) []string {
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
 	"secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true,
 }
 
 func isHelpArg(s string) bool {

@@ -15,6 +15,7 @@ model you point it at, and records everything it does.
 | [The microVM driver](22-microvm.md) | experimental: sandboxes as Firecracker microVMs on Linux with KVM; what is and is not isolated |
 | [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |
 | [The terminal](20-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
+| [TLS and command-line sign-in](22-tls-and-cli-login.md) | `serve` over HTTPS with reload and two certificates, client certificates, `abhed pki`, `abhed login` and profiles |
 
 ## Extending it
 

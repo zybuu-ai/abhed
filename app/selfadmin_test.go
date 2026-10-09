@@ -93,6 +93,8 @@ func TestSelfAdminNamesOnlyChanges(t *testing.T) {
 		"mcp add a b": true, "mcp rm a": true, "mcp remove a": true, "mcp list": false, "init": true, "doctor": false,
 		"eval -trust-workspace": true, "resolve --trust-workspace=true u": true,
 		"admin web-search on": true, "admin web-search off": true,
+		"login https://a.test": true, "logout": true, "profile use a": true, "profile rm a": true,
+		"profile list": false, "pki init": false,
 	} {
 		if got := selfAdmin(strings.Fields(args)) != ""; got != want {
 			t.Errorf("selfAdmin(%q) = %v, want %v", args, got, want)

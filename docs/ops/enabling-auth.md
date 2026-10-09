@@ -357,8 +357,12 @@ than no link.
 
 ## API clients
 
-The Community Edition issues no API tokens. A script signs in with a
-password and sends the session cookie back:
+For a person at a terminal, `abhed login` signs the command line in to a
+server with local accounts and keeps a token in a profile, once
+`auth.cli.enabled` is on; a client certificate can also sign an account in.
+See [TLS and command-line sign-in](../guide/22-tls-and-cli-login.md). A
+script without either signs in with a password and sends the session cookie
+back:
 
 ```bash
 curl -c jar -H 'Content-Type: application/json' \
@@ -380,7 +384,8 @@ above without them.
 
 | Hook | Called | Effect of an error |
 |---|---|---|
-| `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued | `403` with the error text; no session |
+| `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued; also when a command-line token is issued and on each use, and for a client certificate that signs the account in | `403` with the error text; no session, no token |
+| `auth.CLILoginAdvertiser` on a `Provider` | when `abhed login` reads `GET /v1/cli` | its methods are listed after the local one; the middleware's `Verifier` must accept the tokens they lead to |
 | `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…,"refused":true}`; whoami answers `authenticated: false` with the reason |
 | `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way. `user.admin_revoked` carries `sessions_ended` (on this server) and, when the sign-out could not be recorded for other servers, `revocation_error` |
 

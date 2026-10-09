@@ -137,6 +137,9 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 	if m.Verifier != nil {
 		token := bearerToken(r)
 		if token == "" {
+			if len(m.Providers) > 0 {
+				return nil, nil, failChallenge, errors.New("sign in required")
+			}
 			return nil, nil, failChallenge, errors.New("missing bearer token")
 		}
 		id, err := m.Verifier.Verify(r.Context(), token)

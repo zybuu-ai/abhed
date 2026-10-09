@@ -99,6 +99,9 @@ func StatePaths(cfg config.Config, workspace string) []string {
 		users = filepath.Join(workspace, users)
 	}
 	out := []string{users}
+	// TLS keys and the command-line token key: whoever reads them can pose as
+	// the server or sign tokens for any account.
+	out = append(out, cfg.ServerSecretFiles(workspace)...)
 	if path, err := secrets.DefaultPath(); err == nil {
 		out = append(out, path)
 	}

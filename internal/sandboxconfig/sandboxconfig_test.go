@@ -308,6 +308,29 @@ func TestStatePathsHoldTheAccountStores(t *testing.T) {
 	}
 }
 
+// TLS keys and the command-line token key are state: a TLS key the agent can
+// read lets it pose as the server, and a token key lets it sign in as anyone.
+func TestStatePathsHoldServerKeys(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Auth.CLI.Enabled = true
+	cfg.Server.TLS = config.ServerTLSConfig{CertFile: "/srv/tls/c.pem", KeyFile: "/srv/tls/k.pem"}
+	got := StatePaths(cfg, ws)
+	key, _ := cfg.CLIKeyFile(ws)
+	for _, want := range []string{"/srv/tls/k.pem", key, key + ".revoked"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s is not among the state paths %v", want, got)
+		}
+	}
+	// A key inside the workspace is refused at start, like any state file there.
+	cfg.Server.TLS.KeyFile = "certs/k.pem"
+	if err := CheckStatePaths(cfg, ws); err == nil || !strings.Contains(err.Error(), "k.pem") {
+		t.Errorf("a TLS key in the workspace: %v", err)
+	}
+}
+
 // sandbox.network allowlist gives the policy the compiled egress rules and
 // takes allow_network out of play: the proxy is the only way out.
 func TestAllowlistReplacesAllowNetwork(t *testing.T) {
