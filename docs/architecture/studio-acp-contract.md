@@ -786,6 +786,9 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   can ask the terminal; in a container a typed-ahead line is judged by its
   echo alone.
 - `confirm` is answered only from a modal whose default is No.
+- In `lines` mode the engine draws the prompt (the workspace folder and the
+  path under it, then `$`), echoes typed text in bold, and shows each line's
+  output followed by its dimmed `exit N · time`.
 - Studio's ACP `terminal` client capability stays `false`: the agent never
   runs commands in Studio's terminals.
 

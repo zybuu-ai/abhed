@@ -177,35 +177,38 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 		return
 	}
 	var lines []string
-	var echo []byte
+	var echo lineEcho
 	t.mu.Lock()
 	for _, b := range []byte(p.Data) {
 		switch {
 		case b == 0x03: // Ctrl-C stops the command running and drops the line
 			if t.running != nil {
 				t.running()
+			} else {
+				// Nothing ran, so nothing else brings the prompt back.
+				lines = append(lines, "")
 			}
 			t.line = t.line[:0]
-			echo = append(echo, "^C\r\n"...)
+			echo.control("^C\r\n")
 		case b == '\r' || b == '\n':
 			lines = append(lines, string(t.line))
 			t.line = t.line[:0]
-			echo = append(echo, "\r\n"...)
+			echo.control("\r\n")
 		case b == 0x7f || b == 0x08:
 			if len(t.line) > 0 {
 				t.line = t.line[:len(t.line)-1]
-				echo = append(echo, "\b \b"...)
+				echo.control("\b \b")
 			}
 		case b < 0x20:
 		default:
 			if len(t.line) < maxTerminalLine {
 				t.line = append(t.line, b)
-				echo = append(echo, b)
+				echo.typed(b)
 			}
 		}
 	}
 	t.mu.Unlock()
-	c.output(t, echo)
+	c.output(t, echo.bytes())
 	for _, l := range lines {
 		select {
 		case t.queue <- l:
@@ -216,22 +219,79 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
-// runTerminal runs the terminal's lines one at a time until it is killed.
+// runTerminal runs the terminal's lines one at a time until it is killed,
+// showing a prompt whenever it is ready for the next one.
 func (c *acpConn) runTerminal(t *acpTerminal) {
 	defer func() {
 		c.notification("_abhed/terminal/exit", map[string]any{"terminalId": t.id, "code": 0})
 	}()
+	c.output(t, linePrompt(t.sess))
+	ahead := false
 	for {
 		select {
 		case <-t.ctx.Done():
 			return
 		case line := <-t.queue:
-			if line == "" {
-				continue
+			if ahead {
+				// Typed while the last line ran: its echo is above, so show it at its prompt.
+				var e lineEcho
+				for _, b := range []byte(line) {
+					e.typed(b)
+				}
+				e.control("\r\n")
+				c.output(t, e.bytes())
 			}
-			c.runLine(t, line)
+			if line != "" {
+				c.runLine(t, line)
+			}
+			if t.ctx.Err() == nil {
+				ahead = len(t.queue) > 0
+				c.output(t, linePrompt(t.sess))
+			}
 		}
 	}
+}
+
+// linePrompt is the lines-mode prompt: where the next line runs, as the
+// workspace folder and the path under it, dimmed.
+func linePrompt(s *tools.Session) []byte {
+	where := filepath.Base(s.Root)
+	if rel := s.Rel(s.Cwd); rel != "." && rel != "" {
+		where = filepath.Join(where, rel)
+	}
+	return []byte("\x1b[2m" + ui.VisibleLine(where) + " $\x1b[0m ")
+}
+
+// lineEcho is what lines mode echoes for an input: typed text in bold, so a
+// command stays apart from its output, and line editing as it is.
+type lineEcho struct {
+	b    []byte
+	bold bool
+}
+
+func (e *lineEcho) typed(b byte) {
+	if !e.bold {
+		e.b = append(e.b, "\x1b[1m"...)
+		e.bold = true
+	}
+	e.b = append(e.b, b)
+}
+
+func (e *lineEcho) control(s string) {
+	e.end()
+	e.b = append(e.b, s...)
+}
+
+func (e *lineEcho) end() {
+	if e.bold {
+		e.b = append(e.b, "\x1b[0m"...)
+		e.bold = false
+	}
+}
+
+func (e *lineEcho) bytes() []byte {
+	e.end()
+	return e.b
 }
 
 // runLine is one entered line: a bash call put to policy as the person's,
@@ -274,7 +334,21 @@ func (c *acpConn) runLine(t *acpTerminal, line string) {
 	t.mu.Unlock()
 	result.Content = redacted(result.Content)
 	_ = loop.ManualObserve(id, "bash", result, time.Since(start))
-	c.output(t, crlf(result.Content))
+	c.output(t, lineResult(result))
+}
+
+// lineResult is a line's result as a terminal shows it. The bash tool heads
+// its result with "exit N · time" for the record; here that comes after the
+// output, dimmed, and the "[no output]" placeholder is left out.
+func lineResult(r tools.Result) []byte {
+	head, body, ok := strings.Cut(r.Content, "\n")
+	if r.ExitCode == nil || !ok || !strings.HasPrefix(head, "exit ") {
+		return crlf(r.Content)
+	}
+	body = strings.TrimPrefix(body, "[no output]")
+	body = strings.TrimLeft(body, "\n")
+	out := crlf(body)
+	return append(out, "\x1b[2m"+head+"\x1b[0m\r\n"...)
 }
 
 // crlf ends each line as a terminal expects.
