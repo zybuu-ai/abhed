@@ -253,7 +253,10 @@ pull by digest; the tag is then ignored.
 
 `replicaCount` above 1 needs `postgres.enabled` and a workspace that is not a
 `ReadWriteOnce` volume (`persistence.accessModes: [ReadWriteMany]`, or
-persistence off); the chart refuses otherwise. `podAntiAffinity: hard` or
+persistence off); the chart refuses otherwise. With the control plane on,
+several replicas (or `control_plane.ha`) also need
+`controlPlane.sshHostKey.existingSecret`, so every pod presents the same
+`:ssh` relay host key. `podAntiAffinity: hard` or
 `soft` spreads the pods across nodes, and `podDisruptionBudget.minAvailable`
 keeps some serving through a drain. Sign-in sessions are held by the replica
 that made them, so set `service.sessionAffinity: ClientIP` or session

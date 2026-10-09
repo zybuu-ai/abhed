@@ -148,6 +148,11 @@ refuse "the relay host key set as a path in config" "controlPlane.sshHostKey" \
   --set config.control_plane.enabled=true --set config.control_plane.ssh_host_key=/keys/k
 refuse "a relay host key without the control plane" "needs config.control_plane.enabled" \
   --set controlPlane.sshHostKey.existingSecret=k
+refuse "replicas with the control plane and no shared relay host key" "needs controlPlane.sshHostKey" \
+  --set replicaCount=2 --set postgres.enabled=true --set postgres.existingSecret=db \
+  --set persistence.enabled=false --set config.control_plane.enabled=true
+refuse "control_plane.ha with no shared relay host key" "needs controlPlane.sshHostKey" \
+  --set config.control_plane.enabled=true --set config.control_plane.ha.enabled=true
 refuse "a secret file at the relay host key's path" "used twice" \
   --set config.control_plane.enabled=true --set controlPlane.sshHostKey.existingSecret=k \
   --set 'secretFiles[0].secretName=s' --set 'secretFiles[0].key=k' --set 'secretFiles[0].path=ssh_host_ed25519_key'

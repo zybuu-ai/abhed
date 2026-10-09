@@ -155,6 +155,11 @@ ssh_host_ed25519_key
 {{- if hasKey $cpCfg "ssh_host_key" }}
 {{- fail "config.control_plane.ssh_host_key is set: use controlPlane.sshHostKey.existingSecret, so the key is copied in from a Secret, mode 0400." }}
 {{- end }}
+{{- $ha := get $cpCfg "ha" }}
+{{- if kindIs "map" $ha }}{{- $ha = get $ha "enabled" }}{{- end }}
+{{- if and (get $cpCfg "enabled") (or (gt (int .Values.replicaCount) 1) $ha) (not .Values.controlPlane.sshHostKey.existingSecret) }}
+{{- fail "the control plane on several replicas (replicaCount above 1, or control_plane.ha) needs controlPlane.sshHostKey.existingSecret: each pod would otherwise make its own :ssh relay host key, and clients checking it strictly would be refused by all but one." }}
+{{- end }}
 {{- if and .Values.controlPlane.sshHostKey.existingSecret (not (get $cpCfg "enabled")) }}
 {{- fail "controlPlane.sshHostKey needs config.control_plane.enabled: the key is for the control plane's :ssh relay." }}
 {{- end }}
