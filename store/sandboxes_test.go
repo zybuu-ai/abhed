@@ -63,6 +63,23 @@ func TestSandboxesAreTenantScoped(t *testing.T) {
 	if evs, err := b.AuditFor(ctx, s.ID); err != nil || len(evs) != 0 {
 		t.Fatalf("another tenant read the record: %d %v", len(evs), err)
 	}
+	tmpl, err := a.CreateTemplate(ctx, controlplane.Template{Name: "web", Owner: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.GetTemplate(ctx, "web"); !errors.Is(err, controlplane.ErrNotFound) {
+		t.Fatalf("another tenant read the template: %v", err)
+	}
+	if items, _, err := b.ListTemplates(ctx, controlplane.TemplateListOptions{}); err != nil || len(items) != 0 {
+		t.Fatalf("another tenant listed %d templates: %v", len(items), err)
+	}
+	if err := b.DeleteTemplate(ctx, "web", tmpl.ResourceVersion); !errors.Is(err, controlplane.ErrNotFound) {
+		t.Fatalf("another tenant removed the template: %v", err)
+	}
+	// Each tenant has its own names.
+	if _, err := b.CreateTemplate(ctx, controlplane.Template{Name: "web", Owner: "root"}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The runtime role writes the control plane's record and cannot rewrite it.
