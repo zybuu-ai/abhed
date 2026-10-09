@@ -35,6 +35,19 @@ more often a mistyped command than a task.
 | `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 
+These flags come before a subcommand or after it: `abhed -C ~/src/app
+doctor` and `abhed doctor -C ~/src/app` are the same. After a subcommand,
+only the ones it reads are taken: `-C` by every subcommand that works on a
+workspace (all but `providers`, `secret`, `pki` and `admin`),
+`-trust-workspace` by those that load its configuration, and `-settings` by
+`doctor`. Any other one there stops the command with exit code 2 and a
+message naming it, as does an argument to a subcommand that takes none
+(`init`, `acp`, `rpc`, `index`, `providers`; `doctor` and `version` take
+only `--json`). A subcommand's own flag keeps its meaning (`serve -addr`,
+`record list -n`, `resolve -mode`), and nothing after `--` or in a command
+passed on as given (`mcp add NAME COMMAND ARGS`, `sandbox exec ID COMMAND
+ARGS`) is read as one of these.
+
 ### Moving between sessions
 
 ```bash

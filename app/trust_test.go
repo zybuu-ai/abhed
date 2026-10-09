@@ -335,30 +335,6 @@ func TestTrustFlagAfterTheSubcommand(t *testing.T) {
 	}
 }
 
-// The flag is taken only where it is a flag: first after the subcommand, or
-// among serve's, eval's and resolve's own flags; never as a value or after --.
-func TestLeadingTrustFlag(t *testing.T) {
-	for _, c := range []struct {
-		args  []string
-		trust bool
-		left  []string
-	}{
-		{[]string{"doctor", "-trust-workspace"}, true, []string{"doctor"}},
-		{[]string{"acp", "--trust-workspace"}, true, []string{"acp"}},
-		{[]string{"user", "add", "-trust-workspace"}, false, []string{"user", "add", "-trust-workspace"}},
-		{[]string{"rpc", "--", "-trust-workspace"}, false, []string{"rpc", "--", "-trust-workspace"}},
-		{[]string{"secret", "-trust-workspace"}, false, []string{"secret", "-trust-workspace"}},
-		{[]string{"trust", "-trust-workspace"}, false, []string{"trust", "-trust-workspace"}},
-		{[]string{"audit-export", "-trust-workspace"}, false, []string{"audit-export", "-trust-workspace"}},
-	} {
-		var got bool
-		left := leadingTrustFlag(append([]string(nil), c.args...), &got)
-		if got != c.trust || strings.Join(left, " ") != strings.Join(c.left, " ") {
-			t.Errorf("%v: trust %v left %v", c.args, got, left)
-		}
-	}
-}
-
 // Every registered subcommand says whether it loads the workspace
 // configuration, and the ones that never read it do not take the flag.
 func TestSubcommandsDeclareTrust(t *testing.T) {

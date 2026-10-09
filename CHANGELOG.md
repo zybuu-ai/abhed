@@ -332,6 +332,15 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- The command line's own flags written after a subcommand were ignored:
+  `abhed doctor -C DIR` checked the current folder, with the built-in
+  default provider. `-C`, `-trust-workspace` and doctor's `-settings` are
+  now taken after the subcommand as before it; any other top-level flag
+  there, or an argument to a subcommand that takes none (`init`, `acp`,
+  `rpc`, `index`, `providers`; `doctor` and `version` take only `--json`),
+  stops with exit code 2 and names it. A subcommand's own flags of the same
+  name, such as `serve -addr` or `record list -n`, stay its own, and a
+  command passed on as given (`mcp add`, `sandbox exec`) is left as written.
 - The fence's refusal off Linux read "darwin  arm64", with two spaces where
   there is no kernel version.
 - `abhed doctor` says where git protection is on: in `abhed serve`'s and
