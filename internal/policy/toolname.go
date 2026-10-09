@@ -86,6 +86,12 @@ var familiarTools = map[string]string{
 	"ls": "glob", "notebookedit": "edit", "shell": "bash",
 }
 
+// FamiliarName reports whether name is another harness's name for one of Abhed's tools.
+func FamiliarName(name string) bool {
+	_, ok := familiarTools[strings.ToLower(name)]
+	return ok
+}
+
 // SuggestTool is the built-in name a misspelt or familiar one probably meant, or "".
 func SuggestTool(name string) string {
 	lower := strings.ToLower(name)

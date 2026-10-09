@@ -24,14 +24,17 @@ All notable changes to Abhed are recorded here. The format follows
   to a deny or ask rule. Affects 0.1.0 to 1.2.7.
 - A rule whose tool name names no tool is now reported: a startup warning,
   a `rules` line in `abhed doctor`, `/doctor` and Abhed Studio's checks, with
-  the name it was probably meant to be. A managed rule that can never match
-  fails `abhed doctor`, and a managed deny rule that can never match (an
-  unknown name with no extension that may provide tools, or an MCP server
-  named in another case than it is configured) stops Abhed from starting,
-  naming the rule and the file. MCP, knowledge-base and extension tool names
+  the name it was probably meant to be. A managed deny or ask rule so listed
+  fails `abhed doctor`; a managed allow rule is a warning. A managed deny rule
+  whose tool name is evidently a mistake (`Shell`, `WebFetch`, a near-miss of
+  a built-in with no extension that may provide tools, look-alike letters,
+  `MCP__`, or an MCP server or knowledge base the managed file sets, written
+  in another case) stops Abhed from starting, naming the rule and the file.
+  A name that may be meant ahead, an MCP server, knowledge base or extension
+  tool not set up here, does not. MCP, knowledge-base and extension tool names
   are still compared exactly, case included; a rule that differs from one of
-  the session's tools only in case is warned of when the tools are loaded.
-  A bash pattern ending in `:*` is read literally and is now listed.
+  the session's tools only in case is warned of when the tools are loaded. A
+  bash pattern ending in `:*` is read literally and is now listed.
 - A rule naming every tool of one MCP server, `mcp__<server>__*`, as agent
   definitions name them, matched no tool: rules compared tool names exactly,
   so a managed `"deny": ["mcp__github__*"]` allowed every `github` tool and

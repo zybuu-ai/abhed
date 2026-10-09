@@ -186,16 +186,24 @@ reported too. Spaces around a tool name are ignored: `bash (curl *)` is
 A rule whose tool name names no tool is not silent. Abhed warns of it at
 startup, and `abhed doctor` (and `/doctor`, and Abhed Studio's checks) lists
 it, with the name it was probably meant to be (`WebFetch` → `web_fetch`). This
-covers a name that is no built-in, an MCP rule for a configured server written
-in another case (`mcp__GitHub__x` when the server is `github`), and, once the
-session's tools are known, an MCP or extension tool written in another case.
-A rule for an MCP server that is not configured, or an unknown name while an
-extension that may provide tools is configured, is listed but may still match
-later, since an organisation may deny ahead. A rule from your own files is a
-warning only. In the managed configuration, a rule that can never match fails
-`abhed doctor`, and a deny rule that can never match stops Abhed from starting,
-with a message naming the rule and the file: Abhed does not run while the
-organisation believes a deny rule holds that cannot. A bash pattern ending in
+covers a name that is no built-in; an MCP rule for a server that is not
+configured, or for a configured one written in another case (`mcp__GitHub__x`
+when the server is `github`); a `rag_` name no knowledge base here has; and,
+once the session's tools are known, an MCP or extension tool written in
+another case. A rule from your own files is a warning only.
+
+In the managed configuration, a deny or ask rule listed so fails `abhed
+doctor`; an allow rule listed so is a warning, since it only allows less.
+Abhed still starts, because a server, knowledge base or extension tool the
+rule names may be set up later or on another machine. Only a managed deny
+rule whose tool name is evidently a mistake stops Abhed from starting, with a
+message naming the rule and the file, since Abhed should not run while the
+organisation believes such a rule holds. Evidently a mistake means: another
+tool's name for a built-in (`Shell`, `WebFetch`, `MultiEdit`); a name a
+letter or two from a built-in (`bsh`) when no extension may provide tools; a
+built-in written with look-alike letters (the Kelvin sign for `k`); `MCP__`
+written in another case; or an MCP server or knowledge base that the managed
+configuration itself sets, written in another case. A bash pattern ending in
 `:*`, another tool's way of writing a prefix, is read literally (a colon, then
 anything) and is listed too: write `bash(npm test *)` for `Bash(npm test:*)`.
 The `-allowedTools` and `-disallowedTools` flags still translate `:*` for you.

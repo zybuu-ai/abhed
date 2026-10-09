@@ -377,7 +377,7 @@ type configCheck struct {
 	// but does not act on yet.
 	unknown, notInEffect bool
 	// rules is a permission rule that names no tool as written; neverManaged
-	// one from the managed configuration that can match nothing here.
+	// a managed deny or ask rule among them, which the organisation relies on.
 	rules, neverManaged bool
 	// storeDown and authDown report an event store or sign-in doctor could
 	// not open, as before `abhed migrate`.
@@ -393,7 +393,7 @@ func configFindings(w io.Writer, cfg config.Config) configCheck {
 }
 
 // printRuleFindings lists the permission rules that name no tool as written,
-// and reports whether there were any, and whether a managed one never matches.
+// and reports whether there were any, and whether a managed deny or ask rule is among them.
 func printRuleFindings(w io.Writer, cfg config.Config) (found, neverManaged bool) {
 	for i, f := range cfg.RuleFindings() {
 		label := "            "
@@ -402,7 +402,7 @@ func printRuleFindings(w io.Writer, cfg config.Config) (found, neverManaged bool
 		}
 		fmt.Fprintf(w, "%s%s  ⚠\n", label, f)
 		found = true
-		neverManaged = neverManaged || (f.Managed() && f.Never)
+		neverManaged = neverManaged || f.FailsDoctor()
 	}
 	return found, neverManaged
 }
@@ -435,8 +435,8 @@ func doctorVerdict(w io.Writer, f configCheck) int {
 			"so the controls they name are not in force. Remove them, or run a version that acts on them.")
 	}
 	if f.neverManaged {
-		fmt.Fprintln(w, "Not ready: the managed configuration has a permission rule that can never match (listed above), "+
-			"so the control it names is not in force. Whoever manages it must correct the rule.")
+		fmt.Fprintln(w, "Not ready: the managed configuration has a deny or ask rule that names no tool as written (listed above), "+
+			"so the control it names is not in force here. Whoever manages it must correct the rule.")
 	}
 	if f == (configCheck{rules: true}) {
 		// Only rules of the person's own that may match nothing: said above, not a failure.

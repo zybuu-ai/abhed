@@ -40,12 +40,12 @@ func TestDoctorReportsARuleNamingNoTool(t *testing.T) {
 	}
 }
 
-// A managed rule that can never match fails the doctor; a managed deny rule
-// stops the configuration loading at all.
+// A managed ask rule naming no tool fails the doctor; a managed deny rule
+// that evidently misnames its tool stops the configuration loading at all.
 func TestDoctorFailsOnAManagedRuleThatNeverMatches(t *testing.T) {
 	managedConfig(t, `{"permissions":{"ask":["Shell(git push*)"]}}`)
 	out, code, js, jsonCode := doctorWithRules(t, "")
-	if code == 0 || !strings.Contains(out, "managed configuration has a permission rule that can never match") {
+	if code == 0 || !strings.Contains(out, "managed configuration has a deny or ask rule that names no tool as written") {
 		t.Fatalf("managed ask (%d):\n%s", code, out)
 	}
 	if jsonCode == 0 || !strings.Contains(js, `"status": "fail"`) {
@@ -54,7 +54,7 @@ func TestDoctorFailsOnAManagedRuleThatNeverMatches(t *testing.T) {
 
 	managedConfig(t, `{"permissions":{"deny":["Shell(curl *)"]}}`)
 	_, code, js, jsonCode = doctorWithRules(t, "")
-	if code == 0 || jsonCode == 0 || !strings.Contains(js, "Shell(curl *) can never match") {
+	if code == 0 || jsonCode == 0 || !strings.Contains(js, "Shell(curl *) names its tool wrongly") {
 		t.Fatalf("managed deny (%d, %d):\n%s", code, jsonCode, js)
 	}
 }
@@ -66,7 +66,7 @@ func TestDoctorVerdictOnRuleFindings(t *testing.T) {
 	}
 	b.Reset()
 	if code := doctorVerdict(&b, configCheck{rules: true, neverManaged: true}); code != 1 {
-		t.Errorf("a managed rule that never matches passed:\n%s", b.String())
+		t.Errorf("a managed deny or ask rule naming no tool passed:\n%s", b.String())
 	}
 }
 

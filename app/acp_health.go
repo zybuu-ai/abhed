@@ -55,7 +55,7 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	if findings := cfg.RuleFindings(); len(findings) > 0 {
 		status, lines := "warn", make([]string, 0, len(findings))
 		for _, f := range findings {
-			if f.Managed() && f.Never {
+			if f.FailsDoctor() {
 				status = "fail"
 			}
 			lines = append(lines, f.String())

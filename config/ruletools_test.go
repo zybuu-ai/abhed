@@ -97,7 +97,7 @@ func TestManagedMCPDenyRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := cfg.RuleFindings()
-	if len(f) != 1 || f[0].Rule != "mcp__jira__delete" || f[0].Never || !f[0].Managed() {
+	if len(f) != 1 || f[0].Rule != "mcp__jira__delete" || f[0].Mistake || !f[0].FailsDoctor() {
 		t.Fatalf("findings: %+v", f)
 	}
 }
@@ -137,7 +137,7 @@ func TestUnknownToolRuleWithExtensions(t *testing.T) {
 }
 
 // MCP rule shapes that can never match are named as such; a server wildcard
-// for a configured server is no finding.
+// for a configured server is no finding, unless as an allow it also covers another server.
 func TestMCPRuleShapes(t *testing.T) {
 	cfg := Default()
 	cfg.MCP.Servers = []MCPServerConfig{{Name: "github", Command: "true"}, {Name: "github__ent", Command: "true"}}
@@ -151,13 +151,60 @@ func TestMCPRuleShapes(t *testing.T) {
 		"mcp__gitlab__create": "no MCP server \"gitlab\"",
 		"mcp__github__ent__*": "",
 	} {
-		cfg.Permissions.Deny = []string{rule}
+		cfg.Permissions.Allow = []string{rule}
 		f := cfg.RuleFindings()
 		switch {
 		case want == "" && len(f) != 0:
 			t.Errorf("%s: %v", rule, f)
 		case want != "" && (len(f) != 1 || !strings.Contains(f[0].Why, want)):
 			t.Errorf("%s: %+v, want %q", rule, f, want)
+		}
+	}
+}
+
+// Startup refuses a managed deny rule only for an evident mistake; a name that
+// may be meant ahead fails the doctor and is warned of, and Abhed starts.
+func TestManagedDenyRefusalIsForEvidentMistakesOnly(t *testing.T) {
+	home := func(t *testing.T, body string) {
+		t.Helper()
+		dir := filepath.Join(os.Getenv("HOME"), ".abhed")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		managed, user string
+		refused       bool
+	}{
+		{`{"permissions":{"deny":["Shell(curl *)"]}}`, "", true},
+		{`{"permissions":{"deny":["WebFetch(https://x/*)"]}}`, "", true},
+		{`{"permissions":{"deny":["\u212a8s_get"]}}`, "", true},
+		{`{"permissions":{"deny":["bsh(curl *)"]}}`, "", true},
+		{`{"permissions":{"deny":["MCP__github__x"]}}`, "", true},
+		{`{"permissions":{"deny":["rag_docs"]}}`, "", false},
+		{`{"permissions":{"deny":["jira_create"]}}`, "", false},
+		{`{"permissions":{"deny":["Shell(curl *)"]},"extensions":[{"name":"x","command":"true"}]}`, "", true},
+		{`{"permissions":{"deny":["jira_create"]},"extensions":[{"name":"x","command":"true"}]}`, "", false},
+		{`{"permissions":{"deny":["mcp__gitlab__x"]}}`, "", false},
+		// A person's own server in another case does not stop startup.
+		{`{"permissions":{"deny":["mcp__github__x"]}}`, `{"mcp":{"servers":[{"name":"GitHub","command":"true"}]}}`, false},
+	} {
+		withManaged(t, c.managed)
+		if c.user != "" {
+			home(t, c.user)
+		}
+		cfg, err := Load(t.TempDir())
+		if (err != nil) != c.refused {
+			t.Errorf("%s %s: err %v, want refused %v", c.managed, c.user, err, c.refused)
+			continue
+		}
+		if !c.refused {
+			if f := cfg.RuleFindings(); len(f) != 1 || !f[0].FailsDoctor() {
+				t.Errorf("%s: findings %+v", c.managed, f)
+			}
 		}
 	}
 }
