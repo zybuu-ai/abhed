@@ -105,7 +105,17 @@ func (f *firecracker) check() error { return f.probe() }
 
 // jailDir is the jailer's folder for one VM; root is the chroot inside it.
 func (f *firecracker) jailDir(vmID string) string {
-	return filepath.Join(f.fc.ChrootBase, filepath.Base(f.fc.Binary), vmID)
+	return filepath.Join(f.jailBase(), vmID)
+}
+
+// jailBase holds every VM's jail folder. The jailer names it after the
+// binary with its links resolved, as a release's versioned file name.
+func (f *firecracker) jailBase() string {
+	name := filepath.Base(f.fc.Binary)
+	if real, err := filepath.EvalSymlinks(f.fc.Binary); err == nil {
+		name = filepath.Base(real)
+	}
+	return filepath.Join(f.fc.ChrootBase, name)
 }
 
 func (f *firecracker) ids(slot int) (uid, gid int) {

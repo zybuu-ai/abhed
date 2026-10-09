@@ -217,7 +217,14 @@ sudo -E ABHED_TEST_FIRECRACKER=1 \
 
 It checks that the workspace arrives, exit codes come back, commands run as
 the unprivileged user and cannot signal init, the guest has no interface
-but loopback, the root filesystem is read-only, the workspace survives a
-restart, and the chroot and cgroup are gone after delete. A CI job for it
-needs a runner with `/dev/kvm`, a pinned Firecracker release, a pinned guest
-kernel, and the root filesystem built by the script above.
+but loopback, the root filesystem is read-only, changes come back as the
+workspace's user and never into `.abhed`, the workspace survives a restart,
+a VM reaches an allowed destination only through the egress proxy and
+under the call's credential, a restarted driver ends the VMs a killed one
+left, and the chroot and cgroup are gone after delete.
+
+CI runs it in the `microvm-kvm` job on `ubuntu-24.04`, which fails if the
+runner has no `/dev/kvm`. It fetches a pinned Firecracker release, a pinned
+guest kernel from Firecracker's CI artifacts and a pinned Alpine
+minirootfs, checks each against its SHA-256, and builds the root
+filesystem with `scripts/microvm/build-rootfs.sh`.

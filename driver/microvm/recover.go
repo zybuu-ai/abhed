@@ -89,7 +89,7 @@ func (d *Driver) Recover(ctx context.Context) ([]string, error) {
 // recover ends the VMs a killed driver of this state folder left running
 // and removes their chroots and cgroups.
 func (f *firecracker) recover(context.Context) ([]string, error) {
-	base := filepath.Join(f.fc.ChrootBase, filepath.Base(f.fc.Binary))
+	base := f.jailBase()
 	entries, err := os.ReadDir(base)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

@@ -336,3 +336,22 @@ func TestConsoleIsBoundedAndPrintable(t *testing.T) {
 		t.Fatalf("console tail %q", s[max(0, len(s)-40):])
 	}
 }
+
+// The jailer names a VM's folder after the binary it runs, links resolved.
+func TestJailFolderFollowsTheBinarysLink(t *testing.T) {
+	o := fcOptions(t)
+	dir := t.TempDir()
+	real := filepath.Join(dir, "firecracker-v1.17.0-x86_64")
+	_ = os.WriteFile(real, nil, 0o755)
+	o.Firecracker.Binary = filepath.Join(dir, "firecracker")
+	if err := os.Symlink(real, o.Firecracker.Binary); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := newFirecracker(&o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fc.jailDir("sbx-1"), filepath.Join(o.Firecracker.ChrootBase, "firecracker-v1.17.0-x86_64", "sbx-1"); got != want {
+		t.Fatalf("jail %s, want %s", got, want)
+	}
+}
