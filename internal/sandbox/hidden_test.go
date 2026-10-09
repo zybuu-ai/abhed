@@ -22,7 +22,7 @@ func TestSeatbeltHidesSiblingFolders(t *testing.T) {
 	// Writes too, after the temp and cache allows that may hold the folder.
 	wdeny := strings.LastIndex(prof, fmt.Sprintf("(deny file-write* (subpath %q))", root))
 	wallow := strings.LastIndex(prof, fmt.Sprintf("(allow file-write* (subpath %q))", ws))
-	temp := strings.LastIndex(prof, `(allow file-write* (subpath "/tmp"))`)
+	temp := strings.LastIndex(prof, `var/tmp"))`)
 	wstate := strings.Index(prof, fmt.Sprintf("(deny file-write* (subpath %q))", filepath.Join(ws, stateDir)))
 	if temp < 0 || wdeny < temp || wallow < wdeny || wstate < wallow {
 		t.Fatalf("write order temp %d, deny %d, allow %d, state %d in\n%s", temp, wdeny, wallow, wstate, prof)
