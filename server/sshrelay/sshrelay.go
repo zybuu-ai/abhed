@@ -331,10 +331,17 @@ func serveSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request,
 // an Ed25519 one there (mode 0600) when there is none. A key others may
 // read, or a path that is a link, is refused.
 func LoadOrCreateHostKey(path string) (ssh.Signer, error) {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return createHostKey(path)
+	}
+	return LoadHostKey(path)
+}
+
+// LoadHostKey reads a host key the operator provides at path, refusing one
+// that is missing, a link, not a regular file, or readable by others.
+func LoadHostKey(path string) (ssh.Signer, error) {
 	fi, err := os.Lstat(path)
 	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return createHostKey(path)
 	case err != nil:
 		return nil, err
 	case !fi.Mode().IsRegular():

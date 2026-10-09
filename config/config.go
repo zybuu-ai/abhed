@@ -672,6 +672,11 @@ type ControlPlaneConfig struct {
 	ExecPerMinute      int `json:"exec_per_minute,omitempty"`
 	// ReconcileSeconds is how often every sandbox is checked against its driver.
 	ReconcileSeconds int `json:"reconcile_seconds,omitempty"`
+	// SSHHostKey is the :ssh relay's host key file, so replicas can share one
+	// key from a secret. Empty means a key the server makes in the control
+	// plane's state folder. Absolute, mode 0600, not a link, outside every
+	// workspace.
+	SSHHostKey string `json:"ssh_host_key,omitempty"`
 	// SandboxCPUs and SandboxMemoryMB size every sandbox that does not set
 	// its own; zero leaves the size to the driver.
 	SandboxCPUs     float64 `json:"sandbox_cpus,omitempty"`

@@ -297,11 +297,13 @@ channel types, `env`, signals and subsystems are refused. SFTP is not
 served: drivers move files as tar (`:cp`), and SFTP over that would copy
 whole trees to list them. The host key is Ed25519, per server, in the
 control plane's state folder (`0600`, refused if readable by others or a
-link, and a state path no tool may read). `app`'s `abhed sandbox connect
+link, and a state path no tool may read), or the file
+`control_plane.ssh_host_key` names, which replicas share; a configured key
+that cannot be read refuses the start. `app`'s `abhed sandbox connect
 --stdio ID` is the `ProxyCommand` end.
 
-In HA (§13) a `SandboxRouter` must carry the upgrade to the owning replica;
-the replicas also need one host key between them.
+In HA (§13) a `SandboxRouter` must carry the upgrade to the owning replica,
+and the replicas share one host key through `control_plane.ssh_host_key`.
 
 ## 5. The driver interface (Implemented: package `driver`)
 

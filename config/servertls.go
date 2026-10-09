@@ -62,5 +62,9 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 			out = append(out, p, p+".revoked")
 		}
 	}
+	// Whoever reads the relay's host key can pose as every sandbox's SSH server.
+	if c.ControlPlane.Enabled && c.ControlPlane.SSHHostKey != "" {
+		out = append(out, c.ControlPlane.SSHHostKey)
+	}
 	return out
 }

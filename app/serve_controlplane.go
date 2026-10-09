@@ -288,35 +288,77 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 			closeStore()
 		}
 	}
+	if out.sshKey, err = sandboxSSHKey(cfg, os.Stderr); err != nil {
+		out.close()
+		return builtControlPlane{}, err
+	}
 	if cfg.ControlPlane.Expose {
 		out.expose = expose.New(expose.Options{Enabled: true, Record: record,
 			MaxTTL: time.Duration(cfg.ControlPlane.ExposeMaxTTLSeconds) * time.Second, Current: svc.Current})
 	}
-	out.sshKey = sandboxSSHKey(os.Stderr)
 	return out, nil
 }
 
-// sandboxSSHKey is the :ssh relay's host key, kept in the control plane's
-// state folder and made on first use. A key that cannot be read or made
-// leaves the relay off, and says why on w.
-func sandboxSSHKey(w io.Writer) ssh.Signer {
-	state, err := controlPlaneStateDir()
-	if err == nil {
-		err = ownFolder(state)
+// sshHostKey reads the :ssh relay's host key: control_plane.ssh_host_key
+// when set, which must load, or else the server's own in the control
+// plane's state folder, made on first use when create is set. It returns
+// the key's path; a nil key with no error is one not made yet.
+func sshHostKey(cfg config.Config, create bool) (ssh.Signer, string, error) {
+	if p := cfg.ControlPlane.SSHHostKey; p != "" {
+		if !filepath.IsAbs(p) {
+			return nil, p, fmt.Errorf("control_plane.ssh_host_key %q is not an absolute path", p)
+		}
+		key, err := sshrelay.LoadHostKey(p)
+		if err != nil {
+			return nil, p, fmt.Errorf("control_plane.ssh_host_key: %w", err)
+		}
+		return key, p, nil
 	}
+	state, err := controlPlaneStateDir()
 	if err != nil {
-		fmt.Fprintf(w, "abhed: the sandbox SSH relay is off: %v\n", err)
-		return nil
+		return nil, "", err
 	}
 	path := filepath.Join(state, sshHostKeyFile)
+	if !create {
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			return nil, path, nil
+		}
+		key, err := sshrelay.LoadHostKey(path)
+		return key, path, err
+	}
+	if err := ownFolder(state); err != nil {
+		return nil, path, err
+	}
 	key, err := sshrelay.LoadOrCreateHostKey(path)
+	return key, path, err
+}
+
+// sandboxSSHKey is the relay's key for serve. A configured key that cannot
+// be read refuses the start; the server's own leaves the relay off, said on w.
+func sandboxSSHKey(cfg config.Config, w io.Writer) (ssh.Signer, error) {
+	key, path, err := sshHostKey(cfg, true)
 	if err != nil {
+		if cfg.ControlPlane.SSHHostKey != "" {
+			return nil, err
+		}
 		fmt.Fprintf(w, "abhed: the sandbox SSH relay is off: %v\n", err)
-		return nil
+		return nil, nil
 	}
 	// No command or file tool may read the server's host key.
 	tools.AddStatePath(path)
-	return key
+	return key, nil
+}
+
+// sshKeyLabel says which key the relay uses, for -check and doctor.
+func sshKeyLabel(cfg config.Config) (string, error) {
+	key, path, err := sshHostKey(cfg, false)
+	switch {
+	case err != nil:
+		return "", err
+	case key == nil:
+		return path + " (made when serve first starts)", nil
+	}
+	return path + " (" + ssh.FingerprintSHA256(key.PublicKey()) + ")", nil
 }
 
 // sshHostKeyFile is the :ssh relay's host key in the control plane's state folder.
@@ -459,6 +501,12 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		} else {
 			settings, label, err := checkControlPlane(context.Background(), cfg, workspace, events, a.cpHooks...)
 			add("control plane", err, "on, store "+label)
+			keyLabel, keyErr := sshKeyLabel(cfg)
+			if keyErr != nil && cfg.ControlPlane.SSHHostKey == "" {
+				// serve starts without the relay rather than refuse.
+				keyLabel, keyErr = "off: "+keyErr.Error(), nil
+			}
+			add("ssh relay", keyErr, keyLabel)
 			if settings != nil {
 				for _, s := range settings.List() {
 					detail := s.Value

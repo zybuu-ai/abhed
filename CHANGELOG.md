@@ -39,7 +39,10 @@ All notable changes to Abhed are recorded here. The format follows
   the sign-in, the page's origin and the caller's sight of the sandbox
   before the connection is taken over, and an open stream ends when the
   sign-in does. The WebSocket implementation is Abhed's own, in the public
-  package `wsconn`, with no new dependency.
+  package `wsconn`, with no new dependency. `control_plane.ssh_host_key`
+  names a host key file replicas share (`0600`, not a link, outside every
+  workspace, and a protected state file); `abhed serve -check` and
+  `abhed doctor` report the key in use.
 
 - `abhed serve` can manage sandboxes over `/v1/sandboxes` when
   `control_plane.enabled` is set (off by default; with it off nothing

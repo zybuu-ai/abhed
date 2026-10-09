@@ -30,6 +30,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. |
 | `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
 | `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace. |
+| `ssh_host_key` | a key the server makes | The `:ssh` relay's host key file, so several servers can share one key; see [SSH](#streams-attach-exec-with-stdin-forward-and-ssh). |
 | `expose` | `false` | Lets `:expose` publish a sandbox's port to whoever asked; see [exposed services](#the-api). |
 | `expose_max_ttl_seconds` | 3600 | Longest an exposure lives. |
 | `sqlite_path` | `~/.abhed/controlplane/sandboxes.db` | The SQLite file sandboxes are kept in when `storage.driver` is not `postgres`; see [where sandboxes are kept](#where-sandboxes-are-kept). Must be absolute. |
@@ -373,6 +374,19 @@ The host key is an Ed25519 key in the control plane's state folder
 A key file that others may read, or that is a link, leaves the relay off:
 the server says so when it starts, and `:ssh` answers `501`. No command or
 file tool may read it.
+
+Several servers behind one name (Kubernetes replicas, or a server whose
+state folder does not survive a restart) should share one key, set with
+`control_plane.ssh_host_key`: an absolute path to an OpenSSH private key
+(`ssh-keygen -t ed25519 -N '' -f relay_key`) owned by the server's user,
+mode `0600`, not a link, and outside every workspace, added directory,
+sandbox folder, temp folder and cache. A configured key that cannot be read
+refuses the start instead of leaving the relay off. It is a protected state
+file like the TLS key. From a Kubernetes Secret, mount the one file with
+`subPath` (the Secret volume's own files are links) and `defaultMode: 0400`
+under a `runAsUser` that owns it, or copy it into place with an init
+container. `abhed serve -check` and `abhed doctor` name the key in use and
+its fingerprint.
 
 ## Lifecycle
 
