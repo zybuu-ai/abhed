@@ -439,7 +439,9 @@ again) and `session/resume` continues it without the replay; both verify the
 chain first and say whether it held in `_meta["zybuu.ai/abhed"].record`. A
 session another Abhed process is writing is refused, and one whose record
 fails verification opens read-only, to be forked. `session/close` lets a
-session go; nothing is deleted over ACP. With `storage.driver` set to
+session go, and records its end as `session_closed` when nothing else would
+(a session of terminal lines only, say), as the editor going away does; it
+can be loaded again. Nothing is deleted over ACP. With `storage.driver` set to
 `postgres` the record is the server's, and sessions here stay in memory.
 
 `session/new` offers the permission modes the engine allows now, as `modes`

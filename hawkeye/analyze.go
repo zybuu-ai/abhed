@@ -201,8 +201,8 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	}
 
 	// A session only people worked in, at the workbench's terminal or editor,
-	// has no run to be running: say that rather than "running".
-	if r.Outcome == "running" && len(r.Turns) == 0 && !slices.ContainsFunc(evs, func(e agent.Event) bool { return e.Type == agent.EvUserMessage }) {
+	// has no run to be running, nor one a close ended: say that instead.
+	if (r.Outcome == "running" || r.Outcome == string(agent.TermSessionClosed)) && len(r.Turns) == 0 && !slices.ContainsFunc(evs, func(e agent.Event) bool { return e.Type == agent.EvUserMessage }) {
 		r.Outcome = "no agent run"
 	}
 	for _, id := range order {

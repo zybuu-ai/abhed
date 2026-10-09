@@ -366,6 +366,40 @@ func (c *acpConn) dropSession(s *acpSession) {
 	c.shut(s)
 }
 
+// recordClosed ends a session's record as it is let go, by session/close or
+// the editor going away, unless a run of its own is still to end it. The
+// session can be loaded again, as one a run ended can; without this a
+// session of terminal lines and saves only would never record an end.
+func (s *acpSession) recordClosed(running bool) {
+	if !s.inner || s.readOnly != "" || running {
+		return
+	}
+	loop := s.parts.Loop
+	// Background work owed records its own closing end as the agent closes.
+	if loop.Background.Owed() > 0 {
+		return
+	}
+	events, err := s.parts.Store.Events(s.id)
+	if err != nil || len(events) == 0 {
+		return
+	}
+	// Only a record whose last event is this session's own, and not an end already.
+	if last := events[len(events)-1]; last.Type == agent.EvSessionEnded || last.Seq != loop.Recorder.LastAppended() {
+		return
+	}
+	// The totals go on from the last end, so a report still counts the runs.
+	end, _ := agent.LastEnd(events)
+	u := loop.Usage()
+	end.Reason = agent.TermSessionClosed
+	end.Turns = max(end.Turns, u.Turns)
+	end.TokensIn, end.TokensOut = max(end.TokensIn, u.InputTokens), max(end.TokensOut, u.OutputTokens)
+	end.TokensCached, end.Compactions = max(end.TokensCached, u.CachedTokens), max(end.Compactions, u.Compactions)
+	end.Background, end.Settled, end.Suggesting, end.Recovered, end.Detail = 0, false, false, false, ""
+	if _, err := loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, end); err != nil {
+		warnf("the record did not take the session's end: %v", err)
+	}
+}
+
 func (c *acpConn) closeSession(msg rpcMessage) {
 	s, e := c.sessionFor(msg.Params)
 	if e != nil {

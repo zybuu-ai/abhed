@@ -264,7 +264,7 @@ Studio consumes them through the methods below and builds neither.
 | `session/list` (spec) | `{cwd?, cursor?}` → `{sessions: SessionInfo[], nextCursor?}` |
 | `session/load` (spec) | `{sessionId, cwd, mcpServers: [], _meta?: {trust?: "untrusted"}}` → replays the session as `session/update` notifications, then replies `{configOptions, modes, _meta}` |
 | `session/resume` (spec) | same params → no replay; replies as `session/load` |
-| `session/close` (spec) | `{sessionId}` → `{}`: ends the engine's hold on the session; the record stays |
+| `session/close` (spec) | `{sessionId}` → `{}`: ends the engine's hold on the session; the record stays. Unless a running prompt records its own end, or background work its closing one, it records `session.ended` with reason `session_closed` after its terminals' last lines, carrying the last run's totals; so does the editor going away. The session stays resumable. |
 | `_abhed/session/rename` | `{sessionId, name}` → `{}`, recorded `session.named` |
 
 ```ts
@@ -788,7 +788,15 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
 - `confirm` is answered only from a modal whose default is No.
 - In `lines` mode the engine draws the prompt (the workspace folder and the
   path under it, then `$`), echoes typed text in bold, and shows each line's
-  output followed by its dimmed `exit N · time`.
+  output followed by its dimmed `exit N · time`. It edits the line itself:
+  Backspace deletes, and a key that sends an escape sequence (the arrows,
+  Home, End, function keys, Alt with a key, a paste's bracketed-paste
+  markers, a terminal's replies) is dropped whole, never typed. There is no
+  history or cursor movement; an Esc alone at the end of an input is the Esc
+  key, and a line break ends a sequence left unfinished. Lines entered while
+  one runs wait their turn; Ctrl-C stops the one running and drops those
+  waiting, as a shell flushes its input on an interrupt, and the terminal
+  says `abhed: N typed-ahead lines were not run`.
 - Studio's ACP `terminal` client capability stays `false`: the agent never
   runs commands in Studio's terminals.
 

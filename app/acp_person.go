@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,13 +67,19 @@ type acpTerminal struct {
 	sess    *tools.Session
 	mu      sync.Mutex
 	line    []byte
-	queue   chan string
-	ctx     context.Context
-	cancel  context.CancelFunc
+	// esc is where typed input stands within an escape sequence.
+	esc   escState
+	queue chan queuedLine
+	// gen counts the Ctrl-Cs; a line queued before the last one is not run.
+	gen    uint64
+	ctx    context.Context
+	cancel context.CancelFunc
 	// running cancels the command running now; nil when none is.
 	running context.CancelFunc
 	// shell is set for an interactive terminal.
 	shell *acpShell
+	// done is closed once the terminal has recorded its last line or exit.
+	done chan struct{}
 }
 
 func (c *acpConn) terminalCreate(msg rpcMessage) {
@@ -116,7 +123,7 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
-	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan string, 16), ctx: ctx, cancel: cancel}
+	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	if p.Mode == "interactive" {
 		if e := c.startShell(t, parts, bash, iso, p.Cols, p.Rows); e != nil {
 			cancel()
@@ -178,10 +185,18 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	}
 	var lines []string
 	var echo lineEcho
+	dropped := 0
 	t.mu.Lock()
 	for _, b := range []byte(p.Data) {
+		if t.esc.drop(b) {
+			continue
+		}
 		switch {
-		case b == 0x03: // Ctrl-C stops the command running and drops the line
+		case b == 0x03:
+			// Ctrl-C stops the command running and drops the line, and the
+			// lines typed ahead, as a shell flushes its input on an interrupt.
+			dropped += t.flushLocked(lines)
+			lines = lines[:0]
 			if t.running != nil {
 				t.running()
 			} else {
@@ -207,11 +222,24 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 			}
 		}
 	}
+	// An Esc on its own at the end of an input is the Esc key, not the start
+	// of a sequence the next input finishes.
+	if t.esc == escStart {
+		t.esc = escNone
+	}
+	gen := t.gen
 	t.mu.Unlock()
+	if dropped > 0 {
+		what := "line was"
+		if dropped > 1 {
+			what = "lines were"
+		}
+		echo.control(fmt.Sprintf("abhed: %d typed-ahead %s not run\r\n", dropped, what))
+	}
 	c.output(t, echo.bytes())
 	for _, l := range lines {
 		select {
-		case t.queue <- l:
+		case t.queue <- queuedLine{line: l, gen: gen}:
 		default:
 			c.output(t, []byte("abhed: too many lines waiting; this one was not run\r\n"))
 		}
@@ -219,11 +247,107 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
+// queuedLine is a line waiting to run, with the Ctrl-C count when it was entered.
+type queuedLine struct {
+	line string
+	gen  uint64
+}
+
+// flushLocked drops the lines waiting to run, and pending, the lines of this
+// input before the Ctrl-C, and returns how many were commands. The caller
+// holds t.mu.
+func (t *acpTerminal) flushLocked(pending []string) int {
+	t.gen++
+	n := 0
+	for _, l := range pending {
+		if l != "" {
+			n++
+		}
+	}
+	for {
+		select {
+		case q := <-t.queue:
+			if q.line != "" {
+				n++
+			}
+		default:
+			return n
+		}
+	}
+}
+
+// escState follows an escape sequence through typed input. Arrow and
+// function keys, bracketed-paste markers and a terminal's replies are keys
+// for a program, never text for a line, so each is dropped whole.
+type escState uint8
+
+const (
+	escNone      escState = iota
+	escStart              // after ESC
+	escCSI                // ESC [, up to its final byte
+	escSS3                // ESC O, one more byte
+	escString             // OSC, DCS, SOS, PM or APC, up to BEL or ESC \
+	escStringEsc          // an ESC within one of those
+)
+
+// drop reports whether b belongs to an escape sequence. A line break or
+// Ctrl-C ends an unfinished one, so it never swallows the line.
+func (e *escState) drop(b byte) bool {
+	if b == '\r' || b == '\n' || b == 0x03 {
+		*e = escNone
+		return false
+	}
+	switch *e {
+	case escStart:
+		switch b {
+		case '[':
+			*e = escCSI
+		case 'O':
+			*e = escSS3
+		case ']', 'P', 'X', '^', '_':
+			*e = escString
+		case 0x1b: // Alt with a key that sends a sequence of its own
+		default: // Alt with a key
+			*e = escNone
+		}
+		return true
+	case escCSI:
+		if b < 0x20 || b > 0x7e {
+			// Not part of a sequence: the sequence was cut short.
+			*e = escNone
+			return false
+		}
+		if b >= 0x40 {
+			*e = escNone
+		}
+		return true
+	case escSS3:
+		*e = escNone
+		return true
+	case escString:
+		if b == 0x07 {
+			*e = escNone
+		} else if b == 0x1b {
+			*e = escStringEsc
+		}
+		return true
+	case escStringEsc:
+		*e = escNone
+		return true
+	}
+	if b == 0x1b {
+		*e = escStart
+		return true
+	}
+	return false
+}
+
 // runTerminal runs the terminal's lines one at a time until it is killed,
 // showing a prompt whenever it is ready for the next one.
 func (c *acpConn) runTerminal(t *acpTerminal) {
 	defer func() {
 		c.notification("_abhed/terminal/exit", map[string]any{"terminalId": t.id, "code": 0})
+		close(t.done)
 	}()
 	c.output(t, linePrompt(t.sess))
 	ahead := false
@@ -231,7 +355,15 @@ func (c *acpConn) runTerminal(t *acpTerminal) {
 		select {
 		case <-t.ctx.Done():
 			return
-		case line := <-t.queue:
+		case q := <-t.queue:
+			t.mu.Lock()
+			stale := q.gen != t.gen
+			t.mu.Unlock()
+			if stale {
+				// Taken as a Ctrl-C flushed the rest.
+				continue
+			}
+			line := q.line
 			if ahead {
 				// Typed while the last line ran: its echo is above, so show it at its prompt.
 				var e lineEcho
@@ -403,7 +535,11 @@ func (c *acpConn) dropTerminal(t *acpTerminal) {
 	t.cancel()
 }
 
-// killTerminals ends a session's terminals, or every one for "".
+// terminalDrain bounds how long killTerminals waits for terminals to settle.
+var terminalDrain = 10 * time.Second
+
+// killTerminals ends a session's terminals, or every one for "", and waits a
+// while for each to record what it ran.
 func (c *acpConn) killTerminals(sessionID string) {
 	c.termMu.Lock()
 	var mine []*acpTerminal
@@ -415,6 +551,14 @@ func (c *acpConn) killTerminals(sessionID string) {
 	c.termMu.Unlock()
 	for _, t := range mine {
 		c.dropTerminal(t)
+	}
+	bound := time.After(terminalDrain)
+	for _, t := range mine {
+		select {
+		case <-t.done:
+		case <-bound:
+			return
+		}
 	}
 }
 

@@ -354,6 +354,22 @@ A server with it off starts on the older schema as before.
 - Studio's line-by-line terminal shows a prompt with the folder, prints the
   typed command in bold, and puts each `exit N · time` line after the command's
   output instead of before it.
+- In Studio's line-by-line terminal an arrow key lost its Esc and the rest of
+  it ran as a command (`[A: command not found`). Keys that send escape
+  sequences, the arrows, Home, End, function keys and Alt with a key, and a
+  paste's bracketed-paste markers, are now dropped whole; up and down do not
+  recall earlier lines.
+- In Studio's line-by-line terminal, Ctrl-C stopped the line running but the
+  lines typed behind it still ran afterwards. Ctrl-C now drops them too, as a
+  shell flushes its input on an interrupt, and the terminal says how many
+  were not run.
+- An ACP session closed with `session/close`, or left when the editor went
+  away, recorded no end unless a prompt had just ended it, so a session of
+  terminal lines only never had one and HawkEYE reported "The session has no
+  recorded end". It now records `session.ended` with reason `session_closed`
+  after its terminals' last lines, carrying the last run's totals; the session
+  can still be loaded and continued. HawkEYE reports such a session with no
+  agent run as `no agent run`.
 
 ### Dependencies
 
