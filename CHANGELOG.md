@@ -14,7 +14,7 @@ All notable changes to Abhed are recorded here. The format follows
   `:stop` and `:exec` with its output streamed as NDJSON. `Idempotency-Key`
   replays a request instead of repeating it, and `If-Match` refuses a change
   made against a stale version. Every change is recorded with who asked, in
-  an append-only `sandbox_audit` table on Postgres. `:attach`, `:ssh`,
+  an append-only `sandbox_audit` table. `:attach`, `:ssh`,
   `:forward`, `:expose`, `:cp`, `:snapshot` and `:restore` answer `501` for
   now. See [Sandboxes over the API](docs/guide/22-sandboxes.md).
 - Restart policies (`never`, `on-failure`, `always`) with doubling backoff
@@ -28,10 +28,27 @@ All notable changes to Abhed are recorded here. The format follows
   its database, secrets store or control plane cannot serve. `/v1/health` is
   unchanged.
 - Rate limits per caller on the sandbox routes.
+- Sandboxes survive a restart without Postgres: the control plane keeps
+  them, their idempotency records and their audit record in an SQLite file,
+  `~/.abhed/controlplane/sandboxes.db` or `control_plane.sqlite_path`
+  (`0600` in a `0700` folder; refused when it is a link, has a second name,
+  is open to other users or sits where commands can write). `abhed serve
+  -check` and `abhed doctor` name the store in use. With `storage.driver`
+  `postgres` nothing changes.
 
 **Upgrading with Postgres.** The control plane's tables come with schema
 version 7; run `abhed migrate` before turning `control_plane.enabled` on.
 A server with it off starts on the older schema as before.
+
+### Dependencies
+
+- `modernc.org/sqlite` v1.60.1, a pure-Go SQLite (no cgo, so the binaries
+  stay static on every platform, Linux on s390x included), for the
+  control plane's single-host store. It brings `modernc.org/libc`,
+  `modernc.org/mathutil`, `modernc.org/memory`, `github.com/dustin/go-humanize`,
+  `github.com/google/uuid`, `github.com/mattn/go-isatty`,
+  `github.com/ncruces/go-strftime` and `github.com/remyoudompheng/bigfft`;
+  all are BSD-3-Clause or MIT, and SQLite itself is public domain.
 
 ### Go API
 
@@ -46,8 +63,8 @@ A server with it off starts on the older schema as before.
   resource versions). `controlplane.Service` is the one path to sandboxes
   for the REST API and in-process callers, with its reconciler, settings
   registry and audit record; `store.Postgres.Sandboxes` is the Postgres
-  store. The contract is `docs/architecture/control-plane-contract.md`.
-  They may change in a minor release until 2.0.
+  store and `store/sqlite` the single-host one. The contract is
+  `docs/architecture/control-plane-contract.md`. They may change in a minor release until 2.0.
 
 ## [1.2.7] - 2026-10-07
 

@@ -23,6 +23,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 |---|---|---|
 | `enabled` | `false` | Serve `/v1/sandboxes` and run the reconciler. |
 | `workspace_root` | the server's workspace | Gives each sandbox a folder of its own, `<root>/<id>`, removed when the sandbox is deleted. Unset, every sandbox works in the server's workspace, as sessions do. Must be absolute. |
+| `sqlite_path` | `~/.abhed/controlplane/sandboxes.db` | The SQLite file sandboxes are kept in when `storage.driver` is not `postgres`; see [where sandboxes are kept](#where-sandboxes-are-kept). Must be absolute. |
 | `exec_timeout_seconds` | 600 | Longest one `:exec` may run. |
 | `exec_output_bytes` | 16 MiB | Most output one `:exec` may write, stdout and stderr together. |
 | `restart_policy` | `never` | `never`, `on-failure` or `always`; see [restarts](#restarts-and-generations). |
@@ -35,14 +36,53 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 The weakest isolation a sandbox may run under is your existing
 `sandbox.min_tier`.
 
-With `storage.driver` `postgres`, sandboxes and their record live in the
-same database as sessions and survive a restart; run `abhed migrate` after
-upgrading, as for any new table (the server refuses to turn the control
-plane on against an older schema and names what is missing). The runtime
-role gets `SELECT`, `INSERT`, `UPDATE` and `DELETE` on `sandboxes` and
-`sandbox_idempotency`, and only `SELECT` and `INSERT` on `sandbox_audit`,
-which is append-only like `events`. Without Postgres, sandboxes are kept in
-memory and lost when the server stops.
+## Where sandboxes are kept
+
+Sandboxes, idempotency records and the record of every change survive a
+restart of the server, in one of two places:
+
+- **Postgres**, when `storage.driver` is `postgres`: the same database as
+  sessions. Run `abhed migrate` after upgrading, as for any new table (the
+  server refuses to turn the control plane on against an older schema and
+  names what is missing). The runtime role gets `SELECT`, `INSERT`,
+  `UPDATE` and `DELETE` on `sandboxes` and `sandbox_idempotency`, and only
+  `SELECT` and `INSERT` on `sandbox_audit`, which is append-only like
+  `events`.
+- **SQLite**, otherwise: one file on the server's host,
+  `~/.abhed/controlplane/sandboxes.db` for the user `abhed serve` runs as,
+  or `control_plane.sqlite_path`. It suits one server on one host; several
+  servers sharing sandboxes need Postgres. The file is created when the
+  server first starts with the control plane on, and its tables are
+  created and upgraded by the server itself, so there is no `abhed migrate`
+  step.
+
+The SQLite file is the server's own state, so it is held to the same rules
+as the accounts and secrets files:
+
+- Its folder is created `0700` and the file `0600`. The server refuses to
+  start when the folder or the file can be read or written by other users,
+  belongs to another user, or when the file is a symbolic link or has a
+  second name (a hard link). It never loosens or repairs them for you; fix
+  the mode (`chmod 700` the folder, `chmod 600` the file) or pick another
+  path.
+- It is refused inside the workspace (its `.abhed` included), an added
+  directory, `workspace_root`, a temp folder or a cache: anywhere a
+  command could move or replace it. Under `~/.abhed` is always fine.
+- The agent's tools and every sandboxed command are denied the file and
+  the `-wal` and `-shm` files SQLite keeps beside it.
+- `sandbox_audit` is append-only: triggers refuse every `UPDATE` and
+  `DELETE` of it, and an `INSERT OR REPLACE` over an existing row. As with
+  `storage.single_role` on Postgres, this guards the record against
+  mistakes, not against whoever can write the file itself.
+
+The file uses SQLite's write-ahead log with full sync on commit, so a
+server that is killed mid-change loses that change and nothing committed
+before it. To back it up while the server runs, use `sqlite3
+sandboxes.db ".backup copy.db"`, or stop the server and copy the file and
+any `-wal` file beside it.
+
+The memory store in the Go API (`controlplane.NewMemory`) is for tests;
+`abhed serve` never falls back to it.
 
 ## Check before you serve
 
@@ -52,9 +92,13 @@ abhed serve -check -addr :8080
 
 Loads the configuration, resolves the model, reads the secrets store, builds
 the sandbox, builds sign-in, opens storage, builds the control plane when it
-is on (listing every setting, where its value came from, and which are
+is on (naming its store, `sqlite (<path>)` or `postgres (tenant …)`, and
+listing every setting, where its value came from, and which are
 ceilings) and binds the listen address once to release it. It serves nothing.
 Each check prints `ok` or `FAIL`; the exit status is 0 only when all pass.
+With the control plane on and no database yet, the check creates the SQLite
+file, as serving would. `abhed doctor` names the store too, on its
+`sandboxes` line, without opening it.
 
 ## Settings: global and per sandbox
 
@@ -180,7 +224,7 @@ condition. After `restart.max_restarts` it stays in `Error` with
 starts again from zero when the sandbox has run for ten minutes, or when you
 start it yourself.
 
-With Postgres, a server restart loses the `process` driver's instances; the
+A server restart loses the `process` driver's instances; the
 reconciler finds each `Ready` sandbox gone (`InstanceLost`) and the restart
 policy brings it back as a new generation.
 
