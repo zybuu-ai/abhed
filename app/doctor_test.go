@@ -353,7 +353,8 @@ func TestDoctorHonoursSettingsFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "-settings", set, "doctor"}) })
-	if !strings.Contains(out, "mode        plan") || !strings.Contains(out, "settings    "+set) {
+	if !strings.Contains(out, "mode        plan") || !strings.Contains(out, "settings    "+set) ||
+		!strings.Contains(out, "git         held read-only from commands in `abhed serve`'s and Studio's sessions") {
 		t.Fatalf("-settings was not applied:\n%s", out)
 	}
 	if out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "doctor"}) }); !strings.Contains(out, "mode        default") || strings.Contains(out, "settings    ") {

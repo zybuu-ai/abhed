@@ -81,6 +81,7 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
 	fmt.Printf("egress      %s\n", egressLabel(cfg))
+	fmt.Println("git         held read-only from commands in `abhed serve`'s and Studio's sessions; not in the terminal's (docs/guide/04-permissions.md)")
 	if cfg.Sandbox.Tier == string(sandbox.TierFence) {
 		printFenceProbe(os.Stdout, cfg, workspace)
 	}

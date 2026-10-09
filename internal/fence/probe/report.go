@@ -120,7 +120,7 @@ func (r *Report) Add(c Check) {
 func (r *Report) finish() {
 	fails := r.Failures()
 	r.Qualified = len(r.Checks) > 0 && len(fails) == 0
-	host := strings.TrimSpace(fmt.Sprintf("%s %s %s", r.OS, r.Kernel, r.Arch))
+	host := strings.Join(strings.Fields(fmt.Sprintf("%s %s %s", r.OS, r.Kernel, r.Arch)), " ")
 	if r.Qualified {
 		passed := 0
 		for _, c := range r.Checks {

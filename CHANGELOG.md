@@ -45,6 +45,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The fence's refusal off Linux read "darwin  arm64", with two spaces where
+  there is no kernel version.
+- `abhed doctor` says where git protection is on: in `abhed serve`'s and
+  Studio's sessions, not in the terminal's.
 - A managed-only setting set aside from `~/.abhed/config.json`, `-settings`
   or a trusted workspace's file, such as `sandbox.network` or `egress.rules`,
   was recorded as `config.refused` with an empty value. The event and the
