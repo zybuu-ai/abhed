@@ -489,3 +489,26 @@ func (r *racingStore) Update(ctx context.Context, s cp.Sandbox, expect int64) (c
 	}
 	return r.Memory.Update(ctx, s, expect)
 }
+
+// A restore is allowed only once the instance is not running, and is a new
+// generation; refused, it changes nothing.
+func TestRestoreBumpsGenerationFromStoppedOnly(t *testing.T) {
+	for _, st := range cp.States {
+		s := cp.Sandbox{State: st, Generation: 4}
+		err := s.Restore(t0)
+		if cp.CanRestore(st) {
+			if err != nil || s.State != cp.StateStarting || s.Generation != 5 {
+				t.Errorf("restore from %s: %v %+v", st, err, s)
+			}
+			continue
+		}
+		if !errors.Is(err, cp.ErrInvalidTransition) || s.State != st || s.Generation != 4 {
+			t.Errorf("restore from %s was not refused cleanly: %v %+v", st, err, s)
+		}
+	}
+	for _, st := range []cp.State{cp.StateStopped, cp.StateCompleted, cp.StateError} {
+		if !cp.CanRestore(st) {
+			t.Errorf("%s should allow a restore", st)
+		}
+	}
+}

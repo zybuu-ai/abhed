@@ -121,11 +121,20 @@ type AttachRequest struct {
 	Resize <-chan WinSize `json:"-"`
 }
 
-// SnapshotRef names a snapshot a driver took.
+// SnapshotRef names a snapshot a driver took. Digest is the content's
+// SHA-256 as "sha256:<hex>"; a restore refuses content that does not match
+// it, so whoever holds the ref decides what may be restored.
 type SnapshotRef struct {
 	ID         string `json:"id"`
 	Name       string `json:"name,omitempty"`
 	Generation int64  `json:"generation"`
+	Digest     string `json:"digest"`
+	// Bytes is the size of the workspace archive.
+	Bytes int64 `json:"bytes,omitempty"`
+	// Image is the ID of the image a container driver committed, when it did.
+	Image string `json:"image,omitempty"`
+	// CreatedAt is when the snapshot was taken.
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Driver is what every driver implements.
@@ -156,11 +165,33 @@ type Forwarder interface {
 	Forward(ctx context.Context, id string, port int) (io.ReadWriteCloser, error)
 }
 
-// Snapshotter is implemented by drivers declaring CapSnapshot.
+// Snapshotter is implemented by drivers declaring CapSnapshot. Restore
+// runs only on a stopped instance; the start that follows is a new
+// generation.
 type Snapshotter interface {
 	Snapshot(ctx context.Context, id, name string) (SnapshotRef, error)
 	Restore(ctx context.Context, id string, ref SnapshotRef) error
 }
+
+// Lifetime is implemented by drivers that can say when an instance's
+// current incarnation ends, so what is bound to it (a forward, an exposed
+// service) closes with it. Done fails for an instance that is not running.
+type Lifetime interface {
+	Done(id string) (<-chan struct{}, error)
+}
+
+// Events drivers and their helpers write to the record. Each payload
+// carries sandbox_id and generation.
+const (
+	EventSnapshot      = "sandbox.snapshot"
+	EventRestore       = "sandbox.restore"
+	EventForward       = "sandbox.forward"
+	EventForwardListen = "sandbox.forward_listen"
+	EventExpose        = "sandbox.expose"
+)
+
+// Recorder appends one event to the record.
+type Recorder func(event string, payload map[string]any) error
 
 // Check refuses a driver whose declared capabilities do not match what it
 // implements, or which declares one this package does not know.

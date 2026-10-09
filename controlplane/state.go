@@ -68,3 +68,19 @@ func (s *Sandbox) Transition(to State, now time.Time) error {
 	s.State, s.UpdatedAt = to, now
 	return nil
 }
+
+// CanRestore reports whether a sandbox in s may be restored from a
+// snapshot: only once its instance is not running.
+func CanRestore(s State) bool {
+	return s == StateStopped || s == StateCompleted || s == StateError
+}
+
+// Restore moves a stopped, completed or failed sandbox to Starting for a
+// restore. The restored instance is a new incarnation, so the generation
+// goes up, as for any start.
+func (s *Sandbox) Restore(now time.Time) error {
+	if !CanRestore(s.State) {
+		return fmt.Errorf("%w: a sandbox in %s cannot be restored; stop it first", ErrInvalidTransition, s.State)
+	}
+	return s.Transition(StateStarting, now)
+}

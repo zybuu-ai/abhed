@@ -48,6 +48,37 @@ A server with it off starts on the older schema as before.
   registry and audit record; `store.Postgres.Sandboxes` is the Postgres
   store. The contract is `docs/architecture/control-plane-contract.md`.
   They may change in a minor release until 2.0.
+- `driver/container`: the `docker` and `podman` drivers, one long-lived
+  container per sandbox. No capabilities, `no-new-privileges`, the engine's
+  default seccomp profile, a read-only root with noexec scratch space, a
+  non-root user (`--userns keep-id` on rootless Podman), memory, process and
+  CPU bounds, and no network; after start the driver checks from inside the
+  container what the kernel reports and removes one that is weaker. Images
+  from an operator list (`ABHED_SANDBOX_IMAGE` stays the default), extra
+  mounts read-only by default and refused for Abhed's state, engine sockets,
+  `/proc`, `/sys`, `/dev`, whole home folders and links out of their root,
+  SELinux relabelling of the workspace, opt-in CDI GPUs, attach on a
+  terminal and tar copy with every entry checked. Under the network
+  allowlist the egress proxy stays on the host and the container reaches it
+  through a relay on its own loopback, on a Linux host with a local engine;
+  elsewhere the sandbox is refused. The per-command container tier is
+  unchanged. See `docs/guide/22-container-drivers.md`.
+- Snapshots, forwarding and exposed services for the `process`, `docker`
+  and `podman` drivers. A snapshot is the workspace, without `.abhed`, as a
+  gzip tar named by its SHA-256 (plus a committed image on the container
+  drivers); a restore needs the sandbox stopped, refuses content whose digest
+  does not match and any entry a copy would refuse, unpacks through an
+  `os.Root` and only then replaces the workspace, leaving `.abhed` alone, and
+  the next start is a new generation. Forwarding runs a relay inside the
+  sandbox to its own loopback, so a container under `--network none` is
+  reached through `exec` and never given a network; host listeners bind
+  `127.0.0.1` unless a wider address is asked for and recorded. Forwards and
+  listeners close with the sandbox. `server/expose` publishes a sandbox port
+  on an authenticated path for the same principal and tenant only, off by
+  default, with the viewer's credentials stripped and a sandboxing CSP on
+  every response. Every snapshot, restore, forward and exposure is recorded
+  with the sandbox id and generation. See
+  `docs/guide/23-snapshots-and-forwarding.md`.
 
 ## [1.2.7] - 2026-10-07
 
