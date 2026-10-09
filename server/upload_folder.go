@@ -28,7 +28,7 @@ func (s *Server) uploadInto(w http.ResponseWriter, r *http.Request, dir, rawName
 		WriteError(w, http.StatusForbidden, "files cannot be written on this server, so nothing can be uploaded into a folder")
 		return
 	}
-	v, err := s.openView()
+	v, err := s.openView(s.workspaceOf(live))
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "workspace is not readable")
 		return
@@ -84,7 +84,7 @@ func (s *Server) uploadInto(w http.ResponseWriter, r *http.Request, dir, rawName
 	}
 
 	start := time.Now()
-	werr := s.createUpload(abs, data)
+	werr := s.createUploadIn(s.workspaceOf(live), abs, data)
 	res := tools.Result{Content: fmt.Sprintf("uploaded %d bytes to %s", len(data), filepath.ToSlash(rel))}
 	if werr != nil {
 		res = tools.Result{Content: "upload not written: " + werr.Error(), IsError: true}
