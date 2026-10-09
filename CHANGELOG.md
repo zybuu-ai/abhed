@@ -8,6 +8,35 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Commands could read the control plane's own files. A session's command, or
+  a `process` driver sandbox's, could read the `:ssh` relay's host key (and
+  so pose as every sandbox's SSH server) and every sandbox's snapshots in the
+  control plane's state folder, a `control_plane.snapshot_dir` set
+  elsewhere, and, from a sandbox, the server's workspace's `.abhed` with its
+  accounts; a sandbox also resolved relative TLS, command-line token and
+  workload key paths against its own folder, so the real files were left
+  open. The state folder and a configured `snapshot_dir` are now denied to
+  every command on every tier, a sandbox keeping only its own folder there;
+  a sandbox resolves state paths against the server's workspace and is
+  denied its `.abhed`; and the file tools refuse the host key and the
+  snapshots.
+- `server.tls.client_ca_file`, which `abhed serve` reloads, was not
+  protected: a command could rewrite it and mint a client certificate for any
+  account. It is now state, as the TLS keys are: refused in the workspace,
+  an added directory, a temp folder or a cache, and denied to commands. So
+  are `control_plane.ha.relay_key_file` and `relay_ca_file`.
+- The profiles file set with `ABHED_PROFILES_FILE`, which holds sign-in
+  tokens, and the client certificate, key and CA saved by `abhed login
+  -cert`, `-key` and `-ca` are now denied to commands and the file tools.
+- `control_plane.ssh_host_key` and `control_plane.snapshot_dir` are checked
+  to be absolute when the configuration loads, not when serve first uses
+  them.
+- `control_plane.interceptors`, the admission hooks every mutating sandbox
+  call passes, is now managed only, as `control_plane.kubernetes` is: a copy
+  in `~/.abhed/config.json` or a trusted workspace's `.abhed/config.json` is
+  set aside with a warning. `control_plane.ha` still comes from the user's
+  own file or the managed one, but never from a workspace's file, trusted or
+  not, however its keys are spelled; that copy is set aside with a warning.
 - A permission rule naming a built-in tool in another case than Abhed's
   lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
   `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's

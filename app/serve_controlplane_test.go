@@ -260,7 +260,7 @@ func TestBuiltControlPlaneSnapshotsAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot through serve's process driver: %v", err)
 	}
-	dir, _ := snapshotDir(cfg.ControlPlane)
+	dir, _ := snapshotDir(cfg)
 	stateDir, _ := controlPlaneStateDir()
 	if !within(dir, stateDir) || within(dir, ws) {
 		t.Fatalf("snapshots in %s", dir)
@@ -415,5 +415,58 @@ func TestServeCheckDoesNotMigrate(t *testing.T) {
 	if code := newApp().serveCheck(&out, ws, "127.0.0.1:0"); code != 0 || !strings.Contains(out.String(), "on, store sqlite ("+real+", schema version ") ||
 		strings.Contains(out.String(), "migrate") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// serve hands the process driver its own workspace, so a sandbox's commands
+// cannot read serve's accounts in that workspace's .abhed.
+func TestServeSandboxCannotReadServeState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the host's sandbox")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := filepath.Join(ws, ".abhed", "users.json")
+	if err := os.MkdirAll(filepath.Dir(users), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(users, []byte(`{"alice":"hash"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.ControlPlane.Enabled = true
+	cfg.Sandbox.MinTier = "process"
+	built, err := buildControlPlane(context.Background(), cfg, ws, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer built.close()
+	ctx := context.Background()
+	who := controlplane.Caller{Principal: "alice"}
+	sb, err := built.svc.Create(ctx, who, controlplane.CreateRequest{Template: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := built.svc.Reconcile(ctx, sb.ID); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	res, _, err := built.svc.Exec(ctx, who, sb.ID, "", controlplane.ExecRequest{Command: "cat " + users},
+		controlplane.ExecIO{Stdout: &out, Stderr: &out})
+	if errors.Is(err, driver.ErrUnavailable) || errors.Is(err, controlplane.ErrUnavailable) {
+		if _, statErr := os.Stat("/usr/bin/sandbox-exec"); statErr == nil {
+			t.Fatalf("Seatbelt is present but the sandbox did not run: %v", err)
+		}
+		t.Skipf("no process tier on this host: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode == 0 || strings.Contains(out.String(), "alice") {
+		t.Fatalf("a sandbox read serve's accounts: %d %q", res.ExitCode, out.String())
 	}
 }

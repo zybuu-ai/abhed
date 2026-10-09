@@ -309,7 +309,7 @@ func (a *App) loadConfigWith(workspace string, set flagSettings) (config.Config,
 // registerState marks the state files a configuration moves out of .abhed,
 // so the agent's tools and the server's readers refuse them there too.
 func registerState(cfg config.Config, workspace string) {
-	for _, p := range sandboxconfig.StatePaths(cfg, workspace) {
+	for _, p := range sandboxconfig.ToolStatePaths(cfg, workspace) {
 		tools.AddStatePath(p)
 	}
 }

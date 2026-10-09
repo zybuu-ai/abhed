@@ -106,3 +106,36 @@ func TestServerSecretFiles(t *testing.T) {
 		t.Errorf("configured key file = %s", k)
 	}
 }
+
+// The relay's host key and the snapshot folder are absolute, refused at
+// load otherwise, and the configured key is a secret file in clean form.
+func TestControlPlanePathsResolved(t *testing.T) {
+	for _, mod := range []func(*Config){
+		func(c *Config) { c.ControlPlane.SSHHostKey = "keys/host" },
+		func(c *Config) { c.ControlPlane.SnapshotDir = "snaps" },
+	} {
+		c := Default()
+		mod(&c)
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "not an absolute path") {
+			t.Errorf("a relative path was accepted: %v", err)
+		}
+	}
+	t.Setenv("HOME", "/home/u")
+	t.Setenv("XDG_STATE_HOME", "/state")
+	c := Default()
+	c.ControlPlane.Enabled = true
+	state, err := ControlPlaneStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key, err := c.SSHHostKeyFile(); err != nil || key != filepath.Join(state, SSHHostKeyName) {
+		t.Errorf("default key %q %v", key, err)
+	}
+	if snaps, err := c.SnapshotDir(); err != nil || snaps != filepath.Join(state, "snapshots") {
+		t.Errorf("default snapshots %q %v", snaps, err)
+	}
+	c.ControlPlane.SSHHostKey = "/run/keys/../secrets/host"
+	if got := c.ServerSecretFiles("/ws"); !slices.Contains(got, "/run/secrets/host") {
+		t.Errorf("secret files %q lack the configured key in clean form", got)
+	}
+}

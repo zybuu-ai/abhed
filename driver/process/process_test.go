@@ -282,7 +282,7 @@ func TestRealSandboxConfines(t *testing.T) {
 	}
 	ctx := context.Background()
 	// Not under a temp area: the process tier lets commands write those.
-	ws, outside := localDir(t), localDir(t)
+	ws, outside := localDir(t), unwritableDir(t)
 	cfg := config.Default()
 	d := New(cfg)
 	st, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, MinTier: "process"})
@@ -350,6 +350,45 @@ func localDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return real
+}
+
+// unwritableDir is a new folder outside every area the process tier lets
+// commands write, beside the checkout or else in the home folder; with
+// neither, as for a checkout and home both under a temp folder, the test is
+// skipped saying so.
+func unwritableDir(t *testing.T) string {
+	t.Helper()
+	var parents []string
+	if wd, err := os.Getwd(); err == nil {
+		parents = append(parents, wd)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		parents = append(parents, home)
+	}
+	writable := func(p string) bool {
+		for _, a := range sandbox.WritableAreas() {
+			for _, form := range sandbox.PathForms(a) {
+				if _, ok := sandbox.Within(sandbox.RealPath(p), form); ok {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, p := range parents {
+		if writable(p) {
+			continue
+		}
+		d, err := os.MkdirTemp(p, ".abhed128-outside-")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(d) })
+		return sandbox.RealPath(d)
+	}
+	t.Skipf("the checkout and the home folder %v both lie in areas the sandbox lets commands write (%v), so no folder here is out of reach",
+		parents, sandbox.WritableAreas())
+	return ""
 }
 
 // The process driver cannot hold one sandbox to a size, so a Spec that asks

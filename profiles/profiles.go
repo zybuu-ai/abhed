@@ -18,10 +18,12 @@ import (
 	"runtime"
 	"sort"
 	"time"
+
+	"github.com/zybuu-ai/abhed/config"
 )
 
 // EnvFile overrides where profiles are kept.
-const EnvFile = "ABHED_PROFILES_FILE"
+const EnvFile = config.ProfilesEnv
 
 // Profile is one server and what this command line holds for it.
 type Profile struct {
@@ -84,16 +86,7 @@ var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 func ValidName(n string) bool { return validName.MatchString(n) }
 
 // DefaultPath is $ABHED_PROFILES_FILE, else ~/.abhed/profiles.json.
-func DefaultPath() (string, error) {
-	if p := os.Getenv(EnvFile); p != "" {
-		return filepath.Abs(p)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".abhed", "profiles.json"), nil
-}
+func DefaultPath() (string, error) { return config.ProfilesPath() }
 
 // ErrNoProfile is returned when a named or current profile does not exist.
 var ErrNoProfile = errors.New("no such profile")

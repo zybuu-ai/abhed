@@ -158,6 +158,8 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `memory.import_depth` | **applied** only when lower, trusted or not; zero means the default of 5, and no file may set more than 10 |
 | `cli.mode_cycle`, `record.dir`, `record.retention_days`, `hooks.disabled`, `hooks.managed_only` | ignored, trusted or not, as in the user's own file: only the managed configuration makes these |
 | `control_plane.kubernetes` | ignored, trusted or not, as in the user's own file: only the managed configuration configures the Kubernetes driver, and its values are hidden in the warning |
+| `control_plane.interceptors` | ignored, trusted or not, as in the user's own file: only the managed configuration sets what admits sandbox calls |
+| `control_plane.ha` | ignored, trusted or not: only an operator's file (the user's own or the managed one) joins the server to replicas and names the relay's key, never a file that arrives with a repository |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse

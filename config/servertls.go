@@ -46,9 +46,9 @@ func (c Config) CLIKeyFile(workspace string) (string, error) {
 const CLIEditionStateSuffix = ".edition"
 
 // ServerSecretFiles are the private files serve reads that commands must not
-// reach: the TLS keys; with command-line sign-in, its token key and the
-// list of tokens signed out early; with workload identity, its token key and
-// the trust bundles.
+// reach: the TLS keys and the client CA; with command-line sign-in, its token
+// key and the list of tokens signed out early; with workload identity, its
+// token key and the trust bundles; with replicas, the relay's key and CA.
 func (c Config) ServerSecretFiles(workspace string) []string {
 	var out []string
 	if c.Server.TLS.Enabled() {
@@ -59,6 +59,18 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 		for _, p := range t.AdditionalCertificates {
 			if p.KeyFile != "" {
 				out = append(out, p.KeyFile)
+			}
+		}
+		// Whoever could rewrite the client CA, which serve reloads, could
+		// mint a certificate for any account.
+		if t.ClientCAFile != "" {
+			out = append(out, t.ClientCAFile)
+		}
+	}
+	if ha := c.ControlPlane.HA; ha.Enabled {
+		for _, p := range []string{ha.RelayKeyFile, ha.RelayCAFile} {
+			if p != "" {
+				out = append(out, serverPath(workspace, p))
 			}
 		}
 	}
@@ -80,7 +92,9 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 	}
 	// Whoever reads the relay's host key can pose as every sandbox's SSH server.
 	if c.ControlPlane.Enabled && c.ControlPlane.SSHHostKey != "" {
-		out = append(out, c.ControlPlane.SSHHostKey)
+		if p, err := c.SSHHostKeyFile(); err == nil {
+			out = append(out, p)
+		}
 	}
 	return out
 }

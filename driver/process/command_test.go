@@ -165,7 +165,8 @@ func hiddenSiblings(t *testing.T, root string) {
 		t.Fatal("a file was planted in the other sandbox's folder")
 	}
 	// The workspace's own .abhed stays denied after its read is allowed.
-	if err := os.Mkdir(filepath.Join(a, ".abhed"), 0o700); err != nil {
+	// Bubblewrap has made it already, as the point its tmpfs is mounted on.
+	if err := os.MkdirAll(filepath.Join(a, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(a, ".abhed", "state"), []byte("kept"), 0o600); err != nil {
@@ -189,5 +190,152 @@ func TestHiddenUnderAReadOnlyPathIsRefused(t *testing.T) {
 	if _, err := d.Create(context.Background(), driver.Spec{ID: "a", Workspace: ws}); !errors.Is(err, driver.ErrUnavailable) ||
 		!strings.Contains(err.Error(), "kept apart") {
 		t.Fatalf("created under a read-only path: %v", err)
+	}
+}
+
+// An instance whose folder lies in the control plane's state folder keeps
+// it, and reaches nothing else there: not the relay's host key, nor a
+// sibling's snapshot.
+func TestStateFolderHiddenAroundTheInstance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the host's sandbox")
+	}
+	ctx := context.Background()
+	base := localDir(t)
+	t.Setenv("HOME", filepath.Join(base, "home"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(base, "home", ".local", "state"))
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	state, err := config.ControlPlaneStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(state, "sandboxes")
+	ws := filepath.Join(root, "sbx_a")
+	secret := map[string]string{
+		filepath.Join(state, config.SSHHostKeyName):            "host-key",
+		filepath.Join(state, "snapshots", "sbx_b", "snap.tar"): "sibling-snapshot",
+	}
+	if err := os.MkdirAll(ws, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for p, body := range secret {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Default()
+	cfg.ControlPlane.Enabled = true
+	d := NewWithOptions(cfg, Options{Hide: []string{root}})
+	_, err = d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, MinTier: "process"})
+	if errors.Is(err, driver.ErrUnavailable) {
+		if _, statErr := os.Stat("/usr/bin/sandbox-exec"); statErr == nil {
+			t.Fatalf("Seatbelt is present but the driver refused: %v", err)
+		}
+		t.Skipf("no process tier on this host: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Delete(ctx, "a") }()
+	run := func(line string) (int, string) {
+		t.Helper()
+		var out syncBuffer
+		res, err := d.Exec(ctx, "a", driver.ExecRequest{Command: line, Stdout: &out, Stderr: &out})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.ExitCode, out.String()
+	}
+	if code, out := run("echo mine > own.txt && cat own.txt"); code != 0 || !strings.Contains(out, "mine") {
+		t.Fatalf("its own folder: %d %q", code, out)
+	}
+	// Bubblewrap makes the folders above the workspace in its own root, so
+	// what a command writes there is judged on the host.
+	for p, body := range secret {
+		if code, out := run("cat '" + p + "'"); code == 0 || strings.Contains(out, body) {
+			t.Errorf("read %s: %d %q", p, code, out)
+		}
+		run("echo x > '" + p + "'")
+		if got, _ := os.ReadFile(p); string(got) != body {
+			t.Errorf("wrote %s: %q", p, got)
+		}
+	}
+	if _, out := run("ls '" + state + "'"); strings.Contains(out, "snapshots") || strings.Contains(out, config.SSHHostKeyName) {
+		t.Errorf("listed the state folder: %q", out)
+	}
+}
+
+// An instance's commands cannot reach serve's state: its workspace's .abhed,
+// nor key files a relative setting names beside it, which resolve against
+// serve's workspace and not the instance's folder.
+func TestServeStateHiddenFromTheInstance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the host's sandbox")
+	}
+	ctx := context.Background()
+	base := localDir(t)
+	t.Setenv("HOME", filepath.Join(base, "home"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(base, "home", ".local", "state"))
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	serveWS, root := filepath.Join(base, "serve"), filepath.Join(base, "sandboxes")
+	ws := filepath.Join(root, "sbx_a")
+	secret := map[string]string{
+		filepath.Join(serveWS, ".abhed", "users.json"): "serve-users",
+		filepath.Join(base, "keys", "server.key"):      "tls-key",
+		filepath.Join(base, "keys", "cli.key"):         "cli-token-key",
+		filepath.Join(base, "keys", "workload.key"):    "workload-key",
+	}
+	if err := os.MkdirAll(ws, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for p, body := range secret {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Default()
+	cfg.ControlPlane.Enabled = true
+	cfg.Auth.Mode = "local"
+	cfg.Server.TLS = config.ServerTLSConfig{CertFile: "../keys/server.pem", KeyFile: "../keys/server.key"}
+	cfg.Auth.CLI.Enabled, cfg.Auth.CLI.KeyFile = true, "../keys/cli.key"
+	cfg.Auth.Workload.Enabled, cfg.Auth.Workload.KeyFile = true, "../keys/workload.key"
+	d := NewWithOptions(cfg, Options{Hide: []string{root}, StateWorkspace: serveWS})
+	_, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, MinTier: "process"})
+	if errors.Is(err, driver.ErrUnavailable) {
+		if _, statErr := os.Stat("/usr/bin/sandbox-exec"); statErr == nil {
+			t.Fatalf("Seatbelt is present but the driver refused: %v", err)
+		}
+		t.Skipf("no process tier on this host: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Delete(ctx, "a") }()
+	run := func(line string) (int, string) {
+		t.Helper()
+		var out syncBuffer
+		res, err := d.Exec(ctx, "a", driver.ExecRequest{Command: line, Stdout: &out, Stderr: &out})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.ExitCode, out.String()
+	}
+	if code, out := run("echo mine > own.txt && cat own.txt"); code != 0 || !strings.Contains(out, "mine") {
+		t.Fatalf("its own folder: %d %q", code, out)
+	}
+	for p, body := range secret {
+		if code, out := run("cat '" + p + "'"); code == 0 || strings.Contains(out, body) {
+			t.Errorf("read %s: %d %q", p, code, out)
+		}
+		run("echo x > '" + p + "'")
+		if got, _ := os.ReadFile(p); string(got) != body {
+			t.Errorf("wrote %s: %q", p, got)
+		}
 	}
 }
