@@ -551,10 +551,12 @@ starts in the tracked folder, so a line that changes directory some other
 way only misses the note; it never moves the next one.
 A `cd` in a command that failed is not followed either. The agent's
 commands follow `cd` by the same rule, and its result carries the same note.
-A managed policy (`/etc/abhed/config.json`) with deny rules for `bash` or for every tool (`*`),
-or with a policy hook such as an extension, gets that mode without asking,
-because a managed rule is an organisation's statement that it holds, and a
-hook may refuse any command.
+A managed file (`/etc/abhed/config.json`) that itself sets `permissions.deny`,
+with rules for `bash` or for every tool (`*`), or sets `extensions`, gets that
+mode without asking, because a managed rule is an organisation's statement that
+it holds, and a hook may refuse any command. Deny rules from the defaults, the
+user or the workspace do not, even when an unrelated managed file is present
+(for example one that only turns web search on).
 A destructive line, one that always confirms, is not run on Enter: the terminal
 shows why and asks `1` No or `2` Yes, run it. Only `2` then Enter runs it,
 recorded as confirmed; `1` or Ctrl-C cancels it, recorded as declined. Either

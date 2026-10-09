@@ -728,8 +728,10 @@ func TestShellDoesNotWaitOnTheExplorer(t *testing.T) {
 func TestShellFallsBackToLines(t *testing.T) {
 	for name, wb := range map[string]*workbench{
 		"operator chose lines": shellBench(t, func(c *config.Config) { c.Sandbox.Terminal = "lines" }),
-		"managed bash rules":   shellBench(t, func(c *config.Config) { c.Managed = true }),
-		"no shell in sandbox":  manualBench(t, nil),
+		"managed bash rules": shellBench(t, func(c *config.Config) {
+			c.Managed, c.ManagedKeys = true, []string{"permissions.deny"}
+		}),
+		"no shell in sandbox": manualBench(t, nil),
 	} {
 		rec := wb.send("acme", "POST", "pty", ptyStartRequest{Interactive: true})
 		var got ptyStartResponse
@@ -738,6 +740,19 @@ func TestShellFallsBackToLines(t *testing.T) {
 			t.Errorf("%s: %d %+v", name, rec.Code, got)
 		}
 	}
+}
+
+// A managed file that sets no deny rules, only web search, leaves the shell
+// interactive: the deny rules in force are not the organisation's.
+func TestShellStaysInteractiveUnderUnrelatedManagedSettings(t *testing.T) {
+	wb := shellBench(t, func(c *config.Config) {
+		c.Managed, c.ManagedKeys = true, []string{"web_search.enabled"}
+	})
+	start := wb.startShell()
+	if start.Lines != "" || !start.Interactive {
+		t.Fatalf("fell back to lines: %+v", start)
+	}
+	_, _ = wb.typeLines(start.ID, enter("exit")...)
 }
 
 // Plan mode is read-only for a person too: no shell.

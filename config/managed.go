@@ -128,6 +128,13 @@ func (c Config) ManagedSets(path string) bool {
 // configuration sets a permissions key, whichever one. Every surface asks this.
 func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
+// ManagedScreens reports whether the managed file itself sets the deny rules
+// or the extensions, so a refusal they make is the organisation's to hold.
+// Like Apply, it is only as good as ManagedKeys: a hand-built Config has none.
+func (c Config) ManagedScreens() bool {
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions"))
+}
+
 // dropLockedAllow sets aside the allow rules the user's and the workspace's
 // files added when the managed file locks allow rules without listing its own.
 func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {

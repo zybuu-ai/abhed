@@ -67,8 +67,8 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 		return refusal(errPolicy, `this configuration's terminal judges each line before it runs (sandbox.terminal is "lines"); open the terminal in lines mode`)
 	case b.Shell == nil:
 		return refusal(errRefused, "this sandbox cannot host an interactive shell; open the terminal in lines mode")
-	case pol.Managed && pol.Screens("bash"):
-		// A managed policy is the organisation's word that its rules hold.
+	case parts.Config.ManagedScreens() && pol.Screens("bash"):
+		// Managed deny rules or extensions are the organisation's word that they hold.
 		return refusal(errPolicy, "your organisation's policy has deny rules or hooks that only a line-by-line terminal applies to every command; open the terminal in lines mode")
 	}
 	loop := parts.Loop

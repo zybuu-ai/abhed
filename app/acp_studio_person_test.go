@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/termline"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // waitOutput waits until a terminal's output from index from on holds want.
@@ -95,6 +97,52 @@ func TestStudioTerminalLines(t *testing.T) {
 	r.cl.ok("_abhed/terminal/kill", map[string]any{"terminalId": term.TerminalID}, nil)
 	r.cl.waitFor(from, "terminal exit", func(m rpcMessage) bool { return m.Method == "_abhed/terminal/exit" })
 	r.cl.refused(errParams, "_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "ls\n"})
+}
+
+// A lines-mode terminal reads like a shell: a prompt naming where the next
+// line runs, the typed command in bold, its output, then its exit status.
+func TestStudioTerminalLinesShowOutputBeforeTheStatus(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("sub/keep.txt", "")
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo order-check\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "\r\norder-check\r\n")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cd sub\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, filepath.Join(filepath.Base(r.ws), "sub")+" $")
+	got := terminalOutput(r.cl.since(from), term.TerminalID)
+	root := "\x1b[2m" + filepath.Base(r.ws) + " $\x1b[0m "
+	want := root + "\x1b[1mecho order-check\x1b[0m\r\norder-check\r\n\x1b[2mexit 0 · "
+	if !strings.HasPrefix(got, want) {
+		t.Fatalf("the line's output, status and prompt are out of order:\n%q\nwant prefix\n%q", got, want)
+	}
+	if strings.Contains(got, "[no output]") {
+		t.Fatalf("the record's placeholder reached the terminal: %q", got)
+	}
+	if !strings.HasSuffix(got, "ms\x1b[0m\r\n\x1b[2m"+filepath.Join(filepath.Base(r.ws), "sub")+" $\x1b[0m ") {
+		t.Fatalf("the prompt does not follow the cd: %q", got)
+	}
+}
+
+func TestLineResultPutsTheStatusLast(t *testing.T) {
+	code := 1
+	got := string(lineResult(tools.Result{Content: "exit 1 · 12ms\nboom\nbang", ExitCode: &code}))
+	if got != "boom\r\nbang\r\n\x1b[2mexit 1 · 12ms\x1b[0m\r\n" {
+		t.Fatalf("%q", got)
+	}
+	got = string(lineResult(tools.Result{Content: "exit 1 · 12ms\n[no output]", ExitCode: &code}))
+	if got != "\x1b[2mexit 1 · 12ms\x1b[0m\r\n" {
+		t.Fatalf("no output: %q", got)
+	}
+	// A refusal or a tool error has no status to move.
+	if got := string(lineResult(tools.Result{Content: "Denied: curl", IsError: true})); got != "Denied: curl\r\n" {
+		t.Fatalf("refusal: %q", got)
+	}
 }
 
 // §7.3: a person's save is recorded manual.edit by: user; a path outside
@@ -575,5 +623,44 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	obs, _ := r.recorded(id, agent.EvObservation)
 	if !strings.Contains(obs[len(obs)-1]["content"].(string), "interactive Abhed terminal") {
 		t.Fatalf("the shell's end: %v", obs[len(obs)-1])
+	}
+}
+
+// Only a managed file that sets deny rules forces line mode on Studio's
+// terminal; one that only turns web search on leaves it interactive.
+func TestStudioInteractiveTerminalUnderManagedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, managedBody string
+		refused           bool
+	}{
+		{"managed deny", `{"permissions":{"deny":["bash(*curl*)"]}}`, true},
+		{"managed web search", `{"web_search":{"enabled":true}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newStudioRig(t, "")
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(tc.managedBody), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			old := managed.ConfigFile
+			managed.ConfigFile = path
+			t.Cleanup(func() { managed.ConfigFile = old })
+			id := r.open()
+			params := map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}
+			if tc.refused {
+				if msg := r.cl.refused(errPolicy, "_abhed/terminal/create", params); !strings.Contains(msg, "lines mode") {
+					t.Fatalf("refusal does not name lines mode: %q", msg)
+				}
+				return
+			}
+			var term struct {
+				TerminalID string `json:"terminalId"`
+			}
+			r.cl.ok("_abhed/terminal/create", params, &term)
+			if term.TerminalID == "" {
+				t.Fatal("no interactive terminal opened")
+			}
+			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
+		})
 	}
 }

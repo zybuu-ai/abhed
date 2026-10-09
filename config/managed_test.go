@@ -219,6 +219,26 @@ func TestAllowRefusedUnderAnyManagedPermission(t *testing.T) {
 	}
 }
 
+// Only a managed file that sets deny rules or extensions makes their refusals
+// the organisation's; one that turns on web search alone does not.
+func TestManagedScreensOnlyForManagedDenyOrExtensions(t *testing.T) {
+	for _, keys := range [][]string{{"permissions.deny"}, {"permissions"}, {"extensions"}} {
+		if !managedCfg(keys...).ManagedScreens() {
+			t.Errorf("%v: not screening", keys)
+		}
+	}
+	for _, keys := range [][]string{{"web_search.enabled"}, {"permissions.mode", "sandbox.min_tier"}} {
+		if managedCfg(keys...).ManagedScreens() {
+			t.Errorf("%v: screening", keys)
+		}
+	}
+	unmanaged := Default()
+	unmanaged.ManagedKeys = []string{"permissions.deny"}
+	if unmanaged.ManagedScreens() {
+		t.Error("an unmanaged config screened")
+	}
+}
+
 // Under a managed file that sets any permissions setting but not
 // permissions.allow, the allow rules the user's and a trusted workspace's
 // files add are left out and each is named; the defaults stay.
