@@ -530,7 +530,10 @@ Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: eac
 tab then runs every line as a `bash` call of its own, judged before it runs, on
 its own pseudo-terminal, and shell state does not carry from one line to the
 next (variables, `export` and aliases are lost; the folder moves only as
-follows). Keys typed into a running command are not recorded; a line typed
+follows). A Tab pasted or typed into a line (in Studio, where Tab does not
+complete) becomes a space, as bash reads it, so `wget<Tab>http://x` is
+judged and run as `wget http://x`; other control characters are dropped.
+Keys typed into a running command are not recorded; a line typed
 while it reads lines (or anywhere on the container tier) is taken out of the
 command's recorded output as the shell's are, so a password typed ahead of a
 `read -s` is not kept. This covers every answer typed into a command, not

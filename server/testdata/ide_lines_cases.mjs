@@ -368,4 +368,12 @@ check('the prompt shows control characters in its directory: ' + JSON.stringify(
   check('a line recalled from history is marked too', out.join('').endsWith('echo \x1b[7m?\x1b[27mx') && t.line === 'echo ' + RLO + 'x');
 }
 
+// A Tab in pasted text separates words, as in bash, rather than joining them.
+{
+  let {t} = term();
+  __sent.length = 0; __attached = null; __replies.push({id:'u9', cwd:'.'});
+  linesData(t, 'wget\thttp://x\r'); await tick();
+  check('a pasted Tab is sent as a space: ' + JSON.stringify(__sent[0]), __sent.length === 1 && __sent[0].command === 'wget http://x');
+}
+
 process.exit(ok ? 0 : 1);

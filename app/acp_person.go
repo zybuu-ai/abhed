@@ -191,6 +191,10 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 		if t.esc.drop(b) {
 			continue
 		}
+		// bash splits words on a Tab as on a space; dropped, it would join them.
+		if b == '\t' {
+			b = ' '
+		}
 		switch {
 		case b == 0x03:
 			// Ctrl-C stops the command running and drops the line, and the

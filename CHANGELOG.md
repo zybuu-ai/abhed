@@ -8,6 +8,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- In a line-by-line terminal (Studio's, and a line pasted into the
+  workbench's), a Tab was dropped and joined the words around it, so
+  `wget<Tab>http://x` was judged as the one word `wgethttp://x` and passed a
+  `bash(wget *)` deny rule. A Tab now becomes a space, as bash reads it;
+  other control characters are still dropped.
 - Built with Go 1.26.9, which fixes 13 standard-library advisories that
   `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
   pin it.

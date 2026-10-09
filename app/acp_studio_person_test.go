@@ -172,6 +172,31 @@ func TestStudioTerminalLinesDropEscapeSequences(t *testing.T) {
 	}
 }
 
+// A Tab typed or pasted into a line separates words as bash does, so the
+// line judged and run is the one bash would see, not two words joined.
+func TestStudioTerminalLinesTabSeparatesWords(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(wget *)"]}`)
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "wget\thttp://x\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "Denied")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo\ttab-ok\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "tab-ok\r\n\x1b[2mexit 0")
+	var ran []string
+	reqs, _ := r.recorded(id, agent.EvActionRequested)
+	for _, q := range reqs {
+		ran = append(ran, q["args"].(map[string]any)["command"].(string))
+	}
+	if want := []string{"wget http://x", "echo tab-ok"}; !slices.Equal(ran, want) {
+		t.Fatalf("lines judged: %q, want %q", ran, want)
+	}
+}
+
 // Ctrl-C while a line runs stops it and drops the lines typed ahead of the
 // prompt, as a shell flushes its input on an interrupt, and says so.
 func TestStudioTerminalLinesCtrlCDropsTypedAhead(t *testing.T) {

@@ -2547,7 +2547,9 @@ function linesData(t, d){
   // ended are keys for a program, never text for the line.
   d = d.replace(keySeq, '').replace(/\r\n/g, '\r').replace(/\n/g, '\r');
   let quiet = t.busy || t.queue.length > 0, dropped = 0;
-  for(const ch of d){
+  for(let ch of d){
+    // A pasted Tab separates words as a space does in bash; dropped, it would join them.
+    if(ch === '\t') ch = ' ';
     if(ch === '\r'){
       const cmd = t.line.trim(); t.line = '';
       if(!quiet) t.term.write('\r\n');
