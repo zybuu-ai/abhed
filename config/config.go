@@ -632,6 +632,55 @@ type ControlPlaneConfig struct {
 	ExecPerMinute      int `json:"exec_per_minute,omitempty"`
 	// ReconcileSeconds is how often every sandbox is checked against its driver.
 	ReconcileSeconds int `json:"reconcile_seconds,omitempty"`
+	// HA runs several replicas of serve on one Postgres (Enterprise).
+	HA HAConfig `json:"ha,omitempty"`
+	// Interceptors admit every mutating sandbox call, in order (Enterprise).
+	Interceptors []InterceptorConfig `json:"interceptors,omitempty"`
+}
+
+// HAConfig makes this server one of several replicas sharing a Postgres
+// store: each sandbox is owned by one replica under a lease, and a call for
+// it on another replica is relayed to the owner. Enterprise only.
+type HAConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// NodeID names this replica; unique among the replicas, without '#'.
+	NodeID string `json:"node_id,omitempty"`
+	// AdvertiseURL is where the other replicas reach this one, https unless
+	// AllowHTTPRelay is set.
+	AdvertiseURL string `json:"advertise_url,omitempty"`
+	// RelayKeyFile or RelayKeyEnv holds the key replicas sign relayed calls
+	// with: at least 32 bytes, the same on every replica.
+	RelayKeyFile string `json:"relay_key_file,omitempty"`
+	RelayKeyEnv  string `json:"relay_key_env,omitempty"`
+	// RelayCAFile, when set, is the CA bundle the replicas' certificates are
+	// checked against, instead of the system's.
+	RelayCAFile string `json:"relay_ca_file,omitempty"`
+	// AllowHTTPRelay permits plain-HTTP advertise URLs, for a private network.
+	AllowHTTPRelay bool `json:"allow_http_relay,omitempty"`
+	// LeaseSeconds is how long a replica's hold on a sandbox lasts without
+	// renewal; another replica takes it over after that.
+	LeaseSeconds int `json:"lease_seconds,omitempty"`
+}
+
+// InterceptorConfig is one admission hook on the sandbox API. Enterprise only.
+type InterceptorConfig struct {
+	Name string `json:"name"`
+	// Phase is validate (allow or deny), patch (may return an RFC 6902 patch
+	// of labels and settings) or post_commit (told after the call).
+	Phase string `json:"phase"`
+	// Operations limits the hook to these calls; empty means all of them.
+	Operations []string `json:"operations,omitempty"`
+	// URL is an HTTP endpoint to POST each request to, or Command is a
+	// program speaking JSON Lines on stdin and stdout. One of the two.
+	URL     string   `json:"url,omitempty"`
+	Command []string `json:"command,omitempty"`
+	// TokenEnv names an environment variable sent as a bearer token to URL.
+	TokenEnv string `json:"token_env,omitempty"`
+	// TimeoutMS bounds one answer; 500 when unset.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
+	// FailOpen lets a call through when this hook errs or times out, and
+	// records that it did. A denial is always enforced.
+	FailOpen bool `json:"fail_open,omitempty"`
 }
 
 // ServerConfig holds the settings that only matter once `abhed serve` is

@@ -32,6 +32,10 @@ func TestEditionRefusesKeysItCannotHonour(t *testing.T) {
 		{"schedules", func(c *config.Config) {
 			c.Schedules = []config.ScheduleConfig{{Name: "n", Cron: "@daily", Prompt: "p"}}
 		}, "schedules", "Team"},
+		{"ha", func(c *config.Config) { c.ControlPlane.HA.Enabled = true }, "control_plane.ha.enabled", "Enterprise"},
+		{"interceptors", func(c *config.Config) {
+			c.ControlPlane.Interceptors = []config.InterceptorConfig{{Name: "opa", Phase: "validate", URL: "https://opa"}}
+		}, "control_plane.interceptors", "Enterprise"},
 	} {
 		cfg := config.Default()
 		tc.adjust(&cfg)
@@ -54,8 +58,10 @@ func TestEditionRefusesKeysItCannotHonour(t *testing.T) {
 		WithAuthMode("oidc", func(context.Context, config.Config, string, auth.UserStore) (auth.Provider, auth.TokenVerifier, error) {
 			return nil, nil, nil
 		}),
-		WithFeature("schedules"), WithFeature("telemetry"))
+		WithFeature("schedules"), WithFeature("telemetry"), WithFeature("ha"), WithFeature("interceptors"))
 	cfg := config.Default()
+	cfg.ControlPlane.HA.Enabled = true
+	cfg.ControlPlane.Interceptors = []config.InterceptorConfig{{Name: "opa", Phase: "validate", URL: "https://opa"}}
 	cfg.Auth.Mode = "oidc"
 	cfg.Telemetry.Enabled = true
 	cfg.Schedules = []config.ScheduleConfig{{Name: "n", Cron: "@daily", Prompt: "p"}}

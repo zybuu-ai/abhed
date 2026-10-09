@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
@@ -77,6 +80,29 @@ func TestServeCheckFails(t *testing.T) {
 	ws = checkEnv(t, `{}`, "")
 	out.Reset()
 	if code := newApp().serveCheck(&out, ws, "127.0.0.1:0"); code != 0 || !strings.Contains(out.String(), "off (control_plane.enabled)") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// An edition's control-plane hook sees the configuration before the service
+// is built, and its error refuses the start.
+func TestControlPlaneHooks(t *testing.T) {
+	ws := checkEnv(t, `{"control_plane":{"enabled":true}}`, "")
+	var saw []string
+	hook := WithControlPlane(func(_ context.Context, _ config.Config, c *controlplane.Config) error {
+		saw = append(saw, c.DefaultDriver)
+		c.NodeID = "node-a"
+		return nil
+	})
+	var out bytes.Buffer
+	if code := newApp(hook).serveCheck(&out, ws, "127.0.0.1:0"); code != 0 || len(saw) != 1 || saw[0] != "process" {
+		t.Fatalf("exit %d, hook saw %v:\n%s", code, saw, out.String())
+	}
+	refuse := WithControlPlane(func(context.Context, config.Config, *controlplane.Config) error {
+		return errors.New("the relay key is missing")
+	})
+	out.Reset()
+	if code := newApp(refuse).serveCheck(&out, ws, "127.0.0.1:0"); code != 1 || !strings.Contains(out.String(), "the relay key is missing") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }

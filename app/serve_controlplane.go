@@ -75,7 +75,7 @@ func sandboxWorkspaces(root, workspace string) (get func(string) (string, error)
 // buildControlPlane builds serve's control plane: the process driver, the
 // store beside the event store, and the settings registry.
 func buildControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore,
-	redact func(string) string) (*controlplane.Service, string, error) {
+	redact func(string) string, hooks []ControlPlaneHook) (*controlplane.Service, string, error) {
 	settings, err := controlplane.SettingsFromConfig(cfg)
 	if err != nil {
 		return nil, "", fmt.Errorf("control_plane: %w", err)
@@ -92,8 +92,14 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return nil, "", err
 	}
-	svc, err := controlplane.New(controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
-		DefaultDriver: process.Name, Workspace: get, ReleaseWorkspace: release, Redact: redact})
+	c := controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
+		DefaultDriver: process.Name, Workspace: get, ReleaseWorkspace: release, Redact: redact}
+	for _, h := range hooks {
+		if err := h(ctx, cfg, &c); err != nil {
+			return nil, "", fmt.Errorf("control_plane: %w", err)
+		}
+	}
+	svc, err := controlplane.New(c)
 	if err != nil {
 		return nil, "", err
 	}
@@ -179,7 +185,7 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		if events == nil {
 			add("control plane", errors.New("needs the event store, which did not open"), "")
 		} else {
-			svc, label, err := buildControlPlane(context.Background(), cfg, workspace, events, nil)
+			svc, label, err := buildControlPlane(context.Background(), cfg, workspace, events, nil, a.cpHooks)
 			if err == nil {
 				_, _, err = svc.Store().List(context.Background(), controlplane.ListOptions{Limit: 1})
 			}
