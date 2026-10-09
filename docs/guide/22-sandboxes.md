@@ -205,7 +205,11 @@ to it in the pool carries over) and is recorded as `claim` by the session's
 user, put to a guard as an update. A claimed sandbox never goes back to the
 pool. The pool is refilled in the background, failed members are replaced,
 it never holds more than `warm_pool`, and it is drained (its sandboxes
-deleted) when the server stops. The pool is in the control plane's store,
+deleted) when the server stops. While fills keep failing (members end in
+`Error`, or creates are refused), the pool backs off: the next fill waits
+`reconcile_seconds`, then twice that, up to ten minutes, and a claim does
+not cut the wait short. The server logs the failure once, and again when
+the pool fills. The pool is in the control plane's store,
 which holds one tenant, so it is never shared across tenants. When the pool
 is empty a session gets a new sandbox.
 

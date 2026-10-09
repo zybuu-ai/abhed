@@ -411,3 +411,53 @@ func TestScopedPoolFillsAreGuardedInTheirScope(t *testing.T) {
 		t.Fatal("a pool scope naming the pool label was accepted")
 	}
 }
+
+// Fills that keep failing back off, from the interval doubling to the
+// bound, rather than retrying at every interval; a claim's kick does not
+// cut the wait short, and the pool fills once creates succeed again.
+func TestPoolBacksOffWhileFillsFail(t *testing.T) {
+	r := commandRig(t)
+	var mu sync.Mutex
+	attempts, refuse := 0, true
+	guarded(t, r, func(a *cp.Admission) (func(), error) {
+		if a.Action != "create" {
+			return nil, nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if refuse {
+			return nil, errors.New("no capacity")
+		}
+		return nil, nil
+	})
+	p, err := r.svc.NewPool(cp.PoolConfig{Key: "session", Size: 1, Create: cp.CreateRequest{Template: "session"},
+		Interval: 10 * time.Millisecond, MaxBackoff: 80 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { p.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	for end := time.Now().Add(600 * time.Millisecond); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+		p.Kick()
+	}
+	mu.Lock()
+	n := attempts
+	refuse = false
+	mu.Unlock()
+	// 10+20+40+80+80... ms is about 10 fills in 600ms; every interval or
+	// kick would be 60 or more.
+	if n < 3 || n > 14 {
+		t.Fatalf("%d fills in 600ms while every one failed", n)
+	}
+	for end := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if ms, _ := p.Members(context.Background()); len(ms) == 1 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("the pool did not fill once creates succeeded")
+		}
+	}
+}

@@ -319,6 +319,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- A warm pool whose fills keep failing backs off, from `reconcile_seconds`
+  doubling up to ten minutes, instead of retrying every interval and after
+  every claim; the failure is logged once until the pool fills again
+  (`controlplane.PoolConfig.MaxBackoff` sets the bound).
 - `auth.session_hours` must be from 0 (the default of 12) to 8760. A
   negative value, which made every sign-in expire at once, is now refused
   when the configuration loads, and `abhed doctor` shows the sign-in length

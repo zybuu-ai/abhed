@@ -229,7 +229,13 @@ type PoolConfig struct {
 	Scope map[string]string
 	// Interval is how often the pool is checked besides after each claim.
 	Interval time.Duration
+	// MaxBackoff bounds the wait after fills that keep failing, which
+	// starts at Interval and doubles; 10 minutes when zero.
+	MaxBackoff time.Duration
 }
+
+// defaultPoolBackoff is PoolConfig.MaxBackoff when unset.
+const defaultPoolBackoff = 10 * time.Minute
 
 // Pool keeps a warm pool full. Members belong to SessionsPrincipal and carry
 // LabelPool until one is claimed; a claimed member never goes back.
@@ -266,6 +272,10 @@ func (s *Service) NewPool(cfg PoolConfig) (*Pool, error) {
 	if cfg.Interval <= 0 {
 		cfg.Interval = s.cfg.Settings.For(nil).Seconds(SetReconcileInterval)
 	}
+	if cfg.MaxBackoff <= 0 {
+		cfg.MaxBackoff = defaultPoolBackoff
+	}
+	cfg.MaxBackoff = max(cfg.MaxBackoff, cfg.Interval)
 	return &Pool{svc: s, cfg: cfg, kick: make(chan struct{}, 1)}, nil
 }
 
@@ -304,19 +314,37 @@ func (p *Pool) Members(ctx context.Context) ([]Sandbox, error) {
 // Fill makes members until Size are Ready or on their way, and deletes
 // members that failed or stopped; it never holds more than Size.
 func (p *Pool) Fill(ctx context.Context) error {
+	_, err := p.fill(ctx)
+	return err
+}
+
+// fillResult is what one fill found of the members made before it.
+type fillResult struct {
+	failed  int // members in Error, replaced
+	pending int // members not yet Ready
+}
+
+func (p *Pool) fill(ctx context.Context) (fillResult, error) {
+	var res fillResult
 	ctx = WithOrigin(ctx, OriginSession)
 	ms, err := p.Members(ctx)
 	if err != nil {
-		return err
+		return res, err
 	}
 	live := 0
 	var errs []error
 	for _, m := range ms {
 		switch m.State {
-		case StateReady, StateProvisioning, StateStarting:
+		case StateReady:
 			live++
+		case StateProvisioning, StateStarting:
+			live++
+			res.pending++
 		case StateDeleting:
 		default:
+			if m.State == StateError {
+				res.failed++
+			}
 			if _, err := p.svc.Delete(ctx, p.caller(), m.ID, ""); err != nil && !errors.Is(err, ErrNotFound) {
 				errs = append(errs, err)
 			}
@@ -330,8 +358,9 @@ func (p *Pool) Fill(ctx context.Context) error {
 			errs = append(errs, err)
 			break
 		}
+		res.pending++
 	}
-	return errors.Join(errs...)
+	return res, errors.Join(errs...)
 }
 
 // Kick asks Run to fill the pool soon.
@@ -343,13 +372,39 @@ func (p *Pool) Kick() {
 }
 
 // Run fills the pool at once, after each claim and every interval, until
-// ctx ends.
+// ctx ends. Fills that keep failing back off, from Interval doubling to
+// MaxBackoff, and the failure is logged once until a fill succeeds.
 func (p *Pool) Run(ctx context.Context) {
 	tick := time.NewTicker(p.cfg.Interval)
 	defer tick.Stop()
+	failures := 0
 	for {
-		if err := p.Fill(ctx); err != nil && ctx.Err() == nil {
-			p.svc.cfg.Log.Warn("control plane: filling the warm pool failed", "pool", p.cfg.Key, "err", err)
+		res, err := p.fill(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		switch {
+		case err != nil || res.failed > 0:
+			failures++
+			if failures == 1 {
+				if err == nil {
+					err = fmt.Errorf("%d member(s) failed and were replaced", res.failed)
+				}
+				p.svc.cfg.Log.Warn("control plane: filling the warm pool failed; retrying with backoff", "pool", p.cfg.Key, "err", err)
+			}
+		case failures > 0 && res.pending == 0:
+			p.svc.cfg.Log.Info("control plane: the warm pool fills again", "pool", p.cfg.Key, "failed_fills", failures)
+			failures = 0
+		}
+		if failures > 0 {
+			// Neither a claim nor the interval cuts the wait short.
+			wait := min(p.cfg.Interval<<min(failures-1, 16), p.cfg.MaxBackoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			continue
 		}
 		select {
 		case <-ctx.Done():
