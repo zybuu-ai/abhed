@@ -7,6 +7,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/rag"
 )
@@ -130,10 +131,16 @@ func (c Config) mcpProblem(tool, list string) problem {
 		for _, s := range c.MCP.Servers {
 			configured = configured || "mcp__"+s.Name+"__" == wild
 		}
+		// Server and tool names may hold "__", so a wildcard can reach past the
+		// server it was written for; wider than meant only matters where it allows.
 		for _, s := range c.MCP.Servers {
-			// Wider than meant only matters where it allows.
-			if other := "mcp__" + s.Name + "__"; configured && list == "allow" && other != wild && strings.HasPrefix(other, wild) {
+			other := "mcp__" + s.Name + "__"
+			switch {
+			case list != "allow" || other == wild:
+			case configured && strings.HasPrefix(other, wild):
 				return problem{why: fmt.Sprintf("it also covers every tool of the MCP server %q, whose tools are named %s…", s.Name, other)}
+			case strings.HasPrefix(wild, other):
+				return problem{why: fmt.Sprintf("it also covers the tools of the MCP server %q whose names begin %s", s.Name, strings.TrimPrefix(wild, other))}
 			}
 		}
 		if configured {
@@ -167,6 +174,25 @@ func (c Config) mcpProblem(tool, list string) problem {
 		return problem{never: true, why: "it names no tool: write mcp__<server>__<tool>, or mcp__<server>__* for every tool of a server"}
 	}
 	return problem{never: true, why: fmt.Sprintf("no MCP server %q is configured here, so the rule matches nothing until one is", server)}
+}
+
+// MCPServerOverlaps names each pair of enabled MCP servers where one's name
+// is the other's and "__" and more: their tools' names cannot be told apart,
+// so the longer-named server is not started.
+func (c Config) MCPServerOverlaps() []string {
+	var enabled []string
+	for _, s := range c.MCP.Servers {
+		if s.Enabled {
+			enabled = append(enabled, s.Name)
+		}
+	}
+	var out []string
+	for _, n := range enabled {
+		if o := mcp.OverlappedBy(n, enabled); o != "" {
+			out = append(out, fmt.Sprintf("MCP server %q is not started: its name begins with that of server %q and \"__\", so their tools' names cannot be told apart; rename one", n, o))
+		}
+	}
+	return out
 }
 
 // extensionsMayProvideTools reports whether a configured extension may offer

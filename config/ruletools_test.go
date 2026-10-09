@@ -243,3 +243,26 @@ func TestManagedAllowFindingDoesNotFailTheDoctor(t *testing.T) {
 		}
 	}
 }
+
+// An allow wildcard reports a server it reaches past in either direction, and
+// two enabled servers whose names overlap are named.
+func TestMCPWildcardOverlapBothWays(t *testing.T) {
+	cfg := Default()
+	cfg.MCP.Servers = []MCPServerConfig{{Name: "a", Command: "true", Enabled: true}, {Name: "a__b", Command: "true", Enabled: true}}
+	for rule, want := range map[string]string{
+		"mcp__a__*":    `also covers every tool of the MCP server "a__b"`,
+		"mcp__a__b__*": `also covers the tools of the MCP server "a" whose names begin b__`,
+	} {
+		cfg.Permissions.Allow, cfg.Permissions.Deny = []string{rule}, nil
+		if f := cfg.RuleFindings(); len(f) != 1 || !strings.Contains(f[0].Why, want) {
+			t.Errorf("allow %s: %+v", rule, f)
+		}
+		cfg.Permissions.Allow, cfg.Permissions.Deny = nil, []string{rule}
+		if f := cfg.RuleFindings(); len(f) != 0 {
+			t.Errorf("deny %s: %+v", rule, f)
+		}
+	}
+	if o := cfg.MCPServerOverlaps(); len(o) != 1 || !strings.Contains(o[0], `"a__b" is not started`) {
+		t.Errorf("overlaps %q", o)
+	}
+}

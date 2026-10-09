@@ -59,6 +59,9 @@ type Gateway struct {
 	configs map[string]ServerConfig
 	// failed are the enabled servers that did not connect, with why.
 	failed map[string]error
+	// overlaps are remote tools left out because another server's tools are
+	// named the same way, keyed by full name.
+	overlaps map[string]string
 	// life is the context Connect was given: a server process lives as long
 	// as it, whatever context a later Restart was called with.
 	life context.Context
@@ -77,7 +80,7 @@ type Gateway struct {
 }
 
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}}
+	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}}
 }
 
 // Connect starts and initializes the enabled servers. A server that fails to
@@ -88,6 +91,12 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 	g.life = ctx
 	g.mu.Unlock()
 	var errs []error
+	var enabled []string
+	for _, cfg := range configs {
+		if cfg.Enabled {
+			enabled = append(enabled, cfg.Name)
+		}
+	}
 	for _, cfg := range configs {
 		if !cfg.Enabled {
 			continue
@@ -95,6 +104,11 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 		if !validServerName.MatchString(cfg.Name) {
 			// Not kept even as failed: the name would reach /mcp and the panels unescaped.
 			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
+			continue
+		}
+		if other := OverlappedBy(cfg.Name, enabled); other != "" {
+			errs = append(errs, fmt.Errorf("mcp server %q is not started: its name begins with that of server %q and \"__\", "+
+				"so a tool named mcp__%s__… could be either server's and a rule for one would reach the other; rename one of them", cfg.Name, other, cfg.Name))
 			continue
 		}
 		if err := g.connectOne(ctx, ctx, cfg); err != nil {
@@ -279,8 +293,12 @@ func ValidServerName(name string) bool { return validServerName.MatchString(name
 // Tools returns the gateway's tools as agent-facing tools, namespaced by
 // server so a malicious server cannot shadow a native tool.
 func (g *Gateway) Tools() []tools.Tool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	// A write lock: the tools left out are noted.
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.overlaps == nil {
+		g.overlaps = map[string]string{}
+	}
 
 	var out []tools.Tool
 	names := make([]string, 0, len(g.clients))
@@ -294,6 +312,13 @@ func (g *Gateway) Tools() []tools.Tool {
 		cfg := g.configs[server]
 		for _, def := range client.Tools() {
 			if !allowed(cfg, def.Name) {
+				continue
+			}
+			// mcp__a__b__x is server a's tool b__x and the name server a__b's
+			// x would have: a rule written for one would reach the other.
+			full := "mcp__" + server + "__" + def.Name
+			if other := g.claimedBy(full, server); other != "" {
+				g.overlaps[full] = fmt.Sprintf("mcp tool %s of server %q is not offered: its name is also how a tool of server %q is named, so a rule for one would reach the other", full, server, other)
 				continue
 			}
 			out = append(out, &remoteTool{
@@ -336,6 +361,51 @@ func (g *Gateway) Status() []string {
 	var out []string
 	for name, c := range g.clients {
 		out = append(out, fmt.Sprintf("%s (%d tools)", name, len(c.Tools())))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// OverlappedBy is a server among others whose name, with "__", begins name,
+// or "": its tools' names could not be told from that server's.
+func OverlappedBy(name string, others []string) string {
+	for _, o := range others {
+		if o != name && strings.HasPrefix(name, o+"__") {
+			return o
+		}
+	}
+	return ""
+}
+
+// claimedBy is another configured server whose tools' names begin as full
+// does, or "". The caller holds g.mu.
+func (g *Gateway) claimedBy(full, server string) string {
+	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs)} {
+		for o := range names {
+			if o != server && strings.HasPrefix(full, "mcp__"+o+"__") {
+				return o
+			}
+		}
+	}
+	return ""
+}
+
+func keysOf[V any](m map[string]V) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+// Overlaps are the remote tools Tools left out because their names are
+// also another server's, each with why, sorted.
+func (g *Gateway) Overlaps() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make([]string, 0, len(g.overlaps))
+	for _, m := range g.overlaps {
+		out = append(out, m)
 	}
 	sort.Strings(out)
 	return out

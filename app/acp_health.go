@@ -109,7 +109,9 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 			add("record", "Record", "ok", "the local record's index verifies")
 		}
 	}
-	if n := len(cfg.MCP.Servers); n > 0 {
+	if overlaps := cfg.MCPServerOverlaps(); len(overlaps) > 0 {
+		add("mcp", "MCP servers", "fail", strings.Join(overlaps, "\n"))
+	} else if n := len(cfg.MCP.Servers); n > 0 {
 		add("mcp", "MCP servers", "ok", fmt.Sprintf("%d configured; started with a session", n))
 	} else {
 		add("mcp", "MCP servers", "ok", "none configured")

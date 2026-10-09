@@ -164,6 +164,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, t := range s.Gateway.Tools() {
 			s.Registry.Add(t)
 		}
+		for _, m := range s.Gateway.Overlaps() {
+			warn("%s", m)
+		}
 		DeferMCP(s.Registry, DeferThreshold)
 	}
 	// A tool an extension provides goes through policy and the record like

@@ -379,6 +379,8 @@ type configCheck struct {
 	// rules is a permission rule that names no tool as written; neverManaged
 	// a managed deny or ask rule among them, which the organisation relies on.
 	rules, neverManaged bool
+	// mcpOverlap is a pair of MCP servers whose tools' names overlap.
+	mcpOverlap bool
 	// storeDown and authDown report an event store or sign-in doctor could
 	// not open, as before `abhed migrate`.
 	storeDown, authDown bool
@@ -389,6 +391,10 @@ func configFindings(w io.Writer, cfg config.Config) configCheck {
 	unknown := printUnknown(w, cfg)
 	c := configCheck{unknown: unknown, notInEffect: printNotInEffect(w, cfg)}
 	c.rules, c.neverManaged = printRuleFindings(w, cfg)
+	for _, m := range cfg.MCPServerOverlaps() {
+		fmt.Fprintf(w, "mcp         %s  ⚠\n", m)
+		c.mcpOverlap = true
+	}
 	return c
 }
 
@@ -437,6 +443,9 @@ func doctorVerdict(w io.Writer, f configCheck) int {
 	if f.neverManaged {
 		fmt.Fprintln(w, "Not ready: the managed configuration has a deny or ask rule that names no tool as written (listed above), "+
 			"so the control it names is not in force here. Whoever manages it must correct the rule.")
+	}
+	if f.mcpOverlap {
+		fmt.Fprintln(w, "Not ready: two MCP servers' names overlap (listed above), so one is not started. Rename one of them.")
 	}
 	if f == (configCheck{rules: true}) {
 		// Only rules of the person's own that may match nothing: said above, not a failure.

@@ -112,3 +112,16 @@ func TestDisallowedToolsKeepsTheLoweredSpelling(t *testing.T) {
 		t.Errorf("deny rules %q", cfg.Permissions.Deny)
 	}
 }
+
+func TestDoctorFailsOnOverlappingMCPServers(t *testing.T) {
+	var b strings.Builder
+	if code := doctorVerdict(&b, configCheck{mcpOverlap: true}); code != 1 || !strings.Contains(b.String(), "MCP servers' names overlap") {
+		t.Fatalf("%d:\n%s", code, b.String())
+	}
+	cfg := config.Default()
+	cfg.MCP.Servers = []config.MCPServerConfig{{Name: "a", Command: "true", Enabled: true}, {Name: "a__b", Command: "true", Enabled: true}}
+	b.Reset()
+	if f := configFindings(&b, cfg); !f.mcpOverlap {
+		t.Fatalf("not found:\n%s", b.String())
+	}
+}

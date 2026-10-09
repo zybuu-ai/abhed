@@ -178,9 +178,15 @@ refuses every tool the `github` server offers, and may take a pattern too,
 `mcp__github__*(repo/*)`. The server name is compared exactly. It is the only
 wildcard in a tool name; any other `*`, `?` or space in an MCP tool name, or
 an MCP rule with no tool part (`mcp__github`), never matches and is reported
-as below. A server whose name begins with another's and `__`, such as
-`github__ent` beside `github`, is also covered by `mcp__github__*`, which is
-reported too. Spaces around a tool name are ignored: `bash (curl *)` is
+as below. Server and tool names may themselves hold `__`, so
+`mcp__github__ent__x` could be server `github`'s tool `ent__x` or server
+`github__ent`'s tool `x`. Abhed does not start an enabled server whose name is
+another enabled server's followed by `__` (here `github__ent`), and leaves out
+any server's tool whose full name begins with another configured server's
+`mcp__<name>__`; each is a warning, and `abhed doctor` fails on such a pair.
+An allow wildcard that could reach past its server either way, such as
+`mcp__github__*` beside a `github__ent` server or `mcp__github__ent__*`
+beside a `github` server, is listed too. Spaces around a tool name are ignored: `bash (curl *)` is
 `bash(curl *)`.
 
 A rule whose tool name names no tool is not silent. Abhed warns of it at

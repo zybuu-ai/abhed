@@ -44,6 +44,12 @@ All notable changes to Abhed are recorded here. The format follows
   or an MCP rule with no tool part, is reported as never matching. Space
   around any rule's tool name is now ignored. Affects 0.1.0 to 1.2.7; the
   agent-definition guide has taught the form since 1.2.3.
+- MCP server and tool names may hold `__`, so `mcp__a__b__x` was both server
+  `a`'s tool `b__x` and server `a__b`'s tool `x`, and a rule written for one
+  reached the other. An enabled server whose name is another enabled server's
+  followed by `__` is no longer started, and a remote tool whose full name
+  begins with another configured server's `mcp__<name>__` is no longer
+  offered; both are warned of, and `abhed doctor` fails on such a pair.
 - An extension may no longer provide a tool named like a built-in tool, in
   any case: such a tool is refused with a warning. It could take a rule meant
   for the built-in, and one named exactly as a built-in replaced it.
