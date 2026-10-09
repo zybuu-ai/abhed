@@ -1,0 +1,112 @@
+package microvm
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+const cgroupRoot = "/sys/fs/cgroup"
+
+// probeFirecracker reports the first thing missing for the jailer to run a
+// VM here. Each is required; none is worked around.
+func probeFirecracker(o *Options, fc Firecracker) error {
+	if os.Geteuid() != 0 {
+		return errors.New("the firecracker backend must run as root, because the jailer needs root to chroot and drop to each VM's user; run cmd/abhed-microvm as root and register it as an out-of-process driver")
+	}
+	kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("KVM is not available: %w; the host needs hardware virtualization and the kvm module", err)
+	}
+	_ = kvm.Close()
+	if _, err := os.Stat(filepath.Join(cgroupRoot, "cgroup.controllers")); err != nil {
+		return errors.New("the jailer's limits need cgroup v2 mounted at /sys/fs/cgroup")
+	}
+	for _, p := range []string{fc.Binary, fc.Jailer} {
+		if err := trustedBinary(p); err != nil {
+			return err
+		}
+	}
+	for _, p := range []string{o.Kernel, o.Rootfs} {
+		fi, err := os.Stat(p)
+		if err != nil || !fi.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a readable file", p)
+		}
+	}
+	return firecrackerVersion(fc.Binary)
+}
+
+// trustedBinary refuses a binary root would run that someone else could
+// have replaced.
+func trustedBinary(p string) error {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return fmt.Errorf("%s is not installed: %w", p, err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%s is not an executable file", p)
+	}
+	if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s must be owned by root and writable by no one else", p)
+	}
+	return nil
+}
+
+var versionRE = regexp.MustCompile(`Firecracker v(\d+)\.(\d+)`)
+
+// firecrackerVersion refuses a Firecracker older than 1.5, the oldest the
+// configuration and flags here are written for.
+func firecrackerVersion(bin string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	if err != nil {
+		return fmt.Errorf("%s --version: %w", bin, err)
+	}
+	m := versionRE.FindSubmatch(out)
+	if m == nil {
+		return fmt.Errorf("%s did not report a Firecracker version", bin)
+	}
+	major, _ := strconv.Atoi(string(m[1]))
+	minor, _ := strconv.Atoi(string(m[2]))
+	if major < 1 || (major == 1 && minor < 5) {
+		return fmt.Errorf("Firecracker %d.%d is older than the 1.5 this driver needs", major, minor)
+	}
+	return nil
+}
+
+func cgroupDir(parent, vmID string) string { return filepath.Join(cgroupRoot, parent, vmID) }
+
+// killCgroup kills every process in the VM's cgroup.
+func killCgroup(parent, vmID string) error {
+	err := os.WriteFile(filepath.Join(cgroupDir(parent, vmID), "cgroup.kill"), []byte("1"), 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// removeCgroup removes the VM's cgroup once it is empty.
+func removeCgroup(parent, vmID string) error {
+	err := unix.Rmdir(cgroupDir(parent, vmID))
+	if err == nil || errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	return fmt.Errorf("removing the cgroup of %s: %w", vmID, err)
+}
+
+// vmmProcAttr kills the jailer if the driver dies before it has dropped
+// privileges; after that, Delete and cgroup.kill end it.
+func vmmProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
+}

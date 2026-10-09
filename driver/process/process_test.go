@@ -152,6 +152,9 @@ func TestMinTier(t *testing.T) {
 	if _, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, MinTier: "strong"}); !errors.Is(err, driver.ErrInvalid) {
 		t.Fatalf("unknown tier: %v", err)
 	}
+	if _, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, MinTier: "microvm"}); !errors.Is(err, driver.ErrUnavailable) {
+		t.Fatalf("min microvm: %v", err)
+	}
 	d2 := newDriver(func(driver.Spec) (sandbox.Sandbox, error) { return nil, errors.New("no backend") })
 	if _, err := d2.Create(ctx, driver.Spec{ID: "a", Workspace: ws}); !errors.Is(err, driver.ErrUnavailable) {
 		t.Fatalf("build failure: %v", err)

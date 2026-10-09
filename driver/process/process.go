@@ -69,6 +69,10 @@ var tiers = map[string]sandbox.Tier{
 	string(sandbox.TierVM): sandbox.TierVM,
 }
 
+// microVMTier is the tier only the microvm driver provides: known, so not
+// invalid, but never met here.
+const microVMTier = "microvm"
+
 func status(id string, in *instance) driver.Status {
 	st := driver.Status{ID: id, Phase: driver.PhaseRunning}
 	if in.stopped {
@@ -102,6 +106,9 @@ func (d *Driver) Create(_ context.Context, spec driver.Spec) (driver.Status, err
 	}
 	if spec.Workspace == "" || !filepath.IsAbs(spec.Workspace) {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "the process driver needs an absolute workspace")
+	}
+	if spec.MinTier == microVMTier {
+		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "the process driver cannot provide the %s tier; use the microvm driver", microVMTier)
 	}
 	if _, ok := tiers[spec.MinTier]; spec.MinTier != "" && !ok {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "unknown tier %q", spec.MinTier)
