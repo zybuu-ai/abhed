@@ -705,8 +705,9 @@ client sent `If-Match` and a retry when it did not.
 
 The Community module carries only the seams these use (§12, §13); with none of
 them set, which is every Community build, nothing behaves differently. The
-configuration keys `control_plane.ha` and `control_plane.interceptors` are in
-every edition's schema, and a Community binary refuses to start with them set,
+configuration keys `control_plane.ha`, `control_plane.interceptors` and
+`control_plane.kubernetes` (the driver's options as one JSON object, managed
+only) are in every edition's schema, and a Community binary refuses to start with them set,
 naming the key and the edition, rather than run without them.
 
 The control-plane and driver packages are public, not `internal/`, because the

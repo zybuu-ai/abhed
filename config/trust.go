@@ -405,7 +405,8 @@ func redact(key string, v any) any {
 	if i := strings.LastIndex(key, "."); i >= 0 {
 		last = key[i+1:]
 	}
-	if secretKey(last) || last == "extra" || last == "body" {
+	// The edition's driver options are opaque here and may hold a kubeconfig.
+	if secretKey(last) || last == "extra" || last == "body" || key == "control_plane.kubernetes" {
 		return redactAll(v)
 	}
 	if list, ok := v.([]any); ok && last == "args" {
@@ -676,6 +677,8 @@ var workspaceRules = map[string]fieldRule{
 	"control_plane":    {nil, "turns on an API that runs commands, and sets its limits"},
 	"schedules":        {nil, "prompts the server runs on its own"},
 	"auth":             {nil, "who may sign in"},
+
+	"control_plane.kubernetes": {nil, "only the managed configuration sets it"},
 }
 
 func union(field func(*Config) *[]string) func(dst, ws *Config) bool {

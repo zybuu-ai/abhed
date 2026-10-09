@@ -279,6 +279,16 @@ as `UNAVAILABLE`, and `abhed serve -check` fails its `driver docker` or
 `driver podman` line. When it is the per-session driver, `abhed serve`
 refuses to start.
 
+## The Kubernetes driver
+
+Enterprise: see the Kubernetes driver guide.
+
+`control_plane.kubernetes` holds that driver's options as one JSON object.
+It is managed only: a user's or workspace's file that sets it is set aside
+and named, with its values hidden, since it may carry a kubeconfig. A
+Community binary checks only that it is a JSON object, and refuses to
+start with it set, naming the key and the edition.
+
 ## Settings: global and per sandbox
 
 Every setting above except the rate limits and `reconcile_seconds` can also

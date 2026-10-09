@@ -31,6 +31,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `control_plane.kubernetes`: the Kubernetes driver's options as one JSON
+  object in the managed configuration, for the editions that carry the
+  driver. It is managed only; a user's or workspace's copy is set aside with
+  a warning that hides its values. A Community binary refuses to start with
+  it set, naming the key. Editions read it from the configuration their
+  control-plane hook receives (`config.ControlPlaneConfig.Kubernetes`).
 - **`abhed sandbox`**: a server's sandboxes from the command line, as the
   profile `abhed login` saved (`-profile`, the current one, or `-server URL`):
   `create` (from a template, with labels, settings, a minimum tier, a

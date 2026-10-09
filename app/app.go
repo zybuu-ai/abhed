@@ -225,6 +225,7 @@ var paidFeatures = map[string]string{
 	"ha":           "Enterprise",
 	"interceptors": "Enterprise",
 	"workload":     "Enterprise",
+	"kubernetes":   "Team",
 }
 
 // EditionError is a config key this binary cannot honour.
@@ -272,6 +273,9 @@ func (a *App) checkEdition(cfg config.Config) error {
 	}
 	if len(cfg.ControlPlane.Interceptors) > 0 && !a.features["interceptors"] {
 		return &EditionError{Key: "control_plane.interceptors", Feature: "interceptors", Edition: a.edition}
+	}
+	if len(cfg.ControlPlane.Kubernetes) > 0 && !a.features["kubernetes"] {
+		return &EditionError{Key: "control_plane.kubernetes", Feature: "kubernetes", Edition: a.edition}
 	}
 	if cfg.Auth.Workload.Enabled && !a.features["workload"] {
 		return &EditionError{Key: "auth.workload.enabled", Feature: "workload", Edition: a.edition}

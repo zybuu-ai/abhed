@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -253,6 +254,7 @@ var managedOnly = map[string]string{
 	"egress.mode":                  "only the managed configuration sets the egress mode",
 	"egress.record_paths":          "only the managed configuration sets what the egress record keeps",
 	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
+	"control_plane.kubernetes":     "only the managed configuration configures the Kubernetes driver",
 }
 
 // containerManagedOnly are the container drivers' settings that reach more
@@ -311,6 +313,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Egress.RecordPaths = nil
 	case "egress.idle_seconds":
 		c.Egress.IdleSeconds = 0
+	case "control_plane.kubernetes":
+		c.ControlPlane.Kubernetes = nil
 	}
 	for engine, cc := range map[string]*ContainerDriverConfig{"docker": &c.ControlPlane.Docker, "podman": &c.ControlPlane.Podman} {
 		switch key {
@@ -738,6 +742,9 @@ type ControlPlaneConfig struct {
 	HA HAConfig `json:"ha,omitempty"`
 	// Interceptors admit every mutating sandbox call, in order (Enterprise).
 	Interceptors []InterceptorConfig `json:"interceptors,omitempty"`
+	// Kubernetes is the edition's Kubernetes driver options, kept as written
+	// for the edition to decode. A JSON object; managed only.
+	Kubernetes json.RawMessage `json:"kubernetes,omitempty"`
 }
 
 // SessionSandboxConfig is how control_plane.per_session gives sessions
@@ -1531,6 +1538,9 @@ func (c Config) Validate() error {
 	if _, err := egress.Compile(c.Egress); err != nil {
 		return err
 	}
+	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
+		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
 	}
@@ -1840,4 +1850,10 @@ func (c Config) validateCLILogin() error {
 		return fmt.Errorf("auth.cli.enabled signs accounts in from the command line, so it needs auth.mode local (or oidc, in an edition that serves it)")
 	}
 	return nil
+}
+
+// jsonObject reports whether raw is one JSON object.
+func jsonObject(raw json.RawMessage) bool {
+	var m map[string]json.RawMessage
+	return json.Unmarshal(raw, &m) == nil && m != nil
 }
