@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -89,19 +88,7 @@ func controlPlaneLabel(cfg config.Config) string {
 // controlPlaneStateDir is where serve keeps the control plane's own folders
 // unless configured otherwise: outside ~/.abhed, which no sandbox may read,
 // and outside any workspace.
-func controlPlaneStateDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("the control plane's state folder: %w", err)
-	}
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "Abhed", "control-plane"), nil
-	}
-	if x := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(x) {
-		return filepath.Join(x, "abhed", "control-plane"), nil
-	}
-	return filepath.Join(home, ".local", "state", "abhed", "control-plane"), nil
-}
+func controlPlaneStateDir() (string, error) { return config.ControlPlaneStateDir() }
 
 // checkSandboxRoot refuses a folder for sandbox workspaces that another
 // sandbox, a session or Abhed's state would share: inside the server's
@@ -224,19 +211,7 @@ func controlPlaneDriverEntries(ctx context.Context, w io.Writer, cfg config.Conf
 }
 
 // snapshotDir is where the process driver keeps snapshots.
-func snapshotDir(cp config.ControlPlaneConfig) (string, error) {
-	if cp.SnapshotDir != "" {
-		if !filepath.IsAbs(cp.SnapshotDir) {
-			return "", fmt.Errorf("control_plane.snapshot_dir %q is not an absolute path", cp.SnapshotDir)
-		}
-		return filepath.Clean(cp.SnapshotDir), nil
-	}
-	state, err := controlPlaneStateDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(state, "snapshots"), nil
-}
+func snapshotDir(cfg config.Config) (string, error) { return cfg.SnapshotDir() }
 
 // builtControlPlane is serve's control plane and what it serves beside it.
 type builtControlPlane struct {
@@ -267,7 +242,7 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return builtControlPlane{}, fmt.Errorf("control_plane: %w", err)
 	}
-	snaps, err := snapshotDir(cfg.ControlPlane)
+	snaps, err := snapshotDir(cfg)
 	if err != nil {
 		return builtControlPlane{}, err
 	}
@@ -333,21 +308,17 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 // plane's state folder, made on first use when create is set. It returns
 // the key's path; a nil key with no error is one not made yet.
 func sshHostKey(cfg config.Config, create bool) (ssh.Signer, string, error) {
-	if p := cfg.ControlPlane.SSHHostKey; p != "" {
-		if !filepath.IsAbs(p) {
-			return nil, p, fmt.Errorf("control_plane.ssh_host_key %q is not an absolute path", p)
-		}
-		key, err := sshrelay.LoadHostKey(p)
-		if err != nil {
-			return nil, p, fmt.Errorf("control_plane.ssh_host_key: %w", err)
-		}
-		return key, p, nil
-	}
-	state, err := controlPlaneStateDir()
+	path, err := cfg.SSHHostKeyFile()
 	if err != nil {
-		return nil, "", err
+		return nil, path, err
 	}
-	path := filepath.Join(state, sshHostKeyFile)
+	if cfg.ControlPlane.SSHHostKey != "" {
+		key, err := sshrelay.LoadHostKey(path)
+		if err != nil {
+			return nil, path, fmt.Errorf("control_plane.ssh_host_key: %w", err)
+		}
+		return key, path, nil
+	}
 	if !create {
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 			return nil, path, nil
@@ -355,7 +326,7 @@ func sshHostKey(cfg config.Config, create bool) (ssh.Signer, string, error) {
 		key, err := sshrelay.LoadHostKey(path)
 		return key, path, err
 	}
-	if err := ownFolder(state); err != nil {
+	if err := ownFolder(filepath.Dir(path)); err != nil {
 		return nil, path, err
 	}
 	key, err := sshrelay.LoadOrCreateHostKey(path)
@@ -390,9 +361,6 @@ func sshKeyLabel(cfg config.Config) (string, error) {
 	return path + " (" + ssh.FingerprintSHA256(key.PublicKey()) + ")", nil
 }
 
-// sshHostKeyFile is the :ssh relay's host key in the control plane's state folder.
-const sshHostKeyFile = "ssh_host_ed25519_key"
-
 // checkControlPlane is buildControlPlane for serve -check: the same
 // refusals, with nothing created, migrated or written. An SQLite file that
 // is missing or due a migration is reported, not made. The hooks run on a
@@ -409,7 +377,7 @@ func checkControlPlane(ctx context.Context, cfg config.Config, workspace string,
 			return settings, "", fmt.Errorf("control_plane: %w", err)
 		}
 	}
-	if _, err := snapshotDir(cfg.ControlPlane); err != nil {
+	if _, err := snapshotDir(cfg); err != nil {
 		return settings, "", err
 	}
 	if _, _, err := sandboxWorkspaces(cfg.ControlPlane, workspace); err != nil {

@@ -260,7 +260,7 @@ func TestBuiltControlPlaneSnapshotsAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot through serve's process driver: %v", err)
 	}
-	dir, _ := snapshotDir(cfg.ControlPlane)
+	dir, _ := snapshotDir(cfg)
 	stateDir, _ := controlPlaneStateDir()
 	if !within(dir, stateDir) || within(dir, ws) {
 		t.Fatalf("snapshots in %s", dir)

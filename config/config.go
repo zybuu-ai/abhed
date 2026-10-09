@@ -1622,6 +1622,9 @@ func (c Config) Validate() error {
 	if err := c.validateCLILogin(); err != nil {
 		return err
 	}
+	if err := c.validateControlPlanePaths(); err != nil {
+		return err
+	}
 	if err := c.Auth.Workload.validate(); err != nil {
 		return err
 	}
