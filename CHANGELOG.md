@@ -19,6 +19,21 @@ All notable changes to Abhed are recorded here. The format follows
   resource versions). Nothing uses them yet; the contract is
   `docs/architecture/control-plane-contract.md`. They may change in a minor
   release until 2.0.
+- `driver/container`: the `docker` and `podman` drivers, one long-lived
+  container per sandbox. No capabilities, `no-new-privileges`, the engine's
+  default seccomp profile, a read-only root with noexec scratch space, a
+  non-root user (`--userns keep-id` on rootless Podman), memory, process and
+  CPU bounds, and no network; after start the driver checks from inside the
+  container what the kernel reports and removes one that is weaker. Images
+  from an operator list (`ABHED_SANDBOX_IMAGE` stays the default), extra
+  mounts read-only by default and refused for Abhed's state, engine sockets,
+  `/proc`, `/sys`, `/dev`, whole home folders and links out of their root,
+  SELinux relabelling of the workspace, opt-in CDI GPUs, attach on a
+  terminal and tar copy with every entry checked. Under the network
+  allowlist the egress proxy stays on the host and the container reaches it
+  through a relay on its own loopback, on a Linux host with a local engine;
+  elsewhere the sandbox is refused. The per-command container tier is
+  unchanged. See `docs/guide/22-container-drivers.md`.
 
 ## [1.2.7] - 2026-10-07
 

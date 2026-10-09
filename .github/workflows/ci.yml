@@ -394,6 +394,33 @@ jobs:
           ABHED_REQUIRE_CONTAINER=1 go test ./internal/sandbox/ -run 'TestContainerTierOnARealEngine$' -count=1 -v > engine.log 2>&1 || { cat engine.log; exit 1; }
           grep -q -- "--- PASS: TestContainerTierOnARealEngine " engine.log || { echo "the engine test did not run and pass:"; cat engine.log; exit 1; }
 
+  # The docker and podman drivers, one long-lived container per sandbox, on
+  # both engines; static, so the test binary can be bound in as the relay.
+  container-drivers:
+    name: Container drivers on ${{ matrix.engine }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: Pull the sandbox image
+        run: ${{ matrix.engine }} pull docker.io/library/debian:bookworm-slim
+      - name: The drivers' boundaries hold on ${{ matrix.engine }}
+        env:
+          CGO_ENABLED: "0"
+          ABHED_REQUIRE_CONTAINER_DRIVER: ${{ matrix.engine }}
+        run: |
+          set -euo pipefail
+          go test ./driver/container/ -run 'OnARealEngine$' -count=1 -v > drivers.log 2>&1 || { cat drivers.log; exit 1; }
+          for t in TestContainerDriverOnARealEngine TestContainerDriverMountsAttachCopyOnARealEngine TestContainerDriverAllowlistOnARealEngine; do
+            grep -q -- "--- PASS: $t " drivers.log || { echo "$t did not run and pass:"; cat drivers.log; exit 1; }
+          done
+
   container:
     name: Container image
     runs-on: ubuntu-latest

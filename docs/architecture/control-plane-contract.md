@@ -1,9 +1,9 @@
 # Control plane and drivers: the contract
 
 Status: 2026-10-09, contract version 1, draft for 1.2.8. The Go packages
-`driver`, `driver/plugin`, `driver/process` and `controlplane` implement the
-parts marked **Implemented**; everything else on this page is the contract the
-REST, CLI, per-session and container-driver work builds against.
+`driver`, `driver/plugin`, `driver/process`, `driver/container` and
+`controlplane` implement the parts marked **Implemented**; everything else on
+this page is the contract the REST, CLI and per-session work builds against.
 
 This page defines the sandbox object, its lifecycle, the `/v1/sandboxes` REST
 surface, the driver interface and its out-of-process protocol, how `abhed
@@ -258,8 +258,27 @@ releases the fence's cgroup. Copy, forward and snapshot are not declared.
 
 Because it reuses today's selection, the `process` driver also yields the
 container or gVisor tier where configuration and host pick one, and says so in
-`Status.Tier`. When the docker and podman drivers land (P3-07), whether
-`process` is narrowed to the process and fence tiers is decided there.
+`Status.Tier`. With the docker and podman drivers in place, whether `process`
+is narrowed to the process and fence tiers is still open; it is unchanged
+for now.
+
+### 5.2 The `docker` and `podman` drivers (Implemented: `driver/container`)
+
+One long-lived container per sandbox, driven through the engine's CLI. The
+policy is built from the configuration as for `process`; `Spec.Config`
+(`image`, `mounts`, `gpus`, `memory_mb`, `pids`, `cpus`) may only pick from
+what the operator's `Options` list and lower what they bound, and any other
+key is refused. `Create` verifies from inside the container that seccomp,
+`no_new_privs`, an empty capability set, the uid, the network and a
+read-only root are in force, and removes a container that is weaker; the
+reported tier is always `container`, so `MinTier: vm` and `sandbox.tier:
+fence` fail with `ErrUnavailable`. Under the network allowlist the proxy
+stays on the host and a relay inside the container's own network namespace
+reaches it over a bound Unix socket; where the engine is not local to a
+Linux host this fails with `ErrUnavailable`. `Start` builds a fresh
+container; `Stop` stops it with the grace given. Capabilities: `attach` and
+`copy`. Details and every admission rule are in
+`docs/guide/22-container-drivers.md`.
 
 `ExecRequest.Env` may add variables but never replace one the sandbox set
 (`PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables), and `Cwd` must be
