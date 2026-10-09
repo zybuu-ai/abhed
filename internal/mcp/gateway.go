@@ -73,8 +73,9 @@ type Gateway struct {
 	refused map[string]refusal
 	// pending are servers being connected, whose names are already taken.
 	pending map[string]bool
-	// life is the context Connect was given: a server process lives as long
-	// as it, whatever context a later Restart was called with.
+	// life is the first Connect's context without its cancellation: a server
+	// process lives as long as it, whatever context a later Connect or
+	// Restart was called with.
 	life context.Context
 	// restarting serialises Restart, so two restarts of one server cannot
 	// both start a process and leave one running unowned.
@@ -98,8 +99,14 @@ func NewGateway() *Gateway {
 // start is reported but does not prevent the others from working: one broken
 // integration should not take down the agent.
 func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
+	// The gateway's lifetime is set once, by the first Connect, and never
+	// ends with a caller's deadline: a server added at run time is connected
+	// within its request's time, but lives as the gateway does.
 	g.mu.Lock()
-	g.life = ctx
+	if g.life == nil {
+		g.life = context.WithoutCancel(ctx)
+	}
+	life := g.life
 	g.mu.Unlock()
 	var errs []error
 	var enabled []string
@@ -123,7 +130,7 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 			errs = append(errs, err)
 			continue
 		}
-		err := g.connectOne(ctx, ctx, cfg)
+		err := g.connectOne(life, ctx, cfg)
 		g.mu.Lock()
 		delete(g.pending, cfg.Name)
 		if err != nil {

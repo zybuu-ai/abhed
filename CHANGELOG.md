@@ -61,6 +61,14 @@ All notable changes to Abhed are recorded here. The format follows
   any case: such a tool is refused with a warning. It could take a rule meant
   for the built-in, and one named exactly as a built-in replaced it.
 
+### Fixed
+
+- An MCP server an admin added at run time (`POST /v1/admin/mcp`) was tied
+  to that request: its process ended once the request was answered, and a
+  later restart reused the ended context. The request now only bounds the
+  connection; the server lives as long as the gateway, as configured servers
+  do.
+
 ### Changed
 
 - `-allowedTools` no longer lower-cases an MCP or extension tool's name,
