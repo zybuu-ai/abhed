@@ -639,6 +639,11 @@ on. A server with it off starts on the older schema as before.
 - `wsconn`, `profiles`, `server/sshrelay` and `store/sqlite` are
   experimental APIs until 2.0, as `driver` and `controlplane` are: they may
   change in a minor release.
+- `controlplane.AdmissionRequest` gains `Stdin`, `Cwd` and `EnvNames` for an
+  exec (from `Service.Exec` and `Service.Command`, a session's `:shell`
+  included), so an interceptor can tell a command fed input and see which
+  variables were set, by name only. Interceptors that ignore them are
+  unaffected.
 - Breaking for code that implements or calls `controlplane.IdempotencyStore`:
   the `Complete` and `Release` signatures changed (each now takes the
   claim's token, `IdemRecord.Token`), and the interface gained `Renew`. A

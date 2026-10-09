@@ -644,7 +644,8 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	}
 	defer release()
 	old := sb.Clone()
-	adm := AdmissionRequest{Operation: OpExec, Caller: c, SandboxID: id, Old: &old, Object: sb, Command: ev.Detail["command"]}
+	adm := AdmissionRequest{Operation: OpExec, Caller: c, SandboxID: id, Old: &old, Object: sb, Command: ev.Detail["command"],
+		Stdin: dreq.Stdin != nil, Cwd: req.Cwd, EnvNames: envNames(req.Env)}
 	if _, err := s.admit(ctx, adm); err != nil {
 		s.outcome(ctx, ev, err)
 		return driver.ExecResult{}, sb, err

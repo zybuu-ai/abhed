@@ -39,6 +39,25 @@ type AdmissionRequest struct {
 	Object Sandbox
 	// Command is an exec's command line, already redacted for the record.
 	Command string
+	// Stdin is set for an exec whose command reads input the caller streams.
+	Stdin bool
+	// Cwd is an exec's working folder in the workspace, "" for its root.
+	Cwd string
+	// EnvNames are the variables an exec's caller set, by name only.
+	EnvNames []string
+}
+
+// envNames is the names of env's NAME=value entries; values never leave.
+func envNames(env []string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		out = append(out, k)
+	}
+	return out
 }
 
 // AdmissionDecision is what one hook decided. Each is recorded with the

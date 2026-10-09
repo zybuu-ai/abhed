@@ -84,7 +84,8 @@ func (s *Service) Command(ctx context.Context, c Caller, id string, req driver.C
 	}
 	defer release()
 	old := sb.Clone()
-	adm := AdmissionRequest{Operation: OpExec, Caller: c, SandboxID: id, Old: &old, Object: sb, Command: ev.Detail["command"]}
+	adm := AdmissionRequest{Operation: OpExec, Caller: c, SandboxID: id, Old: &old, Object: sb, Command: ev.Detail["command"],
+		Stdin: req.Shell, Cwd: req.Cwd}
 	if _, err := s.admit(ctx, adm); err != nil {
 		s.outcome(ctx, ev, err)
 		return nil, sb, err

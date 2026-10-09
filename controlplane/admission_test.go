@@ -3,6 +3,7 @@ package controlplane_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -349,5 +350,78 @@ func TestOnlyTheOwnerActs(t *testing.T) {
 	o.set(true, nil)
 	if _, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "true"}, cp.ExecIO{}); err != nil {
 		t.Fatalf("exec on the owner: %v", err)
+	}
+}
+
+// An interceptor sees whether an exec reads streamed input, where it runs
+// and which variables its caller set, by name and never by value.
+func TestExecAdmissionCarriesStdinCwdAndEnvNames(t *testing.T) {
+	h := &hook{}
+	r := newRigWith(t, nil, func(c *cp.Config) { c.Interceptor = h })
+	ctx := context.Background()
+	sb := r.ready(t)
+	req := cp.ExecRequest{Command: "cat", Cwd: "sub", Env: []string{"API_TOKEN=hunter2", "MODE=fast"}, Stdin: true}
+	if _, _, err := r.svc.Exec(ctx, alice, sb.ID, "", req, cp.ExecIO{Stdin: strings.NewReader("x")}); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	got := h.seen[len(h.seen)-1]
+	h.mu.Unlock()
+	if got.Operation != cp.OpExec || !got.Stdin || got.Cwd != "sub" || strings.Join(got.EnvNames, ",") != "API_TOKEN,MODE" {
+		t.Fatalf("interceptor saw %+v", got)
+	}
+	if s := fmt.Sprintf("%+v", got); strings.Contains(s, "hunter2") || strings.Contains(s, "fast") {
+		t.Fatalf("a variable's value reached the interceptor: %s", s)
+	}
+	if _, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "true"}, cp.ExecIO{}); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	got = h.seen[len(h.seen)-1]
+	h.mu.Unlock()
+	if got.Stdin || got.Cwd != "" || got.EnvNames != nil {
+		t.Fatalf("a plain exec: %+v", got)
+	}
+
+	// A session's command and its terminal shell, through Service.Command.
+	st, err := cp.NewSettings(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := drivertest.New("process", driver.CapCommand)
+	reg := driver.NewRegistry()
+	if err := reg.Register(fake); err != nil {
+		t.Fatal(err)
+	}
+	mem := cp.NewMemory()
+	root := t.TempDir()
+	hc := &hook{}
+	svc, err := cp.New(cp.Config{Store: mem, Audit: mem, Drivers: reg, Settings: st, Interceptor: hc,
+		Workspace: func(id string) (string, error) { return root + "/" + id, nil }, Now: (&clock{t: t0}).now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := cp.Caller{Principal: "alice", Admin: true, Scope: map[string]string{cp.LabelSession: "s1"}}
+	maker := cp.Caller{Principal: cp.SessionsPrincipal, Scope: user.Scope}
+	csb, err := svc.Create(ctx, maker, cp.CreateRequest{Template: "session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.WaitReady(ctx, user, csb.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		req   driver.CommandRequest
+		stdin bool
+	}{{driver.CommandRequest{Command: "ls", Cwd: "src"}, false}, {driver.CommandRequest{Shell: true, Cwd: "src"}, true}} {
+		if _, _, err := svc.Command(ctx, user, csb.ID, c.req); err != nil {
+			t.Fatal(err)
+		}
+		hc.mu.Lock()
+		got := hc.seen[len(hc.seen)-1]
+		hc.mu.Unlock()
+		if got.Operation != cp.OpExec || got.Stdin != c.stdin || got.Cwd != "src" || got.EnvNames != nil {
+			t.Fatalf("%+v: interceptor saw %+v", c.req, got)
+		}
 	}
 }

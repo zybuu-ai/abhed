@@ -863,7 +863,9 @@ amounts to. They also check ownership as a change does.
 is written or run; `Committed` after its outcome. The request carries the
 operation, the caller, the sandbox before (absent on create) and as the call
 would leave it, and for an exec its command line already redacted for the
-record. Rules the service enforces whatever the interceptor is:
+record, whether it reads input the caller streams (`Stdin`, also set for a
+session's `:shell`), its working folder (`Cwd`) and the names of the
+variables its caller set (`EnvNames`; never their values). Rules the service enforces whatever the interceptor is:
 
 - An error refuses the call: `ErrDenied` answers `403 forbidden`; anything
   else, including a timeout, is `503 unavailable`. Nothing is written or run.
