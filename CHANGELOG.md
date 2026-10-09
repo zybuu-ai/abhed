@@ -329,6 +329,14 @@ A server with it off starts on the older schema as before.
   `network-would-deny` finding per call and destination. The workbench's
   HawkEYE panel shows the counts.
 
+### Security
+
+- A managed `/etc/abhed/config.json` with a key repeated in one object, or a
+  number too large for a generic JSON decode, is now refused at startup. Such a
+  file could be read one way for the rules in force and another way for which
+  settings the managed file makes, so a managed rule could fail to lock allow
+  rules or to force line-by-line terminals.
+
 ### Fixed
 
 - The fence's refusal off Linux read "darwin  arm64", with two spaces where

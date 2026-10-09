@@ -128,6 +128,13 @@ func TestStudioTerminalLinesShowOutputBeforeTheStatus(t *testing.T) {
 	if !strings.HasSuffix(got, "ms\x1b[0m\r\n\x1b[2m"+filepath.Join(filepath.Base(r.ws), "sub")+" $\x1b[0m ") {
 		t.Fatalf("the prompt does not follow the cd: %q", got)
 	}
+	// A cd that is not followed has no output but a note: the note shows, the placeholder does not.
+	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cd /\r"}, nil)
+	waitOutput(r.cl, at, term.TerminalID, "outside the workspace")
+	if got := terminalOutput(r.cl.since(at), term.TerminalID); strings.Contains(got, "[no output]") {
+		t.Fatalf("the placeholder reached the terminal after a refused cd: %q", got)
+	}
 }
 
 // Keys that send escape sequences, an arrow or a bracketed paste's markers,
@@ -274,9 +281,29 @@ func TestLineResultPutsTheStatusLast(t *testing.T) {
 	if got != "boom\r\nbang\r\n\x1b[2mexit 1 · 12ms\x1b[0m\r\n" {
 		t.Fatalf("%q", got)
 	}
-	got = string(lineResult(tools.Result{Content: "exit 1 · 12ms\n[no output]", ExitCode: &code}))
+	got = string(lineResult(tools.Result{Content: "exit 1 · 12ms\n[no output]", ExitCode: &code, NoOutput: true}))
 	if got != "\x1b[2mexit 1 · 12ms\x1b[0m\r\n" {
 		t.Fatalf("no output: %q", got)
+	}
+	// The placeholder goes, the tool's note after it stays.
+	zero := 0
+	got = string(lineResult(tools.Result{Content: "exit 0 · 3ms\n[no output]\n\ncd: / is outside the workspace; still in .", ExitCode: &zero, NoOutput: true}))
+	if got != "cd: / is outside the workspace; still in .\r\n\x1b[2mexit 0 · 3ms\x1b[0m\r\n" {
+		t.Fatalf("note after no output: %q", got)
+	}
+	// Real output keeps its leading blank lines, and real text that reads like the placeholder.
+	got = string(lineResult(tools.Result{Content: "exit 0 · 3ms\n\n\nafter", ExitCode: &zero}))
+	if !strings.HasPrefix(got, "\r\n\r\nafter") {
+		t.Fatalf("leading blank lines dropped: %q", got)
+	}
+	got = string(lineResult(tools.Result{Content: "exit 0 · 3ms\n[no output]", ExitCode: &zero}))
+	if !strings.HasPrefix(got, "[no output]\r\n") {
+		t.Fatalf("real placeholder text hidden: %q", got)
+	}
+	// A command whose real output is the placeholder's text keeps it.
+	got = string(lineResult(tools.Result{Content: "exit 0 · 9ms\n[no output]\nreal\n", ExitCode: &code}))
+	if !strings.HasPrefix(got, "[no output]\r\nreal") {
+		t.Fatalf("real output hidden: %q", got)
 	}
 	// A refusal or a tool error has no status to move.
 	if got := string(lineResult(tools.Result{Content: "Denied: curl", IsError: true})); got != "Denied: curl\r\n" {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,12 +39,20 @@ func mergeManaged(cfg *Config) error {
 		return nil
 	}
 	below := slices.Clone(cfg.Permissions.Deny)
-	data, err := readMerge(cfg, path)
-	if err != nil {
-		return err
-	}
-	if data == nil {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
 		return fmt.Errorf("managed configuration %s is a link to nothing", path)
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	// What the file sets is read twice, once into the config and once as keys;
+	// a file the two could read differently is refused, not guessed at.
+	if err := CheckManagedJSON(data); err != nil {
+		return fmt.Errorf("managed configuration %s: %w", path, err)
+	}
+	if _, err := mergeData(cfg, path, data); err != nil {
+		return err
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
@@ -63,13 +72,74 @@ func mergeManaged(cfg *Config) error {
 	return nil
 }
 
+// CheckManagedJSON refuses a document with a key repeated in one object, or a
+// value a generic decode cannot hold, since either lets the config and its keys disagree.
+func CheckManagedJSON(data []byte) error {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		var ute *json.UnmarshalTypeError
+		if errors.As(err, &ute) && ute.Value == "number" {
+			return fmt.Errorf("it holds a number too large to read (%s)", ute.Value)
+		}
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dupKeys(dec, "")
+}
+
+// dupKeys walks one JSON value from dec and reports the first repeated key.
+func dupKeys(dec *json.Decoder, path string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for dec.More() {
+			k, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, _ := k.(string)
+			if seen[key] {
+				return fmt.Errorf("the key %q appears twice in %s", key, orRoot(path))
+			}
+			seen[key] = true
+			if err := dupKeys(dec, join(path, key)); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	case json.Delim('['):
+		for dec.More() {
+			if err := dupKeys(dec, path); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	}
+	return nil
+}
+
+func orRoot(path string) string {
+	if path == "" {
+		return "the top level"
+	}
+	return path
+}
+
 // managedKeys lists the settings a file makes, as sorted dotted paths.
 func managedKeys(data []byte) []string {
 	var raw any
 	if json.Unmarshal(data, &raw) != nil {
 		return nil
 	}
-	var out []string
+	// Empty, not nil, for a file read: nil means nothing is known of it.
+	out := []string{}
 	walkSet("", raw, reflect.TypeFor[Config](), func(path string, _ any) { out = append(out, path) })
 	sort.Strings(out)
 	return out
@@ -130,9 +200,14 @@ func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
 // ManagedScreens reports whether the managed file itself sets the deny rules
 // or the extensions, so a refusal they make is the organisation's to hold.
-// Like Apply, it is only as good as ManagedKeys: a hand-built Config has none.
+// A managed Config with no ManagedKeys at all, such as one built by hand,
+// is taken to screen.
 func (c Config) ManagedScreens() bool {
-	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions"))
+	if c.Managed && c.ManagedKeys == nil {
+		// Nothing is known of what the file set, so assume it set the rules.
+		return true
+	}
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && len(c.Extensions) > 0)
 }
 
 // dropLockedAllow sets aside the allow rules the user's and the workspace's

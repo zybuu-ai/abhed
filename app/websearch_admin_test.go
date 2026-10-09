@@ -247,6 +247,21 @@ func TestAdminWebSearchEditsTheManagedFile(t *testing.T) {
 	}
 }
 
+// A managed file Abhed would refuse is not rewritten, so a repeated key cannot
+// be collapsed into a file that loads without the organisation's deny rule.
+func TestAdminWebSearchLeavesAnAmbiguousFileAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	body := `{"permissions":{"deny":["bash(curl *)"]},"permissions":{}}`
+	file := managedAt(t, dir, body)
+	if code, _, _ := runAdmin(t, "web-search", "on"); code == 0 {
+		t.Fatal("rewrote a managed file with a repeated key")
+	}
+	if data, _ := os.ReadFile(file); string(data) != body {
+		t.Fatalf("the file changed: %s", data)
+	}
+}
+
 // Without the right to write the managed file the command refuses, changes
 // nothing, and the attempt is logged where it can be.
 func TestAdminWebSearchRefusesWithoutWriteAccess(t *testing.T) {
