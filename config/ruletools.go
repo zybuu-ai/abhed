@@ -111,8 +111,10 @@ func (c Config) ruleToolProblem(tool, list string) problem {
 	if alt != "" {
 		why += fmt.Sprintf(" (did you mean %s?)", alt)
 		// A near miss such as git or sql may be a tool meant ahead: a finding, not a refusal.
-		// Another harness's name (Shell) is evident unless an extension may offer a tool so named.
-		evident = evident || policy.FamiliarName(tool) && !ext
+		// Another harness's name (Shell) is evident unless an extension the
+		// organisation set may offer a tool so named; a person's own cannot
+		// switch the organisation's refusal off.
+		evident = evident || policy.FamiliarName(tool) && !c.managedExtensionsMayProvideTools()
 	}
 	if ext {
 		return problem{mistake: evident, why: why + "; it matches only a tool an extension provides under exactly that name"}
@@ -168,8 +170,7 @@ func (c Config) mcpProblem(tool, list string) problem {
 		}
 	}
 	if !strings.HasPrefix(tool, "mcp__") {
-		ext := c.extensionsMayProvideTools()
-		return problem{never: !ext, mistake: !ext,
+		return problem{never: !c.extensionsMayProvideTools(), mistake: !c.managedExtensionsMayProvideTools(),
 			why: "MCP tools are named mcp__server__tool in lower-case mcp__, so the rule names no MCP tool"}
 	}
 	server, name, _ := strings.Cut(strings.TrimPrefix(tool, "mcp__"), "__")
@@ -200,8 +201,17 @@ func (c Config) MCPServerOverlaps() []string {
 
 // extensionsMayProvideTools reports whether a configured extension may offer
 // tools, whose names are known only once it runs.
-func (c Config) extensionsMayProvideTools() bool {
+func (c Config) extensionsMayProvideTools() bool { return c.toolExtensions(false) }
+
+// managedExtensionsMayProvideTools is extensionsMayProvideTools for the
+// extensions the managed configuration sets.
+func (c Config) managedExtensionsMayProvideTools() bool { return c.toolExtensions(true) }
+
+func (c Config) toolExtensions(managedOnly bool) bool {
 	for _, e := range c.ExtensionSpecs() {
+		if managedOnly && c.ExtensionLayer(e.Name) != LayerManaged {
+			continue
+		}
 		if len(e.Events) == 0 || slices.Contains(e.Events, extension.EvListTools) {
 			return true
 		}
