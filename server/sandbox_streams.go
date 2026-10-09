@@ -179,7 +179,10 @@ func accept(w http.ResponseWriter, r *http.Request, proto string) (*wsconn.Conn,
 // generation, when the client has gone quiet, or after streamMax. It
 // returns why it ended the stream, once it has stopped.
 func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *http.Request, c controlplane.Caller,
-	sb controlplane.Sandbox, d driver.Driver, ws *wsconn.Conn) (wait func() error) {
+	sb controlplane.Sandbox, d driver.Driver, ws *wsconn.Conn, b streamBounds) (wait func() error) {
+	if b.max <= 0 {
+		b.max = streamMax
+	}
 	guard := s.newStreamGuard(r, "", false)
 	caller := s.sandboxCallerFunc()
 	guard.may = func(r *http.Request) bool {
@@ -198,7 +201,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 	}
 	every := min(s.streamRecheck(), streamPing)
 	tick := time.NewTicker(every)
-	deadline := time.NewTimer(streamMax)
+	deadline := time.NewTimer(b.max)
 	var why error
 	done := make(chan struct{})
 	go func() {
@@ -225,7 +228,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 				stop(fmt.Errorf("%w: the sandbox stopped", controlplane.ErrInvalidTransition))
 				return
 			case <-deadline.C:
-				stop(fmt.Errorf("%w: the stream was open for %s, the longest one may be", controlplane.ErrUnavailable, streamMax))
+				stop(fmt.Errorf("%w: the stream was open for %s, the longest one may be", controlplane.ErrUnavailable, b.max))
 				return
 			case <-guard.woken():
 				if err := guard.check(); err != nil {
@@ -239,6 +242,10 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 				}
 				if err := current(); err != nil {
 					stop(err)
+					return
+				}
+				if b.idle > 0 && b.active != nil && time.Since(b.active()) > b.idle {
+					stop(fmt.Errorf("%w: nothing was sent either way for %s", controlplane.ErrUnavailable, b.idle))
 					return
 				}
 				if ws != nil {
@@ -256,6 +263,15 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelFunc, r *
 		<-done
 		return why
 	}
+}
+
+// streamBounds are a stream's own limits; zero values take the defaults.
+type streamBounds struct {
+	// max is the longest the stream stays open, streamMax when zero.
+	max time.Duration
+	// idle, with active, ends a stream with no traffic for that long.
+	idle   time.Duration
+	active func() time.Time
 }
 
 // sandboxCallerFunc works out who a request acts as, as sandboxCaller does,

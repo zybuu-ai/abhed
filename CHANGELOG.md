@@ -42,7 +42,12 @@ All notable changes to Abhed are recorded here. The format follows
   package `wsconn`, with no new dependency. `control_plane.ssh_host_key`
   names a host key file replicas share (`0600`, not a link, outside every
   workspace, and a protected state file); `abhed serve -check` and
-  `abhed doctor` report the key in use.
+  `abhed doctor` report the key in use. SSH connections have their own
+  limits, `control_plane.ssh.idle_timeout_seconds` (an hour) and
+  `max_session_seconds` (twelve hours), settable per sandbox with managed
+  values as ceilings; a command run over SSH is bounded by them rather than
+  by `exec_timeout_seconds`, so an editor's server keeps running, and its
+  output is still capped per channel.
 
 - `abhed serve` can manage sandboxes over `/v1/sandboxes` when
   `control_plane.enabled` is set (off by default; with it off nothing
@@ -201,9 +206,10 @@ A server with it off starts on the older schema as before.
 
 ### Changed
 
-- Every sandbox `:exec` is judged by the server's deny rules and extension
-  hooks, as the workbench's terminal is: a refused command is `403
-  forbidden` and recorded, and never runs. `POST :exec` with `"stdin":
+- Behaviour change: every sandbox `:exec` is now judged by the server's
+  deny rules and extension hooks, as the workbench's terminal is. A command
+  they refuse gets `403` with code `forbidden`, is recorded, and never
+  runs; before, no deny rule applied to it. `POST :exec` with `"stdin":
   true` answers `400` naming the WebSocket form instead of `501`.
 - The fence probe's `seccomp` check now also installs the fence's own filter
   in its helper and requires a signal to Abhed to be refused and one to the
@@ -287,6 +293,8 @@ A server with it off starts on the older schema as before.
   through the same checks, record, guard and interceptor as a verb, with
   `StreamRequest.Screen`; `ExecIO.Screen` judges an exec's command line;
   `Service.Note` records what happens inside an admitted call;
+  `ExecIO.Timeout` replaces `exec.timeout_seconds` for a caller that bounds
+  a command otherwise;
   `server.Options.SandboxSSHKey` turns the relay on;
   `drivertest.Fake.AttachFunc` stands in for a shell.
 - Experimental public Go packages for the sandbox control plane, the base

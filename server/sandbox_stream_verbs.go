@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,7 +64,7 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 			if ws, err = accept(w, r, st.proto); err != nil {
 				return nil, err
 			}
-			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws)
+			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws, streamBounds{})
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
 			var gone atomic.Bool
 			keys, resize := make(chan []byte, 16), make(chan driver.WinSize, 4)
@@ -194,7 +195,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		Screen: func(command string) error { return denied(pol, command, false) },
 		Started: func(sb controlplane.Sandbox) {
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
-			wait = s.watchStream(ctx, cancel, r, call.caller, sb, nil, ws)
+			wait = s.watchStream(ctx, cancel, r, call.caller, sb, nil, ws, streamBounds{})
 		}})
 	_ = pr.Close()
 	if wait != nil {
@@ -290,7 +291,7 @@ func (s *Server) forwardSandbox(w http.ResponseWriter, r *http.Request, call ver
 			if ws, err = accept(w, r, st.proto); err != nil {
 				return nil, err
 			}
-			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws)
+			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws, streamBounds{})
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
 			stop := context.AfterFunc(ctx, func() { _ = rwc.Close() })
 			defer stop()
@@ -384,9 +385,15 @@ func (s *Server) sshRelay(w http.ResponseWriter, r *http.Request, call verbCall)
 			if ws, err = accept(w, r, st.proto); err != nil {
 				return nil, err
 			}
-			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws)
-			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: s.sandboxPolicy(sb.ID)}
-			stats, err := sshrelay.Serve(ctx, wsconn.NewStream(ws), sshrelay.Config{HostKey: key, Log: s.log}, h)
+			// SSH has its own bounds: an editor's server lives longer than an exec may.
+			vals := s.opts.ControlPlane.Settings().For(sb.Settings)
+			maxSession := vals.Seconds(controlplane.SetSSHMaxSession)
+			conn := &activeConn{Conn: wsconn.NewStream(ws)}
+			conn.touch()
+			wait := s.watchStream(ctx, cancel, r, call.caller, sb, d, ws,
+				streamBounds{max: maxSession, idle: vals.Seconds(controlplane.SetSSHIdle), active: conn.last})
+			h := &sshSandbox{s: s, caller: call.caller, sb: sb, pol: s.sandboxPolicy(sb.ID), until: time.Now().Add(maxSession)}
+			stats, err := sshrelay.Serve(ctx, conn, sshrelay.Config{HostKey: key, Log: s.log}, h)
 			if why := wait(); why != nil {
 				err = why
 			}
@@ -407,6 +414,33 @@ type sshSandbox struct {
 	caller controlplane.Caller
 	sb     controlplane.Sandbox
 	pol    *policy.Engine
+	// until is when the connection's ssh.max_session_seconds runs out.
+	until time.Time
+}
+
+// activeConn notes when bytes last went either way.
+type activeConn struct {
+	net.Conn
+	at atomic.Int64
+}
+
+func (c *activeConn) touch()          { c.at.Store(time.Now().UnixNano()) }
+func (c *activeConn) last() time.Time { return time.Unix(0, c.at.Load()) }
+
+func (c *activeConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.touch()
+	}
+	return n, err
+}
+
+func (c *activeConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.touch()
+	}
+	return n, err
 }
 
 // limited holds each SSH session to the caller's exec rate, as the verb
@@ -466,8 +500,14 @@ func (h *sshSandbox) Exec(ctx context.Context, command string, sess sshrelay.Ses
 	if err := h.limited(); err != nil {
 		return 1, err
 	}
+	// Bounded by the connection's own limits, not exec.timeout_seconds; its
+	// output is still held to exec.output_bytes on this channel.
+	left := time.Until(h.until)
+	if left <= 0 {
+		return 1, fmt.Errorf("%w: the SSH connection has reached ssh.max_session_seconds", controlplane.ErrUnavailable)
+	}
 	res, _, err := h.s.opts.ControlPlane.Exec(ctx, h.caller, h.sb.ID, "", controlplane.ExecRequest{Command: command, Stdin: true},
-		controlplane.ExecIO{Stdin: sess.Stdin, Stdout: sess.Stdout, Stderr: sess.Stderr,
+		controlplane.ExecIO{Stdin: sess.Stdin, Stdout: sess.Stdout, Stderr: sess.Stderr, Timeout: left,
 			Screen: func(command string) error { return denied(h.pol, command, false) }})
 	return res.ExitCode, err
 }

@@ -677,6 +677,8 @@ type ControlPlaneConfig struct {
 	// plane's state folder. Absolute, mode 0600, not a link, outside every
 	// workspace.
 	SSHHostKey string `json:"ssh_host_key,omitempty"`
+	// SSH bounds the sessions reached through the :ssh relay.
+	SSH SSHSessionConfig `json:"ssh,omitempty"`
 	// SandboxCPUs and SandboxMemoryMB size every sandbox that does not set
 	// its own; zero leaves the size to the driver.
 	SandboxCPUs     float64 `json:"sandbox_cpus,omitempty"`
@@ -685,6 +687,18 @@ type ControlPlaneConfig struct {
 	HA HAConfig `json:"ha,omitempty"`
 	// Interceptors admit every mutating sandbox call, in order (Enterprise).
 	Interceptors []InterceptorConfig `json:"interceptors,omitempty"`
+}
+
+// SSHSessionConfig bounds an SSH connection to a sandbox. Its commands are
+// bounded by these rather than by exec_timeout_seconds, so a long-lived
+// server an editor starts over SSH keeps running.
+type SSHSessionConfig struct {
+	// IdleTimeoutSeconds closes a connection with no traffic either way for
+	// this long. Zero means an hour.
+	IdleTimeoutSeconds int `json:"idle_timeout_seconds,omitempty"`
+	// MaxSessionSeconds closes a connection this long after it opened. Zero
+	// means twelve hours.
+	MaxSessionSeconds int `json:"max_session_seconds,omitempty"`
 }
 
 // HAConfig makes this server one of several replicas sharing a Postgres

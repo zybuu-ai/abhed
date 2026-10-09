@@ -30,6 +30,8 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. |
 | `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
 | `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace. |
+| `ssh.idle_timeout_seconds` | 3600 | An SSH connection with no traffic either way for this long is closed. |
+| `ssh.max_session_seconds` | 43200 | Longest an SSH connection stays open. Its commands are bounded by this, not by `exec_timeout_seconds`. |
 | `ssh_host_key` | a key the server makes | The `:ssh` relay's host key file, so several servers can share one key; see [SSH](#streams-attach-exec-with-stdin-forward-and-ssh). |
 | `expose` | `false` | Lets `:expose` publish a sandbox's port to whoever asked; see [exposed services](#the-api). |
 | `expose_max_ttl_seconds` | 3600 | Longest an exposure lives. |
@@ -136,6 +138,8 @@ be set on one sandbox, under `settings` with its registry name:
 | `isolation.min_tier` | `sandbox.min_tier` |
 | `resources.cpus` | `control_plane.sandbox_cpus` |
 | `resources.memory_mb` | `control_plane.sandbox_memory_mb` |
+| `ssh.idle_timeout_seconds` | `control_plane.ssh.idle_timeout_seconds` |
+| `ssh.max_session_seconds` | `control_plane.ssh.max_session_seconds` |
 | `rate.mutations_per_minute` | `control_plane.mutations_per_minute` (server only) |
 | `rate.exec_per_minute` | `control_plane.exec_per_minute` (server only) |
 | `reconcile.interval_seconds` | `control_plane.reconcile_seconds` (server only) |
@@ -354,11 +358,20 @@ inside an agent's command; see
 
 Each SSH session is its own recorded call, judged as the verb it amounts
 to: a shell is an `:attach` (`via: ssh` in the record; refused where
-`:attach` is), a command is an `:exec` (judged by the deny rules, bounded
-by `exec.timeout_seconds` and `exec.output_bytes`, and run without a
+`:attach` is), a command is an `:exec` (judged by the deny rules, its
+output held to `exec.output_bytes` on its channel, and run without a
 terminal even when one was asked for), and a `direct-tcpip` channel to
 `127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
-is recorded as `ssh`, with its sessions, forwards and refusals. Everything
+is recorded as `ssh`, with its sessions, forwards and refusals.
+
+An SSH connection has limits of its own, so a server an editor starts
+over SSH keeps running: it closes after `ssh.idle_timeout_seconds` with
+no traffic either way (an hour by default; a client's keepalives count)
+and `ssh.max_session_seconds` after it opened (twelve hours by default),
+and a command run over it is bounded by what is left of that, not by
+`exec.timeout_seconds` (the record notes the bound as `timeout_seconds`).
+Both can be set per sandbox, and a managed value is a ceiling a sandbox
+may only tighten. Each SSH session also counts against `exec_per_minute`. Everything
 else is refused: remote forwarding, agent and X11 forwarding, environment
 variables, signals, and subsystems.
 
