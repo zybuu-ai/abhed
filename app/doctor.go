@@ -189,6 +189,7 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		// serve keeps sessions in memory; the command line keeps its own record.
 		fmt.Printf("storage     %s for serve\n            %s for the command line\n", serveStorageLabel(cfg), storageLabel(cfg))
 	}
+	fmt.Printf("sandboxes   %s\n", controlPlaneLabel(cfg))
 	if cfg.Retrieval.Enabled {
 		if ix, err := toolset.OpenIndex(context.Background(), cfg, workspace); err == nil {
 			d, t, v, _ := ix.Stats()

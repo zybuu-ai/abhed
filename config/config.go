@@ -652,6 +652,11 @@ type ControlPlaneConfig struct {
 	Expose bool `json:"expose,omitempty"`
 	// ExposeMaxTTLSeconds bounds an exposure's life. Zero means an hour.
 	ExposeMaxTTLSeconds int `json:"expose_max_ttl_seconds,omitempty"`
+	// SQLitePath is the database file sandboxes are kept in when storage is
+	// not Postgres. Empty is ~/.abhed/controlplane/sandboxes.db. Must be
+	// absolute, in a folder only the server's user can enter, outside any
+	// workspace.
+	SQLitePath string `json:"sqlite_path,omitempty"`
 	// ExecTimeoutSeconds bounds one :exec.
 	ExecTimeoutSeconds int `json:"exec_timeout_seconds,omitempty"`
 	// ExecOutputBytes bounds what one :exec may write, stdout and stderr together.

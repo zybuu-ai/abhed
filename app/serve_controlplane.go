@@ -18,15 +18,19 @@ import (
 	"github.com/zybuu-ai/abhed/driver/builtin"
 	"github.com/zybuu-ai/abhed/driver/process"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/server/expose"
 	"github.com/zybuu-ai/abhed/store"
+	"github.com/zybuu-ai/abhed/store/sqlite"
 )
 
 // controlPlaneStore is where the control plane keeps sandboxes: the
-// Postgres the event store uses, or memory when serve keeps events there.
-func controlPlaneStore(ctx context.Context, events server.EventStore) (controlplane.Store, controlplane.AuditLog, string, error) {
+// Postgres the event store uses, or else an SQLite file of the server's own.
+// The memory store is for tests; nothing here falls back to it.
+func controlPlaneStore(ctx context.Context, cfg config.Config, workspace string, events server.EventStore) (
+	controlplane.Store, controlplane.AuditLog, string, func(), error) {
 	var pg *store.Postgres
 	switch st := events.(type) {
 	case *store.Postgres:
@@ -34,15 +38,48 @@ func controlPlaneStore(ctx context.Context, events server.EventStore) (controlpl
 	case *store.Held:
 		pg = st.Postgres
 	}
-	if pg == nil {
-		mem := controlplane.NewMemory()
-		return mem, mem, "memory (sandboxes do not survive restart)", nil
+	if pg != nil {
+		q, err := pg.Sandboxes(ctx)
+		if err != nil {
+			return nil, nil, "", nil, err
+		}
+		return q, q, "postgres (tenant " + pg.Tenant() + ")", func() {}, nil
 	}
-	q, err := pg.Sandboxes(ctx)
+	if cfg.Storage.Driver == "postgres" {
+		return nil, nil, "", nil, errors.New("storage.driver is postgres but the event store is not")
+	}
+	path := sandboxconfig.ControlPlaneDB(cfg)
+	if path == "" {
+		return nil, nil, "", nil, errors.New("no place for the control plane's database: set control_plane.sqlite_path")
+	}
+	// The same refusals the sandbox applies: not where commands can write.
+	if err := sandboxconfig.CheckStatePaths(cfg, workspace); err != nil {
+		return nil, nil, "", nil, err
+	}
+	db, err := sqlite.Open(ctx, path)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
-	return q, q, "postgres (tenant " + pg.Tenant() + ")", nil
+	// Where it really is, when its folder was reached through a link.
+	for _, f := range sqlite.Files(db.Path()) {
+		tools.AddStatePath(f)
+	}
+	return db, db, "sqlite (" + db.Path() + ")", func() { _ = db.Close() }, nil
+}
+
+// controlPlaneLabel names the store serve's control plane uses, as
+// controlPlaneStore chooses it, without opening it.
+func controlPlaneLabel(cfg config.Config) string {
+	switch {
+	case !cfg.ControlPlane.Enabled:
+		return "off (control_plane.enabled)"
+	case cfg.Storage.Driver == "postgres":
+		return "postgres (tenant " + orDefault(cfg.Storage.Tenant, "default") + ", beside the sessions)"
+	}
+	if path := sandboxconfig.ControlPlaneDB(cfg); path != "" {
+		return "sqlite (" + path + ")"
+	}
+	return "sqlite (no path: set control_plane.sqlite_path)"
 }
 
 // controlPlaneStateDir is where serve keeps the control plane's own folders
@@ -202,16 +239,7 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return builtControlPlane{}, fmt.Errorf("control_plane: %w", err)
 	}
-	st, audit, label, err := controlPlaneStore(ctx, events)
-	if err != nil {
-		return builtControlPlane{}, fmt.Errorf("control_plane: %w", err)
-	}
 	snaps, err := snapshotDir(cfg.ControlPlane)
-	if err != nil {
-		return builtControlPlane{}, err
-	}
-	record := controlplane.DriverRecorder(audit, nil)
-	drivers, err := controlPlaneDrivers(ctx, os.Stderr, cfg, builtin.Options{Process: process.Options{SnapshotDir: snaps, Record: record}})
 	if err != nil {
 		return builtControlPlane{}, err
 	}
@@ -219,25 +247,90 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return builtControlPlane{}, err
 	}
+	st, audit, label, closeStore, err := controlPlaneStore(ctx, cfg, workspace, events)
+	if err != nil {
+		return builtControlPlane{}, fmt.Errorf("control_plane: %w", err)
+	}
+	fail := func(err error) (builtControlPlane, error) {
+		closeStore()
+		return builtControlPlane{}, err
+	}
+	record := controlplane.DriverRecorder(audit, nil)
+	drivers, err := controlPlaneDrivers(ctx, os.Stderr, cfg, builtin.Options{Process: process.Options{SnapshotDir: snaps, Record: record}})
+	if err != nil {
+		return fail(err)
+	}
 	eg, err := newSandboxEgress(cfg, record)
 	if err != nil {
-		return builtControlPlane{}, err
+		return fail(err)
 	}
 	svc, err := controlplane.New(controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
 		DefaultDriver: builtin.Default, Workspace: get, ReleaseWorkspace: release, Redact: redact,
 		WriteProtected: cfg.Sandbox.WriteProtected, Egress: eg})
 	if err != nil {
-		return builtControlPlane{}, err
+		return fail(err)
 	}
-	out := builtControlPlane{svc: svc, label: label, close: func() {}}
+	out := builtControlPlane{svc: svc, label: label, close: closeStore}
 	if se, ok := eg.(*sandboxEgress); ok {
-		out.close = se.closeAll
+		out.close = func() {
+			se.closeAll()
+			closeStore()
+		}
 	}
 	if cfg.ControlPlane.Expose {
 		out.expose = expose.New(expose.Options{Enabled: true, Record: record,
 			MaxTTL: time.Duration(cfg.ControlPlane.ExposeMaxTTLSeconds) * time.Second, Current: svc.Current})
 	}
 	return out, nil
+}
+
+// checkControlPlane is buildControlPlane for serve -check: the same
+// refusals, with nothing created, migrated or written. An SQLite file that
+// is missing or due a migration is reported, not made.
+func checkControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore) (
+	*controlplane.Settings, string, error) {
+	settings, err := controlplane.SettingsFromConfig(cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("control_plane: %w", err)
+	}
+	if _, err := snapshotDir(cfg.ControlPlane); err != nil {
+		return settings, "", err
+	}
+	if _, _, err := sandboxWorkspaces(cfg.ControlPlane, workspace); err != nil {
+		return settings, "", err
+	}
+	if _, err := newSandboxEgress(cfg, nil); err != nil {
+		return settings, "", err
+	}
+	var pg *store.Postgres
+	switch st := events.(type) {
+	case *store.Postgres:
+		pg = st
+	case *store.Held:
+		pg = st.Postgres
+	}
+	if pg != nil {
+		q, err := pg.Sandboxes(ctx)
+		if err == nil {
+			_, _, err = q.List(ctx, controlplane.ListOptions{Limit: 1})
+		}
+		return settings, "postgres (tenant " + pg.Tenant() + ")", err
+	}
+	if cfg.Storage.Driver == "postgres" {
+		return settings, "", errors.New("control_plane: storage.driver is postgres but the event store is not")
+	}
+	path := sandboxconfig.ControlPlaneDB(cfg)
+	if path == "" {
+		return settings, "", errors.New("control_plane: no place for the database: set control_plane.sqlite_path")
+	}
+	if err := sandboxconfig.CheckStatePaths(cfg, workspace); err != nil {
+		return settings, "", fmt.Errorf("control_plane: %w", err)
+	}
+	probe, err := sqlite.Inspect(ctx, path)
+	if err != nil {
+		return settings, "", fmt.Errorf("control_plane: %w", err)
+	}
+	return settings, "sqlite (" + probe.String() + ")", nil
 }
 
 // checkLine is one preflight result.
@@ -319,14 +412,10 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		if events == nil {
 			add("control plane", errors.New("needs the event store, which did not open"), "")
 		} else {
-			built, err := buildControlPlane(context.Background(), cfg, workspace, events, nil)
-			svc, label := built.svc, built.label
-			if err == nil {
-				_, _, err = svc.Store().List(context.Background(), controlplane.ListOptions{Limit: 1})
-			}
+			settings, label, err := checkControlPlane(context.Background(), cfg, workspace, events)
 			add("control plane", err, "on, store "+label)
-			if svc != nil {
-				for _, s := range svc.Settings().List() {
+			if settings != nil {
+				for _, s := range settings.List() {
 					detail := s.Value
 					if detail == "" {
 						detail = "(none)"

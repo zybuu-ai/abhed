@@ -219,6 +219,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 			return 1
 		}
 		cp, exposed = built.svc, built.expose
+		// Deferred before the reconciler's stop, so it runs after the reconciler has ended.
 		defer built.close()
 		if exposed != nil {
 			defer exposed.Close()

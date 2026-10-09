@@ -2,9 +2,10 @@
 
 Status: 2026-10-09, contract version 1, draft for 1.2.8. The Go packages
 `driver`, `driver/plugin`, `driver/process`, `driver/container`,
-`controlplane`, `store` (the Postgres store) and `server` (the REST surface)
-implement the parts marked **Implemented**; everything else on this page is
-the contract the CLI and per-session work builds against.
+`controlplane`, `store` (the Postgres store), `store/sqlite` (the
+single-host store) and `server` (the REST surface) implement the parts
+marked **Implemented**; everything else on this page is the contract the
+CLI and per-session work builds against.
 
 This page defines the sandbox object, its lifecycle, the `/v1/sandboxes` REST
 surface, the driver interface and its out-of-process protocol, how `abhed
@@ -468,7 +469,7 @@ own (`app/sessionfence.go`). Under this contract (P3-03):
 - A warm pool, when added, holds `Ready` sandboxes from a template with no
   session label and claims one by an update guarded on its resource version.
 
-## 8. Store (Implemented: `controlplane.Store`, memory)
+## 8. Store (Implemented: `controlplane.Store`, memory, SQLite, Postgres)
 
 ```go
 type Store interface {
@@ -491,13 +492,23 @@ client sent `If-Match` and a retry when it did not.
   can be resumed and, later, watched.
 - `Update` and `Delete` succeed only when the stored version equals `expect`.
 - Idempotency claims are atomic: two concurrent claims of one key, one wins.
-- Backends: memory (implemented), SQLite for a single host, Postgres for
-  servers (implemented: `store.Postgres.Sandboxes`, tables `sandboxes`,
-  `sandbox_idempotency` and the append-only `sandbox_audit`, schema version
-  7, applied by `abhed migrate`). SQLite must be a pure-Go driver, so the binary stays static with no
-  cgo; the dependency is a founder decision and is not added yet. Both SQL
-  backends run the same conformance tests as the memory store
-  (`controlplane/storetest`).
+- Backends: memory (implemented, for tests), SQLite for a single host
+  (implemented: `store/sqlite`, the pure-Go `modernc.org/sqlite`, so the
+  binary stays static with no cgo; the same three tables, migrated by the
+  server itself and recorded in its own `schema_version`; WAL, full sync,
+  one writer connection whose every write is a `BEGIN IMMEDIATE`
+  transaction; triggers refuse `UPDATE`, `DELETE` and `INSERT OR REPLACE`
+  on `sandbox_audit`) and Postgres for servers (implemented:
+  `store.Postgres.Sandboxes`, tables `sandboxes`, `sandbox_idempotency` and
+  the append-only `sandbox_audit`, schema version 7, applied by `abhed
+  migrate`). `abhed serve` uses Postgres when `storage.driver` is
+  `postgres` and SQLite otherwise, never memory. Both SQL backends run the
+  same conformance tests as the memory store (`controlplane/storetest`).
+- The SQLite file is the server's state: `0600` in a `0700` folder,
+  refused when it is a link, has a second name, belongs to another user or
+  is open to others, and refused inside a workspace, an added directory,
+  `control_plane.workspace_root`, a temp folder or a cache. The agent and
+  every sandbox are denied it and its `-wal` and `-shm` files.
 
 ## 9. Editions
 

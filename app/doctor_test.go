@@ -276,7 +276,8 @@ func TestDoctorIsNotReadyWithoutTheEventStore(t *testing.T) {
 // Memory storage is named as serve uses it, beside the command line's record.
 func TestDoctorNamesMemoryStorage(t *testing.T) {
 	out, code := doctorWith(t, `"storage":{"driver":"memory"},`)
-	if code != 0 || !strings.Contains(out, "storage     memory (sessions do not survive restart) for serve") || !strings.Contains(out, "for the command line") {
+	if code != 0 || !strings.Contains(out, "storage     memory (sessions do not survive restart) for serve") || !strings.Contains(out, "for the command line") ||
+		!strings.Contains(out, "sandboxes   off (control_plane.enabled)") {
 		t.Fatalf("doctor with memory storage (%d):\n%s", code, out)
 	}
 }

@@ -381,3 +381,54 @@ func TestPolicyCarriesSkillDirs(t *testing.T) {
 		t.Errorf("skills off: %v %v", p.SkillDirs, err)
 	}
 }
+
+// The control plane's database is state, kept out of every workspace, its
+// .abhed included, and out of the sandboxes' own folders.
+func TestControlPlaneDatabasePlacement(t *testing.T) {
+	base := outsideWritableAreas(t)
+	t.Setenv("TMPDIR", filepath.Join(base, "tmp"))
+	ws := filepath.Join(base, "ws")
+	home := filepath.Join(base, "home")
+	t.Setenv("HOME", home)
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	roots := filepath.Join(base, "sandboxes")
+	cases := []struct {
+		path    string
+		refused bool
+	}{
+		{"", false}, // ~/.abhed/controlplane/sandboxes.db
+		{filepath.Join(base, "state", "cp.db"), false},
+		{filepath.Join(ws, "cp.db"), true},
+		{filepath.Join(ws, ".abhed", "cp.db"), true},
+		{filepath.Join(roots, "cp.db"), true},
+		{filepath.Join(base, "tmp", "cp.db"), true},
+		{"cp.db", true},
+	}
+	for _, c := range cases {
+		cfg := config.Default()
+		cfg.ControlPlane = config.ControlPlaneConfig{Enabled: true, SQLitePath: c.path, WorkspaceRoot: roots}
+		err := CheckStatePaths(cfg, ws)
+		if c.refused != (err != nil) {
+			t.Errorf("sqlite_path %q: refused=%v, want %v (%v)", c.path, err != nil, c.refused, err)
+		}
+		db := ControlPlaneDB(cfg)
+		if c.path == "" && db != filepath.Join(home, ".abhed", "controlplane", "sandboxes.db") {
+			t.Errorf("default database %q", db)
+		}
+		for _, f := range []string{db, db + "-wal", db + "-shm"} {
+			if !slices.Contains(StatePaths(cfg, ws), f) {
+				t.Errorf("%s is not state", f)
+			}
+		}
+	}
+	// Off, or on Postgres, there is no database to guard.
+	cfg := config.Default()
+	cfg.ControlPlane.SQLitePath = filepath.Join(ws, "cp.db")
+	if ControlPlaneDB(cfg) != "" || CheckStatePaths(cfg, ws) != nil {
+		t.Error("a database was placed for a control plane that is off")
+	}
+	cfg.ControlPlane.Enabled, cfg.Storage.Driver = true, "postgres"
+	if ControlPlaneDB(cfg) != "" || CheckStatePaths(cfg, ws) != nil {
+		t.Error("a database was placed for a control plane on Postgres")
+	}
+}

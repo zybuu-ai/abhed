@@ -11,11 +11,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/builtin"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
@@ -53,8 +55,13 @@ func TestServeCheckPasses(t *testing.T) {
 	if code != 0 || !strings.Contains(out.String(), "Ready to serve.") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
+	// The check creates nothing: the folder and file are only named.
+	db := filepath.Join(os.Getenv("HOME"), ".abhed", "controlplane", "sandboxes.db")
+	if _, err := os.Lstat(filepath.Dir(db)); !os.IsNotExist(err) {
+		t.Fatalf("serve -check created the database's folder: %v", err)
+	}
 	for _, want := range []string{
-		"control plane", "on, store memory",
+		"control plane", "on, store sqlite (would be created at " + db + ")",
 		"exec.timeout_seconds", "120 (configured)",
 		"restart.policy", "on-failure (managed, ceiling)",
 	} {
@@ -206,12 +213,14 @@ func TestBuiltControlPlaneSnapshotsAndRecords(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	cfg := config.Default()
+	cfg.ControlPlane.Enabled = true
 	cfg.Sandbox.MinTier = "none"
 	ws := t.TempDir()
 	built, err := buildControlPlane(context.Background(), cfg, ws, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer built.close()
 	if built.expose != nil {
 		t.Fatal("exposures are on by default")
 	}
@@ -246,11 +255,142 @@ func TestBuiltControlPlaneSnapshotsAndRecords(t *testing.T) {
 	}
 
 	cfg.ControlPlane.Expose = true
-	if built, err = buildControlPlane(context.Background(), cfg, ws, nil, nil); err != nil || built.expose == nil || !built.expose.Enabled() {
-		t.Fatalf("exposures asked for: %+v %v", built.expose, err)
+	again, err := buildControlPlane(context.Background(), cfg, ws, nil, nil)
+	if err != nil || again.expose == nil || !again.expose.Enabled() {
+		t.Fatalf("exposures asked for: %+v %v", again.expose, err)
 	}
+	again.close()
 	cfg.ControlPlane.SnapshotDir = "relative"
 	if _, err := buildControlPlane(context.Background(), cfg, ws, nil, nil); err == nil {
 		t.Fatal("a relative snapshot folder was accepted")
+	}
+}
+
+// Without Postgres the control plane keeps sandboxes in SQLite, so they
+// outlive the server; it never falls back to memory.
+func TestControlPlaneSQLiteSurvivesRestart(t *testing.T) {
+	ws := checkEnv(t, `{"control_plane":{"enabled":true}}`, "")
+	cfg, err := newApp().loadConfig(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	built, err := buildControlPlane(ctx, cfg, ws, agent.NewMemStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, closeCP := built.svc, built.close
+	if !strings.HasPrefix(built.label, "sqlite (") {
+		t.Fatalf("store %q", built.label)
+	}
+	sb, err := controlplane.NewSandbox("alice", "default", "process", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Store().Create(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	closeCP()
+	built, err = buildControlPlane(ctx, cfg, ws, agent.NewMemStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = built.svc
+	defer built.close()
+	if _, err := svc.Store().Get(ctx, sb.ID); err != nil {
+		t.Fatalf("after a restart: %v", err)
+	}
+}
+
+// The database is refused where the agent's or a sandbox's commands write.
+func TestControlPlaneSQLitePathRefused(t *testing.T) {
+	root := t.TempDir()
+	for name, path := range map[string]string{
+		"relative":        "sandboxes.db",
+		"workspace":       "WS/state/sandboxes.db",
+		"workspace abhed": "WS/.abhed/sandboxes.db",
+		"sandbox folder":  root + "/cp/sandboxes.db",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := checkEnv(t, "{}", "")
+			path = strings.ReplaceAll(path, "WS", ws)
+			cfgText := `{"control_plane":{"enabled":true,"workspace_root":"` + root + `","sqlite_path":"` + path + `"}}`
+			if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".abhed", "config.json"), []byte(cfgText), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := newApp().loadConfig(ws)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := buildControlPlane(context.Background(), cfg, ws, agent.NewMemStore(), nil); err == nil {
+				t.Fatalf("%s was accepted", path)
+			}
+			var out bytes.Buffer
+			if code := newApp().serveCheck(&out, ws, "127.0.0.1:0"); code != 1 || !strings.Contains(out.String(), "FAIL control plane") {
+				t.Fatalf("exit %d:\n%s", code, out.String())
+			}
+			if filepath.IsAbs(path) {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("the refused database was created: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestControlPlaneLabel(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	for want, cfg := range map[string]config.Config{
+		"off (control_plane.enabled)": {},
+		"postgres (tenant acme, beside the sessions)": {ControlPlane: config.ControlPlaneConfig{Enabled: true},
+			Storage: config.StorageConfig{Driver: "postgres", Tenant: "acme"}},
+		"sqlite (/home/u/.abhed/controlplane/sandboxes.db)": {ControlPlane: config.ControlPlaneConfig{Enabled: true}},
+		"sqlite (/srv/abhed/cp.db)":                         {ControlPlane: config.ControlPlaneConfig{Enabled: true, SQLitePath: "/srv/abhed/cp.db"}},
+	} {
+		if got := controlPlaneLabel(cfg); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+// serve -check reads an existing database and says whether a migration is
+// due, applying none; once it is current it says so.
+func TestServeCheckDoesNotMigrate(t *testing.T) {
+	ws := checkEnv(t, `{"control_plane":{"enabled":true}}`, "")
+	db := filepath.Join(os.Getenv("HOME"), ".abhed", "controlplane", "sandboxes.db")
+	if err := os.MkdirAll(filepath.Dir(db), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(db, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := newApp().serveCheck(&out, ws, "127.0.0.1:0"); code != 0 || !strings.Contains(out.String(), "schema version 0; serve will migrate it to") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if info, err := os.Stat(db); err != nil || info.Size() != 0 {
+		t.Fatalf("serve -check wrote to the database: %v %v", info, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(db)); len(entries) != 1 {
+		t.Fatalf("serve -check left files beside the database: %v", entries)
+	}
+
+	cfg, err := newApp().loadConfig(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, err := buildControlPlane(context.Background(), cfg, ws, agent.NewMemStore(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built.close()
+	real, err := filepath.EvalSymlinks(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := newApp().serveCheck(&out, ws, "127.0.0.1:0"); code != 0 || !strings.Contains(out.String(), "on, store sqlite ("+real+", schema version ") ||
+		strings.Contains(out.String(), "migrate") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }
