@@ -344,20 +344,13 @@ func (s *Service) settle(ctx context.Context, sb Sandbox, st driver.Status, err 
 			return cur.SetCondition(Condition{Type: CondIsolationVerified, Status: ConditionFalse, Reason: reason,
 				Message: fmt.Sprintf("the driver reports %q, weaker than the required %q", st.Tier, minTier)}, now)
 		}
-		cur.Tier = st.Tier
 		if terr := cur.Transition(StateReady, now); terr != nil {
 			return terr
 		}
 		if serr := cur.SetCondition(Condition{Type: CondDriverReady, Status: ConditionTrue, Reason: reason}, now); serr != nil {
 			return serr
 		}
-		msg := "tier " + st.Tier
-		if st.Caveat != "" {
-			// Said as doctor says it: "tier process (no /proc)".
-			msg += " (" + st.Caveat + ")"
-		}
-		return cur.SetCondition(Condition{Type: CondIsolationVerified, Status: ConditionTrue, Reason: "TierMeetsPolicy",
-			Message: msg}, now)
+		return verifiedTier(cur, st, now)
 	})
 	if werr != nil {
 		return werr
@@ -367,6 +360,18 @@ func (s *Service) settle(ctx context.Context, sb Sandbox, st driver.Status, err 
 		s.Kick(sb.ID)
 	}
 	return nil
+}
+
+// verifiedTier records the tier st reports, which meets the policy.
+func verifiedTier(cur *Sandbox, st driver.Status, now time.Time) error {
+	cur.Tier = st.Tier
+	msg := "tier " + st.Tier
+	if st.Caveat != "" {
+		// Said as doctor says it: "tier process (no /proc)".
+		msg += " (" + st.Caveat + ")"
+	}
+	return cur.SetCondition(Condition{Type: CondIsolationVerified, Status: ConditionTrue, Reason: "TierMeetsPolicy",
+		Message: msg}, now)
 }
 
 // observe moves sb to state with its DriverReady condition, when it is still where the
@@ -421,6 +426,14 @@ func (s *Service) watch(ctx context.Context, sb Sandbox, st driver.Status, err e
 		changed := false
 		if c, ok := cur.Condition(CondDriverReady); !ok || c.Status != ConditionTrue {
 			if err := cur.SetCondition(Condition{Type: CondDriverReady, Status: ConditionTrue, Reason: "Running"}, now); err != nil {
+				return err
+			}
+			changed = true
+		}
+		// A tier that changed while running, still meeting the policy, is
+		// what the sandbox shows from now on.
+		if cur.Tier != st.Tier {
+			if err := verifiedTier(cur, st, now); err != nil {
 				return err
 			}
 			changed = true

@@ -551,3 +551,22 @@ func TestIsolationConditionNamesTheTiersCaveat(t *testing.T) {
 		t.Fatalf("condition %+v", c)
 	}
 }
+
+// A tier that changes while the sandbox runs, still meeting the policy,
+// replaces the one recorded at start.
+func TestWatchRefreshesTheTier(t *testing.T) {
+	r := newRig(t, map[string]string{cp.SetMinTier: "process"}, nil)
+	sb := r.ready(t)
+	if sb.Tier != "process" {
+		t.Fatalf("tier %q", sb.Tier)
+	}
+	r.fake.SetTier("container")
+	sb = r.reconcile(t, sb.ID)
+	if c, _ := sb.Condition(cp.CondIsolationVerified); sb.State != cp.StateReady || sb.Tier != "container" || c.Message != "tier container" {
+		t.Fatalf("after the tier changed: %s %q %+v", sb.State, sb.Tier, c)
+	}
+	rv := sb.ResourceVersion
+	if sb = r.reconcile(t, sb.ID); sb.ResourceVersion != rv {
+		t.Fatal("an unchanged tier wrote again")
+	}
+}
