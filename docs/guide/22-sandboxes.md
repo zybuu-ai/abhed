@@ -212,8 +212,12 @@ is empty a session gets a new sandbox.
 **Under an edition's workspaces.** When an edition confines sandbox calls
 to a scope, such as a Team workspace, a session's sandbox is made in the
 workspace its user acts in: it carries that workspace's label, so the
-workspace's quotas and approvals count it, and the workspace's policy
-rules judge the commands run in it. Warm pools are kept per workspace, made
+workspace's quotas count it, and the workspace's policy rules judge the
+commands run in it. What the server does for the session (making,
+claiming, starting and removing its sandbox, and filling the warm pool) is
+shown to the edition's guard as the session's own, so a four-eyes rule on
+creating or deleting sandboxes does not hold a session someone has already
+started. Warm pools are kept per workspace, made
 when a workspace's first session starts, and each fill is counted in that
 workspace. A user who is in no workspace gets no session.
 

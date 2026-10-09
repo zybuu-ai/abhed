@@ -589,3 +589,58 @@ func TestEditionScopeAppliesToSandboxesAndPoolFills(t *testing.T) {
 		}
 	}
 }
+
+// fourEyesGuard holds every create and delete for approval unless the
+// server makes it for a session, as a workspace with four-eyes rules would.
+type fourEyesGuard struct {
+	mu   sync.Mutex
+	seen []controlplane.Admission
+}
+
+func (g *fourEyesGuard) Admit(_ context.Context, a *controlplane.Admission) (func(), error) {
+	g.mu.Lock()
+	g.seen = append(g.seen, *a)
+	g.mu.Unlock()
+	if (a.Action == controlplane.ActionCreate || a.Action == controlplane.ActionDelete) && a.Origin != controlplane.OriginSession && a.Approval == "" {
+		return nil, &controlplane.ApprovalNeeded{ID: "ap-1"}
+	}
+	return nil, nil
+}
+
+// The server's own work on a session's sandbox, and its warm pool, shows
+// the guard OriginSession, so four-eyes rules need not hold a session a
+// person already started; the same create asked by a person does not.
+func TestSessionWorkCarriesItsOrigin(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := &fourEyesGuard{}
+	if err := r.svc.SetGuard(g); err != nil {
+		t.Fatal(err)
+	}
+	m := r.manager(t, func(c *Config) { c.Pool = 1 })
+	if err := m.Pool().Fill(ctx); err != nil {
+		t.Fatalf("a pool fill was held: %v", err)
+	}
+	a := r.bind(t, m, "s1", "alice")
+	b := r.bind(t, m, "s2", "bob")
+	if _, err := run(t, a, a.Workspace, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SessionDeleted(ctx, "s2", "bob", "default"); err != nil {
+		t.Fatalf("deleting a session's sandbox was held: %v", err)
+	}
+	if _, err := r.mem.Get(ctx, b.Sandbox.ID); err == nil {
+		t.Fatal("the deleted session's sandbox is still there")
+	}
+	g.mu.Lock()
+	for _, s := range g.seen {
+		if s.Origin != controlplane.OriginSession {
+			t.Errorf("%s on %s was not marked as the session's: %+v", s.Action, s.Sandbox.ID, s)
+		}
+	}
+	g.mu.Unlock()
+	// A person's own create gets no such origin.
+	if _, err := r.svc.Create(ctx, controlplane.Caller{Principal: "alice"}, controlplane.CreateRequest{Template: "x"}); !errors.Is(err, controlplane.ErrApprovalRequired) {
+		t.Fatalf("a person's create: %v", err)
+	}
+}

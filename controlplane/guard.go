@@ -15,7 +15,13 @@ import (
 // Guard; with none installed every operation is admitted as before.
 //
 // Admit must fail closed: when it cannot decide, such as when usage cannot be
-// counted, it returns an error and the operation does not happen. The release
+// counted, it returns an error and the operation does not happen.
+//
+// Admission.Origin says why the server itself asks. OriginSession is the
+// sandbox of a session a person already started, made, claimed, run in and
+// removed by the server for it: a guard counts it against quotas as any
+// other, but should not hold it for other people's approval, since nobody
+// would be there to send the request again. The release
 // it returns, when not nil, runs once the operation has ended, whatever its
 // outcome, so a guard can hold a slot or a lock across it.
 type Guard interface {
@@ -48,6 +54,26 @@ type Admission struct {
 	Grace time.Duration
 	// Approval is the approval the request names, "" when it names none.
 	Approval string
+	// Origin is OriginSession for the server's own work on a session's
+	// sandbox and its warm pool, "" for a request a caller made. Only the
+	// server sets it; no request can.
+	Origin string
+}
+
+// OriginSession marks an operation the server makes for a session's sandbox.
+const OriginSession = "session"
+
+type originKey struct{}
+
+// WithOrigin is ctx carrying the origin the guard is shown.
+func WithOrigin(ctx context.Context, origin string) context.Context {
+	return context.WithValue(ctx, originKey{}, origin)
+}
+
+// OriginOf is the origin ctx carries, "" for none.
+func OriginOf(ctx context.Context) string {
+	o, _ := ctx.Value(originKey{}).(string)
+	return o
 }
 
 // SetGuard installs g. It is set once, before the service serves; a second
@@ -71,6 +97,7 @@ func (s *Service) guardAdmit(ctx context.Context, a *Admission) (func(), error) 
 		return func() {}, nil
 	}
 	a.Approval = ApprovalOf(ctx)
+	a.Origin = OriginOf(ctx)
 	release, err := box.Admit(ctx, a)
 	if err != nil {
 		if release != nil {

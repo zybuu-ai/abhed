@@ -368,6 +368,7 @@ func (m *Manager) find(ctx context.Context, labels map[string]string) (controlpl
 // warm pool, else a new one. A sandbox that cannot be made Ready, or would
 // run with no isolation, is refused; nothing falls back to the shared one.
 func (m *Manager) Bind(ctx context.Context, b Binding) (Bound, error) {
+	ctx = controlplane.WithOrigin(ctx, controlplane.OriginSession)
 	if err := m.checkTenant(b.Tenant); err != nil {
 		return Bound{}, err
 	}
@@ -492,6 +493,7 @@ func (m *Manager) Release(sessionID string) {
 // SessionDeleted deletes the sandbox of a deleted session, when it has one
 // of its own; a user's sandbox stays for the user's other sessions.
 func (m *Manager) SessionDeleted(ctx context.Context, sessionID, user, tenant string) error {
+	ctx = controlplane.WithOrigin(ctx, controlplane.OriginSession)
 	m.Release(sessionID)
 	if m.cfg.Scope != ScopeSession || m.checkTenant(tenant) != nil {
 		return nil
@@ -529,6 +531,7 @@ func (m *Manager) Workspace(ctx context.Context, sessionID, user, tenant string)
 // session being started is never swept. alive answers for a session id; an
 // error leaves the sandbox alone.
 func (m *Manager) Sweep(ctx context.Context, since time.Time, alive func(ctx context.Context, sessionID string) (bool, error)) error {
+	ctx = controlplane.WithOrigin(ctx, controlplane.OriginSession)
 	sel, err := controlplane.ParseSelector(controlplane.LabelSession)
 	if err != nil {
 		return err
@@ -568,6 +571,7 @@ func (m *Manager) Sweep(ctx context.Context, since time.Time, alive func(ctx con
 // Close applies the retention to every sandbox this process bound, as the
 // server stops, and drains the warm pools. Run must have returned.
 func (m *Manager) Close(ctx context.Context) error {
+	ctx = controlplane.WithOrigin(ctx, controlplane.OriginSession)
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.bound))
 	for id := range m.bound {
@@ -669,6 +673,7 @@ func (s *session) announce() error {
 }
 
 func (s *session) command(ctx context.Context, req driver.CommandRequest) *exec.Cmd {
+	ctx = controlplane.WithOrigin(ctx, controlplane.OriginSession)
 	if err := s.announce(); err != nil {
 		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: %w", err)}
 	}

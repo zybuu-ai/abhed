@@ -624,7 +624,11 @@ on (it needs `control_plane.enabled` and refuses `shared_workspace`):
   confines the user's calls on it; and warm pools are kept per scope
   (`PoolConfig.Scope`), each made on a scope's first session, so every fill
   is admitted and counted in its scope and a claim never moves a member out
-  of it. A refusal refuses the session. A sandbox found outside the user's
+  of it. A refusal refuses the session. Everything the server does for a
+  session's sandbox or a warm pool reaches the guard with
+  `Admission.Origin` `session` (set only by the server, from the context,
+  never from a request): a guard counts it against quotas but should not
+  hold it for approvals, since no one would send it again. A sandbox found outside the user's
   scope now is not reattached. Under an edition's scope no unscoped pool is
   filled until an unscoped session asks for one.
 - Not yet: the microvm driver cannot hand out a process, so it cannot be

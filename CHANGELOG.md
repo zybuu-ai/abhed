@@ -291,7 +291,8 @@ All notable changes to Abhed are recorded here. The format follows
   when its sandbox cannot be made Ready, has no isolation, or would be in
   another tenant. Under an edition's `SandboxCaller` (a Team workspace),
   each session's sandbox and warm pool are made in its user's workspace,
-  so the workspace's quotas, approvals and policy rules apply to them. See
+  so the workspace's quotas and policy rules apply to them; its four-eyes
+  approvals do not hold the server's own work for the session. See
   [Sandboxes over the API](docs/guide/22-sandboxes.md#per-session-sandboxes).
 - `control_plane.docker` and `control_plane.podman` register the container
   drivers in `abhed serve`. Their `binary`, `images`, `mounts`,
@@ -522,7 +523,10 @@ on. A server with it off starts on the older schema as before.
   `create` record names its session. `controlplane.PoolConfig.Scope` makes
   and counts a pool's members under an edition's reserved labels, which a
   claim cannot change; `server.Options.SandboxCaller` is also asked for each
-  per-session sandbox's user.
+  per-session sandbox's user. `controlplane.Admission.Origin` is
+  `OriginSession` for the server's own work on a session's sandbox and warm
+  pool (`WithOrigin`, `OriginOf`), so a guard need not hold it for
+  approval.
 
 ## [1.2.7] - 2026-10-07
 

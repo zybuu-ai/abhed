@@ -304,6 +304,7 @@ func (p *Pool) Members(ctx context.Context) ([]Sandbox, error) {
 // Fill makes members until Size are Ready or on their way, and deletes
 // members that failed or stopped; it never holds more than Size.
 func (p *Pool) Fill(ctx context.Context) error {
+	ctx = WithOrigin(ctx, OriginSession)
 	ms, err := p.Members(ctx)
 	if err != nil {
 		return err
@@ -361,6 +362,7 @@ func (p *Pool) Run(ctx context.Context) {
 
 // Drain deletes every unclaimed member and waits for each to go.
 func (p *Pool) Drain(ctx context.Context) error {
+	ctx = WithOrigin(ctx, OriginSession)
 	ms, err := p.Members(ctx)
 	if err != nil {
 		return err
@@ -383,6 +385,7 @@ var errClaimed = fmt.Errorf("%w: claimed by another session", ErrVersionMismatch
 // is recorded as a claim and put to the guard and the interceptor as an
 // update. ok is false when no member is Ready.
 func (p *Pool) Claim(ctx context.Context, c Caller, labels map[string]string) (sb Sandbox, ok bool, err error) {
+	ctx = WithOrigin(ctx, OriginSession)
 	if err := ValidateLabels(labels, true); err != nil {
 		return Sandbox{}, false, err
 	}
