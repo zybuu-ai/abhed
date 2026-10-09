@@ -31,6 +31,13 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `mutations_per_minute` | 120 | Changes to sandboxes one caller may make a minute. |
 | `exec_per_minute` | 60 | `:exec` calls one caller may make a minute. |
 | `reconcile_seconds` | 10 | How often every sandbox is checked against its driver. |
+| `sandbox_cpus` | unset | CPUs each sandbox may use, such as `0.5` or `2`. Unset leaves it to the driver. |
+| `sandbox_memory_mb` | unset | Memory each sandbox may use, in MiB. Unset leaves it to the driver. |
+
+A size is passed to the driver, which holds the sandbox to it or refuses
+it. The `process` driver cannot hold one sandbox to a size, so a sandbox
+with `sandbox_cpus` or `sandbox_memory_mb` in force goes to `Error` under it
+rather than run unbounded; use a driver that bounds each sandbox.
 
 The weakest isolation a sandbox may run under is your existing
 `sandbox.min_tier`.
@@ -69,6 +76,8 @@ be set on one sandbox, under `settings` with its registry name:
 | `restart.max_restarts` | `control_plane.max_restarts` |
 | `restart.backoff_seconds` | `control_plane.restart_backoff_seconds` |
 | `isolation.min_tier` | `sandbox.min_tier` |
+| `resources.cpus` | `control_plane.sandbox_cpus` |
+| `resources.memory_mb` | `control_plane.sandbox_memory_mb` |
 | `rate.mutations_per_minute` | `control_plane.mutations_per_minute` (server only) |
 | `rate.exec_per_minute` | `control_plane.exec_per_minute` (server only) |
 | `reconcile.interval_seconds` | `control_plane.reconcile_seconds` (server only) |
@@ -112,7 +121,10 @@ version.
 Errors are `{"error": {"code", "message"}}` with codes `invalid`,
 `not_found`, `conflict`, `precondition_failed`, `unsupported`,
 `unavailable`, `forbidden` and `internal`. A store, record or driver that
-cannot be reached is `503`; nothing is assumed to have worked.
+cannot be reached is `503`; nothing is assumed to have worked. An edition
+with workspaces adds `403` with `quota_exceeded`, and `approval_required`
+with the approval to ask for in the `Abhed-Approval` response header; once
+it is approved, send the same request again with that header.
 
 Selectors: `team=payments`, `tier!=gold`, `env in (dev,test)`, `!archived`,
 comma-separated, all of which must hold.

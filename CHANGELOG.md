@@ -28,6 +28,11 @@ All notable changes to Abhed are recorded here. The format follows
   its database, secrets store or control plane cannot serve. `/v1/health` is
   unchanged.
 - Rate limits per caller on the sandbox routes.
+- Sandbox sizes: `control_plane.sandbox_cpus` and
+  `control_plane.sandbox_memory_mb`, or `resources.cpus` and
+  `resources.memory_mb` on one sandbox, are passed to its driver. The
+  `process` driver cannot hold a sandbox to a size and refuses one rather
+  than run it unbounded.
 
 **Upgrading with Postgres.** The control plane's tables come with schema
 version 7; run `abhed migrate` before turning `control_plane.enabled` on.
@@ -48,6 +53,19 @@ A server with it off starts on the older schema as before.
   registry and audit record; `store.Postgres.Sandboxes` is the Postgres
   store. The contract is `docs/architecture/control-plane-contract.md`.
   They may change in a minor release until 2.0.
+- Extension points for an edition with workspaces, each a no-op when unset:
+  `controlplane.Guard` (installed with `Service.SetGuard`) admits or refuses
+  every create, update, start, stop, delete and exec after it is recorded
+  and before the store or a driver is touched, failing closed; a
+  `Caller.Scope` of reserved labels confines a caller to the sandboxes
+  carrying them and stamps them on what it creates;
+  `server.Options.SandboxCaller` refines the caller of a sandbox request;
+  `server.Options.ApprovalGate` decides who may answer a session's pending
+  approvals and when an answer settles one, and `Server.PendingAsks` lists
+  the requests waiting; `secretstore.OpenSource` keeps a store's values in
+  a credential driver instead of a file, failing closed when it cannot be
+  reached. New error codes `approval_required` and `quota_exceeded` (`403`),
+  and the `Abhed-Approval` header.
 
 ## [1.2.7] - 2026-10-07
 
