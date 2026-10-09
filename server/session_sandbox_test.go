@@ -79,6 +79,8 @@ func newPerSessionRigWith(t *testing.T, edition func(*Options)) *perSessionRig {
 		"alice": {Subject: "alice", Tenant: "default"},
 		"bob":   {Subject: "bob", Tenant: "default"},
 		"eve":   {Subject: "eve", Tenant: "other"},
+		"root":  {Subject: "root", Tenant: "default", Groups: []string{DefaultAdminGroup}},
+		"root2": {Subject: "root2", Tenant: "default", Groups: []string{DefaultAdminGroup}},
 	}}
 	ws, _ := filepath.EvalSymlinks(t.TempDir())
 	opts := Options{Workspace: ws, Config: cfg, Adapter: stubAdapter{}, Auth: mw, ControlPlane: svc,
@@ -405,4 +407,56 @@ func TestPerSessionSandboxesTakeTheEditionsScope(t *testing.T) {
 	if items, _, _ := r.mem.List(context.Background(), controlplane.ListOptions{}); len(items) != 1 {
 		t.Fatalf("sandboxes: %d, want alice's one", len(items))
 	}
+}
+
+// A server administrator in no workspace gets a session with an unscoped
+// sandbox of their own, as the edition's SandboxCaller leaves an
+// administrator unscoped; only the caller's refusal refuses them.
+func TestPerSessionAdministratorOutsideWorkspaces(t *testing.T) {
+	var asked []controlplane.Caller
+	var mu sync.Mutex
+	r := newPerSessionRigWith(t, func(o *Options) {
+		if err := o.ControlPlane.SetGuard(guardFunc(func(a *controlplane.Admission) error {
+			// An unscoped create is the server's own, for a session.
+			if a.Action == controlplane.ActionCreate && a.Next.Labels[wsLabel] == "" && a.Origin != controlplane.OriginSession {
+				return fmt.Errorf("%w: every sandbox belongs to a workspace", controlplane.ErrForbidden)
+			}
+			return nil
+		})); err != nil {
+			t.Fatal(err)
+		}
+		o.SandboxCaller = func(r *http.Request, c controlplane.Caller) (controlplane.Caller, error) {
+			mu.Lock()
+			asked = append(asked, c)
+			mu.Unlock()
+			switch {
+			case c.Principal == "root2":
+				return c, fmt.Errorf("%w: suspended", controlplane.ErrForbidden)
+			case c.Admin:
+				return c, nil
+			}
+			return c, fmt.Errorf("%w: you are not in a workspace", controlplane.ErrForbidden)
+		}
+	})
+	_, live := r.open(t, "root")
+	sb, err := r.mem.Get(context.Background(), filepath.Base(r.srv.workspaceOf(live)))
+	if err != nil || sb.Labels[wsLabel] != "" {
+		t.Fatalf("the administrator's sandbox: %+v %v", sb.Labels, err)
+	}
+	for _, who := range []string{"bob", "root2"} {
+		if rec := r.call(t, "POST", "/v1/sessions", who, `{"workbench":true}`); rec.Code == http.StatusAccepted {
+			t.Fatalf("%s got a session: %s", who, rec.Body)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) != 3 || !asked[0].Admin || asked[1].Admin || !asked[2].Admin {
+		t.Fatalf("SandboxCaller was asked %+v", asked)
+	}
+}
+
+type guardFunc func(a *controlplane.Admission) error
+
+func (g guardFunc) Admit(_ context.Context, a *controlplane.Admission) (func(), error) {
+	return nil, g(a)
 }

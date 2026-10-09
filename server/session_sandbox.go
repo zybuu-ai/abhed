@@ -24,7 +24,7 @@ func (s *Server) bindSandbox(sessionID string, spec StartSpec, registry *tools.R
 		}
 	}
 	b, err := s.opts.SessionSandboxes.Bind(context.Background(), sessionsandbox.Binding{
-		SessionID: sessionID, User: spec.User, Tenant: storeTenant(s.opts.Config, spec.Tenant),
+		SessionID: sessionID, User: spec.User, Tenant: storeTenant(s.opts.Config, spec.Tenant), Admin: spec.admin,
 		Shared: shared, Recorder: rec,
 	})
 	if err != nil {
@@ -104,14 +104,16 @@ func (s *Server) sessionExists(ctx context.Context, id string) (bool, error) {
 
 // sessionSandboxScope asks the edition's SandboxCaller where a session's
 // user acts, as for a create of their own, so the session's sandbox is made
-// and counted there.
-func (s *Server) sessionSandboxScope(ctx context.Context, tenant, user string) (map[string]string, error) {
-	ctx = context.WithValue(context.WithValue(ctx, ctxUser, user), ctxTenant, tenant)
+// and counted there. An administrator is asked about as one: an edition
+// that leaves an administrator unscoped gives them an unscoped sandbox, and
+// only its refusal refuses the session.
+func (s *Server) sessionSandboxScope(ctx context.Context, req sessionsandbox.ScopeRequest) (map[string]string, error) {
+	ctx = context.WithValue(context.WithValue(ctx, ctxUser, req.User), ctxTenant, req.Tenant)
 	r, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/sandboxes", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.opts.SandboxCaller(r, controlplane.Caller{Principal: user})
+	c, err := s.opts.SandboxCaller(r, controlplane.Caller{Principal: req.User, Admin: req.Admin})
 	if err != nil {
 		return nil, err
 	}

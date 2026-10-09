@@ -522,13 +522,13 @@ func TestEditionScopeAppliesToSandboxesAndPoolFills(t *testing.T) {
 	var mu sync.Mutex
 	scopes := map[string]map[string]string{"alice": {wsKey: "pay"}, "bob": {wsKey: "ops"},
 		"mallory": {controlplane.LabelSession: "s1"}}
-	m.SetScope(func(_ context.Context, tenant, user string) (map[string]string, error) {
+	m.SetScope(func(_ context.Context, req ScopeRequest) (map[string]string, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		if s, ok := scopes[user]; ok && tenant == "default" {
+		if s, ok := scopes[req.User]; ok && req.Tenant == "default" {
 			return s, nil
 		}
-		return nil, fmt.Errorf("%w: %s is in no workspace", controlplane.ErrForbidden, user)
+		return nil, fmt.Errorf("%w: %s is in no workspace", controlplane.ErrForbidden, req.User)
 	})
 	runCtx, stop := context.WithCancel(ctx)
 	ran := make(chan struct{})

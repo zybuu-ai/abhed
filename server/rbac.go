@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/zybuu-ai/abhed/auth"
@@ -46,7 +47,12 @@ func (s *Server) Admin(h http.HandlerFunc) http.Handler {
 // IsAdmin reports whether the caller is an administrator, for handlers that
 // change their answer rather than refusing outright.
 func (s *Server) IsAdmin(r *http.Request) bool {
-	id, ok := auth.FromContext(r.Context())
+	return s.isAdminCtx(r.Context())
+}
+
+// isAdminCtx is IsAdmin for the identity ctx carries.
+func (s *Server) isAdminCtx(ctx context.Context) bool {
+	id, ok := auth.FromContext(ctx)
 	if !ok {
 		return false
 	}

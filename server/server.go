@@ -1252,6 +1252,9 @@ type StartSpec struct {
 	// OnEnd is called when the run finishes, however it finishes, with the
 	// terminal reason as the event stream records it.
 	OnEnd func(reason string, err error)
+	// admin is whether the person starting it is a server administrator,
+	// which an edition's SandboxCaller is told for the session's sandbox.
+	admin bool
 }
 
 // recordConfigAttempts records, after a session's start, the settings the
@@ -1318,7 +1321,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	spec := StartSpec{
 		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID,
-		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()),
+		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()), admin: s.isAdminCtx(r.Context()),
 	}
 	start := s.StartSession
 	if idle {
@@ -1960,7 +1963,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	recorder.Redact = red
 	recorder.Advance(events[len(events)-1].Seq)
 
-	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant}
+	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant, admin: s.isAdminCtx(ctx)}
 	if spec.Prompt == "" {
 		spec.Prompt = prompt
 	}

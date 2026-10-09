@@ -76,6 +76,8 @@ type Config struct {
 // Binding is one session asking for its sandbox.
 type Binding struct {
 	SessionID, User, Tenant string
+	// Admin is whether the user is a server administrator, for the edition's scope.
+	Admin bool
 	// Shared is the server's bash; the session's keeps its secrets and settings.
 	Shared tools.Bash
 	// Recorder is the session's record; sandbox.bound goes to it before the
@@ -94,7 +96,14 @@ type Bound struct {
 // ScopeFunc is an edition's scope for a user's sandboxes, such as the
 // reserved label of the Team workspace the user acts in; nil or empty for none.
 // An error refuses the session.
-type ScopeFunc func(ctx context.Context, tenant, user string) (map[string]string, error)
+type ScopeFunc func(ctx context.Context, req ScopeRequest) (map[string]string, error)
+
+// ScopeRequest is whose sandbox a scope is asked for.
+type ScopeRequest struct {
+	Tenant, User string
+	// Admin is whether the user is a server administrator.
+	Admin bool
+}
 
 // Manager gives sessions their sandboxes.
 type Manager struct {
@@ -267,7 +276,7 @@ func (m *Manager) scopeOf(ctx context.Context, b Binding) (map[string]string, er
 	if f == nil {
 		return nil, nil
 	}
-	scope, err := f(ctx, b.Tenant, b.User)
+	scope, err := f(ctx, ScopeRequest{Tenant: b.Tenant, User: b.User, Admin: b.Admin})
 	if err != nil {
 		return nil, err
 	}

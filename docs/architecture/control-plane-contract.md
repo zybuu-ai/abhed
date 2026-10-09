@@ -624,7 +624,9 @@ on (it needs `control_plane.enabled` and refuses `shared_workspace`):
   confines the user's calls on it; and warm pools are kept per scope
   (`PoolConfig.Scope`), each made on a scope's first session, so every fill
   is admitted and counted in its scope and a claim never moves a member out
-  of it. A refusal refuses the session. Everything the server does for a
+  of it. The caller passed in carries `Admin` for a server administrator,
+  so an edition that leaves an administrator unscoped gives their session
+  an unscoped sandbox; only the edition's refusal refuses the session. Everything the server does for a
   session's sandbox or a warm pool reaches the guard with
   `Admission.Origin` `session` (set only by the server, from the context,
   never from a request): a guard counts it against quotas but should not

@@ -219,7 +219,9 @@ shown to the edition's guard as the session's own, so a four-eyes rule on
 creating or deleting sandboxes does not hold a session someone has already
 started. Warm pools are kept per workspace, made
 when a workspace's first session starts, and each fill is counted in that
-workspace. A user who is in no workspace gets no session.
+workspace. A user who is in no workspace gets no session, unless they are
+a server administrator the edition leaves unscoped: their session then gets
+an unscoped sandbox of its own.
 
 **Isolation.** Under the `process` driver each session's commands can
 neither read nor write the other sessions' folders; under `docker` and
