@@ -223,6 +223,10 @@ type PoolConfig struct {
 	Size int
 	// Create is what each member is made from; it carries no labels.
 	Create CreateRequest
+	// Scope, when set, is reserved labels every member carries and is made
+	// under, such as an edition's workspace, so its guard admits and counts
+	// each fill as that scope's.
+	Scope map[string]string
 	// Interval is how often the pool is checked besides after each claim.
 	Interval time.Duration
 }
@@ -249,6 +253,13 @@ func (s *Service) NewPool(cfg PoolConfig) (*Pool, error) {
 	if len(cfg.Create.Labels) > 0 {
 		return nil, fmt.Errorf("%w: pool members carry no labels of their own", ErrInvalid)
 	}
+	if err := checkScope(cfg.Scope); err != nil {
+		return nil, err
+	}
+	if _, ok := cfg.Scope[LabelPool]; ok {
+		return nil, fmt.Errorf("%w: a pool's scope cannot set %s", ErrInvalid, LabelPool)
+	}
+	cfg.Scope = maps.Clone(cfg.Scope)
 	if err := s.cfg.Settings.Check(cfg.Create.Settings); err != nil {
 		return nil, err
 	}
@@ -259,7 +270,17 @@ func (s *Service) NewPool(cfg PoolConfig) (*Pool, error) {
 }
 
 func (p *Pool) caller() Caller {
-	return Caller{Principal: SessionsPrincipal, Scope: map[string]string{LabelPool: p.cfg.Key}}
+	return Caller{Principal: SessionsPrincipal, Scope: p.labels()}
+}
+
+// labels are what every member carries until it is claimed.
+func (p *Pool) labels() map[string]string {
+	l := maps.Clone(p.cfg.Scope)
+	if l == nil {
+		l = map[string]string{}
+	}
+	l[LabelPool] = p.cfg.Key
+	return l
 }
 
 // Members lists the pool's unclaimed sandboxes.
@@ -268,7 +289,7 @@ func (p *Pool) Members(ctx context.Context) ([]Sandbox, error) {
 	after := ""
 	for {
 		items, next, err := p.svc.cfg.Store.List(ctx, ListOptions{Owner: SessionsPrincipal,
-			Labels: map[string]string{LabelPool: p.cfg.Key}, Limit: MaxLimit, After: after})
+			Labels: p.labels(), Limit: MaxLimit, After: after})
 		if err != nil {
 			return nil, storeErr(err)
 		}
@@ -369,6 +390,10 @@ func (p *Pool) Claim(ctx context.Context, c Caller, labels map[string]string) (s
 		if !strings.HasPrefix(k, ReservedPrefix) || k == LabelPool {
 			return Sandbox{}, false, fmt.Errorf("%w: a claim sets only the server's own labels, not %q", ErrInvalid, k)
 		}
+		if _, ok := p.cfg.Scope[k]; ok {
+			// A claim never moves a member out of the scope it was made and counted in.
+			return Sandbox{}, false, fmt.Errorf("%w: a claim cannot change the pool's scope label %q", ErrInvalid, k)
+		}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -399,7 +424,7 @@ func (p *Pool) claim(ctx context.Context, c Caller, m Sandbox, labels map[string
 		return Sandbox{}, err
 	}
 	claimed := func(sb *Sandbox) error {
-		if sb.State != StateReady || sb.Owner != SessionsPrincipal || sb.Labels[LabelPool] != p.cfg.Key {
+		if sb.State != StateReady || sb.Owner != SessionsPrincipal || !scoped(p.labels(), sb.Labels) {
 			return errClaimed
 		}
 		delete(sb.Labels, LabelPool)

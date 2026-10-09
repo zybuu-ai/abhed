@@ -206,6 +206,14 @@ deleted) when the server stops. The pool is in the control plane's store,
 which holds one tenant, so it is never shared across tenants. When the pool
 is empty a session gets a new sandbox.
 
+**Under an edition's workspaces.** When an edition confines sandbox calls
+to a scope, such as a Team workspace, a session's sandbox is made in the
+workspace its user acts in: it carries that workspace's label, so the
+workspace's quotas and approvals count it, and the workspace's policy
+rules judge the commands run in it. Warm pools are kept per workspace, made
+when a workspace's first session starts, and each fill is counted in that
+workspace. A user who is in no workspace gets no session.
+
 **Isolation.** Under the `process` driver each session's commands can
 neither read nor write the other sessions' folders; under `docker` and
 `podman` only the session's own folder, of all the sandboxes' folders, is

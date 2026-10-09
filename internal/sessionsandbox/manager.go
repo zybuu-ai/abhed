@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,10 +91,25 @@ type Bound struct {
 	Bash tools.Bash
 }
 
+// ScopeFunc is an edition's scope for a user's sandboxes, such as the
+// reserved label of the Team workspace the user acts in; nil or empty for none.
+// An error refuses the session.
+type ScopeFunc func(ctx context.Context, tenant, user string) (map[string]string, error)
+
 // Manager gives sessions their sandboxes.
 type Manager struct {
 	cfg  Config
 	pool *controlplane.Pool
+
+	// scope is the edition's, set by SetScope before Run.
+	scope ScopeFunc
+	// pools are the warm pools of each scope, made when a session first
+	// needs one; the unscoped one is pool.
+	pools map[string]*controlplane.Pool
+	// started holds the pools a session asked for, true once running.
+	started map[string]bool
+	runCtx  context.Context
+	runs    sync.WaitGroup
 
 	mu sync.Mutex
 	// bound are the sandboxes this process bound, with the sessions on each
@@ -135,26 +152,141 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	m := &Manager{cfg: cfg, bound: map[string]map[string]bool{}, sessions: map[string]string{}, locks: map[string]*keyLock{}}
+	m := &Manager{cfg: cfg, bound: map[string]map[string]bool{}, sessions: map[string]string{}, locks: map[string]*keyLock{},
+		pools: map[string]*controlplane.Pool{}, started: map[string]bool{}}
 	if cfg.Pool > 0 {
-		p, err := cfg.Service.NewPool(controlplane.PoolConfig{Key: cfg.Template, Size: cfg.Pool,
-			Create: controlplane.CreateRequest{Template: cfg.Template, Driver: cfg.Driver}})
+		p, err := m.newPool(nil)
 		if err != nil {
-			return nil, fmt.Errorf("control_plane.sessions.warm_pool: %w", err)
+			return nil, err
 		}
 		m.pool = p
+		m.pools[""] = p
 	}
 	return m, nil
 }
 
-// Pool is the warm pool, nil when there is none.
+func (m *Manager) newPool(scope map[string]string) (*controlplane.Pool, error) {
+	p, err := m.cfg.Service.NewPool(controlplane.PoolConfig{Key: m.cfg.Template, Size: m.cfg.Pool, Scope: scope,
+		Create: controlplane.CreateRequest{Template: m.cfg.Template, Driver: m.cfg.Driver}})
+	if err != nil {
+		return nil, fmt.Errorf("control_plane.sessions.warm_pool: %w", err)
+	}
+	return p, nil
+}
+
+// Pool is the unscoped warm pool, nil when there is none.
 func (m *Manager) Pool() *controlplane.Pool { return m.pool }
 
-// Run keeps the warm pool full until ctx ends. Close drains it after.
+// SetScope installs the edition's scope, before Run. Each session's sandbox
+// is then made, claimed and counted in its user's scope, and warm pools are
+// kept per scope, from the first session that needs one.
+func (m *Manager) SetScope(f ScopeFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scope = f
+}
+
+// Run keeps the warm pools full until ctx ends. Close drains them after.
 func (m *Manager) Run(ctx context.Context) {
-	if m.pool != nil {
-		m.pool.Run(ctx)
+	m.mu.Lock()
+	m.runCtx = ctx
+	// Under an edition's scope an unscoped fill would be refused by its
+	// guard, so the unscoped pool waits for a session that is unscoped.
+	if m.pool != nil && m.scope == nil {
+		m.started[""] = false
 	}
+	for key, run := range m.started {
+		if !run {
+			m.started[key] = m.startLocked(m.pools[key])
+		}
+	}
+	m.mu.Unlock()
+	<-ctx.Done()
+	m.mu.Lock()
+	m.runCtx = nil
+	m.mu.Unlock()
+	m.runs.Wait()
+}
+
+// startLocked runs p under Run's context, reporting whether it did; the
+// caller holds m.mu.
+func (m *Manager) startLocked(p *controlplane.Pool) bool {
+	if m.runCtx == nil {
+		return false
+	}
+	m.runs.Add(1)
+	go func(ctx context.Context) {
+		defer m.runs.Done()
+		p.Run(ctx)
+	}(m.runCtx)
+	return true
+}
+
+// poolFor is the warm pool of scope, made and started on first use; nil
+// when there is no pool.
+func (m *Manager) poolFor(scope map[string]string) (*controlplane.Pool, error) {
+	if m.cfg.Pool <= 0 {
+		return nil, nil
+	}
+	key := scopeKey(scope)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.pools[key]
+	if !ok {
+		var err error
+		if p, err = m.newPool(scope); err != nil {
+			return nil, err
+		}
+		m.pools[key] = p
+	}
+	if !m.started[key] {
+		m.started[key] = m.startLocked(p)
+	}
+	return p, nil
+}
+
+func scopeKey(scope map[string]string) string {
+	keys := make([]string, 0, len(scope))
+	for k := range scope {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k + "=" + scope[k] + "\x00")
+	}
+	return b.String()
+}
+
+// scopeOf is the edition's scope for the session's user, checked: only
+// reserved labels, and never one naming a session or a pool.
+func (m *Manager) scopeOf(ctx context.Context, b Binding) (map[string]string, error) {
+	m.mu.Lock()
+	f := m.scope
+	m.mu.Unlock()
+	if f == nil {
+		return nil, nil
+	}
+	scope, err := f(ctx, b.Tenant, b.User)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range scope {
+		switch {
+		case k == controlplane.LabelSession || k == controlplane.LabelSessionUser || k == controlplane.LabelPool:
+			return nil, fmt.Errorf("%w: the edition's scope sets the session label %s", controlplane.ErrForbidden, k)
+		case !strings.HasPrefix(k, controlplane.ReservedPrefix) || v == "":
+			return nil, fmt.Errorf("%w: the edition's scope %s=%q is not a reserved label with a value", controlplane.ErrForbidden, k, v)
+		}
+	}
+	return maps.Clone(scope), nil
+}
+
+// with is labels and scope together.
+func with(labels, scope map[string]string) map[string]string {
+	out := maps.Clone(labels)
+	maps.Copy(out, scope)
+	return out
 }
 
 // labels are the reserved labels naming the sandbox of a session.
@@ -243,31 +375,43 @@ func (m *Manager) Bind(ctx context.Context, b Binding) (Bound, error) {
 	defer m.lock(lockKey(labels))()
 	ctx, cancel := context.WithTimeout(ctx, m.cfg.Ready)
 	defer cancel()
-	svc, who := m.cfg.Service, caller(b.User, labels)
+	scope, err := m.scopeOf(ctx, b)
+	if err != nil {
+		return Bound{}, err
+	}
+	// The edition's scope is stamped on what is made and confines the user to it.
+	svc, who := m.cfg.Service, caller(b.User, with(labels, scope))
 
 	sb, found, err := m.find(ctx, labels)
 	if err != nil {
 		return Bound{}, err
 	}
 	fresh := false
-	switch {
-	case found:
+	if found {
+		for k, v := range scope {
+			if sb.Labels[k] != v {
+				return Bound{}, fmt.Errorf("%w: the session's sandbox %s is outside the scope its user acts in now (%s)",
+					controlplane.ErrForbidden, sb.ID, k)
+			}
+		}
 		if sb, err = m.wake(ctx, who, sb); err != nil {
 			return Bound{}, err
 		}
-	case m.pool != nil:
-		var ok bool
-		if sb, ok, err = m.pool.Claim(ctx, who, labels); err != nil {
+	} else {
+		pool, err := m.poolFor(scope)
+		if err != nil {
 			return Bound{}, err
 		}
-		if ok {
-			fresh = true
-			break
+		claimed := false
+		if pool != nil {
+			if sb, claimed, err = pool.Claim(ctx, who, labels); err != nil {
+				return Bound{}, err
+			}
 		}
-		fallthrough
-	default:
-		if sb, err = svc.Create(ctx, maker(labels), controlplane.CreateRequest{Template: m.cfg.Template, Driver: m.cfg.Driver}); err != nil {
-			return Bound{}, err
+		if !claimed {
+			if sb, err = svc.Create(ctx, maker(with(labels, scope)), controlplane.CreateRequest{Template: m.cfg.Template, Driver: m.cfg.Driver}); err != nil {
+				return Bound{}, err
+			}
 		}
 		fresh = true
 	}
@@ -422,7 +566,7 @@ func (m *Manager) Sweep(ctx context.Context, since time.Time, alive func(ctx con
 }
 
 // Close applies the retention to every sandbox this process bound, as the
-// server stops, and drains the warm pool. Run must have returned.
+// server stops, and drains the warm pools. Run must have returned.
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.bound))
@@ -454,8 +598,14 @@ func (m *Manager) Close(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("sandbox %s: %w", id, err))
 		}
 	}
-	if m.pool != nil {
-		if err := m.pool.Drain(ctx); err != nil {
+	m.mu.Lock()
+	pools := make([]*controlplane.Pool, 0, len(m.pools))
+	for _, p := range m.pools {
+		pools = append(pools, p)
+	}
+	m.mu.Unlock()
+	for _, p := range pools {
+		if err := p.Drain(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}

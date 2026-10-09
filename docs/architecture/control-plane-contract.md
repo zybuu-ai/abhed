@@ -613,10 +613,19 @@ on (it needs `control_plane.enabled` and refuses `shared_workspace`):
   The pool is refilled after each claim and every reconcile interval,
   replaces members in `Error`, `Completed` or `Stopped`, and is drained when
   the server stops. It lives in the store, which holds one tenant.
+- An edition's `SandboxCaller` is asked for each session's user, with a
+  `POST /v1/sandboxes` request carrying the session's tenant and user and
+  no headers. Its scope (reserved labels, such as a workspace's) is stamped
+  on the session's sandbox, so the guard admits and counts it there; it
+  confines the user's calls on it; and warm pools are kept per scope
+  (`PoolConfig.Scope`), each made on a scope's first session, so every fill
+  is admitted and counted in its scope and a claim never moves a member out
+  of it. A refusal refuses the session. A sandbox found outside the user's
+  scope now is not reattached. Under an edition's scope no unscoped pool is
+  filled until an unscoped session asks for one.
 - Not yet: the microvm driver cannot hand out a process, so it cannot be
   the session driver; under HA a `process` sandbox lives in the replica
-  that made it; an edition's `SandboxCaller` scope is not applied to a
-  session's sandbox.
+  that made it.
 
 ## 8. Store (Implemented: `controlplane.Store`, memory, SQLite, Postgres)
 

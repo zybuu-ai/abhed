@@ -347,3 +347,67 @@ func TestUserLabelIsATenantsUser(t *testing.T) {
 		t.Fatalf("labels %s %s %s", a, b, c)
 	}
 }
+
+// A scoped pool's fills are made in its scope, so the guard admits and
+// counts each as that scope's; pools of two scopes never share a member, and
+// a claim cannot move one out of its scope.
+func TestScopedPoolFillsAreGuardedInTheirScope(t *testing.T) {
+	ctx := context.Background()
+	r := commandRig(t)
+	ws := cp.ReservedPrefix + "workspace"
+	var mu sync.Mutex
+	created := map[string]int{}
+	guarded(t, r, func(a *cp.Admission) (func(), error) {
+		if a.Action == cp.ActionCreate {
+			mu.Lock()
+			defer mu.Unlock()
+			if created[a.Next.Labels[ws]] >= 2 {
+				return nil, cp.ErrQuotaExceeded
+			}
+			created[a.Next.Labels[ws]]++
+		}
+		return nil, nil
+	})
+	pool := func(scope string) *cp.Pool {
+		p, err := r.svc.NewPool(cp.PoolConfig{Key: "session", Size: 3, Create: cp.CreateRequest{Template: "session"},
+			Scope: map[string]string{ws: scope}, Interval: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	pay, ops := pool("pay"), pool("ops")
+	if err := pay.Fill(ctx); !errors.Is(err, cp.ErrQuotaExceeded) {
+		t.Fatalf("a fill past the scope's quota: %v", err)
+	}
+	if err := ops.Fill(ctx); !errors.Is(err, cp.ErrQuotaExceeded) {
+		t.Fatalf("a fill past the scope's quota: %v", err)
+	}
+	pm, _ := pay.Members(ctx)
+	om, _ := ops.Members(ctx)
+	if len(pm) != 2 || len(om) != 2 || created["pay"] != 2 || created["ops"] != 2 || created[""] != 0 {
+		t.Fatalf("members pay %d ops %d, admitted %v", len(pm), len(om), created)
+	}
+	for _, m := range pm {
+		if m.Labels[ws] != "pay" {
+			t.Fatalf("a pay member carries %v", m.Labels)
+		}
+		if _, err := r.svc.WaitReady(ctx, cp.Caller{Principal: cp.SessionsPrincipal, Scope: map[string]string{cp.LabelPool: "session"}}, m.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	user := cp.Caller{Principal: "alice", Admin: true, Scope: map[string]string{ws: "pay", cp.LabelSession: "s1"}}
+	if _, _, err := pay.Claim(ctx, user, map[string]string{cp.LabelSession: "s1", ws: "ops"}); !errors.Is(err, cp.ErrInvalid) {
+		t.Fatalf("a claim moving a member to another scope: %v", err)
+	}
+	sb, ok, err := pay.Claim(ctx, user, sessionScope("s1"))
+	if err != nil || !ok || sb.Labels[ws] != "pay" || sb.Labels[cp.LabelSession] != "s1" {
+		t.Fatalf("claim %+v %v %v", sb.Labels, ok, err)
+	}
+	if _, err := r.svc.NewPool(cp.PoolConfig{Key: "session", Size: 1, Scope: map[string]string{"team": "x"}}); err == nil {
+		t.Fatal("a pool scoped by a client label was accepted")
+	}
+	if _, err := r.svc.NewPool(cp.PoolConfig{Key: "session", Size: 1, Scope: map[string]string{cp.LabelPool: "other"}}); err == nil {
+		t.Fatal("a pool scope naming the pool label was accepted")
+	}
+}

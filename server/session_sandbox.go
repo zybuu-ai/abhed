@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+
+	"github.com/zybuu-ai/abhed/controlplane"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
@@ -97,4 +100,20 @@ func (s *Server) sessionExists(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	return len(events) > 0, nil
+}
+
+// sessionSandboxScope asks the edition's SandboxCaller where a session's
+// user acts, as for a create of their own, so the session's sandbox is made
+// and counted there.
+func (s *Server) sessionSandboxScope(ctx context.Context, tenant, user string) (map[string]string, error) {
+	ctx = context.WithValue(context.WithValue(ctx, ctxUser, user), ctxTenant, tenant)
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/sandboxes", http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.opts.SandboxCaller(r, controlplane.Caller{Principal: user})
+	if err != nil {
+		return nil, err
+	}
+	return c.Scope, nil
 }

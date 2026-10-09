@@ -3,6 +3,7 @@ package sessionsandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -468,5 +469,123 @@ func TestDriverFailureIsRefused(t *testing.T) {
 	_, err := m.Bind(context.Background(), Binding{SessionID: "s1", User: "alice", Tenant: "default"})
 	if err == nil || !strings.Contains(err.Error(), "engine gone") {
 		t.Fatalf("a sandbox that failed: %v", err)
+	}
+}
+
+// scopeGuard is an edition's guard: every create is in a workspace, and it
+// keeps what it was asked.
+type scopeGuard struct {
+	mu      sync.Mutex
+	creates []map[string]string
+}
+
+func (g *scopeGuard) Admit(_ context.Context, a *controlplane.Admission) (func(), error) {
+	if a.Action != controlplane.ActionCreate {
+		return nil, nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.creates = append(g.creates, a.Next.Labels)
+	if a.Next.Labels[wsKey] == "" {
+		return nil, fmt.Errorf("%w: every sandbox belongs to a workspace", controlplane.ErrForbidden)
+	}
+	return nil, nil
+}
+
+func (g *scopeGuard) unscoped() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n := 0
+	for _, l := range g.creates {
+		if l[wsKey] == "" {
+			n++
+		}
+	}
+	return n
+}
+
+const wsKey = controlplane.ReservedPrefix + "workspace"
+
+// Under an edition's scope, a session's sandbox and the warm pool it is
+// claimed from are made in its user's workspace, so the edition's guard
+// admits and counts each there; no unscoped fill is ever made; a scope that
+// names a session label, or fails, refuses the session; and a sandbox left
+// in another workspace is not reattached.
+func TestEditionScopeAppliesToSandboxesAndPoolFills(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := &scopeGuard{}
+	if err := r.svc.SetGuard(g); err != nil {
+		t.Fatal(err)
+	}
+	m := r.manager(t, func(c *Config) { c.Pool = 1 })
+	var mu sync.Mutex
+	scopes := map[string]map[string]string{"alice": {wsKey: "pay"}, "bob": {wsKey: "ops"},
+		"mallory": {controlplane.LabelSession: "s1"}}
+	m.SetScope(func(_ context.Context, tenant, user string) (map[string]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if s, ok := scopes[user]; ok && tenant == "default" {
+			return s, nil
+		}
+		return nil, fmt.Errorf("%w: %s is in no workspace", controlplane.ErrForbidden, user)
+	})
+	runCtx, stop := context.WithCancel(ctx)
+	ran := make(chan struct{})
+	go func() { defer close(ran); m.Run(runCtx) }()
+
+	a := r.bind(t, m, "s1", "alice")
+	if a.Sandbox.Labels[wsKey] != "pay" || a.Sandbox.Labels[controlplane.LabelSession] != "s1" {
+		t.Fatalf("alice's sandbox: %v", a.Sandbox.Labels)
+	}
+	// The pay pool fills in the background, in pay.
+	m.mu.Lock()
+	pay := m.pools[scopeKey(map[string]string{wsKey: "pay"})]
+	m.mu.Unlock()
+	if pay == nil {
+		t.Fatal("no warm pool for pay")
+	}
+	var member controlplane.Sandbox
+	for deadline := time.Now().Add(10 * time.Second); member.ID == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		ms, _ := pay.Members(ctx)
+		if len(ms) == 1 {
+			var err error
+			if member, err = r.svc.WaitReady(ctx, controlplane.Caller{Principal: controlplane.SessionsPrincipal, Scope: map[string]string{controlplane.LabelPool: DefaultTemplate}}, ms[0].ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if member.Labels[wsKey] != "pay" {
+		t.Fatalf("the pay pool's member: %+v", member.Labels)
+	}
+	if b := r.bind(t, m, "s2", "alice"); b.Sandbox.ID != member.ID || b.Sandbox.Labels[wsKey] != "pay" {
+		t.Fatalf("alice's second session was not claimed from pay's pool: %s %v", b.Sandbox.ID, b.Sandbox.Labels)
+	}
+	if b := r.bind(t, m, "s3", "bob"); b.Sandbox.Labels[wsKey] != "ops" || b.Sandbox.ID == member.ID {
+		t.Fatalf("bob's sandbox: %s %v", b.Sandbox.ID, b.Sandbox.Labels)
+	}
+	for _, user := range []string{"mallory", "carol"} {
+		if _, err := m.Bind(ctx, Binding{SessionID: "x-" + user, User: user, Tenant: "default"}); !errors.Is(err, controlplane.ErrForbidden) {
+			t.Fatalf("%s's session: %v", user, err)
+		}
+	}
+	mu.Lock()
+	scopes["alice"] = map[string]string{wsKey: "ops"}
+	mu.Unlock()
+	if _, err := m.Bind(ctx, Binding{SessionID: "s1", User: "alice", Tenant: "default"}); !errors.Is(err, controlplane.ErrForbidden) {
+		t.Fatalf("a sandbox in pay reattached in ops: %v", err)
+	}
+	stop()
+	<-ran
+	if n := g.unscoped(); n != 0 {
+		t.Fatalf("%d sandboxes were made outside a workspace", n)
+	}
+	if err := m.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for key, p := range m.pools {
+		if left, _ := p.Members(ctx); len(left) != 0 {
+			t.Fatalf("pool %q kept %d after Close", key, len(left))
+		}
 	}
 }

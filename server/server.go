@@ -320,7 +320,10 @@ type Options struct {
 	// SandboxCaller, when set, refines who a sandbox request acts as, from
 	// the caller the server worked out: an edition confines it to a scope,
 	// such as a workspace, or changes what it may administer. An error
-	// refuses the request (controlplane.ErrForbidden is 403).
+	// refuses the request (controlplane.ErrForbidden is 403). Under
+	// SessionSandboxes it is also asked for each session's sandbox, with a
+	// POST /v1/sandboxes request carrying the session's tenant and user and
+	// no headers; its scope is stamped on the sandbox and its warm pool.
 	SandboxCaller func(r *http.Request, c controlplane.Caller) (controlplane.Caller, error)
 	// ApprovalGate, when set, decides who may answer a session's pending
 	// approvals and when an answer settles one. Nil: the session's owner
@@ -695,6 +698,9 @@ func New(opts Options) *Server {
 		v := cp.Settings().For(nil)
 		s.cpMutations = newLimiter(int(v.Int(controlplane.SetMutationsPerMin)), cpRateWindow)
 		s.cpExec = newLimiter(int(v.Int(controlplane.SetExecPerMin)), cpRateWindow)
+	}
+	if opts.SessionSandboxes != nil && opts.SandboxCaller != nil {
+		opts.SessionSandboxes.SetScope(s.sessionSandboxScope)
 	}
 	srv = s
 	s.reportConfigAttempts()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +39,13 @@ type perSessionRig struct {
 }
 
 func newPerSessionRig(t *testing.T, mod func(*sessionsandbox.Config)) *perSessionRig {
+	t.Helper()
+	return newPerSessionRigWith(t, mod, nil)
+}
+
+// newPerSessionRigWith is newPerSessionRig with what an edition adds to the
+// server's options, given the control plane it serves.
+func newPerSessionRigWith(t *testing.T, mod func(*sessionsandbox.Config), edition func(*Options)) *perSessionRig {
 	t.Helper()
 	st, err := controlplane.NewSettings(nil, nil)
 	if err != nil {
@@ -75,9 +84,13 @@ func newPerSessionRig(t *testing.T, mod func(*sessionsandbox.Config)) *perSessio
 		"eve":   {Subject: "eve", Tenant: "other"},
 	}}
 	ws, _ := filepath.EvalSymlinks(t.TempDir())
-	srv := New(Options{Workspace: ws, Config: cfg, Adapter: stubAdapter{}, Auth: mw, ControlPlane: svc,
+	opts := Options{Workspace: ws, Config: cfg, Adapter: stubAdapter{}, Auth: mw, ControlPlane: svc,
 		Registry:         tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}),
-		SessionSandboxes: mgr})
+		SessionSandboxes: mgr}
+	if edition != nil {
+		edition(&opts)
+	}
+	srv := New(opts)
 	return &perSessionRig{srv: srv, h: srv.Handler(), mem: mem, mgr: mgr, ws: ws, root: root}
 }
 
@@ -291,5 +304,108 @@ func TestWithoutPerSessionTheServerWorkspaceIsShared(t *testing.T) {
 	got, err := s.sessionWorkspace(context.Background(), "anything")
 	if err != nil || got != ws {
 		t.Fatalf("session workspace %s %v", got, err)
+	}
+}
+
+// wsLabel is the workspace label of the edition the tests stand in for.
+const wsLabel = controlplane.ReservedPrefix + "workspace"
+
+// workspaceGuard admits a create into a workspace while it holds fewer than
+// quota sandboxes, as the Team edition's quotas count them: by label.
+type workspaceGuard struct {
+	mu      sync.Mutex
+	svc     *controlplane.Service
+	quota   int
+	actions []controlplane.Admission
+}
+
+func (g *workspaceGuard) Admit(ctx context.Context, a *controlplane.Admission) (func(), error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.actions = append(g.actions, *a)
+	if a.Action != controlplane.ActionCreate {
+		return nil, nil
+	}
+	ws := a.Next.Labels[wsLabel]
+	if ws == "" {
+		return nil, fmt.Errorf("%w: every sandbox belongs to a workspace", controlplane.ErrForbidden)
+	}
+	items, _, err := g.svc.Store().List(ctx, controlplane.ListOptions{Labels: map[string]string{wsLabel: ws}, Limit: controlplane.MaxLimit})
+	if err != nil {
+		return nil, err
+	}
+	if len(items) >= g.quota {
+		return nil, fmt.Errorf("%w: workspace %s holds %d sandboxes", controlplane.ErrQuotaExceeded, ws, len(items))
+	}
+	return nil, nil
+}
+
+// Under an edition's SandboxCaller, a session's sandbox is made in the
+// workspace its user acts in: it carries the workspace's label, the guard
+// admits and counts it there, a user in no workspace gets no sandbox, and
+// the workspace's policy layer judges the commands typed in it.
+func TestPerSessionSandboxesTakeTheEditionsScope(t *testing.T) {
+	g := &workspaceGuard{quota: 1}
+	r := newPerSessionRigWith(t, nil, func(o *Options) {
+		g.svc = o.ControlPlane
+		if err := o.ControlPlane.SetGuard(g); err != nil {
+			t.Fatal(err)
+		}
+		o.SandboxCaller = func(r *http.Request, c controlplane.Caller) (controlplane.Caller, error) {
+			if TenantOf(r.Context()) != "default" || UserOf(r.Context()) != c.Principal {
+				return c, fmt.Errorf("%w: asked for %s in %s", controlplane.ErrForbidden, c.Principal, TenantOf(r.Context()))
+			}
+			if c.Principal != "alice" {
+				return c, fmt.Errorf("%w: you are not in a workspace", controlplane.ErrForbidden)
+			}
+			c.Scope = map[string]string{wsLabel: "pay"}
+			return c, nil
+		}
+		o.SessionPolicy = func(_ context.Context, req SessionPolicyRequest) (*PolicyLayer, error) {
+			return &PolicyLayer{Name: "workspace pay", Deny: []string{"bash(touch*)"}}, nil
+		}
+	})
+	id, live := r.open(t, "alice")
+	sb, err := r.mem.Get(context.Background(), filepath.Base(r.srv.workspaceOf(live)))
+	if err != nil || sb.Labels[wsLabel] != "pay" || sb.Labels[controlplane.LabelSession] != id {
+		t.Fatalf("alice's sandbox: %+v %v", sb.Labels, err)
+	}
+
+	// The workspace's rules judge what is typed in the session's sandbox.
+	rec := r.call(t, "POST", "/v1/sessions/"+id+"/exec", "alice", `{"command":"touch planted.txt"}`)
+	var out execResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || !out.IsError {
+		t.Fatalf("a command the workspace denies: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(filepath.Join(r.srv.workspaceOf(live), "planted.txt")); err == nil {
+		t.Fatal("the denied command ran in the sandbox")
+	}
+	rec = r.call(t, "POST", "/v1/sessions/"+id+"/exec", "alice", `{"command":"echo fine"}`)
+	if _ = json.Unmarshal(rec.Body.Bytes(), &out); rec.Code != http.StatusOK || out.IsError || !strings.Contains(out.Output, "fine") {
+		t.Fatalf("an allowed command: %d %s", rec.Code, rec.Body)
+	}
+	g.mu.Lock()
+	var execs int
+	for _, a := range g.actions {
+		if a.Action == controlplane.ActionExec && a.Sandbox.Labels[wsLabel] == "pay" {
+			execs++
+		}
+	}
+	g.mu.Unlock()
+	if execs == 0 {
+		t.Fatal("the guard was not asked about the command in the workspace's sandbox")
+	}
+
+	// The workspace's quota counts the session's sandbox: a second session is refused.
+	if rec := r.call(t, "POST", "/v1/sessions", "alice", `{"workbench":true}`); rec.Code == http.StatusAccepted {
+		t.Fatalf("a session past the workspace's quota: %d %s", rec.Code, rec.Body)
+	}
+	// A user in no workspace gets no session and no sandbox.
+	if rec := r.call(t, "POST", "/v1/sessions", "bob", `{"workbench":true}`); rec.Code == http.StatusAccepted {
+		t.Fatalf("bob, in no workspace, got a session: %s", rec.Body)
+	}
+	if items, _, _ := r.mem.List(context.Background(), controlplane.ListOptions{}); len(items) != 1 {
+		t.Fatalf("sandboxes: %d, want alice's one", len(items))
 	}
 }

@@ -271,7 +271,10 @@ All notable changes to Abhed are recorded here. The format follows
   a new session claims in one guarded update, refilled in the background and
   drained at stop. A session is refused, never moved to the shared sandbox,
   when its sandbox cannot be made Ready, has no isolation, or would be in
-  another tenant. See [Sandboxes over the API](docs/guide/22-sandboxes.md#per-session-sandboxes).
+  another tenant. Under an edition's `SandboxCaller` (a Team workspace),
+  each session's sandbox and warm pool are made in its user's workspace,
+  so the workspace's quotas, approvals and policy rules apply to them. See
+  [Sandboxes over the API](docs/guide/22-sandboxes.md#per-session-sandboxes).
 - `control_plane.docker` and `control_plane.podman` register the container
   drivers in `abhed serve`. Their `binary`, `images`, `mounts`,
   `mount_roots`, `gpus`, `cpus` and `seccomp_profile` are managed only. An
@@ -401,6 +404,10 @@ A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `controlplane.PoolConfig.Scope`: reserved labels a warm pool's members are
+  made and counted under; a claim cannot change them.
+  `server.Options.SandboxCaller` is also asked for each per-session
+  sandbox's user.
 - `internal/sandboxcli` is `abhed sandbox`. `controlplane.Template`,
   `TemplateStore` (implemented by the memory, SQLite and Postgres stores and
   required by `storetest.Run`), `Service.CreateTemplate`, `GetTemplate`,
