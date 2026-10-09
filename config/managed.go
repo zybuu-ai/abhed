@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
@@ -79,8 +80,8 @@ func CheckManagedJSON(data []byte) error {
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		var ute *json.UnmarshalTypeError
-		if errors.As(err, &ute) && ute.Value == "number" {
-			return fmt.Errorf("it holds a number too large to read (%s)", ute.Value)
+		if errors.As(err, &ute) && strings.HasPrefix(ute.Value, "number") {
+			return fmt.Errorf("it holds a number too large to read (%s)", strings.TrimPrefix(ute.Value, "number "))
 		}
 		return err
 	}
@@ -97,17 +98,23 @@ func dupKeys(dec *json.Decoder, path string) error {
 	}
 	switch tok {
 	case json.Delim('{'):
-		seen := map[string]bool{}
+		// Keyed folded: the config decode matches keys regardless of case, so
+		// "PERMISSIONS" after "permissions" is the same setting written twice.
+		seen := map[string]string{}
 		for dec.More() {
 			k, err := dec.Token()
 			if err != nil {
 				return err
 			}
 			key, _ := k.(string)
-			if seen[key] {
-				return fmt.Errorf("the key \"%s\" appears twice in %s", Printable(key), Printable(orRoot(path)))
+			fold := foldKey(key)
+			if first, ok := seen[fold]; ok {
+				if first == key {
+					return fmt.Errorf("the key \"%s\" appears twice in %s", Printable(key), Printable(orRoot(path)))
+				}
+				return fmt.Errorf("the keys \"%s\" and \"%s\" in %s are the same setting", Printable(first), Printable(key), Printable(orRoot(path)))
 			}
-			seen[key] = true
+			seen[fold] = key
 			if err := dupKeys(dec, join(path, key)); err != nil {
 				return err
 			}
@@ -124,6 +131,21 @@ func dupKeys(dec *json.Decoder, path string) error {
 		return err
 	}
 	return nil
+}
+
+// foldKey is a key as encoding/json compares it to a field name: by simple
+// case folding, so "permiſſions" and "PERMISSIONS" both fold to "permissions".
+func foldKey(k string) string {
+	var b strings.Builder
+	for _, r := range k {
+		// The smallest rune of r's fold orbit stands for the whole orbit.
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		b.WriteRune(least)
+	}
+	return b.String()
 }
 
 func orRoot(path string) string {

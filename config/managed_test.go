@@ -223,11 +223,14 @@ func TestAllowRefusedUnderAnyManagedPermission(t *testing.T) {
 // refused: a repeated key, or a value only one of them can hold.
 func TestManagedFileReadTwoWaysIsRefused(t *testing.T) {
 	for name, body := range map[string]string{
-		"repeated, then empty":  `{"permissions":{"deny":["bash(*touch *)"]},"permissions":{}}`,
-		"repeated, then null":   `{"permissions":{"deny":["bash(*touch *)"]},"permissions":null}`,
-		"repeated nested":       `{"permissions":{"deny":["bash(curl *)"],"deny":[]}}`,
-		"number past float64":   `{"_comment":1e400,"permissions":{"deny":["bash(*touch *)"]}}`,
-		"number past float64 2": `{"$note":-1e999,"extensions":[{"name":"x","command":"x"}]}`,
+		"repeated, then empty":   `{"permissions":{"deny":["bash(*touch *)"]},"permissions":{}}`,
+		"repeated, then null":    `{"permissions":{"deny":["bash(*touch *)"]},"permissions":null}`,
+		"repeated nested":        `{"permissions":{"deny":["bash(curl *)"],"deny":[]}}`,
+		"number past float64":    `{"_comment":1e400,"permissions":{"deny":["bash(*touch *)"]}}`,
+		"repeated in two cases":  `{"permissions":{"deny":[]},"PERMISSIONS":{"deny":["bash(*touch *)"]}}`,
+		"repeated, long s":       `{"permissions":{"deny":["bash(*touch *)"]},"permiſſions":{}}`,
+		"inner key in two cases": `{"permissions":{"deny":["bash(*touch *)"],"DENY":null}}`,
+		"number past float64 2":  `{"$note":-1e999,"extensions":[{"name":"x","command":"x"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
@@ -241,6 +244,14 @@ func TestManagedFileReadTwoWaysIsRefused(t *testing.T) {
 				t.Fatalf("loaded %s", body)
 			}
 		})
+	}
+}
+
+// The refusal of an over-large number says so in plain words.
+func TestManagedFileNumberTooLargeIsNamed(t *testing.T) {
+	err := CheckManagedJSON([]byte(`{"_comment":1e400}`))
+	if err == nil || !strings.Contains(err.Error(), "number too large to read (1e400)") {
+		t.Fatalf("got %v", err)
 	}
 }
 
