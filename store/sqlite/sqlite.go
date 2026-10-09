@@ -91,9 +91,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	var mode string
-	if err := s.w.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil || !strings.EqualFold(mode, "wal") {
+	if err := s.w.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
 		_ = s.w.Close()
-		return nil, fmt.Errorf("the control plane's database %s is not in WAL mode (%q): %v", path, mode, err)
+		return nil, fmt.Errorf("the control plane's database %s: reading its journal mode: %w", path, err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		_ = s.w.Close()
+		return nil, fmt.Errorf("the control plane's database %s is not in WAL mode (%q)", path, mode)
 	}
 	s.r, err = sql.Open("sqlite", path+"?"+common+"&_query_only=1")
 	if err != nil {
