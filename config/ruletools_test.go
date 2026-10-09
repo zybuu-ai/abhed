@@ -189,7 +189,7 @@ func TestManagedDenyRefusalIsForEvidentMistakesOnly(t *testing.T) {
 		{`{"permissions":{"deny":["MCP__github__x"]},"extensions":[{"name":"x","command":"true"}]}`, "", false},
 		{`{"permissions":{"deny":["rag_docs"]}}`, "", false},
 		{`{"permissions":{"deny":["jira_create"]}}`, "", false},
-		{`{"permissions":{"deny":["Shell(curl *)"]},"extensions":[{"name":"x","command":"true"}]}`, "", true},
+		{`{"permissions":{"deny":["Shell(curl *)"]},"extensions":[{"name":"x","command":"true"}]}`, "", false},
 		{`{"permissions":{"deny":["jira_create"]},"extensions":[{"name":"x","command":"true"}]}`, "", false},
 		{`{"permissions":{"deny":["mcp__gitlab__x"]}}`, "", false},
 		// A person's own server in another case does not stop startup.

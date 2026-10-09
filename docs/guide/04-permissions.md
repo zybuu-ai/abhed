@@ -205,7 +205,9 @@ rule names may be set up later or on another machine. Only a managed deny
 rule whose tool name is evidently a mistake stops Abhed from starting, with a
 message naming the rule and the file, since Abhed should not run while the
 organisation believes such a rule holds. Evidently a mistake means: another
-tool's name for a built-in (`Shell`, `WebFetch`, `MultiEdit`); a
+tool's name for a built-in (`Shell`, `WebFetch`, `MultiEdit`) while no
+extension that may provide tools is configured (with one, it may be that
+extension's tool, so it fails the doctor instead); a
 built-in written with look-alike letters (the Kelvin sign for `k`); `MCP__`
 written in another case; or an MCP server or knowledge base that the managed
 configuration itself sets, written in another case. A name merely close to a

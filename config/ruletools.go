@@ -111,7 +111,8 @@ func (c Config) ruleToolProblem(tool, list string) problem {
 	if alt != "" {
 		why += fmt.Sprintf(" (did you mean %s?)", alt)
 		// A near miss such as git or sql may be a tool meant ahead: a finding, not a refusal.
-		evident = evident || policy.FamiliarName(tool)
+		// Another harness's name (Shell) is evident unless an extension may offer a tool so named.
+		evident = evident || policy.FamiliarName(tool) && !ext
 	}
 	if ext {
 		return problem{mistake: evident, why: why + "; it matches only a tool an extension provides under exactly that name"}
