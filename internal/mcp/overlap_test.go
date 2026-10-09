@@ -113,3 +113,19 @@ func TestRefusedServerStillClaimsItsNames(t *testing.T) {
 		t.Fatalf("offered %s", got)
 	}
 }
+
+// The tools left out are worked out again on each call.
+func TestOverlapsAreRebuiltEachCall(t *testing.T) {
+	g := NewGateway()
+	g.clients["a"] = &Client{name: "a", tools: []ToolDef{{Name: "b__x"}}}
+	g.clients["a__b"] = &Client{name: "a__b"}
+	g.Tools()
+	if len(g.Overlaps()) != 1 {
+		t.Fatalf("overlaps %q", g.Overlaps())
+	}
+	delete(g.clients, "a__b")
+	g.Tools()
+	if o := g.Overlaps(); len(o) != 0 {
+		t.Fatalf("a stale overlap is still reported: %q", o)
+	}
+}

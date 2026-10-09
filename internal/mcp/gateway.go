@@ -315,9 +315,8 @@ func (g *Gateway) Tools() []tools.Tool {
 	// A write lock: the tools left out are noted.
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.overlaps == nil {
-		g.overlaps = map[string]string{}
-	}
+	// Made again each time, so a tool no longer offered is no longer reported.
+	g.overlaps = map[string]string{}
 
 	var out []tools.Tool
 	names := make([]string, 0, len(g.clients))
