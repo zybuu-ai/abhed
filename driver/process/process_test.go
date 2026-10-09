@@ -345,3 +345,17 @@ func localDir(t *testing.T) string {
 	}
 	return real
 }
+
+// The process driver cannot hold one sandbox to a size, so a Spec that asks
+// for one is refused, never run without it.
+func TestConfigIsRefused(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, ws := fake(t, sandbox.TierProcess)
+	_, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, Config: map[string]string{"memory_mb": "512", "cpus": "1"}})
+	if !errors.Is(err, driver.ErrInvalid) || !strings.Contains(err.Error(), "cpus, memory_mb") {
+		t.Fatalf("a sized spec was not refused: %v", err)
+	}
+	if _, err := d.Status(ctx, "a"); !errors.Is(err, driver.ErrNotFound) {
+		t.Fatal("a refused create left an instance")
+	}
+}

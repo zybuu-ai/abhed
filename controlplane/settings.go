@@ -2,6 +2,8 @@ package controlplane
 
 import (
 	"fmt"
+	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"time"
@@ -32,7 +34,31 @@ const (
 	SetMutationsPerMin   = "rate.mutations_per_minute"
 	SetExecPerMin        = "rate.exec_per_minute"
 	SetReconcileInterval = "reconcile.interval_seconds"
+	// SetCPUs and SetMemoryMB size a sandbox. Unset leaves the size to the
+	// driver; set, a driver that cannot hold a sandbox to it refuses it.
+	SetCPUs     = "resources.cpus"
+	SetMemoryMB = "resources.memory_mb"
 )
+
+// cpusPattern is a CPU count with at most three decimals, as "0.5" or "2".
+var cpusPattern = regexp.MustCompile(`^[0-9]{1,4}(\.[0-9]{1,3})?$`)
+
+// MilliCPUs is a resources.cpus value in thousandths of a CPU; ok is false
+// for an unset or malformed value.
+func MilliCPUs(v string) (int64, bool) {
+	if !cpusPattern.MatchString(v) {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, false
+	}
+	m := int64(math.Round(f * 1000))
+	return m, m >= 10 && m <= 1024*1000
+}
+
+// unboundedRank is an unset size: looser than any value.
+const unboundedRank = math.MinInt64
 
 // Setting is one entry in the registry.
 type Setting struct {
@@ -145,6 +171,33 @@ var Registry = []Setting{
 			return enumRank(tierRanks, "none, process, fence, container or vm")(v)
 		},
 		value: func(c config.Config) string { return c.Sandbox.MinTier }},
+	{Key: SetCPUs, Scope: ScopeSandbox, Config: "control_plane.sandbox_cpus", Default: "",
+		Doc: "CPUs a sandbox may use, such as 0.5 or 2; unset leaves it to the driver",
+		rank: func(v string) (int64, error) {
+			if v == "" {
+				return unboundedRank, nil
+			}
+			m, ok := MilliCPUs(v)
+			if !ok {
+				return 0, fmt.Errorf("a number of CPUs from 0.01 to 1024, at most three decimals")
+			}
+			return -m, nil
+		},
+		value: func(c config.Config) string {
+			if c.ControlPlane.SandboxCPUs == 0 {
+				return ""
+			}
+			return strconv.FormatFloat(c.ControlPlane.SandboxCPUs, 'f', -1, 64)
+		}},
+	{Key: SetMemoryMB, Scope: ScopeSandbox, Config: "control_plane.sandbox_memory_mb", Default: "",
+		Doc: "memory a sandbox may use, in MiB; unset leaves it to the driver",
+		rank: func(v string) (int64, error) {
+			if v == "" {
+				return unboundedRank, nil
+			}
+			return intRank(16, 4<<20, true)(v)
+		},
+		value: func(c config.Config) string { return itoa(c.ControlPlane.SandboxMemoryMB) }},
 	{Key: SetMutationsPerMin, Scope: ScopeGlobal, Config: "control_plane.mutations_per_minute", Default: "120",
 		Doc: "changes to sandboxes one caller may make a minute", rank: intRank(1, 100000, true),
 		value: func(c config.Config) string { return itoa(c.ControlPlane.MutationsPerMinute) }},
