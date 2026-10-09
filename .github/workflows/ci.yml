@@ -183,9 +183,11 @@ jobs:
             echo "cmd/abhed depends on an ee/ package"; exit 1
           fi
           # The changelog and the scan record are history and may name the
-          # old tree; this workflow names the pattern it looks for.
+          # old tree; this workflow names the pattern it looks for. The open
+          # Helm chart, deploy/helm/, is not that tree.
           if git grep -n -E '(^|[^a-z])deploy/' -- '*.go' '*.yml' '*.md' \
-               ':!CHANGELOG.md' ':!docs/trust/security-scans.md' ':!.github/workflows/ci.yml'; then
+               ':!CHANGELOG.md' ':!docs/trust/security-scans.md' ':!.github/workflows/ci.yml' \
+               | grep -E '(^|[^a-z])deploy/($|[^h]|h($|[^e])|he($|[^l])|hel($|[^m])|helm($|[^/]))'; then
             echo "references to the private deployment tree"; exit 1
           fi
 

@@ -7,7 +7,7 @@ with `GET /v1/ready` and `abhed serve -check`.
 ```bash
 helm install abhed deploy/helm/abhed --namespace abhed --create-namespace \
   -f my-values.yaml
-kubectl -n abhed rollout status deploy/abhed
+kubectl -n abhed rollout status deployment/abhed
 ```
 
 Every value is checked against `values.schema.json`, so a misspelt key or a
@@ -127,7 +127,7 @@ Make one with `ssh-keygen -t ed25519 -N '' -f ssh_host_ed25519_key` and
 - **Preflight.** An init container runs `abhed serve -check` with the same
   configuration, Secrets and volumes, so a pod whose model, secrets store,
   sandbox, sign-in, storage or control plane would stop the server never
-  starts. `kubectl logs deploy/abhed -c preflight` shows each check. Turn it
+  starts. `kubectl logs deployment/abhed -c preflight` shows each check. Turn it
   off with `preflight.enabled: false`.
 - **Startup and liveness** probe `GET /v1/health`: the process is up.
 - **Readiness** probes `GET /v1/ready`: the server is not draining, and the
