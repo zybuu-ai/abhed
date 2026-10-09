@@ -149,7 +149,7 @@ func TestMCPRuleShapes(t *testing.T) {
 		"mcp__github__x*":     "the only wildcard",
 		"mcp__GitHub__*":      "configured as \"github\"",
 		"mcp__gitlab__create": "no MCP server \"gitlab\"",
-		"mcp__github__ent__*": "",
+		"mcp__github__ent__*": "also covers the tools of the MCP server \"github\" whose names begin ent__",
 	} {
 		cfg.Permissions.Allow = []string{rule}
 		f := cfg.RuleFindings()
