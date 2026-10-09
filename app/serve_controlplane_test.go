@@ -2,13 +2,18 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/driver"
+	"github.com/zybuu-ai/abhed/driver/builtin"
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
@@ -118,5 +123,32 @@ func TestSandboxWorkspaces(t *testing.T) {
 	}
 	if _, err := os.Stat(d); !os.IsNotExist(err) {
 		t.Fatalf("not removed: %v", err)
+	}
+}
+
+// The control plane's drivers are the ones the configuration describes: a
+// configured microvm driver is selectable by name, and one that cannot be
+// reached refuses its sandboxes rather than being missing.
+func TestControlPlaneDriversFromConfig(t *testing.T) {
+	cfg := config.Default()
+	r, err := controlPlaneDrivers(context.Background(), nil, cfg, builtin.Options{})
+	if err != nil || !slices.Equal(r.Names(), []string{"process"}) {
+		t.Fatalf("%v %v", r.Names(), err)
+	}
+	cfg.Sandbox.MicroVMSocket = filepath.Join(t.TempDir(), "absent.sock")
+	var warn bytes.Buffer
+	r, err = controlPlaneDrivers(context.Background(), &warn, cfg, builtin.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Get("microvm")
+	if err != nil {
+		t.Fatalf("the configured microvm driver is not registered: %v", err)
+	}
+	if _, err := d.Create(context.Background(), driver.Spec{ID: "sbx_0123456789abcdef"}); !errors.Is(err, driver.ErrUnavailable) {
+		t.Fatalf("an unreachable driver did not fail closed: %v", err)
+	}
+	if !strings.Contains(warn.String(), "sandbox driver microvm is unavailable") {
+		t.Fatalf("no warning: %q", warn.String())
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
-	"github.com/zybuu-ai/abhed/driver/process"
+	"github.com/zybuu-ai/abhed/driver/builtin"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
@@ -72,17 +72,34 @@ func sandboxWorkspaces(root, workspace string) (get func(string) (string, error)
 	return get, release, nil
 }
 
-// buildControlPlane builds serve's control plane: the process driver, the
-// store beside the event store, and the settings registry.
+// controlPlaneDrivers is the registry the configuration describes
+// (driver/builtin). A configured driver that cannot be reached is
+// registered refusing every sandbox, and said on w.
+func controlPlaneDrivers(ctx context.Context, w io.Writer, cfg config.Config, opts builtin.Options) (*driver.Registry, error) {
+	drivers, entries, err := builtin.RegistryWith(ctx, cfg, opts)
+	if err != nil {
+		return nil, fmt.Errorf("control_plane: %w", err)
+	}
+	for _, e := range entries {
+		if e.Err != nil && w != nil {
+			fmt.Fprintf(w, "abhed: sandbox driver %s is unavailable (%s): %v\n", e.Name, e.Detail, e.Err)
+		}
+	}
+	return drivers, nil
+}
+
+// buildControlPlane builds serve's control plane: the drivers the
+// configuration describes, the store beside the event store, and the
+// settings registry.
 func buildControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore,
 	redact func(string) string) (*controlplane.Service, string, error) {
 	settings, err := controlplane.SettingsFromConfig(cfg)
 	if err != nil {
 		return nil, "", fmt.Errorf("control_plane: %w", err)
 	}
-	drivers := driver.NewRegistry()
-	if err := drivers.Register(process.New(cfg)); err != nil {
-		return nil, "", fmt.Errorf("control_plane: %w", err)
+	drivers, err := controlPlaneDrivers(ctx, os.Stderr, cfg, builtin.Options{})
+	if err != nil {
+		return nil, "", err
 	}
 	st, audit, label, err := controlPlaneStore(ctx, events)
 	if err != nil {
@@ -93,7 +110,7 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 		return nil, "", err
 	}
 	svc, err := controlplane.New(controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
-		DefaultDriver: process.Name, Workspace: get, ReleaseWorkspace: release, Redact: redact})
+		DefaultDriver: builtin.Default, Workspace: get, ReleaseWorkspace: release, Redact: redact})
 	if err != nil {
 		return nil, "", err
 	}

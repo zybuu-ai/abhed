@@ -3,8 +3,13 @@
 `abhed serve` can manage sandboxes as objects of their own: create one, run
 commands in it, stop it, start it again, delete it, all over `/v1/sandboxes`.
 Each sandbox is confined exactly as a session's commands are today (the
-`process` driver builds it from your `sandbox` settings), and every change
-to one is recorded with who asked for it.
+`process` driver, the default, builds it from your `sandbox` settings), and
+every change to one is recorded with who asked for it. A sandbox may name
+another driver the configuration registers: `microvm`, when the managed
+`sandbox.microvm_socket` is set ([The microVM driver](24-microvm.md)). A
+configured driver that cannot be reached is named when `abhed serve` starts,
+and sandboxes asking for it fail with `unavailable` rather than running
+under another.
 
 This is the control plane. It is off unless you turn it on, and with it off
 `abhed serve` behaves exactly as before. The full contract, including the

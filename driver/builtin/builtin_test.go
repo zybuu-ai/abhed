@@ -15,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/drivertest"
 	"github.com/zybuu-ai/abhed/driver/plugin"
+	"github.com/zybuu-ai/abhed/driver/process"
 )
 
 func TestDefaultsAreUnchanged(t *testing.T) {
@@ -82,5 +83,20 @@ func TestUnreachableMicroVMFailsClosed(t *testing.T) {
 		if entries[1].Err == nil {
 			t.Fatal("doctor would not see it is unreachable")
 		}
+	}
+}
+
+func TestOptionsReachTheProcessDriver(t *testing.T) {
+	r, _, err := RegistryWith(context.Background(), config.Default(), Options{Process: process.Options{SnapshotDir: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Get(process.Name)
+	if err != nil || !d.Info().Has(driver.CapSnapshot) {
+		t.Fatalf("the process driver did not get its snapshot folder: %v %+v", err, d)
+	}
+	r, _, _ = Registry(context.Background(), config.Default())
+	if d, _ := r.Get(process.Name); d.Info().Has(driver.CapSnapshot) {
+		t.Fatal("snapshot declared without a folder")
 	}
 }

@@ -65,9 +65,10 @@ All notable changes to Abhed are recorded here. The format follows
   - On start, `abhed-microvm` takes its state folder's lock and ends the
     VMs a killed run of it left, recognised by a marker beside each chroot.
   - `sandbox.microvm_socket` (managed only) adds the driver to the registry
-    Abhed builds from its configuration (`driver/builtin`), so a sandbox can
-    choose it by name; the default stays `process`. `abhed doctor` shows
-    whether it answers.
+    Abhed builds from its configuration (`driver/builtin`), which `abhed
+    serve`'s control plane uses, so a sandbox can choose it by name; the
+    default stays `process`. `abhed doctor` and `abhed serve` say whether it
+    answers.
   - A CI job boots real microVMs on KVM with a pinned, checksummed
     Firecracker, guest kernel and Alpine base.
   - On macOS it needs a Virtualization.framework helper signed with the

@@ -31,13 +31,23 @@ type Entry struct {
 	Err error
 }
 
+// Options are the operator's settings for the built-in drivers.
+type Options struct {
+	Process process.Options
+}
+
 // Registry registers the drivers cfg configures. A microvm driver that
 // cannot be reached is still registered under its name, refusing every
 // sandbox with the reason, so choosing it fails closed rather than finding
 // no driver or another one.
 func Registry(ctx context.Context, cfg config.Config) (*driver.Registry, []Entry, error) {
+	return RegistryWith(ctx, cfg, Options{})
+}
+
+// RegistryWith is Registry with the operator's options.
+func RegistryWith(ctx context.Context, cfg config.Config, opts Options) (*driver.Registry, []Entry, error) {
 	r := driver.NewRegistry()
-	if err := r.Register(process.New(cfg)); err != nil {
+	if err := r.Register(process.NewWithOptions(cfg, opts.Process)); err != nil {
 		return nil, nil, err
 	}
 	entries := []Entry{{Name: process.Name, Detail: "the configured sandbox tier"}}

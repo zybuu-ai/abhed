@@ -292,7 +292,8 @@ Registration: `driver.Registry` maps names (`[a-z][a-z0-9-]{0,31}`) to drivers.
 always, and `microvm` when the managed `sandbox.microvm_socket` names an
 `abhed-microvm` socket (registered even when it cannot be reached, refusing
 every call with `ErrUnavailable`, so choosing it never falls through).
-`Register` runs `Check` and refuses duplicates. `app.WithDriver` (later work)
+`abhed serve`'s control plane builds its registry this way, and says at
+startup which configured driver cannot be reached. `Register` runs `Check` and refuses duplicates. `app.WithDriver` (later work)
 adds one to the server's registry, which is how the Team module adds the
 Kubernetes driver without CE importing it.
 
