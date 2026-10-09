@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/termline"
@@ -205,6 +206,65 @@ func TestStudioTerminalLinesCtrlCDropsTypedAhead(t *testing.T) {
 	}
 	if want := []string{"sleep 30", "echo after"}; !slices.Equal(ran, want) {
 		t.Fatalf("lines run: %q, want %q", ran, want)
+	}
+}
+
+// A session let go of, by session/close or the editor going away, records
+// its end, after its terminals' last lines, so its report has one; one a
+// run ended keeps that run's totals.
+func TestStudioSessionRecordsItsEndWhenLetGo(t *testing.T) {
+	r := newStudioRig(t, "")
+	lines := func(id, data, want string) {
+		var term struct {
+			TerminalID string `json:"terminalId"`
+		}
+		from := r.cl.mark()
+		r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": data}, nil)
+		waitOutput(r.cl, from, term.TerminalID, want)
+	}
+	lastEnd := func(id string) (agent.SessionEnded, []agent.Event) {
+		t.Helper()
+		evs := r.events(id)
+		last := evs[len(evs)-1]
+		var end agent.SessionEnded
+		if last.Type != agent.EvSessionEnded || json.Unmarshal(last.Payload, &end) != nil {
+			t.Fatalf("the record ends with %s, not session.ended", last.Type)
+		}
+		if rep := hawkeye.Analyze(id, evs); slices.ContainsFunc(rep.Findings, func(f hawkeye.Finding) bool { return f.Code == "no-end" }) {
+			t.Fatalf("HawkEYE finds no end: %+v", rep.Findings)
+		}
+		return end, evs
+	}
+
+	closed := r.open()
+	lines(closed, "echo closed\r", "\r\nclosed\r\n")
+	r.cl.ok("session/close", map[string]any{"sessionId": closed}, nil)
+	if end, _ := lastEnd(closed); end.Reason != agent.TermSessionClosed {
+		t.Fatalf("session/close ended it as %q", end.Reason)
+	}
+
+	ran := r.open()
+	if stop, _ := r.prompt(ran, "hello"); stop != "end_turn" {
+		t.Fatalf("stop: %s", stop)
+	}
+	lines(ran, "sleep 30\r", "\x1b[1msleep 30\x1b[0m\r\n")
+	left := r.open()
+	// The editor going away lets every session go.
+	r.cl.conn.closeAll()
+	end, evs := lastEnd(ran)
+	if end.Reason != agent.TermSessionClosed || end.Turns != 1 || end.TokensIn == 0 {
+		t.Fatalf("closing end after a run: %+v", end)
+	}
+	if obs := evs[len(evs)-2]; obs.Type != agent.EvObservation {
+		t.Fatalf("the stopped line's result is not before the end: %s", obs.Type)
+	}
+	if end, _ := lastEnd(left); end.Reason != agent.TermSessionClosed {
+		t.Fatalf("an untouched session ended as %q", end.Reason)
+	}
+	// The run's end and the closing one; a session closed before records no second.
+	if a, b := count(r.events(ran), agent.EvSessionEnded), count(r.events(closed), agent.EvSessionEnded); a != 2 || b != 1 {
+		t.Fatalf("ends: %d after a run, %d once closed", a, b)
 	}
 }
 

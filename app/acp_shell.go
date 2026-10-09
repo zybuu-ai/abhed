@@ -182,6 +182,7 @@ func (c *acpConn) waitShell(t *acpTerminal) {
 	c.termMu.Lock()
 	delete(c.terms, t.id)
 	c.termMu.Unlock()
+	close(t.done)
 	c.notification("_abhed/terminal/exit", map[string]any{"terminalId": t.id, "code": code})
 }
 

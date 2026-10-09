@@ -587,6 +587,26 @@ func TestAWorkbenchOnlySessionHasNoAgentRun(t *testing.T) {
 	}
 }
 
+// A session the editor closed or let go of ends as session_closed: it is no
+// open session and no abnormal end, and its totals are the last run's.
+func TestAClosedSessionHasAnEnd(t *testing.T) {
+	r := &rec{}
+	r.add(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{"origin": "chat"})
+	r.person("u1", `{"command":"ls"}`, "a.txt", false, 5, false)
+	r.end(agent.TermSessionClosed)
+	got := Analyze("s", r.evs)
+	if got.Outcome != "no agent run" || has(got, "no-end") != nil || has(got, "abnormal-end") != nil {
+		t.Fatalf("a closed terminal-only session: %q %+v", got.Outcome, got.Findings)
+	}
+	r = (&rec{}).user("go").model(1000, 0, 32768).end(agent.TermCompleted)
+	r.person("u2", `{"command":"ls"}`, "a.txt", false, 5, false)
+	r.add(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermSessionClosed, Turns: 1, TokensIn: 1000, TokensOut: 50})
+	got = Analyze("s", r.evs)
+	if got.Outcome != string(agent.TermSessionClosed) || has(got, "no-end") != nil || has(got, "abnormal-end") != nil || got.Totals.Turns != 1 {
+		t.Fatalf("a closed session after a run: %q %+v %+v", got.Outcome, got.Totals, got.Findings)
+	}
+}
+
 // A suggestion's model call is no turn, but its tokens count in the totals,
 // as they do in the session's own.
 func TestSuggestionTokensCountInTheTotals(t *testing.T) {

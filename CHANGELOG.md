@@ -254,6 +254,13 @@ A server with it off starts on the older schema as before.
   lines typed behind it still ran afterwards. Ctrl-C now drops them too, as a
   shell flushes its input on an interrupt, and the terminal says how many
   were not run.
+- An ACP session closed with `session/close`, or left when the editor went
+  away, recorded no end unless a prompt had just ended it, so a session of
+  terminal lines only never had one and HawkEYE reported "The session has no
+  recorded end". It now records `session.ended` with reason `session_closed`
+  after its terminals' last lines, carrying the last run's totals; the session
+  can still be loaded and continued. HawkEYE reports such a session with no
+  agent run as `no agent run`.
 
 ### Dependencies
 

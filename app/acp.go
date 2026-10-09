@@ -523,8 +523,10 @@ func (c *acpConn) shut(s *acpSession) {
 	if cancel != nil {
 		cancel()
 	}
+	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
 	c.unsubscribeSession(s.id)
+	s.recordClosed(cancel != nil)
 	s.agent.Close()
 }
 

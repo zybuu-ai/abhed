@@ -264,7 +264,7 @@ Studio consumes them through the methods below and builds neither.
 | `session/list` (spec) | `{cwd?, cursor?}` → `{sessions: SessionInfo[], nextCursor?}` |
 | `session/load` (spec) | `{sessionId, cwd, mcpServers: [], _meta?: {trust?: "untrusted"}}` → replays the session as `session/update` notifications, then replies `{configOptions, modes, _meta}` |
 | `session/resume` (spec) | same params → no replay; replies as `session/load` |
-| `session/close` (spec) | `{sessionId}` → `{}`: ends the engine's hold on the session; the record stays |
+| `session/close` (spec) | `{sessionId}` → `{}`: ends the engine's hold on the session; the record stays. Unless a running prompt records its own end, or background work its closing one, it records `session.ended` with reason `session_closed` after its terminals' last lines, carrying the last run's totals; so does the editor going away. The session stays resumable. |
 | `_abhed/session/rename` | `{sessionId, name}` → `{}`, recorded `session.named` |
 
 ```ts

@@ -78,6 +78,8 @@ type acpTerminal struct {
 	running context.CancelFunc
 	// shell is set for an interactive terminal.
 	shell *acpShell
+	// done is closed once the terminal has recorded its last line or exit.
+	done chan struct{}
 }
 
 func (c *acpConn) terminalCreate(msg rpcMessage) {
@@ -121,7 +123,7 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
-	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel}
+	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	if p.Mode == "interactive" {
 		if e := c.startShell(t, parts, bash, iso, p.Cols, p.Rows); e != nil {
 			cancel()
@@ -345,6 +347,7 @@ func (e *escState) drop(b byte) bool {
 func (c *acpConn) runTerminal(t *acpTerminal) {
 	defer func() {
 		c.notification("_abhed/terminal/exit", map[string]any{"terminalId": t.id, "code": 0})
+		close(t.done)
 	}()
 	c.output(t, linePrompt(t.sess))
 	ahead := false
@@ -532,7 +535,11 @@ func (c *acpConn) dropTerminal(t *acpTerminal) {
 	t.cancel()
 }
 
-// killTerminals ends a session's terminals, or every one for "".
+// terminalDrain bounds how long killTerminals waits for terminals to settle.
+var terminalDrain = 10 * time.Second
+
+// killTerminals ends a session's terminals, or every one for "", and waits a
+// while for each to record what it ran.
 func (c *acpConn) killTerminals(sessionID string) {
 	c.termMu.Lock()
 	var mine []*acpTerminal
@@ -544,6 +551,14 @@ func (c *acpConn) killTerminals(sessionID string) {
 	c.termMu.Unlock()
 	for _, t := range mine {
 		c.dropTerminal(t)
+	}
+	bound := time.After(terminalDrain)
+	for _, t := range mine {
+		select {
+		case <-t.done:
+		case <-bound:
+			return
+		}
 	}
 }
 
