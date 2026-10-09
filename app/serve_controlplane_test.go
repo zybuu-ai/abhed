@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/builtin"
 	"github.com/zybuu-ai/abhed/internal/managed"
@@ -196,5 +197,60 @@ func TestControlPlaneDriversFromConfig(t *testing.T) {
 	}
 	if !strings.Contains(warn.String(), "sandbox driver microvm is unavailable") {
 		t.Fatalf("no warning: %q", warn.String())
+	}
+}
+
+// serve's control plane snapshots through the process driver into its
+// state folder, records the driver's own event, and exposes only when on.
+func TestBuiltControlPlaneSnapshotsAndRecords(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	ws := t.TempDir()
+	built, err := buildControlPlane(context.Background(), cfg, ws, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.expose != nil {
+		t.Fatal("exposures are on by default")
+	}
+	ctx := context.Background()
+	who := controlplane.Caller{Principal: "alice"}
+	sb, err := built.svc.Create(ctx, who, controlplane.CreateRequest{Template: "default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := built.svc.Reconcile(ctx, sb.ID); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := built.svc.Snapshot(ctx, who, sb.ID, "", "first")
+	if err != nil {
+		t.Fatalf("snapshot through serve's process driver: %v", err)
+	}
+	dir, _ := snapshotDir(cfg.ControlPlane)
+	stateDir, _ := controlPlaneStateDir()
+	if !within(dir, stateDir) || within(dir, ws) {
+		t.Fatalf("snapshots in %s", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, sb.ID)); err != nil {
+		t.Fatalf("no snapshot folder: %v", err)
+	}
+	evs, _ := built.svc.Store().(controlplane.AuditReader).AuditFor(ctx, sb.ID)
+	recorded := false
+	for _, ev := range evs {
+		recorded = recorded || ev.Action == driver.EventSnapshot && ev.Principal == controlplane.DriverPrincipal && ev.Detail["digest"] == ref.Digest
+	}
+	if !recorded {
+		t.Fatalf("the driver's snapshot is not in the record: %+v", evs)
+	}
+
+	cfg.ControlPlane.Expose = true
+	if built, err = buildControlPlane(context.Background(), cfg, ws, nil, nil); err != nil || built.expose == nil || !built.expose.Enabled() {
+		t.Fatalf("exposures asked for: %+v %v", built.expose, err)
+	}
+	cfg.ControlPlane.SnapshotDir = "relative"
+	if _, err := buildControlPlane(context.Background(), cfg, ws, nil, nil); err == nil {
+		t.Fatal("a relative snapshot folder was accepted")
 	}
 }

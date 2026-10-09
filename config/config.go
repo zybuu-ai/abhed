@@ -644,6 +644,14 @@ type ControlPlaneConfig struct {
 	// SharedWorkspace gives every sandbox the server's workspace instead, as
 	// sessions have; WorkspaceRoot must then be unset.
 	SharedWorkspace bool `json:"shared_workspace,omitempty"`
+	// SnapshotDir holds sandbox snapshots, outside every workspace. Empty
+	// means a folder in the control plane's state folder.
+	SnapshotDir string `json:"snapshot_dir,omitempty"`
+	// Expose lets :expose publish a sandbox's port to whoever asked, on an
+	// authenticated path. Off by default.
+	Expose bool `json:"expose,omitempty"`
+	// ExposeMaxTTLSeconds bounds an exposure's life. Zero means an hour.
+	ExposeMaxTTLSeconds int `json:"expose_max_ttl_seconds,omitempty"`
 	// ExecTimeoutSeconds bounds one :exec.
 	ExecTimeoutSeconds int `json:"exec_timeout_seconds,omitempty"`
 	// ExecOutputBytes bounds what one :exec may write, stdout and stderr together.

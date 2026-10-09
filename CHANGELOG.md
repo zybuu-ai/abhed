@@ -29,9 +29,11 @@ All notable changes to Abhed are recorded here. The format follows
   `:stop` and `:exec` with its output streamed as NDJSON. `Idempotency-Key`
   replays a request instead of repeating it, and `If-Match` refuses a change
   made against a stale version. Every change is recorded with who asked, in
-  an append-only `sandbox_audit` table on Postgres. `:attach`, `:ssh`,
-  `:forward`, `:expose`, `:cp`, `:snapshot` and `:restore` answer `501` for
-  now. Each sandbox works in a folder of its own, outside the server's
+  an append-only `sandbox_audit` table on Postgres. `:snapshot`,
+  `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
+  forwards where it has them (snapshots in `control_plane.snapshot_dir`;
+  exposing off unless `control_plane.expose` is on) and answer `501` where
+  it does not; `:attach`, `:ssh` and `:forward` answer `501` for now. Each sandbox works in a folder of its own, outside the server's
   workspace and `~/.abhed`, unless `control_plane.shared_workspace` asks for
   the server's workspace. See [Sandboxes over the
   API](docs/guide/22-sandboxes.md).
@@ -247,6 +249,11 @@ A server with it off starts on the older schema as before.
   rather than the last one replacing the others.
 - New package `profiles`: the profiles file, an HTTP client carrying a
   profile's token and TLS settings, and the device and PKCE flows.
+- `controlplane.Service` gains `Snapshot`, `Restore`, `CopyIn`, `CopyOut`,
+  `UseDriver` and `Current`, and `controlplane.DriverRecorder` writes a
+  driver's events to the control plane's record; `server.Options.Expose`
+  serves `:expose` and the exposed services' path; `driver/builtin.RegistryWith`
+  passes the operator's options to the built-in drivers.
 - `config.Config.ManagedScreens` reports whether the managed file itself sets
   the deny rules or the extensions, which is when a terminal must judge each
   line.

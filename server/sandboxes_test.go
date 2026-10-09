@@ -21,6 +21,7 @@ import (
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/drivertest"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/server/expose"
 )
 
 // tokens maps bearer tokens to who they sign in.
@@ -43,11 +44,18 @@ type cpRig struct {
 
 func newCPRig(t *testing.T, values map[string]string) *cpRig {
 	t.Helper()
+	return newCPRigWith(t, values, nil, driver.CapAttach)
+}
+
+// newCPRigWith is newCPRig with the fake declaring caps and, when ex is
+// set, exposures served from it.
+func newCPRigWith(t *testing.T, values map[string]string, ex *expose.Server, caps ...driver.Capability) *cpRig {
+	t.Helper()
 	st, err := controlplane.NewSettings(values, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake := drivertest.New("process", driver.CapAttach)
+	fake := drivertest.New("process", caps...)
 	reg := driver.NewRegistry()
 	if err := reg.Register(fake); err != nil {
 		t.Fatal(err)
@@ -68,7 +76,7 @@ func newCPRig(t *testing.T, values map[string]string) *cpRig {
 		"eve":   {Subject: "eve", Tenant: "other"},
 	}}
 	srv := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
-		Registry: tools.NewRegistry(tools.Read{}), Auth: mw, ControlPlane: svc})
+		Registry: tools.NewRegistry(tools.Read{}), Auth: mw, ControlPlane: svc, Expose: ex})
 	return &cpRig{srv: srv, h: srv.Handler(), svc: svc, store: mem, fake: fake}
 }
 
@@ -372,13 +380,16 @@ func TestSandboxVerbsAndExecStream(t *testing.T) {
 			t.Errorf("exec %s: %d", body, rec.Code)
 		}
 	}
-	// Seams owned by later work answer 501 with the contract's code.
+	// Seams owned by later work, and capabilities the driver lacks, answer
+	// 501 with the contract's code.
 	for _, c := range []cpCall{
 		{method: "GET", path: "/v1/sandboxes/" + sb.ID + ":attach"},
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":ssh"},
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":forward", body: `{"port":80}`},
-		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":cp"},
+		// The fake declares neither copy nor snapshot, nor is exposing on.
+		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":cp?direction=out&path=f"},
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":snapshot"},
+		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":expose", body: `{"port":80}`},
 		{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", body: `{"command":"cat","stdin":true}`},
 	} {
 		c.token = "alice"

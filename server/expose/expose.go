@@ -117,6 +117,9 @@ func New(opts Options) *Server {
 	return &Server{opts: opts, byID: map[string]*exposure{}}
 }
 
+// Prefix is the path the server is mounted at.
+func (s *Server) Prefix() string { return s.opts.Prefix }
+
 // Enabled reports whether exposing is on.
 func (s *Server) Enabled() bool { return s.opts.Enabled }
 

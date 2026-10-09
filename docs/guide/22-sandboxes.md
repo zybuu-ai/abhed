@@ -29,6 +29,9 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `enabled` | `false` | Serve `/v1/sandboxes` and run the reconciler. |
 | `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. |
 | `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
+| `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace. |
+| `expose` | `false` | Lets `:expose` publish a sandbox's port to whoever asked; see [exposed services](#the-api). |
+| `expose_max_ttl_seconds` | 3600 | Longest an exposure lives. |
 | `exec_timeout_seconds` | 600 | Longest one `:exec` may run. |
 | `exec_output_bytes` | 16 MiB | Most output one `:exec` may write, stdout and stderr together. |
 | `restart_policy` | `never` | `never`, `on-failure` or `always`; see [restarts](#restarts-and-generations). |
@@ -110,10 +113,43 @@ every other route.
 | `DELETE /v1/sandboxes/{id}` | `202`, the sandbox in `Deleting` |
 | `POST /v1/sandboxes/{id}:start`, `:stop` `{grace_seconds?}` | `202` |
 | `POST /v1/sandboxes/{id}:exec` `{argv \| command, cwd?, env?}` | a stream, below |
+| `POST /v1/sandboxes/{id}:snapshot` `{name?}` | `201 {snapshot, generation}`; `snapshot` carries its `digest` |
+| `POST /v1/sandboxes/{id}:restore` `{snapshot}` | `202`, the sandbox in `Starting` as a new generation |
+| `POST /v1/sandboxes/{id}:cp?direction=in&path=…` with a tar body | `200` |
+| `POST /v1/sandboxes/{id}:cp?direction=out&path=…` (or `{direction, path}`) | `200`, a tar stream |
+| `POST /v1/sandboxes/{id}:expose` `{port, ttl_seconds?}` | `201 {id, url, path, expires_at}` |
 
-`:attach`, `:ssh`, `:forward`, `:expose`, `:cp`, `:snapshot`, `:restore`
-and `:exec` with `"stdin": true` answer `501` with code `unsupported` in this
-version.
+These last four use what the sandbox's driver can do. A driver that cannot
+answers `501` with code `unsupported`, before anything is recorded: the
+`process` driver snapshots and restores but does not copy, and the microVM
+driver answers for itself. `:attach`, `:ssh`, `:forward` and `:exec` with
+`"stdin": true` answer `501` in this version.
+
+**Snapshots.** `:snapshot` takes one from a `Ready` sandbox (while its
+commands may write) or a stopped one (consistent). `:restore` takes the
+`snapshot` object `:snapshot` returned, only while the sandbox is
+`Stopped`, `Completed` or `Error`, and starts it again as a new generation.
+The driver refuses a snapshot of another sandbox or one whose content does
+not match its digest. Snapshots are kept in `control_plane.snapshot_dir`
+and deleted with their sandbox; see [Snapshots and
+forwarding](25-snapshots-and-forwarding.md).
+
+**Copies.** Only a `Ready` sandbox takes a copy. The driver keeps paths in
+the workspace and checks every archive entry. A copy out is bounded by
+`exec.output_bytes`; one that fails after its first byte ends the stream
+and says why in the `X-Abhed-Error` trailer.
+
+**Exposed services.** Off unless `control_plane.expose` is on. Then
+`:expose` publishes a port of a `Ready` sandbox at `path` (under
+`/v1/exposed/`), for the caller alone, in its tenant, behind the server's
+sign-in, until `ttl_seconds` (at most `expose_max_ttl_seconds`), or until
+the sandbox stops or starts again. Everyone else gets `404`. The bytes go
+through the driver's forward, so a sandbox without a network serves without
+being given one.
+
+Every snapshot, restore, copy and exposure is in the record twice: the
+request with who asked, and the driver's own `sandbox.snapshot`,
+`sandbox.restore` or `sandbox.expose` event as `system:driver`.
 
 Errors are `{"error": {"code", "message"}}` with codes `invalid`,
 `not_found`, `conflict`, `precondition_failed`, `unsupported`,

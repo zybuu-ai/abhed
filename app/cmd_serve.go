@@ -23,6 +23,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
+	"github.com/zybuu-ai/abhed/server/expose"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -208,20 +209,25 @@ func (a *App) serveCmd(workspace, addr string) int {
 
 	// The sandbox control plane, only when the configuration turns it on.
 	var cp *controlplane.Service
+	var exposed *expose.Server
 	if cfg.ControlPlane.Enabled {
 		live := openVault().Live()
-		var label string
-		cp, label, err = buildControlPlane(context.Background(), cfg, workspace, eventStore,
+		built, err := buildControlPlane(context.Background(), cfg, workspace, eventStore,
 			func(text string) string { return string(live.Redact([]byte(text))) })
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
-		fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", label)
+		cp, exposed = built.svc, built.expose
+		if exposed != nil {
+			defer exposed.Close()
+		}
+		fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", built.label)
 	}
 
 	opts := server.Options{
 		ControlPlane: cp,
+		Expose:       exposed,
 		Addr:         addr,
 		Workspace:    workspace,
 		HomeURL:      cfg.Server.HomeURL,

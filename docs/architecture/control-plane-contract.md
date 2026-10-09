@@ -172,10 +172,16 @@ last `:`; ids never contain one.
 | `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | `snapshot` carries the content `digest`. |
 | `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. |
 
-`:attach`, `:ssh`, `:forward`, `:expose` and `:cp` (P3-05, P3-06) and
-`:snapshot` and `:restore` (P3-08) are routed and answer `501` with code
-`unsupported` until their work lands; the seam is `sandboxVerbs` in
-`server/sandboxes.go`. They check the caller may see the sandbox first.
+`:snapshot`, `:restore`, `:cp` and `:expose` are implemented
+(`server/sandbox_verbs.go`, over `controlplane.Service`'s `Snapshot`,
+`Restore`, `CopyIn`, `CopyOut` and `UseDriver`); each answers `501` with
+code `unsupported`, before anything is recorded, when the sandbox's driver
+lacks the capability, and `:expose` also while the operator has not turned
+exposing on. `:cp` takes `direction` and `path` in the query when the body
+is the tar to copy in. `:attach`, `:ssh` and `:forward` (P3-05, P3-06) are
+routed and answer `501` until their work lands (`:forward` needs a stream
+transport the server does not have yet); the seam is `sandboxVerbs` in
+`server/sandboxes.go`. All check the caller may see the sandbox first.
 
 Every mutating call becomes an event in the record with the principal, the
 sandbox id, generation and the outcome: one `requested` event before it acts

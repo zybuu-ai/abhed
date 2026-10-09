@@ -34,7 +34,7 @@ type verbCall struct {
 }
 
 // sandboxVerbs is the routing seam. Verbs owned by later work answer 501
-// until their handler is set here.
+// until their handler is set here; :forward waits on its stream transport.
 var sandboxVerbs = map[string]sandboxVerb{
 	"start":    {http.MethodPost, (*Server).startSandbox},
 	"stop":     {http.MethodPost, (*Server).stopSandbox},
@@ -42,10 +42,10 @@ var sandboxVerbs = map[string]sandboxVerb{
 	"attach":   {http.MethodGet, unsupportedVerb},
 	"ssh":      {http.MethodPost, unsupportedVerb},
 	"forward":  {http.MethodPost, unsupportedVerb},
-	"expose":   {http.MethodPost, unsupportedVerb},
-	"cp":       {http.MethodPost, unsupportedVerb},
-	"snapshot": {http.MethodPost, unsupportedVerb},
-	"restore":  {http.MethodPost, unsupportedVerb},
+	"expose":   {http.MethodPost, (*Server).exposeSandbox},
+	"cp":       {http.MethodPost, (*Server).cpSandbox},
+	"snapshot": {http.MethodPost, (*Server).snapshotSandbox},
+	"restore":  {http.MethodPost, (*Server).restoreSandbox},
 }
 
 // cpError is the contract's error body.
@@ -142,6 +142,13 @@ func (s *Server) sandboxRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sandboxes/{target}", s.sandboxTarget)
 	mux.HandleFunc("PATCH /v1/sandboxes/{target}", s.sandboxTarget)
 	mux.HandleFunc("DELETE /v1/sandboxes/{target}", s.sandboxTarget)
+	// Exposed services, behind the same sign-in; each answers its owner only.
+	// Registered per method: a method-less pattern would clash with "GET /".
+	if s.opts.Expose != nil {
+		for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
+			mux.Handle(m+" "+s.opts.Expose.Prefix(), s.opts.Expose)
+		}
+	}
 }
 
 // splitTarget splits "sbx_…:verb" at its last ':'.

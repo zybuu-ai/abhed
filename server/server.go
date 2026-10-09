@@ -42,6 +42,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
+	"github.com/zybuu-ai/abhed/server/expose"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -305,6 +306,9 @@ type Options struct {
 	// ControlPlane, when set, serves /v1/sandboxes from it and joins the
 	// readiness check. Nil leaves the routes unregistered.
 	ControlPlane *controlplane.Service
+	// Expose serves the control plane's :expose and the exposed services'
+	// path; nil, or off, and :expose answers 501.
+	Expose *expose.Server
 }
 
 // Server holds live sessions and serves the API.

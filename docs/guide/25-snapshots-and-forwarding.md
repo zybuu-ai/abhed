@@ -6,9 +6,10 @@ publish a sandbox's service on an authenticated path. These are driver
 capabilities in the Go packages `driver/snapshot`, `driver/forward` and
 `server/expose`, part of
 [the control-plane contract](../architecture/control-plane-contract.md) and
-an experimental API until 2.0. Nothing in `abhed` or `abhed serve` uses them
-yet: the `/v1/sandboxes/{id}:snapshot`, `:restore`, `:forward` and `:expose`
-routes and the `abhed sandbox` commands will.
+an experimental API until 2.0. `abhed serve`'s control plane uses them for
+`/v1/sandboxes/{id}:snapshot`, `:restore` and `:expose` ([Sandboxes over the
+API](22-sandboxes.md)); `:forward` and the `abhed sandbox` commands are
+still to come.
 
 Every one of them writes an event to the record, with the sandbox's id and
 generation. A driver built without a record logs a warning instead.
@@ -139,6 +140,7 @@ Off unless the operator sets `Enabled`; then:
   bearer token today, and browser apps will need a separate origin;
 - at most 16 exposures per sandbox.
 
-The REST route that creates exposures (`POST /v1/sandboxes/{id}:expose`) is
-the API's: it calls `Expose` with the authenticated identity and returns
-`{url, expires_at}`.
+`abhed serve` turns this on with `control_plane.expose`: `POST
+/v1/sandboxes/{id}:expose` calls `Expose` with the authenticated identity
+and returns `{id, url, path, expires_at}`, and `Options.Current` follows the
+sandbox's generation.

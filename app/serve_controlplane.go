@@ -10,14 +10,17 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/builtin"
+	"github.com/zybuu-ai/abhed/driver/process"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/server"
+	"github.com/zybuu-ai/abhed/server/expose"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -162,33 +165,68 @@ func controlPlaneDrivers(ctx context.Context, w io.Writer, cfg config.Config, op
 	return drivers, nil
 }
 
+// snapshotDir is where the process driver keeps snapshots.
+func snapshotDir(cp config.ControlPlaneConfig) (string, error) {
+	if cp.SnapshotDir != "" {
+		if !filepath.IsAbs(cp.SnapshotDir) {
+			return "", fmt.Errorf("control_plane.snapshot_dir %q is not an absolute path", cp.SnapshotDir)
+		}
+		return filepath.Clean(cp.SnapshotDir), nil
+	}
+	state, err := controlPlaneStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(state, "snapshots"), nil
+}
+
+// builtControlPlane is serve's control plane and what it serves beside it.
+type builtControlPlane struct {
+	svc *controlplane.Service
+	// expose serves :expose and the exposed services' path.
+	expose *expose.Server
+	label  string
+}
+
 // buildControlPlane builds serve's control plane: the drivers the
-// configuration describes, the store beside the event store, and the
-// settings registry.
+// configuration describes, the store beside the event store, the settings
+// registry, and exposures when they are turned on. Drivers record their
+// own events (snapshots, restores, forwards, exposures) in the control
+// plane's record.
 func buildControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore,
-	redact func(string) string) (*controlplane.Service, string, error) {
+	redact func(string) string) (builtControlPlane, error) {
 	settings, err := controlplane.SettingsFromConfig(cfg)
 	if err != nil {
-		return nil, "", fmt.Errorf("control_plane: %w", err)
-	}
-	drivers, err := controlPlaneDrivers(ctx, os.Stderr, cfg, builtin.Options{})
-	if err != nil {
-		return nil, "", err
+		return builtControlPlane{}, fmt.Errorf("control_plane: %w", err)
 	}
 	st, audit, label, err := controlPlaneStore(ctx, events)
 	if err != nil {
-		return nil, "", fmt.Errorf("control_plane: %w", err)
+		return builtControlPlane{}, fmt.Errorf("control_plane: %w", err)
+	}
+	snaps, err := snapshotDir(cfg.ControlPlane)
+	if err != nil {
+		return builtControlPlane{}, err
+	}
+	record := controlplane.DriverRecorder(audit, nil)
+	drivers, err := controlPlaneDrivers(ctx, os.Stderr, cfg, builtin.Options{Process: process.Options{SnapshotDir: snaps, Record: record}})
+	if err != nil {
+		return builtControlPlane{}, err
 	}
 	get, release, err := sandboxWorkspaces(cfg.ControlPlane, workspace)
 	if err != nil {
-		return nil, "", err
+		return builtControlPlane{}, err
 	}
 	svc, err := controlplane.New(controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
 		DefaultDriver: builtin.Default, Workspace: get, ReleaseWorkspace: release, Redact: redact})
 	if err != nil {
-		return nil, "", err
+		return builtControlPlane{}, err
 	}
-	return svc, label, nil
+	out := builtControlPlane{svc: svc, label: label}
+	if cfg.ControlPlane.Expose {
+		out.expose = expose.New(expose.Options{Enabled: true, Record: record,
+			MaxTTL: time.Duration(cfg.ControlPlane.ExposeMaxTTLSeconds) * time.Second, Current: svc.Current})
+	}
+	return out, nil
 }
 
 // checkLine is one preflight result.
@@ -270,7 +308,8 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		if events == nil {
 			add("control plane", errors.New("needs the event store, which did not open"), "")
 		} else {
-			svc, label, err := buildControlPlane(context.Background(), cfg, workspace, events, nil)
+			built, err := buildControlPlane(context.Background(), cfg, workspace, events, nil)
+			svc, label := built.svc, built.label
 			if err == nil {
 				_, _, err = svc.Store().List(context.Background(), controlplane.ListOptions{Limit: 1})
 			}
