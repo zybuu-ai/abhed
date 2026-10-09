@@ -52,6 +52,12 @@ type ServerConfig struct {
 	Digest string `json:"digest,omitempty"`
 }
 
+// refusal is a server not started for its name, and why.
+type refusal struct {
+	cfg ServerConfig
+	why error
+}
+
 // Gateway manages registered servers and exposes their tools to the agent.
 type Gateway struct {
 	mu      sync.RWMutex
@@ -64,7 +70,9 @@ type Gateway struct {
 	overlaps map[string]string
 	// refused are servers not started because their names overlap another's;
 	// another server's tools named as theirs would be are still left out.
-	refused map[string]bool
+	refused map[string]refusal
+	// pending are servers being connected, whose names are already taken.
+	pending map[string]bool
 	// life is the context Connect was given: a server process lives as long
 	// as it, whatever context a later Restart was called with.
 	life context.Context
@@ -83,7 +91,7 @@ type Gateway struct {
 }
 
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]bool{}}
+	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}}
 }
 
 // Connect starts and initializes the enabled servers. A server that fails to
@@ -109,31 +117,20 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
 			continue
 		}
-		other := OverlappedBy(cfg.Name, enabled)
-		longer := other != ""
-		if other == "" {
-			// A server added while others run is checked against them, either way round.
-			other, longer = g.overlapsRunning(cfg.Name)
-		}
-		if other != "" {
-			if longer {
-				// Kept, so the other server's tools named as this one's would be are left out too.
-				g.mu.Lock()
-				g.refused[cfg.Name] = true
-				g.mu.Unlock()
-			}
-			long, short := cfg.Name, other
-			if !longer {
-				long, short = other, cfg.Name
-			}
-			errs = append(errs, fmt.Errorf("mcp server %q is not started: its name and server %q's overlap (%q begins with %q and \"__\"), "+
-				"so a tool named mcp__%s__… could be either server's and a rule for one would reach the other; rename one of them", cfg.Name, other, long, short, long))
+		// Checked and reserved under one lock, so two servers added at once
+		// cannot both pass; the reservation ends when the connection does.
+		if err := g.reserve(cfg, enabled); err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		if err := g.connectOne(ctx, ctx, cfg); err != nil {
-			g.mu.Lock()
+		err := g.connectOne(ctx, ctx, cfg)
+		g.mu.Lock()
+		delete(g.pending, cfg.Name)
+		if err != nil {
 			g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
-			g.mu.Unlock()
+		}
+		g.mu.Unlock()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
 		}
 	}
@@ -255,6 +252,16 @@ func (g *Gateway) Servers() []ServerStatus {
 					st.Tools = append(st.Tools, d.Name)
 				}
 			}
+		}
+		out = append(out, st)
+	}
+	for name, r := range g.refused {
+		if _, listed := g.configs[name]; listed {
+			continue
+		}
+		st := ServerStatus{Name: name, Transport: "stdio", Err: r.why}
+		if r.cfg.URL != "" {
+			st.Transport = "http"
 		}
 		out = append(out, st)
 	}
@@ -396,12 +403,39 @@ func OverlappedBy(name string, others []string) string {
 	return ""
 }
 
-// overlapsRunning is a server already configured or connected whose name
-// overlaps name, and whether name is the longer of the two.
-func (g *Gateway) overlapsRunning(name string) (other string, longer bool) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs)} {
+// reserve refuses cfg when its name overlaps another server's, in batch,
+// configured, connected or being connected, and otherwise marks it as being
+// connected. A refused name that is the longer of the two is kept, with why.
+func (g *Gateway) reserve(cfg ServerConfig, batch []string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	other, longer := OverlappedBy(cfg.Name, batch), true
+	if other == "" {
+		other, longer = g.overlapping(cfg.Name)
+	}
+	if other == "" {
+		delete(g.refused, cfg.Name)
+		g.pending[cfg.Name] = true
+		return nil
+	}
+	long, short := cfg.Name, other
+	if !longer {
+		long, short = other, cfg.Name
+	}
+	err := fmt.Errorf("mcp server %q is not started: its name and server %q's overlap, so a tool named mcp__%s__… "+
+		"could be server %q's or server %q's, and a rule for one would reach the other; rename one of them", cfg.Name, other, long, short, long)
+	if longer {
+		// Kept, so the other server's tools named as this one's would be are left out too.
+		g.refused[cfg.Name] = refusal{cfg: cfg, why: err}
+	}
+	return err
+}
+
+// overlapping is a server configured, connected or being connected whose
+// name overlaps name, and whether name is the longer of the two. The caller
+// holds g.mu.
+func (g *Gateway) overlapping(name string) (other string, longer bool) {
+	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs), g.pending} {
 		for o := range names {
 			if OverlappedBy(name, []string{o}) != "" {
 				return o, true
@@ -417,7 +451,7 @@ func (g *Gateway) overlapsRunning(name string) (other string, longer bool) {
 // claimedBy is another configured server whose tools' names begin as full
 // does, or "". The caller holds g.mu.
 func (g *Gateway) claimedBy(full, server string) string {
-	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs), g.refused} {
+	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs), keysOf(g.refused), g.pending} {
 		for o := range names {
 			if o != server && strings.HasPrefix(full, "mcp__"+o+"__") {
 				return o

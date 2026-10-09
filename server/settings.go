@@ -274,34 +274,43 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	before := map[string]bool{}
-	for _, t := range gw.Tools() {
-		before[t.Name()] = true
-	}
-
 	errs := gw.Connect(ctx, []mcp.ServerConfig{{
 		Name: req.Name, Command: req.Command, Args: req.Args,
 		URL: req.URL, Enabled: true,
 	}})
 
-	// Only the tools this server brought are added, so a reconnect of one
-	// server does not disturb another's. A tool the gateway no longer offers,
-	// one whose name a refused server now claims, is taken out.
+	// The registry is brought in line with what the gateway offers now, tool
+	// by tool as server and remote name, not by full name: two servers' tools
+	// can share one. Every gateway tool it no longer offers is taken out, and
+	// this server's new ones are added.
 	added := []string{}
-	now := map[string]bool{}
 	s.state.swapTools(func(reg *tools.Registry) {
+		offered := map[string]tools.Tool{}
 		for _, t := range gw.Tools() {
-			now[t.Name()] = true
-			if !before[t.Name()] && len(errs) == 0 {
+			offered[mcpIdentity(t)] = t
+		}
+		have := map[string]bool{}
+		for _, t := range reg.All() {
+			id := mcpIdentity(t)
+			if id == "" {
+				continue
+			}
+			if _, ok := offered[id]; !ok {
+				reg.Remove(t.Name())
+				continue
+			}
+			have[id] = true
+		}
+		if len(errs) > 0 {
+			return
+		}
+		for id, t := range offered {
+			if n, _ := t.(mcpNamed); n != nil && n.ServerName() == req.Name && !have[id] {
 				reg.Add(t)
 				added = append(added, t.Name())
 			}
 		}
-		for name := range before {
-			if !now[name] {
-				reg.Remove(name)
-			}
-		}
+		sort.Strings(added)
 	})
 	if len(errs) > 0 {
 		WriteError(w, http.StatusBadRequest, errs[0].Error())
@@ -313,6 +322,21 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		"name":  req.Name,
 		"tools": added,
 	})
+}
+
+// mcpNamed is a tool that knows its MCP server and its name there.
+type mcpNamed interface {
+	ServerName() string
+	RemoteName() string
+}
+
+// mcpIdentity is an MCP tool's server and remote name, or "" for another tool.
+func mcpIdentity(t tools.Tool) string {
+	n, ok := t.(mcpNamed)
+	if !ok {
+		return ""
+	}
+	return n.ServerName() + "\x00" + n.RemoteName()
 }
 
 // mcpAuditDetail describes an added MCP server without its secrets: the URL

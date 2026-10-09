@@ -7,13 +7,21 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/mcp"
 )
 
 // fakeMCP is an MCP server over HTTP offering the named tools.
 func fakeMCP(t *testing.T, names ...string) string {
+	t.Helper()
+	return slowMCP(t, 0, names...)
+}
+
+// slowMCP is fakeMCP taking delay to answer initialize.
+func slowMCP(t *testing.T, delay time.Duration, names ...string) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -30,6 +38,9 @@ func fakeMCP(t *testing.T, names ...string) string {
 			return
 		}
 		result := `{"protocolVersion":"2024-11-05","serverInfo":{"name":"t","version":"1"},"capabilities":{"tools":{}}}`
+		if req.Method == "initialize" {
+			time.Sleep(delay)
+		}
 		if req.Method == "tools/list" {
 			var defs []string
 			for _, n := range names {
@@ -84,5 +95,50 @@ func TestRuntimeMCPAddRefusesOverlappingNames(t *testing.T) {
 		if !slices.Equal(mcpTools, c.want) {
 			t.Errorf("%s then %s: registered %v, want %v", c.first, c.second, mcpTools, c.want)
 		}
+	}
+}
+
+// Two servers whose names overlap, added at the same moment while each is
+// slow to start, cannot both start: exactly one is refused, and no tool is
+// registered under the other server's name.
+func TestConcurrentMCPAddsOfOverlappingNames(t *testing.T) {
+	gw := mcp.NewGateway()
+	t.Cleanup(gw.Close)
+	g := newHookRig(t, nil, func(o *Options) { o.Gateway = gw })
+	alice := g.signIn(t, "alice")
+	urls := map[string]string{
+		"a":    slowMCP(t, 300*time.Millisecond, "b__x", "y"),
+		"a__b": slowMCP(t, 300*time.Millisecond, "x"),
+	}
+	codes := map[string]int{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for name, u := range urls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, _ := json.Marshal(map[string]string{"name": name, "url": u})
+			rec := g.do(alice, "POST", "/v1/admin/mcp", string(body))
+			mu.Lock()
+			codes[name] = rec.Code
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if (codes["a"] == http.StatusOK) == (codes["a__b"] == http.StatusOK) {
+		t.Fatalf("codes %v: exactly one should start", codes)
+	}
+	want := map[string]string{"mcp__a__y": "a\x00y"}
+	if codes["a__b"] == http.StatusOK {
+		want = map[string]string{"mcp__a__b__x": "a__b\x00x"}
+	}
+	got := map[string]string{}
+	for _, tl := range g.srv.state.toolRegistry().All() {
+		if id := mcpIdentity(tl); id != "" {
+			got[tl.Name()] = id
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("codes %v: registered %q, want %q", codes, got, want)
 	}
 }
