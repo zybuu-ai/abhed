@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"mime"
 	"net/http"
@@ -324,7 +325,8 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// A sandbox of the session's own goes with it, its folder too.
 	if s.opts.SessionSandboxes != nil {
-		if err := s.opts.SessionSandboxes.SessionDeleted(r.Context(), id, UserOf(r.Context()),
+		// The rows are gone, so the sandbox goes too even if the caller stops waiting.
+		if err := s.opts.SessionSandboxes.SessionDeleted(context.WithoutCancel(r.Context()), id, UserOf(r.Context()),
 			storeTenant(s.opts.Config, TenantOf(r.Context()))); err != nil {
 			s.log.Error("deleting the session's sandbox", "session", id, "error", err)
 		}
