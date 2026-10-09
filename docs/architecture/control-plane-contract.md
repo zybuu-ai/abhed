@@ -345,6 +345,14 @@ and the container committed). Details and every admission rule are in
 (`PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables), and `Cwd` must be
 inside the workspace.
 
+The control plane fills `Spec.WriteProtected` from `controlplane.Config`
+for every driver. For a driver its `controlplane.Egress` names (in `abhed
+serve`, `microvm` under the allowlist) it opens a proxy per sandbox before
+`Create` and sets `Spec.Egress`, refusing to build the sandbox when the
+proxy cannot start; each `:exec` gets its own credential in
+`ExecRequest.Env`, ended when the command ends, and a client's own proxy
+variables are refused. The proxy closes when the sandbox is deleted.
+
 ### 5.3 The `microvm` driver (Implemented: `driver/microvm`, experimental)
 
 Each instance is a virtual machine with its own guest kernel, reporting the

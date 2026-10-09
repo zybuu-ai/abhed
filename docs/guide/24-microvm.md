@@ -72,7 +72,8 @@ checks each entry before it touches anything:
   hooks and pointers in any git folder (`config`, `config.worktree`,
   `commondir`, `gitdir`, `hooks/`, `info/attributes`,
   `objects/info/alternates`, and a `.git` file), and the paths the server
-  marks write-protected. A folder holding one of these is never removed or
+  marks write-protected (`abhed serve` passes its own, the same ones its
+  sessions' commands may not write). A folder holding one of these is never removed or
   replaced.
 - Symlinks come back only when they point inside the workspace and at
   nothing protected. Devices, pipes and sockets stay in the VM. Permission
@@ -88,9 +89,12 @@ on the host and in the VM ends up as the VM left it.
 ## Network
 
 The microVM never gets a network device. When the sandbox's policy is
-`sandbox.network: "allowlist"`, the control plane gives the driver the
-session's egress proxy: its Unix socket and the loopback port commands are
-told to use. The driver then:
+`sandbox.network: "allowlist"`, the control plane gives the driver an
+egress proxy: its Unix socket and the loopback port commands are told to
+use. `abhed serve` starts one per microVM sandbox, serving the configured
+allowlist, records each decision with the sandbox's id, and stops it when
+the sandbox is deleted; a sandbox whose proxy cannot start is not created.
+A client of `:exec` cannot set the proxy variables itself. The driver then:
 
 - listens on one host-side vsock port for the guest (Firecracker's
   `v.sock_1025` in the VM's chroot), made before the VM starts;

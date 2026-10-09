@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/zybuu-ai/abhed/driver"
@@ -252,8 +253,17 @@ func (s *Service) spec(sb Sandbox) (driver.Spec, error) {
 	if minTier == "none" {
 		minTier = ""
 	}
-	return driver.Spec{ID: sb.ID, Generation: sb.Generation, Template: sb.Template, PolicyRev: sb.PolicyRev,
-		Workspace: ws, MinTier: minTier, Labels: sb.Labels}, nil
+	spec := driver.Spec{ID: sb.ID, Generation: sb.Generation, Template: sb.Template, PolicyRev: sb.PolicyRev,
+		Workspace: ws, WriteProtected: slices.Clone(s.cfg.WriteProtected), MinTier: minTier, Labels: sb.Labels}
+	if s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver) {
+		// Without its proxy the sandbox is not built, rather than built with no way out it was promised.
+		eg, err := s.cfg.Egress.Open(sb.ID)
+		if err != nil {
+			return driver.Spec{}, fmt.Errorf("%w: the sandbox's egress proxy: %w", driver.ErrUnavailable, err)
+		}
+		spec.Egress = &eg
+	}
+	return spec, nil
 }
 
 // guarded writes fn's change only while sb is still in the state and
@@ -479,6 +489,9 @@ func (s *Service) remove(ctx, call context.Context, sb Sandbox, d driver.Driver,
 	}
 	if err == nil && s.cfg.ReleaseWorkspace != nil {
 		err = s.cfg.ReleaseWorkspace(sb.ID)
+	}
+	if err == nil && s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver) {
+		err = s.cfg.Egress.Close(sb.ID)
 	}
 	if err != nil {
 		now := s.now()

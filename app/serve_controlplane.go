@@ -186,11 +186,14 @@ type builtControlPlane struct {
 	// expose serves :expose and the exposed services' path.
 	expose *expose.Server
 	label  string
+	// close stops what the control plane runs beside its sandboxes.
+	close func()
 }
 
 // buildControlPlane builds serve's control plane: the drivers the
 // configuration describes, the store beside the event store, the settings
-// registry, and exposures when they are turned on. Drivers record their
+// registry, the egress proxies of microvm sandboxes under the allowlist,
+// and exposures when they are turned on. Drivers record their
 // own events (snapshots, restores, forwards, exposures) in the control
 // plane's record.
 func buildControlPlane(ctx context.Context, cfg config.Config, workspace string, events server.EventStore,
@@ -216,12 +219,20 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 	if err != nil {
 		return builtControlPlane{}, err
 	}
-	svc, err := controlplane.New(controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
-		DefaultDriver: builtin.Default, Workspace: get, ReleaseWorkspace: release, Redact: redact})
+	eg, err := newSandboxEgress(cfg, record)
 	if err != nil {
 		return builtControlPlane{}, err
 	}
-	out := builtControlPlane{svc: svc, label: label}
+	svc, err := controlplane.New(controlplane.Config{Store: st, Audit: audit, Drivers: drivers, Settings: settings,
+		DefaultDriver: builtin.Default, Workspace: get, ReleaseWorkspace: release, Redact: redact,
+		WriteProtected: cfg.Sandbox.WriteProtected, Egress: eg})
+	if err != nil {
+		return builtControlPlane{}, err
+	}
+	out := builtControlPlane{svc: svc, label: label, close: func() {}}
+	if se, ok := eg.(*sandboxEgress); ok {
+		out.close = se.closeAll
+	}
 	if cfg.ControlPlane.Expose {
 		out.expose = expose.New(expose.Options{Enabled: true, Record: record,
 			MaxTTL: time.Duration(cfg.ControlPlane.ExposeMaxTTLSeconds) * time.Second, Current: svc.Current})

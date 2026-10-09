@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,11 +40,31 @@ type Config struct {
 	// ReleaseWorkspace, when set, removes what Workspace made, once the
 	// sandbox is deleted.
 	ReleaseWorkspace func(id string) error
+	// WriteProtected are workspace paths no command may write, given to
+	// every driver in Spec.WriteProtected.
+	WriteProtected []string
+	// Egress, when set, gives sandboxes of the drivers it names an egress
+	// proxy (Spec.Egress) and each of their commands a credential for it.
+	Egress Egress
 	// Redact rewrites text before it reaches the record. Nil records a
 	// digest of it instead, so nothing unredacted is ever kept.
 	Redact func(string) string
 	Now    func() time.Time
 	Log    *slog.Logger
+}
+
+// Egress is the egress proxy for drivers that take it from the control
+// plane rather than building their own, as the microvm driver does.
+type Egress interface {
+	// For reports whether sandboxes of the driver get their proxy here.
+	For(driverName string) bool
+	// Open starts the sandbox's proxy, or returns the one it has.
+	Open(sandboxID string) (driver.Egress, error)
+	// Call issues one command's credential: the environment carrying it,
+	// and end, which revokes it.
+	Call(sandboxID string) (env []string, end func(), err error)
+	// Close stops the sandbox's proxy.
+	Close(sandboxID string) error
 }
 
 // Service is the control plane's operations: the REST API and in-process
@@ -452,6 +473,17 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 	if err != nil {
 		return driver.ExecResult{}, sb, fmt.Errorf("%w: driver %s is not registered", ErrUnavailable, sb.Driver)
 	}
+	if s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver) {
+		if k, ok := proxyVariable(req.Env); ok {
+			return driver.ExecResult{}, sb, fmt.Errorf("%w: %s is the sandbox's own under the egress allowlist", ErrInvalid, k)
+		}
+		env, end, err := s.cfg.Egress.Call(id)
+		if err != nil {
+			return driver.ExecResult{}, sb, fmt.Errorf("%w: an egress credential: %w", ErrUnavailable, err)
+		}
+		defer end()
+		dreq.Env = append(slices.Clone(dreq.Env), env...)
+	}
 	command := req.Command
 	if command == "" {
 		command = strings.Join(req.Argv, " ")
@@ -487,4 +519,16 @@ func (s *Service) Exec(ctx context.Context, c Caller, id, ifMatch string, req Ex
 		return driver.ExecResult{}, sb, err
 	}
 	return res, sb, nil
+}
+
+// proxyVariable finds a proxy variable a client tried to set.
+func proxyVariable(env []string) (string, bool) {
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(k) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY":
+			return k, true
+		}
+	}
+	return "", false
 }

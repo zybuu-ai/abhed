@@ -64,9 +64,12 @@ All notable changes to Abhed are recorded here. The format follows
     or onto another filesystem, never outside the workspace, never into
     `.abhed`, git's configuration and hooks or a write-protected path, and
     as the workspace's user. What was refused is listed on stderr.
-  - With the egress allowlist on, the session's egress proxy is the only
-    way out, over vsock, with the same per-call credentials and record;
-    with it off there is no path out at all.
+  - With the egress allowlist on, an egress proxy is the only way out, over
+    vsock, with the same per-call credentials and record; with it off there
+    is no path out at all. `abhed serve` starts one proxy per microVM
+    sandbox, gives each command its own credential, records each decision
+    with the sandbox's id, and refuses an `:exec` that sets the proxy
+    variables itself. It also passes the paths its sessions may not write.
   - On start, `abhed-microvm` takes its state folder's lock and ends the
     VMs a killed run of it left, recognised by a marker beside each chroot.
   - `sandbox.microvm_socket` (managed only) adds the driver to the registry
@@ -249,6 +252,9 @@ A server with it off starts on the older schema as before.
   rather than the last one replacing the others.
 - New package `profiles`: the profiles file, an HTTP client carrying a
   profile's token and TLS settings, and the device and PKCE flows.
+- `controlplane.Config` gains `WriteProtected` and `Egress` (the
+  `controlplane.Egress` interface: a proxy per sandbox for the drivers that
+  take one from the control plane).
 - `controlplane.Service` gains `Snapshot`, `Restore`, `CopyIn`, `CopyOut`,
   `UseDriver` and `Current`, and `controlplane.DriverRecorder` writes a
   driver's events to the control plane's record; `server.Options.Expose`
