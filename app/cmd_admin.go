@@ -271,6 +271,11 @@ func readManagedDoc(file string) (map[string]any, os.FileMode, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	// A file Abhed would refuse is not rewritten: decoding it here would keep
+	// only the last of a repeated key and could drop the organisation's rules.
+	if err := config.CheckManagedJSON(data); err != nil {
+		return nil, 0, fmt.Errorf("%s was not changed: %w; edit it by hand", config.Printable(file), err)
+	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, 0, fmt.Errorf("%s is not valid JSON, so it was not changed: %w", config.Printable(file), err)
 	}
