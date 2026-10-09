@@ -179,6 +179,28 @@ func (s *Server) sessionLayer(spec StartSpec) (*appliedLayer, error) {
 	return a, nil
 }
 
+// screens reports whether the layer has a deny or ask rule for tool, or for
+// every tool, so a terminal must judge each line with it.
+func (a *appliedLayer) screens(tool string) bool {
+	if a == nil {
+		return false
+	}
+	for _, raw := range append(slices.Clone(a.Deny), a.Ask...) {
+		if r, err := policy.ParseRule(raw); err != nil || r.ForTool(tool) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameRules reports whether b holds the deny and ask rules a does.
+func (a *appliedLayer) sameRules(b *appliedLayer) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return slices.Equal(a.Deny, b.Deny) && slices.Equal(a.Ask, b.Ask)
+}
+
 // applyLayer adds a's rules to pol.
 func applyLayer(pol *policy.Engine, a *appliedLayer) error {
 	if a == nil {

@@ -58,10 +58,17 @@ func TestCommandIsRecordedGuardedAndNeedsReady(t *testing.T) {
 	if err != nil || cmd == nil || got.ID != sb.ID {
 		t.Fatal(err)
 	}
-	if a := g.last(); a.Action != cp.ActionExec || a.Caller.Principal != "alice" || a.Exec.Command != "echo hi" {
+	if a := g.last(); a.Action != cp.ActionExec || a.Caller.Principal != "alice" || a.Exec.Command != "echo hi" || a.Exec.Stdin {
 		t.Fatalf("guard saw %+v", a)
 	}
-	if got := outcomes(t, r, sb.ID); !strings.HasSuffix(got, "exec:requested:,exec:ok:") {
+	// A terminal shell reaches the guard as one that reads its input.
+	if _, _, err := r.svc.Command(ctx, user, sb.ID, driver.CommandRequest{Shell: true}); err != nil {
+		t.Fatal(err)
+	}
+	if a := g.last(); a.Exec.Command != ":shell" || !a.Exec.Stdin {
+		t.Fatalf("guard saw the shell as %+v", a.Exec)
+	}
+	if got := outcomes(t, r, sb.ID); !strings.HasSuffix(got, "exec:requested:,exec:ok:,exec:requested:,exec:ok:") {
 		t.Fatalf("record %s", got)
 	}
 	evs, _ := r.store.AuditFor(ctx, sb.ID)

@@ -557,9 +557,15 @@ commands follow `cd` by the same rule, and its result carries the same note.
 A managed file (`/etc/abhed/config.json`) that itself sets `permissions.deny`
 or a non-empty `extensions` list gets that mode without asking, when deny rules for `bash` or
 for every tool (`*`), or an extension's hook, are then in force, because a managed rule is an organisation's statement that
-it holds, and a hook may refuse any command. Deny rules from the defaults, the
-user or the workspace do not, even when an unrelated managed file is present
-(for example one that only turns web search on).
+it holds, and a hook may refuse any command. So does a session whose edition policy layer
+(a Team workspace's rules) has a deny or ask rule for `bash` or for every
+tool (`*`): the terminal says "your workspace's rules", and each line is
+judged with that layer. The layer is read again when the terminal opens: one
+that cannot be read opens no terminal (`503`), and one that gained such rules
+since the session opened asks for the session to be opened again (`409`).
+Deny rules from the defaults, the user or the workspace folder's own
+configuration do not, even when an unrelated managed file is present (for
+example one that only turns web search on).
 A destructive line, one that always confirms, is not run on Enter: the terminal
 shows why and asks `1` No or `2` Yes, run it. Only `2` then Enter runs it,
 recorded as confirmed; `1` or Ctrl-C cancels it, recorded as declined. Either

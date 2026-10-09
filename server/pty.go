@@ -351,6 +351,19 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	resp.Isolation = isolationOf(tool)
 	b, _ := tool.(tools.Bash)
 	_, _, cfg := s.state.snapshot()
+	// The edition's layer for the session's owner, read now: one that cannot
+	// be read opens no terminal at all.
+	layer, err := s.sessionLayer(StartSpec{Tenant: live.Tenant, User: live.User})
+	if err != nil {
+		s.log.Error("terminal refused: the session's policy layer", "session", live.ID, "user", live.User, "error", err)
+		WriteError(w, http.StatusServiceUnavailable, "the terminal was not opened: "+err.Error())
+		return
+	}
+	// Lines are judged by the session's own engine, so it must hold these rules.
+	if layer.screens("bash") && !layer.sameRules(live.layer) {
+		WriteError(w, http.StatusConflict, "your workspace's rules changed since this session was opened; open it again so its terminal judges each line with them")
+		return
+	}
 	switch pol := live.Loop.Policy; {
 	case cfg.Sandbox.Terminal == "lines":
 		resp.Lines = "this server's terminal judges each line before it runs (sandbox.terminal is \"lines\")"
@@ -359,6 +372,8 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	case cfg.ManagedScreens() && pol.Screens("bash"):
 		// Managed deny rules or extensions are the organisation's word that they hold.
 		resp.Lines = "your organisation's policy has deny rules or hooks that could refuse a command, which only a line-by-line terminal applies to every command"
+	case layer.screens("bash") || live.layer.screens("bash"):
+		resp.Lines = "your workspace's rules have deny or ask rules for commands, which only a line-by-line terminal applies to every command"
 	}
 	if resp.Lines != "" {
 		WriteJSON(w, http.StatusOK, resp)

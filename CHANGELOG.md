@@ -44,6 +44,15 @@ All notable changes to Abhed are recorded here. The format follows
   The layer is asked for per caller when the call or connection opens; one
   that cannot be read or applied refuses the call with `503` instead of
   running it under fewer rules.
+- A session's workbench terminal opened an interactive shell even when the
+  session's edition policy layer (a Team workspace's rules) had deny or ask
+  rules for commands, so those rules were not applied to what was typed.
+  Such a layer now gives the line-by-line terminal, each line judged with
+  it, with the reason "your workspace's rules". The layer is read again when
+  the terminal opens: one that cannot be read opens no terminal (`503`), and
+  one that gained such rules since the session opened answers `409` until
+  the session is opened again. A session's terminal shell now reaches a
+  guard with `Admission.Exec.Stdin` set.
 - A shell fed its commands on stdin in a sandbox (the `:exec` WebSocket, an
   SSH exec request such as `ssh host sh < script`, `abhed sandbox exec -i ID
   -- sh`) has that input judged statement by statement while any deny or

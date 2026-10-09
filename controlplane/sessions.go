@@ -77,7 +77,7 @@ func (s *Service) Command(ctx context.Context, c Caller, id string, req driver.C
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return nil, sb, err
 	}
-	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &ExecRequest{Command: line, Cwd: req.Cwd}})
+	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &ExecRequest{Command: line, Cwd: req.Cwd, Stdin: req.Shell}})
 	if err != nil {
 		s.outcome(ctx, ev, err)
 		return nil, sb, err
