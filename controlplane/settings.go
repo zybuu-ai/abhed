@@ -122,7 +122,12 @@ func init() {
 	for _, t := range []sandbox.Tier{sandbox.TierNone, sandbox.TierProcess, sandbox.TierFence, sandbox.TierContainer, sandbox.TierVM} {
 		tierRanks[string(t)] = int64(t.Strength())
 	}
+	// A guest with its own kernel under a hypervisor, from the microvm driver only.
+	tierRanks[TierMicroVM] = int64(sandbox.TierVM.Strength()) + 1
 }
+
+// TierMicroVM is the tier the microvm driver reports, stronger than vm.
+const TierMicroVM = "microvm"
 
 // TierMeets reports whether tier is at least as strong as min. An unknown
 // tier meets nothing; an empty min is met by anything.
@@ -168,7 +173,7 @@ var Registry = []Setting{
 			if v == "" {
 				return 0, nil
 			}
-			return enumRank(tierRanks, "none, process, fence, container or vm")(v)
+			return enumRank(tierRanks, "none, process, fence, container, vm or microvm")(v)
 		},
 		value: func(c config.Config) string { return c.Sandbox.MinTier }},
 	{Key: SetCPUs, Scope: ScopeSandbox, Config: "control_plane.sandbox_cpus", Default: "",

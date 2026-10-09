@@ -147,3 +147,40 @@ func TestNoEgressProxyNoSandbox(t *testing.T) {
 		t.Fatalf("condition %+v", c)
 	}
 }
+
+// A microvm sandbox under the default sandbox.min_tier (process) is Ready,
+// not stopped as weaker for reporting a tier the control plane did not know.
+func TestMicroVMTierMeetsTheFloor(t *testing.T) {
+	st, err := cp.NewSettings(map[string]string{cp.SetMinTier: "process"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := drivertest.New("microvm")
+	vm.Tier = cp.TierMicroVM
+	reg := driver.NewRegistry()
+	_ = reg.Register(drivertest.New("process"))
+	if err := reg.Register(vm); err != nil {
+		t.Fatal(err)
+	}
+	mem := cp.NewMemory()
+	ws := t.TempDir()
+	svc, err := cp.New(cp.Config{Store: mem, Audit: mem, Drivers: reg, Settings: st,
+		Workspace: func(string) (string, error) { return ws, nil }, Now: (&clock{t: t0}).now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &rig{svc: svc, store: mem}
+	ctx := context.Background()
+	sb, err := svc.Create(ctx, alice, cp.CreateRequest{Template: "default", Driver: "microvm",
+		Settings: map[string]string{cp.SetMinTier: "microvm"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.reconcile(t, sb.ID); got.State != cp.StateReady || got.Tier != cp.TierMicroVM {
+		t.Fatalf("microvm sandbox: %s %s", got.State, got.Tier)
+	}
+	p, _ := svc.Create(ctx, alice, cp.CreateRequest{Template: "default", Settings: map[string]string{cp.SetMinTier: "microvm"}})
+	if got := r.reconcile(t, p.ID); got.State != cp.StateError {
+		t.Fatalf("a process sandbox asking for microvm: %s", got.State)
+	}
+}

@@ -102,7 +102,8 @@ shorter timeout, fewer restarts, stronger isolation) and is refused with
 sandboxes created before it too. Without a managed value, a sandbox may set
 any value the setting takes. `isolation.min_tier` is always a floor: a
 sandbox may require stronger isolation than `sandbox.min_tier`, never
-weaker.
+weaker. The strongest is `microvm`, which only the microVM driver meets; it
+meets every other floor.
 
 ## The API
 

@@ -89,6 +89,8 @@ func TestTierMeets(t *testing.T) {
 	}{
 		{"process", "", true}, {"process", "process", true}, {"fence", "process", true},
 		{"process", "container", false}, {"vm", "container", true}, {"", "process", false}, {"weird", "none", false},
+		// A microVM meets every tier, and only it meets microvm.
+		{"microvm", "process", true}, {"microvm", "vm", true}, {"microvm", "microvm", true}, {"vm", "microvm", false},
 	} {
 		if got := cp.TierMeets(c.tier, c.min); got != c.want {
 			t.Errorf("TierMeets(%q, %q) = %v", c.tier, c.min, got)
