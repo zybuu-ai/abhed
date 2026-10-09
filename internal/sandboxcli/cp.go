@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -114,13 +115,24 @@ func (r *runner) copyIn(src, id, dst string) error {
 	}
 	_ = resp.Body.Close()
 	return r.emit(map[string]any{"direction": "in", "sandbox_id": id, "path": dst, "entries": st.Entries, "bytes": st.Bytes,
-		"skipped": st.Skipped}, func(tw *tabwriter.Writer) {
-		fmt.Fprintf(tw, "copied %d entries (%d bytes) into %s:%s", st.Entries, st.Bytes, id, dst)
-		if st.Skipped > 0 {
-			fmt.Fprintf(tw, "; %d links, sockets or devices left out", st.Skipped)
-		}
-		fmt.Fprintln(tw)
+		"skipped": st.Skipped, "state_skipped": st.State}, func(tw *tabwriter.Writer) {
+		fmt.Fprintf(tw, "copied %d entries (%d bytes) into %s:%s%s\n", st.Entries, st.Bytes, id, dst, leftOut(st))
 	})
+}
+
+// leftOut says what a pack left out, "" when nothing.
+func leftOut(st archive.Stats) string {
+	var parts []string
+	if st.Skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d links, sockets or devices", st.Skipped))
+	}
+	if st.State > 0 {
+		parts = append(parts, fmt.Sprintf("%d .abhed (Abhed's state, never copied)", st.State))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, " and ") + " left out"
 }
 
 // copyOut unpacks what the sandbox sends into a local folder. The archive
@@ -139,7 +151,9 @@ func (r *runner) copyOut(id, src, dst string) error {
 		return usageError{fmt.Errorf("%s is Abhed's state, which is never written", dst)}
 	}
 	fi, err := os.Stat(abs)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
+		return usageError{fmt.Errorf("%s does not exist; cp out copies into a folder that does", dst)}
+	} else if err != nil {
 		return err
 	}
 	if !fi.IsDir() {
@@ -159,17 +173,61 @@ func (r *runner) copyOut(id, src, dst string) error {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	before := topNames(root)
 	st, err := archive.Unpack(r.Ctx, resp.Body, root, archive.Limits{}, nil)
 	if err != nil {
+		removeEmptyNew(root, before)
 		return fmt.Errorf("copying %s:%s out stopped after %d entries: %w", id, src, st.Entries, err)
 	}
 	// The trailer arrives once the body has been read to its end.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	if e := resp.Trailer.Get("X-Abhed-Error"); e != "" {
+		removeEmptyNew(root, before)
 		return fmt.Errorf("copying %s:%s out failed after %d entries: %s", id, src, st.Entries, e)
 	}
 	return r.emit(map[string]any{"direction": "out", "sandbox_id": id, "path": src, "entries": st.Entries, "bytes": st.Bytes},
 		func(tw *tabwriter.Writer) {
 			fmt.Fprintf(tw, "copied %d entries (%d bytes) from %s:%s into %s\n", st.Entries, st.Bytes, id, src, dst)
 		})
+}
+
+// topNames are the names in root's folder, nil when it cannot be read.
+func topNames(root *os.Root) map[string]bool {
+	es, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(es))
+	for _, e := range es {
+		out[e.Name()] = true
+	}
+	return out
+}
+
+// removeEmptyNew removes the folders a failed copy out made at the top of
+// root that hold nothing but folders, so it leaves no empty shell behind.
+// A file it wrote is kept, as is everything that was there before.
+func removeEmptyNew(root *os.Root, before map[string]bool) {
+	if before == nil {
+		return
+	}
+	for name := range topNames(root) {
+		if before[name] || !onlyFolders(root, name) {
+			continue
+		}
+		_ = root.RemoveAll(name)
+	}
+}
+
+// onlyFolders reports whether name is a folder whose tree holds only folders.
+func onlyFolders(root *os.Root, name string) bool {
+	ok := true
+	err := fs.WalkDir(root.FS(), name, func(_ string, e fs.DirEntry, err error) error {
+		if err != nil || !e.IsDir() {
+			ok = false
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return ok && err == nil
 }

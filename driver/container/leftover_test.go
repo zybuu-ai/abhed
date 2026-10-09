@@ -3,7 +3,9 @@ package container
 import (
 	"context"
 	"errors"
+	"io"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -80,5 +82,24 @@ func TestCreateClearsItsOwnStoppedLeftover(t *testing.T) {
 	d, ws = testDriver(t, f, Options{}, nil)
 	if _, err := d.Create(context.Background(), spec(ws)); !errors.Is(err, driver.ErrExists) {
 		t.Errorf("over a running leftover: %v, want exists", err)
+	}
+}
+
+// A copy naming a folder that is not there says so in the caller's terms,
+// without the host's path to the workspace.
+func TestCopyNamesAMissingFolderPlainly(t *testing.T) {
+	f := &fakeRunner{podman: true}
+	d, ws := testDriver(t, f, Options{}, nil)
+	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+		t.Fatal(err)
+	}
+	id := "sbx_0123456789abcdef"
+	errIn := d.CopyIn(context.Background(), id, "work", strings.NewReader(""))
+	errOut := d.CopyOut(context.Background(), id, "work/x", io.Discard)
+	for _, err := range []error{errIn, errOut} {
+		if !errors.Is(err, driver.ErrInvalid) || !strings.Contains(err.Error(), "does not exist in the sandbox's workspace") ||
+			strings.Contains(err.Error(), ws) {
+			t.Errorf("copy with a missing folder: %v", err)
+		}
 	}
 }

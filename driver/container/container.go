@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -895,6 +896,7 @@ func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest
 // it is inside the workspace: the workspace is the same path inside, so a
 // link out of it is caught here before the engine follows it.
 func copyPath(workspace, p string) (string, error) {
+	asked := p
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(workspace, p)
 	}
@@ -903,8 +905,11 @@ func copyPath(workspace, p string) (string, error) {
 		return "", driver.Errorf(driver.ErrInvalid, "%s is outside the workspace", p)
 	}
 	real, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		return "", driver.Errorf(driver.ErrInvalid, "%s: %v", p, err)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Named as asked: the host's path to the workspace is not the caller's.
+		return "", driver.Errorf(driver.ErrInvalid, "%s does not exist in the sandbox's workspace", asked)
+	} else if err != nil {
+		return "", driver.Errorf(driver.ErrInvalid, "%s cannot be read in the sandbox's workspace", asked)
 	}
 	wsReal, err := filepath.EvalSymlinks(workspace)
 	if err != nil {

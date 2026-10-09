@@ -686,13 +686,18 @@ A copy in is sent once.
 **Copies.** `cp` moves a tar archive, as `:cp` does. Going in, the local
 file or folder is packed under its own name, leaving out links that lead
 out of it, sockets, devices, pipes and any `.abhed` folder (the count of
-what was left out is printed). Coming out, the archive from the sandbox is
+each that was left out is printed). Coming out, the archive from the sandbox is
 untrusted: every entry is checked as the server checks a copy in (no
 absolute names, no `..`, no links pointing outside the folder or into
 `.abhed`, no devices) and written through an `os.Root` opened on the
 target folder, so nothing lands outside it; an entry in a `.abhed` folder,
 in any case, stops the copy, and no existing file is overwritten. A local
-or sandbox path in `.abhed` is refused before anything is sent.
+or sandbox path in `.abhed` is refused before anything is sent. Both ends
+copy into a folder that already exists: one that does not is named as
+such (`work does not exist in the sandbox's workspace`), so make it first
+with `abhed sandbox exec ID -- mkdir -p work`. A copy out that fails part
+way removes the folders it made that are still empty; files it wrote are
+kept.
 
 **SSH.** `ssh` and `ssh-config` ask the server for the sandbox's host key
 over the signed-in connection and keep it in `sandbox_known_hosts` beside

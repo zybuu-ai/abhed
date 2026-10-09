@@ -525,7 +525,7 @@ func TestCopy(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(src, ".abhed", "secret"), []byte("state"), 0o600)
 	_ = os.Symlink("/etc/passwd", filepath.Join(src, "out-link"))
 	res := r.must(t, "cp", src, sb.ID+":work")
-	if !strings.Contains(res.out, "1 links, sockets or devices left out") {
+	if !strings.Contains(res.out, "1 links, sockets or devices and 1 .abhed (Abhed's state, never copied) left out") {
 		t.Fatalf("cp in: %+v", res)
 	}
 	dst := t.TempDir()
@@ -553,6 +553,11 @@ func TestCopy(t *testing.T) {
 	r.must(t, "cp", sb.ID+":one", one)
 	if b, _ := os.ReadFile(filepath.Join(one, "a.txt")); string(b) != "alpha" {
 		t.Fatalf("one file: %q", b)
+	}
+
+	// A local folder that is not there is named, not a bare stat error.
+	if res := r.run(t, "cp", sb.ID+":one", filepath.Join(one, "missing")); res.code != ExitUsage || !strings.Contains(res.err, "does not exist") {
+		t.Fatalf("into a missing folder: %+v", res)
 	}
 
 	// What the arguments may name.
@@ -629,6 +634,33 @@ func TestCopyOutRefusesEscapes(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(parent, name)); err == nil {
 			t.Errorf("%s was written", name)
 		}
+	}
+}
+
+// A copy out that fails part way leaves no empty folder it made behind,
+// and keeps what was there before.
+func TestFailedCopyOutRemovesTheEmptyFolderItMade(t *testing.T) {
+	r := newRig(t)
+	sb := r.ready(t)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "w2/", Typeflag: tar.TypeDir, Mode: 0o755})
+	_ = tw.WriteHeader(&tar.Header{Name: "w2/sub/", Typeflag: tar.TypeDir, Mode: 0o755})
+	_ = tw.WriteHeader(&tar.Header{Name: "w2/etc", Typeflag: tar.TypeSymlink, Linkname: "/etc"})
+	_ = tw.Close()
+	if err := r.fake.CopyIn(context.Background(), sb.ID, "w2", &buf); err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	_ = os.Mkdir(filepath.Join(dst, "kept"), 0o755)
+	if res := r.run(t, "cp", sb.ID+":w2", dst); res.code != ExitFailed {
+		t.Fatalf("a link out was copied: %+v", res)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "w2")); err == nil {
+		t.Fatal("the failed copy left the empty folder it made")
+	}
+	if _, err := os.Stat(filepath.Join(dst, "kept")); err != nil {
+		t.Fatalf("a folder that was there before was removed: %v", err)
 	}
 }
 

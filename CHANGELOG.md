@@ -367,6 +367,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `abhed sandbox cp`: a folder that does not exist, in the sandbox or on
+  this machine, is named plainly instead of as a host `lstat` error that
+  showed the server's path to the workspace; a copy out that fails part way
+  removes the empty folders it made; and a `.abhed` folder left out of a
+  copy in is counted with the links and devices left out.
 - Reopening a session after the server restarted failed once with "a
   container named abhed-sbx-… already exists". The docker and podman
   drivers now remove a stopped container they left for that sandbox id

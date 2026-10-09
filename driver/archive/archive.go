@@ -56,6 +56,8 @@ type Stats struct {
 	// Skipped are entries left out of a pack: links leading out of the
 	// folder, sockets, devices and pipes.
 	Skipped int `json:"skipped,omitempty"`
+	// State counts the .abhed folders (or files) a pack left out.
+	State int `json:"state,omitempty"`
 }
 
 // Name is an entry's name cleaned, or an error when it is absolute or
@@ -117,9 +119,9 @@ func TypeName(t byte) string {
 }
 
 // Pack writes the folder dir as a tar stream: folders, regular files and
-// links that stay inside it. Abhed's state and names skip reports true are
-// left out, and so are links leading out, sockets, devices and pipes, which
-// Stats.Skipped counts. A file that changes size while it is read fails the
+// links that stay inside it. Names skip reports true are left out; so is
+// Abhed's state, which Stats.State counts, and links leading out, sockets,
+// devices and pipes, which Stats.Skipped counts. A file that changes size while it is read fails the
 // pack, since the archive would not hold what it says.
 func Pack(ctx context.Context, dir string, w io.Writer, lim Limits, skip func(name string) bool) (Stats, error) {
 	root, err := os.OpenRoot(dir)
@@ -143,7 +145,14 @@ func Pack(ctx context.Context, dir string, w io.Writer, lim Limits, skip func(na
 		if name == "." {
 			return nil
 		}
-		if InState(name) || (skip != nil && skip(name)) {
+		if skip != nil && skip(name) {
+			if e.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if InState(name) {
+			st.State++
 			if e.IsDir() {
 				return fs.SkipDir
 			}
