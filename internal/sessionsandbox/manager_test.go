@@ -368,7 +368,18 @@ func TestResumeReattaches(t *testing.T) {
 	if out, err := run(t, b, b.Workspace, "cat notes.txt"); err != nil || out != "kept\n" {
 		t.Fatalf("the folder did not survive: %q %v", out, err)
 	}
-	// After a lost instance (a server restart) too.
+	// After a crash: Ready in the store, the instance gone.
+	if err := r.fake.Delete(ctx, b.Sandbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	lost := r.bind(t, m2, "s1", "alice")
+	if lost.Sandbox.ID != a.Sandbox.ID || lost.Sandbox.State != controlplane.StateReady {
+		t.Fatalf("after a lost instance %+v", lost.Sandbox)
+	}
+	if out, err := run(t, lost, lost.Workspace, "cat notes.txt"); err != nil || out != "kept\n" {
+		t.Fatalf("after a lost instance: %q %v", out, err)
+	}
+	// After a failed instance too.
 	r.fake.SetPhase(b.Sandbox.ID, driver.PhaseFailed)
 	_ = r.svc.Reconcile(ctx, b.Sandbox.ID)
 	c := r.bind(t, m2, "s1", "alice")

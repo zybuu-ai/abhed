@@ -305,6 +305,17 @@ func (m *Manager) Bind(ctx context.Context, b Binding) (Bound, error) {
 // wake starts a stopped or failed sandbox again, once one stopping has.
 func (m *Manager) wake(ctx context.Context, who controlplane.Caller, sb controlplane.Sandbox) (controlplane.Sandbox, error) {
 	svc := m.cfg.Service
+	if sb.State == controlplane.StateReady {
+		// Ready in the store need not be running: a crash loses a process
+		// driver's instances. A pass now finds that out before it is used.
+		if err := svc.Reconcile(ctx, sb.ID); err != nil {
+			return sb, err
+		}
+		var err error
+		if sb, err = svc.Get(ctx, who, sb.ID); err != nil {
+			return sb, err
+		}
+	}
 	if sb.State == controlplane.StateStopping {
 		if err := svc.Settle(ctx, sb.ID); err != nil {
 			return sb, err
