@@ -74,7 +74,7 @@ func sandboxRow(tw *tabwriter.Writer, sb controlplane.Sandbox) {
 	if tier == "" {
 		tier = "-"
 	}
-	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, clean(string(sb.State), 0), clean(tier, 0), clean(sb.Driver, 0),
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", clean(sb.ID, 0), clean(string(sb.State), 0), clean(tier, 0), clean(sb.Driver, 0),
 		clean(sb.Template, 0), joinMap(sb.Labels), age(sb.CreatedAt))
 }
 
@@ -228,7 +228,7 @@ func (r *runner) list(args []string) error {
 		}
 	})
 	if r.out == "table" && out.Next != "" {
-		fmt.Fprintf(r.Err, "more: -after %s\n", out.Next)
+		fmt.Fprintf(r.Err, "more: -after %s\n", clean(out.Next, 0))
 	}
 	return err
 }
@@ -470,7 +470,7 @@ func (r *runner) snapshot(args []string) error {
 	return r.emit(res, func(tw *tabwriter.Writer) {
 		fmt.Fprintln(tw, "SNAPSHOT\tNAME\tDIGEST\tBYTES\tGENERATION")
 		s := res.Snapshot
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\n", s.ID, orDash(s.Name), s.Digest, s.Bytes, res.Generation)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\n", clean(s.ID, 0), clean(orDash(s.Name), 0), clean(s.Digest, 0), s.Bytes, res.Generation)
 	})
 }
 
@@ -566,7 +566,7 @@ func (r *runner) expose(args []string) error {
 	}
 	return r.emit(res, func(tw *tabwriter.Writer) {
 		fmt.Fprintln(tw, "URL\tEXPIRES")
-		fmt.Fprintf(tw, "%s\t%s\n", res.URL, res.ExpiresAt.Local().Format(time.RFC3339))
+		fmt.Fprintf(tw, "%s\t%s\n", clean(res.URL, 0), res.ExpiresAt.Local().Format(time.RFC3339))
 	})
 }
 

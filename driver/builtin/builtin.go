@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -70,7 +71,13 @@ func RegistryWith(ctx context.Context, cfg config.Config, opts Options) (*driver
 		if !c.sec.Enabled {
 			continue
 		}
-		d, err := c.make(cfg, ContainerOptions(c.sec, opts.Container))
+		co := ContainerOptions(c.sec, opts.Container)
+		// Where sandbox workspaces live is never a folder to mount from.
+		co.Reserved = append(slices.Clone(co.Reserved), opts.Process.Hide...)
+		if root := cfg.ControlPlane.WorkspaceRoot; root != "" {
+			co.Reserved = append(co.Reserved, root)
+		}
+		d, err := c.make(cfg, co)
 		if err != nil {
 			return nil, nil, fmt.Errorf("control_plane.%s: %w", c.name, err)
 		}

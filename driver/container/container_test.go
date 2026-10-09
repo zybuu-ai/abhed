@@ -495,7 +495,7 @@ func TestImages(t *testing.T) {
 func TestMinTierAndChosenTier(t *testing.T) {
 	f := &fakeRunner{podman: true}
 	d, ws := testDriver(t, f, Options{}, nil)
-	for tier, want := range map[string]error{"vm": driver.ErrUnavailable, "bogus": driver.ErrInvalid} {
+	for tier, want := range map[string]error{"vm": driver.ErrUnavailable, "microvm": driver.ErrUnavailable, "bogus": driver.ErrInvalid} {
 		s := spec(ws)
 		s.MinTier = tier
 		if _, err := d.Create(context.Background(), s); !errors.Is(err, want) {
@@ -963,5 +963,26 @@ func TestCopyPathsStayInTheWorkspace(t *testing.T) {
 		if _, err := copyPath(ws, p); !errors.Is(err, driver.ErrInvalid) {
 			t.Errorf("%s: %v, want refused", p, err)
 		}
+	}
+}
+
+// A mount root may not overlap where sandbox workspaces or snapshots are
+// kept: a mount there would hand one sandbox the others' files.
+func TestMountRootsStayClearOfReservedFolders(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	for name, o := range map[string]Options{
+		"workspaces inside the root": {MountRoots: []MountRoot{{Path: root}}, Reserved: []string{filepath.Join(root, "sandboxes")}},
+		"root inside the workspaces": {MountRoots: []MountRoot{{Path: filepath.Join(root, "x")}}, Reserved: []string{root}},
+		"snapshots inside the root":  {MountRoots: []MountRoot{{Path: root}}, SnapshotDir: filepath.Join(root, "snaps")},
+	} {
+		_ = os.MkdirAll(filepath.Join(root, "x"), 0o700)
+		if err := o.check(); !errors.Is(err, driver.ErrInvalid) {
+			t.Errorf("%s: %v, want refused", name, err)
+		}
+	}
+	ok := Options{MountRoots: []MountRoot{{Path: root}}, Reserved: []string{other}, SnapshotDir: filepath.Join(other, "snaps")}
+	if err := ok.check(); err != nil {
+		t.Fatalf("a root clear of both: %v", err)
 	}
 }

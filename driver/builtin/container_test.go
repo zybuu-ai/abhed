@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/container"
+	"github.com/zybuu-ai/abhed/driver/process"
 )
 
 // engine writes a stand-in for an engine's CLI.
@@ -109,5 +110,31 @@ func TestContainerOptionsFromConfig(t *testing.T) {
 	if len(o.Mounts) != 1 || o.Mounts[0] != (container.Mount{Host: "/srv/ref", Target: "/ref", Relabel: true}) ||
 		len(o.MountRoots) != 1 || o.MountRoots[0] != (container.MountRoot{Path: "/srv/data", Writable: true}) {
 		t.Fatalf("mounts %+v %+v", o.Mounts, o.MountRoots)
+	}
+}
+
+// serve does not start with a mount root over the sandbox workspaces, the
+// default folder of them or the snapshots.
+func TestMountRootsOverWorkspacesAreRefused(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.ControlPlane.Podman = config.ContainerDriverConfig{Enabled: true, Binary: engine(t, podmanAnswers),
+		MountRoots: []config.ContainerMountRoot{{Path: root}}}
+	for name, c := range map[string]struct {
+		root string
+		opts Options
+	}{
+		"workspace_root":         {root: filepath.Join(root, "ws")},
+		"default sandbox folder": {opts: Options{Process: process.Options{Hide: []string{filepath.Join(root, "sandboxes")}}}},
+		"snapshot folder":        {opts: Options{Container: container.Options{SnapshotDir: filepath.Join(root, "snaps")}}},
+	} {
+		cfg.ControlPlane.WorkspaceRoot = c.root
+		if _, _, err := RegistryWith(context.Background(), cfg, c.opts); err == nil || !strings.Contains(err.Error(), "overlaps") {
+			t.Errorf("%s under a mount root: %v", name, err)
+		}
+	}
+	cfg.ControlPlane.WorkspaceRoot = t.TempDir()
+	if _, _, err := RegistryWith(context.Background(), cfg, Options{}); err != nil {
+		t.Fatalf("a mount root clear of them: %v", err)
 	}
 }

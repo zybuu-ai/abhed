@@ -288,6 +288,9 @@ and refuses it, with a message naming what is wrong, unless it:
 - was signed with the hardened runtime;
 - when `helper.team_id` is set, was signed with a Developer ID certificate of
   that Apple Developer team.
+- sits in a folder only its owner may write, below folders no one else may
+  write (a sticky shared folder such as `/tmp` excepted), so it cannot be
+  swapped after it is checked.
 
 It then runs `abhed-vmhelper check`, which answers whether this Mac can run a
 VM and whether the helper holds the entitlement. Without a helper, the driver

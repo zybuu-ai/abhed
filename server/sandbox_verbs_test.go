@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/controlplane"
@@ -152,5 +153,37 @@ func TestSandboxExposeRoute(t *testing.T) {
 	}
 	if !seen {
 		t.Fatalf("the exposure is not in the record: %+v", evs)
+	}
+}
+
+// Every request to an exposure makes the read check GET on its sandbox
+// makes, so a caller who has lost the sandbox loses the exposure too.
+func TestSandboxExposeRechecksAccess(t *testing.T) {
+	var svc *controlplane.Service
+	ex := expose.New(expose.Options{Enabled: true, Current: func(ctx context.Context, id string) (int64, bool, error) {
+		return svc.Current(ctx, id)
+	}})
+	var revoked atomic.Bool
+	r := buildCPRig(t, nil, ex, []driver.Capability{driver.CapForward}, func(o *Options) {
+		o.SandboxCaller = func(_ *http.Request, c controlplane.Caller) (controlplane.Caller, error) {
+			if revoked.Load() {
+				return c, controlplane.ErrForbidden
+			}
+			return c, nil
+		}
+	})
+	svc = r.svc
+	sb := r.ready(t, "alice")
+	rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":expose", token: "alice", body: `{"port":8000}`})
+	var e exposeResult
+	if rec.Code != http.StatusCreated || json.Unmarshal(rec.Body.Bytes(), &e) != nil {
+		t.Fatalf("expose: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := r.do(t, cpCall{method: "GET", path: e.Path, token: "alice"}); rec.Code != http.StatusBadGateway {
+		t.Fatalf("alice: %d %s", rec.Code, rec.Body.String())
+	}
+	revoked.Store(true)
+	if rec := r.do(t, cpCall{method: "GET", path: e.Path, token: "alice"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("after losing the sandbox: %d %s", rec.Code, rec.Body.String())
 	}
 }

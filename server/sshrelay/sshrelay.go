@@ -5,6 +5,8 @@
 // exec (a command); direct-tcpip channels to the sandbox's own loopback
 // become forwards. Everything else, remote forwarding, agent and X11
 // forwarding, environment and subsystems such as SFTP, is refused.
+//
+// It is an experimental API until 2.0, and may change in a minor release.
 package sshrelay
 
 import (

@@ -147,7 +147,7 @@ func (m *Memory) Claim(_ context.Context, rec IdemRecord, now time.Time) (IdemRe
 	}
 	k := idemKey{rec.Scope, rec.Key}
 	if cur, ok := m.idem[k]; ok && now.Before(cur.ExpiresAt) {
-		cur.Body = slices.Clone(cur.Body)
+		cur.Body, cur.Token = slices.Clone(cur.Body), ""
 		return cur, false, nil
 	}
 	rec.State, rec.Status, rec.Body = IdemPending, 0, nil
@@ -155,25 +155,41 @@ func (m *Memory) Claim(_ context.Context, rec IdemRecord, now time.Time) (IdemRe
 	return rec, true, nil
 }
 
-func (m *Memory) Complete(_ context.Context, scope, key string, status int, body []byte, expires time.Time) error {
+// held is the pending record token holds, if any. m.mu is held.
+func (m *Memory) held(scope, key, token string) (IdemRecord, bool) {
+	cur, ok := m.idem[idemKey{scope, key}]
+	return cur, ok && cur.State == IdemPending && token != "" && cur.Token == token
+}
+
+func (m *Memory) Renew(_ context.Context, scope, key, token string, expires time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k := idemKey{scope, key}
-	cur, ok := m.idem[k]
-	if !ok || cur.State != IdemPending {
+	cur, ok := m.held(scope, key, token)
+	if !ok {
 		return fmt.Errorf("%w: no pending request for idempotency key %q", ErrNotFound, key)
 	}
-	cur.State, cur.Status, cur.Body, cur.ExpiresAt = IdemDone, status, slices.Clone(body), expires
-	m.idem[k] = cur
+	cur.ExpiresAt = expires
+	m.idem[idemKey{scope, key}] = cur
 	return nil
 }
 
-func (m *Memory) Release(_ context.Context, scope, key string) error {
+func (m *Memory) Complete(_ context.Context, scope, key, token string, status int, body []byte, expires time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k := idemKey{scope, key}
-	if cur, ok := m.idem[k]; ok && cur.State == IdemPending {
-		delete(m.idem, k)
+	cur, ok := m.held(scope, key, token)
+	if !ok {
+		return fmt.Errorf("%w: no pending request for idempotency key %q", ErrNotFound, key)
+	}
+	cur.State, cur.Status, cur.Body, cur.ExpiresAt = IdemDone, status, slices.Clone(body), expires
+	m.idem[idemKey{scope, key}] = cur
+	return nil
+}
+
+func (m *Memory) Release(_ context.Context, scope, key, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.held(scope, key, token); ok {
+		delete(m.idem, idemKey{scope, key})
 	}
 	return nil
 }

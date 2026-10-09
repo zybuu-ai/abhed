@@ -31,6 +31,9 @@ func probeHelper(path, team string) error {
 	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 || fi.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("%s must be an executable file writable only by its owner", path)
 	}
+	if err := helperFolderSafe(path); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := verifyHelper(ctx, path, team, fi); err != nil {

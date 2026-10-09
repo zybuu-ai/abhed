@@ -176,7 +176,7 @@ last `:`; ids never contain one.
 | `POST …:expose` | `{port, ttl_seconds}` | `{url, expires_at}` | Off unless the operator enables it. Served by `server/expose` under `/v1/exposed/`, to the same principal and tenant only. |
 | `POST …:cp` | `{direction: in\|out, path}` + tar body or tar response | `200` | Paths confined to the workspace; archive entries validated (no `..`, no absolute paths, no links out). |
 | `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | `snapshot` carries the content `digest`. |
-| `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. |
+| `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. The sandbox is `Starting` before any file is replaced, so nothing else starts it meanwhile; a restore the driver refuses puts it back in its state, keeping the new `generation`. |
 | `GET …:events?after=&limit=` | — | `200 {items, next}` | The sandbox's record, oldest first, to whoever may see it; `next` is the last `seq` returned while more remain. |
 
 `:snapshot`, `:restore`, `:cp` and `:expose` are implemented
@@ -227,7 +227,9 @@ bytes have been sent, and the stream ends with an error frame of code
   replays.
 - The first request with a key claims it and stores a hash of the body.
   While it runs, a repeat gets `409` with code `conflict`. The claim is a
-  5-minute lease, so a server that dies mid-request frees the key. When it ends, its
+  5-minute lease the running request renews, so a long `:exec` keeps its key
+  while a server that dies mid-request frees it. Only the request holding the
+  claim can complete or release it. When it ends, its
   status and body are stored and a repeat with the same body gets the same
   response with `Idempotent-Replayed: true`. A repeat with a different body
   gets `422` with code `invalid`.

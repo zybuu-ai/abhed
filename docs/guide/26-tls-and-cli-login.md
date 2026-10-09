@@ -165,7 +165,9 @@ console, as the account the command line will act as.
 The token it receives is saved in a profile. It lasts `auth.cli.token_hours`
 (168, a week, by default; at most 2,160). It ends early when you run
 `abhed logout`, when the account signs out everywhere, changes its password or
-has it reset, or is removed. An account whose password must be changed gets
+has it reset, or is removed. `abhed logout` is kept in a file beside
+`auth.cli.key_file`; servers that share that folder see it on their next
+request. An account whose password must be changed gets
 no token until it is changed in the browser.
 
 ```bash

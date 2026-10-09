@@ -243,9 +243,9 @@ func (s *Store) Claim(ctx context.Context, rec controlplane.IdemRecord, now time
 			return fmt.Errorf("claim idempotency key: %w", err)
 		}
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO sandbox_idempotency (scope, key, request_hash, state, status, body, expires_at)
-			VALUES (?, ?, ?, ?, 0, NULL, ?) ON CONFLICT DO NOTHING`,
-			rec.Scope, rec.Key, rec.RequestHash, string(controlplane.IdemPending), rec.ExpiresAt.UnixNano())
+			INSERT INTO sandbox_idempotency (scope, key, request_hash, state, status, body, expires_at, claim_token)
+			VALUES (?, ?, ?, ?, 0, NULL, ?, ?) ON CONFLICT DO NOTHING`,
+			rec.Scope, rec.Key, rec.RequestHash, string(controlplane.IdemPending), rec.ExpiresAt.UnixNano(), rec.Token)
 		if err != nil {
 			return fmt.Errorf("claim idempotency key: %w", err)
 		}
@@ -276,31 +276,48 @@ func (s *Store) Claim(ctx context.Context, rec controlplane.IdemRecord, now time
 	return cur, false, nil
 }
 
-func (s *Store) Complete(ctx context.Context, scope, key string, status int, body []byte, expires time.Time) error {
+func (s *Store) Renew(ctx context.Context, scope, key, token string, expires time.Time) error {
+	return s.write(ctx, "renew idempotency key", func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE sandbox_idempotency SET expires_at = ?
+			WHERE scope = ? AND key = ? AND state = ? AND claim_token = ? AND claim_token <> ''`,
+			expires.UnixNano(), scope, key, string(controlplane.IdemPending), token)
+		return heldOne(res, err, "renew", key)
+	})
+}
+
+func (s *Store) Complete(ctx context.Context, scope, key, token string, status int, body []byte, expires time.Time) error {
 	if body == nil {
 		body = []byte{}
 	}
 	return s.write(ctx, "complete idempotency key", func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
 			UPDATE sandbox_idempotency SET state = ?, status = ?, body = ?, expires_at = ?
-			WHERE scope = ? AND key = ? AND state = ?`,
-			string(controlplane.IdemDone), status, body, expires.UnixNano(), scope, key, string(controlplane.IdemPending))
-		if err != nil {
-			return fmt.Errorf("complete idempotency key: %w", err)
-		}
-		if n, err := res.RowsAffected(); err != nil {
-			return fmt.Errorf("complete idempotency key: %w", err)
-		} else if n == 0 {
-			return fmt.Errorf("%w: no pending request for idempotency key %q", controlplane.ErrNotFound, key)
-		}
-		return nil
+			WHERE scope = ? AND key = ? AND state = ? AND claim_token = ? AND claim_token <> ''`,
+			string(controlplane.IdemDone), status, body, expires.UnixNano(), scope, key, string(controlplane.IdemPending), token)
+		return heldOne(res, err, "complete", key)
 	})
 }
 
-func (s *Store) Release(ctx context.Context, scope, key string) error {
+// heldOne is ErrNotFound when an update guarded by a claim token changed
+// nothing: the claim expired or another request holds it.
+func heldOne(res sql.Result, err error, verb, key string) error {
+	if err != nil {
+		return fmt.Errorf("%s idempotency key: %w", verb, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("%s idempotency key: %w", verb, err)
+	} else if n == 0 {
+		return fmt.Errorf("%w: no pending request for idempotency key %q", controlplane.ErrNotFound, key)
+	}
+	return nil
+}
+
+func (s *Store) Release(ctx context.Context, scope, key, token string) error {
 	return s.write(ctx, "release idempotency key", func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sandbox_idempotency WHERE scope = ? AND key = ? AND state = ?`,
-			scope, key, string(controlplane.IdemPending)); err != nil {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM sandbox_idempotency WHERE scope = ? AND key = ? AND state = ? AND claim_token = ? AND claim_token <> ''`,
+			scope, key, string(controlplane.IdemPending), token); err != nil {
 			return fmt.Errorf("release idempotency key: %w", err)
 		}
 		return nil

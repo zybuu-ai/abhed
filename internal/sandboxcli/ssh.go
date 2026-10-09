@@ -34,6 +34,11 @@ type sshInfo struct {
 // answer is one known_hosts line for the sandbox's alias.
 func (r *runner) sshInfo(id string) (sshInfo, error) {
 	var info sshInfo
+	// The id ends up in ssh config and a ProxyCommand, so only a real one
+	// is ever used, whoever named it.
+	if !controlplane.ValidID(id) {
+		return info, fmt.Errorf("%q is not a sandbox id", clean(id, 80))
+	}
 	if _, err := r.cl.json(r.Ctx, call{method: http.MethodPost, path: sandboxPath(id, "ssh")}, &info); err != nil {
 		return info, err
 	}
@@ -123,7 +128,7 @@ func (r *runner) proxyCommand(id string) (string, error) {
 			return "", err
 		}
 	}
-	cmd := shellQuote(exe) + " sandbox connect --stdio -profile " + shellQuote(r.cl.name) + " " + id
+	cmd := shellQuote(exe) + " sandbox connect --stdio -profile " + shellQuote(r.cl.name) + " " + shellQuote(id)
 	return strings.ReplaceAll(cmd, "%", "%%"), nil
 }
 
@@ -225,6 +230,9 @@ func (r *runner) sshConfig(args []string) error {
 				return err
 			}
 			for _, sb := range page.Items {
+				if !controlplane.ValidID(sb.ID) {
+					return fmt.Errorf("the server listed %q, which is not a sandbox id", clean(sb.ID, 80))
+				}
 				ids = append(ids, sb.ID)
 			}
 			if page.Next == "" {
@@ -238,7 +246,7 @@ func (r *runner) sshConfig(args []string) error {
 	for _, id := range ids {
 		info, err := r.sshInfo(id)
 		if err != nil {
-			return fmt.Errorf("%s: %w", id, err)
+			return fmt.Errorf("%s: %w", clean(id, 80), err)
 		}
 		proxy, err := r.proxyCommand(id)
 		if err != nil {

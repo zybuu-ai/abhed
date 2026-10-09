@@ -439,3 +439,29 @@ func TestInsertedAtIsTheDatabasesClock(t *testing.T) {
 		t.Error("the writer set inserted_at")
 	}
 }
+
+// The control plane's sandbox audit is a record too: a runtime role that
+// could rewrite it is refused as one that could rewrite the events.
+func TestOpenRefusesARoleThatCanAlterTheSandboxAudit(t *testing.T) {
+	runtimeStore(t, "t-sbx-audit") // provisions the runtime role
+	owner, runtime := testDSN(t), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	rc, err := pgx.ParseConfig(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	role := pgx.Identifier{rc.User}.Sanitize()
+	if _, err := pool.Exec(ctx, `GRANT UPDATE, DELETE ON sandbox_audit TO `+role); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `REVOKE UPDATE, DELETE ON sandbox_audit FROM `+role) })
+	_, err = Open(ctx, DefaultConfig(runtime))
+	if err == nil || !strings.Contains(err.Error(), "UPDATE on sandbox_audit") || !strings.Contains(err.Error(), "DELETE on sandbox_audit") {
+		t.Fatalf("a runtime role that can rewrite the sandbox audit was accepted: %v", err)
+	}
+}

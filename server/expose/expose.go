@@ -323,8 +323,20 @@ func (s *Server) lookup(r *http.Request) (*exposure, string, bool) {
 }
 
 // ServeHTTP proxies a request under the prefix to its exposure.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.serve(w, r, nil) }
+
+// Guard is the server with one more check on every request: allow, asked
+// with the exposure's sandbox, must still let the caller use that sandbox.
+// A refusal is the same 404 as an unknown exposure.
+func (s *Server) Guard(allow func(r *http.Request, sandboxID string) bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.serve(w, r, allow) })
+}
+
+func (s *Server) serve(w http.ResponseWriter, r *http.Request, allow func(*http.Request, string) bool) {
 	e, sub, ok := s.lookup(r)
+	if ok && allow != nil {
+		ok = allow(r, e.SandboxID)
+	}
 	if !ok {
 		writeError(w, http.StatusNotFound, "not_found", "no such exposure")
 		return

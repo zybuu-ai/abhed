@@ -6,6 +6,8 @@
 // default, under the directory the agent's tools and sandbox cannot reach.
 // The file holds bearer tokens, so it is written 0600 and refused when other
 // users can read it or when it is a link.
+//
+// It is an experimental API until 2.0, and may change in a minor release.
 package profiles
 
 import (

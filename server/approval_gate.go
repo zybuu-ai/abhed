@@ -71,19 +71,20 @@ type PendingAsk struct {
 func (s *Server) PendingAsks(include func(tenant, owner string) bool) []PendingAsk {
 	s.mu.RLock()
 	lives := make([]*liveSession, 0, len(s.running))
+	owners := make([]string, 0, len(s.running))
 	for _, l := range s.running {
 		if include(l.Tenant, l.User) {
-			lives = append(lives, l)
+			lives, owners = append(lives, l), append(owners, l.User)
 		}
 	}
 	s.mu.RUnlock()
 	var out []PendingAsk
-	for _, l := range lives {
+	for i, l := range lives {
 		l.mu.Lock()
 		p := l.pending
 		var ask PendingAsk
 		if p != nil && p.state == askWaiting {
-			ask = PendingAsk{SessionID: l.ID, Tenant: l.Tenant, Owner: l.User, Request: requestKey(p),
+			ask = PendingAsk{SessionID: l.ID, Tenant: l.Tenant, Owner: owners[i], Request: requestKey(p),
 				RequestID: p.RequestID, Tool: p.Tool, Reason: p.Reason, Subagent: p.Subagent, Since: p.Since}
 			ask.Args = redactedArgs(l, p.Args)
 		}

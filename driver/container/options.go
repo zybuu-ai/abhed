@@ -47,6 +47,10 @@ type Options struct {
 	// SnapshotDir holds workspace snapshots, outside every workspace; the
 	// driver declares snapshot only when it is set.
 	SnapshotDir string
+	// Reserved are host folders no mount root may overlap, such as the one
+	// holding every sandbox's workspace: a mount there would hand one
+	// sandbox the others' files. SnapshotDir is reserved too.
+	Reserved []string
 }
 
 // Mount is an extra host folder seen inside the sandbox. It is read-only
@@ -125,8 +129,19 @@ func (o Options) check() error {
 		return driver.Errorf(driver.ErrInvalid, "name prefix %q cannot start a container name", o.NamePrefix)
 	}
 	for _, r := range o.MountRoots {
-		if _, err := admitHost(r.Path, nil); err != nil {
+		real, err := admitHost(r.Path, nil)
+		if err != nil {
 			return fmt.Errorf("mount root: %w", err)
+		}
+		for _, res := range append(slices.Clone(o.Reserved), o.SnapshotDir) {
+			if res == "" {
+				continue
+			}
+			for _, form := range sandbox.PathForms(res) {
+				if overlaps(real, form) || overlaps(r.Path, form) {
+					return driver.Errorf(driver.ErrInvalid, "mount root %s overlaps %s, where sandbox workspaces or snapshots are kept", r.Path, res)
+				}
+			}
 		}
 	}
 	return nil

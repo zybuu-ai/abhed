@@ -379,6 +379,111 @@ func TestIdempotencyInFlightAndLease(t *testing.T) {
 	}
 }
 
+// renewSeen tells the test each time a claim is renewed, and to when.
+type renewSeen struct {
+	cp.Store
+	renewed chan time.Time
+}
+
+func (r renewSeen) Renew(ctx context.Context, scope, key, token string, expires time.Time) error {
+	err := r.Store.Renew(ctx, scope, key, token, expires)
+	if err == nil {
+		select {
+		case r.renewed <- expires:
+		default:
+		}
+	}
+	return err
+}
+
+// A request that runs past the lease keeps its claim, so a repeat after
+// PendingLease does not run it a second time.
+func TestIdempotencyLongRunKeepsClaim(t *testing.T) {
+	ctx := context.Background()
+	now := t0
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	st := renewSeen{Store: cp.NewMemory(), renewed: make(chan time.Time, 1)}
+	idem := cp.Idempotency{Store: st, Now: clock, RenewEvery: 5 * time.Millisecond}
+	var runs atomic.Int32
+	inside, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	fn := func() (cp.Response, error) {
+		if runs.Add(1) > 1 {
+			return cp.Response{}, errors.New("ran a second time")
+		}
+		close(inside)
+		<-release
+		return cp.Response{Status: 200, Body: []byte("once")}, nil
+	}
+	go func() { defer close(done); _, _, _ = idem.Do(ctx, "a", "POST", "/exec", "k", nil, fn) }()
+	<-inside
+	later := t0.Add(cp.PendingLease + time.Minute)
+	mu.Lock()
+	now = later
+	mu.Unlock()
+	for exp := range st.renewed {
+		if exp.After(later) {
+			break
+		}
+	}
+	if _, _, err := idem.Do(ctx, "a", "POST", "/exec", "k", nil, fn); !errors.Is(err, cp.ErrIdempotencyInFlight) {
+		t.Fatalf("repeat after the lease: %v", err)
+	}
+	close(release)
+	<-done
+	resp, replayed, err := idem.Do(ctx, "a", "POST", "/exec", "k", nil, fn)
+	if err != nil || !replayed || string(resp.Body) != "once" || runs.Load() != 1 {
+		t.Fatalf("replay %q %v %v, ran %d times", resp.Body, replayed, err, runs.Load())
+	}
+}
+
+// A request whose claim lapsed (its server stalled past the lease) cannot
+// complete the claim a later request now holds.
+func TestIdempotencyLapsedClaimCannotComplete(t *testing.T) {
+	ctx := context.Background()
+	now := t0
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	idem := cp.Idempotency{Store: cp.NewMemory(), Now: clock, RenewEvery: time.Hour}
+	inside, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, _, err := idem.Do(ctx, "a", "POST", "/exec", "k", nil, func() (cp.Response, error) {
+			close(inside)
+			<-release
+			return cp.Response{Status: 200, Body: []byte("first")}, nil
+		})
+		done <- err
+	}()
+	<-inside
+	mu.Lock()
+	now = t0.Add(cp.PendingLease + time.Second)
+	mu.Unlock()
+	inside2, release2, done2 := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, _, err := idem.Do(ctx, "a", "POST", "/exec", "k", nil, func() (cp.Response, error) {
+			close(inside2)
+			<-release2
+			return cp.Response{Status: 200, Body: []byte("second")}, nil
+		})
+		done2 <- err
+	}()
+	<-inside2
+	close(release)
+	if err := <-done; !errors.Is(err, cp.ErrNotFound) {
+		t.Fatalf("the lapsed request completed: %v", err)
+	}
+	if _, _, err := idem.Do(ctx, "a", "POST", "/exec", "k", nil, nil); !errors.Is(err, cp.ErrIdempotencyInFlight) {
+		t.Fatalf("the second claim was not kept: %v", err)
+	}
+	close(release2)
+	if err := <-done2; err != nil {
+		t.Fatal(err)
+	}
+	if resp, replayed, err := idem.Do(ctx, "a", "POST", "/exec", "k", nil, nil); err != nil || !replayed || string(resp.Body) != "second" {
+		t.Fatalf("replay %q %v %v", resp.Body, replayed, err)
+	}
+}
+
 func TestIdempotencyConcurrentRunsOnce(t *testing.T) {
 	ctx := context.Background()
 	idem := cp.Idempotency{Store: cp.NewMemory()}

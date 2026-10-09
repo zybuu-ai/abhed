@@ -342,6 +342,10 @@ All notable changes to Abhed are recorded here. The format follows
   refuses `enabled`. Their key files and trust bundles are state the agent
   cannot reach. Every public endpoint under `/v1/cli/`, and `/v1/token`, share
   the sign-in rate limit.
+- `auth.workload.grants[].allow_reusable_svid` (off by default) lets one
+  workload's JWT-SVIDs carry no `jti`, for issuers that leave it out. It
+  weakens replay protection for that grant only: such an SVID can be
+  exchanged again and again until it expires, so keep its lifetime short.
 - The `profiles` client refreshes a token by itself when the profile holds a
   refresh token: before a request once a tenth or less of the token's life is
   left, and once after a `401`, sending the request again (`Profile.Do`;
@@ -468,6 +472,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `abhed logout` is seen by every server sharing `auth.cli.key_file`'s folder
+  on its next request, and sign-outs made at once on two servers no longer
+  overwrite each other.
+
 - `abhed sandbox cp`: a folder that does not exist, in the sandbox or on
   this machine, is named plainly instead of as a host `lstat` error that
   showed the server's path to the workspace; a copy out that fails part way
@@ -571,6 +579,12 @@ on. A server with it off starts on the older schema as before.
   `ListTemplates`, `DeleteTemplate` and `Service.Events`;
   `server.AttachProtocol`, `ExecProtocol` and `ForwardProtocol` beside
   `SSHRelayProtocol`. `drivertest.Fake` snapshots carry a digest.
+- `wsconn`, `profiles`, `server/sshrelay` and `store/sqlite` are
+  experimental APIs until 2.0, as `driver` and `controlplane` are: they may
+  change in a minor release.
+- `controlplane.IdempotencyStore` gains `Renew`, and `Complete` and
+  `Release` take the claim's token (`IdemRecord.Token`): a running request
+  renews its claim, and only the request holding it can finish it.
 - `wsconn`: a small WebSocket (RFC 6455) server upgrade, client and byte
   stream, size-limited and fuzzed, for the sandbox streams and for drivers
   that speak WebSockets. `server/sshrelay`: the SSH server behind the `:ssh`

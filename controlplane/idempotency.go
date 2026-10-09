@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,8 +14,9 @@ import (
 const (
 	// IdempotencyTTL is how long a finished request's response is replayed.
 	IdempotencyTTL = 24 * time.Hour
-	// PendingLease is how long a claim holds while its request runs; a
-	// server that died mid-request frees the key after it.
+	// PendingLease is how long a claim holds unless renewed. A running
+	// request renews it, so it outlasts any timeout; a server that died
+	// mid-request frees the key after it.
 	PendingLease = 5 * time.Minute
 )
 
@@ -30,6 +32,9 @@ type Idempotency struct {
 	Store IdempotencyStore
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
+	// RenewEvery is how often a running request renews its claim;
+	// PendingLease/3 when zero.
+	RenewEvery time.Duration
 }
 
 func (i Idempotency) now() time.Time {
@@ -81,9 +86,14 @@ func (i Idempotency) Do(ctx context.Context, principal, method, path, key string
 	sum := sha256.Sum256(body)
 	hash := hex.EncodeToString(sum[:])
 	scope := Scope(principal, method, path)
+	var tok [16]byte
+	if _, err := rand.Read(tok[:]); err != nil {
+		return Response{}, false, err
+	}
+	token := hex.EncodeToString(tok[:])
 	now := i.now()
 	cur, claimed, err := i.Store.Claim(ctx, IdemRecord{Scope: scope, Key: key, RequestHash: hash,
-		State: IdemPending, ExpiresAt: now.Add(PendingLease)}, now)
+		State: IdemPending, ExpiresAt: now.Add(PendingLease), Token: token}, now)
 	if err != nil {
 		return Response{}, false, err
 	}
@@ -96,16 +106,46 @@ func (i Idempotency) Do(ctx context.Context, principal, method, path, key string
 		}
 		return Response{Status: cur.Status, Body: cur.Body}, true, nil
 	}
+	stop := i.renew(context.WithoutCancel(ctx), scope, key, token)
 	resp, err = fn()
+	stop()
 	if err != nil {
 		// Released even if the caller has gone, so the key is free again.
-		if rerr := i.Store.Release(context.WithoutCancel(ctx), scope, key); rerr != nil {
+		if rerr := i.Store.Release(context.WithoutCancel(ctx), scope, key, token); rerr != nil {
 			err = errors.Join(err, rerr)
 		}
 		return Response{}, false, err
 	}
-	if err := i.Store.Complete(context.WithoutCancel(ctx), scope, key, resp.Status, resp.Body, i.now().Add(IdempotencyTTL)); err != nil {
+	if err := i.Store.Complete(context.WithoutCancel(ctx), scope, key, token, resp.Status, resp.Body, i.now().Add(IdempotencyTTL)); err != nil {
 		return resp, false, err
 	}
 	return resp, false, nil
+}
+
+// renew keeps the claim alive until the returned stop is called, so a
+// request that runs past PendingLease is never run a second time.
+func (i Idempotency) renew(ctx context.Context, scope, key, token string) (stop func()) {
+	every := i.RenewEvery
+	if every <= 0 {
+		every = PendingLease / 3
+	}
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				err := i.Store.Renew(ctx, scope, key, token, i.now().Add(PendingLease))
+				if errors.Is(err, ErrNotFound) {
+					return // the claim is gone; Complete will say so
+				}
+			}
+		}
+	}()
+	return func() { close(done); <-finished }
 }

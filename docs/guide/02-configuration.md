@@ -1006,8 +1006,10 @@ it comes from.
 
 Abhed refuses to start on a managed file with a key repeated in one object
 (`"permissions"` twice, or `"permissions"` and `"PERMISSIONS"`, which are the
-same setting; this also applies to names under `model.providers`) or a number
-too large to hold, such as `1e400`,
+same setting; this applies at every level, to names under `model.providers`
+and to the keys of maps such as an extension's `env` and a corpus's `headers`
+and `headers_env`, so a managed file cannot set both `PATH` and `path` there)
+or a number too large to hold, such as `1e400`,
 even under a comment key. JSON leaves the meaning of such a file open, and an
 organisation's rules must not depend on which reading wins.
 

@@ -324,6 +324,9 @@ type Options struct {
 	// SessionSandboxes it is also asked for each session's sandbox, with a
 	// POST /v1/sandboxes request carrying the session's tenant and user and
 	// no headers; its scope is stamped on the sandbox and its warm pool.
+	// It must build on the c it is given, whose Principal and Admin the
+	// server resolved: r may be one the server made for a session, with no
+	// headers, so who is asking comes from c, never from r's headers.
 	SandboxCaller func(r *http.Request, c controlplane.Caller) (controlplane.Caller, error)
 	// ApprovalGate, when set, decides who may answer a session's pending
 	// approvals and when an answer settles one. Nil: the session's owner
@@ -2997,6 +3000,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			s.releaseNodeIfQuiet(live)
 		}
 	}()
+	owner := s.ownerOf(live)
 	live.mu.Lock()
 	// While draining, nothing is started, steered or interrupted: a steering
 	// message could be dropped, and Send now would stop the turn the drain
@@ -3009,7 +3013,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// The owner's own admitted turn shows them active again, so wakes and
 	// suggestions a revoke held come back for a restored owner.
-	if UserOf(r.Context()) == live.User {
+	if UserOf(r.Context()) == owner {
 		live.ownerGone.Store(false)
 	}
 	// Busy means a run is live, not an ask pending: an ask can wait with no
@@ -3404,8 +3408,9 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 func (s *Server) ownerActive(live *liveSession) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	owner := s.ownerOf(live)
 	if s.opts.OwnerActive != nil {
-		return s.opts.OwnerActive(ctx, live.Tenant, live.User)
+		return s.opts.OwnerActive(ctx, live.Tenant, owner)
 	}
 	local := s.LocalAuth()
 	if local == nil {
@@ -3417,7 +3422,7 @@ func (s *Server) ownerActive(live *liveSession) bool {
 	}
 	for _, u := range users {
 		// Sessions are owned by the owner key, as Identity.Owner makes it.
-		if auth.LocalOwner(u.Username) == live.User {
+		if auth.LocalOwner(u.Username) == owner {
 			return true
 		}
 	}
@@ -4487,6 +4492,14 @@ func (s *Server) releaseStale(local *auth.LocalAuth, username string) {
 		live.User = auth.UnclaimedOwner(owner)
 		s.log.Warn("released a session whose account was removed or made again", "session", id, "owner", owner)
 	}
+}
+
+// ownerOf is live's owner key. It is read under s.mu, which every change to
+// it holds; call it holding neither s.mu nor live.mu.
+func (s *Server) ownerOf(live *liveSession) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return live.User
 }
 
 // ReleaseSessions moves the sessions this process holds for owner in tenant

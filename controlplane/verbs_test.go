@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -122,7 +123,8 @@ func TestSnapshotAndRestore(t *testing.T) {
 			t.Errorf("record lacks %q: %s", want, got)
 		}
 	}
-	// A restore the driver refuses changes nothing.
+	// A restore the driver refuses leaves the sandbox as it was, but for a
+	// generation that never ran.
 	if _, err := r.svc.Stop(ctx, alice, sb.ID, "", 0); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +132,7 @@ func TestSnapshotAndRestore(t *testing.T) {
 	if _, err := r.svc.Restore(ctx, alice, sb.ID, "", driver.SnapshotRef{ID: "nope", Digest: "sha256:00"}); !errors.Is(err, driver.ErrNotFound) {
 		t.Fatalf("an unknown snapshot: %v", err)
 	}
-	if after, _ := r.store.Get(ctx, sb.ID); after.State != cp.StateStopped || after.Generation != before.Generation {
+	if after, _ := r.store.Get(ctx, sb.ID); after.State != cp.StateStopped || after.Generation != before.Generation+1 {
 		t.Fatalf("a refused restore moved the sandbox: %s %d", after.State, after.Generation)
 	}
 }
@@ -244,5 +246,86 @@ func TestVerbsAreAdmittedAsWhatTheyAmountTo(t *testing.T) {
 	o.set(false, nil)
 	if _, _, err := ro.svc.Snapshot(ctx, alice, sb.ID, "", "x"); !errors.Is(err, cp.ErrUnavailable) {
 		t.Fatalf("snapshot on another replica's sandbox: %v", err)
+	}
+}
+
+// slowRestore holds a restore until the test lets it go.
+type slowRestore struct {
+	*drivertest.Fake
+	entered, release chan struct{}
+}
+
+func (s slowRestore) Restore(ctx context.Context, id string, ref driver.SnapshotRef) error {
+	close(s.entered)
+	<-s.release
+	return s.Fake.Restore(ctx, id, ref)
+}
+
+// While a restore replaces the files, the sandbox is already Starting under
+// the restore's own move: a start made meanwhile is refused, not run on
+// half-replaced files.
+func TestRestoreMovesBeforeReplacingFiles(t *testing.T) {
+	slow := slowRestore{entered: make(chan struct{}), release: make(chan struct{})}
+	r := newCapRigWith(t, nil, func(c *cp.Config) {
+		d, _ := c.Drivers.Get("process")
+		slow.Fake = d.(*drivertest.Fake)
+		reg := driver.NewRegistry()
+		if err := reg.Register(slow); err != nil {
+			t.Fatal(err)
+		}
+		c.Drivers = reg
+	}, driver.CapSnapshot)
+	sb := r.ready(t)
+	ctx := context.Background()
+	ref, _, err := r.svc.Snapshot(ctx, alice, sb.ID, "", "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.Stop(ctx, alice, sb.ID, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	stopped := r.reconcile(t, sb.ID)
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.svc.Restore(ctx, alice, sb.ID, "", ref)
+		done <- err
+	}()
+	<-slow.entered
+	if _, err := r.svc.Start(ctx, alice, sb.ID, ""); !errors.Is(err, cp.ErrInvalidTransition) {
+		t.Fatalf("a start during the restore: %v", err)
+	}
+	close(slow.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if out := r.reconcile(t, sb.ID); out.State != cp.StateReady || out.Generation != stopped.Generation+1 {
+		t.Fatalf("after restore: %s generation %d", out.State, out.Generation)
+	}
+}
+
+// A NUL or control character in a snapshot name, a snapshot reference or a
+// copy path is refused as invalid before anything is recorded or asked of
+// the driver.
+func TestVerbsRefuseControlCharacters(t *testing.T) {
+	r := newCapRig(t, nil, driver.CapSnapshot, driver.CapCopy)
+	sb := r.ready(t)
+	ctx := context.Background()
+	before := len(actions(t, r, sb.ID))
+	for _, bad := range []string{"a\x00b", "line\nbreak", "esc\x1b[2J", "del\x7f"} {
+		if _, _, err := r.svc.Snapshot(ctx, alice, sb.ID, "", bad); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("snapshot name %q: %v", bad, err)
+		}
+		if _, err := r.svc.Restore(ctx, alice, sb.ID, "", driver.SnapshotRef{ID: bad, Digest: "sha256:00"}); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("snapshot id %q: %v", bad, err)
+		}
+		if _, err := r.svc.CopyIn(ctx, alice, sb.ID, bad, strings.NewReader("")); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("copy in to %q: %v", bad, err)
+		}
+		if _, err := r.svc.CopyOut(ctx, alice, sb.ID, bad, io.Discard, nil); !errors.Is(err, cp.ErrInvalid) {
+			t.Errorf("copy out of %q: %v", bad, err)
+		}
+	}
+	if got := actions(t, r, sb.ID); len(got) != before {
+		t.Fatalf("a refused verb was recorded: %v", got[before:])
 	}
 }

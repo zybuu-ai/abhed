@@ -82,6 +82,9 @@ type IdemRecord struct {
 	Status      int       `json:"status,omitempty"`
 	Body        []byte    `json:"body,omitempty"`
 	ExpiresAt   time.Time `json:"expires_at"`
+	// Token names the claim. Only the request holding it may renew,
+	// complete or release the record; a record read back never carries it.
+	Token string `json:"-"`
 }
 
 // IdempotencyStore keeps idempotency records. Records past ExpiresAt are
@@ -91,11 +94,15 @@ type IdempotencyStore interface {
 	// reports claimed. Otherwise it returns the live record. Two concurrent
 	// claims of one key never both succeed.
 	Claim(ctx context.Context, rec IdemRecord, now time.Time) (existing IdemRecord, claimed bool, err error)
-	// Complete stores the response for a pending record and keeps it until
-	// expires.
-	Complete(ctx context.Context, scope, key string, status int, body []byte, expires time.Time) error
-	// Release removes a pending record, so the request can be tried again.
-	Release(ctx context.Context, scope, key string) error
+	// Renew moves a pending record's expiry to expires, while token still
+	// holds it; ErrNotFound when it does not.
+	Renew(ctx context.Context, scope, key, token string, expires time.Time) error
+	// Complete stores the response for a pending record token holds and
+	// keeps it until expires; ErrNotFound when token does not hold it.
+	Complete(ctx context.Context, scope, key, token string, status int, body []byte, expires time.Time) error
+	// Release removes a pending record token holds, so the request can be
+	// tried again. A record another claim holds is left alone.
+	Release(ctx context.Context, scope, key, token string) error
 }
 
 // mutateRetries bounds how often Mutate re-reads after losing a race.

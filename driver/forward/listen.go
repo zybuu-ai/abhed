@@ -83,7 +83,13 @@ func Listen(ctx context.Context, d driver.Driver, id string, port int, opts List
 		}
 		_ = l.Close()
 	}()
-	go l.accept()
+	// The accept loop holds the group too, so a connection it adds never
+	// races Close's Wait on an empty group.
+	l.conns.Add(1)
+	go func() {
+		defer l.conns.Done()
+		l.accept()
+	}()
 	return l, nil
 }
 
@@ -128,6 +134,10 @@ func (l *Listener) record(action string, extra map[string]any) error {
 	return l.opts.Record(driver.EventForwardListen, p)
 }
 
+// afterAccept runs between a connection's accept and its count; tests
+// widen the window with it.
+var afterAccept = func() {}
+
 func (l *Listener) accept() {
 	for {
 		c, err := l.ln.Accept()
@@ -135,6 +145,7 @@ func (l *Listener) accept() {
 			_ = l.Close()
 			return
 		}
+		afterAccept()
 		l.conns.Add(1)
 		go l.serve(c)
 	}

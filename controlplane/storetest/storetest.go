@@ -24,6 +24,7 @@ func Run(t *testing.T, open func(t *testing.T) controlplane.Store) {
 	t.Run("ConcurrentUpdatesOneWins", func(t *testing.T) { concurrentUpdates(t, open(t)) })
 	t.Run("Isolation", func(t *testing.T) { isolation(t, open(t)) })
 	t.Run("IdempotencyClaims", func(t *testing.T) { claims(t, open(t)) })
+	t.Run("IdempotencyClaimTokens", func(t *testing.T) { claimTokens(t, open(t)) })
 	t.Run("IdempotencyConcurrentClaim", func(t *testing.T) { concurrentClaim(t, open(t)) })
 	t.Run("Templates", func(t *testing.T) { templates(t, open(t)) })
 }
@@ -270,12 +271,12 @@ func isolation(t *testing.T, st controlplane.Store) {
 
 func claims(t *testing.T, st controlplane.Store) {
 	ctx := context.Background()
-	rec := controlplane.IdemRecord{Scope: "s", Key: "k", RequestHash: "h", State: controlplane.IdemPending, ExpiresAt: t0.Add(time.Minute)}
+	rec := controlplane.IdemRecord{Scope: "s", Key: "k", RequestHash: "h", State: controlplane.IdemPending, ExpiresAt: t0.Add(time.Minute), Token: "t1"}
 	if _, ok, err := st.Claim(ctx, rec, t0); err != nil || !ok {
 		t.Fatalf("first claim %v %v", ok, err)
 	}
 	cur, ok, err := st.Claim(ctx, rec, t0)
-	if err != nil || ok || cur.State != controlplane.IdemPending || cur.RequestHash != "h" {
+	if err != nil || ok || cur.State != controlplane.IdemPending || cur.RequestHash != "h" || cur.Token != "" {
 		t.Fatalf("second claim %+v %v %v", cur, ok, err)
 	}
 	other := rec
@@ -283,7 +284,13 @@ func claims(t *testing.T, st controlplane.Store) {
 	if _, ok, _ := st.Claim(ctx, other, t0); !ok {
 		t.Fatal("a key in another scope was taken")
 	}
-	if err := st.Complete(ctx, "s", "k", 201, []byte("body"), t0.Add(time.Hour)); err != nil {
+	// Only the token that holds the claim completes it.
+	for _, tok := range []string{"", "t2"} {
+		if err := st.Complete(ctx, "s", "k", tok, 500, nil, t0.Add(time.Hour)); !errors.Is(err, controlplane.ErrNotFound) {
+			t.Fatalf("complete with token %q: %v", tok, err)
+		}
+	}
+	if err := st.Complete(ctx, "s", "k", "t1", 201, []byte("body"), t0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	cur, ok, err = st.Claim(ctx, rec, t0.Add(30*time.Minute))
@@ -293,24 +300,65 @@ func claims(t *testing.T, st controlplane.Store) {
 	if _, ok, _ := st.Claim(ctx, rec, t0.Add(2*time.Hour)); !ok {
 		t.Fatal("an expired record still held its key")
 	}
-	if err := st.Release(ctx, "s", "k"); err != nil {
+	if err := st.Release(ctx, "s", "k", "t1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := st.Claim(ctx, rec, t0.Add(2*time.Hour)); !ok {
 		t.Fatal("a released key could not be claimed")
 	}
-	if err := st.Complete(ctx, "s", "missing", 200, nil, t0); !errors.Is(err, controlplane.ErrNotFound) {
+	if err := st.Complete(ctx, "s", "missing", "t1", 200, nil, t0); !errors.Is(err, controlplane.ErrNotFound) {
 		t.Fatalf("complete without a claim: %v", err)
 	}
 	// Release never removes a finished record.
-	if err := st.Complete(ctx, "s", "k", 200, nil, t0.Add(3*time.Hour)); err != nil {
+	if err := st.Complete(ctx, "s", "k", "t1", 200, nil, t0.Add(3*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Release(ctx, "s", "k"); err != nil {
+	if err := st.Release(ctx, "s", "k", "t1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := st.Claim(ctx, rec, t0.Add(2*time.Hour)); ok {
 		t.Fatal("release removed a finished record")
+	}
+}
+
+// claimTokens: a claim that expired and was taken again belongs to the new
+// request; the old one can neither renew, complete nor release it.
+func claimTokens(t *testing.T, st controlplane.Store) {
+	ctx := context.Background()
+	first := controlplane.IdemRecord{Scope: "s", Key: "tok", RequestHash: "h", ExpiresAt: t0.Add(time.Minute), Token: "first"}
+	if _, ok, err := st.Claim(ctx, first, t0); err != nil || !ok {
+		t.Fatalf("first claim %v %v", ok, err)
+	}
+	// Renewed, the claim holds past its first expiry.
+	if err := st.Renew(ctx, "s", "tok", "first", t0.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Renew(ctx, "s", "tok", "other", t0.Add(time.Hour)); !errors.Is(err, controlplane.ErrNotFound) {
+		t.Fatalf("renew with another token: %v", err)
+	}
+	second := first
+	second.Token, second.ExpiresAt = "second", t0.Add(20*time.Minute)
+	if _, ok, _ := st.Claim(ctx, second, t0.Add(5*time.Minute)); ok {
+		t.Fatal("a renewed claim was taken")
+	}
+	if _, ok, err := st.Claim(ctx, second, t0.Add(11*time.Minute)); err != nil || !ok {
+		t.Fatalf("claim after expiry %v %v", ok, err)
+	}
+	if err := st.Renew(ctx, "s", "tok", "first", t0.Add(time.Hour)); !errors.Is(err, controlplane.ErrNotFound) {
+		t.Fatalf("the old claim renewed the new one: %v", err)
+	}
+	if err := st.Complete(ctx, "s", "tok", "first", 200, []byte("old"), t0.Add(time.Hour)); !errors.Is(err, controlplane.ErrNotFound) {
+		t.Fatalf("the old claim completed the new one: %v", err)
+	}
+	if err := st.Release(ctx, "s", "tok", "first"); err != nil {
+		t.Fatal(err)
+	}
+	cur, ok, err := st.Claim(ctx, first, t0.Add(12*time.Minute))
+	if err != nil || ok || cur.State != controlplane.IdemPending {
+		t.Fatalf("the old claim released the new one: %+v %v %v", cur, ok, err)
+	}
+	if err := st.Complete(ctx, "s", "tok", "second", 201, []byte("new"), t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
 	}
 }
 

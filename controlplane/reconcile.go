@@ -166,8 +166,40 @@ func (s *Service) Reconcile(ctx context.Context, id string) error {
 	}
 	s.inflight[id] = true
 	s.mu.Unlock()
-	defer s.forget(id)
+	defer s.unhold(id, false)
 	return s.reconcile(ctx, id)
+}
+
+// unhold ends a hold on id's passes. A kick that arrived meanwhile asked
+// for another pass, and Run makes it; kick asks for one regardless.
+func (s *Service) unhold(id string, kick bool) {
+	s.mu.Lock()
+	again := s.again[id]
+	delete(s.inflight, id)
+	delete(s.again, id)
+	s.mu.Unlock()
+	if again || kick {
+		s.Kick(id)
+	}
+}
+
+// holdPass waits until no pass over id runs, then keeps one from starting
+// until the returned function runs, which asks for a pass.
+func (s *Service) holdPass(ctx context.Context, id string) (func(), error) {
+	for {
+		s.mu.Lock()
+		if !s.inflight[id] {
+			s.inflight[id] = true
+			s.mu.Unlock()
+			return func() { s.unhold(id, true) }, nil
+		}
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 func (s *Service) reconcile(ctx context.Context, id string) error {
@@ -334,20 +366,13 @@ func (s *Service) settle(ctx context.Context, sb Sandbox, st driver.Status, err 
 			return cur.SetCondition(Condition{Type: CondIsolationVerified, Status: ConditionFalse, Reason: reason,
 				Message: fmt.Sprintf("the driver reports %q, weaker than the required %q", st.Tier, minTier)}, now)
 		}
-		cur.Tier = st.Tier
 		if terr := cur.Transition(StateReady, now); terr != nil {
 			return terr
 		}
 		if serr := cur.SetCondition(Condition{Type: CondDriverReady, Status: ConditionTrue, Reason: reason}, now); serr != nil {
 			return serr
 		}
-		msg := "tier " + st.Tier
-		if st.Caveat != "" {
-			// Said as doctor says it: "tier process (no /proc)".
-			msg += " (" + st.Caveat + ")"
-		}
-		return cur.SetCondition(Condition{Type: CondIsolationVerified, Status: ConditionTrue, Reason: "TierMeetsPolicy",
-			Message: msg}, now)
+		return verifiedTier(cur, st, now)
 	})
 	if werr != nil {
 		return werr
@@ -357,6 +382,18 @@ func (s *Service) settle(ctx context.Context, sb Sandbox, st driver.Status, err 
 		s.Kick(sb.ID)
 	}
 	return nil
+}
+
+// verifiedTier records the tier st reports, which meets the policy.
+func verifiedTier(cur *Sandbox, st driver.Status, now time.Time) error {
+	cur.Tier = st.Tier
+	msg := "tier " + st.Tier
+	if st.Caveat != "" {
+		// Said as doctor says it: "tier process (no /proc)".
+		msg += " (" + st.Caveat + ")"
+	}
+	return cur.SetCondition(Condition{Type: CondIsolationVerified, Status: ConditionTrue, Reason: "TierMeetsPolicy",
+		Message: msg}, now)
 }
 
 // observe moves sb to state with its DriverReady condition, when it is still where the
@@ -411,6 +448,14 @@ func (s *Service) watch(ctx context.Context, sb Sandbox, st driver.Status, err e
 		changed := false
 		if c, ok := cur.Condition(CondDriverReady); !ok || c.Status != ConditionTrue {
 			if err := cur.SetCondition(Condition{Type: CondDriverReady, Status: ConditionTrue, Reason: "Running"}, now); err != nil {
+				return err
+			}
+			changed = true
+		}
+		// A tier that changed while running, still meeting the policy, is
+		// what the sandbox shows from now on.
+		if cur.Tier != st.Tier {
+			if err := verifiedTier(cur, st, now); err != nil {
 				return err
 			}
 			changed = true
