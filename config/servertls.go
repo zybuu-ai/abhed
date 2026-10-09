@@ -28,6 +28,16 @@ func (c Config) ResolvedTLS(workspace string) ServerTLSConfig {
 	return t
 }
 
+// ResolvedHA is control_plane.ha with its relay key and CA files made
+// absolute for workspace: the files serve protects as state, and the ones
+// an edition's replicas read.
+func (c Config) ResolvedHA(workspace string) HAConfig {
+	h := c.ControlPlane.HA
+	h.RelayKeyFile = serverPath(workspace, h.RelayKeyFile)
+	h.RelayCAFile = serverPath(workspace, h.RelayCAFile)
+	return h
+}
+
 // CLIKeyFile is where command-line tokens' signing key is kept:
 // auth.cli.key_file, else ~/.abhed/cli-token.key.
 func (c Config) CLIKeyFile(workspace string) (string, error) {
@@ -67,10 +77,10 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 			out = append(out, t.ClientCAFile)
 		}
 	}
-	if ha := c.ControlPlane.HA; ha.Enabled {
+	if ha := c.ResolvedHA(workspace); ha.Enabled {
 		for _, p := range []string{ha.RelayKeyFile, ha.RelayCAFile} {
 			if p != "" {
-				out = append(out, serverPath(workspace, p))
+				out = append(out, p)
 			}
 		}
 	}

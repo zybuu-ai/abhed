@@ -714,6 +714,9 @@ on. A server with it off starts on the older schema as before.
 - `config.Config.ManagedScreens` reports whether the managed file itself sets
   the deny rules or the extensions, which is when a terminal must judge each
   line.
+- `config.Config.ResolvedHA` is `control_plane.ha` with its relay key and
+  CA files resolved against serve's workspace, the paths serve protects as
+  state, for an edition's replicas to read.
 - Extension points for an edition with workspaces, each a no-op when unset:
   `controlplane.Guard` (installed with `Service.SetGuard`) admits or refuses
   every create, update, start, stop, delete and exec after it is recorded

@@ -139,3 +139,24 @@ func TestControlPlanePathsResolved(t *testing.T) {
 		t.Errorf("secret files %q lack the configured key in clean form", got)
 	}
 }
+
+// The replicas' relay files resolve against the workspace, the same paths
+// serve denies to commands, so an edition reads the file that is protected.
+func TestResolvedHA(t *testing.T) {
+	ws := t.TempDir()
+	c := Default()
+	c.ControlPlane.HA = HAConfig{Enabled: true, RelayKeyFile: ".abhed/relay.key", RelayCAFile: "/etc/abhed/ca.pem"}
+	h := c.ResolvedHA(ws)
+	if h.RelayKeyFile != filepath.Join(ws, ".abhed", "relay.key") || h.RelayCAFile != "/etc/abhed/ca.pem" {
+		t.Fatalf("resolved %+v", h)
+	}
+	if c.ControlPlane.HA.RelayKeyFile != ".abhed/relay.key" {
+		t.Fatal("resolving changed the configuration")
+	}
+	got := c.ServerSecretFiles(ws)
+	for _, want := range []string{h.RelayKeyFile, h.RelayCAFile} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s missing from %v", want, got)
+		}
+	}
+}
