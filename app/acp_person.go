@@ -345,8 +345,8 @@ func lineResult(r tools.Result) []byte {
 	if r.ExitCode == nil || !ok || !strings.HasPrefix(head, "exit ") {
 		return crlf(r.Content)
 	}
-	if body == "[no output]" || strings.HasPrefix(body, "[no output]\n") {
-		body = strings.TrimPrefix(body, "[no output]")
+	if body == "[no output]" {
+		body = ""
 	}
 	body = strings.TrimLeft(body, "\n")
 	out := crlf(body)

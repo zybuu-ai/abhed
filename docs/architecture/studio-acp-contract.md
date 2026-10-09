@@ -1008,7 +1008,8 @@ Where the engine differs from the sections above:
    Enter and recorded `terminal.input`, withheld when the terminal did not
    show it. As in the workbench, it is refused where only a line-by-line
    terminal applies every rule (`sandbox.terminal: "lines"`, or a managed
-   policy whose deny rules or hooks screen `bash`), and a destructive line
+   file that itself sets `permissions.deny` screening `bash`, or sets
+   `extensions`), and a destructive line
    there is not confirmed, since the shell, not the engine, runs it.
 5. **Undo (§7.5).** `turn` is the turn number the record's
    `checkpoint.saved` events carry. An accepted hunk moves the baseline, so

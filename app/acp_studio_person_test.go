@@ -139,6 +139,11 @@ func TestLineResultPutsTheStatusLast(t *testing.T) {
 	if got != "\x1b[2mexit 1 · 12ms\x1b[0m\r\n" {
 		t.Fatalf("no output: %q", got)
 	}
+	// A command whose real output is the placeholder's text keeps it.
+	got = string(lineResult(tools.Result{Content: "exit 0 · 9ms\n[no output]\nreal\n", ExitCode: &code}))
+	if !strings.HasPrefix(got, "[no output]\r\nreal") {
+		t.Fatalf("real output hidden: %q", got)
+	}
 	// A refusal or a tool error has no status to move.
 	if got := string(lineResult(tools.Result{Content: "Denied: curl", IsError: true})); got != "Denied: curl\r\n" {
 		t.Fatalf("refusal: %q", got)
