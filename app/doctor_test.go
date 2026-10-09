@@ -48,7 +48,7 @@ func TestDoctorFailsOnUnknownKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
-		return stdoutOf(t, func() int { return newApp().doctor(ws) })
+		return stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 	}
 
 	// The key is listed before any check that needs the environment.
@@ -152,13 +152,13 @@ func TestDoctorFailsOnAStateFileWithASecondName(t *testing.T) {
 	if err := os.WriteFile(users, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := stdoutOf(t, func() int { return newApp().doctor(ws) }); code != 0 {
+	if out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) }); code != 0 {
 		t.Fatalf("the doctor failed without the link (%d):\n%s", code, out)
 	}
 	if err := os.Link(users, filepath.Join(ws, "notes.json")); err != nil {
 		t.Skipf("hard links unavailable: %v", err)
 	}
-	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 	if code != 1 || !strings.Contains(out, users+" has 2 names") || !strings.Contains(out, "-samefile") ||
 		!strings.Contains(out, "checking sandbox exec... FAILED") || strings.Contains(out, "Ready.") {
 		t.Fatalf("the doctor did not fail on and name the linked state file (%d):\n%s", code, out)
@@ -220,7 +220,7 @@ func TestDoctorFailsWhenTheSandboxCannotBeBuilt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
-	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 	if code != 1 || !strings.Contains(out, "checking sandbox exec... FAILED") || strings.Contains(out, "SKIPPED") || strings.Contains(out, "Ready.") {
 		t.Fatalf("the doctor did not fail on the sandbox (%d):\n%s", code, out)
 	}
@@ -258,7 +258,7 @@ func doctorWith(t *testing.T, extra string) (string, int) {
 	}
 	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	t.Setenv("ABHED_DATABASE_URL", "")
-	return stdoutOf(t, func() int { return newApp().doctor(ws) })
+	return stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 }
 
 // An event store doctor cannot open, as before `abhed migrate`, is not ready.
@@ -298,7 +298,7 @@ func TestDoctorDoesNotProbeTheDefaultForAnUntrustedModel(t *testing.T) {
 	if err != nil || cfg.Workspace.Trusted || !modelAwaitsTrust(cfg) {
 		t.Fatalf("an untrusted model was not seen as waiting: trusted %v, %v", cfg.Workspace.Trusted, err)
 	}
-	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 	if code != 1 || !strings.Contains(out, "not probed") || strings.Contains(out, "checking endpoint") {
 		t.Fatalf("doctor (%d):\n%s", code, out)
 	}
@@ -321,13 +321,52 @@ func TestDoctorNamesTheManagedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(config.TrustEnv, "1")
-	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
 	if !strings.Contains(out, "managed     "+managed.ConfigFile+" (sets 1 setting(s))") {
 		t.Fatalf("the doctor does not name the managed file:\n%s", out)
 	}
 	var b strings.Builder
-	_ = newApp().doctorJSON(&b, ws)
+	_ = newApp().doctorJSON(&b, ws, flagSettings{})
 	if !strings.Contains(b.String(), "in force from "+managed.ConfigFile) {
 		t.Fatalf("doctor --json does not name it:\n%s", b.String())
+	}
+}
+
+// abhed -settings <file> doctor checks the configuration a run with the same
+// flag would load, and says where the settings came from.
+func TestDoctorHonoursSettingsFlag(t *testing.T) {
+	srv := doctorEndpoint(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ABHED_DATABASE_URL", "")
+	ws := t.TempDir()
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.TrustEnv, "1")
+	set := filepath.Join(t.TempDir(), "plan.json")
+	if err := os.WriteFile(set, []byte(`{"permissions":{"mode":"plan"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "-settings", set, "doctor"}) })
+	if !strings.Contains(out, "mode        plan") || !strings.Contains(out, "settings    "+set) {
+		t.Fatalf("-settings was not applied:\n%s", out)
+	}
+	if out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "doctor"}) }); !strings.Contains(out, "mode        default") || strings.Contains(out, "settings    ") {
+		t.Fatalf("without -settings:\n%s", out)
+	}
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"permissions":{"mood":"plan"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "-settings", bad, "doctor", "--json"}) }); !strings.Contains(out, "1 setting(s) no part of Abhed reads") {
+		t.Fatalf("doctor --json missed an unknown key from -settings:\n%s", out)
+	}
+	if code := Main([]string{"-C", ws, "-settings", filepath.Join(ws, "missing.json"), "doctor"}); code != 2 {
+		t.Fatalf("an unreadable -settings file: exit %d, want 2", code)
 	}
 }

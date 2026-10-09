@@ -8,6 +8,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed -settings FILE doctor` ignored `-settings` and checked the
+  configuration without it. The doctor, and `doctor --json`, now load it as a
+  run would and name it on a `settings` line.
 - An ACP request whose params did not decode was refused with -32602 and the
   Go decoder's message, Go type names included. The message now names the
   field and the JSON kind it takes, such as `"sessionId" must be a string,

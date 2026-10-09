@@ -190,8 +190,8 @@ func indexVerified(rep local.Report, err error) error {
 }
 
 // doctorJSON is `abhed doctor --json`: the same checks, one JSON object.
-func (a *App) doctorJSON(w io.Writer, workspace string) int {
-	cfg, err := a.loadConfig(workspace)
+func (a *App) doctorJSON(w io.Writer, workspace string, set flagSettings) int {
+	cfg, err := a.loadConfigWith(workspace, set)
 	c := &acpConn{}
 	c.useRecord(workspace, a.trust)
 	var verify func() error

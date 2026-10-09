@@ -254,7 +254,17 @@ func (a *App) checkEdition(cfg config.Config) error {
 // the paid keys configure; the CLI loop does not, because none of those keys
 // change what a terminal session does.
 func (a *App) loadConfig(workspace string) (config.Config, error) {
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust})
+	return a.loadConfigWith(workspace, flagSettings{})
+}
+
+// flagSettings is a -settings value read for a subcommand: its JSON and name.
+type flagSettings struct {
+	data []byte
+	name string
+}
+
+func (a *App) loadConfigWith(workspace string, set flagSettings) (config.Config, error) {
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust, Settings: set.data, SettingsName: set.name})
 	if err != nil {
 		return cfg, err
 	}
