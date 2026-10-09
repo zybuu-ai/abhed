@@ -29,11 +29,14 @@ type Profile struct {
 	// AuthMode is the server's auth.mode when last signed in.
 	AuthMode string `json:"auth_mode,omitempty"`
 	// Method is the sign-in method used: "local", or an identity provider's.
-	Method       string    `json:"method,omitempty"`
-	Username     string    `json:"username,omitempty"`
-	Token        string    `json:"token,omitempty"`
-	TokenType    string    `json:"token_type,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitzero"`
+	Method    string    `json:"method,omitempty"`
+	Username  string    `json:"username,omitempty"`
+	Token     string    `json:"token,omitempty"`
+	TokenType string    `json:"token_type,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// IssuedAt is when the token was received, to tell how much of its life
+	// is left.
+	IssuedAt     time.Time `json:"issued_at,omitzero"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	// TokenEndpoint and ClientID refresh a token that came with a refresh
 	// token; RevocationEndpoint is told the token at logout.
@@ -45,6 +48,9 @@ type Profile struct {
 	CAFile   string `json:"ca_file,omitempty"`
 	CertFile string `json:"cert_file,omitempty"`
 	KeyFile  string `json:"key_file,omitempty"`
+	// PendingLogout marks a profile signed out here whose server has not
+	// yet recorded the sign-out; the token waits in PendingLogouts.
+	PendingLogout bool `json:"pending_logout,omitempty"`
 }
 
 // SignedIn reports whether the profile holds a token that has not expired.
@@ -57,6 +63,9 @@ type File struct {
 	Version  int                 `json:"version"`
 	Current  string              `json:"current,omitempty"`
 	Profiles map[string]*Profile `json:"profiles"`
+	// PendingLogouts are tokens signed out here whose server has not yet
+	// recorded it; each is told again until it does.
+	PendingLogouts []*Profile `json:"pending_logouts,omitempty"`
 }
 
 // Names lists the profiles in order.

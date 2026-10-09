@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
@@ -22,6 +24,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/server/expose"
+	"github.com/zybuu-ai/abhed/server/sshrelay"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/sqlite"
 )
@@ -222,6 +225,8 @@ type builtControlPlane struct {
 	svc *controlplane.Service
 	// expose serves :expose and the exposed services' path.
 	expose *expose.Server
+	// sshKey is the host key of the :ssh relay; nil leaves it off.
+	sshKey ssh.Signer
 	label  string
 	// close stops what the control plane runs beside its sandboxes.
 	close func()
@@ -287,8 +292,35 @@ func buildControlPlane(ctx context.Context, cfg config.Config, workspace string,
 		out.expose = expose.New(expose.Options{Enabled: true, Record: record,
 			MaxTTL: time.Duration(cfg.ControlPlane.ExposeMaxTTLSeconds) * time.Second, Current: svc.Current})
 	}
+	out.sshKey = sandboxSSHKey(os.Stderr)
 	return out, nil
 }
+
+// sandboxSSHKey is the :ssh relay's host key, kept in the control plane's
+// state folder and made on first use. A key that cannot be read or made
+// leaves the relay off, and says why on w.
+func sandboxSSHKey(w io.Writer) ssh.Signer {
+	state, err := controlPlaneStateDir()
+	if err == nil {
+		err = ownFolder(state)
+	}
+	if err != nil {
+		fmt.Fprintf(w, "abhed: the sandbox SSH relay is off: %v\n", err)
+		return nil
+	}
+	path := filepath.Join(state, sshHostKeyFile)
+	key, err := sshrelay.LoadOrCreateHostKey(path)
+	if err != nil {
+		fmt.Fprintf(w, "abhed: the sandbox SSH relay is off: %v\n", err)
+		return nil
+	}
+	// No command or file tool may read the server's host key.
+	tools.AddStatePath(path)
+	return key
+}
+
+// sshHostKeyFile is the :ssh relay's host key in the control plane's state folder.
+const sshHostKeyFile = "ssh_host_ed25519_key"
 
 // checkControlPlane is buildControlPlane for serve -check: the same
 // refusals, with nothing created, migrated or written. An SQLite file that

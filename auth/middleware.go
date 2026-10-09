@@ -50,6 +50,10 @@ type Middleware struct {
 	// provider holds, and its text is shown to the person, so keep it plain.
 	// A stream runs it again through Recheck for as long as it stays open.
 	Check func(ctx context.Context, id *Identity) error
+	// Authorize, when set, runs after Check with the request itself, for a
+	// credential that is good for some requests only, such as a token scoped
+	// to one sandbox. An error answers 403 with its text and ends no session.
+	Authorize func(r *http.Request, id *Identity) error
 }
 
 func (m Middleware) Wrap(next http.Handler) http.Handler {
@@ -93,6 +97,9 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 			}
 			m.refuse(w, r, err)
 			return
+		case failForbidden:
+			forbidden(w, err.Error())
+			return
 		}
 		if p != nil {
 			forgetRefusal(w, r, p)
@@ -119,6 +126,7 @@ const (
 	failChallenge             // no credentials: sign in
 	failToken                 // a bearer token that did not verify
 	failRefused               // identified, then turned away by Check
+	failForbidden             // identified, but not for this request (Authorize)
 )
 
 // authenticate identifies the caller the way every request is identified. It
@@ -129,6 +137,9 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 		if id, ok := p.Identify(r); ok {
 			if err := m.check(r.Context(), id); err != nil {
 				return nil, p, failRefused, err
+			}
+			if err := m.authorize(r, id); err != nil {
+				return nil, p, failForbidden, err
 			}
 			return id, p, failNone, nil
 		}
@@ -148,6 +159,9 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 		}
 		if err := m.check(r.Context(), id); err != nil {
 			return nil, nil, failRefused, err
+		}
+		if err := m.authorize(r, id); err != nil {
+			return nil, nil, failForbidden, err
 		}
 		return id, nil, failNone, nil
 	}
@@ -254,6 +268,20 @@ func (m Middleware) check(ctx context.Context, id *Identity) error {
 		return nil
 	}
 	return m.Check(ctx, id)
+}
+
+func (m Middleware) authorize(r *http.Request, id *Identity) error {
+	if m.Authorize == nil {
+		return nil
+	}
+	return m.Authorize(r, id)
+}
+
+// forbidden answers a request its credential does not cover.
+func forbidden(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden", "reason": reason})
 }
 
 // refuse answers a request whose identity Check turned away: a browser goes

@@ -231,28 +231,83 @@ func (s *Service) CopyOut(ctx context.Context, c Caller, id, src string, w io.Wr
 // on a sandbox through the same checks and record.
 func (s *Service) UseDriver(ctx context.Context, c Caller, id, action string, cap driver.Capability, detail map[string]string,
 	fn func(d driver.Driver, sb Sandbox) error) (Sandbox, error) {
-	sb, d, err := s.prepare(ctx, c, id, "", action, AcceptsWork, cap)
+	return s.Stream(ctx, c, id, StreamRequest{Action: action, Capability: cap, Detail: detail},
+		func(d driver.Driver, sb Sandbox) (map[string]string, error) { return nil, fn(d, sb) })
+}
+
+// StreamRequest is a long-lived call on a sandbox: an attach, a forward,
+// an SSH session.
+type StreamRequest struct {
+	// Action names the call in the record and to the guard (":"+Action).
+	Action     string
+	Capability driver.Capability
+	// Detail is what the call asked for, already fit for the record.
+	Detail map[string]string
+	// Screen, when set, judges the call once it is recorded and before the
+	// guard; a refusal is recorded and returned.
+	Screen func() error
+}
+
+// Stream runs fn with a Ready sandbox's driver, checked, recorded,
+// screened and admitted like any verb, and records fn's outcome with the
+// detail it returns, such as an exit code or byte counts. The guard's
+// release runs when fn returns.
+func (s *Service) Stream(ctx context.Context, c Caller, id string, req StreamRequest,
+	fn func(d driver.Driver, sb Sandbox) (map[string]string, error)) (Sandbox, error) {
+	sb, d, err := s.prepare(ctx, c, id, "", req.Action, AcceptsWork, req.Capability)
 	if err != nil {
 		return sb, err
 	}
-	ev := AuditEvent{Principal: c.Principal, Action: action, SandboxID: id, Generation: sb.Generation, Detail: detail}
+	ev := AuditEvent{Principal: c.Principal, Action: req.Action, SandboxID: id, Generation: sb.Generation, Detail: maps.Clone(req.Detail)}
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return sb, err
 	}
-	command := ":" + action
-	for _, k := range slices.Sorted(maps.Keys(detail)) {
-		command += " " + k + "=" + detail[k]
+	if req.Screen != nil {
+		if err := req.Screen(); err != nil {
+			s.outcome(ctx, ev, err)
+			return sb, err
+		}
+	}
+	command := ":" + req.Action
+	for _, k := range slices.Sorted(maps.Keys(req.Detail)) {
+		command += " " + k + "=" + req.Detail[k]
 	}
 	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, command)
 	if err != nil {
 		return sb, err
 	}
 	defer release()
-	err = fn(d, sb)
+	more, err := fn(d, sb)
+	if len(more) > 0 {
+		if ev.Detail == nil {
+			ev.Detail = map[string]string{}
+		}
+		maps.Copy(ev.Detail, more)
+	}
 	s.outcome(ctx, ev, err)
 	s.committed(ctx, adm, sb, err)
 	return sb, err
 }
+
+// Note records something that happened inside a call already admitted, such
+// as a line typed into an attached terminal or one the deny rules refused.
+// Values under the keys in redacted are passed through the redactor first.
+func (s *Service) Note(ctx context.Context, c Caller, sb Sandbox, action, outcome string, detail map[string]string, redacted ...string) error {
+	d := maps.Clone(detail)
+	for _, k := range redacted {
+		if v, ok := d[k]; ok {
+			d[k] = s.redact(v)
+		}
+	}
+	if outcome == "" {
+		outcome = OutcomeOK
+	}
+	return s.record(ctx, AuditEvent{Principal: c.Principal, Action: action, SandboxID: sb.ID, Generation: sb.Generation,
+		Outcome: outcome, Detail: d})
+}
+
+// Redact is text as the record would keep it.
+func (s *Service) Redact(text string) string { return s.redact(text) }
 
 // Current reports a sandbox's generation and whether it is Ready, for
 // whatever is bound to one incarnation of it. It does not check a caller.

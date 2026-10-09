@@ -6,6 +6,8 @@ package drivertest
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
 	"strings"
@@ -23,6 +25,9 @@ type Fake struct {
 	// ExecFunc, when set, runs each Exec. The default writes the command to
 	// stdout, copies stdin to stdout after it, and exits 0.
 	ExecFunc func(ctx context.Context, id string, req driver.ExecRequest) (driver.ExecResult, error)
+	// AttachFunc, when set, runs each Attach once the instance is found
+	// running. The default echoes stdin to stdout and notes each resize.
+	AttachFunc func(ctx context.Context, id string, req driver.AttachRequest) (driver.ExecResult, error)
 	// Tier is the tier every instance reports; "process" when empty.
 	Tier string
 	// Errs, when set for a method name ("create", "start", "stop",
@@ -222,6 +227,9 @@ func (f *Fake) Attach(ctx context.Context, id string, req driver.AttachRequest) 
 	if err := f.running(id); err != nil {
 		return driver.ExecResult{}, err
 	}
+	if f.AttachFunc != nil {
+		return f.AttachFunc(ctx, id, req)
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -294,7 +302,8 @@ func (f *Fake) Snapshot(_ context.Context, id, name string) (driver.SnapshotRef,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ref := driver.SnapshotRef{ID: id + "@" + name, Name: name}
+	sum := sha256.Sum256([]byte(id + "@" + name))
+	ref := driver.SnapshotRef{ID: id + "@" + name, Name: name, Digest: "sha256:" + hex.EncodeToString(sum[:])}
 	f.snapshots[ref.ID] = ref
 	return ref, nil
 }

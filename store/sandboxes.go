@@ -72,6 +72,7 @@ func (q *Sandboxes) fenced(ctx context.Context, tx pgx.Tx, op FenceOp, id string
 var sandboxColumns = [][2]string{
 	{"sandboxes", "object"}, {"sandboxes", "resource_version"},
 	{"sandbox_idempotency", "request_hash"}, {"sandbox_audit", "principal"},
+	{"sandbox_templates", "object"},
 }
 
 // Sandboxes returns the control plane's store, refusing a database whose

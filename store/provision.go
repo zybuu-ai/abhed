@@ -35,6 +35,7 @@ var runtimeGrants = []struct{ table, privileges string }{
 	{"sandboxes", "SELECT, INSERT, UPDATE, DELETE"},
 	{"sandbox_idempotency", "SELECT, INSERT, UPDATE, DELETE"},
 	{"sandbox_audit", "SELECT, INSERT"},
+	{"sandbox_templates", "SELECT, INSERT, DELETE"},
 }
 
 // Extension lets an edition add its own tables in the same pass, so they are

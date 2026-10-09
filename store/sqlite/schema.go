@@ -64,6 +64,15 @@ CREATE TRIGGER sandbox_audit_no_replace BEFORE INSERT ON sandbox_audit
 WHEN EXISTS (SELECT 1 FROM sandbox_audit WHERE seq = NEW.seq)
 BEGIN SELECT RAISE(ABORT, 'sandbox_audit is append-only'); END;
 `,
+	// 2: sandbox templates, kept whole as JSON like sandboxes, versioned from
+	// the same counter.
+	`
+CREATE TABLE sandbox_templates (
+  name             TEXT    PRIMARY KEY,
+  resource_version INTEGER NOT NULL,
+  object           TEXT    NOT NULL
+) STRICT;
+`,
 }
 
 // SchemaVersion is the newest version this build knows.

@@ -26,6 +26,53 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- **`abhed sandbox`**: a server's sandboxes from the command line, as the
+  profile `abhed login` saved (`-profile`, the current one, or `-server URL`):
+  `create` (from a template, with labels, settings, a minimum tier, a
+  driver, `-wait`), `list` (label selectors, state, pages), `get`, `update`
+  (sent with `If-Match`), `exec` (exits with the command's status; `-i`
+  sends stdin), `connect` (an interactive shell in raw mode that follows
+  the terminal's size; Ctrl-] leaves), `ssh` and `ssh-config` (OpenSSH
+  through the relay, with the server's host key kept in
+  `sandbox_known_hosts` beside the profiles file and checked strictly),
+  `cp` (in and out as tar; what comes out is checked entry by entry and
+  written through an `os.Root`, never outside the target folder, into
+  `.abhed`, or over an existing file), `forward` (loopback by default; a
+  wider `-address` is warned about), `expose`, `logs`, `stop`, `start`,
+  `delete` (asks first unless `-y`), `snapshot`, `restore` and `template
+  list | get | create | rm`. Output is a table or `-o json`; exit status 0,
+  1 failed, 2 usage, 3 not signed in or not allowed, 4 not found, 5
+  conflict, and the remote status for `exec`, `connect` and `ssh`. Every
+  mutating call carries an `Idempotency-Key`, the same one when it is sent
+  again after a lost answer, so the server acts once; a token near its
+  expiry, or refused with `401`, is renewed with the profile's refresh
+  token and saved. Tokens are never printed, text from the server is
+  printed with control characters escaped, and every command is refused
+  inside an agent's command. See
+  [Sandboxes over the API](docs/guide/22-sandboxes.md#from-the-command-line-abhed-sandbox).
+- **Sandbox templates**: named defaults (a driver, labels and settings) a
+  sandbox is created from, at `/v1/sandbox-templates`, kept per tenant in
+  the same store as sandboxes. A create from one gets its driver (another is
+  refused), its labels under the create's own, and its settings, which the
+  create may tighten but not loosen. Everyone in the tenant reads them; an
+  administrator creates and removes them, and each change is recorded.
+- `GET /v1/sandboxes/{id}:events` reads a sandbox's record back, oldest
+  first, in pages, to whoever may see the sandbox.
+- Sandboxes over the API take streams, as WebSockets: `:attach` opens the
+  sandbox's interactive shell (each line judged by the deny rules at its
+  Enter and recorded, as in the workbench's terminal; refused where only a
+  line-by-line terminal holds every rule), `GET :exec` runs a command with
+  stdin, and `:forward` carries a byte stream to a port on the sandbox's
+  loopback, recorded with its bytes and closed when the sandbox stops. An
+  SSH server with no port of its own is reached only through the
+  authenticated `:ssh` relay; `abhed sandbox connect --stdio ID` is its
+  `ProxyCommand`. Its sessions are attaches, execs and forwards, judged and
+  recorded as those are; SFTP is not served (use `:cp`). Each upgrade checks
+  the sign-in, the page's origin and the caller's sight of the sandbox
+  before the connection is taken over, and an open stream ends when the
+  sign-in does. The WebSocket implementation is Abhed's own, in the public
+  package `wsconn`, with no new dependency.
+
 - `abhed serve` can manage sandboxes over `/v1/sandboxes` when
   `control_plane.enabled` is set (off by default; with it off nothing
   changes): create, list with label selectors, get, patch, delete, `:start`,
@@ -36,7 +83,7 @@ All notable changes to Abhed are recorded here. The format follows
   `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
   forwards where it has them (snapshots in `control_plane.snapshot_dir`;
   exposing off unless `control_plane.expose` is on) and answer `501` where
-  it does not; `:attach`, `:ssh` and `:forward` answer `501` for now. Each sandbox works in a folder of its own, outside the server's
+  it does not. Each sandbox works in a folder of its own, outside the server's
   workspace and `~/.abhed`, unless `control_plane.shared_workspace` asks for
   the server's workspace. See [Sandboxes over the
   API](docs/guide/22-sandboxes.md).
@@ -142,6 +189,26 @@ All notable changes to Abhed are recorded here. The format follows
   its own sign-in method through `auth.CLILoginAdvertiser`.
 - `GET /v1/cli` (public) says how a command line signs in; `GET
   /v1/cli/whoami` answers for a bearer token too.
+- Extension points for an edition's sign-in: `auth.Middleware.Authorize`
+  sees each request after the caller is identified and may refuse it (403,
+  no session ended), for a credential that covers some requests only;
+  `auth.LoadCLIKey` reads a token key file as command-line sign-in does.
+  `auth.cli.enabled` is accepted with `auth.mode: "oidc"` when the edition's
+  identity provider serves `abhed login` (`auth.cli.client_id` names the
+  provider's client for it), and `auth.workload` holds the Enterprise
+  edition's workload identity settings: the Community Edition checks them and
+  refuses `enabled`. Their key files and trust bundles are state the agent
+  cannot reach. Every public endpoint under `/v1/cli/`, and `/v1/token`, share
+  the sign-in rate limit.
+- The `profiles` client refreshes a token by itself when the profile holds a
+  refresh token: before a request once a tenth or less of the token's life is
+  left, and once after a `401`, sending the request again (`Profile.Do`;
+  `Whoami` uses it). Profiles record when their token was issued.
+- `abhed logout` retries a server that could not record the sign-out, with
+  backoff, and when it still has not, says so and keeps the token as a pending
+  sign-out, sent again at the next `login`, `logout` or `profile` command until
+  the server records it. Before, the token was dropped here and stayed valid
+  on the server.
 - Linux on Z (s390x): a `linux-s390x` release binary and a `linux/s390x`
   container image, for Red Hat Enterprise Linux, SUSE Linux Enterprise Server
   and Ubuntu. The fence tier accepts s390x with its own system-call table:
@@ -177,12 +244,23 @@ All notable changes to Abhed are recorded here. The format follows
   CI job lint and render it for a matrix of values and validate the result
   against the Kubernetes 1.30 and 1.33 schemas with pinned, checksummed tools.
 
-**Upgrading with Postgres.** The control plane's tables come with schema
-version 7; run `abhed migrate` before turning `control_plane.enabled` on.
+**Upgrading with Postgres.** The control plane's tables (`sandbox_templates`
+among them) come with schema version 7; run `abhed migrate` before turning
+`control_plane.enabled` on.
 A server with it off starts on the older schema as before.
 
 ### Changed
 
+- A link that points into a `.abhed` folder is left out of a snapshot and
+  of what `abhed sandbox cp` sends, and refused in an archive copied into or
+  out of a sandbox or restored from a snapshot, as an entry inside one
+  already was.
+- `abhed sandbox` is refused inside an agent's command for every
+  subcommand, not only `connect`.
+- Every sandbox `:exec` is judged by the server's deny rules and extension
+  hooks, as the workbench's terminal is: a refused command is `403
+  forbidden` and recorded, and never runs. `POST :exec` with `"stdin":
+  true` answers `400` naming the WebSocket form instead of `501`.
 - The fence probe's `seccomp` check now also installs the fence's own filter
   in its helper and requires a signal to Abhed to be refused and one to the
   helper itself allowed, so a kernel that reads the filter's system-call
@@ -258,6 +336,21 @@ A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `internal/sandboxcli` is `abhed sandbox`. `controlplane.Template`,
+  `TemplateStore` (implemented by the memory, SQLite and Postgres stores and
+  required by `storetest.Run`), `Service.CreateTemplate`, `GetTemplate`,
+  `ListTemplates`, `DeleteTemplate` and `Service.Events`;
+  `server.AttachProtocol`, `ExecProtocol` and `ForwardProtocol` beside
+  `SSHRelayProtocol`. `drivertest.Fake` snapshots carry a digest.
+- `wsconn`: a small WebSocket (RFC 6455) server upgrade, client and byte
+  stream, size-limited and fuzzed, for the sandbox streams and for drivers
+  that speak WebSockets. `server/sshrelay`: the SSH server behind the `:ssh`
+  relay. `controlplane.Service.Stream` runs a long-lived call on a sandbox
+  through the same checks, record, guard and interceptor as a verb, with
+  `StreamRequest.Screen`; `ExecIO.Screen` judges an exec's command line;
+  `Service.Note` records what happens inside an admitted call;
+  `server.Options.SandboxSSHKey` turns the relay on;
+  `drivertest.Fake.AttachFunc` stands in for a shell.
 - Experimental public Go packages for the sandbox control plane, the base
   for `/v1/sandboxes` and per-session sandboxes: `driver` (the driver
   interface, capability flags and registry), `driver/plugin` (drivers in a

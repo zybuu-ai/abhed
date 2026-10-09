@@ -192,6 +192,7 @@ var subcommands = []subcommand{
 	{name: "login", about: "sign this command line in to an Abhed server and save it as a profile"},
 	{name: "logout", about: "sign the current profile (or -profile NAME) out"},
 	{name: "profile", about: "the servers this command line knows: list, use, rm"},
+	{name: "sandbox", about: "a server's sandboxes: connect --stdio ID, the SSH relay for ProxyCommand"},
 	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
@@ -223,6 +224,7 @@ var paidFeatures = map[string]string{
 	"telemetry":    "Enterprise",
 	"ha":           "Enterprise",
 	"interceptors": "Enterprise",
+	"workload":     "Enterprise",
 }
 
 // EditionError is a config key this binary cannot honour.
@@ -270,6 +272,9 @@ func (a *App) checkEdition(cfg config.Config) error {
 	}
 	if len(cfg.ControlPlane.Interceptors) > 0 && !a.features["interceptors"] {
 		return &EditionError{Key: "control_plane.interceptors", Feature: "interceptors", Edition: a.edition}
+	}
+	if cfg.Auth.Workload.Enabled && !a.features["workload"] {
+		return &EditionError{Key: "auth.workload.enabled", Feature: "workload", Edition: a.edition}
 	}
 	return nil
 }

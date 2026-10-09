@@ -24,6 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
@@ -321,6 +323,9 @@ type Options struct {
 	// SandboxRouter, when set, relays each call that acts on a sandbox to the
 	// replica that owns it. Nil handles every call here.
 	SandboxRouter SandboxRouter
+	// SandboxSSHKey is the host key of the SSH server sandboxes are reached
+	// by through :ssh. Nil leaves :ssh answering 501.
+	SandboxSSHKey ssh.Signer
 }
 
 // Server holds live sessions and serves the API.
@@ -351,6 +356,8 @@ type Server struct {
 	// Per-caller limits on the sandbox routes, from the settings registry.
 	cpMutations *limiter
 	cpExec      *limiter
+	// cpStreams counts the attach, exec, forward and SSH streams open, per caller.
+	cpStreams streamSlots
 
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
@@ -925,7 +932,7 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v1/signin", "/v1/signup", "/v1/password":
 			rateLimit(s.signinLimiter, trustProxy, next).ServeHTTP(w, r)
-		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath:
+		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath, TokenExchangePath:
 			rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
 		case "/v1/sessions":
 			// Creating a session starts an agent loop, which is the most
@@ -938,6 +945,11 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		default:
+			// An edition's command-line sign-in lives under /v1/cli/ too.
+			if strings.HasPrefix(r.URL.Path, "/v1/cli/") && r.URL.Path != "/v1/cli/whoami" {
+				rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
+				return
+			}
 			next.ServeHTTP(w, r)
 		}
 	})
@@ -1143,6 +1155,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.wrote = true
 	r.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap lets http.ResponseController reach the connection, so a
+// WebSocket upgrade can take it over.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // Flush lets SSE writes reach the client through the wrapper.
 func (r *statusRecorder) Flush() {

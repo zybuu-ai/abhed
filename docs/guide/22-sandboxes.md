@@ -61,7 +61,8 @@ restart of the server, in one of two places:
   sessions. Run `abhed migrate` after upgrading, as for any new table (the
   server refuses to turn the control plane on against an older schema and
   names what is missing). The runtime role gets `SELECT`, `INSERT`,
-  `UPDATE` and `DELETE` on `sandboxes` and `sandbox_idempotency`, and only
+  `UPDATE` and `DELETE` on `sandboxes` and `sandbox_idempotency`,
+  `SELECT`, `INSERT` and `DELETE` on `sandbox_templates`, and only
   `SELECT` and `INSERT` on `sandbox_audit`, which is append-only like
   `events`.
 - **SQLite**, otherwise: one file on the server's host,
@@ -176,12 +177,22 @@ every other route.
 | `POST /v1/sandboxes/{id}:cp?direction=in&path=…` with a tar body | `200` |
 | `POST /v1/sandboxes/{id}:cp?direction=out&path=…` (or `{direction, path}`) | `200`, a tar stream |
 | `POST /v1/sandboxes/{id}:expose` `{port, ttl_seconds?}` | `201 {id, url, path, expires_at}` |
+| `GET /v1/sandboxes/{id}:attach?rows=&cols=&cwd=` | a WebSocket: an interactive shell, [below](#streams-attach-exec-with-stdin-forward-and-ssh) |
+| `GET /v1/sandboxes/{id}:exec` | a WebSocket: one command with stdin |
+| `GET /v1/sandboxes/{id}:forward?port=N` | a WebSocket: a byte stream to a port inside the sandbox |
+| `POST /v1/sandboxes/{id}:ssh` | `200 {host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` |
+| `GET /v1/sandboxes/{id}:ssh` | a WebSocket: the SSH relay |
+| `GET /v1/sandboxes/{id}:events?after=&limit=` | `200 {items, next}`: the sandbox's record, oldest first |
+| `POST /v1/sandbox-templates` `{name, description?, driver?, labels?, settings?}` | `201`, the template; administrators only |
+| `GET /v1/sandbox-templates?selector=&limit=&after=` | `200 {items, next}` |
+| `GET /v1/sandbox-templates/{name}` | `200`, with `ETag` |
+| `DELETE /v1/sandbox-templates/{name}` | `200`; administrators only, `If-Match` honoured |
 
-These last four use what the sandbox's driver can do. A driver that cannot
-answers `501` with code `unsupported`, before anything is recorded: the
-`process` driver snapshots and restores but does not copy, and the microVM
-driver answers for itself. `:attach`, `:ssh`, `:forward` and `:exec` with
-`"stdin": true` answer `501` in this version.
+Snapshots, copies, exposures, `:attach` and `:forward` use what the
+sandbox's driver can do. A driver that cannot answers `501` with code
+`unsupported`, before anything is recorded: the `process` driver
+snapshots, restores, attaches and forwards but does not copy, and the
+microVM driver answers for itself.
 
 **Snapshots.** `:snapshot` takes one from a `Ready` sandbox (while its
 commands may write) or a stopped one (consistent). `:restore` takes the
@@ -208,6 +219,12 @@ being given one.
 Every snapshot, restore, copy and exposure is in the record twice: the
 request with who asked, and the driver's own `sandbox.snapshot`,
 `sandbox.restore` or `sandbox.expose` event as `system:driver`.
+
+**The record of a sandbox.** `:events` returns what the record holds for
+one sandbox, oldest first, to whoever may see the sandbox: each request and
+its outcome, the reconciler's transitions, and the driver's events, each
+with its sequence number. Pass the last `seq` read as `after` for the next
+page (`next` is set while more remain).
 
 Errors are `{"error": {"code", "message"}}` with codes `invalid`,
 `not_found`, `conflict`, `precondition_failed`, `unsupported`,
@@ -255,6 +272,256 @@ sandbox takes a command; any other state is `409`. The response header
 
 The record keeps who ran a command, in which sandbox and generation, and how
 it ended. The command line itself goes through your secrets redaction first.
+
+A command a deny rule or an extension's hook refuses (your
+`permissions.deny`, as for the agent's `bash` and the workbench's
+terminal) is refused with `403` and code `forbidden`, and the refusal is
+recorded. Only a refusal stops a command here: rules that would ask the
+agent first do not ask a person who runs a command themselves. A command
+given as `argv` is judged as its words joined by spaces.
+
+### Streams: attach, exec with stdin, forward and SSH
+
+`:attach`, `:exec` with stdin, `:forward` and the `:ssh` relay are
+WebSockets (RFC 6455, over HTTP/1.1; behind a proxy, let it pass
+`Upgrade`). The client offers the verb's subprotocol in
+`Sec-WebSocket-Protocol`: `abhed.attach.v1`, `abhed.exec.v1`,
+`abhed.forward.v1` or `abhed.ssh.v1`. Before the connection is upgraded the
+request is signed in like any other, refused with `403` when it comes from
+another site's page (its `Origin` is not this server or one in
+`server.allowed_origins`), and refused with `404` when the caller cannot
+see the sandbox; then the driver's capability, the sandbox's state
+(`Ready` only) and the rate limit are checked, so each of those failures
+is an ordinary HTTP answer with the usual error body. A request without
+the upgrade gets `426`.
+
+While a stream is open the caller is authorised again every few seconds
+(as the workbench's streams are): once their sign-in ends, or they can no
+longer see the sandbox, the stream ends. It also ends when the sandbox
+stops, is deleted or starts as a new generation, when the client stops
+answering pings for a minute, and after twelve hours. One caller may have
+16 streams open at once; each opening counts against `exec_per_minute`.
+Messages are at most 1 MiB.
+
+Text messages carry JSON control messages; binary messages carry bytes.
+Each stream that is not SSH starts with `{"type": "started", "generation": n}`
+and ends with `{"type": "exit", "code": n}` when what ran ended with an
+exit status, or `{"type": "error", "error": {"code", "message"}}`, then a
+normal close.
+
+**`:attach`** opens the sandbox's interactive shell on a terminal of
+`rows` × `cols`, in `cwd` (inside the workspace) when given. Binary
+messages are keys to the shell and its output back;
+`{"type": "resize", "rows": 40, "cols": 120}` changes the terminal's size.
+It is followed the way the workbench follows its interactive terminal
+([Working by hand](16-workbench.md#working-by-hand)) where the terminal
+cannot be asked: each line you enter is rebuilt from your keys, put to the
+deny rules at its Enter, and recorded (`attach.input`, without its text
+when the terminal did not show it as typed). A line the rules refuse never
+reaches the shell: the terminal says why and the line is dropped, and the
+refusal is recorded (`attach.refused`). This is best effort: the shell
+decides what a line means, so the sandbox is the boundary. When the
+server's terminal must judge every line (`sandbox.terminal` is
+`"lines"`), or the managed configuration sets deny rules or extensions
+that could refuse a command, `:attach` is refused with `403` and you run
+each command with `:exec` instead. The shell's end is recorded with its
+exit status, its duration, the bytes each way and the last 8 KiB of its
+output, with withheld lines taken out and your secrets redaction applied.
+
+**`:exec` with stdin.** Open `GET …:exec` as a WebSocket and send the
+request as the first message, the same JSON as the `POST` form. Then
+binary messages are stdin, and `{"type": "eof"}` closes it. Output comes
+back as binary messages whose first byte says the stream (1 stdout, 2
+stderr). The command is judged, bounded and recorded as a `POST` one is.
+`POST …:exec` with `"stdin": true` answers `400`, naming the WebSocket form.
+
+**`:forward?port=N`** carries a byte stream to `127.0.0.1:N` inside the
+sandbox, through the driver's own channel (see [Snapshots and
+forwarding](25-snapshots-and-forwarding.md#forwarding-a-port)): binary
+messages both ways, and `{"type": "eof"}` from the client ends what it
+sends while the reply is still read. Nothing listening on the port is an
+HTTP `503` before the upgrade. The record has who opened it and, when it
+closes, the bytes each way.
+
+**SSH.** `abhed serve` runs an SSH server for its sandboxes with no port
+of its own: the only way in is `GET …:ssh`, a WebSocket carrying the raw
+SSH connection, which the server has already signed in and bound to the
+caller and the sandbox. So SSH asks for no password or key, and any user
+name is accepted. `POST …:ssh` returns what a client needs: the server's
+host key (`host_key`, and a `known_hosts` line for `host_alias`), and the
+relay's path and subprotocol. For OpenSSH and editors that use it:
+
+```
+Host abhed-sbx_6f1c0a9e4b2d7c13
+  User sandbox
+  HostKeyAlias abhed-sbx_6f1c0a9e4b2d7c13
+  ProxyCommand abhed sandbox connect --stdio sbx_6f1c0a9e4b2d7c13
+```
+
+`abhed sandbox connect --stdio ID` joins its stdin and stdout to the relay,
+signed in with the current profile (`-profile NAME` for another; refused
+inside an agent's command; see
+[TLS and command-line sign-in](26-tls-and-cli-login.md)). `abhed sandbox
+ssh` and `abhed sandbox ssh-config`, [below](#from-the-command-line-abhed-sandbox),
+write the host key and these lines for you.
+
+Each SSH session is its own recorded call, judged as the verb it amounts
+to: a shell is an `:attach` (`via: ssh` in the record; refused where
+`:attach` is), a command is an `:exec` (judged by the deny rules, bounded
+by `exec.timeout_seconds` and `exec.output_bytes`, and run without a
+terminal even when one was asked for), and a `direct-tcpip` channel to
+`127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
+is recorded as `ssh`, with its sessions, forwards and refusals. Everything
+else is refused: remote forwarding, agent and X11 forwarding, environment
+variables, signals, and subsystems.
+
+**SFTP is not served.** The driver interface moves files as tar archives
+(`:cp`), not one open file at a time, so an SFTP server would have to copy
+a whole folder to list it. Copy files with `:cp` instead. An
+SFTP client is told so and refused; `scp` without `-s` runs the sandbox's
+own `scp` as a command, judged like any other.
+
+The host key is an Ed25519 key in the control plane's state folder
+(`ssh_host_ed25519_key` beside the default `sandboxes` folder, mode
+`0600`), made the first time the server starts with the control plane on.
+A key file that others may read, or that is a link, leaves the relay off:
+the server says so when it starts, and `:ssh` answers `501`. No command or
+file tool may read it.
+
+## Templates
+
+A template is a named set of defaults a sandbox is created from: a driver,
+labels and settings. `POST /v1/sandboxes` with `"template": "web"` copies
+them into the new sandbox when the server has a template by that name:
+
+- **Driver.** A template that names one fixes it: a create naming another
+  is `400`.
+- **Labels.** The template's labels select it (`?selector=` on the list)
+  and are given to every sandbox made from it; the create's own labels win
+  where both set a key. Labels under `abhed.dev/` are the server's, as on
+  sandboxes.
+- **Settings.** Each sandbox gets the template's settings. A create may
+  tighten one (a shorter `exec.timeout_seconds`, a stronger
+  `isolation.min_tier`) and is refused with `400` for a looser one; the
+  ceilings of the managed file hold over both.
+
+What a template gives is copied at create: changing the sandbox's
+`template` later, or removing the template, leaves its driver, labels and
+settings as they are. A name with no template object stays a plain name,
+as it was before templates were kept, so sessions' sandboxes and existing
+clients behave as before; `abhed sandbox create -template NAME` refuses a
+name the server has no template for, other than `default`.
+
+Templates live in the same store as sandboxes (the `sandbox_templates`
+table in Postgres and SQLite), one set per tenant, versioned with the same
+`ETag`s. Everyone signed in to the tenant reads them; only a member of the
+admin group, acting for the whole tenant, creates or removes one, and each
+change is in the record as `template.create` or `template.delete`. A
+server whose store keeps no templates answers `501`.
+
+## From the command line: `abhed sandbox`
+
+`abhed sandbox` drives all of this as the profile `abhed login` saved
+([TLS and command-line sign-in](26-tls-and-cli-login.md)). Every command
+takes `-profile NAME` (default: the current profile) or `-server URL`
+(the profile signed in to that server), and `-o table` (the default) or
+`-o json`. There is no YAML output: Abhed has no YAML writer.
+
+```bash
+abhed login https://abhed.internal
+abhed sandbox template create web -l team=a -min-tier container -set exec.timeout_seconds=300   # admins
+abhed sandbox create -template web -l app=shop -wait
+abhed sandbox list -l team=a,app=shop -state Ready
+abhed sandbox exec sbx_6f1c0a9e4b2d7c13 -- make test
+echo data | abhed sandbox exec -i sbx_6f1c0a9e4b2d7c13 -- wc -c
+abhed sandbox connect sbx_6f1c0a9e4b2d7c13
+abhed sandbox cp ./src sbx_6f1c0a9e4b2d7c13:work
+abhed sandbox forward sbx_6f1c0a9e4b2d7c13 8080:80
+```
+
+| Command | What it does |
+|---|---|
+| `create [-template T] [-l k=v]... [-set k=v]... [-min-tier T] [-cpus N] [-memory-mb N] [-driver D] [-wait]` | Creates a sandbox (`default` template unless named); `-wait` waits until it is `Ready`. |
+| `list [-l SELECTOR] [-state S] [-limit N] [-after CURSOR] [-all]` | One page, or every page with `-all`; a table prints the next cursor on stderr. |
+| `get ID` | The sandbox, its settings and conditions. |
+| `update ID [-l k=v] [-unlabel k] [-set k=v] [-unset k] [-template T] [-if-match V]` | A merge patch sent with `If-Match`: the version just read, or the one you give. A change made in between is exit 5. |
+| `exec [-i] [-c LINE] [-cwd DIR] [-e K=V] ID [--] COMMAND [ARG...]` | Runs a command and exits with its status. `-i` sends stdin over the WebSocket form. |
+| `connect ID [-cwd DIR] [-escape ^X\|none]` | An interactive shell on a terminal in raw mode, resized with yours. **Ctrl-]** leaves (the shell ends with the connection); `-escape` picks another key. |
+| `connect --stdio ID` | stdin and stdout joined to the SSH relay: ssh's `ProxyCommand`. |
+| `ssh ID [-- SSH ARGS]` | Runs your `ssh` through the relay, with the server's host key. |
+| `ssh-config [ID...] [-l SELECTOR]` | Prints a `Host` block per sandbox (every `Ready` one by default) for `~/.ssh/config` or an editor. |
+| `cp SRC ID:DIR`, `cp ID:PATH DIR` | Copies a file or folder in, or out into an existing folder. |
+| `forward ID [LOCAL:]REMOTE [-address A]` | Listens on `127.0.0.1:LOCAL` (any free port when omitted) and carries each connection to `REMOTE` inside the sandbox. |
+| `expose ID PORT [-ttl 1h]` | Publishes the port at a URL for you alone, when the operator turned exposing on. |
+| `logs ID [-after SEQ] [-limit N]` | The sandbox's recorded events. |
+| `stop ID [-grace S]`, `start ID`, `delete ID [-y]` | Lifecycle verbs, each with `-if-match`. `delete` asks first and, away from a terminal, needs `-y`. |
+| `snapshot ID [-name N]`, `restore ID -f FILE` | `restore` takes what `snapshot -o json` printed (`-` reads stdin), or `SNAPSHOT_ID -digest DIGEST`. |
+| `template list [-l SELECTOR]`, `template get NAME`, `template create NAME [...]`, `template rm NAME [-y]` | Templates; `create` takes the same `-l`, `-set` and size flags as `create`, plus `-driver` and `-description`. |
+
+`abhed sandbox -h` lists them; `abhed sandbox COMMAND -h` gives each
+command's flags. Flags may come before or after the sandbox id; for
+`exec`, everything after the command's first word belongs to the command.
+
+**Exit status.** `0` done; `1` the call failed (the server refused it or
+could not be reached); `2` the command was called wrongly; `3` not signed
+in, or the sign-in may not do this (`401`, `403`, a deny rule included);
+`4` no such sandbox or template; `5` a conflict (`409`, `412`, `428`: the
+sandbox is in the wrong state, or changed). `exec`, `connect` and `ssh`
+exit with the remote command's status once it ran, and `255` when it
+started but did not end with one; leaving `connect` with the escape key is
+`0`.
+
+**Sign-in.** A token near its expiry is renewed before a call when the
+profile holds a refresh token, and once more if the server answers `401`;
+the new token is saved to the profiles file. Tokens are never printed. A
+profile that is signed out, or whose token was refused with nothing to
+renew it, is exit 3 with the `abhed login` to run.
+
+**Retries.** Every `POST`, `PATCH` and `DELETE` carries an
+`Idempotency-Key` the command makes. When the answer is lost (the
+connection dropped, or `502`, `503`, `504` or `429`), the same call is sent
+again, up to three more times, with the same key, so the server acts once:
+a repeated create returns the first sandbox, and an `exec` whose output
+stream broke gets the command's exit status without running it again.
+A copy in is sent once.
+
+**Copies.** `cp` moves a tar archive, as `:cp` does. Going in, the local
+file or folder is packed under its own name, leaving out links that lead
+out of it, sockets, devices, pipes and any `.abhed` folder (the count of
+what was left out is printed). Coming out, the archive from the sandbox is
+untrusted: every entry is checked as the server checks a copy in (no
+absolute names, no `..`, no links pointing outside the folder or into
+`.abhed`, no devices) and written through an `os.Root` opened on the
+target folder, so nothing lands outside it; an entry in a `.abhed` folder,
+in any case, stops the copy, and no existing file is overwritten. A local
+or sandbox path in `.abhed` is refused before anything is sent.
+
+**SSH.** `ssh` and `ssh-config` ask the server for the sandbox's host key
+over the signed-in connection and keep it in `sandbox_known_hosts` beside
+the profiles file (one line per sandbox, replaced when it changes; `0600`).
+`ssh` then runs `ssh -o ProxyCommand=… -o UserKnownHostsFile=… -o
+StrictHostKeyChecking=yes -o HostKeyAlias=abhed-ID -l sandbox abhed-ID
+[ARGS]`: the host key is always checked, never skipped. `ssh-config`
+prints the same as a block:
+
+```
+Host abhed-sbx_6f1c0a9e4b2d7c13
+  HostKeyAlias abhed-sbx_6f1c0a9e4b2d7c13
+  User sandbox
+  ProxyCommand /usr/local/bin/abhed sandbox connect --stdio -profile prod sbx_6f1c0a9e4b2d7c13
+  UserKnownHostsFile "/home/me/.abhed/sandbox_known_hosts"
+  StrictHostKeyChecking yes
+  CheckHostIP no
+```
+
+**Forwarding.** `forward` listens on loopback unless `-address` says
+otherwise, and then warns that anyone who can reach that address reaches
+the sandbox's port as you. Each connection is its own `:forward` stream,
+recorded with its bytes; the command runs until Ctrl-C.
+
+**Inside an agent.** Every `abhed sandbox` command is refused when run by
+the agent (`ABHED_SANDBOX` set, or under its fence), as `abhed login` is:
+a session must not reach a server's sandboxes with your sign-in.
 
 ## Lifecycle
 

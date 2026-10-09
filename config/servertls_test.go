@@ -59,6 +59,15 @@ func TestCLILoginValidation(t *testing.T) {
 	if err := c.validateCLILogin(); err == nil || !strings.Contains(err.Error(), "auth.mode local") {
 		t.Errorf("cli login without local accounts: %v", err)
 	}
+	c.Auth.Mode = "proxy"
+	if err := c.validateCLILogin(); err == nil {
+		t.Error("cli login behind an authenticating proxy was accepted")
+	}
+	// An edition that serves oidc signs the command line in through it.
+	c.Auth.Mode = "oidc"
+	if err := c.validateCLILogin(); err != nil {
+		t.Errorf("cli login with oidc: %v", err)
+	}
 	c.Auth.Mode = "local"
 	if err := c.validateCLILogin(); err != nil {
 		t.Errorf("cli login with local accounts: %v", err)
@@ -88,6 +97,9 @@ func TestServerSecretFiles(t *testing.T) {
 	}
 	if slices.Contains(got, filepath.Join(ws, "c.pem")) {
 		t.Error("a certificate is not a secret")
+	}
+	if !slices.Contains(got, key+CLIEditionStateSuffix) {
+		t.Errorf("an edition's sign-in state beside the key is missing from %v", got)
 	}
 	c.Auth.CLI.KeyFile = "/srv/abhed/cli.key"
 	if k, _ := c.CLIKeyFile(ws); k != "/srv/abhed/cli.key" {

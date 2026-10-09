@@ -147,6 +147,15 @@ func TestCLIEndpointsAreRateLimited(t *testing.T) {
 	if !limited {
 		t.Fatal("the token endpoint was never throttled")
 	}
+	// An edition's sign-in under /v1/cli/, and token exchange, share the budget.
+	for _, path := range []string{"/v1/cli/sso/token", TokenExchangePath} {
+		if rec := r.do(nil, "POST", path, "grant_type=x", "Content-Type", "application/x-www-form-urlencoded"); rec.Code != http.StatusTooManyRequests {
+			t.Errorf("%s after the limit = %d", path, rec.Code)
+		}
+	}
+	if rec := r.do(nil, "GET", "/v1/cli/whoami", ""); rec.Code == http.StatusTooManyRequests {
+		t.Error("whoami is throttled with the sign-in endpoints")
+	}
 	// Signing in by password has its own budget.
 	if rec := r.do(nil, "POST", "/v1/signin", `{"username":"alice","password":"correct-horse-1"}`); rec.Code != 200 {
 		t.Errorf("sign-in after the CLI limit = %d", rec.Code)

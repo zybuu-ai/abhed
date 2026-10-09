@@ -229,7 +229,8 @@ DO $$
 DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version',
-                           'sandboxes', 'sandbox_idempotency', 'sandbox_audit'] LOOP
+                           'sandboxes', 'sandbox_idempotency', 'sandbox_audit',
+                           'sandbox_templates'] LOOP
     IF to_regclass(t) IS NOT NULL THEN
       EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE NOWAIT', t);
     END IF;

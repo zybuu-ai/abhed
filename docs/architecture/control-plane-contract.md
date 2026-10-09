@@ -63,7 +63,7 @@ minor release, and each change is listed in the changelog.
 | `id` | server | `sbx_` plus 16 lowercase hex characters. Never reused. Never contains `:` (the REST surface splits on it). |
 | `generation` | server | The incarnation counter. Starts at 1 on create and goes up by one each time the instance is started again (Stopped, Completed or Error → Starting), restored, or its `template` changes. Anything bound to a running instance (a sandbox token, an attach session, a forward) carries the generation and is refused once it no longer matches. |
 | `resource_version` | store | Goes up on every write to the object, by a store-wide counter. It is the `ETag`, and `If-Match` compares against it. |
-| `template` | client | The template the sandbox was built from (P3-04). Changing it bumps `generation` and needs a restart to take effect. |
+| `template` | client | The template the sandbox was built from (§4.4). Changing it bumps `generation` and needs a restart to take effect; what the template gave at create stays. |
 | `policy_rev` | server | The policy revision in force. Policy reload is live, so a new revision does not bump `generation`; it is recorded as a `PolicyApplied` condition and in the event record. |
 | `driver` | client, default from template | The registered driver name. Immutable after create. |
 | `state` | server | One of the states in §3. Clients never write it directly; they call a verb. |
@@ -164,14 +164,17 @@ last `:`; ids never contain one.
 | `PATCH /v1/sandboxes/{id}` | `{labels?, template?, settings?}` (JSON merge patch) | `200` sandbox | `If-Match` required; `428` without it. |
 | `DELETE /v1/sandboxes/{id}` | — | `202` sandbox in `Deleting` | `If-Match` honoured. |
 | `POST …:start` / `:stop` | `{grace_seconds?}` | `202` sandbox | `If-Match` honoured. |
-| `POST …:exec` | `{argv \| command, cwd?, env?, stdin?: bool}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. WebSocket when `stdin` is true (P3-05; `501` until then). |
-| `GET …:attach` | — | WebSocket | PTY; resize as a control frame. Carries `generation`. |
-| `POST …:ssh` | — | `{host, port, user, known_hosts, expires_at}` | Short-lived credentials for the relay (P3-05). |
-| `POST …:forward` | `{port}` | WebSocket | Byte stream to a port inside the sandbox. Loopback-only on the client side. |
+| `POST …:exec` | `{argv \| command, cwd?, env?}` | stream | NDJSON frames `{stdout\|stderr\|exit\|error}`, byte payloads base64. Ends with `{"exit": n}` only when the command ran to an exit code, else `{"error": {code, message}}`. With `"stdin": true`, `400`: stdin is the WebSocket form. |
+| `GET …:exec` | first message: the `POST` body | WebSocket `abhed.exec.v1` | One command with stdin (§4.3). |
+| `GET …:attach?rows=&cols=&cwd=` | — | WebSocket `abhed.attach.v1` | PTY; resize as a control message. Carries `generation`. |
+| `POST …:ssh` | — | `{host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` | What a client needs for the relay; no credential is minted, since the relay authenticates the caller. |
+| `GET …:ssh` | — | WebSocket `abhed.ssh.v1` | The SSH relay: raw SSH in binary messages. |
+| `GET …:forward?port=N` | — | WebSocket `abhed.forward.v1` | Byte stream to a port on the sandbox's loopback. |
 | `POST …:expose` | `{port, ttl_seconds}` | `{url, expires_at}` | Off unless the operator enables it. Served by `server/expose` under `/v1/exposed/`, to the same principal and tenant only. |
 | `POST …:cp` | `{direction: in\|out, path}` + tar body or tar response | `200` | Paths confined to the workspace; archive entries validated (no `..`, no absolute paths, no links out). |
 | `POST …:snapshot` | `{name?}` | `201 {snapshot, generation}` | `snapshot` carries the content `digest`. |
 | `POST …:restore` | `{snapshot}` | `202` sandbox | From `Stopped`, `Completed` or `Error`; bumps `generation`. |
+| `GET …:events?after=&limit=` | — | `200 {items, next}` | The sandbox's record, oldest first, to whoever may see it; `next` is the last `seq` returned while more remain. |
 
 `:snapshot`, `:restore`, `:cp` and `:expose` are implemented
 (`server/sandbox_verbs.go`, over `controlplane.Service`'s `Snapshot`,
@@ -179,10 +182,16 @@ last `:`; ids never contain one.
 code `unsupported`, before anything is recorded, when the sandbox's driver
 lacks the capability, and `:expose` also while the operator has not turned
 exposing on. `:cp` takes `direction` and `path` in the query when the body
-is the tar to copy in. `:attach`, `:ssh` and `:forward` (P3-05, P3-06) are
-routed and answer `501` until their work lands (`:forward` needs a stream
-transport the server does not have yet); the seam is `sandboxVerbs` in
+is the tar to copy in. `:attach`, `:exec` with stdin, `:forward` and `:ssh`
+are WebSockets (§4.3). The seam is `sandboxVerbs` in
 `server/sandboxes.go`. All check the caller may see the sandbox first.
+
+Every `:exec`, in each of its forms, and every shell is judged by the
+server's deny rules and extension hooks (the policy the workbench terminal
+uses) after its `requested` event and before the guard: a refusal is the
+`failed` outcome with code `forbidden` (`403`), and the driver is never
+asked. Only `deny` refuses; an `ask` does not ask a person who runs a
+command themselves.
 
 Every mutating call becomes an event in the record with the principal, the
 sandbox id, generation and the outcome: one `requested` event before it acts
@@ -233,6 +242,91 @@ bytes have been sent, and the stream ends with an error frame of code
 - Without `If-Match`, verbs still run as a guarded update against the version
   the server just read, so a lost update is impossible either way; `If-Match`
   lets a client say which state it decided on.
+
+### 4.3 Streams (Implemented: package `wsconn`, `server/sandbox_streams.go`, `server/sshrelay`)
+
+The streaming verbs are WebSockets (RFC 6455) served by `wsconn`, Abhed's
+own small implementation (no extensions; frames checked for masking,
+reserved bits, opcodes, control-frame rules and minimal lengths; text
+checked to be UTF-8; frames and messages at most 1 MiB, closed with 1009
+past it; the close handshake and ping/pong). It is a public package so the
+Kubernetes driver can share it. For each stream, in order:
+
+1. Authentication, by the server's middleware, as for every route.
+2. Origin: a request carrying an `Origin` that is not this host or one in
+   `server.allowed_origins` is `403` (the same-origin layer passes every
+   `GET`, so the upgrade checks it itself).
+3. The caller must see the sandbox (`404` otherwise; another tenant `403`).
+4. The handshake: `GET`, HTTP/1.1, `Sec-WebSocket-Version: 13`, a 16-byte
+   key, and the verb's subprotocol offered (`426` without an upgrade, `400`
+   otherwise).
+5. The `exec_per_minute` rate limit (`429`) and at most 16 open streams per
+   caller, 512 per server (`429`).
+6. The verb as `Service.Stream` (or `Service.Exec`): capability, state,
+   ownership, the `requested` event, the screen (§4), the guard and the
+   interceptor as an `exec` whose command names the verb (`:attach rows=…`,
+   `:forward port=…`, `:ssh`). Only then is the connection taken over, so
+   every refusal so far is an ordinary HTTP answer. `:exec` reads its
+   request from the first message after the upgrade, and refuses in-band.
+7. While open: the caller is authorised again at the stream interval (as
+   session streams are) and the sandbox's generation and state are checked;
+   a driver implementing `driver.Lifetime` ends it at once on stop. It also
+   ends after 60 s without a frame from the client (the server pings every
+   20 s) and after 12 hours.
+
+Control messages are JSON text: `started {generation}` first; `exit
+{code}` or `error {error: {code, message}}` last; from the client
+`resize {rows, cols}` (attach) and `eof` (exec stdin, forward
+half-close). Exec output is binary led by `1` (stdout) or `2` (stderr).
+The outcome event carries `exit_code` (attach, exec), `bytes_in` and
+`bytes_out` (attach, forward), `duration_ms` and, for attach, the last
+8 KiB of output, scrubbed of withheld lines and redacted.
+
+**Attach** follows the workbench's interactive terminal where the terminal
+cannot be asked (`internal/termline`): each entered line is judged by
+`EvaluateLine` at its Enter and recorded as `attach.input` (text withheld
+when not echoed); a refused line is `attach.refused` and never reaches the
+shell. Where `sandbox.terminal` is `lines`, or the managed configuration
+sets deny rules or extensions that screen `bash`, attach is `403`.
+
+**SSH** (`server/sshrelay`, `golang.org/x/crypto/ssh`): the server's SSH
+server has no listener; the relay hands it one authenticated connection,
+so SSH accepts the `none` method. A `shell` is a `Service.Stream` attach
+(`via=ssh`), an `exec` is `Service.Exec` (no PTY), a `direct-tcpip` channel
+to `127.0.0.1`, `::1` or `localhost` is a forward; global requests, other
+channel types, `env`, signals and subsystems are refused. SFTP is not
+served: drivers move files as tar (`:cp`), and SFTP over that would copy
+whole trees to list them. The host key is Ed25519, per server, in the
+control plane's state folder (`0600`, refused if readable by others or a
+link, and a state path no tool may read). `app`'s `abhed sandbox connect
+--stdio ID` is the `ProxyCommand` end.
+
+In HA (§13) a `SandboxRouter` must carry the upgrade to the owning replica;
+the replicas also need one host key between them.
+
+### 4.4 Templates (Implemented: `controlplane.Template`, `server/sandbox_templates.go`)
+
+A template is a named set of defaults: `{name, description, driver, labels,
+settings}` with `owner`, `resource_version` and `created_at` set by the
+server. Names are 1–63 characters from `[A-Za-z0-9._-]`, starting with a
+letter or digit.
+
+| Method and path | Body | Result | Notes |
+|---|---|---|---|
+| `POST /v1/sandbox-templates` | `{name, description?, driver?, labels?, settings?}` | `201` template | Administrators of the whole tenant only (any caller where `auth.mode` is `none`). Idempotency key honoured. |
+| `GET /v1/sandbox-templates?selector=&limit=&after=` | — | `200 {items, next}` | Every caller of the tenant. |
+| `GET /v1/sandbox-templates/{name}` | — | `200` template, `ETag` | |
+| `DELETE /v1/sandbox-templates/{name}` | — | `200` | Administrators only; `If-Match` honoured. |
+
+A create naming a template the store holds is filled from it before the
+guard and interceptor see it: the template's driver is the sandbox's (a
+create naming another is `400`), its labels are given to the sandbox under
+the create's own, and its settings are the sandbox's unless the create
+tightens one; a looser one is `400` (`Settings.NoLooser`, per key the
+template sets). Nothing is applied again later. A name with no template
+object is kept as a plain name. Template writes are recorded as
+`template.create` and `template.delete` with no sandbox id. The `abhed
+sandbox` command line (P3-04) is built on §4 and this section.
 
 ## 5. The driver interface (Implemented: package `driver`)
 
@@ -482,6 +576,13 @@ type Store interface {
     IdempotencyStore // Claim(rec, now), Complete, Release
 }
 
+type TemplateStore interface { // memory, SQLite and Postgres implement it beside Store
+    CreateTemplate(ctx, Template) (Template, error)          // ErrExists
+    GetTemplate(ctx, name string) (Template, error)          // ErrNotFound
+    ListTemplates(ctx, TemplateListOptions) ([]Template, string, error)
+    DeleteTemplate(ctx, name string, expect int64) error     // ErrVersionMismatch
+}
+
 func Mutate(ctx, Store, id, ifMatch string, fn func(*Sandbox) error) (Sandbox, error)
 ```
 
@@ -504,9 +605,11 @@ client sent `If-Match` and a retry when it did not.
   one writer connection whose every write is a `BEGIN IMMEDIATE`
   transaction; triggers refuse `UPDATE`, `DELETE` and `INSERT OR REPLACE`
   on `sandbox_audit`) and Postgres for servers (implemented:
-  `store.Postgres.Sandboxes`, tables `sandboxes`, `sandbox_idempotency` and
-  the append-only `sandbox_audit`, schema version 7, applied by `abhed
-  migrate`). `abhed serve` uses Postgres when `storage.driver` is
+  `store.Postgres.Sandboxes`, tables `sandboxes`, `sandbox_idempotency`,
+  `sandbox_templates` and the append-only `sandbox_audit`, schema version 7,
+  applied by `abhed migrate`). Templates take their `resource_version` from
+  the same counter as sandboxes; a store that does not implement
+  `TemplateStore` answers the template routes with `501`. `abhed serve` uses Postgres when `storage.driver` is
   `postgres` and SQLite otherwise, never memory. Both SQL backends run the
   same conformance tests as the memory store (`controlplane/storetest`).
 - The SQLite file is the server's state: `0600` in a `0700` folder,
@@ -522,7 +625,7 @@ client sent `If-Match` and a retry when it did not.
 | Sandbox object, lifecycle, REST, idempotency, `If-Match`, labels | Community |
 | Driver interface, out-of-process protocol, process/docker/podman/microVM drivers | Community |
 | Memory, SQLite and Postgres stores | Community |
-| Per-session sandboxes, warm pool, CLI | Community |
+| Per-session sandboxes, warm pool, templates, `abhed sandbox` CLI | Community |
 | Kubernetes driver | Team (private module, via `app.WithDriver`) |
 | Workspaces, roles, quotas, four-eyes approvals on sandboxes (via §12) | Team |
 | Admission interceptors on every mutation, HA ownership and leases | Enterprise |
@@ -641,7 +744,9 @@ The verbs backed by driver capabilities are put to both as what they
 amount to: `:restore` as a `start`, and `:snapshot`, `:cp` and `:expose` as
 an `exec` whose command names the verb (`:snapshot <name>`, `:cp in
 <path>`, `:expose port=<n> …`), so a guard or interceptor that refuses an
-exec is not gone round. They also check ownership as a change does.
+exec is not gone round. So are the streams (§4.3): `:attach`, `:forward`
+and `:ssh` as an `exec` naming the verb, and each SSH session as the verb it
+amounts to. They also check ownership as a change does.
 
 | Seam | Where | Used for |
 |---|---|---|
