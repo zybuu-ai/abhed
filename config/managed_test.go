@@ -467,3 +467,28 @@ func TestManagedDenyAddsToTheOthers(t *testing.T) {
 		t.Errorf("LoadManaged deny %v (%v)", m.Permissions.Deny, err)
 	}
 }
+
+// With the deny lists merged, a managed rule that repeats a person's is
+// credited to the managed file, and the person's other rules stay theirs: a
+// rule naming no tool in the user's file must not stop startup as a managed one.
+func TestManagedDenyMergeKeepsEachRulesLayer(t *testing.T) {
+	withManaged(t, `{"permissions":{"deny":["bash(wget*)"]}}`)
+	_, ws := trustHome(t, `{"permissions":{"deny":["bash(wget*)","Shell(x)","bash(nc *)"]}}`, "")
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatalf("a person's own rule stopped startup: %v", err)
+	}
+	for rule, layer := range map[string]string{"bash(wget*)": LayerManaged, "Shell(x)": LayerUser, "bash(nc *)": LayerUser} {
+		if !slices.Contains(cfg.Permissions.Deny, rule) || cfg.RuleLayer("deny", rule) != layer {
+			t.Errorf("%s: deny %v, layer %q, want %s", rule, cfg.Permissions.Deny, cfg.RuleLayer("deny", rule), layer)
+		}
+	}
+	if n := len(cfg.Permissions.Deny); n != 3 {
+		t.Errorf("deny %v: want each rule once", cfg.Permissions.Deny)
+	}
+	for _, f := range cfg.RuleFindings() {
+		if f.FailsDoctor() {
+			t.Errorf("a person's rule fails the doctor: %+v", f)
+		}
+	}
+}
