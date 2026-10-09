@@ -2,8 +2,9 @@
 
 The `microvm` driver runs each sandbox in a small virtual machine with its own
 guest kernel. On Linux the VM is a Firecracker microVM started by
-Firecracker's jailer on KVM; on macOS it would be a VM on Apple's
-Virtualization.framework, run by a separate signed helper (see "macOS" below).
+Firecracker's jailer on KVM; on macOS it is a VM on Apple's
+Virtualization.framework, run by `abhed-vmhelper`, a separate signed helper
+(see "macOS" below).
 Instances report the isolation tier `microvm`.
 
 This is hardware virtualization, and it is a different thing from the `vm`
@@ -17,8 +18,9 @@ server over the out-of-process driver protocol. When the managed
 configuration sets `sandbox.microvm_socket`, the driver registry Abhed
 builds from its configuration includes `microvm`, so a sandbox can choose it
 by name; the default stays `process`. The driver's process handling, files and wire are tested
-on every platform against a stand-in VMM, and real microVMs are booted on
-KVM in CI (see "Testing on KVM").
+on every platform against a stand-in VMM, real microVMs are booted on
+KVM in CI (see "Testing on KVM"), and on a Mac by a test run there (see
+"Testing on a Mac").
 
 ## What is isolated, and what is not
 
@@ -26,15 +28,16 @@ KVM in CI (see "Testing on KVM").
 |---|---|
 | Kernel | The guest runs its own Linux kernel. A command that exploits a kernel bug compromises the guest kernel, not the host's. |
 | Network | The VM has **no network device**, ever. The only interface in the guest is loopback. With the network off, the host listens on no port for the guest and the guest forwards nothing: there is no path out. With the egress allowlist on, the session's egress proxy is the only way out (see "Network"). |
-| Host channel | One vsock connection to the guest agent. The host side is a Unix socket in the VM's chroot; the driver opens it without following a symlink, so a compromised VMM cannot point it elsewhere. |
+| Host channel | One vsock connection to the guest agent. On Linux the host side is a Unix socket in the VM's chroot; the driver opens it without following a symlink, so a compromised VMM cannot point it elsewhere. |
 | Files | The workspace is copied into an ext4 image when the sandbox is created and mounted at `/workspace`. After every command, and before the VM stops, what changed in it is copied back to the host workspace (see "Copying changes back"). Changes made on the host after create do not reach the VM. The root filesystem is shared between VMs and mounted read-only. |
 | Inside the guest | Commands run as an unprivileged user (uid 1000), not as root, so they cannot signal or replace the agent that reports their exit codes. The agent and init run as root inside the guest. |
 | The VMM process (Linux) | The jailer chroots Firecracker into a folder of its own, runs it as a uid and gid no other VM shares, in a cgroup v2 leaf with CPU, memory (guest memory plus 256 MiB, no swap) and process limits and a file descriptor limit, with Firecracker's seccomp filters. Filters are never turned off; an operator may supply a stricter compiled filter. |
-| Devices | Two block devices (root, workspace), vsock, and a serial console whose output is kept only as a short, printable tail for diagnosing a failed boot. No NIC, no shared folders, no GPU. |
+| Devices | Two block devices (root, workspace), vsock, and a console whose output is kept only as a short, printable tail for diagnosing a failed boot; on macOS also an entropy device. No NIC, no shared folders, no GPU. |
 
 Not isolated, or not yet:
 
-- A VM is only as strong as KVM and Firecracker. Keep both patched.
+- A VM is only as strong as KVM and Firecracker, or on macOS as
+  Virtualization.framework. Keep them patched.
 - The guest kernel and root filesystem are the operator's. A guest with
   extra tools, setuid binaries or kernel modules gives commands more to work
   with inside the VM.
@@ -201,15 +204,155 @@ sudo scripts/microvm/build-rootfs.sh -b alpine-minirootfs.tar.gz -o rootfs.ext4 
 
 ## macOS
 
-Not available in this release. Running a VM on Virtualization.framework
-needs a helper program built against the framework and code-signed with the
-`com.apple.security.virtualization` entitlement; Abhed does not ship one.
-Configured with `"helper": {}`, the driver refuses every sandbox and says
-exactly that. The protocol a helper must speak is defined in
-`driver/microvm/helper.go`: a `check` command, and `run --config` that boots
-a VM with no network device and bridges a vsock port to a Unix socket with
-the same handshake Firecracker uses. On macOS the `process` tier (Seatbelt)
-is unchanged.
+On macOS the VM runs on Apple's Virtualization.framework, through
+`abhed-vmhelper`: a small Swift program in `macos/abhed-vmhelper`, built
+with the Xcode command-line tools and no third-party packages. The
+framework runs only a program code-signed with the
+`com.apple.security.virtualization` entitlement, which is why the helper is
+a binary of its own and the Go driver is not.
+
+What the VM gets, and nothing more:
+
+| | |
+|---|---|
+| Boot | The configured kernel and command line (`VZLinuxBootLoader`), no initrd. |
+| Disks | The root filesystem, read-only, and the workspace image, as virtio block devices. |
+| Host channel | One virtio vsock device. The helper listens on a Unix socket (mode `0600`) in the instance's state folder and joins each `CONNECT <port>` from the driver to that guest port, the handshake Firecracker uses. A guest connection is accepted only on the egress port the driver asked for, and joined to the driver's socket for it; every other port is refused. |
+| Console | A virtio console the guest writes to and the helper copies to its standard output, which the driver keeps as a short, printable tail. Nothing is ever sent to the guest on it. |
+| Entropy | A virtio entropy device, so the guest's random numbers are ready at boot. |
+| Never | A network device, shared folders, clipboard, sound, USB, graphics, keyboard, pointer or memory balloon. The helper sets each of these lists to empty rather than relying on defaults, and refuses a configuration with a key it does not know or a `network` other than `"none"`. |
+
+CPUs and memory are the sandbox's, within the operator's maxima, and the
+helper refuses more than the Mac allows (at most the Mac's CPU count and
+half its memory). The helper exits, stopping the VM, when the guest powers
+off, when it is sent `SIGTERM`, `SIGINT` or `SIGHUP`, or when its standard
+input ends. The driver holds the only write end of that input, so a driver
+that dies, even by `SIGKILL`, takes its VMs with it. Exit status 0 means the
+VM stopped, 1 that it could not start or failed, 2 that the helper refused
+its command line or configuration and ran nothing.
+
+### Requirements
+
+- macOS 13 or later, on Apple silicon (an Intel Mac with VT-x can run the
+  helper, but needs an x86_64 guest kernel and root filesystem, which are
+  not provided or tested).
+- `abhed-vmhelper`, signed with the entitlement and the hardened runtime,
+  beside `abhed-microvm`, or wherever `helper.path` says.
+- An arm64 guest kernel as an uncompressed `Image`, with virtio PCI, block,
+  console and vsock built in, and an arm64 root filesystem holding the
+  guest agent (both below).
+- `mkfs.ext4` from e2fsprogs 1.43 or later, to build workspace images.
+  macOS does not ship it; `brew install e2fsprogs` installs it under
+  `$(brew --prefix e2fsprogs)/sbin`, which `mkfs_ext4` can name.
+- Not root: the helper and `abhed-microvm` run as the user.
+
+Before it runs the helper, the driver checks it with `/usr/bin/codesign`
+and refuses it, with a message naming what is wrong, unless it:
+
+- is signed, and unchanged since it was signed;
+- carries the identifier `com.zybuu.abhed.vmhelper`;
+- holds the `com.apple.security.virtualization` entitlement;
+- was signed with the hardened runtime;
+- when `helper.team_id` is set, was signed with a Developer ID certificate of
+  that Apple Developer team.
+
+It then runs `abhed-vmhelper check`, which answers whether this Mac can run a
+VM and whether the helper holds the entitlement. Without a helper, the driver
+refuses every sandbox and says where it looked. On macOS the `process` tier
+(Seatbelt) is unchanged either way.
+
+### Building the helper
+
+```sh
+scripts/macos/build-vmhelper.sh -o bin/abhed-vmhelper
+```
+
+builds it with `swift build` and signs it ad hoc with its entitlement and the
+hardened runtime. That is enough on the Mac that built it; leave
+`helper.team_id` unset to accept it. An ad-hoc signature says nothing about
+who built the program, so set `team_id` wherever the helper comes from
+someone else.
+
+A helper for others to download must be signed with a Developer ID and
+notarized by Apple, or macOS refuses to run it.
+`scripts/macos/sign-vmhelper.sh` does that, with these from the
+environment:
+
+- `ABHED_SIGN_IDENTITY`: a "Developer ID Application" certificate in the
+  keychain (from an Apple Developer Program membership), by name or SHA-1;
+- `ABHED_NOTARY_PROFILE`: a `notarytool` keychain profile, made once with
+  `xcrun notarytool store-credentials` and an app-specific password;
+- `ABHED_SIGN_KEYCHAIN`, optionally, the keychain holding the identity.
+
+It signs with the hardened runtime and a secure timestamp, notarizes a disk
+image holding the helper and staples the ticket to it (a bare executable
+cannot hold one), and prints the team id for `helper.team_id`.
+
+### The guest
+
+```sh
+scripts/macos/guest-image.sh -o ~/abhed-guest
+```
+
+fetches the arm64 guest kernel Firecracker's CI publishes (Linux 6.1, an
+uncompressed `Image` with virtio PCI, block, console and vsock built in, so no
+initrd or modules are needed) and an Alpine minirootfs, checks each against a
+SHA-256 pinned in the script, builds the guest agent for arm64, and runs
+`scripts/microvm/build-rootfs.sh` in a throwaway Linux container (podman or
+docker), since it needs Linux and root. The same kernel series is the one
+the KVM tests boot on x86_64.
+
+### Running it
+
+```json
+{
+  "kernel": "/Users/me/abhed-guest/vmlinux-arm64",
+  "rootfs": "/Users/me/abhed-guest/rootfs-arm64.ext4",
+  "state_dir": "/Users/me/.local/state/abhed-microvm",
+  "mkfs_ext4": "/opt/homebrew/opt/e2fsprogs/sbin/mkfs.ext4",
+  "vcpus": 1, "max_vcpus": 2,
+  "memory_mib": 512, "max_memory_mib": 2048,
+  "helper": {}
+}
+```
+
+```sh
+abhed-microvm -config ~/abhed-microvm.json -socket ~/.local/state/abhed-microvm.sock
+```
+
+`"helper": {}` uses `abhed-vmhelper` beside `abhed-microvm`; `"path"` names
+another, and `"team_id"` the Developer ID team it must be signed by. Keep
+`state_dir` short: a Unix socket path inside it is limited to about 100
+bytes.
+
+## Testing on a Mac
+
+`TestVZHelperWithoutBooting` runs the built helper without starting a VM: its
+signature, `check`, and the configurations and command lines it must refuse.
+`TestVZHelperBootsAMicroVM` boots real VMs, one vCPU and 256 MiB each, and
+checks that commands run with their exit codes, as the unprivileged user, in
+an arm64 guest with no interface but loopback and no shared folder, on a
+read-only root; that workspace changes come back and never into `.abhed`;
+that the workspace survives a restart; that the egress proxy is the only way
+out; that a helper whose standard input ends stops its VM and exits 0; and
+that no helper process outlives its instance.
+
+```sh
+scripts/macos/build-vmhelper.sh -o bin/abhed-vmhelper
+scripts/macos/guest-image.sh -o /tmp/abhed-guest
+ABHED_TEST_VZ=1 ABHED_TEST_VZ_HELPER=$PWD/bin/abhed-vmhelper \
+  ABHED_TEST_VZ_KERNEL=/tmp/abhed-guest/vmlinux-arm64 \
+  ABHED_TEST_VZ_ROOTFS=/tmp/abhed-guest/rootfs-arm64.ext4 \
+  ABHED_TEST_VZ_MKFS="$(brew --prefix e2fsprogs)/sbin/mkfs.ext4" \
+  go test -run 'TestVZHelper' -count=1 ./driver/microvm/
+```
+
+Set `ABHED_TEST_VZ_TEAM_ID` to test a Developer ID signed helper against its
+team. CI's `macos-vmhelper` job builds the helper, signs it ad hoc and runs
+the tests that do not boot, failing if any of them did not run. GitHub's
+hosted macOS runners are themselves VMs without nested virtualization, so
+the framework cannot start a VM there; the job prints the helper's `check`
+answer and says the boot test was not run, rather than skipping it quietly.
 
 ## Testing on KVM
 
