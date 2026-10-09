@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
@@ -11,9 +13,10 @@ import (
 )
 
 // The verbs that reach a driver's optional capabilities: snapshot, restore,
-// copy and the driver itself for an exposure. Each checks the caller and the
-// capability first, so a driver without it is refused with ErrUnsupported
-// before anything is recorded or asked of it.
+// copy and the driver itself for an exposure. Each checks the caller, the
+// capability and this replica's ownership first, so a driver without it is
+// refused with ErrUnsupported before anything is recorded or asked of it;
+// then the guard and the interceptor admit it (admitVerb).
 
 // capable returns sb's driver, or ErrUnsupported when it lacks c.
 func (s *Service) capable(sb Sandbox, c driver.Capability) (driver.Driver, error) {
@@ -42,7 +45,41 @@ func (s *Service) prepare(ctx context.Context, c Caller, id, ifMatch, verb strin
 		return sb, nil, fmt.Errorf("%w: sandbox %s is %s; :%s cannot run now", ErrInvalidTransition, id, sb.State, verb)
 	}
 	d, err := s.capable(sb, cap)
-	return sb, d, err
+	if err != nil {
+		return sb, nil, err
+	}
+	return sb, d, s.owned(ctx, id)
+}
+
+// admitVerb asks the guard and then the interceptor about a verb as the
+// operation it amounts to: a restore is a start, and a snapshot, a copy or
+// an exposure acts in the sandbox as an exec does, with command naming it.
+// So a guard or interceptor that refuses an exec is not gone round by
+// another verb. On error the verb's outcome is recorded; release runs once
+// the verb has ended.
+func (s *Service) admitVerb(ctx context.Context, ev AuditEvent, c Caller, sb Sandbox, op, command string) (
+	release func(), adm AdmissionRequest, err error) {
+	old := sb.Clone()
+	adm = AdmissionRequest{Operation: op, Caller: c, SandboxID: sb.ID, Old: &old, Object: sb}
+	ga := &Admission{Action: op, Caller: c, Sandbox: sb}
+	if op == OpExec {
+		ga.Exec = &ExecRequest{Command: command}
+		adm.Command = s.redact(command)
+	}
+	release, err = s.guardAdmit(ctx, ga)
+	if err == nil {
+		var next Sandbox
+		if next, err = s.admit(ctx, adm); err != nil {
+			release()
+		} else {
+			adm.Object = next
+		}
+	}
+	if err != nil {
+		s.outcome(ctx, ev, err)
+		return nil, adm, err
+	}
+	return release, adm, nil
 }
 
 // settled reports a state whose instance is not changing.
@@ -60,11 +97,17 @@ func (s *Service) Snapshot(ctx context.Context, c Caller, id, ifMatch, name stri
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return driver.SnapshotRef{}, sb, err
 	}
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":snapshot "+name)
+	if err != nil {
+		return driver.SnapshotRef{}, sb, err
+	}
+	defer release()
 	ref, err := driver.Snapshot(ctx, d, id, name)
 	if err == nil {
 		ev.Detail["snapshot_id"], ev.Detail["digest"] = ref.ID, ref.Digest
 	}
 	s.outcome(ctx, ev, err)
+	s.committed(ctx, adm, sb, err)
 	if err != nil {
 		return driver.SnapshotRef{}, sb, err
 	}
@@ -87,6 +130,11 @@ func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return Sandbox{}, err
 	}
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpStart, "")
+	if err != nil {
+		return Sandbox{}, err
+	}
+	defer release()
 	err = driver.Restore(ctx, d, id, ref)
 	var out Sandbox
 	if err == nil {
@@ -95,6 +143,8 @@ func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref
 				return err
 			}
 			cur.Restarts, cur.NextRestart = 0, nil
+			// What an interceptor admitted for the start: its labels and settings.
+			cur.Labels, cur.Settings = adm.Object.Labels, adm.Object.Settings
 			return nil
 		})
 		if err != nil {
@@ -104,6 +154,7 @@ func (s *Service) Restore(ctx context.Context, c Caller, id, ifMatch string, ref
 		}
 	}
 	s.outcome(ctx, ev, err)
+	s.committed(ctx, adm, out, err)
 	if err != nil {
 		return Sandbox{}, err
 	}
@@ -123,8 +174,14 @@ func (s *Service) CopyIn(ctx context.Context, c Caller, id, dst string, tar io.R
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return sb, err
 	}
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":cp in "+dst)
+	if err != nil {
+		return sb, err
+	}
+	defer release()
 	err = driver.CopyIn(ctx, d, id, dst, tar)
 	s.outcome(ctx, ev, err)
+	s.committed(ctx, adm, sb, err)
 	return sb, err
 }
 
@@ -141,6 +198,11 @@ func (s *Service) CopyOut(ctx context.Context, c Caller, id, src string, w io.Wr
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return sb, err
 	}
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, ":cp out "+src)
+	if err != nil {
+		return sb, err
+	}
+	defer release()
 	limitBytes := s.cfg.Settings.For(sb.Settings).Int(SetExecOutput)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -159,6 +221,7 @@ func (s *Service) CopyOut(ctx context.Context, c Caller, id, src string, w io.Wr
 		err = fmt.Errorf("%w: the copy was larger than %d bytes and was stopped", driver.ErrOutputLimit, limitBytes)
 	}
 	s.outcome(ctx, ev, err)
+	s.committed(ctx, adm, sb, err)
 	return sb, err
 }
 
@@ -176,8 +239,18 @@ func (s *Service) UseDriver(ctx context.Context, c Caller, id, action string, ca
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return sb, err
 	}
+	command := ":" + action
+	for _, k := range slices.Sorted(maps.Keys(detail)) {
+		command += " " + k + "=" + detail[k]
+	}
+	release, adm, err := s.admitVerb(ctx, ev, c, sb, OpExec, command)
+	if err != nil {
+		return sb, err
+	}
+	defer release()
 	err = fn(d, sb)
 	s.outcome(ctx, ev, err)
+	s.committed(ctx, adm, sb, err)
 	return sb, err
 }
 

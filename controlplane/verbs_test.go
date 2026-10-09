@@ -15,6 +15,12 @@ import (
 // newCapRig is newRig with a fake declaring caps.
 func newCapRig(t *testing.T, values map[string]string, caps ...driver.Capability) *rig {
 	t.Helper()
+	return newCapRigWith(t, values, func(*cp.Config) {}, caps...)
+}
+
+// newCapRigWith is newCapRig with the service's configuration adjusted.
+func newCapRigWith(t *testing.T, values map[string]string, adjust func(*cp.Config), caps ...driver.Capability) *rig {
+	t.Helper()
 	st, err := cp.NewSettings(values, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -27,8 +33,10 @@ func newCapRig(t *testing.T, values map[string]string, caps ...driver.Capability
 	mem := cp.NewMemory()
 	clk := &clock{t: t0}
 	ws := t.TempDir()
-	svc, err := cp.New(cp.Config{Store: mem, Audit: mem, Drivers: reg, Settings: st,
-		Workspace: func(string) (string, error) { return ws, nil }, Now: clk.now})
+	c := cp.Config{Store: mem, Audit: mem, Drivers: reg, Settings: st,
+		Workspace: func(string) (string, error) { return ws, nil }, Now: clk.now}
+	adjust(&c)
+	svc, err := cp.New(c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,5 +170,79 @@ func TestDriverRecorderKeepsSandboxAndGeneration(t *testing.T) {
 	if len(evs) != 1 || evs[0].Generation != 3 || evs[0].Action != driver.EventSnapshot || evs[0].Detail["bytes"] != "10" ||
 		evs[0].Principal != cp.DriverPrincipal {
 		t.Fatalf("%+v", evs)
+	}
+}
+
+// A guard or interceptor that refuses an exec is not gone round by a copy,
+// a snapshot or an exposure, and a restore is admitted as the start it is.
+func TestVerbsAreAdmittedAsWhatTheyAmountTo(t *testing.T) {
+	all := []driver.Capability{driver.CapCopy, driver.CapSnapshot, driver.CapForward}
+	g := &guardFunc{admit: func(a *cp.Admission) (func(), error) {
+		if a.Action == cp.ActionExec {
+			return nil, cp.ErrForbidden
+		}
+		return nil, nil
+	}}
+	r := newCapRig(t, nil, all...)
+	sb := r.ready(t)
+	if err := r.svc.SetGuard(g); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := r.svc.Snapshot(ctx, alice, sb.ID, "", "x"); !errors.Is(err, cp.ErrForbidden) {
+		t.Fatalf("snapshot past a guard refusing exec: %v", err)
+	}
+	if _, err := r.svc.CopyIn(ctx, alice, sb.ID, "f", strings.NewReader("")); !errors.Is(err, cp.ErrForbidden) {
+		t.Fatalf("copy in: %v", err)
+	}
+	if _, err := r.svc.CopyOut(ctx, alice, sb.ID, "f", &bytes.Buffer{}, nil); !errors.Is(err, cp.ErrForbidden) {
+		t.Fatalf("copy out: %v", err)
+	}
+	called := false
+	if _, err := r.svc.UseDriver(ctx, alice, sb.ID, "expose", driver.CapForward, map[string]string{"port": "80"},
+		func(driver.Driver, cp.Sandbox) error { called = true; return nil }); !errors.Is(err, cp.ErrForbidden) || called {
+		t.Fatalf("expose: %v %v", err, called)
+	}
+	got := strings.Join(actions(t, r, sb.ID), " ")
+	if !strings.Contains(got, "cp:failed") || !strings.Contains(got, "snapshot:failed") {
+		t.Fatalf("refusals not recorded: %s", got)
+	}
+
+	// The interceptor sees them too, and a restore as a start.
+	h := &hook{}
+	ri := newCapRigWith(t, nil, func(c *cp.Config) { c.Interceptor = h }, all...)
+	sb = ri.ready(t)
+	ref, _, err := ri.svc.Snapshot(ctx, alice, sb.ID, "", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ri.svc.Stop(ctx, alice, sb.ID, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	ri.reconcile(t, sb.ID)
+	ref.Digest = "sha256:00"
+	if _, err := ri.svc.Restore(ctx, alice, sb.ID, "", ref); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	var seen []string
+	for _, req := range h.seen {
+		seen = append(seen, req.Operation+" "+req.Command)
+	}
+	h.mu.Unlock()
+	joined := strings.Join(seen, "|")
+	// The command is redacted for the record, here to its digest.
+	if !strings.Contains(joined, "|exec sha256:") || !strings.Contains(joined, "|start ") {
+		t.Fatalf("interceptor saw %q", joined)
+	}
+
+	// A replica that does not own the sandbox acts on it in no way.
+	o := &owner{}
+	ro := newCapRigWith(t, nil, func(c *cp.Config) { c.Ownership = o }, all...)
+	o.set(true, nil)
+	sb = ro.ready(t)
+	o.set(false, nil)
+	if _, _, err := ro.svc.Snapshot(ctx, alice, sb.ID, "", "x"); !errors.Is(err, cp.ErrUnavailable) {
+		t.Fatalf("snapshot on another replica's sandbox: %v", err)
 	}
 }

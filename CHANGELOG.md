@@ -333,7 +333,9 @@ A server with it off starts on the older schema as before.
   transaction), `server.SandboxRouter` (relays a call to the owning
   replica) and `app.WithControlPlane`. A call an interceptor refuses
   answers `403` with code `forbidden`. The keys `control_plane.ha` and
-  `control_plane.interceptors` are refused by a Community binary, by name.
+  `control_plane.interceptors` are refused by a Community binary, by name. A
+  guard and an interceptor see `:restore` as a start and `:snapshot`, `:cp`
+  and `:expose` as an exec naming the verb.
 
 ## [1.2.7] - 2026-10-07
 

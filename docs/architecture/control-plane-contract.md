@@ -637,6 +637,11 @@ The Enterprise module adds admission interceptors and multi-replica HA
 through these public seams. Each is nil or empty by default, and then
 changes nothing. On every call a guard (§12) is asked first and the
 interceptors after it, so an interceptor sees what the guard admitted.
+The verbs backed by driver capabilities are put to both as what they
+amount to: `:restore` as a `start`, and `:snapshot`, `:cp` and `:expose` as
+an `exec` whose command names the verb (`:snapshot <name>`, `:cp in
+<path>`, `:expose port=<n> …`), so a guard or interceptor that refuses an
+exec is not gone round. They also check ownership as a change does.
 
 | Seam | Where | Used for |
 |---|---|---|
