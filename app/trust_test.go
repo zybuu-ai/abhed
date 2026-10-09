@@ -362,7 +362,8 @@ func TestLeadingTrustFlag(t *testing.T) {
 // Every registered subcommand says whether it loads the workspace
 // configuration, and the ones that never read it do not take the flag.
 func TestSubcommandsDeclareTrust(t *testing.T) {
-	never := map[string]bool{"init": true, "trust": true, "providers": true, "secret": true, "admin": true, "version": true}
+	never := map[string]bool{"init": true, "trust": true, "providers": true, "secret": true, "admin": true, "version": true,
+		"login": true, "logout": true, "profile": true, "pki": true}
 	for _, c := range subcommands {
 		if c.trust == never[c.name] {
 			t.Errorf("%s: trust %v; a subcommand that loads the workspace configuration takes the flag, one that does not never does", c.name, c.trust)
