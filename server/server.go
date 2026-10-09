@@ -24,6 +24,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
@@ -293,6 +294,9 @@ type Options struct {
 	// authorised again. Zero means the default; it can only be shortened, and
 	// anything above maxStreamRecheck is held to it.
 	StreamRecheck time.Duration
+	// ControlPlane, when set, serves /v1/sandboxes from it and joins the
+	// readiness check. Nil leaves the routes unregistered.
+	ControlPlane *controlplane.Service
 }
 
 // Server holds live sessions and serves the API.
@@ -319,6 +323,9 @@ type Server struct {
 	// Throttles for the endpoints reachable before authentication succeeds.
 	signinLimiter  *limiter
 	sessionLimiter *limiter
+	// Per-caller limits on the sandbox routes, from the settings registry.
+	cpMutations *limiter
+	cpExec      *limiter
 
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
@@ -630,6 +637,11 @@ func New(opts Options) *Server {
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
+	if cp := opts.ControlPlane; cp != nil {
+		v := cp.Settings().For(nil)
+		s.cpMutations = newLimiter(int(v.Int(controlplane.SetMutationsPerMin)), time.Minute)
+		s.cpExec = newLimiter(int(v.Int(controlplane.SetExecPerMin)), time.Minute)
+	}
 	srv = s
 	s.reportConfigAttempts()
 	if local := s.LocalAuth(); local != nil {
@@ -717,6 +729,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/interrupt", s.interruptSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/approve", s.approveAction)
 	mux.HandleFunc("GET /v1/health", s.health)
+	mux.HandleFunc("GET /v1/ready", s.ready)
+	s.sandboxRoutes(mux)
 
 	// Each provider registers the routes it owns: local accounts and an
 	// identity provider are not mutually exclusive, and the server does not
@@ -824,7 +838,7 @@ func (s *Server) Handler() http.Handler {
 // PublicPaths answer before anyone signs in, whichever providers are
 // configured; each provider adds the paths it owns. Kept short on purpose.
 func PublicPaths() []string {
-	return []string{"/", "/v1/health", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg"}
+	return []string{"/", "/v1/health", "/v1/ready", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg"}
 }
 
 // Mount adds routes for the next Handler call, for a caller that has the
@@ -907,7 +921,7 @@ func (s *Server) accountOutage(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health says whether the server is up, and sign-out must work regardless.
-		if r.URL.Path != "/v1/health" && r.URL.Path != "/logout" {
+		if r.URL.Path != "/v1/health" && r.URL.Path != "/v1/ready" && r.URL.Path != "/logout" {
 			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) {
 				WriteError(w, http.StatusServiceUnavailable, auth.ErrAccountUnchecked.Error())
 				return

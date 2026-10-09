@@ -1,0 +1,568 @@
+package server
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/driver"
+)
+
+// The sandbox control plane's REST surface, per
+// docs/architecture/control-plane-contract.md §4. Everything here goes
+// through controlplane.Service, which records each mutation with the
+// caller; this file does HTTP: identity, tenant, idempotency, If-Match,
+// rate limits and the error shape.
+
+// sandboxVerb is one custom method, POST or GET /v1/sandboxes/{id}:verb.
+type sandboxVerb struct {
+	method string
+	handle func(s *Server, w http.ResponseWriter, r *http.Request, call verbCall)
+}
+
+// verbCall is what a verb handler is given once the caller is known.
+type verbCall struct {
+	id     string
+	verb   string
+	caller controlplane.Caller
+	body   []byte
+}
+
+// sandboxVerbs is the routing seam. Verbs owned by later work answer 501
+// until their handler is set here.
+var sandboxVerbs = map[string]sandboxVerb{
+	"start":    {http.MethodPost, (*Server).startSandbox},
+	"stop":     {http.MethodPost, (*Server).stopSandbox},
+	"exec":     {http.MethodPost, (*Server).execSandbox},
+	"attach":   {http.MethodGet, unsupportedVerb},
+	"ssh":      {http.MethodPost, unsupportedVerb},
+	"forward":  {http.MethodPost, unsupportedVerb},
+	"expose":   {http.MethodPost, unsupportedVerb},
+	"cp":       {http.MethodPost, unsupportedVerb},
+	"snapshot": {http.MethodPost, unsupportedVerb},
+	"restore":  {http.MethodPost, unsupportedVerb},
+}
+
+// cpError is the contract's error body.
+type cpError struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func writeCPError(w http.ResponseWriter, status int, code, msg string) {
+	var e cpError
+	e.Error.Code, e.Error.Message = code, msg
+	WriteJSON(w, status, e)
+}
+
+// cpStatus maps an error from the control plane to its status and code.
+func cpStatus(err error) (int, string) {
+	code := controlplane.ErrorCode(err)
+	switch {
+	case errors.Is(err, controlplane.ErrIdempotencyMismatch):
+		return http.StatusUnprocessableEntity, "invalid"
+	case errors.Is(err, driver.ErrOutputLimit):
+		return http.StatusRequestEntityTooLarge, "invalid"
+	}
+	switch code {
+	case "not_found":
+		return http.StatusNotFound, code
+	case "invalid":
+		return http.StatusBadRequest, code
+	case "conflict":
+		return http.StatusConflict, code
+	case "precondition_failed":
+		return http.StatusPreconditionFailed, code
+	case "unsupported":
+		return http.StatusNotImplemented, code
+	case "unavailable":
+		return http.StatusServiceUnavailable, code
+	}
+	return http.StatusInternalServerError, "internal"
+}
+
+func (s *Server) failCP(w http.ResponseWriter, r *http.Request, err error) {
+	status, code := cpStatus(err)
+	msg := err.Error()
+	if code == "internal" {
+		// Fails closed, and says nothing about why to the caller.
+		s.log.Error("sandbox request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+		msg = "internal error"
+	}
+	writeCPError(w, status, code, msg)
+}
+
+// cpTenant is the one tenant this server's control plane serves.
+func (s *Server) cpTenant() string {
+	if t := s.opts.Config.Storage.Tenant; t != "" {
+		return t
+	}
+	return "default"
+}
+
+// sandboxCaller resolves who is asking, or answers and returns false. The
+// control plane's store is opened for one tenant, so a request acting in
+// another is refused rather than served from it.
+func (s *Server) sandboxCaller(w http.ResponseWriter, r *http.Request) (controlplane.Caller, bool) {
+	if TenantOf(r.Context()) != s.cpTenant() {
+		writeCPError(w, http.StatusForbidden, "forbidden", "sandboxes on this server belong to another tenant")
+		return controlplane.Caller{}, false
+	}
+	return controlplane.Caller{Principal: UserOf(r.Context()), Admin: s.IsAdmin(r)}, true
+}
+
+// cpLimit applies a per-caller rate limit, answering 429 when it is spent.
+func cpLimit(l *limiter, w http.ResponseWriter, c controlplane.Caller) bool {
+	if l == nil || l.allow(c.Principal) {
+		return true
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(int(l.retryAfter(c.Principal).Seconds())+1))
+	writeCPError(w, http.StatusTooManyRequests, "unavailable", "too many requests; try again later")
+	return false
+}
+
+func (s *Server) sandboxRoutes(mux *http.ServeMux) {
+	if s.opts.ControlPlane == nil {
+		return
+	}
+	mux.HandleFunc("POST /v1/sandboxes", s.createSandbox)
+	mux.HandleFunc("GET /v1/sandboxes", s.listSandboxes)
+	// One segment may not mix a wildcard and a literal, so a verb arrives
+	// in the same wildcard as the id and is split off at its last ':'.
+	mux.HandleFunc("GET /v1/sandboxes/{target}", s.sandboxTarget)
+	mux.HandleFunc("POST /v1/sandboxes/{target}", s.sandboxTarget)
+	mux.HandleFunc("PATCH /v1/sandboxes/{target}", s.sandboxTarget)
+	mux.HandleFunc("DELETE /v1/sandboxes/{target}", s.sandboxTarget)
+}
+
+// splitTarget splits "sbx_…:verb" at its last ':'.
+func splitTarget(target string) (id, verb string) {
+	if i := strings.LastIndexByte(target, ':'); i >= 0 {
+		return target[:i], target[i+1:]
+	}
+	return target, ""
+}
+
+func (s *Server) sandboxTarget(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.sandboxCaller(w, r)
+	if !ok {
+		return
+	}
+	id, verb := splitTarget(r.PathValue("target"))
+	if !controlplane.ValidID(id) {
+		writeCPError(w, http.StatusNotFound, "not_found", "no sandbox "+id)
+		return
+	}
+	if verb == "" {
+		switch r.Method {
+		case http.MethodGet:
+			s.getSandbox(w, r, c, id)
+		case http.MethodPatch:
+			s.patchSandbox(w, r, c, id)
+		case http.MethodDelete:
+			s.deleteSandbox(w, r, c, id)
+		default:
+			writeCPError(w, http.StatusMethodNotAllowed, "invalid", r.Method+" is not a method on a sandbox; use a verb")
+		}
+		return
+	}
+	v, known := sandboxVerbs[verb]
+	if !known {
+		writeCPError(w, http.StatusNotFound, "not_found", "no verb :"+verb)
+		return
+	}
+	if r.Method != v.method {
+		w.Header().Set("Allow", v.method)
+		writeCPError(w, http.StatusMethodNotAllowed, "invalid", ":"+verb+" takes "+v.method)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		badCPBody(w, err)
+		return
+	}
+	v.handle(s, w, r, verbCall{id: id, verb: verb, caller: c, body: body})
+}
+
+func badCPBody(w http.ResponseWriter, err error) {
+	if tooBig := new(http.MaxBytesError); errors.As(err, &tooBig) {
+		writeCPError(w, http.StatusRequestEntityTooLarge, "invalid", fmt.Sprintf("the request body is larger than %d bytes", tooBig.Limit))
+		return
+	}
+	writeCPError(w, http.StatusBadRequest, "invalid", "the request body could not be read")
+}
+
+// decodeStrict decodes body into v, refusing unknown fields; an empty
+// body leaves v as it is.
+func decodeStrict(body []byte, v any) error {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("%w: the body is not valid JSON for this call: %v", controlplane.ErrInvalid, err)
+	}
+	if dec.More() {
+		return fmt.Errorf("%w: the body holds more than one JSON value", controlplane.ErrInvalid)
+	}
+	return nil
+}
+
+// writeSandbox answers with a sandbox and its ETag.
+func writeSandbox(w http.ResponseWriter, status int, sb controlplane.Sandbox) {
+	w.Header().Set("ETag", controlplane.ETag(sb.ResourceVersion))
+	WriteJSON(w, status, sb)
+}
+
+// idempotent runs a mutation once per Idempotency-Key. op returns an error
+// only when it changed nothing; the response it returns is what a repeat
+// with the same key and body gets again.
+func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, c controlplane.Caller, body []byte,
+	op func() (int, controlplane.Sandbox, error)) {
+	idem := controlplane.Idempotency{Store: s.opts.ControlPlane.Store()}
+	resp, replayed, err := idem.Do(r.Context(), c.Principal, r.Method, r.URL.Path, r.Header.Get("Idempotency-Key"), body,
+		func() (controlplane.Response, error) {
+			status, sb, err := op()
+			if err != nil {
+				return controlplane.Response{}, err
+			}
+			b, err := json.Marshal(sb)
+			if err != nil {
+				return controlplane.Response{}, err
+			}
+			return controlplane.Response{Status: status, Body: b}, nil
+		})
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
+	var sb controlplane.Sandbox
+	if json.Unmarshal(resp.Body, &sb) == nil && sb.ResourceVersion > 0 {
+		w.Header().Set("ETag", controlplane.ETag(sb.ResourceVersion))
+	}
+	if replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.Status)
+	_, _ = w.Write(resp.Body)
+}
+
+func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.sandboxCaller(w, r)
+	if !ok || !cpLimit(s.cpMutations, w, c) {
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		badCPBody(w, err)
+		return
+	}
+	s.idempotent(w, r, c, body, func() (int, controlplane.Sandbox, error) {
+		var req controlplane.CreateRequest
+		if err := decodeStrict(body, &req); err != nil {
+			return 0, controlplane.Sandbox{}, err
+		}
+		sb, err := s.opts.ControlPlane.Create(r.Context(), c, req)
+		return http.StatusCreated, sb, err
+	})
+}
+
+type sandboxList struct {
+	Items []controlplane.Sandbox `json:"items"`
+	Next  string                 `json:"next,omitempty"`
+}
+
+func (s *Server) listSandboxes(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.sandboxCaller(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	sel, err := controlplane.ParseSelector(q.Get("selector"))
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
+	o := controlplane.ListOptions{Selector: sel, State: controlplane.State(q.Get("state")), After: q.Get("after")}
+	if o.State != "" && !o.State.Valid() {
+		writeCPError(w, http.StatusBadRequest, "invalid", "unknown state "+strconv.Quote(q.Get("state")))
+		return
+	}
+	if l := q.Get("limit"); l != "" {
+		n, err := strconv.Atoi(l)
+		if err != nil || n < 1 {
+			writeCPError(w, http.StatusBadRequest, "invalid", "limit must be a positive whole number")
+			return
+		}
+		o.Limit = n
+	}
+	items, next, err := s.opts.ControlPlane.List(r.Context(), c, o)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
+	if items == nil {
+		items = []controlplane.Sandbox{}
+	}
+	WriteJSON(w, http.StatusOK, sandboxList{Items: items, Next: next})
+}
+
+func (s *Server) getSandbox(w http.ResponseWriter, r *http.Request, c controlplane.Caller, id string) {
+	sb, err := s.opts.ControlPlane.Get(r.Context(), c, id)
+	if err != nil {
+		s.failCP(w, r, err)
+		return
+	}
+	writeSandbox(w, http.StatusOK, sb)
+}
+
+// parsePatch reads a JSON merge patch of labels, template and settings.
+func parsePatch(body []byte) (controlplane.Patch, error) {
+	var p controlplane.Patch
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil || top == nil {
+		return p, fmt.Errorf("%w: the body must be a JSON merge patch object", controlplane.ErrInvalid)
+	}
+	for k, raw := range top {
+		null := string(bytes.TrimSpace(raw)) == "null"
+		switch k {
+		case "labels":
+			if null {
+				p.ClearLabels = true
+				continue
+			}
+			if err := json.Unmarshal(raw, &p.Labels); err != nil {
+				return p, fmt.Errorf("%w: labels must map names to strings or null", controlplane.ErrInvalid)
+			}
+		case "settings":
+			if null {
+				p.ClearSettings = true
+				continue
+			}
+			if err := json.Unmarshal(raw, &p.Settings); err != nil {
+				return p, fmt.Errorf("%w: settings must map names to strings or null", controlplane.ErrInvalid)
+			}
+		case "template":
+			var t string
+			if null || json.Unmarshal(raw, &t) != nil {
+				return p, fmt.Errorf("%w: template must be a string", controlplane.ErrInvalid)
+			}
+			p.Template = &t
+		default:
+			return p, fmt.Errorf("%w: %s cannot be changed with PATCH", controlplane.ErrInvalid, k)
+		}
+	}
+	return p, nil
+}
+
+func (s *Server) patchSandbox(w http.ResponseWriter, r *http.Request, c controlplane.Caller, id string) {
+	if !cpLimit(s.cpMutations, w, c) {
+		return
+	}
+	ifMatch := r.Header.Get("If-Match")
+	if strings.TrimSpace(ifMatch) == "" {
+		writeCPError(w, http.StatusPreconditionRequired, "precondition_failed", "PATCH needs If-Match with the sandbox's ETag")
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		badCPBody(w, err)
+		return
+	}
+	s.idempotent(w, r, c, body, func() (int, controlplane.Sandbox, error) {
+		p, err := parsePatch(body)
+		if err != nil {
+			return 0, controlplane.Sandbox{}, err
+		}
+		sb, err := s.opts.ControlPlane.Update(r.Context(), c, id, ifMatch, p)
+		return http.StatusOK, sb, err
+	})
+}
+
+func (s *Server) deleteSandbox(w http.ResponseWriter, r *http.Request, c controlplane.Caller, id string) {
+	if !cpLimit(s.cpMutations, w, c) {
+		return
+	}
+	s.idempotent(w, r, c, nil, func() (int, controlplane.Sandbox, error) {
+		sb, err := s.opts.ControlPlane.Delete(r.Context(), c, id, r.Header.Get("If-Match"))
+		return http.StatusAccepted, sb, err
+	})
+}
+
+func (s *Server) startSandbox(w http.ResponseWriter, r *http.Request, call verbCall) {
+	if !cpLimit(s.cpMutations, w, call.caller) {
+		return
+	}
+	s.idempotent(w, r, call.caller, call.body, func() (int, controlplane.Sandbox, error) {
+		var req struct{}
+		if err := decodeStrict(call.body, &req); err != nil {
+			return 0, controlplane.Sandbox{}, err
+		}
+		sb, err := s.opts.ControlPlane.Start(r.Context(), call.caller, call.id, r.Header.Get("If-Match"))
+		return http.StatusAccepted, sb, err
+	})
+}
+
+func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request, call verbCall) {
+	if !cpLimit(s.cpMutations, w, call.caller) {
+		return
+	}
+	s.idempotent(w, r, call.caller, call.body, func() (int, controlplane.Sandbox, error) {
+		var req struct {
+			GraceSeconds *int `json:"grace_seconds"`
+		}
+		if err := decodeStrict(call.body, &req); err != nil {
+			return 0, controlplane.Sandbox{}, err
+		}
+		grace := 10 * time.Second
+		if req.GraceSeconds != nil {
+			grace = time.Duration(*req.GraceSeconds) * time.Second
+		}
+		sb, err := s.opts.ControlPlane.Stop(r.Context(), call.caller, call.id, r.Header.Get("If-Match"), grace)
+		return http.StatusAccepted, sb, err
+	})
+}
+
+// unsupportedVerb answers a verb this build does not serve yet, after the
+// same visibility check as any other, so a 501 says nothing about a sandbox
+// the caller may not see.
+func unsupportedVerb(s *Server, w http.ResponseWriter, r *http.Request, call verbCall) {
+	if _, err := s.opts.ControlPlane.Get(r.Context(), call.caller, call.id); err != nil {
+		s.failCP(w, r, err)
+		return
+	}
+	writeCPError(w, http.StatusNotImplemented, "unsupported", ":"+call.verb+" is not available in this build")
+}
+
+// execFrame is one line of an :exec stream. Byte payloads are base64.
+type execFrame struct {
+	Stdout []byte   `json:"stdout,omitempty"`
+	Stderr []byte   `json:"stderr,omitempty"`
+	Exit   *int     `json:"exit,omitempty"`
+	Error  *cpFault `json:"error,omitempty"`
+}
+
+type cpFault struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// maxExecFrame bounds the bytes one frame carries, as the driver protocol does.
+const maxExecFrame = 32 << 10
+
+// frameWriter turns writes into NDJSON frames on one response, one writer
+// at a time.
+type frameWriter struct {
+	mu  sync.Mutex
+	w   http.ResponseWriter
+	enc *json.Encoder
+}
+
+func (f *frameWriter) frame(fr execFrame) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.enc.Encode(fr); err != nil {
+		return err
+	}
+	if fl, ok := f.w.(http.Flusher); ok {
+		fl.Flush()
+	}
+	return nil
+}
+
+type streamOut struct {
+	f      *frameWriter
+	stderr bool
+}
+
+func (o streamOut) Write(p []byte) (int, error) {
+	for off := 0; off < len(p); off += maxExecFrame {
+		chunk := p[off:min(off+maxExecFrame, len(p))]
+		fr := execFrame{Stdout: chunk}
+		if o.stderr {
+			fr = execFrame{Stderr: chunk}
+		}
+		if err := o.f.frame(fr); err != nil {
+			return off, err
+		}
+	}
+	return len(p), nil
+}
+
+// execSandbox runs one command and streams its output as NDJSON frames,
+// ending with {"exit": n}, or {"error": …} when the command did not run to
+// an exit code. The stream counts against exec.output_bytes.
+func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request, call verbCall) {
+	if !cpLimit(s.cpExec, w, call.caller) {
+		return
+	}
+	var req controlplane.ExecRequest
+	if err := decodeStrict(call.body, &req); err != nil {
+		s.failCP(w, r, err)
+		return
+	}
+	if req.Stdin {
+		if _, err := s.opts.ControlPlane.Get(r.Context(), call.caller, call.id); err != nil {
+			s.failCP(w, r, err)
+			return
+		}
+		writeCPError(w, http.StatusNotImplemented, "unsupported", ":exec with stdin is not available in this build")
+		return
+	}
+	fw := &frameWriter{w: w, enc: json.NewEncoder(w)}
+	started := false
+	idem := controlplane.Idempotency{Store: s.opts.ControlPlane.Store()}
+	resp, replayed, err := idem.Do(r.Context(), call.caller.Principal, r.Method, r.URL.Path, r.Header.Get("Idempotency-Key"), call.body,
+		func() (controlplane.Response, error) {
+			res, _, err := s.opts.ControlPlane.Exec(r.Context(), call.caller, call.id, r.Header.Get("If-Match"), req, controlplane.ExecIO{
+				Stdout: streamOut{f: fw}, Stderr: streamOut{f: fw, stderr: true},
+				Started: func(sb controlplane.Sandbox) {
+					started = true
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					// What anything bound to this run is checked against later.
+					w.Header().Set("X-Abhed-Generation", strconv.FormatInt(sb.Generation, 10))
+					w.WriteHeader(http.StatusOK)
+					if fl, ok := w.(http.Flusher); ok {
+						fl.Flush()
+					}
+				}})
+			if !started {
+				if err == nil {
+					err = errors.New("exec ended without running")
+				}
+				return controlplane.Response{}, err
+			}
+			last := execFrame{Exit: &res.ExitCode}
+			if err != nil {
+				_, code := cpStatus(err)
+				last = execFrame{Error: &cpFault{Code: code, Message: err.Error()}}
+			}
+			_ = fw.frame(last)
+			b, _ := json.Marshal(last)
+			return controlplane.Response{Status: http.StatusOK, Body: b}, nil
+		})
+	switch {
+	case err != nil && !started:
+		s.failCP(w, r, err)
+	case replayed:
+		w.Header().Set("Idempotent-Replayed", "true")
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(resp.Status)
+		_, _ = w.Write(append(resp.Body, '\n'))
+	case err != nil:
+		// The stream has started and ended; the key could not be marked done.
+		s.log.Warn("exec finished but its idempotency record was not completed", "path", r.URL.Path, "err", err)
+	}
+}
