@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -102,6 +103,55 @@ const (
 
 func refusal(code int, format string, args ...any) *rpcError {
 	return &rpcError{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// badParams is the -32602 for params that did not decode. It names the field
+// and the JSON kind expected, never the Go type the decoder reports.
+func badParams(where string, err error) *rpcError {
+	if where != "" {
+		where += ": "
+	}
+	var te *json.UnmarshalTypeError
+	var se *json.SyntaxError
+	switch {
+	case errors.As(err, &te):
+		if te.Field == "" {
+			return refusal(errParams, "%sparams must be %s, not %s", where, jsonKind(te.Type), te.Value)
+		}
+		return refusal(errParams, "%s%q must be %s, not %s", where, te.Field, jsonKind(te.Type), te.Value)
+	case errors.As(err, &se), errors.Is(err, io.ErrUnexpectedEOF):
+		return refusal(errParams, "%sparams are not valid JSON", where)
+	}
+	if f, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		return refusal(errParams, "%sunknown field %s", where, f)
+	}
+	return refusal(errParams, "%sparams could not be read", where)
+}
+
+// jsonKind names a Go type as the JSON value that decodes into it.
+func jsonKind(t reflect.Type) string {
+	if t == nil {
+		return "a different value"
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "true or false"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "a whole number"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	case reflect.Map, reflect.Struct:
+		return "an object"
+	}
+	return "a different value"
 }
 
 type acpSession struct {
@@ -549,7 +599,7 @@ func sessionMeta(raw map[string]json.RawMessage, into any) *rpcError {
 		dec := json.NewDecoder(strings.NewReader(string(b)))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(into); err != nil {
-			return refusal(errParams, "_meta[%q]: %v", key, err)
+			return badParams(fmt.Sprintf("_meta[%q]", key), err)
 		}
 		return nil
 	}
@@ -597,7 +647,7 @@ func (c *acpConn) newSession(msg rpcMessage) {
 		Meta       map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "session/new: %v", err))
+		c.reply(msg.ID, nil, badParams("session/new", err))
 		return
 	}
 	trust, e := c.requestedTrust(p.Meta)

@@ -6,6 +6,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- An ACP request whose params did not decode was refused with -32602 and the
+  Go decoder's message, Go type names included. The message now names the
+  field and the JSON kind it takes, such as `"sessionId" must be a string,
+  not number`.
 
 ## [1.2.7] - 2026-10-07
 

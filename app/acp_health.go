@@ -152,7 +152,7 @@ func (c *acpConn) doctorACP(msg rpcMessage) {
 		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		c.reply(msg.ID, nil, badParams("", err))
 		return
 	}
 	// A Restricted window's checks must not dial a host only the trusted file names.
