@@ -26,6 +26,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Sandboxes over the API take streams, as WebSockets: `:attach` opens the
+  sandbox's interactive shell (each line judged by the deny rules at its
+  Enter and recorded, as in the workbench's terminal; refused where only a
+  line-by-line terminal holds every rule), `GET :exec` runs a command with
+  stdin, and `:forward` carries a byte stream to a port on the sandbox's
+  loopback, recorded with its bytes and closed when the sandbox stops. An
+  SSH server with no port of its own is reached only through the
+  authenticated `:ssh` relay; `abhed sandbox connect --stdio ID` is its
+  `ProxyCommand`. Its sessions are attaches, execs and forwards, judged and
+  recorded as those are; SFTP is not served (use `:cp`). Each upgrade checks
+  the sign-in, the page's origin and the caller's sight of the sandbox
+  before the connection is taken over, and an open stream ends when the
+  sign-in does. The WebSocket implementation is Abhed's own, in the public
+  package `wsconn`, with no new dependency.
+
 - `abhed serve` can manage sandboxes over `/v1/sandboxes` when
   `control_plane.enabled` is set (off by default; with it off nothing
   changes): create, list with label selectors, get, patch, delete, `:start`,
@@ -36,7 +51,7 @@ All notable changes to Abhed are recorded here. The format follows
   `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
   forwards where it has them (snapshots in `control_plane.snapshot_dir`;
   exposing off unless `control_plane.expose` is on) and answer `501` where
-  it does not; `:attach`, `:ssh` and `:forward` answer `501` for now. Each sandbox works in a folder of its own, outside the server's
+  it does not. Each sandbox works in a folder of its own, outside the server's
   workspace and `~/.abhed`, unless `control_plane.shared_workspace` asks for
   the server's workspace. See [Sandboxes over the
   API](docs/guide/22-sandboxes.md).
@@ -183,6 +198,10 @@ A server with it off starts on the older schema as before.
 
 ### Changed
 
+- Every sandbox `:exec` is judged by the server's deny rules and extension
+  hooks, as the workbench's terminal is: a refused command is `403
+  forbidden` and recorded, and never runs. `POST :exec` with `"stdin":
+  true` answers `400` naming the WebSocket form instead of `501`.
 - The fence probe's `seccomp` check now also installs the fence's own filter
   in its helper and requires a signal to Abhed to be refused and one to the
   helper itself allowed, so a kernel that reads the filter's system-call
@@ -258,6 +277,15 @@ A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `wsconn`: a small WebSocket (RFC 6455) server upgrade, client and byte
+  stream, size-limited and fuzzed, for the sandbox streams and for drivers
+  that speak WebSockets. `server/sshrelay`: the SSH server behind the `:ssh`
+  relay. `controlplane.Service.Stream` runs a long-lived call on a sandbox
+  through the same checks, record, guard and interceptor as a verb, with
+  `StreamRequest.Screen`; `ExecIO.Screen` judges an exec's command line;
+  `Service.Note` records what happens inside an admitted call;
+  `server.Options.SandboxSSHKey` turns the relay on;
+  `drivertest.Fake.AttachFunc` stands in for a shell.
 - Experimental public Go packages for the sandbox control plane, the base
   for `/v1/sandboxes` and per-session sandboxes: `driver` (the driver
   interface, capability flags and registry), `driver/plugin` (drivers in a

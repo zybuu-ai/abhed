@@ -183,8 +183,9 @@ the server URL, the account, the token and its expiry, and the paths of any
 CA or client certificate. The file is written mode 600; it is refused if
 other users can read it or if it is a link, and refused inside the workspace
 (other than its `.abhed`), where the agent's commands could read it. Tokens
-are never printed. `abhed login`, `abhed logout`, `abhed profile use` and
-`abhed profile rm` are refused when run by the agent.
+are never printed. `abhed login`, `abhed logout`, `abhed profile use`,
+`abhed profile rm` and `abhed sandbox connect` are refused when run by the
+agent.
 
 **Plain http** is refused for any host but this machine, since the token
 would cross the network in clear; `-allow-http` overrides that on a network

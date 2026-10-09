@@ -7,9 +7,9 @@ capabilities in the Go packages `driver/snapshot`, `driver/forward` and
 `server/expose`, part of
 [the control-plane contract](../architecture/control-plane-contract.md) and
 an experimental API until 2.0. `abhed serve`'s control plane uses them for
-`/v1/sandboxes/{id}:snapshot`, `:restore` and `:expose` ([Sandboxes over the
-API](22-sandboxes.md)); `:forward` and the `abhed sandbox` commands are
-still to come.
+`/v1/sandboxes/{id}:snapshot`, `:restore`, `:expose` and `:forward`, a
+WebSocket to a port inside the sandbox ([Sandboxes over the
+API](22-sandboxes.md#streams-attach-exec-with-stdin-forward-and-ssh)).
 
 Every one of them writes an event to the record, with the sandbox's id and
 generation. A driver built without a record logs a warning instead.

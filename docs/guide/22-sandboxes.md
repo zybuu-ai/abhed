@@ -176,12 +176,17 @@ every other route.
 | `POST /v1/sandboxes/{id}:cp?direction=in&path=…` with a tar body | `200` |
 | `POST /v1/sandboxes/{id}:cp?direction=out&path=…` (or `{direction, path}`) | `200`, a tar stream |
 | `POST /v1/sandboxes/{id}:expose` `{port, ttl_seconds?}` | `201 {id, url, path, expires_at}` |
+| `GET /v1/sandboxes/{id}:attach?rows=&cols=&cwd=` | a WebSocket: an interactive shell, [below](#streams-attach-exec-with-stdin-forward-and-ssh) |
+| `GET /v1/sandboxes/{id}:exec` | a WebSocket: one command with stdin |
+| `GET /v1/sandboxes/{id}:forward?port=N` | a WebSocket: a byte stream to a port inside the sandbox |
+| `POST /v1/sandboxes/{id}:ssh` | `200 {host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` |
+| `GET /v1/sandboxes/{id}:ssh` | a WebSocket: the SSH relay |
 
-These last four use what the sandbox's driver can do. A driver that cannot
-answers `501` with code `unsupported`, before anything is recorded: the
-`process` driver snapshots and restores but does not copy, and the microVM
-driver answers for itself. `:attach`, `:ssh`, `:forward` and `:exec` with
-`"stdin": true` answer `501` in this version.
+Snapshots, copies, exposures, `:attach` and `:forward` use what the
+sandbox's driver can do. A driver that cannot answers `501` with code
+`unsupported`, before anything is recorded: the `process` driver
+snapshots, restores, attaches and forwards but does not copy, and the
+microVM driver answers for itself.
 
 **Snapshots.** `:snapshot` takes one from a `Ready` sandbox (while its
 commands may write) or a stopped one (consistent). `:restore` takes the
@@ -255,6 +260,119 @@ sandbox takes a command; any other state is `409`. The response header
 
 The record keeps who ran a command, in which sandbox and generation, and how
 it ended. The command line itself goes through your secrets redaction first.
+
+A command a deny rule or an extension's hook refuses (your
+`permissions.deny`, as for the agent's `bash` and the workbench's
+terminal) is refused with `403` and code `forbidden`, and the refusal is
+recorded. Only a refusal stops a command here: rules that would ask the
+agent first do not ask a person who runs a command themselves. A command
+given as `argv` is judged as its words joined by spaces.
+
+### Streams: attach, exec with stdin, forward and SSH
+
+`:attach`, `:exec` with stdin, `:forward` and the `:ssh` relay are
+WebSockets (RFC 6455, over HTTP/1.1; behind a proxy, let it pass
+`Upgrade`). The client offers the verb's subprotocol in
+`Sec-WebSocket-Protocol`: `abhed.attach.v1`, `abhed.exec.v1`,
+`abhed.forward.v1` or `abhed.ssh.v1`. Before the connection is upgraded the
+request is signed in like any other, refused with `403` when it comes from
+another site's page (its `Origin` is not this server or one in
+`server.allowed_origins`), and refused with `404` when the caller cannot
+see the sandbox; then the driver's capability, the sandbox's state
+(`Ready` only) and the rate limit are checked, so each of those failures
+is an ordinary HTTP answer with the usual error body. A request without
+the upgrade gets `426`.
+
+While a stream is open the caller is authorised again every few seconds
+(as the workbench's streams are): once their sign-in ends, or they can no
+longer see the sandbox, the stream ends. It also ends when the sandbox
+stops, is deleted or starts as a new generation, when the client stops
+answering pings for a minute, and after twelve hours. One caller may have
+16 streams open at once; each opening counts against `exec_per_minute`.
+Messages are at most 1 MiB.
+
+Text messages carry JSON control messages; binary messages carry bytes.
+Each stream that is not SSH starts with `{"type": "started", "generation": n}`
+and ends with `{"type": "exit", "code": n}` when what ran ended with an
+exit status, or `{"type": "error", "error": {"code", "message"}}`, then a
+normal close.
+
+**`:attach`** opens the sandbox's interactive shell on a terminal of
+`rows` × `cols`, in `cwd` (inside the workspace) when given. Binary
+messages are keys to the shell and its output back;
+`{"type": "resize", "rows": 40, "cols": 120}` changes the terminal's size.
+It is followed the way the workbench follows its interactive terminal
+([Working by hand](16-workbench.md#working-by-hand)) where the terminal
+cannot be asked: each line you enter is rebuilt from your keys, put to the
+deny rules at its Enter, and recorded (`attach.input`, without its text
+when the terminal did not show it as typed). A line the rules refuse never
+reaches the shell: the terminal says why and the line is dropped, and the
+refusal is recorded (`attach.refused`). This is best effort: the shell
+decides what a line means, so the sandbox is the boundary. When the
+server's terminal must judge every line (`sandbox.terminal` is
+`"lines"`), or the managed configuration sets deny rules or extensions
+that could refuse a command, `:attach` is refused with `403` and you run
+each command with `:exec` instead. The shell's end is recorded with its
+exit status, its duration, the bytes each way and the last 8 KiB of its
+output, with withheld lines taken out and your secrets redaction applied.
+
+**`:exec` with stdin.** Open `GET …:exec` as a WebSocket and send the
+request as the first message, the same JSON as the `POST` form. Then
+binary messages are stdin, and `{"type": "eof"}` closes it. Output comes
+back as binary messages whose first byte says the stream (1 stdout, 2
+stderr). The command is judged, bounded and recorded as a `POST` one is.
+`POST …:exec` with `"stdin": true` answers `400`, naming the WebSocket form.
+
+**`:forward?port=N`** carries a byte stream to `127.0.0.1:N` inside the
+sandbox, through the driver's own channel (see [Snapshots and
+forwarding](25-snapshots-and-forwarding.md#forwarding-a-port)): binary
+messages both ways, and `{"type": "eof"}` from the client ends what it
+sends while the reply is still read. Nothing listening on the port is an
+HTTP `503` before the upgrade. The record has who opened it and, when it
+closes, the bytes each way.
+
+**SSH.** `abhed serve` runs an SSH server for its sandboxes with no port
+of its own: the only way in is `GET …:ssh`, a WebSocket carrying the raw
+SSH connection, which the server has already signed in and bound to the
+caller and the sandbox. So SSH asks for no password or key, and any user
+name is accepted. `POST …:ssh` returns what a client needs: the server's
+host key (`host_key`, and a `known_hosts` line for `host_alias`), and the
+relay's path and subprotocol. For OpenSSH and editors that use it:
+
+```
+Host abhed-sbx_6f1c0a9e4b2d7c13
+  User sandbox
+  HostKeyAlias abhed-sbx_6f1c0a9e4b2d7c13
+  ProxyCommand abhed sandbox connect --stdio sbx_6f1c0a9e4b2d7c13
+```
+
+`abhed sandbox connect --stdio ID` joins its stdin and stdout to the relay,
+signed in with the current profile (`-profile NAME` for another; refused
+inside an agent's command; see
+[TLS and command-line sign-in](26-tls-and-cli-login.md)).
+
+Each SSH session is its own recorded call, judged as the verb it amounts
+to: a shell is an `:attach` (`via: ssh` in the record; refused where
+`:attach` is), a command is an `:exec` (judged by the deny rules, bounded
+by `exec.timeout_seconds` and `exec.output_bytes`, and run without a
+terminal even when one was asked for), and a `direct-tcpip` channel to
+`127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
+is recorded as `ssh`, with its sessions, forwards and refusals. Everything
+else is refused: remote forwarding, agent and X11 forwarding, environment
+variables, signals, and subsystems.
+
+**SFTP is not served.** The driver interface moves files as tar archives
+(`:cp`), not one open file at a time, so an SFTP server would have to copy
+a whole folder to list it. Copy files with `:cp` instead. An
+SFTP client is told so and refused; `scp` without `-s` runs the sandbox's
+own `scp` as a command, judged like any other.
+
+The host key is an Ed25519 key in the control plane's state folder
+(`ssh_host_ed25519_key` beside the default `sandboxes` folder, mode
+`0600`), made the first time the server starts with the control plane on.
+A key file that others may read, or that is a link, leaves the relay off:
+the server says so when it starts, and `:ssh` answers `501`. No command or
+file tool may read it.
 
 ## Lifecycle
 
