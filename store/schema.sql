@@ -276,3 +276,81 @@ CREATE TRIGGER events_inserted_at BEFORE INSERT ON events
   FOR EACH ROW EXECUTE FUNCTION abhed_events_inserted_at();
 
 INSERT INTO schema_version (version) VALUES (6) ON CONFLICT DO NOTHING;
+
+-- Schema version 7: the sandbox control plane (docs/architecture/control-plane-contract.md).
+--
+-- A sandbox is kept whole as JSON beside the columns its queries filter on.
+-- resource_version comes from one sequence, so it rises across every write
+-- and a list can be resumed. The audit table is append-only like events:
+-- who asked for what is part of the record.
+CREATE SEQUENCE IF NOT EXISTS sandbox_resource_version;
+
+CREATE TABLE IF NOT EXISTS sandboxes (
+  tenant_id        TEXT   NOT NULL,
+  id               TEXT   NOT NULL,
+  owner            TEXT   NOT NULL,
+  state            TEXT   NOT NULL,
+  resource_version BIGINT NOT NULL,
+  object           JSONB  NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS sandboxes_owner_idx ON sandboxes (tenant_id, owner, id);
+
+CREATE TABLE IF NOT EXISTS sandbox_idempotency (
+  tenant_id    TEXT        NOT NULL,
+  scope        TEXT        NOT NULL,
+  key          TEXT        NOT NULL,
+  request_hash TEXT        NOT NULL,
+  state        TEXT        NOT NULL,
+  status       INT         NOT NULL DEFAULT 0,
+  body         BYTEA,
+  expires_at   TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, scope, key)
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_audit (
+  seq         BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tenant_id   TEXT        NOT NULL,
+  at          TIMESTAMPTZ NOT NULL,
+  principal   TEXT        NOT NULL,
+  action      TEXT        NOT NULL,
+  sandbox_id  TEXT        NOT NULL,
+  generation  BIGINT      NOT NULL,
+  outcome     TEXT        NOT NULL,
+  code        TEXT        NOT NULL DEFAULT '',
+  detail      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  inserted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sandbox_audit_sandbox_idx ON sandbox_audit (tenant_id, sandbox_id, seq);
+
+DROP TRIGGER IF EXISTS sandbox_audit_no_update ON sandbox_audit;
+CREATE TRIGGER sandbox_audit_no_update BEFORE UPDATE ON sandbox_audit
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS sandbox_audit_no_delete ON sandbox_audit;
+CREATE TRIGGER sandbox_audit_no_delete BEFORE DELETE ON sandbox_audit
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS sandbox_audit_no_truncate ON sandbox_audit;
+CREATE TRIGGER sandbox_audit_no_truncate BEFORE TRUNCATE ON sandbox_audit
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+
+ALTER TABLE sandboxes           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_idempotency ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_audit       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandboxes           FORCE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_idempotency FORCE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_audit       FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS sandboxes_tenant_isolation ON sandboxes;
+CREATE POLICY sandboxes_tenant_isolation ON sandboxes
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+DROP POLICY IF EXISTS sandbox_idempotency_tenant_isolation ON sandbox_idempotency;
+CREATE POLICY sandbox_idempotency_tenant_isolation ON sandbox_idempotency
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+DROP POLICY IF EXISTS sandbox_audit_tenant_isolation ON sandbox_audit;
+CREATE POLICY sandbox_audit_tenant_isolation ON sandbox_audit
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+INSERT INTO schema_version (version) VALUES (7) ON CONFLICT DO NOTHING;

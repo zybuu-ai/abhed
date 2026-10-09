@@ -30,6 +30,11 @@ var runtimeGrants = []struct{ table, privileges string }{
 	{"users", "SELECT, INSERT, UPDATE, DELETE"},
 	{"models", "SELECT"},
 	{"schema_version", "SELECT"},
+	// The control plane: sandboxes are rewritten and removed by design; its
+	// audit table is a record, so insert and read only.
+	{"sandboxes", "SELECT, INSERT, UPDATE, DELETE"},
+	{"sandbox_idempotency", "SELECT, INSERT, UPDATE, DELETE"},
+	{"sandbox_audit", "SELECT, INSERT"},
 }
 
 // Extension lets an edition add its own tables in the same pass, so they are

@@ -228,7 +228,8 @@ SET LOCAL lock_timeout = '100ms';
 DO $$
 DECLARE t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version'] LOOP
+  FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version',
+                           'sandboxes', 'sandbox_idempotency', 'sandbox_audit'] LOOP
     IF to_regclass(t) IS NOT NULL THEN
       EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE NOWAIT', t);
     END IF;
@@ -285,6 +286,9 @@ func applySchemaOnce(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func (p *Postgres) Close() { p.pool.Close() }
+
+// Ping reports whether the database answers, for a readiness probe.
+func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
 // CreateSession records a session before its first event. Events reference
 // sessions, so this must happen first.
