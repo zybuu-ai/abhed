@@ -191,7 +191,7 @@ func (c Config) MCPServerOverlaps() []string {
 	var out []string
 	for _, n := range enabled {
 		if o := mcp.OverlappedBy(n, enabled); o != "" {
-			out = append(out, fmt.Sprintf("MCP server %q is not started: its name begins with that of server %q and \"__\", so their tools' names cannot be told apart; rename one", n, o))
+			out = append(out, fmt.Sprintf("MCP server %q is not started: its name and server %q's overlap, so their tools' names cannot be told apart; rename one", n, o))
 		}
 	}
 	return out

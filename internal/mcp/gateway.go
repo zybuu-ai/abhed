@@ -389,7 +389,8 @@ func (g *Gateway) Status() []string {
 // or "": its tools' names could not be told from that server's.
 func OverlappedBy(name string, others []string) string {
 	for _, o := range others {
-		if o != name && strings.HasPrefix(name, o+"__") {
+		// a_ overlaps a too: mcp__a___x is a's _x and a_'s x.
+		if o != name && strings.HasPrefix(name+"__", o+"__") {
 			return o
 		}
 	}

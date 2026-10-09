@@ -50,7 +50,8 @@ func TestOverlappingServerIsNotStarted(t *testing.T) {
 	if overlap != 1 {
 		t.Fatalf("errors %v", errs)
 	}
-	if OverlappedBy("a", []string{"a__b"}) != "" || OverlappedBy("a__b", []string{"a"}) != "a" {
+	if OverlappedBy("a", []string{"a__b"}) != "" || OverlappedBy("a__b", []string{"a"}) != "a" ||
+		OverlappedBy("a_", []string{"a"}) != "a" || OverlappedBy("a", []string{"a_"}) != "" || OverlappedBy("ab", []string{"a"}) != "" {
 		t.Error("OverlappedBy")
 	}
 }

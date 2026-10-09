@@ -269,3 +269,12 @@ func TestMCPWildcardOverlapBothWays(t *testing.T) {
 		t.Errorf("overlaps %q", o)
 	}
 }
+
+// A trailing underscore overlaps as well: mcp__a___x is a's _x and a_'s x.
+func TestMCPServerOverlapWithATrailingUnderscore(t *testing.T) {
+	cfg := Default()
+	cfg.MCP.Servers = []MCPServerConfig{{Name: "a", Command: "true", Enabled: true}, {Name: "a_", Command: "true", Enabled: true}}
+	if o := cfg.MCPServerOverlaps(); len(o) != 1 || !strings.Contains(o[0], `"a_" is not started`) {
+		t.Errorf("overlaps %q", o)
+	}
+}
