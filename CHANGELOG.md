@@ -23,6 +23,11 @@ All notable changes to Abhed are recorded here. The format follows
   where commands must not see one another's secrets. `ABHED_SHOW_ENV=1`
   turns the restart off. Go programs embedding Abhed call
   `app.HideEnvironment()` first in `main` to get the same.
+- A managed `/etc/abhed/config.json` with a key repeated in one object, or a
+  number too large for a generic JSON decode, is now refused at startup. Such a
+  file could be read one way for the rules in force and another way for which
+  settings the managed file makes, so a managed rule could fail to lock allow
+  rules or to force line-by-line terminals.
 
 ### Added
 
@@ -87,20 +92,25 @@ All notable changes to Abhed are recorded here. The format follows
   what it decided, and `GET /v1/sessions/{id}/permissions` lists a running
   session's rules with their layers. `PolicyLayer.Decide` applies a layer
   to one call outside a session, for a guard.
-
 - `abhed serve` can manage sandboxes over `/v1/sandboxes` when
   `control_plane.enabled` is set (off by default; with it off nothing
   changes): create, list with label selectors, get, patch, delete, `:start`,
   `:stop` and `:exec` with its output streamed as NDJSON. `Idempotency-Key`
   replays a request instead of repeating it, and `If-Match` refuses a change
   made against a stale version. Every change is recorded with who asked, in
-  an append-only `sandbox_audit` table. `:snapshot`,
+  an append-only `sandbox_audit` table. Every `:exec` is judged by the
+  server's deny rules and extension hooks, as the workbench's terminal is: a
+  refused command is `403 forbidden`, recorded, and never runs. `:snapshot`,
   `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
   forwards where it has them (snapshots in `control_plane.snapshot_dir`;
   exposing off unless `control_plane.expose` is on) and answer `501` where
   it does not. Each sandbox works in a folder of its own, outside the server's
   workspace and `~/.abhed`, unless `control_plane.shared_workspace` asks for
-  the server's workspace. See [Sandboxes over the
+  the server's workspace; on the `process` driver its commands can neither
+  read nor write the other sandboxes' folders beside it (on macOS the
+  Seatbelt profile denies them, also under a temp or cache folder), and a
+  root inside `sandbox.read_only_paths` or a skills folder, which would show
+  them, is refused. See [Sandboxes over the
   API](docs/guide/22-sandboxes.md).
 - Sandboxes survive a restart without Postgres: the control plane keeps
   them, their idempotency records and their audit record in an SQLite file,
@@ -258,7 +268,6 @@ All notable changes to Abhed are recorded here. The format follows
   and validates every value against a schema. `scripts/ci/helm-check.sh` and a
   CI job lint and render it for a matrix of values and validate the result
   against the Kubernetes 1.30 and 1.33 schemas with pinned, checksummed tools.
-
 - `abhed serve` can give each session a sandbox of its own with
   `control_plane.per_session` (off by default; off, sessions share one
   sandbox and the server's workspace exactly as before). Each session, or
@@ -287,29 +296,13 @@ All notable changes to Abhed are recorded here. The format follows
   every sandbox; `abhed serve -check` and `abhed doctor` show each driver's
   line, and an unreachable per-session driver stops `abhed serve`.
 
-**Upgrading with Postgres.** The control plane's tables (`sandbox_templates`
-among them) come with schema version 7; run `abhed migrate` before turning
-`control_plane.enabled` on.
-A server with it off starts on the older schema as before.
+**Upgrading with Postgres.** The control plane's tables (`sandboxes`,
+`sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
+schema version 7; run `abhed migrate` before turning `control_plane.enabled`
+on. A server with it off starts on the older schema as before.
 
 ### Changed
 
-- A link that points into a `.abhed` folder is left out of a snapshot and
-  of what `abhed sandbox cp` sends, and refused in an archive copied into or
-  out of a sandbox or restored from a snapshot, as an entry inside one
-  already was.
-- `abhed sandbox` is refused inside an agent's command for every
-  subcommand, not only `connect`.
-- Every sandbox `:exec` is judged by the server's deny rules and extension
-  hooks, as the workbench's terminal is: a refused command is `403
-  forbidden` and recorded, and never runs. `POST :exec` with `"stdin":
-  true` answers `400` naming the WebSocket form instead of `501`.
-- Under a `control_plane.workspace_root` (or the default sandbox folder), a
-  sandbox's commands on the `process` driver can no longer read or write the
-  other sandboxes' folders beside its own; on macOS the Seatbelt profile
-  denies them, also where the root lies in a temp or cache folder. A root
-  inside `sandbox.read_only_paths` or a skills folder, which would show them,
-  is refused when the sandbox is built.
 - The fence probe's `seccomp` check now also installs the fence's own filter
   in its helper and requires a signal to Abhed to be refused and one to the
   helper itself allowed, so a kernel that reads the filter's system-call
@@ -336,14 +329,6 @@ A server with it off starts on the older schema as before.
   with `!` (`network_denied` in the JSON), and raises a `network-denied` or
   `network-would-deny` finding per call and destination. The workbench's
   HawkEYE panel shows the counts.
-
-### Security
-
-- A managed `/etc/abhed/config.json` with a key repeated in one object, or a
-  number too large for a generic JSON decode, is now refused at startup. Such a
-  file could be read one way for the rules in force and another way for which
-  settings the managed file makes, so a managed rule could fail to lock allow
-  rules or to force line-by-line terminals.
 
 ### Fixed
 
@@ -409,10 +394,6 @@ A server with it off starts on the older schema as before.
 
 ### Go API
 
-- `controlplane.PoolConfig.Scope`: reserved labels a warm pool's members are
-  made and counted under; a claim cannot change them.
-  `server.Options.SandboxCaller` is also asked for each per-session
-  sandbox's user.
 - `internal/sandboxcli` is `abhed sandbox`. `controlplane.Template`,
   `TemplateStore` (implemented by the memory, SQLite and Postgres stores and
   required by `storetest.Run`), `Service.CreateTemplate`, `GetTemplate`,
@@ -461,7 +442,9 @@ A server with it off starts on the older schema as before.
   and `podman` drivers. A snapshot is the workspace, without `.abhed`, as a
   gzip tar named by its SHA-256 (plus a committed image on the container
   drivers); a restore needs the sandbox stopped, refuses content whose digest
-  does not match and any entry a copy would refuse, unpacks through an
+  does not match and any entry a copy would refuse (a link into a `.abhed`
+  folder included, which a snapshot and `abhed sandbox cp` also leave out),
+  unpacks through an
   `os.Root` and only then replaces the workspace, leaving `.abhed` alone, and
   the next start is a new generation. Forwarding runs a relay inside the
   sandbox to its own loopback, so a container under `--network none` is
@@ -530,7 +513,10 @@ A server with it off starts on the older schema as before.
   `controlplane.LabelSession`, `LabelSessionUser` and `LabelPool` and the
   owner `controlplane.SessionsPrincipal`. `server.Options.SessionSandboxes`.
   `process.Options.Hide` and `builtin.Options.Container`. A sandbox's
-  `create` record names its session.
+  `create` record names its session. `controlplane.PoolConfig.Scope` makes
+  and counts a pool's members under an edition's reserved labels, which a
+  claim cannot change; `server.Options.SandboxCaller` is also asked for each
+  per-session sandbox's user.
 
 ## [1.2.7] - 2026-10-07
 
