@@ -292,6 +292,7 @@ func (s *Service) mutate(ctx context.Context, c Caller, id, ifMatch, action stri
 		return Sandbox{}, err
 	}
 	adm := AdmissionRequest{Operation: action, Caller: c, SandboxID: id}
+	admitted := false
 	out, err := Mutate(ctx, s.cfg.Store, id, ifMatch, func(sb *Sandbox) error {
 		if !c.may(*sb) {
 			return fmt.Errorf("%w: sandbox %s", ErrNotFound, id)
@@ -306,14 +307,15 @@ func (s *Service) mutate(ctx context.Context, c Caller, id, ifMatch, action stri
 			return err
 		}
 		*sb = next
-		adm.Object = next
+		adm.Object, admitted = next, true
 		return nil
 	})
 	if err == nil {
 		ev.Generation = out.Generation
 	}
 	s.outcome(ctx, ev, err)
-	if adm.Old != nil {
+	// Post-commit hooks hear only of calls that were admitted.
+	if admitted {
 		s.committed(ctx, adm, out, err)
 	}
 	if err != nil {
