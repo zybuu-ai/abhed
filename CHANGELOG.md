@@ -352,6 +352,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- The docker and podman drivers, and per-session sandboxes on them, refused
+  every container on hosts with the ipip, sit, gre or vti modules loaded,
+  since the kernel's idle fallback tunnel devices (`tunl0` and the like)
+  appear in every network namespace. Those devices are now accepted when
+  down and without an address; up or addressed, they still fail the check.
 - The command line's own flags written after a subcommand were ignored:
   `abhed doctor -C DIR` checked the current folder, with the built-in
   default provider. `-C`, `-trust-workspace` and doctor's `-settings` are

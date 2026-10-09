@@ -291,14 +291,12 @@ func (d *Driver) verify(ctx context.Context, in *instance) error {
 		return driver.Errorf(driver.ErrUnavailable, "checking the container: %v", err)
 	}
 	got := map[string]string{}
-	var nets []string
+	var netLines []string
 	for _, line := range strings.Split(string(out), "\n") {
 		k, v, _ := strings.Cut(strings.TrimSpace(line), " ")
 		switch k {
-		case "net":
-			if name, _, ok := strings.Cut(v, ":"); ok {
-				nets = append(nets, strings.TrimSpace(name))
-			}
+		case "net", "dev", "fib", "fib-read", "inet6":
+			netLines = append(netLines, strings.TrimSpace(line))
 		case "rootfs":
 			return driver.Errorf(driver.ErrUnavailable, "the container's root filesystem is writable")
 		default:
@@ -321,11 +319,7 @@ func (d *Driver) verify(ctx context.Context, in *instance) error {
 		weak = append(weak, "runs as uid "+got["Uid:"]+", not "+strconv.Itoa(in.uid))
 	}
 	if !in.pol.AllowNetwork || in.pol.Egress != nil {
-		for _, n := range nets {
-			if n != "lo" {
-				weak = append(weak, "has network device "+n)
-			}
-		}
+		weak = append(weak, networkWeakness(netLines)...)
 	}
 	if len(weak) > 0 {
 		return driver.Errorf(driver.ErrUnavailable, "the container is weaker than asked, so it is removed: %s", strings.Join(weak, "; "))

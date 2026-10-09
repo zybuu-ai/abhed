@@ -33,9 +33,13 @@ read -r p < "$1" 2>/dev/null && [ -n "$p" ] && kt "$p"; rm -f "$1"`
 const shellLine = `if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; fi; exec sh -i`
 
 // verifyScript prints what the kernel says is in force for a process in the
-// container, and the network devices it can see.
+// container, the network devices it can see with their state and flags, and
+// the addresses on them, so an idle tunnel device can be told from a link.
 const verifyScript = `while read -r k v _; do case "$k" in Seccomp:|NoNewPrivs:|CapEff:|CapBnd:|Uid:) echo "$k $v";; esac; done < /proc/self/status
 while read -r l; do echo "net $l"; done < /proc/net/dev
+for d in /sys/class/net/*; do s=; f=; read -r s < "$d/operstate"; read -r f < "$d/flags"; echo "dev ${d##*/} $s $f"; done 2>/dev/null
+if [ -r /proc/net/fib_trie ]; then echo "fib-read"; while read -r l; do echo "fib $l"; done < /proc/net/fib_trie; fi
+while read -r l; do echo "inet6 $l"; done 2>/dev/null < /proc/net/if_inet6
 if ( : > /.abhed-rootfs-probe ) 2>/dev/null; then echo "rootfs writable"; fi`
 
 // runArgs is the engine argv that starts in's container.

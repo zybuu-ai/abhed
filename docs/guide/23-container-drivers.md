@@ -46,6 +46,15 @@ than `lo` where there should be none, or a writable root filesystem, the
 container is removed and `Create` fails. `Status.Tier` is `container` only
 for a container that passed this check.
 
+One exception to the network rule: the fallback tunnel devices the kernel
+puts in every network namespace once the ipip, sit, ip6_tunnel, gre or vti
+modules are loaded (`tunl0`, `sit0`, `ip6tnl0`, `gre0`, `gretap0`,
+`erspan0`, `ip_vti0`, `ip6_vti0`, `ip6gre0`, common on Calico and Flannel
+nodes) are accepted when `/sys/class/net` shows the device down and not up,
+it holds no IPv6 address, and the namespace has no IPv4 address beyond
+loopback. Any of them up or addressed, or a state the driver cannot read,
+still removes the container.
+
 Under rootless Docker, root inside the container is your own user outside,
 and the only uid that can write the workspace, so commands run as uid 0
 there, with no capabilities. `Status.Message` says so.
