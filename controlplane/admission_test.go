@@ -437,3 +437,47 @@ func TestExecAdmissionCarriesStdinCwdAndEnvNames(t *testing.T) {
 		}
 	}
 }
+
+// A hook's or guard's reason is redacted before it is cut to its bound, so a
+// cut never leaves part of a secret the redaction would have matched whole.
+func TestReasonsAreRedactedBeforeTheyAreCut(t *testing.T) {
+	const secret = "ghp_0123456789abcdef"
+	reason := strings.Repeat("x", 505) + secret
+	redact := func(c *cp.Config) {
+		c.Redact = func(s string) string { return strings.ReplaceAll(s, secret, "[redacted]") }
+	}
+
+	h := &hook{admit: func(req cp.AdmissionRequest) (cp.AdmissionResult, error) {
+		return cp.AdmissionResult{Decisions: []cp.AdmissionDecision{{Hook: "opa", Phase: "validate", Decision: "deny", Reason: reason}}},
+			cp.ErrDenied
+	}}
+	r := newRigWith(t, nil, func(c *cp.Config) { redact(c); c.Interceptor = h })
+	if _, err := r.svc.Create(context.Background(), alice, cp.CreateRequest{Template: "default"}); !errors.Is(err, cp.ErrDenied) {
+		t.Fatal(err)
+	}
+	evs := admissions(t, r, h.seen[0].SandboxID)
+	if got := evs[0].Detail["reason"]; strings.Contains(got, "ghp_") || len(got) > 512 {
+		t.Fatalf("hook reason recorded as %q", got)
+	}
+
+	r = newRigWith(t, nil, redact)
+	sb := r.ready(t)
+	r.fake.ExecFunc = func(ctx context.Context, _ string, _ driver.ExecRequest) (driver.ExecResult, error) {
+		<-ctx.Done()
+		return driver.ExecResult{}, ctx.Err()
+	}
+	guarded(t, r, func(a *cp.Admission) (func(), error) {
+		if a.Exec != nil {
+			// Recorded behind "ended by the guard: ", so the secret again straddles the bound.
+			go a.Cancel(errors.New(reason[len(cp.ErrEndedByGuard.Error())+2:]))
+		}
+		return nil, nil
+	})
+	if _, _, err := r.svc.Exec(context.Background(), alice, sb.ID, "", cp.ExecRequest{Command: "sleep 600"}, cp.ExecIO{}); !errors.Is(err, cp.ErrEndedByGuard) {
+		t.Fatal(err)
+	}
+	all, _ := r.store.AuditFor(context.Background(), sb.ID)
+	if got := all[len(all)-1].Detail["reason"]; got == "" || strings.Contains(got, "ghp_") || len(got) > 512 {
+		t.Fatalf("guard reason recorded as %q", got)
+	}
+}

@@ -175,11 +175,7 @@ func (s *Service) outcome(ctx context.Context, ev AuditEvent, err error) {
 		if ev.Detail == nil {
 			ev.Detail = map[string]string{}
 		}
-		r := err.Error()
-		if len(r) > maxReason {
-			r = r[:maxReason]
-		}
-		ev.Detail["reason"] = s.redact(r)
+		ev.Detail["reason"] = s.reason(err.Error())
 	}
 	_ = s.record(ctx, ev)
 }

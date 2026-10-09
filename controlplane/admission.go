@@ -135,6 +135,15 @@ func (s *Service) committed(ctx context.Context, req AdmissionRequest, out Sandb
 // maxReason bounds the text a hook may put in the record.
 const maxReason = 512
 
+// reason is r as the record keeps it: redacted first, so a cut cannot split
+// a secret the redaction would have matched, then cut to maxReason.
+func (s *Service) reason(r string) string {
+	if r = s.redact(r); len(r) > maxReason {
+		r = r[:maxReason]
+	}
+	return r
+}
+
 func (s *Service) recordDecisions(ctx context.Context, req AdmissionRequest, ds []AdmissionDecision) error {
 	for _, d := range ds {
 		ev := AuditEvent{Principal: req.Caller.Principal, Action: "admission", SandboxID: req.SandboxID,
@@ -147,12 +156,8 @@ func (s *Service) recordDecisions(ctx context.Context, req AdmissionRequest, ds 
 			}
 		}
 		if d.Reason != "" {
-			r := d.Reason
-			if len(r) > maxReason {
-				r = r[:maxReason]
-			}
 			// Hook text is untrusted and may echo what it was sent.
-			ev.Detail["reason"] = s.redact(r)
+			ev.Detail["reason"] = s.reason(d.Reason)
 		}
 		if len(d.Patched) > 0 {
 			ev.Detail["patched"] = strings.Join(d.Patched, ",")
