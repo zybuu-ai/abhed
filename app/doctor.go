@@ -439,6 +439,11 @@ type configCheck struct {
 	// unknown is a key nothing reads; notInEffect a key this version reads
 	// but does not act on yet.
 	unknown, notInEffect bool
+	// rules is a permission rule that names no tool as written; neverManaged
+	// a managed deny or ask rule among them, which the organisation relies on.
+	rules, neverManaged bool
+	// mcpOverlap is a pair of MCP servers whose tools' names overlap.
+	mcpOverlap bool
 	// storeDown and authDown report an event store or sign-in doctor could
 	// not open, as before `abhed migrate`.
 	storeDown, authDown bool
@@ -451,7 +456,28 @@ type configCheck struct {
 // configFindings lists both kinds of key and reports which there were.
 func configFindings(w io.Writer, cfg config.Config) configCheck {
 	unknown := printUnknown(w, cfg)
-	return configCheck{unknown: unknown, notInEffect: printNotInEffect(w, cfg)}
+	c := configCheck{unknown: unknown, notInEffect: printNotInEffect(w, cfg)}
+	c.rules, c.neverManaged = printRuleFindings(w, cfg)
+	for _, m := range cfg.MCPServerOverlaps() {
+		fmt.Fprintf(w, "mcp         %s  ⚠\n", m)
+		c.mcpOverlap = true
+	}
+	return c
+}
+
+// printRuleFindings lists the permission rules that name no tool as written,
+// and reports whether there were any, and whether a managed deny or ask rule is among them.
+func printRuleFindings(w io.Writer, cfg config.Config) (found, neverManaged bool) {
+	for i, f := range cfg.RuleFindings() {
+		label := "            "
+		if i == 0 {
+			label = "rules       "
+		}
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, f)
+		found = true
+		neverManaged = neverManaged || f.FailsDoctor()
+	}
+	return found, neverManaged
 }
 
 // doctorVerdict ends a doctor run whose checks all passed: ready, unless the
@@ -486,6 +512,19 @@ func doctorVerdict(w io.Writer, f configCheck) int {
 	if f.notInEffect {
 		fmt.Fprintln(w, "Not ready: the configuration sets keys this version does not act on yet (listed above), "+
 			"so the controls they name are not in force. Remove them, or run a version that acts on them.")
+	}
+	if f.neverManaged {
+		fmt.Fprintln(w, "Not ready: the managed configuration has a deny or ask rule that names no tool as written (listed above), "+
+			"so the control it names is not in force here. Whoever manages it must correct the rule.")
+	}
+	if f.mcpOverlap {
+		fmt.Fprintln(w, "Not ready: two MCP servers' names overlap (listed above), so one is not started. Rename one of them.")
+	}
+	if f == (configCheck{rules: true}) {
+		// Only rule warnings nothing relies on, a person's own rules or a managed
+		// allow rule: said above, not a failure.
+		fmt.Fprintln(w, "Ready, with the rule warnings above.")
+		return 0
 	}
 	return 1
 }

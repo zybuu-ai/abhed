@@ -79,6 +79,22 @@ func warnNeverAllows(rules []string) {
 	}
 }
 
+// warnRuleFindings writes, once per process, each rule that names no tool as
+// written. A managed deny rule that misnames its tool is refused, not warned of.
+func warnRuleFindings(findings []RuleFinding) {
+	warnedMu.Lock()
+	defer warnedMu.Unlock()
+	for _, f := range findings {
+		if f.Managed() && f.List == "deny" && f.Mistake {
+			continue
+		}
+		if id := "tool\x00" + f.List + "\x00" + f.Rule; !warned[id] {
+			warned[id] = true
+			fmt.Fprintf(warnOut, "abhed: warning: %s\n", f)
+		}
+	}
+}
+
 // unknownKeys lists the keys in data that t has no field for.
 func unknownKeys(file string, data []byte, t reflect.Type) []UnknownKey {
 	var raw any

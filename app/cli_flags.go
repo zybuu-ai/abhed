@@ -548,9 +548,12 @@ var toolNames = map[string]string{
 
 func toolRule(s string) string {
 	name, pattern, hasPattern := strings.Cut(s, "(")
-	name = strings.ToLower(strings.TrimSpace(name))
-	if mapped, ok := toolNames[name]; ok {
+	name = strings.TrimSpace(name)
+	// Only Abhed's own names are folded: an MCP tool's name keeps its case.
+	if mapped, ok := toolNames[strings.ToLower(name)]; ok {
 		name = mapped
+	} else {
+		name = policy.CanonicalTool(name)
 	}
 	if !hasPattern {
 		return name
@@ -566,6 +569,24 @@ func toolRule(s string) string {
 // joinRules adds rules in the familiar form to rules in Abhed's.
 func joinRules(abhed, familiar string) string {
 	return strings.Join(append(splitTop(abhed), toolRules(familiar)...), ",")
+}
+
+// joinDenyRules is joinRules for deny rules. Up to 1.2.7 the flag lowered
+// every tool name, so a deny for an MCP or extension tool also keeps that
+// spelling: a deny only ever gains a match. Allow rules stay exact.
+func joinDenyRules(abhed, familiar string) string {
+	rules := splitTop(abhed)
+	for _, r := range toolRules(familiar) {
+		rules = append(rules, r)
+		name, rest, found := strings.Cut(r, "(")
+		if lower := strings.ToLower(name); lower != name {
+			if found {
+				lower += "(" + rest
+			}
+			rules = append(rules, lower)
+		}
+	}
+	return strings.Join(rules, ",")
 }
 
 // budgetFlag applies -max-budget-tokens. Under a managed budget it may only

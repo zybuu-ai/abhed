@@ -20,13 +20,17 @@ import (
 // applied: what a program that keeps no config file of its own runs under.
 func LoadManaged() (Config, error) {
 	cfg := Default()
+	cfg.noteRuleLayer(LayerDefault)
 	if err := mergeManaged(&cfg); err != nil {
 		return cfg, err
 	}
+	cfg.noteRuleLayer(LayerManaged)
 	warnUnknown(cfg.Unknown)
 	warnNeverAllows(cfg.Permissions.Allow)
 	warnNotYetInEffect(cfg)
-	return cfg, nil
+	findings := cfg.RuleFindings()
+	warnRuleFindings(findings)
+	return cfg, managedNeverDenies(findings)
 }
 
 // mergeManaged applies the managed file, if there is one, over cfg and
@@ -56,12 +60,9 @@ func mergeManaged(cfg *Config) error {
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	cfg.managedRules = managedRuleSet(data)
 	if cfg.ManagedSets("permissions.deny") {
 		// Its deny rules join the others: a managed file may add a deny rule, never take one away.
-		cfg.managedDeny = map[string]bool{}
-		for _, r := range cfg.Permissions.Deny {
-			cfg.managedDeny[strings.TrimSpace(r)] = true
-		}
 		cfg.Permissions.Deny = dedupe(append(slices.Clone(cfg.Permissions.Deny), below...))
 		delete(cfg.origins, "permissions.deny")
 	}
@@ -385,6 +386,9 @@ func (c Config) Apply(o Overrides) (Config, error) {
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)
 	c.noteRuleLayer(LayerFlag)
+	if len(o.Allow)+len(o.Deny) > 0 {
+		warnRuleFindings(c.RuleFindings())
+	}
 	// Copied, so the result never shares a list with the configuration it came from.
 	c.AdditionalDirs = append(append([]string{}, c.AdditionalDirs...), o.AdditionalDirs...)
 	return c, nil
@@ -432,11 +436,11 @@ func (c *Config) noteRuleLayer(layer string) {
 		"allow": c.Permissions.Allow, "ask": c.Permissions.Ask, "deny": c.Permissions.Deny,
 		"git_extensions": c.Permissions.GitExtensions,
 	} {
-		replaced := layer == LayerManaged && c.ManagedSets("permissions."+list)
 		for _, r := range rules {
 			k := list + "\x00" + strings.TrimSpace(r)
-			mine := replaced && (list != "deny" || c.managedDeny[strings.TrimSpace(r)])
-			if _, have := c.ruleLayers[k]; !have || mine {
+			// Credited to the managed file only where it lists the rule: a file
+			// setting another permissions key does not make the rest its own.
+			if _, have := c.ruleLayers[k]; !have || layer == LayerManaged && c.managedRules[k] {
 				c.ruleLayers[k] = layer
 			}
 		}
@@ -448,6 +452,27 @@ func (c *Config) noteRuleLayer(layer string) {
 			c.ruleLayers[k] = layer
 		}
 	}
+}
+
+// managedRuleSet is the rules the managed file lists, keyed as ruleLayers is.
+func managedRuleSet(data []byte) map[string]bool {
+	var m struct {
+		Permissions struct {
+			Allow, Ask, Deny []string
+			GitExtensions    []string `json:"git_extensions"`
+		}
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for list, rules := range map[string][]string{"allow": m.Permissions.Allow, "ask": m.Permissions.Ask,
+		"deny": m.Permissions.Deny, "git_extensions": m.Permissions.GitExtensions} {
+		for _, r := range rules {
+			out[list+"\x00"+strings.TrimSpace(r)] = true
+		}
+	}
+	return out
 }
 
 // ExtensionLayer names where a configured extension came from, as

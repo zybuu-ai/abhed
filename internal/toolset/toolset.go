@@ -9,6 +9,10 @@ package toolset
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -160,6 +164,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, t := range s.Gateway.Tools() {
 			s.Registry.Add(t)
 		}
+		for _, m := range s.Gateway.Overlaps() {
+			warn("%s", m)
+		}
 		DeferMCP(s.Registry, DeferThreshold)
 	}
 	// A tool an extension provides goes through policy and the record like
@@ -221,7 +228,52 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			s.Registry.Add(&index.SearchTool{Index: ix})
 		}
 	}
+	warnCaseOnly(cfg, s.Registry.Names(), warn)
 	return s
+}
+
+// warnCaseOnly warns of each CaseOnlyRules finding once per process: a server
+// builds a set per session.
+func warnCaseOnly(cfg config.Config, names []string, warn func(string, ...any)) {
+	for _, m := range CaseOnlyRules(cfg, names) {
+		if _, seen := caseWarned.LoadOrStore(m, true); !seen {
+			warn("%s", m)
+		}
+	}
+}
+
+// caseWarned holds the case-only rule warnings already given.
+var caseWarned sync.Map
+
+// caseOnlyServer reports whether an mcp__server__* rule names tool's server
+// only in another case.
+func caseOnlyServer(rule, tool string) bool {
+	prefix, ok := policy.MCPServerWildcard(rule)
+	return ok && len(tool) > len(prefix) && strings.EqualFold(tool[:len(prefix)], prefix)
+}
+
+// CaseOnlyRules names each permission rule whose tool is one of names only
+// in another case: an MCP or extension tool, whose name is compared exactly,
+// so the rule never matches it.
+func CaseOnlyRules(cfg config.Config, names []string) []string {
+	var out []string
+	for list, rules := range map[string][]string{"deny": cfg.Permissions.Deny, "ask": cfg.Permissions.Ask, "allow": cfg.Permissions.Allow} {
+		for _, raw := range rules {
+			r, err := policy.ParseRule(raw)
+			if err != nil || slices.ContainsFunc(names, r.ForTool) {
+				continue
+			}
+			for _, n := range names {
+				if strings.EqualFold(n, r.Tool()) || caseOnlyServer(r.Tool(), n) {
+					out = append(out, fmt.Sprintf("permissions.%s rule %s never matches: the tool is %s, and its name is compared exactly, case included",
+						list, config.Printable(raw), config.Printable(n)))
+					break
+				}
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Close ends the MCP connections and the extension processes, then takes

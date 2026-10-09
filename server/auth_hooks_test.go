@@ -32,6 +32,7 @@ type auditEntry struct {
 // email address) and bob, and a record of what AdminAudit was told.
 type hookRig struct {
 	h     http.Handler
+	srv   *Server
 	local *auth.LocalAuth
 	mu    sync.Mutex
 	audit []auditEntry
@@ -65,7 +66,8 @@ func newHookRig(t *testing.T, check func(context.Context, *auth.Identity) error,
 	if opt != nil {
 		opt(&opts)
 	}
-	rig.h = New(opts).Handler()
+	rig.srv = New(opts)
+	rig.h = rig.srv.Handler()
 	return rig
 }
 

@@ -72,7 +72,18 @@ rename and delete are judged as actions of their own (`mkdir`, `rename`,
 against the old one, since a rename removes it). Hooks and extensions see
 those action names, not `bash`. Rules are
 scoped per-command, not per-tool: allowing `bash(npm test)` never allows
-`bash(rm -rf /)`. A deployment's deny list should block reads of SSH keys,
+`bash(rm -rf /)`. A built-in tool's name in a rule is matched in any case
+(`Bash(curl *)` is `bash(curl *)`); MCP, knowledge-base and extension tool
+names are matched exactly, and an extension may not take a built-in name in
+any case, so folding never moves a rule onto another tool. A managed deny or
+ask rule that names no tool here fails `abhed doctor`; a managed deny rule
+whose tool name is evidently a mistake (another tool's name for a built-in,
+or `MCP__` in another case, when no managed extension may provide tools; a
+built-in in look-alike letters; or a managed MCP server or knowledge base in
+another case) refuses startup rather than run without it. A name merely close to a built-in, such as `git` or `sql`, fails
+the doctor but does not refuse startup. A name that
+may be meant ahead, such as an MCP server or extension tool not set up on this
+machine, does not. A deployment's deny list should block reads of SSH keys,
 cloud credentials and `.env` files, and no allow rule should pre-approve an interpreter or file-reading command that could be
 used to exfiltrate one of those files under the cover of an approved rule.
 

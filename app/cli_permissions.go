@@ -197,6 +197,9 @@ func confirmRule(ctx context.Context, e *cmdEnv, title, why string) bool {
 
 // ruleTool is the tool a rule names.
 func ruleTool(rule string) string {
+	if r, err := policy.ParseRule(rule); err == nil {
+		return r.Tool()
+	}
 	if i := strings.Index(rule, "("); i > 0 {
 		return rule[:i]
 	}
@@ -207,6 +210,7 @@ func ruleTool(rule string) string {
 // at which step, by which rule and why. Hooks are not asked, since asking one
 // would show it a call that is not being made.
 func explainDecision(e *cmdEnv, tool, what string) string {
+	tool = policy.CanonicalTool(tool)
 	key := "path"
 	switch tool {
 	case "bash":

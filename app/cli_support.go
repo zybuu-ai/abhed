@@ -35,6 +35,8 @@ func slashDoctor(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 		cfgResult = "keys nothing reads"
 	case f.notInEffect:
 		cfgResult = "keys this version does not act on yet"
+	case f.rules:
+		cfgResult = "rules that name no tool as written"
 	}
 	rows = append(rows, []string{"configuration", cfgResult}, []string{"trust", trustLine(st.appCfg.Workspace)})
 	if st.sandbox != nil {
@@ -60,7 +62,11 @@ func slashDoctor(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	}
 	if st.set != nil && st.set.Gateway != nil {
 		for _, s := range st.set.Gateway.Servers() {
-			if !s.Connected {
+			switch {
+			case s.Connected:
+			case s.NameRefused:
+				rows = append(rows, []string{"mcp " + s.Name, oneLine(s.Err.Error(), 120)})
+			default:
 				rows = append(rows, []string{"mcp " + s.Name, "not connected; /mcp restart " + s.Name})
 			}
 		}

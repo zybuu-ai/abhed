@@ -586,6 +586,76 @@ on. A server with it off starts on the older schema as before.
   `OriginSession` for the server's own work on a session's sandbox and warm
   pool (`WithOrigin`, `OriginOf`), so a guard need not hold it for
   approval.
+- A permission rule naming a built-in tool in another case than Abhed's
+  lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
+  `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's
+  `.abhed/config.json`, was accepted without a word and matched nothing, so a
+  deny rule copied in that style from another tool never fired and `curl` ran.
+  `abhed doctor` said nothing. Only the `-allowedTools` and `-disallowedTools`
+  flags folded case. A built-in tool's name (and an action's, such as
+  `secret`, `delete` or `forge_pr`) is now matched in any case everywhere a
+  rule is read: deny, ask and allow rules from every file and flag,
+  `/permissions` session rules, an extension's `match` rules, and the
+  `/permissions explain` and Studio dry runs. This widens an allow rule
+  written that way to the tool its author evidently meant (`Read` now allows
+  `read`); it never widens one to another tool, and it only ever adds matches
+  to a deny or ask rule. Affects 0.1.0 to 1.2.7.
+- A rule whose tool name names no tool is now reported: a startup warning,
+  a `rules` line in `abhed doctor`, `/doctor` and Abhed Studio's checks, with
+  the name it was probably meant to be. A managed deny or ask rule so listed
+  fails `abhed doctor`; a managed allow rule is a warning. A managed deny rule
+  whose tool name is evidently a mistake (`Shell`, `WebFetch` or
+  `MCP__` while the managed configuration sets no extension that may provide
+  tools, look-alike letters, or an MCP server or knowledge base the managed
+  file sets, written in another case) stops
+  Abhed from starting, naming the rule and the file. A name that may be meant ahead, such as a name close to a built-in
+  (`git`, `sql`) or an MCP server, knowledge base or extension tool not set up
+  here, fails the doctor and does not stop startup. MCP, knowledge-base and extension tool names
+  are still compared exactly, case included; a rule that differs from one of
+  the session's tools only in case is warned of when the tools are loaded. A
+  bash pattern ending in `:*` is read literally and is now listed.
+- A rule naming every tool of one MCP server, `mcp__<server>__*`, as agent
+  definitions name them, matched no tool: rules compared tool names exactly,
+  so a managed `"deny": ["mcp__github__*"]` allowed every `github` tool and
+  `abhed doctor` said nothing. `mcp__<server>__*` now names every tool of
+  that server (the server compared exactly) in deny, ask and allow rules and
+  in an extension's `match`. Any other wildcard or space in an MCP tool name,
+  or an MCP rule with no tool part, is reported as never matching. Space
+  around any rule's tool name is now ignored. Affects 0.1.0 to 1.2.7; the
+  agent-definition guide has taught the form since 1.2.3.
+- MCP server and tool names may hold `_` and `__`, so `mcp__a__b__x` was
+  both server `a`'s tool `b__x` and server `a__b`'s tool `x` (and
+  `mcp__a___x` both `a`'s `_x` and `a_`'s `x`): the two tools registered
+  under one name, one replacing the other, and a rule written for one
+  reached the other. A server whose name overlaps another's this way is no
+  longer started, whether it is configured or added at run time through
+  `POST /v1/admin/mcp` (which now answers 400 with the reason), and a remote
+  tool whose full name begins with another configured or refused server's
+  `mcp__<name>__` is no longer offered; both are warned of, and `abhed
+  doctor` fails on such a pair. Affects 0.1.0 to 1.2.7. **On upgrade, a
+  configuration with two such servers starts only the shorter-named one:
+  rename one of them.**
+- An extension may no longer provide a tool named like a built-in tool, in
+  any case: such a tool is refused with a warning. It could take a rule meant
+  for the built-in, and one named exactly as a built-in replaced it.
+
+### Fixed
+
+- An MCP server an admin added at run time (`POST /v1/admin/mcp`) was tied
+  to that request: its process ended once the request was answered, and a
+  later restart reused the ended context. The request now only bounds the
+  connection; the server lives as long as the gateway, as configured servers
+  do. Affects 0.1.0 to 1.2.7 (the stdio server ended with the request since
+  0.1.0; the restart reusing the ended context since 1.2.4).
+
+### Changed
+
+- `-allowedTools` no longer lower-cases an MCP or extension tool's name,
+  which made an allow rule for a server or tool with a capital letter match
+  nothing. `-disallowedTools` adds the name as written beside the lower-cased
+  spelling it has always added, so an existing deny keeps matching and one for
+  a capitalised name now does too. Built-in names are still folded.
+
 
 ## [1.2.7] - 2026-10-07
 

@@ -173,6 +173,12 @@ func (d *deferredTool) ServerName() string {
 	return server
 }
 
+// RemoteName is the wrapped tool's name on its server.
+func (d *deferredTool) RemoteName() string {
+	_, name := splitMCP(d.Tool)
+	return name
+}
+
 // ToolSearch finds deferred tools by words in their names and descriptions
 // and loads the ones it returns, so the model can call them from its next
 // step.

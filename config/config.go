@@ -112,8 +112,9 @@ type Config struct {
 	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
-	// managedDeny is the managed file's own deny list, which it adds to the others.
-	managedDeny map[string]bool
+	// managedRules are the rules the managed file itself lists, by list and
+	// rule as ruleLayers keys them.
+	managedRules map[string]bool
 }
 
 // SettingsSource names a -settings file and the hash of what was merged.
@@ -1354,6 +1355,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	warnSetAside(cfg.SetAside)
 	warnNotYetInEffect(cfg)
 	warnNeverAllows(cfg.Permissions.Allow)
+	warnRuleFindings(cfg.RuleFindings())
 	if !o.Quiet {
 		warnUntrusted(cfg.Workspace)
 	}
@@ -1593,6 +1595,9 @@ func (c Config) Validate() error {
 				return fmt.Errorf("permissions.%s: %w", l.name, err)
 			}
 		}
+	}
+	if err := managedNeverDenies(c.RuleFindings()); err != nil {
+		return err
 	}
 	if err := new(policy.Engine).AllowGitExtensions(c.Permissions.GitExtensions...); err != nil {
 		return fmt.Errorf("permissions.git_extensions: %w", err)

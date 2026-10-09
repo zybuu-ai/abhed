@@ -108,7 +108,8 @@ permissions without its own `permissions.allow`.
   `/permissions remove <rule>` takes one out again.
 - `/clear` and `/resume` end the session's rules.
 
-`/permissions explain <tool> <command, path or url>` is a dry run: it prints
+`/permissions explain <tool> <command, path or url>` (the tool name in any
+case) is a dry run: it prints
 the decision, the step, the rule and the reason policy would give, for
 example `deny · step deny · bash(curl *) · denied by rule bash(curl *)`.
 Hooks are not asked, since that would show them a call that is not being made.
@@ -158,6 +159,67 @@ A rule is a tool name, optionally followed by a pattern:
   "ask":   ["bash(git push*)"]
 }
 ```
+
+The tool name of a built-in tool, or of an action such as `secret`, `delete`
+or `forge_pr`, may be written in any case: `Bash(curl *)`, `BASH(curl *)` and
+`bash(curl *)` are the same rule, as are `Read(**/.env)` and `read(**/.env)`,
+so a rule copied from another tool's settings holds. This applies to allow
+rules too, so `Read` allows `read`, as it was evidently meant to. Only the
+tool name is folded: the pattern keeps its case, and a rule never moves to
+another tool. An extension may not provide a tool named like a built-in in any
+case; such a tool is refused with a warning. MCP tool names
+(`mcp__server__tool`), knowledge-base tools (`rag_name`) and extension tools
+are compared exactly, case included, because their own protocols and
+configuration tell `GitHub` from `github`.
+
+`mcp__<server>__*` as the tool name names every tool of that one MCP server,
+as it does in an agent definition's tool list: `"deny": ["mcp__github__*"]`
+refuses every tool the `github` server offers, and may take a pattern too,
+`mcp__github__*(repo/*)`. The server name is compared exactly. It is the only
+wildcard in a tool name; any other `*`, `?` or space in an MCP tool name, or
+an MCP rule with no tool part (`mcp__github`), never matches and is reported
+as below. Server and tool names may themselves hold `__`, so
+`mcp__github__ent__x` could be server `github`'s tool `ent__x` or server
+`github__ent`'s tool `x` (and `mcp__a___x` both `a`'s `_x` and `a_`'s `x`).
+Abhed does not start a server whose name overlaps another's this way (here
+`github__ent`; added at run time, whichever of the two comes second), and
+leaves out any server's tool whose full name begins with another configured
+or refused server's `mcp__<name>__`; each is a warning, and `abhed doctor`
+fails on such a pair. Rename one of the two servers.
+An allow wildcard that could reach past its server either way, such as
+`mcp__github__*` beside a `github__ent` server or `mcp__github__ent__*`
+beside a `github` server, is listed too. Spaces around a tool name are ignored: `bash (curl *)` is
+`bash(curl *)`.
+
+A rule whose tool name names no tool is not silent. Abhed warns of it at
+startup, and `abhed doctor` (and `/doctor`, and Abhed Studio's checks) lists
+it, with the name it was probably meant to be (`WebFetch` → `web_fetch`). This
+covers a name that is no built-in; an MCP rule for a server that is not
+configured, or for a configured one written in another case (`mcp__GitHub__x`
+when the server is `github`); a `rag_` name no knowledge base here has; and,
+once the session's tools are known, an MCP or extension tool written in
+another case. A rule from your own files is a warning only.
+
+In the managed configuration, a deny or ask rule listed so fails `abhed
+doctor`; an allow rule listed so is a warning, since it only allows less.
+Abhed still starts, because a server, knowledge base or extension tool the
+rule names may be set up later or on another machine. Only a managed deny
+rule whose tool name is evidently a mistake stops Abhed from starting, with a
+message naming the rule and the file, since Abhed should not run while the
+organisation believes such a rule holds. Evidently a mistake means: another
+tool's name for a built-in (`Shell`, `WebFetch`, `MultiEdit`), or `MCP__`
+written in another case, while the managed configuration sets no extension
+that may provide tools (with one, it may be that extension's tool, so it
+fails the doctor instead; an extension from your own files does not count); a
+built-in written with look-alike letters (the Kelvin sign for `k`); or an MCP server or knowledge base that the managed
+configuration itself sets, written in another case. A name merely close to a
+built-in, such as `git`, `sql` or `bsh`, may be a tool set up later: it fails
+`abhed doctor`, with the built-in it may mean, but does not stop startup. A bash pattern ending in
+`:*`, another tool's way of writing a prefix, is read literally (a colon, then
+anything) and is listed too: write `bash(npm test *)` for `Bash(npm test:*)`.
+The `-allowedTools` and `-disallowedTools` flags still translate `:*` for you. `-disallowedTools`
+denies an MCP or extension tool both as written and in lower case, as it
+always lowered names; `-allowedTools` allows it only as written.
 
 `*` matches anything, newlines included; the pattern is matched against the
 command or path, or for a tool with neither, the first of its `pattern`,

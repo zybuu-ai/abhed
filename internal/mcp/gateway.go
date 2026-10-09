@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -52,6 +53,14 @@ type ServerConfig struct {
 	Digest string `json:"digest,omitempty"`
 }
 
+var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
+
+// refusal is a server not started for its name, and why.
+type refusal struct {
+	cfg ServerConfig
+	why error
+}
+
 // Gateway manages registered servers and exposes their tools to the agent.
 type Gateway struct {
 	mu      sync.RWMutex
@@ -59,8 +68,19 @@ type Gateway struct {
 	configs map[string]ServerConfig
 	// failed are the enabled servers that did not connect, with why.
 	failed map[string]error
-	// life is the context Connect was given: a server process lives as long
-	// as it, whatever context a later Restart was called with.
+	// overlaps are remote tools left out because another server's tools are
+	// named the same way, keyed by full name.
+	overlaps map[string]string
+	// refused are servers not started because their names overlap another's;
+	// another server's tools named as theirs would be are still left out.
+	refused map[string]refusal
+	// pending are servers being connected, whose names are already taken.
+	pending map[string]bool
+	// closed is set by Close; a connection finishing after it is closed, not kept.
+	closed bool
+	// life is the first Connect's context without its cancellation: a server
+	// process lives as long as it, whatever context a later Connect or
+	// Restart was called with.
 	life context.Context
 	// restarting serialises Restart, so two restarts of one server cannot
 	// both start a process and leave one running unowned.
@@ -77,17 +97,29 @@ type Gateway struct {
 }
 
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}}
+	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}}
 }
 
 // Connect starts and initializes the enabled servers. A server that fails to
 // start is reported but does not prevent the others from working: one broken
 // integration should not take down the agent.
 func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
+	// The gateway's lifetime is set once, by the first Connect, and never
+	// ends with a caller's deadline: a server added at run time is connected
+	// within its request's time, but lives as the gateway does.
 	g.mu.Lock()
-	g.life = ctx
+	if g.life == nil {
+		g.life = context.WithoutCancel(ctx)
+	}
+	life := g.life
 	g.mu.Unlock()
 	var errs []error
+	var enabled []string
+	for _, cfg := range configs {
+		if cfg.Enabled {
+			enabled = append(enabled, cfg.Name)
+		}
+	}
 	for _, cfg := range configs {
 		if !cfg.Enabled {
 			continue
@@ -97,10 +129,20 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
 			continue
 		}
-		if err := g.connectOne(ctx, ctx, cfg); err != nil {
-			g.mu.Lock()
+		// Checked and reserved under one lock, so two servers added at once
+		// cannot both pass; the reservation ends when the connection does.
+		if err := g.reserve(cfg, enabled); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		err := g.connectOne(life, ctx, cfg)
+		g.mu.Lock()
+		delete(g.pending, cfg.Name)
+		if err != nil {
 			g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
-			g.mu.Unlock()
+		}
+		g.mu.Unlock()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
 		}
 	}
@@ -151,6 +193,12 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 	}
 
 	g.mu.Lock()
+	if g.closed {
+		// Closed while this one connected: it would outlive the gateway.
+		g.mu.Unlock()
+		_ = client.Close()
+		return errGatewayClosed
+	}
 	old := g.clients[cfg.Name]
 	g.clients[cfg.Name] = client
 	g.configs[cfg.Name] = cfg
@@ -202,6 +250,9 @@ type ServerStatus struct {
 	// Refused are the tools it offers that were left out for their names, as
 	// it sent them: untrusted text, for showing escaped.
 	Refused []string
+	// NameRefused is set for a server not started because its name overlaps
+	// another's; Err says which. A restart would not start it.
+	NameRefused bool
 }
 
 // Servers reports every enabled server, connected or not, by name.
@@ -222,6 +273,16 @@ func (g *Gateway) Servers() []ServerStatus {
 					st.Tools = append(st.Tools, d.Name)
 				}
 			}
+		}
+		out = append(out, st)
+	}
+	for name, r := range g.refused {
+		if _, listed := g.configs[name]; listed {
+			continue
+		}
+		st := ServerStatus{Name: name, Transport: "stdio", Err: r.why, NameRefused: true}
+		if r.cfg.URL != "" {
+			st.Transport = "http"
 		}
 		out = append(out, st)
 	}
@@ -279,8 +340,11 @@ func ValidServerName(name string) bool { return validServerName.MatchString(name
 // Tools returns the gateway's tools as agent-facing tools, namespaced by
 // server so a malicious server cannot shadow a native tool.
 func (g *Gateway) Tools() []tools.Tool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	// A write lock: the tools left out are noted.
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// Made again each time, so a tool no longer offered is no longer reported.
+	g.overlaps = map[string]string{}
 
 	var out []tools.Tool
 	names := make([]string, 0, len(g.clients))
@@ -294,6 +358,13 @@ func (g *Gateway) Tools() []tools.Tool {
 		cfg := g.configs[server]
 		for _, def := range client.Tools() {
 			if !allowed(cfg, def.Name) {
+				continue
+			}
+			// mcp__a__b__x is server a's tool b__x and the name server a__b's
+			// x would have: a rule written for one would reach the other.
+			full := "mcp__" + server + "__" + def.Name
+			if other := g.claimedBy(full, server); other != "" {
+				g.overlaps[full] = fmt.Sprintf("mcp tool %s of server %q is not offered: its name is also how a tool of server %q is named, so a rule for one would reach the other", full, server, other)
 				continue
 			}
 			out = append(out, &remoteTool{
@@ -323,6 +394,7 @@ func allowed(cfg ServerConfig, tool string) bool {
 func (g *Gateway) Close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.closed = true
 	for _, c := range g.clients {
 		_ = c.Close()
 	}
@@ -339,6 +411,105 @@ func (g *Gateway) Status() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// OverlappedBy is a server among others whose name, with "__", begins name,
+// or "": its tools' names could not be told from that server's.
+func OverlappedBy(name string, others []string) string {
+	for _, o := range others {
+		// a_ overlaps a too: mcp__a___x is a's _x and a_'s x.
+		if o != name && strings.HasPrefix(name+"__", o+"__") {
+			return o
+		}
+	}
+	return ""
+}
+
+// reserve refuses cfg when its name overlaps another server's, in batch,
+// configured, connected or being connected, and otherwise marks it as being
+// connected. A refused name that is the longer of the two is kept, with why.
+func (g *Gateway) reserve(cfg ServerConfig, batch []string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	other, longer := OverlappedBy(cfg.Name, batch), true
+	if other == "" {
+		other, longer = g.overlapping(cfg.Name)
+	}
+	if other == "" {
+		delete(g.refused, cfg.Name)
+		g.pending[cfg.Name] = true
+		return nil
+	}
+	long, short := cfg.Name, other
+	if !longer {
+		long, short = other, cfg.Name
+	}
+	err := fmt.Errorf("mcp server %q is not started: its name and server %q's overlap, so a tool named mcp__%s__… "+
+		"could be server %q's or server %q's, and a rule for one would reach the other; rename one of them", cfg.Name, other, long, short, long)
+	if longer {
+		// Kept, so the other server's tools named as this one's would be are left out too.
+		g.refused[cfg.Name] = refusal{cfg: cfg, why: err}
+	}
+	return err
+}
+
+// overlapping is a server configured, connected or being connected whose
+// name overlaps name, and whether name is the longer of the two. The caller
+// holds g.mu.
+func (g *Gateway) overlapping(name string) (other string, longer bool) {
+	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs), g.pending} {
+		for o := range names {
+			if OverlappedBy(name, []string{o}) != "" {
+				return o, true
+			}
+			if OverlappedBy(o, []string{name}) != "" {
+				return o, false
+			}
+		}
+	}
+	return "", false
+}
+
+// claimedBy is another configured server whose tools' names begin as full
+// does, or "". The caller holds g.mu.
+func (g *Gateway) claimedBy(full, server string) string {
+	for _, names := range []map[string]bool{keysOf(g.clients), keysOf(g.configs), keysOf(g.refused), g.pending} {
+		for o := range names {
+			if o != server && strings.HasPrefix(full, "mcp__"+o+"__") {
+				return o
+			}
+		}
+	}
+	return ""
+}
+
+func keysOf[V any](m map[string]V) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+// Overlaps are the remote tools Tools left out because their names are
+// also another server's, each with why, sorted.
+func (g *Gateway) Overlaps() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make([]string, 0, len(g.overlaps))
+	for _, m := range g.overlaps {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// OverlappedNames are the full names of the tools Tools left out because
+// another server's tools are named the same way.
+func (g *Gateway) OverlappedNames() map[string]bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return keysOf(g.overlaps)
 }
 
 // remoteTool adapts an MCP tool to Abhed's tool interface.
