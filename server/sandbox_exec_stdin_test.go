@@ -152,3 +152,64 @@ func TestClientQuietCountsFromResumed(t *testing.T) {
 		}
 	}
 }
+
+// Stdin sent after {"type":"eof"} is dropped: the command gets what came
+// before, and the server neither panics nor ends the stream for it.
+func TestSandboxExecStdinAfterEOFIsDropped(t *testing.T) {
+	r := newWSRig(t, nil, nil, func(o *Options) { o.Config.Permissions.Deny, o.Config.Permissions.Ask = nil, nil })
+	sb := r.ready(t, "alice")
+	r.fake.ExecFunc = func(_ context.Context, _ string, req driver.ExecRequest) (driver.ExecResult, error) {
+		b, _ := io.ReadAll(req.Stdin)
+		_, _ = req.Stdout.Write(b)
+		return driver.ExecResult{}, nil
+	}
+	ws, err := r.dial(t, "alice", "/v1/sandboxes/"+sb.ID+":exec", protoExec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ws.WriteMessage(wsconn.Text, []byte(`{"command":"cat"}`))
+	if c, _ := control(t, ws); c.Type != "started" {
+		t.Fatalf("first %+v", c)
+	}
+	_ = ws.WriteMessage(wsconn.Binary, []byte("before"))
+	_ = ws.WriteMessage(wsconn.Text, []byte(`{"type":"eof"}`))
+	_ = ws.WriteMessage(wsconn.Binary, []byte("after"))
+	_ = ws.WriteMessage(wsconn.Binary, make([]byte, 1<<20))
+	_ = ws.WriteMessage(wsconn.Text, []byte(`{"type":"eof"}`))
+	var out []byte
+	for {
+		typ, msg, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("the stream ended without an exit: %v (output %q)", err, out)
+		}
+		if typ == wsconn.Binary {
+			out = append(out, msg[1:]...)
+			continue
+		}
+		if !bytes.Contains(msg, []byte(`"exit"`)) {
+			t.Fatalf("end %s (output %q)", msg, out)
+		}
+		break
+	}
+	if string(out) != "before" {
+		t.Fatalf("the command read %q, want only what came before eof", out)
+	}
+}
+
+func TestStdinQueuePutAfterEnd(t *testing.T) {
+	pr, pw := io.Pipe()
+	q := newStdinQueue(pw)
+	if !q.put(context.Background(), []byte("kept")) {
+		t.Fatal("put before end refused")
+	}
+	q.end()
+	q.end()
+	// More than the queue holds, so an unsafe put would also block.
+	if !q.put(context.Background(), make([]byte, (stdinQueued+2)*stdinChunk)) {
+		t.Fatal("put after end reported the context ended")
+	}
+	b, err := io.ReadAll(pr)
+	if err != nil || string(b) != "kept" {
+		t.Fatalf("read %q, %v; want only what was put before end", b, err)
+	}
+}

@@ -243,9 +243,11 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 // command is slow to take it. It holds at most stdinQueued chunks; past that
 // the reader waits for the command, as TCP would, rather than drop input,
 // and full says so, for the client is not the one that stopped. Stdin the
-// command no longer reads at all, once it closed it, is dropped.
+// command no longer reads at all, once it closed it, is dropped, as is
+// anything put after end.
 type stdinQueue struct {
 	ch      chan []byte
+	ended   chan struct{}
 	once    sync.Once
 	isFull  atomic.Bool
 	resumed atomic.Int64
@@ -257,18 +259,33 @@ const (
 )
 
 func newStdinQueue(pw *io.PipeWriter) *stdinQueue {
-	q := &stdinQueue{ch: make(chan []byte, stdinQueued)}
+	q := &stdinQueue{ch: make(chan []byte, stdinQueued), ended: make(chan struct{})}
+	// ch is never closed, so a put racing end cannot panic; what was queued
+	// before end still reaches the command.
 	go func() {
-		for b := range q.ch {
-			_, _ = pw.Write(b)
+		defer func() { _ = pw.Close() }()
+		for {
+			select {
+			case b := <-q.ch:
+				_, _ = pw.Write(b)
+			case <-q.ended:
+				for {
+					select {
+					case b := <-q.ch:
+						_, _ = pw.Write(b)
+					default:
+						return
+					}
+				}
+			}
 		}
-		_ = pw.Close()
 	}()
 	return q
 }
 
-// put queues msg, false when ctx ended first. Once it has had to wait, full
-// stays true until the whole message is queued and the reader reads again.
+// put queues msg, false when ctx ended first; after end it drops msg. Once
+// it has had to wait, full stays true until the whole message is queued and
+// the reader reads again.
 func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
 	waited := false
 	defer func() {
@@ -280,6 +297,11 @@ func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
 	for off := 0; off < len(msg); off += stdinChunk {
 		b := msg[off:min(off+stdinChunk, len(msg))]
 		select {
+		case <-q.ended:
+			return true
+		default:
+		}
+		select {
 		case q.ch <- b:
 			continue
 		default:
@@ -288,6 +310,8 @@ func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
 		q.isFull.Store(true)
 		select {
 		case q.ch <- b:
+		case <-q.ended:
+			return true
 		case <-ctx.Done():
 			return false
 		}
@@ -296,7 +320,7 @@ func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
 }
 
 // end is stdin's end, once everything queued has gone.
-func (q *stdinQueue) end() { q.once.Do(func() { close(q.ch) }) }
+func (q *stdinQueue) end() { q.once.Do(func() { close(q.ended) }) }
 
 func (q *stdinQueue) full() bool { return q.isFull.Load() }
 

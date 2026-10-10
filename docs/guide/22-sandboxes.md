@@ -543,7 +543,8 @@ output, with withheld lines taken out and your secrets redaction applied.
 
 **`:exec` with stdin.** Open `GET …:exec` as a WebSocket and send the
 request as the first message, the same JSON as the `POST` form. Then
-binary messages are stdin, and `{"type": "eof"}` closes it. Output comes
+binary messages are stdin, and `{"type": "eof"}` closes it; stdin sent
+after that is dropped. Output comes
 back as binary messages whose first byte says the stream (1 stdout, 2
 stderr). The command is judged, bounded and recorded as a `POST` one is.
 `POST …:exec` with `"stdin": true` answers `400`, naming the WebSocket form.
