@@ -91,7 +91,7 @@ func (q *stdinScreen) Read(p []byte) (int, error) {
 		n, err := q.src.Read(q.buf)
 		q.pending = append(q.pending, q.buf[:n]...)
 		if q.read += n; q.read > stdinScreenBytes {
-			q.refuse("", fmt.Sprintf("the input is longer than the %d bytes that are judged", stdinScreenBytes))
+			q.refuseNext(fmt.Sprintf("the input is longer than the %d bytes that are judged", stdinScreenBytes))
 			continue
 		}
 		switch {
@@ -119,14 +119,14 @@ func (q *stdinScreen) next() bool {
 		i := bytes.IndexByte(q.pending[q.scan:], '\n')
 		if i < 0 {
 			if len(q.pending) > stdinStatementBytes {
-				q.refuse("", fmt.Sprintf("a statement is longer than %d bytes", stdinStatementBytes))
+				q.refuseNext(fmt.Sprintf("a statement is longer than %d bytes", stdinStatementBytes))
 			}
 			return false
 		}
 		end := q.scan + i + 1
 		q.scan = end
 		if end > stdinStatementBytes {
-			q.refuse("", fmt.Sprintf("a statement is longer than %d bytes", stdinStatementBytes))
+			q.refuseNext(fmt.Sprintf("a statement is longer than %d bytes", stdinStatementBytes))
 			return false
 		}
 		text := q.pending[:end]
@@ -134,7 +134,7 @@ func (q *stdinScreen) next() bool {
 			continue
 		}
 		if q.parsed += end; q.parsed > stdinParseBytes {
-			q.refuse("", "the input's statements span too many lines to judge")
+			q.refuseNext("the input's statements span too many lines to judge")
 			return false
 		}
 		f, err := parseScript(text)
@@ -161,7 +161,7 @@ func (q *stdinScreen) last() {
 	}
 	f, err := parseScript(q.pending)
 	if openStatement(err) {
-		q.refuse(string(q.pending), "the input ended inside a statement")
+		q.refuseNext("the input ended inside a statement")
 		return
 	}
 	q.judge(q.pending, f, err)
@@ -247,14 +247,15 @@ func (q *stdinScreen) policy(stmt string) string {
 	return ""
 }
 
-// refuse ends the input at a statement, recording it and why.
+// refuseNext refuses the statement held and not yet judged, which judge
+// has not counted: it is the next one.
+func (q *stdinScreen) refuseNext(why string) {
+	q.n++
+	q.refuse(string(q.pending), why)
+}
+
+// refuse ends the input at statement q.n, recording it and why.
 func (q *stdinScreen) refuse(stmt, why string) {
-	if stmt == "" {
-		stmt = string(q.pending)
-	}
-	if q.n == 0 {
-		q.n = 1
-	}
 	detail := map[string]string{"statement": stmt, "reason": why, "n": strconv.Itoa(q.n)}
 	if err := q.s.opts.ControlPlane.Note(context.WithoutCancel(q.ctx), q.caller, q.sb, "exec.refused", controlplane.OutcomeFailed,
 		detail, "statement", "reason"); err != nil {

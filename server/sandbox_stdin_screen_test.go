@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -456,5 +457,46 @@ func TestExecRefusesShellStartupVariablesUnderRules(t *testing.T) {
 	if rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", token: "alice",
 		body: `{"command":"bash -c 'echo hi'","env":["MODE=fast"]}`}); rec.Code != http.StatusOK || r.fake.Calls("exec") != 1 {
 		t.Fatalf("a plain variable: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A refusal for size or an open statement names the statement it stops at,
+// the one after the last judged, in the client's error and the record.
+func TestStdinScreenNumbersTheStatementItCutsShort(t *testing.T) {
+	long := "echo " + strings.Repeat("a", 60000) + "\n"
+	for name, c := range map[string]struct {
+		script, why string
+		want        int // 0: one after the statements recorded as judged
+	}{
+		"statement": {"echo one\necho two\necho " + strings.Repeat("a", stdinStatementBytes) + "\necho after\n", "statement is longer than", 3},
+		"open":      {"echo one\necho 'open\n", "ended inside a statement", 2},
+		"input":     {"echo one\n" + strings.Repeat(long, stdinScreenBytes/len(long)+2), "input is longer than", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScreenRig(t)
+			_, err := s.run(t, c.script)
+			if err == nil || !strings.Contains(err.Error(), c.why) {
+				t.Fatalf("refusal: %v, want %q", err, c.why)
+			}
+			evs, _ := s.r.store.AuditFor(context.Background(), s.sb.ID)
+			judged := 0
+			for _, ev := range evs {
+				if ev.Action == "exec.input" {
+					judged++
+				}
+			}
+			want := c.want
+			if want == 0 {
+				want = judged + 1
+			} else if judged != want-1 {
+				t.Fatalf("%d statements recorded as judged, want %d", judged, want-1)
+			}
+			if !strings.Contains(err.Error(), "statement "+strconv.Itoa(want)+" read from stdin") {
+				t.Fatalf("the error numbers another statement than %d: %v", want, err)
+			}
+			if ev := waitAudit(t, s.r, s.sb.ID, "exec.refused", controlplane.OutcomeFailed); ev.Detail["n"] != strconv.Itoa(want) {
+				t.Fatalf("the record numbers statement %s, want %d", ev.Detail["n"], want)
+			}
+		})
 	}
 }
