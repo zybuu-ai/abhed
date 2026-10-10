@@ -49,9 +49,11 @@ type shellFacts struct {
 	// expands reports a program named by any other expansion that may split.
 	expands bool
 	// seps holds the separators literal IFS assignments set; ifsUnknown
-	// reports IFS set in a way the text does not show.
+	// reports IFS set in a way the text does not show, and ifsNamed that
+	// a command names IFS itself as what it sets, not only built text.
 	seps       string
 	ifsUnknown bool
+	ifsNamed   bool
 	// commands are the simple commands whose words are all literal, decoded,
 	// from each word that may be the program: function bodies, subshells,
 	// and the text eval, trap and a shell's -c run included.
@@ -212,7 +214,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 			f.decl(n)
 		case *syntax.ForClause:
 			if it, ok := n.Loop.(*syntax.WordIter); ok && it.Name != nil && it.Name.Value == "IFS" {
-				f.ifsUnknown = true
+				f.ifsUnknown, f.ifsNamed = true, true
 			}
 		case *syntax.CoprocClause:
 			if n.Name != nil {
@@ -230,6 +232,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 			if n.Exp != nil && (n.Exp.Op == syntax.AssignUnset || n.Exp.Op == syntax.AssignUnsetOrNull) &&
 				(n.Excl || n.Param == nil || n.Param.Value == "IFS") {
 				f.ifsUnknown = true
+				f.ifsNamed = f.ifsNamed || !n.Excl && n.Param != nil
 			}
 		}
 		return true
@@ -282,7 +285,7 @@ func (f *shellFacts) arithTarget(x syntax.ArithmExpr) {
 	}
 	name, lit := literal(w)
 	if !lit || strings.Contains(name, "IFS") {
-		f.ifsUnknown = true
+		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
 	}
 }
 
@@ -302,7 +305,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		return
 	}
 	if a.Naked {
-		f.ifsUnknown = true
+		f.ifsUnknown, f.ifsNamed = true, true
 		return
 	}
 	value, lit := "", true
@@ -310,7 +313,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		value, lit = literal(a.Value)
 	}
 	if !lit || a.Index != nil || a.Array != nil {
-		f.ifsUnknown = true
+		f.ifsUnknown, f.ifsNamed = true, true
 		return
 	}
 	f.seps += value
@@ -360,7 +363,7 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 	for _, a := range d.Args {
 		if a.Value != nil && !a.Naked {
 			if v, lit := literal(a.Value); !lit || strings.Contains(v, "IFS") {
-				f.ifsUnknown = true
+				f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
 			}
 		}
 	}
@@ -371,14 +374,14 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 func (f *shellFacts) declWord(w *syntax.Word) {
 	v, lit := literal(w)
 	if !lit || !strings.HasPrefix(v, "-") && strings.Contains(v, "IFS") {
-		f.ifsUnknown = true
+		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
 	}
 }
 
 // name reads a word a command sets as a variable.
 func (f *shellFacts) name(w *syntax.Word) {
 	if v, lit := literal(w); !lit || strings.Contains(v, "IFS") {
-		f.ifsUnknown = true
+		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
 	}
 }
 
@@ -1043,7 +1046,7 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 				if strings.IndexByte(names, v[j]) >= 0 {
 					if rest := v[j+1:]; rest != "" {
 						if strings.Contains(rest, "IFS") {
-							f.ifsUnknown = true
+							f.ifsUnknown, f.ifsNamed = true, true
 						}
 					} else {
 						name = true
@@ -1062,7 +1065,7 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 			if !lit {
 				f.ifsUnknown = true
 			} else if n, _, _ := strings.Cut(v, "="); n == "IFS" || strings.HasPrefix(n, "IFS[") || strings.HasSuffix(n, "+") && strings.TrimSuffix(n, "+") == "IFS" {
-				f.ifsUnknown = true
+				f.ifsUnknown, f.ifsNamed = true, true
 			}
 		}
 	}

@@ -27,6 +27,9 @@ type Canonical struct {
 	// IFSUnknown reports IFS set in a way the text does not show, such as
 	// IFS=$v, read IFS or ${IFS:=x}.
 	IFSUnknown bool
+	// IFSNamed reports that what leaves IFS unknown names IFS itself, as
+	// IFS=$v or read IFS do, rather than only running built text.
+	IFSNamed bool
 	// IFSSplit reports a changed IFS and an expansion it may split, so the
 	// words that run are not in the text; deny rules cannot be checked then.
 	IFSSplit bool
@@ -103,13 +106,15 @@ func CanonicalCommand(command string) Canonical {
 		}
 	}
 	c.Text = b.String()
-	c.IFS, c.IFSUnknown = ifsChanges(command)
+	var named bool
+	c.IFS, c.IFSUnknown, named = ifsRead(command)
 	c.textHidden, c.textIFSUnknown = c.Hidden, c.IFSUnknown
 	// The parser reads the text as written; its findings are added to the
 	// text checks', and a command it cannot read hides everything.
 	c.command, c.shell = command, parseShell(command)
 	c.IFS = blankless(c.IFS + c.shell.seps)
 	c.IFSUnknown = c.IFSUnknown || c.shell.ifsUnknown || c.shell.unparsed
+	c.IFSNamed = named || c.shell.ifsNamed
 	c.Hidden = c.Hidden || c.shell.unparsed || c.shell.tooLong
 	c.IFSSplit = (c.IFS != "" || c.IFSUnknown) && strings.ContainsAny(command, "$`")
 	return c
@@ -134,19 +139,25 @@ var unsetBefore = regexp.MustCompile(`(?:^|[^\w])unset(?:[ \t]+-[vfn]+)*[ \t]+$`
 // as eval could undo them, and treats a name built from an expansion, given to
 // eval, a shell's -c or a command that sets a variable, as setting IFS.
 func ifsChanges(command string) (string, bool) {
-	var seps strings.Builder
-	unknown := builtNames(command)
+	seps, unknown, _ := ifsRead(command)
+	return seps, unknown
+}
+
+// ifsRead is ifsChanges, and also whether an unreadable value is set by an
+// assignment or command that names IFS, rather than only by built text.
+func ifsRead(command string) (seps string, unknown, named bool) {
+	var b strings.Builder
 	for text, n := command, 0; n < 8; n++ {
 		s, u := ifsScan(text)
-		seps.WriteString(s)
-		unknown = unknown || u
+		b.WriteString(s)
+		named = named || u
 		next := evalText(text)
 		if next == text {
 			break
 		}
 		text = next
 	}
-	return blankless(seps.String()), unknown
+	return blankless(b.String()), named || builtNames(command), named
 }
 
 // blankless is seps without blanks or repeats: the separators that split

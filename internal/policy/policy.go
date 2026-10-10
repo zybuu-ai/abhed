@@ -945,7 +945,7 @@ func ifsReason(canon tools.Canonical) string {
 	switch {
 	case canon.IFS != "":
 		return "the command changes IFS and then expands words" + tail
-	case strings.Contains(canon.Text, "IFS"):
+	case canon.IFSNamed:
 		return "the command sets IFS to a value its text does not show and then expands words" + tail
 	default:
 		return "the command runs text built from an expansion (given to eval, a shell's -c or a command that sets variables by name), " +

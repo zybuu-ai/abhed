@@ -95,6 +95,12 @@ func TestIFSRefusalReason(t *testing.T) {
 		"eval ${a}FS=_; $x":             "runs text built from an expansion",
 		"IFS=_; x=git_reset_--hard; $x": "changes IFS",
 		"read IFS <<< _; $x":            "sets IFS to a value its text does not show",
+		// Only what the command does to IFS counts, not the word in its text.
+		`echo IFS; eval "$x"`:       "runs text built from an expansion",
+		`IFS=" "; eval "$x"`:        "runs text built from an expansion",
+		`printf -v IFS %s _; $x`:    "sets IFS to a value its text does not show",
+		`for IFS in _; do $x; done`: "sets IFS to a value its text does not show",
+		`: ${IFS:=_}; $x`:           "sets IFS to a value its text does not show",
 	} {
 		e := New(ModeBypass)
 		if err := e.AddDeny("bash(git reset --hard*)"); err != nil {
