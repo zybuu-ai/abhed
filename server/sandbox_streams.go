@@ -315,7 +315,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelCauseFunc
 					return
 				}
 				if ws != nil {
-					if time.Since(ws.LastRead()) > quiet && (b.busy == nil || !b.busy()) {
+					if b.clientQuiet(ws.LastRead(), quiet, time.Now()) {
 						stop(fmt.Errorf("%w: the client stopped answering", controlplane.ErrUnavailable))
 						return
 					}
@@ -341,6 +341,23 @@ type streamBounds struct {
 	// busy, while true, says the server is not reading the client for
 	// reasons of its own, so a quiet client is not taken to be gone.
 	busy func() bool
+	// resumed is when the server last went back to reading after busy;
+	// the client's silence counts from then at the earliest.
+	resumed func() time.Time
+}
+
+// clientQuiet reports whether the client has sent nothing, pongs included,
+// for longer than quiet while the server was reading it.
+func (b streamBounds) clientQuiet(lastRead time.Time, quiet time.Duration, now time.Time) bool {
+	if b.busy != nil && b.busy() {
+		return false
+	}
+	if b.resumed != nil {
+		if t := b.resumed(); t.After(lastRead) {
+			lastRead = t
+		}
+	}
+	return now.Sub(lastRead) > quiet
 }
 
 // sandboxCallerFunc works out who a request acts as, as sandboxCaller does,

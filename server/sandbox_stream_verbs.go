@@ -220,7 +220,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 		Started: func(sb controlplane.Sandbox) {
 			stdin.sb = sb
 			_ = sendControl(ws, streamControl{Type: "started", Generation: sb.Generation})
-			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{busy: in.full})
+			wait = s.watchStream(ctx, cancel, r, sb, nil, ws, streamBounds{busy: in.full, resumed: in.since})
 		}})
 	_ = pr.Close()
 	if wait != nil {
@@ -245,9 +245,10 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, call verbCal
 // and full says so, for the client is not the one that stopped. Stdin the
 // command no longer reads at all, once it closed it, is dropped.
 type stdinQueue struct {
-	ch     chan []byte
-	once   sync.Once
-	isFull atomic.Bool
+	ch      chan []byte
+	once    sync.Once
+	isFull  atomic.Bool
+	resumed atomic.Int64
 }
 
 const (
@@ -266,8 +267,16 @@ func newStdinQueue(pw *io.PipeWriter) *stdinQueue {
 	return q
 }
 
-// put queues msg, false when ctx ended first.
+// put queues msg, false when ctx ended first. Once it has had to wait, full
+// stays true until the whole message is queued and the reader reads again.
 func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
+	waited := false
+	defer func() {
+		if waited {
+			q.resumed.Store(time.Now().UnixNano())
+			q.isFull.Store(false)
+		}
+	}()
 	for off := 0; off < len(msg); off += stdinChunk {
 		b := msg[off:min(off+stdinChunk, len(msg))]
 		select {
@@ -275,10 +284,10 @@ func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
 			continue
 		default:
 		}
+		waited = true
 		q.isFull.Store(true)
 		select {
 		case q.ch <- b:
-			q.isFull.Store(false)
 		case <-ctx.Done():
 			return false
 		}
@@ -290,6 +299,15 @@ func (q *stdinQueue) put(ctx context.Context, msg []byte) bool {
 func (q *stdinQueue) end() { q.once.Do(func() { close(q.ch) }) }
 
 func (q *stdinQueue) full() bool { return q.isFull.Load() }
+
+// since is when the reader last went back to reading after waiting, zero
+// if it never waited.
+func (q *stdinQueue) since() time.Time {
+	if n := q.resumed.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
 
 // counted is a sandbox stream counting its bytes each way, closed once.
 type counted struct {

@@ -97,3 +97,58 @@ func TestSandboxExecStdinDoesNotBlockPings(t *testing.T) {
 		t.Fatalf("the command read %q, want %d bytes", out, len(data))
 	}
 }
+
+// A message the command is slow to take keeps the reader busy until all of
+// it is queued, not just until one chunk fits, and the client's silence
+// counts from when the reader is back.
+func TestStdinQueueBusyForTheWholeMessage(t *testing.T) {
+	pr, pw := io.Pipe()
+	q := newStdinQueue(pw)
+	msg := make([]byte, (stdinQueued+8)*stdinChunk)
+	go q.put(context.Background(), msg)
+	for !q.full() {
+		time.Sleep(time.Millisecond)
+	}
+	before := time.Now()
+	drained := make(chan int64)
+	go func() {
+		n, _ := io.CopyN(io.Discard, pr, int64(len(msg)))
+		drained <- n
+	}()
+	// resumed is stored before full clears, so full is never false first.
+	for seen := 0; q.since().IsZero(); seen++ {
+		if !q.full() && q.since().IsZero() {
+			t.Fatalf("not busy after %d looks while the message is still being queued", seen)
+		}
+	}
+	if n := <-drained; n != int64(len(msg)) {
+		t.Fatalf("drained %d of %d bytes", n, len(msg))
+	}
+	if q.full() || q.since().Before(before) {
+		t.Fatalf("after the message: full %v, resumed %v (want after %v)", q.full(), q.since(), before)
+	}
+}
+
+func TestClientQuietCountsFromResumed(t *testing.T) {
+	now := time.Now()
+	old, recent := now.Add(-time.Minute), now.Add(-time.Second)
+	busy, idle := func() bool { return true }, func() bool { return false }
+	at := func(t time.Time) func() time.Time { return func() time.Time { return t } }
+	for _, c := range []struct {
+		name string
+		b    streamBounds
+		last time.Time
+		want bool
+	}{
+		{"quiet, no bounds", streamBounds{}, old, true},
+		{"heard lately", streamBounds{}, recent, false},
+		{"server busy", streamBounds{busy: busy}, old, false},
+		{"server just back from busy", streamBounds{busy: idle, resumed: at(recent)}, old, false},
+		{"quiet since the server came back", streamBounds{busy: idle, resumed: at(old)}, old, true},
+		{"never busy", streamBounds{busy: idle, resumed: at(time.Time{})}, old, true},
+	} {
+		if got := c.b.clientQuiet(c.last, 10*time.Second, now); got != c.want {
+			t.Errorf("%s: quiet %v, want %v", c.name, got, c.want)
+		}
+	}
+}
