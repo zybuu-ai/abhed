@@ -685,10 +685,14 @@ var remoteRunners = map[string]bool{"kubectl": true, "oc": true, "docker": true,
 // interpreter judges a shell or another program that runs what it reads.
 func (w *scriptWalk) interpreter(name string, c *syntax.CallExpr, texts []string, lits []bool, i int, in bool,
 	input *syntax.Redirect) {
+	var code []int
 	for j := i + 1; j+1 < len(c.Args); j++ {
-		if lits[j] && inlineCode(name, texts[j]) && !lits[j+1] {
-			w.fail(name + " given code to run that is built when it runs")
-			return
+		if k := codeWord(name, texts, lits, j); k > 0 {
+			if !lits[k] {
+				w.fail(name + " given code to run that is built when it runs")
+				return
+			}
+			code = append(code, k)
 		}
 	}
 	for _, a := range c.Args[i+1:] {
@@ -711,11 +715,9 @@ func (w *scriptWalk) interpreter(name string, c *syntax.CallExpr, texts []string
 		return
 	}
 	if stdinShells[name] || name == "busybox" {
-		for j := i + 1; j+1 < len(c.Args); j++ {
-			if lits[j] && inlineCode(name, texts[j]) {
-				if w.shellCode(name, texts[j+1]); w.why != "" {
-					return
-				}
+		for _, k := range code {
+			if w.shellCode(name, texts[k]); w.why != "" {
+				return
 			}
 		}
 	}
@@ -782,6 +784,22 @@ func (sc *stdinScript) seed(env []string) {
 			sc.vars[k] = &v
 		}
 	}
+}
+
+// codeWord is the index of the code an inline-code option at j gives the
+// interpreter, -1 when texts[j] is none: for a shell, the first operand
+// after its options and --, as the shell reads it.
+func codeWord(name string, texts []string, lits []bool, j int) int {
+	if !lits[j] || !inlineCode(name, texts[j]) {
+		return -1
+	}
+	if stdinShells[name] || name == "busybox" {
+		if k := tools.ShellCommandString(texts[j:], lits[j:]); k > 0 {
+			return j + k
+		}
+		return -1
+	}
+	return j + 1
 }
 
 // inlineCode reports an option whose value is code the interpreter runs.

