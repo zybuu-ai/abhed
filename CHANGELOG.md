@@ -431,8 +431,7 @@ All notable changes to Abhed are recorded here. The format follows
   container so a pod that could not serve never starts. Optional: an Ingress,
   an OpenShift Route, TLS from a Secret, Postgres from a Secret, pulling by
   digest, a NetworkPolicy that denies egress except DNS, the model endpoints
-  and Postgres you list, a PodDisruptionBudget, and a namespace per workspace
-  with restricted Pod Security labels, a quota and a limit range. The chart
+  and Postgres you list, and a PodDisruptionBudget. The chart
   never creates a Secret, refuses a secret written into its configuration,
   and validates every value against a schema. `scripts/ci/helm-check.sh` and a
   CI job lint and render it for a matrix of values and validate the result

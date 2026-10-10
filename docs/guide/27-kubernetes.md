@@ -299,25 +299,6 @@ that made them, so set `service.sessionAffinity: ClientIP` or session
 affinity at the ingress. Sharing sandboxes between replicas, with ownership
 and failover, is the Enterprise edition's high availability.
 
-## A namespace per workspace
-
-```yaml
-workspaceNamespaces:
-  enabled: true
-  workspaces:
-    - name: payments
-      resourceQuota:
-        hard: {pods: "40"}
-    - name: research
-```
-
-Each workspace gets a namespace, `abhed-ws-<name>`, labelled to enforce,
-audit and warn at the `restricted` Pod Security level, with a ResourceQuota
-and a LimitRange (the defaults are in `values.yaml`; an entry may replace
-either). `defaultDenyNetworkPolicy` adds a policy denying all traffic in
-each. The namespaces are kept when the release is uninstalled
-(`workspaceNamespaces.keep`).
-
 ## Checking the chart
 
 `scripts/ci/helm-check.sh` lints and renders the chart for every file in its

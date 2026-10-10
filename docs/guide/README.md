@@ -41,7 +41,7 @@ model you point it at, and records everything it does.
 | [Snapshots and forwarding](25-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
-| [Running on Kubernetes](27-kubernetes.md) | the Helm chart: the restricted pod, probes, preflight, TLS, Postgres, ingress and OpenShift, a namespace per workspace |
+| [Running on Kubernetes](27-kubernetes.md) | the Helm chart: the restricted pod, probes, preflight, TLS, Postgres, ingress and OpenShift |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
 | [Input, memory and commands](19-input-and-memory.md) | `@` files, `!` commands, `#` notes, `ABHED.md` memory, custom slash commands |
 
