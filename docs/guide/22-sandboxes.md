@@ -622,6 +622,12 @@ identifier is refused with `403` and code `forbidden`. For a shell fed
 stdin, `IFS` is refused too, and the shell is refused as uncheckable rather
 than judged statement by statement.
 
+`ENV` is on that list, so an exec that sets the common application variable
+`ENV=production` in its `env` is refused while such rules are in force. Set it
+in the command line instead (`ENV=production ./server` is judged with the
+command, as a shell sees it, and an `sh` run that way reads no file from it
+when not interactive), or name it something else, such as `APP_ENV`.
+
 A script that sets up a server the way an editor does over SSH (makes
 folders, unpacks a tar, writes a settings file with a here-document,
 `chmod`, `test`, `echo`, `if`/`else`, `case`, starts the server in the
