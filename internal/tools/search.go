@@ -130,6 +130,13 @@ func (Glob) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	if len(hits) == 0 {
+		// A pattern into a skipped folder matches nothing by design; say so,
+		// or the model concludes the folder is empty.
+		first, _, _ := strings.Cut(strings.TrimPrefix(filepath.ToSlash(a.Pattern), "./"), "/")
+		if skipDirs[first] {
+			return ok("[no files matched: %s. %s is skipped unless you pass path, such as path %q with the rest of the pattern]",
+				a.Pattern, first, filepath.Join(root, first))
+		}
 		return ok("[no files matched: %s]", a.Pattern)
 	}
 

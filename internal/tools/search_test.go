@@ -61,6 +61,24 @@ func TestGlobNoMatchIsExplicit(t *testing.T) {
 	}
 }
 
+// A pattern that starts in a skipped folder says the folder is skipped and
+// how to search it, rather than a bare no-match.
+func TestGlobIntoSkippedFolderSaysSo(t *testing.T) {
+	s, _ := seedRepo(t)
+	for _, pattern := range []string{"node_modules/**/*.js", "./node_modules/dep/*.js"} {
+		res := run(t, Glob{}, s, globArgs{Pattern: pattern})
+		if !strings.Contains(res.Content, "no files matched") || !strings.Contains(res.Content, "node_modules is skipped unless you pass path") {
+			t.Fatalf("%s: %q", pattern, res.Content)
+		}
+	}
+	if res := run(t, Glob{}, s, globArgs{Pattern: "**/*.rs"}); strings.Contains(res.Content, "skipped") {
+		t.Fatalf("a plain no-match names a skipped folder: %q", res.Content)
+	}
+	if res := run(t, Glob{}, s, globArgs{Pattern: "**/*.js", Path: filepath.Join(s.Root, "node_modules")}); !strings.Contains(res.Content, "node_modules/dep/index.js") {
+		t.Fatalf("the advice does not work: %q", res.Content)
+	}
+}
+
 func TestGrepFindsAcrossFiles(t *testing.T) {
 	s, _ := seedRepo(t)
 	res := run(t, Grep{}, s, grepArgs{Pattern: "handleRequest"})
