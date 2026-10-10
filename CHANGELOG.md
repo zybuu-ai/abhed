@@ -35,6 +35,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A shell's `-c` text was taken to be the word right after `-c`, so in
+  `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
+  `-x` and never the text that runs. A program it named by an expansion
+  (`c=wget; $c …`) was then not asked as one no rule can read: it could run
+  under an allow rule for `sh` or in bypass mode though a deny rule named
+  it. The text is now the first operand after the options and `--`, as the
+  shell reads it. Affects 1.2.4 to 1.2.7.
 - A permission rule naming a built-in tool in another case than Abhed's
   lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
   `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's

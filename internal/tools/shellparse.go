@@ -558,8 +558,12 @@ scan:
 				switch o {
 				case 'c':
 					if v[0] == '-' {
-						if j+1 < len(args) {
-							f.shellText(args[j+1:j+2], depth)
+						texts, lits := make([]string, len(args)-j), make([]bool, len(args)-j)
+						for k, a := range args[j:] {
+							texts[k], lits[k] = literal(a)
+						}
+						if k := ShellCommandString(texts, lits); k > 0 {
+							f.shellText(args[j+k:j+k+1], depth)
 						}
 						return
 					}
@@ -602,6 +606,40 @@ scan:
 	default:
 		f.opaque = "a shell reading its commands from a file"
 	}
+}
+
+// ShellCommandString finds the text a shell given -c runs: words[0] is the
+// option word holding c, and the text is the first operand after it, past
+// further options, their values and "--", as the shell reads them. It is
+// the index of that word, or -1 when there is none. lits says which words
+// are literal text; one that is not is taken as the operand.
+func ShellCommandString(words []string, lits []bool) int {
+	skip := 0
+	if len(words) > 0 {
+		skip = strings.Count(words[0], "o") + strings.Count(words[0], "O")
+	}
+	for i := 1; i < len(words); i++ {
+		v := words[i]
+		switch {
+		case skip > 0:
+			skip--
+		case !lits[i]:
+			return i
+		case v == "--" || v == "-":
+			if i+1 < len(words) {
+				return i + 1
+			}
+			return -1
+		case v == "--rcfile" || v == "--init-file":
+			skip = 1
+		case strings.HasPrefix(v, "--"):
+		case len(v) > 1 && (v[0] == '-' || v[0] == '+'):
+			skip = strings.Count(v, "o") + strings.Count(v, "O")
+		default:
+			return i
+		}
+	}
+	return -1
 }
 
 // stdinRedirect reports whether r sets fd 0: an input redirect with no fd
