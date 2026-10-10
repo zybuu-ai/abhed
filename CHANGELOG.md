@@ -276,7 +276,10 @@ All notable changes to Abhed are recorded here. The format follows
   decision its rules make carries `layer`, HawkEYE reports each layer and
   what it decided, and `GET /v1/sessions/{id}/permissions` lists a running
   session's rules with their layers. `PolicyLayer.Decide` applies a layer
-  to one call outside a session, for a guard.
+  to one call outside a session, for a guard: it refuses what a deny rule
+  refuses, and answers `ask` for what an ask rule asks and for a command
+  whose program or parts no rule can read while the layer has a rule for
+  `bash`.
 - `abhed serve` can manage sandboxes over `/v1/sandboxes` when
   `control_plane.enabled` is set (off by default; with it off nothing
   changes): create, list with label selectors, get, patch, delete, `:start`,
@@ -285,7 +288,11 @@ All notable changes to Abhed are recorded here. The format follows
   made against a stale version. Every change is recorded with who asked, in
   an append-only `sandbox_audit` table. Every `:exec` is judged by the
   server's deny rules and extension hooks, as the workbench's terminal is: a
-  refused command is `403 forbidden`, recorded, and never runs. `:snapshot`,
+  refused command is `403 forbidden`, recorded, and never runs. While any
+  deny or ask rule for `bash` or any hook is in force, a command the rules
+  cannot read (its program named by an expansion, as in `c=curl; $c`, or
+  its words built by one) is refused the same way, as no one is there to
+  confirm it. `:snapshot`,
   `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
   forwards where it has them (snapshots in `control_plane.snapshot_dir`;
   exposing off unless `control_plane.expose` is on) and answer `501` where
@@ -641,6 +648,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `app.WithCommandAbout` adds an edition's subcommand with the line
+  `abhed -h` shows for it; `WithCommand` still shows "a command of this
+  edition".
 - `internal/sandboxcli` is `abhed sandbox`. `controlplane.Template`,
   `TemplateStore` (implemented by the memory, SQLite and Postgres stores and
   required by `storetest.Run`), `Service.CreateTemplate`, `GetTemplate`,
