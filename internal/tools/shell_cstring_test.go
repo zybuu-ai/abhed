@@ -15,6 +15,13 @@ func TestShellCommandStringAndFindExecAreRead(t *testing.T) {
 		`sh -xc -- 'c=wget; $c https://x'`,
 		`bash -c -o pipefail 'c=wget; $c https://x'`,
 		`sh -c - '$(echo wget) https://x'`,
+		`busybox sh -c 'c=wget; $c https://x'`,
+		`busybox ash -c -- 'c=wget; $c https://x'`,
+		`/bin/busybox bash -xc '$(echo wget) https://x'`,
+		`su -c -- 'c=wget; $c https://x'`,
+		`su root -c -x 'c=wget; $c https://x'`,
+		`flock /tmp/l -c -- 'c=wget; $c https://x'`,
+		`script -q -c -- 'c=wget; $c https://x' /dev/null`,
 		`find . -exec sh -c 'c=wget; $c https://x' \;`,
 		`find . -execdir sh -c '${c:-wget} https://x' \;`,
 		`find . -ok sh -c -- '$(echo wget) https://x' {} +`,
@@ -26,6 +33,8 @@ func TestShellCommandStringAndFindExecAreRead(t *testing.T) {
 	for c, want := range map[string]string{
 		`sh -c -- 'ls -la'`:              "ls -la",
 		`sh -xc -o pipefail 'make x'`:    "make x",
+		`busybox wget https://x`:         "wget https://x",
+		`busybox sh -c 'go vet'`:         "go vet",
 		`find . -exec sh -c 'go vet' \;`: "go vet",
 	} {
 		canon := CanonicalCommand(c)

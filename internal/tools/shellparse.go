@@ -671,8 +671,17 @@ func (f *shellFacts) runner(args []*syntax.Word, depth int) {
 			f.read(strings.TrimPrefix(v, "--command="), depth+1)
 			return
 		case len(v) > 1 && v[0] == '-' && v[1] != '-' && strings.Contains(v, "c"):
+			// getopt gives -c the next word; a shell's reading takes the first
+			// operand past options and --. Both are read, so neither hides.
 			if j+1 < len(args) {
 				f.shellText(args[j+1:j+2], depth)
+			}
+			texts, lits := make([]string, len(args)-j), make([]bool, len(args)-j)
+			for k, a := range args[j:] {
+				texts[k], lits[k] = literal(a)
+			}
+			if k := ShellCommandString(texts, lits); k > 1 {
+				f.shellText(args[j+k:j+k+1], depth)
 			}
 			return
 		}

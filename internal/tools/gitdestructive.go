@@ -193,6 +193,7 @@ func substitutionWord(inner string) string {
 var gitRunners = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "dash": true, "env": true, "command": true, "exec": true, "nohup": true, "nice": true, "sudo": true, "doas": true,
 	"time": true, "timeout": true, "xargs": true, "setsid": true, "stdbuf": true, "ionice": true, "builtin": true,
+	"busybox": true, // runs the applet named next as that program
 }
 
 // position follows a simple command's words to the program it runs: past

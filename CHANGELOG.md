@@ -41,7 +41,11 @@ All notable changes to Abhed are recorded here. The format follows
   (`c=wget; $c …`) was then not asked as one no rule can read: it could run
   under an allow rule for `sh` or in bypass mode though a deny rule named
   it. The text is now the first operand after the options and `--`, as the
-  shell reads it. Affects 1.2.4 to 1.2.7.
+  shell reads it. The same held for `su -c`, `flock -c` and `script -c`,
+  which now have both the word after `-c` and that operand read, and a shell
+  run as `busybox sh -c` or `busybox ash -c` was not read as a shell at all;
+  `busybox` now runs the applet it names as that program. Affects 1.2.4 to
+  1.2.7.
 - A command `find` runs with `-exec`, `-execdir`, `-ok` or `-okdir` was read
   only as text, so a shell it ran (`find . -exec sh -c 'c=wget; $c …' \;`)
   had its `-c` text unread and a program named there by an expansion went
