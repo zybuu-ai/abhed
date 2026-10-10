@@ -147,8 +147,10 @@ abhed serve -check -addr :8080
 ```
 
 Loads the configuration, resolves the model, reads the secrets store, builds
-the sandbox, builds sign-in, opens storage, builds the control plane when it
-is on (naming its store, `sqlite (<path>)` or `postgres (tenant …)`, and
+the sandbox, builds sign-in, loads `server.tls` with the checks serve makes
+at start (every certificate loads, matches its key, is in date and is for
+server use; the client CA reads), opens storage, builds the control plane
+when it is on (naming its store, `sqlite (<path>)` or `postgres (tenant …)`, and
 listing every setting, where its value came from, and which are
 ceilings) and binds the listen address once to release it. It serves nothing.
 Each check prints `ok` or `FAIL`; the exit status is 0 only when all pass.

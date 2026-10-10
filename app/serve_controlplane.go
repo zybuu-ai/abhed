@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -517,6 +518,17 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		add("auth", err, "")
 	} else {
 		add("auth", nil, authLabel(cfg, mw))
+	}
+	// The same certificate checks serve makes before it listens.
+	if tl, err := buildTLS(cfg, workspace, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		add("tls", err, "")
+	} else {
+		add("tls", nil, tlsLabel(cfg, tl))
+		if tl != nil {
+			for _, w := range tl.Warnings() {
+				lines = append(lines, checkLine{name: "  warning", ok: true, detail: w})
+			}
+		}
 	}
 
 	events, closeStore, err := openServeStore(context.Background(), cfg)

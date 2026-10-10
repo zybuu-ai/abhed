@@ -520,6 +520,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `abhed serve -check` said "Ready to serve" for a `server.tls` that serve
+  refuses at start, such as a key that does not match its certificate or
+  files that are missing. It now loads `server.tls` with the same checks,
+  prints a `tls` line and fails when serve would.
 - The command line's own flags written after a subcommand were ignored:
   `abhed doctor -C DIR` checked the current folder, with the built-in
   default provider. `-C`, `-trust-workspace` and doctor's `-settings` are
