@@ -335,7 +335,7 @@ tightens one; a looser one is `400` (`Settings.NoLooser`, per key the
 template sets). Nothing is applied again later. A name with no template
 object is kept as a plain name. Template writes are recorded as
 `template.create` and `template.delete` with no sandbox id. The `abhed
-sandbox` command line (P3-04) is built on §4 and this section.
+sandbox` command line is built on §4 and this section.
 
 ## 5. The driver interface (Implemented: package `driver`)
 
