@@ -6,83 +6,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading from 1.2.7
+
+- A managed `permissions.deny` list now adds to the user's and the
+  workspace's deny rules instead of replacing them.
+- Rule tool names match built-in tools in any case: an allow rule written
+  `Read(...)` now allows `read`, as a deny rule written `Bash(curl *)` now
+  denies.
+- `abhed` refuses to start on some evident mistakes in the managed file: a
+  managed deny rule naming another harness's tool for a built-in (`Shell`,
+  `WebFetch`) or a built-in in look-alike letters, a key repeated in one
+  object (also in different cases), or a number too large to read.
+- Of two configured MCP servers whose names overlap (`a` and `a__b`), only
+  the shorter-named starts; rename one.
+- Flags after a subcommand are taken when the subcommand reads them and
+  refused with exit `2` when it does not, instead of being ignored.
+- On macOS `abhed` runs itself again as it starts, with secrets kept out of
+  the environment other processes can read; `ABHED_SHOW_ENV=1` turns it off.
+- `auth.session_hours` must be between 0 and 8760.
+
 ### Security
 
-- Commands could read the control plane's own files. A session's command, or
-  a `process` driver sandbox's, could read the `:ssh` relay's host key (and
-  so pose as every sandbox's SSH server) and every sandbox's snapshots in the
-  control plane's state folder, a `control_plane.snapshot_dir` set
-  elsewhere, and, from a sandbox, the server's workspace's `.abhed` with its
-  accounts; a sandbox also resolved relative TLS, command-line token and
-  workload key paths against its own folder, so the real files were left
-  open. The state folder and a configured `snapshot_dir` are now denied to
-  every command on every tier, a sandbox keeping only its own folder there;
-  a sandbox resolves state paths against the server's workspace and is
-  denied its `.abhed`; and the file tools refuse the host key and the
-  snapshots.
-- `server.tls.client_ca_file`, which `abhed serve` reloads, was not
-  protected: a command could rewrite it and mint a client certificate for any
-  account. It is now state, as the TLS keys are: refused in the workspace,
-  an added directory, a temp folder or a cache, and denied to commands. So
-  are `control_plane.ha.relay_key_file` and `relay_ca_file`.
-- The profiles file set with `ABHED_PROFILES_FILE`, which holds sign-in
-  tokens, and the client certificate, key and CA saved by `abhed login
-  -cert`, `-key` and `-ca` are now denied to commands and the file tools.
-- `control_plane.ssh_host_key` and `control_plane.snapshot_dir` are checked
-  to be absolute when the configuration loads, not when serve first uses
-  them.
-- `control_plane.interceptors`, the admission hooks every mutating sandbox
-  call passes, is now managed only, as `control_plane.kubernetes` is: a copy
-  in `~/.abhed/config.json` or a trusted workspace's `.abhed/config.json` is
-  set aside with a warning. `control_plane.ha` still comes from the user's
-  own file or the managed one, but never from a workspace's file, trusted or
-  not, however its keys are spelled; that copy is set aside with a warning.
-- An edition's per-person policy layer (`server.Options.SessionPolicy`,
-  such as a Team workspace's rules) now judges that person's sandbox
-  commands (`:exec`, either form) and every line typed into `:attach` and
-  an SSH shell, as it judges their sessions and the workbench's terminal.
-  The layer is asked for per caller when the call or connection opens; one
-  that cannot be read or applied refuses the call with `503` instead of
-  running it under fewer rules.
-- A session's workbench terminal opened an interactive shell even when the
-  session's edition policy layer (a Team workspace's rules) had deny or ask
-  rules for commands, so those rules were not applied to what was typed.
-  Such a layer now gives the line-by-line terminal, each line judged with
-  it, with the reason "your workspace's rules". The layer is read again when
-  the terminal opens: one that cannot be read opens no terminal (`503`), and
-  one that gained such rules since the session opened answers `409` until
-  the session is opened again. A session's terminal shell now reaches a
-  guard with `Admission.Exec.Stdin` set.
-- A shell fed its commands on stdin in a sandbox (the `:exec` WebSocket, an
-  SSH exec request such as `ssh host sh < script`, `abhed sandbox exec -i ID
-  -- sh`) has that input judged statement by statement while any deny or
-  ask rule for `bash` or any hook is in force (the default deny rules and a
-  Team workspace's rules included): lines are held until they make a
-  complete statement, which is judged whole by the rules, hooks and policy
-  layer, recorded as `exec.input`, and only then sent. A refused statement
-  is recorded as `exec.refused`, never sent, and ends the input, so nothing
-  after it runs; the exec ends `403`. A statement that would let the shell
-  run what no rule read (an interpreter reading the shell's own input, a
-  here-document fed to another interpreter, `eval` of text built when it
-  runs, a file the script wrote, a program named by a variable the script
-  set to unknown text, an alias) is refused as uncheckable, as is one that
-  cannot be parsed. Under those rules an exec may not set, in its own
-  `env`, a variable a shell runs or reads on its own (`BASH_ENV`, `ENV`,
-  `PS1`–`PS4`, `PROMPT_COMMAND`, `SHELLOPTS` …), an exported function
-  (`BASH_FUNC_…`) or a name that is not an identifier, and a shell fed stdin
-  may not be given `IFS`. Scripts that set up a server the way editors do over
-  SSH now run. Any other command that could read commands from stdin, such
-  as `python3 -`, `cat | sh` or `sh -c '…'`, is still refused with `403`;
-  the sandboxes guide lists both rules. With no such rule or hook, stdin
-  passes through untouched.
-- A sandbox command given as `argv` (`POST :exec`, the `:exec` WebSocket,
-  and `abhed sandbox exec ID -- COMMAND ARG...`) is judged by the deny rules
-  and recorded as the line the process and container drivers run, each word
-  quoted for a POSIX shell, rather than as the words joined by spaces, which
-  let quotes inside the words hide a command from the rules
-  (`env "A='" sh -c "curl …" "B='"` passed `Bash(curl *)`). One quoting,
-  `driver.QuoteArgv`, serves the screen, the record and both drivers; a
-  word holding a NUL byte is refused with `400`.
 - A permission rule naming a built-in tool in another case than Abhed's
   lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
   `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's
@@ -172,6 +116,64 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- What a sandbox command can reach of the server: on every tier, nothing
+  in the control plane's state folder but its own sandbox folder (not the
+  `:ssh` relay's host key, other sandboxes' folders or snapshots, or a
+  configured `control_plane.snapshot_dir`); a sandbox resolves state paths
+  against the server's workspace and is denied its `.abhed`; the file tools
+  refuse the host key and snapshots. `server.tls.client_ca_file`,
+  `control_plane.ha.relay_key_file` and `relay_ca_file`, the profiles file
+  and the client certificate, key and CA `abhed login` saves are state too:
+  denied to commands, and refused in the workspace, an added directory, a
+  temp folder or a cache. `control_plane.ssh_host_key` and `snapshot_dir`
+  must be absolute.
+- `control_plane.interceptors`, the admission hooks every mutating sandbox
+  call passes, is managed only, as `control_plane.kubernetes` is: a copy
+  in `~/.abhed/config.json` or a trusted workspace's `.abhed/config.json` is
+  set aside with a warning. `control_plane.ha` still comes from the user's
+  own file or the managed one, but never from a workspace's file, trusted or
+  not, however its keys are spelled; that copy is set aside with a warning.
+- An edition's per-person policy layer (`server.Options.SessionPolicy`,
+  such as a Team workspace's rules) judges that person's sandbox
+  commands (`:exec`, either form) and every line typed into `:attach` and
+  an SSH shell, as it judges their sessions and the workbench's terminal.
+  The layer is asked for per caller when the call or connection opens; one
+  that cannot be read or applied refuses the call with `503` instead of
+  running it under fewer rules.
+- A session's workbench terminal opens line by line, each line judged with
+  the session's edition policy layer (a Team workspace's rules), when that
+  layer has deny or ask rules for commands, with the reason "your
+  workspace's rules". The layer is read when the terminal opens: one that
+  cannot be read opens no terminal (`503`), and one that gained such rules
+  since the session opened answers `409` until the session is opened again.
+  A session's terminal shell reaches a guard with `Admission.Exec.Stdin`
+  set.
+- A shell fed its commands on stdin in a sandbox (the `:exec` WebSocket, an
+  SSH exec request such as `ssh host sh < script`, `abhed sandbox exec -i ID
+  -- sh`) has that input judged statement by statement while any deny or
+  ask rule for `bash` or any hook is in force (the default deny rules and a
+  Team workspace's rules included): lines are held until they make a
+  complete statement, which is judged whole by the rules, hooks and policy
+  layer, recorded as `exec.input`, and only then sent. A refused statement
+  is recorded as `exec.refused`, never sent, and ends the input, so nothing
+  after it runs; the exec ends `403`. A statement that would let the shell
+  run what no rule read (an interpreter reading the shell's own input, a
+  here-document fed to another interpreter, `eval` of text built when it
+  runs, a file the script wrote, a program named by a variable the script
+  set to unknown text, an alias) is refused as uncheckable, as is one that
+  cannot be parsed. Under those rules an exec may not set, in its own
+  `env`, a variable a shell runs or reads on its own (`BASH_ENV`, `ENV`,
+  `PS1`–`PS4`, `PROMPT_COMMAND`, `SHELLOPTS` …), an exported function
+  (`BASH_FUNC_…`) or a name that is not an identifier, and a shell fed stdin
+  may not be given `IFS`. Scripts that set up a server the way editors do over
+  SSH run. Any other command that could read commands from stdin, such
+  as `python3 -`, `cat | sh` or `sh -c '…'`, is still refused with `403`;
+  the sandboxes guide lists both rules. With no such rule or hook, stdin
+  passes through untouched.
+- A sandbox command given as `argv` (`POST :exec`, the `:exec` WebSocket,
+  `abhed sandbox exec ID -- COMMAND ARG...`) is judged by the deny rules and
+  recorded as the line the drivers run, each word quoted for a POSIX shell
+  (`driver.QuoteArgv`); a word holding a NUL byte is refused with `400`.
 - `control_plane.docker.name_prefix` and `control_plane.podman.name_prefix`
   set what the container drivers' container names start with
   (`abhed-sbx-` by default), so two servers can share one engine; a prefix
@@ -388,10 +390,6 @@ All notable changes to Abhed are recorded here. The format follows
   refuses `enabled`. Their key files and trust bundles are state the agent
   cannot reach. Every public endpoint under `/v1/cli/`, and `/v1/token`, share
   the sign-in rate limit.
-- `auth.workload.grants[].allow_reusable_svid` (off by default) lets one
-  workload's JWT-SVIDs carry no `jti`, for issuers that leave it out. It
-  weakens replay protection for that grant only: such an SVID can be
-  exchanged again and again until it expires, so keep its lifetime short.
 - The `profiles` client refreshes a token by itself when the profile holds a
   refresh token: before a request once a tenth or less of the token's life is
   left, and once after a `401`, sending the request again (`Profile.Do`;
@@ -464,7 +462,6 @@ All notable changes to Abhed are recorded here. The format follows
   engine that does not answer leaves its driver registered and refusing
   every sandbox; `abhed serve -check` and `abhed doctor` show each driver's
   line, and an unreachable per-session driver stops `abhed serve`.
-
 **Upgrading with Postgres.** The control plane's tables (`sandboxes`,
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
@@ -472,10 +469,6 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
-- A warm pool whose fills keep failing backs off, from `reconcile_seconds`
-  doubling up to ten minutes, instead of retrying every interval and after
-  every claim; the failure is logged once until the pool fills again
-  (`controlplane.PoolConfig.MaxBackoff` sets the bound).
 - `auth.session_hours` must be from 0 (the default of 12) to 8760. A
   negative value, which made every sign-in expire at once, is now refused
   when the configuration loads, and `abhed doctor` shows the sign-in length
@@ -511,46 +504,9 @@ on. A server with it off starts on the older schema as before.
   nothing. `-disallowedTools` adds the name as written beside the lower-cased
   spelling it has always added, so an existing deny keeps matching and one for
   a capitalised name now does too. Built-in names are still folded.
-- The Kubernetes guide now says that with `sandbox.min_tier: none` the pod is
-  the only boundary: a command can read and write `~/.abhed` and the control
-  plane's state.
 
 ### Fixed
 
-- `abhed logout` is seen by every server sharing `auth.cli.key_file`'s folder
-  on its next request, and sign-outs made at once on two servers no longer
-  overwrite each other.
-- An `attach.refused` record kept the refusal's reason as given, and a
-  hook's reason may quote the refused line; the reason now goes through the
-  secrets redaction, as the line does.
-- A command run over the `:exec` WebSocket that was slow to read its stdin
-  stopped the server reading the stream at all, pongs included, so after a
-  minute the stream ended as if the client had gone. Stdin now waits in a
-  bounded queue (1 MiB) while the reader goes on; only with the queue full
-  does the reader wait for the command, and then a quiet client is not
-  taken to be gone. No stdin is dropped while the command may still read it.
-- A client that stopped reading a sandbox stream held the server's writes,
-  and its answers to pings, until the connection broke. Each write on a
-  stream now has 30 seconds; past that the stream is closed and ends as
-  any lost client's does. `wsconn.Limits.WriteTimeout` sets the bound.
-- A server shutting down now ends its open `:attach`, `:exec`, `:forward`
-  and `:ssh` streams, which the HTTP server's own shutdown does not close,
-  records how each ended (code `unavailable`), and opens no new one.
-- `abhed sandbox cp`: a folder that does not exist, in the sandbox or on
-  this machine, is named plainly instead of as a host `lstat` error that
-  showed the server's path to the workspace; a copy out that fails part way
-  removes the empty folders it made; and a `.abhed` folder left out of a
-  copy in is counted with the links and devices left out.
-- Reopening a session after the server restarted failed once with "a
-  container named abhed-sbx-… already exists". The docker and podman
-  drivers now remove a stopped container they left for that sandbox id
-  before creating it. A container under that name with another driver's or
-  id's labels is no longer removed when the create fails.
-- The docker and podman drivers, and per-session sandboxes on them, refused
-  every container on hosts with the ipip, sit, gre or vti modules loaded,
-  since the kernel's idle fallback tunnel devices (`tunl0` and the like)
-  appear in every network namespace. Those devices are now accepted when
-  down and without an address; up or addressed, they still fail the check.
 - The command line's own flags written after a subcommand were ignored:
   `abhed doctor -C DIR` checked the current folder, with the built-in
   default provider. `-C`, `-trust-workspace` and doctor's `-settings` are
@@ -656,12 +612,6 @@ on. A server with it off starts on the older schema as before.
   variables were set, by name only. Interceptors that ignore them are
   unaffected. An exec `Env` entry that is not `NAME=value` is now refused
   `invalid` by the control plane before admission, not later by the driver.
-- Breaking for code that implements or calls `controlplane.IdempotencyStore`:
-  the `Complete` and `Release` signatures changed (each now takes the
-  claim's token, `IdemRecord.Token`), and the interface gained `Renew`. A
-  store written for 1.2.7 no longer compiles until it adds both. A running
-  request renews its claim, and only the request holding it can finish it.
-  `controlplane` is experimental until 2.0, so this lands in a minor release.
 - `wsconn`: a small WebSocket (RFC 6455) server upgrade, client and byte
   stream, size-limited and fuzzed, for the sandbox streams and for drivers
   that speak WebSockets. `server/sshrelay`: the SSH server behind the `:ssh`
