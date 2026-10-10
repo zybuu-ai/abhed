@@ -642,8 +642,9 @@ something no rule read:
   `"$SERVER_DIR/bin/server"`, is judged by that name. The exec's own
   variables and a command's own assignments (`c=… sh -c …`, `env c=… sh -c
   …`) count as set to their values, and the text a shell runs with `-c` or
-  from a here-document is read as a script of its own, so `sh -c 'c=curl;
-  $c …'` is judged as `curl …`. That shell starts with only what it
+  from a here-document is read as a script of its own, and a shell's `-c`
+  text inside that too, eight deep at most, so `sh -c 'c=curl; $c …'` is
+  judged as `curl …`. That shell starts with only what it
   inherits: the exec's variables, the command's own assignments and what
   the script exported, so after `c=echo`, `sh -c '$c …'` is refused;
 - setting a variable a shell runs or reads as commands on its own

