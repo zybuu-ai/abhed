@@ -16,8 +16,9 @@ enclave and it works there.
 
 ### Linux on Z (s390x)
 
-Abhed runs on Linux on Z (s390x): Red Hat Enterprise Linux, SUSE Linux
-Enterprise Server and Ubuntu. Each release has a `linux-s390x` binary beside
+Abhed is built for Linux on Z (s390x): Red Hat Enterprise Linux, SUSE Linux
+Enterprise Server and Ubuntu. So far it has been tested under emulation, not
+on a real Linux on Z machine. Each release has a `linux-s390x` binary beside
 the others, and the container image has a `linux/s390x` variant. The binary is
 static, so it does not depend on the distribution's C library. To build it on
 another machine:
@@ -36,8 +37,6 @@ Sandbox tiers on s390x:
   kernel version, RHEL 10, SLES 16 and Ubuntu 24.04 meet them, and RHEL 9 and
   SLES 15 do not. A distribution kernel can differ from its version number,
   so check with `abhed doctor`. The fence refuses to start when a check fails.
-  So far s390x has been tested under emulation, not on a real Linux on Z
-  machine.
 
 Two things differ under the fence on s390x. A 31-bit program is ended at its
 first system call, as another architecture's program is on any host. And
