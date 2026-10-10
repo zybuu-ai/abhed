@@ -483,17 +483,24 @@ such as the rules of the Team workspace they belong to, its deny rules
 judge their commands here too, and the lines they type into `:attach` and
 an SSH shell; when the layer cannot be read the call is refused with `503`
 rather than run under fewer rules. Only a refusal stops a command here: rules that would ask the
-agent first do not ask a person who runs a command themselves. A command
-the rules cannot read is refused too, as no one is there to confirm it:
-while any deny or ask rule for `bash` or any hook is in force, a command
-line whose program is named by an expansion (`c=curl; $c …`,
-`sh -c 'c=curl; $c …'`, `$(echo curl) …`), whose words are split by a
-changed `IFS`, that runs text no rule can read, or whose parts are built by
-an expansion or brace list (`echo {a,b}`) is refused with `403` and code
-`forbidden`, the reason in the message, whichever rule it would have met.
-Name the program in the command line instead. A command the rules read
-runs, a destructive one such as `rm -rf build` included. A command
-given as `argv` runs as one shell line with each word quoted, so the shell
+agent first do not ask a person who runs a command themselves.
+
+An exec also refuses a command the rules cannot read, as no one is there
+to confirm it: while any deny or ask rule for `bash` or any hook is in
+force, a command line on `:exec` (`POST`, the WebSocket, or an SSH exec
+request such as `ssh host 'cmd'`) whose program is named by an expansion
+(`c=curl; $c …`, `sh -c 'c=curl; $c …'`, `$(echo curl) …`), whose words
+are split by a changed `IFS`, that runs text no rule can read, or whose
+parts are built by an expansion or brace list (`echo {a,b}`) is refused
+with `403` and code `forbidden`, the reason in the message, whichever rule
+it would have met. Name the program in the command line instead. A command
+the rules read runs, a destructive one such as `rm -rf build` included.
+This refusal is for exec only: the lines a person types into `:attach` or
+an interactive SSH shell are screened by the deny rules alone, as the
+workbench's terminal is, so a line there that names its program by an
+expansion is not refused for that.
+
+A command given as `argv` runs as one shell line with each word quoted, so the shell
 splits it back into exactly those words; that quoted line is what the rules
 judge and the record keeps. A word with a NUL byte cannot be passed and is
 refused with `400`.
