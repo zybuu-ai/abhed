@@ -314,12 +314,6 @@ func (sc *stdinScript) child(env map[string]*string) *stdinScript {
 	return c
 }
 
-func (sc *stdinScript) clone() *stdinScript {
-	c := &stdinScript{vars: maps.Clone(sc.vars), written: maps.Clone(sc.written), writtenUnknown: sc.writtenUnknown, ifs: sc.ifs,
-		exported: maps.Clone(sc.exported)}
-	return c
-}
-
 // check is why a statement cannot be judged, "" when it can, and notes
 // what it sets for the statements after it.
 func (sc *stdinScript) check(f *syntax.File) string {
