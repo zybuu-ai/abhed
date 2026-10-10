@@ -520,6 +520,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- A command refused because IFS could split its words, such as `eval "$x"`
+  under a deny rule, was said to change IFS when its text sets none. The
+  reason now says it runs text built from an expansion that could set IFS.
 - `abhed -h` and `abhed sandbox -h` named only `sandbox connect --stdio`;
   both now list every sandbox command, as `abhed sandbox help` does.
 - `abhed serve -check` said "Ready to serve" for a `server.tls` that serve

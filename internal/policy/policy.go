@@ -742,7 +742,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	// 2a. Under a changed IFS an expansion's value splits into words no rule
 	// can read; a deny rule must hold in every mode, so this refuses, not asks.
 	if canon.IFSSplit && patterned(denyRules, tool) {
-		return Result{Decision: Deny, Reason: "the command changes IFS and then expands words, so they cannot be checked against the deny rules", Scope: "", Step: "screen"}
+		return Result{Decision: Deny, Reason: ifsReason(canon), Scope: "", Step: "screen"}
 	}
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
@@ -936,4 +936,19 @@ func globsMeet(a, b string) bool {
 		return ok
 	}
 	return meet(0, 0)
+}
+
+// ifsReason says why a command whose expansions IFS may split is refused:
+// it sets IFS where the text shows it, or runs built text that could.
+func ifsReason(canon tools.Canonical) string {
+	const tail = ", so the words that run cannot be checked against the deny rules"
+	switch {
+	case canon.IFS != "":
+		return "the command changes IFS and then expands words" + tail
+	case strings.Contains(canon.Text, "IFS"):
+		return "the command sets IFS to a value its text does not show and then expands words" + tail
+	default:
+		return "the command runs text built from an expansion (given to eval, a shell's -c or a command that sets variables by name), " +
+			"which could set IFS and split its words" + tail
+	}
 }

@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // A command that changes IFS must not get past a deny rule in any mode: the
 // rules read it split on the new separators, and an expansion it may split is refused.
@@ -79,6 +82,30 @@ func TestChangedIFSCannotPassADenyRule(t *testing.T) {
 			if res.Decision != Deny {
 				t.Errorf("%s %q = %s at %s (%s), want deny", mode, command, res.Decision, res.Step, res.Reason)
 			}
+		}
+	}
+}
+
+// The refusal says what the command does to IFS: an eval of a variable
+// leaves it alone as written and is not said to change it.
+func TestIFSRefusalReason(t *testing.T) {
+	for command, want := range map[string]string{
+		`eval "$x"`:                     "runs text built from an expansion",
+		`bash -c "$cmd"`:                "runs text built from an expansion",
+		"eval ${a}FS=_; $x":             "runs text built from an expansion",
+		"IFS=_; x=git_reset_--hard; $x": "changes IFS",
+		"read IFS <<< _; $x":            "sets IFS to a value its text does not show",
+	} {
+		e := New(ModeBypass)
+		if err := e.AddDeny("bash(git reset --hard*)"); err != nil {
+			t.Fatal(err)
+		}
+		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
+		if res.Decision != Deny || res.Step != "screen" || !strings.Contains(res.Reason, want) {
+			t.Errorf("%q = %s at %s (%s), want a screen deny saying %q", command, res.Decision, res.Step, res.Reason, want)
+		}
+		if want != "changes IFS" && strings.Contains(res.Reason, "changes IFS") {
+			t.Errorf("%q: reason says the command changes IFS: %s", command, res.Reason)
 		}
 	}
 }
