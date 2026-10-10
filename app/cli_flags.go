@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,16 +35,26 @@ func (a *App) usage(fs *flag.FlagSet) {
 		"       abhed [flags] \"task\"      interactive, starting with the task (or: abhed -- task words)\n"+
 		"       abhed -p [flags] [task]   headless; the task may also come on stdin\n\n")
 	fmt.Fprintf(w, "With no command, abhed opens an interactive session in the workspace;\n-p runs one task headless and exits.\n\nCommands:\n")
-	for _, c := range subcommands {
-		fmt.Fprintf(w, "  %-10s %s\n", c.name, wrapAbout(c.about, 72))
-	}
 	var own []string
+	width := 10
+	for _, c := range subcommands {
+		width = max(width, len(c.name))
+	}
 	for name := range a.commands {
 		own = append(own, name)
+		width = max(width, len(name))
 	}
 	sort.Strings(own)
+	list := slices.Clone(subcommands)
 	for _, name := range own {
-		fmt.Fprintf(w, "  %-10s a command of this edition\n", name)
+		about := a.about[name]
+		if about == "" {
+			about = "a command of this edition"
+		}
+		list = append(list, subcommand{name: name, about: about})
+	}
+	for _, c := range list {
+		fmt.Fprintf(w, "  %-*s %s\n", width, c.name, wrapAbout(c.about, 72, width+3))
 	}
 	fmt.Fprintf(w, "\nFlags:\n")
 	fs.PrintDefaults()
@@ -51,13 +62,13 @@ func (a *App) usage(fs *flag.FlagSet) {
 }
 
 // wrapAbout breaks a long description at spaces, indenting each further
-// line under the first.
-func wrapAbout(s string, width int) string {
+// line under the first, which starts at column indent.
+func wrapAbout(s string, width, indent int) string {
 	var b strings.Builder
 	n := 0
 	for i, word := range strings.Fields(s) {
 		if i > 0 && n+1+len(word) > width {
-			b.WriteString("\n" + strings.Repeat(" ", 13))
+			b.WriteString("\n" + strings.Repeat(" ", indent))
 			n = 0
 		} else if i > 0 {
 			b.WriteByte(' ')

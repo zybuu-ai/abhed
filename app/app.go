@@ -38,6 +38,7 @@ type App struct {
 	auth       map[string]AuthBuilder
 	features   map[string]bool
 	commands   map[string]Command
+	about      map[string]string
 	migrate    []store.Extension
 	taps       []TapBuilder
 	serverOpts []ServerOptionsHook
@@ -58,6 +59,7 @@ func newApp(opts ...Option) *App {
 		auth:     map[string]AuthBuilder{},
 		features: map[string]bool{},
 		commands: map[string]Command{},
+		about:    map[string]string{},
 	}
 	WithAuthMode("local", buildLocal)(a)
 	for _, o := range opts {
@@ -124,6 +126,15 @@ func WithCommand(name string, run Command) Option {
 	return func(a *App) {
 		if _, builtin := builtinCommands[name]; !builtin {
 			a.commands[name] = run
+		}
+	}
+}
+
+// WithCommandAbout is WithCommand with the one line abhed -h shows for it.
+func WithCommandAbout(name, about string, run Command) Option {
+	return func(a *App) {
+		if _, builtin := builtinCommands[name]; !builtin {
+			a.commands[name], a.about[name] = run, about
 		}
 	}
 }
