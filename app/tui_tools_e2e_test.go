@@ -3,6 +3,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,12 +84,17 @@ func TestTUICommandOutputPreviewExpands(t *testing.T) {
 	r.waitScreen("Transcript")
 	r.send("g")
 	r.waitScreen("please big")
-	for i := 0; i < 20; i++ {
+	// One page at a time, each confirmed by the header, so no frame has to
+	// be caught in passing.
+	page := 30 - 2
+	for top := 1; !hasLine(r.term.Text(), "1500"); {
+		if top > 3000 {
+			t.Fatalf("paged past the middle of the output:\n%s", r.term.Text())
+		}
+		top += page
 		r.send("\x1b[6~")
+		r.waitScreen(fmt.Sprintf("Transcript · %d–", top))
 	}
-	r.waitFor("the middle of the output in the transcript view", false, func(s string) bool {
-		return strings.Contains(s, "\n     4")
-	})
 	r.send("q")
 	r.waitFor("the session back", false, func(s string) bool { return !strings.Contains(s, "Transcript ·") })
 }
@@ -104,4 +110,14 @@ func TestTUIFailureIsReadable(t *testing.T) {
 	if !strings.Contains(all, "⎿  Exit ") || !strings.Contains(all, "No such file or directory") {
 		t.Fatalf("the failure is not readable:\n%s", all)
 	}
+}
+
+// hasLine reports whether some line of s, trimmed, is exactly want.
+func hasLine(s, want string) bool {
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) == want {
+			return true
+		}
+	}
+	return false
 }
