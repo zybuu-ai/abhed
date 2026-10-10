@@ -101,6 +101,15 @@ func init() {
 	}
 }
 
+// Commands names the subcommands, in the order Usage lists them.
+func Commands() []string {
+	out := make([]string, len(commands))
+	for i, c := range commands {
+		out[i] = c.name
+	}
+	return out
+}
+
 // Usage writes the command's help.
 func Usage(w io.Writer) {
 	fmt.Fprintln(w, `usage: abhed sandbox COMMAND [flags] [args]

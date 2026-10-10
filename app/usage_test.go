@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 )
 
 // stderrOf runs Main with args and returns what it wrote to stderr.
@@ -41,7 +43,7 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 			t.Errorf("%v: no synopsis:\n%s", args, out)
 		}
 		for _, c := range append(subcommands, subcommand{name: "audit-export", about: "a command of this edition"}) {
-			if !strings.Contains(out, "  "+c.name+strings.Repeat(" ", max(1, 11-len(c.name)))+c.about) {
+			if !strings.Contains(out, "  "+c.name+strings.Repeat(" ", max(1, 11-len(c.name)))+wrapAbout(c.about, 72)) {
 				t.Errorf("%v: %s is not listed with its description:\n%s", args, c.name, out)
 			}
 		}
@@ -50,6 +52,36 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 		}
 		if !strings.Contains(out, "-addr string\n") || strings.Contains(out, "-addr abhed") {
 			t.Errorf("%v: -addr is not shown as a flag with a value:\n%s", args, out)
+		}
+	}
+}
+
+// abhed -h and abhed sandbox -h name every sandbox command, as abhed sandbox
+// help does; both used to name only connect --stdio.
+func TestHelpListsTheSandboxCommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	top, _ := stderrOf(t, []string{"-h"})
+	_, line, ok := strings.Cut(top, "  sandbox ")
+	line, _, ok2 := strings.Cut(line, "\n  pki ")
+	if !ok || !ok2 {
+		t.Fatalf("abhed -h has no sandbox line:\n%s", top)
+	}
+	help, code := stderrOf(t, []string{"sandbox", "help"})
+	if code != 0 {
+		t.Fatalf("sandbox help: exit %d", code)
+	}
+	for _, name := range sandboxcli.Commands() {
+		if !strings.Contains(" "+strings.Join(strings.Fields(line), " ")+",", " "+name+",") {
+			t.Errorf("abhed -h lacks %s:\n%s", name, line)
+		}
+		if !strings.Contains(help, "\n  "+name+" ") {
+			t.Errorf("abhed sandbox help lacks %s:\n%s", name, help)
+		}
+	}
+	for _, arg := range []string{"-h", "--help"} {
+		got, code := stderrOf(t, []string{"sandbox", arg})
+		if code != 0 || got != help {
+			t.Errorf("sandbox %s: exit %d, differs from sandbox help:\n%s", arg, code, got)
 		}
 	}
 }

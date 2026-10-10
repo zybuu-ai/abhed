@@ -34,7 +34,7 @@ func (a *App) usage(fs *flag.FlagSet) {
 		"       abhed -p [flags] [task]   headless; the task may also come on stdin\n\n")
 	fmt.Fprintf(w, "With no command, abhed opens an interactive session in the workspace;\n-p runs one task headless and exits.\n\nCommands:\n")
 	for _, c := range subcommands {
-		fmt.Fprintf(w, "  %-10s %s\n", c.name, c.about)
+		fmt.Fprintf(w, "  %-10s %s\n", c.name, wrapAbout(c.about, 72))
 	}
 	var own []string
 	for name := range a.commands {
@@ -47,6 +47,25 @@ func (a *App) usage(fs *flag.FlagSet) {
 	fmt.Fprintf(w, "\nFlags:\n")
 	fs.PrintDefaults()
 	fmt.Fprint(w, exitCodesHelp)
+}
+
+// wrapAbout breaks a long description at spaces, indenting each further
+// line under the first.
+func wrapAbout(s string, width int) string {
+	var b strings.Builder
+	n := 0
+	for i, word := range strings.Fields(s) {
+		if i > 0 && n+1+len(word) > width {
+			b.WriteString("\n" + strings.Repeat(" ", 13))
+			n = 0
+		} else if i > 0 {
+			b.WriteByte(' ')
+			n++
+		}
+		b.WriteString(word)
+		n += len(word)
+	}
+	return b.String()
 }
 
 // exitCodesHelp is the exit-code table, as docs/guide/10-automation.md has it.
@@ -445,7 +464,7 @@ var permissionModes = map[string]string{
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"sandbox": true, "secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true,
 }
 

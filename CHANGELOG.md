@@ -520,6 +520,8 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `abhed -h` and `abhed sandbox -h` named only `sandbox connect --stdio`;
+  both now list every sandbox command, as `abhed sandbox help` does.
 - `abhed serve -check` said "Ready to serve" for a `server.tls` that serve
   refuses at start, such as a key that does not match its certificate or
   files that are missing. It now loads `server.tls` with the same checks,
