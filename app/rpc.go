@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -79,6 +80,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			}
 			mu.Lock()
 			switch {
+			case req.Method == "steer" && strings.TrimSpace(req.Prompt) == "":
+				// An empty steer would be answered steered and carry nothing.
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: `steer needs its text in "prompt"`})
 			case req.Method == "steer":
 				if latest == nil {
 					mu.Unlock()

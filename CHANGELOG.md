@@ -609,6 +609,9 @@ on. A server with it off starts on the older schema as before.
   connection; the server lives as long as the gateway, as configured servers
   do. Affects 0.1.0 to 1.2.7 (the stdio server ended with the request since
   0.1.0; the restart reusing the ended context since 1.2.4).
+- `abhed rpc` answered a `steer` without text in `prompt`, such as one sent
+  with `text`, as `steered` and delivered nothing. It is now answered with an
+  error naming `prompt`, and the guide says a steer carries its text there.
 
 ### Dependencies
 

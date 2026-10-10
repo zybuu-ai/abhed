@@ -252,6 +252,28 @@ func TestRPCSteerRightAfterStartIsKept(t *testing.T) {
 	}
 }
 
+// A steer without text in "prompt", such as one sent with "text", is refused
+// naming the field, not answered steered with nothing in it.
+func TestRPCSteerWithoutPromptIsRefused(t *testing.T) {
+	m := &globModel{text: true}
+	ws := rpcWorkspace(t, m.serve(t).URL, "")
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"id":"1"`)
+	for i, line := range []string{`{"id":"2","method":"steer","text":"Also count lines."}`, `{"id":"3","method":"steer","prompt":"  "}`} {
+		s.send(line)
+		id := fmt.Sprintf(`"id":"%d"`, i+2)
+		if out := s.waitFor(t, id); !strings.Contains(out, `"type":"error"`) || !strings.Contains(out, `\"prompt\"`) {
+			t.Fatalf("%s: want an error naming the prompt field:\n%s", line, out)
+		}
+	}
+	s.send(`{"id":"4","method":"prompt","prompt":"go"}`)
+	s.waitFor(t, `"id":"4"`)
+	if reqs := m.requests(); len(reqs) == 0 || strings.Contains(reqs[0], "count lines") {
+		t.Fatal("the refused steer reached the model")
+	}
+}
+
 // A steer read after a second start, still queued behind a prompt, goes to
 // that new session; it once went to the old one, which the start then closed.
 func TestRPCSteerAfterAQueuedStartGoesToTheNewSession(t *testing.T) {

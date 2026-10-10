@@ -177,8 +177,8 @@ send(method="prompt", prompt="fix the failing tests")
 | Method | |
 |---|---|
 | `start` | open a session — `workspace`, `mode`, `allow`, `deny` |
-| `prompt` | send a prompt, get the final answer |
-| `steer` | redirect a run in progress |
+| `prompt` | send a prompt, get the final answer — `prompt` |
+| `steer` | redirect a run in progress — the text in `prompt` |
 | `usage` | tokens, turns, compactions |
 | `export` | the HTML transcript |
 | `providers` | what this build supports |
@@ -196,8 +196,9 @@ waits for it.
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
-per run. A `steer` goes to the session of the last `start` sent, even one
-not yet answered. It is answered at once: `steered` when a prompt is running
+per run. A `steer` carries its text in `prompt`, as a prompt does; one without
+it is answered with an error. A `steer` goes to the session of the last
+`start` sent, even one not yet answered. It is answered at once: `steered` when a prompt is running
 and will read it before its answer, `queued` when it will lead that
 session's next prompt instead. A queued steer the session never reads, because
 `quit`, the end of input or a new `start` came first, is named in an
