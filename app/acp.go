@@ -494,7 +494,7 @@ func (c *acpConn) call(ctx context.Context, method string, params any) (json.Raw
 		c.pendMu.Lock()
 		delete(c.pending, id)
 		c.pendMu.Unlock()
-		return nil, errors.New("the client closed its input and cannot answer")
+		return nil, errInputClosed{}
 	case msg := <-ch:
 		if msg.Error != nil {
 			return nil, errors.New(msg.Error.Message)
@@ -502,6 +502,13 @@ func (c *acpConn) call(ctx context.Context, method string, params any) (json.Raw
 		return msg.Result, nil
 	}
 }
+
+// errInputClosed reads as a cancel, so a turn waiting on the client ends as
+// interrupted whichever of this and the turn's own cancel the loop sees first.
+type errInputClosed struct{}
+
+func (errInputClosed) Error() string        { return "the client closed its input and cannot answer" }
+func (errInputClosed) Is(target error) bool { return target == context.Canceled }
 
 func (c *acpConn) answer(msg rpcMessage) {
 	var id int64
@@ -1207,7 +1214,8 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	res, err := c.call(askCtx, "session/request_permission", map[string]any{
 		"sessionId": s.id, "toolCall": toolCall, "options": options,
 	})
-	if err != nil && ctx.Err() == nil && bound != nil && bound.Err() != nil {
+	// Stdin closing also ends the turn; that stays a cancel, not a refusal.
+	if err != nil && ctx.Err() == nil && bound != nil && bound.Err() != nil && !errors.Is(err, errInputClosed{}) {
 		why := "the prompt turn ended before it was answered"
 		if held {
 			why = "the review was closed before it was answered"
