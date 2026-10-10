@@ -263,11 +263,13 @@ func (cl *client) do(ctx context.Context, c call) (*http.Response, error) {
 }
 
 // refused reads a refused call's answer. A server that serves no sandbox
-// API answers its paths with the router's bare 404, which says nothing a
-// person can act on.
+// API answers its paths with the router's bare 404, or a bare 405 where
+// another route takes the path for GET; neither says anything a person can act on.
 func (cl *client) refused(path string, status int, b []byte) error {
-	if status == http.StatusNotFound && strings.TrimSpace(string(b)) == "404 page not found" &&
-		strings.HasPrefix(path, "/v1/sandbox") {
+	body := strings.TrimSpace(string(b))
+	bare := status == http.StatusNotFound && body == "404 page not found" ||
+		status == http.StatusMethodNotAllowed && body == "Method Not Allowed"
+	if bare && strings.HasPrefix(path, "/v1/sandbox") {
 		return &apiError{msg: fmt.Sprintf("%s serves no sandbox API: its control plane is off "+
 			"(control_plane.enabled), or it predates this command", cl.p.URL)}
 	}

@@ -819,6 +819,30 @@ func TestControlPlaneOff(t *testing.T) {
 	}
 }
 
+// With the control plane off, a server whose router has a GET catch-all
+// answers the other verbs with a bare 405; that is said plainly too.
+func TestControlPlaneOffOtherVerbs(t *testing.T) {
+	r := newRig(t)
+	off := http.NewServeMux()
+	off.HandleFunc("GET /", http.NotFound)
+	r.setWrap(func(w http.ResponseWriter, req *http.Request, _ http.Handler) bool {
+		if strings.HasPrefix(req.URL.Path, "/v1/sandbox") {
+			off.ServeHTTP(w, req)
+			return true
+		}
+		return false
+	})
+	const id = "sbx_0000000000000000"
+	for _, args := range [][]string{{"create"}, {"exec", id, "--", "true"}, {"stop", id}, {"start", id},
+		{"delete", "-y", id}, {"snapshot", id}, {"expose", id, "8000"}, {"ssh-config", id}, {"get", id}} {
+		res := r.run(t, args...)
+		if res.code != ExitFailed || !strings.Contains(res.err, "serves no sandbox API: its control plane is off (control_plane.enabled)") ||
+			strings.Contains(res.err, "Method Not Allowed") {
+			t.Errorf("%v: %+v", args, res)
+		}
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"plain":              "plain",
