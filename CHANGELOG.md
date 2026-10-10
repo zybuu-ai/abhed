@@ -42,6 +42,11 @@ All notable changes to Abhed are recorded here. The format follows
   under an allow rule for `sh` or in bypass mode though a deny rule named
   it. The text is now the first operand after the options and `--`, as the
   shell reads it. Affects 1.2.4 to 1.2.7.
+- A command `find` runs with `-exec`, `-execdir`, `-ok` or `-okdir` was read
+  only as text, so a shell it ran (`find . -exec sh -c 'c=wget; $c …' \;`)
+  had its `-c` text unread and a program named there by an expansion went
+  unseen, as above. Such a command is now read as a command of its own.
+  Affects 1.2.4 to 1.2.7.
 - A permission rule naming a built-in tool in another case than Abhed's
   lower case, such as `Bash(curl *)`, `BASH(curl *)` or `Read(**/.env)` in
   `/etc/abhed/config.json`, `~/.abhed/config.json` or a workspace's

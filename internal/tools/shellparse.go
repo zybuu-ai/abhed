@@ -496,7 +496,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		f.envSplit(args, depth)
 		return false
 	case name == "find":
-		f.findExec(args)
+		f.findExec(st, args, depth)
 		return false
 	case name == "watch":
 		f.watch(args, depth)
@@ -717,33 +717,21 @@ func (f *shellFacts) envSplit(args []*syntax.Word, depth int) {
 
 // findExec reads the commands find runs with -exec, -execdir, -ok and -okdir:
 // a command for the rules, and a program named by an expansion.
-func (f *shellFacts) findExec(args []*syntax.Word) {
+func (f *shellFacts) findExec(st *syntax.Stmt, args []*syntax.Word, depth int) {
 	for j := 0; j < len(args); j++ {
 		v, _ := literal(args[j])
 		if v != "-exec" && v != "-execdir" && v != "-ok" && v != "-okdir" {
 			continue
 		}
-		var words []string
 		k := j + 1
 		for ; k < len(args); k++ {
-			w, lit := literal(args[k])
-			if lit && (w == ";" || w == "+") {
+			if w, lit := literal(args[k]); lit && (w == ";" || w == "+") {
 				break
 			}
-			if !lit {
-				w = wordText(args[k])
-			}
-			words = append(words, w)
 		}
-		if len(words) > 0 {
-			f.command(strings.Join(words, " "))
-			if _, lit := literal(args[j+1]); !lit {
-				if editedWord(args[j+1]) {
-					f.edited = true
-				} else if splitsAsProgram(args[j+1]) {
-					f.expands = true
-				}
-			}
+		if k > j+1 {
+			// Read as a command of its own, so a shell's -c text under it is read too.
+			f.call(&syntax.CallExpr{Args: args[j+1 : k]}, st, depth)
 		}
 		j = k
 	}

