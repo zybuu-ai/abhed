@@ -104,6 +104,7 @@ func TestSandboxExecStdinDoesNotBlockPings(t *testing.T) {
 func TestStdinQueueBusyForTheWholeMessage(t *testing.T) {
 	pr, pw := io.Pipe()
 	q := newStdinQueue(pw)
+	t.Cleanup(func() { q.end(); _ = pr.Close() })
 	msg := make([]byte, (stdinQueued+8)*stdinChunk)
 	go q.put(context.Background(), msg)
 	for !q.full() {

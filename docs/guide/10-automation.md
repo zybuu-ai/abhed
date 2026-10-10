@@ -324,7 +324,8 @@ whatever the configuration says, exactly as from the terminal.
 When the editor closes `abhed acp`'s stdin, every request it sent before is
 still answered before the process exits: a prompt running then ends as
 `cancelled`, and a permission request it was waiting on counts as refused,
-since no answer can arrive.
+since no answer can arrive. It waits at most 30 seconds for those answers,
+then closes its sessions and exits.
 
 The request's `toolCallId` is the id of the `tool_call` update for the same
 call, and that update is sent first, so the editor can show the prompt on

@@ -525,8 +525,8 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 	} else {
 		add("tls", nil, tlsLabel(cfg, tl))
 		if tl != nil {
-			for _, w := range tl.Warnings() {
-				lines = append(lines, checkLine{name: "  warning", ok: true, detail: w})
+			for _, warning := range tl.Warnings() {
+				lines = append(lines, checkLine{name: "  warning", ok: true, detail: warning})
 			}
 		}
 	}
