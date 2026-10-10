@@ -205,18 +205,28 @@ func (q *stdinScreen) judge(text []byte, f *syntax.File, perr error) {
 	case bytes.IndexByte(text, 0) >= 0:
 		why = "the statement holds a NUL byte, so it cannot be checked"
 	}
+	unread := ""
 	if why == "" {
-		why = q.policy(stmt)
+		why, unread = q.policy(stmt)
 	}
 	if why == "" {
 		why = q.script.check(f)
 	}
+	// A program named by a variable the script set to known text is read in
+	// the lines resolved with it; anything else no rule can read is refused,
+	// as on an exec.
+	resolved := unread != "" && strings.Contains(unread, "program named by an expansion") && len(q.script.resolved) > 0
 	if why == "" {
 		for _, line := range q.script.resolved {
-			if why = q.policy(line); why != "" {
+			u := ""
+			if why, u = q.policy(line); why != "" {
 				break
 			}
+			resolved = resolved && u == ""
 		}
+	}
+	if why == "" && unread != "" && !resolved {
+		why = unread + ", which no one can confirm on a statement read from stdin"
 	}
 	if why == "" {
 		if opaque := tools.CanonicalCommand(stmt).Opaque(); opaque != "" {
@@ -235,16 +245,17 @@ func (q *stdinScreen) judge(text []byte, f *syntax.File, perr error) {
 
 // policy is why the rules or hooks refuse a statement, "" when they do not.
 // An ask rule's or a hook's question refuses it: no one is there to answer.
-func (q *stdinScreen) policy(stmt string) string {
+// unread is why the rules cannot read it, as an exec refuses it.
+func (q *stdinScreen) policy(stmt string) (why, unread string) {
 	args, _ := json.Marshal(map[string]string{"command": stmt})
 	d := q.pol.Evaluate("bash", true, args)
 	switch {
 	case d.Decision == policy.Deny:
-		return "denied by policy: " + d.Reason
+		return "denied by policy: " + d.Reason, ""
 	case d.Decision == policy.Ask && (d.Step == "ask" || d.Step == "hook"):
-		return "it needs approval (" + d.Reason + "), which no one can give to a statement read from stdin"
+		return "it needs approval (" + d.Reason + "), which no one can give to a statement read from stdin", ""
 	}
-	return ""
+	return "", unreadable(d, stmt)
 }
 
 // refuseNext refuses the statement held and not yet judged, which judge
@@ -591,6 +602,9 @@ func (w *scriptWalk) call(c *syntax.CallExpr, in, outer, cond bool, input *synta
 			case in:
 				w.fail("a program named by an expansion could read the statements that follow as something other than shell")
 				return
+			default:
+				w.fail("a program named by an expansion whose value is not known here, which no rule can read")
+				return
 			}
 		}
 		if name == "" {
@@ -716,7 +730,7 @@ func (w *scriptWalk) interpreter(name string, c *syntax.CallExpr, texts []string
 	}
 	if stdinShells[name] || name == "busybox" {
 		for _, k := range code {
-			if w.shellCode(name, texts[k]); w.why != "" {
+			if w.shellCode(name, texts[k], w.prefixed(c, texts[:i], lits[:i])); w.why != "" {
 				return
 			}
 		}
@@ -761,19 +775,54 @@ func (w *scriptWalk) interpreter(name string, c *syntax.CallExpr, texts []string
 // shellCode walks the text a shell runs from -c as a script of its own, so
 // a program it names by a variable or a substitution is judged as one fed
 // on stdin is.
-func (w *scriptWalk) shellCode(name, text string) {
+func (w *scriptWalk) shellCode(name, text string, env map[string]*string) {
 	f, err := parseScript([]byte(text))
 	if err != nil {
 		w.fail("the text " + name + " -c runs cannot be parsed")
 		return
 	}
 	inner := &scriptWalk{sc: w.sc.clone()}
+	maps.Copy(inner.sc.vars, env)
 	inner.stmts(f.Stmts, false, false)
 	if inner.why != "" {
 		w.fail(inner.why + " (in the text " + name + " -c runs)")
 		return
 	}
 	w.sc.resolved = append(w.sc.resolved, inner.sc.resolved...)
+}
+
+// prefixed is what a command's own assignments set for the program it runs:
+// NAME=value before it, and env's NAME=value and -u NAME operands; nil for
+// a value that is not known text.
+func (w *scriptWalk) prefixed(c *syntax.CallExpr, texts []string, lits []bool) map[string]*string {
+	env := map[string]*string{}
+	for _, a := range c.Assigns {
+		if a.Name == nil {
+			continue
+		}
+		var v *string
+		if t, ok := w.sc.literal(a.Value); ok || a.Value == nil {
+			v = &t
+		}
+		env[a.Name.Value] = v
+	}
+	for j := 0; j < len(texts); j++ {
+		k, v, ok := strings.Cut(texts[j], "=")
+		switch {
+		case texts[j] == "-u" || texts[j] == "--unset":
+			if j+1 < len(texts) {
+				env[texts[j+1]] = nil
+				j++
+			}
+		case ok && validName(k):
+			if lits[j] {
+				env[k] = &v
+			} else {
+				env[k] = nil
+			}
+		}
+	}
+	return env
 }
 
 // seed sets the variables an exec gives the shell as known text, as the
