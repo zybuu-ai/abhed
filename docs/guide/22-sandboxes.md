@@ -500,6 +500,15 @@ an interactive SSH shell are screened by the deny rules alone, as the
 workbench's terminal is, so a line there that names its program by an
 expansion is not refused for that.
 
+A deny rule matches the words of a command, so on an exec it has the same
+limits as in a session ([Rules](04-permissions.md#rules)): a path to the
+program (`/usr/bin/curl`), `busybox curl`, an interpreter's own code
+(`python3 -c …`), `xargs`, and a command git runs from its configuration
+(`git -c alias.x='!curl …' x`, `core.sshCommand`) all run past
+`bash(curl *)`. A session asks about the git alias as destructive; an exec,
+where no one is asked, runs it. The sandbox, not a deny rule, is the
+boundary.
+
 A command given as `argv` runs as one shell line with each word quoted, so the shell
 splits it back into exactly those words; that quoted line is what the rules
 judge and the record keeps. A word with a NUL byte cannot be passed and is
