@@ -1095,6 +1095,13 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		// names packages, paths, and versions.
 		defer func() {
 			if v := recover(); v != nil {
+				// A relayed stream the other end cut short is aborted, as net/http
+				// does quietly, and logged as the request it was.
+				if err, ok := v.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+					s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+						"user", user, "tenant", tenant, "duration", time.Since(start), "aborted", true)
+					panic(v)
+				}
 				s.log.Error("panic serving request",
 					"method", r.Method, "path", r.URL.Path,
 					"user", user, "panic", v)

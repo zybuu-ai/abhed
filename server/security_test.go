@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -290,6 +291,32 @@ func TestPanicIsRecoveredAndLogged(t *testing.T) {
 	// A Go stack trace names packages, paths and versions.
 	if strings.Contains(rec.Body.String(), "boom") {
 		t.Error("panic detail leaked to the client")
+	}
+}
+
+// A stream a relay aborts, as a reverse proxy does when the other end cuts
+// it short, ends the way net/http ends it, quietly, and is logged as the
+// request it was rather than as a panic.
+func TestAbortedStreamIsLoggedAsARequest(t *testing.T) {
+	s := testServer(t)
+	var logged bytes.Buffer
+	s.log = slog.New(slog.NewTextHandler(&logged, nil))
+	h := s.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{\"exit\":0}\n"))
+		panic(http.ErrAbortHandler)
+	}))
+	func() {
+		defer func() {
+			if err, _ := recover().(error); !errors.Is(err, http.ErrAbortHandler) {
+				t.Errorf("the abort did not reach net/http: %v", err)
+			}
+		}()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/sandboxes/x:exec", nil))
+	}()
+	out := logged.String()
+	if strings.Contains(out, "panic") || !strings.Contains(out, "msg=request") || !strings.Contains(out, "status=200") || !strings.Contains(out, "aborted=true") {
+		t.Fatalf("logged %q", out)
 	}
 }
 
