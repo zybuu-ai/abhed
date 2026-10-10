@@ -335,6 +335,42 @@ type acpConn struct {
 	// terms are the sandboxed terminals, by id (§7.1).
 	termMu sync.Mutex
 	terms  map[string]*acpTerminal
+
+	// inflight are the requests being answered; gone closes when stdin
+	// does, so nothing waits for an answer the client can no longer send.
+	inflight sync.WaitGroup
+	goneInit sync.Once
+	gone     chan struct{}
+	goneOnce sync.Once
+}
+
+// drainWait bounds how long the requests read before stdin closed may take
+// to be answered before the process exits anyway.
+const drainWait = 30 * time.Second
+
+// inputClosed says stdin has closed: a prompt running stops as cancelled
+// and an agent→client request fails, so every request read is answered.
+func (c *acpConn) inputClosed() {
+	ch := c.goneCh()
+	c.goneOnce.Do(func() { close(ch) })
+}
+
+// goneCh is closed once stdin has.
+func (c *acpConn) goneCh() chan struct{} {
+	c.goneInit.Do(func() { c.gone = make(chan struct{}) })
+	return c.gone
+}
+
+// drain waits, up to wait, for the replies to every request read.
+func (c *acpConn) drain(wait time.Duration) bool {
+	done := make(chan struct{})
+	go func() { c.inflight.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(wait):
+		return false
+	}
 }
 
 // root is the context every agent and prompt runs under.
@@ -352,8 +388,7 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	c := &acpConn{out: os.Stdout, version: build.Version, build: build, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
 	c.useRecord(workspace, trust)
-	err := c.serve(os.Stdin)
-	c.closeAll()
+	err := c.run(os.Stdin)
 	c.closeRecord()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: acp: %v\n", err)
@@ -362,7 +397,21 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	return 0
 }
 
+// run serves in, answers every request read from it, then closes every
+// session.
+func (c *acpConn) run(in io.Reader) error {
+	err := c.serve(in)
+	if !c.drain(drainWait) {
+		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+drainWait.String())
+	}
+	c.closeAll()
+	return err
+}
+
+// serve answers the requests on in until it ends, then says the input is
+// gone; the replies to requests still running follow (see drain).
 func (c *acpConn) serve(in io.Reader) error {
+	defer c.inputClosed()
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
 	for sc.Scan() {
@@ -383,7 +432,11 @@ func (c *acpConn) serve(in io.Reader) error {
 		default:
 			// A prompt runs for as long as the model does; the loop must keep
 			// reading for the cancel and the permission answers meanwhile.
-			go c.request(msg)
+			c.inflight.Add(1)
+			go func() {
+				defer c.inflight.Done()
+				c.request(msg)
+			}()
 		}
 	}
 	return sc.Err()
@@ -437,6 +490,11 @@ func (c *acpConn) call(ctx context.Context, method string, params any) (json.Raw
 		delete(c.pending, id)
 		c.pendMu.Unlock()
 		return nil, ctx.Err()
+	case <-c.goneCh():
+		c.pendMu.Lock()
+		delete(c.pending, id)
+		c.pendMu.Unlock()
+		return nil, errors.New("the client closed its input and cannot answer")
 	case msg := <-ch:
 		if msg.Error != nil {
 			return nil, errors.New(msg.Error.Message)
@@ -933,6 +991,14 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		defer c.busy()()
 	}
 	ctx, cancel := context.WithCancel(c.root())
+	// With stdin closed no one can steer or cancel the turn: it ends now.
+	go func() {
+		select {
+		case <-c.goneCh():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	// A turn the session woke for runs to its end, or session/cancel, first.
 	for {
 		wait, busy := s.claimTurn(ctx, cancel)

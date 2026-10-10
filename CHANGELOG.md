@@ -520,6 +520,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `abhed acp` exited as soon as stdin closed, so requests read in a burst
+  just before could go unanswered. It now answers every request it read
+  first: a prompt still running ends as `cancelled`, and a request to the
+  editor that can no longer be answered fails.
 - `abhed sandbox` against a server with its control plane off said
   "404 page not found"; it now says the server serves no sandbox API and
   names `control_plane.enabled`. Refused inside an agent's command, it exits

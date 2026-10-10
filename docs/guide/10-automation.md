@@ -321,6 +321,11 @@ suggests when one is offered, and *Deny*. It can answer an ask; it cannot
 lift a deny rule, and the sandbox tier and the workspace boundary are
 whatever the configuration says, exactly as from the terminal.
 
+When the editor closes `abhed acp`'s stdin, every request it sent before is
+still answered before the process exits: a prompt running then ends as
+`cancelled`, and a permission request it was waiting on counts as refused,
+since no answer can arrive.
+
 The request's `toolCallId` is the id of the `tool_call` update for the same
 call, and that update is sent first, so the editor can show the prompt on
 that call. A call the model wrote as prose has no id of its own; it is named
