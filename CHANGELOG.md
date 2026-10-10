@@ -24,6 +24,14 @@ All notable changes to Abhed are recorded here. The format follows
 - On macOS `abhed` runs itself again as it starts, with secrets kept out of
   the environment other processes can read; `ABHED_SHOW_ENV=1` turns it off.
 - `auth.session_hours` must be between 0 and 8760.
+- An extension may no longer provide a tool named like a built-in tool, in
+  any case; such a tool is refused with a warning.
+- `-allowedTools` keeps an MCP or extension tool's name as written, so an
+  allow flag with capital letters now matches that tool.
+- Studio's and the web IDE's terminals are interactive again under a managed
+  file that sets neither deny rules nor extensions.
+- `POST /v1/admin/mcp` answers `400` for a server whose name overlaps a
+  configured one's.
 
 ### Security
 
@@ -55,7 +63,7 @@ All notable changes to Abhed are recorded here. The format follows
   knowledge-base and extension tool names are still compared exactly, case
   included; a rule that differs from one of the session's tools only in case
   is warned of when the tools are loaded. A bash pattern ending in `:*` is
-  read literally and is now listed.
+  read literally and is now listed. Affects 0.1.0 to 1.2.7.
 - A rule naming every tool of one MCP server, `mcp__<server>__*`, as agent
   definitions name them, matched no tool: rules compared tool names exactly,
   so a managed `"deny": ["mcp__github__*"]` allowed every `github` tool and
@@ -397,11 +405,11 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed logout` retries a server that could not record the sign-out, with
   backoff, and when it still has not, says so and keeps the token as a pending
   sign-out, sent again at the next `login`, `logout` or `profile` command until
-  the server records it. Before, the token was dropped here and stayed valid
-  on the server.
+  the server records it.
 - Linux on Z (s390x): a `linux-s390x` release binary and a `linux/s390x`
-  container image, for Red Hat Enterprise Linux, SUSE Linux Enterprise Server
-  and Ubuntu. The fence tier accepts s390x with its own system-call table:
+  container image, meant for Red Hat Enterprise Linux, SUSE Linux Enterprise
+  Server and Ubuntu on Linux on Z, and so far tested under emulation, not on
+  a real s390x machine. The fence tier accepts s390x with its own system-call table:
   the filter compares arguments by their low word, which s390x stores second;
   reads clone's flags from its second argument, where s390x passes them;
   refuses the old `umount` as well as `umount2`; and ends a 31-bit program at
@@ -462,6 +470,7 @@ All notable changes to Abhed are recorded here. The format follows
   engine that does not answer leaves its driver registered and refusing
   every sandbox; `abhed serve -check` and `abhed doctor` show each driver's
   line, and an unreachable per-session driver stops `abhed serve`.
+
 **Upgrading with Postgres.** The control plane's tables (`sandboxes`,
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
@@ -469,6 +478,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- `abhed doctor`, `abhed serve -check` and Studio's health show the process
+  sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
+  fresh `/proc` (under some container runtimes' seccomp profiles), instead of
+  a plain `process`.
 - `auth.session_hours` must be from 0 (the default of 12) to 8760. A
   negative value, which made every sign-in expire at once, is now refused
   when the configuration loads, and `abhed doctor` shows the sign-in length

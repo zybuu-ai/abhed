@@ -27,7 +27,6 @@ what it renders: each one is a Secret you create, which the chart names.
 | NetworkPolicy | Ingress to the server's port only; egress denied except DNS, the endpoints you list, Postgres and the other replicas. |
 | PodDisruptionBudget | `maxUnavailable: 1` by default, so a single replica does not block a node drain. |
 | Ingress, Route | Only when turned on. |
-| Namespaces per workspace | Only when turned on; see [below](#a-namespace-per-workspace). |
 
 ## Configuration
 
