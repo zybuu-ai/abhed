@@ -15,9 +15,14 @@ func TestSandboxCmdRefusedInAgent(t *testing.T) {
 	t.Cleanup(func() { inAgentCommand = was })
 	for _, args := range [][]string{{"list"}, {"connect", "--stdio", "sbx_0123456789abcdef"}, {"template", "list"}} {
 		var errOut bytes.Buffer
-		if code := sandboxCmd(t.TempDir(), args, strings.NewReader(""), &bytes.Buffer{}, &errOut); code != 1 ||
+		if code := sandboxCmd(t.TempDir(), args, strings.NewReader(""), &bytes.Buffer{}, &errOut); code != 3 ||
 			!strings.Contains(errOut.String(), "refused inside an agent's command") {
 			t.Errorf("%v: %d %q", args, code, errOut.String())
+		}
+		// Through the command line too, which refuses it first.
+		if out, code := stderrOf(t, append([]string{"-C", t.TempDir(), "sandbox"}, args...)); code != 3 ||
+			!strings.Contains(out, "refused inside an agent's command") {
+			t.Errorf("abhed sandbox %v: %d %q", args, code, out)
 		}
 	}
 }

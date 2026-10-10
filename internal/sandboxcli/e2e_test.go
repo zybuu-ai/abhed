@@ -784,12 +784,38 @@ func TestRefusedInAgent(t *testing.T) {
 	for _, args := range [][]string{{"list"}, {"create"}, {"exec", "sbx_0000000000000000", "--", "true"},
 		{"connect", "--stdio", "sbx_0000000000000000"}, {"ssh-config"}, {"template", "list"}, {"cp", "a", "sbx_0000000000000000:b"}} {
 		res := r.runWith(t, runOpts{inAgent: "ABHED_SANDBOX is set"}, args...)
-		if res.code != ExitFailed || !strings.Contains(res.err, "refused inside an agent's command") {
+		// Not allowed, as the usage's exit table says for 3.
+		if res.code != ExitAuth || !strings.Contains(res.err, "refused inside an agent's command") {
 			t.Errorf("%v: %+v", args, res)
 		}
 	}
 	if n := r.requests.Load() - before; n != 0 {
 		t.Fatalf("%d requests reached the server", n)
+	}
+}
+
+// A server with the control plane off has no sandbox routes; its router's
+// bare 404 is said plainly instead of passed on.
+func TestControlPlaneOff(t *testing.T) {
+	r := newRig(t)
+	r.setWrap(func(w http.ResponseWriter, req *http.Request, _ http.Handler) bool {
+		if strings.HasPrefix(req.URL.Path, "/v1/sandbox") {
+			http.NotFound(w, req)
+			return true
+		}
+		return false
+	})
+	for _, args := range [][]string{{"list"}, {"get", "sbx_0000000000000000"}, {"template", "list"}} {
+		res := r.run(t, args...)
+		if res.code != ExitFailed || !strings.Contains(res.err, "serves no sandbox API: its control plane is off (control_plane.enabled)") ||
+			strings.Contains(res.err, "404 page not found") {
+			t.Errorf("%v: %+v", args, res)
+		}
+	}
+	// A sandbox the server does not have is still a 404 of its own.
+	r.setWrap(nil)
+	if res := r.run(t, "get", "sbx_0000000000000000"); res.code != ExitNotFound || strings.Contains(res.err, "control plane is off") {
+		t.Errorf("missing sandbox: %+v", res)
 	}
 }
 

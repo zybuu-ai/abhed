@@ -23,6 +23,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -304,8 +305,12 @@ func Main(args []string, opts ...Option) int {
 	}
 	if len(rest) > 0 {
 		if refuseInAgent(selfAdmin(rest)) {
-			if rest[0] == "admin" {
+			switch rest[0] {
+			case "admin":
 				logAdminInAgent(rest[1:], inAgentCommand(), os.Stderr)
+			case "sandbox":
+				// Its own exit table: 3, not allowed.
+				return sandboxcli.ExitAuth
 			}
 			return 1
 		}

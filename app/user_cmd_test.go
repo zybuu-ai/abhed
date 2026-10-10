@@ -155,3 +155,17 @@ func TestUserAddShowsAGeneratedPasswordOnlyOnSuccess(t *testing.T) {
 		t.Fatalf("a refused add = %d printed a password: %s", code, out)
 	}
 }
+
+// user add's usage names every flag it takes, -admin among them.
+func TestUserAddUsageNamesItsFlags(t *testing.T) {
+	ws := userWorkspace(t)
+	code, out := runUser(t, ws, "add")
+	if code != 2 {
+		t.Fatalf("user add with no name = %d: %s", code, out)
+	}
+	for _, want := range []string{"[-admin]", "-admin\n", "grant administrator rights", "[-password ...]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage lacks %q:\n%s", want, out)
+		}
+	}
+}

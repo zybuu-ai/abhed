@@ -77,6 +77,35 @@ func TestStatePathInAWritableAreaIsRefused(t *testing.T) {
 	}
 }
 
+// The refusal for a server file inside the workspace names the setting that
+// put it there, not only the account, secrets and database settings.
+func TestStateRefusalNamesTheSetting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	ws := t.TempDir()
+	for setting, set := range map[string]func(*config.Config){
+		"server.tls.key_file": func(c *config.Config) {
+			c.Server.TLS.CertFile, c.Server.TLS.KeyFile = "certs/server.pem", "certs/server-key.pem"
+		},
+		"server.tls.additional_certificates[0].key_file": func(c *config.Config) {
+			c.Server.TLS.CertFile, c.Server.TLS.KeyFile = "/elsewhere/a.pem", "/elsewhere/a-key.pem"
+			c.Server.TLS.AdditionalCertificates = []config.CertificatePair{{CertFile: "b.pem", KeyFile: "b-key.pem"}}
+		},
+		"server.tls.client_ca_file": func(c *config.Config) {
+			c.Server.TLS.CertFile, c.Server.TLS.KeyFile = "/elsewhere/a.pem", "/elsewhere/a-key.pem"
+			c.Server.TLS.ClientCAFile = "ca.pem"
+		},
+		"auth.users_file": func(c *config.Config) { c.Auth.UsersFile = "users.json" },
+	} {
+		cfg := config.Default()
+		set(&cfg)
+		err := CheckStatePaths(cfg, ws)
+		if err == nil || !strings.Contains(err.Error(), "Keep "+setting+" outside the workspace") {
+			t.Errorf("%s: %v", setting, err)
+		}
+	}
+}
+
 // outsideWritableAreas makes a folder that no writable area holds, so the
 // test runs where temp folders live under /tmp too: under the home directory,
 // or else under this package's folder, removed when the test ends.

@@ -157,7 +157,7 @@ func Main(env Env, args []string) int {
 	if env.InAgent != nil {
 		if why := env.InAgent(); why != "" {
 			fmt.Fprintf(env.Err, "abhed: abhed sandbox %s is refused inside an agent's command (%s); run it in your own terminal\n", cmd.name, why)
-			return ExitFailed
+			return ExitAuth
 		}
 	}
 	r := &runner{Env: env, out: "table"}

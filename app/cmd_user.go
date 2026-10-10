@@ -107,7 +107,9 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 		// username. Lift the positional out first, then parse the rest.
 		rest, username := splitPositional(args[1:])
 		if username == "" {
-			fmt.Fprintln(os.Stderr, "usage: abhed user add <username> [-email ...] [-name ...]")
+			fmt.Fprintln(os.Stderr, "usage: abhed user add <username> [-admin] [-email ...] [-name ...] [-tenant ...] [-groups ...] [-password ...]")
+			fs.SetOutput(os.Stderr)
+			fs.PrintDefaults()
 			return 2
 		}
 		_ = fs.Parse(rest) // the set exits on a bad flag; nothing is left to check

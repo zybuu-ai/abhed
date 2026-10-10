@@ -107,12 +107,6 @@ type usageError struct{ err error }
 func (e usageError) Error() string { return e.err.Error() }
 func (e usageError) Unwrap() error { return e.err }
 
-// readAPIError reads the contract's error body from a refused response.
-func readAPIError(resp *http.Response) error {
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	return apiErrorFrom(resp.StatusCode, b)
-}
-
 func apiErrorFrom(status int, b []byte) error {
 	var body struct {
 		Error any `json:"error"`
@@ -263,8 +257,21 @@ func (cl *client) do(ctx context.Context, c call) (*http.Response, error) {
 			return nil, &apiError{msg: fmt.Sprintf("could not reach %s: %v", cl.p.URL, unwrapURLError(err))}
 		}
 		defer func() { _ = resp.Body.Close() }()
-		return nil, readAPIError(resp)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return nil, cl.refused(c.path, status, b)
 	}
+}
+
+// refused reads a refused call's answer. A server that serves no sandbox
+// API answers its paths with the router's bare 404, which says nothing a
+// person can act on.
+func (cl *client) refused(path string, status int, b []byte) error {
+	if status == http.StatusNotFound && strings.TrimSpace(string(b)) == "404 page not found" &&
+		strings.HasPrefix(path, "/v1/sandbox") {
+		return &apiError{msg: fmt.Sprintf("%s serves no sandbox API: its control plane is off "+
+			"(control_plane.enabled), or it predates this command", cl.p.URL)}
+	}
+	return apiErrorFrom(status, b)
 }
 
 func boolInt(b bool) int {
@@ -362,6 +369,6 @@ func (cl *client) dial(ctx context.Context, path, proto string) (*wsconn.Conn, e
 				continue
 			}
 		}
-		return nil, apiErrorFrom(he.Status, he.Body)
+		return nil, cl.refused(path, he.Status, he.Body)
 	}
 }

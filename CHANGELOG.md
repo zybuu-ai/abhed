@@ -520,6 +520,13 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `abhed sandbox` against a server with its control plane off said
+  "404 page not found"; it now says the server serves no sandbox API and
+  names `control_plane.enabled`. Refused inside an agent's command, it exits
+  `3` (not allowed) as its help says, instead of `1`. `abhed user add`'s
+  usage lists `-admin` and its other flags. A state file refused at start
+  for being inside the workspace, such as a TLS key, is named by its
+  setting (`server.tls.key_file`) in the advice.
 - A command refused because IFS could split its words, such as `eval "$x"`
   under a deny rule, was said to change IFS when its text sets none. The
   reason now says it runs text built from an expansion that could set IFS.

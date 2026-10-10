@@ -285,15 +285,82 @@ func CheckStatePaths(cfg config.Config, workspace string, stateRoots ...string) 
 		}
 		for _, a := range areas {
 			if under([]string{abs, real}, []string{a}) {
+				what, where := "auth.users_file, ABHED_SECRETS_FILE and control_plane.sqlite_path", " (the home directory's only, for the database)"
+				if s := stateSetting(cfg, workspace, p); s != "" {
+					what, where = s, ""
+					if slices.Contains(db, p) {
+						where = " (the home directory's only)"
+					}
+				}
 				return fmt.Errorf("refusing to start: the state file %s is inside %s, where commands "+
-					"can write and could move it or replace it. Keep auth.users_file, "+
-					"ABHED_SECRETS_FILE and control_plane.sqlite_path outside the workspace, added "+
+					"can write and could move it or replace it. Keep %s outside the workspace, added "+
 					"directories, sandbox folders, temp folders and caches, or under the workspace's "+
-					"or the home directory's .abhed (the home directory's only, for the database)", p, a)
+					"or the home directory's .abhed%s", p, a, what, where)
 			}
 		}
 	}
 	return checkLinks(cfg, workspace, stateRoots)
+}
+
+// stateSetting names what puts the state file p where it is: a setting, or
+// the variable for the secrets store; "" when nothing names it alone.
+func stateSetting(cfg config.Config, workspace, p string) string {
+	named := map[string]string{}
+	add := func(path, setting string) {
+		if path != "" {
+			if _, ok := named[path]; !ok {
+				named[path] = setting
+			}
+		}
+	}
+	if cfg.Auth.UsersFile != "" {
+		add(StatePaths(cfg, workspace)[0], "auth.users_file")
+	}
+	if path, err := secrets.DefaultPath(); err == nil {
+		add(path, "ABHED_SECRETS_FILE")
+	}
+	for _, f := range controlPlaneFiles(cfg) {
+		add(f, "control_plane.sqlite_path")
+	}
+	if cfg.Server.TLS.Enabled() {
+		t := cfg.ResolvedTLS(workspace)
+		add(t.KeyFile, "server.tls.key_file")
+		for i, c := range t.AdditionalCertificates {
+			add(c.KeyFile, fmt.Sprintf("server.tls.additional_certificates[%d].key_file", i))
+		}
+		add(t.ClientCAFile, "server.tls.client_ca_file")
+	}
+	if ha := cfg.ResolvedHA(workspace); ha.Enabled {
+		add(ha.RelayKeyFile, "control_plane.ha.relay_key_file")
+		add(ha.RelayCAFile, "control_plane.ha.relay_ca_file")
+	}
+	if cfg.Auth.CLI.Enabled {
+		if k, err := cfg.CLIKeyFile(workspace); err == nil {
+			for _, f := range []string{k, k + ".revoked", k + config.CLIEditionStateSuffix} {
+				add(f, "auth.cli.key_file")
+			}
+		}
+	}
+	if w := cfg.ResolvedWorkload(workspace); w.Enabled {
+		if k, err := cfg.WorkloadKeyFile(workspace); err == nil {
+			add(k, "auth.workload.key_file")
+			add(k+config.CLIEditionStateSuffix, "auth.workload.key_file")
+		}
+		add(w.JWTBundleFile, "auth.workload.jwt_bundle_file")
+		add(w.X509BundleFile, "auth.workload.x509_bundle_file")
+	}
+	if cfg.ControlPlane.Enabled && cfg.ControlPlane.SSHHostKey != "" {
+		if k, err := cfg.SSHHostKeyFile(); err == nil {
+			add(k, "control_plane.ssh_host_key")
+		}
+	}
+	if cfg.Record.Dir != "" {
+		add(cfg.Record.Dir, "record.dir")
+	}
+	for _, f := range cfg.Record.Also {
+		add(f, "record.also")
+	}
+	return named[p]
 }
 
 // checkLinks refuses a state file with a second name: the sandbox guards the

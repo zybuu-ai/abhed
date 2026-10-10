@@ -877,7 +877,8 @@ recorded with its bytes; the command runs until Ctrl-C.
 
 **Inside an agent.** Every `abhed sandbox` command is refused when run by
 the agent (`ABHED_SANDBOX` set, or under its fence), as `abhed login` is:
-a session must not reach a server's sandboxes with your sign-in.
+a session must not reach a server's sandboxes with your sign-in. The
+refusal exits `3`, not allowed.
 
 ## Lifecycle
 
