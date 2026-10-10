@@ -825,11 +825,17 @@ func (w *scriptWalk) prefixed(c *syntax.CallExpr, texts []string, lits []bool) m
 	return env
 }
 
+// shellSet are variables a shell sets itself whatever the exec gave it.
+var shellSet = map[string]bool{"PWD": true, "OLDPWD": true, "PPID": true, "SHLVL": true, "UID": true, "EUID": true,
+	"GROUPS": true, "OPTIND": true, "OPTARG": true, "LINENO": true, "RANDOM": true, "SRANDOM": true, "SECONDS": true,
+	"EPOCHSECONDS": true, "EPOCHREALTIME": true, "HOSTNAME": true, "HISTCMD": true, "_": true}
+
 // seed sets the variables an exec gives the shell as known text, as the
-// caller chose them, so a statement naming its program by one is read.
+// caller chose them, so a statement naming its program by one is read. One
+// the shell sets itself is left unknown.
 func (sc *stdinScript) seed(env []string) {
 	for _, kv := range env {
-		if k, v, ok := strings.Cut(kv, "="); ok && validName(k) {
+		if k, v, ok := strings.Cut(kv, "="); ok && validName(k) && !shellSet[k] && !strings.HasPrefix(k, "BASH") {
 			sc.vars[k] = &v
 		}
 	}
