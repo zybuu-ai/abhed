@@ -13,6 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/wsconn"
 )
@@ -403,6 +404,36 @@ func denied(pol *policy.Engine, command string, line bool) error {
 		return nil
 	}
 	return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
+}
+
+// execRefused refuses what denied does, and, while rules or hooks are in
+// force, a command line they cannot read whole: a session would put it to a
+// person, and an exec has no one to confirm it, so it fails closed.
+func execRefused(pol *policy.Engine, command string) error {
+	args, _ := json.Marshal(map[string]string{"command": command})
+	d := pol.Evaluate("bash", true, args)
+	if d.Decision == policy.Deny {
+		return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
+	}
+	if why := unreadable(d, command); why != "" && screensStdin(pol) {
+		return fmt.Errorf("%w: %s, and no one can confirm it on an exec", controlplane.ErrForbidden, why)
+	}
+	return nil
+}
+
+// unreadable is why a policy's question about a command line is that its
+// parts or its program cannot be read, "" when the question is another.
+func unreadable(d policy.Result, command string) string {
+	switch {
+	case d.Decision != policy.Ask:
+	case d.Step == "screen":
+		return d.Reason
+	case d.Step == "destructive":
+		if why := tools.CanonicalCommand(command).Unreadable(); why != "" {
+			return "the command cannot be checked against the rules (" + why + ")"
+		}
+	}
+	return ""
 }
 
 // terminalRefusal says why this server opens no interactive shell in a

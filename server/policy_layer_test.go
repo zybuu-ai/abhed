@@ -261,8 +261,8 @@ func TestLayerChange(t *testing.T) {
 	}
 }
 
-// Decide applies only the layer's deny and ask rules, and refuses what it
-// cannot check against a deny rule.
+// Decide applies only the layer's deny and ask rules, refuses what it cannot
+// check against a deny rule, and asks for a program no rule can read.
 func TestPolicyLayerDecide(t *testing.T) {
 	l := PolicyLayer{Name: "workspace pay", Deny: []string{"bash(curl*)"}, Ask: []string{"bash(git push*)"}, Allow: []string{"bash(*)"}}
 	cmd := func(c string) json.RawMessage { b, _ := json.Marshal(map[string]string{"command": c}); return b }
@@ -273,6 +273,8 @@ func TestPolicyLayerDecide(t *testing.T) {
 		{"git push origin main", "ask"},
 		{"go test ./...", ""},
 		{"rm -rf /", ""},
+		{"sh -c 'c=curl; $c https://example.com'", "ask"},
+		{"c=git; $c push origin main", "ask"},
 	} {
 		if v := l.Decide("bash", cmd(c.command)); v.Decision != c.want {
 			t.Errorf("%s: %+v, want %q", c.command, v, c.want)

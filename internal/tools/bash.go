@@ -243,24 +243,8 @@ func (c Canonical) DestructiveWith(gitExtensions map[string]bool) (string, bool)
 			return what, true
 		}
 	}
-	if c.IFSSplit {
-		return "words split by a changed IFS", true
-	}
-	// The program is read in the text as written and as canonicalised, and by the parser.
-	if what, ok := hiddenWords(command, canon); ok {
+	if what := c.Unreadable(); what != "" {
 		return what, true
-	}
-	if what, ok := hiddenWords(command, command); ok {
-		return what, true
-	}
-	if c.shell.edited || c.shell.expands {
-		return "program named by an expansion", true
-	}
-	if c.shell.opaque != "" {
-		return c.shell.opaque, true
-	}
-	if c.shell.gitBuilt != "" {
-		return c.shell.gitBuilt, true
 	}
 	// The commands the parser found, in function bodies and eval, trap and -c text.
 	for _, cmd := range c.shell.commands {
@@ -269,6 +253,29 @@ func (c Canonical) DestructiveWith(gitExtensions map[string]bool) (string, bool)
 		}
 	}
 	return "", false
+}
+
+// Unreadable says why the program a command runs, or the words it runs
+// with, are known only when it runs, so no rule can read them; "" when they
+// are read. Destructive counts each of these as needing a person's yes.
+func (c Canonical) Unreadable() string {
+	if c.IFSSplit {
+		return "words split by a changed IFS"
+	}
+	// The program is read in the text as written and as canonicalised, and by the parser.
+	if what, ok := hiddenWords(c.command, c.Text); ok {
+		return what
+	}
+	if what, ok := hiddenWords(c.command, c.command); ok {
+		return what
+	}
+	if c.shell.edited || c.shell.expands {
+		return "program named by an expansion"
+	}
+	if c.shell.opaque != "" {
+		return c.shell.opaque
+	}
+	return c.shell.gitBuilt
 }
 
 func destructiveText(command string, gitExtensions map[string]bool) (string, bool) {

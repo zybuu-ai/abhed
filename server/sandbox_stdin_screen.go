@@ -710,6 +710,15 @@ func (w *scriptWalk) interpreter(name string, c *syntax.CallExpr, texts []string
 		w.fail(name + " would read the statements that follow from the shell's own input, which are judged as shell, not as its input")
 		return
 	}
+	if stdinShells[name] || name == "busybox" {
+		for j := i + 1; j+1 < len(c.Args); j++ {
+			if lits[j] && inlineCode(name, texts[j]) {
+				if w.shellCode(name, texts[j+1]); w.why != "" {
+					return
+				}
+			}
+		}
+	}
 	if input == nil {
 		return
 	}
@@ -743,6 +752,34 @@ func (w *scriptWalk) interpreter(name string, c *syntax.CallExpr, texts []string
 	default:
 		if v, ok := w.sc.literal(input.Word); !ok || w.sc.written[path.Base(v)] {
 			w.fail(name + " reads its commands from a file the script wrote or names when it runs")
+		}
+	}
+}
+
+// shellCode walks the text a shell runs from -c as a script of its own, so
+// a program it names by a variable or a substitution is judged as one fed
+// on stdin is.
+func (w *scriptWalk) shellCode(name, text string) {
+	f, err := parseScript([]byte(text))
+	if err != nil {
+		w.fail("the text " + name + " -c runs cannot be parsed")
+		return
+	}
+	inner := &scriptWalk{sc: w.sc.clone()}
+	inner.stmts(f.Stmts, false, false)
+	if inner.why != "" {
+		w.fail(inner.why + " (in the text " + name + " -c runs)")
+		return
+	}
+	w.sc.resolved = append(w.sc.resolved, inner.sc.resolved...)
+}
+
+// seed sets the variables an exec gives the shell as known text, as the
+// caller chose them, so a statement naming its program by one is read.
+func (sc *stdinScript) seed(env []string) {
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && validName(k) {
+			sc.vars[k] = &v
 		}
 	}
 }

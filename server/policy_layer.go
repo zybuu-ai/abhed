@@ -101,10 +101,11 @@ type LayerVerdict struct {
 }
 
 // Decide applies the layer's deny and ask rules to one call, as a session's
-// policy would: a deny rule refuses, an ask rule asks, and a command that
-// cannot be checked against the deny rules is refused. It is for a surface
-// that runs commands outside a session, such as a sandbox's exec. A layer
-// that does not validate refuses everything.
+// policy would: a deny rule refuses, an ask rule asks, a command that cannot
+// be checked against the deny rules is refused, and one whose parts or
+// program no rule can read asks. It is for a surface that runs commands
+// outside a session, such as a sandbox's exec. A layer that does not
+// validate refuses everything.
 func (l PolicyLayer) Decide(tool string, args json.RawMessage) LayerVerdict {
 	e := policy.New(policy.ModeDefault)
 	if err := e.AddLayer(orName(l.Name), l.Deny, l.Ask, nil); err != nil {
@@ -116,6 +117,9 @@ func (l PolicyLayer) Decide(tool string, args json.RawMessage) LayerVerdict {
 		return LayerVerdict{Decision: string(policy.Deny), Rule: res.Rule, Reason: res.Reason}
 	case res.Decision == policy.Ask && (res.Step == "ask" || res.Step == "screen"):
 		return LayerVerdict{Decision: string(policy.Ask), Rule: res.Rule, Reason: res.Reason}
+	}
+	if why := unreadable(res, policy.Subject(tool, args)); why != "" && (&appliedLayer{PolicyLayer: l}).screens(tool) {
+		return LayerVerdict{Decision: string(policy.Ask), Reason: why}
 	}
 	return LayerVerdict{}
 }

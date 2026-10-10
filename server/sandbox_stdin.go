@@ -150,7 +150,7 @@ func screensStdin(pol *policy.Engine) bool {
 // reading its commands from stdin is let through with in turned on, so each
 // statement it is given is judged first; any other reader is refused.
 func (s *Server) screenStdinExec(pol *policy.Engine, command string, env []string, in *stdinScreen) error {
-	if err := denied(pol, command, false); err != nil {
+	if err := execRefused(pol, command); err != nil {
 		return err
 	}
 	if !screensStdin(pol) {
@@ -161,6 +161,7 @@ func (s *Server) screenStdinExec(pol *policy.Engine, command string, env []strin
 		return execEnvRefused(env)
 	}
 	if in != nil && stdinShell(command) && shellEnvVar(env, true) == "" {
+		in.script.seed(env)
 		in.on = true
 		return nil
 	}
@@ -175,7 +176,7 @@ func (s *Server) screenStdinExec(pol *policy.Engine, command string, env []strin
 // screenExec judges a command run without stdin: the deny rules and hooks,
 // then the variables the exec sets itself.
 func screenExec(pol *policy.Engine, command string, env []string) error {
-	if err := denied(pol, command, false); err != nil {
+	if err := execRefused(pol, command); err != nil {
 		return err
 	}
 	if !screensStdin(pol) {

@@ -484,6 +484,15 @@ judge their commands here too, and the lines they type into `:attach` and
 an SSH shell; when the layer cannot be read the call is refused with `503`
 rather than run under fewer rules. Only a refusal stops a command here: rules that would ask the
 agent first do not ask a person who runs a command themselves. A command
+the rules cannot read is refused too, as no one is there to confirm it:
+while any deny or ask rule for `bash` or any hook is in force, a command
+line whose program is named by an expansion (`c=curl; $c …`,
+`sh -c 'c=curl; $c …'`, `$(echo curl) …`), whose words are split by a
+changed `IFS`, that runs text no rule can read, or whose parts are built by
+an expansion or brace list (`echo {a,b}`) is refused with `403` and code
+`forbidden`, the reason in the message, whichever rule it would have met.
+Name the program in the command line instead. A command the rules read
+runs, a destructive one such as `rm -rf build` included. A command
 given as `argv` runs as one shell line with each word quoted, so the shell
 splits it back into exactly those words; that quoted line is what the rules
 judge and the record keeps. A word with a NUL byte cannot be passed and is
@@ -613,7 +622,10 @@ something no rule read:
 - a program named by a variable the script set to text that is not known,
   such as from `read` or a command substitution, or by a positional
   parameter (`"$1"`, `"$@"`). A name whose last path element is known, as in
-  `"$SERVER_DIR/bin/server"`, is judged by that name;
+  `"$SERVER_DIR/bin/server"`, is judged by that name. The exec's own
+  variables count as set to their values, and the text a shell runs with
+  `-c` is read as a script of its own, so `sh -c 'c=curl; $c …'` is judged
+  as `curl …`;
 - setting a variable a shell runs or reads as commands on its own
   (`BASH_ENV`, `ENV`, `PS1` to `PS4`, `PROMPT_COMMAND`, `SHELLOPTS` …).
 
