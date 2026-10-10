@@ -286,17 +286,37 @@ type stdinScript struct {
 	// writtenUnknown reports a file written whose name is not known text.
 	writtenUnknown bool
 	ifs            bool
+	// exported names the variables a shell the script starts inherits.
+	exported map[string]bool
 	// resolved are the lines found in a statement once variables it set
 	// earlier are put in, for the rules to see too.
 	resolved []string
 }
 
 func newStdinScript() *stdinScript {
-	return &stdinScript{vars: map[string]*string{}, written: map[string]bool{}}
+	return &stdinScript{vars: map[string]*string{}, written: map[string]bool{}, exported: map[string]bool{}}
+}
+
+// child is what a shell the script starts sees: the variables it exported,
+// or the exec gave it, and env set for that command alone. Anything else is
+// unset there, whatever the script set it to.
+func (sc *stdinScript) child(env map[string]*string) *stdinScript {
+	c := &stdinScript{vars: map[string]*string{}, written: maps.Clone(sc.written), writtenUnknown: sc.writtenUnknown,
+		ifs: sc.ifs, exported: maps.Clone(sc.exported)}
+	for k := range sc.exported {
+		if v, ok := sc.vars[k]; ok {
+			c.vars[k] = v
+		}
+	}
+	for k, v := range env {
+		c.vars[k], c.exported[k] = v, true
+	}
+	return c
 }
 
 func (sc *stdinScript) clone() *stdinScript {
-	c := &stdinScript{vars: maps.Clone(sc.vars), written: maps.Clone(sc.written), writtenUnknown: sc.writtenUnknown, ifs: sc.ifs}
+	c := &stdinScript{vars: maps.Clone(sc.vars), written: maps.Clone(sc.written), writtenUnknown: sc.writtenUnknown, ifs: sc.ifs,
+		exported: maps.Clone(sc.exported)}
 	return c
 }
 
@@ -455,6 +475,7 @@ func (w *scriptWalk) cmd(c syntax.Command, in, outer, cond bool, input *syntax.R
 			w.fail("a name reference, which makes one variable stand for another")
 			return
 		}
+		export := c.Variant.Value == "export"
 		for _, a := range c.Args {
 			if a.Naked && a.Name == nil {
 				v, ok := w.sc.literal(a.Value)
@@ -463,10 +484,15 @@ func (w *scriptWalk) cmd(c syntax.Command, in, outer, cond bool, input *syntax.R
 					w.fail(c.Variant.Value + " of a variable named when it runs")
 				case strings.HasPrefix(v, "-") && strings.Contains(v, "n"):
 					w.fail("a name reference, which makes one variable stand for another")
+				case strings.HasPrefix(v, "-") && strings.Contains(v, "x"):
+					export = true
 				}
 				continue
 			}
 			w.assign(a, outer, cond || c.Variant.Value == "local")
+			if export && a.Name != nil {
+				w.sc.exported[a.Name.Value] = true
+			}
 		}
 	case *syntax.TimeClause:
 		w.stmt(c.Stmt, in, cond)
@@ -759,7 +785,7 @@ func (w *scriptWalk) interpreter(name string, c *syntax.CallExpr, texts []string
 			return
 		}
 		// The rules saw its text with the statement; here its own reads.
-		inner := w.sc.clone()
+		inner := w.sc.child(w.prefixed(c, texts[:i], lits[:i]))
 		if why := inner.check(f); why != "" {
 			w.fail(why + " (in a here-document fed to " + name + ")")
 			return
@@ -781,8 +807,7 @@ func (w *scriptWalk) shellCode(name, text string, env map[string]*string) {
 		w.fail("the text " + name + " -c runs cannot be parsed")
 		return
 	}
-	inner := &scriptWalk{sc: w.sc.clone()}
-	maps.Copy(inner.sc.vars, env)
+	inner := &scriptWalk{sc: w.sc.child(env)}
 	inner.stmts(f.Stmts, false, false)
 	if inner.why != "" {
 		w.fail(inner.why + " (in the text " + name + " -c runs)")
@@ -836,7 +861,7 @@ var shellSet = map[string]bool{"PWD": true, "OLDPWD": true, "PPID": true, "SHLVL
 func (sc *stdinScript) seed(env []string) {
 	for _, kv := range env {
 		if k, v, ok := strings.Cut(kv, "="); ok && validName(k) && !shellSet[k] && !strings.HasPrefix(k, "BASH") {
-			sc.vars[k] = &v
+			sc.vars[k], sc.exported[k] = &v, true
 		}
 	}
 }
