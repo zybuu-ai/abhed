@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS approvals (
 -- The "always allow" scope an answer carried, empty for this call only: the
 -- waiting node widens the session's allow list only from this.
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS answer_scope TEXT NOT NULL DEFAULT '';
+-- The action.requested event the row asks about, so another node can check an
+-- answer bound to it. Empty on rows from before the column.
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '';
 -- Set when the request stopped waiting, answered or not. An ended row takes
 -- no answer, so nothing is approved after the turn it was asked in. When the
 -- column is first added, the rows already there are from turns that are no

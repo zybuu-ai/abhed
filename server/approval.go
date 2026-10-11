@@ -336,7 +336,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalReadyWait)
 			defer cancel()
 			id, err := l.durable.AskApproval(wctx, store.Approval{
-				ID: rowID, SessionID: l.ID, Tool: tool, Args: args,
+				ID: rowID, SessionID: l.ID, RequestID: p.RequestID, Tool: tool, Args: args,
 				Reason: res.Reason, Scope: offer,
 			})
 			if err != nil {

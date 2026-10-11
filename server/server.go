@@ -4527,9 +4527,7 @@ func (s *Server) releaseNode(sessionID string) {
 // so the answer is delivered without the request ever reaching it.
 func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, sessionID string, req approveRequest) bool {
 	d := s.approvalStore()
-	// The store's rows do not carry the request id, so an answer naming one
-	// is left to the node running the session, which can check it.
-	if d == nil || req.RequestID != "" {
+	if d == nil {
 		return false
 	}
 	// The same owner check the local path makes, against the stored row:
@@ -4540,6 +4538,12 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 	}
 	pending, found, err := d.PendingApproval(r.Context(), sessionID)
 	if err != nil || !found {
+		return false
+	}
+	// An answer naming a request is recorded only on that request's row. One
+	// naming another (perhaps not asked yet), or a row from before rows carried
+	// the id, is left to the node running the session.
+	if req.RequestID != "" && req.RequestID != pending.RequestID {
 		return false
 	}
 	// Only a node running the session waits on the row. A row left by a

@@ -153,9 +153,10 @@ answers `202` with `"delivery": "steered"` and a `queue_id`,
 delivers a queued message carries the same id as `queue_id`, and a
 `client_id` sent with any message comes back on its `user.message` too.
 Posting with `"interrupt": true` is Send now. On a server with node routing,
-the queue routes, `/interrupt` and an `/approve` that names its request
-answer `421` with `Abhed-Session-Node` for
-a session running on another node. Streamed reasoning is recorded as
+the queue routes and `/interrupt` answer `421` with `Abhed-Session-Node` for
+a session running on another node. An `/approve` there is recorded on the
+stored approval when it names no request or names the one the stored row
+asks about; one naming another request also gets the `421`. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
 text, so a reader that ignores the parts is unaffected.
 

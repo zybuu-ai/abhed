@@ -536,6 +536,56 @@ func TestApproveElsewhereLeavesABoundAnswerToTheOwner(t *testing.T) {
 	}
 }
 
+// A row that carries its request id takes an answer bound to that request on
+// any node; an answer bound to another request is sent to the owning node.
+func TestApproveElsewhereChecksTheBoundRequest(t *testing.T) {
+	f := newFakeApprovals()
+	f.pending["s-far"] = store.Approval{ID: "ap-far", SessionID: "s-far", RequestID: "ev-7"}
+	s := &Server{store: routedApprovals{f, "node-b"}, opts: Options{NodeID: "node-a"},
+		sessions: farSession, running: map[string]*liveSession{}, log: discardLogger()}
+	send := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := asUser(httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(body)), "default", "priya")
+		req.SetPathValue("id", "s-far")
+		s.approveAction(rec, req)
+		return rec
+	}
+	if rec := send(`{"approved":true,"request_id":"ev-6"}`); rec.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("an answer bound to another request = %d, want 421", rec.Code)
+	}
+	if f.answer("ap-far") {
+		t.Fatal("an answer bound to another request was recorded on this row")
+	}
+	if rec := send(`{"approved":true,"request_id":"ev-7"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("an answer bound to the row's request = %d %s, want 204", rec.Code, rec.Body)
+	}
+	if !f.answer("ap-far") {
+		t.Fatal("an answer bound to the row's request was not recorded")
+	}
+}
+
+// The row a turn writes carries the request it asks about.
+func TestApprovalRowCarriesTheRequestID(t *testing.T) {
+	f := newFakeApprovals()
+	l := &liveSession{ID: "s-rid", allowed: map[string]bool{}, durable: f}
+	go func() {
+		for f.askedCount() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "", "reviewer")
+	}()
+	ctx := agent.WithRequestID(context.Background(), "ev-42")
+	if ok, err := l.Approve(ctx, "bash", []byte(`{}`), policy.Result{Reason: "mutating"}); err != nil || !ok {
+		t.Fatalf("Approve = %v, %v", ok, err)
+	}
+	f.mu.Lock()
+	got := f.pending["s-rid"].RequestID
+	f.mu.Unlock()
+	if got != "ev-42" {
+		t.Fatalf("the row's request id = %q, want ev-42", got)
+	}
+}
+
 // On a node not running the session, only its owner may answer its pending
 // approval, as on the node that runs it: another user, another tenant, or a
 // session with no stored row gets no answer recorded.

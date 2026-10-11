@@ -32,6 +32,11 @@ All notable changes to Abhed are recorded here. The format follows
   file that sets neither deny rules nor extensions.
 - `POST /v1/admin/mcp` answers `400` for a server whose name overlaps a
   configured one's.
+- On Postgres, the `approvals` table has a `request_id` column, which this
+  release writes and checks: run `abhed migrate` (or apply
+  `store/schema.sql`) as the schema owner before starting 1.2.8 servers
+  against an existing database. A server whose database lacks it refuses
+  to start and names the column.
 
 ### Security
 
@@ -568,6 +573,10 @@ on. A server with it off starts on the older schema as before.
   nothing. `-disallowedTools` adds the name as written beside the lower-cased
   spelling it has always added, so an existing deny keeps matching and one for
   a capitalised name now does too. Built-in names are still folded.
+- Approval rows on Postgres carry the request they ask about, so an answer
+  naming its request (`request_id`) is recorded on any node when it names
+  the stored row's request; before, such an answer was always sent to the
+  node running the session with `421`.
 
 ### Fixed
 

@@ -795,8 +795,12 @@ func randomID() (string, error) {
 
 // Approval is a request for a human decision, and the decision when it comes.
 type Approval struct {
-	ID         string
-	SessionID  string
+	ID        string
+	SessionID string
+	// RequestID is the action.requested event the row asks about, so a node
+	// that is not running the session can check an answer bound to it.
+	// Empty on rows written before 1.2.8.
+	RequestID  string
 	Tool       string
 	Args       []byte
 	Reason     string
@@ -827,9 +831,9 @@ func (p *Postgres) AskApproval(ctx context.Context, a Approval) (string, error) 
 		args = []byte("{}")
 	}
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO approvals (id, session_id, tenant_id, tool, args, reason, scope)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		id, a.SessionID, p.tenant, a.Tool, args, a.Reason, a.Scope)
+		INSERT INTO approvals (id, session_id, tenant_id, tool, args, reason, scope, request_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		id, a.SessionID, p.tenant, a.Tool, args, a.Reason, a.Scope, a.RequestID)
 	if err != nil {
 		return "", fmt.Errorf("ask approval for %s: %w", a.SessionID, err)
 	}
@@ -865,11 +869,11 @@ func (p *Postgres) EndApproval(ctx context.Context, id string) error {
 func (p *Postgres) PendingApproval(ctx context.Context, sessionID string) (Approval, bool, error) {
 	var a Approval
 	err := p.pool.QueryRow(ctx, `
-		SELECT id, session_id, tool, args, reason, scope, asked_at, ended_at IS NOT NULL
+		SELECT id, session_id, request_id, tool, args, reason, scope, asked_at, ended_at IS NOT NULL
 		FROM approvals
 		WHERE session_id = $1 AND answered_at IS NULL
 		ORDER BY asked_at DESC LIMIT 1`, sessionID).
-		Scan(&a.ID, &a.SessionID, &a.Tool, &a.Args, &a.Reason, &a.Scope, &a.AskedAt, &a.Ended)
+		Scan(&a.ID, &a.SessionID, &a.RequestID, &a.Tool, &a.Args, &a.Reason, &a.Scope, &a.AskedAt, &a.Ended)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, false, nil
 	}
