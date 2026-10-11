@@ -94,8 +94,9 @@ func TestMiddlewareRequiresToken(t *testing.T) {
 }
 
 // A session is checked before a token, so the console works without every
-// request carrying one; a browser with neither is sent to the first provider
-// that has an entry point, keeping where it was going.
+// request carrying one; a browser with neither is sent to the front door,
+// which offers the local form beside the provider's page, keeping where it
+// was going.
 func TestMiddlewarePrefersSessionAndRedirectsBrowsers(t *testing.T) {
 	local := fakeProvider{name: "local", held: "s1"}
 	sso := fakeProvider{name: "sso", entry: "/fake/login", held: "s2"}
@@ -110,7 +111,7 @@ func TestMiddlewarePrefersSessionAndRedirectsBrowsers(t *testing.T) {
 		t.Fatalf("session not honoured: %d %q", rec.Code, rec.Body.String())
 	}
 
-	// A browser navigation with nothing → redirect to the entry point.
+	// A browser navigation with nothing → redirect to the front door.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest("GET", "/console?tab=2", nil)
 	req.Header.Set("Accept", "text/html")
@@ -118,7 +119,7 @@ func TestMiddlewarePrefersSessionAndRedirectsBrowsers(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("browser should be redirected, got %d", rec.Code)
 	}
-	if loc := rec.Header().Get("Location"); loc != "/fake/login?return=%2Fconsole%3Ftab%3D2" {
+	if loc := rec.Header().Get("Location"); loc != "/?return=%2Fconsole%3Ftab%3D2" {
 		t.Errorf("redirect target %q", loc)
 	}
 
