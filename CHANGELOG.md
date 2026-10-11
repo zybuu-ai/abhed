@@ -174,6 +174,14 @@ All notable changes to Abhed are recorded here. The format follows
   workspace, so any account on the server could list that folder and learn
   other people's session ids. Each upload now goes into a folder of its
   own with a random name. Affects 1.0.0 to 1.2.7.
+- Account and invite emails accepted zero-width, format and other
+  invisible characters and non-ASCII spaces, so `bob@example.com` with a
+  zero-width joiner inside could be made beside `bob@example.com`, and
+  such an email from single sign-on or a proxy could own sessions. They
+  are now refused. Under `auth.require_group`, a local sign-in by a
+  non-member answered `200 ok` and was only turned away on the next page;
+  it is now refused at the form with `403` and the reason. Group names
+  match case-sensitively, as documented now. Affects 1.0.0 to 1.2.7.
 
 ### Added
 

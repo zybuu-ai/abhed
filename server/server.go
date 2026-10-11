@@ -755,6 +755,20 @@ func New(opts Options) *Server {
 			s.releaseStale(local, username)
 			s.RecheckStreams()
 		})
+		// A sign-in outside auth.require_group is refused at the form, rather
+		// than answered ok and then turned away on the first page.
+		if group := opts.Config.Auth.RequireGroup; group != "" {
+			next := local.Admit
+			local.Admit = func(ctx context.Context, u *auth.User) error {
+				if !slices.Contains(u.Groups, group) {
+					return notMember(group)
+				}
+				if next != nil {
+					return next(ctx, u)
+				}
+				return nil
+			}
+		}
 	}
 	return s
 }

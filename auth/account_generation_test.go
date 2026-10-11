@@ -73,3 +73,25 @@ func TestSignInEndsTheSessionTheBrowserHeld(t *testing.T) {
 		t.Fatal("bob's new cookie does not work")
 	}
 }
+
+// An address with a character that shows as nothing, or as a plain space, is
+// refused, so it cannot pose as another account's address.
+func TestEmailRefusesInvisibleCharacters(t *testing.T) {
+	for _, e := range []string{
+		"b‍ob@example.com", "bob​@example.com", "bo­b@example.com",
+		"bob️@example.com", "bob@exam⁠ple.com", "bㅤob@example.com",
+	} {
+		if ValidEmail(e) == nil {
+			t.Errorf("%q was accepted", e)
+		}
+	}
+	for _, e := range []string{"bob@example.com", "zoë@example.com"} {
+		if err := ValidEmail(e); err != nil {
+			t.Errorf("%q was refused: %v", e, err)
+		}
+	}
+	l := newTestAuth(t)
+	if err := l.CreateUser(context.Background(), User{Username: "bob2", Email: "b‍ob@example.com"}, "correct-horse-1"); err == nil {
+		t.Fatal("an account was made with a zero-width character in its email")
+	}
+}

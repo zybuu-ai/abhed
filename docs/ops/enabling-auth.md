@@ -133,8 +133,12 @@ accounts are created by an administrator, which is true and actionable.
 An account's email is optional. When given, at `user add`, sign-up or an
 administrator's account creation, it must be a plain address
 (`name@example.com`, no display name) that no other account holds and that is
-not another account's username, compared without regard to case. The email is
-for people to read and for notices; it grants nothing.
+not another account's username, compared without regard to case. An address
+with a character that shows as nothing or as a plain space (a zero-width
+joiner, a soft hyphen, a variation selector, a control character, or any
+space but the ASCII one) is refused, so it cannot pass for another; such an
+email from a single sign-on provider or a trusted proxy does not decide who
+owns a session. The email is for people to read and for notices; it grants nothing.
 
 ### Who owns a session
 
@@ -332,9 +336,12 @@ rather than straight to the identity provider.
 { "auth": { "mode": "local", "require_group": "abhed-users" } }
 ```
 
-Only members of the group may use the server. The check runs once someone is
-signed in, so the sign-in page, sign-in itself, sign-out, `/v1/whoami` and
-`/v1/health` answer everyone. `/v1/whoami` answers `200` to every caller:
+Only members of the group may use the server. A local account outside the
+group is refused at sign-in itself, `403` with the reason, and given no
+session. For other providers the check runs once someone is signed in, so
+the sign-in page, sign-in itself, sign-out, `/v1/whoami` and `/v1/health`
+answer everyone. Group names match exactly, case included: `Abhed-Users` is
+not `abhed-users`, here and for the administrator group. `/v1/whoami` answers `200` to every caller:
 with no sign-in, or a cookie whose sign-in has ended or expired, it reads
 `"authenticated": false`, while every other API route answers `401`. A
 signed-in person outside the group is signed

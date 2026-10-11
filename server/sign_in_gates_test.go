@@ -75,6 +75,36 @@ func (g *gateRig) signIn(t *testing.T, user string) *http.Cookie {
 	return nil
 }
 
+// signInThenDrop signs user in as a member of abhed-users and then takes the
+// group away, as an administrator would while the session is live.
+func (g *gateRig) signInThenDrop(t *testing.T, user string) *http.Cookie {
+	t.Helper()
+	ctx := context.Background()
+	if err := g.local.SetGroups(ctx, user, "abhed-users", true); err != nil {
+		t.Fatal(err)
+	}
+	c := g.signIn(t, user)
+	if err := g.local.SetGroups(ctx, user, "abhed-users", false); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// Under auth.require_group a non-member's sign-in is refused at the form, with
+// the reason, and no session is issued.
+func TestRequireGroupRefusesANonMembersSignIn(t *testing.T) {
+	g := newGateRig(t, "abhed-users")
+	rec := g.do(nil, "POST", "/v1/signin", `{"username":"bob","password":"correct-horse-1"}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "abhed-users") {
+		t.Fatalf("a non-member's sign-in = %d %s, want 403 naming the group", rec.Code, rec.Body)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "abhed_session" && c.Value != "" {
+			t.Fatal("a non-member was issued a session")
+		}
+	}
+}
+
 // auth.require_group admits its members and turns away everyone else once
 // they are known, without closing the paths needed to sign in.
 func TestRequireGroupGatesAfterSignIn(t *testing.T) {
@@ -93,7 +123,7 @@ func TestRequireGroupGatesAfterSignIn(t *testing.T) {
 	}
 
 	// A non-member's API call is refused with the reason, and the session ends.
-	bob := g.signIn(t, "bob")
+	bob := g.signInThenDrop(t, "bob")
 	rec := g.do(bob, "GET", "/v1/sessions", "")
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "not in the abhed-users group") {
 		t.Fatalf("a non-member = %d %s, want 403 naming the group", rec.Code, rec.Body)
@@ -103,7 +133,7 @@ func TestRequireGroupGatesAfterSignIn(t *testing.T) {
 	}
 
 	// A non-member's browser lands on the front door, told why.
-	bob = g.signIn(t, "bob")
+	bob = g.signInThenDrop(t, "bob")
 	nav := g.do(bob, "GET", "/ide", "", "Accept", "text/html")
 	loc, _ := url.Parse(nav.Header().Get("Location"))
 	if nav.Code != http.StatusFound || loc == nil || loc.Path != "/" ||
@@ -112,7 +142,7 @@ func TestRequireGroupGatesAfterSignIn(t *testing.T) {
 	}
 
 	// whoami says so too, rather than naming a session nothing will serve.
-	bob = g.signIn(t, "bob")
+	bob = g.signInThenDrop(t, "bob")
 	var me map[string]any
 	_ = json.Unmarshal(g.do(bob, "GET", "/v1/whoami", "").Body.Bytes(), &me)
 	if me["authenticated"] != false || !strings.Contains(me["reason"].(string), "abhed-users") {
@@ -127,7 +157,7 @@ func TestRequireGroupGatesAfterSignIn(t *testing.T) {
 // workbench, now signed out, still lands on sign-in with the reason.
 func TestRefusedMemberKeepsTheReasonAcrossAReload(t *testing.T) {
 	g := newGateRig(t, "abhed-users")
-	bob := g.signIn(t, "bob")
+	bob := g.signInThenDrop(t, "bob")
 	rec := g.do(bob, "GET", "/v1/sessions", "")
 	var body map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
