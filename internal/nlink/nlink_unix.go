@@ -14,3 +14,6 @@ func Of(info os.FileInfo) uint64 {
 	}
 	return 1
 }
+
+// pathCount is Of for the file at path.
+func pathCount(_ string, info os.FileInfo) uint64 { return Of(info) }

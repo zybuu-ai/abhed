@@ -137,7 +137,9 @@ files the state check knows, in the workspace and the home directory, and the
 users, config and secrets files the user could rewrite in every folder above
 the workspace, other than a world-writable sticky one) has more than one name, and `config.Load` refuses
 a configuration file with more than one name (`internal/nlink`,
-`internal/sandboxconfig`). Link counts are not read on Windows.
+`internal/sandboxconfig`). On Windows these named-file checks read the link
+count from the file itself; the walk over the state folders, and files Abhed
+has already opened, are not counted there.
 
 A users file set with `auth.users_file`, or a secrets file set with
 `ABHED_SECRETS_FILE`, is refused by the same check. Abhed refuses to start

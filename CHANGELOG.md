@@ -35,6 +35,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- On Windows a state file's hard links were never counted, so a second name
+  for the users, config or secrets file did not stop Abhed as it does
+  elsewhere. Those checks now read the link count from the file. Affects
+  1.2.0 to 1.2.7 on Windows.
 - Abhed's own git commands (the prompt's branch and change count, file
   mentions, worktree bookkeeping, a resolved issue's commit) ran on the host
   in a repository the agent can write, guarded only by a list of settings

@@ -17,7 +17,7 @@ func Linked(path string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if n := Of(info); info.Mode().IsRegular() && n > 1 {
+	if n := pathCount(path, info); info.Mode().IsRegular() && n > 1 {
 		return n, nil
 	}
 	return 0, nil
