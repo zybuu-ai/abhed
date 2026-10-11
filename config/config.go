@@ -276,6 +276,7 @@ var containerManagedOnly = map[string]string{
 	"gpus":            "only the managed configuration gives sandboxes devices",
 	"cpus":            "only the managed configuration sets the CPU bound",
 	"seccomp_profile": "only the managed configuration replaces the seccomp profile",
+	"relay_binary":    "only the managed configuration names the program run inside sandboxes as the egress relay",
 }
 
 func init() {
@@ -343,6 +344,8 @@ func clearManagedOnly(c *Config, key string) {
 			cc.CPUs = 0
 		case "control_plane." + engine + ".seccomp_profile":
 			cc.SeccompProfile = ""
+		case "control_plane." + engine + ".relay_binary":
+			cc.RelayBinary = ""
 		}
 	}
 }
@@ -807,6 +810,9 @@ type ContainerDriverConfig struct {
 	// NamePrefix starts every container's name, "abhed-sbx-" when empty;
 	// letters, digits, '_', '.' and '-', starting with a letter or digit.
 	NamePrefix string `json:"name_prefix,omitempty"`
+	// RelayBinary is a Linux build of Abhed run inside each container as the
+	// egress relay where the engine is in a VM or on another host. Managed only.
+	RelayBinary string `json:"relay_binary,omitempty"`
 }
 
 // ContainerMount is a host folder every container sandbox sees.

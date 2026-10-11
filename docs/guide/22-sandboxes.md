@@ -296,6 +296,7 @@ gets, and every admission rule, is in [Container drivers](23-container-drivers.m
 | `gpus` | managed only | CDI device names a sandbox may ask for, such as `nvidia.com/gpu=all`. |
 | `cpus` | managed only | CPUs each sandbox may use, 2 when unset. |
 | `seccomp_profile` | managed only | A seccomp profile file in place of the engine's default; `unconfined` is refused. |
+| `relay_binary` | managed only | A Linux build of Abhed for the engine's architecture, at an absolute path the engine's host can see, run inside each container as the egress relay where the engine is in a VM or on another host. Without it the network allowlist is refused there. See [Container drivers](23-container-drivers.md#network). |
 | `name_prefix` | any configuration | What every container's name starts with, `abhed-sbx-` when unset: letters, digits, `_`, `.` and `-`, starting with a letter or digit, at most 64; anything else stops `abhed serve` at start. Two servers sharing one engine, such as a test run beside a real one, keep apart by it. Containers made under an earlier prefix are not found under a new one. |
 
 Each managed-only key widens what a sandbox can reach or loosens a bound, so
