@@ -1339,6 +1339,9 @@ type createRequest struct {
 	Workbench bool `json:"workbench,omitempty"`
 }
 
+// errBadClientID refuses a client id validClientID does not accept.
+var errBadClientID = errors.New("client_id is up to 64 letters, digits, - and _")
+
 // validClientID keeps a client's id short and plain, since it is recorded.
 func validClientID(id string) bool {
 	if len(id) > 64 {
@@ -1445,7 +1448,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validClientID(req.ClientID) {
-		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
+		WriteError(w, http.StatusBadRequest, errBadClientID.Error())
 		return
 	}
 	spec := StartSpec{
@@ -1466,6 +1469,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			writeHoldFailed(w)
 		case errors.Is(err, errBadMode):
 			WriteError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, errBadClientID):
+			WriteError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, ErrPolicyLayer):
 			s.log.Error("session refused: its policy layer", "user", spec.User, "error", err)
 			w.Header().Set("Retry-After", "5")
@@ -1494,6 +1499,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 // agent is running. The context passed in governs creation only; the run
 // itself gets its own, cancelled through the live session.
 func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, error) {
+	// Checked here as well as on the route: a caller in Go reaches this directly.
+	if !validClientID(spec.ClientID) {
+		return "", errBadClientID
+	}
 	// The mode is resolved before anything is persisted or started, because a
 	// rejected mode must not leave a half-created session behind.
 	mode, ok := requestMode(s.opts.Config.Permissions.Mode, spec.Mode)

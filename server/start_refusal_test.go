@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -58,5 +60,19 @@ func TestNewSessionRefusedWhileSecretsUnreadable(t *testing.T) {
 	}
 	if w := call(t, s, "POST", "/v1/sessions", `{"workbench":true}`); w.Code != http.StatusAccepted {
 		t.Fatalf("after the store was fixed = %d %s", w.Code, w.Body)
+	}
+}
+
+// A client id is checked when a session is started from Go, as on the route.
+func TestStartSessionChecksTheClientID(t *testing.T) {
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{})})
+	for _, id := range []string{strings.Repeat("a", 65), "has space", "semi;colon"} {
+		if _, err := s.StartSession(context.Background(), StartSpec{Prompt: "hi", ClientID: id}); !errors.Is(err, errBadClientID) {
+			t.Fatalf("client id %q: %v", id, err)
+		}
+	}
+	if _, err := s.StartSession(context.Background(), StartSpec{Prompt: "hi", ClientID: "ok-id_1"}); err != nil {
+		t.Fatalf("a plain client id: %v", err)
 	}
 }

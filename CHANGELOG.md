@@ -739,6 +739,10 @@ on. A server with it off starts on the older schema as before.
   server was running got what had been recorded so far and a closed
   stream, and had to reload to see more. The stream now follows the run
   live, read-only.
+- `Server.StartSession` refused a client id only on the HTTP route; a
+  session started from Go with a client id over 64 characters, or with
+  characters other than letters, digits, `-` and `_`, was recorded with
+  it. It is now refused there too.
 
 ### Dependencies
 
