@@ -405,7 +405,11 @@ func (g *Gateway) Status() []string {
 	defer g.mu.RUnlock()
 	var out []string
 	for name, c := range g.clients {
-		out = append(out, fmt.Sprintf("%s (%d tools)", name, len(c.Tools())))
+		line := fmt.Sprintf("%s (%d tools)", name, len(c.Tools()))
+		if n := len(c.Refused()); n > 0 {
+			line = fmt.Sprintf("%s (%d tools, %d left out for their names)", name, len(c.Tools()), n)
+		}
+		out = append(out, line)
 	}
 	sort.Strings(out)
 	return out

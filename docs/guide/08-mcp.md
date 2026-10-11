@@ -155,6 +155,12 @@ warning. Built-in commands, and your own and the workspace's custom
 commands, keep their names: an MCP prompt that would take one is left out,
 and the session says so.
 
+A remote tool's name may hold only letters, digits, `_`, `.` and `-`, up to
+64 characters. The MCP specification allows names of up to 128, but model
+providers refuse tool names over 64, so a longer one is left out: a warning
+names it and gives its length, `/mcp` counts the tools left out for their
+names beside each server, and Studio lists them under the server.
+
 ## Namespacing and policy
 
 Remote tools are namespaced by server, so two servers offering `search` do not
