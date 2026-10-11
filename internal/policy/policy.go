@@ -57,6 +57,9 @@ type Result struct {
 	// Rule is the rule that decided, as written, for the deny, ask and allow
 	// steps; "" when no rule did.
 	Rule string
+	// Suggest is an allow rule a person could write for exactly this call,
+	// when the default step asks and offers no scope; "" otherwise.
+	Suggest string
 	// Layer is the policy layer the deciding rule came from when an edition
 	// added it with AddLayer; "" for configured and session rules.
 	Layer string
@@ -844,12 +847,24 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 
 	// 6. Default: read-only tools proceed, mutations ask.
 	if why := e.readOnlyAsk(tool, subject); why != "" && !mutates {
-		return Result{Decision: Ask, Reason: why, Scope: suggestScope(tool, subject), Step: "default"}
+		return e.defaultAsk(tool, subject, why)
 	}
 	if !mutates {
 		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
 	}
-	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+	return e.defaultAsk(tool, subject, askReason(tool, e.Mode))
+}
+
+// defaultAsk is the default step's question, with the scope it offers, or,
+// when it offers none, the rule a person could add to allow the command.
+func (e *Engine) defaultAsk(tool, subject, why string) Result {
+	res := Result{Decision: Ask, Reason: why, Scope: e.suggestScope(tool, subject), Step: "default"}
+	if res.Scope == "" {
+		if res.Suggest = suggestRule(tool, subject); res.Suggest != "" {
+			res.Reason += " (to always allow exactly this, add " + res.Suggest + " to permissions.allow)"
+		}
+	}
+	return res
 }
 
 // trustWords are spellings that trust a workspace for a nested run.
@@ -912,7 +927,7 @@ func askReason(tool string, mode Mode) string {
 
 // suggestScope proposes a narrow "always allow" rule for the approval prompt.
 // Narrow by construction: allowing `git commit *` must never allow `rm`.
-func suggestScope(tool, subject string) string {
+func (e *Engine) suggestScope(tool, subject string) string {
 	if subject == "" {
 		return tool
 	}
@@ -928,7 +943,7 @@ func suggestScope(tool, subject string) string {
 		}
 		fields[0] = tools.CommandName(fields[0])
 		prefix := bashScope(fields)
-		if prefix == "" {
+		if prefix == "" || !e.resolvesOutsideRoots(fields[0]) {
 			return ""
 		}
 		return fmt.Sprintf("%s(%s *)", tool, prefix)

@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- An "always allow" scope for a listed program such as `ls` was offered
+  though `PATH` found it inside the workspace (a planted `./venv/bin/ls`
+  first on `PATH`), so the remembered scope ran the workspace's file. The
+  scope is now offered only when the program `PATH` finds is outside every
+  workspace root and no relative `PATH` entry comes first. Affects 1.2.0 to
+  1.2.7.
 - The ask before a bash command naming `ABHED_TRUST_WORKSPACE` or
   `trust-workspace` was a default `permissions.ask` entry, so a configuration
   with its own ask list dropped it, and a command that assembled the name
@@ -532,6 +538,12 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- The one-click scope is offered for `wc -c`, `head -c`, `du -sch`,
+  `grep -e` and the other listed tools without subcommands, which take `-c`
+  and `-e` as counts or patterns; `git`, `npm`, `pip` and `docker` still get
+  none with such a flag. When no scope is offered for a simple command, the
+  reason names the allow rule that would allow exactly that command, and
+  `Result.Suggest` carries it.
 - A brace list in a word that is literal text throughout, such as
   `mkdir -p src/{a,b}` or `cp f{,.bak}`, is read as the words it makes
   (`src/a src/b`) instead of being asked about as words no rule can read

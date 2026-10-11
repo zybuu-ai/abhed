@@ -1,8 +1,12 @@
 package policy
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // scopeTools are the only programs offered a one-click "always allow": no word
@@ -75,8 +79,10 @@ func bashScope(fields []string) string {
 			n++
 		}
 	}
+	// A program with subcommands may take code by a short flag (git -c);
+	// for the others -c and -e are counts or patterns (wc -c, grep -e).
 	for _, a := range fields[1:] {
-		if codeFlag(a) {
+		if codeFlag(a, subs != nil) {
 			return ""
 		}
 	}
@@ -90,15 +96,60 @@ func bashScope(fields []string) string {
 	return strings.Join(fields[:n], " ")
 }
 
-// codeFlag reports a flag that hands a program code or a command to run,
-// alone or in a cluster of short flags such as -ec.
-func codeFlag(a string) bool {
+// codeFlag reports a flag that hands a program code or a command to run:
+// --eval or --exec, and, when short says so, -c or -e alone or in a
+// cluster of short flags such as -ec.
+func codeFlag(a string, short bool) bool {
 	flag, _, _ := strings.Cut(a, "=")
 	switch {
 	case flag == "--eval" || flag == "--exec":
 		return true
-	case strings.HasPrefix(a, "--") || !strings.HasPrefix(a, "-"):
+	case !short || strings.HasPrefix(a, "--") || !strings.HasPrefix(a, "-"):
 		return false
 	}
 	return strings.ContainsAny(a[1:], "ce")
+}
+
+// resolvesOutsideRoots reports whether name, found on PATH as a shell would
+// find it, is a file outside every workspace root: a scope for ls must not
+// cover a planted ./venv/bin/ls. A relative PATH entry is the workspace's.
+func (e *Engine) resolvesOutsideRoots(name string) bool {
+	var roots []string
+	if e.Roots != nil {
+		for _, r := range e.Roots() {
+			roots = append(roots, tools.RealPath(r))
+		}
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			return false
+		}
+		p := filepath.Join(dir, name)
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+			continue
+		}
+		real := tools.RealPath(p)
+		for _, r := range roots {
+			if rel, err := filepath.Rel(r, real); err == nil && filepath.IsLocal(rel) {
+				return false
+			}
+			if rel, err := filepath.Rel(r, filepath.Clean(p)); err == nil && filepath.IsLocal(rel) {
+				return false
+			}
+		}
+		return true
+	}
+	// Not on PATH: a builtin such as pwd or echo, or nothing at all.
+	return true
+}
+
+// suggestRule is an allow rule a person could add for exactly this command
+// when no one-click scope is offered, or "" when none could match it.
+func suggestRule(tool, subject string) string {
+	if tool != "bash" || subject == "" || len(subject) > 200 || hasShellControl(subject) ||
+		strings.ContainsAny(subject, "*?") || strings.TrimSpace(subject) != subject {
+		return ""
+	}
+	return tool + "(" + subject + ")"
 }

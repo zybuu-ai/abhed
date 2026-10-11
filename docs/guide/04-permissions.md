@@ -332,9 +332,16 @@ program alone, as in `bash(ls *)`; for `git stash`, the one read-only word
 after it too, as in `bash(git stash list *)`. The program must be spelled
 exactly so (on macOS and Windows, without regard to case): `/usr/bin/git`, a wrapper or a `VAR=value` assignment in
 front gets no scope. Nor does a command with `--eval` or `--exec` among its
-arguments, or any single-dash word containing `c` or `e`, such as `-ec`,
-`wc -c` or `head -c`; nor one with a quote, backslash, `$`, glob, brace or
-backtick in the words the scope keeps. Interpreters, shells, package runners,
+arguments; for `git`, `npm`, `pip` and `docker`, any single-dash word
+containing `c` or `e`, such as `git commit -c` (the tools without
+subcommands take `-c` and `-e` as counts or patterns, so `wc -c`, `head -c`,
+`du -sch` and `grep -e` keep theirs); nor one with a quote, backslash, `$`,
+glob, brace or backtick in the words the scope keeps. Nor does a program
+that `PATH` finds inside the workspace or an added directory (a planted
+`./venv/bin/ls`), or behind a relative `PATH` entry. When no scope is
+offered for a simple command, the reason names the allow rule that would
+allow exactly that command, such as `bash(python3 -m unittest)`, for you to
+add to `permissions.allow` if you want it. Interpreters, shells, package runners,
 `make`, `npm install` and `npm test`, `go` (a `toolchain` line in `go.mod`
 makes it run another go binary), `yarn`, `pnpm`, `cargo` and `kubectl` are left
 off because a word on the line, or a file the agent can write, can make them
