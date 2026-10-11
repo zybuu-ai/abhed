@@ -648,6 +648,10 @@ on. A server with it off starts on the older schema as before.
   took out every recorded output line holding it inside a longer word
   (`makes`). Such a line now takes a line only where no letter, digit or `_`
   follows it; longer lines are matched as before.
+- A save from the workbench editor that left a file no longer parsing was
+  made without a word, though the record carried the warning the agent's
+  edit gets. The save now answers with that warning (`note` on
+  `PUT /v1/sessions/{id}/file`) and the editor shows it.
 
 ### Dependencies
 

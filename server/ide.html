@@ -952,7 +952,7 @@ async function save(t){
   try{
     const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.model.getValue(), base:t.base})});
     t.base = r.hash; t.saved = version; t.dirty = t.model.getAlternativeVersionId() !== version; drawTabs();
-    crumbs(t.path, 'saved · recorded as your change'); changesSoon(300); hawkSoon();
+    crumbs(t.path, r.note ? 'saved · ' + r.note : 'saved · recorded as your change'); changesSoon(300); hawkSoon();
   }catch(e){ crumbs(t.path, 'not saved — ' + visible(e.message)); }
   t.saving = false;
 }

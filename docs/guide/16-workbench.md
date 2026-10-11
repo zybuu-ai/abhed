@@ -296,6 +296,10 @@ screen on each line as typed (see **Terminal** below).
 | What git reads in `.git` (`config`, `hooks`, `commondir` and the like) | cannot be written by a command | cannot be written by your commands or shell either |
 | The record | every call, decision and result | the same events, marked as yours (`actor: user`, `by: user`); in a shell, each line you enter, as typed (see below) |
 
+A save that leaves a file no longer parsing (invalid JSON, a Go file with an
+unclosed bracket) is made, never refused, and the line above the editor says
+so, as the agent's own edit would; `tools.syntax_check: off` turns that off.
+
 So HawkEYE's report covers what people did as well as what the agent did, and a
 save shows up under **Changes** with a diff like any other edit. The chat shows
 the conversation with the agent only: your own saves, commands, shells and

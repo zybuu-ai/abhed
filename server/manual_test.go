@@ -220,4 +220,22 @@ func TestManualSaveOfBrokenCodeIsWarnedNotRefused(t *testing.T) {
 	if !warned {
 		t.Fatal("the record does not carry the syntax warning")
 	}
+	// The editor is told too, as the agent is.
+	var resp saveResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || !strings.Contains(resp.Note, "main.go no longer parses") {
+		t.Fatalf("the save did not answer with the warning: %s", rec.Body)
+	}
+	wb.write("c.json", "{}\n")
+	_, f = wb.file("c.json")
+	rec = wb.send("acme", "PUT", "file", saveRequest{Path: "c.json", Content: "{\"a\": }\n", Base: f.Hash})
+	resp = saveResponse{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || !strings.Contains(resp.Note, "c.json no longer parses") {
+		t.Fatalf("invalid JSON saved without a warning: %d %s", rec.Code, rec.Body)
+	}
+	// A clean save carries no note.
+	_, f = wb.file("c.json")
+	rec = wb.send("acme", "PUT", "file", saveRequest{Path: "c.json", Content: "{\"a\": 1}\n", Base: f.Hash})
+	if resp = (saveResponse{}); json.Unmarshal(rec.Body.Bytes(), &resp) != nil || resp.Note != "" {
+		t.Fatalf("a clean save carried a note: %s", rec.Body)
+	}
 }
