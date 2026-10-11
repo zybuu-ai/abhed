@@ -311,6 +311,14 @@ func Main(args []string, opts ...Option) int {
 	if f.trustWS {
 		a.trust = config.TrustGranted
 	}
+	// A nested run never takes workspace trust from its environment: the
+	// command could have set it under a name no rule can read.
+	if os.Getenv(config.TrustEnv) != "" {
+		if why := inAgentCommand(); why != "" {
+			_ = os.Unsetenv(config.TrustEnv)
+			fmt.Fprintf(os.Stderr, "abhed: %s is ignored inside an agent's command (%s)\n", config.TrustEnv, why)
+		}
+	}
 	if refuseInAgent(f.escalation()) {
 		return 1
 	}

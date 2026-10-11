@@ -155,3 +155,18 @@ func TestWidenedNamesFenceSettings(t *testing.T) {
 		t.Errorf("cpu changed: %q", got)
 	}
 }
+
+// A nested run ignores ABHED_TRUST_WORKSPACE, which its command could have
+// set under a name no rule can read.
+func TestNestedRunIgnoresTrustEnv(t *testing.T) {
+	ws := t.TempDir()
+	asAgentCommand(t)
+	t.Setenv(config.TrustEnv, "1")
+	out, _ := stderrOf(t, []string{"-C", ws, "trust", "show"})
+	if !strings.Contains(out, config.TrustEnv+" is ignored inside an agent's command") {
+		t.Errorf("no word that the trust variable was ignored: %q", out)
+	}
+	if v, ok := os.LookupEnv(config.TrustEnv); ok {
+		t.Errorf("%s is still %q", config.TrustEnv, v)
+	}
+}

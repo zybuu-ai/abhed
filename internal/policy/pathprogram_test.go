@@ -97,3 +97,22 @@ func TestLiteralBraceListIsReadNotScreened(t *testing.T) {
 		t.Errorf("echo {$a,b} = %s at %s (%s), want a screen", res.Decision, res.Step, res.Reason)
 	}
 }
+
+// Naming workspace trust asks in every mode, with no ask rule configured.
+func TestTrustNamingAsksWithoutAnAskRule(t *testing.T) {
+	for _, command := range []string{
+		"ABHED_TRUST_WORKSPACE=1 abhed -p hi", "abhed --Trust-Workspace -p hi",
+		"X=abhed_trust_workspace; echo $X", "bash -c 'abhed -trust-workspace -p hi'",
+	} {
+		for _, mode := range []Mode{ModeBypass, ModeAuto, ModeDefault} {
+			e := New(mode)
+			if err := e.AddAllow("bash(*)"); err != nil {
+				t.Fatal(err)
+			}
+			res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
+			if res.Decision != Ask || !strings.Contains(res.Reason, "nested run") {
+				t.Errorf("%s %q = %s at %s (%s), want the trust ask", mode, command, res.Decision, res.Step, res.Reason)
+			}
+		}
+	}
+}

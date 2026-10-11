@@ -986,7 +986,8 @@ and the whole of `web_search` and `web_fetch`, which a lower layer may only
 turn off or narrow ([Web search](#web-search)). A lower layer's value the managed file replaces
 is recorded too, as `config.refused` with the decision `overridden`.
 
-Inside an agent's command, a nested `abhed` refuses `-settings` and
+Inside an agent's command, a nested `abhed` ignores `ABHED_TRUST_WORKSPACE`
+with a warning, and refuses `-trust-workspace`, `-settings` and
 `-mcp-config` whatever they hold: either can name an endpoint the nested
 session would send the code or its queries to. A nested run narrows with
 `-mode plan`, `-disallowedTools` or `-max-turns`.

@@ -772,6 +772,12 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		}
 	}
 
+	// 2c'. A command naming workspace trust for a nested run asks in every
+	// mode, whatever ask rules a configuration sets.
+	if tool == "bash" && namesTrust(append(subjects, canon.Text)) {
+		return Result{Decision: Ask, Reason: "the command names ABHED_TRUST_WORKSPACE or -trust-workspace, which would trust a workspace for a nested run — always requires confirmation", Scope: "", Step: "ask"}
+	}
+
 	// 2d. A command too long or tangled to split in full may hide a part a
 	// deny or ask rule would match, so no mode or allow rule approves it.
 	if !complete && e.rulesSeeParts(tool) {
@@ -844,6 +850,22 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
 	}
 	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+}
+
+// trustWords are spellings that trust a workspace for a nested run.
+var trustWords = []string{"abhed_trust_workspace", "trust-workspace", "trust_workspace"}
+
+// namesTrust reports a command text naming workspace trust, in any case.
+func namesTrust(texts []string) bool {
+	for _, t := range texts {
+		lower := strings.ToLower(t)
+		for _, w := range trustWords {
+			if strings.Contains(lower, w) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sessionControl names tools that change only the session's own background

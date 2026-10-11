@@ -323,11 +323,13 @@ line per ignored setting.
 - **The variable and the flag are not inherited.** Commands the agent runs do
   not inherit `ABHED_TRUST_WORKSPACE`: the process tier passes only an
   allowlist, and a command on the host has it removed. A command can still set
-  the variable or pass `-trust-workspace` itself, so the default configuration
-  asks before any bash command that mentions either
-  (`bash(*ABHED_TRUST_WORKSPACE*)`, `bash(*trust-workspace*)`). A
-  configuration that replaces `permissions.ask` drops these defaults. Set the
-  variable for a single CI step, not in a shell profile.
+  the variable or pass `-trust-workspace` itself, so the policy asks, in every
+  mode and whatever `permissions.ask` a configuration sets, before any bash
+  command that names either in any case. A command can also assemble the name
+  or set it in a script, which no check on its text can see, so a nested
+  `abhed` (one inside an agent's command) ignores `ABHED_TRUST_WORKSPACE`
+  with a warning and refuses `-trust-workspace`. Set the variable for a single
+  CI step, not in a shell profile.
 - **Where `abhed acp` keeps its record** is read once, at startup, with the
   folder's stored trust, before any editor says whether its window is
   untrusted. It chooses a location only: `record.dir` is managed-only even
