@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A deny or ask path rule written in another case than the disk holds the
+  name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
+  on a disk that ignores case (documented as a limit). Deny and ask path
+  rules now also match without regard to case on macOS and Windows and on
+  any disk found to fold case. Allow rules are unchanged. Affects every
+  release to 1.2.7.
 - A call whose first subject argument was not a string, such as an MCP
   tool's `command` given as a list or an object, was judged on the next
   argument, a `path` say, so a deny rule on the command never saw it. A list

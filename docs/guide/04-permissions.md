@@ -280,10 +280,12 @@ holds; a name that does not exist yet, such as a new file or folder, keeps
 its spelling, under its folder's real name. Allow patterns still compare case
 as written, so another spelling never gains an allow. On a disk that keeps
 case, `DOCS/` and `docs/` are different folders and are compared as written.
-A pattern's case is never folded. **On macOS and Windows, write a path rule
-in the case the disk holds the name:** `write(**/VAULT/**)` does not protect a
-folder the disk holds as `vault`, whatever spelling a tool is given. Check the
-disk's spelling with `ls` (or `dir` on Windows) before you write the rule.
+A deny or ask path pattern is also matched without regard to case on macOS and
+Windows, and on any disk found to open a name in another case (a Linux
+case-folding folder), so `write(**/VAULT/**)` protects a folder the disk holds
+as `vault`. On macOS and Windows this holds even on a volume formatted to keep
+case, where it can refuse or ask about a folder of another name that differs
+only in case; that only tightens. An allow pattern's case is never folded.
 
 A pattern's Unicode form does not matter for deny and ask rules. A name with
 an accent can be spelled in two forms, NFC (`é` as one character) and NFD

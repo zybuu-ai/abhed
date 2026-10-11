@@ -83,6 +83,9 @@ type Rule struct {
 	// folded is pattern with the literal start of its program name lowered, for
 	// systems that ignore case; nil when that changes nothing.
 	folded *regexp.Regexp
+	// caseless is pattern matching without regard to case, which deny and ask
+	// path rules also use on a disk that folds case; nil when it has no letter.
+	caseless *regexp.Regexp
 	// nfc is pattern in Unicode NFC, which deny and ask path rules also match
 	// against NFC subjects; nil for a pattern with no non-ASCII character.
 	nfc *regexp.Regexp
@@ -128,6 +131,11 @@ func ParseRule(s string) (Rule, error) {
 		}
 		r.pattern, r.glob = re, glob
 		r.flags = parseFlagForm(glob)
+		if strings.ToLower(glob) != strings.ToUpper(glob) {
+			if r.caseless, err = regexp.Compile("(?i)" + re.String()); err != nil {
+				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
+			}
+		}
 		if hasNonASCII(glob) {
 			if r.nfc, err = globToRegexp(norm.NFC.String(glob)); err != nil {
 				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
@@ -282,6 +290,34 @@ func (r Rule) matchesPathAny(tool string, subjects []string) bool {
 		}
 		if re.MatchString(norm.NFC.String(s)) {
 			return true
+		}
+	}
+	return false
+}
+
+// matchesCaselessAny is matchesAny without regard to case, on both sides in NFC.
+func (r Rule) matchesCaselessAny(tool string, subjects []string) bool {
+	if r.caseless == nil || !r.ForTool(tool) {
+		return false
+	}
+	for _, s := range subjects {
+		if r.caseless.MatchString(s) || hasNonASCII(s) && r.caseless.MatchString(norm.NFC.String(s)) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathFoldsCase reports whether the disk under the first absolute path among
+// subjects folds case; where the system as a whole ignores case it is taken
+// to, which can only add deny and ask matches.
+func pathFoldsCase(subjects []string) bool {
+	if tools.FoldsCommandNames() {
+		return true
+	}
+	for _, s := range subjects {
+		if filepath.IsAbs(s) {
+			return tools.FoldsCaseAt(s)
 		}
 	}
 	return false
@@ -743,6 +779,13 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	matches := Rule.matchesAny
 	if key == "path" && tool != "bash" {
 		matches = Rule.matchesPathAny
+		// On a disk that folds case, a rule spelled in another case than the
+		// disk holds still names the same files.
+		if pathFoldsCase(subjects) {
+			matches = func(r Rule, tool string, subjects []string) bool {
+				return r.matchesPathAny(tool, subjects) || r.matchesCaselessAny(tool, subjects)
+			}
+		}
 	}
 	// A bash rule naming flags also holds with them moved or split.
 	if tool == "bash" {
