@@ -112,7 +112,15 @@ func (d *Driver) runArgs(in *instance) []string {
 	for _, g := range req.gpus {
 		args = append(args, "--device", g)
 	}
-	if in.egress != nil {
+	switch {
+	case in.egress != nil && in.egress.stdio:
+		// The operator's Linux build, on the engine's host, is the relay.
+		opt := "ro"
+		if eng.selinux {
+			opt += ",z"
+		}
+		args = append(args, "-v", d.opts.RelayBinary+":"+egressRelay+":"+opt)
+	case in.egress != nil:
 		opt := "ro"
 		if eng.selinux {
 			opt += ",Z"
@@ -121,7 +129,7 @@ func (d *Driver) runArgs(in *instance) []string {
 	}
 	args = append(args, "-w", pol.Workspace,
 		"-e", "ABHED_SANDBOX="+string(sandbox.TierContainer), "-e", "HOME=/tmp")
-	if in.egress != nil {
+	if in.egress != nil && !in.egress.stdio {
 		args = append(args, "--entrypoint", egressRelay, req.image,
 			egressRelayArg, egressSocket, in.egress.listen, "--", "/bin/sh", "-c", keepAlive)
 		return args

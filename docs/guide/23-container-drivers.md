@@ -128,10 +128,20 @@ decision goes to `Options.Record` as an `egress.decision` event with the
 sandbox's id. Names are resolved by the proxy, so tools must honour the
 proxy variables; there is no resolver inside.
 
-This needs the engine on the same Linux host, over a local socket. Where it
-runs in a VM (Docker Desktop, Podman on macOS and Windows) or elsewhere
-(`DOCKER_HOST=tcp://…`), a host socket cannot reach the container, so
-`Create` fails with `unavailable` rather than run without the allowlist.
+Where the engine runs in a VM (Docker Desktop, Podman on macOS and
+Windows) or elsewhere (`DOCKER_HOST=tcp://…`), a host socket cannot reach
+the container. There the relay is a Linux build of Abhed for the engine's
+architecture that you name in `control_plane.<engine>.relay_binary`
+(managed only), at an absolute path the engine's host can see (under your
+home folder for Podman's and Docker Desktop's VMs, which share it). It is
+bound in read-only, and the driver runs it with a long-lived `exec` as the
+sandbox's user: it listens on the container's loopback and carries each
+connection over that exec's input and output to the proxy on this host.
+The container still has no network. The sandbox is ready only once the
+relay listens; an exec that ends is started again while the sandbox runs,
+and connections made meanwhile fail rather than go anywhere else. Without
+`relay_binary`, `Create` fails with `unavailable` rather than run without
+the allowlist.
 
 ## Lifecycle
 

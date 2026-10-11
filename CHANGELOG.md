@@ -729,8 +729,11 @@ on. A server with it off starts on the older schema as before.
   SELinux relabelling of the workspace, opt-in CDI GPUs, attach on a
   terminal and tar copy with every entry checked. Under the network
   allowlist the egress proxy stays on the host and the container reaches it
-  through a relay on its own loopback, on a Linux host with a local engine;
-  elsewhere the sandbox is refused. With git protection on, a repository
+  through a relay on its own loopback: over a bound-in socket on a Linux
+  host with a local engine, and, where the engine is in a VM or on another
+  host, over a long-lived `exec`'s stdio, with a Linux build of Abhed named
+  in the managed `control_plane.<engine>.relay_binary` as the relay; without
+  it the sandbox is refused there. With git protection on, a repository
   made inside a running container is protected by replacing the container,
   once nothing else uses it, within the same generation (recorded as
   `sandbox.restarted`); while it is in use, commands are refused with

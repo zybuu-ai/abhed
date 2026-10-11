@@ -51,6 +51,12 @@ type Options struct {
 	// holding every sandbox's workspace: a mount there would hand one
 	// sandbox the others' files. SnapshotDir is reserved too.
 	Reserved []string
+	// RelayBinary is a Linux build of Abhed for the engine's architecture,
+	// at a path the engine's host can see. With it, the network allowlist
+	// works where the engine runs in a VM or on another host: the relay
+	// inside reaches the proxy over a long-lived exec's stdio instead of a
+	// host socket.
+	RelayBinary string
 }
 
 // Mount is an extra host folder seen inside the sandbox. It is read-only
@@ -116,6 +122,9 @@ func (o Options) check() error {
 		if !cdiName.MatchString(g) {
 			return driver.Errorf(driver.ErrInvalid, "GPU %q is not a CDI device name such as nvidia.com/gpu=all", g)
 		}
+	}
+	if o.RelayBinary != "" && !filepath.IsAbs(o.RelayBinary) {
+		return driver.Errorf(driver.ErrInvalid, "relay_binary %q is not an absolute path", o.RelayBinary)
 	}
 	if o.SeccompProfile != "" {
 		if strings.EqualFold(o.SeccompProfile, "unconfined") || !filepath.IsAbs(o.SeccompProfile) {

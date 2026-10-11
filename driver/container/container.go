@@ -242,7 +242,7 @@ func (d *Driver) build(ctx context.Context, in *instance) (driver.Status, error)
 		return driver.Status{}, err
 	}
 	if pol.Egress != nil {
-		if why := egressRefusal(eng); why != "" {
+		if why := egressRefusal(eng, d.opts.RelayBinary); why != "" {
 			return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "%s", why)
 		}
 	}
@@ -272,7 +272,7 @@ func (d *Driver) start(ctx context.Context, in *instance, eng engineInfo) (drive
 	}
 	in.mounts = mounts
 	if in.pol.Egress != nil {
-		e, err := startEgress(in.spec.ID, in.pol.Egress, d.opts.Record, eng.selinux)
+		e, err := startEgress(in.spec.ID, in.pol.Egress, d.opts.Record, eng.selinux, stdioEgress(eng))
 		if err != nil {
 			return driver.Status{}, err
 		}
@@ -305,6 +305,12 @@ func (d *Driver) start(ctx context.Context, in *instance, eng engineInfo) (drive
 	if err := d.verify(ctx, in); err != nil {
 		_ = d.teardown(in)
 		return driver.Status{}, err
+	}
+	if in.egress != nil && in.egress.stdio {
+		if err := d.startStdioRelay(in); err != nil {
+			_ = d.teardown(in)
+			return driver.Status{}, err
+		}
 	}
 	in.forwards, in.done = &forward.Set{}, make(chan struct{})
 	return d.status(in, eng, driver.PhaseRunning), nil
