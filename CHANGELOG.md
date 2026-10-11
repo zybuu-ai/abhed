@@ -689,6 +689,10 @@ on. A server with it off starts on the older schema as before.
 - A web IDE terminal opened while its panel was hidden or squeezed was
   fitted to xterm's two-column minimum and its shell started that narrow. It
   is now fitted only when the panel has room, and resized when it is shown.
+- A web IDE page left open on a session deleted elsewhere asked the server
+  for its state every two seconds for as long as it stayed open, each
+  answered `404`. After three such answers in a row it now says the session
+  was deleted and stops asking.
 
 ### Dependencies
 

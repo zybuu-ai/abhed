@@ -206,7 +206,7 @@ const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => tru
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
 const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {}, loadDownloads = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
-const requestAnimationFrame = f => f(), idleTurns = new Map();
+const requestAnimationFrame = f => f(), idleTurns = new Map(), setConn = () => {};
 // api answers the session list from __sessions, after the next of __delays;
 // a route given to __defer answers when the test resolves it.
 let __sessions = [], __delays = []; const __pending = {};

@@ -57,11 +57,11 @@ sets = {
     'ide-chat': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
           'function userBubble(text, state){','function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
-          'function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','async function watchIdle(){','function offerNext(t){','function takeNext(e){',
+          'function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','async function watchIdle(){','const goneTries = ','function sessionGone(id, e){','function offerNext(t){','function takeNext(e){',
           'const MAX_UPLOAD = ','let pending = ','function addFiles(list){','function drawFiles(){','let reviewNotes = ','function addNote(path, line, code, text){','function drawNotes(){','function withNotes(text, notes){','async function postFile(id, file, name, dir){','async function flushUploads(id){','function withFiles(prompt, uploaded){',
           'const NOTE_TEXT = ','const notifyOn = ','function notify(kind){','let lastUser = ','const EDIT_HINT = ','function offerEdit(){','function editLast(b){','function stopEditing(){'],
     'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(why){',
-          'function connect(id){','function streamLost(id){','const STARTING_WAITS = ','function stillStarting(id, what, again){','async function notHere(id){',
+          'function connect(id){','function streamLost(id){','const goneTries = ','function sessionGone(id, e){','const STARTING_WAITS = ','function stillStarting(id, what, again){','async function notHere(id){',
           'async function api(path, opts){','function attach(t, id, reattach){'],
     # From ide.html: the explorer's tree and its name input.
     'ide-tree': ['const el = (tag, cls, text) => {','function reveal(s, lines){','const clear = ','const parentOf = ','const joinPath = ','const dirs = ','const heldLoads = ',
