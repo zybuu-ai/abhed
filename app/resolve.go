@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/forge"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -129,7 +130,11 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 		return fail(err)
 	}
 	*mode = resolveMode(cfg, fs, *mode)
-	opts := forge.Options{Kind: *kind, CAFile: *ca}
+	own := toolset.OwnEgress(cfg) // the forge API and the push, under the allowlist
+	if own != nil {
+		defer own.Close()
+	}
+	opts := forge.Options{Kind: *kind, CAFile: *ca, Egress: own}
 	if opts.Kind != "" {
 		opts.Token = tokenFor(opts.Kind)
 	}
@@ -166,6 +171,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	}
 	worktree = work.Dir
 	work.Secrets = openVault().Session() // a stored value in the change refuses the push
+	work.Egress = own
 	defer func() {
 		if !kept {
 			work.Cleanup(context.WithoutCancel(ctx), workspace)

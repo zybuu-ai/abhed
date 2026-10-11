@@ -84,6 +84,12 @@ new one; a hook that keeps a count or a log should expect that.
   a deny rule is: each part of a chained command, a path relative to the
   workspace or absolute, and in any Unicode normal form. A call that cannot be
   read that far is sent. With no `match`, every call reaches the extension.
+- `env` sets variables for the process. An extension does not inherit
+  Abhed's environment, which holds `ABHED_API_KEY` and model provider keys:
+  it gets `PATH`, `HOME`, `USER`, `LOGNAME`, the locale, `TMPDIR` and `TZ`
+  (on Windows also what a program needs to start), then its `env`, which
+  wins. A variable given an empty value, `"GITHUB_TOKEN": ""`, passes your
+  own value of it. Before 1.2.8 an extension inherited everything.
 - `async` sends the events that only observe (`turn_end`, `subagent_end`,
   `notification`, `session_start`, `session_end`) without waiting for a reply.
 - A workspace's extensions start only once the workspace is trusted.

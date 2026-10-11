@@ -38,6 +38,11 @@ All notable changes to Abhed are recorded here. The format follows
 - An MCP server with a `digest` starts only when its program matches; a URL
   server with a `digest` is refused.
 
+- An extension no longer inherits Abhed's environment: list each variable
+  it needs in its `env`, an empty value passing your own.
+- Under the egress allowlist, `ssh_connect`, the `k8s_*` tools, `rag` and
+  `abhed resolve` need allow rules for their hosts.
+
 ### Security
 
 - A shell's `-c` text was taken to be the word right after `-c`, so in
@@ -183,6 +188,15 @@ All notable changes to Abhed are recorded here. The format follows
   grapheme joiner (U+034F) or a Hangul filler (U+3164) beside `..` passed.
   Every default-ignorable character is now dropped first. Affects 1.2.2 to
   1.2.7.
+- Under `sandbox.network: "allowlist"`, `ssh_connect`, the `k8s_*` tools,
+  `rag` retrieval over HTTP and `abhed resolve`'s forge API and push went
+  around the egress rules. They are now judged and recorded as Abhed's own
+  requests of kind `ssh`, `k8s`, `rag` and `forge`. Extensions and a
+  kubeconfig's credential helper inherited Abhed's whole environment,
+  `ABHED_API_KEY` and model provider keys included; they now get only what
+  a program needs to run (and, for a credential helper, what cloud sign-in
+  tools read), then their configured variables. Affects 1.2.7 for the
+  allowlist, 0.1.0 to 1.2.7 for the environment.
 
 ### Added
 

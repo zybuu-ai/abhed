@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Ref names one issue on one host.
@@ -118,6 +120,9 @@ type Options struct {
 	APIBase string
 	// Client, when set, replaces the HTTP client (tests).
 	Client *http.Client
+	// Egress, when set, judges the API requests by the egress allowlist as
+	// Abhed's own requests of kind forge; nil uses the guard in force, if any.
+	Egress *egress.Guard
 }
 
 // New connects to the host that ref names.
@@ -125,7 +130,7 @@ func New(ctx context.Context, ref Ref, opts Options) (Forge, error) {
 	client := opts.Client
 	if client == nil {
 		var err error
-		client, err = httpClient(opts.CAFile)
+		client, err = httpClient(opts.CAFile, opts.Egress)
 		if err != nil {
 			return nil, err
 		}
@@ -166,9 +171,9 @@ func New(ctx context.Context, ref Ref, opts Options) (Forge, error) {
 	return nil, fmt.Errorf("unknown forge kind %q: want github, gitlab or gitea", kind)
 }
 
-func httpClient(caFile string) (*http.Client, error) {
+func httpClient(caFile string, guard *egress.Guard) (*http.Client, error) {
 	if caFile == "" {
-		return &http.Client{Timeout: 30 * time.Second}, nil
+		return &http.Client{Timeout: 30 * time.Second, Transport: &egress.Transport{Kind: egress.KindForge, Guard: guard}}, nil
 	}
 	pem, err := os.ReadFile(caFile) // #nosec G304 -- the operator names the CA file
 	if err != nil {
@@ -181,7 +186,8 @@ func httpClient(caFile string) (*http.Client, error) {
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("%s holds no certificate", caFile)
 	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}, nil
+	base := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
+	return &http.Client{Timeout: 30 * time.Second, Transport: &egress.Transport{Kind: egress.KindForge, Guard: guard, Base: base}}, nil
 }
 
 // inferKind asks an unfamiliar host which API it serves. GitLab answers on

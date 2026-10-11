@@ -329,6 +329,10 @@ request as an `egress.decision` event:
 | `web_fetch` | `web_fetch` | by the rules, then by `web_fetch`'s own checks as before (its `allowed_hosts`, and internal addresses, which it never reaches even when an egress rule names them in `allow_ips`) |
 | `web_search` | `web_search` | by the rules |
 | MCP over HTTP | `mcp` | by the rules |
+| `ssh_connect` | `ssh` | by the rules as a tunnel (host and port; a rule narrowed by method or path never allows it), then the address check |
+| the `k8s_*` tools | `k8s` | by the rules, as HTTPS to the API server |
+| `rag` retrieval over HTTP | `rag` | by the rules |
+| `abhed resolve`'s forge API and push | `forge` | by the rules; the push is judged by host and port before git connects, and its address is git's to resolve |
 
 The `model` rule follows whatever provider configuration is in force: it
 skips the address check, so a `base_url` or IAM URL on loopback, a private
@@ -432,10 +436,15 @@ names the tier and says whether it holds it.
 ## Not covered yet
 
 - Abhed's other own connections: the start-up check that the model endpoint
-  is up (a TCP connect to it), embeddings for retrieval and `rag` corpora,
-  the Kubernetes and SSH tools, the forge client, extensions' processes,
-  and the checks `abhed doctor` and onboarding make. These keep their own
-  settings.
+  is up (a TCP connect to it), embeddings for the code index, extensions'
+  processes, and the checks `abhed doctor` and onboarding make. These keep
+  their own settings. An extension, and a Kubernetes credential helper, no
+  longer inherit Abhed's whole environment: an extension gets `PATH`,
+  `HOME`, the locale and the temporary folder, then its `env`; a credential
+  helper gets those and what cloud sign-in tools read (`AWS_*`, `AZURE_*`,
+  `GOOGLE_*`, `CLOUDSDK_*`, `KUBECONFIG`, the proxy and certificate
+  variables), then the kubeconfig's `env`. Neither gets `ABHED_API_KEY` or a
+  model provider's key.
 - The filesystem of a stdio MCP server: only its network is confined.
 - Inspecting HTTPS: no TLS termination, so HTTPS rules are host and port only.
 - UDP and raw TCP other than through `CONNECT`, QUIC among them.

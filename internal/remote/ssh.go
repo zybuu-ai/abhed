@@ -27,6 +27,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // HostConfig declares one reachable machine. Operator-supplied: the model
@@ -199,8 +201,14 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 		return nil, err
 	}
 
-	dialer := net.Dialer{Timeout: h.cfg.Timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", h.cfg.Addr)
+	// Judged by the egress allowlist when one is in force, as a command's
+	// ssh through the proxy would be.
+	dctx, cancel := ctx, context.CancelFunc(func() {})
+	if h.cfg.Timeout > 0 {
+		dctx, cancel = context.WithTimeout(ctx, h.cfg.Timeout)
+	}
+	conn, err := egress.Dial(dctx, egress.KindSSH, "tcp", h.cfg.Addr)
+	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach %s (%s): %w", h.cfg.Name, h.cfg.Addr, err)
 	}

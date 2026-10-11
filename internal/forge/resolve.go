@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -29,6 +32,9 @@ type Work struct {
 	Secrets interface {
 		FindSent(text string) (label string, found bool)
 	}
+	// Egress, when set, judges the push by the egress allowlist before git
+	// connects, as Abhed's own request of kind forge.
+	Egress *egress.Guard
 }
 
 // ErrSecretInChange refuses a push whose change holds a stored secret: the
@@ -215,7 +221,27 @@ func (w *Work) Push(ctx context.Context, repo string, ref Ref, auth, caFile stri
 	if err := w.checkSecrets(ctx, repo); err != nil {
 		return err
 	}
+	if err := w.Egress.Allow(ctx, egress.KindForge, hostOnly(ref.Host), portOf(ref.Host)); err != nil {
+		return fmt.Errorf("refusing to push: %w", err)
+	}
 	return push(ctx, repo, w.Dir, url, "https://"+ref.Host+"/", w.Branch, auth, caFile, nil)
+}
+
+// hostOnly and portOf split a host[:port] as an https URL names it.
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+func portOf(hostport string) uint16 {
+	if _, p, err := net.SplitHostPort(hostport); err == nil {
+		if n, err := strconv.ParseUint(p, 10, 16); err == nil {
+			return uint16(n)
+		}
+	}
+	return 443
 }
 
 // checkSecrets refuses a change whose diff, file names or commit messages
