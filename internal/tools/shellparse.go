@@ -253,7 +253,8 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 	})
 }
 
-// bareExec reports an exec with no command, also behind command or builtin.
+// bareExec reports an exec with no command, also behind command or builtin,
+// and past exec's own options: -c, -l, -a NAME and --.
 func bareExec(args []*syntax.Word) bool {
 	i := 0
 	for i < len(args) {
@@ -269,7 +270,23 @@ func bareExec(args []*syntax.Word) bool {
 			}
 			continue
 		case "exec":
-			return i == len(args)-1
+			for i++; i < len(args); i++ {
+				o, lit := literal(args[i])
+				if !lit {
+					return true // it may expand to nothing
+				}
+				if !strings.HasPrefix(o, "-") || o == "-" {
+					return false
+				}
+				if o == "--" {
+					return i == len(args)-1
+				}
+				// -a takes the next word as the name, or what follows it glued.
+				if k := strings.IndexByte(o, 'a'); k > 0 && k == len(o)-1 {
+					i++
+				}
+			}
+			return true
 		}
 		return false
 	}

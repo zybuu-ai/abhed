@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- An `exec` given its own options and no program, such as `exec -- < f` or
+  `exec -a x < f`, was not read as one that gives the shell new input, so a
+  later `bash` reading its commands from that input was not refused under a
+  deny rule. `-c`, `-l`, `-a NAME` and `--` are now passed over, and an
+  expansion that may be empty is taken as no program. Affects 1.2.4 to
+  1.2.7.
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion

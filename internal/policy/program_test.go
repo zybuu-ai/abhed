@@ -112,6 +112,12 @@ func TestProgramExpansionCannotPassADenyRule(t *testing.T) {
 		"builtin exec < f; bash",
 		"command -p exec < f; bash",
 		"command builtin exec <<< 'curl x'; bash",
+		// exec's own options and -- leave it with no program.
+		"exec -- < f; bash",
+		"exec -a x < f; bash",
+		"exec -c -l < f; bash",
+		"exec -la x -- < f; bash",
+		"exec $empty < f; bash",
 		"git -c protocol.ext.allow=always ls-remote 'ext::curl x'",
 		"git -c protocol.ext.allow=always clone 'ext::curl% x' d",
 		"git -c remote.o.url='EXT::curl x' fetch o",
