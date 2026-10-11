@@ -147,6 +147,15 @@ All notable changes to Abhed are recorded here. The format follows
   and draw a fake prompt or status line over what was really there (display
   only; the record was not affected). Only colour now passes; any other
   escape or control character is shown as a symbol. Affects 1.2.7.
+- In a workbench shell on the container tier, printing the alternate-screen
+  sequence (`printf '\e[?1049h'`) made the server take every later line as
+  typed into a full-screen program, so a line a deny rule names ran and the
+  record kept no line, until the screen was switched back. The server now
+  asks the container engine at each such Enter whether a program really has
+  the terminal, and screens and records the line unless it does. The fence
+  tier's shell, which runs on the server's own terminal, is now asked as the
+  process tier's is, instead of being treated as a container's.
+  Affects 1.2.3 to 1.2.7.
 
 ### Added
 

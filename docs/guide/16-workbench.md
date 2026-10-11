@@ -516,13 +516,23 @@ What a shell changes about the checks, stated plainly:
   Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
   in canonical mode too, so from then on every line is recorded without its
   text; it is still screened.
-- **Which program has the keys.** On the process and none tiers the server
-  asks the terminal which process group is in the foreground: while it is not
-  the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
+- **Which program has the keys.** On the process, fence and none tiers the
+  server asks the terminal which process group is in the foreground: while it
+  is not the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
   screened nor recorded. On the container tier the engine's CLI holds the
-  terminal, so the server can only watch for a program switching to the
-  alternate screen; a `printf` of that sequence switches the screening and the
-  recording off there until the screen is switched back. Nor can it tell a
+  terminal, so the server watches for a program switching to the alternate
+  screen, and once one has, asks the engine at each Enter (`podman exec` or
+  `docker exec` of `cat /proc/1/stat` in the shell's container) whether the
+  terminal's foreground group is the shell's. Only when the engine says a
+  program has it is a line left unscreened and unrecorded; when the engine
+  cannot be asked (an image without `cat`, an engine that does not answer in
+  three seconds), the line is screened and recorded, which inside an editor
+  can refuse a line of text that matches a deny rule. A `printf` of the
+  switch alone no longer turns anything off. Programs that do not switch
+  screens (`python`, `cat`) have their lines screened and recorded there as
+  commands. A program that takes the foreground and hands the terminal back
+  to the shell's group while it keeps reading is beyond what the terminal
+  reports on any tier. Nor can it tell a
   password prompt there: a password that also appears in what was printed
   while it was typed, such as a user name in `[sudo] password for root:`, can
   be recorded. Nor can it ask whether the shell is at its prompt, so there a

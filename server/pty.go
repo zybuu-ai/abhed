@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -83,6 +84,9 @@ type ptyRun struct {
 	// prompt follows whether the shell is back at its prompt, where the
 	// terminal can be asked.
 	prompt *termline.Prompt
+	// foreground, on a container's shell, asks the engine whether a program
+	// other than the shell has the terminal; nil where it cannot be asked.
+	foreground func() (program, ok bool)
 	// idle is how long the run may go unwatched.
 	idle time.Duration
 	// leader names a shell, so what it leaves in its session can be ended safely.
@@ -320,6 +324,9 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 			run.capture.Hidden = func() bool { return termline.Hidden(tty) }
 		}
 		run.leader = sandbox.Lead(cmd) // named now, while its pid is certainly its own
+		if !run.local {
+			run.foreground = engineForeground(cmd)
+		}
 	}
 	live.mu.Lock()
 	live.ptys[id] = run
@@ -340,6 +347,12 @@ func isolationOf(t tools.Tool) *tools.Isolation {
 		in = tools.Isolation{Tier: "none", Backend: "host", Network: true}
 	}
 	return &in
+}
+
+// heldHere reports the tiers whose shell runs on this server's own terminal,
+// which can be asked who has the foreground: the fence's too, a process here.
+func heldHere(tier string) bool {
+	return tier == "process" || tier == "none" || tier == "fence"
 }
 
 // startShell starts one interactive shell in the session's sandbox, at the
@@ -402,7 +415,7 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	cmd.Env = withTerm(cmd.Env)
 	shell := &shellInfo{
 		capture: newLineCapture(id, func(in agent.TerminalInput) { s.unrecorded(nil, live, live.Loop.ManualTerminalInput(in)) }),
-		local:   resp.Isolation != nil && (resp.Isolation.Tier == "process" || resp.Isolation.Tier == "none"),
+		local:   resp.Isolation != nil && heldHere(resp.Isolation.Tier),
 		idle:    shellIdle,
 	}
 	if cfg.Sandbox.TerminalIdleMinutes > 0 {
@@ -880,8 +893,15 @@ func (p *ptyRun) send(b []byte) (int, error) {
 // the shell's prompt, so the line counts as typed ahead unless Abhed's own
 // prompt is plainly back (container tier), or at all (a failed ask).
 func (p *ptyRun) ask(e *enteredLine) {
-	e.Program = e.Alt
+	e.Program = false
 	if !p.local {
+		// A switch to the alternate screen is only printed text: the engine
+		// is asked before a line goes unscreened, and when it cannot say,
+		// the line is screened.
+		if e.Alt && p.foreground != nil {
+			program, ok := p.foreground()
+			e.Program = ok && program
+		}
 		e.Ahead = p.prompt == nil || !p.prompt.At()
 		return
 	}
@@ -899,6 +919,55 @@ func (p *ptyRun) ask(e *enteredLine) {
 	e.Ahead = p.prompt != nil && !p.prompt.At()
 }
 
+// engineForeground asks the engine that started a container's shell, named
+// by --name, whether the terminal's foreground process group is not the
+// shell's. The shell is the container's pid 1; its /proc stat holds both
+// its own group and the terminal's foreground group.
+func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
+	name := ""
+	for i, a := range cmd.Args {
+		if a == "--name" && i+1 < len(cmd.Args) {
+			name = cmd.Args[i+1]
+		}
+	}
+	if name == "" || cmd.Path == "" {
+		return nil
+	}
+	engine := cmd.Path
+	return func() (bool, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), engineAskWait)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, engine, "exec", name, "cat", "/proc/1/stat").Output() // #nosec G204 -- the engine that started the shell, and its container
+		if err != nil {
+			return false, false
+		}
+		return foregroundIsProgram(string(out))
+	}
+}
+
+// engineAskWait bounds asking the engine at a line's Enter.
+const engineAskWait = 3 * time.Second
+
+// foregroundIsProgram reads a /proc/<pid>/stat line: whether the terminal's
+// foreground group (tpgid) is set and is not the process's own group.
+func foregroundIsProgram(stat string) (program, ok bool) {
+	// The command name is in parentheses and may hold spaces.
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return false, false
+	}
+	f := strings.Fields(stat[i+1:])
+	if len(f) < 6 {
+		return false, false
+	}
+	pgrp, err1 := strconv.Atoi(f[2])
+	tpgid, err2 := strconv.Atoi(f[5])
+	if err1 != nil || err2 != nil || pgrp <= 0 || tpgid <= 0 {
+		return false, false
+	}
+	return tpgid != pgrp, true
+}
+
 // holdTyped keeps, for the record's scrub, each line typed into a single
 // command while its terminal reads lines (canonical mode, as sleep, cat or a
 // script's read leave it): such a line may be a password typed ahead that the
@@ -913,7 +982,7 @@ func (p *ptyRun) holdTyped(live *liveSession, data []byte) {
 	asked := false
 	if tool, ok := live.Loop.Tools.Get("bash"); ok {
 		if in := isolationOf(tool); in != nil {
-			asked = in.Tier == "process" || in.Tier == "none"
+			asked = heldHere(in.Tier)
 		}
 	}
 	for _, k := range p.held.Keys(data) {
