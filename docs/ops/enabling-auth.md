@@ -229,8 +229,11 @@ A live session re-reads its account before a request once the account may
 have changed: at once for the users file, within a couple of seconds for
 Postgres. An account removed with `abhed user remove`, even while the server
 runs, is signed out there, and the agent sessions that server holds for it
-go to no one, so an account made again under the name does not reach them;
-no restart is needed. Within 15 seconds the server also stops what it runs
+go to no one, so an account made again under the name does not reach them,
+nor do the removed account's browser sessions: a session ends when its
+account's creation time is no longer the one it was issued under. Signing in
+from a browser ends the session that browser already held, whoever it was
+for. No restart is needed. Within 15 seconds the server also stops what it runs
 for the removed account: the live run, background shells and tasks, and
 terminals end as `owner_revoked`. A group change, a reset or a must-change flag
 applies on every node without a new sign-in. Removing administrator rights,

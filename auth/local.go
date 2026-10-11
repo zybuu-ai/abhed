@@ -458,6 +458,7 @@ func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 	s.lastSeen.Store(now.UnixNano())
 	s.pwStamp = passwordStamp(u.Hash)
 	s.revocations = u.Revocations
+	s.accountMade = u.CreatedAt
 	l.mu.Lock()
 	l.sessions[sid] = s
 	l.mu.Unlock()
@@ -571,8 +572,9 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 	if _, live := l.sessions[sid]; !live {
 		return nil, errSessionGone
 	}
-	// A higher count is a sign-out everywhere made after this session began.
-	if u.Revocations > s.revocations {
+	// A higher count is a sign-out everywhere made after this session began;
+	// another creation time is another account under the same name.
+	if u.Revocations > s.revocations || remade(s.accountMade, u.CreatedAt) {
 		delete(l.sessions, sid)
 		return nil, errSessionGone
 	}
@@ -595,6 +597,12 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 		s.checked.Store(&accountCheck{version: version, at: now})
 	}
 	return id, nil
+}
+
+// remade reports whether an account's creation time differs from the one a
+// session was issued under. A store that keeps none gives no answer.
+func remade(issued, now time.Time) bool {
+	return !issued.IsZero() && !now.IsZero() && !issued.Equal(now)
 }
 
 // session finds the live session a request's cookie names.
@@ -736,6 +744,16 @@ func (l *LocalAuth) SignInHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The session this browser held, as whoever it was, ends with the new sign-in.
+	if c, err := r.Cookie(l.CookieName); err == nil {
+		l.mu.Lock()
+		old, found := l.sessions[c.Value]
+		delete(l.sessions, c.Value)
+		l.mu.Unlock()
+		if found {
+			l.changed(subjectOf(old))
+		}
+	}
 	l.issue(w, u)
 	// An account made again under a removed name must not find the old one's
 	// sessions still held here.

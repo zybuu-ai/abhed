@@ -145,6 +145,13 @@ All notable changes to Abhed are recorded here. The format follows
   15 seconds, and at once when it sees one change, and stops that work as
   `owner_revoked`; removing administrator rights stops the person's work
   too. Affects 1.2.3 to 1.2.7.
+- A local account's browser session outlived the account: once the name
+  was made again, the removed account's cookie worked for the new account,
+  unless the password was changed too. A session now ends when its
+  account's creation time differs from the one it was issued under.
+  Signing in as one person and then as another from the same browser also
+  left the first session valid; a sign-in now ends the session the browser
+  sent. Affects 0.1.0 to 1.2.7.
 
 ### Added
 
