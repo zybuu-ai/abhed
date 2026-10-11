@@ -158,8 +158,9 @@ and the session says so.
 A remote tool's name may hold only letters, digits, `_`, `.` and `-`, up to
 64 characters. The MCP specification allows names of up to 128, but model
 providers refuse tool names over 64, so a longer one is left out: a warning
-names it and gives its length, `/mcp` counts the tools left out for their
-names beside each server, and Studio lists them under the server.
+names it and gives its length, `/mcp` and Studio list it under its server,
+and `abhed doctor` and the server's MCP status count the tools left out for
+their names beside each server.
 
 ## Namespacing and policy
 

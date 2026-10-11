@@ -556,8 +556,8 @@ on. A server with it off starts on the older schema as before.
   `group%2Fproject` or a URL carried in the path, on a host that no deny or
   ask rule names a path on; it was refused on every host.
 
-- `/mcp` counts the tools a server offers that were left out for their
-  names (over 64 characters, or characters other than letters, digits,
+- `abhed doctor` and the server's MCP status count the tools a server
+  offers that were left out for their names (over 64 characters, or characters other than letters, digits,
   `_`, `.` and `-`), and the warning gives the name's length.
 
 ### Changed
