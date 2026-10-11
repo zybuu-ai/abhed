@@ -94,6 +94,20 @@ func TestNewWorktreeDirRefusesWhatIsThere(t *testing.T) {
 	if err := NewWorktreeDir(filepath.Join(dir, "planted")); err == nil {
 		t.Fatal("a planted link was taken for a new worktree")
 	}
+	// The folder is made, so git fills it rather than making one by name;
+	// an empty one left behind is made afresh, one holding files refused.
+	if info, err := os.Lstat(filepath.Join(dir, "new")); err != nil || !info.IsDir() {
+		t.Fatalf("no folder made: %v", err)
+	}
+	if err := NewWorktreeDir(filepath.Join(dir, "new")); err != nil {
+		t.Fatalf("an empty folder left behind: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new", "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewWorktreeDir(filepath.Join(dir, "new")); err == nil {
+		t.Fatal("a folder holding work was taken for a new worktree")
+	}
 }
 
 // The worktree exclude line is written as the file tools write: a planted

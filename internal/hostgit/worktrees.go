@@ -36,15 +36,21 @@ func (r *Repo) Worktrees(ctx context.Context) (string, error) {
 	return dir, nil
 }
 
-// NewWorktreeDir refuses a worktree path that something already holds, such
-// as a link planted where the next checkout would be made.
+// NewWorktreeDir makes the empty folder a worktree is checked out into,
+// refusing a path something already holds, such as a link planted where the
+// next checkout would be made; an empty folder an earlier attempt left is
+// made afresh. Git then fills a folder that is there, not one it makes by
+// name, and Placed checks the result.
 func NewWorktreeDir(dir string) error {
-	if _, err := os.Lstat(dir); err == nil {
-		return fmt.Errorf("%s already exists; remove it", dir)
+	if info, err := os.Lstat(dir); err == nil {
+		if !info.IsDir() || os.Remove(dir) != nil {
+			return fmt.Errorf("%s already exists; remove it", dir)
+		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return nil
+	// Mkdir never follows a link at dir: one swapped in since is an error here.
+	return os.Mkdir(dir, 0o750)
 }
 
 // RemoveWorktrees removes the worktrees folder once it is empty.
