@@ -813,7 +813,8 @@ on. A server with it off starts on the older schema as before.
   per-session sandbox's user. `controlplane.Admission.Origin` is
   `OriginSession` for the server's own work on a session's sandbox and warm
   pool (`WithOrigin`, `OriginOf`), so a guard need not hold it for
-  approval.
+  approval. `Service.Command` holds the guard's release until the context
+  it was given ends, and passes `Admission.Cancel`, which kills the process.
 - `driver.Status.Caveat` names what the reported tier lacks on this host,
   such as `no /proc`, and the control plane adds it to the `IsolationVerified`
   condition; `drivertest.Fake.Caveat` reports one.

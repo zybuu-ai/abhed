@@ -196,8 +196,10 @@ What changes for a session:
   driver, with git protection, `.abhed` hidden, and the network as the
   driver builds it. Each command is in the control plane's record as an
   `exec` by the session's user (with `"via": "session"`), put to a guard
-  and interceptors as any `:exec` is. The bash tool's own timeout applies,
-  not `exec_timeout_seconds`.
+  and interceptors as any `:exec` is. A guard counts the command, or the
+  terminal, as running until it ends, as it counts an `:exec`, and can end
+  it; that end is recorded as `exec.ended`. The bash tool's own timeout
+  applies, not `exec_timeout_seconds`.
 - **The record links them.** The sandbox carries the reserved label
   `abhed.dev/session=<session id>` (or `abhed.dev/session-user=<digest>`
   per user), is owned by `system:sessions`, and its `create` or `claim`
