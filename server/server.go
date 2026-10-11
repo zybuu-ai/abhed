@@ -994,7 +994,16 @@ func (s *Server) accountOutage(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health says whether the server is up, and sign-out must work regardless.
 		if r.URL.Path != "/v1/health" && r.URL.Path != "/v1/ready" && r.URL.Path != "/logout" {
-			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) {
+			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) &&
+				!s.otherCredential(r, local) {
+				if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					w.Header().Set("Retry-After", "5")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(accountOutageHTML))
+					return
+				}
+				w.Header().Set("Retry-After", "5")
 				WriteError(w, http.StatusServiceUnavailable, auth.ErrAccountUnchecked.Error())
 				return
 			}
@@ -1002,6 +1011,31 @@ func (s *Server) accountOutage(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// otherCredential reports whether something other than the local session
+// identifies the request: a bearer token, or another provider's session.
+// Such a request is judged by that, not by a local cookie it also carries.
+func (s *Server) otherCredential(r *http.Request, local *auth.LocalAuth) bool {
+	if h := r.Header.Get("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
+		return true
+	}
+	for _, p := range s.signIns() {
+		if p == auth.Provider(local) {
+			continue
+		}
+		if _, ok := p.Identify(r); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// accountOutageHTML is what a browser is shown while the accounts cannot be read.
+const accountOutageHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Try again shortly</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}</style></head>
+<body><h1>Try again shortly</h1><p>This server could not check your sign-in just now, because it cannot read its accounts.
+You are still signed in. Reload the page in a moment.</p></body></html>`
 
 // authMiddleware builds the identity layer from config unless one was injected.
 func (s *Server) authMiddleware() auth.Middleware {

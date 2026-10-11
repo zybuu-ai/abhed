@@ -74,3 +74,27 @@ func TestSignOutEndsBothSessions(t *testing.T) {
 		t.Fatalf("a signed-out reload went to %q", loc)
 	}
 }
+
+// While the accounts cannot be read, a request that a single sign-on session
+// or a bearer token identifies is judged by that, not refused for a stale
+// local cookie it also carries; a browser alone gets a page, not JSON.
+func TestAccountOutageOnlyWhenNothingElseIdentifies(t *testing.T) {
+	g, st, _ := newMixedRig(t)
+	alice := g.signIn(t, "alice")
+	st.setDown(true)
+	rec := g.do(nil, "GET", "/v1/sessions", "", "Cookie", "sso=held; abhed_session="+alice.Value)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("single sign-on with a stale local cookie during an outage = %d %s", rec.Code, rec.Body)
+	}
+	rec = g.do(alice, "GET", "/v1/sessions", "", "Authorization", "Bearer not-a-token")
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Fatalf("a bearer request with a local cookie got the outage answer: %s", rec.Body)
+	}
+	nav := g.do(alice, "GET", "/console", "", "Accept", "text/html")
+	if nav.Code != http.StatusServiceUnavailable || !strings.HasPrefix(nav.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("a browser during an outage = %d %q", nav.Code, nav.Header().Get("Content-Type"))
+	}
+	if api := g.do(alice, "GET", "/v1/sessions", ""); api.Code != http.StatusServiceUnavailable || api.Header().Get("Retry-After") == "" {
+		t.Fatalf("an API call during an outage = %d, Retry-After %q", api.Code, api.Header().Get("Retry-After"))
+	}
+}

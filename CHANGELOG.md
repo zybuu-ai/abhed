@@ -660,6 +660,11 @@ on. A server with it off starts on the older schema as before.
   as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
   so the agent took the folder for empty. It now says the folder is skipped
   unless `path` names it, and gives that path.
+- While the local account store could not be read, a request carrying a
+  stale local cookie got `503` even when a bearer token or a single
+  sign-on session identified it, and a browser opening a page got JSON.
+  The `503` now applies only when nothing else identifies the request,
+  carries `Retry-After`, and is a page for a browser.
 
 ### Dependencies
 

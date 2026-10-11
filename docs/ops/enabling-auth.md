@@ -261,8 +261,11 @@ on other servers stay live.
 
 While the account store cannot be read, a request with a local session gets
 `503 {"error":"could not check your sign-in; try again shortly"}` rather
-than `401`: the session is kept, and the workbench does not report it as
-signed out. Sign-out and `/v1/health` still answer.
+than `401`, with `Retry-After: 5`, and a browser opening a page gets a short
+page saying so: the session is kept, and the workbench does not report it as
+signed out. Sign-out and `/v1/health` still answer. A request that a bearer
+token or another provider's session also identifies is judged by that
+instead, not refused for the local cookie it carries.
 
 ## Behind a reverse proxy
 
