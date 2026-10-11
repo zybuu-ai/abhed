@@ -406,10 +406,27 @@ is the boundary. A command too long or complex to split in full (over
 asked about while any deny or ask rule for `bash` has a pattern, in every
 mode.
 
+Deny and ask rules also read the shell scripts a command runs, from the
+folder the agent's command starts in: a shell's script (`bash ./s.sh`,
+`sh -e -- s.sh`), `source f` and `. f`, a program named by a path that is a
+shell script (`./tool` with a `#!/bin/sh` line, or no `#!` line at all), and
+the scripts those source, two levels deep. So `bash ./s.sh` is refused under
+`bash(curl *)` when `s.sh` holds `curl`. A script that does not exist, that
+the same line writes before it runs it (`echo … > s.sh; sh s.sh`), or that
+is named from `~`, is refused while a deny rule for `bash` has a pattern. One
+the rules cannot read in full, because it is over 64 KiB, does not parse, or
+runs text built when it runs (`eval "$x"`), is asked about, in every mode.
+A binary, or a script for another interpreter (`#!/usr/bin/env python3`),
+is not read. A script is read when the decision is made, so one changed
+between then and the run is not seen; the sandbox is the boundary there.
+
 A deny pattern matches the words, so it is easy to step around.
 `bash(curl *)` does not catch any of these, and every one of them runs curl:
 
-- a command in a file the shell reads: `bash ./script.sh`, `source ./f`
+- a script another program reads (`python3 x.py`, `node x.js`, `make`), a
+  shell script over 64 KiB, one the agent's own commands judge from a folder
+  the server cannot see (an `:exec` in a sandbox), or a program the line
+  builds before it runs it (`make && ./bin/app`)
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,

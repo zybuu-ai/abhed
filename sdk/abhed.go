@@ -310,6 +310,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
+	pol.Cwd = sess.WorkDir
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
 		return nil, fmt.Errorf("abhed: deny rule: %w", err)
 	}

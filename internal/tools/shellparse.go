@@ -71,6 +71,20 @@ type shellFacts struct {
 	// prefixes are assignments before read, which set how read splits its
 	// input and not the shell's words.
 	prefixes map[*syntax.Assign]bool
+	// scripts are the files, named literally, that a shell, source or . runs,
+	// and programs named by a path, which run as shell text when they are not
+	// a binary or another interpreter's script.
+	scripts []Script
+	// writes are the literal targets of output redirections.
+	writes []string
+}
+
+// Script is a file a command runs as shell text, as named on its line.
+type Script struct {
+	Path string
+	// Direct marks a program named by a path, run as a script only when it
+	// has no #! line or a shell's.
+	Direct bool
 }
 
 // maxReadings bounds the commands read from one simple command's words, so a
@@ -198,6 +212,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 				f.feed(n.Y)
 			}
 		case *syntax.Stmt:
+			f.redirectTargets(n)
 			// Visited before what it holds, so its input passes inward.
 			if f.fed[n] || inputRedirect(n) {
 				for _, in := range innerStmts(n.Cmd) {
@@ -487,6 +502,10 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 			continue
 		}
 		if !dispatched {
+			// A program named by a path may be a script the shell runs.
+			if !value && strings.Contains(words[i], "/") && !strings.HasSuffix(words[i], "/") && !isAssignment(words[i]) {
+				f.script(words[i], true)
+			}
 			dispatched = f.runs(c, st, path.Base(words[i]), c.Args[i+1:], depth)
 		}
 	}
@@ -517,8 +536,11 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		}
 	case name == "source" || name == ".":
 		if len(args) > 0 {
-			if v, _ := literal(args[0]); stdinFile(v) {
+			v, lit := literal(args[0])
+			if stdinFile(v) {
 				f.opaque = "a script read from its input"
+			} else if lit {
+				f.script(v, false)
 			}
 			if hasProcSubst(args[0]) {
 				f.opaque = "a script made when it runs"
@@ -590,8 +612,12 @@ scan:
 		case v == "--":
 			script = j+1 < len(args)
 			if script {
-				if w, _ := literal(args[j+1]); stdinFile(w) {
+				w, lit := literal(args[j+1])
+				switch {
+				case stdinFile(w):
 					stdin = true
+				case lit:
+					f.script(w, false)
 				}
 			}
 			break scan
@@ -625,6 +651,9 @@ scan:
 		default:
 			script = true
 			stdin = stdin || stdinFile(v) || v == "-"
+			if !stdin {
+				f.script(v, false)
+			}
 			break scan
 		}
 	}
@@ -1073,6 +1102,29 @@ func globWord(w *syntax.Word) bool {
 		}
 	}
 	return false
+}
+
+// maxScripts bounds the scripts one command records.
+const maxScripts = 16
+
+// script records a file the command runs as shell text.
+func (f *shellFacts) script(name string, direct bool) {
+	if name == "" || len(f.scripts) >= maxScripts {
+		return
+	}
+	f.scripts = append(f.scripts, Script{Path: name, Direct: direct})
+}
+
+// redirectTargets records the literal files st's output redirections write.
+func (f *shellFacts) redirectTargets(st *syntax.Stmt) {
+	for _, r := range st.Redirs {
+		switch r.Op {
+		case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
+			if v, lit := literal(r.Word); lit && len(f.writes) < maxScripts {
+				f.writes = append(f.writes, v)
+			}
+		}
+	}
 }
 
 // command keeps one command the rules and checks read, failing closed past

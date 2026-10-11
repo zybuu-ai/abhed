@@ -110,6 +110,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		pol := policy.New(policy.ModeAuto)
 		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 		pol.Roots = sess.PolicyRoots
+		pol.Cwd = sess.WorkDir
 		must(pol.AddDeny(cfg.Permissions.Deny...))
 		// The operator's own allow rules apply, so an eval run is governed the
 		// same way a real session is. The build-tool defaults stay for corpora

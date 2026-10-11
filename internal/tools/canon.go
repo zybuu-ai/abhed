@@ -869,6 +869,13 @@ func (c Canonical) AsTerminalLine() Canonical {
 // unclosed quote: where its words start and end is not known.
 func (c Canonical) Unparsed() bool { return c.shell.unparsed }
 
+// Scripts are the files, named literally, the command runs as shell text:
+// a shell's script operand, source and . files, and programs named by a path.
+func (c Canonical) Scripts() []Script { return c.shell.scripts }
+
+// Writes are the literal targets of the command's output redirections.
+func (c Canonical) Writes() []string { return c.shell.writes }
+
 // Commands are the simple commands a bash parser finds, from each word that
 // may be the program, quoting undone: inside functions, subshells and the
 // literal text eval, trap and a shell's -c run. Deny and ask rules read them.

@@ -396,6 +396,12 @@ type Engine struct {
 	// written relative to one matches. Nil matches paths only as given.
 	Roots func() []string
 
+	// Cwd returns the folder a bash command starts in. When set, deny and
+	// ask rules also read the scripts a command runs (bash ./s.sh, source f,
+	// ./tool) from there. Nil reads none, for an engine judging commands in
+	// a sandbox whose files are not the host's.
+	Cwd func() string
+
 	// AskReadOnly names read-only tools that may still ask in the default,
 	// accept-edits, auto and plan modes. Each is given the call's subject and
 	// returns why it asks, or "" when it need not. An allow rule approves
@@ -764,6 +770,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
 	allowSubjects := []string{subject}
 	var canon tools.Canonical
+	var script scriptRead
 	switch {
 	case tool == "bash":
 		// Every step sees the command as written and as the shell splits it,
@@ -786,6 +793,11 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		// And the commands a bash parser finds, in function bodies and in the
 		// text eval, trap and -c run, read whole: their quoting is undone.
 		subjects = append(subjects, canon.Commands()...)
+		// And the commands in the scripts it runs, read from where it starts.
+		if e.Cwd != nil && e.rulesSeeParts(tool) {
+			script = e.readScripts(canon)
+			subjects = append(subjects, script.subjects...)
+		}
 		// Deny and ask rules also see each program named by a path as its
 		// base name: bash(curl *) holds for /usr/bin/curl x and ./curl x.
 		subjects = withBaseNames(subjects)
@@ -906,6 +918,9 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	if canon.Unparsed() && patterned(denyRules, tool) {
 		return Result{Decision: Deny, Reason: "the command cannot be parsed as the shell reads it, so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
 	}
+	if script.refuse != "" && patterned(denyRules, tool) {
+		return Result{Decision: Deny, Reason: "the command runs a script no rule can read (" + script.refuse + "), so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
+	}
 
 	// 2a. Under a changed IFS an expansion's value splits into words no rule
 	// can read; a deny rule must hold in every mode, so this refuses, not asks.
@@ -937,6 +952,9 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	// deny or ask rule would match, so no mode or allow rule approves it.
 	if !complete && e.rulesSeeParts(tool) {
 		return Result{Decision: Ask, Reason: "the command is too long or complex to check each part against the rules", Scope: "", Step: "screen"}
+	}
+	if why := firstNonEmpty(script.refuse, script.ask); why != "" {
+		return Result{Decision: Ask, Reason: "the command runs a script that cannot be checked in full against the rules (" + why + ")", Scope: "", Step: "screen"}
 	}
 
 	// 3. Ask rules — force a prompt even if a later allow would match, so they
@@ -1043,6 +1061,15 @@ func hookLate(ctx context.Context) Result {
 		why = "the decision was cancelled before the policy hooks decided"
 	}
 	return Result{Decision: Deny, Reason: why + ", so the call is refused", Step: "hook"}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // sessionControl names tools that change only the session's own background

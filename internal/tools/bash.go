@@ -823,7 +823,9 @@ func asExitError(err error, target **exec.ExitError) bool {
 func (s *Session) FollowCd(command string) string {
 	next, why := detectCd(command, s)
 	if next != "" {
+		s.mu.Lock()
 		s.Cwd = next
+		s.mu.Unlock()
 	}
 	return why
 }

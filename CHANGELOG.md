@@ -35,6 +35,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Deny and ask rules for `bash` did not see inside a shell script a command
+  ran, so `bash ./s.sh`, `source f` or `./tool` ran `curl` past
+  `bash(curl *)` when the script held it. The agent's commands now have the
+  shell scripts they run read from the folder they start in, two levels
+  deep, and their commands checked against deny and ask rules. A script that
+  does not exist, that the same line writes before running it, or that is
+  named from `~` is refused under a deny rule; one too long, unparsable or
+  running built text is asked about. Binaries and other interpreters'
+  scripts are not read, and an `:exec` reads no script. Affects every
+  release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
   on a disk that ignores case (documented as a limit). Deny and ask path

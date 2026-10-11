@@ -161,6 +161,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
+	pol.Cwd = sess.WorkDir
 	pol.Session = &policy.Overlay{}
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
