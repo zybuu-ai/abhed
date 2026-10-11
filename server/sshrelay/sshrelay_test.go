@@ -275,3 +275,29 @@ func TestLoadHostKeyNeverMakesOne(t *testing.T) {
 		t.Fatalf("a 0400 key: %v", err)
 	}
 }
+
+// An end during the handshake is returned as the end, not as a failed
+// handshake.
+func TestEndDuringHandshake(t *testing.T) {
+	key, err := LoadOrCreateHostKey(filepath.Join(t.TempDir(), "k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := tcpPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := Serve(ctx, a, Config{HostKey: key}, &fakeHandler{})
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "handshake") {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not end with its context")
+	}
+}
