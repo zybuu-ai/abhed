@@ -876,20 +876,33 @@ Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.
 
-On a Community server that several accounts sign in to (local, proxy or OIDC
-authentication), every account shares the operator's one store. Any account
-can then use every secret an allow rule names, and can read it too: redaction
-hides the stored value, not a command that prints it reversed, encoded or
-split. The server logs a warning at startup when it finds such a rule, and
-again as each session starts, naming its account. Give
-each person who must not see another's secrets their own server.
+On a server that several accounts sign in to (local, proxy or OIDC
+authentication), each account has its own store, and a session reads only
+the store of the account it runs as: one account never uses or reads
+another's secrets, nor the operator's. The stores are files in
+`~/.abhed/secrets.d` (`ABHED_ACCOUNT_SECRETS_DIR` overrides; it must be an
+absolute path), one per account, named by a digest so no account's name is
+on disk; the tools and sandbox refuse that folder as they refuse the
+operator's store. A local account made again under a removed one's name
+starts with an empty store. The operator's store, which `abhed secret`
+manages, serves scheduled runs only. A caller with no account (anonymous)
+gets an empty store and cannot add to it. Each account manages its own
+secrets through the API, names only, values never read back:
 
-A server embedding Abhed for several accounts can instead give each account
-its own store, through `server.Options.SecretsFor`: a session's commands,
-logins and fetches then read only its owner's store, and its record is
-redacted with it. Such stores belong in `~/.abhed/secrets.d`
-(`ABHED_ACCOUNT_SECRETS_DIR` overrides), which the tools and sandbox refuse
-as they refuse the operator's store.
+```sh
+curl -X PUT  https://abhed.example/v1/secrets/GITHUB_TOKEN -d '{"value":"ghp_…"}'
+curl         https://abhed.example/v1/secrets            # {"names":["GITHUB_TOKEN"]}
+curl -X DELETE https://abhed.example/v1/secrets/GITHUB_TOKEN
+```
+
+A value is 8 characters to 64 KiB. Allow rules still decide which names a
+session may use. Before 1.2.8 every account on such a server shared the
+operator's one store.
+
+A server embedding Abhed can give each account a store of its own choosing
+through `server.Options.SecretsFor` instead: a session's commands, logins
+and fetches then read only what it returns, and its record is redacted with
+it and the operator's store.
 
 ```json
 "allow": ["secret(GITHUB_TOKEN)"],

@@ -43,6 +43,10 @@ All notable changes to Abhed are recorded here. The format follows
 - Under the egress allowlist, `ssh_connect`, the `k8s_*` tools, `rag` and
   `abhed resolve` need allow rules for their hosts.
 
+- On `abhed serve` with sign-in, each account reads only its own secrets
+  store; the operator's store serves scheduled runs only. Have each person
+  add their secrets with `PUT /v1/secrets/{name}`.
+
 ### Security
 
 - A shell's `-c` text was taken to be the word right after `-c`, so in
@@ -197,6 +201,12 @@ All notable changes to Abhed are recorded here. The format follows
   a program needs to run (and, for a credential helper, what cloud sign-in
   tools read), then their configured variables. Affects 1.2.7 for the
   allowlist, 0.1.0 to 1.2.7 for the environment.
+- On `abhed serve` with sign-in (local, proxy or OIDC authentication) every
+  account shared the operator's secrets store, so any account could use,
+  and by printing it transformed read, every secret an allow rule named.
+  Each account now has its own store under `~/.abhed/secrets.d`, managed
+  through `GET /v1/secrets` and `PUT` and `DELETE /v1/secrets/{name}`; the
+  operator's store serves scheduled runs only. Affects 0.1.0 to 1.2.7.
 
 ### Added
 
