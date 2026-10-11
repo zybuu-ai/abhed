@@ -170,6 +170,10 @@ All notable changes to Abhed are recorded here. The format follows
   withheld; it is now refused with `503` and `Retry-After`. A resumed or
   running session still withholds until the store loads again. Affects
   1.2.2 to 1.2.7.
+- An uploaded file went into `uploads/<session id>` in the shared
+  workspace, so any account on the server could list that folder and learn
+  other people's session ids. Each upload now goes into a folder of its
+  own with a random name. Affects 1.0.0 to 1.2.7.
 
 ### Added
 

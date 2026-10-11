@@ -183,7 +183,9 @@ agent panel, or an image pasted into the message box attaches it to the next
 message. Nothing is uploaded until you send; × takes a file off. On send each
 file goes through the same upload route as the console's (`POST
 /v1/sessions/{id}/upload`, 32 MiB a file, refused before upload when larger),
-into the session's own folder under `uploads/`, and the message names its path
+into a folder of its own under `uploads/`, named at random rather than after
+the session so that other accounts sharing the workspace cannot read session
+ids off the folder names, and the message names its path
 for the agent to open with `read`, under the read rules every workspace file
 meets. An image is recognised by its bytes, not its name, and a model that can
 see reads it as an image. A file the server refuses keeps the message unsent

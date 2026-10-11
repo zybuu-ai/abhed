@@ -80,10 +80,10 @@ func TestUploadIntoAFolderIsThePersonsRecordedWrite(t *testing.T) {
 	if rec := wb.dropFile("acme", ptr(""), "top.txt", []byte("hi")); rec.Code != http.StatusOK {
 		t.Fatalf("upload to the root: %d %s", rec.Code, rec.Body)
 	}
-	// Without a folder, the composer's upload still goes to the session's upload folder.
+	// Without a folder, the composer's upload still goes to the upload folder.
 	rec = wb.dropFile("acme", nil, "note.txt", []byte("hi"))
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if rec.Code != http.StatusOK || !strings.Contains(out.Path, filepath.Join(uploadDirName, wb.session)) {
+	if rec.Code != http.StatusOK || !strings.Contains(out.Path, uploadDirName+string(filepath.Separator)) {
 		t.Fatalf("composer upload: %d %+v", rec.Code, out)
 	}
 }
