@@ -2365,7 +2365,7 @@ function makeTerm(name, kind){
     convertEol:kind === 'agent', scrollback:5000, theme:isDark() ? TERM_DARK : TERM_LIGHT, allowTransparency:true, disableStdin:kind === 'agent'});
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(pane);
   // Sized before the shell starts, so it is told the right width from the first prompt.
-  if($('p-terminal').offsetHeight) try{ fit.fit(); }catch{}
+  if(termRoom()) try{ fit.fit(); }catch{}
   const t = {id:++termSeq, name, kind, pane, term, fit, session:current, run:null, es:null, mode:null, dead:false,
     line:'', queue:[], hist:[], at:0, cwd:'.', q:'', sending:false, watch:false};
   terms.push(t);
@@ -2438,8 +2438,11 @@ function closeTerm(t){
   drawTermTabs(); saveShells(t.session); if(!terms.length) noTerminal();
 }
 function closeAllTerms(){ [...terms].forEach(closeTerm); }
+// termRoom reports whether the terminal panel is on screen with room to fit to: fitted while
+// hidden or squeezed, a terminal shrinks to xterm's two-column minimum and the shell is told so.
+const termRoom = () => { const b = $('tpanes'); return $('p-terminal').offsetHeight > 0 && b.clientWidth >= 120 && b.clientHeight >= 40; };
 function fitActive(){
-  const t = activeTerm; if(!t || !$('p-terminal').offsetHeight) return;
+  const t = activeTerm; if(!t || !termRoom()) return;
   try{ t.fit.fit(); }catch{}
   if(t.run && t.session === current) api(ptyURL(t, '/' + t.run + '/resize'), {method:'POST', body: JSON.stringify({cols:t.term.cols, rows:t.term.rows})}).catch(() => {});
 }

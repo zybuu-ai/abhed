@@ -686,6 +686,9 @@ on. A server with it off starts on the older schema as before.
   panel*) collapsed the editor to nothing and stretched the agent across
   the page. The panes now keep their columns. On a phone the hidden side
   panel no longer draws over the pane being shown.
+- A web IDE terminal opened while its panel was hidden or squeezed was
+  fitted to xterm's two-column minimum and its shell started that narrow. It
+  is now fitted only when the panel has room, and resized when it is shown.
 
 ### Dependencies
 

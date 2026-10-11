@@ -748,3 +748,13 @@ func TestIDEGridPlacesEachPaneByColumn(t *testing.T) {
 		t.Error("on a phone a hidden side panel is drawn over the pane being shown")
 	}
 }
+
+// A terminal is fitted only when its panel is on screen with room: fitted
+// hidden or squeezed, it shrinks to two columns and the shell is told so.
+func TestIDETerminalFitsOnlyWithRoom(t *testing.T) {
+	for _, want := range []string{"  if(termRoom()) try{ fit.fit(); }catch{}", "const t = activeTerm; if(!t || !termRoom()) return;", "new ResizeObserver(() => fitActive()).observe($('tpanes'));"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("missing: %s", want)
+		}
+	}
+}
