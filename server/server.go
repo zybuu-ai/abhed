@@ -497,6 +497,38 @@ type liveSession struct {
 	mu       sync.Mutex
 }
 
+// errSecretsUnreadable refuses a new session while the operator's secrets
+// store cannot be loaded: its record would have every payload withheld.
+var errSecretsUnreadable = errors.New("the secrets store cannot be read, so the session's record could not be redacted; " +
+	"the server log has the cause")
+
+// operatorSecretsReadable reports why the operator's secrets store cannot be
+// loaded now, nil when it can or when Redact reads no store.
+func (s *Server) operatorSecretsReadable() error {
+	if fresh, ok := s.opts.Redact.(interface {
+		Session() (*secrets.Fresh, error)
+	}); ok {
+		_, err := fresh.Session()
+		return err
+	}
+	if live, ok := s.opts.Redact.(interface {
+		Load() (*secrets.Redactor, error)
+	}); ok {
+		_, err := live.Load()
+		return err
+	}
+	return nil
+}
+
+// refuseUnreadableSecrets is the check a new session makes before it starts.
+func (s *Server) refuseUnreadableSecrets() error {
+	if err := s.operatorSecretsReadable(); err != nil {
+		s.log.Error("session refused: the secrets store cannot be read", "err", err)
+		return errSecretsUnreadable
+	}
+	return nil
+}
+
 // sessionRedactor is the redactor a session records with: the store read as it
 // changes where Redact can do so, withholding every payload if it cannot be loaded.
 func (s *Server) sessionRedactor() agent.Redactor {
@@ -1401,8 +1433,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, controlplane.ErrUnavailable):
 			w.Header().Set("Retry-After", "5")
 			WriteError(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, errSecretsUnreadable):
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
 		default:
-			WriteError(w, http.StatusInternalServerError, err.Error())
+			// The cause can name store internals, so it goes to the log only.
+			s.log.Error("session not started", "user", spec.User, "error", err)
+			WriteError(w, http.StatusInternalServerError, "the session could not be started; the server log has the cause")
 		}
 		return
 	}
@@ -1442,6 +1479,9 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 	sessionID := newSessionID()
 	defer s.startingDone(s.startingNow(sessionID))
+	if err := s.refuseUnreadableSecrets(); err != nil {
+		return "", err
+	}
 	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, true); err != nil {
 		return "", err
 	}
@@ -1576,6 +1616,9 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	}
 	sessionID := newSessionID()
 	defer s.startingDone(s.startingNow(sessionID))
+	if err := s.refuseUnreadableSecrets(); err != nil {
+		return "", err
+	}
 	vault, red, err := s.sessionSecrets(spec)
 	if err != nil {
 		return "", err

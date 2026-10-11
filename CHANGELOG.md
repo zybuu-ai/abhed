@@ -158,6 +158,13 @@ All notable changes to Abhed are recorded here. The format follows
   own sign-out. A signed-out reload on a server with local accounts beside
   single sign-on now lands on the front door rather than at the identity
   provider. Affects 1.0.0 to 1.2.7.
+- `POST /v1/sessions` answered a failure it had no case for with the raw
+  error, which could name store internals; it now logs the error and
+  answers a fixed message. A new session started while the operator's
+  secrets store could not be loaded ran with every payload in its record
+  withheld; it is now refused with `503` and `Retry-After`. A resumed or
+  running session still withholds until the store loads again. Affects
+  1.2.2 to 1.2.7.
 
 ### Added
 

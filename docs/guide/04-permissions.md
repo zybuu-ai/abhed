@@ -941,9 +941,10 @@ start with an error that names the file and the fix, and `abhed doctor` reports
 it as not ready. A missing store just means no secrets.
 
 `abhed serve` checks the store when it starts. If the store breaks while the
-server runs, each new or resumed session still starts, but every event payload
-it records is withheld, and the server logs why, until the file is fixed: a
-session started meanwhile redacts again from then on. While the store cannot
+server runs, a new session, chat or workbench, is refused with `503` and
+`Retry-After`, and the server logs why. A resumed session, or one already
+running, goes on, but every event payload it records is withheld until the
+file is fixed, and it redacts again from then on. While the store cannot
 be loaded, `GET /v1/health` answers `"status": "degraded"` with
 `"secrets_store": "unreadable"`, still with code 200. The
 same happens for the next conversation in a terminal that is already running.
