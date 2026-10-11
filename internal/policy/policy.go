@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/text/unicode/norm"
@@ -606,7 +607,9 @@ func subjectOf(args json.RawMessage) (key, subject string, err error) {
 // rules see every one: the path as given, absolute, with its links resolved,
 // and relative to each root, with and without a leading ./. Allow rules see
 // only the target: the resolved path, absolute and relative to the workspace.
-func (e *Engine) pathSubjects(p string) (all, allow []string) {
+// With disk false the disk's spellings are left out, for a tool no deny or
+// ask rule reads by path.
+func (e *Engine) pathSubjects(p string, disk bool) (all, allow []string) {
 	add := func(to *[]string, s string) {
 		for _, have := range *to {
 			if have == s {
@@ -620,15 +623,19 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 		return all, all
 	}
 	var roots []string
+	firstReal := ""
 	if e.Roots != nil {
-		for _, r := range e.Roots() {
+		for i, r := range e.Roots() {
+			real, disk := rootSpellings(r)
+			if i == 0 {
+				firstReal = real
+			}
 			roots = append(roots, r)
-			real := tools.RealPath(r)
 			if real != r {
 				roots = append(roots, real)
 			}
 			// A root named in another case than the disk holds would miss the disk's spelling below.
-			if disk := tools.DiskPath(real); disk != real {
+			if disk != real {
 				roots = append(roots, disk)
 			}
 		}
@@ -656,9 +663,13 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 	}
 	// Deny and ask rules also see the case the disk holds: on a disk that folds case,
 	// core/VAULT is core/vault. Allow rules keep the spelling given, so this only tightens.
-	diskAbs, diskReal := tools.DiskPath(abs), tools.DiskPath(real)
-	if real == abs {
-		diskReal = diskAbs
+	// Only deny and ask rules read them, so with none for paths they are not looked up.
+	diskAbs, diskReal := abs, real
+	if disk {
+		diskAbs, diskReal = tools.DiskPath(abs), tools.DiskPath(real)
+		if real == abs {
+			diskReal = diskAbs
+		}
 	}
 	for _, a := range []string{abs, real, diskAbs, diskReal} {
 		add(&all, filepath.ToSlash(a)+dir)
@@ -668,9 +679,33 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 	}
 	allow = []string{filepath.ToSlash(real) + dir}
 	if len(roots) > 0 {
-		relTo(&allow, tools.RealPath(roots[0]), real)
+		relTo(&allow, firstReal, real)
 	}
 	return all, allow
+}
+
+// rootSpellingsFor is how long a root's resolved and disk spellings are
+// kept: a decision's own path is read each time, its roots at most this often.
+const rootSpellingsFor = time.Second
+
+var rootMemo sync.Map // root -> rootSpelling
+
+type rootSpelling struct {
+	real, disk string
+	at         time.Time
+}
+
+// rootSpellings is root with its links resolved, and that as the disk spells it.
+func rootSpellings(root string) (real, disk string) {
+	if v, ok := rootMemo.Load(root); ok {
+		if s := v.(rootSpelling); time.Since(s.at) < rootSpellingsFor {
+			return s.real, s.disk
+		}
+	}
+	real = tools.RealPath(root)
+	disk = tools.DiskPath(real)
+	rootMemo.Store(root, rootSpelling{real: real, disk: disk, at: time.Now()})
+	return real, disk
 }
 
 // pathRules reports whether any deny, ask or allow rule for tool has a pattern.
@@ -761,7 +796,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			narrowAllows = false
 		}
 	case key == "path" && e.pathRules(tool):
-		subjects, allowSubjects = e.pathSubjects(subject)
+		subjects, allowSubjects = e.pathSubjects(subject, e.rulesSeeParts(tool))
 	}
 	// A Kubernetes or ssh call is judged on where it goes. Deny and ask rules also
 	// see the argument its subject used to be, so a rule written on a

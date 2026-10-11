@@ -196,7 +196,7 @@ func (e *Engine) MatchesCall(rules []Rule, tool string, args json.RawMessage) bo
 		}
 		subjects = append(subjects, subject)
 	case key == "path":
-		subjects, _ = e.pathSubjects(subject)
+		subjects, _ = e.pathSubjects(subject, true)
 		match = Rule.matchesPathAny
 	}
 	for _, r := range rules {

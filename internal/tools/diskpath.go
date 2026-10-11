@@ -82,7 +82,14 @@ func sameAs(dir string, names []string, info os.FileInfo) (string, bool) {
 }
 
 // foldKey is a name as a disk that ignores case and Unicode form compares it: STRASSE is straße.
-func foldKey(n string) string { return norm.NFC.String(cases.Fold().String(norm.NFC.String(n))) }
+func foldKey(n string) string {
+	c := folders.Get().(*cases.Caser)
+	defer folders.Put(c)
+	return norm.NFC.String(c.String(norm.NFC.String(n)))
+}
+
+// folders keeps Casers for foldKey, which are costly to make and not safe to share at once.
+var folders = sync.Pool{New: func() any { c := cases.Fold(); return &c }}
 
 // A folder's listing is kept while its identity and times are unchanged. Where the disk keeps
 // whole seconds, a folder changed in the last few could change again unseen, so it is not kept.

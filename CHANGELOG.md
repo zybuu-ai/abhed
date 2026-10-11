@@ -549,6 +549,12 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- A file tool's decision costs less: a workspace root's resolved and disk
+  spellings are read at most once a second rather than on every decision,
+  the disk's spelling of the path is looked up only when a deny or ask rule
+  reads paths for that tool, and the case folding Casers are reused. A
+  write decision with path rules takes about a quarter less time, and one
+  with only allow rules about a third of what it did.
 - Policy hooks, an extension's `tool_call` among them, now get the
   decision's context with a deadline: 30 seconds, or the request's own, such
   as an Explorer rename's. A call whose hooks have not decided by then is
