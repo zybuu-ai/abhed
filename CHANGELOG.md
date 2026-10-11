@@ -137,6 +137,11 @@ All notable changes to Abhed are recorded here. The format follows
   `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
   pin it.
   Affects the binaries and images of 1.2.7 and earlier.
+- The documentation served at `/docs/` had no Content-Security-Policy, so a
+  page there was the one place on the server a browser would run script
+  from. Every `/docs/` response now carries
+  `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:`.
+  Affects 0.1.0 to 1.2.7.
 
 ### Added
 
