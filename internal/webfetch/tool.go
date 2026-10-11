@@ -86,6 +86,10 @@ type Tool struct {
 	// Secrets reads the stored values for each call; a URL holding one is
 	// refused. Nil checks nothing, for a deployment with no store.
 	Secrets func() (*secrets.Redactor, error)
+	// PathRuled reports whether a deny or ask rule names a path on a host; an
+	// encoded slash is fetched only on a host it says no to. Nil refuses an
+	// encoded slash on every host. See PathRuled.
+	PathRuled func(host string) bool
 	// MaxBytes caps the body read; MaxChars the text returned per call.
 	MaxBytes int64
 	MaxChars int
@@ -171,7 +175,7 @@ func (t *Tool) check(raw string) (*url.URL, error) {
 	if raw != strings.TrimSpace(raw) {
 		return nil, errors.New("the URL has spaces or line breaks around it; pass it without them")
 	}
-	u, err := canonical(raw)
+	u, err := canonical(raw, t.PathRuled)
 	if err != nil {
 		return nil, err
 	}

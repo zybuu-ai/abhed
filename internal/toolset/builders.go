@@ -54,8 +54,9 @@ func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
 	if vault != nil {
 		load = vault.LoadRedactor
 	}
+	ruled := append(append([]string(nil), cfg.Permissions.Deny...), cfg.Permissions.Ask...)
 	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts,
-		Secrets: load, MaxChars: cfg.WebFetch.MaxChars}
+		Secrets: load, MaxChars: cfg.WebFetch.MaxChars, PathRuled: webfetch.PathRuled(ruled)}
 }
 
 // WebSearchTool constructs the web search tool when enabled. Returns nil, nil

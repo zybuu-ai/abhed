@@ -185,6 +185,12 @@ All notable changes to Abhed are recorded here. The format follows
   command whose path holds a space was recorded cut at the first space; it
   is now recorded as its program's base name. Affects 0.1.0 to 1.2.7.
 
+- `web_fetch` dropped only format characters before judging whether a path
+  segment reads as `.` or `..`, so a variation selector (U+FE0F), the
+  grapheme joiner (U+034F) or a Hangul filler (U+3164) beside `..` passed.
+  Every default-ignorable character is now dropped first. Affects 1.2.2 to
+  1.2.7.
+
 ### Added
 
 - What a sandbox command can reach of the server: on every tier, nothing
@@ -545,6 +551,10 @@ All notable changes to Abhed are recorded here. The format follows
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
+
+- `web_fetch` fetches a URL with an encoded slash (`%2F`), such as GitLab's
+  `group%2Fproject` or a URL carried in the path, on a host that no deny or
+  ask rule names a path on; it was refused on every host.
 
 ### Changed
 
