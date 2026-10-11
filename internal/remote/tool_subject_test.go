@@ -22,3 +22,17 @@ func TestSSHPolicySubjectIsHostFirst(t *testing.T) {
 		t.Fatal("an allow rule for staging allowed prod")
 	}
 }
+
+// Host names that pass for one another fold to one name; others stay apart.
+func TestFoldNameReadsLookAlikesAsOne(t *testing.T) {
+	for a, b := range map[string]string{"pr0d": "prod", "buiId1": "build1", "db-1": "db1", "rnail": "mail", "W3B": "web"} {
+		if foldName(a) != foldName(b) {
+			t.Errorf("%q and %q fold apart: %q, %q", a, b, foldName(a), foldName(b))
+		}
+	}
+	for a, b := range map[string]string{"build1": "build2", "prod": "stage", "db1": "db10"} {
+		if foldName(a) == foldName(b) {
+			t.Errorf("%q and %q fold together", a, b)
+		}
+	}
+}

@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- An `ssh_connect` host name that read like an operator's host only by a
+  look-alike character, such as `pr0d` or `buiId1` beside `prod` and
+  `build1`, was accepted. Names are now compared with look-alike characters
+  read as one and separators dropped; the approval's `user@addr` remains the
+  control. Affects 1.2.2 to 1.2.7.
 - Deny and ask rules for `bash` did not see inside a shell script a command
   ran, so `bash ./s.sh`, `source f` or `./tool` ran `curl` past
   `bash(curl *)` when the script held it. The agent's commands now have the

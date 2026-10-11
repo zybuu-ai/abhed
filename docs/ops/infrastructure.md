@@ -255,8 +255,11 @@ connection works, and registers the host **for that conversation only**.
 Nothing is written to `~/.ssh/config`. Another session on the same server
 cannot run on it or see its name, and in the terminal `/clear`, `/resume` and
 a fork close it; connect again there. A name an `ssh.hosts` entry uses, in any case, cannot
-be taken, and names are plain ASCII. That does not stop every look-alike:
-`pr0d` or `buiId1` still pass beside `prod` and `build1`. The approval for
+be taken, and names are plain ASCII. Nor can one that reads like it once
+look-alike characters are read as one (`0` as `o`, `1`, `I` and `i` as `l`,
+`5` as `s`, `rn` as `m`, and the like) and `-`, `_` and `.` are dropped:
+`pr0d`, `pr-od` and `buiId1` are refused beside `prod` and `build1`. No list
+covers every look-alike, so the name is not the control. The approval for
 each `ssh` command names the account and address it runs on, as
 `runs as user@addr`, and says whether the host was declared by the operator
 or added in this session; that address, not the name, is what to check.
