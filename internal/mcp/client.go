@@ -24,9 +24,9 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"unicode/utf8"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const protocolVersion = "2025-06-18"
