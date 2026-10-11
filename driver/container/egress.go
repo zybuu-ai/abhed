@@ -10,11 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/stdiorelay"
 )
 
 // hostOS is runtime.GOOS; tests set it to check another host's arguments.
@@ -171,7 +171,7 @@ func (d *Driver) startStdioRelay(in *instance) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.stopRelay, e.relayDone = cancel, make(chan struct{})
 	ready := make(chan error, 1)
-	args := []string{"exec", "-i", "--user", in.user, in.name, egressRelay, stdioRelayArg, e.listen}
+	args := []string{"exec", "-i", "--user", in.user, in.name, egressRelay, stdiorelay.Arg, e.listen}
 	sock := filepath.Join(e.dir, "proxy.sock")
 	go func() {
 		defer close(e.relayDone)
@@ -213,38 +213,5 @@ func (d *Driver) startStdioRelay(in *instance) error {
 
 // runStdioRelay runs one exec of the relay until it or ctx ends.
 func (d *Driver) runStdioRelay(ctx context.Context, args []string, sock string, ready func()) error {
-	cmd := d.r.command(ctx, args)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &limitedBuilder{b: &stderr, n: 4 << 10}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	merr := dialMuxReady(stdout, stdin, func() (net.Conn, error) { return net.Dial("unix", sock) }, ready)
-	_ = stdin.Close()
-	werr := cmd.Wait()
-	if msg := strings.TrimSpace(stderr.String()); msg != "" {
-		return fmt.Errorf("%s", msg)
-	}
-	return errors.Join(werr, merr)
-}
-
-// limitedBuilder keeps the first n bytes written to it.
-type limitedBuilder struct {
-	b *strings.Builder
-	n int
-}
-
-func (l *limitedBuilder) Write(p []byte) (int, error) {
-	if room := l.n - l.b.Len(); room > 0 {
-		l.b.Write(p[:min(len(p), room)])
-	}
-	return len(p), nil
+	return stdiorelay.Run(d.r.command(ctx, args), func() (net.Conn, error) { return net.Dial("unix", sock) }, ready)
 }
