@@ -42,6 +42,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
 	"github.com/zybuu-ai/abhed/internal/extension"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -227,7 +228,9 @@ type Agent struct {
 	// sandbox is the backend New built for commands, closed with the agent;
 	// warn is Options.Warn, which hears what closing it found.
 	sandbox sandbox.Sandbox
-	warn    func(format string, args ...any)
+	// unconfine undoes the registration that runs Abhed's own git inside it.
+	unconfine func()
+	warn      func(format string, args ...any)
 	// running counts the runs in progress, under forkMu: Fork holds it while
 	// it forks and refuses while a run is in progress, and a run starting
 	// meanwhile waits for the fork to finish.
@@ -338,12 +341,14 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// A chosen tier confines commands too: none runs unconfined in its place.
 	var fence *sandbox.Fence
 	var sbox sandbox.Sandbox
+	unconfine := func() {}
 	if opts.Sandbox || cfg.ManagedSets("sandbox") || cfg.Sandbox.Tier != "" {
 		sb, err := sandboxconfig.Build(cfg, opts.Workspace, stateRoots...)
 		if err != nil {
 			return nil, fmt.Errorf("abhed: %w", err)
 		}
 		sbox = sb
+		unconfine = hostgit.Register(opts.Workspace, sb)
 		bash.Sandbox = sb.Command
 		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))
 		fence, _ = sb.(*sandbox.Fence)
@@ -369,6 +374,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	var release func() // lets go of the record once recordFor has opened it
 	fail := func(err error) (*Agent, error) {
 		set.Close()
+		unconfine()
 		_ = sandbox.Close(sbox)
 		if release != nil {
 			release()
@@ -484,7 +490,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		fence.SetRecord(agent.SandboxRecord(rec))
 	}
 	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
-		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, warn: opts.Warn}
+		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, unconfine: unconfine, warn: opts.Warn}
 	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
@@ -692,6 +698,9 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	if a.unconfine != nil {
+		a.unconfine()
+	}
 	// The fence closes before the record is released, so state it finds
 	// planted then is recorded; its error goes to Warn.
 	if a.sandbox != nil {

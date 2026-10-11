@@ -718,7 +718,9 @@ repository that is not a submodule, so before running git in one, check its
 `.git/config` for settings that run a program, such as `core.fsmonitor` and
 `core.hooksPath`.
 
-Abhed's own git on the host refuses to run while a `commondir` names
+Abhed's own git (the prompt's branch, worktrees, a resolved issue's commit)
+runs inside the session's sandbox on the process tier and the fence; see
+[security posture](../trust/security-posture.md). It refuses to run while a `commondir` names
 anything but the repository's own git folder, by `../..` or its path
 through no symbolic link, while a work tree's `.git` file reaches its git
 folder through a symbolic link (`git worktree repair` writes it afresh),

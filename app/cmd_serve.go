@@ -18,6 +18,7 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -65,6 +66,8 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	// Abhed's own git in the workspace runs inside the sandbox too.
+	defer hostgit.Register(workspace, sb)()
 	// Under the fence each session gets a fence of its own, with its own
 	// cgroup, qualified at its first command; this one qualifies the host at
 	// startup and confines nothing else.

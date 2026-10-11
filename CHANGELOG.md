@@ -35,6 +35,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Abhed's own git commands (the prompt's branch and change count, file
+  mentions, worktree bookkeeping, a resolved issue's commit) ran on the host
+  in a repository the agent can write, guarded only by a list of settings
+  known to run a program. They now run inside the session's sandbox on the
+  process tier and the fence, in the terminal CLI, `abhed -p`, `abhed rpc`,
+  Studio and `abhed serve`; `git worktree add` and `remove`, the push, and the
+  container, vm and none tiers stay on the host with the list. Affects 0.1.0
+  to 1.2.7.
+
 - The terminal CLI, `abhed -p` and `abhed rpc` let a command write what git
   reads in a git folder (`.git/config`, hooks, `info/attributes`,
   `commondir`), as Studio and `abhed serve` did not, so a command could set

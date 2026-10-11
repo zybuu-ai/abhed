@@ -168,9 +168,18 @@ sandbox resolves these paths against serve's workspace, as serve does, and
 is denied that workspace's `.abhed` as well (`internal/sandboxconfig`,
 `driver/process`).
 
-Abhed's own git commands run on the host, outside the sandbox, in a repository
-the agent can write: the branch and change count in each prompt, worktrees for
-parallel runs, and a resolved issue's commit and push. They switch off, in
+Abhed's own git commands work in a repository the agent can write: the branch
+and change count in each prompt, file mentions, worktrees for parallel runs,
+and a resolved issue's commit and push. Where the session's sandbox runs
+commands on this host (the process tier, bubblewrap or Seatbelt, and the
+fence), they run inside it, as the agent's commands do: the terminal CLI,
+`abhed -p`, `abhed rpc`, Studio and `abhed serve` all do this. Three kinds stay
+on the host: `git worktree add` and `remove` (the sandbox holds the folders git
+writes them into), the push of a resolved issue from a repository Abhed makes
+itself, and every git command under the container, vm and none tiers, whose
+commands do not run on this host or run unconfined. A commit inside the
+sandbox takes the author's name and address from your configuration, read on
+the host. Wherever they run, they switch off, in
 git's command-line scope (through `GIT_CONFIG_COUNT`, which names any driver),
 the settings known to name a program git would run for these commands:
 fsmonitor, hooks, clean and smudge filters, merge drivers, textconv and
@@ -179,10 +188,10 @@ They do not enter submodules, refuse to commit a change holding a repository
 of its own, and drop git's environment variables (`internal/hostgit`). The git
 they run is the one on `PATH`, links followed, and is refused when it lies in
 the repository or in a folder sandboxed commands may write (temp folders,
-toolchain caches), where the agent could have planted one. This is
-a list, so it is best effort: a setting a later git adds is not covered until
-it is listed. Running these commands inside the sandbox is the complete
-answer, and is tracked as follow-up work. A resolved issue's branch is pushed
+toolchain caches), where the agent could have planted one. On the host
+this is a list, so it is best effort: a setting a later git adds is not
+covered until it is listed; inside the sandbox such a program runs as
+confined as the agent's own commands. A resolved issue's branch is pushed
 to an https address built from the issue, from a temporary repository with no
 configuration of its own that borrows the checkout's objects, so the
 agent-writable repository configuration cannot choose where the token goes;
