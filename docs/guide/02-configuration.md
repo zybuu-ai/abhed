@@ -198,7 +198,9 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 Shell commands run in the sandbox. On the process tier a command may write the
 workspace and a few shared folders, not only the workspace:
 
-- **Linux:** the workspace, and a private `/tmp` that is gone when the command ends.
+- **Linux:** the workspace, and a private `/tmp` that is gone when the command ends. The host's
+  `/tmp` and `/var/tmp` are out of every sandboxed command's reach, so state
+  kept there (a `HOME`, `auth.users_file`) is not refused as writable.
 - **macOS:** the workspace, `/private/tmp`, `/private/var/tmp`, your `TMPDIR`, and
   the toolchain caches `~/.cache`, `~/Library/Caches`, `~/.npm`,
   `~/.cargo/registry` and `~/go/pkg/mod`. These are the real folders, shared

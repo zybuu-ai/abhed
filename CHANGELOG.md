@@ -561,6 +561,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- On Linux, a home folder or state file under `/tmp` was refused as a place
+  sandboxed commands can write, though bubblewrap, the fence and containers
+  each give commands a `/tmp` of their own. It is accepted now.
 - `abhed acp` exited as soon as stdin closed, so requests read in a burst
   just before could go unanswered. It now answers every request it read
   first: a prompt still running ends as `cancelled`, and a request to the

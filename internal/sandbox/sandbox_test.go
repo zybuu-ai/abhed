@@ -466,3 +466,27 @@ func TestProcessDescribesTheBoundItSets(t *testing.T) {
 		t.Fatalf("with no count: %s", d)
 	}
 }
+
+// On Linux no sandboxed command writes the host's /tmp, so it is not listed
+// as writable: a HOME or state file under /tmp is not refused for it.
+func TestWritableAreasLeaveLinuxTmpOut(t *testing.T) {
+	t.Setenv("TMPDIR", "")
+	has := func(areas []string, p string) bool {
+		for _, a := range areas {
+			if a == p {
+				return true
+			}
+		}
+		return false
+	}
+	if l := writableAreas("linux"); has(l, "/tmp") || has(l, "/var/tmp") {
+		t.Errorf("linux lists the host's /tmp: %v", l)
+	}
+	if d := writableAreas("darwin"); !has(d, "/tmp") {
+		t.Errorf("darwin leaves /tmp out: %v", d)
+	}
+	t.Setenv("TMPDIR", "/tmp/x")
+	if l := writableAreas("linux"); has(l, "/tmp/x") {
+		t.Errorf("linux lists a TMPDIR under /tmp: %v", l)
+	}
+}

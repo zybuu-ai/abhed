@@ -340,9 +340,18 @@ func cacheAreas() []string {
 // command may write on some backend: temp folders and toolchain caches. A
 // file there cannot be protected by the sandbox's rules, since a command can
 // move the folder around it.
-func WritableAreas() []string {
-	out := append([]string{"/tmp", "/var/tmp", os.TempDir()}, tempAreas...)
-	if tmp := userTemp(); tmp != "" {
+func WritableAreas() []string { return writableAreas(runtime.GOOS) }
+
+func writableAreas(goos string) []string {
+	var out []string
+	// On Linux no sandboxed command writes the host's /tmp or /var/tmp:
+	// bubblewrap and containers mount a tmpfs there, the fence a private folder.
+	if goos != "linux" {
+		out = append([]string{"/tmp", "/var/tmp", os.TempDir()}, tempAreas...)
+	} else if t := os.TempDir(); !insideAny(t, []string{"/tmp", "/var/tmp"}) {
+		out = append(out, t)
+	}
+	if tmp := userTemp(); tmp != "" && (goos != "linux" || !insideAny(tmp, []string{"/tmp", "/var/tmp"})) {
 		out = append(out, tmp)
 	}
 	return append(out, cacheAreas()...)
