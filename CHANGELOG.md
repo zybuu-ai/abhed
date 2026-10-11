@@ -450,9 +450,12 @@ All notable changes to Abhed are recorded here. The format follows
   kernel. See [Linux on Z](docs/guide/01-getting-started.md#linux-on-z-s390x).
 - Sandbox sizes: `control_plane.sandbox_cpus` and
   `control_plane.sandbox_memory_mb`, or `resources.cpus` and
-  `resources.memory_mb` on one sandbox, are passed to its driver. The
-  `process` driver cannot hold a sandbox to a size and refuses one rather
-  than run it unbounded.
+  `resources.memory_mb` on one sandbox, are passed to its driver. On Linux
+  the `process` driver holds a sized sandbox in a cgroup of its own under a
+  delegated subtree, on the `process` tier; on macOS or without a delegated
+  subtree it refuses the create up front (`400`, with the reason), and on
+  another tier the sandbox goes to `Error`, rather than run unbounded. A driver can refuse a size at
+  create time through `driver.ConfigChecker`.
 - **A Helm chart for Kubernetes and OpenShift**, in `deploy/helm/abhed`
   ([Running on Kubernetes](docs/guide/27-kubernetes.md)). It runs `abhed serve`
   as one replica by default, held to the restricted Pod Security level

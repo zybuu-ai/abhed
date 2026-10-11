@@ -216,6 +216,13 @@ type Commander interface {
 	ForwardEnv(cmd *exec.Cmd, names []string)
 }
 
+// ConfigChecker is implemented by drivers that can tell, before an instance
+// is made, that they cannot apply a Spec's Config here, so a create is
+// refused at once rather than failing when the instance is built.
+type ConfigChecker interface {
+	CheckConfig(cfg map[string]string) error
+}
+
 // Lifetime is implemented by drivers that can say when an instance's
 // current incarnation ends, so what is bound to it (a forward, an exposed
 // service) closes with it. Done fails for an instance that is not running.

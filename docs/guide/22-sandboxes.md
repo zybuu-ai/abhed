@@ -54,9 +54,18 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `sandbox_memory_mb` | unset | Memory each sandbox may use, in MiB. Unset leaves it to the driver. |
 
 A size is passed to the driver, which holds the sandbox to it or refuses
-it. The `process` driver cannot hold one sandbox to a size, so a sandbox
-with `sandbox_cpus` or `sandbox_memory_mb` in force goes to `Error` under it
-rather than run unbounded; use a driver that bounds each sandbox.
+it. On Linux the `process` driver gives each sized sandbox a cgroup of its
+own (`cpu.max`, `memory.max` with no swap, and the whole cgroup killed on
+an out-of-memory), with every command, shell and forward in a leaf of it.
+It needs a delegated cgroup v2 subtree, as the fence does (for example
+`systemd-run --user --scope -p Delegate=yes abhed serve`), and sizes only
+the `process` tier: the fence, container and vm tiers keep their commands
+in cgroups of their own, and the `none` tier could move itself out. On
+macOS, where there are no cgroups, or on a Linux host with no delegated
+subtree, a create with `sandbox_cpus` or `sandbox_memory_mb` in force is
+refused with `400` and the reason; on another tier the sandbox goes to
+`Error` with the reason when it is built. Neither runs unbounded; use the
+container or microvm driver there.
 
 The weakest isolation a sandbox may run under is your existing
 `sandbox.min_tier`.
