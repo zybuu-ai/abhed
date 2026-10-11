@@ -694,6 +694,11 @@ on. A server with it off starts on the older schema as before.
   claiming as the drain started has its hold released by that drain
   instead of left behind; and a release the store refuses is tried again
   rather than only logged.
+- The server's request log left out requests refused before they were
+  identified, such as a `401` for no sign-in or a sign-in `429` from the
+  throttle, so a password-guessing run left no trace there. Every request
+  now has its `request` line; one refused that early carries
+  `identified=false`.
 
 ### Dependencies
 

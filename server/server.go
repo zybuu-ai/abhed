@@ -940,7 +940,33 @@ func (s *Server) Handler() http.Handler {
 	// still a response a browser will act on.
 	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins, s.log)(limited)
 	headed := securityHeaders(s.bodyLimit(guarded), s.opts.Config.Server.HSTS)
-	return canonicalHost(s.opts.Config.Server.CanonicalHost, headed)
+	return s.logRefused(canonicalHost(s.opts.Config.Server.CanonicalHost, headed))
+}
+
+// logMark records that withMiddleware logged the request.
+type logMark struct{ done bool }
+
+// logRefused is outermost, so a request answered before it reaches
+// withMiddleware (a 401 from sign-in, a 429 from the throttle, a refused
+// origin) is in the request log too.
+func (s *Server) logRefused(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		mark := &logMark{}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), ctxLogMark, mark)))
+		if !mark.done {
+			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+				"user", "", "duration", time.Since(start), "identified", false)
+		}
+	})
+}
+
+// markLogged tells logRefused that the request has its log line.
+func markLogged(r *http.Request) {
+	if m, ok := r.Context().Value(ctxLogMark).(*logMark); ok {
+		m.done = true
+	}
 }
 
 // PublicPaths answer before anyone signs in, whichever providers are
@@ -1148,6 +1174,7 @@ func (s *Server) requireGroup(next http.Handler) http.Handler {
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		markLogged(r)
 
 		// Identity comes from the auth layer, which has already verified it.
 		id, _ := auth.FromContext(r.Context())
@@ -1199,8 +1226,9 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 type ctxKey string
 
 const (
-	ctxUser   ctxKey = "user"
-	ctxTenant ctxKey = "tenant"
+	ctxUser    ctxKey = "user"
+	ctxTenant  ctxKey = "tenant"
+	ctxLogMark ctxKey = "logmark"
 )
 
 // UserOf is the caller the middleware resolved, for a handler that records
