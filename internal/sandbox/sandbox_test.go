@@ -514,3 +514,24 @@ func TestServerVIMINITIsKept(t *testing.T) {
 		t.Error("no VIMINIT of Abhed's own when the server has none")
 	}
 }
+
+// The user's processes are counted once for commands started close together,
+// not by reading every process's status for each.
+func TestProcessCountIsShortlyReused(t *testing.T) {
+	calls := 0
+	count := cachedCount(func() (int, bool) { calls++; return calls, true }, time.Hour)
+	for range 5 {
+		if n, ok := count(); !ok || n != 1 {
+			t.Fatalf("count %d %v", n, ok)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("counted %d times", calls)
+	}
+	fresh := cachedCount(func() (int, bool) { calls++; return calls, true }, 0)
+	fresh()
+	fresh()
+	if calls != 3 {
+		t.Fatalf("no reuse past the ttl: %d", calls)
+	}
+}

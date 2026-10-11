@@ -756,8 +756,26 @@ func (s *Process) bounded(ctx context.Context, name string, args []string) *exec
 	return exec.CommandContext(ctx, "/bin/bash", wrapped...) // #nosec G204 -- fixed script; the argv is passed as "$@"
 }
 
-// countUserProcesses counts the user's processes; a test replaces it.
-var countUserProcesses = userProcesses
+// countUserProcesses counts the user's processes; a test replaces it. The
+// count reads every process's status, so commands within a second share one.
+var countUserProcesses = cachedCount(userProcesses, time.Second)
+
+// cachedCount is count, its answer reused for ttl.
+func cachedCount(count func() (int, bool), ttl time.Duration) func() (int, bool) {
+	var mu sync.Mutex
+	var at time.Time
+	var n int
+	var ok bool
+	return func() (int, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.IsZero() || time.Since(at) >= ttl {
+			n, ok = count()
+			at = time.Now()
+		}
+		return n, ok
+	}
+}
 
 // procLimit is what the user runs now plus MaxProcs, as the kernel counts all the
 // user's processes, so concurrent commands and the desktop share that headroom;
