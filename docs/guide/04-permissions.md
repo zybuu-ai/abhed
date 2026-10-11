@@ -961,11 +961,24 @@ ordinary text. A shorter value stored before that rule is still redacted, but
 not in JSON object keys, so a value such as `type` cannot break the structure
 of an event.
 
-What redaction does not catch. It matches the exact value, in its JSON-escaped
-and HTML-escaped forms, and nothing else:
+Redaction matches the exact value and its JSON-escaped and HTML-escaped
+forms. For a value of 12 characters or more it also matches the forms a
+command or client encodes it in: base64 and base64url at any byte alignment
+(as in a Basic auth header that `curl -v` prints), hex in either case,
+percent-encoding, and the whole value in lower or upper case. The same forms
+are looked for in what `web_fetch` and `web_search` would send. All values
+are replaced in one pass, longest first, so a label already written is never
+matched again by a shorter value. Plain text (the sandbox control plane's
+record, the prompt history) is redacted as text.
 
-- An encoded form is not caught: base64 (as in a Basic auth header that
-  `curl -v` prints), URL-encoded, hex, or a change of case.
+What redaction does not catch:
+
+- A value split, reversed, partly sent, or encoded in another way (gzip,
+  base32, a custom cipher) is not caught. No redactor can know every
+  encoding, so give a secret only to the command that needs it, keep the
+  [egress allowlist](21-network-policy.md) on, and rotate a value that was
+  exposed.
+- A value of 8 to 11 characters is matched only as written and escaped.
 - Part of a value is not caught, such as a truncated one.
 - An error returned from a run, such as a provider's error body, is not
   redacted.

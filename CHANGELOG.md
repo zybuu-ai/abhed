@@ -138,6 +138,17 @@ All notable changes to Abhed are recorded here. The format follows
   pin it.
   Affects the binaries and images of 1.2.7 and earlier.
 
+- Redaction matched only a stored value exactly as written, so a value
+  that a command printed base64-encoded (a Basic auth header from
+  `curl -v`), hex-encoded, percent-encoded or in another case reached the
+  record, and `web_fetch` and `web_search` would send it. A value of 12
+  characters or more is now also matched in those forms. Plain text passed
+  for redaction, such as the prompt history, was left alone unless it was
+  quoted; it is now redacted as text.
+  Values were replaced one after another, so a shorter value could rewrite
+  a label already written; they are now replaced in one pass. Affects 1.0.0
+  to 1.2.7.
+
 ### Added
 
 - What a sandbox command can reach of the server: on every tier, nothing
