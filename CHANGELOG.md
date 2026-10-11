@@ -665,6 +665,11 @@ on. A server with it off starts on the older schema as before.
   sign-on session identified it, and a browser opening a page got JSON.
   The `503` now applies only when nothing else identifies the request,
   carries `Retry-After`, and is a page for a browser.
+- Two sign-ups for one name at the same moment could both spend an invite,
+  though only one account was made. Sign-ups on one server now run one at
+  a time from the name check to the account, and a code redeemed for a
+  name another server made first is given back when the invite store can
+  do so.
 
 ### Dependencies
 
@@ -838,6 +843,9 @@ on. A server with it off starts on the older schema as before.
 - `driver.Status.Caveat` names what the reported tier lacks on this host,
   such as `no /proc`, and the control plane adds it to the `IsolationVerified`
   condition; `drivertest.Fake.Caveat` reports one.
+- `server.InviteReleaser`: an invite store that implements `Release(ctx,
+  code, username)` gets back a code redeemed for an account that could not
+  then be made.
 
 ## [1.2.7] - 2026-10-07
 

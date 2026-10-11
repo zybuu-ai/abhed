@@ -168,6 +168,13 @@ type InviteRedeemer interface {
 	Redeemed(ctx context.Context, code, username string) error
 }
 
+// InviteReleaser is an InviteRedeemer that can give a spent code back. Signup
+// asks it when the account could not be made after the code was redeemed, as
+// when another sign-up took the name first.
+type InviteReleaser interface {
+	Release(ctx context.Context, code, username string) error
+}
+
 // InviteEmailChecker is an InviteRedeemer whose codes may be made out to one
 // address. Signup asks it before the code is spent, so a refusal keeps the code.
 type InviteEmailChecker interface {
@@ -382,6 +389,8 @@ type Server struct {
 	// adminMu serialises admin-rights changes, so two demotions at once
 	// cannot leave nobody an administrator. It holds within one process only.
 	adminMu sync.Mutex
+	// signupMu holds one self-registration at a time (signup).
+	signupMu sync.Mutex
 
 	// state holds what a settings change may replace, behind its own lock.
 	// Separate from opts, which stays immutable — mixing "set once" and
@@ -4055,6 +4064,11 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 	//
 	// A new account gets NO groups, so an invited user is an ordinary user
 	// until an administrator promotes them.
+	// One sign-up at a time here, from the name check to the account, so two
+	// for one name cannot both spend an invite.
+	s.signupMu.Lock()
+	defer s.signupMu.Unlock()
+	redeemed := false
 	if !s.opts.Config.Auth.AllowSignup {
 		if s.opts.Invites == nil {
 			WriteJSON(w, http.StatusForbidden, map[string]string{
@@ -4088,6 +4102,7 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 				"error": err.Error()})
 			return
 		}
+		redeemed = true
 	}
 
 	u := auth.User{
@@ -4095,6 +4110,12 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		Tenant: orDefaultStr(s.opts.Config.Auth.DefaultTenant, "default"),
 	}
 	if err := local.CreateUser(r.Context(), u, req.Password); err != nil {
+		// Another server may have made the name meanwhile: the code goes back.
+		if rel, ok := s.opts.Invites.(InviteReleaser); ok && redeemed {
+			if rerr := rel.Release(r.Context(), req.Invite, req.Username); rerr != nil {
+				s.log.Error("give back an invite after a failed sign-up", "user", req.Username, "err", rerr)
+			}
+		}
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
