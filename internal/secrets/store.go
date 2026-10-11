@@ -355,6 +355,9 @@ type pair struct {
 	needle, label string
 	// short marks a value under MinLength, which leaves JSON keys alone.
 	short bool
+	// encoded marks a form the value takes encoded or in another case, which
+	// file path checks leave out.
+	encoded bool
 }
 
 // MinLength is the fewest characters `abhed secret set` accepts. A shorter value
@@ -569,10 +572,17 @@ func (s *Store) LoadRedactor() (*Redactor, error) {
 		// Text that embeds JSON holds the value escaped, so that form is a
 		// needle too, with and without HTML escaping.
 		seen := map[string]bool{}
-		for _, n := range append([]string{value, escaped(value, true), escaped(value, false)}, encodedForms(value)...) {
+		short := utf8.RuneCountInString(value) < MinLength
+		for _, n := range []string{value, escaped(value, true), escaped(value, false)} {
+			if !seen[n] {
+				seen[n] = true
+				pairs = append(pairs, pair{needle: n, label: label, short: short})
+			}
+		}
+		for _, n := range encodedForms(value) {
 			if n != "" && !seen[n] {
 				seen[n] = true
-				pairs = append(pairs, pair{n, label, utf8.RuneCountInString(value) < MinLength})
+				pairs = append(pairs, pair{needle: n, label: label, encoded: true})
 			}
 		}
 	}
@@ -820,7 +830,7 @@ func (r *Redactor) FindInPath(path string) (label string, found bool) {
 		return "", true
 	}
 	for _, p := range r.pairs {
-		if utf8.RuneCountInString(p.needle) >= PathMinLength && strings.Contains(path, p.needle) {
+		if !p.encoded && utf8.RuneCountInString(p.needle) >= PathMinLength && strings.Contains(path, p.needle) {
 			return p.label, true
 		}
 	}
