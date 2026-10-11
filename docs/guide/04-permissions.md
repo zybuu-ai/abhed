@@ -471,7 +471,9 @@ expansion where it could become `IFS`: given to `eval` or a shell's `-c`,
 or as the name a setter is given (`read ${v}FS`, `printf -v "$v"`). A prefix
 to `read` (`IFS=, read -r a b`), `IFS` set only to blanks (`IFS=$'\n'`) and
 `IFS` as another command's argument (`grep IFS f`) and a name that only holds
-the letters (`(( MYIFS = 1 ))`, `read MYIFS`) are not refused. The refusal
+the letters (`(( MYIFS = 1 ))`, `read MYIFS`) are not refused. A prefix to
+`read` is not asked about either, as it splits only what `read` reads, so
+`IFS=, read -r a b < f` runs on `:exec`. The refusal
 says how `IFS` was set: to a separator the text shows, in a `for` loop, by
 arithmetic, to a value the text does not show, or by text built from an
 expansion. Some

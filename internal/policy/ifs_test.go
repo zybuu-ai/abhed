@@ -160,3 +160,33 @@ func TestChangedIFSIsDestructiveWithoutRules(t *testing.T) {
 		}
 	}
 }
+
+// A prefix IFS on read splits only read's input, so it is neither asked
+// about as hidden words nor confirmed as a changed IFS, and an exec runs it.
+func TestReadPrefixIFSIsNotScreened(t *testing.T) {
+	for _, command := range []string{
+		"IFS=, read -r a b <f",
+		"IFS=, read -r a b <<< \"$line\"",
+		"while IFS=, read -r a b; do echo \"$a\"; done < f",
+		"IFS=: read -ra parts <<< \"$PATH\"",
+	} {
+		e := New(ModeDefault)
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
+		if res.Step == "screen" || res.Step == "destructive" || res.Decision == Deny {
+			t.Errorf("%q = %s at %s (%s)", command, res.Decision, res.Step, res.Reason)
+		}
+	}
+	// An IFS after a read prefix still counts.
+	for _, command := range []string{"IFS=, read a <f; IFS=_; x=c_u_r_l; $x", "IFS=, read a; IFS=_ eval $x"} {
+		e := New(ModeDefault)
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Deny {
+			t.Errorf("%q = %s at %s (%s), want deny", command, res.Decision, res.Step, res.Reason)
+		}
+	}
+}

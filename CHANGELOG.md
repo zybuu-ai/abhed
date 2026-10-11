@@ -624,6 +624,12 @@ on. A server with it off starts on the older schema as before.
 - A command refused because IFS could split its words, such as `eval "$x"`
   under a deny rule, was said to change IFS when its text sets none. The
   reason now says it runs text built from an expansion that could set IFS.
+- `IFS=, read -r a b < f` and other prefixes to `read` were asked about as
+  words built by IFS, or confirmed as words split by a changed IFS, while a
+  deny or ask rule for `bash` had a pattern, so `:exec` refused them though
+  the guide said they were not refused. A prefix to `read` splits only what
+  `read` reads and is no longer flagged; an `IFS` set elsewhere on the line
+  still is.
 - A command that sets `IFS` in a `for` loop over literal words, or by
   arithmetic, was refused as setting it "to a value its text does not show";
   each now has its own reason, and the destructive step no longer says a

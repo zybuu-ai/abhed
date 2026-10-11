@@ -148,7 +148,7 @@ func CanonicalCommand(command string) Canonical {
 			b.WriteByte(' ')
 			c.Reworded = true
 		default:
-			if !double && wordStart() && strings.HasPrefix(command[i:], "IFS=") && ifsValue(command[i+4:]) {
+			if !double && wordStart() && strings.HasPrefix(command[i:], "IFS=") && ifsValue(command[i+4:]) && !readPrefix(command[i+4:]) {
 				c.Reworded, c.Hidden = true, true
 			}
 			b.WriteByte(ch)
@@ -259,10 +259,10 @@ func ifsScan(text string) (string, bool) {
 			unknown = true
 		case strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "+="):
 			rest = rest[strings.IndexByte(rest, '=')+1:]
-			value, end, known := ifsWord(rest)
+			value, _, known := ifsWord(rest)
 			unknown = !known
 			// A prefix to read sets how read splits its input, not the shell's words.
-			if after := strings.TrimLeft(rest[end:], " \t"); strings.HasPrefix(after, "read") && (len(after) == 4 || !isNameByte(after[4])) {
+			if readPrefix(rest) {
 				continue
 			}
 			seps.WriteString(value)
@@ -773,14 +773,39 @@ func hexValue(d byte) byte {
 	return d - 'A' + 10
 }
 
-// ifsSet finds an IFS assignment with a value followed later by an expansion.
-var ifsSet = regexp.MustCompile(`(?s)(?:^|[\s;&|(])IFS=[^\s;&|].*\$`)
+// readPrefix reports an IFS value, rest being the text after IFS=, that is a
+// prefix to read: it sets how read splits its input, and the words of read's
+// own line are expanded before it is assigned, so it splits nothing else.
+func readPrefix(rest string) bool {
+	_, end, _ := ifsWord(rest)
+	after := strings.TrimLeft(rest[end:], " \t")
+	return strings.HasPrefix(after, "read") && (len(after) == 4 || !isNameByte(after[4]))
+}
+
+// ifsSetAndExpanded reports an IFS assignment with a value, not a prefix to
+// read, followed later by an expansion.
+func ifsSetAndExpanded(command string) bool {
+	for i := 0; ; {
+		j := strings.Index(command[i:], "IFS=")
+		if j < 0 {
+			return false
+		}
+		at := i + j
+		i = at + 4
+		if at > 0 && !strings.ContainsRune(" \t\n;&|(", rune(command[at-1])) {
+			continue
+		}
+		if ifsValue(command[i:]) && !readPrefix(command[i:]) && strings.Contains(command[i:], "$") {
+			return true
+		}
+	}
+}
 
 // hiddenWords reports a command whose program, or whose split into words, is
 // only known when it runs: an expansion as the program, or IFS set and expanded.
 // The IFS assignment is read as written, the program in the canonical text.
 func hiddenWords(command, canon string) (string, bool) {
-	if ifsSet.MatchString(command) || ifsSet.MatchString(canon) {
+	if ifsSetAndExpanded(command) || ifsSetAndExpanded(canon) {
 		return "words split by a changed IFS", true
 	}
 	for _, words := range shellWords(canon) {
