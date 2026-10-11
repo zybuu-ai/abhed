@@ -1,4 +1,4 @@
-package container
+package stdiorelay
 
 import (
 	"bytes"
@@ -39,10 +39,10 @@ func TestStdioMuxCarriesConnections(t *testing.T) {
 	toHost, fromInside := io.Pipe()
 	toInside, fromHost := io.Pipe()
 	served := make(chan error, 1)
-	go func() { served <- serveMux(in, toInside, fromInside) }()
+	go func() { served <- Serve(in, toInside, fromInside) }()
 	hostMux := make(chan error, 1)
 	go func() {
-		hostMux <- dialMux(toHost, fromHost, func() (net.Conn, error) { return net.Dial("tcp", up.Addr().String()) })
+		hostMux <- Dial(toHost, fromHost, func() (net.Conn, error) { return net.Dial("tcp", up.Addr().String()) }, nil)
 	}()
 	var wg sync.WaitGroup
 	for i := range 20 {
@@ -92,9 +92,9 @@ func TestStdioMuxFailedDialClosesInside(t *testing.T) {
 	}
 	toHost, fromInside := io.Pipe()
 	toInside, fromHost := io.Pipe()
-	go func() { _ = serveMux(in, toInside, fromInside) }()
+	go func() { _ = Serve(in, toInside, fromInside) }()
 	go func() {
-		_ = dialMux(toHost, fromHost, func() (net.Conn, error) { return nil, io.ErrClosedPipe })
+		_ = Dial(toHost, fromHost, func() (net.Conn, error) { return nil, io.ErrClosedPipe }, nil)
 	}()
 	defer fromHost.Close()
 	c, err := net.Dial("tcp", in.Addr().String())

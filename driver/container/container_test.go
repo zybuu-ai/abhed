@@ -20,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/stdiorelay"
 )
 
 // fakeRunner records every argv and answers as a healthy engine would,
@@ -908,11 +909,11 @@ func TestEgressAllowlistThroughAnExecWhereTheEngineIsInAVM(t *testing.T) {
 	f := &fakeRunner{podman: true}
 	// This test binary is the relay: its init runs it for the relay's argument.
 	f.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
-		if len(args) < 2 || args[len(args)-2] != stdioRelayArg {
+		if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
 			return nil
 		}
 		relays.Add(1)
-		return exec.CommandContext(ctx, exe, stdioRelayArg, "127.0.0.1:0")
+		return exec.CommandContext(ctx, exe, stdiorelay.Arg, "127.0.0.1:0")
 	}
 	d, ws := testDriver(t, f, Options{RelayBinary: "/opt/abhed/abhed-linux-arm64"}, func(p *sandbox.Policy) { p.Egress = pol })
 	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
@@ -928,11 +929,11 @@ func TestEgressAllowlistThroughAnExecWhereTheEngineIsInAVM(t *testing.T) {
 	}
 	var relayCall []string
 	for _, c := range f.find("exec") {
-		if slices.Contains(c, stdioRelayArg) {
+		if slices.Contains(c, stdiorelay.Arg) {
 			relayCall = c
 		}
 	}
-	if want := " exec -i --user " + in.user + " " + in.name + " /run/abhed-egress/relay " + stdioRelayArg + " " + in.egress.listen + " "; joined(relayCall) != want {
+	if want := " exec -i --user " + in.user + " " + in.name + " /run/abhed-egress/relay " + stdiorelay.Arg + " " + in.egress.listen + " "; joined(relayCall) != want {
 		t.Errorf("relay exec %q, want %q", joined(relayCall), want)
 	}
 	if relays.Load() != 1 {
@@ -950,7 +951,7 @@ func TestEgressAllowlistThroughAnExecWhereTheEngineIsInAVM(t *testing.T) {
 	// A relay that never listens refuses the sandbox.
 	f2 := &fakeRunner{podman: true}
 	f2.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
-		if len(args) < 2 || args[len(args)-2] != stdioRelayArg {
+		if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
 			return nil
 		}
 		return exec.CommandContext(ctx, "/bin/sh", "-c", "echo 'exec format error' >&2; exit 126")

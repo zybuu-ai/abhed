@@ -1,4 +1,9 @@
-package container
+// Package stdiorelay carries connections made inside a container to a proxy
+// on the host over one stdin and stdout, such as a long-lived `engine exec`'s,
+// where the engine runs in a VM or on another host and no host socket can be
+// bound in. Connections are multiplexed as frames of type, stream id and
+// length.
+package stdiorelay
 
 import (
 	"bufio"
@@ -8,32 +13,30 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 )
 
-// Where the engine runs in a VM or on another host, no host socket can be
-// bound into a container. The relay inside then carries each connection to
-// the egress proxy over its own stdio, through a long-lived `engine exec`:
-// connections are multiplexed as frames of type, stream id and length.
-
-// stdioRelayArg makes this binary, bound into the container, the stdio relay.
-const stdioRelayArg = "__abhed_egress_relay_stdio"
+// Arg makes this binary, bound into a container, the relay: run it as
+// `abhed Arg ADDR` and it listens on ADDR and serves over its stdio.
+const Arg = "__abhed_egress_relay_stdio"
 
 func init() {
-	if len(os.Args) == 3 && os.Args[1] == stdioRelayArg {
-		os.Exit(runStdioRelay(os.Args[2]))
+	if len(os.Args) == 3 && os.Args[1] == Arg {
+		os.Exit(runRelay(os.Args[2]))
 	}
 }
 
-// runStdioRelay listens on addr inside the container and serves each
+// runRelay listens on addr inside the container and serves each
 // connection over stdin and stdout until stdin ends.
-func runStdioRelay(addr string) int {
+func runRelay(addr string) int {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed egress relay: listening on %s: %v\n", addr, err)
 		return 126
 	}
-	err = serveMux(ln, os.Stdin, os.Stdout)
+	err = Serve(ln, os.Stdin, os.Stdout)
 	_ = ln.Close()
 	if err != nil && !errors.Is(err, io.EOF) {
 		fmt.Fprintf(os.Stderr, "abhed egress relay: %v\n", err)
@@ -265,9 +268,9 @@ func (m *mux) readReady(r io.Reader, open func(id uint32), ready func()) error {
 	}
 }
 
-// serveMux is the inside end: each connection accepted on ln becomes a
-// stream, until r ends.
-func serveMux(ln net.Listener, r io.Reader, w io.Writer) error {
+// Serve is the inside end: each connection accepted on ln becomes a
+// stream, until r ends. It first tells the host it listens.
+func Serve(ln net.Listener, r io.Reader, w io.Writer) error {
 	m := newMux(w)
 	defer m.closeAll()
 	if err := m.send(frameReady, 0, nil); err != nil {
@@ -290,14 +293,10 @@ func serveMux(ln net.Listener, r io.Reader, w io.Writer) error {
 	return err
 }
 
-// dialMux is the host end: each stream the inside opens is joined to a new
-// connection from dial, until r ends.
-func dialMux(r io.Reader, w io.Writer, dial func() (net.Conn, error)) error {
-	return dialMuxReady(r, w, dial, nil)
-}
-
-// dialMuxReady is dialMux, calling ready once the inside listens.
-func dialMuxReady(r io.Reader, w io.Writer, dial func() (net.Conn, error), ready func()) error {
+// Dial is the host end: each stream the inside opens is joined to a new
+// connection from dial, until r ends; ready, when set, is called once the
+// inside listens.
+func Dial(r io.Reader, w io.Writer, dial func() (net.Conn, error), ready func()) error {
 	m := newMux(w)
 	defer m.closeAll()
 	return m.readReady(r, func(id uint32) {
@@ -308,4 +307,44 @@ func dialMuxReady(r io.Reader, w io.Writer, dial func() (net.Conn, error), ready
 		}
 		m.add(id, c, nil)
 	}, ready)
+}
+
+// Run starts cmd, the relay inside a container reached over its stdio (an
+// `engine exec -i … abhed Arg ADDR`), and joins each connection it takes to
+// one from dial, until cmd or its stdio ends. The first lines cmd writes to
+// stderr are the error when it ends with them.
+func Run(cmd *exec.Cmd, dial func() (net.Conn, error), ready func()) error {
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &limited{b: &stderr, n: 4 << 10}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	merr := Dial(stdout, stdin, dial, ready)
+	_ = stdin.Close()
+	werr := cmd.Wait()
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return errors.New(msg)
+	}
+	return errors.Join(werr, merr)
+}
+
+// limited keeps the first n bytes written to it.
+type limited struct {
+	b *strings.Builder
+	n int
+}
+
+func (l *limited) Write(p []byte) (int, error) {
+	if room := l.n - l.b.Len(); room > 0 {
+		l.b.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
 }
