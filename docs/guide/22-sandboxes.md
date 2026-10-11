@@ -491,23 +491,31 @@ force, a command line on `:exec` (`POST`, the WebSocket, or an SSH exec
 request such as `ssh host 'cmd'`) whose program is named by an expansion
 (`c=curl; $c …`, `sh -c 'c=curl; $c …'`, `$(echo curl) …`), whose words
 are split by a changed `IFS`, that runs text no rule can read, or whose
-parts are built by an expansion or brace list (`echo {a,b}`) is refused
-with `403` and code `forbidden`, the reason in the message, whichever rule
-it would have met. Name the program in the command line instead. A command
+parts are built by an expansion or brace list (`echo {a,b}`), that sets a
+git alias on its command line (`git -c alias.x='!curl …' x`), or that runs
+a git subcommand which is not git's own (an alias or an extension such as
+`git lfs`, unless `permissions.git_extensions` names it) is refused with
+`403` and code `forbidden`, the reason in the message, whichever rule it
+would have met. Name the program in the command line instead. A command
 the rules read runs, a destructive one such as `rm -rf build` included.
-This refusal is for exec only: the lines a person types into `:attach` or
-an interactive SSH shell are screened by the deny rules alone, as the
-workbench's terminal is, so a line there that names its program by an
-expansion is not refused for that.
+The default configuration has deny rules for `bash`, so this applies
+unless you remove them all.
+
+The lines a person types into `:attach` or an interactive SSH shell are
+refused the same way, at their Enter: a line whose program is named by an
+expansion, whose words are built by one, or that runs git code no rule can
+read never reaches the shell, and the terminal says why. A line the shell
+finishes later (`for f in *; do`, an open quote) is judged as a terminal
+line, not refused for being incomplete.
 
 A deny rule matches the words of a command, so on an exec it has the same
 limits as in a session ([Rules](04-permissions.md#rules)): a path to the
 program (`/usr/bin/curl`), `busybox curl`, an interpreter's own code
 (`python3 -c …`), `xargs`, and a command git runs from its configuration
-(`git -c alias.x='!curl …' x`, `core.sshCommand`) all run past
-`bash(curl *)`. A session asks about the git alias as destructive; an exec,
-where no one is asked, runs it. The sandbox, not a deny rule, is the
-boundary.
+(`core.sshCommand` in a repository's config) all run past `bash(curl *)`.
+A git alias set on the command line is refused, as above, but one in a
+repository's or the user's git config is not seen. The sandbox, not a deny
+rule, is the boundary.
 
 A command given as `argv` runs as one shell line with each word quoted, so the shell
 splits it back into exactly those words; that quoted line is what the rules
@@ -553,12 +561,18 @@ messages are keys to the shell and its output back;
 It is followed the way the workbench follows its interactive terminal
 ([Working by hand](16-workbench.md#working-by-hand)) where the terminal
 cannot be asked: each line you enter is rebuilt from your keys, put to the
-deny rules at its Enter, and recorded (`attach.input`, without its text
-when the terminal did not show it as typed). A line the rules refuse never
+deny rules at its Enter (and refused, as on `:exec`, when the rules cannot
+read it), and recorded (`attach.input`, without its text when the terminal
+did not show it as typed). A line the rules refuse never
 reaches the shell: the terminal says why and the line is dropped, and the
 refusal is recorded (`attach.refused`, with the line and the reason through
 your secrets redaction, as a rule or hook may quote the line). This is best effort: the shell
-decides what a line means, so the sandbox is the boundary. When the
+decides what a line means, and an interactive shell can still run what no
+line shows (a full-screen program such as `vi` and its `:!`, history
+expansion, an alias or function defined earlier, a script it sources), so
+the sandbox is the boundary. Use `:exec` for automation, and
+`sandbox.terminal: "lines"` (or managed deny rules, which refuse `:attach`
+outright) where every command must be judged. When the
 server's terminal must judge every line (`sandbox.terminal` is
 `"lines"`), or the managed configuration sets deny rules or extensions
 that could refuse a command, `:attach` is refused with `403` and you run

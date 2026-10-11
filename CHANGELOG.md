@@ -250,8 +250,9 @@ All notable changes to Abhed are recorded here. The format follows
   first, in pages, to whoever may see the sandbox.
 - Sandboxes over the API take streams, as WebSockets: `:attach` opens the
   sandbox's interactive shell (each line judged by the deny rules at its
-  Enter and recorded, as in the workbench's terminal; refused where only a
-  line-by-line terminal holds every rule), `GET :exec` runs a command with
+  Enter and recorded, as in the workbench's terminal, and a line the rules
+  cannot read refused as on `:exec`; refused where only a line-by-line
+  terminal holds every rule), `GET :exec` runs a command with
   stdin, and `:forward` carries a byte stream to a port on the sandbox's
   loopback, recorded with its bytes and closed when the sandbox stops. An
   SSH server with no port of its own is reached only through the
@@ -294,9 +295,11 @@ All notable changes to Abhed are recorded here. The format follows
   server's deny rules and extension hooks, as the workbench's terminal is: a
   refused command is `403 forbidden`, recorded, and never runs. While any
   deny or ask rule for `bash` or any hook is in force, a command the rules
-  cannot read (its program named by an expansion, as in `c=curl; $c`, or
-  its words built by one) is refused the same way, as no one is there to
-  confirm it. `:snapshot`,
+  cannot read (its program named by an expansion, as in `c=curl; $c`, its
+  words built by one, a git alias set on its command line, or a git
+  subcommand that is not git's own and not named in
+  `permissions.git_extensions`) is refused the same way, as no one is there
+  to confirm it. `:snapshot`,
   `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
   forwards where it has them (snapshots in `control_plane.snapshot_dir`;
   exposing off unless `control_plane.expose` is on) and answer `501` where

@@ -71,7 +71,7 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request, call verb
 		detail["cwd"] = s.opts.ControlPlane.Redact(cwd)
 	}
 	_, err = s.opts.ControlPlane.Stream(ctx, call.caller, call.id, controlplane.StreamRequest{Action: "attach", End: cancel,
-		Capability: driver.CapAttach, Detail: detail, Screen: func() error { return denied(pol, "bash -i", false) }},
+		Capability: driver.CapAttach, Detail: detail, Screen: func() error { return denied(pol, "bash -i") }},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {
 			var err error
 			if ws, err = accept(w, r, st.proto); err != nil {
@@ -604,7 +604,7 @@ func (h *sshSandbox) Shell(ctx context.Context, sess sshrelay.Session) (int, err
 	code := 0
 	_, err := h.s.opts.ControlPlane.Stream(ctx, h.caller, h.sb.ID, controlplane.StreamRequest{Action: "attach",
 		Capability: driver.CapAttach, Detail: map[string]string{"via": "ssh", "rows": strconv.Itoa(int(size.Rows)), "cols": strconv.Itoa(int(size.Cols))},
-		Screen: func() error { return denied(h.pol, "bash -i", false) }},
+		Screen: func() error { return denied(h.pol, "bash -i") }},
 		func(d driver.Driver, sb controlplane.Sandbox) (map[string]string, error) {
 			keys := make(chan []byte, 16)
 			go func() {
