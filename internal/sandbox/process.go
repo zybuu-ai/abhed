@@ -828,7 +828,7 @@ func (s *Process) env() []string {
 		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE",
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
 		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
-	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), "VIMINIT=" + vimInit}
+	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), vimInitEnv()}
 	for _, k := range keep {
 		if v := os.Getenv(k); v != "" {
 			out = append(out, k+"="+v)
@@ -839,6 +839,15 @@ func (s *Process) env() []string {
 
 // vimInit reads the person's vim config, then turns off the history file: the sandbox
 // refuses that write in home, and vim then waits at "Press ENTER" after :wq.
+// vimInitEnv is VIMINIT for a command: the server's own, kept, with the
+// history files turned off after it; else vimInit.
+func vimInitEnv() string {
+	if v := os.Getenv("VIMINIT"); v != "" {
+		return "VIMINIT=" + v + " | silent! set viminfo= | silent! set shada="
+	}
+	return "VIMINIT=" + vimInit
+}
+
 const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (filereadable(stdpath('config') . '/init.lua') ? '/init.lua' : '/init.vim')` +
 	` | if filereadable(g:abhed_rc) | let $MYVIMRC = g:abhed_rc | exe 'source' fnameescape(g:abhed_rc) | endif | unlet g:abhed_rc | set shada=` +
 	` | else | let g:abhed_rc = filter(['~/.vimrc', '~/.vim/vimrc', '~/.config/vim/vimrc', '~/.exrc'], 'filereadable(expand(v:val))')` +

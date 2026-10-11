@@ -561,6 +561,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- A `VIMINIT` set before starting Abhed was replaced by Abhed's own in every
+  process-tier and fence command, so your vim startup commands were dropped.
+  Yours is kept now, with the history files turned off after it.
 - On Linux, a home folder or state file under `/tmp` was refused as a place
   sandboxed commands can write, though bubblewrap, the fence and containers
   each give commands a `/tmp` of their own. It is accepted now.

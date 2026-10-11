@@ -587,8 +587,10 @@ stopped at "Press ENTER" after every `:wq`. Your own vimrc (or `~/.exrc`) is
 still read, through `VIMINIT`, except by a vim built without scripting, such
 as `vim.tiny`, which then reads none. On Linux the sandbox shows no home
 directory, so vim there runs with its defaults. Neovim gets the same
-treatment for its history file, untested. The setting is part of every
-process-tier command's environment, so the agent's commands have it too.
+treatment for its history file, untested. A `VIMINIT` you set before
+starting Abhed is kept: commands get yours with the history files turned off
+after it. The setting is part of every process-tier and fence command's
+environment, so the agent's commands have it too.
 A character you type that draws nothing or changes the text's direction
 (a zero-width space, a bidi control) is shown in the line as one
 reverse-video `?`, so `cd d`, U+202E, `rlo` does not read as `cd drlo`; the line still

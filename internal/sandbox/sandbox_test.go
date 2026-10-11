@@ -490,3 +490,27 @@ func TestWritableAreasLeaveLinuxTmpOut(t *testing.T) {
 		t.Errorf("linux lists a TMPDIR under /tmp: %v", l)
 	}
 }
+
+// A VIMINIT the server has is kept, with the history files turned off
+// after it, on the process tier and the fence alike.
+func TestServerVIMINITIsKept(t *testing.T) {
+	t.Setenv("VIMINIT", "source ~/.mine.vim")
+	for name, env := range map[string][]string{
+		"process": NewProcess(DefaultPolicy(t.TempDir())).env(),
+		"fence":   NewFence(DefaultPolicy(t.TempDir())).env(),
+	} {
+		got := ""
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, "VIMINIT="); ok {
+				got = v
+			}
+		}
+		if !strings.HasPrefix(got, "source ~/.mine.vim | ") || !strings.Contains(got, "viminfo=") {
+			t.Errorf("%s: VIMINIT %q", name, got)
+		}
+	}
+	t.Setenv("VIMINIT", "")
+	if !slices.Contains(NewProcess(DefaultPolicy(t.TempDir())).env(), "VIMINIT="+vimInit) {
+		t.Error("no VIMINIT of Abhed's own when the server has none")
+	}
+}
