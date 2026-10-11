@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -344,15 +345,17 @@ func mcpIdentity(t tools.Tool) string {
 }
 
 // mcpAuditDetail describes an added MCP server without its secrets: the URL
-// keeps scheme, host and path, and the command only its program.
+// keeps scheme and host only, since a path can carry a key (/s/<key>/mcp),
+// and the command its program's base name. The command is run as one path,
+// spaces and all, so it is not split at a space.
 func mcpAuditDetail(req mcpRequest, added []string) map[string]any {
 	d := map[string]any{"tools": added}
-	if f := strings.Fields(req.Command); len(f) > 0 {
-		d["command"] = f[0]
+	if c := strings.TrimSpace(req.Command); c != "" {
+		d["command"] = filepath.Base(c)
 	}
 	if req.URL != "" {
-		if u, err := url.Parse(req.URL); err == nil {
-			d["url"] = (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+		if u, err := url.Parse(req.URL); err == nil && u.Host != "" {
+			d["url"] = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 		} else {
 			d["url"] = "(unparseable)"
 		}

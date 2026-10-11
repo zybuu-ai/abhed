@@ -180,6 +180,11 @@ All notable changes to Abhed are recorded here. The format follows
   the search service. A search now asks in every mode short of bypass
   unless an allow rule names `web_search`. Affects 1.2.2 to 1.2.7.
 
+- The `mcp.added` admin audit kept an MCP server URL's path, which can
+  carry a key (`/s/<key>/mcp`); it now keeps the scheme and host only. A
+  command whose path holds a space was recorded cut at the first space; it
+  is now recorded as its program's base name. Affects 0.1.0 to 1.2.7.
+
 ### Added
 
 - What a sandbox command can reach of the server: on every tier, nothing
