@@ -55,14 +55,16 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		}
 		text, shell, err := tools.ReadScript(p, s.Direct)
 		switch {
-		case errors.Is(err, fs.ErrNotExist) && s.Direct:
-			continue // a program the line may build first, such as make && ./bin/app
-		case errors.Is(err, fs.ErrNotExist):
-			out.refuse = "the script " + name + " does not exist yet"
-			return
 		case errors.Is(err, tools.ErrScriptTooLong):
 			out.ask = "the script " + name + " is too long to check against the rules"
 			continue
+		case err != nil && s.Direct:
+			// A program the line may build first (make && ./bin/app), or one
+			// no shell could read as a script either.
+			continue
+		case errors.Is(err, fs.ErrNotExist):
+			out.refuse = "the script " + name + " does not exist yet"
+			return
 		case err != nil:
 			out.refuse = "the script " + name + " cannot be read"
 			return
