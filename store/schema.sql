@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   mode            TEXT        NOT NULL DEFAULT 'default',
   -- The opening request, kept so a session list is readable at a glance.
   prompt          TEXT        NOT NULL DEFAULT '',
-  parent_id       TEXT        REFERENCES sessions(id),
+  -- Its parent in the same tenant only: see sessions_parent_same_tenant.
+  parent_id       TEXT,
   started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at        TIMESTAMPTZ,
   terminal_reason TEXT,
@@ -113,6 +114,22 @@ CREATE INDEX IF NOT EXISTS sessions_tenant_started_idx
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions (parent_id)
   WHERE parent_id IS NOT NULL;
+
+-- A parent is found in the session's own tenant. A key on parent_id alone was
+-- checked outside row security, so a write naming another tenant's session as
+-- parent succeeded and confirmed that the id existed there. Rows already
+-- stored are not re-checked (NOT VALID); every write from now on is.
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_tenant_id_key ON sessions (tenant_id, id);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conname = 'sessions_parent_same_tenant'
+                   AND conrelid = to_regclass(current_schema() || '.sessions')) THEN
+    ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_parent_id_fkey;
+    ALTER TABLE sessions ADD CONSTRAINT sessions_parent_same_tenant
+      FOREIGN KEY (tenant_id, parent_id) REFERENCES sessions (tenant_id, id) NOT VALID;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS events (
   id         TEXT        PRIMARY KEY,

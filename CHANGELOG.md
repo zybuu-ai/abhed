@@ -32,11 +32,12 @@ All notable changes to Abhed are recorded here. The format follows
   file that sets neither deny rules nor extensions.
 - `POST /v1/admin/mcp` answers `400` for a server whose name overlaps a
   configured one's.
-- On Postgres, the `approvals` table has a `request_id` column, which this
-  release writes and checks: run `abhed migrate` (or apply
-  `store/schema.sql`) as the schema owner before starting 1.2.8 servers
-  against an existing database. A server whose database lacks it refuses
-  to start and names the column.
+- On Postgres, run `abhed migrate` (or apply `store/schema.sql`) as the
+  schema owner before starting 1.2.8 servers against an existing database.
+  It adds the `approvals.request_id` column, which this release writes and
+  checks (a server whose database lacks it refuses to start and names the
+  column), and the `sessions_parent_same_tenant` key, which keeps a
+  session's parent in its own tenant.
 
 ### Security
 
@@ -186,6 +187,12 @@ All notable changes to Abhed are recorded here. The format follows
   running, which showed when a veto was down. Where people sign in, an
   extension's `status` is now given to administrators only. Affects 1.2.2
   to 1.2.7.
+- On Postgres, a session's parent was checked by a key on its id alone,
+  outside row-level security, so a write in one tenant naming another
+  tenant's session as its parent succeeded, and so confirmed that the id
+  existed there. The parent is now looked up in the session's own tenant,
+  and a write naming another tenant's session is refused exactly as one
+  naming no session. Affects 0.1.0 to 1.2.7.
 
 ### Added
 
