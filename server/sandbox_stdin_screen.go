@@ -474,7 +474,7 @@ func (w *scriptWalk) cmd(c syntax.Command, in, outer, cond bool, input *syntax.R
 			w.fail("a name reference, which makes one variable stand for another")
 			return
 		}
-		export := c.Variant.Value == "export"
+		export, unexport := c.Variant.Value == "export", false
 		for _, a := range c.Args {
 			if a.Naked && a.Name == nil {
 				v, ok := w.sc.literal(a.Value)
@@ -485,11 +485,17 @@ func (w *scriptWalk) cmd(c syntax.Command, in, outer, cond bool, input *syntax.R
 					w.fail("a name reference, which makes one variable stand for another")
 				case strings.HasPrefix(v, "-") && strings.Contains(v, "x"):
 					export = true
+				case strings.HasPrefix(v, "+") && strings.Contains(v, "x"):
+					unexport = true
 				}
 				continue
 			}
 			w.assign(a, outer, cond || c.Variant.Value == "local")
-			if export && a.Name != nil {
+			switch {
+			case a.Name == nil:
+			case unexport:
+				delete(w.sc.exported, a.Name.Value)
+			case export:
 				w.sc.exported[a.Name.Value] = true
 			}
 		}
@@ -924,6 +930,9 @@ func (w *scriptWalk) effects(name string, args []*syntax.Word, texts []string, l
 					continue
 				}
 				w.set(n, nil)
+				if name == "unset" {
+					delete(w.sc.exported, n) // a later plain assignment is not exported
+				}
 			}
 		}
 		if name == "read" {

