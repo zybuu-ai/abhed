@@ -41,15 +41,10 @@ type ServerConfig struct {
 	// AllowTools optionally restricts which of the server's tools are exposed.
 	// Empty means all of them, which is the riskier choice.
 	AllowTools []string `json:"allow_tools,omitempty"`
-	// Digest is NOT YET ENFORCED. It is carried through configuration and
-	// verified nowhere — connectOne does not read it — so setting it today
-	// buys an air-gapped operator no protection at all. It is left in place
-	// because the field is the right shape and removing it would break
-	// configs that already set it, but anything that reads like a
-	// supply-chain guarantee must not be claimed until this is wired up.
-	//
-	// Intended: pins the server artifact. Air-gapped installs must set this;
-	// a tag or floating command is not reproducible (docs/ops/air-gap.md).
+	// Digest pins the server's program as sha256:<hex>: the file its command
+	// resolves to is hashed before it starts and a mismatch refuses it, or an
+	// OCI image named by that digest in the arguments is pulled by it. A URL
+	// server with a digest is refused, since it cannot be checked.
 	Digest string `json:"digest,omitempty"`
 }
 
@@ -166,6 +161,9 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 	var transport Transport
 	var err error
 	if cfg.URL != "" {
+		if _, err := pinnedCommand(cfg, nil); err != nil {
+			return err
+		}
 		headers := map[string]string{}
 		for k, v := range cfg.Headers {
 			headers[k] = v

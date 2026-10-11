@@ -33,6 +33,11 @@ All notable changes to Abhed are recorded here. The format follows
 - `POST /v1/admin/mcp` answers `400` for a server whose name overlaps a
   configured one's.
 
+- `web_search` asks for each search unless an allow rule names it; add
+  `"allow": ["web_search"]` to the managed file to keep searches unasked.
+- An MCP server with a `digest` starts only when its program matches; a URL
+  server with a `digest` is refused.
+
 ### Security
 
 - A shell's `-c` text was taken to be the word right after `-c`, so in
@@ -161,6 +166,19 @@ All notable changes to Abhed are recorded here. The format follows
   and into the pull request's description. A change that holds a stored
   value, as written or encoded, now refuses the push. Affects 1.0.0 to
   1.2.7.
+
+- An MCP server's `digest` was accepted and never checked, and Studio
+  reported such a server as pinned, so a changed program started all the
+  same. The program a stdio server's command resolves to is now hashed
+  before it starts and a mismatch refuses it; an OCI image named by the
+  digest in the arguments is accepted as pinned by the engine. A URL server
+  with a `digest`, or a malformed digest, is refused. Affects 0.1.0 to
+  1.2.7.
+
+- Once the managed file turned `web_search` on, a search ran without
+  asking as a read-only tool, so a query could carry what the agent read to
+  the search service. A search now asks in every mode short of bypass
+  unless an allow rule names `web_search`. Affects 1.2.2 to 1.2.7.
 
 ### Added
 

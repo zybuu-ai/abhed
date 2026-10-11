@@ -26,7 +26,18 @@ A stdio server is a process Abhed starts on your machine, as you, **outside the
 sandbox**. It can read and write what your user can and reach the network,
 whatever the sandbox tier and `allow_network` say. The one exception is the
 network under `sandbox.network: "allowlist"`; see below. A URL server runs
-wherever it is hosted. `digest` is accepted in the configuration but not checked yet.
+wherever it is hosted.
+
+`digest` pins a stdio server's program, as `"sha256:<64 hex digits>"`: just
+before the server starts, the file its `command` resolves to (on the
+server's own `PATH`, links followed) is hashed, a mismatch refuses the
+server, and the resolved path is what starts. When an argument names an OCI
+image by that digest (`ghcr.io/org/server@sha256:…`), the container engine
+pulls by it and the program is not hashed. A digest pins the one program
+file: an interpreter's script or packages it loads (`npx`, `python
+server.py`) are not covered, so pin the image or a single binary. A URL
+server with a `digest` is refused, since its program cannot be checked. A
+malformed digest refuses the server too.
 Add a server as you would install any program: only one you trust.
 
 A stdio server does not inherit Abhed's environment, which holds model

@@ -21,13 +21,17 @@ var errUnconfined = errors.New("sandbox.network is allowlist and no sandbox here
 // startStdio starts a stdio server, confined when the gateway can confine it.
 func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTransport, error) {
 	env := ServerEnv(cfg.Env)
+	command, err := pinnedCommand(cfg, env)
+	if err != nil {
+		return nil, err
+	}
 	if g.Confine == nil {
 		if g.MustConfine {
 			return nil, errUnconfined
 		}
-		return NewStdioTransport(life, cfg.Command, cfg.Args, env)
+		return NewStdioTransport(life, command, cfg.Args, env)
 	}
-	argv := append([]string{cfg.Command}, cfg.Args...)
+	argv := append([]string{command}, cfg.Args...)
 	// The server's own life: ending it revokes its credential and lets its proxy go.
 	sctx, cancel := context.WithCancel(life)
 	cmd, err := g.Confine(sctx, cfg.Name, argv, env, g.calls.recordFor(cfg.Name))

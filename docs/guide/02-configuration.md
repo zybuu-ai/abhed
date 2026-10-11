@@ -581,6 +581,13 @@ administrator's setting: **only the managed configuration**
 (`/etc/abhed/config.json`) turns it on or says where the queries go. The
 same holds for [`web_fetch`](#web-fetch).
 
+Once on, every search asks in the default, accept-edits, auto and plan
+modes, as `web_fetch` does without a host list: a query can carry what the
+agent read to the search service. An allow rule runs searches unasked, such
+as `"permissions": {"allow": ["web_search"]}` in the managed file, and
+bypass mode runs them. Before 1.2.8 a search ran unasked as a read-only
+tool.
+
 Every other layer, `~/.abhed/config.json`, `-settings`, a workspace's
 `.abhed/config.json` trusted or not and an SDK `ConfigDir`, may only turn it
 off or narrow it. No `ABHED_*` variable sets either section:
