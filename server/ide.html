@@ -2135,7 +2135,7 @@ function render(ev){
     const d = el('details', 'call'), s = el('summary'); const subj = p.withheld ? p.withheld : subjectOf(p.tool, p.args);
     s.appendChild(el('span', 'tool', visible(p.tool || 'call'))); s.appendChild(el('span', 'subj', visible(subj))); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s);
-    const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0};
+    const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0, reason:p.reason, asked:!!p.requires_approval};
     // Arguments and output are drawn when the call is opened, so a session of
     // hundreds of calls keeps only their headers in the page.
     d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
@@ -2144,11 +2144,11 @@ function render(ev){
     if(p.requires_approval){ asks.set(p.call_id, {p, rid: ev.id, shown:false}); if(live) offerAsks(); }
     break; }
   case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
-    if(c){ c.node.appendChild(el('div', 'why', visible('allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')))); c.res.textContent = 'running…'; }
-    settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? reveal(c.tool) : 'tool')); break; }
+    if(c){ c.node.appendChild(el('div', 'why', visible('allowed · step ' + (p.step || '?') + byWhom(p) + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')))); c.res.textContent = 'running…'; }
+    answered(p, c, 'allowed' + byWhom(p) + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '')); if(live) waiting('Running ' + (c ? reveal(c.tool) : 'tool')); break; }
   case 'action.denied': { if(mineCalls.has(p.call_id)){ hawkSoon(); break; } const c = calls.get(p.call_id);
-    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + ' — ' + (p.reason || '')))); }
-    settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
+    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + byWhom(p) + ' — ' + (p.reason || '')))); }
+    answered(p, c, 'denied' + byWhom(p) + (p.reason ? ' — ' + p.reason : '')); hawkSoon(); break; }
   case 'observation': {
     const mine = mineCalls.has(p.call_id), c = mine ? null : calls.get(p.call_id); const body = p.content || '';
     if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
@@ -2354,6 +2354,26 @@ function focusSoon(){
   clearTimeout(focusTimer);
   focusTimer = setTimeout(() => { const open = [...tx().querySelectorAll('.ask')].filter(a => a.querySelector('.btns'));
     if(open.length) open[open.length - 1].querySelector('.btns').firstChild.focus({preventScroll:true}); }, 100);
+}
+// byWhom names who decided a call: the person who answered, or the rule or scope that did.
+const byWhom = p => p.by === 'reviewer' || (!p.by && p.step === 'reviewer') ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '';
+// answered settles a call's prompt from the record. A call a session scope allowed was never
+// put to anyone, so a prompt drawn for it goes; one a person answered keeps who and what
+// scope, and a replay draws it settled, as it was decided.
+function answered(p, c, how){
+  if(p.by === 'session-scope'){
+    asks.delete(p.call_id);
+    for(const a of tx().querySelectorAll('.ask')) if(a.dataset.call === p.call_id && a.querySelector('.btns')) a.remove();
+    return;
+  }
+  const person = p.by === 'reviewer' || (!p.by && p.step === 'reviewer');
+  if(person && c && c.asked && ![...tx().querySelectorAll('.ask')].some(x => x.dataset.call === p.call_id)){
+    asks.delete(p.call_id);
+    const a = el('div', 'ask'); a.dataset.call = p.call_id;
+    a.appendChild(el('b', '', 'Allow ' + visible(c.tool || 'call') + '?')); a.appendChild(el('p', '', visible(c.subject || '') + (c.reason ? '  —  ' + visible(c.reason) : '')));
+    a.appendChild(el('div', 'done', visible(how))); add(a); return;
+  }
+  settleAsk(p.call_id, visible(how));
 }
 function settleAsk(callID, how){
   asks.delete(callID);

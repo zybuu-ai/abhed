@@ -693,6 +693,12 @@ on. A server with it off starts on the older schema as before.
   for its state every two seconds for as long as it stayed open, each
   answered `404`. After three such answers in a row it now says the session
   was deleted and stops asking.
+- In the web IDE a call that an earlier *Always allow* let through drew an
+  approval card nobody was asked, and after a reload the answered cards were
+  gone and nothing said who had answered. A call a session scope allowed now
+  draws no card; an answered card says who answered and the scope chosen
+  (`allowed · by ana · always allowing bash(touch *)`), live and when the
+  session is reopened.
 
 ### Dependencies
 
