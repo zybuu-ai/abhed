@@ -317,6 +317,12 @@ Chrome posts a plain form as `Origin: null`; that is accepted only when the
 browser also says `Sec-Fetch-Site: same-origin`, so the confirm page's form
 still works without script.
 
+A browser holding both a local session and a single sign-on session is
+signed out of both: the local one ends, then the provider's own sign-out
+runs. Where local accounts are on, a browser that must sign in is sent to
+the front door, which offers the local form beside the provider's button,
+rather than straight to the identity provider.
+
 ## Requiring a group
 
 ```json

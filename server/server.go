@@ -3893,17 +3893,27 @@ func (c *redirectCapture) Write(b []byte) (int, error) {
 }
 
 func (s *Server) endSignIn(w http.ResponseWriter, r *http.Request) {
-	// The local session the cookie names ends even when its account cannot be read.
-	if l := s.LocalAuth(); l != nil && l.HasSession(r) {
-		l.SignOut(w, r)
-		return
+	// The local session the cookie names ends even when its account cannot be
+	// read; a single sign-on session the browser also holds is ended after it.
+	l := s.LocalAuth()
+	endedLocal := false
+	if l != nil && l.HasSession(r) {
+		l.EndRequestSession(w, r)
+		endedLocal = true
 	}
 	providers := s.signIns()
 	for _, p := range providers {
+		if p == auth.Provider(l) {
+			continue
+		}
 		if _, found := p.Identify(r); found {
 			p.SignOut(w, r)
 			return
 		}
+	}
+	if endedLocal {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
 	}
 	providers[0].SignOut(w, r)
 }

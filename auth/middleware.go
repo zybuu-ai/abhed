@@ -355,10 +355,10 @@ func (h *headerOnly) WriteHeader(int)             {}
 // challenge answers a request with no credentials. A browser is sent to sign
 // in, keeping where it was going; an API client gets 401 and a reason.
 //
-// The destination is the first provider with an entry point of its own. With
-// none — local accounts only — it is the front door, where the server renders
-// the sign-in form. Either way the page receives ?return= so it can send the
-// person back afterwards.
+// The destination is the first provider with an entry point of its own, unless
+// a provider has none (local accounts): then it is the front door, where the
+// server renders the sign-in form beside the other providers' buttons. Either
+// way the page receives ?return= so it can send the person back afterwards.
 func (m Middleware) challenge(w http.ResponseWriter, r *http.Request, reason string) {
 	if !wantsHTML(r) || len(m.Providers) == 0 {
 		unauthorized(w, reason)
@@ -366,9 +366,14 @@ func (m Middleware) challenge(w http.ResponseWriter, r *http.Request, reason str
 	}
 	target := "/"
 	for _, p := range m.Providers {
-		if u, _ := p.SignIn(); u != "" {
-			target = u
+		u, _ := p.SignIn()
+		if u == "" {
+			// Local accounts sign in on the front door, which offers the others too.
+			target = "/"
 			break
+		}
+		if target == "/" {
+			target = u
 		}
 	}
 	q := "?return=" + url.QueryEscape(r.URL.RequestURI())

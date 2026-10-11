@@ -152,6 +152,12 @@ All notable changes to Abhed are recorded here. The format follows
   Signing in as one person and then as another from the same browser also
   left the first session valid; a sign-in now ends the session the browser
   sent. Affects 0.1.0 to 1.2.7.
+- In a browser holding both a local session and a single sign-on session,
+  Sign out ended only the local one, and the single sign-on session went
+  on working. Both now end: the local session first, then the provider's
+  own sign-out. A signed-out reload on a server with local accounts beside
+  single sign-on now lands on the front door rather than at the identity
+  provider. Affects 1.0.0 to 1.2.7.
 
 ### Added
 
