@@ -300,6 +300,11 @@ A save that leaves a file no longer parsing (invalid JSON, a Go file with an
 unclosed bracket) is made, never refused, and the line above the editor says
 so, as the agent's own edit would; `tools.syntax_check: off` turns that off.
 
+Replies, reasoning and messages in the chat show a zero-width, bidi or other
+format character as its code point (`⟨U+202E⟩`), as tool cards do; a
+no-break, narrow or em space there is drawn as a space. File names, tool
+cards and output still mark every space other than a plain one.
+
 So HawkEYE's report covers what people did as well as what the agent did, and a
 save shows up under **Changes** with a diff like any other edit. The chat shows
 the conversation with the agent only: your own saves, commands, shells and

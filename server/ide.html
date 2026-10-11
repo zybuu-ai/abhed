@@ -1872,8 +1872,13 @@ function visible(s, lines){
 }
 // reveal is visible without the spacing rule, for prose and code whose layout is its own:
 // replies, reasoning, and file names in the explorer, tabs and dialogs.
-function reveal(s, lines){
-  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?! )\p{Zs}|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+// Prose (replies, reasoning, messages) passes prose: other spaces (no-break, narrow, em) are
+// drawn as spaces, which typography puts there and which hide nothing. Format, bidi and
+// zero-width characters stay marked.
+function reveal(s, lines, prose){
+  const hidden = prose ? /[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu
+    : /[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?! )\p{Zs}|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu;
+  return String(s).replace(hidden, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1918,10 +1923,10 @@ function flushStream(){
   if(flushRaf){ cancelAnimationFrame(flushRaf); flushRaf = 0; }
   if(!pendText && !pendThink) return;
   const stick = nearBottom();
-  if(pendThink){ thinkLive().body.appendData(reveal(pendThink, true)); pendThink = ''; }
+  if(pendThink){ thinkLive().body.appendData(reveal(pendThink, true, true)); pendThink = ''; }
   if(pendText){
     if(!streaming){ streaming = bubble('agent', 'abhed', ''); streamBody = streaming.lastChild; add(streaming); }
-    streamBody.appendData(reveal(pendText, true)); pendText = '';
+    streamBody.appendData(reveal(pendText, true, true)); pendText = '';
   }
   follow(stick);
 }
@@ -1939,7 +1944,7 @@ function thinkLive(at){
 }
 function endThinking(at, whole){
   const t = thinkBlock; if(!t) return false;
-  if(whole != null && reveal(whole, true) !== t.body.data) t.body.data = reveal(whole, true);
+  if(whole != null && reveal(whole, true, true) !== t.body.data) t.body.data = reveal(whole, true, true);
   if(t.live){ t.live = false; t.secs = Math.max(1, Math.round(((at || Date.now()) - t.since) / 1000)); t.node.classList.remove('live'); if(!t.pinned) t.node.open = false; }
   t.summary.textContent = '▸ thought for ' + t.secs + 's · ' + words(t.body.data) + ' words';
   return true;
@@ -1963,7 +1968,7 @@ function mdInline(parent, s){
   if(at < s.length) parent.appendChild(document.createTextNode(s.slice(at)));
 }
 function md(text){
-  const root = el('div', 'md'), lines = reveal(String(text || ''), true).split('\n');
+  const root = el('div', 'md'), lines = reveal(String(text || ''), true, true).split('\n');
   let list = null, kind = '', para = null, quote = null;
   const flat = () => { list = null; kind = ''; para = null; quote = null; };
   for(let i = 0; i < lines.length; i++){
@@ -2007,7 +2012,7 @@ function md(text){
 // Every message carries an id of the page's own, echoed on the user.message
 // that records it, so matching never depends on the recorded text.
 const newCid = () => 'c-' + Array.from(crypto.getRandomValues(new Uint8Array(9)), x => x.toString(16).padStart(2, '0')).join('');
-function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', reveal(text, true)); b.text = text; b.cid = newCid(); return b; }
+function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', reveal(text, true, true)); b.text = text; b.cid = newCid(); return b; }
 function drawQueued(b){
   const old = b.querySelector('.qbar'); if(old) old.remove();
   const bar = el('div', 'qbar');
@@ -2087,7 +2092,7 @@ function render(ev){
   logEvent(ev, p);
   switch(ev.type){
   case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
-  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p), node = b || bubble('user', 'you', reveal(p.text || '', true)); add(node);
+  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p), node = b || bubble('user', 'you', reveal(p.text || '', true, true)); add(node);
     node.seq = ev.seq; if(!b) node.said = p.text || ''; lastUser = node;
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
@@ -2103,7 +2108,7 @@ function render(ev){
     follow(stick); break; }
   case 'agent.reasoning':
     if(thinkBlock){ endThinking(at, p.text || ''); thinkBlock = null; break; }
-    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', reveal(p.text || '', true))); add(d); }
+    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', reveal(p.text || '', true, true))); add(d); }
     break;
   case 'action.requested': {
     // The chat is the conversation with the agent: what the person did by

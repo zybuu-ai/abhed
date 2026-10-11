@@ -553,9 +553,9 @@ func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
 	for fn, wants := range map[string][]string{
 		"function drawTabs(){":             {"el('span', 'nm', reveal(t.label))", "b.title = reveal(", "'Close ' + reveal(t.label)"},
 		"function crumbs(path, meta){":     {"reveal(p)"},
-		"function flushStream(){":          {"appendData(reveal(pendThink, true))", "appendData(reveal(pendText, true))"},
+		"function flushStream(){":          {"appendData(reveal(pendThink, true, true))", "appendData(reveal(pendText, true, true))"},
 		"async function loadChanges(){":    {"reveal(f.path)"},
-		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true)"},
+		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true, true)"},
 	} {
 		start := strings.Index(ideHTML, fn)
 		if start < 0 {

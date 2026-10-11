@@ -37,4 +37,10 @@ root = md('see notes' + RLO + 'dm.txt' + ZW + '\n```\n        indented' + RLO + 
 check('a reply shows bidi and zero-width characters as code points', !root.textContent.includes(RLO) && !root.textContent.includes(ZW) &&
   root.textContent.includes('notes⟨U+202E⟩dm.txt⟨U+200B⟩') && root.textContent.includes('        indented⟨U+202E⟩'));
 
+// Other spaces in prose are typography and are drawn as spaces; a format character still is not.
+const NNBSP = String.fromCharCode(0x202f), NBSP = String.fromCharCode(0xa0);
+root = md('10' + NNBSP + 'km at 5' + NBSP + 'pm' + ZW);
+check('a reply draws no-break and narrow spaces plain', root.textContent === '10' + NNBSP + 'km at 5' + NBSP + 'pm⟨U+200B⟩');
+check('a file name still marks them', reveal('a' + NNBSP + 'b') === 'a⟨U+202F⟩b');
+
 process.exit(ok ? 0 : 1);

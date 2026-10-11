@@ -677,6 +677,11 @@ on. A server with it off starts on the older schema as before.
 - A line typed into a workbench shell that was longer than the terminal was
   wide was recorded without its text, as though it had not been echoed:
   the shell's soft wrap at the right margin was read as part of the line.
+- The web IDE drew a narrow no-break space (U+202F) or any other space but a
+  plain one in a model's reply as `⟨U+202F⟩`. Replies, reasoning and
+  messages now draw such spaces as spaces; format, bidi and zero-width
+  characters are still marked, and file names, tool cards and output are
+  unchanged.
 
 ### Dependencies
 

@@ -110,6 +110,9 @@ sets = {
 }
 seen=set(); out=[]
 for fn in sets[which]:
+    # The workbench's reveal takes a third argument, prose; the console's does not.
+    if fn == 'function reveal(s, lines){' and fn not in src:
+        fn = 'function reveal(s, lines, prose){'
     if fn not in src: continue
     name = re.match(r'(?:async function|function|const|let) (\w+)', fn).group(1)
     if name in seen: continue
