@@ -20,6 +20,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -347,6 +348,24 @@ func isolationOf(t tools.Tool) *tools.Isolation {
 		in = tools.Isolation{Tier: "none", Backend: "host", Network: true}
 	}
 	return &in
+}
+
+// warnShellScreening tells the operator of a server accounts sign in to that
+// its deny rules for commands only screen what is typed into a workbench
+// shell, unless the terminal judges each line.
+func (s *Server) warnShellScreening() {
+	cfg := s.opts.Config
+	if !s.multiUser() || cfg.Sandbox.Terminal == "lines" || cfg.ManagedScreens() {
+		return
+	}
+	for _, d := range cfg.Permissions.Deny {
+		if r, err := policy.ParseRule(d); err == nil && r.ForTool("bash") {
+			s.log.Warn("deny rules for commands only screen the lines typed into a workbench shell, "+
+				"which a shell can get around; set sandbox.terminal to \"lines\" to judge every line before it runs",
+				"rule", d)
+			return
+		}
+	}
 }
 
 // heldHere reports the tiers whose shell runs on this server's own terminal,

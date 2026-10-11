@@ -517,6 +517,9 @@ All notable changes to Abhed are recorded here. The format follows
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
+- `abhed serve` with sign-in logs a warning at start when deny rules for
+  commands are in force and `sandbox.terminal` is not `"lines"`: in a
+  workbench shell those rules only screen the lines as typed.
 
 ### Changed
 

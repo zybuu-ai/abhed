@@ -1047,3 +1047,29 @@ func TestShellRecordsAWrappedLine(t *testing.T) {
 		t.Fatalf("the wrapped line was not recorded with its text: %+v", wb.typed())
 	}
 }
+
+// A server accounts sign in to warns at start when its deny rules for
+// commands are only a screen in the workbench shell.
+func TestShellScreeningWarnedOnAMultiUserServer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit func(*config.Config)
+		warn bool
+	}{
+		"multi-user, shell":    {func(c *config.Config) { c.Auth.Mode = "proxy" }, true},
+		"multi-user, lines":    {func(c *config.Config) { c.Auth.Mode = "proxy"; c.Sandbox.Terminal = "lines" }, false},
+		"single user":          {func(c *config.Config) { c.Auth.Mode = "none" }, false},
+		"no command deny rule": {func(c *config.Config) { c.Auth.Mode = "proxy"; c.Permissions.Deny = []string{"read(**/.env)"} }, false},
+		"managed rules force lines": {func(c *config.Config) {
+			c.Auth.Mode = "proxy"
+			c.Managed, c.ManagedKeys = true, []string{"permissions.deny"}
+		}, false},
+	} {
+		cfg := config.Default()
+		tc.edit(&cfg)
+		var buf bytes.Buffer
+		New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+		if got := strings.Contains(buf.String(), `set sandbox.terminal to \"lines\"`); got != tc.warn {
+			t.Errorf("%s: warned=%v\n%s", name, got, buf.String())
+		}
+	}
+}

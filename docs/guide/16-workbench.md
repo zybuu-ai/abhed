@@ -544,6 +544,10 @@ What a shell changes about the checks, stated plainly:
   that way (a nested shell's prompt) passes it, and a prompt changed to end
   otherwise makes every line recorded without its text there.
 
+A server accounts sign in to logs a warning at start when deny rules for
+commands are in force (the defaults include some) and `sandbox.terminal` is
+not `"lines"`, since there they only screen each shell's lines.
+
 Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
 tab then runs every line as a `bash` call of its own, judged before it runs, on
 its own pseudo-terminal, and shell state does not carry from one line to the

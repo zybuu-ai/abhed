@@ -707,6 +707,7 @@ func New(opts Options) *Server {
 	}
 	srv = s
 	s.reportConfigAttempts()
+	s.warnShellScreening()
 	if local := s.LocalAuth(); local != nil {
 		local.OnChange(func(username string) {
 			s.releaseStale(local, username)
