@@ -134,7 +134,7 @@ func send(ctx context.Context, client *http.Client, p RetryPolicy,
 	for attempt := 1; attempt <= attempts; attempt++ {
 		req, err := build()
 		if err != nil {
-			return nil, err
+			return nil, scrubURLError(err)
 		}
 		resp, err := client.Do(req)
 		if te := (*TimeoutError)(nil); errors.As(err, &te) {
@@ -150,11 +150,11 @@ func send(ctx context.Context, client *http.Client, p RetryPolicy,
 						attempt+1, attempts))
 				}
 				if werr := p.Wait(ctx, attempt, nil); werr != nil {
-					return nil, err
+					return nil, scrubURLError(err)
 				}
 				continue
 			}
-			return nil, err
+			return nil, scrubURLError(err)
 		}
 		if resp.StatusCode == http.StatusOK || !Retryable(resp.StatusCode) {
 			return resp, nil

@@ -149,6 +149,13 @@ All notable changes to Abhed are recorded here. The format follows
   a label already written; they are now replaced in one pass. Affects 1.0.0
   to 1.2.7.
 
+- An error a run returned was not redacted, and a model request that could
+  not connect quoted its whole URL, so a key in `base_url`
+  (`?api_key=…`, `user:key@host`) or a stored value in a provider's error
+  body reached the terminal, the API and the server log. The URL is now
+  reported without its query and user information, and the error is
+  redacted. Affects 1.0.0 to 1.2.7.
+
 ### Added
 
 - What a sandbox command can reach of the server: on every tier, nothing

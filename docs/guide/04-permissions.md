@@ -969,7 +969,10 @@ percent-encoding, and the whole value in lower or upper case. The same forms
 are looked for in what `web_fetch` and `web_search` would send. All values
 are replaced in one pass, longest first, so a label already written is never
 matched again by a shorter value. Plain text (the sandbox control plane's
-record, the prompt history) is redacted as text.
+record, the prompt history) is redacted as text. An error a run returns, such
+as a provider's error body, is redacted too, and a request to the model that
+cannot connect reports its URL without the query or user information, where
+a `base_url` may carry a key (`?api_key=`, `user:key@host`).
 
 What redaction does not catch:
 
@@ -980,8 +983,6 @@ What redaction does not catch:
   exposed.
 - A value of 8 to 11 characters is matched only as written and escaped.
 - Part of a value is not caught, such as a truncated one.
-- An error returned from a run, such as a provider's error body, is not
-  redacted.
 - Files are not redacted. What the agent writes to a file stays there, and
   `abhed resolve` pushes it and quotes the diff in the pull request's
   description.

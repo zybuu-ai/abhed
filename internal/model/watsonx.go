@@ -119,7 +119,7 @@ func (w *WatsonX) bearer(ctx context.Context) (string, error) {
 
 	resp, err := w.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("cannot reach IBM IAM: %w", err)
+		return "", fmt.Errorf("cannot reach IBM IAM: %w", scrubURLError(err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -303,7 +303,7 @@ func (w *WatsonX) Complete(ctx context.Context, req Request) (<-chan Chunk, erro
 
 	resp, err := w.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("watsonx request failed: %w", err)
+		return nil, fmt.Errorf("watsonx request failed: %w", scrubURLError(err))
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()

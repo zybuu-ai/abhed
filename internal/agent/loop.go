@@ -591,7 +591,8 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 
 // RunMessage is Run for a prompt that carries a client's id, which the
 // recorded user.message echoes so the client can match it.
-func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error) {
+func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err error) {
+	defer func() { err = l.redactErr(err) }()
 	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
