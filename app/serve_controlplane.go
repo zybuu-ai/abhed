@@ -93,15 +93,21 @@ func controlPlaneStateDir() (string, error) { return config.ControlPlaneStateDir
 
 // checkSandboxRoot refuses a folder for sandbox workspaces that another
 // sandbox, a session or Abhed's state would share: inside the server's
-// workspace, inside any .abhed, or one others may write.
+// workspace, inside any .abhed or a git directory, or one others may write.
 func checkSandboxRoot(key, root, workspace string) error {
 	if !filepath.IsAbs(root) {
 		return fmt.Errorf("%s %q is not an absolute path", key, root)
 	}
 	root = filepath.Clean(root)
-	for _, c := range strings.Split(filepath.ToSlash(root), "/") {
-		if strings.EqualFold(c, tools.StateDir) {
-			return fmt.Errorf("%s %q is inside Abhed's state", key, root)
+	for _, p := range []string{root, sandbox.RealPath(root)} {
+		for _, c := range strings.Split(filepath.ToSlash(p), "/") {
+			switch {
+			case strings.EqualFold(c, tools.StateDir):
+				return fmt.Errorf("%s %q is inside Abhed's state", key, root)
+			case strings.EqualFold(c, ".git"):
+				// git would read a sandbox's files as its repository's own.
+				return fmt.Errorf("%s %q is inside a git directory", key, root)
+			}
 		}
 	}
 	for _, ws := range []string{workspace, sandbox.RealPath(workspace)} {
