@@ -176,6 +176,13 @@ func (s *Service) outcome(ctx context.Context, ev AuditEvent, err error) {
 			ev.Detail = map[string]string{}
 		}
 		ev.Detail["reason"] = s.reason(err.Error())
+	case errors.Is(err, ErrForbidden) && err.Error() != ErrForbidden.Error():
+		// A screen's reason may quote the command, so it is redacted too.
+		ev.Detail = maps.Clone(ev.Detail)
+		if ev.Detail == nil {
+			ev.Detail = map[string]string{}
+		}
+		ev.Detail["reason"] = s.reason(strings.TrimPrefix(err.Error(), ErrForbidden.Error()+": "))
 	}
 	_ = s.record(ctx, ev)
 }

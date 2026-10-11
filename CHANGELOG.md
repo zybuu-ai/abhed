@@ -293,7 +293,7 @@ All notable changes to Abhed are recorded here. The format follows
   made against a stale version. Every change is recorded with who asked, in
   an append-only `sandbox_audit` table. Every `:exec` is judged by the
   server's deny rules and extension hooks, as the workbench's terminal is: a
-  refused command is `403 forbidden`, recorded, and never runs. While any
+  refused command is `403 forbidden`, recorded with its redacted reason, and never runs. While any
   deny or ask rule for `bash` or any hook is in force, a command the rules
   cannot read (its program named by an expansion, as in `c=curl; $c`, its
   words built by one, a git alias set on its command line, or a git

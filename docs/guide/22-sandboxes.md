@@ -478,7 +478,8 @@ it ended. The command line itself goes through your secrets redaction first.
 A command a deny rule or an extension's hook refuses (your
 `permissions.deny`, as for the agent's `bash` and the workbench's
 terminal) is refused with `403` and code `forbidden`, and the refusal is
-recorded. Where an edition gives each person a policy layer of their own,
+recorded with its reason (through your secrets redaction, at most 512
+bytes). Where an edition gives each person a policy layer of their own,
 such as the rules of the Team workspace they belong to, its deny rules
 judge their commands here too, and the lines they type into `:attach` and
 an SSH shell; when the layer cannot be read the call is refused with `503`
