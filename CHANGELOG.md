@@ -549,6 +549,13 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- Policy hooks, an extension's `tool_call` among them, now get the
+  decision's context with a deadline: 30 seconds, or the request's own, such
+  as an Explorer rename's. A call whose hooks have not decided by then is
+  refused, and once the deadline has passed the rest of a batch is refused
+  without asking the hooks, so renaming a large folder under a slow hook no
+  longer holds the workbench for every file in it. A manual action judges
+  each repeated subject once.
 - `ssh` calls are judged by host as well as command: rules and "always allow"
   read them as `host/command`, so an answer for one host never covers
   another, and deny and ask rules also read the command alone as before. An

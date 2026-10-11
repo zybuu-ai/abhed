@@ -10,6 +10,7 @@
 package policy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -357,6 +359,15 @@ func (r Rule) named() string {
 // no opinion. A hook can tighten a decision and never loosen one.
 type Hook func(tool string, args json.RawMessage) *Result
 
+// ContextHook is a Hook given the decision's context, which carries a
+// deadline: the caller's, or HookTimeout from when the hooks start. A hook
+// that has not decided by then refuses the call, so a slow one cannot hold
+// a decision, or a batch of them, past it.
+type ContextHook func(ctx context.Context, tool string, args json.RawMessage) *Result
+
+// DefaultHookTimeout bounds the hooks of one decision when the caller sets no deadline.
+const DefaultHookTimeout = 30 * time.Second
+
 type Engine struct {
 	Mode  Mode
 	Deny  []Rule
@@ -366,6 +377,11 @@ type Engine struct {
 	// EngineHooks are hooks made for the engine evaluating, so one copied for
 	// a subagent, with more roots, judges with those.
 	EngineHooks []func(*Engine) Hook
+	// ContextHooks are EngineHooks given the decision's context.
+	ContextHooks []func(*Engine) ContextHook
+	// HookTimeout bounds the hooks of one decision when its context has no
+	// earlier deadline; 0 is DefaultHookTimeout.
+	HookTimeout time.Duration
 
 	// Managed marks the engine as org-controlled: bypass mode is refused and
 	// local config cannot escalate past it (docs P7, §10 precedence).
@@ -454,7 +470,7 @@ func addAll(dst *[]Rule, patterns []string) error {
 // tool and not others. Something that cannot show each call to the engine,
 // such as an interactive shell, cannot honour such a rule and must not run.
 func (e *Engine) Screens(tool string) bool {
-	if len(e.Hooks)+len(e.EngineHooks) > 0 {
+	if len(e.Hooks)+len(e.EngineHooks)+len(e.ContextHooks) > 0 {
 		return true
 	}
 	for _, r := range e.DenyRules() {
@@ -673,7 +689,14 @@ func (e *Engine) pathRules(tool string) bool {
 // Evaluate applies the ordered decision flow. A prompt shows the command as
 // written; its reason notes continuations the checks joined.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
-	return e.evaluateAs(tool, mutates, args, false)
+	return e.evaluateAs(context.Background(), tool, mutates, args, false)
+}
+
+// EvaluateContext is Evaluate with the context its hooks are given: a
+// deadline on ctx bounds them, and once it has passed, a decision that needs
+// a hook refuses at once.
+func (e *Engine) EvaluateContext(ctx context.Context, tool string, mutates bool, args json.RawMessage) Result {
+	return e.evaluateAs(ctx, tool, mutates, args, false)
 }
 
 // EvaluateLine judges one line typed at an interactive terminal. The shell
@@ -682,11 +705,11 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 // judged by the text checks alone, not refused for that; every other step
 // is Evaluate's.
 func (e *Engine) EvaluateLine(tool string, mutates bool, args json.RawMessage) Result {
-	return e.evaluateAs(tool, mutates, args, true)
+	return e.evaluateAs(context.Background(), tool, mutates, args, true)
 }
 
-func (e *Engine) evaluateAs(tool string, mutates bool, args json.RawMessage, line bool) Result {
-	res := e.evaluate(tool, mutates, args, line)
+func (e *Engine) evaluateAs(ctx context.Context, tool string, mutates bool, args json.RawMessage, line bool) Result {
+	res := e.evaluate(ctx, tool, mutates, args, line)
 	if res.Decision == Ask && tool == "bash" {
 		// Only a backslash before a newline can be joined; the rest is not parsed again.
 		if _, subject, err := subjectOf(args); err == nil && strings.Contains(subject, "\\\n") && tools.CanonicalCommand(subject).Joined {
@@ -696,7 +719,7 @@ func (e *Engine) evaluateAs(tool string, mutates bool, args json.RawMessage, lin
 	return res
 }
 
-func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line bool) Result {
+func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args json.RawMessage, line bool) Result {
 	key, subject, err := subjectOf(args)
 	if err != nil {
 		return Result{Decision: Deny, Reason: err.Error(), Scope: "", Step: "args"}
@@ -756,12 +779,34 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
 	// steps below, so a hook can never turn a refusal into a question.
 	var hookAsk *Result
-	hooks := e.Hooks
+	hooks := make([]ContextHook, 0, len(e.Hooks)+len(e.EngineHooks)+len(e.ContextHooks))
+	for _, h := range e.Hooks {
+		hooks = append(hooks, func(_ context.Context, tool string, args json.RawMessage) *Result { return h(tool, args) })
+	}
 	for _, bind := range e.EngineHooks {
-		hooks = append(hooks[:len(hooks):len(hooks)], bind(e))
+		h := bind(e)
+		hooks = append(hooks, func(_ context.Context, tool string, args json.RawMessage) *Result { return h(tool, args) })
+	}
+	for _, bind := range e.ContextHooks {
+		hooks = append(hooks, bind(e))
+	}
+	if len(hooks) > 0 {
+		timeout := e.HookTimeout
+		if timeout <= 0 {
+			timeout = DefaultHookTimeout
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	for _, h := range hooks {
-		res := h(tool, args)
+		if ctx.Err() != nil {
+			return hookLate(ctx)
+		}
+		res := h(ctx, tool, args)
+		if (res == nil || res.Decision == Allow) && ctx.Err() != nil {
+			return hookLate(ctx)
+		}
 		if res == nil || res.Decision == Allow {
 			continue
 		}
@@ -953,6 +998,16 @@ func namesTrust(texts []string) bool {
 		}
 	}
 	return false
+}
+
+// hookLate is the refusal of a call whose hooks did not all decide before
+// the decision's deadline: a hook's veto must not be skipped for being slow.
+func hookLate(ctx context.Context) Result {
+	why := "the policy hooks did not decide before the deadline"
+	if errors.Is(ctx.Err(), context.Canceled) {
+		why = "the decision was cancelled before the policy hooks decided"
+	}
+	return Result{Decision: Deny, Reason: why + ", so the call is refused", Step: "hook"}
 }
 
 // sessionControl names tools that change only the session's own background

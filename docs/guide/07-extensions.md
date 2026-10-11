@@ -152,6 +152,14 @@ veto it stood for is gone. For the other events it is skipped: a
 `user_prompt_submit` hook that has stopped fails open, and the CLI says each
 message went unscreened. The session goes on either way.
 
+**One decision's policy hooks have a deadline.** A `tool_call` hook, with
+every other policy hook, must decide within 30 seconds of the decision, or by
+the deadline of the request it serves if that comes first, such as an
+Explorer rename or delete judging each file it touches. A call whose hooks
+have not all decided by then is refused, and once that deadline has passed
+the rest of the batch is refused without asking the hooks again, so a slow
+extension cannot hold the workbench for the length of a large folder.
+
 **A hung extension is not retried.** The read is abandoned but the stream is
 not, so a later reply would be matched to the wrong request.
 
