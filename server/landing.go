@@ -407,6 +407,15 @@ function renderFacts(o){
   // page the agent is given, and does not let it search.
   f.appendChild(card('Web access', webAccess(o), webAccessDetail(o),
     o.web_search !== 'disabled' || o.web_fetch ? 'warn' : 'off'));
+  // The workspace's own config: whether it is trusted, and what was set aside.
+  const wc = o.workspace_config;
+  if(wc){
+    const n = (wc.ignored || []).length;
+    f.appendChild(card('Workspace config', wc.trusted ? 'trusted' : 'not trusted',
+      n ? n + ' setting' + (n === 1 ? '' : 's') + ' ignored: ' + wc.ignored.map(k => k.key).join(', ')
+        : (wc.trusted ? 'every setting applies' : 'only settings that tighten apply'),
+      wc.trusted ? 'on' : 'warn'));
+  }
 
   // ---- activity
   const st = $('stats');

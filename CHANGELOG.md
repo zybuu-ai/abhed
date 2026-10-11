@@ -520,6 +520,10 @@ on. A server with it off starts on the older schema as before.
 - `abhed serve` with sign-in logs a warning at start when deny rules for
   commands are in force and `sandbox.terminal` is not `"lines"`: in a
   workbench shell those rules only screen the lines as typed.
+- `GET /v1/overview` has `workspace_config`: whether the workspace's
+  `.abhed/config.json` is trusted, why, and the names of the settings it
+  set aside, for a signed-in caller or where nobody signs in; the front
+  page shows it as a card.
 
 ### Changed
 
