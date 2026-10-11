@@ -543,6 +543,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- The Python syntax check was skipped where `python3` is a pyenv, asdf or
+  mise shim. The shim is now resolved through the manager to the interpreter
+  it runs, never one inside the workspace.
+- A JSON-with-comments file such as `tsconfig.json` accepted `{,}` and
+  `[1,,]` as valid; a trailing comma is now allowed only after a value.
 - A glob into a skipped folder below the top (`services/x/node_modules/**`)
   or behind a wildcard (`**/node_modules/**`) gave a bare no-match; it now
   says the folder is skipped and how to search it. With `path` already that

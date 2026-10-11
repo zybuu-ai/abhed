@@ -202,7 +202,8 @@ comments and trailing commas by convention — `.jsonc`, `tsconfig*.json`,
 `deno.json`, `turbo.json`, `biome.json`, `tslint.json`, `api-extractor.json`,
 `cspell.json`, `settings.json`, `launch.json`, and anything in a `.vscode` or
 `.devcontainer` directory — are parsed that way; other `.json` files are
-strict JSON.
+strict JSON. A trailing comma is allowed only after a value, so `{,}` or
+`[1,,]` still fails.
 
 An `edit` whose new text is a pasted diff hunk — every non-empty line starts
 with `+` or `-`, there is at least one of each, and the old text has no such
@@ -214,9 +215,12 @@ is a pasted diff.
 
 Python is compiled, never run, by the `python3` on the path — the real
 interpreter behind it, never one inside the workspace or an added directory,
-with site packages and the environment switched off. With no `python3`, or
-when `python3` is a version-manager shim (pyenv, asdf) that needs its
-environment, Python is not checked. The host's interpreter decides what
+with site packages and the environment switched off. When `python3` is a
+pyenv, asdf or mise shim, the manager is asked which interpreter it runs
+(`pyenv which python3`), from a temporary folder, so a version file in the
+workspace does not choose it; that interpreter's version then decides. With
+no `python3`, or a shim the manager cannot resolve to an interpreter outside
+the workspace, Python is not checked. The host's interpreter decides what
 parses, so one older than 3.12, which could reject newer syntax the project
 accepts, warns instead of refusing.
 

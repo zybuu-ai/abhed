@@ -250,6 +250,66 @@ func TestTheRealInterpreterIsRun(t *testing.T) {
 	}
 }
 
+// A version manager's shim runs nothing without its environment, so it is
+// resolved through the manager, from a neutral folder, to the real file.
+func TestAVersionManagerShimIsResolved(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".pyenv")
+	real := filepath.Join(root, "versions", "3.13.0", "bin")
+	marker := fakePython(t, real)
+	realPy, _ := filepath.EvalSymlinks(filepath.Join(real, "python3"))
+	shims, bin := filepath.Join(root, "shims"), filepath.Join(root, "bin")
+	cwd := filepath.Join(t.TempDir(), "cwd")
+	for _, d := range []string{shims, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The shim fails as a real one does when its environment is cleared.
+	writeFile(t, filepath.Join(shims, "python3"), "#!/bin/sh\nexit 127\n")
+	writeFile(t, filepath.Join(bin, "pyenv"), "#!/bin/sh\npwd > "+cwd+"\necho "+filepath.Join(real, "python3")+"\n")
+	for _, f := range []string{filepath.Join(shims, "python3"), filepath.Join(bin, "pyenv")} {
+		if err := os.Chmod(f, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shim, _ := filepath.EvalSymlinks(filepath.Join(shims, "python3"))
+	defer shimTargets.Delete(shim)
+	s, _ := setup(t)
+	got, ver, ok := s.interpreter()
+	if !ok || got != realPy || ver != [2]int{3, 13} {
+		t.Fatalf("got %q %v %v, want %q", got, ver, ok, realPy)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the interpreter behind the shim was not asked")
+	}
+	if dir, _ := os.ReadFile(cwd); strings.TrimSpace(string(dir)) == s.Root {
+		t.Fatal("the manager ran in the workspace, where a version file chooses for it")
+	}
+}
+
+// A shim that resolves into the workspace is never run.
+func TestAShimIntoTheWorkspaceIsNeverRun(t *testing.T) {
+	s, dir := setup(t)
+	marker := fakePython(t, filepath.Join(dir, "py"))
+	root := filepath.Join(t.TempDir(), ".asdf")
+	shims, bin := filepath.Join(root, "shims"), filepath.Join(root, "bin")
+	for _, d := range []string{shims, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(shims, "python3"), "#!/bin/sh\nexit 127\n")
+	writeFile(t, filepath.Join(bin, "asdf"), "#!/bin/sh\necho "+filepath.Join(dir, "py", "python3")+"\n")
+	for _, f := range []string{filepath.Join(shims, "python3"), filepath.Join(bin, "asdf")} {
+		if err := os.Chmod(f, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	refusesInterpreter(t, s, marker)
+}
+
 // fakePython is an interpreter that would be accepted if it were ever run: it
 // answers the version question, and leaves a marker so a test can tell.
 func fakePython(t *testing.T, bin string) (marker string) {
@@ -513,4 +573,9 @@ func TestJSONCEdgeCases(t *testing.T) {
 	bad("tsconfig.json", `{"a": 1} /* unterminated`)
 	bad("tsconfig.json", `[1/**/2]`)
 	bad("package.json", `{"a": 1,}`)
+	ok("tsconfig.json", "{\"a\": [1, \"x\",], \"b\": {} ,}")
+	ok("tsconfig.json", "{\"a\": 1, /* c */ }")
+	for _, v := range []string{"{,}", "[,]", "{ , }", "{\"a\": 1,,}", "[1,,]", "{\"a\":,}", "{ /* c */ , }"} {
+		bad("tsconfig.json", v)
+	}
 }
