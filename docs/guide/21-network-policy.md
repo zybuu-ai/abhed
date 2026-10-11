@@ -136,12 +136,19 @@ revoked when the command's call ends:
 - Any launch bound to a session gets a token the same way, an MCP server
   started as `mcp/<name>` included, for as long as it runs.
 
-The proxy remembers the last 1,024 ended tokens, so their late traffic is
-recorded under the right call; an older one, or one never issued, is
-refused with no call id. A token is given only in its command's environment,
-though a command can pass it on: one written to the workspace and read by a
-concurrent call makes that call's traffic recorded as the first call's, until
-the first call ends.
+Each call also reaches the proxy by a way in of its own: on Linux a unix
+socket bound into its sandbox in place of the session's, on macOS a loopback
+port its Seatbelt profile allows and no other call's profile does. What
+arrives there is that call's, whatever credentials it carries or lacks, so a
+token passed to another command (written to the workspace and read by a
+concurrent call) does not move that command's traffic to the first call's
+record: it goes nowhere, or is recorded as the command's own call. That way
+in closes when the call ends. The proxy remembers the last 1,024 ended
+tokens, so late traffic that still reaches it is recorded under the right
+call; an older one, or one never issued, is refused with no call id. What
+remains: a stdio MCP server on Linux has the session's socket folder bound
+back, so it can still present another call's token there, and a name lookup
+through the session's resolver is attributed by the token it carries.
 On Linux each command has its own PID namespace, so no command can see
 another's environment. On macOS it can: `ps` is refused inside the sandbox,
 but the kernel returns the arguments and environment of any process of the
@@ -174,21 +181,17 @@ closed unread. Clients that keep connections open should be within it.
 
 ### Clients that do not send proxy credentials
 
-The proxy asks for its credentials (the user and password in the proxy
-variables) on every request, `CONNECT` included, and answers 407 without
-them. Most clients send them: curl, wget, git, pip, npm, Go and Python
-`requests`. Java's `HttpURLConnection`, which Maven and Gradle use, does
-not send Basic credentials on a `CONNECT` by default, so HTTPS from a JVM
-gets 407. The JVM's own flag turns that default off:
-
-```
--Djdk.http.auth.tunneling.disabledSchemes=
-```
-
-(an empty value; set it with `JAVA_TOOL_OPTIONS`, `MAVEN_OPTS` or
-`org.gradle.jvmargs`), together with `-Dhttps.proxyHost`, `-Dhttps.proxyPort`,
-`-Dhttps.proxyUser` and `-Dhttps.proxyPassword` from the proxy URL, since the
-JVM does not read `HTTPS_PROXY`.
+A request that arrives through a call's own way in (above) needs no
+credentials: it is the call's. So a client that sends none is served, Java's
+`HttpURLConnection` among them, which Maven and Gradle use and which sends
+no Basic credentials on a `CONNECT`. The JVM does not read `HTTP_PROXY` or
+`HTTPS_PROXY`, so each command is also given `JAVA_TOOL_OPTIONS` naming the
+proxy (`-Dhttp.proxyHost`, `-Dhttp.proxyPort`, `-Dhttps.proxyHost`,
+`-Dhttps.proxyPort` and `-Dhttp.nonProxyHosts` for loopback); a JVM prints
+`Picked up JAVA_TOOL_OPTIONS` on its standard error when it reads it. A
+request that reaches the proxy any other way (the session's shared port,
+which a sandboxed command cannot reach) still needs the credentials in the
+proxy variables and is answered 407 without them.
 
 A denied request gets 403 with the rule and the reason in the body, which the
 agent sees in the command's output.

@@ -207,6 +207,13 @@ All notable changes to Abhed are recorded here. The format follows
   Each account now has its own store under `~/.abhed/secrets.d`, managed
   through `GET /v1/secrets` and `PUT` and `DELETE /v1/secrets/{name}`; the
   operator's store serves scheduled runs only. Affects 0.1.0 to 1.2.7.
+- Under `sandbox.network: "allowlist"` a command could hand its proxy token
+  to a concurrent call, through the workspace or (on macOS) by reading its
+  environment, and that call's traffic was then recorded under the first
+  call. Each call now reaches the proxy by its own way in, a unix socket
+  bound into its sandbox on Linux and a loopback port only its Seatbelt
+  profile allows on macOS, and what arrives there is recorded as that call.
+  Affects 1.2.7.
 
 ### Added
 
@@ -720,6 +727,10 @@ on. A server with it off starts on the older schema as before.
   as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
   so the agent took the folder for empty. It now says the folder is skipped
   unless `path` names it, and gives that path.
+- HTTPS from a JVM (Maven, Gradle) behind the egress allowlist got 407: the
+  JVM sends no credentials on `CONNECT` and reads no proxy variable. A
+  request through a call's own way in needs no credentials now, and each
+  command gets `JAVA_TOOL_OPTIONS` naming the proxy.
 
 ### Dependencies
 

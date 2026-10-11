@@ -209,6 +209,7 @@ func (p *Proxy) serve(ln net.Listener, handle func(net.Conn)) {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
+				p.forget(ln) // a call's own listener ends with its call
 				return
 			}
 			select {
@@ -234,6 +235,18 @@ func (p *Proxy) serve(ln net.Listener, handle func(net.Conn)) {
 			}()
 		}
 	}()
+}
+
+// forget drops a listener that has stopped from those Close would close.
+func (p *Proxy) forget(ln net.Listener) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, l := range p.listeners {
+		if l == ln {
+			p.listeners = append(p.listeners[:i], p.listeners[i+1:]...)
+			return
+		}
+	}
 }
 
 func (p *Proxy) track(c net.Conn) bool {
@@ -294,7 +307,13 @@ func (p *Proxy) emit(e Event) {
 }
 
 // handle serves one client connection: one request, then it is closed.
-func (p *Proxy) handle(raw net.Conn) {
+func (p *Proxy) handle(raw net.Conn) { p.handleAs(raw, nil) }
+
+// handleAs serves one connection. One made through a call's own listener is
+// that call's whatever credentials it sends, or none, so a token passed to
+// another command cannot move its traffic to another call's record, and a
+// client that sends no credentials on CONNECT (a JVM) is served.
+func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 	act := &activity{}
 	c := &active{Conn: raw, act: act}
 	_ = c.SetReadDeadline(time.Now().Add(headerTimeout))
@@ -313,7 +332,13 @@ func (p *Proxy) handle(raw net.Conn) {
 	// The request's life: ending its call cancels the dial and closes the upstream.
 	life, endLife := context.WithCancel(context.Background())
 	defer endLife()
-	callID, key, err := p.authorize(req.Header.Get("Proxy-Authorization"))
+	var callID string
+	var key [32]byte
+	if bound != nil {
+		callID, key, err = p.authorizeKey(tokenKey(bound.token))
+	} else {
+		callID, key, err = p.authorize(req.Header.Get("Proxy-Authorization"))
+	}
 	if err == nil && !p.bind(key, raw, endLife) {
 		err = errCallEnded
 	}

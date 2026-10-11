@@ -51,7 +51,7 @@ func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []st
 	var cmd *exec.Cmd
 	switch s.backend {
 	case "sandbox-exec":
-		cmd = exec.CommandContext(ctx, "sandbox-exec", append([]string{"-p", serverProfile(e.port())}, argv...)...) // #nosec G204 -- the configured server, confined
+		cmd = exec.CommandContext(ctx, "sandbox-exec", append([]string{"-p", serverProfile(e.portFor(call))}, argv...)...) // #nosec G204 -- the configured server, confined
 	case "bwrap":
 		// A host /proc would show every process's environment and sockets.
 		if !s.bwrapFreshOK() {
@@ -59,7 +59,11 @@ func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []st
 		}
 		args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid", "--dev-bind", "/", "/", "--proc", "/proc"},
 			serverHides(e.dir, e.exe)...)
-		relay := []string{e.exe, egress.RelayArg, filepath.Join(e.dir, "proxy.sock"), e.proxy.Addr().String()}
+		sock := filepath.Join(e.dir, "proxy.sock")
+		if call.Socket() != "" {
+			sock = call.Socket() // the server's own, as a command's
+		}
+		relay := []string{e.exe, egress.RelayArg, sock, e.proxy.Addr().String()}
 		if e.dns {
 			// The session's resolver, as commands get it; its socket is in the folder bound back.
 			args = append(args, "--ro-bind", filepath.Join(e.dir, "resolv.conf"), "/etc/resolv.conf")

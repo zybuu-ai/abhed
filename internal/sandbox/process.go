@@ -577,7 +577,7 @@ func (s *Process) bwrapFreshOK() bool {
 }
 
 func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
-	env, eg, err := s.commandEnv(ctx)
+	ctx, env, eg, err := s.commandEnv(ctx)
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
@@ -587,22 +587,23 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 // commandEnv is env, with the egress proxy's variables under the allowlist,
 // and the session's proxy. A proxy that cannot start refuses the command:
 // never the open network.
-func (s *Process) commandEnv(ctx context.Context) ([]string, *egressState, error) {
+// The context returned names the command's call credential for wrapEgress.
+func (s *Process) commandEnv(ctx context.Context) (context.Context, []string, *egressState, error) {
 	env := s.env()
 	if s.policy.Egress == nil {
-		return env, nil, nil
+		return ctx, env, nil, nil
 	}
-	pe, eg, err := s.egressEnv(ctx)
+	pe, eg, call, err := s.egressEnv(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("sandbox: the command was not run: the egress proxy is not available: %w", err)
+		return ctx, nil, nil, fmt.Errorf("sandbox: the command was not run: the egress proxy is not available: %w", err)
 	}
-	return append(env, pe...), eg, nil
+	return withEgressCall(ctx, call), append(env, pe...), eg, nil
 }
 
 // Shell starts a long-lived interactive bash under the same confinement as
 // Command, for a person at a terminal.
 func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	env, eg, err := s.commandEnv(ctx)
+	ctx, env, eg, err := s.commandEnv(ctx)
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
@@ -620,7 +621,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 	}
 	switch s.backend {
 	case "sandbox-exec":
-		profile := s.seatbeltProfileFor(eg.port())
+		profile := s.seatbeltProfileFor(eg.portFor(egressCallOf(ctx)))
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
 		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
@@ -673,7 +674,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// loopback only: a relay inside it, listening where the proxy
 		// variables point, joins each connection to the proxy's socket.
 		if s.policy.Egress != nil {
-			binds, wrapped := eg.relayArgs(argv)
+			binds, wrapped := eg.relayArgsFor(egressCallOf(ctx), argv)
 			args = append(args, binds...)
 			argv = wrapped
 		}
