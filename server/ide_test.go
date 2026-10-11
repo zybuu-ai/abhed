@@ -734,3 +734,17 @@ func TestIDESwitchesSessions(t *testing.T) {
 		t.Fatalf("switching sessions failed:\n%s", out)
 	}
 }
+
+// Every pane of the workbench's grid is placed by column: with the side
+// panel hidden (⌘B) its tracks are empty, and auto-placement would move the
+// editor into them and the agent over the editor.
+func TestIDEGridPlacesEachPaneByColumn(t *testing.T) {
+	for id, col := range map[string]string{"act": "1", "side": "2", "split-side": "3", "center": "4", "split-agent": "5", "agent": "6"} {
+		if !strings.Contains(ideHTML, "#"+id+"{grid-column:"+col+"}") {
+			t.Errorf("#%s is not placed in column %s", id, col)
+		}
+	}
+	if !strings.Contains(ideHTML, `#app.noside[data-pane="side"] #side{display:flex}`) {
+		t.Error("on a phone a hidden side panel is drawn over the pane being shown")
+	}
+}

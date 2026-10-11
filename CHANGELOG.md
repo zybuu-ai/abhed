@@ -682,6 +682,10 @@ on. A server with it off starts on the older schema as before.
   messages now draw such spaces as spaces; format, bidi and zero-width
   characters are still marked, and file names, tool cards and output are
   unchanged.
+- Hiding the web IDE's side panel (⌘B, or the palette's *Toggle the side
+  panel*) collapsed the editor to nothing and stretched the agent across
+  the page. The panes now keep their columns. On a phone the hidden side
+  panel no longer draws over the pane being shown.
 
 ### Dependencies
 

@@ -54,6 +54,8 @@ button:focus-visible,[tabindex]:focus-visible,textarea:focus-visible,input:focus
   grid-template-columns:48px var(--side) 4px minmax(0,1fr) 4px var(--agent)}
 #app.noside{grid-template-columns:48px 0 0 minmax(0,1fr) 4px var(--agent)}
 #app.noside #side,#app.noside #split-side{display:none}
+/* Placed by column, so a hidden side panel leaves its tracks empty instead of shifting the rest into them. */
+#act{grid-column:1}#side{grid-column:2}#split-side{grid-column:3}#center{grid-column:4}#split-agent{grid-column:5}#agent{grid-column:6}
 #title{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--chrome);border-bottom:1px solid var(--line)}
 #title .brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.01em}
 #title .brand .lockup img{height:20px}
@@ -379,7 +381,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   #app[data-pane="side"] #center,#app[data-pane="side"] #agent,
   #app[data-pane="center"] #side,#app[data-pane="center"] #agent,
   #app[data-pane="agent"] #side,#app[data-pane="agent"] #center{display:none}
-  #app.noside #side{display:flex}
+  #app.noside[data-pane="side"] #side{display:flex}
   #palette-open,#title .ws{display:none}
   /* The mark alone, and only the links a phone needs; the name links to the account page. */
   #title .brand .lockup .lk-word,#pwlink,#title .right a[href="/console"]{display:none!important}
