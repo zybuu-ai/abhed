@@ -95,3 +95,27 @@ func TestEmailRefusesInvisibleCharacters(t *testing.T) {
 		t.Fatal("an account was made with a zero-width character in its email")
 	}
 }
+
+// A request carrying a session that has ended is told why.
+func TestEndedReasonNamesTheCause(t *testing.T) {
+	l := newTestAuth(t)
+	mustCreate(t, l, "ada", "correct-horse-1")
+	a := signInAs(t, l, "ada", "correct-horse-1", nil)
+	r := httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(a)
+	if why := l.EndedReason(r); why != "" {
+		t.Fatalf("a live session reads as ended: %q", why)
+	}
+	w := httptest.NewRecorder()
+	l.EndRequestSession(w, r)
+	if why := l.EndedReason(r); why != WhySignedOut {
+		t.Fatalf("after sign-out the reason is %q", why)
+	}
+	b := signInAs(t, l, "ada", "correct-horse-1", nil)
+	l.RevokeUser("ada")
+	rb := httptest.NewRequest("GET", "/", nil)
+	rb.AddCookie(b)
+	if why := l.EndedReason(rb); why != WhyEverywhere {
+		t.Fatalf("after a sign-out everywhere the reason is %q", why)
+	}
+}

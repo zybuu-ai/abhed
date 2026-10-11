@@ -252,7 +252,12 @@ meets: at once when a sign-out, removal, group change or reset happens on
 the same server, and otherwise at least every 10 seconds and before any write
 once its last check is that old. A stream that fails ends with an
 `event: refused` carrying the reason, and reconnecting meets the ordinary
-`401` or `403`. `StreamRecheck` in the server options can shorten the
+`401` or `403`. For a local session that ended, the reason says why, on the
+stream and on the `401` alike: `sign in required: ` followed by "you signed
+out", "you were signed out everywhere", "the account was removed", "the
+account's password was changed", "an administrator ended this sign-in",
+"this browser signed in again" or "the sign-in expired". A server remembers
+why for a day, and only for the sessions it ended itself. `StreamRecheck` in the server options can shorten the
 interval, never lengthen it past 15 seconds. The terminal's command itself
 keeps running until it ends or is stopped. Each recheck reruns the sign-in
 providers and reads the session once, so 1,000 open streams cost about 100

@@ -149,7 +149,7 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 		token := bearerToken(r)
 		if token == "" {
 			if len(m.Providers) > 0 {
-				return nil, nil, failChallenge, errors.New("sign in required")
+				return nil, nil, failChallenge, m.signInRequired(r)
 			}
 			return nil, nil, failChallenge, errors.New("missing bearer token")
 		}
@@ -169,7 +169,7 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 	if len(m.Providers) > 0 {
 		// Sessions are the whole authentication mechanism here, not a
 		// fallback: no session means not signed in.
-		return nil, nil, failChallenge, errors.New("sign in required")
+		return nil, nil, failChallenge, m.signInRequired(r)
 	}
 
 	if m.TrustHeaders {
@@ -183,6 +183,25 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 	}
 
 	return &Identity{Subject: "anonymous", Tenant: "default"}, nil, failNone, nil
+}
+
+// EndedReasoner is a provider that can say why the session a request still
+// carries has ended, so the caller, or an open stream, is told the cause.
+type EndedReasoner interface {
+	EndedReason(r *http.Request) string
+}
+
+// signInRequired is the challenge's error, naming why the request's session
+// ended when a provider can say.
+func (m Middleware) signInRequired(r *http.Request) error {
+	for _, p := range m.Providers {
+		if e, ok := p.(EndedReasoner); ok {
+			if why := e.EndedReason(r); why != "" {
+				return errors.New("sign in required: " + why)
+			}
+		}
+	}
+	return errors.New("sign in required")
 }
 
 const recheckKey ctxKey = "abhed.recheck"

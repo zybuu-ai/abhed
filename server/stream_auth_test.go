@@ -453,6 +453,17 @@ func TestLocalSignOutEndsAnOpenStreamAtOnce(t *testing.T) {
 	if took := time.Since(start); took > time.Second {
 		t.Fatalf("the stream took %v to end; a sign-out here should end it at once", took)
 	}
+	// The refusal says why the sign-in ended, and so does the next request.
+	if !strings.Contains(strings.Join(seen, "\n"), auth.WhyEverywhere) {
+		t.Fatalf("the stream's refusal gives no cause: %q", seen)
+	}
+	again := httptest.NewRequest("GET", "/v1/sessions", nil)
+	again.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, again)
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), auth.WhyEverywhere) {
+		t.Fatalf("a request with the ended cookie = %d %s", rec.Code, rec.Body)
+	}
 }
 
 // The configured interval can only shorten the recheck, never lengthen it.

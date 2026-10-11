@@ -597,6 +597,11 @@ on. A server with it off starts on the older schema as before.
   naming its request (`request_id`) is recorded on any node when it names
   the stored row's request; before, such an answer was always sent to the
   node running the session with `421`.
+- An event or terminal stream ended because its local sign-in ended said
+  only "sign in required", and so did the next request. Both now say why:
+  signed out, signed out everywhere, the account removed, the password
+  changed, ended by an administrator, replaced by a new sign-in in the
+  same browser, or expired.
 
 ### Fixed
 
@@ -910,6 +915,10 @@ on. A server with it off starts on the older schema as before.
 - `server.InviteReleaser`: an invite store that implements `Release(ctx,
   code, username)` gets back a code redeemed for an account that could not
   then be made.
+- `auth.EndedReasoner`: a provider that implements
+  `EndedReason(*http.Request) string` has the cause added to the
+  middleware's "sign in required"; `LocalAuth` implements it, with the
+  `auth.Why*` constants.
 
 ## [1.2.7] - 2026-10-07
 
