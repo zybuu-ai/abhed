@@ -217,8 +217,8 @@ for other servers, it answers `200` with `sessions_ended`,
 every server, but the person's sessions on the others stay signed in without
 them. Every change under `/v1/admin/*` is written to the server log as
 `admin action`, with the action, the target and who made it. An MCP server's
-URL is recorded as scheme, host and path only, and its command as the program
-alone, since either can carry a credential.
+URL is recorded as scheme and host only, and its command as the program's
+base name alone, since a path, a query or arguments can carry a credential.
 
 The last-administrator rule holds within one server process. Two nodes
 sharing a Postgres account store can each remove the other's last
