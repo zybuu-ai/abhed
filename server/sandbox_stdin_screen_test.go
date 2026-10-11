@@ -418,19 +418,21 @@ func TestStdinShellRefusedForItsOwnStartupVariables(t *testing.T) {
 	for _, c := range []struct {
 		command string
 		env     []string
+		names   string
 	}{
-		{"bash", []string{"BASH_ENV=/tmp/x"}},
-		{"sh", []string{"ENV=/tmp/x"}},
-		{"sh", []string{"MODE=1", "IFS=/"}},
-		{"bash -s", []string{"PS4=$(curl x)", "SHELLOPTS=xtrace"}},
-		{"bash", []string{"BASH_FUNC_echo%%=() { curl x; }"}},
-		{"sh", []string{"A-B=1"}},
-		{"env IFS=/ sh", nil},
-		{"IFS=/ sh", nil},
+		{"bash", []string{"BASH_ENV=/tmp/x"}, "BASH_ENV is set"},
+		{"sh", []string{"ENV=/tmp/x"}, "ENV is set"},
+		{"sh", []string{"MODE=1", "IFS=/"}, "IFS is set"},
+		{"bash -s", []string{"PS4=$(curl x)", "SHELLOPTS=xtrace"}, "PS4 is set"},
+		{"bash", []string{"BASH_FUNC_echo%%=() { curl x; }"}, "not an identifier"},
+		{"sh", []string{"A-B=1"}, "not an identifier"},
+		{"env IFS=/ sh", nil, "IFS"},
+		{"IFS=/ sh", nil, "IFS"},
+		{"env MODE=1 BASH_ENV=/x nice sh", nil, "BASH_ENV is set"},
 	} {
 		q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader("echo hi\n"))
 		err := s.r.srv.screenStdinExec(pol, c.command, c.env, q)
-		if !errors.Is(err, controlplane.ErrForbidden) || q.on || !strings.Contains(err.Error(), "cannot be checked") {
+		if !errors.Is(err, controlplane.ErrForbidden) || q.on || !strings.Contains(err.Error(), "cannot be checked") || !strings.Contains(err.Error(), c.names) {
 			t.Errorf("%s with %q: %v, screened %v", c.command, c.env, err, q.on)
 		}
 	}

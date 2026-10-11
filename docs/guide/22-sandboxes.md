@@ -671,7 +671,8 @@ stdin, since `BASH_ENV` runs a file even for a judged `bash -c`: setting one
 of those, an exported function (`BASH_FUNC_…`) or a name that is not an
 identifier is refused with `403` and code `forbidden`. For a shell fed
 stdin, `IFS` is refused too, and the shell is refused as uncheckable rather
-than judged statement by statement.
+than judged statement by statement; the message names the variable to leave
+out.
 
 `ENV` is on that list, so an exec that sets the common application variable
 `ENV=production` in its `env` is refused while such rules are in force; give

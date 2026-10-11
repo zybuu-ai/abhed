@@ -160,10 +160,18 @@ func (s *Server) screenStdinExec(pol *policy.Engine, command string, env []strin
 	if what == "" {
 		return execEnvRefused(env)
 	}
-	if in != nil && stdinShell(command) && shellEnvVar(env, true) == "" {
+	shell, unsafe := stdinShellVar(command)
+	if shell && unsafe == "" {
+		unsafe = shellEnvVar(env, true)
+	}
+	if in != nil && shell && unsafe == "" {
 		in.script.seed(env)
 		in.on = true
 		return nil
+	}
+	if shell && unsafe != "" {
+		return fmt.Errorf("%w: %s, so the statements a shell reads from stdin cannot be checked against the rules and hooks in force; leave it out",
+			controlplane.ErrForbidden, unjudgedVar(unsafe))
 	}
 	instead := "open :attach (or an SSH shell), which judges each line, feed the commands to sh, whose input is judged statement by statement, or pass the commands in the command line"
 	if s.terminalRefusal(pol) != "" {
@@ -195,6 +203,17 @@ func execEnvRefused(env []string) error {
 	return nil
 }
 
+// unjudgedVar says what a variable shellEnvVar names does to a stdin shell.
+func unjudgedVar(name string) string {
+	switch {
+	case name == "IFS":
+		return "IFS is set for the shell, which would split its statements otherwise than they are judged"
+	case !envName.MatchString(name):
+		return name + " is set for the shell"
+	}
+	return name + " is set for the shell, which it reads as commands or files to run on its own"
+}
+
 // shellEnvVar names the first of env a shell would act on unjudged: one in
 // shellStartFiles, an exported function, or a name no variable has. A stdin
 // shell also takes IFS, which changes how its statements split from how they
@@ -223,10 +242,10 @@ var stdinShellWrappers = map[string]bool{"env": true, "nice": true, "timeout": t
 	"stdbuf": true, "setsid": true, "command": true}
 
 // wrapperProgram is the index of the program a wrapper at words[i-1] runs,
-// past the options and assignments it is known to take harmlessly, or -1 for
-// anything else: env -S, which builds a new command line, an option of
-// unknown arity, or a variable a shell runs on its own.
-func wrapperProgram(wrapper string, words []string, i int) int {
+// past its options and assignments, or -1 for anything else: env -S, which
+// builds a new command line, or an option of unknown arity. The first
+// assignment a stdin shell would act on unjudged goes in unsafe.
+func wrapperProgram(wrapper string, words []string, i int, unsafe *string) int {
 	value := func(w, short, long string) (int, bool) { // how many words an option with a value takes
 		switch {
 		case w == short || w == long:
@@ -304,8 +323,8 @@ func wrapperProgram(wrapper string, words []string, i int) int {
 			if !strings.Contains(words[i], "=") {
 				break
 			}
-			if shellEnvVar(words[i:i+1], true) != "" {
-				return -1
+			if name := shellEnvVar(words[i:i+1], true); name != "" && *unsafe == "" {
+				*unsafe = name
 			}
 		}
 	}
@@ -335,55 +354,63 @@ var shellStartFiles = map[string]bool{"BASH_ENV": true, "ENV": true, "ZDOTDIR": 
 // one simple command of literal words, run directly or through wrappers,
 // with no script file, no -c and no redirect of its input.
 func stdinShell(command string) bool {
+	ok, unsafe := stdinShellVar(command)
+	return ok && unsafe == ""
+}
+
+// stdinShellVar is stdinShell, apart from the variables the command sets for
+// the shell: unsafe names the first a stdin shell would act on unjudged
+// (IFS, or one shellEnvVar names), in which case the shell is not judged.
+func stdinShellVar(command string) (ok bool, unsafe string) {
 	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 	if err != nil || len(f.Stmts) != 1 {
-		return false
+		return false, ""
 	}
 	st := f.Stmts[0]
 	call, ok := st.Cmd.(*syntax.CallExpr)
 	if !ok || st.Background || st.Coprocess || len(call.Args) == 0 {
-		return false
+		return false, ""
 	}
 	for _, r := range st.Redirs {
 		if r.N == nil || r.N.Value == "0" {
 			switch r.Op {
 			case syntax.RdrIn, syntax.RdrInOut, syntax.DplIn, syntax.WordHdoc, syntax.Hdoc, syntax.DashHdoc:
-				return false
+				return false, ""
 			}
 		}
 	}
 	for _, a := range call.Assigns {
-		if shellEnvVar([]string{a.Name.Value + "="}, true) != "" {
-			return false
+		if name := shellEnvVar([]string{a.Name.Value + "="}, true); name != "" && unsafe == "" {
+			unsafe = name
 		}
 	}
 	words := make([]string, len(call.Args))
 	for i, w := range call.Args {
 		text, lit := literalWord(w)
 		if !lit {
-			return false
+			return false, ""
 		}
 		words[i] = text
 	}
 	i := 0
 	for i < len(words) && stdinShellWrappers[programName(words[i])] {
-		if i = wrapperProgram(programName(words[i]), words, i+1); i < 0 {
-			return false
+		if i = wrapperProgram(programName(words[i]), words, i+1, &unsafe); i < 0 {
+			return false, ""
 		}
 	}
 	if i >= len(words) {
-		return false
+		return false, ""
 	}
 	name := programName(words[i])
 	if name == "busybox" && i+1 < len(words) {
 		i++
 		if name = programName(words[i]); name != "sh" && name != "ash" && name != "hush" {
-			return false
+			return false, ""
 		}
 	} else if !stdinShells[name] {
-		return false
+		return false, ""
 	}
-	return shellReadsStdin(words[i+1:])
+	return shellReadsStdin(words[i+1:]), unsafe
 }
 
 // durationWord is a number, or a duration as timeout takes it.
