@@ -501,13 +501,21 @@ workbench's terminal is, so a line there that names its program by an
 expansion is not refused for that.
 
 A deny rule matches the words of a command, so on an exec it has the same
-limits as in a session ([Rules](04-permissions.md#rules)): a path to the
-program (`/usr/bin/curl`), `busybox curl`, an interpreter's own code
+limits as in a session ([Rules](04-permissions.md#rules)): `busybox curl`,
+an interpreter's own code
 (`python3 -c …`), `xargs`, and a command git runs from its configuration
 (`git -c alias.x='!curl …' x`, `core.sshCommand`) all run past
 `bash(curl *)`. A session asks about the git alias as destructive; an exec,
 where no one is asked, runs it. The sandbox, not a deny rule, is the
 boundary.
+
+Two edges of how a shell's `-c` text is read, both on the safe side:
+`sh -c -- -- 'c=wget; $c …'` runs, because the shell's command text there is
+the second `--` (the quoted text is only `$0`), so the shell runs a command
+named `--`, which fails, and never the quoted text; and `-c` text nested more
+than eight shells deep (`sh -c "sh -c \"…\""` nine times) is refused as text
+no rule can read, even when the innermost command is harmless. Flatten such a
+command, or put it in a script the sandbox runs.
 
 A command given as `argv` runs as one shell line with each word quoted, so the shell
 splits it back into exactly those words; that quoted line is what the rules
