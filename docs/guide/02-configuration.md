@@ -996,7 +996,9 @@ is recorded too, as `config.refused` with the decision `overridden`.
 
 Inside an agent's command, a nested `abhed` refuses `-settings` and
 `-mcp-config` whatever they hold: either can name an endpoint the nested
-session would send the code or its queries to. A nested run narrows with
+session would send the code or its queries to. It also refuses a `-mode`
+looser than the configured mode (`accept-edits` or `auto` when the
+configuration says `default`), not only `bypass`. A nested run narrows with
 `-mode plan`, `-disallowedTools` or `-max-turns`.
 
 ### The managed file

@@ -146,6 +146,11 @@ All notable changes to Abhed are recorded here. The format follows
   `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
   pin it.
   Affects the binaries and images of 1.2.7 and earlier.
+- Inside an agent's command, a nested `abhed` refused `-mode bypass` but
+  took `-mode accept-edits` or `-mode auto`, so a command could start a
+  session that approved edits or ran by rule where the configuration said to
+  ask. A nested run now refuses any mode looser than the configured one.
+  Affects 1.2.4 to 1.2.7.
 
 ### Added
 
