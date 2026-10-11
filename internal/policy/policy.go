@@ -656,6 +656,9 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		// And the commands a bash parser finds, in function bodies and in the
 		// text eval, trap and -c run, read whole: their quoting is undone.
 		subjects = append(subjects, canon.Commands()...)
+		// Deny and ask rules also see each program named by a path as its
+		// base name: bash(curl *) holds for /usr/bin/curl x and ./curl x.
+		subjects = withBaseNames(subjects)
 		if canon.Joined && !canon.Reworded {
 			allowSubjects, narrowAllows = []string{canon.Text}, !hasShellControl(canon.Text)
 		}

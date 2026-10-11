@@ -399,7 +399,6 @@ mode.
 A deny pattern matches the words, so it is easy to step around.
 `bash(curl *)` does not catch any of these, and every one of them runs curl:
 
-- an absolute or relative path to the program: `/usr/bin/curl x`
 - a command in a file the shell reads: `bash ./script.sh`, `source ./f`
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
@@ -412,7 +411,10 @@ A deny pattern matches the words, so it is easy to step around.
 - flags in another place or split up: `bash(rm -rf *)` does not match
   `rm x -rf` or `rm -r -f x`
 
-A quoted or escaped name (`'curl' x`, `c\url x`) is read as the program,
+A program named by a path (`/usr/bin/curl x`, `./curl x`) is also matched by
+its base name, so `bash(curl *)` holds for it; an allow rule still sees only
+the path as written. A quoted or escaped name (`'curl' x`, `c\url x`) is read
+as the program,
 and literal text another command runs is read as the commands it is:
 `bash -c 'curl x'`, `eval 'curl x'`, `trap 'curl x' EXIT`,
 `bash <<< 'curl x'`, `su --command`, `flock`, `env -S 'curl x'`,

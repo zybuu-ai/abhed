@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A deny or ask rule naming a program, such as `bash(curl *)`, did not match
+  the program named by a path (`/usr/bin/curl x`, `./curl x`); only wrappers
+  were matched by their base name. Deny and ask rules now also see each
+  command with its program cut to its base name. Allow rules are unchanged.
+  Affects every release to 1.2.7.
 - git followed an `ext::` URL taken from `.gitmodules` or a repository's own
   config (`protocol.ext.allow=always` with an `ext::` remote, then
   `git fetch` or `git submodule update`), running the command it names where
