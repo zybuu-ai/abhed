@@ -21,6 +21,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/zybuu-ai/abhed/internal/kubescope"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -890,7 +891,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		}
 	case ModeBypass:
 		if e.Managed {
-			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy", Scope: "", Step: "mode"}
+			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy (" + managed.ConfigFile + "), so this asks as in default mode", Scope: "", Step: "mode"}
 		}
 		return Result{Decision: Allow, Reason: "bypass mode", Scope: "", Step: "mode"}
 	case ModeAcceptEdits:

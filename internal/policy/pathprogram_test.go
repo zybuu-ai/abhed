@@ -3,6 +3,8 @@ package policy
 import (
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // A deny rule naming a program holds when the program is named by a path.
@@ -114,5 +116,15 @@ func TestTrustNamingAsksWithoutAnAskRule(t *testing.T) {
 				t.Errorf("%s %q = %s at %s (%s), want the trust ask", mode, command, res.Decision, res.Step, res.Reason)
 			}
 		}
+	}
+}
+
+// Bypass under a managed file asks, and the reason names the file.
+func TestManagedBypassReasonNamesTheFile(t *testing.T) {
+	e := New(ModeBypass)
+	e.Managed = true
+	res := e.Evaluate("bash", true, args(map[string]string{"command": "make"}))
+	if res.Decision != Ask || !strings.Contains(res.Reason, managed.ConfigFile) {
+		t.Errorf("= %s (%s), want an ask naming %s", res.Decision, res.Reason, managed.ConfigFile)
 	}
 }

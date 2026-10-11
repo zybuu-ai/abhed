@@ -365,6 +365,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("  managed   %s\n", line)
 	}
+	if line := bypassDisabled(cfg); line != "" {
+		fmt.Printf("  mode      %s\n", line)
+	}
 	switch {
 	case docsite.Available():
 		fmt.Printf("  docs      %s/docs\n", serveURL(addr, tlsL != nil))

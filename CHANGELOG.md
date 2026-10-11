@@ -610,6 +610,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- Bypass mode under a managed file asked about every call with the reason
+  "bypass mode is disabled by organization policy", naming no file, while
+  `abhed doctor` still showed the mode as `bypass`. The reason now names the
+  managed file and says the call asks as in default mode, and `abhed doctor`
+  and the `abhed serve` banner say `bypass disabled by <path>`.
 - `abhed acp` exited as soon as stdin closed, so requests read in a burst
   just before could go unanswered. It now answers every request it read
   first: a prompt still running ends as `cancelled`, and a request to the

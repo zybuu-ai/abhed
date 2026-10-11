@@ -1003,7 +1003,10 @@ force (the built-in ones, `~/.abhed/config.json`, `-settings` and a trusted
 workspace's file), so a managed file can add a deny rule but never take one
 away. `/permissions` shows each rule with the layer it came from. Its
 presence makes the policy engine managed: `bypass` mode is refused wherever
-it comes from.
+it comes from. A call that bypass would approve asks as in default mode, and
+the reason names the managed file; `abhed doctor` shows the mode as
+`bypass (bypass disabled by /etc/abhed/config.json; …)` and the `abhed serve`
+banner prints the same on a `mode` line.
 
 Abhed refuses to start on a managed file with a key repeated in one object
 (`"permissions"` twice, or `"permissions"` and `"PERMISSIONS"`, which are the
