@@ -767,6 +767,17 @@ on. A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `policy`: `Engine.EvaluateContext`, `ContextHook`, `Engine.ContextHooks`,
+  `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's hooks by
+  a deadline; `Engine.Cwd` lets deny and ask rules read the scripts a
+  command runs; `Result.Suggest` is the allow rule for exactly a call that
+  offers no scope. `tools.Subjector` with `RegisterSubjector` lets a tool
+  name its own policy subject, as `ssh` does with `host/command`.
+  `tools.Canonical` gains `IFSCause` (one of the `IFSBy` constants),
+  `Scripts` and `Writes`; `tools.ReadScript`, `WithGitSafeConfig`,
+  `FoldsCaseAt`, `NamesIFS` and `Session.WorkDir` are new, and
+  `extension.Host.ContextPolicyHookFor` asks extensions under each
+  decision's context.
 - `app.WithCommandAbout` adds an edition's subcommand with the line
   `abhed -h` shows for it; `WithCommand` still shows "a command of this
   edition".
