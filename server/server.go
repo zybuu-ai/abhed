@@ -2808,10 +2808,22 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
-		backlog, err := s.store.Events(id)
-		if err != nil || len(backlog) == 0 {
-			WriteError(w, http.StatusNotFound, "session not found")
-			return
+		// An administrator watching a scheduled run this process is running
+		// follows it as it goes; the stream only reads.
+		if _, sched := s.scheduledForAdmin(r, id); sched {
+			s.mu.RLock()
+			l := s.running[id]
+			s.mu.RUnlock()
+			if l != nil && l.Tenant == TenantOf(r.Context()) {
+				live, running = l, true
+			}
+		}
+		if !running {
+			backlog, err := s.store.Events(id)
+			if err != nil || len(backlog) == 0 {
+				WriteError(w, http.StatusNotFound, "session not found")
+				return
+			}
 		}
 	}
 

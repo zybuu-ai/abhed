@@ -4,7 +4,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
@@ -87,4 +90,61 @@ func TestDemotedAdminLosesAScheduledRunStream(t *testing.T) {
 			t.Errorf("%s: check() = %v, want allowed %v", c.name, err, c.allow)
 		}
 	}
+}
+
+// An administrator watching a scheduled run that this process is running
+// follows it live, rather than getting what was recorded so far and a closed
+// stream.
+func TestAdminFollowsALiveScheduledRun(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	ad := newGateAdapter()
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: ad,
+		Registry: tools.NewRegistry(tools.Read{}), Store: st})
+	id, err := s.StartSession(context.Background(), StartSpec{Prompt: "nightly", Tenant: "default", User: "schedule:nightly"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ad.entered
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	r := httptest.NewRequest("GET", "/v1/sessions/"+id+"/events", nil).WithContext(ctx)
+	r.SetPathValue("id", id)
+	r = asUser(r, "default", "local:ann")
+	r = r.WithContext(auth.WithIdentity(r.Context(), &auth.Identity{Provider: auth.ProviderLocal, Subject: "ann", Tenant: "default", Groups: []string{DefaultAdminGroup}}))
+	w := &syncRecorder{ResponseRecorder: httptest.NewRecorder()}
+	done := make(chan struct{})
+	go func() { s.streamEvents(w, r); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the stream closed while the run was still going")
+	default:
+	}
+	close(ad.gate)
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("the stream did not end with the run")
+	}
+	if !strings.Contains(w.body(), "session.ended") {
+		t.Fatalf("the run's end did not reach the administrator's stream:\n%s", w.body())
+	}
+}
+
+// syncRecorder is a ResponseRecorder safe to read while a handler writes.
+type syncRecorder struct {
+	*httptest.ResponseRecorder
+	mu sync.Mutex
+}
+
+func (s *syncRecorder) Write(b []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ResponseRecorder.Write(b)
+}
+
+func (s *syncRecorder) body() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Body.String()
 }

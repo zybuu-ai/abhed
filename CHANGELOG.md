@@ -730,6 +730,10 @@ on. A server with it off starts on the older schema as before.
   request" rather than "no longer pending"; and a body that is not JSON,
   sent to a session the caller cannot see, gets `404` like any other body,
   not `400`.
+- An administrator opening the event stream of a scheduled run that the
+  server was running got what had been recorded so far and a closed
+  stream, and had to reload to see more. The stream now follows the run
+  live, read-only.
 
 ### Dependencies
 
