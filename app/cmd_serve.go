@@ -279,6 +279,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	if tlsL != nil {
 		opts.TLS = tlsL.Config()
+		opts.ClientCertRevoked = tlsL.Revoked
 	}
 	// A session leaving this process takes its egress proxy, and what the
 	// guard of Abhed's own requests counts for it, with it.

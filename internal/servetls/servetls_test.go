@@ -2,12 +2,16 @@ package servetls
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -349,5 +353,118 @@ func TestWarningsNameAnOpenKey(t *testing.T) {
 	}
 	if w := strings.Join(l.Warnings(), "\n"); !strings.Contains(w, "readable by other users") {
 		t.Errorf("warnings = %q", w)
+	}
+}
+
+// crl writes a PEM CRL signed by the CA in dir, revoking serials.
+func (f fixture) crl(t *testing.T, next time.Time, serials ...*big.Int) []byte {
+	t.Helper()
+	cb, _ := os.ReadFile(filepath.Join(f.dir, pki.CACert))
+	kb, _ := os.ReadFile(filepath.Join(f.dir, pki.CAKey))
+	cblk, _ := pem.Decode(cb)
+	kblk, _ := pem.Decode(kb)
+	ca, err := x509.ParseCertificate(cblk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := x509.ParsePKCS8PrivateKey(kblk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []x509.RevocationListEntry
+	for _, s := range serials {
+		entries = append(entries, x509.RevocationListEntry{SerialNumber: s, RevocationTime: time.Now()})
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1),
+		ThisUpdate: time.Now().Add(-time.Hour), NextUpdate: next, RevokedCertificateEntries: entries},
+		ca, key.(crypto.Signer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: der})
+}
+
+// A client certificate named in the revocation file is refused although it
+// verifies, by a CRL or by a listed serial, and the file is re-read like the
+// CA: a revocation takes effect on the next handshake, and lifting it too.
+func TestClientCertificateRevocation(t *testing.T) {
+	f := newPKI(t)
+	srv := f.server(t, "r", pki.ECDSA, "r.test")
+	alice, bob := f.client(t, "alice"), f.client(t, "bob")
+	aliceLeaf, _ := x509.ParseCertificate(alice.Certificate[0])
+	ca := filepath.Join(f.dir, pki.CACert)
+	revoked := filepath.Join(t.TempDir(), "revoked")
+	if err := os.WriteFile(revoked, []byte("# nobody yet\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := New(Spec{Certs: []Pair{srv}, ClientCAFile: ca, ClientRevokedFile: revoked, ClientAuth: RequireClientCert, Logger: quiet()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := serve(t, l)
+	as := func(c tls.Certificate) error {
+		_, err := dial(addr, &tls.Config{RootCAs: f.pool, ServerName: "r.test", Certificates: []tls.Certificate{c}})
+		return err
+	}
+	if err := as(alice); err != nil {
+		t.Fatalf("alice before any revocation: %v", err)
+	}
+	for name, body := range map[string][]byte{
+		"a CRL":           f.crl(t, time.Now().Add(time.Hour), aliceLeaf.SerialNumber),
+		"a listed serial": []byte(strings.ToUpper(aliceLeaf.SerialNumber.Text(16)) + "  # alice's laptop\n"),
+	} {
+		if err := os.WriteFile(revoked, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := l.Reload(); !changed || err != nil {
+			t.Fatalf("%s: reload = %v, %v", name, changed, err)
+		}
+		if err := as(alice); err == nil {
+			t.Fatalf("%s: alice's revoked certificate was served", name)
+		}
+		if !l.Revoked(aliceLeaf) {
+			t.Fatalf("%s: Revoked does not name alice's certificate", name)
+		}
+		if err := as(bob); err != nil {
+			t.Fatalf("%s: bob was refused: %v", name, err)
+		}
+		_ = os.WriteFile(revoked, []byte("\n"), 0o600)
+		if _, err := l.Reload(); err != nil {
+			t.Fatal(err)
+		}
+		if err := as(alice); err != nil {
+			t.Fatalf("%s: alice after the revocation was lifted: %v", name, err)
+		}
+	}
+	// A CRL another CA signed is not used, and the previous list stays.
+	_ = os.WriteFile(revoked, []byte(aliceLeaf.SerialNumber.Text(16)+"\n"), 0o600)
+	if _, err := l.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(revoked, newPKI(t).crl(t, time.Now().Add(time.Hour)), 0o600)
+	if _, err := l.Reload(); err == nil {
+		t.Fatal("a CRL from another CA was accepted")
+	}
+	if err := as(alice); err == nil {
+		t.Fatal("a refused reload lifted the revocations in force")
+	}
+	// A stale CRL still applies, and the banner says it is stale.
+	_ = os.WriteFile(revoked, f.crl(t, time.Now().Add(-time.Minute), aliceLeaf.SerialNumber), 0o600)
+	if _, err := l.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := as(alice); err == nil {
+		t.Fatal("a stale CRL's revocation was dropped")
+	}
+	if w := strings.Join(l.Warnings(), "\n"); !strings.Contains(w, "past its next update") {
+		t.Fatalf("no warning for a stale CRL: %q", w)
+	}
+	// A missing or unreadable file stops startup.
+	if _, err := New(Spec{Certs: []Pair{srv}, ClientCAFile: ca, ClientRevokedFile: revoked + ".missing", ClientAuth: RequireClientCert, Logger: quiet()}); err == nil {
+		t.Fatal("a missing revocation file was accepted at startup")
+	}
+	_ = os.WriteFile(revoked, []byte("not-hex\n"), 0o600)
+	if _, err := New(Spec{Certs: []Pair{srv}, ClientCAFile: ca, ClientRevokedFile: revoked, ClientAuth: RequireClientCert, Logger: quiet()}); err == nil {
+		t.Fatal("a line that is not a serial was accepted")
 	}
 }

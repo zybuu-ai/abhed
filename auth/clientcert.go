@@ -16,8 +16,8 @@ import (
 // Only a chain the TLS layer verified against the configured client CA
 // counts; an offered but unverified certificate never reaches here. The
 // account is read again, briefly cached, so removing it ends the access.
-// A certificate cannot be signed out: revoke it by removing the account or
-// replacing the client CA.
+// A certificate cannot be signed out: revoke it in server.tls.client_revoked_file,
+// remove the account, or replace the client CA.
 type ClientCertAuth struct {
 	// Local holds the accounts, and its Admit hook is asked as at a
 	// password sign-in.

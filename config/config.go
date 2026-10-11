@@ -938,6 +938,10 @@ type ServerTLSConfig struct {
 	MinVersion string `json:"min_version,omitempty"`
 	// ClientCAFile turns on client certificates, verified against this CA.
 	ClientCAFile string `json:"client_ca_file,omitempty"`
+	// ClientRevokedFile lists client certificates refused although they
+	// verify: PEM CRLs signed by the client CA, or hex serial numbers one to
+	// a line. Re-read like the CA.
+	ClientRevokedFile string `json:"client_revoked_file,omitempty"`
 	// ClientAuth is "require" (the default once client_ca_file is set), or
 	// "optional" to let a browser without a certificate use another sign-in.
 	ClientAuth string `json:"client_auth,omitempty"`
@@ -958,7 +962,7 @@ type CertificatePair struct {
 // and refuses to start without a usable certificate.
 func (t ServerTLSConfig) Enabled() bool {
 	return t.CertFile != "" || t.KeyFile != "" || len(t.AdditionalCertificates) > 0 ||
-		t.ClientCAFile != "" || t.ClientAuth != "" || t.ClientCertAccounts || t.MinVersion != ""
+		t.ClientCAFile != "" || t.ClientRevokedFile != "" || t.ClientAuth != "" || t.ClientCertAccounts || t.MinVersion != ""
 }
 
 // CLILoginConfig is command-line sign-in (`abhed login`) for local accounts.

@@ -21,10 +21,11 @@ func buildTLS(cfg config.Config, workspace string, log *slog.Logger) (*servetls.
 	}
 	t := cfg.ResolvedTLS(workspace)
 	spec := servetls.Spec{
-		Certs:        []servetls.Pair{{CertFile: t.CertFile, KeyFile: t.KeyFile}},
-		ClientCAFile: t.ClientCAFile,
-		Interval:     time.Duration(t.ReloadSeconds) * time.Second,
-		Logger:       log,
+		Certs:             []servetls.Pair{{CertFile: t.CertFile, KeyFile: t.KeyFile}},
+		ClientCAFile:      t.ClientCAFile,
+		ClientRevokedFile: t.ClientRevokedFile,
+		Interval:          time.Duration(t.ReloadSeconds) * time.Second,
+		Logger:            log,
 	}
 	for _, p := range t.AdditionalCertificates {
 		spec.Certs = append(spec.Certs, servetls.Pair{CertFile: p.CertFile, KeyFile: p.KeyFile})

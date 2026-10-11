@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -293,6 +294,10 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// ClientCertRevoked, when set, says whether a verified client certificate
+	// has since been revoked; a request on a connection made with one is
+	// refused, though its handshake predates the revocation.
+	ClientCertRevoked func(*x509.Certificate) bool
 	// SessionEnded, when set, is told a session's id as the session leaves
 	// this process (deleted, or taken by another), so what the sandbox keeps
 	// for it, such as its egress proxy, goes with it.
@@ -955,7 +960,29 @@ func (s *Server) Handler() http.Handler {
 	// still a response a browser will act on.
 	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins, s.log)(limited)
 	headed := securityHeaders(s.bodyLimit(guarded), s.opts.Config.Server.HSTS)
-	return s.logRefused(canonicalHost(s.opts.Config.Server.CanonicalHost, headed))
+	return s.logRefused(s.refuseRevokedCert(canonicalHost(s.opts.Config.Server.CanonicalHost, headed)))
+}
+
+// refuseRevokedCert answers 401 to a request whose connection was verified
+// with a client certificate revoked since its handshake.
+func (s *Server) refuseRevokedCert(next http.Handler) http.Handler {
+	revoked := s.opts.ClientCertRevoked
+	if revoked == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil {
+			for _, chain := range r.TLS.VerifiedChains {
+				for _, c := range chain {
+					if revoked(c) {
+						WriteError(w, http.StatusUnauthorized, "the client certificate has been revoked")
+						return
+					}
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // logMark records that withMiddleware logged the request.

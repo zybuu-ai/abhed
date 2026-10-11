@@ -558,6 +558,11 @@ on. A server with it off starts on the older schema as before.
   `.abhed/config.json` is trusted, why, and the names of the settings it
   set aside, for a signed-in caller or where nobody signs in; the front
   page shows it as a card.
+- `server.tls.client_revoked_file`: client certificates that are refused
+  although they verify, as PEM CRLs signed by the client CA or as hex
+  serial numbers one to a line. It is reloaded like the CA; a revoked
+  certificate is refused on the next handshake, and a request on a
+  connection made with it before gets `401`.
 
 ### Changed
 
