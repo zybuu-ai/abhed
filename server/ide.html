@@ -547,7 +547,9 @@ const fmt = n => (n || 0).toLocaleString('en-US');
 
 async function api(path, opts){
   let r; try{ r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts}); }
-  catch(e){ connLost(false); throw e; }
+  catch{
+    // The browser's own words ("Failed to fetch", "Load failed") say nothing a person can act on.
+    connLost(false); const e = new Error('the server could not be reached; check the connection and try again'); e.offline = true; throw e; }
   if(r.status === 401) signInEnded();
   if(!r.ok){ let m = r.statusText, b = {}; try{ b = await r.json() || {}; m = b.error || m; }catch{}
     // A refused identity (dropped from require_group) has had its sign-in ended; say why.
@@ -1174,7 +1176,9 @@ function withNotes(text, notes){
 async function postFile(id, file, name, dir){
   const fd = new FormData(); if(dir != null) fd.append('dir', dir); fd.append('file', file, name);
   let r; try{ r = await fetch(id ? '/v1/sessions/' + id + '/upload' : '/v1/uploads', {method:'POST', body:fd, credentials:'same-origin'}); }
-  catch(e){ connLost(false); throw e; }
+  catch{
+    // The browser's own words ("Failed to fetch", "Load failed") say nothing a person can act on.
+    connLost(false); const e = new Error('the server could not be reached; check the connection and try again'); e.offline = true; throw e; }
   if(r.status === 401) signInEnded();
   let b = {}; try{ b = await r.json() || {}; }catch{}
   if(!r.ok){ const e = new Error(b.error || r.statusText || String(r.status)); e.status = r.status; throw e; }
@@ -1338,7 +1342,8 @@ function drawCaps(){
     items.forEach(i => x.appendChild(draw(i)));
   };
   sect('Extensions', c.extensions, e => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(e.name))); top.appendChild(el('span', 'pill on', 'active'));
+    // Status is running, stopped or not started (and only for those allowed to see it): never assumed.
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(e.name))); if(e.status) top.appendChild(el('span', 'pill' + (e.status === 'running' ? ' on' : ''), visible(e.status)));
     card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (visible(e.events.join(', ')) || 'all events'))); return card;
   }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
   sect('MCP servers', c.mcp, m => {
@@ -1916,6 +1921,8 @@ function hasHidden(v, depth = 0){
 function subjectOf(tool, args){
   if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
   if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
+  if(tool === 'skill' && args.name) return args.name;
+  if(tool === 'tasks' && Array.isArray(args.tasks)) return args.tasks.length + (args.tasks.length === 1 ? ' subagent: ' : ' subagents: ') + args.tasks.map(t => (t && (t.description || t.agent_type)) || 'task').join(', ');
   if(args.url) return args.url; if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
   const s = JSON.stringify(args); return s === '{}' ? '' : s;
 }
@@ -2511,7 +2518,8 @@ async function newTerminal(opts){
   const t = makeTerm('shell ' + n, 'shell'); setPanel('terminal'); await startTerm(t, opts || {});
 }
 $('t-new').addEventListener('click', () => newTerminal());
-$('t-kill').addEventListener('click', () => { const t = activeTerm; if(t && t.run) fetch(ptyURL(t, '/' + t.run), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); });
+// The button disables itself once the shell ends; focus goes to the terminal, where Enter opens a new one.
+$('t-kill').addEventListener('click', () => { const t = activeTerm; if(t && t.run) fetch(ptyURL(t, '/' + t.run), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); if(t) t.term.focus(); });
 
 // The banner says what contains the shell, before anything is typed into it.
 function banner(t, r, note){

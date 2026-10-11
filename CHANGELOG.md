@@ -699,6 +699,13 @@ on. A server with it off starts on the older schema as before.
   draws no card; an answered card says who answered and the scope chosen
   (`allowed · by ana · always allowing bash(touch *)`), live and when the
   session is reopened.
+- Small web IDE fixes: a request that cannot reach the server says so in
+  plain words instead of the browser's "Failed to fetch"; **Kill** hands
+  focus to the terminal instead of keeping it on the button it disables; the
+  Extensions view shows each extension's real status (`running`, `stopped`,
+  `not started`) instead of labelling every one "active", and none where the
+  server does not report it; a `skill` call is shown by the skill's name and
+  a `tasks` call by its subagents, not as raw JSON.
 
 ### Dependencies
 

@@ -758,3 +758,17 @@ func TestIDETerminalFitsOnlyWithRoom(t *testing.T) {
 		}
 	}
 }
+
+// The Extensions view shows each extension's real status, never a fixed
+// "active"; Kill hands focus to the terminal, not to the button it disables.
+func TestIDEExtensionStatusAndKillFocus(t *testing.T) {
+	if strings.Contains(ideHTML, "el('span', 'pill on', 'active')") {
+		t.Error("every extension is labelled active")
+	}
+	if !strings.Contains(ideHTML, "if(e.status) top.appendChild(el('span', 'pill' + (e.status === 'running' ? ' on' : ''), visible(e.status)));") {
+		t.Error("the extension's status is not shown")
+	}
+	if !strings.Contains(ideHTML, "{method:'DELETE', credentials:'same-origin'}).catch(() => {}); if(t) t.term.focus(); });") {
+		t.Error("Kill leaves focus on itself")
+	}
+}
