@@ -3949,10 +3949,8 @@ type approveRequest struct {
 func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req approveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		badBody(w, err, "invalid JSON body")
-		return
-	}
+	// The session is looked up first, so an unknown one is 404 whatever the body.
+	decErr := json.NewDecoder(r.Body).Decode(&req)
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
@@ -3962,7 +3960,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 		// anyway: the waiting node polls for the result, so the reviewer's
 		// decision still arrives. This is the case sticky routing exists to
 		// avoid and the one durability exists to survive when it does not.
-		if s.answerElsewhere(w, r, id, req) {
+		if decErr == nil && s.answerElsewhere(w, r, id, req) {
 			return
 		}
 		if node := s.elsewhere(r.Context(), id); node != "" {
@@ -3972,6 +3970,10 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		WriteError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if decErr != nil {
+		badBody(w, decErr, "invalid JSON body")
 		return
 	}
 	s.answerHere(w, r, live, req)

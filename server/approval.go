@@ -48,12 +48,13 @@ type pendingApproval struct {
 	ready, answer, final chan struct{}
 }
 
+// approvalReadyWait bounds how long an answer waits for its request's row.
+var approvalReadyWait = 30 * time.Second
+
 const (
 	// requestWait is how long an answer naming a request waits for the turn
 	// to publish it: the event reaches the client just before the turn waits.
 	requestWait = 2 * time.Second
-	// approvalReadyWait bounds how long an answer waits for its request's row.
-	approvalReadyWait = 30 * time.Second
 	// maxParked bounds the answers one session holds waiting at a time.
 	maxParked = 8
 	// endedKept is how many requests that stopped waiting a session remembers.
@@ -116,10 +117,14 @@ func (l *liveSession) pendingFor(ctx context.Context, requestID string) (*pendin
 			return nil, "this approval is answered only by its request_id"
 		case p != nil && (requestID == "" || p.RequestID == requestID):
 			return p, ""
-		case p != nil || ended:
+		case ended:
 			return nil, "that approval is no longer pending"
-		case requestID == "" || time.Now().After(deadline):
+		case p != nil:
+			return nil, "no such pending request: another request is waiting"
+		case requestID == "":
 			return nil, "no approval is pending for this session"
+		case time.Now().After(deadline):
+			return nil, "no such pending request"
 		}
 		select {
 		case <-ctx.Done():
@@ -166,6 +171,7 @@ func (s *Server) answerHere(w http.ResponseWriter, r *http.Request, live *liveSe
 	case <-r.Context().Done():
 		return
 	case <-time.After(approvalReadyWait):
+		w.Header().Set("Retry-After", "1")
 		WriteError(w, http.StatusServiceUnavailable, "the approval is still being recorded; retry")
 		return
 	}

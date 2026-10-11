@@ -720,6 +720,12 @@ on. A server with it off starts on the older schema as before.
   signing in; it now goes back to a same-origin return path. For a single
   sign-on account, `/account` replaced the whole page with its message,
   Back and Sign out included; it now replaces only the form.
+- `POST /v1/sessions/{id}/approve`: a `503` for an answer that arrived
+  before its request was recorded now carries `Retry-After: 1`; an answer
+  naming a request that is not the one waiting is told "no such pending
+  request" rather than "no longer pending"; and a body that is not JSON,
+  sent to a session the caller cannot see, gets `404` like any other body,
+  not `400`.
 
 ### Dependencies
 
