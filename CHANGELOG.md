@@ -648,6 +648,8 @@ on. A server with it off starts on the older schema as before.
   as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
   so the agent took the folder for empty. It now says the folder is skipped
   unless `path` names it, and gives that path.
+- A config key for a feature this edition lacks was reported as "a
+  Enterprise feature"; it now reads "an Enterprise feature".
 
 ### Dependencies
 
