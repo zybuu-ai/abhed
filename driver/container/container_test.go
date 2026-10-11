@@ -692,42 +692,74 @@ func TestCancelKillsInsideTheContainer(t *testing.T) {
 	}
 }
 
-// With git protection, a repository made after the container started
-// refuses commands until a restart mounts it.
-func TestNewGitFolderRefusesCommandsUntilRestart(t *testing.T) {
+// With git protection, a repository made after the container started is
+// protected by replacing the idle container with one that mounts it; while
+// the container is in use, the command is refused instead.
+func TestNewGitFolderRestartsAnIdleContainer(t *testing.T) {
 	f := &fakeRunner{podman: true}
-	d, ws := testDriver(t, f, Options{}, func(p *sandbox.Policy) { p.ProtectGit = true })
-	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+	var mu sync.Mutex
+	var events []map[string]any
+	d, ws := testDriver(t, f, Options{Record: func(ev string, p map[string]any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if ev == EventRestarted {
+			events = append(events, p)
+		}
+		return nil
+	}}, func(p *sandbox.Policy) { p.ProtectGit = true })
+	ctx := context.Background()
+	if _, err := d.Create(ctx, spec(ws)); err != nil {
 		t.Fatal(err)
 	}
 	id := "sbx_0123456789abcdef"
-	if _, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true"}); err != nil {
+	if _, err := d.Exec(ctx, id, driver.ExecRequest{Command: "true"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(ws, "repo", ".git", "hooks"), 0o755); err != nil {
+	newRepo := func(name string) string {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(ws, name, ".git", "hooks"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for file, text := range map[string]string{"config": "[core]\n", "HEAD": "ref: refs/heads/main\n"} {
+			if err := os.WriteFile(filepath.Join(ws, name, ".git", file), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return filepath.Join(ws, name, ".git", "config") + ":ro"
+	}
+	// A handed-out command keeps the container in use until its context ends.
+	cctx, cancel := context.WithCancel(ctx)
+	if _, err := driver.Command(cctx, d, id, driver.CommandRequest{Command: "sleep 1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "repo", ".git", "config"), []byte("[core]\n"), 0o644); err != nil {
-		t.Fatal(err)
+	runs := len(f.find("run"))
+	mount := newRepo("repo")
+	_, err := d.Exec(ctx, id, driver.ExecRequest{Command: "true"})
+	if !errors.Is(err, driver.ErrConflict) || !strings.Contains(err.Error(), "in use") || len(f.find("run")) != runs {
+		t.Fatalf("a command while the container is in use: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "repo", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err = d.Exec(ctx, id, driver.ExecRequest{Command: "true"})
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	_, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true"})
-	if !errors.Is(err, driver.ErrConflict) || !strings.Contains(err.Error(), "restart") {
-		t.Fatalf("a command after a new repository: %v", err)
+	if err != nil {
+		t.Fatalf("a command once the container is idle: %v", err)
 	}
-	if _, err := d.Stop(context.Background(), id, 0); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Start(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(joined(f.runCall(t)), filepath.Join(ws, "repo", ".git", "config")+":ro") {
+	if len(f.find("run")) != runs+1 || !strings.Contains(joined(f.runCall(t)), mount) {
 		t.Errorf("the restart did not protect the new repository: %s", joined(f.runCall(t)))
 	}
-	if _, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true"}); err != nil {
-		t.Fatalf("after the restart: %v", err)
+	mu.Lock()
+	if len(events) != 1 || events[0]["outcome"] != "restarted" || events[0]["generation"] != int64(1) {
+		t.Errorf("restart record %v", events)
+	}
+	mu.Unlock()
+	if st, err := d.Status(ctx, id); err != nil || st.Phase != driver.PhaseRunning {
+		t.Fatalf("status after the restart: %+v %v", st, err)
 	}
 }
 

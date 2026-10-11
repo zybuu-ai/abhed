@@ -152,9 +152,16 @@ A cancelled command is ended inside the container too: its wrapper leaves
 its pid in `/tmp`, and the driver stops and kills it and every descendant.
 
 With git protection on, the git folders are mounted read-only when the
-container starts. A repository made after that cannot be mounted into a
-running container, so commands are refused with `conflict` until the
-sandbox is restarted; the restart protects it.
+container starts. A repository made after that (`git init` inside the
+sandbox) cannot be mounted into a running container, so the next command
+replaces the container with one that mounts it, within the same
+generation, and records `sandbox.restarted` with the folders it protects.
+That ends whatever was left running in the old container and empties
+`/tmp`, as a restart does, and closes its forwards. It happens only while
+nothing else uses the container: while a command, a shell, a forward or a
+session's command is running, the command is refused with `conflict`, and
+the first command once it is idle restarts it (or restart the sandbox
+yourself).
 
 A container this process did not create, such as one left by a crash, is
 reported by `Status` without a tier and removed by `Delete` when its labels

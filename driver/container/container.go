@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,8 +77,14 @@ type instance struct {
 	// life serialises start, stop and delete of the instance.
 	life    sync.Mutex
 	stopped bool
+	// restarting is set while restartFor replaces the container; a stop or
+	// delete meanwhile clears it, so the instance stays stopped.
+	restarting bool
 	// running counts commands in flight; a stop waits for them up to its grace.
 	running sync.WaitGroup
+	// busy counts what uses the container now: commands in flight and the
+	// commands handed to callers, until their context ends.
+	busy atomic.Int64
 	// forwards are this incarnation's open forwards; done closes when it stops.
 	forwards *forward.Set
 	done     chan struct{}
@@ -487,7 +494,7 @@ func (d *Driver) Stop(ctx context.Context, id string, grace time.Duration) (driv
 		d.mu.Unlock()
 		return driver.Status{}, err
 	}
-	in.stopped = true
+	in.stopped, in.restarting = true, false
 	d.mu.Unlock()
 	in.life.Lock()
 	defer in.life.Unlock()
@@ -518,7 +525,7 @@ func (d *Driver) Delete(ctx context.Context, id string) error {
 		d.mu.Unlock()
 		return d.deleteLeftover(ctx, id)
 	}
-	in.stopped = true
+	in.stopped, in.restarting = true, false
 	delete(d.insts, id)
 	d.mu.Unlock()
 	in.life.Lock()
@@ -581,32 +588,91 @@ func (d *Driver) deleteLeftover(ctx context.Context, id string) error {
 
 // begin admits one command to a running instance; done must be called after.
 // With git protection on, a git folder that appeared since the container
-// started refuses the command: its mounts are fixed until a restart.
+// started must be mounted read-only, which a running container cannot take:
+// an idle container is restarted with it, and a busy one refuses the command.
 func (d *Driver) begin(ctx context.Context, id string) (*instance, func(), error) {
-	d.mu.Lock()
-	in, err := d.get(id)
-	if err != nil {
+	for restarted := false; ; restarted = true {
+		d.mu.Lock()
+		in, err := d.get(id)
+		if err != nil {
+			d.mu.Unlock()
+			return nil, nil, err
+		}
+		if in.stopped {
+			d.mu.Unlock()
+			return nil, nil, driver.Errorf(driver.ErrConflict, "instance %s is stopped", id)
+		}
+		in.running.Add(1)
+		in.busy.Add(1)
 		d.mu.Unlock()
-		return nil, nil, err
+		done := func() { in.busy.Add(-1); in.running.Done() }
+		now, err := in.git.Args(ctx, in.pol, d.name)
+		if err != nil {
+			done()
+			return nil, nil, driver.Errorf(driver.ErrUnavailable, "%v", err)
+		}
+		missing := newMounts(in.mounts, now)
+		if len(missing) == 0 {
+			return in, done, nil
+		}
+		done()
+		if restarted {
+			return nil, nil, driver.Errorf(driver.ErrConflict, "%s could not be protected by restarting the container", strings.Join(missing, ", "))
+		}
+		if err := d.restartFor(ctx, in, missing); err != nil {
+			return nil, nil, err
+		}
 	}
-	if in.stopped {
-		d.mu.Unlock()
-		return nil, nil, driver.Errorf(driver.ErrConflict, "instance %s is stopped", id)
-	}
-	in.running.Add(1)
-	d.mu.Unlock()
-	now, err := in.git.Args(ctx, in.pol, d.name)
-	if err != nil {
-		in.running.Done()
-		return nil, nil, driver.Errorf(driver.ErrUnavailable, "%v", err)
-	}
-	if missing := newMounts(in.mounts, now); len(missing) > 0 {
-		in.running.Done()
-		return nil, nil, driver.Errorf(driver.ErrConflict,
-			"%s must be protected, which this container's mounts cannot do once started; restart the sandbox", strings.Join(missing, ", "))
-	}
-	return in, in.running.Done, nil
 }
+
+// restartFor replaces an idle instance's container with one started from
+// fresh mounts, so the git folders in missing are protected, within the
+// same generation. A container still in use is left alone and the command
+// refused: a restart would end what runs in it.
+func (d *Driver) restartFor(ctx context.Context, in *instance, missing []string) error {
+	in.life.Lock()
+	defer in.life.Unlock()
+	d.mu.Lock()
+	if in.stopped || in.busy.Load() > 0 {
+		d.mu.Unlock()
+		return driver.Errorf(driver.ErrConflict,
+			"%s must be protected, which this container's mounts cannot do once started, and the sandbox is in use; "+
+				"it is restarted with them by the first command once nothing else runs in it, or restart it yourself", strings.Join(missing, ", "))
+	}
+	// Refuses new commands until the new container is up.
+	in.stopped, in.restarting = true, true
+	d.mu.Unlock()
+	eng, err := d.engine(ctx)
+	if err == nil {
+		in.endIncarnation()
+		in.running.Wait()
+		if err = d.teardown(in); err == nil {
+			_, err = d.start(ctx, in, eng)
+		}
+	}
+	payload := map[string]any{"sandbox_id": in.spec.ID, "generation": in.spec.Generation, "reason": "protect git folders made since it started",
+		"paths": missing}
+	if err != nil {
+		payload["outcome"], payload["error"] = "failed", err.Error()
+		_ = d.record(EventRestarted, payload)
+		d.mu.Lock()
+		in.restarting = false
+		d.mu.Unlock()
+		return driver.Errorf(driver.ErrUnavailable, "restarting the container to protect %s: %v", strings.Join(missing, ", "), err)
+	}
+	payload["outcome"] = "restarted"
+	_ = d.record(EventRestarted, payload)
+	d.mu.Lock()
+	if d.insts[in.spec.ID] == in && in.restarting {
+		in.stopped = false
+	}
+	in.restarting = false
+	d.mu.Unlock()
+	return nil
+}
+
+// EventRestarted records a container replaced to protect git folders.
+const EventRestarted = "sandbox.restarted"
 
 // newMounts lists the mount sources in now that were not in at.
 func newMounts(at, now []string) []string {
@@ -786,15 +852,18 @@ func (d *Driver) Command(ctx context.Context, id string, req driver.CommandReque
 		line, fixed = shellLine, []string{"TERM=xterm-256color", `PS1=(sandbox: container) \W \$ `, "HISTFILE=", "ABHED_TERMINAL=1"}
 	}
 	p, err := d.prepare(ctx, in, req.Shell, dir, line, nil, fixed)
-	// Not counted as running: the caller owns it, and stopping the container ends it.
+	// Not counted as running: the caller owns it, and stopping the container
+	// ends it. It keeps the container busy until its context ends.
+	in.busy.Add(1)
 	done()
 	if err != nil {
+		in.busy.Add(-1)
 		return nil, err
 	}
 	cmd := p.cmd
 	cmd.Cancel = func() error { d.kill(in, p.pidFile); return cmd.Process.Kill() }
 	cmd.WaitDelay = 2 * time.Second
-	context.AfterFunc(ctx, p.end)
+	context.AfterFunc(ctx, func() { p.end(); in.busy.Add(-1) })
 	return cmd, nil
 }
 
