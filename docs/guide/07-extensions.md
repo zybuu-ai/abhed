@@ -167,8 +167,10 @@ compacts, one request at a time. An extension that must not see one user's
 work alongside another's belongs on a server of its own. The serve banner
 lists the extensions and names any that is not running, and
 `/v1/capabilities` gives each one's `status`: `running`, `stopped` (it
-crashed, hung or was closed) or `not started`. A stopped `tool_call`
-extension's calls are asked, as above.
+crashed, hung or was closed) or `not started`. Where people sign in, only an
+administrator is given `status`, since it says when a veto is down; others
+see each extension's name and events. A stopped `tool_call` extension's
+calls are asked, as above.
 
 ## Providing tools
 

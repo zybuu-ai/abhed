@@ -182,6 +182,10 @@ All notable changes to Abhed are recorded here. The format follows
   non-member answered `200 ok` and was only turned away on the next page;
   it is now refused at the form with `403` and the reason. Group names
   match case-sensitively, as documented now. Affects 1.0.0 to 1.2.7.
+- `/v1/capabilities` told every signed-in user whether each extension was
+  running, which showed when a veto was down. Where people sign in, an
+  extension's `status` is now given to administrators only. Affects 1.2.2
+  to 1.2.7.
 
 ### Added
 
