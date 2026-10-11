@@ -59,8 +59,10 @@ All notable changes to Abhed are recorded here. The format follows
 - A call whose first subject argument was not a string, such as an MCP
   tool's `command` given as a list or an object, was judged on the next
   argument, a `path` say, so a deny rule on the command never saw it. A list
-  of strings is now read as its words joined by blanks, and any other kind
-  is refused at step `args`. Affects every release to 1.2.7.
+  of strings is now read as its words joined by blanks; any other kind is
+  refused at step `args` while a deny or ask rule with a pattern applies to
+  the tool, and is otherwise judged on its JSON text. Affects every release
+  to 1.2.7.
 - An "always allow" scope for a listed program such as `ls` was offered
   though `PATH` found it inside the workspace (a planted `./venv/bin/ls`
   first on `PATH`), so the remembered scope ran the workspace's file. The

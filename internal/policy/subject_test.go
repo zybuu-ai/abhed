@@ -58,8 +58,16 @@ func TestNonStringSubjectIsNotPassedOver(t *testing.T) {
 	}
 	for _, raw := range []string{`{"command":{"argv":"curl x"},"path":"a"}`, `{"command":7,"path":"a"}`, `{"command":["curl",1],"path":"a"}`} {
 		res := e.Evaluate("mcp__x__run", true, json.RawMessage(raw))
-		if res.Decision != Deny || res.Step != "args" || !strings.Contains(res.Reason, "must be a string") {
+		if res.Decision != Deny || res.Step != "args" || !strings.Contains(res.Reason, "not a string") {
 			t.Errorf("%s = %s at %s (%s)", raw, res.Decision, res.Step, res.Reason)
+		}
+		// With no rule to read it, the call is judged on its JSON text, not on path.
+		plain := New(ModeDefault)
+		if err := plain.AddAllow("mcp__x__run(a)"); err != nil {
+			t.Fatal(err)
+		}
+		if res := plain.Evaluate("mcp__x__run", true, json.RawMessage(raw)); res.Step == "args" || res.Decision == Allow {
+			t.Errorf("no rules: %s = %s at %s (%s)", raw, res.Decision, res.Step, res.Reason)
 		}
 	}
 	if res := e.Evaluate("mcp__x__run", true, json.RawMessage(`{"command":null,"path":"a"}`)); res.Step == "args" {

@@ -504,7 +504,7 @@ func (e *Engine) Screens(tool string) bool {
 // A tool that names its own subject (a tools.Subjector, such as ssh's
 // host/command) is judged on that, as a Kubernetes tool is on its cluster.
 func Subject(tool string, args json.RawMessage) string {
-	_, s, _ := subjectOf(args)
+	_, s, _ := subjectOf(args) // a subject of another kind reads as its JSON text
 	if target, ok := toolSubject(tool, args); ok {
 		return target
 	}
@@ -578,8 +578,9 @@ func clusterSubject(tool string, args json.RawMessage) (string, bool) {
 // subjectOf is Subject with the argument it came from. Arguments are decoded
 // strictly and keys matched as a tool's struct matches them, so both read one value.
 // The first subject argument present is the subject: a list of strings is
-// read as its words joined by blanks, and any other kind is refused, as
-// passing on to the next key would judge the call on what it does not do.
+// read as its words joined by blanks, and any other kind is its JSON text
+// with errNonStringSubject, as passing on to the next key would judge the
+// call on what it does not do.
 func subjectOf(args json.RawMessage) (key, subject string, err error) {
 	m, err := tools.DecodeArgs(args)
 	if err != nil {
@@ -595,19 +596,24 @@ func subjectOf(args json.RawMessage) (key, subject string, err error) {
 			return key, v, nil
 		case []any:
 			words := make([]string, len(v))
+			all := true
 			for i, w := range v {
 				s, isStr := w.(string)
-				if !isStr {
-					return "", "", fmt.Errorf("%w: %q must be a string or a list of strings", tools.ErrMalformedArgs, key)
-				}
+				all = all && isStr
 				words[i] = s
 			}
-			return key, strings.Join(words, " "), nil
+			if all {
+				return key, strings.Join(words, " "), nil
+			}
 		}
-		return "", "", fmt.Errorf("%w: %q must be a string or a list of strings", tools.ErrMalformedArgs, key)
+		text, _ := json.Marshal(v)
+		return key, string(text), fmt.Errorf("%w: %q is not a string or a list of strings, so a rule with a pattern cannot read it", errNonStringSubject, key)
 	}
 	return "", "", nil
 }
+
+// errNonStringSubject marks a subject argument of another kind than text.
+var errNonStringSubject = errors.New("malformed arguments")
 
 // pathSubjects are the spellings a path rule is matched against. Deny and ask
 // rules see every one: the path as given, absolute, with its links resolved,
@@ -762,7 +768,9 @@ func (e *Engine) evaluateAs(ctx context.Context, tool string, mutates bool, args
 
 func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args json.RawMessage, line bool) Result {
 	key, subject, err := subjectOf(args)
-	if err != nil {
+	// A subject that is not text is read as its JSON, unless a deny or ask
+	// rule with a pattern is there to read it, which it could not.
+	if err != nil && (!errors.Is(err, errNonStringSubject) || e.rulesSeeParts(tool)) {
 		return Result{Decision: Deny, Reason: err.Error(), Scope: "", Step: "args"}
 	}
 	// Deny and ask rules see each command in a bash chain. A narrow allow rule
