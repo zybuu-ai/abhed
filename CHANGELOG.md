@@ -706,6 +706,13 @@ on. A server with it off starts on the older schema as before.
   `not started`) instead of labelling every one "active", and none where the
   server does not report it; a `skill` call is shown by the skill's name and
   a `tasks` call by its subagents, not as raw JSON.
+- The landing page's *Web search* card said "the agent can reach the
+  internet" when only web fetch was on. Search and fetch now share one *Web
+  access* card that says what each allows: with fetch alone, the agent can
+  read web pages but cannot search. On a phone the web IDE's header no longer
+  lets a long account name push *sign out* off screen; the docs link is left
+  to the palette there. The console, the workbench, the account and the
+  sign-out pages now share one sign-out script instead of four copies.
 
 ### Dependencies
 

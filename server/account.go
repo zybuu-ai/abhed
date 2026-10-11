@@ -96,12 +96,6 @@ a{color:var(--acc)}nav{margin-top:22px}
 // signOutScript is the sign-out both pages above run. The form stays as the
 // fallback without script; the server accepts it by Sec-Fetch-Site.
 const signOutScript = `// A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
-async function signOut(){
-  try{
-    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
-    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
-  }catch{}
-  location.href = '/logout';
-}
+/*{{SIGN_OUT}}*/
 document.getElementById('so').addEventListener('submit', e => { e.preventDefault(); signOut(); });
 `

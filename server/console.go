@@ -2553,13 +2553,7 @@ function postSignOut(e){
   signOut();
 }
 // A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
-async function signOut(){
-  try{
-    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
-    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
-  }catch{}
-  location.href = '/logout';
-}
+/*{{SIGN_OUT}}*/
 async function whoami(){
   let me = null;
   try{ me = await api('/v1/whoami'); }catch{}

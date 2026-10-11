@@ -46,10 +46,21 @@ const brandCSS = `:root{--on-accent:#fff}
 :root[data-theme="dark"] .lk-dark{display:block!important}
 `
 
+// signOutJS is every page's sign-out: a same-origin fetch POST to /logout, then
+// where the answer says. A plain form post arrives from Chrome as Origin: null.
+const signOutJS = `async function signOut(){
+  try{
+    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
+    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
+  }catch{}
+  location.href = '/logout';
+}`
+
 var (
 	brandOuter = strings.NewReplacer(
 		"{{BRAND_LOCKUP}}", brandLockup,
 		"/*{{BRAND_CSS}}*/", brandCSS,
+		"/*{{SIGN_OUT}}*/", signOutJS,
 	)
 	brandImages = strings.NewReplacer(
 		"{{BRAND_MARK}}", brandURI("mark.webp"),
