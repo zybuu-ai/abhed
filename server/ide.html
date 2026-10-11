@@ -2996,6 +2996,7 @@ function palItems(){
   const out = [], mod = isMac ? '⌘' : 'Ctrl+';
   SLASH.forEach(s => out.push({k:'command', l:s[1], h:s[0], run:s[2]}));
   out.push({k:'command', l:'Toggle the side panel', h:mod + 'B', run:() => $('app').classList.toggle('noside')});
+  out.push({k:'command', l:'Open the documentation', h:'', run:() => window.open('/docs', '_blank', 'noopener')});
   out.push({k:'command', l:'Toggle the terminal panel', h:mod + 'J', run:() => $('app').classList.toggle('nopanel')});
   out.push({k:'command', l:'Toggle the terminal', h:'Ctrl+`', run:toggleTerminal});
   out.push({k:'command', l:'Switch light / dark', h:'', run:() => $('theme').click()});
