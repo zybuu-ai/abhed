@@ -644,6 +644,10 @@ on. A server with it off starts on the older schema as before.
   as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
   so the agent took the folder for empty. It now says the folder is skipped
   unless `path` names it, and gives that path.
+- A four-character line typed ahead in a workbench terminal, such as `make`,
+  took out every recorded output line holding it inside a longer word
+  (`makes`). Such a line now takes a line only where no letter, digit or `_`
+  follows it; longer lines are matched as before.
 
 ### Dependencies
 

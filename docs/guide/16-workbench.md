@@ -503,7 +503,10 @@ What a shell changes about the checks, stated plainly:
   taken out of the recorded output the same way. Keys typed into a program
   that reads them raw (an editor, a REPL) stay in the recorded output, as they
   were on screen. The rule is eager: a command typed ahead takes out every
-  output line sharing four characters in a row with it. What is not caught:
+  output line sharing four characters in a row with it. A line of exactly
+  four characters is the exception: it takes out a line holding it where no
+  letter, digit or `_` follows, so a typed-ahead `make` takes `make: done`
+  and `remake` but leaves `makes`. What is not caught:
   pieces of a password shorter than four characters, split apart by other
   output or by where the kept output begins.
   Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt

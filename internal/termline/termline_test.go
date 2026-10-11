@@ -188,6 +188,17 @@ func TestScrubFailsClosed(t *testing.T) {
 	if got != "[withheld]\nprogress 10%\n[withheld]\nnothing here\n" {
 		t.Fatalf("fragments were kept: %q", got)
 	}
+	// A held four-letter word takes the lines that hold it, not those where
+	// it runs on into a longer word; a longer held line matches anywhere.
+	c = entered("make\n", true, false, true)
+	got = c.Scrub("makes sense\nremake done\nmake: *** No rule\nmake\n")
+	if got != "makes sense\n[withheld]\n[withheld]\n[withheld]\n" {
+		t.Fatalf("word match: %q", got)
+	}
+	c = entered("hunter33\n", true, false, true)
+	if got := c.Scrub("hunting\nhunter33x\n"); got != "[withheld]\n[withheld]\n" {
+		t.Fatalf("a longer held line lost its fragments: %q", got)
+	}
 	// A short secret goes where it stands alone, however padded.
 	c = entered(" ab \n", true, true, true)
 	if got := c.Scrub("x\n  ab\t\nab cd\n"); got != "x\n[withheld]\nab cd\n" {
