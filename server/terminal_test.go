@@ -1035,3 +1035,15 @@ func TestShellWithholdsAPasswordTypedAheadKeyByKey(t *testing.T) {
 		})
 	}
 }
+
+// A line longer than the terminal is wide is soft-wrapped by readline as it
+// is echoed; it is still recorded with its text.
+func TestShellRecordsAWrappedLine(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	long := "echo " + strings.Repeat("wrapped-", 19) + "end"
+	wb.drive(start.ID, step{keys: long, until: "-end"}, step{keys: "\r"}, step{keys: "exit\r"})
+	if !slices.ContainsFunc(wb.typed(), func(in agent.TerminalInput) bool { return in.Line == long }) {
+		t.Fatalf("the wrapped line was not recorded with its text: %+v", wb.typed())
+	}
+}

@@ -68,6 +68,9 @@ func TestCaptureWithholdsWhenUnsure(t *testing.T) {
 		"only the end shown":      {typed("hunter22echo hi there\r", "echo hi there", true, false), false},
 		"all but one key shown":   {typed("echo hi there\r", "echo hi the", true, false), false},
 		"typed ahead":             {ahead(typed("hunter22\r", "hunter22", true, false)), false},
+		// readline wraps at the right margin with a space and a carriage return.
+		"soft-wrapped":   {typed("echo aaaabbbbcccc\r", "$ echo aaaab \rbbbcccc", true, false), true},
+		"a real newline": {typed("echo aaaabbbbcccc\r", "$ echo aaaab \r\nbbbcccc", true, false), false},
 	} {
 		if got := tc.e.Echoed(); got != tc.want {
 			t.Errorf("%s: echoed() = %v, want %v (%+v)", name, got, tc.want, tc.e)

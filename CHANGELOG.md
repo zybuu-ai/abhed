@@ -666,6 +666,9 @@ on. A server with it off starts on the older schema as before.
   made without a word, though the record carried the warning the agent's
   edit gets. The save now answers with that warning (`note` on
   `PUT /v1/sessions/{id}/file`) and the editor shows it.
+- A line typed into a workbench shell that was longer than the terminal was
+  wide was recorded without its text, as though it had not been echoed:
+  the shell's soft wrap at the right margin was read as part of the line.
 
 ### Dependencies
 

@@ -487,7 +487,8 @@ What a shell changes about the checks, stated plainly:
   or keys typed while a builtin ran), for a line whose whole text it did not
   see echoed before the Enter (so keys a program took without an Enter, as
   `read -s -n` does, never prefix a recorded line), for an edited line, and for a short line where it could not ask the
-  terminal. Keys typed ahead while a command still runs are shown by the
+  terminal. A line longer than the terminal is wide, which the shell wraps
+  onto the next row as it echoes it, is recorded with its text. Keys typed ahead while a command still runs are shown by the
   terminal as they arrive, so a password typed ahead of its prompt can be on
   screen. The output the record keeps then drops it, best effort: every line
   of that output holding four or more characters in a row of a line recorded
