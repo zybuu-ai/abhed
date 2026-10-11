@@ -165,6 +165,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 		return fail(err)
 	}
 	worktree = work.Dir
+	work.Secrets = openVault().Session() // a stored value in the change refuses the push
 	defer func() {
 		if !kept {
 			work.Cleanup(context.WithoutCancel(ctx), workspace)

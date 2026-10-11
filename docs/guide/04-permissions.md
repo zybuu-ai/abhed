@@ -983,9 +983,11 @@ What redaction does not catch:
   exposed.
 - A value of 8 to 11 characters is matched only as written and escaped.
 - Part of a value is not caught, such as a truncated one.
-- Files are not redacted. What the agent writes to a file stays there, and
-  `abhed resolve` pushes it and quotes the diff in the pull request's
-  description.
+- Files are not redacted. What the agent writes to a file stays there.
+  `abhed resolve` checks the change before it pushes: a diff, file name or
+  commit message that holds a stored value, in any of the forms above,
+  refuses the push and the pull request, and the change stays on its local
+  branch.
 - The model's own text and calls go back to the same model unredacted in the
   conversation. They are redacted everywhere else.
 

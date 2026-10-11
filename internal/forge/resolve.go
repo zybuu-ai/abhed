@@ -24,7 +24,16 @@ type Work struct {
 	Dir    string // the worktree
 	Base   string
 	Start  string // the commit the worktree was made at
+	// Secrets, when set, finds a stored value in what is about to leave:
+	// Push refuses a change whose diff or commit messages hold one.
+	Secrets interface {
+		FindSent(text string) (label string, found bool)
+	}
 }
+
+// ErrSecretInChange refuses a push whose change holds a stored secret: the
+// branch and the pull request's description would carry it to the forge.
+var ErrSecretInChange = errors.New("the change holds a stored secret")
 
 // Runner does the actual work in the worktree. It is the agent session; the
 // resolver knows nothing about models.
@@ -203,7 +212,38 @@ func (w *Work) Push(ctx context.Context, repo string, ref Ref, auth, caFile stri
 	if err != nil {
 		return err
 	}
+	if err := w.checkSecrets(ctx, repo); err != nil {
+		return err
+	}
 	return push(ctx, repo, w.Dir, url, "https://"+ref.Host+"/", w.Branch, auth, caFile, nil)
+}
+
+// checkSecrets refuses a change whose diff, file names or commit messages
+// hold a stored value in any form FindSent knows, read from the trusted
+// repository with no external diff or text conversion.
+func (w *Work) checkSecrets(ctx context.Context, repo string) error {
+	if w.Secrets == nil {
+		return nil
+	}
+	r := hostgit.New(ctx, repo)
+	span := w.Start + ".." + "refs/heads/" + w.Branch
+	diff, err := git(ctx, r, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text", span)
+	if err != nil {
+		return fmt.Errorf("refusing to push: the change could not be read to check it for stored secrets: %w", err)
+	}
+	msgs, err := git(ctx, r, "log", "--format=%B", span)
+	if err != nil {
+		return fmt.Errorf("refusing to push: the commit messages could not be read to check them for stored secrets: %w", err)
+	}
+	if label, found := w.Secrets.FindSent(diff + "\n" + msgs); found {
+		what := "what may be a stored secret (the secrets store could not be read)"
+		if label != "" {
+			what = "the stored secret " + label
+		}
+		return fmt.Errorf("refusing to push: %w: it holds %s, which the branch and the pull request would carry; "+
+			"the change stays on branch %s", ErrSecretInChange, what, w.Branch)
+	}
+	return nil
 }
 
 func push(ctx context.Context, repo, worktree, url, scope, branch, auth, caFile string, env []string) error {

@@ -156,6 +156,12 @@ All notable changes to Abhed are recorded here. The format follows
   reported without its query and user information, and the error is
   redacted. Affects 1.0.0 to 1.2.7.
 
+- `abhed resolve` pushed whatever the run wrote, so a stored secret the
+  agent put in a file, a file name or a commit message went to the forge
+  and into the pull request's description. A change that holds a stored
+  value, as written or encoded, now refuses the push. Affects 1.0.0 to
+  1.2.7.
+
 ### Added
 
 - What a sandbox command can reach of the server: on every tier, nothing
