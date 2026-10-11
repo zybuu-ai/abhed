@@ -686,6 +686,14 @@ on. A server with it off starts on the older schema as before.
   a time from the name check to the account, and a code redeemed for a
   name another server made first is given back when the invite store can
   do so.
+- Shutting down with Postgres stalled, `abhed serve` gave back its
+  workbench claims one session at a time, each with its own wait, so many
+  held sessions could keep it from exiting well past its grace period.
+  They are now given back together within one 15-second budget. A
+  workbench write's claim has a 10-second deadline; a write that began
+  claiming as the drain started has its hold released by that drain
+  instead of left behind; and a release the store refuses is tried again
+  rather than only logged.
 
 ### Dependencies
 

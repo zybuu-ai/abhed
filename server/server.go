@@ -391,6 +391,8 @@ type Server struct {
 	adminMu sync.Mutex
 	// signupMu holds one self-registration at a time (signup).
 	signupMu sync.Mutex
+	// claiming counts the workbench writes claiming a session now.
+	claiming atomic.Int64
 
 	// state holds what a settings change may replace, behind its own lock.
 	// Separate from opts, which stays immutable — mixing "set once" and
@@ -2210,15 +2212,33 @@ func (s *Server) claimForWrite(id string, live *liveSession) error {
 		live.holdMu.Unlock()
 		return nil
 	}
+	// Counted before draining is read, so a drain waits for this claim to
+	// settle before it releases the holds.
+	s.claiming.Add(1)
+	defer s.claiming.Add(-1)
 	if s.draining.Load() {
 		return errDraining
 	}
-	newly, err := s.claimOpened(context.Background(), id, live)
+	ctx, cancel := context.WithTimeout(context.Background(), claimTimeout)
+	defer cancel()
+	newly, err := s.claimOpened(ctx, id, live)
 	if err != nil || !newly {
 		return err
 	}
 	s.holdClaim(id, live)
 	return nil
+}
+
+// claimTimeout bounds a workbench write's claim, so a stalled store cannot
+// hold claimMu, and the write, for ever.
+const claimTimeout = 10 * time.Second
+
+// waitClaims waits, up to limit, for the claims writes have started to settle.
+func (s *Server) waitClaims(limit time.Duration) {
+	deadline := time.Now().Add(limit)
+	for s.claiming.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // holdClaim keeps a claim taken for workbench work until it goes quiet, then
@@ -4515,10 +4535,22 @@ func (s *Server) releaseNode(sessionID string) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Tried again within one budget: a claim left behind holds the session
+	// from every other node until it goes stale.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := r.ReleaseNode(ctx, sessionID, s.holder); err != nil {
-		s.log.Warn("could not release session claim", "session", sessionID, "err", err)
+	var err error
+	for wait := 200 * time.Millisecond; ; wait *= 2 {
+		if err = r.ReleaseNode(ctx, sessionID, s.holder); err == nil || errors.Is(err, store.ErrHeldElsewhere) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			s.log.Warn("could not release session claim; it lapses once stale", "session", sessionID,
+				"err", err, "stale_after", nodeStale)
+			return
+		case <-time.After(wait):
+		}
 	}
 }
 
@@ -4879,7 +4911,14 @@ func (s *Server) drain() {
 	s.draining.Store(true)
 	// Alongside the drain, so closing terminals adds nothing to the worst case.
 	idleClosed := make(chan struct{})
-	go func() { defer close(idleClosed); s.closeIdle() }()
+	go func() {
+		defer close(idleClosed)
+		// A first write that passed the draining check before it was set may
+		// still be claiming; its hold is released with the others.
+		deadline := time.Now().Add(idleBudget)
+		s.waitClaims(time.Until(deadline) - turnEndWait)
+		s.closeIdle(deadline)
+	}()
 	defer func() { <-idleClosed }()
 	streamsEnded := make(chan struct{})
 	go func() { defer close(streamsEnded); s.cpStreams.shutdown(turnEndWait) }()
@@ -4912,7 +4951,7 @@ func (s *Server) drain() {
 
 // closeIdle ends the terminals of sessions opened with no prompt and marks
 // their records ended, so a restarted server can reopen them from the record.
-func (s *Server) closeIdle() {
+func (s *Server) closeIdle(by time.Time) {
 	s.mu.Lock()
 	var idle []*liveSession
 	for _, live := range s.running {
@@ -4943,21 +4982,40 @@ wait:
 			break wait
 		}
 	}
+	// In parallel under one deadline: one at a time, a stalled store cost each
+	// session its own wait.
+	var wg sync.WaitGroup
 	for _, live := range idle {
 		if live.unclaimed.Load() {
 			continue // its row still holds the end it was opened with
 		}
-		live.holdMu.Lock()
-		held := live.held
-		live.holdMu.Unlock()
-		if held {
-			s.releaseHeld(live.ID, live, true) // workbench work alone: ended as it was opened
-			continue
-		}
-		_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
-			agent.SessionEnded{Reason: agent.TermShutdown})
+		wg.Add(1)
+		go func(live *liveSession) {
+			defer wg.Done()
+			live.holdMu.Lock()
+			held := live.held
+			live.holdMu.Unlock()
+			if held {
+				s.releaseHeld(live.ID, live, true) // workbench work alone: ended as it was opened
+				return
+			}
+			_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
+				agent.SessionEnded{Reason: agent.TermShutdown})
+		}(live)
+	}
+	ended := make(chan struct{})
+	go func() { wg.Wait(); close(ended) }()
+	select {
+	case <-ended:
+	case <-time.After(max(time.Until(by), time.Second)):
+		s.log.Warn("idle sessions did not record their end before shutdown")
 	}
 }
+
+// idleBudget bounds everything a shutdown does for idle sessions: waiting for
+// claims in flight, closing their terminals, and recording their ends and
+// giving back their claims, all of them together.
+const idleBudget = 15 * time.Second
 
 func (s *Server) runningCount() int {
 	s.mu.Lock()

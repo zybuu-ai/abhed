@@ -19,7 +19,7 @@ func TestShutdownRecordsATerminalsResultBeforeTheEnd(t *testing.T) {
 	wb := shellBench(t, nil)
 	start := wb.startPTY("sleep 60")
 	time.Sleep(200 * time.Millisecond)
-	wb.s.closeIdle()
+	wb.s.closeIdle(time.Now().Add(idleBudget))
 	obs, end := -1, -1
 	for i, e := range wb.events() {
 		switch e.Type {

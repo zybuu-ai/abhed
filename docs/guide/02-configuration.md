@@ -881,11 +881,15 @@ still running, recorded as `shutdown`, including a turn stopped before the
 model's first reply, and kills the command each is running with everything
 it started. A message steered into a turn that is ended this way is recorded
 as `message.dropped`, not delivered. The terminals of an idle workbench
-session are closed and their results recorded before its end. It then waits
-up to five seconds for turns to record their end, and up to ten more for
-open HTTP requests. The worst case is `drain_seconds` + 15 seconds, so give the
-process at least that much grace: with Kubernetes' default
-`terminationGracePeriodSeconds` of 30, keep `drain_seconds` at 15 or less.
+session are closed and their results recorded before its end. Alongside the
+drain, idle sessions are ended and their claims given back all together,
+within 15 seconds; a release the store refuses is tried again within ten
+seconds, and one that never lands lapses when its claim goes stale. It then
+waits up to five seconds for turns to record their end, and up to ten more
+for open HTTP requests. The worst case is `drain_seconds` + 15 seconds, or
+25 seconds when `drain_seconds` is under 10, so give the process at least
+that much grace: with Kubernetes' default `terminationGracePeriodSeconds` of
+30, keep `drain_seconds` at 15 or less.
 Without `drain_seconds`, running turns are ended at once. SIGINT and a
 hang-up (SIGHUP) stop the server the same way; a hang-up is not a reload.
 Signals that arrive while it drains are ignored, so a second SIGTERM does

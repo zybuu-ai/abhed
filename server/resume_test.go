@@ -43,6 +43,14 @@ type durableMem struct {
 	// onReclaim when ReclaimOwn is asked.
 	afterStart func()
 	onReclaim  func()
+	// releaseDelay slows each ReleaseNode, and releaseFails fails that many.
+	releaseDelay time.Duration
+	releaseFails atomic.Int32
+	// claimReached and claimGate, when set, hold ClaimResume until the gate
+	// closes; claimDeadline records whether it was given a deadline.
+	claimReached  chan struct{}
+	claimGate     chan struct{}
+	claimDeadline atomic.Bool
 }
 
 // ReclaimOwn takes back an open row held under holder's node id.
@@ -92,6 +100,10 @@ func (d *durableMem) RenewNode(_ context.Context, id, holder string) (bool, erro
 }
 
 func (d *durableMem) ReleaseNode(_ context.Context, id, holder string) error {
+	time.Sleep(d.releaseDelay)
+	if d.releaseFails.Add(-1) >= 0 {
+		return errors.New("connection reset")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.holders[id] == holder {
@@ -225,6 +237,12 @@ func (d *durableMem) ClaimOrphan(ctx context.Context, id, holder string, stale t
 }
 
 func (d *durableMem) ClaimResume(ctx context.Context, id string) (bool, error) {
+	_, has := ctx.Deadline()
+	d.claimDeadline.Store(has)
+	if d.claimGate != nil {
+		close(d.claimReached)
+		<-d.claimGate
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, ok := d.rows[id]; !ok || !d.ended[id] {
@@ -594,7 +612,7 @@ func TestDrainReleasesAWorkbenchHold(t *testing.T) {
 	if _, err := live.Loop.Recorder.Record(agent.EvChangeAccepted, agent.ActorUser, agent.Trusted, map[string]any{"path": "a"}); err != nil {
 		t.Fatal(err)
 	}
-	v.s.closeIdle()
+	v.s.closeIdle(time.Now().Add(idleBudget))
 	events := v.checkSeqs()
 	last := events[len(events)-1]
 	if !v.ended() || last.Type != agent.EvSessionEnded || string(last.Payload) != string(before[len(before)-1].Payload) {
@@ -625,7 +643,7 @@ func TestDrainLeavesAnOpenedSessionAlone(t *testing.T) {
 	live.State = "idle"
 	live.mu.Unlock()
 	before, _ := v.st.Events(v.id)
-	v.s.closeIdle()
+	v.s.closeIdle(time.Now().Add(idleBudget))
 	if after, _ := v.st.Events(v.id); len(after) != len(before) {
 		t.Fatalf("the drain wrote %d events to a session only opened here", len(after)-len(before))
 	}
