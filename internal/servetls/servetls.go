@@ -439,7 +439,8 @@ func parseRevoked(b, caPEM []byte, now time.Time) (map[string]bool, []string, er
 	}
 	for i, line := range strings.Split(string(b), "\n") {
 		line, _, _ = strings.Cut(line, "#")
-		line = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(line), ":", ""))
+		// As openssl prints it too: serial=0A1B...
+		line = strings.TrimPrefix(strings.ToLower(strings.ReplaceAll(strings.TrimSpace(line), ":", "")), "serial=")
 		if line == "" {
 			continue
 		}

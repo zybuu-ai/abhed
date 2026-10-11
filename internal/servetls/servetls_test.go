@@ -412,6 +412,7 @@ func TestClientCertificateRevocation(t *testing.T) {
 	for name, body := range map[string][]byte{
 		"a CRL":           f.crl(t, time.Now().Add(time.Hour), aliceLeaf.SerialNumber),
 		"a listed serial": []byte(strings.ToUpper(aliceLeaf.SerialNumber.Text(16)) + "  # alice's laptop\n"),
+		"openssl's line":  []byte("serial=" + strings.ToUpper(aliceLeaf.SerialNumber.Text(16)) + "\n"),
 	} {
 		if err := os.WriteFile(revoked, body, 0o600); err != nil {
 			t.Fatal(err)
