@@ -125,6 +125,18 @@ func CanonicalCommand(command string) Canonical {
 			i += ifsAt(command, i+1)
 		case ch == '{' && !double && (i == 0 || command[i-1] != '$'):
 			if end := braceList(command, i); end > 0 {
+				// A list in a literal word is read as the words it makes.
+				s := b.String()
+				ws := strings.LastIndexAny(s, " \t\n;&|()`<>") + 1
+				if words, wordEnd, ok := braceWords(s[ws:], command, i, end); ok {
+					prefix := s[:ws]
+					b.Reset()
+					b.WriteString(prefix)
+					b.WriteString(words)
+					c.Reworded = true
+					i = wordEnd - 1
+					continue
+				}
 				b.WriteString(strings.NewReplacer(",", " ").Replace(command[i+1 : end]))
 				b.WriteByte(' ')
 				c.Reworded, c.Hidden = true, true
@@ -607,6 +619,38 @@ func braceList(command string, i int) int {
 		}
 	}
 	return 0
+}
+
+// maxBraceWords bounds the words a literal brace list is read as.
+const maxBraceWords = 64
+
+// braceWords expands the brace list command[open:end+1] in a word that is
+// literal text throughout, prefix before it: the words joined by blanks and
+// where the word ends. ok is false for a list with a nested list, an
+// expansion, a quote or an escape in the word, a second list after it, or
+// an assignment's value, where bash does not expand it.
+func braceWords(prefix, command string, open, end int) (string, int, bool) {
+	wordEnd := end + 1
+	for wordEnd < len(command) && strings.IndexByte(" \t\n;&|()`<>", command[wordEnd]) < 0 {
+		wordEnd++
+	}
+	suffix, items := command[end+1:wordEnd], command[open+1:end]
+	const special = "{}$`'\"\\"
+	if strings.ContainsAny(prefix, special) || strings.ContainsAny(suffix, special) || strings.ContainsAny(items, special) {
+		return "", 0, false
+	}
+	if isAssignment(prefix) {
+		return "", 0, false
+	}
+	parts := strings.Split(items, ",")
+	if len(parts) > maxBraceWords {
+		return "", 0, false
+	}
+	words := make([]string, len(parts))
+	for k, p := range parts {
+		words[k] = prefix + p + suffix
+	}
+	return strings.Join(words, " "), wordEnd, true
 }
 
 // ansiC decodes a $'...' string from command[i], just past its opening quote,

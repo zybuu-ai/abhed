@@ -445,7 +445,10 @@ or `GIT_ALLOW_PROTOCOL` on the line, which the checks read, lifts it.
 Words the shell builds are read as it would build them: line continuations
 are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as
 `{curl,x}` are read as the words they make, so `c${IFS}url` is matched as
-`curl`. A command that sets `IFS` to a separator other than blanks is also read
+`curl`. A brace list in a word that is literal text throughout
+(`mkdir -p src/{a,b}`) is read exactly as bash expands it and is not asked
+about for that; one holding an expansion, a quote, a nested or second list
+is asked about while a deny or ask rule for `bash` has a pattern. A command that sets `IFS` to a separator other than blanks is also read
 split on it, so `IFS=_; curl_x` is matched as `curl x`. Where such a command,
 or one that sets `IFS` in a way the text does not show (`IFS=$v`, `read IFS`,
 `${IFS:=_}`), then expands anything (`IFS=_; c=curl_x; $c`), the words that

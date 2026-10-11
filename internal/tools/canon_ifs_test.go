@@ -144,3 +144,31 @@ func TestIFSCause(t *testing.T) {
 		t.Errorf("unparsed command: destructive reason %q", what)
 	}
 }
+
+// A brace list in a literal word is read as the words it makes; one with an
+// expansion, a nested list or in an assignment's value still hides its words.
+func TestLiteralBraceListIsExpanded(t *testing.T) {
+	for command, want := range map[string]string{
+		"mkdir -p src/{a,b}":      "mkdir -p src/a src/b",
+		"cp f{,.bak}":             "cp f f.bak",
+		"touch {a,b}.go; ls":      "touch a.go b.go; ls",
+		"{curl,x}":                "curl x",
+		"echo --x={1,2} y":        "echo --x=1 --x=2 y",
+		"mkdir -p a/{b,c}/d{1,2}": "",
+		"echo {$a,b}":             "",
+		"echo {a,{b,c}}":          "",
+		"x={a,b} cmd":             "",
+		"echo 'q'{a,b}":           "",
+	} {
+		c := CanonicalCommand(command)
+		if want == "" {
+			if !c.Hidden {
+				t.Errorf("%q: not hidden (%q)", command, c.Text)
+			}
+			continue
+		}
+		if c.Text != want || c.Hidden {
+			t.Errorf("%q: text %q hidden %v, want %q", command, c.Text, c.Hidden, want)
+		}
+	}
+}

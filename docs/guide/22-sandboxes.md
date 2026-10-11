@@ -491,7 +491,7 @@ force, a command line on `:exec` (`POST`, the WebSocket, or an SSH exec
 request such as `ssh host 'cmd'`) whose program is named by an expansion
 (`c=curl; $c …`, `sh -c 'c=curl; $c …'`, `$(echo curl) …`), whose words
 are split by a changed `IFS`, that runs text no rule can read, or whose
-parts are built by an expansion or brace list (`echo {a,b}`) is refused
+parts are built by an expansion or a brace list holding one (`echo {$a,b}`) is refused
 with `403` and code `forbidden`, the reason in the message, whichever rule
 it would have met. Name the program in the command line instead. A command
 the rules read runs, a destructive one such as `rm -rf build` included.

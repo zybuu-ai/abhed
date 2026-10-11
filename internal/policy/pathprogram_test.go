@@ -79,3 +79,21 @@ func TestRuleFlagsMatchMovedOrSplit(t *testing.T) {
 		t.Error("an allow rule matched moved flags")
 	}
 }
+
+// A literal brace list is not a word no rule can read, so an exec need not
+// refuse it; a deny rule still sees the words it makes.
+func TestLiteralBraceListIsReadNotScreened(t *testing.T) {
+	e := New(ModeDefault)
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	if res := e.Evaluate("bash", true, args(map[string]string{"command": "mkdir -p a/{b,c}"})); res.Step == "screen" || res.Decision == Deny {
+		t.Errorf("mkdir -p a/{b,c} = %s at %s (%s)", res.Decision, res.Step, res.Reason)
+	}
+	if res := e.Evaluate("bash", true, args(map[string]string{"command": "{curl,x}"})); res.Decision != Deny {
+		t.Errorf("{curl,x} = %s at %s (%s), want deny", res.Decision, res.Step, res.Reason)
+	}
+	if res := e.Evaluate("bash", true, args(map[string]string{"command": "echo {$a,b}"})); res.Step != "screen" {
+		t.Errorf("echo {$a,b} = %s at %s (%s), want a screen", res.Decision, res.Step, res.Reason)
+	}
+}

@@ -525,6 +525,13 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- A brace list in a word that is literal text throughout, such as
+  `mkdir -p src/{a,b}` or `cp f{,.bak}`, is read as the words it makes
+  (`src/a src/b`) instead of being asked about as words no rule can read
+  while a deny or ask rule for `bash` has a pattern, so `:exec` no longer
+  refuses it. Deny and ask rules see the words it makes. A list with an
+  expansion, a quote, a nested or second list, or in an assignment's value
+  is still asked about, and refused on `:exec`.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of
