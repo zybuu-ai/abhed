@@ -442,7 +442,11 @@ quotes, backslashes and `$'…'` (`eval I""FS=_`), in arithmetic
 expansion where it could become `IFS`: given to `eval` or a shell's `-c`,
 or as the name a setter is given (`read ${v}FS`, `printf -v "$v"`). A prefix
 to `read` (`IFS=, read -r a b`), `IFS` set only to blanks (`IFS=$'\n'`) and
-`IFS` as another command's argument (`grep IFS f`) are not refused. Some
+`IFS` as another command's argument (`grep IFS f`) and a name that only holds
+the letters (`(( MYIFS = 1 ))`, `read MYIFS`) are not refused. The refusal
+says how `IFS` was set: to a separator the text shows, in a `for` loop, by
+arithmetic, to a value the text does not show, or by text built from an
+expansion. Some
 commands that set nothing are refused with an expansion after them, because
 the text cannot tell them apart: a setter's name in quoted text
 (`echo "read IFS"`), any `x=IFS`, `IFS` beside a blank and `=` (`[ IFS = x ]`),

@@ -557,6 +557,13 @@ on. A server with it off starts on the older schema as before.
 - A command refused because IFS could split its words, such as `eval "$x"`
   under a deny rule, was said to change IFS when its text sets none. The
   reason now says it runs text built from an expansion that could set IFS.
+- A command that sets `IFS` in a `for` loop over literal words, or by
+  arithmetic, was refused as setting it "to a value its text does not show";
+  each now has its own reason, and the destructive step no longer says a
+  command that cannot be parsed changes IFS. A variable whose name only holds
+  the letters, such as `(( MYIFS = 1 ))`, `read MYIFS` or
+  `declare -n r=MYIFS`, was taken as setting `IFS` and refused a following
+  expansion under a deny rule; only `IFS` itself counts now.
 - `abhed -h` and `abhed sandbox -h` named only `sandbox connect --stdio`;
   both now list every sandbox command, as `abhed sandbox help` does.
 - `abhed serve -check` said "Ready to serve" for a `server.tls` that serve

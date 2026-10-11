@@ -54,6 +54,9 @@ type shellFacts struct {
 	seps       string
 	ifsUnknown bool
 	ifsNamed   bool
+	// ifsLoop and ifsArith report IFS set by a for loop with literal words or
+	// by arithmetic; ifsOther that it is set some other way the text hides.
+	ifsLoop, ifsArith, ifsOther bool
 	// commands are the simple commands whose words are all literal, decoded,
 	// from each word that may be the program: function bodies, subshells,
 	// and the text eval, trap and a shell's -c run included.
@@ -215,6 +218,16 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 		case *syntax.ForClause:
 			if it, ok := n.Loop.(*syntax.WordIter); ok && it.Name != nil && it.Name.Value == "IFS" {
 				f.ifsUnknown, f.ifsNamed = true, true
+				literalWords := true
+				for _, w := range it.Items {
+					_, lit := literal(w)
+					literalWords = literalWords && lit
+				}
+				if literalWords {
+					f.ifsLoop = true
+				} else {
+					f.ifsOther = true
+				}
 			}
 		case *syntax.CoprocClause:
 			if n.Name != nil {
@@ -233,6 +246,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 				(n.Excl || n.Param == nil || n.Param.Value == "IFS") {
 				f.ifsUnknown = true
 				f.ifsNamed = f.ifsNamed || !n.Excl && n.Param != nil
+				f.ifsOther = f.ifsOther || !n.Excl && n.Param != nil
 			}
 		}
 		return true
@@ -284,10 +298,22 @@ func (f *shellFacts) arithTarget(x syntax.ArithmExpr) {
 		return
 	}
 	name, lit := literal(w)
-	if !lit || strings.Contains(name, "IFS") {
+	if !lit || NamesIFS(name) {
 		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsArith = f.ifsArith || lit
 	}
 }
+
+// NamesIFS reports a variable name, or name=value, that sets IFS itself:
+// IFS, IFS+= or an index of it, and not a name that only holds the letters.
+func NamesIFS(v string) bool {
+	n, _, _ := strings.Cut(v, "=")
+	n = strings.TrimSuffix(n, "+")
+	return n == "IFS" || strings.HasPrefix(n, "IFS[")
+}
+
+// ifsHidden marks IFS set, by a name that is IFS, to a value the text hides.
+func (f *shellFacts) ifsHidden() { f.ifsUnknown, f.ifsNamed, f.ifsOther = true, true, true }
 
 // assign reads an assignment: a literal value of IFS is its separators; any
 // other value, or an index, leaves it unknown.
@@ -305,7 +331,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		return
 	}
 	if a.Naked {
-		f.ifsUnknown, f.ifsNamed = true, true
+		f.ifsHidden()
 		return
 	}
 	value, lit := "", true
@@ -313,7 +339,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		value, lit = literal(a.Value)
 	}
 	if !lit || a.Index != nil || a.Array != nil {
-		f.ifsUnknown, f.ifsNamed = true, true
+		f.ifsHidden()
 		return
 	}
 	f.seps += value
@@ -362,8 +388,9 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 	}
 	for _, a := range d.Args {
 		if a.Value != nil && !a.Naked {
-			if v, lit := literal(a.Value); !lit || strings.Contains(v, "IFS") {
+			if v, lit := literal(a.Value); !lit || NamesIFS(v) {
 				f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+				f.ifsOther = f.ifsOther || lit
 			}
 		}
 	}
@@ -373,15 +400,17 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 // "${v}FS=_": a name built from an expansion, or one spelled IFS, may set it.
 func (f *shellFacts) declWord(w *syntax.Word) {
 	v, lit := literal(w)
-	if !lit || !strings.HasPrefix(v, "-") && strings.Contains(v, "IFS") {
+	if !lit || !strings.HasPrefix(v, "-") && NamesIFS(v) {
 		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsOther = f.ifsOther || lit
 	}
 }
 
 // name reads a word a command sets as a variable.
 func (f *shellFacts) name(w *syntax.Word) {
-	if v, lit := literal(w); !lit || strings.Contains(v, "IFS") {
+	if v, lit := literal(w); !lit || NamesIFS(v) {
 		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsOther = f.ifsOther || lit
 	}
 }
 
@@ -1080,8 +1109,8 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 			for j := 1; j < len(v); j++ {
 				if strings.IndexByte(names, v[j]) >= 0 {
 					if rest := v[j+1:]; rest != "" {
-						if strings.Contains(rest, "IFS") {
-							f.ifsUnknown, f.ifsNamed = true, true
+						if NamesIFS(rest) {
+							f.ifsHidden()
 						}
 					} else {
 						name = true
@@ -1099,8 +1128,8 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 		case operands:
 			if !lit {
 				f.ifsUnknown = true
-			} else if n, _, _ := strings.Cut(v, "="); n == "IFS" || strings.HasPrefix(n, "IFS[") || strings.HasSuffix(n, "+") && strings.TrimSuffix(n, "+") == "IFS" {
-				f.ifsUnknown, f.ifsNamed = true, true
+			} else if NamesIFS(v) {
+				f.ifsHidden()
 			}
 		}
 	}

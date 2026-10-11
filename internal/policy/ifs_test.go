@@ -99,8 +99,14 @@ func TestIFSRefusalReason(t *testing.T) {
 		`echo IFS; eval "$x"`:       "runs text built from an expansion",
 		`IFS=" "; eval "$x"`:        "runs text built from an expansion",
 		`printf -v IFS %s _; $x`:    "sets IFS to a value its text does not show",
-		`for IFS in _; do $x; done`: "sets IFS to a value its text does not show",
+		`for IFS in _; do $x; done`: "sets IFS in a for loop",
 		`: ${IFS:=_}; $x`:           "sets IFS to a value its text does not show",
+		// Each way IFS is unknown has its own reason.
+		`for IFS in a b; do $c; done`:  "sets IFS in a for loop",
+		`for IFS in "$@"; do $c; done`: "sets IFS to a value its text does not show",
+		`((IFS=1)); $x`:                "sets IFS by arithmetic",
+		`(( IFS += 1 )); $x`:           "sets IFS by arithmetic",
+		`declare -n r=IFS; r=_; $x`:    "sets IFS to a value its text does not show",
 	} {
 		e := New(ModeBypass)
 		if err := e.AddDeny("bash(git reset --hard*)"); err != nil {
@@ -128,6 +134,11 @@ func TestUnchangedIFSIsNotRefused(t *testing.T) {
 		"echo posix; IFS=_ read a; echo $a",
 		"grep IFS f; echo $x",
 		"man bash | grep -n IFS; echo $HOME",
+		// A name that only holds the letters IFS is not IFS.
+		"((MYIFS=1)); echo $x",
+		"declare -n r=MYIFS; echo $x",
+		"printf -v MYIFS %s _; echo $x",
+		"read MYIFS <<< _; echo $x",
 	} {
 		e := New(ModeBypass)
 		if err := e.AddDeny("bash(git reset --hard*)"); err != nil {

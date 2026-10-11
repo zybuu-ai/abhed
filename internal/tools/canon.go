@@ -30,6 +30,8 @@ type Canonical struct {
 	// IFSNamed reports that what leaves IFS unknown names IFS itself, as
 	// IFS=$v or read IFS do, rather than only running built text.
 	IFSNamed bool
+	// IFSCause says why IFS is unknown, when IFSUnknown: one of the IFSBy values.
+	IFSCause string
 	// IFSSplit reports a changed IFS and an expansion it may split, so the
 	// words that run are not in the text; deny rules cannot be checked then.
 	IFSSplit bool
@@ -38,6 +40,41 @@ type Canonical struct {
 	shell   shellFacts
 	// textHidden and textIFSUnknown are what the text checks alone found.
 	textHidden, textIFSUnknown bool
+	// textIFSNamed is what the text checks alone found of IFSNamed.
+	textIFSNamed bool
+}
+
+// Why IFS is unknown, in Canonical.IFSCause.
+const (
+	// IFSByName is an assignment or setter naming IFS with a value the text hides.
+	IFSByName = "named"
+	// IFSByLoop is a for loop over literal words setting IFS to each.
+	IFSByLoop = "loop"
+	// IFSByArithmetic is an arithmetic assignment to IFS.
+	IFSByArithmetic = "arithmetic"
+	// IFSByUnparsed is a command the parser cannot read, so where IFS is set is not known.
+	IFSByUnparsed = "unparsed"
+	// IFSByBuilt is text built from an expansion that is run, and could set IFS.
+	IFSByBuilt = "built"
+)
+
+// ifsCause is why IFS is unknown, from what the text and the parser found.
+func (c Canonical) ifsCause(textNamed bool) string {
+	switch {
+	case !c.IFSUnknown:
+		return ""
+	case c.shell.ifsOther:
+		return IFSByName
+	case c.shell.ifsLoop:
+		return IFSByLoop
+	case c.shell.ifsArith:
+		return IFSByArithmetic
+	case textNamed:
+		return IFSByName
+	case c.shell.unparsed && !c.textIFSUnknown && !c.shell.ifsUnknown:
+		return IFSByUnparsed
+	}
+	return IFSByBuilt
 }
 
 // CanonicalCommand reads command as the shell would split it into words, as
@@ -115,6 +152,8 @@ func CanonicalCommand(command string) Canonical {
 	c.IFS = blankless(c.IFS + c.shell.seps)
 	c.IFSUnknown = c.IFSUnknown || c.shell.ifsUnknown || c.shell.unparsed
 	c.IFSNamed = named || c.shell.ifsNamed
+	c.textIFSNamed = named
+	c.IFSCause = c.ifsCause(named)
 	c.Hidden = c.Hidden || c.shell.unparsed || c.shell.tooLong
 	c.IFSSplit = (c.IFS != "" || c.IFSUnknown) && strings.ContainsAny(command, "$`")
 	return c
@@ -751,6 +790,7 @@ func (c Canonical) AsTerminalLine() Canonical {
 	c.Hidden = c.textHidden || c.shell.tooLong
 	c.IFS = blankless(c.IFS)
 	c.IFSUnknown = c.textIFSUnknown || c.shell.ifsUnknown || c.shell.unparsed
+	c.IFSCause = c.ifsCause(c.textIFSNamed)
 	c.Hidden = c.Hidden || c.shell.unparsed
 	c.IFSSplit = (c.IFS != "" || c.IFSUnknown) && strings.ContainsAny(c.command, "$`")
 	return c

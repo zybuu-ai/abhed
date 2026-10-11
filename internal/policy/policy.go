@@ -945,8 +945,14 @@ func ifsReason(canon tools.Canonical) string {
 	switch {
 	case canon.IFS != "":
 		return "the command changes IFS and then expands words" + tail
-	case canon.IFSNamed:
+	case canon.IFSCause == tools.IFSByLoop:
+		return "the command sets IFS in a for loop and then expands words" + tail
+	case canon.IFSCause == tools.IFSByArithmetic:
+		return "the command sets IFS by arithmetic and then expands words" + tail
+	case canon.IFSCause == tools.IFSByName:
 		return "the command sets IFS to a value its text does not show and then expands words" + tail
+	case canon.IFSCause == tools.IFSByUnparsed:
+		return "the command cannot be parsed as the shell reads it, so where it sets IFS is not known" + tail
 	default:
 		return "the command runs text built from an expansion (given to eval, a shell's -c or a command that sets variables by name), " +
 			"which could set IFS and split its words" + tail

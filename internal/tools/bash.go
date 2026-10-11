@@ -260,6 +260,12 @@ func (c Canonical) DestructiveWith(gitExtensions map[string]bool) (string, bool)
 // are read. Destructive counts each of these as needing a person's yes.
 func (c Canonical) Unreadable() string {
 	if c.IFSSplit {
+		switch c.IFSCause {
+		case IFSByUnparsed:
+			return "a command that cannot be parsed, so where it sets IFS is not known"
+		case IFSByBuilt:
+			return "text built from an expansion that could set IFS"
+		}
 		return "words split by a changed IFS"
 	}
 	// The program is read in the text as written and as canonicalised, and by the parser.

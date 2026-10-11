@@ -1,6 +1,9 @@
 package tools
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Every way of setting IFS is read: its separators beyond blanks when the text
 // shows them, and unknown when it does not.
@@ -117,5 +120,27 @@ func TestProgramNamedByAnExpansion(t *testing.T) {
 		if _, got := hiddenWords(command, c.Text); got != hidden {
 			t.Errorf("%q hidden = %v, want %v", command, got, hidden)
 		}
+	}
+}
+
+// IFSCause says why IFS is unknown, and the destructive reason follows it: a
+// command that does not parse is not said to change IFS.
+func TestIFSCause(t *testing.T) {
+	for command, want := range map[string]string{
+		"IFS=_; $x":                   "",
+		"IFS=$v; $x":                  IFSByName,
+		"for IFS in a b; do $c; done": IFSByLoop,
+		"for IFS in $v; do $c; done":  IFSByName,
+		"((IFS=1)); $x":               IFSByArithmetic,
+		"((MYIFS=1)); $x":             "",
+		`eval "$x"`:                   IFSByBuilt,
+		`echo "open $x`:               IFSByUnparsed,
+	} {
+		if got := CanonicalCommand(command).IFSCause; got != want {
+			t.Errorf("%q: IFSCause %q, want %q", command, got, want)
+		}
+	}
+	if what, _ := CanonicalCommand(`echo "open $x`).Destructive(); !strings.Contains(what, "cannot be parsed") {
+		t.Errorf("unparsed command: destructive reason %q", what)
 	}
 }
