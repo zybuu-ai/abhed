@@ -183,3 +183,13 @@ func TestContainerBindsMissingGitHooksReadOnly(t *testing.T) {
 		t.Errorf("hooks is not an empty folder: %v", err)
 	}
 }
+
+// The CPU bound is sandbox.max_cpu_percent, two CPUs when unset.
+func TestContainerCPUsFollowTheConfiguration(t *testing.T) {
+	for pct, want := range map[int]string{0: "--cpus 2 ", 50: "--cpus 0.5 ", 400: "--cpus 4 "} {
+		c := &Container{policy: Policy{Workspace: "/w", MaxCPUPercent: pct}}
+		if got := strings.Join(c.Command(context.Background(), "/w", "x").Args, " "); !strings.Contains(got, want) {
+			t.Errorf("max_cpu_percent %d: no %q in %s", pct, want, got)
+		}
+	}
+}

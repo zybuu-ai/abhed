@@ -279,6 +279,10 @@ you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
 none tier, and when root runs the process tier, whose processes the kernel
 does not bound.
 
+`"max_cpu_percent"` bounds each container tier command's CPU, in percent of
+one CPU (200, two CPUs, when unset); the fence's own bound is
+`fence.cpu_percent`. A workspace file can only lower it.
+
 `"protect_git"` keeps commands from writing what git reads in every git
 folder in the workspace (config, hooks and the like; see
 [Permissions](04-permissions.md)). Unset, it is on wherever the tier can hold

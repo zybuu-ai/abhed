@@ -43,16 +43,14 @@ All notable changes to Abhed are recorded here. The format follows
   Studio and `abhed serve`; `git worktree add` and `remove`, the push, and the
   container, vm and none tiers stay on the host with the list. Affects 0.1.0
   to 1.2.7.
-
 - The terminal CLI, `abhed -p` and `abhed rpc` let a command write what git
   reads in a git folder (`.git/config`, hooks, `info/attributes`,
-  `commondir`), as Studio and `abhed serve` did not, so a command could set
+  `commondir`), which Studio and `abhed serve` already prevented, so a command could set
   `core.fsmonitor` and a later git command you approved with "always allow",
   or your own git, ran it. Those surfaces now hold git's files too, on every
   tier but none; `sandbox.protect_git: false` turns it off. An "always allow"
   for a git command is also asked again once the repository's config, hooks,
   attributes or your global git configuration change. Affects 0.1.0 to 1.2.7.
-
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion
@@ -158,6 +156,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `sandbox.max_cpu_percent` bounds a container tier command's CPU, in
+  percent of one CPU; it was always two CPUs, which stays the default.
 - What a sandbox command can reach of the server: on every tier, nothing
   in the control plane's state folder but its own sandbox folder (not the
   `:ssh` relay's host key, other sandboxes' folders or snapshots, or a

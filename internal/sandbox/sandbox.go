@@ -148,6 +148,9 @@ type Policy struct {
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int
 	MaxProcs    int
+	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
+	// CPU; zero means 200.
+	MaxCPUPercent int
 	// Tier, when set, is the one backend Select builds, in place of the
 	// strongest available; only TierFence can be chosen.
 	Tier Tier

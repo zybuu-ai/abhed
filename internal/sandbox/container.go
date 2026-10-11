@@ -194,7 +194,7 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 
 	// A CPU cap so one session cannot starve the host. Not security, but a
 	// session that pins every core is indistinguishable from an outage.
-	args = append(args, "--cpus", "2")
+	args = append(args, "--cpus", c.cpus())
 
 	// No IPC sharing, and a hostname of its own: the engine refuses a hostname
 	// with the host's UTS namespace, so the flag also fails closed.
@@ -238,6 +238,15 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 
 	args = append(args, "-e", "ABHED_SANDBOX="+string(c.Tier()))
 	return args, nil
+}
+
+// cpus is the --cpus value: MaxCPUPercent of one CPU, two when unset.
+func (c *Container) cpus() string {
+	pct := c.policy.MaxCPUPercent
+	if pct <= 0 {
+		pct = 200
+	}
+	return strconv.FormatFloat(float64(pct)/100, 'f', -1, 64)
 }
 
 // mountArgs are a container's host mounts for p: the workspace, the

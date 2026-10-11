@@ -1173,6 +1173,9 @@ type SandboxConfig struct {
 	// every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
 	MaxProcs    int `json:"max_procs"`
+	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
+	// CPU; zero means 200.
+	MaxCPUPercent int `json:"max_cpu_percent,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
