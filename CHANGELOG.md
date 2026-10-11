@@ -743,6 +743,11 @@ on. A server with it off starts on the older schema as before.
   session started from Go with a client id over 64 characters, or with
   characters other than letters, digits, `-` and `_`, was recorded with
   it. It is now refused there too.
+- Workbench search: two searches starting as another ended could make a
+  session run one more than its limit of two; and a linked git worktree
+  inside the workspace was searched as well, so every hit in the
+  repository was listed twice. The limit now holds under any interleaving,
+  and a linked worktree is passed over (a submodule is still searched).
 
 ### Dependencies
 

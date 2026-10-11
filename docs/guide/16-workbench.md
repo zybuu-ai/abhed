@@ -380,7 +380,10 @@ command in the terminal.
 **Search.** Search reads what the Explorer shows and nothing more: a folder or
 file a read rule withholds is not opened, and neither is `.abhed/`, `.git/` or
 a folder the `grep` tool passes over (`node_modules`, `vendor`, `dist`, `.venv`
-and the like). Binary files are skipped. A regular expression is RE2, as in
+and the like). A linked git worktree inside the workspace (a folder whose
+`.git` is a file pointing into `.git/worktrees/`) is passed over too, since
+its files are the repository's again; a submodule is searched. Binary files
+are skipped. A regular expression is RE2, as in
 `grep`. A search stops at 2,000 results, 20,000 files or five seconds and
 says which; a file with more than 100 matches is listed with its first 100 and
 marked. A line is shown as at most 240 bytes around the match. A session runs

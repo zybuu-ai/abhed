@@ -355,8 +355,9 @@ type Options struct {
 // Server holds live sessions and serves the API.
 type Server struct {
 	opts Options
-	// searching counts the workspace searches running per session.
-	searching sync.Map
+	// searching counts the workspace searches running per session, under searchMu.
+	searchMu  sync.Mutex
+	searching map[string]int
 	store     EventStore
 	sessions  SessionRecorder // nil when the store is not durable
 	log       *slog.Logger
