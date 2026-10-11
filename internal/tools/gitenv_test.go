@@ -34,14 +34,37 @@ func TestBashGitNeverRunsExtFromConfig(t *testing.T) {
 	}
 }
 
-func TestWithGitExtNeverKeepsEarlierEntries(t *testing.T) {
-	env, names := WithGitExtNever([]string{"A=1", "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=x.y"})
-	for _, want := range []string{"A=1", "GIT_CONFIG_KEY_0=x.y", "GIT_CONFIG_COUNT=3", "GIT_CONFIG_KEY_2=protocol.ext.allow", "GIT_CONFIG_VALUE_2=never"} {
+func TestWithGitSafeConfigKeepsEarlierEntries(t *testing.T) {
+	env, names := WithGitSafeConfig([]string{"A=1", "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=x.y"})
+	for _, want := range []string{"A=1", "GIT_CONFIG_KEY_0=x.y", "GIT_CONFIG_COUNT=4", "GIT_CONFIG_KEY_2=protocol.ext.allow",
+		"GIT_CONFIG_VALUE_2=never", "GIT_CONFIG_KEY_3=core.fsmonitor", "GIT_CONFIG_VALUE_3=false"} {
 		if !slices.Contains(env, want) {
 			t.Errorf("env %v lacks %s", env, want)
 		}
 	}
-	if slices.Contains(env, "GIT_CONFIG_COUNT=2") || !slices.Equal(names, []string{"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2"}) {
+	if slices.Contains(env, "GIT_CONFIG_COUNT=2") || len(names) != 5 {
 		t.Errorf("env %v names %v", env, names)
+	}
+}
+
+// A repository's core.fsmonitor cannot make git status run a command.
+func TestBashGitIgnoresRepositoryFsmonitor(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	s, ws := setup(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	hook := filepath.Join(t.TempDir(), "mon.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][]string{{"init", "-q", ws}, {"-C", ws, "config", "core.fsmonitor", hook}} {
+		if out, err := exec.Command("git", c...).CombinedOutput(); err != nil {
+			t.Fatal(err, string(out))
+		}
+	}
+	run(t, Bash{}, s, bashArgs{Command: "git status", Description: "status"})
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("git status ran the repository's fsmonitor command")
 	}
 }

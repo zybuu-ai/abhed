@@ -547,9 +547,9 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	// A stopped turn ends what the command started, not only its shell.
 	sandbox.EndWithCommand(cmd)
 
-	// git never runs the command an ext:: URL from a repository's config names.
+	// git never runs a command a repository's own config names for ext:: or fsmonitor.
 	var gitNames []string
-	cmd.Env, gitNames = WithGitExtNever(cmd.Env)
+	cmd.Env, gitNames = WithGitSafeConfig(cmd.Env)
 	b.forward(cmd, gitNames)
 
 	if len(a.Secrets) > 0 {

@@ -467,7 +467,19 @@ or `GIT_ALLOW_PROTOCOL`). An `ext::` in the text of `git commit`, `grep`,
 command the agent runs gets `protocol.ext.allow=never` as git environment
 config, so an `ext::` URL from `.gitmodules` or a repository's own config
 (`git submodule update`, `git fetch o`) is refused by git itself; only `-c`
-or `GIT_ALLOW_PROTOCOL` on the line, which the checks read, lifts it.
+or `GIT_ALLOW_PROTOCOL` on the line, which the checks read, lifts it. The
+same environment config sets `core.fsmonitor=false`, so a repository's
+config cannot make `git status` run a command.
+
+A command git runs from configuration it reads itself is still not on the
+line for any rule to see: `core.sshCommand`, `core.hooksPath` and the hooks,
+`diff.external`, a filter driver named in `.gitattributes`, or
+`credential.helper`. On the line, `-c` and an alias confirm as destructive
+in a session and are refused on `:exec`; `core.pager` runs only when git
+writes to a terminal, which an agent's command never is. For the rest, keep
+the agent from writing `.git` (the sandbox's git protection) and limit
+where its commands can connect (`sandbox.network`), so a command git runs
+cannot reach out.
 
 Words the shell builds are read as it would build them: line continuations
 are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as
