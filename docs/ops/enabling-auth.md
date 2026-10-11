@@ -324,6 +324,11 @@ Chrome posts a plain form as `Origin: null`; that is accepted only when the
 browser also says `Sec-Fetch-Site: same-origin`, so the confirm page's form
 still works without script.
 
+A local sign-in goes back to the page that sent you to sign in (the
+`?return=` path, when it is a path on this server), and to the workbench
+otherwise. The account page of a single sign-on account says to change the
+password with the identity provider and keeps its Back and Sign out links.
+
 A browser holding both a local session and a single sign-on session is
 signed out of both: the local one ends, then the provider's own sign-out
 runs. Where local accounts are on, a browser that must sign in is sent to

@@ -715,6 +715,11 @@ on. A server with it off starts on the older schema as before.
   throttle, so a password-guessing run left no trace there. Every request
   now has its `request` line; one refused that early carries
   `identified=false`.
+- A local sign-in ignored `?return=` and always landed on the workbench,
+  so opening `/admin` or `/account` signed out ended on `/ide` after
+  signing in; it now goes back to a same-origin return path. For a single
+  sign-on account, `/account` replaced the whole page with its message,
+  Back and Sign out included; it now replaces only the form.
 
 ### Dependencies
 
