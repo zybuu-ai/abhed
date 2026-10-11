@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -147,4 +148,47 @@ func listDir(dir string) *dirListing {
 		listings.Unlock()
 	}
 	return l
+}
+
+// diskFoldsCase reports whether the disk holding dir opens a name in another case. It only reads:
+// an entry of dir is tried first, as an ancestor may sit on another volume.
+func diskFoldsCase(dir string) bool {
+	if f, err := openDir(dir); err == nil {
+		names, _ := f.Readdirnames(64)
+		_ = f.Close()
+		for _, n := range names {
+			if folds, known := opensFlipped(dir, n); known {
+				return folds
+			}
+		}
+	}
+	for p := filepath.Clean(dir); ; p = filepath.Dir(p) {
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		if folds, known := opensFlipped(parent, filepath.Base(p)); known {
+			return folds
+		}
+	}
+}
+
+// opensFlipped reports whether name in dir opens under its case swapped; known is false when
+// the name has no case to swap or does not exist.
+func opensFlipped(dir, name string) (folds, known bool) {
+	flipped := strings.Map(func(r rune) rune {
+		if unicode.IsUpper(r) {
+			return unicode.ToLower(r)
+		}
+		return unicode.ToUpper(r)
+	}, name)
+	if flipped == name {
+		return false, false
+	}
+	a, err := os.Lstat(filepath.Join(dir, name))
+	if err != nil {
+		return false, false
+	}
+	b, err := os.Lstat(filepath.Join(dir, flipped))
+	return err == nil && os.SameFile(a, b), true
 }

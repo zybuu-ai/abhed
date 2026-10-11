@@ -543,6 +543,13 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- A glob into a skipped folder below the top (`services/x/node_modules/**`)
+  or behind a wildcard (`**/node_modules/**`) gave a bare no-match; it now
+  says the folder is skipped and how to search it. With `path` already that
+  folder, the advice no longer names the folder twice.
+- `glob` matched case exactly on a disk that ignores case, so `core/Vault/**`
+  found nothing where the folder is `vault`; it now matches as the disk opens
+  names. The `glob` filter of `grep` does the same.
 - `abhed acp` exited as soon as stdin closed, so requests read in a burst
   just before could go unanswered. It now answers every request it read
   first: a prompt still running ends as `cancelled`, and a request to the

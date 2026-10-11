@@ -22,6 +22,14 @@ in Abhed's state, so a new file in a new folder needs no shell approval in
 `accept-edits` or `auto` mode. A write that fails takes back the folders it made,
 and `/undo` of the new file removes them while they are empty.
 
+`glob` and `grep` pass over vendored and build folders (`node_modules`,
+`vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
+names such a folder anywhere in its pattern, such as
+`services/x/node_modules/**`, says so in its no-match and gives the `path` to
+pass. On a disk that ignores case, such as the default macOS one, a glob
+matches without case, as the disk opens names: `core/Vault/**` finds
+`core/vault`.
+
 `bash` takes an optional `secrets` list: names from the operator's store,
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see

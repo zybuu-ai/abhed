@@ -77,7 +77,7 @@ func (Glob) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		root = resolved
 	}
 
-	matcher, err := compileGlob(a.Pattern)
+	matcher, err := compileGlob(a.Pattern, diskFoldsCase(root))
 	if err != nil {
 		return errf("Invalid glob pattern %q: %v", a.Pattern, err)
 	}
@@ -132,12 +132,7 @@ func (Glob) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	if len(hits) == 0 {
 		// A pattern into a skipped folder matches nothing by design; say so,
 		// or the model concludes the folder is empty.
-		first, _, _ := strings.Cut(strings.TrimPrefix(filepath.ToSlash(a.Pattern), "./"), "/")
-		if skipDirs[first] {
-			return ok("[no files matched: %s. %s is skipped unless you pass path, such as path %q with the rest of the pattern]",
-				a.Pattern, first, filepath.Join(root, first))
-		}
-		return ok("[no files matched: %s]", a.Pattern)
+		return ok("[no files matched: %s%s]", a.Pattern, skippedFolderHint(a.Pattern, root))
 	}
 
 	// Newest first: recently touched files are usually the relevant ones.
@@ -160,11 +155,44 @@ func (Glob) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	return Result{Content: strings.TrimSuffix(b.String(), "\n"), Truncated: truncated}
 }
 
+// skippedFolderHint explains a no-match whose pattern names a folder glob passes over.
+func skippedFolderHint(pattern, root string) string {
+	segs := strings.Split(strings.TrimPrefix(filepath.ToSlash(pattern), "./"), "/")
+	literal := true
+	for i, seg := range segs {
+		if strings.ContainsAny(seg, "*?") {
+			literal = false
+			continue
+		}
+		if !skipDirs[seg] {
+			continue
+		}
+		if !literal {
+			return fmt.Sprintf(". %s folders are skipped; to search one, pass its path", seg)
+		}
+		// path already is that folder: the pattern names it twice, and the walk would never find it.
+		if i == 0 && filepath.Base(root) == seg {
+			return ""
+		}
+		rest := strings.Join(segs[i+1:], "/")
+		if rest == "" {
+			rest = "**"
+		}
+		return fmt.Sprintf(". %s is skipped unless you pass path, such as path %q with pattern %q",
+			seg, filepath.Join(append([]string{root}, segs[:i+1]...)...), rest)
+	}
+	return ""
+}
+
 // compileGlob translates a glob into a matcher. Supports ** (any depth),
 // * (within a segment), and ? (single char) — the subset models actually use.
-func compileGlob(pattern string) (func(string) bool, error) {
+// fold matches without case, as a disk that folds case opens names.
+func compileGlob(pattern string, fold bool) (func(string) bool, error) {
 	p := filepath.ToSlash(pattern)
 	var re strings.Builder
+	if fold {
+		re.WriteString("(?i)")
+	}
 	re.WriteString("^")
 	for i := 0; i < len(p); i++ {
 		switch p[i] {
@@ -293,7 +321,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 
 	var globMatch func(string) bool
 	if a.Glob != "" {
-		globMatch, err = compileGlob(a.Glob)
+		globMatch, err = compileGlob(a.Glob, diskFoldsCase(root))
 		if err != nil {
 			return errf("Invalid glob %q: %v", a.Glob, err)
 		}
