@@ -100,6 +100,25 @@ func (r *Registry) Close() {
 // Tool runs a command on a declared host.
 type Tool struct{ R *Registry }
 
+func init() { tools.RegisterSubjector("ssh", Tool{}) }
+
+// PolicySubject is host/command, so a rule or an "always allow" for one host
+// never covers another; deny and ask rules also see the command alone.
+func (Tool) PolicySubject(args json.RawMessage) (string, bool) {
+	m, err := tools.DecodeArgs(args)
+	if err != nil {
+		return "", false
+	}
+	h, _ := tools.Lookup(m, "host")
+	c, _ := tools.Lookup(m, "command")
+	host, _ := h.(string)
+	command, _ := c.(string)
+	if host == "" {
+		return "", false
+	}
+	return host + "/" + command, true
+}
+
 func (Tool) Name() string { return "ssh" }
 
 // Mutates is true unconditionally.

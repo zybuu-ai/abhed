@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A call whose first subject argument was not a string, such as an MCP
+  tool's `command` given as a list or an object, was judged on the next
+  argument, a `path` say, so a deny rule on the command never saw it. A list
+  of strings is now read as its words joined by blanks, and any other kind
+  is refused at step `args`. Affects every release to 1.2.7.
 - An "always allow" scope for a listed program such as `ls` was offered
   though `PATH` found it inside the workspace (a planted `./venv/bin/ls`
   first on `PATH`), so the remembered scope ran the workspace's file. The
@@ -538,6 +543,12 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- `ssh` calls are judged by host as well as command: rules and "always allow"
+  read them as `host/command`, so an answer for one host never covers
+  another, and deny and ask rules also read the command alone as before. An
+  allow rule written on the command alone, such as `ssh(uptime)`, no longer
+  matches; write `ssh(build1/uptime)` or `ssh(*/uptime)`. A tool can name its
+  own subject the same way with `tools.Subjector`.
 - The one-click scope is offered for `wc -c`, `head -c`, `du -sch`,
   `grep -e` and the other listed tools without subcommands, which take `-c`
   and `-e` as counts or patterns; `git`, `npm`, `pip` and `docker` still get

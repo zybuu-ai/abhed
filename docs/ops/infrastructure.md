@@ -309,6 +309,20 @@ rather than the consequence.
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.
 
+### Rules on a host
+
+Permission rules and "always allow" read an `ssh` call as `host/command`,
+so a rule or an answer for one host never covers another:
+`ssh(build1/*)` allows every command on `build1` and nothing elsewhere, and
+"don't ask again" for `uptime` on `build1` offers `ssh(build1/uptime)`.
+Deny and ask rules also read the command alone, so `ssh(rm *)` still stops
+`rm` on every host.
+
+```json
+"deny":  ["ssh(db1/*)", "ssh(rm *)"],
+"allow": ["ssh(build1/uptime)"]
+```
+
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment
 variable, never the password itself. A passphrase-protected key says so and

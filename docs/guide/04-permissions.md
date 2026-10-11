@@ -96,8 +96,9 @@ permissions without its own `permissions.allow`.
   `permissions` setting. A "Yes, and don't ask again" answer to a prompt is
   not a rule: it covers only the scope the prompt names (for `bash`, one of
   the short list below; for a file, that one path; for `web_fetch`, the site;
-  for another tool, that call's subject, such as an MCP tool's `path`, `url`
-  or `command`, or every call to the tool when the call has none) for the
+  for `ssh`, the host and command, as `host/command`; for another tool,
+  that call's subject, such as an MCP tool's `path`, `url` or `command`,
+  or every call to the tool when the call has none) for the
   rest of the session, and
   still applies under a managed configuration.
 - Session rules are evaluated after the configured ones in each list, so a

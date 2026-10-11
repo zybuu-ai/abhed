@@ -441,15 +441,26 @@ func (e *Engine) Screens(tool string) bool {
 // refuses for bash. The list is priority order, most security-relevant first;
 // the first key present wins, so a single subject string is returned as before.
 //
-// ssh takes both `command` and `host`; command wins here because it is the more
-// consequential field and ssh already asks unconditionally. Scoping ssh by host
-// needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
+// A tool that names its own subject (a tools.Subjector, such as ssh's
+// host/command) is judged on that, as a Kubernetes tool is on its cluster.
 func Subject(tool string, args json.RawMessage) string {
 	_, s, _ := subjectOf(args)
-	if target, ok := clusterSubject(tool, args); ok {
+	if target, ok := toolSubject(tool, args); ok {
 		return target
 	}
 	return s
+}
+
+// toolSubject is the subject a Kubernetes tool or a registered Subjector
+// names for the call, which says where it goes first.
+func toolSubject(tool string, args json.RawMessage) (string, bool) {
+	if target, ok := clusterSubject(tool, args); ok {
+		return target, true
+	}
+	if s := tools.SubjectorFor(tool); s != nil {
+		return s.PolicySubject(args)
+	}
+	return "", false
 }
 
 // clusterSubject is the subject of a Kubernetes tool, which names where the
@@ -506,17 +517,34 @@ func clusterSubject(tool string, args json.RawMessage) (string, bool) {
 
 // subjectOf is Subject with the argument it came from. Arguments are decoded
 // strictly and keys matched as a tool's struct matches them, so both read one value.
+// The first subject argument present is the subject: a list of strings is
+// read as its words joined by blanks, and any other kind is refused, as
+// passing on to the next key would judge the call on what it does not do.
 func subjectOf(args json.RawMessage) (key, subject string, err error) {
 	m, err := tools.DecodeArgs(args)
 	if err != nil {
 		return "", "", err
 	}
 	for _, key := range tools.SubjectKeys {
-		if v, found := tools.Lookup(m, key); found {
-			if s, isStr := v.(string); isStr {
-				return key, s, nil
-			}
+		v, found := tools.Lookup(m, key)
+		if !found || v == nil {
+			continue
 		}
+		switch v := v.(type) {
+		case string:
+			return key, v, nil
+		case []any:
+			words := make([]string, len(v))
+			for i, w := range v {
+				s, isStr := w.(string)
+				if !isStr {
+					return "", "", fmt.Errorf("%w: %q must be a string or a list of strings", tools.ErrMalformedArgs, key)
+				}
+				words[i] = s
+			}
+			return key, strings.Join(words, " "), nil
+		}
+		return "", "", fmt.Errorf("%w: %q must be a string or a list of strings", tools.ErrMalformedArgs, key)
 	}
 	return "", "", nil
 }
@@ -675,11 +703,11 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	case key == "path" && e.pathRules(tool):
 		subjects, allowSubjects = e.pathSubjects(subject)
 	}
-	// A Kubernetes call is judged on where it goes. Deny and ask rules also
+	// A Kubernetes or ssh call is judged on where it goes. Deny and ask rules also
 	// see the argument its subject used to be, so a rule written on a
 	// resource, a verb or a namespace still holds; allow rules and the
 	// offered scope see only the cluster-first subject.
-	if target, ok := clusterSubject(tool, args); ok {
+	if target, ok := toolSubject(tool, args); ok {
 		subjects, allowSubjects = []string{target}, []string{target}
 		if subject != "" && subject != target {
 			subjects = append(subjects, subject)
