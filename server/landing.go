@@ -399,6 +399,15 @@ function renderFacts(o){
   f.appendChild(card('Web fetch', o.web_fetch ? 'enabled' : 'disabled',
     o.web_fetch ? 'the agent can read web pages' : 'the agent reads no web pages',
     o.web_fetch ? 'warn' : 'off'));
+  // The workspace's own config: whether it is trusted, and what was set aside.
+  const wc = o.workspace_config;
+  if(wc){
+    const n = (wc.ignored || []).length;
+    f.appendChild(card('Workspace config', wc.trusted ? 'trusted' : 'not trusted',
+      n ? n + ' setting' + (n === 1 ? '' : 's') + ' ignored: ' + wc.ignored.map(k => k.key).join(', ')
+        : (wc.trusted ? 'every setting applies' : 'only settings that tighten apply'),
+      wc.trusted ? 'on' : 'warn'));
+  }
 
   // ---- activity
   const st = $('stats');

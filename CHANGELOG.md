@@ -547,6 +547,10 @@ All notable changes to Abhed are recorded here. The format follows
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
+- `GET /v1/overview` has `workspace_config`: whether the workspace's
+  `.abhed/config.json` is trusted, why, and the names of the settings it
+  set aside, for a signed-in caller or where nobody signs in; the front
+  page shows it as a card.
 
 ### Changed
 

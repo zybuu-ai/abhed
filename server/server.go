@@ -4336,6 +4336,24 @@ type overviewResponse struct {
 	Sessions       int      `json:"sessions"`
 	Events         int64    `json:"events"`
 	Running        int      `json:"running"`
+	// WorkspaceConfig is whether the workspace's .abhed/config.json is
+	// trusted and which of its settings were set aside, for a signed-in
+	// caller or where nobody signs in; absent when the workspace has none.
+	WorkspaceConfig *overviewTrust `json:"workspace_config,omitempty"`
+}
+
+// overviewTrust is the workspace configuration's trust, without its values.
+type overviewTrust struct {
+	Trusted bool              `json:"trusted"`
+	Reason  string            `json:"reason"`
+	Applied []string          `json:"applied,omitempty"`
+	Ignored []overviewIgnored `json:"ignored,omitempty"`
+}
+
+// overviewIgnored is one setting set aside; its value stays in the file.
+type overviewIgnored struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -4409,6 +4427,14 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	// disclosed only to someone who has already authenticated.
 	if o.Authenticated {
 		o.Workspace = s.opts.Workspace
+	}
+	if mw := s.authMiddleware(); (o.Authenticated || len(mw.Providers) == 0 && mw.Verifier == nil && !mw.TrustHeaders) &&
+		cfg.Workspace.File != "" {
+		t := &overviewTrust{Trusted: cfg.Workspace.Trusted, Reason: cfg.Workspace.Reason, Applied: cfg.Workspace.Applied}
+		for _, k := range cfg.Workspace.Ignored {
+			t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+		}
+		o.WorkspaceConfig = t
 	}
 
 	s.mu.RLock()
