@@ -142,6 +142,11 @@ All notable changes to Abhed are recorded here. The format follows
   from. Every `/docs/` response now carries
   `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:`.
   Affects 0.1.0 to 1.2.7.
+- In Studio's line-by-line terminal a command's output reached the terminal
+  with its escape sequences intact, so it could move the cursor, erase lines
+  and draw a fake prompt or status line over what was really there (display
+  only; the record was not affected). Only colour now passes; any other
+  escape or control character is shown as a symbol. Affects 1.2.7.
 
 ### Added
 

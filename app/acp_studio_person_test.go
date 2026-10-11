@@ -360,6 +360,21 @@ func TestLineResultPutsTheStatusLast(t *testing.T) {
 	}
 }
 
+// A line's output keeps its colour, but cannot move the cursor, erase a line
+// or overwrite one, so it cannot draw a fake prompt or status line.
+func TestLineResultShowsOnlyTextAndColour(t *testing.T) {
+	zero := 0
+	out := "\x1b[31mred\x1b[0m\n\x1b[2K\x1b[1Aabhed$ \x1b]0;title\x07\rdone\bX\u009b2J\x7f\x9b"
+	got := string(lineResult(tools.Result{Content: "exit 0 · 1ms\n" + out, ExitCode: &zero}))
+	want := "\x1b[31mred\x1b[0m\r\n\u241b[2K\u241b[1Aabhed$ \u241b]0;title\u2407\r\ndone\u2408X⟨U+009B⟩2J\u2421\ufffd\r\n\x1b[2mexit 0 · 1ms\x1b[0m\r\n"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if got := string(crlf("Denied: \x1b[1A")); got != "Denied: \u241b[1A\r\n" {
+		t.Fatalf("refusal: %q", got)
+	}
+}
+
 // §7.3: a person's save is recorded manual.edit by: user; a path outside
 // the session's roots is dropped, not recorded.
 func TestStudioManualEdit(t *testing.T) {

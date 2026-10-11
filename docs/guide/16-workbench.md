@@ -540,6 +540,10 @@ next (variables, `export` and aliases are lost; the folder moves only as
 follows). A Tab pasted or typed into a line (in Studio, where Tab does not
 complete) becomes a space, as bash reads it, so `wget<Tab>http://x` is
 judged and run as `wget http://x`; other control characters are dropped.
+In Studio a line's output keeps its colours, but any other escape sequence
+or control character in it is shown as a symbol (`␛[1A`), and a lone
+carriage return starts a new line, so a command cannot move the cursor,
+erase a line or draw a prompt or status line that is not there.
 Keys typed into a running command are not recorded; a line typed
 while it reads lines (or anywhere on the container tier) is taken out of the
 command's recorded output as the shell's are, so a password typed ahead of a

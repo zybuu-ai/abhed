@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 
@@ -498,14 +500,54 @@ func lineResult(r tools.Result) []byte {
 	return append(out, "\x1b[2m"+head+"\x1b[0m\r\n"...)
 }
 
-// crlf ends each line as a terminal expects.
+// crlf ends each line as a terminal expects. The text is a command's output,
+// so only colour passes; see terminalSafe.
 func crlf(s string) []byte {
-	b := bytes.ReplaceAll([]byte(s), []byte("\r\n"), []byte("\n"))
+	b := bytes.ReplaceAll([]byte(terminalSafe(s)), []byte("\r\n"), []byte("\n"))
 	b = bytes.ReplaceAll(b, []byte("\n"), []byte("\r\n"))
 	if len(b) > 0 && !bytes.HasSuffix(b, []byte("\r\n")) {
 		b = append(b, "\r\n"...)
 	}
 	return b
+}
+
+// sgr is a colour or text-style sequence, the one escape output may keep.
+var sgr = regexp.MustCompile(`^\x1b\[[0-9;:]*m`)
+
+// terminalSafe keeps a command's output from drawing anything but text and
+// colour: other escapes (cursor moves, line erases, titles, OSC links) and
+// control characters are shown as symbols, and a lone carriage return or a
+// backspace cannot write over what is already on the line.
+func terminalSafe(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == 0x1b:
+			if m := sgr.FindString(s[i:]); m != "" {
+				b.WriteString(m)
+				i += len(m)
+				continue
+			}
+			b.WriteRune('\u241b')
+		case r == '\r' && !strings.HasPrefix(s[i+1:], "\n"):
+			b.WriteByte('\n')
+		case r == '\t' || r == '\n' || r == '\r':
+			b.WriteRune(r)
+		case r < 0x20:
+			b.WriteRune(0x2400 + r)
+		case r == 0x7f:
+			b.WriteRune('\u2421')
+		case r >= 0x80 && r <= 0x9f:
+			fmt.Fprintf(&b, "⟨U+%04X⟩", r)
+		case r == utf8.RuneError && n == 1:
+			b.WriteRune(utf8.RuneError) // a stray byte a terminal might read as a C1 control
+		default:
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
 }
 
 func (c *acpConn) terminalResize(msg rpcMessage) {
