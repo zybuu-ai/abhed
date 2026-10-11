@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -83,6 +84,9 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
 	fmt.Printf("egress      %s\n", egressLabel(cfg))
+	for _, w := range internalModelEndpoints(cfg) {
+		fmt.Printf("            ⚠ %s\n", w)
+	}
 	fmt.Println("git         held read-only from commands in `abhed serve`'s and Studio's sessions; not in the terminal's (docs/guide/04-permissions.md)")
 	if printDrivers(os.Stdout, cfg) {
 		findings.driverDown = true
@@ -357,6 +361,29 @@ func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied on the none tier", cfg.Sandbox.MaxProcs))
 	case cfg.Sandbox.MaxProcs > 0 && tier == sandbox.TierProcess && runningAsRoot():
 		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied: this runs as root, whose processes the kernel does not bound", cfg.Sandbox.MaxProcs))
+	}
+	return out
+}
+
+// internalModelEndpoints warns, under the allowlist, of each configured
+// model endpoint on an internal address: the model client is Abhed's own and
+// is not held to the address check commands are, so such a base_url (a cloud
+// metadata address, say) is reached all the same.
+func internalModelEndpoints(cfg config.Config) []string {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Model.Providers))
+	for name := range cfg.Model.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []string
+	for _, name := range names {
+		if why := egress.InternalEndpoint(context.Background(), cfg.Model.Providers[name].BaseURL, nil); why != "" {
+			out = append(out, fmt.Sprintf("provider %s: %s, which the model client reaches though the allowlist refuses it to commands; "+
+				"make sure only trusted configuration sets it", config.Printable(name), why))
+		}
 	}
 	return out
 }

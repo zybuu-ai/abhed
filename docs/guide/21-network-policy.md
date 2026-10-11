@@ -334,6 +334,9 @@ The `model` rule follows whatever provider configuration is in force: it
 skips the address check, so a `base_url` or IAM URL on loopback, a private
 address or a metadata address such as `169.254.169.254` is reached without
 a rule. The model cannot change it, but anyone who can set the provider can.
+`abhed doctor` and `abhed serve -check` warn, under the allowlist, of each
+configured provider whose `base_url` is or resolves to such an address, so
+an endpoint set by mistake or by an untrusted layer is seen before it is used.
 
 Each tool set has its own guard: the rules of the configuration it was
 built from judge its tools' requests and its sessions' model requests,

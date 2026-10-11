@@ -142,7 +142,6 @@ All notable changes to Abhed are recorded here. The format follows
   `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
   pin it.
   Affects the binaries and images of 1.2.7 and earlier.
-
 - Redaction matched only a stored value exactly as written, so a value
   that a command printed base64-encoded (a Basic auth header from
   `curl -v`), hex-encoded, percent-encoded or in another case reached the
@@ -153,20 +152,17 @@ All notable changes to Abhed are recorded here. The format follows
   Values were replaced one after another, so a shorter value could rewrite
   a label already written; they are now replaced in one pass. Affects 1.0.0
   to 1.2.7.
-
 - An error a run returned was not redacted, and a model request that could
   not connect quoted its whole URL, so a key in `base_url`
   (`?api_key=…`, `user:key@host`) or a stored value in a provider's error
   body reached the terminal, the API and the server log. The URL is now
   reported without its query and user information, and the error is
   redacted. Affects 1.0.0 to 1.2.7.
-
 - `abhed resolve` pushed whatever the run wrote, so a stored secret the
   agent put in a file, a file name or a commit message went to the forge
   and into the pull request's description. A change that holds a stored
   value, as written or encoded, now refuses the push. Affects 1.0.0 to
   1.2.7.
-
 - An MCP server's `digest` was accepted and never checked, and Studio
   reported such a server as pinned, so a changed program started all the
   same. The program a stdio server's command resolves to is now hashed
@@ -174,17 +170,14 @@ All notable changes to Abhed are recorded here. The format follows
   digest in the arguments is accepted as pinned by the engine. A URL server
   with a `digest`, or a malformed digest, is refused. Affects 0.1.0 to
   1.2.7.
-
 - Once the managed file turned `web_search` on, a search ran without
   asking as a read-only tool, so a query could carry what the agent read to
   the search service. A search now asks in every mode short of bypass
   unless an allow rule names `web_search`. Affects 1.2.2 to 1.2.7.
-
 - The `mcp.added` admin audit kept an MCP server URL's path, which can
   carry a key (`/s/<key>/mcp`); it now keeps the scheme and host only. A
   command whose path holds a space was recorded cut at the first space; it
   is now recorded as its program's base name. Affects 0.1.0 to 1.2.7.
-
 - `web_fetch` dropped only format characters before judging whether a path
   segment reads as `.` or `..`, so a variation selector (U+FE0F), the
   grapheme joiner (U+034F) or a Hangul filler (U+3164) beside `..` passed.
@@ -193,6 +186,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `abhed doctor` and `abhed serve -check` warn, under the egress allowlist,
+  of a model provider whose `base_url` is on a loopback, private,
+  link-local or metadata address, which the model client reaches though the
+  allowlist refuses it to commands.
 - What a sandbox command can reach of the server: on every tier, nothing
   in the control plane's state folder but its own sandbox folder (not the
   `:ssh` relay's host key, other sandboxes' folders or snapshots, or a
@@ -552,16 +549,15 @@ All notable changes to Abhed are recorded here. The format follows
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
 
+### Changed
+
 - `web_fetch` fetches a URL with an encoded slash (`%2F`), such as GitLab's
   `group%2Fproject` or a URL carried in the path, on a host that no deny or
   ask rule names a path on; it was refused on every host.
-
 - `abhed doctor` and the server's MCP status count the tools a server
-  offers that were left out for their names (over 64 characters, or characters other than letters, digits,
-  `_`, `.` and `-`), and the warning gives the name's length.
-
-### Changed
-
+  offers that were left out for their names (over 64 characters, or
+  characters other than letters, digits, `_`, `.` and `-`), and the warning
+  gives the name's length.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of
