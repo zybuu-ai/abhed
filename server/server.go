@@ -3410,6 +3410,82 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 	return n
 }
 
+// removedOwnerSweep is how often stopRemovedOwners runs under local accounts.
+const removedOwnerSweep = 15 * time.Second
+
+// sweepRemovedOwners runs stopRemovedOwners every interval, and at once when
+// the local accounts report a change, until ctx ends.
+func (s *Server) sweepRemovedOwners(ctx context.Context, every time.Duration) {
+	local := s.LocalAuth()
+	if local == nil || s.opts.OwnerActive != nil {
+		return
+	}
+	poke := make(chan struct{}, 1)
+	local.OnChange(func(string) {
+		select {
+		case poke <- struct{}{}:
+		default:
+		}
+	})
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-poke:
+		}
+		s.stopRemovedOwners(ctx)
+	}
+}
+
+// stopRemovedOwners stops the work this process runs for local accounts that
+// were removed, perhaps by `abhed user remove` in another process, or removed
+// and made again after the session began. A store that cannot be read stops
+// nothing.
+func (s *Server) stopRemovedOwners(ctx context.Context) int {
+	local := s.LocalAuth()
+	if local == nil || s.opts.OwnerActive != nil {
+		return 0
+	}
+	lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	users, err := local.Store.List(lctx)
+	cancel()
+	if err != nil {
+		return 0
+	}
+	made := make(map[string]time.Time, len(users))
+	for _, u := range users {
+		made[auth.LocalOwner(u.Username)] = u.CreatedAt
+	}
+	type target struct{ tenant, user string }
+	var gone []target
+	seen := map[target]bool{}
+	s.mu.RLock()
+	for _, live := range s.running {
+		owner := live.User
+		if !strings.HasPrefix(owner, auth.ProviderLocal+":") {
+			continue
+		}
+		at, ok := made[owner]
+		// An account made after the session began is another person under the old name.
+		if ok && (at.IsZero() || live.Created.IsZero() || !at.After(live.Created)) {
+			continue
+		}
+		if t := (target{live.Tenant, owner}); !seen[t] {
+			seen[t] = true
+			gone = append(gone, t)
+		}
+	}
+	s.mu.RUnlock()
+	n := 0
+	for _, t := range gone {
+		n += s.StopOwnerBackground(ctx, t.tenant, t.user)
+	}
+	return n
+}
+
 // ownerActive asks Options.OwnerActive, or the local accounts when there
 // are any: the owner's account must still exist. live.User is an owner key.
 func (s *Server) ownerActive(live *liveSession) bool {
@@ -4651,6 +4727,8 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	}
 	srv.Addr = ln.Addr().String()
 	go s.sweepOrphans(ctx, nodeStale)
+	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
+	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)

@@ -230,7 +230,9 @@ have changed: at once for the users file, within a couple of seconds for
 Postgres. An account removed with `abhed user remove`, even while the server
 runs, is signed out there, and the agent sessions that server holds for it
 go to no one, so an account made again under the name does not reach them;
-no restart is needed. A group change, a reset or a must-change flag
+no restart is needed. Within 15 seconds the server also stops what it runs
+for the removed account: the live run, background shells and tasks, and
+terminals end as `owner_revoked`. A group change, a reset or a must-change flag
 applies on every node without a new sign-in. Removing administrator rights,
 and any sign-out everywhere an edition offers, ends the person's sessions on
 every server sharing the account store: at once on the server that did it,

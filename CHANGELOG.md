@@ -137,6 +137,14 @@ All notable changes to Abhed are recorded here. The format follows
   `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
   pin it.
   Affects the binaries and images of 1.2.7 and earlier.
+- `abhed user remove` did not stop what a running `abhed serve` ran for
+  the removed account: its live run, background shells and tasks, and
+  workbench terminals went on, and so did those of an account removed and
+  made again under the same name, and of a person whose administrator
+  rights were taken away. The server now checks its local accounts every
+  15 seconds, and at once when it sees one change, and stops that work as
+  `owner_revoked`; removing administrator rights stops the person's work
+  too. Affects 1.2.3 to 1.2.7.
 
 ### Added
 
