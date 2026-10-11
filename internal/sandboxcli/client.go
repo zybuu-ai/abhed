@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,8 @@ type client struct {
 	hc   *http.Client
 	// retryWait is the first pause before a retry; doubled each time.
 	retryWait time.Duration
+	// approval, when set, names the approval every request is sent with.
+	approval string
 }
 
 // openClient resolves the profile a command runs as: -profile, the profile
@@ -86,6 +89,8 @@ type apiError struct {
 	status int
 	code   string
 	msg    string
+	// approval names the approval an approval_required refusal asks for.
+	approval string
 }
 
 func (e *apiError) Error() string {
@@ -225,6 +230,9 @@ func (cl *client) do(ctx context.Context, c call) (*http.Response, error) {
 			for k, vs := range c.header {
 				req.Header[k] = vs
 			}
+			if cl.approval != "" {
+				req.Header.Set(approvalHeader, cl.approval)
+			}
 			return req, nil
 		}, cl.saved)
 		status := 0
@@ -258,7 +266,11 @@ func (cl *client) do(ctx context.Context, c call) (*http.Response, error) {
 		}
 		defer func() { _ = resp.Body.Close() }()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return nil, cl.refused(c.path, status, b)
+		err = cl.refused(c.path, status, b)
+		if ae := new(apiError); errors.As(err, &ae) && ae.code == "approval_required" {
+			ae.approval = resp.Header.Get(approvalHeader)
+		}
+		return nil, err
 	}
 }
 
@@ -330,7 +342,33 @@ func (cl *client) authHeader() http.Header {
 		}
 		h.Set("Authorization", typ+" "+cl.p.Token)
 	}
+	if cl.approval != "" {
+		h.Set(approvalHeader, cl.approval)
+	}
 	return h
+}
+
+// approvalHeader names the approval a request is sent with, and the one a
+// refusal asks for.
+const approvalHeader = "Abhed-Approval"
+
+// approvalIn is the approval a refusal's message names, "(approval ID)" at
+// its end, for one that came in a stream rather than with the header.
+var approvalIn = regexp.MustCompile(`\(approval ([A-Za-z0-9_.:-]+)\)$`)
+
+// approvalOf is the approval err asks for, "" when it asks for none.
+func approvalOf(err error) (string, bool) {
+	ae := new(apiError)
+	if !errors.As(err, &ae) || ae.code != "approval_required" {
+		return "", false
+	}
+	if ae.approval != "" {
+		return ae.approval, true
+	}
+	if m := approvalIn.FindStringSubmatch(ae.msg); m != nil {
+		return m[1], true
+	}
+	return "", true
 }
 
 // dial opens a stream, refreshing the token first when it is near its

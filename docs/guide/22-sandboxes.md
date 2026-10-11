@@ -825,8 +825,10 @@ server whose store keeps no templates answers `501`.
 `abhed sandbox` drives all of this as the profile `abhed login` saved
 ([TLS and command-line sign-in](26-tls-and-cli-login.md)). Every command
 takes `-profile NAME` (default: the current profile) or `-server URL`
-(the profile signed in to that server), and `-o table` (the default) or
-`-o json`. There is no YAML output: Abhed has no YAML writer.
+(the profile signed in to that server), `-o table` (the default) or
+`-o json`, and `-approval ID`, which sends each of the command's requests
+with that approval (the `Abhed-Approval` header). There is no YAML output:
+Abhed has no YAML writer.
 
 ```bash
 abhed login https://abhed.internal
@@ -867,7 +869,10 @@ command's flags. Flags may come before or after the sandbox id; for
 could not be reached); `2` the command was called wrongly; `3` not signed
 in, or the sign-in may not do this (`401`, `403`, a deny rule included);
 `4` no such sandbox or template; `5` a conflict (`409`, `412`, `428`: the
-sandbox is in the wrong state, or changed). `exec`, `connect` and `ssh`
+sandbox is in the wrong state, or changed); `6` other people must approve
+it first (`approval_required`, from an edition with approvals): the command
+prints the approval to ask for, and once it is granted you run the same
+command again with `-approval ID`. `exec`, `connect` and `ssh`
 exit with the remote command's status once it ran, and `255` when it
 started but did not end with one; leaving `connect` with the escape key is
 `0`.

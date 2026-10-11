@@ -232,7 +232,9 @@ All notable changes to Abhed are recorded here. The format follows
   `delete` (asks first unless `-y`), `snapshot`, `restore` and `template
   list | get | create | rm`. Output is a table or `-o json`; exit status 0,
   1 failed, 2 usage, 3 not signed in or not allowed, 4 not found, 5
-  conflict, and the remote status for `exec`, `connect` and `ssh`. Every
+  conflict, 6 waiting on an approval (the approval is named; send the
+  command again with `-approval ID` once it is granted), and the remote
+  status for `exec`, `connect` and `ssh`. Every
   mutating call carries an `Idempotency-Key`, the same one when it is sent
   again after a lost answer, so the server acts once; a token near its
   expiry, or refused with `401`, is renewed with the profile's refresh

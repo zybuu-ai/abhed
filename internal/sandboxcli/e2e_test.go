@@ -920,3 +920,43 @@ func TestServerTextIsCleanedOnTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// A command refused until others approve it exits 6 and names the approval;
+// sent again with -approval, each request carries it, streams included.
+func TestApprovalFlag(t *testing.T) {
+	r := newRig(t)
+	sb := r.ready(t)
+	var mu sync.Mutex
+	var seen []string
+	r.setWrap(func(w http.ResponseWriter, req *http.Request, next http.Handler) bool {
+		if !strings.Contains(req.URL.Path, ":exec") {
+			return false
+		}
+		mu.Lock()
+		seen = append(seen, req.Header.Get("Abhed-Approval"))
+		mu.Unlock()
+		if req.Header.Get("Abhed-Approval") == "apr_7" {
+			return false
+		}
+		w.Header().Set("Abhed-Approval", "apr_7")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"code":"approval_required","message":"approval required: two people approve exec (approval apr_7)"}}`)
+		return true
+	})
+	for _, args := range [][]string{{"exec", sb.ID, "--", "true"}, {"exec", "-i", sb.ID, "--", "true"}} {
+		res := r.runWith(t, runOpts{in: strings.NewReader("")}, args...)
+		if res.code != ExitApproval || !strings.Contains(res.err, "-approval apr_7") {
+			t.Fatalf("%v: %+v", args, res)
+		}
+		again := append([]string{args[0], "-approval", "apr_7"}, args[1:]...)
+		if res := r.runWith(t, runOpts{in: strings.NewReader("")}, again...); res.code != 0 {
+			t.Fatalf("%v: %+v", again, res)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 4 || seen[0] != "" || seen[1] != "apr_7" || seen[2] != "" || seen[3] != "apr_7" {
+		t.Fatalf("approvals sent %q", seen)
+	}
+}
