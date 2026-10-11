@@ -173,7 +173,7 @@ type acpSession struct {
 	mu         sync.Mutex
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
-	always map[string]bool
+	always map[string]string
 	// A call salvaged from prose has no id, so the editor knows it by its
 	// action.requested id: the last one requested, and those approved and
 	// awaiting a result, oldest first.
@@ -773,7 +773,7 @@ func metaOf(res map[string]any) map[string]any {
 // openSession builds a session's agent, in the record when the connection
 // keeps one, and adds it to the connection.
 func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
-	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]bool{}}
+	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]string{}}
 	if s.id == "" {
 		s.id = "s-" + acpID()
 		if c.durable() {
@@ -1104,7 +1104,8 @@ func textBlock(t string) map[string]any { return map[string]any{"type": "text", 
 func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 	scope := d.Offer()
 	s.mu.Lock()
-	remembered := scope != "" && s.always[scope]
+	guard, ok := s.always[scope]
+	remembered := ok && d.Covers(scope, guard)
 	s.mu.Unlock()
 	if remembered {
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
@@ -1245,7 +1246,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	switch {
 	case out.Outcome.OptionID == always && offerAlways:
 		s.mu.Lock()
-		s.always[scope] = true
+		s.always[scope] = d.Guard
 		s.mu.Unlock()
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: scope})
 		// Recorded so a later session/load restores it, where policy still allows.

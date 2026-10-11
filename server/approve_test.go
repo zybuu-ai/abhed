@@ -45,7 +45,7 @@ func waitAsked(l *liveSession, rid string) *pendingApproval {
 // auto-approved without raising another prompt — the fix for default mode
 // re-prompting on every mutating call.
 func TestApproveRemembersAlwaysAllow(t *testing.T) {
-	live := &liveSession{allowed: map[string]bool{}}
+	live := &liveSession{allowed: map[string]string{}}
 	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(npm install *)"}
 
 	// First call: reviewer chooses "always allow", which sends the scope back.
@@ -54,7 +54,7 @@ func TestApproveRemembersAlwaysAllow(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("first approval should accept: ok=%v err=%v", ok, err)
 	}
-	if !live.allowed[res.Scope] {
+	if _, ok := live.allowed[res.Scope]; !ok {
 		t.Fatalf("scope was not remembered")
 	}
 
@@ -72,13 +72,13 @@ func TestApproveRemembersAlwaysAllow(t *testing.T) {
 // TestApproveWithoutScopeIsNotRemembered ensures a plain one-off approval does
 // not widen into a standing allowance.
 func TestApproveWithoutScopeIsNotRemembered(t *testing.T) {
-	live := &liveSession{allowed: map[string]bool{}}
+	live := &liveSession{allowed: map[string]string{}}
 	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(npm install *)"}
 	go answerWhenAsked(live, true, "") // no scope: approve once only
 	if ok, err := live.Approve(context.Background(), "bash", nil, res); err != nil || !ok {
 		t.Fatalf("approval should accept: ok=%v err=%v", ok, err)
 	}
-	if live.allowed[res.Scope] {
+	if _, ok := live.allowed[res.Scope]; ok {
 		t.Fatalf("a scopeless approval must not be remembered as always-allow")
 	}
 }
@@ -429,7 +429,7 @@ func TestAnswerWaitsForASlowRow(t *testing.T) {
 // Requests that stopped waiting are remembered oldest first out, so a late
 // answer to a recent one is refused at once.
 func TestEndedRequestsAreAFIFO(t *testing.T) {
-	live := &liveSession{allowed: map[string]bool{}}
+	live := &liveSession{allowed: map[string]string{}}
 	for i := 0; i < endedKept+6; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
 		c := askTurn(ctx, live, fmt.Sprintf("ev-%d", i))
@@ -630,7 +630,9 @@ func TestApproveRefusesAScopeTheRequestDidNotOffer(t *testing.T) {
 	}
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	if live.allowed["bash(*)"] || !live.allowed["bash(ls *)"] {
+	_, wide := live.allowed["bash(*)"]
+	_, offered := live.allowed["bash(ls *)"]
+	if wide || !offered {
 		t.Fatalf("allowed = %v, want only the offered scope", live.allowed)
 	}
 }
@@ -759,7 +761,7 @@ func (r timedOutRow) AskApproval(_ context.Context, a store.Approval) (string, e
 // the server chose for it.
 func TestARowWhoseWriteFailedIsClosed(t *testing.T) {
 	f := newFakeApprovals()
-	l := &liveSession{ID: "s-lost", allowed: map[string]bool{}, durable: timedOutRow{f}}
+	l := &liveSession{ID: "s-lost", allowed: map[string]string{}, durable: timedOutRow{f}}
 	go answerWhenAsked(l, false, "")
 	if _, err := l.Approve(context.Background(), "bash", []byte(`{}`), policy.Result{}); err != nil {
 		t.Fatalf("Approve: %v", err)

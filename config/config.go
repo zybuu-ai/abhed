@@ -1183,11 +1183,28 @@ type SandboxConfig struct {
 	// surface that runs the session, never by a file.
 	WriteProtected []string `json:"-"`
 	// ProtectGit write-protects what git reads in every git folder in the
-	// workspace (config, hooks, commondir and the like); set as WriteProtected is.
+	// workspace (config, hooks, commondir and the like); set as WriteProtected
+	// is, by a surface that requires it.
 	ProtectGit bool `json:"-"`
+	// GitProtect is sandbox.protect_git: unset, git's files are protected
+	// wherever the tier can hold them; true requires it; false turns it off
+	// where no surface requires it.
+	GitProtect *bool `json:"protect_git,omitempty"`
 	// MicroVMSocket is the socket of an abhed-microvm driver; when set, the
 	// control plane can choose the microvm driver by name. Managed only.
 	MicroVMSocket string `json:"microvm_socket,omitempty"`
+}
+
+// GitProtected reports whether commands are kept from writing git's files,
+// and required reports whether a tier that cannot hold them is refused.
+func (s SandboxConfig) GitProtected() (on, required bool) {
+	switch {
+	case s.ProtectGit:
+		return true, true
+	case s.GitProtect == nil:
+		return true, false
+	}
+	return *s.GitProtect, *s.GitProtect
 }
 
 type LimitsConfig struct {

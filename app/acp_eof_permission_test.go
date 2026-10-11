@@ -23,7 +23,7 @@ func TestACPPermissionAskFailsAsCancelledWhenInputCloses(t *testing.T) {
 		<-hold
 		return nil
 	})
-	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(touch *)"}
 	go func() {
 		<-asked

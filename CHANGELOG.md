@@ -35,6 +35,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The terminal CLI, `abhed -p` and `abhed rpc` let a command write what git
+  reads in a git folder (`.git/config`, hooks, `info/attributes`,
+  `commondir`), as Studio and `abhed serve` did not, so a command could set
+  `core.fsmonitor` and a later git command you approved with "always allow",
+  or your own git, ran it. Those surfaces now hold git's files too, on every
+  tier but none; `sandbox.protect_git: false` turns it off. An "always allow"
+  for a git command is also asked again once the repository's config, hooks,
+  attributes or your global git configuration change. Affects 0.1.0 to 1.2.7.
+
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion

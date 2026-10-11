@@ -37,7 +37,7 @@ func (s *seamTTY) Write(b []byte) (int, error) {
 func seamShell(t *testing.T) (*liveSession, *ptyRun, *seamTTY, *agent.MemStore) {
 	t.Helper()
 	store := agent.NewMemStore()
-	live := &liveSession{ID: "s1", allowed: map[string]bool{}, Loop: &agent.Loop{
+	live := &liveSession{ID: "s1", allowed: map[string]string{}, Loop: &agent.Loop{
 		Tools: tools.NewRegistry(tools.Bash{}), Policy: policy.New(policy.ModeDefault), Recorder: agent.NewRecorder(store, "s1", ""),
 	}}
 	tty := &seamTTY{}

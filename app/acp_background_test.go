@@ -18,7 +18,7 @@ import (
 // for the next turn, goes out inside it, and is refused if none opens in time.
 func TestACPIdleAskHeldUntilPrompt(t *testing.T) {
 	c, asked := editorConn(t, "allow_once")
-	s := &acpSession{id: "s1", always: map[string]bool{}}
+	s := &acpSession{id: "s1", always: map[string]string{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)"}
 	done := make(chan bool, 1)
 	go func() {
@@ -45,7 +45,7 @@ func TestACPIdleAskHeldUntilPrompt(t *testing.T) {
 	heldAskWait = 50 * time.Millisecond
 	defer func() { heldAskWait = old }()
 	c2, asked2 := editorConn(t, "allow_once")
-	s2 := &acpSession{id: "s2", always: map[string]bool{}}
+	s2 := &acpSession{id: "s2", always: map[string]string{}}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	if ok, err := c2.askEditor(ctx, s2, "bash", json.RawMessage(`{"command":"ls"}`), d); ok || err != nil {
 		t.Fatalf("an unasked ask: %v %v", ok, err)
@@ -60,7 +60,7 @@ func TestACPIdleAskHeldUntilPrompt(t *testing.T) {
 func TestACPNoticeCompletesCardOutsideTurn(t *testing.T) {
 	cl := newACPClient(t, nil)
 	c := cl.conn
-	s := &acpSession{id: "s1", always: map[string]bool{}}
+	s := &acpSession{id: "s1", always: map[string]string{}}
 	raw := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 	c.forward(s, abhed.Event{Type: agent.EvSubagentSpawned, Payload: raw(map[string]any{"background": true, "task_id": "t1", "description": "scan"})})
 	c.forward(s, abhed.Event{Type: agent.EvSubagentNotice, Payload: raw(agent.Notice{TaskID: "t1", Status: "completed", Content: "all clear"})})
@@ -177,7 +177,7 @@ func TestACPPromptReleasesHeldAsk(t *testing.T) {
 // card, which the editor already has.
 func TestACPHeldAskWaitsOnTheTaskCard(t *testing.T) {
 	cl := newACPClient(t, nil)
-	s := &acpSession{id: "s1", always: map[string]bool{}}
+	s := &acpSession{id: "s1", always: map[string]string{}}
 	ctx, cancel := context.WithCancel(agent.WithBackgroundTask(agent.WithSubagent(agent.WithRequestID(context.Background(), "ev-9"), "scan"), "t9"))
 	defer cancel()
 	go func() {
@@ -208,7 +208,7 @@ func TestACPHeldAskWaitsOnTheTaskCard(t *testing.T) {
 func TestACPAskBoundToItsTurn(t *testing.T) {
 	cl := newACPClient(t, nil) // the editor never answers
 	turn, endTurn := context.WithCancel(context.Background())
-	s := &acpSession{id: "s1", always: map[string]bool{}, cancel: endTurn, turn: turn}
+	s := &acpSession{id: "s1", always: map[string]string{}, cancel: endTurn, turn: turn}
 	ctx, answer := agent.ExpectAnswer(agent.WithBackgroundTask(context.Background(), "t9"))
 	type result struct {
 		ok  bool

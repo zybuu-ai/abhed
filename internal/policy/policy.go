@@ -60,6 +60,16 @@ type Result struct {
 	// Layer is the policy layer the deciding rule came from when an edition
 	// added it with AddLayer; "" for configured and session rules.
 	Layer string
+	// Guard, for a scope on a git command, sums what git reads in the
+	// workspace's repositories as the call is decided. A remembered scope
+	// covers a later call only with the same Guard: a hook or fsmonitor
+	// planted after the grant is asked about again.
+	Guard string
+}
+
+// Covers reports whether a scope remembered with guard covers r.
+func (r Result) Covers(scope, guard string) bool {
+	return scope != "" && scope == r.Offer() && guard == r.Guard
 }
 
 // Offer is the scope a person may "always allow", and the only one a
@@ -830,7 +840,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	if !mutates {
 		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
 	}
-	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+	return e.guarded(Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"})
 }
 
 // sessionControl names tools that change only the session's own background

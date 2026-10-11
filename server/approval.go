@@ -279,7 +279,8 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	offer := res.Offer()
 	if offer != "" {
 		l.mu.Lock()
-		remembered := l.allowed[offer]
+		guard, ok := l.allowed[offer]
+		remembered := ok && res.Covers(offer, guard)
 		l.mu.Unlock()
 		if remembered {
 			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: offer})
@@ -413,7 +414,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			// matching the same rule is not re-prompted.
 			if approved && scope != "" && scope == offer {
 				l.mu.Lock()
-				l.allowed[scope] = true
+				l.allowed[scope] = res.Guard
 				l.mu.Unlock()
 			} else {
 				scope = ""
@@ -441,7 +442,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			// only to the scope this request offered.
 			if approved && scope != "" && scope == offer {
 				l.mu.Lock()
-				l.allowed[scope] = true
+				l.allowed[scope] = res.Guard
 				l.mu.Unlock()
 			} else {
 				scope = ""

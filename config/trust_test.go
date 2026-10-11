@@ -108,6 +108,7 @@ func TestUntrustedWorkspaceIgnoresWhatWidens(t *testing.T) {
 		{"tier none", "sandbox.min_tier", `{"sandbox":{"min_tier":"none"}}`, func(c Config) bool { return c.Sandbox.MinTier == "none" }},
 		{"read-only mounts", "sandbox.read_only_paths", `{"sandbox":{"read_only_paths":["/Users"]}}`, func(c Config) bool { return len(c.Sandbox.ReadOnlyPaths) > 0 }},
 		{"fence tier", "sandbox.tier", `{"sandbox":{"tier":"fence"}}`, func(c Config) bool { return c.Sandbox.Tier == "fence" }},
+		{"git protection off", "sandbox.protect_git", `{"sandbox":{"protect_git":false}}`, func(c Config) bool { return c.Sandbox.GitProtect != nil }},
 		{"fence cpu", "fence.cpu_percent", `{"fence":{"cpu_percent":50}}`, func(c Config) bool { return c.Fence.CPUPercent == 50 }},
 		{"more processes", "sandbox.max_procs", `{"sandbox":{"max_procs":100000}}`, func(c Config) bool { return c.Sandbox.MaxProcs == 100000 }},
 		{"shell terminal", "sandbox.terminal", `{"sandbox":{"terminal":"shell"}}`, func(c Config) bool { return c.Sandbox.Terminal == "shell" }},

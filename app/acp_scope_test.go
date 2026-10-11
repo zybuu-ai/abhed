@@ -56,7 +56,7 @@ func answeringConn(t *testing.T, answer func(json.RawMessage) any) (*acpConn, *a
 // scope that did, not as a reviewer who was never asked.
 func TestACPRememberedScopeIsRecordedAsTheSessionScope(t *testing.T) {
 	c, asked := editorConn(t, "reject_once")
-	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{"bash(mkdir *)": true}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{"bash(mkdir *)": ""}}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(mkdir *)"}
 	ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"mkdir b"}`), d)
@@ -71,13 +71,13 @@ func TestACPRememberedScopeIsRecordedAsTheSessionScope(t *testing.T) {
 // Choosing "always" is recorded on the approval that granted it.
 func TestACPAlwaysRecordsTheGrantedScope(t *testing.T) {
 	c, _ := editorConn(t, "allow_always")
-	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(mkdir *)"}
 	if ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"mkdir a"}`), d); err != nil || !ok {
 		t.Fatalf("always: ok %v err %v", ok, err)
 	}
-	if answer.By != agent.ByReviewer || answer.Granted != "bash(mkdir *)" || !s.always["bash(mkdir *)"] {
+	if answer.By != agent.ByReviewer || answer.Granted != "bash(mkdir *)" || !hasKey(s.always, "bash(mkdir *)") {
 		t.Fatalf("answer %+v always %v", answer, s.always)
 	}
 }
@@ -85,7 +85,7 @@ func TestACPAlwaysRecordsTheGrantedScope(t *testing.T) {
 // An ask rule asks every time, whatever the editor chose to always allow.
 func TestACPAskRuleIgnoresARememberedScope(t *testing.T) {
 	c, asked := editorConn(t, "reject_once")
-	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{"bash(git tag *)": true}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{"bash(git tag *)": ""}}
 	for _, d := range []abhed.Decision{
 		{Decision: policy.Ask, Step: "ask", Scope: "bash(git tag *)", Reason: "matched ask rule bash(git tag*)"},
 		{Decision: policy.Ask, Step: "destructive", Scope: "bash(git tag *)", Reason: "delete or replace a tag"},
@@ -106,7 +106,7 @@ func TestACPAlwaysNotOfferedIsRefused(t *testing.T) {
 		{Decision: policy.Ask, Step: "destructive", Reason: "delete or replace a tag"},
 	} {
 		c, _ := editorConn(t, "allow_always")
-		s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+		s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 		ctx, answer := agent.ExpectAnswer(context.Background())
 		ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"git tag -d v1"}`), d)
 		if err != nil || ok || answer.By != agent.BySystem {
@@ -117,3 +117,5 @@ func TestACPAlwaysNotOfferedIsRefused(t *testing.T) {
 		}
 	}
 }
+
+func hasKey(m map[string]string, k string) bool { _, ok := m[k]; return ok }

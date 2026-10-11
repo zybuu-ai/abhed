@@ -279,6 +279,14 @@ you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
 none tier, and when root runs the process tier, whose processes the kernel
 does not bound.
 
+`"protect_git"` keeps commands from writing what git reads in every git
+folder in the workspace (config, hooks and the like; see
+[Permissions](04-permissions.md)). Unset, it is on wherever the tier can hold
+those files; `true` also refuses a tier that cannot (the fence without a
+mount namespace); `false` turns it off for the terminal CLI, `abhed -p` and
+`abhed rpc`. Studio and `abhed serve` hold them whatever it says. A workspace
+file you have not trusted cannot set it.
+
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.

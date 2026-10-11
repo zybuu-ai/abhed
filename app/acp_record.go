@@ -237,7 +237,7 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		}
 	} else {
 		// Read, never written to: going on from it is a fork.
-		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]bool{}, agent: recordOnly{},
+		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]string{}, agent: recordOnly{},
 			readOnly: "the record failed verification at seq " + strconv.FormatInt(rep.FirstBad, 10)}
 		c.sessMu.Lock()
 		c.sessions[s.id] = s
@@ -341,7 +341,8 @@ func (c *acpConn) restore(s *acpSession, rec *local.Store, events []agent.Event)
 			var g agent.ScopeGranted
 			if json.Unmarshal(ev.Payload, &g) == nil && g.Scope != "" {
 				if _, err := policy.ParseRule(g.Scope); err == nil {
-					s.always[g.Scope] = true
+					// No guard: a git scope restored is asked about again, as its repository may have changed.
+					s.always[g.Scope] = ""
 				}
 			}
 		}

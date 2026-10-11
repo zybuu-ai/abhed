@@ -210,7 +210,7 @@ func FenceProbe(ctx context.Context, p Policy) probe.Report {
 
 func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	base, derr := cgroup.Discover()
-	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit}
+	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit && p.GitRequired}
 	if derr == nil {
 		req.CgroupDir = base.Path()
 	}

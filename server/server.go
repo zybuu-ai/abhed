@@ -435,7 +435,7 @@ type liveSession struct {
 	// session, so default mode stops re-prompting for the same kind of call.
 	// It mirrors the CLI's session AllowList; without it the console asked
 	// again on every mutating tool with no way to say "don't ask again".
-	allowed map[string]bool
+	allowed map[string]string
 	// undo holds each file's content from before the agent first changed it,
 	// which is what the console's changes view diffs against.
 	undo *agent.UndoLog
@@ -1686,7 +1686,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		Created: time.Now(), Prompt: spec.Prompt, State: "running",
 		// Replaced when a turn starts; a session opened idle has nothing to cancel.
 		Cancel:  func() {},
-		allowed: map[string]bool{},
+		allowed: map[string]string{},
 		durable: s.approvalStore(),
 		undo:    undo,
 		layer:   layer,
