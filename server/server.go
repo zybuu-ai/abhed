@@ -439,6 +439,8 @@ type liveSession struct {
 	// undo holds each file's content from before the agent first changed it,
 	// which is what the console's changes view diffs against.
 	undo *agent.UndoLog
+	// snap is the workspace as the session opened, for changes made by commands.
+	snap *wsSnapshot
 	// manual is the tool session of the person at the workbench, and manualMu
 	// runs their calls one at a time so two commands never share a cd.
 	manual   *tools.Session
@@ -1692,6 +1694,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		allowed: map[string]bool{},
 		durable: s.approvalStore(),
 		undo:    undo,
+		snap:    takeSnapshot(sess.Root),
 		layer:   layer,
 		// A spec with no provider runs on the configured default.
 		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),

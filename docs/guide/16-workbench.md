@@ -673,8 +673,17 @@ open.
   *Terminal* above; `sandbox.terminal: "lines"` trades the shell for a policy
   decision on every line.
 - **Files over 4 MB are read-only**, shown in part.
-- **Changes** covers saves and edits made with `write` and `edit`. A file
-  changed by a shell command, yours or the agent's, does not appear there.
+- **Changes made by commands are found by comparison, within limits.** As
+  a session opens, the server notes every file in the workspace (outside
+  `.git`, `node_modules` and `.abhed`) with its size, time and hash, and keeps
+  the text of files up to 1 MB, 16 MB in all. A file a shell command changed,
+  created or removed since then, yours or the agent's, is listed under
+  **Changes** beside the edit tools' changes and can be reviewed and accepted
+  the same way; one whose text was not kept is listed without a diff. In a
+  workspace of more than 20,000 files the files past that are not compared,
+  and **Changes** says so. A change undone before the list is read, or made
+  and reverted by a command, is not listed, and the record holds only what
+  the command was, not what it changed.
 - **No go to definition, hover or diagnostics from a language server.** The
   browser's own language services cover JSON, CSS, HTML, JavaScript and
   TypeScript; other languages are highlighted only. See below for where a

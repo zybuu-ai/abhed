@@ -390,6 +390,8 @@ type changedFile struct {
 	Diff    string `json:"diff"`
 	// Note says why there is no diff: binary, too large, denied, outside.
 	Note string `json:"note,omitempty"`
+	// ByCommand marks a change the edit tools did not make: a shell command's.
+	ByCommand bool `json:"by_command,omitempty"`
 }
 
 type changesResponse struct {
@@ -397,6 +399,8 @@ type changesResponse struct {
 	// log: the originals live in memory, with the run.
 	Available bool          `json:"available"`
 	Files     []changedFile `json:"files"`
+	// Partial says why changes made by commands may be missing, when they may.
+	Partial string `json:"partial,omitempty"`
 }
 
 // changesSession reports what the agent changed, as a diff of each file's
@@ -416,8 +420,14 @@ func (s *Server) changesSession(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Available = true
 
+	byTools := map[string]bool{}
 	for _, abs := range live.undo.Changed() {
 		before, existed, _ := live.undo.Original(abs)
+		for _, p := range []string{abs, realPath(abs)} {
+			if r, err := filepath.Rel(v.sess.Root, p); err == nil && filepath.IsLocal(r) {
+				byTools[relSlash(r)] = true
+			}
+		}
 		rel, err := v.resolve(abs)
 		if err != nil {
 			// Named, because the agent did change it; not shown, because the
@@ -451,5 +461,35 @@ func (s *Server) changesSession(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Files = append(out.Files, entry)
 	}
+	shell, partial := shellChanges(v, live.snap, byTools)
+	out.Files, out.Partial = append(out.Files, shell...), partial
 	WriteJSON(w, http.StatusOK, out)
+}
+
+// shellChanges are the files changed since the session opened that the edit
+// tools' undo log does not hold: by a command, the person's or the agent's.
+func shellChanges(v *workspaceView, snap *wsSnapshot, byTools map[string]bool) ([]changedFile, string) {
+	if snap == nil {
+		return nil, ""
+	}
+	changes, partial := snap.changes(byTools)
+	out := make([]changedFile, 0, len(changes))
+	for _, c := range changes {
+		rel, err := v.resolve(c.rel)
+		if err != nil {
+			if errors.Is(err, errDenied) {
+				out = append(out, changedFile{Path: c.rel, Status: c.status, Note: "denied by policy", ByCommand: true})
+			}
+			continue
+		}
+		entry := changedFile{Path: filepath.ToSlash(rel), Status: c.status, ByCommand: true}
+		if c.diffable {
+			entry.Diff, entry.Added, entry.Removed = unifiedDiff(entry.Path, string(c.before), string(c.after))
+		} else {
+			entry.Note = "binary, too large, or no copy kept from when the session opened"
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, partial
 }

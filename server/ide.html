@@ -1305,11 +1305,14 @@ async function loadChanges(){
   clear(box); const files = res.files || [];
   $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
   if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
-  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save and edits the agent makes through write and edit appear here; changes made by shell commands do not.')); return; }
+  // Changes made by commands are found against the workspace as the session opened, within limits.
+  if(res.partial) box.appendChild(el('div', 'empty', 'Changes made by commands may be missing here: ' + visible(res.partial) + '.'));
+  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save, edits the agent makes, and files changed by commands, yours or the agent\'s, appear here.')); return; }
   for(const f of files){
     const row = el('button', 'row'); row.type = 'button';
     row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
     row.appendChild(el('span', 'name mono', reveal(f.path)));
+    if(f.by_command) row.title = 'Not changed through the edit tools: a command or an upload' + (f.note ? ' · ' + visible(f.note) : '');
     const m = el('span', 'meta'); m.appendChild(el('span', 'plus', '+' + f.added)); m.appendChild(document.createTextNode(' ')); m.appendChild(el('span', 'minus', '−' + f.removed));
     row.appendChild(m); row.addEventListener('click', () => openDiff(f.path)); box.appendChild(row);
   }

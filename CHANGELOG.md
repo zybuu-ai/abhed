@@ -567,6 +567,14 @@ on. A server with it off starts on the older schema as before.
   and its shells end a minute later unless a reload reattaches; opening the
   session in another tab or browser adopts your own shells no page is
   watching (`GET /v1/sessions/{id}/pty`).
+- The workbench's **Changes** and review now list files changed by shell
+  commands, the person's or the agent's, not only edits made through the
+  edit tools. Each session notes the workspace as it opens (size, time and
+  hash of every file outside `.git`, `node_modules` and `.abhed`, and the
+  text of files up to 1 MB, 16 MB in all) and compares against it; such a
+  file is marked `by_command` in `GET /v1/sessions/{id}/changes`, and in a
+  workspace of more than 20,000 files `partial` says the rest were not
+  compared.
 
 ### Fixed
 

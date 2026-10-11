@@ -239,3 +239,65 @@ func TestManualSaveOfBrokenCodeIsWarnedNotRefused(t *testing.T) {
 		t.Fatalf("a clean save carried a note: %s", rec.Body)
 	}
 }
+
+// A file a command changes, the person's or the agent's, is in the changes
+// view too, diffed against the workspace as the session opened, and can be
+// reviewed and accepted like an edit.
+func TestChangesShowWhatCommandsChanged(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.write("pre.txt", "a\n")
+	wb.write("gone.txt", "bye\n")
+	wb.session = wb.openIdle("acme") // opens with pre.txt and gone.txt in place
+	rec := wb.send("acme", "POST", "exec", execRequest{Command: "printf 'a\\nb\\n' > pre.txt && rm gone.txt && printf 'new\\n' > made.txt"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	var ch changesResponse
+	_ = json.Unmarshal(wb.get("acme", "changes").Body.Bytes(), &ch)
+	got := map[string]changedFile{}
+	for _, f := range ch.Files {
+		got[f.Path] = f
+	}
+	if f := got["pre.txt"]; f.Status != "modified" || !f.ByCommand || f.Added != 1 || !strings.Contains(f.Diff, "+b") {
+		t.Errorf("modified by a command: %+v", f)
+	}
+	if f := got["gone.txt"]; f.Status != "deleted" || !f.ByCommand || f.Removed != 1 {
+		t.Errorf("deleted by a command: %+v", f)
+	}
+	if f := got["made.txt"]; f.Status != "added" || !f.ByCommand || f.Added != 1 {
+		t.Errorf("created by a command: %+v", f)
+	}
+	if len(ch.Files) != 3 || ch.Partial != "" {
+		t.Errorf("changes: %+v partial %q", ch.Files, ch.Partial)
+	}
+	var orig originalResponse
+	_ = json.Unmarshal(wb.get("acme", "original?path=pre.txt").Body.Bytes(), &orig)
+	if orig.Content != "a\n" || !orig.Existed {
+		t.Fatalf("original of a file a command changed: %+v", orig)
+	}
+	if rec := wb.send("acme", "POST", "accept", acceptRequest{Path: "pre.txt", Content: "a\nb\n"}); rec.Code != http.StatusNoContent {
+		t.Fatalf("accept: %d %s", rec.Code, rec.Body)
+	}
+	ch = changesResponse{}
+	_ = json.Unmarshal(wb.get("acme", "changes").Body.Bytes(), &ch)
+	for _, f := range ch.Files {
+		if f.Path == "pre.txt" {
+			t.Fatalf("an accepted change is still listed: %+v", f)
+		}
+	}
+}
+
+// Abhed's own state and the folders the viewer never shows are not taken as changes.
+func TestChangesLeaveOutStateAndHiddenFolders(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.session = wb.openIdle("acme")
+	wb.write(".git/config", "x")
+	wb.write("node_modules/m/index.js", "x")
+	var ch changesResponse
+	_ = json.Unmarshal(wb.get("acme", "changes").Body.Bytes(), &ch)
+	for _, f := range ch.Files {
+		if strings.HasPrefix(f.Path, ".git") || strings.HasPrefix(f.Path, "node_modules") || strings.HasPrefix(f.Path, ".abhed") {
+			t.Errorf("listed %s", f.Path)
+		}
+	}
+}
