@@ -28,6 +28,9 @@ func TestRulesReadTheScriptsACommandRuns(t *testing.T) {
 	write(filepath.Join(ws, "outer.sh"), ". ./s.sh\n", 0o644)
 	write(filepath.Join(ws, "built.sh"), "eval \"$x\"\n", 0o644)
 	write(filepath.Join(sub, "s.sh"), "echo safe\n", 0o644)
+	big := make([]byte, 200<<10)
+	big[10] = 0
+	write(filepath.Join(ws, "bin/app"), string(big), 0o755)
 	cwd := ws
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }

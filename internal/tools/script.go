@@ -34,26 +34,29 @@ func ReadScript(p string, direct bool) (text string, shell bool, err error) {
 		return "", false, err
 	case !info.Mode().IsRegular():
 		return "", false, fmt.Errorf("%s is not a regular file", path.Base(p))
-	case info.Size() > MaxScriptBytes:
-		return "", false, ErrScriptTooLong
 	}
-	b, err := io.ReadAll(io.LimitReader(f, MaxScriptBytes+1))
-	switch {
-	case err != nil:
+	// A binary or another interpreter's script is known by its start, whatever its size.
+	head := make([]byte, 512)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return "", false, err
-	case len(b) > MaxScriptBytes:
-		return "", false, ErrScriptTooLong
 	}
+	head = head[:n]
 	if direct {
-		head := b[:min(len(b), 512)]
 		if bytes.IndexByte(head, 0) >= 0 {
-			return "", false, nil // a binary
+			return "", false, nil
 		}
-		if line, ok := bytes.CutPrefix(head, []byte("#!")); ok {
-			if !scriptShells[shebangProgram(string(line))] {
-				return "", false, nil
-			}
+		if line, ok := bytes.CutPrefix(head, []byte("#!")); ok && !scriptShells[shebangProgram(string(line))] {
+			return "", false, nil
 		}
+	}
+	rest, err := io.ReadAll(io.LimitReader(f, MaxScriptBytes+1-int64(n)))
+	if err != nil {
+		return "", false, err
+	}
+	b := append(head, rest...)
+	if len(b) > MaxScriptBytes {
+		return "", false, ErrScriptTooLong
 	}
 	return string(b), true, nil
 }
