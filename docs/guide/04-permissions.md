@@ -404,8 +404,7 @@ A deny pattern matches the words, so it is easy to step around.
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,
-  `core.sshCommand`, `git clone -u`, or an `ext::` remote taken from the
-  configuration)
+  `core.sshCommand` or `git clone -u`)
 - a shell another program starts with its input: `… | xargs bash -c`,
   `… | xargs -I{} bash -c {}`, a pipe into a function that runs a shell
   (`f() { bash; }; cat f | f`), or a process substitution written to
@@ -425,7 +424,11 @@ Such text built from an expansion is refused while a deny rule for `bash`
 has a pattern. So is any git argument built from an expansion once the line
 enables the ext protocol (`protocol.ext.allow` or `protocol.allow` in `-c`,
 or `GIT_ALLOW_PROTOCOL`). An `ext::` in the text of `git commit`, `grep`,
-`log`, `show`, `shortlog`, `tag` or `notes` is not read as a URL.
+`log`, `show`, `shortlog`, `tag` or `notes` is not read as a URL. Every
+command the agent runs gets `protocol.ext.allow=never` as git environment
+config, so an `ext::` URL from `.gitmodules` or a repository's own config
+(`git submodule update`, `git fetch o`) is refused by git itself; only `-c`
+or `GIT_ALLOW_PROTOCOL` on the line, which the checks read, lifts it.
 
 Words the shell builds are read as it would build them: line continuations
 are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as

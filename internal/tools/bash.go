@@ -547,6 +547,11 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	// A stopped turn ends what the command started, not only its shell.
 	sandbox.EndWithCommand(cmd)
 
+	// git never runs the command an ext:: URL from a repository's config names.
+	var gitNames []string
+	cmd.Env, gitNames = WithGitExtNever(cmd.Env)
+	b.forward(cmd, gitNames)
+
 	if len(a.Secrets) > 0 {
 		env, err := b.Secrets(a.Secrets)
 		if err != nil {
@@ -560,14 +565,18 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 				names = append(names, k)
 			}
 		}
-		// A container sees only what is forwarded to it by name.
-		if b.Forward != nil {
-			b.Forward(cmd, names)
-		} else {
-			sandbox.ForwardEnv(cmd, names)
-		}
+		b.forward(cmd, names)
 	}
 	return cmd, nil
+}
+
+// forward gives a container the variables named, which it sees only by name.
+func (b Bash) forward(cmd *exec.Cmd, names []string) {
+	if b.Forward != nil {
+		b.Forward(cmd, names)
+	} else {
+		sandbox.ForwardEnv(cmd, names)
+	}
 }
 
 // moveToBackground hands a running foreground command to the session's host

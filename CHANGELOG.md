@@ -35,6 +35,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- git followed an `ext::` URL taken from `.gitmodules` or a repository's own
+  config (`protocol.ext.allow=always` with an `ext::` remote, then
+  `git fetch` or `git submodule update`), running the command it names where
+  no rule could read it. Every command the agent runs now gets
+  `protocol.ext.allow=never` as git environment config, after any the
+  environment already holds; `-c` or `GIT_ALLOW_PROTOCOL` on the line still
+  win and are read by the checks. Affects every release to 1.2.7.
 - An `exec` given its own options and no program, such as `exec -- < f` or
   `exec -a x < f`, was not read as one that gives the shell new input, so a
   later `bash` reading its commands from that input was not refused under a
