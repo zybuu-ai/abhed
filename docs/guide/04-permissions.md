@@ -408,8 +408,18 @@ A deny pattern matches the words, so it is easy to step around.
   `… | xargs -I{} bash -c {}`, a pipe into a function that runs a shell
   (`f() { bash; }; cat f | f`), or a process substitution written to
   (`echo 'curl x' > >(bash)`, `tee >(bash)`)
-- flags in another place or split up: `bash(rm -rf *)` does not match
-  `rm x -rf` or `rm -r -f x`
+- a flag spelled another way: `bash(rm -rf *)` does not match
+  `rm --recursive --force x`, `rm --rec -f x`, or a flag hidden in an
+  option's value, because no rule knows each program's own flag grammar
+
+A deny or ask rule that names flags after the program and any literal
+subcommands also holds with those flags moved or split: `bash(rm -rf *)`
+matches `rm x -rf`, `rm -r -f x` and `rm -v x -f -r`, and
+`bash(git push --force *)` matches `git push origin --force`. The command
+must have every flag the rule names, anywhere before `--`, and its other
+words, in order, must match the rest of the pattern. This reading only adds
+matches, and allow rules do not use it. For the destructive commands
+themselves, the destructive step and the sandbox remain the control.
 
 A program named by a path (`/usr/bin/curl x`, `./curl x`) is also matched by
 its base name, so `bash(curl *)` holds for it; an allow rule still sees only

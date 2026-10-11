@@ -83,6 +83,9 @@ type Rule struct {
 	// nfc is pattern in Unicode NFC, which deny and ask path rules also match
 	// against NFC subjects; nil for a pattern with no non-ASCII character.
 	nfc *regexp.Regexp
+	// flags is the glob read with its flags as a set, for deny and ask
+	// rules on bash; nil when it names none.
+	flags *flagForm
 	// session marks a rule a person added for this session; see Overlay.
 	session bool
 	// layer names the policy layer an edition added the rule under; see AddLayer.
@@ -121,6 +124,7 @@ func ParseRule(s string) (Rule, error) {
 			return Rule{}, fmt.Errorf("rule %q: %w", s, err)
 		}
 		r.pattern, r.glob = re, glob
+		r.flags = parseFlagForm(glob)
 		if hasNonASCII(glob) {
 			if r.nfc, err = globToRegexp(norm.NFC.String(glob)); err != nil {
 				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
@@ -708,6 +712,12 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	matches := Rule.matchesAny
 	if key == "path" && tool != "bash" {
 		matches = Rule.matchesPathAny
+	}
+	// A bash rule naming flags also holds with them moved or split.
+	if tool == "bash" {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			return r.matchesAny(tool, subjects) || r.matchesFlagsAny(tool, subjects)
+		}
 	}
 	// A Kubernetes call on every namespace, `*`, reads each one: a deny or ask
 	// rule matches it when the rule would match some namespace it covers.

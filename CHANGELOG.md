@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A deny or ask rule naming flags, such as `bash(rm -rf *)`, did not match
+  the same flags moved or split (`rm x -rf`, `rm -r -f x`). Such a rule now
+  also matches a command with the same program and subcommands that has
+  every flag it names anywhere before `--`, its other words matching the
+  rest of the pattern. Allow rules are unchanged. A flag spelled another way
+  (`--recursive`) is still not matched. Affects every release to 1.2.7.
 - A deny or ask rule naming a program, such as `bash(curl *)`, did not match
   the program named by a path (`/usr/bin/curl x`, `./curl x`); only wrappers
   were matched by their base name. Deny and ask rules now also see each
