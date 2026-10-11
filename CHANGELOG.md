@@ -562,6 +562,11 @@ on. A server with it off starts on the older schema as before.
   nothing. `-disallowedTools` adds the name as written beside the lower-cased
   spelling it has always added, so an existing deny keeps matching and one for
   a capitalised name now does too. Built-in names are still folded.
+- A workbench shell whose page was closed ran on for 30 minutes, and only the
+  same browser tab could reattach to it. A closing page now tells the server,
+  and its shells end a minute later unless a reload reattaches; opening the
+  session in another tab or browser adopts your own shells no page is
+  watching (`GET /v1/sessions/{id}/pty`).
 
 ### Fixed
 

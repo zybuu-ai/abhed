@@ -1073,3 +1073,62 @@ func TestShellScreeningWarnedOnAMultiUserServer(t *testing.T) {
 		}
 	}
 }
+
+// A shell no page watches is listed for its owner to adopt; once a page says
+// it is closing, the shell waits a minute for a reload, not its idle time.
+func TestShellAdoptAndDetach(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	list := func(user string) []openShell {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/sessions/"+wb.session+"/pty", nil)
+		req.Header.Set("X-Abhed-Tenant", "acme")
+		if user != "" {
+			req.Header.Set("X-Abhed-User", user)
+		}
+		wb.h.ServeHTTP(rec, req)
+		var out []openShell
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Fatalf("list: %d %s", rec.Code, rec.Body)
+		}
+		return out
+	}
+	if got := list(""); len(got) != 1 || got[0].ID != start.ID || got[0].Isolation == nil || got[0].Workspace != wb.workspace {
+		t.Fatalf("the unwatched shell was not listed: %+v", got)
+	}
+	if got := list("mallory"); len(got) != 0 {
+		t.Fatalf("another account was offered the shell: %+v", got)
+	}
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	live.mu.Lock()
+	run := live.ptys[start.ID]
+	live.mu.Unlock()
+	// Watched, it is not offered.
+	ch := make(chan []byte)
+	run.mu.Lock()
+	run.subs[ch] = struct{}{}
+	run.mu.Unlock()
+	if got := list(""); len(got) != 0 {
+		t.Fatalf("a watched shell was offered: %+v", got)
+	}
+	run.mu.Lock()
+	delete(run.subs, ch)
+	run.mu.Unlock()
+
+	if rec := wb.send("acme", "POST", "pty/"+start.ID+"/detach", nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("detach: %d %s", rec.Code, rec.Body)
+	}
+	run.mu.Lock()
+	run.lastRead = time.Now().Add(-2 * shellDetachGrace)
+	run.mu.Unlock()
+	if !run.abandoned() {
+		t.Fatal("a detached shell waits its whole idle time")
+	}
+	run.detached.Store(false)
+	if run.abandoned() {
+		t.Fatal("a shell went before its idle time")
+	}
+	if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("kill: %d", rec.Code)
+	}
+}

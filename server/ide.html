@@ -1728,7 +1728,7 @@ function openSession(id, state, opts){
   $('s-rename').hidden = $('s-export').hidden = false; $('s-resume').hidden = !resumeCommand(id);
   restoreTabs(); connect(id); loadChanges(); loadSessions(); if(live) loadQueue(id);
   if(window.innerWidth <= 900) $('app').dataset.pane = 'agent';
-  newTerminal(opts);
+  newTerminal(Object.assign({adopt:true}, opts));
 }
 // A session with no prompt: the workspace and sandbox, ready for the terminal and the editor.
 async function createWorkbench(note){
@@ -2395,7 +2395,13 @@ const shellsKey = id => 'abhed.ide.shells.' + id;
 // Streams closing as the page unloads must not read as shells that ended.
 let leaving = false;
 addEventListener('beforeunload', () => { leaving = true; });
-addEventListener('pagehide', () => { leaving = true; });
+// A closing page tells the server it no longer watches its shells: they end
+// a minute later unless a page reattaches, as a reload does.
+addEventListener('pagehide', () => {
+  leaving = true;
+  for(const t of terms) if(t.kind === 'shell' && t.mode === 'shell' && t.run)
+    fetch(ptyURL(t, '/' + t.run + '/detach'), {method:'POST', keepalive:true, credentials:'same-origin'}).catch(() => {});
+});
 function saveShells(id){
   id = id || current;
   if(!id || leaving) return;
@@ -2440,7 +2446,15 @@ function noTerminal(why){
 }
 async function newTerminal(opts){
   if(!current){ await createWorkbench(); return; }
-  const saved = opts && opts.reattach ? savedShells(current) : [];
+  let saved = opts && opts.reattach ? savedShells(current) : [];
+  // Opening a session adopts your own shells on it that no page is watching:
+  // left by a closed tab, or opened in another browser.
+  if(!saved.length && opts && opts.adopt){
+    const id = current; let open = [];
+    try{ open = await api('/v1/sessions/' + id + '/pty'); }catch{}
+    if(id !== current) return;
+    saved = (open || []).map((o, i) => ({id:o.id, name:'shell ' + (i + 1), info:{isolation:o.isolation, workspace:o.workspace}}));
+  }
   if(saved.length){
     for(const s of saved){
       const t = makeTerm(s.name, 'shell'); t.mode = 'shell'; t.info = s.info;

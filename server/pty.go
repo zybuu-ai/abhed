@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,9 @@ const (
 	// shellIdle is longer than ptyIdle: a shell outlives a laptop's sleep or a
 	// dropped connection, and a reloaded page reattaches to it.
 	shellIdle = 30 * time.Minute
+	// shellDetachGrace is how long a shell whose page said it was closing
+	// waits for a reader: long enough for a reload to reattach.
+	shellDetachGrace = time.Minute
 	// maxTerminals bounds the shells and commands one session runs at once.
 	maxTerminals = 8
 	// maxLinesPerInput bounds the lines one write to a shell may enter.
@@ -59,6 +63,7 @@ type shellInfo struct {
 	capture *lineCapture
 	local   bool
 	idle    time.Duration
+	user    string
 }
 
 // ptyRun is one command, or one interactive shell, on a terminal.
@@ -88,8 +93,12 @@ type ptyRun struct {
 	// foreground, on a container's shell, asks the engine whether a program
 	// other than the shell has the terminal; nil where it cannot be asked.
 	foreground func() (program, ok bool)
-	// idle is how long the run may go unwatched.
-	idle time.Duration
+	// idle is how long the run may go unwatched; detached shortens it to
+	// shellDetachGrace once the page watching it said it was closing.
+	idle     time.Duration
+	detached atomic.Bool
+	// user opened the shell; a page of theirs may adopt it when unwatched.
+	user string
 	// leader names a shell, so what it leaves in its session can be ended safely.
 	leader sandbox.Leader
 	// endedBy says who ended the run when the server did, for its record.
@@ -176,7 +185,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		live.shellMu.Lock()
 		defer live.shellMu.Unlock()
 		if !terminalsFull(w, live) {
-			s.startShell(w, live, sess, req)
+			s.startShell(w, r, live, sess, req)
 		}
 		return
 	}
@@ -318,7 +327,7 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 	run := &ptyRun{id: id, command: command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(), idle: ptyIdle,
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	if shell != nil {
-		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
+		run.capture, run.local, run.idle, run.user = shell.capture, shell.local, shell.idle, shell.user
 		run.prompt = termline.NewPrompt()
 		if run.local {
 			tty := run.tty
@@ -377,7 +386,7 @@ func heldHere(tier string) bool {
 // startShell starts one interactive shell in the session's sandbox, at the
 // workspace root. Starting it is the person's bash call: judged, and recorded
 // with the shell's exit and the tail of its output when it ends.
-func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tools.Session, req ptyStartRequest) {
+func (s *Server) startShell(w http.ResponseWriter, r *http.Request, live *liveSession, sess *tools.Session, req ptyStartRequest) {
 	resp := ptyStartResponse{Cwd: sess.Rel(sess.Root), Workspace: sess.Root}
 	tool, _ := live.Loop.Tools.Get("bash")
 	resp.Isolation = isolationOf(tool)
@@ -436,6 +445,7 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 		capture: newLineCapture(id, func(in agent.TerminalInput) { s.unrecorded(nil, live, live.Loop.ManualTerminalInput(in)) }),
 		local:   resp.Isolation != nil && heldHere(resp.Isolation.Tier),
 		idle:    shellIdle,
+		user:    UserOf(r.Context()),
 	}
 	if cfg.Sandbox.TerminalIdleMinutes > 0 {
 		shell.idle = time.Duration(cfg.Sandbox.TerminalIdleMinutes) * time.Minute
@@ -497,6 +507,17 @@ func (p *ptyRun) pump() {
 	}
 }
 
+// abandoned reports a run nobody has watched for longer than it may wait.
+func (p *ptyRun) abandoned() bool {
+	limit := p.idle
+	if p.detached.Load() {
+		limit = min(limit, shellDetachGrace)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.subs) == 0 && time.Since(p.lastRead) > limit
+}
+
 // noteSweep tells the operator when a shell's session was not swept, so that
 // containment not running is never silent.
 func (s *Server) noteSweep(live *liveSession, run *ptyRun, refused string) {
@@ -528,10 +549,7 @@ loop:
 		case err = <-waited:
 			break loop
 		case <-idle.C:
-			run.mu.Lock()
-			abandoned := len(run.subs) == 0 && time.Since(run.lastRead) > run.idle
-			run.mu.Unlock()
-			if abandoned {
+			if run.abandoned() {
 				run.stop("ended after going unwatched")
 			}
 		}
@@ -701,6 +719,7 @@ func (s *Server) streamPTY(w http.ResponseWriter, r *http.Request) {
 	run.subs[ch] = struct{}{}
 	run.lastRead = time.Now()
 	run.mu.Unlock()
+	run.detached.Store(false)
 	defer func() {
 		run.mu.Lock()
 		delete(run.subs, ch)
@@ -1058,6 +1077,68 @@ func (s *Server) resizePTY(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = pty.Setsize(run.tty, &pty.Winsize{Cols: size.Cols, Rows: size.Rows})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// detachPTY is a page saying, as it closes, that it no longer watches a
+// shell: unless a page reattaches within shellDetachGrace, as a reload does,
+// the shell ends then rather than after its idle time.
+func (s *Server) detachPTY(w http.ResponseWriter, r *http.Request) {
+	_, run, ok := s.ptyFor(w, r)
+	if !ok {
+		return
+	}
+	run.mu.Lock()
+	run.lastRead = time.Now()
+	run.mu.Unlock()
+	run.detached.Store(true)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// openShell is a running shell a page can attach to.
+type openShell struct {
+	ID        string           `json:"id"`
+	Started   time.Time        `json:"started"`
+	Isolation *tools.Isolation `json:"isolation,omitempty"`
+	Workspace string           `json:"workspace,omitempty"`
+}
+
+// listShells lists the caller's own shells on a session that no page is
+// watching, so a page opened in another tab or browser can adopt them.
+func (s *Server) listShells(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	out := []openShell{}
+	live, found := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	if !validSessionID(id) || !found {
+		WriteJSON(w, http.StatusOK, out)
+		return
+	}
+	var in *tools.Isolation
+	if tool, ok := live.Loop.Tools.Get("bash"); ok {
+		in = isolationOf(tool)
+	}
+	user := UserOf(r.Context())
+	live.mu.Lock()
+	runs := make([]*ptyRun, 0, len(live.ptys))
+	for _, run := range live.ptys {
+		runs = append(runs, run)
+	}
+	live.mu.Unlock()
+	for _, run := range runs {
+		select {
+		case <-run.done:
+			continue
+		default:
+		}
+		run.mu.Lock()
+		watched := len(run.subs) > 0
+		run.mu.Unlock()
+		if run.capture == nil || watched || run.user != user {
+			continue
+		}
+		out = append(out, openShell{ID: run.id, Started: run.started, Isolation: in, Workspace: live.Loop.Session.Root})
+	}
+	slices.SortFunc(out, func(a, b openShell) int { return a.Started.Compare(b.Started) })
+	WriteJSON(w, http.StatusOK, out)
 }
 
 // killPTY ends the command.

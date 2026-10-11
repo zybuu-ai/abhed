@@ -404,9 +404,15 @@ Tabs are opened with **+**, renamed by double-clicking, and closed with **×**.
 terminal, which interrupts the program in the foreground, as in any terminal.
 Pasting several lines runs them in turn. The shell keeps its own working
 directory, so a `cd` there never moves the agent. Reloading the page
-reattaches to the shells it had open, with their recent output. A shell nobody
-has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), and one
-is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
+reattaches to the shells it had open, with their recent output. Opening a
+session, in another tab or another browser, adopts your own shells on it that
+no page is watching (`GET /v1/sessions/{id}/pty` lists them), so a closed tab's
+shells are not lost. A page that closes tells the server
+(`POST /v1/sessions/{id}/pty/{pty}/detach`), and its shells end a minute later
+unless a page reattaches in that time, as a reload does. A shell nobody
+has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), which
+covers a page that could not say it was closing (a crash, a lost connection),
+and one is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
 its tab, deleting the session or either limit, hangs it up, and bash hangs up
 the jobs it started in the background; so does typing `exit`. Once the shell
 has exited, and before its process is released, everything still in its
@@ -661,9 +667,6 @@ open.
 - **A shell's lines are screened as typed, not judged as run.** See
   *Terminal* above; `sandbox.terminal: "lines"` trades the shell for a policy
   decision on every line.
-- **Shells reattach only in the same browser tab.** Another tab or browser
-  opens new shells; the old ones end once nobody has watched them for the idle
-  limit.
 - **Files over 4 MB are read-only**, shown in part.
 - **Changes** covers saves and edits made with `write` and `edit`. A file
   changed by a shell command, yours or the agent's, does not appear there.
