@@ -294,11 +294,21 @@ give the key with `-witness-key`: the public key as statements carry it
 the heads are not checked and `verify` fails.
 A session pruned on the record (by `record.retention_days`, `abhed record
 prune`, or a delete) is reported as `pruned`, not failed, when the index's
-tombstone keeps its head at or past the line the witness holds, with the same
-hash at that line, and says the record was there and verified when it was
-pruned. A session file gone with no tombstone still fails, and so does one
-pruned after its file was removed or edited: the prune does not account for
-what was done before it.
+tombstone holds the witnessed hash at that line and says the record was there
+and verified when it was pruned. The tombstone keeps the hash at its head
+and, when `record.witness.file` is set, at every line the witness file held
+for the session then: a prune reads that file first, checks the record
+against each head in it, and is refused when the file cannot be read. A
+record that no longer matched the witness is pruned as unverified, so a
+record re-chained and then pruned still fails. A witnessed line the prune
+kept no hash for fails too: with only `record.witness.url`, or a head the
+file did not hold yet, a prune can show only the session's last line, so set
+a witness file if sessions are pruned. A session file gone with no tombstone
+still fails, and so does one pruned after its file was removed or edited:
+the prune does not account for what was done before it. The tombstone is
+the installation's own word; an owner who writes the index by hand, rather
+than through `abhed record prune`, is caught only by the witness holding
+the index's heads.
 
 What a witness still cannot show: lines written after the last head it was
 sent (the last sync), and anything before it was configured.

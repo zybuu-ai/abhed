@@ -41,6 +41,10 @@ type Options struct {
 	// machine's owner too; the record does not depend on it, and an error it
 	// has is its own to report.
 	Anchor func(tenant, session string, head Head)
+	// Witnessed, when set, gives the heads the witness holds for a session,
+	// which a prune checks the record against and keeps in its tombstone; an
+	// error stops the prune.
+	Witnessed func(tenant, session string) ([]WitnessedHead, error)
 	// OnClose runs after Close has synced every held session, so an anchor
 	// can send the last heads before the process ends.
 	OnClose func()
@@ -64,6 +68,7 @@ type Store struct {
 	tenant, user string
 	redact       agent.Redactor
 	anchor       func(tenant, session string, head Head)
+	witnessed    func(tenant, session string) ([]WitnessedHead, error)
 	onClose      func()
 
 	mu     sync.Mutex
@@ -165,7 +170,7 @@ func Open(opts Options) (*Store, error) {
 		red = nil // a typed nil redacts nothing, and must not be called
 	}
 	s := &Store{
-		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red, anchor: anchor, onClose: opts.OnClose,
+		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red, anchor: anchor, witnessed: opts.Witnessed, onClose: opts.OnClose,
 		held: map[string]*session{}, subs: map[string][]chan agent.Event{},
 	}
 	s.blobs = &blobStore{dir: filepath.Join(dir, "blobs", "sha256")}

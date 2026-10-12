@@ -777,6 +777,9 @@ func openRecord(cfg config.Config) (*local.Store, error) {
 	if w != nil {
 		opts.Anchor = func(tenant, session string, h local.Head) { w.Local(tenant, session, h.Lines, h.Seq, h.Hash) }
 		opts.OnClose = func() { closeWitness(w) }
+		if file := cfg.Record.Witness.File; file != "" {
+			opts.Witnessed = (&witnessFile{cfg: cfg, path: file}).heads
+		}
 	}
 	rec, err := local.Open(opts)
 	if err != nil {

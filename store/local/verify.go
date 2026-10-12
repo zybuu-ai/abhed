@@ -372,29 +372,40 @@ func (s *Store) Pruned(id string) (Tombstone, bool) {
 // index when id is "index", and whether the record holds that line; for
 // checking a head a witness kept against the record as it is now.
 func (s *Store) HashAt(id string, n int64) (string, bool, error) {
+	hs, err := s.hashesAt(id, []int64{n})
+	if err != nil || len(hs) == 0 {
+		return "", false, err
+	}
+	return hs[n], true, nil
+}
+
+// hashesAt is the hash at each of lines the record holds, read once.
+func (s *Store) hashesAt(id string, lines []int64) (map[int64]string, error) {
 	path := s.index.path()
 	if id != "index" {
 		if err := checkID("session", id); err != nil {
-			return "", false, err
+			return nil, err
 		}
 		path = s.Path(id)
 	}
 	data, err := readOwn(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 	raws := scan(data).raws
-	if n <= 0 || n > int64(len(raws)) {
-		return "", false, nil
+	out := map[int64]string{}
+	for _, n := range lines {
+		if n <= 0 || n > int64(len(raws)) {
+			continue
+		}
+		var l struct {
+			Hash string `json:"hash"`
+		}
+		_ = json.Unmarshal(raws[n-1], &l) // a line that is not one: no hash matches it
+		out[n] = l.Hash
 	}
-	var l struct {
-		Hash string `json:"hash"`
-	}
-	if err := json.Unmarshal(raws[n-1], &l); err != nil {
-		return "", true, nil //nolint:nilerr // a line that is not one: no hash matches it
-	}
-	return l.Hash, true, nil
+	return out, nil
 }

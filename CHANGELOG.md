@@ -1171,9 +1171,12 @@ All notable changes to Abhed are recorded here. The format follows
   storage, and/or a `url` sent each signed head). `abhed record verify`
   checks every head the witness holds is still in the record, which catches
   a record cut back, re-chained or restored from an older copy. A session
-  pruned with a tombstone that covers the witnessed head is reported as
-  pruned, not failed, unless its file was gone or did not verify when it
-  was pruned.
+  pruned with a tombstone that holds the witnessed hash at that line is
+  reported as pruned, not failed, unless its file was gone or did not verify
+  when it was pruned. With a witness `file`, a prune checks the record
+  against each head the file holds for the session first and keeps the
+  hashes in the tombstone, so a re-chained record still fails once pruned;
+  a prune that cannot read the file is refused.
 - Postgres events are hash-chained per session by the database itself
   (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
   sends), as is the control plane's `sandbox_audit` per tenant. `abhed
@@ -2038,7 +2041,7 @@ All notable changes to Abhed are recorded here. The format follows
   installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
   `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`,
   `ChainHashAt` and `ChainSessions` (with `store.ChainSession`), `store.ChainReport`, `store/local.Store.HashAt` and
-  `Pruned` (with `Tombstone`), and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
+  `Pruned` (with `Tombstone` and `WitnessedHead`), `store/local.Options.Witnessed`, and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
   tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
   `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.
 - `hawkeye`: `Report.Network` with `NetworkStats` and `NetworkRefusal`,

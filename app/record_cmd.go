@@ -324,13 +324,24 @@ func (c recordCtx) checkWitness(path, keyGiven string) bool {
 }
 
 // prunedHead accounts for a witnessed head of a session that was pruned: the
-// tombstone must keep at least that many lines, and at that line the same
-// hash, of a record that was there and verified when it was pruned.
+// tombstone must hold the witnessed hash at that line, as its head or as a
+// head the prune checked against the witness file, of a record that was
+// there and verified when it was pruned.
 func (c recordCtx) prunedHead(session string, line int64, hash string) (string, bool, error) {
 	t, pruned := c.rec.Pruned(session)
 	h := t.Head
 	if !pruned || line > h.Lines || line == h.Lines && hash != h.Hash {
 		return "", false, nil
+	}
+	kept := line == h.Lines
+	for _, w := range t.Witnessed {
+		if w.Lines != line {
+			continue
+		}
+		if w.Hash != hash {
+			return fmt.Sprintf("the witness holds line %d, and the record held another line there when it was pruned: it was rewritten first", line), false, nil
+		}
+		kept = true
 	}
 	// A prune of a record already cut or gone cannot launder what was done to it.
 	switch {
@@ -338,8 +349,12 @@ func (c recordCtx) prunedHead(session string, line int64, hash string) (string, 
 		return fmt.Sprintf("the witness holds line %d, and the session's file was gone before it was pruned", line), false, nil
 	case !t.Verified:
 		return fmt.Sprintf("the witness holds line %d, and the record did not verify when it was pruned: %s", line, t.Unverified), false, nil
+	case !kept && !t.WitnessChecked:
+		return fmt.Sprintf("the witness holds line %d, and the prune kept the record's hash only at its head (line %d), with no witness file to check: a record re-chained before it was pruned cannot be told apart", line, h.Lines), false, nil
+	case !kept:
+		return fmt.Sprintf("the witness holds line %d, which the witness file did not hold when the session was pruned, so the prune kept no hash there", line), false, nil
 	}
-	return fmt.Sprintf("pruned; the witness holds line %d, and the index's tombstone keeps its head at line %d (%s)", line, h.Lines, short(h.Hash)), true, nil
+	return fmt.Sprintf("pruned; the witness holds line %d, and the index's tombstone keeps the same hash there, its head at line %d (%s)", line, h.Lines, short(h.Hash)), true, nil
 }
 
 // printWitnessProblems names each witnessed head the record no longer holds:
