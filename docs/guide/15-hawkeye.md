@@ -84,7 +84,7 @@ capture does not say it left any out.
 
 | Section | What it tells you |
 |---|---|
-| Summary | outcome (how the session ended; `running` with no end recorded; `no agent run` for a session only people worked in, at the workbench's terminal or editor, closed or not; `session_closed` for one an editor let go of after a run), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window, and, when the [egress allowlist](21-network-policy.md) was on, how many connections and requests it allowed and refused (`network` in the JSON) |
+| Summary | outcome (how the session ended; `running` with no end recorded; `idle` for a session open on the server that makes the report with no run going, such as a workbench session between messages; `no agent run` for a session only people worked in, at the workbench's terminal or editor, closed or not; `session_closed` for one an editor let go of after a run), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out (`~` on a turn whose tokens were estimated), cache hit rate (`cache not reported` when no turn's provider gave a cached figure, rather than 0%), peak context against the window, and, when the [egress allowlist](21-network-policy.md) was on, how many connections and requests it allowed and refused (`network` in the JSON) |
 | Findings | rules over the record, each naming its evidence by sequence number |
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
 | Policy layers | the rules an edition added to the session as a layer of their own, such as a Team workspace's ([Policy layers](04-permissions.md#policy-layers-from-an-edition)), from its `policy.layer` events: name, revision, rules, allow rules set aside, and how many decisions the layer's rules made (`policy_layers` and `policy.by_layer` in the JSON) |
@@ -129,6 +129,7 @@ and none of them is a model's opinion.
 | Code | Severity | Fires when |
 |---|---|---|
 | `record-gap` | critical | the event sequence skips — the record was filtered, truncated or edited |
+| `fence-state-planted` | critical | a command under the fence made a `.abhed` in the workspace, where Abhed keeps its own state; it was moved and the session's fence runs no further command |
 | `stream-omitted` | info | a stream-json capture skips only where the deltas it says it left out sit |
 | `borrowed-host` | warn | an allowed call names a host the user never mentioned and that first appeared in tool output |
 | `sensitive-path` | warn / info | a call reached, or was stopped from reaching, a credential path |
@@ -148,6 +149,8 @@ and none of them is a model's opinion.
 | `slow-tool` | info | a tool call ran longer than a minute |
 | `cold-cache` | info | under 20% of the prompt was cached across five or more turns whose provider reported a cache figure |
 | `no-end` | info | the record has no terminal event |
+| `fence-limit` | info | a command under the fence ran into its memory or process limit |
+| `shell-owner-gone` | info | a background shell was stopped because its owner's access was withdrawn (`owner_revoked`, `owner_inactive`), not because it failed |
 
 Calls a person made by hand in the workbench (`actor: user`: saves, commands,
 shells, Explorer operations) are in the report as theirs, with the `actor`
@@ -175,9 +178,12 @@ read and not a verdict.
   this report.
 - **It does not detect prompt injection.** It flags one mechanical shape
   injection tends to take. The boundary is still the sandbox and the policy.
-- **It does not see inside `bash`.** File access is counted from the file
-  tools' arguments; guessing paths out of a shell command would report things
-  that did not happen.
+- **It does not see every file inside `bash`.** File access is counted from
+  the file tools' arguments; guessing paths out of a shell command would
+  report things that did not happen. What the sandbox itself records about a
+  command is read: the egress proxy's decisions, a fence limit hit, and a
+  `.abhed` planted in the workspace. No sandbox tier records each file a
+  command opens, so that stays out of the report.
 - **Records written by v0.2.0 or earlier have no per-turn events.** The summary falls
   back to the session's own totals and the context chart is omitted.
 

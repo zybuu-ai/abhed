@@ -584,6 +584,10 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 	for k, v := range extra {
 		spawned[k] = v
 	}
+	// The parent's call that started it, so a trace pairs them by id, not by description.
+	if id := CallIDOf(ctx); id != "" {
+		spawned["call_id"] = id
+	}
 	_, _ = c.sub.Recorder.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
 	c.parent.record(EvSubagentSpawned, ActorAgent, spawned)
 	c.extra = extra

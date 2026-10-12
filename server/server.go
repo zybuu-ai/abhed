@@ -2867,9 +2867,15 @@ func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Live here whoever owns it: mayAccess has already admitted the caller.
 	s.mu.RLock()
-	_, live := s.running[id]
+	ls, live := s.running[id]
 	s.mu.RUnlock()
-	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live})
+	idle := false
+	if live {
+		ls.mu.Lock()
+		idle = ls.State == "idle"
+		ls.mu.Unlock()
+	}
+	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live, Idle: idle})
 	if r.URL.Query().Get("format") != "html" {
 		WriteJSON(w, http.StatusOK, rep)
 		return

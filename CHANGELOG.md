@@ -680,6 +680,16 @@ on. A server with it off starts on the older schema as before.
   `session.started` whose `through_seq` still counted in the source's
   numbering. It is now renumbered to the branch's, as a restore's
   checkpoint is.
+- HawkEYE printed "0% cached" for a provider that reports no cached
+  figure; it now says "cache not reported". A workbench session open
+  between messages showed as `running`; it is now `idle`. A turn whose
+  tokens were estimated is marked `~`. A background shell stopped as
+  `owner_revoked` or `owner_inactive` raises `shell-owner-gone`, a fence
+  limit hit raises `fence-limit`, and a `.abhed` planted under the fence
+  raises `fence-state-planted`.
+- `subagent.spawned` did not name the parent's call that started it, so a
+  trace could only pair two subagents with the same description by guess.
+  It now carries `call_id`.
 
 ### Dependencies
 

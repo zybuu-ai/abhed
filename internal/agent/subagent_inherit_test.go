@@ -54,6 +54,10 @@ func TestSubagentInheritsModeRowAndMonitor(t *testing.T) {
 		if id, _ := sp["session"].(string); id != "" {
 			kid = id
 		}
+		// The spawn names the parent's call that made it.
+		if sp["call_id"] != "ctask" {
+			t.Fatalf("subagent.spawned call_id = %v, want the task call's", sp["call_id"])
+		}
 	}
 	evs, _ := rows.Events(kid)
 	judged := false
