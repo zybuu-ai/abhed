@@ -672,6 +672,11 @@ on. A server with it off starts on the older schema as before.
   start and names the missing setting. A headless resolve that stopped at
   the pull request's approval did not say where the change was; it now
   names the local branch.
+- After `/compact`, `/rename`, `/rewind`, `/models` or `/fork` on a resumed
+  session in a shared (Postgres) store, the CLI released the row by copying
+  its last `session.ended`, so the record kept that end's context size and
+  compaction count though the command had changed them. The release now
+  keeps only the reason and takes the totals from the session as it stands.
 
 ### Dependencies
 

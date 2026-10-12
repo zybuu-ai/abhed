@@ -575,19 +575,22 @@ func claimForWrite(ctx context.Context, st *cliState) (release func(), err error
 	}, nil
 }
 
-// endAsBefore records the session's last end again, reason and totals, so a
-// row claimed only to write a fork or a compaction is released unchanged.
+// endAsBefore ends the session again with its last end's reason, so a row
+// claimed only to write a fork or a compaction is released as it was. The
+// totals are the loop's own, since the write may have changed them; the
+// context size is left out, as the last end's no longer holds.
 func endAsBefore(st *cliState) {
-	end := json.RawMessage(nil)
+	reason := agent.TermCompleted
 	if events, err := st.store.Events(st.sessionID); err == nil {
-		for _, ev := range events {
-			if ev.Type == agent.EvSessionEnded {
-				end = ev.Payload
-			}
+		if last, ok := agent.LastEnd(events); ok && last.Reason != "" {
+			reason = last.Reason
 		}
 	}
-	if end == nil {
-		end, _ = json.Marshal(agent.SessionEnded{Reason: agent.TermCompleted, Turns: st.loop.Usage().Turns})
+	u := st.loop.Usage()
+	end := agent.SessionEnded{Reason: reason, Turns: u.Turns, TokensIn: u.InputTokens,
+		TokensOut: u.OutputTokens, TokensCached: u.CachedTokens, Compactions: u.Compactions}
+	if st.loop.Adapter != nil {
+		end.ContextWindow = st.loop.Adapter.Profile().ContextWindow
 	}
 	_, _ = st.loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, end)
 }

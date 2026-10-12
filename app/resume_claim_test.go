@@ -87,7 +87,7 @@ func resumeRig(t *testing.T, user, tenant string) (*cliState, *rowStore, *ui.Ren
 	ended := time.Now()
 	rs.rows["s-old"] = store.SessionRecord{ID: "s-old", User: user, Tenant: tenant, EndedAt: &ended}
 	msg, _ := json.Marshal(agent.Message{Text: "remember ZEBRA-41"})
-	end, _ := json.Marshal(agent.SessionEnded{Reason: agent.TermCompleted, Turns: 3, TokensIn: 42})
+	end, _ := json.Marshal(agent.SessionEnded{Reason: agent.TermCompleted, Turns: 3, TokensIn: 42, ContextTokens: 9999})
 	_ = rs.Append(agent.Event{ID: "e1", SessionID: "s-old", Seq: 1, Type: agent.EvUserMessage, Payload: msg})
 	reply, _ := json.Marshal(agent.Message{Text: "noted ZEBRA-41"})
 	_ = rs.Append(agent.Event{ID: "e2", SessionID: "s-old", Seq: 2, Type: agent.EvAgentMessage, Payload: reply})
@@ -362,6 +362,10 @@ func TestForkOrCompactThenQuitLeavesTheSessionResumable(t *testing.T) {
 		if last := events[len(events)-1]; last.Type != agent.EvSessionEnded || json.Unmarshal(last.Payload, &end) != nil ||
 			end.Reason != agent.TermCompleted || end.Turns != 3 || end.TokensIn != 42 {
 			t.Fatalf("%s: the row was not ended as before: %+v", cmd, end)
+		}
+		// The totals are the loop's now, not a copy of the last end's.
+		if u := st.loop.Usage(); end.ContextTokens == 9999 || end.Compactions != u.Compactions {
+			t.Fatalf("%s: the end repeats stale figures: %+v (usage %+v)", cmd, end, u)
 		}
 		if rep := hawkeye.Analyze("s-old", events); rep.Outcome != string(agent.TermCompleted) || len(rep.Integrity.Gaps) != 0 {
 			t.Fatalf("%s: HawkEYE reads the record as %s with gaps %v", cmd, rep.Outcome, rep.Integrity.Gaps)
