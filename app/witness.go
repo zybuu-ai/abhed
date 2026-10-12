@@ -17,7 +17,7 @@ import (
 // openWitness opens the managed record.witness, or nil when none is set. A
 // witness that is set and cannot be opened stops the start: a control the
 // organisation asked for does not silently go missing.
-func openWitness(cfg config.Config) (*witness.Witness, error) {
+func openWitness(cfg config.Config) (*openedWitness, error) {
 	wc := cfg.Record.Witness
 	if !wc.On() || !cfg.ManagedSets("record.witness") {
 		return nil, nil
@@ -34,12 +34,18 @@ func openWitness(cfg config.Config) (*witness.Witness, error) {
 		}
 		token = v
 	}
-	w, err := witness.Open(witness.Config{File: wc.File, URL: wc.URL, Token: token, KeyFile: keyFile,
-		OnError: witnessReporter(slog.Default(), time.Minute)})
+	rep := newWitnessReporter(slog.Default(), time.Minute)
+	w, err := witness.Open(witness.Config{File: wc.File, URL: wc.URL, Token: token, KeyFile: keyFile, OnError: rep.report})
 	if err != nil {
 		return nil, fmt.Errorf("record.witness: %w", err)
 	}
-	return w, nil
+	return &openedWitness{Witness: w, rep: rep}, nil
+}
+
+// openedWitness is a witness with the reporter its failures go to.
+type openedWitness struct {
+	*witness.Witness
+	rep *witnessReporter
 }
 
 // witnessKeyFile is where the installation keeps its witness signing key.
@@ -72,14 +78,16 @@ func witnessKey(cfg config.Config, given string) (ed25519.PublicKey, error) {
 	return witness.PublicKey(f)
 }
 
-// closeWitness waits for heads still being sent and says which failed.
-func closeWitness(w *witness.Witness) {
+// closeWitness waits for heads still being sent and says which failed,
+// including those the reporter held back.
+func closeWitness(w *openedWitness) {
 	w.Close(5 * time.Second)
 	for {
 		select {
 		case err := <-w.Errors():
 			fmt.Fprintf(os.Stderr, "abhed: a head of the record did not reach the witness: %v\n", err)
 		default:
+			w.rep.flush()
 			return
 		}
 	}
@@ -88,21 +96,39 @@ func closeWitness(w *witness.Witness) {
 // witnessReporter logs a head that did not reach the witness as it fails, so
 // a long-running serve says so at once; after the first, at most one line per
 // every, counting the failures it did not log.
-func witnessReporter(log *slog.Logger, every time.Duration) func(error) {
-	var mu sync.Mutex
-	var last time.Time
-	quiet := 0
-	return func(err error) {
-		mu.Lock()
-		now := time.Now()
-		if !last.IsZero() && now.Sub(last) < every {
-			quiet++
-			mu.Unlock()
-			return
-		}
-		missed := quiet
-		last, quiet = now, 0
-		mu.Unlock()
-		log.Warn("a head of the record did not reach the witness", "error", err, "failures_not_logged", missed)
+type witnessReporter struct {
+	log   *slog.Logger
+	every time.Duration
+	mu    sync.Mutex
+	last  time.Time
+	quiet int
+}
+
+func newWitnessReporter(log *slog.Logger, every time.Duration) *witnessReporter {
+	return &witnessReporter{log: log, every: every}
+}
+
+func (r *witnessReporter) report(err error) {
+	r.mu.Lock()
+	now := time.Now()
+	if !r.last.IsZero() && now.Sub(r.last) < r.every {
+		r.quiet++
+		r.mu.Unlock()
+		return
+	}
+	missed := r.quiet
+	r.last, r.quiet = now, 0
+	r.mu.Unlock()
+	r.log.Warn("a head of the record did not reach the witness", "error", err, "failures_not_logged", missed)
+}
+
+// flush logs the count of failures held back since the last line, at close.
+func (r *witnessReporter) flush() {
+	r.mu.Lock()
+	missed := r.quiet
+	r.quiet = 0
+	r.mu.Unlock()
+	if missed > 0 {
+		r.log.Warn("heads of the record did not reach the witness and were not logged", "failures_not_logged", missed)
 	}
 }

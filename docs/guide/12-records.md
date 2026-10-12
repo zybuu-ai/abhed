@@ -278,7 +278,8 @@ witness that is set and cannot be opened, or a `url` that is not an `http` or
 `https` URL with a host, stops the start. A head that fails
 to reach the URL, or to be appended to the file, is logged as a warning when
 it fails, the first at once and then at most one a minute with a count of
-the rest, so a long-running `abhed serve` says so the same day. The URL is
+the rest, so a long-running `abhed serve` says so the same day; those not
+yet logged are counted in one last warning when Abhed stops. The URL is
 named without its user information, query or fragment.
 
 `abhed record verify` then also checks every head in `record.witness.file`

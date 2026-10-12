@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,7 +144,8 @@ func TestRecordVerifyPostgresChainAndWitness(t *testing.T) {
 // once and then at most one per interval, saying how many were not logged.
 func TestWitnessReporterLogsAtOnceThenThrottles(t *testing.T) {
 	var buf bytes.Buffer
-	report := witnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), 50*time.Millisecond)
+	rep := newWitnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), 50*time.Millisecond)
+	report := rep.report
 	report(errors.New("first"))
 	if !strings.Contains(buf.String(), "first") {
 		t.Fatalf("the first failure was not logged at once: %q", buf.String())
@@ -156,6 +159,26 @@ func TestWitnessReporterLogsAtOnceThenThrottles(t *testing.T) {
 	report(errors.New("fourth"))
 	if !strings.Contains(buf.String(), "fourth") || !strings.Contains(buf.String(), "failures_not_logged=2") {
 		t.Fatalf("after the interval: %q", buf.String())
+	}
+}
+
+// Failures the reporter held back are counted in the log when the witness
+// closes, not lost with the process.
+func TestWitnessCloseLogsHeldBackFailures(t *testing.T) {
+	var buf bytes.Buffer
+	rep := newWitnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), time.Hour)
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	w, err := witness.Open(witness.Config{URL: dead.URL, KeyFile: filepath.Join(t.TempDir(), "witness.key"), OnError: rep.report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		w.Local("default", "s1", int64(i+1), 0, "h")
+	}
+	closeWitness(&openedWitness{Witness: w, rep: rep})
+	if !strings.Contains(buf.String(), "failures_not_logged=2") {
+		t.Fatalf("held-back failures were lost at close: %q", buf.String())
 	}
 }
 
