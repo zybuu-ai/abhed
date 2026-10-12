@@ -1184,6 +1184,10 @@ type SandboxConfig struct {
 	// caches (~/.cache, ~/Library/Caches, ~/.npm, ~/.cargo/registry,
 	// ~/go/pkg/mod) instead of folders of the session's own.
 	SharedCaches bool `json:"shared_caches,omitempty"`
+	// ReadableHome lets macOS process-tier commands read the whole home
+	// folder but the known credential paths, as before 1.2.8, in place of
+	// only the toolchain folders, the workspace and read_only_paths.
+	ReadableHome bool `json:"readable_home,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`

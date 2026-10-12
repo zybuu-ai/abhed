@@ -87,14 +87,15 @@ hides its environment; bubblewrap ends everything in its namespace. See
   as an `observation`, redacted like any other; `shell.started` and
   `shell.ended` record the rest.
 - Once the shell's own command has ended, what it started and left running
-  (`server &`, then the shell exits) is no longer reached: not by
-  `shell_kill`, the session closing, a stop or Abhed exiting, nor by revoking
-  the session in Enterprise. It keeps running in the sandbox until it ends.
-  Keep a long-running process in the foreground of its background shell
-  (`server`, not `server &`) so that stopping the shell stops it. If Abhed
-  itself is killed, its shells are left running the same way. Bubblewrap on
-  Linux is the exception to both: its process namespace ends with the shell,
-  and the shell with Abhed.
+  (`server &`, then the shell exits) is still ended by `shell_kill`, the
+  session closing, a stop or Abhed exiting: by the process group the shell
+  led, which outlives it while a member is left, and by `ABHED_COMMAND_ID`
+  for one that left the group. On the none tier and the macOS process tier,
+  one that both left the group (`setsid`, a daemon) and cleared its
+  environment, or on macOS runs a program Apple ships, is not found and runs
+  until it ends, within the sandbox. If Abhed itself is killed, its shells
+  are left running. Bubblewrap on Linux ends everything with the shell: its
+  process namespace ends with the shell, and the shell with Abhed.
 - A subagent cannot start one, and neither can a surface that runs no
   background work (`abhed eval`).
 

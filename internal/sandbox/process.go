@@ -372,6 +372,21 @@ func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
 func (s *Process) seatbeltProfileFor(port uint16) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
+	// Home holds credentials no list names; only what toolchains need, the
+	// workspace and the named read-only paths are read there. First, so the
+	// state and credential denies below still win.
+	if home, err := os.UserHomeDir(); err == nil && !s.policy.ReadableHome {
+		b.WriteString(";; Home is unreadable but for the toolchains and the workspace.\n")
+		for _, h := range PathForms(home) {
+			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
+			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+		}
+		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...)
+		for _, p := range allow {
+			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
+		}
+		b.WriteString("\n")
+	}
 	// A command signals only processes in its own sandbox: never Abhed,
 	// which it could otherwise kill with kill $PPID, nor another command's,
 	// as bubblewrap's PID namespace keeps them apart on Linux.
@@ -379,6 +394,7 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 	// On every network setting: an app opened outside the sandbox has the
 	// network and the filesystem the command does not.
 	b.WriteString(";; No LaunchServices or Apple events.\n" + denyLaunchServices + "\n")
+	b.WriteString(";; Nor the person's clipboard or screen.\n" + denySessionServices + "\n")
 
 	// Other sandboxes' folders beside this one's: before the workspace's own
 	// rules, so its .abhed stays denied after the read allowed here.
@@ -913,14 +929,47 @@ func (s *Process) ownCaches() map[string]string {
 	if proxy == "" {
 		proxy = "https://proxy.golang.org,direct"
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		shared := os.Getenv("GOMODCACHE")
-		if shared == "" {
-			shared = filepath.Join(home, "go", "pkg", "mod")
-		}
+	if shared := goModCache(); shared != "" {
 		out["GOPROXY"] = "file://" + filepath.ToSlash(filepath.Join(shared, "cache", "download")) + "," + proxy
 	}
 	return out
+}
+
+// goSetting is a Go setting as the go command reads it: the environment,
+// then the file go env -w writes.
+func goSetting(key string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "go", "env")) // #nosec G304 -- go's own settings file
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// goModCache is the shared Go module cache: GOMODCACHE, else the first
+// GOPATH's pkg/mod, else ~/go/pkg/mod.
+func goModCache() string {
+	if c := goSetting("GOMODCACHE"); c != "" {
+		return c
+	}
+	if p := filepath.SplitList(goSetting("GOPATH")); len(p) > 0 && p[0] != "" {
+		return filepath.Join(p[0], "pkg", "mod")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "go", "pkg", "mod")
+	}
+	return ""
 }
 
 // removeCaches removes the sandbox's own caches.
@@ -1025,3 +1074,86 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 
 // Backend says there is none.
 func (n *None) Backend() string { return "host" }
+
+// homeToolchainDirs and homeToolchainFiles are what commands may read in home
+// beside the workspace: toolchains, their package stores and caches, and the
+// configuration git, editors and shells read. Credential paths inside them
+// stay unreadable (HomeSecrets).
+var (
+	homeToolchainDirs = []string{"go", "sdk", ".cargo", ".rustup", ".npm", ".nvm", ".pyenv", ".rbenv", ".gem", ".bundle",
+		".local/bin", ".local/lib", ".local/share/mise", ".local/share/pnpm", ".local/share/uv", ".local/pipx",
+		".local/share/pipx", ".local/share/virtualenvs", ".pnpm-store", ".bun", ".deno", ".volta",
+		".asdf", ".sdkman", ".m2/repository", ".gradle/caches", ".gradle/wrapper", ".ivy2/cache", ".nuget/packages",
+		".dotnet", ".swiftpm", ".conda", "miniconda3", "anaconda3", "miniforge3", ".julia", ".ghcup", ".cabal", ".stack",
+		".opam", ".elan", ".nix-profile", ".cache", "Library/Caches", "Library/pnpm", "Library/Python",
+		".vim", ".config/nvim", ".config/git", ".oh-my-zsh", ".terraform.d/plugins"}
+	homeToolchainFiles = []string{".gitconfig", ".gitignore_global", ".gitignore", ".vimrc", ".exrc", ".bashrc",
+		".bash_profile", ".profile", ".zshrc", ".zprofile", ".zshenv", ".inputrc", ".editorconfig", ".tool-versions"}
+	// homeToolchainEnv name folders a toolchain lives in, wherever it was put.
+	homeToolchainEnv = []string{"GOPATH", "GOROOT", "GOMODCACHE", "CARGO_HOME", "RUSTUP_HOME", "JAVA_HOME",
+		"VIRTUAL_ENV", "NVM_DIR", "PYENV_ROOT", "SDKMAN_DIR", "CONDA_PREFIX", "BUN_INSTALL", "VOLTA_HOME"}
+)
+
+// homeToolchains are the paths under home commands may read: the lists
+// above, each folder an environment variable above names, and each folder
+// on PATH with the one holding it (a bin's toolchain), never home itself.
+func homeToolchains(home string) []string {
+	var out []string
+	add := func(p string) {
+		if p == "" || !filepath.IsAbs(p) {
+			return
+		}
+		p = filepath.Clean(p)
+		if _, in := Within(p, home); !in || p == filepath.Clean(home) {
+			return
+		}
+		for _, f := range PathForms(p) {
+			if !slices.Contains(out, f) {
+				out = append(out, f)
+			}
+		}
+	}
+	for _, d := range append(append([]string{}, homeToolchainDirs...), homeToolchainFiles...) {
+		add(filepath.Join(home, d))
+	}
+	for _, k := range homeToolchainEnv {
+		for _, p := range filepath.SplitList(goSetting(k)) {
+			add(p)
+		}
+	}
+	// Where go env -w keeps its settings, which the go command reads.
+	if dir, err := os.UserConfigDir(); err == nil {
+		add(filepath.Join(dir, "go"))
+	}
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		add(p)
+		// ~/.local holds keyrings and other programs' data beside its bin.
+		if filepath.Base(p) == "bin" && filepath.Dir(p) != filepath.Join(home, ".local") {
+			add(filepath.Dir(p))
+		}
+		// A program linked into a bin under home runs from where it was
+		// installed, with the folder that install holds.
+		if _, in := Within(p, home); !in {
+			continue
+		}
+		entries, _ := os.ReadDir(p)
+		for i, e := range entries {
+			if i >= 512 {
+				break
+			}
+			if e.Type()&fs.ModeSymlink == 0 {
+				continue
+			}
+			to := RealPath(filepath.Join(p, e.Name()))
+			root := filepath.Dir(to)
+			if filepath.Base(root) == "bin" {
+				root = filepath.Dir(root)
+			}
+			// Never a whole folder at the top of home, such as Documents.
+			if filepath.Dir(root) != filepath.Clean(home) {
+				add(root)
+			}
+		}
+	}
+	return out
+}

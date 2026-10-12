@@ -35,6 +35,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- On macOS a process-tier command could read and set your clipboard and
+  capture your screen through per-session system services. The pasteboard,
+  the window server's session port and screen capture are now denied to
+  commands. Affects 0.1.0 to 1.2.7 on macOS.
+- On macOS the process tier let commands read everything in your home folder
+  but a list of known credential paths, so a token kept elsewhere
+  (`~/.config/<tool>/token`, `~/Documents`) was readable. Home is now
+  unreadable to commands but for the workspace, `read_only_paths`, the
+  toolchains and caches, and the files git, editors and shells read;
+  `sandbox.readable_home: true` restores the old rule. Affects 0.1.0 to
+  1.2.7 on macOS.
 - On macOS the process tier let commands write the real toolchain caches
   (`~/.cache`, `~/Library/Caches`, `~/.npm`, `~/.cargo/registry`,
   `~/go/pkg/mod`), so a command could leave a poisoned entry that a build
@@ -636,6 +647,12 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- What a background shell left running after its own command ended
+  (`server &`) was no longer stopped by `shell_kill`, a stop or the session
+  closing, outside bubblewrap; and a process the workbench shell started in
+  a session of its own (`setsid`) outlived the shell. Both are now ended, by
+  the process group and by `ABHED_COMMAND_ID`, and processes the workbench
+  sweep cannot signal are counted in its log line.
 - The fence's `mount_namespace` mode left an empty `.abhed` in the workspace
   after every session. The last fence on a workspace to close now removes it
   when it is still the same, empty folder. The check of the covered

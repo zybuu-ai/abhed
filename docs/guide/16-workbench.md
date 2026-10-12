@@ -417,9 +417,13 @@ signalled by its number: if its id were reused in between, which needs the
 ids to wrap round within microseconds and is not reachable in practice, the
 stop or the kill would land on a stranger: a stop is undone at once with a
 continue signal, a kill is not.
-Closing that gap strictly would need signalling by audit token. What escapes is
-a process that makes a session of its own, with `setsid` or by daemonising;
-it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
+Closing that gap strictly would need signalling by audit token. A process
+that makes a session of its own, with `setsid` or by daemonising, is ended
+too, by the `ABHED_COMMAND_ID` every process the shell starts carries; one
+that also cleared its environment, or on macOS runs a program Apple ships
+(whose environment macOS hides), escapes and runs until it ends, within the
+sandbox. Processes in the session that cannot be signalled (another user's,
+after a setuid program) are counted in the server's log line. On Linux bubblewrap ends everything
 in the sandbox with the shell, and a container is removed. A shell runs as
 the server's user. On the process tier it starts with a process limit of what
 that user runs plus `sandbox.max_procs` (512 by default), so a fork bomb

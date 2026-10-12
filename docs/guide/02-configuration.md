@@ -211,7 +211,11 @@ workspace and a few shared folders, not only the workspace:
   already in your module cache are read from it through `GOPROXY`
   (`file://…/cache/download` first), so a build that worked offline still
   does; npm, pip and cargo start from an empty cache and need the network
-  for what they fetch. `"shared_caches": true` lets commands write the real
+  for what they fetch. Commands read in home only the workspace, `read_only_paths`, the
+  toolchains, the caches and the files git, editors and shells read (see
+  [security posture](../trust/security-posture.md));
+  `"readable_home": true` lets them read the rest of home but the credential
+  paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can
   leave a file a program outside the sandbox later reads; a workspace file
   can only turn it off.
@@ -244,7 +248,12 @@ refuses it. So a command, a workbench terminal or a stdio MCP server can
 read an MCP server's or an extension's environment, which holds Abhed's,
 and what a concurrent command was handed: its egress token and its
 `secrets`, and any process's arguments, Abhed's included (an inline
-`-settings` among them).
+`-settings` among them). This cannot be closed on the process tier. What
+limits it: each egress token is the call's own and is revoked when the call
+ends; a provider key kept as `api_key` in the configuration, not exported,
+is in no environment; and the container and vm tiers give each command a
+process space of its own, so use one of those where commands must not see
+one another's secrets.
 
 Abhed hides its own environment: as it starts on macOS it runs itself
 again with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `PWD`,

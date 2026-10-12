@@ -151,6 +151,9 @@ type Policy struct {
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int
 	MaxProcs    int
+	// ReadableHome lets the macOS process tier read all of home but the
+	// HomeSecrets; otherwise only the toolchain folders there are readable.
+	ReadableHome bool
 	// SharedCaches lets the macOS process tier write the real toolchain
 	// caches; otherwise each sandbox's commands get caches of their own.
 	SharedCaches bool

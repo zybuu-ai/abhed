@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -108,5 +109,18 @@ func TestSweepBacksOffWhileMembersDie(t *testing.T) {
 	// 1ms wait makes hundreds.
 	if passes > 40 {
 		t.Fatalf("%d passes in %v: the sweep did not back off", passes, sweepGrace)
+	}
+}
+
+// A member the sweep cannot signal is counted in its reason, not passed over.
+func TestSweepCountsWhatItCannotSignal(t *testing.T) {
+	f := &fakeSession{listings: [][]int{{101, 102}, {101, 102}, {101, 102}, {102}}}
+	f.install(t)
+	signalOne = func(pid, _ int, sig syscall.Signal) bool {
+		f.sent[pid] = append(f.sent[pid], sig)
+		return pid != 102
+	}
+	if why := named.sweep(); why == "" || !strings.Contains(why, "1 processes") {
+		t.Fatalf("sweep: %q", why)
 	}
 }

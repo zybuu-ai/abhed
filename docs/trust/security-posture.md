@@ -295,8 +295,11 @@ inside it. So, for the terminal:
   there would need signalling by audit token. When the sweep cannot run (the
   start time unreadable, or no pidfd on a Linux kernel before 5.3) the server
   logs that containment did not run. A process that starts a session of its own
-  (`setsid`, a daemon) escapes and runs until it ends, within the sandbox;
-  bubblewrap and the container tier end everything regardless. A shell runs
+  (`setsid`, a daemon) is found by the `ABHED_COMMAND_ID` it inherits and
+  ended; one that also cleared its environment, or on macOS runs a program
+  Apple ships, escapes and runs until it ends, within the sandbox; macOS has
+  no cgroup to freeze. Bubblewrap and the container tier end everything
+  regardless. A shell runs
   as the server's user; on the process tier it can start at most
   `sandbox.max_procs` more processes than that user ran when it opened (see
   "Resource limits" below), and on the none tier nothing bounds it. A pids
@@ -311,21 +314,37 @@ and cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
 (`~/.netrc`, `~/.git-credentials`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`,
 …), database and model tokens, shell history, the keychains and browser
 profiles. Each is named both as given and with its links resolved, so a
-home reached through a link is covered. The list is a deny list: another
-file in home that holds a secret is readable, where Linux's bubblewrap
-leaves home out altogether. Signals stay inside the sandbox: the profile
+home reached through a link is covered. Beyond that list, home is unreadable
+by default: a command reads in home only the workspace, `read_only_paths`,
+the toolchains (`~/go`, `~/.cargo`, `~/.rustup`, `~/.npm`, `~/.nvm`,
+`~/.pyenv`, `~/.local/bin`, `~/.local/share/uv` and the like, the folders
+`GOPATH`, `GOROOT`, `CARGO_HOME`, `JAVA_HOME` and similar variables name, each
+`PATH` folder under home with the install a program linked there comes from,
+never a whole folder at the top of home), the caches (`~/.cache`,
+`~/Library/Caches`) and the files git, vim and shells read (`~/.gitconfig`,
+`~/.config/git`, `~/.vimrc`, `~/.zshrc`, …). The credential list above still
+applies inside those. What remains: a secret kept inside one of those
+folders, such as a token in `~/.cache`, is readable, since the rules are
+paths, not contents; the container or vm tier keeps home out altogether, as
+Linux's bubblewrap does. `sandbox.readable_home: true` returns to reading all
+of home but the credential list. Signals stay inside the sandbox: the profile
 allows a command or shell to signal only processes in its own Seatbelt
 sandbox (`(allow signal (target same-sandbox))`), so it cannot stop Abhed
 (`kill $PPID`), the server, or another command's processes, as bubblewrap's
 PID namespace keeps them apart on Linux (`TestSeatbeltSignalsStayInside`).
 One consequence: a command cannot stop a server an earlier command left
 running; Abhed's own stop for a background shell, sent from outside, does.
-The profile starts from `(allow default)`, and the only Mach lookups it
-denies are the network and system configuration services, with the network
-off or under the allowlist; other `mach-lookup` services stay reachable: a command can ask the user's per-session services
-(the pasteboard, Launch Services, which opens applications and URLs, and
-others) to act for it outside the sandbox. Linux has no equivalent. A
-deny-by-default profile for Mach services is not done yet. The environment is an allowlist
+The profile starts from `(allow default)`. The Mach services it denies are
+Launch Services and Apple events (which open applications and URLs), the
+pasteboard (`pbpaste` and `pbcopy` fail), the window server's session port
+and screen capture, on every network setting, and the network and system
+configuration services with the network off or under the allowlist. Other
+`mach-lookup` services stay reachable, and some act outside the sandbox for
+a command (`trustd` fetches a certificate's URLs, for one; TLS needs it). A
+deny-by-default Mach profile would break the system services every program
+uses, so what remains is that list's gap: a per-session service not named
+above can still be asked to act. The container and vm tiers have no Mach
+services at all. The environment is an allowlist
 (`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
 `ABHED_` settings. On macOS that does not keep them from a command: the
 kernel returns any same-user process's environment (`kern.procargs2`) unless
