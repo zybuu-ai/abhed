@@ -107,6 +107,8 @@ type Config struct {
 	// Overridden are the settings a lower layer made that the managed file
 	// replaced with another value.
 	Overridden []SetAsideKey `json:"-"`
+	// userNet is the person's own network settings, held until the managed file.
+	userNet *userNetwork
 	// webIntents and origins are what loading holds until the managed file.
 	webIntents []webIntent
 	origins    map[string]origin
@@ -251,7 +253,7 @@ var managedOnly = map[string]string{
 	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
-	"sandbox.network":              "only the managed configuration turns on the egress allowlist",
+	"sandbox.network":              "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
 	"sandbox.microvm_socket":       "only the managed configuration names the microVM driver",
 	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
 	"egress.default":               "only the managed configuration sets which destinations commands reach",
@@ -350,6 +352,16 @@ func setAside(c *Config, file, layer string, data []byte) {
 	setAsideWeb(c, file, layer)
 	kept := c.SetKeys[:0:0]
 	for _, k := range c.SetKeys {
+		if why, ok := managedOnly[k]; ok && layer == LayerUser && (k == "sandbox.network" || strings.HasPrefix(k, "egress.")) {
+			// Held until the managed file is read: the person's own file may
+			// narrow allow_network to an allowlist of their own.
+			if c.userNet == nil {
+				c.userNet = &userNetwork{network: c.Sandbox.Network, egress: c.Egress}
+			}
+			c.userNet.keys = append(c.userNet.keys, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
+			clearManagedOnly(c, k)
+			continue
+		}
 		if why, ok := managedOnly[k]; ok {
 			clearManagedOnly(c, k)
 			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
@@ -358,6 +370,45 @@ func setAside(c *Config, file, layer string, data []byte) {
 		kept = append(kept, k)
 	}
 	c.SetKeys = kept
+}
+
+// userNetwork is the person's own sandbox.network and egress settings, held
+// until the managed file is read.
+type userNetwork struct {
+	network string
+	egress  egress.Config
+	keys    []SetAsideKey
+}
+
+// userAllowlistNarrows applies the person's own allowlist and egress rules
+// where they only narrow: allow_network is true and the managed file sets
+// none of allow_network, sandbox.network or egress. Otherwise they are set
+// aside, so they never open a host that no network, or the managed rules,
+// would have kept closed.
+func userAllowlistNarrows(c *Config) {
+	u := c.userNet
+	c.userNet = nil
+	if u == nil {
+		return
+	}
+	managedNet := c.ManagedSets("sandbox.allow_network") || c.ManagedSets("sandbox.network") || c.ManagedSets("egress")
+	if u.network == NetworkAllowlist && c.Sandbox.AllowNetwork && !managedNet {
+		c.Sandbox.Network, c.Egress = NetworkAllowlist, u.egress
+		for _, k := range u.keys {
+			c.SetKeys = append(c.SetKeys, k.Key)
+		}
+		return
+	}
+	for _, k := range u.keys {
+		switch {
+		case managedNet:
+		case u.network != NetworkAllowlist:
+			k.Reason = "your own egress settings apply only with sandbox.network \"allowlist\" in the same file"
+		default:
+			k.Reason = "your own allowlist applies only over sandbox.allow_network true, which it narrows; without it commands already reach nothing"
+		}
+		c.SetAside = append(c.SetAside, k)
+	}
 }
 
 // valueIn is the value data gives the setting at key, as a record shows it,
@@ -1371,6 +1422,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg.origins = nil
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
+	userAllowlistNarrows(&cfg)
 
 	applyEnv(&cfg)
 	w := warnSink(o.Warn)

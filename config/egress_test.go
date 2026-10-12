@@ -95,3 +95,48 @@ func TestRefusedEgressValuesAreRecorded(t *testing.T) {
 	}
 	check("untrusted workspace", cfg, "ignored_untrusted")
 }
+
+// The person's own file may narrow allow_network to the egress allowlist;
+// over no network, from a trusted workspace or against a managed value it
+// is set aside, so it never widens.
+func TestUserFileMayNarrowToTheAllowlist(t *testing.T) {
+	own := `{"sandbox":{"allow_network":true,"network":"allowlist"},"egress":{"rules":[{"host":"proxy.golang.org","decision":"allow"}]}}`
+	_, ws := trustHome(t, own, "")
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Network != NetworkAllowlist || len(cfg.Egress.Rules) != 1 || len(cfg.SetAside) != 0 {
+		t.Fatalf("the user's allowlist was set aside: %+v", cfg.SetAside)
+	}
+	_, ws = trustHome(t, `{"sandbox":{"network":"allowlist"}}`, "")
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Network != "" {
+		t.Fatal("an allowlist over no network was kept")
+	}
+	_, ws = trustHome(t, `{"sandbox":{"allow_network":true}}`, `{"sandbox":{"network":"allowlist"}}`)
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true, Trust: TrustGranted}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Network != "" {
+		t.Fatal("a workspace's allowlist was kept")
+	}
+	withManaged(t, `{"egress":{"default":"deny"}}`)
+	_, ws = trustHome(t, own, "")
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Network != "" || len(cfg.Egress.Rules) != 0 {
+		t.Fatalf("over a managed egress setting: network %q rules %v", cfg.Sandbox.Network, cfg.Egress.Rules)
+	}
+	withManaged(t, `{"sandbox":{"allow_network":false}}`)
+	_, ws = trustHome(t, own, "")
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Network != "" || cfg.Sandbox.AllowNetwork {
+		t.Fatalf("over a managed allow_network false: network %q allow %v", cfg.Sandbox.Network, cfg.Sandbox.AllowNetwork)
+	}
+}

@@ -550,6 +550,10 @@ schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
 - `abhed doctor` names the edition and the configuration files it read,
   and takes `-timeout` for the endpoint checks (60 seconds by default).
+- Your own `~/.abhed/config.json` may narrow `sandbox.allow_network: true`
+  to the egress allowlist with `sandbox.network: "allowlist"` and `egress`
+  rules of your own. They are set aside when they would widen anything:
+  over no network, or when the managed file sets any network setting.
 
 ### Changed
 
