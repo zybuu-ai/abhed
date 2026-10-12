@@ -971,13 +971,8 @@ func (p *ptyRun) ask(e *enteredLine) {
 	e.Ahead = p.prompt != nil && !p.prompt.At()
 }
 
-// engineForeground asks, from outside the container, whether the terminal's
-// foreground process group is not the shell's. The shell is the container's
-// pid 1, and nothing is run from the container's image, whose programs the
-// agent can replace: the engine names the shell's host pid, and its /proc
-// stat is read on the engine's host (here on Linux, through the machine for
-// podman elsewhere), or docker's own ps answers. Any doubt is "cannot say",
-// and the line is screened.
+// engineForeground asks the engine, never the agent-writable image, whether the
+// shell (the container's pid 1) has a foreground job; any doubt screens the line.
 func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
 	name := ""
 	for i, a := range cmd.Args {

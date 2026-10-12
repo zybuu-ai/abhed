@@ -347,10 +347,8 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
-// Removed says why a head the record no longer holds was removed on the
-// record (a prune's tombstone that covers that line and hash), with removed
-// true; or, with removed false, why a removal does not account for it ("" for
-// the general reason).
+// Removed says why a head the record no longer holds was removed (removed
+// true), or why a removal does not account for it ("" for the general reason).
 type Removed func(session string, line int64, hash string) (why string, removed bool, err error)
 
 // Check compares statements for one store and tenant with the record as it

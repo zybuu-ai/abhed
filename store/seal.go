@@ -30,10 +30,8 @@ var erasedPayload = json.RawMessage(`{"erased":true}`)
 // sealedBlob marks a sealed checkpoint pre-image.
 var sealedBlob = []byte("abhed.sealed.v1:")
 
-// sealer returns the session's cipher for a write, making its key when the
-// session has none. A deleted session answers ErrSessionDeleted, so nothing is
-// written to it in the clear; nil with no error means no row, which the
-// insert's foreign key refuses. Reads never use this cache: see readKeys.
+// sealer is the session's write cipher, its key made if missing; a deleted
+// session is ErrSessionDeleted, and nil means no row (the insert refuses it).
 func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, error) {
 	if a, ok := p.keys.load(sessionID); ok {
 		return a, nil
@@ -156,9 +154,8 @@ func (p *Postgres) queryKey(ctx context.Context, q, sessionID string) ([]byte, e
 	return key, nil
 }
 
-// readKeys opens the payloads of one read. Each session's key is read from the
-// database once per read, never from the cache, so a session another process
-// erased opens as erased here too; a deleted session's key counts as gone.
+// readKeys opens one read's payloads with keys read fresh, never cached, so
+// another process's erasure (or a deleted session) opens as erased here too.
 type readKeys struct {
 	p   *Postgres
 	got map[string]cipher.AEAD
