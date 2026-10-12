@@ -2071,14 +2071,30 @@ func (b *fragmentBuffer) push(s string) string {
 	}
 	raw := b.carry + s
 	whole := redactedText(b.redact, raw)
+	safe := func(cut int) (string, bool) {
+		head := redactedText(b.redact, raw[:cut])
+		return head, head+redactedText(b.redact, raw[cut:]) == whole
+	}
 	for cut := len(raw) - (b.span - 1); cut > 0; cut -= max(b.span-1, 1) {
 		for cut > 0 && cut < len(raw) && !utf8.RuneStart(raw[cut]) {
 			cut--
 		}
 		// A cut is safe only where splitting changes nothing. A secret that
 		// crosses it starts less than a span before it, so the next try is there.
-		head := redactedText(b.redact, raw[:cut])
-		if cut > 0 && head+redactedText(b.redact, raw[cut:]) == whole {
+		if cut > 0 {
+			if head, ok := safe(cut); ok {
+				b.carry = raw[cut:]
+				return head
+			}
+		}
+	}
+	// Each try fell inside a value (encoded values are longer than the text
+	// between them): look rune by rune below the first try before holding all.
+	for cut := len(raw) - b.span; cut > 0; cut-- {
+		if !utf8.RuneStart(raw[cut]) {
+			continue
+		}
+		if head, ok := safe(cut); ok {
 			b.carry = raw[cut:]
 			return head
 		}
