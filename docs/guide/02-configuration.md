@@ -1216,6 +1216,7 @@ may tighten what the managed file set and never loosen it:
 | `limits.max_turns` | lower it |
 | `permissions.allow` | add nothing when the file sets any `permissions` setting (the `-allow` and `-allowedTools` flags, `/permissions allow`, `Options.Allow`, rpc `start`); the user's and workspace's files' allow rules are dropped with a warning |
 | `additional_dirs` | add nothing when the file sets `additional_dirs` |
+| `memory.auto` | choose only the managed value, when the file sets it |
 | `permissions.deny` | add rules; the managed ones stay |
 
 A refused override stops the command with an error naming the setting. The
