@@ -543,6 +543,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `bash` added "the sandbox denied this operation" to a command that exited
+  `0`, such as `git status` warning about `.abhed`; the note now comes only
+  with a failure. Its notes follow the output after one blank line, not
+  three, and the "cd: not followed" note no longer fires on `cd` as an
+  argument or in a comment (`echo cd`).
 - The Python syntax check was skipped where `python3` is a pyenv, asdf or
   mise shim. The shim is now resolved through the manager to the interpreter
   it runs, never one inside the workspace.
