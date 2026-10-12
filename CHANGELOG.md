@@ -1293,6 +1293,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A session recovered from a process that stopped mid-turn was ended with
+  the calls that turn had open left without an outcome. Each now gets one
+  before the end: an approved call, which may have run, is answered
+  "outcome unknown", and any other is denied with step `handover`. Affects
+  1.2.3 to 1.2.7.
 - A message sent in the web IDE before its first workbench session had
   finished opening could lose its view: the workbench session opened over
   it, so the new session's approval card was no longer shown and its call

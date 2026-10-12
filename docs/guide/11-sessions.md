@@ -214,6 +214,11 @@ An edition that runs replicas on one Postgres can move running turns too
 - Every request keeps exactly one outcome, and the record stays
   append-only: the old request is denied with step `handover` before its new
   call is asked.
+- A take-over that fails after it claimed the session, and the recovery of a
+  turn by a replica that does not continue turns, end the session as
+  recovered. Before the end, each open call gets its outcome there too: one
+  that was approved is answered "outcome unknown", and any other is denied
+  with step `handover`.
 
 Not covered: a background task, or a foreground subagent, running on the
 replica that stopped is recorded as lost or ended and does not go on; an
