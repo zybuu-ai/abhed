@@ -122,7 +122,7 @@ func TestEgressProxyServesTheAllowlist(t *testing.T) {
 
 func TestEgressProxyRefusesWhatItCannotHonour(t *testing.T) {
 	for name, body := range map[string]string{
-		"unknown key":   `{"rules":[],"defualt":"allow"}`,
+		"unknown key":   `{"rules":[],"default_rule":"allow"}`,
 		"repeated key":  `{"default":"deny","default":"allow"}`,
 		"inspect_tls":   `{"inspect_tls":true}`,
 		"bad decision":  `{"rules":[{"host":"a.test","decision":"maybe"}]}`,
