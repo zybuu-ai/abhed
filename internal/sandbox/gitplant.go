@@ -160,7 +160,8 @@ func gitFolderIn(ws, g string) (dir string, inside bool) {
 
 // plantedGits strips what names a program git would run from git folders new
 // since the session's first look, and says why the command is refused. A
-// pointer outside the workspace, or a linked config, is refused every time.
+// repository counts as seen only once it is clean, so a failed rewrite refuses
+// every command until it is fixed.
 func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits []string) error {
 	mem.mu.Lock()
 	if mem.based == nil {
@@ -198,9 +199,7 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 		ok := true
 		for _, c := range []string{"config", "config.worktree"} {
 			if m := cleanGitConfig(filepath.Join(dir, c), g); m != nil {
-				if m["outcome"] == plantRemaining && m["error"] == nil {
-					ok = false
-				}
+				ok = ok && m["outcome"] != plantRemaining
 				entries = append(entries, m)
 				parts = append(parts, m["summary"].(string))
 				delete(m, "summary")
@@ -217,6 +216,7 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 				m["outcome"] = plantRemoved
 				parts = append(parts, h+" was removed")
 			} else {
+				ok = false
 				m["outcome"] = plantRemaining
 				parts = append(parts, h+" is still there and could not be taken out; remove it before running git there")
 			}

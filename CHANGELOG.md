@@ -268,7 +268,8 @@ All notable changes to Abhed are recorded here. The format follows
   hooks moved there, and that command is refused and recorded as
   `sandbox.git_planted`. A `.git` file naming a folder outside the workspace
   or under `.abhed`, or a linked config, is left untouched and refuses every
-  command until removed. Affects 1.2.3 to 1.2.7.
+  command until removed; so does one that could not be cleaned. Affects
+  1.2.3 to 1.2.7.
 - Under bubblewrap, a container or the fence, a repository past the
   20,000-folder look for git folders was left unprotected in Studio and
   `abhed serve` too, so a command could fill the workspace with folders and

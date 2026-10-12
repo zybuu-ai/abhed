@@ -139,3 +139,39 @@ func TestPlantedConfigLinkIsNotWrittenThrough(t *testing.T) {
 		t.Errorf("the planted config kept %q", b)
 	}
 }
+
+// A planted repository that cannot be cleaned is refused on this command and
+// every one after, until it is.
+func TestPlantedRepositoryUncleanedStaysRefused(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through read-only modes")
+	}
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	var mem gitMemory
+	var rec recorded
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("the first look refused: %v", err)
+	}
+	writeFiles(t, ws, map[string]string{"n/.git/HEAD": "ref: refs/heads/main\n", "n/.git/config": "[core]\n\tfsmonitor = ./x\n",
+		"n/.git/hooks/post-checkout": "#!/bin/sh\n"})
+	gitDir := filepath.Join(ws, "n", ".git")
+	if err := os.Chmod(gitDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gitDir, 0o755) })
+	for i := range 2 {
+		if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "could not be") {
+			t.Fatalf("command %d ran with the repository uncleaned: %v", i+1, err)
+		}
+	}
+	if err := os.Chmod(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err == nil {
+		t.Fatal("the repository was cleaned without a refusal")
+	}
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("a cleaned repository still refuses: %v", err)
+	}
+}

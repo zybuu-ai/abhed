@@ -832,7 +832,8 @@ moved there, the command is not run, its error says what was done, and the
 record gains `sandbox.git_planted`. A new `.git` file naming a git folder
 outside the workspace or under `.abhed` (in any case), or a new repository
 whose `config` is a link, is never changed by Abhed: every command is
-refused, naming it, until you remove it. A config is replaced rather than
+refused, naming it, until you remove it; so is one Abhed could not clean
+(a read-only git folder, say), until it can be. A config is replaced rather than
 written through, so a hard link to it keeps its other contents. This runs
 under bubblewrap, in a container and on macOS; under the fence in
 `mount_namespace` mode too. Until
