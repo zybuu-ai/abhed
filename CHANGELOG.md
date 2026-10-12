@@ -637,6 +637,12 @@ All notable changes to Abhed are recorded here. The format follows
   wide was recorded without its text, as though it had not been echoed: the
   shell's soft wrap at the right margin was read as part of the line. Affects
   1.0.0 to 1.2.7.
+- The workbench editor bundled DOMPurify 3.4.8, the copy the editor
+  component ships, which has five published advisories (GHSA-cmwh-pvxp-8882,
+  GHSA-vxr8-fq34-vvx9, GHSA-55q2-fjhq-7xh7, GHSA-c2j3-45gr-mqc4,
+  GHSA-6688-9rhm-gjv2; low and moderate, two of them XSS). The bundle now
+  takes DOMPurify 3.4.16 from its own pinned package instead. Affects 1.1.0
+  to 1.2.7.
 
 ### Added
 
@@ -1661,6 +1667,8 @@ All notable changes to Abhed are recorded here. The format follows
   `github.com/google/uuid`, `github.com/mattn/go-isatty`,
   `github.com/ncruces/go-strftime` and `github.com/remyoudompheng/bigfft`;
   all are BSD-3-Clause or MIT, and SQLite itself is public domain.
+- DOMPurify 3.4.8 to 3.4.16 in the workbench editor bundle, pinned in
+  `web/ide/package.json` (see Security).
 
 ### Go API
 

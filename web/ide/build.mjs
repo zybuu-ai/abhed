@@ -10,8 +10,23 @@ mkdirSync(out, { recursive: true });
 // The directory holds only what this script writes, so a dropped file never lingers.
 for (const f of readdirSync(out)) rmSync(join(out, f));
 
+// Monaco ships its own copy of DOMPurify; the bundle takes the dompurify
+// package instead, so a sanitizer fix needs only a version bump here.
+let dompurifySwapped = false;
+const dompurify = {
+  name: "dompurify",
+  setup(b) {
+    b.onResolve({ filter: /[\\/]dompurify[\\/]dompurify\.js$/ }, (args) => {
+      if (!args.importer.includes(join("node_modules", "monaco-editor"))) return undefined;
+      dompurifySwapped = true;
+      return { path: join(here, "node_modules", "dompurify", "dist", "purify.es.mjs") };
+    });
+  },
+};
+
 const common = {
   bundle: true,
+  plugins: [dompurify],
   format: "iife",
   minify: true,
   target: "es2022",
@@ -27,6 +42,8 @@ await build({
   loader: { ".ttf": "file" },
   assetNames: "[name]",
 });
+
+if (!dompurifySwapped) throw new Error("monaco's DOMPurify import was not replaced; check its path");
 
 // One same-origin worker per language service, loaded by the page as a classic script.
 const monaco = join(here, "node_modules", "monaco-editor", "esm", "vs");
