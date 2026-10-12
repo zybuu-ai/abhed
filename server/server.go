@@ -442,6 +442,8 @@ type liveSession struct {
 	Created time.Time
 	Prompt  string
 	State   string // running | waiting_approval | background | idle | done
+	// began is when the session itself was made; Created is when this process took it up.
+	began time.Time
 	// title is the name a person last gave the session; guarded by mu.
 	title string
 	// Reason is how the last run ended, which the session list shows for done.
@@ -2259,6 +2261,7 @@ func (s *Server) liveFromRecord(ctx context.Context, id string, rec store.Sessio
 		live.fallback = &agent.ModelSwitched{Provider: s.opts.Config.Model.Default,
 			Model: adapter.Profile().Name, From: orDefaultStr(agent.LastModel(events), rec.Model)}
 	}
+	live.began = rec.StartedAt
 	loop.SetHistory(msgs, rec.Turns)
 	if end, ok := agent.LastEnd(events); ok {
 		loop.CarryUsage(end)
@@ -5022,9 +5025,8 @@ func (s *Server) ReleaseSessions(tenant, owner string) int {
 	return n
 }
 
-// ReleaseSessionsBefore is ReleaseSessions for the sessions this process
-// started or took up before before: an account made again at before owns
-// none of them, and keeps those it started or had taken up since.
+// ReleaseSessionsBefore is ReleaseSessions for the sessions made before before,
+// wherever and whenever this process took them up: an account made again then owns none.
 func (s *Server) ReleaseSessionsBefore(tenant, owner string, before time.Time) int {
 	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) || before.IsZero() {
 		return 0
@@ -5033,7 +5035,11 @@ func (s *Server) ReleaseSessionsBefore(tenant, owner string, before time.Time) i
 	defer s.mu.Unlock()
 	n := 0
 	for _, live := range s.running {
-		if live.Tenant == tenant && live.User == owner && live.Created.Before(before) {
+		began := live.began
+		if began.IsZero() {
+			began = live.Created
+		}
+		if live.Tenant == tenant && live.User == owner && began.Before(before) {
 			live.User = auth.UnclaimedOwner(owner)
 			n++
 		}

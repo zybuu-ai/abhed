@@ -653,6 +653,10 @@ func TestViewingWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Taken up now, but made when its record says: an account made in between owns none of it.
+	if live.began.IsZero() || !live.began.Before(live.Created) {
+		t.Fatalf("began %v, taken up %v", live.began, live.Created)
+	}
 	time.Sleep(2500 * time.Millisecond) // past the idle settle window
 	after, _ := st.Events(id)
 	st.mu.Lock()
