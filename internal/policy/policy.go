@@ -982,7 +982,9 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	}
 
 	// 2c'. A command naming workspace trust for a nested run asks in every
-	// mode, whatever ask rules a configuration sets.
+	// mode, whatever ask rules a configuration sets. It is a prompt, not the
+	// control: scripts are read only under patterned rules, and a nested
+	// abhed ignores the variable whatever this sees.
 	if tool == "bash" && namesTrust(append(subjects, canon.Text)) {
 		return Result{Decision: Ask, Reason: "the command names ABHED_TRUST_WORKSPACE or -trust-workspace, which would trust a workspace for a nested run — always requires confirmation", Scope: "", Step: "ask"}
 	}

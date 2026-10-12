@@ -187,13 +187,15 @@ All notable changes to Abhed are recorded here. The format follows
   scope is now offered only when the program `PATH` finds is outside every
   workspace root and no relative `PATH` entry comes first. Affects 1.2.0 to
   1.2.7.
-- The ask before a bash command naming `ABHED_TRUST_WORKSPACE` or
-  `trust-workspace` was a default `permissions.ask` entry, so a configuration
-  with its own ask list dropped it, and a command that assembled the name
-  (`X=ABHED_TRUST_WORKSPACE; env $X=1 abhed …`) or set it in a script was not
-  caught. The ask is now built in, in every mode and any case, and a nested
-  `abhed` inside an agent's command ignores `ABHED_TRUST_WORKSPACE` with a
-  warning. Affects 1.2.2 to 1.2.7.
+- A nested `abhed` inside an agent's command honoured
+  `ABHED_TRUST_WORKSPACE`, however the command set it: a name the command
+  assembled (`X=ABHED_TRUST_WORKSPACE; env $X=1 abhed …`) or one set in a
+  script passed the ask, which was only a default `permissions.ask` entry
+  that a configuration with its own ask list dropped. A nested `abhed` now
+  ignores `ABHED_TRUST_WORKSPACE` with a warning, which is the control. The
+  ask is also built in, in every mode and any case, for a command whose text
+  names it; it sees inside a script the command runs only while a bash deny
+  or ask rule has a pattern, when scripts are read. Affects 1.2.2 to 1.2.7.
 - A deny or ask rule naming flags, such as `bash(rm -rf *)`, did not match
   the same flags moved or split (`rm x -rf`, `rm -r -f x`). Such a rule now
   also matches a command with the same program and subcommands that has
