@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -34,8 +35,8 @@ var sealedBlob = []byte("abhed.sealed.v1:")
 // has no key: written before keys, or erased. Reads never use this cache: see
 // readKeys.
 func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, error) {
-	if a, ok := p.keys.Load(sessionID); ok {
-		return a.(cipher.AEAD), nil
+	if a, ok := p.keys.load(sessionID); ok {
+		return a, nil
 	}
 	key, err := p.sessionKey(ctx, sessionID)
 	if err != nil {
@@ -63,8 +64,57 @@ func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, e
 	if err != nil {
 		return nil, err
 	}
-	p.keys.Store(sessionID, a)
+	p.keys.store(sessionID, a)
 	return a, nil
+}
+
+// keyCacheMax bounds the write ciphers a store keeps.
+const keyCacheMax = 1024
+
+// keyCache is the write ciphers of the sessions a store wrote lately, at most
+// max (keyCacheMax when 0); a full cache lets an arbitrary one go.
+type keyCache struct {
+	mu  sync.Mutex
+	m   map[string]cipher.AEAD
+	max int
+}
+
+func (c *keyCache) load(id string) (cipher.AEAD, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a, ok := c.m[id]
+	return a, ok
+}
+
+func (c *keyCache) store(id string, a cipher.AEAD) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = map[string]cipher.AEAD{}
+	}
+	limit := c.max
+	if limit <= 0 {
+		limit = keyCacheMax
+	}
+	for k := range c.m {
+		if len(c.m) < limit {
+			break
+		}
+		delete(c.m, k)
+	}
+	c.m[id] = a
+}
+
+func (c *keyCache) drop(id string) {
+	c.mu.Lock()
+	delete(c.m, id)
+	c.mu.Unlock()
+}
+
+func (c *keyCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.m)
 }
 
 func newAEAD(sessionID string, key []byte) (cipher.AEAD, error) {

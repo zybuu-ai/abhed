@@ -52,8 +52,8 @@ type Postgres struct {
 	owners        OwnerPolicy
 	ownerAccounts func() ([]*auth.User, error)
 
-	// keys caches each session's payload cipher by session id; see seal.go.
-	keys sync.Map
+	// keys caches the payload ciphers of sessions written lately; see seal.go.
+	keys keyCache
 	// anchor is given a session's chain head at each run's end.
 	anchor func(tenant, session string, pos int64, hash string)
 }
@@ -1142,7 +1142,7 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
 	}
 	for _, id := range ids {
-		p.keys.Delete(id)
+		p.keys.drop(id)
 	}
 	return nil
 }
