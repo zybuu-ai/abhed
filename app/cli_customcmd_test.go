@@ -319,3 +319,34 @@ func TestQueuedModelAndBangWaitForACommandsTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A /model run during a custom command's turn, queued while it worked, is
+// not undone when the turn puts its own model back.
+func TestQueuedModelSurvivesACommandsRestore(t *testing.T) {
+	st, _, _ := customRig(t)
+	st.appCfg.Model.Providers = map[string]config.ProviderConfig{
+		"a": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Model: "a"},
+		"b": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Model: "b"},
+		"c": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Model: "c"},
+	}
+	st.appCfg.Model.Default = "a"
+	userCommand(t, "fast.md", "---\nmodel: b\n---\nGO")
+	typeLine(t, st, "/fast")
+	turn := st.takeTurn()
+	if turn == nil || st.appCfg.Model.Default != "b" {
+		t.Fatalf("turn %+v on %q", turn, st.appCfg.Model.Default)
+	}
+	if err := switchCommandModel(st, "c"); err != nil { // as a queued /model c does
+		t.Fatal(err)
+	}
+	turn.done()
+	if st.appCfg.Model.Default != "c" {
+		t.Fatalf("the restore undid the queued /model: on %q", st.appCfg.Model.Default)
+	}
+	// Without one, the restore puts the model back.
+	typeLine(t, st, "/fast")
+	st.takeTurn().done()
+	if st.appCfg.Model.Default != "c" {
+		t.Fatalf("not put back: on %q", st.appCfg.Model.Default)
+	}
+}

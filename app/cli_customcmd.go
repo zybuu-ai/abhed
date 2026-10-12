@@ -207,6 +207,10 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 			return fmt.Errorf("%s was not sent: %w", c.Name, err)
 		}
 		undo = append(undo, func() {
+			// A /model run since, such as one queued during the turn, stands.
+			if st.appCfg.Model.Default != c.Model {
+				return
+			}
 			if err := switchCommandModel(st, was); err != nil {
 				sf.Append(ui.Block{Kind: ui.BlockError, Text: "could not switch back to " + was + ": " + err.Error()})
 			}

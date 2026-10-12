@@ -677,6 +677,10 @@ on. A server with it off starts on the older schema as before.
   its last `session.ended`, so the record kept that end's context size and
   compaction count though the command had changed them. The release now
   keeps only the reason and takes the totals from the session as it stands.
+- A `/model` typed while a custom command with its own `model` ran was
+  undone when the command's turn switched back; the model chosen during
+  the turn now stands. `/bug`'s browser opener is waited for, so it no
+  longer stays behind as a defunct process.
 
 ### Dependencies
 

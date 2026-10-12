@@ -212,7 +212,7 @@ A file in a subdirectory, `frontend/test.md`, is `/frontend:test`.
 | `description` | shown in `/help` and `/commands` |
 | `argument-hint` | shown after the name |
 | `allowed-tools` | the tools the command's turn may use: a subset of the session's, never an allow rule; a tool the session lacks refuses the command |
-| `model` | a configured provider the turn runs on; the session switches back afterwards |
+| `model` | a configured provider the turn runs on; the session switches back afterwards, unless a `/model` typed during the turn chose another |
 
 Any other key refuses the command: a command cannot change the mode, add
 rules, or touch the sandbox.

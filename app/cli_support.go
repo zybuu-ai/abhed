@@ -169,12 +169,27 @@ func slashBug(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if ans, _ := e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: "Open this link in your browser?"}); ans != ui.ChoiceYes {
 		return false, nil
 	}
+	if _, err := openLink(ctx, link); err != nil {
+		return false, fmt.Errorf("could not open the browser: %w; the link is above", err)
+	}
+	return false, nil
+}
+
+// openLink starts the system's opener on link and reaps it when it exits, so
+// it is not left a zombie; the channel closes then.
+func openLink(ctx context.Context, link string) (<-chan struct{}, error) {
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		opener = "open"
 	}
-	if err := exec.CommandContext(ctx, opener, link).Start(); err != nil { // #nosec G204 -- the system opener, on a link the person just agreed to open
-		return false, fmt.Errorf("could not open the browser: %w; the link is above", err)
+	cmd := exec.CommandContext(ctx, opener, link) // #nosec G204 -- the system opener, on a link the person just agreed to open
+	if err := cmd.Start(); err != nil {
+		return nil, err
 	}
-	return false, nil
+	reaped := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(reaped)
+	}()
+	return reaped, nil
 }
