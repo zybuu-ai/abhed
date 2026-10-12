@@ -29,20 +29,21 @@ nothing and burns a turn; a tool with ambiguous semantics produces silent corrup
 
 ## 1. Tool surface
 
-Nine native tools. Everything else arrives via the reviewed MCP gateway (§03-security).
+A small set of core native tools, below; the rest are listed in [Tools](../guide/05-tools.md).
+Everything else arrives via the reviewed MCP gateway (§03-security).
 This set is deliberately small — every tool is an attack surface and a decision the model
 can get wrong.
 
 | Tool | Purpose | Mutates | Approval |
 |---|---|---|---|
-| `read` | Read file content | no | none |
+| `read` | Read file content | no | none, except `.env`, `*.pem`, `*.key` and SSH key files, which ask |
 | `write` | Create/overwrite file | **yes** | ask (unless allowlisted) |
 | `edit` | Exact-match replacement | **yes** | ask (unless allowlisted) |
 | `glob` | Find files by pattern | no | none |
 | `grep` | Search file contents | no | none |
 | `bash` | Execute shell command | **yes** | ask, per-command scoped |
 | `task` | Spawn subagent | no* | none (budget-capped) |
-| `plan` | Write/update task plan | no | none |
+| `exit_plan` | In plan mode, propose the plan for the person's decision | no | none |
 | `todo` | Track multi-step progress | no | none |
 
 \* `task` doesn't mutate directly, but its subagent can.
@@ -261,7 +262,8 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
       "command":    {"type":"string"},
       "description":{"type":"string","description":"Short human-readable description shown in the approval prompt."},
       "timeout_ms": {"type":"integer","description":"Default 120000, max 600000."},
-      "background": {"type":"boolean","description":"Run detached; returns a handle. Use for servers and long builds."}
+      "secrets":    {"type":"array","items":{"type":"string"},"description":"Stored secrets this command needs as environment variables; each must be allowed by policy."},
+      "run_in_background": {"type":"boolean","description":"Start and return at once with a shell id; read with shell_output, stop with shell_kill."}
     },
     "required":["command","description"]
   }
@@ -280,7 +282,8 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
   model must reason about. Never convert a failing test run into a tool failure.
 - `description` is required because it's what the human sees in the approval prompt. A tool
   that asks for approval without saying what it does is unusable.
-- Background mode returns a handle; output retrievable and the process killable.
+- Background mode returns a shell id; `shell_output` reads its output and `shell_kill`
+  stops it. The agent is told when it ends.
 - The command runs in a session of its own, with no controlling terminal, so a read of
   `/dev/tty` fails at once. A cancelled call (an interrupt, Send now, a shutdown, the
   timeout) kills that session's process group, in every sandbox tier, and a container is
@@ -309,7 +312,10 @@ force-push) require confirmation **in every mode**, including the most permissiv
       "prompt":     {"type":"string","description":"Complete, self-contained task. The subagent sees none of this conversation."},
       "description":{"type":"string","description":"3-5 word label."},
       "agent_type": {"type":"string","enum":["general","explore","test","review","<loaded definitions>"],"description":"One of the agent types listed on the task tool. Defaults to general."},
-      "max_turns":  {"type":"integer"}
+      "max_turns":  {"type":"integer"},
+      "resume":     {"type":"string","description":"A finished subagent's task_id, to continue it."},
+      "background": {"type":"boolean","description":"Offered when background tasks are on."},
+      "model":      {"type":"string","description":"Offered when more than one model is configured."}
     },
     "required":["prompt","description"]
   }
@@ -332,14 +338,14 @@ force-push) require confirmation **in every mode**, including the most permissiv
 
 ---
 
-## 9. `plan` and `todo`
+## 9. `exit_plan` and `todo`
 
 Lightweight, but they carry real weight: they are the model's externalized working memory,
 and they survive compaction when the conversation doesn't (P4).
 
-- **`plan`** — write or update a structured plan for the current task. Persisted to the
-  session and re-injected after compaction. Used by plan mode (§07-ux).
-- **`todo`** — a checklist with states (`pending` / `in_progress` / `done`). Exactly one item
+- **`exit_plan`** — offered only in plan mode: the model presents its plan, which is
+  recorded, and the person decides whether it may be carried out (§09-ux).
+- **`todo`** — a checklist with states (`pending` / `in_progress` / `done` / `cancelled`). Exactly one item
   `in_progress` at a time; enforce it. Rendered live in the CLI so the human can see progress
   without reading the transcript.
 

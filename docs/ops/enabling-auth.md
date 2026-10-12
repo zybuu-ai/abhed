@@ -17,6 +17,10 @@ much security sounds good.
 | Change your own password at `/account` | yes | yes | yes |
 | OIDC single sign-on (Keycloak, Okta, Entra ID, Auth0, Google and other OIDC providers) and API bearer tokens from the same provider | — | yes | yes |
 | Invites, an admin page, access requests and grants with a recorded reason | — | yes | yes |
+| GitHub sign-in (`auth.github`) | — | yes | yes |
+| Sign out everywhere, and revoking a person's sign-ins and tokens | — | yes | yes |
+| Single sign-on for `abhed login` | — | yes | yes |
+| Workload identity and token exchange (SPIFFE JWT-SVIDs, `auth.workload`) | — | — | yes |
 | Tenant mapping from the identity provider | — | — | yes |
 
 The paid editions are built on this module and document their own setup.
@@ -187,9 +191,6 @@ every account on one server:
   run one server per group of people who may see each other's files.
 - runs its tools and terminals as the **same operating-system user**, the one
   the server runs as.
-- draws on the **same secret store** (`abhed secret`). A secret an allow rule
-  permits is available to every account's sessions, not only to the person
-  who stored it.
 - under the fence tier on Linux older than 6.12 (Landlock ABI below 6), has
   its **commands unseparated from other accounts' commands**: one session's
   commands can signal another's and read their command lines in `/proc`.
@@ -197,9 +198,12 @@ every account on one server:
   readable either way.
 
 What is per account: sessions and their records, subagent records, approvals,
-and each session's terminals. People who must not see each other's files or
-secrets need separate servers, each with its own workspace, OS user and secret
-store.
+each session's terminals, and secrets: each account has its own store under
+`~/.abhed/secrets.d`, managed with `GET /v1/secrets` and `PUT` and `DELETE
+/v1/secrets/{name}`, and the operator's store (`abhed secret`) serves
+scheduled runs only ([Permissions](../guide/04-permissions.md#secrets)).
+People who must not see each other's files need a sandbox per session, the
+default on a server with more than one account, or separate servers.
 
 ### Password handling
 
@@ -441,6 +445,8 @@ above without them.
 |---|---|---|
 | `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued; also when a command-line token is issued and on each use, and for a client certificate that signs the account in | `403` with the error text; no session, no token |
 | `auth.CLILoginAdvertiser` on a `Provider` | when `abhed login` reads `GET /v1/cli` | its methods are listed after the local one; the middleware's `Verifier` must accept the tokens they lead to |
+| `auth.Middleware.Authorize(r, *Identity) error` | on every request after the caller is identified, and on each stream recheck | `403` with its text; no session is ended |
+| `server.(*Server).RecheckStreams()` | when an edition ends sessions or withdraws access | every open event and terminal stream is checked again before it writes more |
 | `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…,"refused":true}`; whoami answers `authenticated: false` with the reason |
 | `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way. `user.admin_revoked` carries `sessions_ended` (on this server), `work_stopped` (runs, shells, tasks and terminals stopped here) and, when the sign-out could not be recorded for other servers, `revocation_error` |
 
@@ -448,20 +454,27 @@ Notes for an edition setting them:
 
 - **The reason is shown to the person.** Admit's and Check's error text
   appears in the sign-in form, in whoami, and on the front door after "Access
-  refused:", cut to 200 characters. Write it for them; never pass through an
-  internal error such as a database message.
+  refused:". The front door and its reason cookie keep only the first 200
+  characters; the API's `403` and whoami carry it whole. Write it for them;
+  never pass through an internal error such as a database message.
 - **Admit covers local accounts only.** A single sign-on session is issued at
   its callback, which is public, and is ended by Check on its first checked
   request. Refuse at the provider's own callback where it matters.
-- **Check runs when a request arrives.** A stream already open (session
-  events, a terminal) is not cut when access is withdrawn; it is refused when
-  it reconnects.
+- **Check also runs on open streams.** An event or terminal stream is
+  checked again at least every 10 seconds, and at once when
+  `RecheckStreams` is called; one Check refuses ends with the reason. Call
+  `Server.RecheckStreams` when your edition ends sessions or withdraws
+  access.
 - **AdminAudit may run while the admin-rights lock is held**, so it must not
   call an admin route itself.
 
 `auth.LocalAuth.Sessions()` lists live local sessions — a digest of the
 cookie as the ID, never the cookie, with the user, when it was created, last
 seen and expires — and `EndSession(id)` ends one by that digest.
+`EndSession` checks nothing itself: a route an edition adds to call it must
+be for administrators only, must record the action through `AdminAudit`,
+and must sit behind the server's origin check, so a cross-site form cannot
+end someone's sign-in.
 
 ## Tenant
 

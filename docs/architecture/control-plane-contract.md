@@ -708,10 +708,13 @@ client sent `If-Match` and a retry when it did not.
 | Kubernetes driver | Team (private module, via `app.WithDriver`) |
 | Workspaces, roles, quotas, four-eyes approvals on sandboxes (via §12) | Team |
 | Admission interceptors on every mutation, HA ownership and leases | Enterprise |
+| Per-account secrets store (`server.Options.SecretsFor` seam) | Community |
+| Single sign-on for `abhed login`, GitHub sign-in, team secrets | Team |
+| Workload identity and token exchange (SPIFFE, `auth.workload`) | Enterprise |
 
 The Community module carries only the seams these use (§12, §13); with none of
 them set, which is every Community build, nothing behaves differently. The
-configuration keys `control_plane.ha`, `control_plane.interceptors` and
+configuration keys `control_plane.ha.enabled`, `control_plane.interceptors` and
 `control_plane.kubernetes` (the driver's options as one JSON object, managed
 only) are in every edition's schema, and a Community binary refuses to start with them set,
 naming the key and the edition, rather than run without them.

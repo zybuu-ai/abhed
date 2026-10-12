@@ -14,7 +14,7 @@ The design research that informed Abhed produced **zero verified claims about
 agent sandboxing**, and **two candidate claims were refuted** under adversarial
 verification. The isolation posture of comparable agents is therefore unknown,
 not known-good. Abhed's controls were built from first principles and tested
-against 16 self-authored attacks; that is a floor, not a clearance.
+against the self-authored attacks in `internal/redteam`; that is a floor, not a clearance.
 
 ## What Abhed is
 
@@ -30,7 +30,9 @@ that reaches a code-execution primitive.**
 | Agent loop | `internal/agent` | Turn cycle, compaction, subagents |
 | Tool layer | `internal/tools` | File I/O, shell, workspace scoping |
 | Policy engine | `internal/policy` | Ordered evaluation, deny rules |
-| Sandbox | `internal/sandbox` | Seatbelt / bubblewrap / OCI / gVisor |
+| Sandbox | `internal/sandbox` | Seatbelt / bubblewrap / OCI / gVisor / Landlock fence (preview) |
+| Control plane and drivers | `controlplane`, `driver` (the `microvm` driver experimental) | `/v1/sandboxes`, per-session sandboxes, `:attach`, `:exec`, `:ssh`, `:expose` |
+| Egress proxy | `internal/egress` | The allowlist |
 | MCP gateway | `internal/mcp` | Third-party tool servers |
 | HTTP API + console | `server` | Multi-tenant, SSE |
 | Auth | `auth` | Local accounts, proxy identity, session middleware |
@@ -46,7 +48,8 @@ Each is a property Abhed asserts. Breaking any one is a critical finding.
 
 1. **Workspace confinement.** No path, symlink, race, or shell construction lets
    the agent read or write outside its workspace.
-2. **Egress denial from the sandbox.** With `allow_network: false`, no command
+2. **Egress denial from the sandbox.** With `allow_network: false`, or with
+   `sandbox.network: "allowlist"` for hosts the rules do not allow, no command
    the sandboxed shell runs, nor the toolchains it starts, reaches the network
    — including DNS, ICMP, unix sockets to host daemons, and abuse of a
    permitted toolchain (a package manager's fetch, a language runtime's HTTP

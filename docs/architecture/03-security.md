@@ -68,7 +68,7 @@ agent still cannot exceed its granted authority.
 | I0 | Process: Seatbelt on macOS, bubblewrap namespaces on Linux (no seccomp filter, no Landlock) | Weak | ~0 | Never for untrusted code |
 | I1 | Container (OCI) | Namespace | Low | Trusted internal only |
 | I2 | **gVisor (runsc)** | Userspace kernel | ~10-20% | **What `vm` builds today** |
-| I3 | Firecracker / Kata microVM | Hardware virt | ~50-150 ms boot | Target, not shipped |
+| I3 | Firecracker / Virtualization.framework microVM | Hardware virt | ~50-150 ms boot | Experimental: the `microvm` control-plane driver, chosen per sandbox; not a `sandbox.tier` |
 | I4 | Dedicated node | Physical | High | Classified / cross-tenant-sensitive |
 
 **What ships today.** The four configurable tiers are `none`, `process`, `container` and
@@ -77,8 +77,8 @@ agent still cannot exceed its granted authority.
 sandbox on macOS; `container` is an OCI container through the host's engine; `vm` is that
 same container pinned to the gVisor `runsc` runtime, which is I2 above — a userspace kernel
 intercepting syscalls, not a hardware-virtualised microVM. `internal/sandbox` contains three
-backends, `process.go`, `container.go` and the fence (`fence.go`, `fence_linux.go`); there
-is no Firecracker or Kata implementation, and the tier refuses to start if `runsc` is not
+backends, `process.go`, `container.go` and the fence (`fence.go`, `fence_linux.go`); the
+microVM lives apart, as a control-plane driver (`driver/microvm`), and the `vm` tier refuses to start if `runsc` is not
 registered with the container engine rather than silently running without it. The `process` tier filters no system calls: bubblewrap runs without `--seccomp`
 and no Landlock ruleset is applied, so a command there can make any call your user could.
 
@@ -89,9 +89,9 @@ should read it as gVisor. Container-only isolation (I1) remains *not* sufficient
 agent-generated code — a container shares the host kernel — which is why `vm` exists as a
 distinct tier and why `min_tier` is the setting that matters.
 
-**I3 is on the roadmap, and is not implemented.** A microVM per session would give a
-hardware-enforced boundary at a boot cost small relative to agent turn latency. Until it
-exists, this document says gVisor.
+**I3 ships as the experimental `microvm` control-plane driver** ([The microVM
+driver](../guide/24-microvm.md)): a virtual machine per sandbox, for `abhed serve`'s
+sandboxes and per-session sandboxes. The agent's own `sandbox.tier: vm` is still gVisor.
 
 What each tier bounds today:
 
@@ -101,11 +101,16 @@ What each tier bounds today:
   512 MB cap per file, and `max_memory_mb` and `max_procs` as the container's limits.
 - **`process`.** Writes go to the workspace, plus temp folders and, on macOS, toolchain
   caches ([Configuration](../guide/02-configuration.md#sandbox) lists them). Processes are
-  bounded by `max_procs` and each command by its timeout; memory, CPU and disk are not.
+  bounded by `max_procs` and each command by its timeout. On Linux each process's data
+  is bounded by `max_memory_mb`, and where Abhed runs in a delegated cgroup the command
+  has a cgroup of its own; on macOS memory is not bounded, and CPU and disk are bounded
+  on neither.
   A command signals only its own processes: bubblewrap's PID namespace on Linux, a
   Seatbelt `same-sandbox` signal rule on macOS, so `kill $PPID` does not reach Abhed. On
-  macOS, Mach service lookups other than the network and system configuration services
-  stay open under the profile's `(allow default)`
+  macOS the profile starts from `(allow default)` and denies Launch Services and Apple
+  events, the pasteboard, the window server's session port and screen capture, and the
+  network and system configuration services with the network off or under the
+  allowlist; other Mach services stay open
   ([security posture](../trust/security-posture.md)).
   When Abhed runs as root the command is given no capabilities (`--cap-drop ALL` in a user
   namespace, `no_new_privs` kept) and the writable root-owned `/proc` files are bound
@@ -177,17 +182,20 @@ What Abhed does today:
 
 What it does not do yet:
 
-- **No file containment.** A stdio server is a process Abhed starts on the host, as your
-  user: it can read and write what you can, so it can plant a LaunchAgent, a systemd unit
-  or a shell rc line that runs later outside any sandbox. With no `env` it inherits Abhed's
-  whole environment. Outside the allowlist it also reaches the network whatever the
+- **Partial file containment.** A stdio server is a process Abhed starts on the host, as
+  your user. On the process tier its home folder is hidden but for a home of its own under
+  `~/.abhed/mcp` and its install folder, read-only; `"host_files": true` restores full
+  access, with which it can plant a LaunchAgent, a systemd unit or a shell rc line that
+  runs later outside any sandbox. It gets only `PATH`, `HOME`, `USER`, the locale and
+  temporary-folder variables, then the variables its `env` lists. Outside the allowlist it also reaches the network whatever the
   sandbox tier says. Under `sandbox.network: "allowlist"` only its direct sockets are
   confined, to an egress proxy of its own (Seatbelt on macOS; network and process
   namespaces on Linux, never as root), and where that cannot be done it is not started.
   On Linux it can still reach AF_UNIX sockets in folders left visible, and on macOS
   `trustd` fetches certificate URLs for it outside the proxy.
-- **No signed registry and no pinning.** Any command or URL in the configuration can be a
-  server, and `digest` is carried in the configuration but checked nowhere.
+- **No signed registry.** Any command or URL in the configuration can be a server. A
+  stdio server with a `digest` starts only when the program its command resolves to
+  matches; a URL server with a `digest` is refused.
 - **No per-server network policy.** Under the allowlist the session's `egress` rules judge
   every server's requests (MCP over HTTP in Abhed's process; a stdio server's through its
   own proxy, recorded with `mcp_server`), but no rule names a server; outside the allowlist
@@ -201,7 +209,8 @@ tools improve both reliability *and* security: every tool is an attack surface a
 decision the model can get wrong.
 
 Abhed ships a deliberately small native tool set — read, write, edit, glob, grep, bash,
-task/subagent, plan — plus a few opt-in native tools, off by default and listed below.
+task/subagent, `exit_plan` and a few session tools (todo, background shells, questions,
+memory) — plus a few opt-in native tools, off by default and listed below.
 Everything else arrives through the reviewed MCP gateway or an extension, and goes
 through the same policy engine.
 
@@ -212,8 +221,8 @@ through the same policy engine.
 process with host network, so the Seatbelt, bubblewrap or gVisor boundary that contains
 `bash` does not contain them. Under `sandbox.network: "allowlist"`, `web_search` and
 `web_fetch` are judged by the `egress` rules in Abhed's process, request by request, and
-connect only to an address the rules allow; `ssh`, the `k8s_*` tools and remote RAG are
-not, and keep their own settings.
+connect only to an address the rules allow, and so are `ssh`, the `k8s_*` tools, remote
+RAG and `abhed resolve`'s forge API and push, which need allow rules for their hosts.
 
 All five are disabled unless configured, so the default posture of no egress is intact.
 Enabling one is a deliberate decision to move that execution and its egress outside the
@@ -222,12 +231,13 @@ boundary, and the consequences are worth stating plainly:
 | Tool | Mediation once enabled |
 |---|---|
 | `ssh` | Always asks — it reports `Mutates() = true`, so no mode auto-approves it |
-| `k8s_get`, `web_search` | Read-only, so **auto mode approves them without a prompt** |
+| `k8s_get` | Read-only, so **auto mode approves it without a prompt** |
+| `web_search` | Asks for each search in every mode but bypass, unless an allow rule names it |
 | `k8s_apply` | Mutating, so it asks |
 | `web_fetch` | Read-only, but it composes a URL that can carry data to the site, so with no `web_fetch.allowed_hosts` it **asks in the default, accept-edits, auto and plan modes** unless an allow rule names the URL. With `allowed_hosts`, a listed host runs unasked on the scheme's default port and asks on any other port. Bypass mode (unless a managed policy disables it) and `abhed eval` approve every ask. It refuses internal, loopback and metadata addresses on every hop and a URL holding a stored secret |
 
-The read-only pair is the sharp edge: in an unattended or `auto` deployment, an injected
-instruction in untrusted content can drive them to read and to reach the network with no
+`k8s_get` is the sharp edge: in an unattended or `auto` deployment, an injected
+instruction in untrusted content can drive it to read and to reach the network with no
 sandbox boundary in the way. Argument-scoped policy rules (`deny k8s_get(secrets*)`) are
 the control that applies, and they work — but whole-tool policy is otherwise the only
 thing mediating these tools.
@@ -236,8 +246,8 @@ Under the allowlist, `web_fetch` and `web_search` go through the egress rules an
 recorded as `egress.decision` events with `kind` `web_fetch` or `web_search`; `web_fetch`
 keeps its own checks after the rules', so it still never reaches an internal address.
 Outside the allowlist, `web_fetch.allowed_hosts` is a per-machine list, not a broker.
-Bringing `ssh`, the `k8s_*` tools and remote RAG under the same rules is outstanding work
-(issue #44).
+`ssh`, the `k8s_*` tools, remote RAG and the forge are recorded as kinds `ssh`, `k8s`,
+`rag` and `forge`.
 
 ## 7. Validation status
 
@@ -304,7 +314,7 @@ asserted. Current state:
       s390x: the job `s390x` cross-builds and vets for it and runs the unit tests under
       emulation, which checks the filter's s390x table against `golang.org/x/sys` and
       its programs in an interpreter laid out as s390x lays out a call, but cannot load
-      a filter, so the fence's gated tests have not run on an s390x kernel
+      a filter, so the fence's gated tests have not run on an s390x kernel.
 - [x] **Cross-tenant leakage** — session list and replay isolated (`server`)
 - [x] **MCP tool poisoning** — descriptions sanitized before reaching the model
       (`internal/mcp`)

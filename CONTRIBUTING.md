@@ -31,8 +31,9 @@ Some tests need more:
 - Postgres integration tests need `ABHED_TEST_DSN` pointed at a real database
   (`store`).
 - The fuzz targets are `FuzzFoldOnlyTightensDeny` (`internal/policy`),
-  `FuzzPolicySubjectIsExecutedSubject` (`internal/tools`) and
-  `FuzzCanonical` (`store/local`). CI runs only their seed corpora, as part
+  `FuzzPolicySubjectIsExecutedSubject` (`internal/tools`), `FuzzCanonical`
+  (`store/local`), `FuzzParseRequestLine` and `FuzzHostMatching`
+  (`internal/egress`), and `FuzzReadMessage` and `FuzzReadFrame` (`wsconn`). CI runs only their seed corpora, as part
   of `go test`. To fuzz one, run it on its own with the minimizer capped:
 
   ```sh

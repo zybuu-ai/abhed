@@ -5,6 +5,13 @@ files. All are **off by default**: reaching a cluster, a VM, or a corpus is an
 authorization decision, and credentials already sitting on the machine are not
 a reason to hand them to an agent unasked.
 
+Under `sandbox.network: "allowlist"`, the Kubernetes and SSH tools and RAG
+over HTTP are judged by the `egress` rules, recorded as kinds `k8s`, `ssh`
+and `rag`: add an allow rule for each cluster, host and corpus
+([Network policy](../guide/21-network-policy.md)). A kubeconfig's credential
+helper gets only what a program needs to run, plus the variables cloud
+sign-in tools read.
+
 ## Kubernetes
 
 ```json
