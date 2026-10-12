@@ -16,6 +16,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/wsconn"
 )
 
@@ -654,6 +655,26 @@ func TestExecRefusesWhatItCannotReadInTheSandbox(t *testing.T) {
 		err := screenExec(pol, command, nil)
 		if got := errors.Is(err, controlplane.ErrForbidden); got != refused {
 			t.Errorf("%q: %v", command, err)
+		}
+	}
+}
+
+// Under a hook alone, a line typed into an attached sandbox shell gets the
+// same check an :exec does: what it would read in the sandbox is refused.
+func TestTypedLineRefusesWhatItCannotReadUnderAHook(t *testing.T) {
+	// No rules, as an engine with only an extension's hook has.
+	pol := policy.New(policy.ModeDefault)
+	pol.SandboxFiles = true
+	pol.Hooks = append(pol.Hooks, func(string, json.RawMessage) *policy.Result { return nil })
+	for line, refused := range map[string]bool{
+		". /w/s.sh": true, "BASH_ENV=/w/s.sh bash -c true": true, "zsh -c true": true, "bash": true, "./s.sh": true,
+		"ls -la": false, "go version": false, "sh -c 'ls'": false,
+	} {
+		if got := errors.Is(lineRefused(pol, line), controlplane.ErrForbidden); got != refused {
+			t.Errorf("%q: refused %v", line, got)
+		}
+		if got := errors.Is(execRefused(pol, line), controlplane.ErrForbidden); got != refused && line != "bash" {
+			t.Errorf(":exec %q: refused %v", line, got)
 		}
 	}
 }

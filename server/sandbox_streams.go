@@ -432,8 +432,13 @@ func lineRefused(pol *policy.Engine, line string) error {
 	if d.Decision == policy.Deny {
 		return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
 	}
-	if why := unreadable(d, tools.CanonicalCommand(line).AsTerminalLine(), pol.GitExtensions); why != "" && screensStdin(pol) {
+	canon := tools.CanonicalCommand(line).AsTerminalLine()
+	if why := unreadable(d, canon, pol.GitExtensions); why != "" && screensStdin(pol) {
 		return fmt.Errorf("%w: %s, which a typed line may not do while the rules are in force; name the program in the line", controlplane.ErrForbidden, why)
+	}
+	// As for an :exec: hooks too, and what the sandbox's files hold is out of reach.
+	if why := policy.SandboxScripts(canon); why != "" && pol.SandboxFiles && screensStdin(pol) {
+		return fmt.Errorf("%w: %s, which a typed line may not do while the rules are in force", controlplane.ErrForbidden, why)
 	}
 	return nil
 }
