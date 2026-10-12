@@ -238,6 +238,7 @@ you trust. With `-ca`, only that CA is trusted for the server.
 | `POST /v1/cli/authorize` | no | issues a PKCE code for the signed-in person; JSON from a browser session only |
 | `POST /v1/cli/logout` | bearer | ends the token it is sent with |
 | `GET /v1/cli/whoami` | no | who the request is signed in as, bearer tokens included |
+| `GET /v1/whoami` | yes | the same for a bearer token (`"credential": "token"`, with `scopes` when the token was narrowed), and for a browser session; `401` for a token that does not verify, `403` for one an edition's `Authorize` refuses |
 
 Approving accepts only `application/json` from a page of the same origin, so
 another site cannot approve a sign-in with a form, and only from a browser

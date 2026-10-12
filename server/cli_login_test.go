@@ -290,3 +290,77 @@ func TestServeTLSWithClientCertificate(t *testing.T) {
 		t.Logf("plain HTTP: %v", err)
 	}
 }
+
+// scopedVerifier stands for an edition's narrowed token: it names a principal
+// and the scopes the token was narrowed to.
+type scopedVerifier struct{}
+
+func (scopedVerifier) Verify(_ context.Context, tok string) (*auth.Identity, error) {
+	if tok != "wl_good" {
+		return nil, auth.ErrTokenNotMine
+	}
+	return &auth.Identity{Subject: "spiffe://lab/ci", Tenant: "default", Provider: "spiffe",
+		Scopes: []string{"sandboxes:read"}}, nil
+}
+
+func TestWhoamiAnswersForABearerToken(t *testing.T) {
+	r := newCLIRig(t)
+	r.mw.Verifier = auth.Verifiers{r.tokens, scopedVerifier{}}
+	r.h = r.srv.Handler()
+	tok, _, err := r.tokens.Issue(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var me map[string]any
+	rec := r.do(nil, "GET", "/v1/whoami", "", "Authorization", "Bearer "+tok)
+	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || rec.Code != 200 ||
+		me["authenticated"] != true || me["owner"] != "local:alice" || me["credential"] != "token" {
+		t.Fatalf("whoami with a command-line token = %d %s", rec.Code, rec.Body)
+	}
+	if _, ok := me["sign_out_url"]; ok {
+		t.Fatalf("a token was offered a browser sign-out: %s", rec.Body)
+	}
+	for _, path := range []string{"/v1/whoami", "/v1/cli/whoami"} {
+		rec = r.do(nil, "GET", path, "", "Authorization", "Bearer wl_good")
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"scopes":["sandboxes:read"]`) ||
+			!strings.Contains(rec.Body.String(), `"subject":"spiffe://lab/ci"`) {
+			t.Fatalf("%s with a scoped token = %d %s", path, rec.Code, rec.Body)
+		}
+	}
+	// A token that does not verify is refused, as on /v1/cli/whoami.
+	if rec := r.do(nil, "GET", "/v1/whoami", "", "Authorization", "Bearer abhcli_nope"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("whoami with a bad token = %d %s", rec.Code, rec.Body)
+	}
+	// Authorize applies here too.
+	r.mw.Authorize = func(*http.Request, *auth.Identity) error { return errors.New("not for this token") }
+	r.h = r.srv.Handler()
+	if rec := r.do(nil, "GET", "/v1/whoami", "", "Authorization", "Bearer wl_good"); rec.Code != http.StatusForbidden {
+		t.Fatalf("whoami refused by Authorize = %d %s", rec.Code, rec.Body)
+	}
+	r.mw.Authorize = nil
+	r.h = r.srv.Handler()
+	// No credentials at all: still a plain answer, not signed in.
+	if rec := r.do(nil, "GET", "/v1/whoami", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"authenticated":false`) {
+		t.Fatalf("whoami without credentials = %d %s", rec.Code, rec.Body)
+	}
+	// A browser session still wins over a token.
+	ck := r.signIn(t)
+	if rec := r.do(ck, "GET", "/v1/whoami", "", "Authorization", "Bearer wl_good"); !strings.Contains(rec.Body.String(), `"owner":"local:alice"`) ||
+		!strings.Contains(rec.Body.String(), `"sign_out_url"`) {
+		t.Fatalf("whoami with a session and a token = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestWhoamiWithTokensOnly(t *testing.T) {
+	cfg := config.Default()
+	mw := &auth.Middleware{Verifier: scopedVerifier{}, PublicPaths: PublicPaths()}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Auth: mw})
+	req := httptest.NewRequest("GET", "/v1/whoami", nil)
+	req.Header.Set("Authorization", "Bearer wl_good")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"authenticated":true`) {
+		t.Fatalf("whoami on a token-only server = %d %s", rec.Code, rec.Body)
+	}
+}

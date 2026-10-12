@@ -728,7 +728,9 @@ All notable changes to Abhed are recorded here. The format follows
   device page is on another host (an identity provider), the prompt says to
   sign in there rather than to the server.
 - `GET /v1/cli` (public) says how a command line signs in; `GET
-  /v1/cli/whoami` answers for a bearer token too.
+  /v1/cli/whoami` and `GET /v1/whoami` answer for a bearer token too, naming
+  the principal and, for a narrowed token, its `scopes` (`auth.Identity.Scopes`,
+  set by the verifier; `auth.Middleware.IdentifyToken` for a public handler).
 - Extension points for an edition's sign-in: `auth.Middleware.Authorize`
   sees each request after the caller is identified and may refuse it (403,
   no session ended), for a credential that covers some requests only;

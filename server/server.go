@@ -914,6 +914,11 @@ func (s *Server) Handler() http.Handler {
 		} else {
 			mux.HandleFunc("GET /logout", s.authDisabledPage)
 		}
+	case s.authMiddleware().Verifier != nil:
+		// Tokens only: whoami answers for a bearer token.
+		mux.HandleFunc("GET /v1/whoami", s.whoami)
+		mux.HandleFunc("GET /login", s.authDisabledPage)
+		mux.HandleFunc("GET /logout", s.authDisabledPage)
 	default:
 		// Sign-in is not configured. These routes still answer, because a 404
 		// leaves the console unable to tell "no auth here" from "the server is
@@ -4169,7 +4174,25 @@ func (s *Server) endSignIn(w http.ResponseWriter, r *http.Request) {
 // whoami answers for whichever session exists, and says which mechanism
 // holds it, so the console can show the right chip.
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
-	id, mode, err := s.authMiddleware().Identify(w, r)
+	mw := s.authMiddleware()
+	id, mode, err := mw.Identify(w, r)
+	if id == nil && err == nil {
+		// A command line or a workload calls with a bearer token, as on
+		// /v1/cli/whoami; one that does not verify is refused the same way.
+		tid, sent, terr := mw.IdentifyToken(r)
+		if sent {
+			if terr != nil {
+				code := http.StatusUnauthorized
+				if auth.IsForbidden(terr) {
+					code = http.StatusForbidden
+				}
+				WriteError(w, code, terr.Error())
+				return
+			}
+			WriteJSON(w, http.StatusOK, tokenWhoami(tid, orDefaultStr(s.opts.Config.Auth.Mode, "none")))
+			return
+		}
+	}
 	if id == nil {
 		out := map[string]any{
 			"authenticated": false,
@@ -4337,6 +4360,21 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 
 // whoamiDisabled reports that this deployment runs without authentication.
 // The console uses it to decide whether to show a user chip at all.
+// tokenWhoami is whoami's answer for a bearer token: who it names and what
+// it was narrowed to, with no browser session to sign out of or switch.
+func tokenWhoami(id *auth.Identity, mode string) map[string]any {
+	me := map[string]any{
+		"authenticated": true, "auth_mode": mode, "credential": "token",
+		"subject": id.Subject, "email": id.Email, "name": id.Name,
+		"tenant": id.Tenant, "groups": id.Groups, "owner": id.Owner(),
+		"provider": id.Provider, "expires": id.Expires,
+	}
+	if len(id.Scopes) > 0 {
+		me["scopes"] = id.Scopes
+	}
+	return me
+}
+
 func (s *Server) whoamiDisabled(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"authenticated": false,
