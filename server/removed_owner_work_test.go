@@ -139,3 +139,25 @@ func TestDemotionStopsTheAdministratorsWork(t *testing.T) {
 		t.Fatalf("audit detail = %v; want work_stopped 1", audited)
 	}
 }
+
+// One server runs one removed-owner sweep: a second returns at once instead
+// of registering another listener that stops the same work again.
+func TestOneRemovedOwnerSweepPerServer(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Store: agent.NewMemStore(),
+		Auth: &auth.Middleware{Providers: []auth.Provider{local}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.sweepRemovedOwners(ctx, time.Hour)
+	waitUntil(t, "the first sweep", s.ownerSweep.Load)
+	done := make(chan struct{})
+	go func() { s.sweepRemovedOwners(ctx, time.Hour); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second sweep ran alongside the first")
+	}
+}

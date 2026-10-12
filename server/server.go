@@ -385,6 +385,9 @@ type Server struct {
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
+	// ownerSweep is set by the first sweepRemovedOwners: its OnChange listener
+	// is never removed, so a second would double every stop.
+	ownerSweep atomic.Bool
 	// holder is this process's liveness identity: NodeID when set, otherwise
 	// an id of its own for its lifetime. Every session it holds is claimed
 	// and heartbeated under it, so "no heartbeat" never reads as "dead".
@@ -3715,7 +3718,7 @@ const removedOwnerSweep = 15 * time.Second
 // the local accounts report a change, until ctx ends.
 func (s *Server) sweepRemovedOwners(ctx context.Context, every time.Duration) {
 	local := s.LocalAuth()
-	if local == nil || s.opts.OwnerActive != nil {
+	if local == nil || s.opts.OwnerActive != nil || !s.ownerSweep.CompareAndSwap(false, true) {
 		return
 	}
 	poke := make(chan struct{}, 1)
@@ -5132,7 +5135,6 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	}
 	srv.Addr = ln.Addr().String()
 	go s.sweepOrphans(ctx, nodeStale)
-	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	stopped := make(chan struct{})
 	go func() {
