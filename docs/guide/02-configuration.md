@@ -456,8 +456,11 @@ without running anything.
   held state is Abhed's own, and stays covered. Abhed refuses to start with a state file
   (`auth.users_file`, the secrets file) inside the workspace outside `.abhed`,
   so there is none to hide; another configuration folder's `.abhed` inside
-  the workspace is covered as the workspace's is. A `.abhed` in another
-  spelling of its case is not covered, and is still taken out as below.
+  the workspace is covered as the workspace's is. Where the workspace's disk
+  ignores case, every spelling of `.abhed` (`.ABHED`, `.Abhed` and so on) is
+  covered by the same empty tmpfs; on a disk that keeps case apart, a folder
+  of another spelling is not state, and one a command makes is still taken
+  out as below.
 - **Abhed's state in the workspace, `landlock_only`.** Landlock cannot keep a command from
   making a folder inside the writable workspace, so Abhed checks instead:
   after every command, before the next one and when the session closes. A

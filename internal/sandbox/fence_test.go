@@ -477,7 +477,9 @@ func TestFencePlan(t *testing.T) {
 			t.Errorf("pins lack %s: %v", want, plan.Pin)
 		}
 	}
-	if !slices.Equal(plan.Empty, []string{".abhed", "state.d"}) {
+	// Other spellings of .abhed are covered too where the disk folds case.
+	hidden := slices.DeleteFunc(slices.Clone(plan.Empty), func(e string) bool { return e != ".abhed" && strings.EqualFold(e, ".abhed") })
+	if !slices.Equal(hidden, []string{".abhed", "state.d"}) {
 		t.Errorf("hidden: %v", plan.Empty)
 	}
 	if err := os.Symlink("/tmp", filepath.Join(ws, ".vscode", "link.json")); err != nil {
@@ -796,5 +798,27 @@ func TestFenceGitByDefaultNeedsNoMounts(t *testing.T) {
 	p.GitRequired = true
 	if !NewFence(p).needsMounts() {
 		t.Fatal("required git protection must need a mount namespace")
+	}
+}
+
+// Where the workspace's disk folds case, every spelling of .abhed is covered.
+func TestFencePlanCoversEverySpellingOfState(t *testing.T) {
+	p := fencePolicy(t)
+	ws := p.Workspace
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	folds := false
+	if _, err := os.Lstat(filepath.Join(ws, ".ABHED")); err == nil {
+		folds = true
+	}
+	f := NewFence(p)
+	f.mounts = true
+	plan, err := f.plan(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := slices.Contains(plan.Empty, ".ABHED"); got != folds {
+		t.Fatalf("disk folds case %v, .ABHED covered %v: %v", folds, got, plan.Empty)
 	}
 }

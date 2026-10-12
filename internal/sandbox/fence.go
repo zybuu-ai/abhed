@@ -607,6 +607,13 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 		p.ReadOnly = append(p.ReadOnly, r)
 	}
 	p.Empty = append(p.Empty, stateDir)
+	// On a disk that folds case, another spelling reaches the same folder
+	// under a name the mount above may not cover; each is covered too.
+	for _, name := range caseSpellings(ws, stateDir) {
+		if info, err := os.Lstat(filepath.Join(ws, name)); name != stateDir && err == nil && info.IsDir() {
+			p.Empty = append(p.Empty, name)
+		}
+	}
 	for _, sp := range (&Process{policy: f.policy}).statePaths() {
 		r, ok := rel(sp)
 		if !ok || seen[r] || underState(r) {
