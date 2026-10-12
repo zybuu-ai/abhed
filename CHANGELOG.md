@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- On the Linux process tier `sandbox.max_memory_mb` bounded nothing, so one
+  command could take all the host's memory. Each of a command's processes now
+  has its data bounded by it (`RLIMIT_DATA`), as a hard limit the command
+  cannot raise; the command's total is bounded only on the container, vm and
+  fence tiers, and macOS still bounds no memory. Affects 0.1.0 to 1.2.7 on
+  Linux.
 - On macOS a process-tier command could read and set your clipboard and
   capture your screen through per-session system services. The pasteboard,
   the window server's session port and screen capture are now denied to

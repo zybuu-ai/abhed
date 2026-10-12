@@ -293,9 +293,13 @@ Running Abhed as an ordinary user is still the recommendation.
 start: on the process tier, as a limit of what your user runs plus this many
 (the kernel counts all of the user's processes, and does not bound root), and
 on the container and vm tiers, as the container's own limit. The none tier
-ignores it. `"max_memory_mb"` (4096) is applied on the container and vm tiers
-only; the none and process tiers do not bound memory. `abhed doctor` warns when
-you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
+ignores it. `"max_memory_mb"` (4096) bounds a command's memory on the
+container and vm tiers and the fence. On the Linux process tier it bounds each
+process's data (its private writable memory, `RLIMIT_DATA`), a hard limit the
+command cannot raise, but not the command's total: many processes can each
+use that much, up to `max_procs` of them. The macOS process tier and the none
+tier do not bound memory; macOS has no cgroups and does not enforce the data
+limit. `abhed doctor` warns when you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
 none tier, and when root runs the process tier, whose processes the kernel
 does not bound.
 

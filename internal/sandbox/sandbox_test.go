@@ -535,3 +535,29 @@ func TestProcessCountIsShortlyReused(t *testing.T) {
 		t.Fatalf("no reuse past the ttl: %d", calls)
 	}
 }
+
+// On Linux each process's data segment is bounded by max_memory_mb; macOS,
+// which does not enforce that limit, says memory is not bounded.
+func TestProcessBoundsDataOnLinux(t *testing.T) {
+	was := countUserProcesses
+	t.Cleanup(func() { countUserProcesses = was })
+	countUserProcesses = func() (int, bool) { return 0, false }
+	linux := &Process{backend: "bwrap", policy: Policy{MaxMemoryMB: 256}}
+	cmd := linux.bounded(context.Background(), "/bin/true", nil)
+	if !slices.Contains(cmd.Args, "262144") || !strings.Contains(strings.Join(cmd.Args, " "), "ulimit -d") {
+		t.Fatalf("no data bound: %v", cmd.Args)
+	}
+	if d := linux.Describe(); !strings.Contains(d, "data at most 256 MB") {
+		t.Fatalf("describe: %s", d)
+	}
+	mac := &Process{backend: "sandbox-exec", policy: Policy{MaxMemoryMB: 256}}
+	if cmd := mac.bounded(context.Background(), "/bin/true", nil); filepath.Base(cmd.Path) == "bash" {
+		t.Fatalf("macOS was given a data bound: %v", cmd.Args)
+	}
+	if runtime.GOOS == "linux" {
+		out, err := exec.Command("/bin/bash", append(cmd.Args[1:3], "abhed-limit", "-", "262144", "/bin/sh", "-c", "ulimit -d")...).Output()
+		if err != nil || strings.TrimSpace(string(out)) != "262144" {
+			t.Fatalf("the limit was not set: %v %s", err, out)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -349,8 +350,10 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 // default, is not warned about.
 func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 	var out []string
-	if m := cfg.Sandbox.MaxMemoryMB; m > 0 && cfg.Sets("sandbox.max_memory_mb") && tier.Strength() < sandbox.TierContainer.Strength() && tier != sandbox.TierFence {
-		out = append(out, fmt.Sprintf("sandbox.max_memory_mb (%d) is not applied on the %s tier; only the container and vm tiers bound memory", m, tier))
+	// The Linux process tier bounds each process's data, not the command's total.
+	if m := cfg.Sandbox.MaxMemoryMB; m > 0 && cfg.Sets("sandbox.max_memory_mb") && tier.Strength() < sandbox.TierContainer.Strength() && tier != sandbox.TierFence &&
+		(tier != sandbox.TierProcess || runtime.GOOS != "linux") {
+		out = append(out, fmt.Sprintf("sandbox.max_memory_mb (%d) is not applied on the %s tier here; the container, vm and fence tiers bound memory, and the process tier on Linux each process's data", m, tier))
 	}
 	switch {
 	case cfg.Sandbox.MaxProcs > 0 && tier == sandbox.TierNone:

@@ -287,8 +287,12 @@ func (s *Process) Describe() string {
 	if s.procLimit() > 0 {
 		procs = fmt.Sprintf("at most %d more processes per command", s.policy.MaxProcs)
 	}
-	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · memory, CPU and disk not bounded",
-		s.backend, net, procs)
+	mem := "memory, CPU and disk not bounded"
+	if kb := s.dataLimitKB(); kb > 0 {
+		mem = fmt.Sprintf("each process's data at most %d MB (not the command's total); CPU and disk not bounded", kb/1024)
+	}
+	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · %s",
+		s.backend, net, procs, mem)
 	if s.Caveat() != "" {
 		d += " · no /proc: bubblewrap cannot mount one here, so commands that read it fail"
 	}
@@ -785,14 +789,36 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 // backend, so it holds for all the command starts, bubblewrap's namespace included.
 func (s *Process) bounded(ctx context.Context, name string, args []string) *exec.Cmd {
 	n := s.procLimit()
-	if n == 0 {
+	data := s.dataLimitKB()
+	if n == 0 && data == 0 {
 		return exec.CommandContext(ctx, name, args...) // #nosec G204 -- the sandbox backend with its own argv
 	}
 	if p, err := exec.LookPath(name); err == nil {
 		name = p
 	}
-	wrapped := append([]string{"-c", `ulimit -u "$1" && shift && exec "$@"`, "abhed-limit", strconv.FormatUint(n, 10), name}, args...)
+	// "-" leaves a limit as it is; each is passed as an argument, never in the
+	// script. The data bound is hard, so the command cannot raise it; a lower
+	// hard bound already in force is kept.
+	procs, mem := "-", "-"
+	if n > 0 {
+		procs = strconv.FormatUint(n, 10)
+	}
+	if data > 0 {
+		mem = strconv.Itoa(data)
+	}
+	script := `{ [ "$1" = - ] || ulimit -u "$1"; } && { [ "$2" = - ] || ulimit -d "$2" 2>/dev/null || [ "$(ulimit -H -d)" != unlimited ]; } && shift 2 && exec "$@"`
+	wrapped := append([]string{"-c", script, "abhed-limit", procs, mem, name}, args...)
 	return exec.CommandContext(ctx, "/bin/bash", wrapped...) // #nosec G204 -- fixed script; the argv is passed as "$@"
+}
+
+// dataLimitKB is each command's data segment bound, max_memory_mb, on Linux,
+// whose kernel counts a process's private writable memory against it; 0 on
+// macOS, which does not enforce it, or with no bound set.
+func (s *Process) dataLimitKB() int {
+	if s.backend != "bwrap" || s.policy.MaxMemoryMB <= 0 {
+		return 0
+	}
+	return s.policy.MaxMemoryMB * 1024
 }
 
 // countUserProcesses counts the user's processes; a test replaces it. The
