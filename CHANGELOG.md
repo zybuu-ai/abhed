@@ -1136,7 +1136,8 @@ All notable changes to Abhed are recorded here. The format follows
   hover and diagnostics. It is started on the first file in that language,
   as the person's recorded `bash` call judged by the policy, and runs in the
   session's sandbox; none runs on the none tier, and a workspace file cannot
-  name one, even a trusted one. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
+  name one, even a trusted one. Only the editor's own requests reach it;
+  `workspace/executeCommand` and other methods are refused. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
   `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed

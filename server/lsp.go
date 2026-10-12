@@ -72,6 +72,51 @@ type lspStartResponse struct {
 	Root string `json:"root"`
 }
 
+// lspTiers are the sandboxes a language server may run in; an empty or
+// unknown tier is not one of them.
+var lspTiers = map[string]bool{"process": true, "container": true, "vm": true, "fence": true}
+
+// lspMethods are what the workbench editor sends. Anything else, such as
+// workspace/executeCommand, can have the server run programs past the policy.
+var lspMethods = map[string]bool{
+	"initialize": true, "initialized": true, "shutdown": true, "exit": true, "$/cancelRequest": true,
+	"textDocument/didOpen": true, "textDocument/didChange": true, "textDocument/didClose": true,
+	"textDocument/hover": true, "textDocument/definition": true,
+}
+
+// lspAllowed returns the message from the page that may reach the server:
+// one of lspMethods, or an answer to the server's own request. It is sent
+// re-encoded, so a duplicate key or another key's case cannot make the server
+// read a method other than the one checked here.
+func lspAllowed(body []byte) ([]byte, bool) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return nil, false // a batch, or not an object
+	}
+	for k := range m {
+		switch k {
+		case "jsonrpc", "id", "method", "params", "result", "error":
+		default:
+			return nil, false
+		}
+	}
+	raw, isCall := m["method"]
+	if isCall {
+		var method string
+		if json.Unmarshal(raw, &method) != nil || !lspMethods[method] {
+			return nil, false
+		}
+	} else {
+		_, result := m["result"]
+		_, failed := m["error"]
+		if id := string(m["id"]); id == "" || id == "null" || result == failed {
+			return nil, false
+		}
+	}
+	out, err := json.Marshal(m)
+	return out, err == nil
+}
+
 var safeWord = regexp.MustCompile(`^[A-Za-z0-9_./=:@%+,-]+$`)
 
 // commandLine is argv as the policy reads a bash command.
@@ -108,7 +153,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 	tool, _ := live.Loop.Tools.Get("bash")
 	b, isBash := tool.(tools.Bash)
-	if in := isolationOf(tool); !isBash || b.Sandbox == nil || in == nil || in.Tier == "none" {
+	if in := isolationOf(tool); !isBash || b.Sandbox == nil || in == nil || !lspTiers[in.Tier] {
 		WriteError(w, http.StatusConflict, "a language server runs only inside a sandbox, and this session has none")
 		return
 	}
@@ -302,6 +347,11 @@ func (s *Server) sendLSP(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, lspMaxMessage))
 	if err != nil || !json.Valid(body) {
 		badBody(w, err, "the message is not JSON")
+		return
+	}
+	body, ok = lspAllowed(body)
+	if !ok {
+		WriteError(w, http.StatusForbidden, "the workbench sends a language server only editor requests")
 		return
 	}
 	select {

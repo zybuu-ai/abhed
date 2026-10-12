@@ -157,6 +157,12 @@ func TestLanguageServerRefusals(t *testing.T) {
 	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusConflict {
 		t.Errorf("on the none tier: %d %s", rec.Code, rec.Body)
 	}
+	for _, tier := range []string{"", "host", "None"} {
+		wb, _ = lspBench(t, tier, nil)
+		if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusConflict {
+			t.Errorf("on tier %q: %d %s", tier, rec.Code, rec.Body)
+		}
+	}
 	wb, _ = lspBench(t, "process", nil)
 	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "python"}); rec.Code != http.StatusNotFound {
 		t.Errorf("an unconfigured language: %d %s", rec.Code, rec.Body)
@@ -213,4 +219,54 @@ func TestLSPSlowReaderEnded(t *testing.T) {
 	if len(sub.ch)*len(body) > lspQueue {
 		t.Fatalf("%d messages queued", len(sub.ch))
 	}
+}
+
+// Only what the editor sends reaches a language server: executeCommand and
+// the like would run programs the policy never judged.
+func TestLSPMethodAllowlist(t *testing.T) {
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{}}`,
+		`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{}}`,
+		`{"jsonrpc":"2.0","id":7,"result":null}`,
+		`{"jsonrpc":"2.0","id":"a","error":{"code":1,"message":"x"}}`,
+	} {
+		if _, ok := lspAllowed([]byte(m)); !ok {
+			t.Errorf("refused %s", m)
+		}
+	}
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand","params":{"command":"gopls.generate"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand","METHOD":"textDocument/hover"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","method":"workspace/executeCommand"}`,
+		`[{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand"}]`,
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction"}`,
+		`{"jsonrpc":"2.0","id":null,"result":null}`,
+		`{"jsonrpc":"2.0","result":null}`,
+	} {
+		if out, ok := lspAllowed([]byte(m)); ok {
+			t.Errorf("allowed %s as %s", m, out)
+		}
+	}
+	// A duplicate key reaches the server once, as checked.
+	if out, ok := lspAllowed([]byte(`{"method":"workspace/executeCommand","method":"textDocument/hover","id":1}`)); ok && strings.Contains(string(out), "executeCommand") {
+		t.Errorf("sent %s", out)
+	}
+
+	wb, _ := lspBench(t, "process", nil)
+	var start lspStartResponse
+	_ = json.Unmarshal(wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}).Body.Bytes(), &start)
+	srv := httptest.NewServer(wb.h)
+	defer srv.Close()
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/sessions/"+wb.session+"/lsp/"+start.ID,
+		strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand","params":{"command":"x"}}`))
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("executeCommand: %d", res.StatusCode)
+	}
+	wb.send("acme", "DELETE", "lsp/"+start.ID, nil)
 }
