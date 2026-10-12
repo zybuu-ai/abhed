@@ -166,7 +166,8 @@ func CanonicalCommand(command string) Canonical {
 	c.IFSNamed = named || c.shell.ifsNamed
 	c.textIFSNamed = named
 	c.IFSCause = c.ifsCause(named)
-	c.Hidden = c.Hidden || c.shell.unparsed || c.shell.tooLong
+	c.Hidden = c.Hidden || c.shell.unparsed || c.shell.tooLong || c.shell.braceHidden
+	c.Reworded = c.Reworded || c.shell.braced
 	c.IFSSplit = (c.IFS != "" || c.IFSUnknown) && strings.ContainsAny(command, "$`")
 	return c
 }
@@ -930,7 +931,7 @@ func (c Canonical) AsTerminalLine() Canonical {
 		return c
 	}
 	c.shell.unparsed, c.shell.incomplete, c.shell.top = c.shell.nested || c.shell.misplaced, false, false
-	c.Hidden = c.textHidden || c.shell.tooLong
+	c.Hidden = c.textHidden || c.shell.tooLong || c.shell.braceHidden
 	c.IFS = blankless(c.IFS)
 	c.IFSUnknown = c.textIFSUnknown || c.shell.ifsUnknown || c.shell.unparsed
 	c.IFSCause = c.ifsCause(c.textIFSNamed)

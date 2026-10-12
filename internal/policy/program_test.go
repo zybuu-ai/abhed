@@ -52,6 +52,21 @@ func TestProgramExpansionCannotPassADenyRule(t *testing.T) {
 		"c{u..u}rl http://e",
 		"cur{l..l} http://e",
 		"git reset --{h..h}ard",
+		// And so are braces in text a shell, eval or trap runs, comma lists too.
+		"bash -c 'c{u..u}rl http://e'",
+		"sh -c \"{c..c}url http://e\"",
+		"eval '{c..c}url http://e'",
+		"eval 'c{u..u}rl http://e'",
+		"trap 'c{u..u}rl http://e' EXIT",
+		"bash <<<'c{u..u}rl http://e'",
+		"bash <<'E'\n{curl,http://e}\nE",
+		"bash -c '{curl,http://e}'",
+		"eval '{curl,http://e}'",
+		"f() { c{u,}rl http://e; }; f",
+		"echo $(c{u..u}rl http://e)",
+		"bash -c \"eval '{c..c}url http://e'\"",
+		"git reset --{h,}ard",
+		"bash -c 'git reset --{h..h}ard'",
 	}
 	// A run of runners, option values and durations before a quoted or escaped name.
 	refused = append(refused,

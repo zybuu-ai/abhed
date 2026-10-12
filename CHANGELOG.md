@@ -167,6 +167,11 @@ All notable changes to Abhed are recorded here. The format follows
   letters of both cases, or a longer one, is asked about, and refused on
   `:exec`, while a deny or ask rule for `bash` has a pattern. Affects every
   release to 1.2.7.
+- A brace list or sequence in text that a shell's `-c`, `eval`, `trap`, a
+  here-string or a heredoc runs was not expanded, so `bash -c '{curl,x}'` or
+  `eval 'c{u..u}rl x'` ran `curl` past `bash(curl *)` in any mode that runs
+  commands unasked. Braces are now read as bash expands them at every depth,
+  in function bodies and substitutions too. Affects every release to 1.2.7.
 - An `ssh_connect` host name that read like an operator's host only by a
   look-alike character, such as `pr0d` or `buiId1` beside `prod` and
   `build1`, was accepted. Names are now compared with look-alike characters

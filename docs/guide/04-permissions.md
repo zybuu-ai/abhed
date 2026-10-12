@@ -528,7 +528,10 @@ brace sequence: `{c..c}url` and `c{u..u}rl` are read as `curl`, and
 `{1..3}` and `{a..c}` as their words, up to 1,024 of them. A sequence that
 bash versions expand differently (an increment such as `{1..9..2}`, zero
 padding such as `{01..10}`, or letters of both cases such as `{Z..a}`), or a
-longer one, is asked about as a list that hides its words is. A command that sets `IFS` to a separator other than blanks is also read
+longer one, is asked about as a list that hides its words is. Braces are
+read so at any depth: in text given to `eval`, `trap`, a shell's `-c`, a
+here-string or a heredoc (`bash -c '{curl,x}'`, `eval 'c{u..u}rl x'`), in
+function bodies and in substitutions. A command that sets `IFS` to a separator other than blanks is also read
 split on it, so `IFS=_; curl_x` is matched as `curl x`. Where such a command,
 or one that sets `IFS` in a way the text does not show (`IFS=$v`, `read IFS`,
 `${IFS:=_}`), then expands anything (`IFS=_; c=curl_x; $c`), the words that

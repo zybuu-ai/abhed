@@ -86,6 +86,11 @@ type shellFacts struct {
 	moves bool
 	// scriptsCut reports scripts past maxScripts that were not recorded.
 	scriptsCut bool
+	// braced reports a word read through its brace expansion, braceHidden
+	// one whose expansion could not be read, and braceWords the words made
+	// so far; inBraces is set while the words made are read.
+	braced, braceHidden, inBraces bool
+	braceWords                    int
 }
 
 // Script is a file a command runs as shell text, as named on its line.
@@ -123,6 +128,9 @@ func parseShell(command string) shellFacts {
 }
 
 func (f *shellFacts) read(command string, depth int) {
+	// Text run from a word brace expansion made has braces of its own.
+	defer func(in bool) { f.inBraces = in }(f.inBraces)
+	f.inBraces = false
 	if f.tooLong || len(command) > maxShellBytes {
 		f.tooLong = true
 		return
@@ -469,6 +477,7 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 			words[i] = wordText(w)
 		}
 	}
+	f.braces(c, st, depth)
 	readings, dispatched := 0, false
 	pos := position{on: true}
 	for i, w := range c.Args {
