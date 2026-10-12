@@ -112,8 +112,11 @@ func TestClaimFailureFailsTheHold(t *testing.T) {
 	if err := s.holdNode(live); err == nil || live.beatStop != nil {
 		t.Fatalf("hold with a failed claim: err %v, heartbeat started %v", err, live.beatStop != nil)
 	}
-	s.releaseNode("s-1") // logged, not fatal
-	if len(f.claimed) != 2 || len(f.released) != 1 {
+	retry := releaseRetry
+	releaseRetry = 300 * time.Millisecond
+	defer func() { releaseRetry = retry }()
+	s.releaseNode("s-1") // tried again, then logged, not fatal
+	if len(f.claimed) != 2 || len(f.released) < 2 {
 		t.Fatalf("claimed %v released %v", f.claimed, f.released)
 	}
 }

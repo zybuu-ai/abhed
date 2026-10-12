@@ -55,19 +55,20 @@ func TestServerWithNoRedactorUsesTheSecretsStore(t *testing.T) {
 	}
 }
 
-// With no redactor and a secrets store it cannot load, a server withholds every
-// payload rather than record one unredacted.
+// With no redactor, a session running when the secrets store becomes
+// unloadable withholds every payload rather than record one unredacted (a new
+// session is refused: see TestNewSessionRefusedWhileSecretsUnreadable).
 func TestServerWithAnUnloadableStoreWithholds(t *testing.T) {
 	const raw = "fake-server-mode-value-2e9a"
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	if err := os.WriteFile(path, []byte(`{"FAKE_TOKEN":"`+raw+`"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(secrets.EnvFile, path)
+	wb := shellBenchOpts(t, nil, func(o *Options) { o.Redact = nil })
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(secrets.EnvFile, path)
-	wb := shellBenchOpts(t, nil, func(o *Options) { o.Redact = nil })
 	start := wb.startShell()
 	wb.typeLines(start.ID, enter("echo "+raw, "exit")...)
 	deadline := time.Now().Add(3 * time.Second)
@@ -133,8 +134,8 @@ func TestServerReadsTheStoreForEachSession(t *testing.T) {
 	}
 }
 
-// A store that breaks while the server runs withholds the next session's
-// payloads rather than record a value it can no longer redact.
+// A store that breaks while a session runs withholds that session's payloads
+// rather than record a value it can no longer redact.
 func TestServerWithholdsWhenTheStoreBreaksMidRun(t *testing.T) {
 	const later = "fake-broken-later-8e3f"
 	path := filepath.Join(t.TempDir(), "secrets.json")
@@ -143,13 +144,13 @@ func TestServerWithholdsWhenTheStoreBreaksMidRun(t *testing.T) {
 	}
 	t.Setenv(secrets.EnvFile, path)
 	wb := shellBenchOpts(t, nil, func(o *Options) { o.Redact = secrets.Open(path).Live() })
+	wb.session = freshSession(wb)
 	if err := secrets.Open(path).Set("LATER_TOKEN", later); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wb.session = freshSession(wb)
 	start := wb.startShell()
 	wb.typeLines(start.ID, enter("echo "+later, "exit")...)
 	deadline := time.Now().Add(3 * time.Second)

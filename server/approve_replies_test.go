@@ -40,12 +40,10 @@ func TestApproveWhileStillRecordingSaysWhenToRetry(t *testing.T) {
 	t.Cleanup(func() { approvalReadyWait = wait })
 	h, live, rows, id := approvalSession(t, true)
 	gate := make(chan struct{})
-	rows.askHook = func(ctx context.Context) error {
-		select {
-		case <-gate:
-		case <-ctx.Done():
-		}
-		return ctx.Err()
+	// Held past the reply's wait, whatever the write's own deadline.
+	rows.askHook = func(context.Context) error {
+		<-gate
+		return nil
 	}
 	defer close(gate)
 	c := askTurn(context.Background(), live, "ev-slow")

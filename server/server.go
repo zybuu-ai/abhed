@@ -4032,6 +4032,11 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	}
+	// Too large is refused as such whoever sends it.
+	if tooBig := new(http.MaxBytesError); errors.As(decErr, &tooBig) {
+		badBody(w, decErr, "invalid JSON body")
+		return
+	}
 	if !ok {
 		// The session is not here. If the store holds the approval, answer it
 		// anyway: the waiting node polls for the result, so the reviewer's
@@ -4684,7 +4689,7 @@ func (s *Server) releaseNode(sessionID string) {
 	}
 	// Tried again within one budget: a claim left behind holds the session
 	// from every other node until it goes stale.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), releaseRetry)
 	defer cancel()
 	var err error
 	for wait := 200 * time.Millisecond; ; wait *= 2 {
@@ -4700,6 +4705,9 @@ func (s *Server) releaseNode(sessionID string) {
 		}
 	}
 }
+
+// releaseRetry bounds the tries at giving a claim back; a variable for tests.
+var releaseRetry = 10 * time.Second
 
 // answerElsewhere records a decision for a session this node is not running,
 // and reports whether it did. The node that is waiting polls for the result,
