@@ -56,8 +56,21 @@ const signOutJS = `async function signOut(){
   location.href = '/logout';
 }`
 
+// wsConfigJS says, for the console and the workbench as the front page does,
+// whether the workspace's own config is trusted and which settings it set
+// aside. Key names come from the file, so each page draws them through visible.
+const wsConfigJS = `function wsConfigLine(wc){
+  if(!wc) return null;
+  const ig = wc.ignored || [], n = ig.length;
+  return {warn: !wc.trusted || n > 0,
+    text: 'workspace config ' + (wc.trusted ? 'trusted' : 'not trusted') + ' · ' + (n ? n + ' setting' + (n === 1 ? '' : 's') + ' ignored: ' + ig.map(k => k.key).join(', ')
+      : wc.trusted ? 'every setting applies' : 'only settings that tighten apply'),
+    title: [wc.reason || ''].concat(ig.map(k => k.key + (k.reason ? ': ' + k.reason : ''))).filter(Boolean).join('\n')};
+}`
+
 var (
 	brandOuter = strings.NewReplacer(
+		"/*{{WS_CONFIG}}*/", wsConfigJS,
 		"{{BRAND_LOCKUP}}", brandLockup,
 		"/*{{BRAND_CSS}}*/", brandCSS,
 		"/*{{SIGN_OUT}}*/", signOutJS,

@@ -133,7 +133,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .pill.mut{color:var(--warn);border-color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
 .pill.on{color:var(--ok);border-color:var(--ok)}
 .rules{margin:0 12px 6px;font:12px var(--mono);color:var(--ink-2);overflow-wrap:anywhere}
-.rules div{padding:2px 0}.rules .k{display:inline-block;width:44px;color:var(--muted)}
+.rules div{padding:2px 0}.rules div.warn{color:var(--warn)}.rules .k{display:inline-block;width:44px;color:var(--muted)}
 .empty{margin:8px 12px;padding:10px;border:1px dashed var(--line-strong);border-radius:6px;color:var(--muted);font-size:12px}
 .empty code{font:11px var(--mono);color:var(--ink-2)}
 .primary{margin:8px 12px;height:30px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600;flex:none}
@@ -1321,6 +1321,9 @@ $('changes-reload').addEventListener('click', loadChanges);
 const changesSoon = (ms = 1500) => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !t.dirty && !editorFocused()) showTab(t); }, ms); };
 
 /* ---------------------------------------------------------------- tools + extensions */
+// The workspace's own config, from the overview: trusted or not, and what it set aside.
+let wsConf = null;
+/*{{WS_CONFIG}}*/
 function drawCaps(){
   const c = caps, t = $('tools'), x = $('extensions'); clear(t); clear(x);
   t.appendChild(el('div', 'group', 'Permissions'));
@@ -1328,6 +1331,7 @@ function drawCaps(){
   const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
   line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
   line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');
+  const w = wsConfigLine(wsConf); if(w){ line('config', visible(w.text)); r.lastChild.title = visible(w.title); if(w.warn) r.lastChild.className = 'warn'; }
   t.appendChild(r);
   t.appendChild(el('div', 'empty', 'A deny rule holds for every tool call, the agent\'s and yours, in every mode, including auto. In your interactive terminal it only screens each line as typed. Rules are set in the server configuration.'));
   const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
@@ -3120,6 +3124,7 @@ $('switchuser').addEventListener('click', postSignOut);
   try{ caps = await api('/v1/capabilities'); setConn(true); }
   catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + visible(e.message))); return; }
   stat.window = caps.model.context_window; drawCaps(); drawNotify();
+  api('/v1/overview').then(o => { if(o && o.workspace_config){ wsConf = o.workspace_config; drawCaps(); } }).catch(() => {});
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');
   if(sb.tier === 'none') sbox.className = 'off';

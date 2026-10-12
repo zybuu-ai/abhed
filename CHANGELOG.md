@@ -523,7 +523,8 @@ on. A server with it off starts on the older schema as before.
 - `GET /v1/overview` has `workspace_config`: whether the workspace's
   `.abhed/config.json` is trusted, why, and the names of the settings it
   set aside, for a signed-in caller or where nobody signs in; the front
-  page shows it as a card.
+  page shows it as a card, the console under its examples, and the
+  workbench in its **Tools** panel.
 
 ### Changed
 

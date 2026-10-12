@@ -1135,7 +1135,8 @@ server open.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
   list` lists every decision.
-- **`abhed serve`** says on its front page, and in `GET /v1/overview` as
+- **`abhed serve`** says on its front page, under the console's examples,
+  in the workbench's **Tools** panel, and in `GET /v1/overview` as
   `workspace_config`, whether the file is trusted, why, and the names of the
   settings it set aside (not their values): to a signed-in person, or to
   anyone where nobody signs in.
