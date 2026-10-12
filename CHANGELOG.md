@@ -756,6 +756,9 @@ on. A server with it off starts on the older schema as before.
   `local-only` migration refused for finding no accounts still recorded the
   accounts schema (version 5); it now records nothing, and says to import
   the accounts with `abhed user import` first.
+- `abhed serve -addr 127.0.0.1:0` printed `:0` in its banner; it now names
+  the port the system gave it. The banner also says whether git's files
+  are held read-only from commands.
 
 ### Dependencies
 
