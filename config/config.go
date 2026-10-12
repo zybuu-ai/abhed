@@ -1180,6 +1180,10 @@ type SandboxConfig struct {
 	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
 	// CPU; zero means 200.
 	MaxCPUPercent int `json:"max_cpu_percent,omitempty"`
+	// SharedCaches lets macOS process-tier commands write the real toolchain
+	// caches (~/.cache, ~/Library/Caches, ~/.npm, ~/.cargo/registry,
+	// ~/go/pkg/mod) instead of folders of the session's own.
+	SharedCaches bool `json:"shared_caches,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`

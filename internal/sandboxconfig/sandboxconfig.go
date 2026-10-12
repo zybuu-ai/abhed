@@ -96,6 +96,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		p.MaxProcs = cfg.Sandbox.MaxProcs
 	}
 	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
+	p.SharedCaches = cfg.Sandbox.SharedCaches
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
 	p.FenceSocketcall = cfg.Fence.Socketcall

@@ -639,6 +639,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.allow_network":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
 	"sandbox.max_memory_mb":         {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }, zeroIs(4096)), "only lower"},
 	"sandbox.max_procs":             {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }, zeroIs(512)), "only lower"},
+	"sandbox.shared_caches":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.SharedCaches }), "only false"},
 	"sandbox.max_cpu_percent":       {lower(func(c *Config) *int { return &c.Sandbox.MaxCPUPercent }, zeroIs(200)), "only lower"},
 	"sandbox.terminal":              {onlyLines, "only lines"},
 	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},

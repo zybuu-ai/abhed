@@ -390,7 +390,7 @@ func (s *Process) EndSession(id string) error {
 }
 
 // Close stops every session's egress proxy and removes their sockets'
-// folders. Every command built after it is refused, under the allowlist,
+// folders, and the sandbox's own caches. Every command built after it is refused, under the allowlist,
 // rather than given a proxy that is gone.
 func (s *Process) Close() error {
 	ss := &s.egress
@@ -403,7 +403,7 @@ func (s *Process) Close() error {
 	for _, e := range all {
 		err = errors.Join(err, e.close())
 	}
-	return err
+	return errors.Join(err, s.removeCaches())
 }
 
 // egressAvailable says why the process tier cannot enforce the allowlist

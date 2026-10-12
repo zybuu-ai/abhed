@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +53,11 @@ type Process struct {
 	// host-root path. Probed once; empty means it is, so the tier fails closed.
 	capsOnce sync.Once
 	capsErr  string
+
+	// caches is the folder holding this sandbox's own toolchain caches on
+	// Seatbelt, made at its first command; "" when it could not be.
+	cachesOnce sync.Once
+	caches     string
 }
 
 // rootCaps reports whether Abhed runs as uid 0, where bwrap keeps the host's full
@@ -408,9 +416,13 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 	}
 
 	// Toolchains need writable caches or builds fail in ways that look like
-	// agent errors rather than sandbox errors.
-	for _, c := range cacheAreas() {
-		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", c)
+	// agent errors rather than sandbox errors. They get folders of the
+	// sandbox's own, in the temp folder above; the real ones, which programs
+	// outside Abhed use, are read-only unless shared_caches is set.
+	if s.policy.SharedCaches {
+		for _, c := range cacheAreas() {
+			fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", c)
+		}
 	}
 
 	// Again after the temp and cache allows, which may hold the siblings' folder.
@@ -858,12 +870,74 @@ func (s *Process) env() []string {
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
 		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
 	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), vimInitEnv()}
+	own := map[string]string{}
+	if s.backend == "sandbox-exec" && !s.policy.SharedCaches {
+		own = s.ownCaches()
+	}
 	for _, k := range keep {
+		if _, mine := own[k]; mine {
+			continue
+		}
 		if v := os.Getenv(k); v != "" {
 			out = append(out, k+"="+v)
 		}
 	}
+	for _, k := range slices.Sorted(maps.Keys(own)) {
+		out = append(out, k+"="+own[k])
+	}
 	return out
+}
+
+// ownCaches are the variables pointing the toolchains at this sandbox's own
+// caches. Go modules already in the shared cache are read from it through
+// GOPROXY, so a build that worked offline still does.
+func (s *Process) ownCaches() map[string]string {
+	s.cachesOnce.Do(func() {
+		parent := userTemp()
+		if parent == "" {
+			parent = os.TempDir()
+		}
+		if d, err := os.MkdirTemp(parent, "abhed-caches-"); err == nil {
+			s.caches = d
+		}
+	})
+	if s.caches == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for k, sub := range map[string]string{"XDG_CACHE_HOME": "cache", "GOCACHE": "go-build", "GOMODCACHE": "go-mod",
+		"npm_config_cache": "npm", "PIP_CACHE_DIR": "pip", "CARGO_HOME": "cargo"} {
+		out[k] = filepath.Join(s.caches, sub)
+	}
+	proxy := os.Getenv("GOPROXY")
+	if proxy == "" {
+		proxy = "https://proxy.golang.org,direct"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		shared := os.Getenv("GOMODCACHE")
+		if shared == "" {
+			shared = filepath.Join(home, "go", "pkg", "mod")
+		}
+		out["GOPROXY"] = "file://" + filepath.ToSlash(filepath.Join(shared, "cache", "download")) + "," + proxy
+	}
+	return out
+}
+
+// removeCaches removes the sandbox's own caches.
+func (s *Process) removeCaches() error {
+	// Ordered after the first command's making of them.
+	s.cachesOnce.Do(func() {})
+	if s.caches == "" {
+		return nil
+	}
+	// Go makes its module cache read-only; RemoveAll needs it writable.
+	_ = filepath.WalkDir(s.caches, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700) // #nosec G302 -- a folder of the sandbox's own being removed
+		}
+		return nil
+	})
+	return os.RemoveAll(s.caches)
 }
 
 // vimInit reads the person's vim config, then turns off the history file: the sandbox

@@ -201,11 +201,20 @@ workspace and a few shared folders, not only the workspace:
 - **Linux:** the workspace, and a private `/tmp` that is gone when the command ends. The host's
   `/tmp` and `/var/tmp` are out of every sandboxed command's reach, so state
   kept there (a `HOME`, `auth.users_file`) is not refused as writable.
-- **macOS:** the workspace, `/private/tmp`, `/private/var/tmp`, your `TMPDIR`, and
-  the toolchain caches `~/.cache`, `~/Library/Caches`, `~/.npm`,
-  `~/.cargo/registry` and `~/go/pkg/mod`. These are the real folders, shared
-  with the rest of your machine, so a command can leave a file there that a
-  program outside the sandbox later reads.
+- **macOS:** the workspace, `/private/tmp`, `/private/var/tmp` and your
+  `TMPDIR`. The toolchain caches commands write are folders of the
+  sandbox's own, in `TMPDIR` and removed when the session ends:
+  `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `npm_config_cache`,
+  `PIP_CACHE_DIR` and `CARGO_HOME` point there, so nothing a command writes
+  reaches the real `~/.cache`, `~/Library/Caches`, `~/.npm`,
+  `~/.cargo/registry` or `~/go/pkg/mod`, which stay readable. Go modules
+  already in your module cache are read from it through `GOPROXY`
+  (`file://…/cache/download` first), so a build that worked offline still
+  does; npm, pip and cargo start from an empty cache and need the network
+  for what they fetch. `"shared_caches": true` lets commands write the real
+  folders again, shared with the rest of your machine, where a command can
+  leave a file a program outside the sandbox later reads; a workspace file
+  can only turn it off.
 
 `/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
 design: tools expect a shared temp area there, so keep nothing in them a command

@@ -210,3 +210,47 @@ func TestProcessSandboxTakesOutAMovedInRepository(t *testing.T) {
 		t.Errorf("fsmonitor left: %q", b)
 	}
 }
+
+// Commands get toolchain caches of their own: the real ones, which programs
+// outside Abhed use, cannot be written, and the sandbox's are gone at Close.
+func TestProcessSandboxKeepsCachesApart(t *testing.T) {
+	// Outside the temp folders, which commands may write.
+	home, err := os.MkdirTemp(".", "home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home, err = filepath.Abs(home); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	for _, d := range []string{".npm", ".cache", "go/pkg/mod"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := workspace(t)
+	s := NewProcess(DefaultPolicy(ws))
+	available(t, s)
+	out, err := runIn(t, s, ws, `echo bad > "$HOME/.npm/poison" 2>/dev/null; echo ok > "$npm_config_cache.probe" 2>/dev/null; mkdir -p "$npm_config_cache" && echo ok > "$npm_config_cache/x" && echo "$npm_config_cache|$GOPROXY"`)
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".npm", "poison")); err == nil {
+		t.Fatal("a command wrote the real npm cache")
+	}
+	own, proxy, _ := strings.Cut(strings.TrimSpace(out), "|")
+	if !strings.Contains(own, "abhed-caches-") || !strings.HasPrefix(proxy, "file://") {
+		t.Fatalf("caches %q proxy %q", own, proxy)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(own); err == nil {
+		t.Fatal("the sandbox's caches outlived Close")
+	}
+	shared := NewProcess(Policy{Workspace: ws, MinTier: TierProcess, SharedCaches: true})
+	if out, err := runIn(t, shared, ws, `echo ok > "$HOME/.npm/shared" && echo done`); err != nil || !strings.Contains(out, "done") {
+		t.Fatalf("shared_caches: %v %s", err, out)
+	}
+}

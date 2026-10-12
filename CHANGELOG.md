@@ -35,6 +35,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- On macOS the process tier let commands write the real toolchain caches
+  (`~/.cache`, `~/Library/Caches`, `~/.npm`, `~/.cargo/registry`,
+  `~/go/pkg/mod`), so a command could leave a poisoned entry that a build
+  outside Abhed later used. Commands now get caches of the session's own,
+  removed when it ends, with Go modules read from your cache through
+  `GOPROXY`; `sandbox.shared_caches: true` restores the shared ones. Affects
+  0.1.0 to 1.2.7 on macOS.
 - Under the fence on Linux older than 6.12, one account's commands on an
   `abhed serve` that accounts sign in to could signal another account's
   commands, which run as the same user. Such a server now refuses the fence

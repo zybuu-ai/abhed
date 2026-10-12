@@ -141,8 +141,8 @@ type Policy struct {
 	// ProtectGit write-protects the gitPointers of every git folder in the
 	// workspace and each .git file; see gitprotect.go for how each backend does it.
 	ProtectGit bool
-	// ScopeSignals requires a fence whose Landlock scopes signals (ABI 6),
-	// for sessions of several accounts on one host.
+	// ScopeSignals requires a TierFence that keeps signals to the command's
+	// own processes (ABI 6), for sessions of several accounts on one host.
 	ScopeSignals bool
 	// GitRequired refuses a fence that cannot hold ProtectGit (no mount
 	// namespace); without it, that fence runs and says git's files are not held.
@@ -151,6 +151,9 @@ type Policy struct {
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int
 	MaxProcs    int
+	// SharedCaches lets the macOS process tier write the real toolchain
+	// caches; otherwise each sandbox's commands get caches of their own.
+	SharedCaches bool
 	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
 	// CPU; zero means 200.
 	MaxCPUPercent int
