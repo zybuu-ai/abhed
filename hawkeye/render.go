@@ -60,7 +60,11 @@ func Text(r Report) string {
 	}
 	fmt.Fprintf(&b, "  duration  %s  (model %s · tools %s)\n", dur(t.DurationMS), dur(t.ModelMS), dur(t.ToolMS))
 	fmt.Fprintf(&b, "  turns     %d   tool calls %d   events %d\n", t.Turns, t.ToolCalls, t.Events)
-	fmt.Fprintf(&b, "  tokens    %s in · %s out · %.0f%% cached\n", commas(t.TokensIn), commas(t.TokensOut), t.CacheHitRate*100)
+	cache := fmt.Sprintf("%.0f%% cached", t.CacheHitRate*100)
+	if !t.CacheReported {
+		cache = "cache not reported"
+	}
+	fmt.Fprintf(&b, "  tokens    %s in · %s out · %s\n", commas(t.TokensIn), commas(t.TokensOut), cache)
 	if t.Window > 0 {
 		fmt.Fprintf(&b, "  context   peak %s of %s (%d%%)   compactions %d   offloads %d   recalls %d\n",
 			commas(t.PeakContext), commas(t.Window), t.PeakContext*100/t.Window, len(r.Compactions), len(r.Offloads), t.Recalls)

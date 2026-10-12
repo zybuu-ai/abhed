@@ -536,11 +536,18 @@ func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, fr
 	if err := recordSession(ctx, es, id, cfg); err != nil {
 		return "", err
 	}
+	// A copy that fails part way is deleted, so no half branch is left listed.
+	failed := func(err error) (string, error) {
+		if del, ok := es.(agent.SessionDeleter); ok {
+			_ = del.DeleteSession(id)
+		}
+		return "", err
+	}
 	rec := agent.NewRecorder(es, id, "")
 	rec.Redact = openVault().Redactor()
 	if _, err := rec.Record(agent.EvSessionBranched, agent.ActorUser, agent.Trusted,
 		agent.SessionBranched{From: from, ThroughSeq: last, Unverified: unverified}); err != nil {
-		return "", err
+		return failed(err)
 	}
 	red := openVault().Redactor()
 	for _, ev := range copied {
@@ -550,7 +557,7 @@ func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, fr
 			ev.Trust = agent.Untrusted
 		}
 		if err := es.Append(ev); err != nil {
-			return "", fmt.Errorf("copy into %s: %w", id, err)
+			return failed(fmt.Errorf("copy into %s: %w", id, err))
 		}
 	}
 	return id, nil

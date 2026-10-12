@@ -289,6 +289,7 @@ func errf(format string, a ...any) tools.Result {
 type sessionHosts struct {
 	mu     sync.Mutex
 	hosts  map[string]*Host
+	added  map[string]time.Time // when each was connected, for a fork to keep or drop it
 	closed bool
 }
 
@@ -344,11 +345,28 @@ func (s *sessionHosts) add(h *Host) bool {
 	}
 	old := s.hosts[h.Name()]
 	s.hosts[h.Name()] = h
+	if s.added == nil {
+		s.added = map[string]time.Time{}
+	}
+	s.added[h.Name()] = time.Now()
 	s.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
 	return true
+}
+
+// ForgetAfter closes and drops the hosts connected after t.
+func (s *sessionHosts) ForgetAfter(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, h := range s.hosts {
+		if s.added[name].After(t) {
+			_ = h.Close()
+			delete(s.hosts, name)
+			delete(s.added, name)
+		}
+	}
 }
 
 // Close ends the session's connections when the session goes.

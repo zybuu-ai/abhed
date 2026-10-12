@@ -533,18 +533,23 @@ func (c *acpConn) copyInto(rec *local.Store, src local.Entry, events []agent.Eve
 		Workspace: src.Cwd, StartedAt: time.Now().UTC()}); err != nil {
 		return "", 0, err
 	}
+	// A copy that fails part way is deleted, so no half branch is left listed.
+	failed := func(err error) (string, int64, error) {
+		_ = rec.DeleteSession(id)
+		return "", 0, err
+	}
 	r := agent.NewRecorder(rec, id, "")
 	r.Redact = openVault().Redactor()
 	if _, err := r.Record(agent.EvSessionBranched, agent.ActorUser, agent.Trusted,
 		agent.SessionBranched{From: src.ID, ThroughSeq: last, Unverified: unverified}); err != nil {
-		return "", 0, err
+		return failed(err)
 	}
 	for _, ev := range copied {
 		if unverified != "" {
 			ev.Trust = agent.Untrusted
 		}
 		if err := rec.Append(ev); err != nil {
-			return "", 0, err
+			return failed(err)
 		}
 	}
 	// Handed back at rest, so this process's resume can claim it.

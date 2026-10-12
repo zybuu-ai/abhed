@@ -95,7 +95,9 @@ built, not passed as an argument.
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. The headroom is a quarter of the window, or half of `compact_at`'s
-share of it when that is less, so a low value still waits for history. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+share of it when that is less, so a low value still waits for history. The
+first check after a compaction leaves the headroom out, so a small window
+is not summarized twice in a row. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost
@@ -846,8 +848,16 @@ ABHED_DATABASE_URL='postgres://abhed_runtime:…@db/abhed' abhed serve
 
 `abhed migrate` applies the schema as the owner and grants the runtime role
 exactly what the server uses: `INSERT` and `SELECT` on `events`, and nothing
-that changes or removes one. Keep the owner's credentials off the host that
-runs the server; whoever holds them can alter the record. After an upgrade
+that changes or removes one. On `sessions` it may update only the columns a
+session's life changes, never its id, tenant, parent or start; its owner
+(`user_id`) only to the unclaimed form when the account is removed, which a
+trigger enforces. Every owner change is written to `owner_changes`, and every
+change to an account's groups or tenant to `account_changes`, by triggers
+that run as the tables' owner: the runtime role can read those tables but
+neither write nor skip a row. Keep the owner's credentials off the host that
+runs the server; whoever holds them can alter the record (see
+[the Postgres record](12-records.md#the-postgres-record) for the chain and
+witness that show it). After an upgrade
 that adds columns, run `abhed migrate` again before starting the server: on a
 schema older than the binary it refuses to start and names what is missing.
 

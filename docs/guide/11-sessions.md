@@ -232,12 +232,23 @@ chat is stopped first.
 What "delete" means depends on the store, and the console says so rather than
 pretending:
 
-- **Postgres** marks the session deleted. It disappears from every list, get
-  and replay — nothing reads it through the API again — but the transcript
-  rows stay, because the events table refuses `DELETE` by trigger and that
-  refusal is a property this store promises. The mark records who deleted it
-  and when. Someone with the database can still see it; someone with only the
-  API cannot.
+- **Postgres** erases what the session said and keeps that it happened. Each
+  session's event payloads and file pre-images are sealed (AES-256-GCM) with
+  a key of its own, kept in `session_keys`; delete removes the key, along with
+  the session's label, title and its approvals' arguments. The event rows
+  stay, because the events table refuses `DELETE` by trigger and that refusal
+  is a property this store promises, but what is left in them is ciphertext
+  no one can open: type, actor, time and hash remain, the words do not. Its
+  subagents' sessions go the same way. The mark records who deleted it and
+  when. What erasure does not reach: sessions recorded before 1.2.8, whose
+  payloads were never sealed; a database backup taken before the delete,
+  which still holds the key until it expires; and, until `VACUUM` runs, the
+  deleted key's bytes in the table's free space.
+- **The local record** (`~/.abhed/records`) deletes as `abhed record prune`
+  does: the session's file, its subagents' and the pre-images no other session
+  names are removed, and a tombstone in the index keeps its id and head. Lines
+  the index wrote earlier, such as its title, stay, since the index is
+  append-only.
 - **Memory** drops the events outright.
 - A store built without deletion answers `501`, and the console reports that
   this deployment keeps an append-only record. A delete button that silently

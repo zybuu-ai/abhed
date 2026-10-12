@@ -41,6 +41,9 @@ func TestControlPlaneTablesAreOneSchemaVersion(t *testing.T) {
 		t.Fatal("schema.sql has no schema version 7")
 	}
 	v7 := schemaSQL[at:]
+	if end := strings.Index(v7, "-- Schema version 8"); end > 0 {
+		v7 = v7[:end]
+	}
 	for _, m := range regexp.MustCompile(`(?m)^CREATE TABLE IF NOT EXISTS (\w+)`).FindAllStringSubmatch(v7, -1) {
 		if !slices.ContainsFunc(sandboxColumns, func(c [2]string) bool { return c[0] == m[1] }) {
 			t.Errorf("%s is not among the columns the control plane checks for", m[1])

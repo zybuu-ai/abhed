@@ -16,7 +16,8 @@ type Report struct {
 	Ended     time.Time `json:"ended"`
 	Prompt    string    `json:"prompt"`
 	// Outcome is the terminal reason, or "running" when the record has no end,
-	// or "no agent run" when it has neither an end nor an agent run.
+	// "idle" when it has none and the session is open with no run going, or
+	// "no agent run" when it has neither an end nor an agent run.
 	Outcome string `json:"outcome"`
 	// Models are the models the calls went to in order, one entry per run of
 	// calls, so a switch and a switch back both show.
@@ -55,6 +56,9 @@ type Totals struct {
 	TokensOut    int     `json:"tokens_out"`
 	TokensCached int     `json:"tokens_cached"`
 	CacheHitRate float64 `json:"cache_hit_rate"`
+	// CacheReported is false when no turn's provider gave a cached-token
+	// figure, so a zero rate means unknown, not a cold cache.
+	CacheReported bool `json:"cache_reported"`
 	// ModelMS and ToolMS split the wall clock between waiting on the model
 	// and waiting on tools, which is the first question about a slow session.
 	ModelMS    int64 `json:"model_ms"`
@@ -79,13 +83,15 @@ type Turn struct {
 	TokensOut    int    `json:"tokens_out"`
 	TokensCached int    `json:"tokens_cached"`
 	// CacheReported is false when the provider gave no cached-token figure.
-	CacheReported bool   `json:"cache_reported,omitempty"`
-	Window        int    `json:"context_window"`
-	CutOff        bool   `json:"cut_off,omitempty"`
-	FirstTokenMS  int64  `json:"first_token_ms"`
-	LatencyMS     int64  `json:"latency_ms"`
-	ToolCalls     int    `json:"tool_calls"`
-	Error         string `json:"error,omitempty"`
+	CacheReported bool `json:"cache_reported,omitempty"`
+	Window        int  `json:"context_window"`
+	CutOff        bool `json:"cut_off,omitempty"`
+	// Estimated marks tokens the harness estimated for a reply stopped early.
+	Estimated    bool   `json:"estimated,omitempty"`
+	FirstTokenMS int64  `json:"first_token_ms"`
+	LatencyMS    int64  `json:"latency_ms"`
+	ToolCalls    int    `json:"tool_calls"`
+	Error        string `json:"error,omitempty"`
 }
 
 // Call is one tool call followed through its whole life: what was asked, what

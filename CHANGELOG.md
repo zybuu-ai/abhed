@@ -209,6 +209,19 @@ All notable changes to Abhed are recorded here. The format follows
   `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
   pin it.
   Affects the binaries and images of 1.2.7 and earlier.
+- The Postgres runtime role, which is meant to append and not alter, could
+  move any session to another owner (`UPDATE sessions SET user_id = …`),
+  rewrite a session's tenant or parent, and change an account's groups, with
+  no record of it. It may now update only the columns a session's life
+  changes; a trigger allows an owner change only to the unclaimed form when
+  an account is removed, and every owner change and every change to an
+  account's groups or tenant is written to `owner_changes` and
+  `account_changes` by triggers the runtime role can neither skip nor write.
+  Run `abhed migrate` to apply it. Affects 1.0.0 to 1.2.7.
+- Deleting a session in Postgres left its whole transcript readable in the
+  database. Its payloads are now sealed with a per-session key that delete
+  removes (see Added). Affects 1.0.0 to 1.2.7; sessions recorded by those
+  versions keep their plaintext.
 
 ### Added
 
@@ -570,6 +583,20 @@ All notable changes to Abhed are recorded here. The format follows
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
+- The record's heads can be sent to a witness the machine's owner does not
+  control (managed `record.witness`: an append-only `file` on WORM or remote
+  storage, and/or a `url` sent each signed head). `abhed record verify`
+  checks every head the witness holds is still in the record, which catches
+  a record cut back, re-chained or restored from an older copy.
+- Postgres events are hash-chained per session by the database itself
+  (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
+  sends), as is the control plane's `sandbox_audit` per tenant. `abhed
+  record verify` with `storage.driver: postgres` walks each chain, and with a
+  witness each session's head is sent at the end of every run.
+- Deleting a Postgres session now erases what it said: payloads and file
+  pre-images are sealed with a per-session key, and delete removes the key,
+  the session's label and title, and its approvals' arguments. The event
+  rows and their hashes stay. Sessions recorded before 1.2.8 are not sealed.
 
 ### Changed
 
@@ -782,6 +809,64 @@ on. A server with it off starts on the older schema as before.
   as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
   so the agent took the folder for empty. It now says the folder is skipped
   unless `path` names it, and gives that path.
+- A tool call the model sent without an id, or with an id it had already
+  used in the same turn, kept that id, so two such reads run in parallel
+  could have their results paired with the wrong call in the record and in
+  editor cards. Each such call now gets an id of its own (`call_` and a
+  unique suffix) before anything is recorded.
+- An ask that ended with no one's answer was recorded as `action.denied`
+  at step `ask`, counted with the ask rule's own refusals. It now has its
+  own step: `interrupted` when the run stopped while it waited, `unanswered`
+  when the wait timed out, input ended, the client could not ask or the
+  approver failed, and `withheld` when its record could not be redacted.
+- An ask refused because input ended (`echo | abhed` with an ask) was
+  recorded as the person's refusal (`by: user`). It is now the system's,
+  with the reason `input ended`.
+- A key a built-in tool does not take, such as `file_path` for `read`, was
+  dropped without telling the model, which then read "path is required"
+  and could not see why. The result now ends `[ignored: file_path (not
+  arguments of read)]`. The `dropped_args` the record keeps were also
+  unbounded; each key is now clipped to 64 characters, and after 32 the
+  rest are counted as `+N more`.
+- A subagent's session row always said mode `auto`, whatever mode it ran
+  in. It now holds the mode the subagent ran in: the parent's, or its
+  role's narrower one.
+- A reply stopped before its provider reported usage was recorded as
+  `model.call` with 0 tokens in and out, and nothing was spent from the
+  token budget. The tokens are now estimated, marked `estimated: true`,
+  and spent.
+- With a small `context_window` (such as 12000) a session was summarized
+  twice in every turn: the check before a turn added room for that turn to
+  history a compaction had just made as small as it gets. The first check
+  after a compaction now leaves that room out.
+- Streaming a reply redacted each fragment three times over, and more while
+  a stored value sat near the end, which with a long value such as a key
+  file cost about 0.1 ms a fragment. A fragment with no stored value in
+  reach is now redacted once.
+- A fork (`/fork`, `/rewind`, the SDK's `Fork`) closed every Kubernetes
+  login and SSH host of the conversation, even those made before the step
+  it goes on from. It now keeps those and closes only the ones made after.
+- A branch of a session (`-fork-session`, the editor's branch) copied a
+  `session.started` whose `through_seq` still counted in the source's
+  numbering. It is now renumbered to the branch's, as a restore's
+  checkpoint is.
+- HawkEYE printed "0% cached" for a provider that reports no cached
+  figure; it now says "cache not reported". A workbench session open
+  between messages showed as `running`; it is now `idle`. A turn whose
+  tokens were estimated is marked `~`. A background shell stopped as
+  `owner_revoked` or `owner_inactive` raises `shell-owner-gone`, a fence
+  limit hit raises `fence-limit`, and a `.abhed` planted under the fence
+  raises `fence-state-planted`.
+- `subagent.spawned` did not name the parent's call that started it, so a
+  trace could only pair two subagents with the same description by guess.
+  It now carries `call_id`.
+- A session start refused after its session was recorded in the local record
+  (a server draining, a policy layer or secrets that could not be read), or
+  a branch whose copy failed part way, left an empty session listed that
+  never ran. The local record can now delete a session, as a prune by the
+  person with a tombstone, and these paths use it; a delete in the console
+  over a local record does the same instead of answering that the record is
+  append-only.
 
 ### Dependencies
 

@@ -684,11 +684,24 @@ func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(
 		}
 		return rec, func() { _ = rec.Close() }, nil
 	}
-	pg, err := store.Open(ctx, storeConfig(cfg))
+	sc := storeConfig(cfg)
+	w, err := openWitness(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if w != nil {
+		sc.Anchor = w.Postgres
+	}
+	pg, err := store.Open(ctx, sc)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open event store: %w", err)
 	}
-	return pg, pg.Close, nil
+	return pg, func() {
+		pg.Close()
+		if w != nil {
+			closeWitness(w)
+		}
+	}, nil
 }
 
 // openServeStore is serve's event store: Postgres when configured, and
@@ -713,7 +726,16 @@ func serveStorageLabel(cfg config.Config) string {
 // the secrets store, read again as it changes, before anything is written. A managed
 // record.retention_days prunes what is older, leaving tombstones.
 func openRecord(cfg config.Config) (*local.Store, error) {
-	rec, err := local.Open(local.Options{Dir: cfg.Record.Dir, Tenant: cliTenant(cfg), User: cliUser(), Redact: openVault().Session()})
+	opts := local.Options{Dir: cfg.Record.Dir, Tenant: cliTenant(cfg), User: cliUser(), Redact: openVault().Session()}
+	w, err := openWitness(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if w != nil {
+		opts.Anchor = func(tenant, session string, h local.Head) { w.Local(tenant, session, h.Lines, h.Seq, h.Hash) }
+		opts.OnClose = func() { closeWitness(w) }
+	}
+	rec, err := local.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("open the local record: %w", err)
 	}

@@ -299,8 +299,11 @@ type ModelCall struct {
 	ToolCalls    int   `json:"tool_calls"`
 	// CutOff marks a turn that spent the whole output budget: the model was
 	// still writing when the limit ended it, so what it said is not an answer.
-	CutOff bool   `json:"cut_off,omitempty"`
-	Error  string `json:"error,omitempty"`
+	CutOff bool `json:"cut_off,omitempty"`
+	// Estimated marks token counts the harness worked out itself, for a reply
+	// stopped before its provider reported any.
+	Estimated bool   `json:"estimated,omitempty"`
+	Error     string `json:"error,omitempty"`
 	// Retryable marks an Error from a call or stall timeout: nothing was wrong
 	// with the request, so the same call may be sent again.
 	Retryable bool `json:"retryable,omitempty"`

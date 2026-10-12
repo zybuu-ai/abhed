@@ -67,7 +67,7 @@ func TestRecordListShowVerify(t *testing.T) {
 		t.Fatalf("show: %d %s", code, out)
 	}
 	code, out, _ = runRecord(t, ws, "verify")
-	if code != 0 || strings.Count(out, "ok ") != 3 || !strings.Contains(out, "not proof against them") {
+	if code != 0 || strings.Count(out, "ok ") != 3 || !strings.Contains(out, "put back an older copy") {
 		t.Fatalf("verify: %d %s", code, out)
 	}
 	// The index is numbered by line; it used to say "head seq 0". Each session

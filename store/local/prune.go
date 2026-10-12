@@ -191,3 +191,39 @@ func (s *Store) PruneOlder(cutoff time.Time, by, reason string) (pruned []Pruned
 	}
 	return pruned, skipped, nil
 }
+
+// DeleteSession erases session id and its subagents, as the Postgres store's
+// delete does: what they said goes (the files and the blobs no other session
+// names), and a tombstone in the index keeps that they existed and their
+// heads. A session this process holds is let go first. Deleting one that is
+// not recorded, or already gone, is not an error: the caller asked for a state.
+func (s *Store) DeleteSession(id string) error {
+	if err := checkID("session", id); err != nil {
+		return err
+	}
+	e, ok := s.index.get(id)
+	if !ok || e.Pruned {
+		return nil
+	}
+	all, err := s.index.entries()
+	if err != nil {
+		return err
+	}
+	ids := []string{id}
+	for i := 0; i < len(ids); i++ {
+		for _, c := range all {
+			if c.Subagent && c.Parent == ids[i] && !c.Pruned {
+				ids = append(ids, c.ID)
+			}
+		}
+	}
+	for _, sid := range ids {
+		if err := s.Release(sid); err != nil {
+			return fmt.Errorf("delete session %s: %w", sid, err)
+		}
+	}
+	if _, err := s.Prune(id, "user", "deleted"); err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	return nil
+}

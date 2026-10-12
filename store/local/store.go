@@ -41,6 +41,9 @@ type Options struct {
 	// machine's owner too; the record does not depend on it, and an error it
 	// has is its own to report.
 	Anchor func(tenant, session string, head Head)
+	// OnClose runs after Close has synced every held session, so an anchor
+	// can send the last heads before the process ends.
+	OnClose func()
 }
 
 // DefaultDir is ~/.abhed/records.
@@ -61,6 +64,7 @@ type Store struct {
 	tenant, user string
 	redact       agent.Redactor
 	anchor       func(tenant, session string, head Head)
+	onClose      func()
 
 	mu     sync.Mutex
 	held   map[string]*session
@@ -103,6 +107,7 @@ var writeLine = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
 var (
 	_ Record                  = (*Store)(nil)
 	_ agent.SessionCreator    = (*Store)(nil)
+	_ agent.SessionDeleter    = (*Store)(nil)
 	_ agent.SubSessionChecker = (*Store)(nil)
 )
 
@@ -160,7 +165,7 @@ func Open(opts Options) (*Store, error) {
 		red = nil // a typed nil redacts nothing, and must not be called
 	}
 	s := &Store{
-		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red, anchor: anchor,
+		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red, anchor: anchor, onClose: opts.OnClose,
 		held: map[string]*session{}, subs: map[string][]chan agent.Event{},
 	}
 	s.blobs = &blobStore{dir: filepath.Join(dir, "blobs", "sha256")}
@@ -513,6 +518,9 @@ func (s *Store) Close() error {
 		if err := h.close(s); err != nil && first == nil {
 			first = err
 		}
+	}
+	if s.onClose != nil {
+		s.onClose()
 	}
 	return first
 }
@@ -976,8 +984,8 @@ func (s *Store) create(rec store.SessionRecord, parent, kind string) error {
 
 // CreateSubagentSession starts a subagent's own session, named as its
 // parent's child so lists leave it out and resume checks whose it is.
-func (s *Store) CreateSubagentSession(_ context.Context, id, parentID, description string) error {
-	return s.create(store.SessionRecord{ID: id, User: "agent", Model: "subagent", Mode: "auto", Prompt: description}, parentID, kindSubagent)
+func (s *Store) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
+	return s.create(store.SessionRecord{ID: id, User: "agent", Model: "subagent", Mode: agent.SubagentMode(ctx, "auto"), Prompt: description}, parentID, kindSubagent)
 }
 
 // SubSessionOf reports whether childID is a subagent session parentID started.

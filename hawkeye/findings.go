@@ -92,6 +92,42 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 		}
 		add(Info, "no-end", "The session has no recorded end", detail, 0)
 	}
+	// What happened inside a command, as the sandbox saw it: a shell stopped
+	// because its owner lost access, a fence limit hit, harness state planted.
+	for _, e := range evs {
+		switch e.Type {
+		case agent.EvShellEnded:
+			var end agent.ShellEnded
+			if json.Unmarshal(e.Payload, &end) != nil {
+				continue
+			}
+			if end.Reason == string(agent.TermOwnerRevoked) || end.Reason == string(agent.TermOwnerInactive) {
+				add(Info, "shell-owner-gone", "A background shell was stopped: "+end.Reason,
+					fmt.Sprintf("Background shell %s was ended because its owner's access was withdrawn (%s), "+
+						"not because it failed or finished; its work may be incomplete.", end.ShellID, end.Reason), e.Seq)
+			}
+		case agent.EvFenceLimit:
+			var p struct {
+				CallID  string `json:"call_id"`
+				PidsMax int    `json:"pids_max"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			what := "its memory limit"
+			if p.PidsMax > 0 {
+				what = "its process limit"
+			}
+			add(Info, "fence-limit", "A fenced command hit "+what,
+				fmt.Sprintf("Call %s ran into %s under the fence; its output may be cut short.", p.CallID, what), e.Seq)
+		case agent.EvFenceStatePlanted:
+			var p struct {
+				CallID string `json:"call_id"`
+				Reason string `json:"reason"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			add(Critical, "fence-state-planted", "A command wrote where Abhed keeps its own state",
+				fmt.Sprintf("Call %s: %s.", p.CallID, p.Reason), e.Seq)
+		}
+	}
 	if why, bad := abnormal[r.Outcome]; bad {
 		add(Warn, "abnormal-end", "Ended as "+r.Outcome, "The session did not complete: "+why+".", r.Integrity.LastSeq)
 	}

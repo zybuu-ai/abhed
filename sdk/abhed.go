@@ -616,8 +616,8 @@ func (a *Agent) Usage() Usage { return a.loop.Usage() }
 // steps after throughSeq stay in the record but leave the conversation (see
 // Live), and it refuses a step past the end or one an earlier fork abandoned.
 // It returns ErrForkDuringRun while Run, Continue, RunJSON or RunStructured is
-// in progress: a fork rewrites the conversation and ends its logins, which
-// must not happen under a turn. A run started while a fork is under way
+// in progress: a fork rewrites the conversation and ends the logins made
+// after its step, which must not happen under a turn. A run started while a fork is under way
 // waits for it.
 func (a *Agent) Fork(throughSeq int64) error {
 	a.forkMu.Lock()

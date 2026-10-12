@@ -46,6 +46,42 @@ type Approver interface {
 
 type requestIDKey struct{}
 
+// maxIgnoredKeys bounds the keys of one call the record and the model are told
+// were ignored; the model chooses them, so neither their number nor length is its to set.
+const maxIgnoredKeys = 32
+
+// boundKeys clips each key and keeps at most maxIgnoredKeys, naming how many more there were.
+func boundKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]string, 0, min(len(keys), maxIgnoredKeys+1))
+	for i, k := range keys {
+		if i == maxIgnoredKeys {
+			out = append(out, fmt.Sprintf("+%d more", len(keys)-i))
+			break
+		}
+		if r := []rune(k); len(r) > 64 {
+			k = string(r[:64]) + "…"
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// withCallID gives a call the model left without an id, or with one already
+// used this turn, an id of its own, so its events and result pair with it alone.
+func withCallID(c model.ToolCall, prior []model.ToolCall) model.ToolCall {
+	taken := c.ID == ""
+	for _, p := range prior {
+		taken = taken || p.ID == c.ID
+	}
+	if taken {
+		c.ID = "call_" + newID()
+	}
+	return c
+}
+
 // RequestIDOf reports the id of the action.requested event an Approver is
 // asked about. Unlike a model's call id it is unique, so an answer that names
 // it cannot be taken for the answer to a later request.
@@ -303,6 +339,10 @@ type Loop struct {
 	// they abort the process.
 	repeatedFailures map[string]int
 	failuresMu       sync.Mutex
+	// justCompacted is set by a compaction and cleared by the next check.
+	justCompacted bool
+	// ignored holds, by call id, the argument keys a tool did not take, told to the model with its result.
+	ignored sync.Map
 
 	// recordErr is the first failure to write an event. The record is the
 	// session: a run that continued past a store that stopped taking events
@@ -763,9 +803,12 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		return nil
 	}
 	check := l.Compactor.ShouldCompact
-	if !reserve {
+	// Right after a compaction the history is as small as it gets: room for
+	// the next turn on top would compact again at once in a small window.
+	if !reserve || l.justCompacted {
 		check = l.Compactor.ShouldCompactNow
 	}
+	l.justCompacted = false
 	should, used, err := check(l.Config.SystemPrompt, l.messages, toolDefs(l.Tools))
 	if err != nil || !should {
 		return err
@@ -790,6 +833,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 
 	l.messages = compacted
 	l.usage.Compactions++
+	l.justCompacted = true
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
@@ -1002,7 +1046,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				flushThinking(false)
 			}
 		case model.ChunkToolCall:
-			calls = append(calls, *chunk.ToolCall)
+			calls = append(calls, withCallID(*chunk.ToolCall, calls))
 		case model.ChunkError:
 			streamErr = chunk.Err
 		case model.ChunkDone:
@@ -1032,6 +1076,20 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
+	}
+	// A reply stopped before the provider reported usage still cost tokens:
+	// they are estimated, marked so, and spent from the budget.
+	if ctx.Err() != nil && callUsage.InputTokens == 0 && callUsage.OutputTokens == 0 {
+		mc.TokensIn, _ = l.Adapter.CountTokens(req)
+		produced := text.Len() + reasoning.Len()
+		for _, c := range calls {
+			produced += len(c.Name) + len(c.Args)
+		}
+		mc.TokensOut = (produced + 3) / 4
+		if mc.TokensIn > 0 || mc.TokensOut > 0 {
+			mc.Estimated = true
+			l.Budget.Spend(mc.TokensIn + mc.TokensOut)
+		}
 	}
 	// A stream cut by our own cancel is an interrupt, recorded as such at
 	// session end, not a model failure.
@@ -1219,6 +1277,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		c.Args = json.RawMessage(`{}`)
 		return l.refuseArgs(ctx, tool, call, err)
 	}
+	dropped = boundKeys(dropped)
+	if len(dropped) > 0 {
+		l.ignored.Store(call.ID, dropped)
+	}
 	// Before policy, approval, the record and history see it: a credential
 	// where a secret's name belongs is never kept.
 	canon = tools.WithholdSecretValues(tool, canon)
@@ -1321,7 +1383,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	case policy.Ask:
 		if requestedFrom(asked).Withheld {
 			l.record(EvActionDenied, ActorSystem, map[string]string{
-				"call_id": call.ID, "reason": withheldAsk, "step": "ask", "by": BySystem,
+				"call_id": call.ID, "reason": withheldAsk, "step": "withheld", "by": BySystem,
 			})
 			return false, tools.Result{Content: "Denied: " + withheldAsk + ". The call was not run.", IsError: true}, ""
 		}
@@ -1337,13 +1399,14 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.
+			// Its own step, so a refusal no one gave is not counted as the ask rule's.
 			cancelled := ctx.Err() != nil || errors.Is(err, context.Canceled)
-			why := "approval failed: " + err.Error()
+			why, step := "approval failed: "+err.Error(), "unanswered"
 			if cancelled {
-				why = unanswered(ctx, answer.Held)
+				why, step = unanswered(ctx, answer.Held), "interrupted"
 			}
 			l.record(EvActionDenied, ActorSystem, map[string]string{
-				"call_id": call.ID, "reason": why, "step": "ask", "by": BySystem,
+				"call_id": call.ID, "reason": why, "step": step, "by": BySystem,
 			})
 			if cancelled {
 				return false, tools.Result{Content: "Interrupted.", IsError: true}, terminalForCancel(ctx)
@@ -1358,7 +1421,11 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 					why = answer.Reason + ": " + decision.Reason
 				}
 			}
-			denied := withRule(map[string]string{"call_id": call.ID, "reason": why, "step": decision.Step, "by": by}, decision)
+			step := decision.Step
+			if by == BySystem {
+				step = "unanswered" // no one declined it: timed out, input ended, or the client failed
+			}
+			denied := withRule(map[string]string{"call_id": call.ID, "reason": why, "step": step, "by": by}, decision)
 			if answer.Approver != "" {
 				denied["approver"] = answer.Approver
 			}
@@ -1563,6 +1630,10 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		result.Content = redactedText(red.Redact, result.Content)
 	}
 	elapsed := time.Since(start)
+	// Without this the model reads "path is required" and never learns its file_path was not taken.
+	if keys, ok := l.ignored.LoadAndDelete(call.ID); ok {
+		result.Content += "\n\n[ignored: " + strings.Join(keys.([]string), ", ") + " (not arguments of " + call.Name + ")]"
+	}
 
 	// An identical call that keeps failing means the model is not reading the
 	// error. Escalate the message rather than letting it consume every turn:
@@ -1822,6 +1893,7 @@ func (l *Loop) resultLimitChars() int {
 // order they finished, for the same reason.
 func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalReason {
 	results := make([]callOutcome, len(calls))
+	l.ignored.Clear() // a call refused last turn never ran to take its entry
 
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
@@ -2070,6 +2142,19 @@ func (b *fragmentBuffer) push(s string) string {
 	}
 	raw := b.carry + s
 	whole := redactedText(b.redact, raw)
+	if whole == raw {
+		// Nothing in raw matches, so no part of it can: one redaction, not one per candidate cut.
+		cut := len(raw) - (b.span - 1)
+		for cut > 0 && cut < len(raw) && !utf8.RuneStart(raw[cut]) {
+			cut--
+		}
+		if cut <= 0 {
+			b.carry = raw
+			return ""
+		}
+		b.carry = raw[cut:]
+		return raw[:cut]
+	}
 	for cut := len(raw) - (b.span - 1); cut > 0; cut -= max(b.span-1, 1) {
 		for cut > 0 && cut < len(raw) && !utf8.RuneStart(raw[cut]) {
 			cut--

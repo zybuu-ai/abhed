@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -256,10 +257,20 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 		return 0, err
 	}
 	// A login made after the fork point would outlive the turns that made it,
-	// so a fork starts with none; the conversation logs in again.
-	l.Session.ResetScoped()
+	// so it goes; one made before the point stays, as the conversation does.
+	l.Session.ForgetScopedAfter(forkTime(live, seq))
 	l.messages = msgs
 	return len(msgs), nil
+}
+
+// forkTime is when the step a fork goes on from was recorded.
+func forkTime(live []Event, seq int64) time.Time {
+	for _, e := range live {
+		if e.Seq == seq {
+			return e.CreatedAt
+		}
+	}
+	return time.Time{} // not reached: forkPoint refused a step not in live
 }
 
 // CheckForkPoint is ForkTo's refusal of a step, without recording anything,

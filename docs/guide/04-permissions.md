@@ -570,8 +570,9 @@ Every call goes through the same steps, and the order is the design:
    (`command` and `Command`), spell a declared argument in another case
    (`Content` for `content`), or give a tool a key the rules read
    (`command`, `path`, …) that it does not take, is refused at step `args`. A
-   built-in tool drops any other key it does not declare, and the record
-   lists them in `dropped_args`; an MCP tool whose schema sets
+   built-in tool drops any other key it does not declare, the record
+   lists them in `dropped_args` (each clipped to 64 characters, at most 32,
+   then `+N more`), and the result tells the model `[ignored: …]`; an MCP tool whose schema sets
    `additionalProperties: false` refuses them instead. Every later step,
    and the tool itself, reads those same canonical arguments
 1. **Hooks** — extensions, next, so they can veto. A hook's refusal is final
@@ -912,7 +913,8 @@ Two rules make it safe to let it read the reasoning:
 
 Each consultation would be in the record as `monitor.verdict`, with the
 decision before and after, the code, the rationale and the judge's version,
-and a denial it caused would say so at step `monitor`.
+and a denial it caused would say so at step `monitor`. A subagent's calls
+go to the same judge as its parent's, with a per-turn budget of their own.
 
 ## Secrets
 

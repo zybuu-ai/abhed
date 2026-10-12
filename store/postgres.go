@@ -51,6 +51,11 @@ type Postgres struct {
 
 	owners        OwnerPolicy
 	ownerAccounts func() ([]*auth.User, error)
+
+	// keys caches each session's payload cipher by session id; see seal.go.
+	keys sync.Map
+	// anchor is given a session's chain head at each run's end.
+	anchor func(tenant, session string, pos int64, hash string)
 }
 
 type Config struct {
@@ -74,6 +79,10 @@ type Config struct {
 	// the local accounts kept outside the users table. Called only when the
 	// migration runs; its error stops the start.
 	OwnerAccounts func() ([]*auth.User, error)
+	// Anchor, when set, is given a session's event chain head (its last
+	// position and hash) at the end of each run, for a witness outside the
+	// database. It must not block; an error it has is its own to report.
+	Anchor func(tenant, session string, pos int64, hash string)
 }
 
 func DefaultConfig(dsn string) Config {
@@ -140,7 +149,8 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"(see docs/guide/02-configuration.md)")
 	}
 
-	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts}
+	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts,
+		anchor: cfg.Anchor}
 	if cfg.SingleRole {
 		if err := p.Migrate(ctx); err != nil {
 			pool.Close()
@@ -230,7 +240,7 @@ DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version',
                            'sandboxes', 'sandbox_idempotency', 'sandbox_audit',
-                           'sandbox_templates'] LOOP
+                           'sandbox_templates', 'owner_changes', 'session_keys'] LOOP
     IF to_regclass(t) IS NOT NULL THEN
       EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE NOWAIT', t);
     END IF;
@@ -382,7 +392,7 @@ const SubagentUser = auth.Subagent
 func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
 		ID: id, Tenant: p.tenant, User: SubagentUser,
-		Workspace: description, Model: "subagent", Mode: "auto",
+		Workspace: description, Model: "subagent", Mode: agent.SubagentMode(ctx, "auto"),
 		ParentID: parentID, StartedAt: time.Now().UTC(),
 	})
 }
@@ -438,6 +448,16 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Sealed with the session's key, so deleting the key erases it.
+	stored := []byte(ev.Payload)
+	if a, err := p.sealer(ctx, ev.SessionID, true); err != nil {
+		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
+	} else if a != nil {
+		if stored, err = sealPayload(a, ev.SessionID, ev.Seq, stored); err != nil {
+			return fmt.Errorf("append event %s/%d: seal: %w", ev.SessionID, ev.Seq, err)
+		}
+	}
+
 	var tag pgconn.CommandTag
 	var err error
 	if holder == "" {
@@ -447,7 +467,7 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 			VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
 			ON CONFLICT (session_id, seq) DO NOTHING`,
 			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
-			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt)
+			stored, string(ev.Actor), string(ev.Trust), ev.CreatedAt)
 	} else {
 		tag, err = p.pool.Exec(ctx, `
 			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
@@ -458,7 +478,7 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 			                AND (s.node_id = $12 OR (s.node_id IS NULL AND s.ended_at IS NULL)))
 			ON CONFLICT (session_id, seq) DO NOTHING`,
 			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
-			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt,
+			stored, string(ev.Actor), string(ev.Trust), ev.CreatedAt,
 			leaseSession(ev), holder)
 	}
 	if err != nil {
@@ -579,6 +599,12 @@ func (p *Postgres) finalizeSession(ctx context.Context, ev agent.Event) {
 		ev.SessionID, endedAt, string(ended.Reason), ended.Turns,
 		ended.TokensIn, ended.TokensOut, ended.TokensCached, ended.Compactions,
 		ctxTokens, ctxWindow)
+	// Each run's end is a head worth keeping outside the database.
+	if p.anchor != nil {
+		if pos, h, err := p.chainHead(ctx, ev.SessionID); err == nil && pos > 0 {
+			p.anchor(p.tenant, ev.SessionID, pos, h)
+		}
+	}
 }
 
 // truncatePrompt bounds what goes in the label column.
@@ -626,6 +652,9 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
+		if payload, err = p.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+			return nil, err
+		}
 		ev.Payload = payload
 		out = append(out, ev)
 	}
@@ -1025,13 +1054,13 @@ func (p *Postgres) NodeFor(ctx context.Context, sessionID string, stale time.Dur
 	return *node, nil
 }
 
-// DeleteSession marks a session deleted. The transcript rows stay — the events
-// table refuses DELETE by trigger, and that refusal is a property the
-// deployment promised — but Events, ListSessions and GetSession all treat a
-// marked session as absent from then on, which is what the person who pressed
-// delete needed: nothing reads it through the API again. The marking is not
-// a second delete path around the audit log; it is the audit log recording
-// that a delete happened, and by whom.
+// DeleteSession marks a session deleted and erases what it said. The
+// transcript rows stay — the events table refuses DELETE by trigger, and that
+// refusal is a property the deployment promised — but the session's key is
+// deleted, so its sealed payloads and pre-images can no longer be opened, and
+// its label, title and pending approvals' arguments are cleared. Events,
+// ListSessions and GetSession treat it as absent from then on. What stays is
+// that each step happened, when, by whom, and its hash.
 //
 // Deleting a session that is already deleted, or that belongs to another
 // tenant (RLS makes it invisible), is not an error: the caller asked for a
@@ -1041,23 +1070,54 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 	defer cancel()
 	// The session's subagents go with it: their records hold its work. They
 	// are marked the same way, so their rows stay for the audit too.
-	_, err := p.pool.Exec(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
 		WITH RECURSIVE tree(id) AS (
 			SELECT id FROM sessions WHERE id = $1
 			UNION
 			SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
 		)
-		UPDATE sessions SET deleted_at = now(), deleted_by = user_id
-		WHERE id IN (SELECT id FROM tree) AND deleted_at IS NULL`, sessionID)
+		SELECT id FROM tree`, sessionID)
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	for _, q := range []string{
+		`UPDATE sessions SET deleted_at = now(), deleted_by = user_id WHERE id = ANY($1) AND deleted_at IS NULL`,
+		`UPDATE sessions SET prompt = '', title = '' WHERE id = ANY($1)`,
+		`UPDATE approvals SET args = '{}'::jsonb, reason = '' WHERE session_id = ANY($1)`,
+		`DELETE FROM session_keys WHERE session_id = ANY($1)`,
+	} {
+		if _, err := tx.Exec(ctx, q, ids); err != nil {
+			return fmt.Errorf("delete session %s: %w", sessionID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	for _, id := range ids {
+		p.keys.Delete(id)
 	}
 	return nil
 }
 
 // SaveCheckpoint records a file's prior content, backing /undo.
 func (p *Postgres) SaveCheckpoint(ctx context.Context, sessionID string, seq int64, path string, before []byte) error {
-	_, err := p.pool.Exec(ctx, `
+	a, err := p.sealer(ctx, sessionID, true)
+	if err != nil {
+		return err
+	}
+	if before, err = sealBlob(a, sessionID, seq, before); err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(ctx, `
 		INSERT INTO checkpoints (id, session_id, tenant_id, event_seq, path, before)
 		VALUES ($1,$2,$3,$4,$5,$6)`,
 		fmt.Sprintf("%s-%d", sessionID, seq), sessionID, p.tenant, seq, path, before)
@@ -1130,6 +1190,9 @@ func (p *Postgres) Scan(ctx context.Context, from, to time.Time, fn func(agent.E
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
+		if payload, err = p.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+			return err
+		}
 		ev.Payload = payload
 		if err := fn(ev); err != nil {
 			return err

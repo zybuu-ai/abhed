@@ -80,7 +80,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
     {{if .Models}}<div><dt>Model</dt><dd>{{latest .Models}}</dd><small>{{if gt (len .Models) 1}}switched: {{join .Models " → "}}{{else}}every call{{end}}</small></div>{{end}}
     <div><dt>Duration</dt><dd>{{ms .Totals.DurationMS}}</dd><small>model {{ms .Totals.ModelMS}} · tools {{ms .Totals.ToolMS}}</small></div>
     <div><dt>Turns</dt><dd>{{.Totals.Turns}}</dd><small>{{.Totals.ToolCalls}} tool calls · {{.Totals.Events}} events</small></div>
-    <div><dt>Tokens in</dt><dd>{{n .Totals.TokensIn}}</dd><small>{{pct .Totals.CacheHitRate}} cached · {{n .Totals.TokensOut}} out</small></div>
+    <div><dt>Tokens in</dt><dd>{{n .Totals.TokensIn}}</dd><small>{{if .Totals.CacheReported}}{{pct .Totals.CacheHitRate}} cached{{else}}cache not reported{{end}} · {{n .Totals.TokensOut}} out</small></div>
     <div><dt>Peak context</dt><dd>{{n .Totals.PeakContext}}</dd><small>{{if .Totals.Window}}of {{n .Totals.Window}} window · {{end}}{{len .Compactions}} compactions · {{len .Offloads}} offloads · {{.Totals.Recalls}} recalls</small></div>
     <div><dt>Policy</dt><dd>{{.Policy.Allowed}} / {{.Policy.Denied}}</dd><small>allowed / denied · {{.Policy.Reviewer}} asked a reviewer</small></div>
     {{with .Network}}<div><dt>Network</dt><dd>{{.Allowed}} / {{.Denied}}</dd><small>allowed / refused by the allowlist{{if .WouldDeny}} · {{.WouldDeny}} would be refused (monitor){{end}}</small></div>{{end}}
@@ -154,7 +154,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
   <h2>Turns</h2>
   <div class="scroll"><table>
     <tr><th>#</th><th class="r">tokens in</th><th class="r">cached</th><th class="r">out</th><th class="r">first token</th><th class="r">total</th><th class="r">calls</th><th>error</th></tr>
-    {{range .Turns}}<tr><td>{{.N}}</td><td class="r">{{n .TokensIn}}</td><td class="r">{{n .TokensCached}}</td><td class="r">{{n .TokensOut}}</td><td class="r">{{ms .FirstTokenMS}}</td><td class="r">{{ms .LatencyMS}}</td><td class="r">{{.ToolCalls}}</td><td class="wide err">{{.Error}}</td></tr>{{end}}
+    {{range .Turns}}<tr><td>{{.N}}</td><td class="r">{{if .Estimated}}~{{end}}{{n .TokensIn}}</td><td class="r">{{if or .CacheReported .TokensCached}}{{n .TokensCached}}{{else}}—{{end}}</td><td class="r">{{if .Estimated}}~{{end}}{{n .TokensOut}}</td><td class="r">{{ms .FirstTokenMS}}</td><td class="r">{{ms .LatencyMS}}</td><td class="r">{{.ToolCalls}}</td><td class="wide err">{{.Error}}</td></tr>{{end}}
   </table></div>
 </section>
 {{end}}

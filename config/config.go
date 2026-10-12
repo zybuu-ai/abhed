@@ -178,7 +178,24 @@ type RecordConfig struct {
 	// Also are records an embedder hands in beside Dir, never read from a
 	// file; they are state as Dir is.
 	Also []string `json:"-"`
+	// Witness is where each head of the record is sent as it is written, so
+	// the record can be checked against what the machine's owner cannot rewrite.
+	Witness WitnessConfig `json:"witness,omitempty"`
 }
+
+// WitnessConfig names an off-host witness for the record's heads. Managed only.
+type WitnessConfig struct {
+	// File is an append-only file on storage the machine's owner cannot
+	// rewrite, such as a WORM or object-lock mount or another host's share.
+	File string `json:"file,omitempty"`
+	// URL is sent each head as a JSON POST.
+	URL string `json:"url,omitempty"`
+	// TokenSecret names the stored secret sent to URL as a bearer token.
+	TokenSecret string `json:"token_secret,omitempty"`
+}
+
+// On reports whether a witness is configured.
+func (w WitnessConfig) On() bool { return w.File != "" || w.URL != "" }
 
 // SuggestConfig governs the next-prompt suggestion an interactive surface
 // shows after a completed turn. Headless runs never make one.
@@ -248,6 +265,7 @@ var managedOnly = map[string]string{
 	"cli.mode_cycle":               "only the managed configuration narrows the Shift-Tab modes",
 	"record.dir":                   "only the managed configuration moves the record",
 	"record.retention_days":        "only the managed configuration sets how long the record is kept",
+	"record.witness":               "only the managed configuration says where the record's heads are witnessed",
 	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",

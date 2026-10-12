@@ -1851,7 +1851,7 @@ func (s *Server) subagentStoreIn(sessionID string, spec StartSpec, mode, workspa
 		}
 		return s.sessions.CreateSession(ctx, store.SessionRecord{
 			ID: id, Tenant: tenant, User: user, Workspace: workspace,
-			Model: "subagent", Mode: mode, ParentID: parentID,
+			Model: "subagent", Mode: agent.SubagentMode(ctx, mode), ParentID: parentID,
 			Prompt: description, StartedAt: time.Now().UTC(),
 		})
 	}}
@@ -2868,9 +2868,15 @@ func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Live here whoever owns it: mayAccess has already admitted the caller.
 	s.mu.RLock()
-	_, live := s.running[id]
+	ls, live := s.running[id]
 	s.mu.RUnlock()
-	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live})
+	idle := false
+	if live {
+		ls.mu.Lock()
+		idle = ls.State == "idle"
+		ls.mu.Unlock()
+	}
+	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live, Idle: idle})
 	if r.URL.Query().Get("format") != "html" {
 		WriteJSON(w, http.StatusOK, rep)
 		return

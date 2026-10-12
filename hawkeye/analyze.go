@@ -19,6 +19,9 @@ const outputKeep = 4000
 type Options struct {
 	// Live is set when the session is still running where the report is made.
 	Live bool
+	// Idle is set when the session is open where the report is made but no
+	// run is going, as a workbench session between messages.
+	Idle bool
 	// Omitted is what the capture says it left out, from a -p run's result line.
 	// Only the delta types are honoured: a gap that only they could fill is no hole.
 	Omitted []string
@@ -84,7 +87,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				N: len(r.Turns) + 1, Seq: e.Seq, Model: m.Model, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
 				TokensCached: m.TokensCached, CacheReported: m.CacheReported,
 				Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
-				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff,
+				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff, Estimated: m.Estimated,
 			})
 
 		case agent.EvActionRequested:
@@ -213,6 +216,9 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	if (r.Outcome == "running" || r.Outcome == string(agent.TermSessionClosed)) && len(r.Turns) == 0 && !slices.ContainsFunc(evs, func(e agent.Event) bool { return e.Type == agent.EvUserMessage }) {
 		r.Outcome = "no agent run"
 	}
+	if r.Outcome == "running" && opt.Idle {
+		r.Outcome = "idle"
+	}
 	for _, id := range order {
 		r.Calls = append(r.Calls, *calls[id])
 	}
@@ -334,6 +340,8 @@ func (r *Report) totals(ended agent.SessionEnded) {
 	if t.TokensIn > 0 {
 		t.CacheHitRate = float64(t.TokensCached) / float64(t.TokensIn)
 	}
+	// A cached figure anywhere is one reported, records older than the flag included.
+	t.CacheReported = t.TokensCached > 0 || slices.ContainsFunc(r.Turns, func(x Turn) bool { return x.CacheReported })
 }
 
 func integrity(evs []agent.Event, ordered bool, opt Options) Integrity {

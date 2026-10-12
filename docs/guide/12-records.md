@@ -248,12 +248,56 @@ What `verify` cannot show:
   first line, or to nothing, with its creation head written back, looks
   exactly like a crash during its first write. That is the same edit as
   rewriting a head, below. With two or more lines left, a creation head fails.
-- **An owner who rewrites the evidence.** Verification is only as strong as
-  the head and index files, and the same owner can rewrite those as well as
-  the lines, or compute a whole new chain. The record is tamper-evident against
-  the agent and against accidental or partial edits, and it can be verified
-  offline. It is not proof against the machine's owner. Abhed does not anchor
-  the chain outside the machine.
+- **An owner who rewrites the evidence, without a witness.** Verification is
+  only as strong as the head and index files, and the same owner can rewrite
+  those as well as the lines, or compute a whole new chain. Without
+  `record.witness` the record is tamper-evident against the agent and against
+  accidental or partial edits, and it can be verified offline, but it is not
+  proof against the machine's owner.
+
+### A witness outside the machine
+
+The managed configuration can send every head, as it is synced, to a witness
+the machine's owner does not control:
+
+```json
+{ "record": { "witness": {
+    "file": "/Volumes/audit-worm/abhed-heads.jsonl",
+    "url": "https://audit.example.com/abhed/heads",
+    "token_secret": "AUDIT_WITNESS_TOKEN" } } }
+```
+
+`file` is appended one signed statement per line (installation, tenant,
+session, line count, seq, hash, time); put it on storage the owner cannot
+rewrite, such as a WORM or object-lock mount or another host's share. `url`
+is sent each statement as a JSON POST, with the named secret as a bearer
+token. Statements are signed with an Ed25519 key kept as `witness.key` in the
+records folder, which says which installation sent them; it does not stop the
+owner, who holds the key, so the witness's value is where it keeps them. A
+witness that is set and cannot be opened stops the start; a head that fails
+to reach the URL is reported on stderr.
+
+`abhed record verify` then also checks every head in `record.witness.file`
+(or a copy named with `-witness <file>`): each must still be in the record,
+line for line. A record cut back, re-chained, or put back from an older copy
+fails there, though it passes every other check.
+
+What a witness still cannot show: lines written after the last head it was
+sent (the last sync), and anything before it was configured.
+
+### The Postgres record
+
+In Postgres every event is chained to the one before it in its session, by
+the database itself: a trigger sets `chain_pos`, `prev_hash` and `hash`,
+whatever the server sent, and holds a lock per session so concurrent writers
+make one chain. The control plane's `sandbox_audit` is chained per tenant the
+same way. `abhed record verify [session ...]` with `storage.driver: postgres`
+walks each chain in the database and reports the first event that was
+changed, removed or reordered; events written before 1.2.8 are counted as
+unchained, not as broken. The runtime role cannot change a row, but the
+tables' owner can, and can recompute the chain: with `record.witness` each
+session's head is sent at the end of every run, and `verify` checks that the
+database still holds every head the witness has.
 
 ## Exporting
 
