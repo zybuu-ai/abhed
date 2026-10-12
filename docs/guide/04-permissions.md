@@ -493,8 +493,7 @@ A deny pattern matches the words, so it is easy to step around.
 `bash(curl *)` does not catch any of these, and every one of them runs curl:
 
 - a script another program reads (`python3 x.py`, `node x.js`, `make`), a
-  shell script over 64 KiB, one the agent's own commands judge from a folder
-  the server cannot see (an `:exec` in a sandbox), a program the line
+  shell script over 64 KiB, a program the line
   builds before it runs it (`make && ./bin/app`), or a script another
   program on the line writes or unpacks (`tar x`, `unzip`, `git checkout`,
   `patch`, `python3 -c`)

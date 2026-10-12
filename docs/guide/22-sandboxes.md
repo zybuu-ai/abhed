@@ -714,7 +714,17 @@ since the check cannot read files inside the sandbox; a command that starts
 none, a plain `bash -c`, or a shell fed stdin keeps them. A shell started
 with the sandbox's own `HOME` is refused the same way while the rules are
 in force, and so is an interactive terminal's, unless it is the one the
-server starts (`bash --noprofile --norc -i`), which reads none. For a shell fed
+server starts (`bash --noprofile --norc -i`), which reads none.
+
+The server cannot read a sandbox's files, so while bash rules or hooks are
+in force an `:exec` or SSH exec line that would have a shell run one is
+refused (`403`, code `forbidden`) rather than passed unread: a script run
+by path or through a shell (`./s.sh`, `sh s.sh`), a file sourced
+(`. f`, `source f`), a start-up file (`BASH_ENV=`, `ENV=`, `--rcfile`,
+`--init-file`), a `HOME` or `ZDOTDIR` with a shell that reads start-up
+files from it, and a program found through a `PATH` the line sets. A
+program named by its path in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`,
+`/usr/local/bin` or `/usr/local/sbin` is taken as the image's own; plain commands run as before. For a shell fed
 stdin, `IFS` is refused too, and the shell is refused as uncheckable rather
 than judged statement by statement; the message names the variable to leave
 out.

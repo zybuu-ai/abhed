@@ -208,7 +208,11 @@ All notable changes to Abhed are recorded here. The format follows
   read on the process tier, none and the fence, and refused under a deny
   rule where the host cannot read that `HOME`, as in a container); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
-  interpreters' scripts are not read, and an `:exec` reads no script.
+  interpreters' scripts are not read. An `:exec` in a sandbox, whose files
+  the server cannot read, refuses instead, while rules or hooks are in
+  force, a line that runs a script, sources a file, gives a shell a start-up
+  file or folder, or finds a program on a `PATH` it sets; plain commands
+  and programs in the image's own `bin` folders run.
   Affects every release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing

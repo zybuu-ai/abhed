@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -32,8 +33,11 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 		cwd = e.Cwd()
 	}
 	if cwd == "" {
-		// Nothing is read; a start-up file in the HOME the command gets still
-		// cannot be passed over.
+		if e.SandboxFiles {
+			out.refuse = SandboxScripts(canon)
+			return out
+		}
+		// Nothing is read; a start-up file a shell reads still cannot be passed over.
 		if names := canon.HomeStartups(); len(names) > 0 {
 			out.refuse = "it starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
 		}
@@ -49,6 +53,40 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 	}
 	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{})
 	return out
+}
+
+// systemBins are folders a sandbox's image holds its programs in: a program
+// named by a path there is taken as the image's, not a script.
+var systemBins = map[string]bool{"/bin": true, "/sbin": true, "/usr/bin": true, "/usr/sbin": true,
+	"/usr/local/bin": true, "/usr/local/sbin": true}
+
+// SandboxScripts says why canon cannot be judged where its files are not the
+// host's, as on a sandbox's :exec: it runs a script, sources a file, gives a
+// shell a start-up file or folder, or finds a program on a PATH it sets, none
+// of which the check can read. "" for a command that does none of that.
+func SandboxScripts(canon tools.Canonical) string {
+	if names := canon.HomeStartups(); len(names) > 0 {
+		return "it starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
+	}
+	if why := canon.StartupHidden(); why != "" {
+		return "it names " + why
+	}
+	if canon.ScriptsCut() {
+		return "it runs more scripts than the check reads"
+	}
+	for _, s := range canon.Scripts() {
+		switch {
+		case s.Startup:
+			return "it starts a shell that reads start-up files from a folder the check cannot read (" + s.Path + ")"
+		case s.Direct && path.IsAbs(s.Path) && systemBins[path.Dir(path.Clean(s.Path))]:
+		default:
+			return "it runs " + s.Path + ", which the check cannot read in the sandbox"
+		}
+	}
+	if canon.PathSet() && len(canon.Bare()) > 0 && (len(canon.PathDirs()) > 0 || canon.PathUnknown()) {
+		return "it runs " + canon.Bare()[0] + " through a PATH it sets, which the check cannot read in the sandbox"
+	}
+	return ""
 }
 
 // home is the HOME the sandbox gives a command, and whether the host can read it.

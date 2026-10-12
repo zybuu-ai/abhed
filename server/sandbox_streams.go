@@ -379,6 +379,7 @@ func (s *Server) sandboxCallerFunc() func(r *http.Request) (controlplane.Caller,
 // the workbench's terminal. A layer that cannot be had refuses the call.
 func (s *Server) sandboxPolicy(ctx context.Context, id string) (*policy.Engine, error) {
 	pol := s.newPolicy(policy.ModeDefault)
+	pol.SandboxFiles = true
 	toolset.Police(s.opts.Extensions, pol, "sandbox:"+id)
 	layer, err := s.sessionLayer(StartSpec{Tenant: TenantOf(ctx), User: UserOf(ctx)})
 	if err == nil {
@@ -414,6 +415,10 @@ func execRefused(pol *policy.Engine, command string) error {
 		return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
 	}
 	if why := unreadable(d, tools.CanonicalCommand(command), pol.GitExtensions); why != "" && screensStdin(pol) {
+		return fmt.Errorf("%w: %s, and no one can confirm it on an exec", controlplane.ErrForbidden, why)
+	}
+	// Hooks too: what a sandbox's files hold is out of the check's reach.
+	if why := policy.SandboxScripts(tools.CanonicalCommand(command)); why != "" && pol.SandboxFiles && screensStdin(pol) {
 		return fmt.Errorf("%w: %s, and no one can confirm it on an exec", controlplane.ErrForbidden, why)
 	}
 	return nil

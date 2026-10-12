@@ -418,6 +418,11 @@ type Engine struct {
 	// is refused under the rules. Nil is this process's own HOME.
 	Home func() (dir string, visible bool)
 
+	// SandboxFiles marks an engine judging commands in a sandbox whose files
+	// the host cannot read, as a control-plane :exec: a line that runs a
+	// script or gives a shell a start-up file there is refused under rules.
+	SandboxFiles bool
+
 	// AskReadOnly names read-only tools that may still ask in the default,
 	// accept-edits, auto and plan modes. Each is given the call's subject and
 	// returns why it asks, or "" when it need not. An allow rule approves
