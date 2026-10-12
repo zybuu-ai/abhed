@@ -152,3 +152,29 @@ func TestProcessSandboxWorktreeRoundTrip(t *testing.T) {
 		t.Fatalf("branch -D in the sandbox: %v %s", err, out)
 	}
 }
+
+// The files git reads for global configuration include what include.path
+// and includeIf bring in, and the system file's place.
+func TestConfigFilesFollowIncludes(t *testing.T) {
+	ws := gitRepo(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	inc := filepath.Join(t.TempDir(), "inc.conf")
+	cond := filepath.Join(t.TempDir(), "cond.conf")
+	for _, f := range []string{inc, cond} {
+		if err := os.WriteFile(f, []byte("[core]\n\tpager = less\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	global := "[include]\n\tpath = " + inc + "\n[includeIf \"gitdir:" + ws + "/\"]\n\tpath = " + cond + "\n"
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(global), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files := strings.Join(ConfigFiles(context.Background(), ws), "\n")
+	for _, want := range []string{inc, cond, "/etc/gitconfig", filepath.Join(home, ".gitconfig")} {
+		if !strings.Contains(files, want) {
+			t.Errorf("no %s in:\n%s", want, files)
+		}
+	}
+}

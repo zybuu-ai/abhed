@@ -201,7 +201,9 @@ agent-writable repository configuration cannot choose where the token goes;
 operator's global configuration still applies, and is trusted only while the
 agent cannot write it. Assuming the process sandbox tier, the push is refused
 when `~/.gitconfig`, `~/.config/git/config` or `$XDG_CONFIG_HOME/git/config`,
-or the folder it would be made in, lies in the run's worktree or a writable
+the system file (`/etc/gitconfig`, or `etc/gitconfig` under git's install
+prefix), a file any of them brings in with `include.path` or `includeIf`, or
+the folder one would be made in, lies in the run's worktree or a writable
 area of the sandbox (temp folders, toolchain caches). The temporary repository
 is made in `~/.abhed/push`, a private folder sandboxed commands cannot write;
 when that folder is in a writable area, is a file or a link, or is not the

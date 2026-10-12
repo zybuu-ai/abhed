@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `abhed resolve` refused to push when your global git configuration lay
+  where the run could write it, but not when a file it includes
+  (`include.path`, `includeIf`) or the system configuration did, so a run
+  could add a setting to the push through one of those. They are checked the
+  same way now. Affects 1.2.0 to 1.2.7.
 - On Windows a state file's hard links were never counted, so a second name
   for the users, config or secrets file did not stop Abhed as it does
   elsewhere. Those checks now read the link count from the file. Affects

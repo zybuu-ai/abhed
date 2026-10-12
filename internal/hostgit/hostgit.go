@@ -485,3 +485,37 @@ func splitNUL(data []byte, atEOF bool) (int, []byte, error) {
 	}
 	return 0, nil, nil
 }
+
+// ConfigFiles are the files git reads for its global and system
+// configuration in dir, the ones their include.path and includeIf lines
+// bring in followed, and where a system file would be though none is there.
+// Reading configuration runs nothing, so this runs on the host.
+func ConfigFiles(ctx context.Context, dir string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	add("/etc/gitconfig")
+	if p, err := GitPath(dir); err == nil {
+		// A git installed under a prefix reads <prefix>/etc/gitconfig.
+		add(filepath.Join(filepath.Dir(filepath.Dir(sandbox.RealPath(p))), "etc", "gitconfig"))
+	}
+	for _, scope := range []string{"--global", "--system"} {
+		b, err := gitCmd(ctx, dir, true, Env(), "-C", dir, "config", scope, "--includes", "--show-origin", "--name-only", "-z", "--list").Output()
+		if err != nil {
+			continue
+		}
+		// Each entry is origin NUL name NUL.
+		parts := bytes.Split(b, []byte{0})
+		for i := 0; i+1 < len(parts); i += 2 {
+			if f, ok := strings.CutPrefix(string(parts[i]), "file:"); ok {
+				add(f)
+			}
+		}
+	}
+	return out
+}

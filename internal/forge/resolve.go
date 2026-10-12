@@ -207,7 +207,7 @@ func (w *Work) Push(ctx context.Context, repo string, ref Ref, auth, caFile stri
 }
 
 func push(ctx context.Context, repo, worktree, url, scope, branch, auth, caFile string, env []string) error {
-	if err := globalConfigWritable(worktree); err != nil {
+	if err := globalConfigWritable(ctx, worktree); err != nil {
 		return err
 	}
 	parent, err := pushParent()
@@ -322,8 +322,9 @@ func pushParent() (string, error) {
 // could have written: a file, or the folder it would be made in, inside the
 // worktree or a writable area. The rest of the checkout, such as a home
 // directory holding dotfiles, is not the run's to write.
-func globalConfigWritable(worktree string) error {
-	var files []string
+func globalConfigWritable(ctx context.Context, worktree string) error {
+	// What the global and system files include, and the system file, too.
+	files := hostgit.ConfigFiles(ctx, worktree)
 	if home, err := os.UserHomeDir(); err == nil {
 		files = append(files, filepath.Join(home, ".gitconfig"), filepath.Join(home, ".config", "git", "config"))
 	}
@@ -334,7 +335,7 @@ func globalConfigWritable(worktree string) error {
 	for _, f := range files {
 		for _, a := range areas {
 			if a != "" && (inside(f, a) || inside(filepath.Dir(f), a)) {
-				return fmt.Errorf("refusing to push: your global git configuration %s is inside %s, "+
+				return fmt.Errorf("refusing to push: your global git configuration (or the system one, or a file either includes) %s is inside %s, "+
 					"which the run can write", f, a)
 			}
 		}
