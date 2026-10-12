@@ -146,7 +146,8 @@ certificates refused although they verify:
 The file holds either PEM CRLs (`-----BEGIN X509 CRL-----`), each signed by a
 certificate in `client_ca_file`, or serial numbers in hex, one to a line
 (colons, a `0x` and openssl's `serial=` are allowed, `#` starts a
-comment). A listed serial is
+comment), not both: a serial written beside a CRL is refused as the file's
+error rather than ignored. A listed serial is
 refused whichever CA in `client_ca_file` issued it. The file is reloaded like
 the CA: a revoked certificate is refused on the next handshake, and a request
 on a connection made with it before the change gets `401`. A file that is
