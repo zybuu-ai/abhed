@@ -39,7 +39,7 @@ All notable changes to Abhed are recorded here. The format follows
   workspace's `.abhed` reached by another spelling (`.ABHED`) was not under
   the empty tmpfs, so a command could read or write Abhed's state through it
   until the check after the command. Every spelling is covered now. Affects
-  1.2.4 to 1.2.7 on Linux.
+  1.2.7 on Linux.
 - A single command could make a repository in the workspace with a config
   naming an fsmonitor or a hook and add it to the parent as a submodule, and
   your next git command there ran it; on macOS a repository could be built
