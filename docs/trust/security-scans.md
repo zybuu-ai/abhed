@@ -23,10 +23,48 @@ this one are the first scan of 14 September 2026, kept as its record; their
 | govulncheck v1.8.0 | `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` | No vulnerability reached by the code or in an imported package. One in a required module, not called: GO-2026-5932, `golang.org/x/crypto/openpgp` unmaintained (no fix exists; Abhed does not import `openpgp`) |
 | gosec v2.29.0 | as CI runs it (`scripts/ci/gosec-gate.py`) | See "Refreshed 12 October 2026" under gosec below: 32 new findings triaged, one real bug fixed, 97 in the baseline |
 | gitleaks 8.30.1 | `gitleaks git --redact .` (all 870 commits) | 57 matches, all placeholders: test fixtures (`sk-live-abcdef0123456789`, `AKIAABCDEFGHIJKLMNOP`, `ghp_0123456789abcdef`), the benchmark rig's tests, the e2e check's throwaway password, an xterm.js constant, and the documentation's example password. No live credential |
-| trivy 0.74.0 | `trivy fs --scanners vuln,misconfig .` | `go.mod`: the same GO-2026-5932. `web/ide/package-lock.json`: DOMPurify 3.4.8, which the workbench editor bundle carries, has five advisories (two medium, three low), fixed by 3.4.16; **to fix** by rebuilding the bundle. Helm chart: three findings, all accepted: the chart leaves the namespace to `helm install -n` (KSV-0110) and the image registry to the operator's values (KSV-0125, for the server and its preflight container) |
+| trivy 0.74.0 | `trivy fs --scanners vuln,misconfig .` | `go.mod`: the same GO-2026-5932. `web/ide/package-lock.json`: DOMPurify 3.4.8, which the workbench editor bundle carries, has five advisories (two medium, three low), fixed by 3.4.16; **fixed**: the bundle now takes DOMPurify 3.4.16 in place of the editor's own copy. Helm chart: three findings, all accepted: the chart leaves the namespace to `helm install -n` (KSV-0110) and the image registry to the operator's values (KSV-0125, for the server and its preflight container) |
 
-The container image was not rescanned in this pass; `trivy image` against the
-1.2.8 image is due before the release is published.
+### `trivy image` on the 1.2.8 image
+
+Built from this tree with the repository's `Dockerfile` (`podman build
+--build-arg VERSION=1.2.8-rc`, linux/arm64, `debian:trixie-slim` base of
+5 October 2026 with Debian 13.7 and the build's `apt-get upgrade`), saved
+with `podman save` and scanned with `trivy image --input <tar> --scanners
+vuln` (trivy 0.74.0, DB of 12 October 2026).
+
+| Target | Critical | High | Medium | Low | Unknown |
+|---|---|---|---|---|---|
+| OS packages (Debian 13.7) | 0 | 91 | 155 | 168 | 63 |
+| Python packages | 0 | 0 | 0 | 0 | 0 |
+| `usr/local/bin/abhed` (Go binary) | 0 | 0 | 0 | 0 | 1 |
+
+No finding has a fixed version available: the image already takes every
+Debian update at build time, so neither a newer base digest nor a package
+pin removes any of them. The 91 HIGH rows are 28 CVEs in 12 source
+packages, each counted once per binary package:
+
+| Source package | CVEs | Debian status | Triage |
+|---|---|---|---|
+| util-linux (`mount`, `login`, `libblkid1`, `libmount1`, `libuuid1`, …) | CVE-2026-76642, -78408, -78409, -78410 | affected, no fix | Accepted until Debian ships one; the agent's shell can run these tools, which is what bubblewrap and the read-only, capability-free container contain |
+| curl (`curl`, `libcurl4t64`, `libcurl3t64-gnutls`) | CVE-2026-12064, -8286, -8458, -8927 | affected, no fix | Accepted until fixed; used by the health check and by the agent's own commands, never by Abhed's Go code |
+| python3.13 | CVE-2026-15308, -19445, -19553, -7210, -82049 | affected, no fix | Accepted until fixed; runs the document libraries and the pypdf fallback in the sandboxed shell |
+| expat (`libexpat1`) | CVE-2026-66046, -76956, -76957, -77214, -93990 | affected, no fix | Accepted until fixed; reached through Python's XML parsing in the document writers |
+| gnutls (`libgnutls30t64`) | CVE-2026-88647, -88648 | affected, no fix | Accepted until fixed; git's HTTPS transport |
+| libtiff (`libtiff6`) | CVE-2026-36849, CVE-2026-52490 | will not fix, affected | Accepted; graphics chain of graphviz and matplotlib |
+| ncurses | CVE-2025-69720 | affected, no fix | Accepted; terminal library of the shell |
+| perl | CVE-2026-9538 | fix deferred | Accepted; base-system dependency Abhed does not call |
+| systemd (`libsystemd0`, `libudev1`) | CVE-2026-16742 | affected, no fix | Accepted; library only, no systemd runs in the image |
+| acl (`libacl1`) | CVE-2026-54369 | affected, no fix | Accepted; base-system library |
+| libx11, libxrender | CVE-2026-88806, CVE-2026-88807 | affected, no fix | Accepted; graphics chain of graphviz and matplotlib |
+
+The Go binary's one finding is GO-2026-5932 (`golang.org/x/crypto` v0.57.0,
+`openpgp` unmaintained), the same advisory govulncheck reports above with no
+call path. Against 14 September (0 critical, 71 high after that day's fixes)
+there are still no critical findings; the high count rose with advisories
+published since for packages whose fixes Debian has not yet released. The
+build's `apt-get upgrade` takes those fixes as they land, so the image
+published for the release should be built, and scanned, on the day.
 
 **G306, file modes.** `app/cmd_eval.go` (the eval report) and
 `internal/eval/eval.go` (an eval task's fixture files) still write `0644`, and
