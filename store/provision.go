@@ -106,6 +106,21 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			"CREATE ROLE %s LOGIN PASSWORD '…'", cfg.RuntimeRole, pgx.Identifier{cfg.RuntimeRole}.Sanitize())
 	}
 
+	// Two provisions at once (two migrates, or replicas starting together)
+	// update the same catalog rows and fail with "tuple concurrently updated":
+	// each holds this lock from the schema to the last grant.
+	lock, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("provision: %w", err)
+	}
+	defer lock.Release()
+	if _, err := lock.Exec(ctx, `SELECT pg_advisory_lock(hashtext('abhed.provision'))`); err != nil {
+		return fmt.Errorf("provision: wait for another provision: %w", err)
+	}
+	defer func() {
+		_, _ = lock.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('abhed.provision'))`)
+	}()
+
 	if err := applySchema(ctx, pool); err != nil {
 		return err
 	}
@@ -151,10 +166,20 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			"REVOKE ALL ON "+table+" FROM "+role,
 			"GRANT "+g.privileges+" ON "+table+" TO "+role)
 	}
+	// One transaction, so a running server's role is never left between a
+	// REVOKE and its GRANT.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("provision grants: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	for _, s := range stmts {
-		if _, err := pool.Exec(ctx, s); err != nil {
+		if _, err := tx.Exec(ctx, s); err != nil {
 			return fmt.Errorf("%s: %w", s, err)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("provision grants: %w", err)
 	}
 	return nil
 }

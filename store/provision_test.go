@@ -465,3 +465,43 @@ func TestOpenRefusesARoleThatCanAlterTheSandboxAudit(t *testing.T) {
 		t.Fatalf("a runtime role that can rewrite the sandbox audit was accepted: %v", err)
 	}
 }
+
+// Provisions run at once (two migrates, or replicas starting together) all
+// succeed, and leave the runtime role its grants.
+func TestConcurrentProvisionsSucceed(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+		t.Fatal(err)
+	}
+	for round := range 3 {
+		errs := make(chan error, 8)
+		for range 8 {
+			go func() { errs <- Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}) }()
+		}
+		var failed []error
+		for range 8 {
+			if err := <-errs; err != nil {
+				failed = append(failed, err)
+			}
+		}
+		if len(failed) > 0 {
+			t.Fatalf("round %d: %d of 8 concurrent provisions failed, the first: %v", round, len(failed), failed[0])
+		}
+	}
+	conn, err := pgx.Connect(ctx, runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, "SELECT count(*) FROM sessions"); err != nil {
+		t.Fatalf("the runtime role lost its grants: %v", err)
+	}
+}
