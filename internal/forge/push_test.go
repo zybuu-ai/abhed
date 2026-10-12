@@ -112,6 +112,14 @@ func TestPushRefusesAGlobalConfigTheRunCanWrite(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "global git configuration") {
 		t.Fatalf("a global configuration in the worktree was trusted: %v", err)
 	}
+	// XDG_CONFIG_HOME in a writable area, with HOME in none, is named.
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	areas(t, xdg)
+	err = (&Work{Branch: "abhed/issue-5", Dir: t.TempDir()}).Push(context.Background(), repo, ref, token, "")
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(xdg, "git", "config")) {
+		t.Fatalf("a writable XDG configuration was trusted: %v", err)
+	}
 }
 
 // A dotfiles checkout of the home directory pushes: the run writes only its
@@ -216,19 +224,6 @@ func TestPushComparesPathsWithoutCase(t *testing.T) {
 	err := (&Work{Branch: "abhed/issue-5", Dir: strings.ToUpper(worktree)}).Push(context.Background(), repo, ref, token, "")
 	if err == nil || !strings.Contains(err.Error(), "global git configuration") {
 		t.Fatalf("a configuration in the worktree, named in another case, was trusted: %v", err)
-	}
-}
-
-// XDG_CONFIG_HOME in a writable area is refused even when HOME is not.
-func TestPushRefusesAWritableXDGConfig(t *testing.T) {
-	repo := gitRepo(t)
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	areas(t, xdg)
-	ref := Ref{Scheme: "https", Host: "git.example", Owner: "t", Repo: "r", Number: 5}
-	err := (&Work{Branch: "abhed/issue-5", Dir: t.TempDir()}).Push(context.Background(), repo, ref, token, "")
-	if err == nil || !strings.Contains(err.Error(), filepath.Join(xdg, "git", "config")) {
-		t.Fatalf("a writable XDG configuration was trusted: %v", err)
 	}
 }
 
