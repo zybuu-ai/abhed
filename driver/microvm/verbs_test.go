@@ -181,3 +181,36 @@ func TestSnapshotAndRestore(t *testing.T) {
 		t.Fatalf("events %v", events)
 	}
 }
+
+// A snapshot copying back from a running VM is a call on it: a stop ends the
+// copy rather than kill the VM under it, and the snapshot returns.
+func TestStopEndsASnapshotsCopy(t *testing.T) {
+	ws, _ := sandboxPair(t)
+	be := &fakeBackend{}
+	o := testOptions(t)
+	o.SnapshotDir = filepath.Join(shortTemp(t), "snaps")
+	d := newDriver(o, be)
+	d.image = copyImage
+	ctx := context.Background()
+	if _, err := d.Create(ctx, driver.Spec{ID: id, Workspace: ws}); err != nil {
+		t.Fatal(err)
+	}
+	be.last().silent = true
+	snapped := make(chan error, 1)
+	sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	go func() { _, err := d.Snapshot(sctx, id, "s"); snapped <- err }()
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	if _, err := d.Stop(ctx, id, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("the stop waited %s on the snapshot's copy", took)
+	}
+	select {
+	case <-snapped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the snapshot's copy outlived the stop")
+	}
+}
