@@ -168,15 +168,35 @@ func TestBashOnTheHostGivesNoSandboxHint(t *testing.T) {
 		t.Fatalf("host result: %+v", res)
 	}
 	sb := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, Isolation: Isolation{Tier: "process"}}
-	if res := run(t, sb, s, bashArgs{Command: `echo "x: Operation not permitted"`, Description: "print"}); res.Tier != "process" ||
+	if res := run(t, sb, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.Tier != "process" ||
 		!strings.Contains(res.Content, "the sandbox denied") {
 		t.Fatalf("sandboxed result: %+v", res)
 	}
 	// Started before the sandbox was chosen, which then turned out to be none.
 	late := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, RanUnder: func() string { return "none" }}
-	if res := run(t, late, s, bashArgs{Command: `echo "x: Operation not permitted"`, Description: "print"}); res.Tier != "none" ||
+	if res := run(t, late, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.Tier != "none" ||
 		strings.Contains(res.Content, "the sandbox denied") {
 		t.Fatalf("result once chosen as none: %+v", res)
+	}
+}
+
+// A command that succeeded was not stopped by the sandbox, whatever it printed:
+// git warns about .abhed and exits 0.
+func TestBashSandboxHintOnlyOnFailure(t *testing.T) {
+	s, dir := setup(t)
+	sb := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, Isolation: Isolation{Tier: "process"}}
+	res := run(t, sb, s, bashArgs{Command: `echo "warning: could not open .abhed/x: Operation not permitted"`, Description: "print"})
+	if strings.Contains(res.Content, "the sandbox denied") {
+		t.Fatalf("a hint on exit 0: %q", res.Content)
+	}
+}
+
+// A note follows the output after one blank line, however the output ends.
+func TestBashNotesHaveOneBlankLine(t *testing.T) {
+	s, _ := setup(t)
+	res := run(t, Bash{}, s, bashArgs{Command: "printf 'a\\n\\n\\n'; cd /", Description: "print"})
+	if !strings.Contains(res.Content, "a\n\ncd: ") {
+		t.Fatalf("blank lines before the note: %q", res.Content)
 	}
 }
 

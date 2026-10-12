@@ -102,6 +102,11 @@ All notable changes to Abhed are recorded here. The format follows
   deny rule. `-c`, `-l`, `-a NAME` and `--` are now passed over, and an
   expansion that may be empty is taken as no program. Affects 1.2.4 to
   1.2.7.
+- The destructive-command step missed `git checkout FILE` for a file named
+  with an extension (`git checkout main.go`), `git commit --amend`,
+  `unlink FILE` and `rmdir -p`, so in `bypass` mode they ran without the
+  question. They now always confirm. The list stays best effort; the
+  sandbox and deny rules are the boundary. Affects 0.1.0 to 1.2.7.
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion
@@ -647,6 +652,27 @@ on. A server with it off starts on the older schema as before.
   `abhed doctor` still showed the mode as `bypass`. The reason now names the
   managed file and says the call asks as in default mode, and `abhed doctor`
   and the `abhed serve` banner say `bypass disabled by <path>`.
+- `k8s_apply` given a JSON list as its manifest answered that the
+  "arguments must be a JSON object"; it now says the manifest is a list and
+  to apply each item in its own call. A tool call whose arguments are not an
+  object names what they are.
+- `bash` added "the sandbox denied this operation" to a command that exited
+  `0`, such as `git status` warning about `.abhed`; the note now comes only
+  with a failure. Its notes follow the output after one blank line, not
+  three, and the "cd: not followed" note no longer fires on `cd` as an
+  argument or in a comment (`echo cd`).
+- The Python syntax check was skipped where `python3` is a pyenv, asdf or
+  mise shim. The shim is now resolved through the manager to the interpreter
+  it runs, never one inside the workspace.
+- A JSON-with-comments file such as `tsconfig.json` accepted `{,}` and
+  `[1,,]` as valid; a trailing comma is now allowed only after a value.
+- A glob into a skipped folder below the top (`services/x/node_modules/**`)
+  or behind a wildcard (`**/node_modules/**`) gave a bare no-match; it now
+  says the folder is skipped and how to search it. With `path` already that
+  folder, the advice no longer names the folder twice.
+- `glob` matched case exactly on a disk that ignores case, so `core/Vault/**`
+  found nothing where the folder is `vault`; it now matches as the disk opens
+  names. The `glob` filter of `grep` does the same.
 - `abhed acp` exited as soon as stdin closed, so requests read in a burst
   just before could go unanswered. It now answers every request it read
   first: a prompt still running ends as `cancelled`, and a request to the

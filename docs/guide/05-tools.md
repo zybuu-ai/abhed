@@ -22,6 +22,14 @@ in Abhed's state, so a new file in a new folder needs no shell approval in
 `accept-edits` or `auto` mode. A write that fails takes back the folders it made,
 and `/undo` of the new file removes them while they are empty.
 
+`glob` and `grep` pass over vendored and build folders (`node_modules`,
+`vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
+names such a folder anywhere in its pattern, such as
+`services/x/node_modules/**`, says so in its no-match and gives the `path` to
+pass. On a disk that ignores case, such as the default macOS one, a glob
+matches without case, as the disk opens names: `core/Vault/**` finds
+`core/vault`.
+
 `bash` takes an optional `secrets` list: names from the operator's store,
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
@@ -116,6 +124,8 @@ Where a credential goes is the operator's choice, not the model's.
 verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.
+`k8s_apply` takes one object per call; a JSON list is refused with a message
+that says to apply each item in its own call.
 `ssh_connect` sends a password only to a host whose key is already in
 `known_hosts`.
 
@@ -194,7 +204,8 @@ comments and trailing commas by convention — `.jsonc`, `tsconfig*.json`,
 `deno.json`, `turbo.json`, `biome.json`, `tslint.json`, `api-extractor.json`,
 `cspell.json`, `settings.json`, `launch.json`, and anything in a `.vscode` or
 `.devcontainer` directory — are parsed that way; other `.json` files are
-strict JSON.
+strict JSON. A trailing comma is allowed only after a value, so `{,}` or
+`[1,,]` still fails.
 
 An `edit` whose new text is a pasted diff hunk — every non-empty line starts
 with `+` or `-`, there is at least one of each, and the old text has no such
@@ -206,9 +217,12 @@ is a pasted diff.
 
 Python is compiled, never run, by the `python3` on the path — the real
 interpreter behind it, never one inside the workspace or an added directory,
-with site packages and the environment switched off. With no `python3`, or
-when `python3` is a version-manager shim (pyenv, asdf) that needs its
-environment, Python is not checked. The host's interpreter decides what
+with site packages and the environment switched off. When `python3` is a
+pyenv, asdf or mise shim, the manager is asked which interpreter it runs
+(`pyenv which python3`), from a temporary folder, so a version file in the
+workspace does not choose it; that interpreter's version then decides. With
+no `python3`, or a shim the manager cannot resolve to an interpreter outside
+the workspace, Python is not checked. The host's interpreter decides what
 parses, so one older than 3.12, which could reject newer syntax the project
 accepts, warns instead of refusing.
 

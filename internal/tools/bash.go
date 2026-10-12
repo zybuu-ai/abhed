@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -200,6 +202,8 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\btruncate\s+-s\s*0\b`), "file truncation"},
 	{regexp.MustCompile(`\bgit\s+checkout\s+--\s+\.`), "discard all working-tree changes"},
 	{regexp.MustCompile(`\bgit\s+branch\s+-D\b`), "force branch delete"},
+	{regexp.MustCompile(`\bunlink\s+\S`), "delete via unlink"},
+	{regexp.MustCompile(`\brmdir\b.*\s(?:-[a-zA-Z]*p[a-zA-Z]*|--parents?)\b`), "delete parent folders (rmdir -p)"},
 }
 
 // Note on completeness: this list cannot be exhaustive. Shell affords endless
@@ -508,10 +512,10 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		content = "[no output]"
 	}
 	if bgNote != "" {
-		content += "\n\n" + bgNote
+		content = withNote(content, bgNote)
 	}
 	if cdNote != "" {
-		content += "\n\n" + cdNote
+		content = withNote(content, cdNote)
 	}
 
 	// A non-zero exit is a valid observation the model must reason about, not a
@@ -520,9 +524,10 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
-		content += "\n\n" + networkHint
-	} else if hint := sandboxHint(content); hint != "" && b.ranTier() != "none" {
-		content += "\n\n" + hint
+		content = withNote(content, networkHint)
+	} else if hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
+		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
+		content = withNote(content, hint)
 	}
 	return Result{
 		Content:   header + "\n" + content,
@@ -530,6 +535,11 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		ExitCode:  &exitCode,
 		NoOutput:  noOutput,
 	}
+}
+
+// withNote puts a note after the output with one blank line between, however the output ends.
+func withNote(content, note string) string {
+	return strings.TrimRight(content, "\n") + "\n\n" + note
 }
 
 // command makes the process for a call: under the sandbox when there is
@@ -842,7 +852,7 @@ func detectCd(command string, s *Session) (next, why string) {
 		return s.Root, ""
 	}
 	if !IsCdLine(line) {
-		if changesDir.MatchString(unquoted.Replace(line)) {
+		if mayChangeDir(line) {
 			return "", unfollowed
 		}
 		return "", ""
@@ -879,6 +889,41 @@ var changesDir = regexp.MustCompile("(?:^|[\\s;&|(){}`!])(?:cd|pushd|popd|eval|s
 
 // unquoted drops a line's quotes and backslashes, for changesDir.
 var unquoted = strings.NewReplacer(`"`, "", `'`, "", `\`, "")
+
+// mayChangeDir reports a line that runs a command able to change directory, read
+// by the parser so that `echo cd` or a comment is not one; a line it cannot read falls back to changesDir.
+func mayChangeDir(line string) bool {
+	if strings.Contains(line, "CDPATH") {
+		return true
+	}
+	var file *syntax.File
+	var err error
+	if len(line) <= maxShellBytes {
+		file, err = syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(line), "")
+	}
+	if file == nil || err != nil {
+		return changesDir.MatchString(unquoted.Replace(line))
+	}
+	found := false
+	syntax.Walk(file, func(n syntax.Node) bool {
+		call, ok := n.(*syntax.CallExpr)
+		if !ok || found {
+			return !found
+		}
+		for _, w := range call.Args {
+			name, lit := literal(w)
+			if !lit || (name != "builtin" && name != "command") {
+				found = lit && dirWords[name]
+				break
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// dirWords are the commands that can change the shell's directory.
+var dirWords = map[string]bool{"cd": true, "pushd": true, "popd": true, "eval": true, "source": true, ".": true}
 
 // IsCdLine reports a line that is the cd command with an argument: cd, then
 // a space or a tab, the only blanks bash splits a line's words on.

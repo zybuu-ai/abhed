@@ -176,9 +176,17 @@ func TestHookShortCircuits(t *testing.T) {
 
 func TestScopeSuggestionIsNarrow(t *testing.T) {
 	e := New(ModeDefault)
-	res := e.Evaluate("bash", true, args(map[string]string{"command": "git commit --amend --no-edit"}))
+	res := e.Evaluate("bash", true, args(map[string]string{"command": "git commit --no-verify -m wip"}))
 	if res.Scope != "bash(git commit *)" {
 		t.Fatalf("scope should capture verb but not args, got %q", res.Scope)
+	}
+}
+
+// An amend replaces the last commit, so it is destructive and offers no scope.
+func TestAmendOffersNoScope(t *testing.T) {
+	res := New(ModeBypass).Evaluate("bash", true, args(map[string]string{"command": "git commit --amend --no-edit"}))
+	if res.Decision != Ask || res.Scope != "" {
+		t.Fatalf("amend in bypass: %s, scope %q", res.Decision, res.Scope)
 	}
 }
 

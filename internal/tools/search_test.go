@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,53 @@ func TestGlobIntoSkippedFolderSaysSo(t *testing.T) {
 	}
 	if res := run(t, Glob{}, s, globArgs{Pattern: "**/*.js", Path: filepath.Join(s.Root, "node_modules")}); !strings.Contains(res.Content, "node_modules/dep/index.js") {
 		t.Fatalf("the advice does not work: %q", res.Content)
+	}
+}
+
+// A skipped folder deeper in the pattern, or behind a wildcard, is named too;
+// and a path that already is the folder gets no doubled advice.
+func TestGlobIntoNestedSkippedFolderSaysSo(t *testing.T) {
+	s, dir := seedRepo(t)
+	_ = os.MkdirAll(filepath.Join(dir, "services/x/node_modules/lib"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "services/x/node_modules/lib/a.js"), nil, 0o644)
+
+	res := run(t, Glob{}, s, globArgs{Pattern: "services/x/node_modules/**"})
+	want := filepath.Join(s.Root, "services", "x", "node_modules")
+	if !strings.Contains(res.Content, "node_modules is skipped") || !strings.Contains(res.Content, fmt.Sprintf("%q", want)) {
+		t.Fatalf("nested: %q", res.Content)
+	}
+	res = run(t, Glob{}, s, globArgs{Pattern: "**", Path: want})
+	if !strings.Contains(res.Content, "lib/a.js") {
+		t.Fatalf("the advice does not work: %q", res.Content)
+	}
+	if res := run(t, Glob{}, s, globArgs{Pattern: "**/node_modules/**"}); !strings.Contains(res.Content, "node_modules folders are skipped") {
+		t.Fatalf("behind a wildcard: %q", res.Content)
+	}
+	res = run(t, Glob{}, s, globArgs{Pattern: "node_modules/**/*.rs", Path: filepath.Join(s.Root, "node_modules")})
+	if strings.Contains(res.Content, "skipped") {
+		t.Fatalf("advice doubles the folder: %q", res.Content)
+	}
+}
+
+// On a disk that folds case, glob matches as the disk opens names.
+func TestGlobFoldsCaseAsTheDiskDoes(t *testing.T) {
+	s, dir := seedRepo(t)
+	_ = os.MkdirAll(filepath.Join(dir, "core/vault"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "core/vault/keys.go"), nil, 0o644)
+	folds := foldsCase(t, dir)
+	if got := diskFoldsCase(dir); got != folds {
+		t.Fatalf("diskFoldsCase = %v, the disk folds = %v", got, folds)
+	}
+	res := run(t, Glob{}, s, globArgs{Pattern: "core/Vault/**"})
+	if found := strings.Contains(res.Content, "core/vault/keys.go"); found != folds {
+		t.Fatalf("folds=%v but glob gave %q", folds, res.Content)
+	}
+	m, err := compileGlob("core/Vault/**", true)
+	if err != nil || !m("core/vault/keys.go") {
+		t.Fatal("a folding matcher misses another case")
+	}
+	if m, _ := compileGlob("core/Vault/**", false); m("core/vault/keys.go") {
+		t.Fatal("a plain matcher folds case")
 	}
 }
 

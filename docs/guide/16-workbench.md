@@ -546,10 +546,11 @@ folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
 writes it), and the prompt shows the new folder at once. A bare `cd` or `cd ~` goes to the workspace
 root. A line that is just `cd` and a folder that is missing, outside the
 workspace, or cannot be read with confidence (a variable, a glob, `cd -`)
-leaves the terminal where it was and says so. So does any other line with
-`cd`, `pushd`, `popd`, `CDPATH`, `eval` or `source` (or `.` as a command) in
-it, quoted or not, such as `mkdir x && cd x`, `ls; cd x`, `builtin "cd" x`
-or `eval "cd x"`: the note names the folder the next line runs in. Each line
+leaves the terminal where it was and says so. So does any other line that
+runs `cd`, `pushd`, `popd`, `eval` or `source` (or `.`) as a command, quoted
+or not, or names `CDPATH`, such as `mkdir x && cd x`, `ls; cd x`, `builtin "cd" x`
+or `eval "cd x"`: the note names the folder the next line runs in. A word
+that is only an argument or a comment, as in `echo cd`, gives no note. Each line
 starts in the tracked folder, so a line that changes directory some other
 way only misses the note; it never moves the next one.
 A `cd` in a command that failed is not followed either. The agent's

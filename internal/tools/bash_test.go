@@ -191,8 +191,8 @@ func TestDetectCdUndoesQuotingAndSaysWhatItDidNotFollow(t *testing.T) {
 		{`pushd plain >/dev/null`, "", "not followed"},
 		{`popd`, "", "not followed"},
 		{`CDPATH=plain && cd packages`, "", "not followed"},
-		{`# && cd plain`, "", "not followed"},
-		{`echo x #&& cd plain`, "", "not followed"},
+		{`# && cd plain`, "", ""},
+		{`echo x #&& cd plain`, "", ""},
 		{`cd plain; ls`, "", "not followed"},
 		{`cd plain | cat`, "", "not followed"},
 		{`cd plain &`, "", "not followed"},
@@ -221,6 +221,14 @@ func TestDetectCdUndoesQuotingAndSaysWhatItDidNotFollow(t *testing.T) {
 		{`ls .`, "", ""},
 		{`./run.sh`, "", ""},
 		{`echo sourced evaluate`, "", ""},
+		{`echo cd`, "", ""},
+		{`echo cd plain && ls`, "", ""},
+		{`grep -r "cd x" .`, "", ""},
+		{`printf '%s\n' eval source`, "", ""},
+		{`if true; then cd plain; fi`, "", "not followed"},
+		{`time cd plain`, "", "not followed"},
+		{`x=1 cd plain`, "", "not followed"},
+		{"echo $(cd plain; pwd)", "", "not followed"},
 		// Quoted, escaped or indirect ways to change directory still get the note.
 		{`"cd" plain`, "", "not followed"},
 		{`'cd' plain`, "", "not followed"},
@@ -334,6 +342,15 @@ func TestBashOutputTruncation(t *testing.T) {
 func TestIsDestructive(t *testing.T) {
 	cases := map[string]bool{
 		"rm -rf /": true,
+
+		// Deletion and rewriting the list had missed.
+		"unlink notes.txt":          true,
+		"cd x && unlink a":          true,
+		"rmdir -p a/b/c":            true,
+		"rmdir -vp a/b":             true,
+		"rmdir --parents a/b":       true,
+		"rmdir empty":               false,
+		"python3 -c 'os.unlink(x)'": false,
 
 		// Line continuations and word-splitting tricks hide the words from a plain read.
 		"rm \\\n-rf scratch":                     true,

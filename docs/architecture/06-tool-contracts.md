@@ -205,6 +205,8 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
   `.git`, `target`, `dist`, `__pycache__` exclusions.
 - Caps at 1000 results with an explicit truncation note and a suggestion to narrow.
 - Returns `[no files matched: {pattern}]` on empty — never a bare empty list.
+- A no-match whose pattern names a skipped folder says so and gives the `path` to pass.
+- Matches without case on a disk that folds case.
 
 ---
 
