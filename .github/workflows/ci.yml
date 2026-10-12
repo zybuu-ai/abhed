@@ -291,7 +291,8 @@ jobs:
         run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
       - name: Every gated fence test runs and passes in a delegated scope
         run: |
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
@@ -325,7 +326,8 @@ jobs:
         run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
       - name: Name resolution and package installs work under the fence
         run: |
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run-network "$FENCE_DIR"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
@@ -442,7 +444,8 @@ jobs:
           skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
           skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestIndexScales'
           skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
-          go test -count=1 -skip "$skip" $(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
+          mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
+          go test -count=1 -skip "$skip" "${pkgs[@]}"
       - name: The s390x table was checked on s390x
         run: |
           go test -count=1 -v -run 'TestNativeTableMatchesUnix|TestTablesMatchXSys' ./internal/fence/seccomp/ > table.log 2>&1 || { cat table.log; exit 1; }
