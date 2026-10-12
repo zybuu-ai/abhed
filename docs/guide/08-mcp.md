@@ -47,9 +47,11 @@ whatever `allow_network` says, except under `sandbox.network:
 `digest` pins a stdio server's program, as `"sha256:<64 hex digits>"`: just
 before the server starts, the file its `command` resolves to (on the
 server's own `PATH`, links followed) is hashed, a mismatch refuses the
-server, and the resolved path is what starts. When an argument names an OCI
-image by that digest (`ghcr.io/org/server@sha256:…`), the container engine
-pulls by it and the program is not hashed. A digest pins the one program
+server, and the resolved path is what starts. When the command is `docker`,
+`podman` or `nerdctl` and an argument (not an option) names an OCI image by
+that digest (`ghcr.io/org/server@sha256:…`), the container engine pulls by
+it and the program is not hashed; another program given such an argument is
+hashed as usual. A digest pins the one program
 file: an interpreter's script or packages it loads (`npx`, `python
 server.py`) are not covered, so pin the image or a single binary. A URL
 server with a `digest` is refused, since its program cannot be checked. A

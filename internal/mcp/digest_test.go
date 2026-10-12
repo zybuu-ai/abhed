@@ -56,4 +56,10 @@ func TestDigestPinsTheProgram(t *testing.T) {
 	if errs := connect(mcp.ServerConfig{URL: "http://127.0.0.1:1/mcp", Digest: right}); len(errs) != 1 || !strings.Contains(errs[0].Error(), "cannot be checked") {
 		t.Fatalf("a URL server with a digest: %v", errs)
 	}
+	// Only a container engine's image argument pins: another program given
+	// one is hashed as itself.
+	errs = connect(mcp.ServerConfig{Command: "fake-mcp", Args: []string{"x@" + wrong}, Env: env, Digest: wrong})
+	if len(errs) != 1 || !errors.Is(errs[0], mcp.ErrDigestMismatch) {
+		t.Fatalf("an image-like argument to another program counted as pinned: %v", errs)
+	}
 }
