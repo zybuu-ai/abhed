@@ -91,6 +91,13 @@ type shellFacts struct {
 	// so far; inBraces is set while the words made are read.
 	braced, braceHidden, inBraces bool
 	braceWords                    int
+	// pathSet reports PATH set, pathDirs the folders its literal values
+	// name, and pathUnknown one built from another expansion; bare are the
+	// programs named without a folder, and bareCut those past maxBare.
+	pathSet, pathUnknown, bareCut bool
+	pathDirs, bare                []string
+	// startupHidden says why a shell start-up file the command sets is not known.
+	startupHidden string
 }
 
 // Script is a file a command runs as shell text, as named on its line.
@@ -251,6 +258,9 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 		case *syntax.DeclClause:
 			f.decl(n)
 		case *syntax.ForClause:
+			if it, ok := n.Loop.(*syntax.WordIter); ok && it.Name != nil {
+				f.setsByName(it.Name.Value)
+			}
 			if it, ok := n.Loop.(*syntax.WordIter); ok && it.Name != nil && it.Name.Value == "IFS" {
 				f.ifsUnknown, f.ifsNamed = true, true
 				literalWords := true
@@ -370,6 +380,7 @@ func (f *shellFacts) ifsHidden() { f.ifsUnknown, f.ifsNamed, f.ifsOther = true, 
 // assign reads an assignment: a literal value of IFS is its separators; any
 // other value, or an index, leaves it unknown.
 func (f *shellFacts) assign(a *syntax.Assign) {
+	f.setsVar(a)
 	if f.prefixes[a] {
 		return
 	}
@@ -440,6 +451,9 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 	}
 	for _, a := range d.Args {
 		if a.Value != nil && !a.Naked {
+			if v, lit := literal(a.Value); lit {
+				f.setsByName(v)
+			}
 			if v, lit := literal(a.Value); !lit || NamesIFS(v) {
 				f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
 				f.ifsOther = f.ifsOther || lit
@@ -460,6 +474,9 @@ func (f *shellFacts) declWord(w *syntax.Word) {
 
 // name reads a word a command sets as a variable.
 func (f *shellFacts) name(w *syntax.Word) {
+	if v, lit := literal(w); lit {
+		f.setsByName(v)
+	}
 	if v, lit := literal(w); !lit || NamesIFS(v) {
 		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
 		f.ifsOther = f.ifsOther || lit
@@ -503,6 +520,9 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 				}
 			}
 			f.command(strings.Join(words[i:], " "))
+			if lits[i] && !strings.Contains(reading, "/") {
+				f.bareProgram(reading)
+			}
 		}
 		if lits[i] && !value && !strings.Contains(reading, "=") && globWord(w) {
 			f.expands = true // cur? and c*l name whatever file matches
@@ -647,7 +667,11 @@ scan:
 			}
 			break scan
 		case v == "--rcfile" || v == "--init-file":
-			j++ // its value is a file read at start, not the script
+			// Its value is a file an interactive shell runs first.
+			if j++; j < len(args) {
+				w, lit := literal(args[j])
+				f.startupFile(v, w, lit)
+			}
 		case strings.HasPrefix(v, "--"):
 		case len(v) > 1 && (v[0] == '-' || v[0] == '+'):
 			value := false
@@ -802,6 +826,8 @@ func (f *shellFacts) envSplit(args []*syntax.Word, depth int) {
 		case !lit:
 			if t := wordText(a); strings.HasPrefix(t, "-S") || strings.HasPrefix(t, "--split-string") {
 				f.opaque = "env -S given text built when it runs"
+			} else if isAssignment(t) {
+				f.envAssign(a)
 			}
 			continue
 		case v == "--split-string" || v == "-S":
@@ -811,6 +837,9 @@ func (f *shellFacts) envSplit(args []*syntax.Word, depth int) {
 		case len(v) > 2 && v[0] == '-' && v[1] != '-' && strings.Contains(v, "S"):
 			text = v[strings.IndexByte(v, 'S')+1:]
 			next = text == ""
+		case isAssignment(v):
+			f.envAssign(a)
+			continue
 		case !strings.HasPrefix(v, "-"):
 			return // the command, read as the program
 		default:
@@ -1209,6 +1238,7 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 			for j := 1; j < len(v); j++ {
 				if strings.IndexByte(names, v[j]) >= 0 {
 					if rest := v[j+1:]; rest != "" {
+						f.setsByName(rest)
 						if NamesIFS(rest) {
 							f.ifsHidden()
 						}
@@ -1228,7 +1258,7 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 		case operands:
 			if !lit {
 				f.ifsUnknown = true
-			} else if NamesIFS(v) {
+			} else if f.setsByName(v); NamesIFS(v) {
 				f.ifsHidden()
 			}
 		}

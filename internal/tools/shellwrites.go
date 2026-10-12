@@ -38,6 +38,9 @@ func (f *shellFacts) placeAndWrites(name string, args []*syntax.Word) {
 		}
 	case "cp", "mv", "ln", "install", "rsync", "gcp", "gmv", "gln", "ginstall":
 		f.copies(name, args)
+	case "ditto":
+		// ditto copies a folder's contents into the target, whatever it names.
+		f.writeHidden = "ditto copying a folder's contents"
 	case "tee":
 		f.operandsWritten(name, args, nil)
 	case "dd":
@@ -91,7 +94,7 @@ func optionTaken(args []*syntax.Word, short, long string) bool {
 // each source's name inside it, as when the target is a folder.
 func (f *shellFacts) copies(name string, args []*syntax.Word) {
 	var operands []string
-	target, hidden, ended := "", false, false
+	target, hidden, ended, contents := "", false, false, false
 	for j := 0; j < len(args); j++ {
 		v, lit := literal(args[j])
 		if !lit {
@@ -105,6 +108,8 @@ func (f *shellFacts) copies(name string, args []*syntax.Word) {
 			operands = append(operands, v)
 		case v == "--":
 			ended = true
+		case v == "--no-target-directory":
+			contents = true
 		case v == "--target-directory":
 			if j+1 < len(args) {
 				j++
@@ -122,6 +127,8 @@ func (f *shellFacts) copies(name string, args []*syntax.Word) {
 				hidden = true
 			}
 			target = t
+		case name != "rsync" && shortCluster(v) && strings.Contains(v, "T"):
+			contents = true
 		case (v == "-S" && name != "rsync") || (name == "install" && (v == "-m" || v == "-o" || v == "-g")) || (name == "rsync" && v == "-e"):
 			j++ // the option's value
 		}
@@ -134,6 +141,14 @@ func (f *shellFacts) copies(name string, args []*syntax.Word) {
 	}
 	if target == "" {
 		return
+	}
+	// What a source's contents copy writes is not named on the line: cp -r
+	// sub/. dest, rsync sub/ dest, cp -T sub dest, and BSD cp sub/ dest.
+	for _, src := range operands {
+		base := path.Base(src)
+		if contents || base == "." || base == ".." || strings.HasSuffix(src, "/") && (name == "rsync" || name == "cp") {
+			f.writeHidden = name + " copying a folder's contents"
+		}
 	}
 	f.wrote(target)
 	for _, src := range operands {

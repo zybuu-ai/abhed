@@ -814,6 +814,29 @@ func (c Canonical) MovesFolder() bool { return c.shell.moves }
 // ScriptsCut reports a command naming more scripts than Scripts holds.
 func (c Canonical) ScriptsCut() bool { return c.shell.scriptsCut }
 
+// PathSet reports a PATH the command sets, so a program or sourced script
+// named without a folder may be found in another folder than usual.
+func (c Canonical) PathSet() bool { return c.shell.pathSet }
+
+// PathDirs are the folders the PATH values the command sets name, as
+// written; "." is the folder it runs in.
+func (c Canonical) PathDirs() []string { return c.shell.pathDirs }
+
+// PathUnknown reports a PATH set to a value built from an expansion other
+// than $PATH or $PWD, whose folders are not known.
+func (c Canonical) PathUnknown() bool { return c.shell.pathUnknown }
+
+// Bare are the programs the command names without a folder, and BareCut
+// reports more than it keeps.
+func (c Canonical) Bare() []string { return c.shell.bare }
+
+// BareCut reports programs named without a folder past those Bare keeps.
+func (c Canonical) BareCut() bool { return c.shell.bareCut }
+
+// StartupHidden says why a start-up file the command gives a shell, as
+// BASH_ENV=$f does, is not known; "" when each is literal.
+func (c Canonical) StartupHidden() string { return c.shell.startupHidden }
+
 // Commands are the simple commands a bash parser finds, from each word that
 // may be the program, quoting undone: inside functions, subshells and the
 // literal text eval, trap and a shell's -c run. Deny and ask rules read them.

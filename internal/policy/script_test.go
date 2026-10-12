@@ -103,6 +103,7 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 	write("mover.sh", "cd sub\n")
 	write("inner.sh", "cd sub\n./s.sh\n")
 	write("runner.sh", "sh s.sh\n")
+	write("sourcer.sh", ". s.sh\n")
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	e.Cwd = func() string { return ws }
@@ -138,12 +139,46 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 		`echo x > "$f"; sh s.sh`:                     "deny",
 		"cp sub/s.sh s.sh; bash runner.sh":           "deny",
 		many + "sh sub/s.sh":                         "deny",
-		"bash inner.sh":                              "screen",
-		"sh s.sh":                                    "",
-		"./s.sh > out.log; echo done":                "",
-		"cd sub && sh " + filepath.Join(ws, "s.sh"):  "",
-		"cp a.txt b.txt && sh s.sh":                  "",
-		"bash runner.sh":                             "",
+		// A folder's contents copied over the script, which the line names
+		// no file of.
+		"cp -r sub/. . && sh s.sh":   "deny",
+		"cp -a sub/. ./ && sh s.sh":  "deny",
+		"cp -R sub/ . && ./s.sh":     "deny",
+		"cp -rT sub . && sh s.sh":    "deny",
+		"rsync -a sub/ . && sh s.sh": "deny",
+		"ditto sub . && sh s.sh":     "deny",
+		// A PATH the line sets finds a script without a folder elsewhere.
+		"PATH=sub . s.sh":                             "deny",
+		"export PATH=sub:$PATH; source s.sh":          "deny",
+		"env PATH=sub sh -c '. s.sh'":                 "deny",
+		"read -r PATH <<< sub; . s.sh":                "deny",
+		"PATH=sub:$PATH s.sh":                         "deny",
+		"PATH=$PWD/sub:$PATH s.sh":                    "deny",
+		"export PATH=\"sub:$PATH\"; s.sh":             "deny",
+		"cp sub/s.sh bin/tool && PATH=bin:$PATH tool": "deny",
+		"PATH=sub:$PATH bash sourcer.sh":              "screen",
+		// And a file a shell runs as it starts.
+		"BASH_ENV=sub/s.sh bash -c true":            "deny",
+		"export BASH_ENV=sub/s.sh; bash -c true":    "deny",
+		"env BASH_ENV=sub/s.sh bash -c true":        "deny",
+		"ENV=sub/s.sh sh -i -c true":                "deny",
+		"BASH_ENV=$f bash -c true":                  "deny",
+		"bash --rcfile sub/s.sh -i":                 "deny",
+		"bash --init-file sub/s.sh -i":              "deny",
+		"bash inner.sh":                             "screen",
+		"sh s.sh":                                   "",
+		"./s.sh > out.log; echo done":               "",
+		"cd sub && sh " + filepath.Join(ws, "s.sh"): "",
+		"cp a.txt b.txt && sh s.sh":                 "",
+		"bash runner.sh":                            "",
+		"bash --rcfile /dev/null -i":                "",
+		"BASH_ENV=s.sh bash -c true":                "",
+		"PATH=/usr/bin:$PATH sh s.sh":               "",
+		"export PATH=$PATH:/opt/bin; go version":    "",
+		"PATH=sub:$PATH ls":                         "",
+		"PATH=:$PATH s.sh":                          "",
+		"source s.sh":                               "",
+		"cp -r sub dest && sh s.sh":                 "",
 	} {
 		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
 		switch want {
@@ -167,7 +202,9 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 	if err := ask.AddAsk("bash(curl *)"); err != nil {
 		t.Fatal(err)
 	}
-	if res := ask.Evaluate("bash", true, args(map[string]string{"command": "cd sub && ./s.sh"})); res.Decision != Ask {
-		t.Errorf("ask rule only: %s at %s (%s)", res.Decision, res.Step, res.Reason)
+	for _, command := range []string{"cd sub && ./s.sh", "PATH=sub . s.sh", "cp -r sub/. . && sh s.sh"} {
+		if res := ask.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Ask {
+			t.Errorf("ask rule only: %q = %s at %s (%s)", command, res.Decision, res.Step, res.Reason)
+		}
 	}
 }

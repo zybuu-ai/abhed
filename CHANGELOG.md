@@ -182,11 +182,16 @@ All notable changes to Abhed are recorded here. The format follows
   deep, and their commands checked against deny and ask rules. A script that
   does not exist, that the same line writes before running it (a
   redirection, `cp`, `mv`, `ln`, `install`, `rsync`, `tee`, `dd`, `sed -i`,
-  `perl -i`, `curl -o`, `wget`, or a file named by an expansion), that is
-  named by a relative path on a line that changes folder (`cd`, `pushd`,
+  `perl -i`, `curl -o`, `wget`, a file named by an expansion, or a folder's
+  contents copied over it, as `cp -r sub/. .` or `rsync -a sub/ .` do), that
+  is named by a relative path on a line that changes folder (`cd`, `pushd`,
   `popd`, `env -C`, `sudo -D`, `find -execdir`, or a sourced script that
-  does), or that is named from `~` is refused under a deny rule and asked
-  about otherwise; one too long, unparsable, running built text, or itself
+  does), that is sourced by a bare name on a line that sets `PATH`
+  (`PATH=sub . s.sh`), or that is named from `~` is refused under a deny
+  rule and asked about otherwise. A bare program is read from each folder a
+  `PATH` the line sets names (`PATH=sub:$PATH tool`), and a shell's start-up
+  file is read as a script it runs (`BASH_ENV=f`, `ENV=f`, `--rcfile f`,
+  `--init-file f`); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
   interpreters' scripts are not read, and an `:exec` reads no script.
   Affects every release to 1.2.7.
