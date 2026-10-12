@@ -614,6 +614,9 @@ func reorderFlags(args []string) []string {
 	return append(flags, rest...)
 }
 
+// pgVerifyLimit is how many sessions record verify walks when none is named.
+var pgVerifyLimit = 100000
+
 // verifyPostgres walks the event chain of each named session in the
 // database, or of every session the tenant lists, and checks the heads a
 // witness file holds for it.
@@ -635,11 +638,15 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 	}
 	defer pg.Close()
 	ids := fs.Args()
+	capped := false
 	if len(ids) == 0 {
-		rows, err := pg.ListSessions(ctx, 100000)
+		rows, err := pg.ListSessions(ctx, pgVerifyLimit+1)
 		if err != nil {
 			fmt.Fprintf(stderr, "abhed: %v\n", err)
 			return 1
+		}
+		if capped = len(rows) > pgVerifyLimit; capped {
+			rows = rows[:pgVerifyLimit]
 		}
 		for _, r := range rows {
 			ids = append(ids, r.ID)
@@ -685,6 +692,9 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		printWitnessProblems(stdout, problems)
 		fmt.Fprintf(stdout, "%d witnessed head(s) checked from %s\n", len(stmts), *witnessed)
 		bad = bad || len(unreadable) > 0 || witness.Failed(problems) > 0
+	}
+	if capped {
+		fmt.Fprintf(stdout, "NOTE    only the %d most recent sessions were checked; name the others to check them\n", pgVerifyLimit)
 	}
 	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered by anyone short of the tables' owner. "+
 		"An owner can recompute the chain; with record.witness each head the witness holds must still be in the database.")
