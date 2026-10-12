@@ -13,8 +13,12 @@
 // and git is refused while a commondir, which a command could plant, is not git's own.
 //
 // This is a list, and so best effort: a git release that adds a setting
-// naming a program is not covered until it is added here. Running these
-// commands inside the sandbox is the complete answer, and is tracked apart.
+// naming a program is not covered until it is added here. So a surface that
+// has a sandbox registers it with Register, and every command on the
+// workspace's repository then runs inside it as well, the list still applied;
+// only worktree add and remove, which the sandbox keeps from writing git's
+// worktree folders, and commands on a repository Abhed made itself (the bare
+// one a push goes from) stay on the host.
 package hostgit
 
 import (
@@ -28,9 +32,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
@@ -56,6 +62,123 @@ var safety = [][2]string{
 	{"protocol.allow", "never"},
 	{"protocol.https.allow", "always"},
 }
+
+// confinement is a sandbox registered for the repositories under root.
+type confinement struct {
+	roots []string
+	sb    sandbox.Sandbox
+}
+
+var (
+	confineMu sync.Mutex
+	confines  []*confinement
+)
+
+// Register runs git commands on the repositories under workspace inside sb
+// from now on, when sb runs commands on this host (the process tier or the
+// fence); the container, vm and none tiers leave them on the host. It
+// returns what undoes it; the latest registration for a folder wins.
+func Register(workspace string, sb sandbox.Sandbox) (unregister func()) {
+	if sb == nil || workspace == "" {
+		return func() {}
+	}
+	c := &confinement{roots: sandbox.PathForms(workspace), sb: sb}
+	confineMu.Lock()
+	confines = append(confines, c)
+	confineMu.Unlock()
+	return func() {
+		confineMu.Lock()
+		defer confineMu.Unlock()
+		confines = slices.DeleteFunc(confines, func(x *confinement) bool { return x == c })
+	}
+}
+
+// confinedBy is the sandbox registered for dir that runs commands on this
+// host, or nil.
+func confinedBy(dir string) sandbox.Sandbox {
+	forms := sandbox.PathForms(dir)
+	confineMu.Lock()
+	var found *confinement
+	for i := len(confines) - 1; i >= 0 && found == nil; i-- {
+		for _, r := range confines[i].roots {
+			for _, f := range forms {
+				if _, in := sandbox.Within(f, r); in {
+					found = confines[i]
+				}
+			}
+		}
+	}
+	confineMu.Unlock()
+	if found == nil {
+		return nil
+	}
+	switch found.sb.Tier() {
+	case sandbox.TierProcess, sandbox.TierFence:
+		return found.sb
+	}
+	return nil
+}
+
+// Confined reports whether git commands in dir run inside a sandbox.
+func Confined(dir string) bool { return confinedBy(dir) != nil }
+
+// onHost reports whether a command stays on the host: worktree add and
+// remove make and remove folders under the git folder the sandbox holds, and
+// a command naming its git folder outright is on a repository Abhed made.
+func onHost(args, env []string) bool {
+	if len(args) > 0 && args[0] == "worktree" && len(args) > 1 && args[1] != "list" {
+		return true
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_DIR=") {
+			return true
+		}
+	}
+	return false
+}
+
+// gitCmd builds git in dir with env added to git's own dropped: inside the
+// registered sandbox unless host is set or none is registered.
+func gitCmd(ctx context.Context, dir string, host bool, env []string, args ...string) *exec.Cmd {
+	sb := confinedBy(dir)
+	if sb == nil || host {
+		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed binary, arguments from Abhed
+		place(cmd, dir)
+		cmd.Env = env
+		return cmd
+	}
+	p, err := GitPath(dir)
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
+	cmd := sb.Command(ctx, dir, confinedLine(p, env, args))
+	if cmd.Err != nil {
+		sandbox.Release(cmd)
+	}
+	return cmd
+}
+
+// confinedLine is the shell line running git at path with args: git's
+// variables the sandbox passes on unset, then those Abhed sets. The rest of
+// the host's environment is the sandbox's to give, so no secret is added here.
+func confinedLine(path string, env, args []string) string {
+	var b strings.Builder
+	b.WriteString(`for v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done; `)
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(k, "GIT_") {
+			continue
+		}
+		b.WriteString("export " + k + "=" + shellQuote(v) + "; ")
+	}
+	b.WriteString("exec " + shellQuote(path))
+	for _, a := range args {
+		b.WriteString(" " + shellQuote(a))
+	}
+	return b.String()
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // Repo runs git on one repository. The drivers its configuration names are
 // read once, when it is made, for all the commands of one operation.
@@ -89,6 +212,11 @@ func (r *Repo) Command(ctx context.Context, args ...string) *exec.Cmd {
 // CommandWith is Command with more configuration, set in the same
 // command-line scope, and more environment, added after git's own is dropped.
 func (r *Repo) CommandWith(ctx context.Context, config [][2]string, env []string, args ...string) *exec.Cmd {
+	return r.commandWith(ctx, config, env, false, args...)
+}
+
+// commandWith is CommandWith; host keeps it on the host whatever is registered.
+func (r *Repo) commandWith(ctx context.Context, config [][2]string, env []string, host bool, args ...string) *exec.Cmd {
 	if len(args) > 0 {
 		switch args[0] {
 		case "diff", "show", "log":
@@ -99,16 +227,32 @@ func (r *Repo) CommandWith(ctx context.Context, config [][2]string, env []string
 		}
 	}
 	all := append(append(append([][2]string(nil), safety...), r.drivers...), config...)
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", r.Dir}, args...)...) // #nosec G204 -- fixed binary, arguments from Abhed
-	place(cmd, r.Dir)
-	if r.unknown != nil && cmd.Err == nil {
-		cmd.Err = r.unknown
+	// Checked before a sandbox's command is built, which would hold what it made for one never started.
+	if r.unknown != nil {
+		return &exec.Cmd{Err: r.unknown}
 	}
-	if err := r.redirected(); err != nil && cmd.Err == nil {
-		cmd.Err = err
+	if err := r.redirected(); err != nil {
+		return &exec.Cmd{Err: err}
 	}
-	cmd.Env = append(append(r.env(env), configEnv(all)...), env...)
-	return cmd
+	host = host || onHost(args, env)
+	if !host && len(args) > 0 && args[0] == "commit" && confinedBy(r.Dir) != nil {
+		// A sandbox may give git a home of its own, without the person's name.
+		env = append(r.identity(ctx), env...)
+	}
+	return gitCmd(ctx, r.Dir, host, append(append(r.env(env), configEnv(all)...), env...), append([]string{"-C", r.Dir}, args...)...)
+}
+
+// identity is the author and committer git would take for a commit here,
+// read on the host, where reading configuration runs nothing.
+func (r *Repo) identity(ctx context.Context) []string {
+	var out []string
+	for _, k := range [][3]string{{"user.name", "GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"}, {"user.email", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"}} {
+		v, err := gitCmd(ctx, r.Dir, true, r.env(nil), "-C", r.Dir, "config", "--get", k[0]).Output()
+		if s := strings.TrimSpace(string(v)); err == nil && s != "" {
+			out = append(out, k[1]+"="+s, k[2]+"="+s)
+		}
+	}
+	return out
 }
 
 // env is Env with the common git folder named, unless more names the git
@@ -133,10 +277,7 @@ func pinned(common string, more []string) []string {
 // gitDirs are dir's git folder and its common one, two up for a linked worktree's,
 // never read from a commondir; an error when a .git is there but git cannot name it.
 func gitDirs(ctx context.Context, dir string) (string, string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--absolute-git-dir") // #nosec G204 -- fixed arguments
-	place(cmd, dir)
-	cmd.Env = Env()
-	out, err := cmd.Output()
+	out, err := gitCmd(ctx, dir, false, Env(), "-C", dir, "rev-parse", "--absolute-git-dir").Output()
 	gd := filepath.Clean(strings.TrimSpace(string(out)))
 	if err != nil || !filepath.IsAbs(gd) {
 		if root := repoRoot(dir); root != "" {
@@ -303,10 +444,7 @@ func Env() []string {
 // drivers clears the command of every filter and merge driver the
 // repository's configuration names.
 func drivers(ctx context.Context, dir, common string) [][2]string {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "config", "--includes", "--name-only", "-z", "--get-regexp", `^(filter|merge)\.`) // #nosec G204 -- fixed arguments
-	place(cmd, dir)
-	cmd.Env = pinned(common, nil)
-	out, err := cmd.Output()
+	out, err := gitCmd(ctx, dir, false, pinned(common, nil), "-C", dir, "config", "--includes", "--name-only", "-z", "--get-regexp", `^(filter|merge)\.`).Output()
 	if err != nil {
 		return nil
 	}
@@ -351,4 +489,38 @@ func splitNUL(data []byte, atEOF bool) (int, []byte, error) {
 		return len(data), data, nil
 	}
 	return 0, nil, nil
+}
+
+// ConfigFiles are the files git reads for its global and system
+// configuration in dir, the ones their include.path and includeIf lines
+// bring in followed, and where a system file would be though none is there.
+// Reading configuration runs nothing, so this runs on the host.
+func ConfigFiles(ctx context.Context, dir string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	add("/etc/gitconfig")
+	if p, err := GitPath(dir); err == nil {
+		// A git installed under a prefix reads <prefix>/etc/gitconfig.
+		add(filepath.Join(filepath.Dir(filepath.Dir(sandbox.RealPath(p))), "etc", "gitconfig"))
+	}
+	for _, scope := range []string{"--global", "--system"} {
+		b, err := gitCmd(ctx, dir, true, Env(), "-C", dir, "config", scope, "--includes", "--show-origin", "--name-only", "-z", "--list").Output()
+		if err != nil {
+			continue
+		}
+		// Each entry is origin NUL name NUL.
+		parts := bytes.Split(b, []byte{0})
+		for i := 0; i+1 < len(parts); i += 2 {
+			if f, ok := strings.CutPrefix(string(parts[i]), "file:"); ok {
+				add(f)
+			}
+		}
+	}
+	return out
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -111,6 +112,46 @@ func endTree(root int) {
 	for _, m := range members {
 		m.kill()
 	}
+}
+
+// ownGroup starts cmd in a process group of its own, which a cancel kills
+// whole: a helper the command started cannot keep its pipes open.
+func ownGroup(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	cmd.Cancel = func() error {
+		if err := killGroup(cmd.Process.Pid); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+}
+
+// EndLeft ends what cmd's command left running, found by its marker, after
+// the command itself has exited: a server it started in the background, or
+// a child that left its session. A cancel does this only while the command runs.
+func EndLeft(cmd *exec.Cmd) {
+	// The group it led outlives it while a member is left, and its id is not
+	// given to another process meanwhile; a program Apple ships, whose
+	// environment macOS hides from the marker's search, is found this way.
+	if cmd.Process != nil && cmd.SysProcAttr != nil && cmd.SysProcAttr.Setsid {
+		_ = killGroup(cmd.Process.Pid)
+	}
+	if m := markerIn(cmd.Env); m != "" {
+		endMarked(m)
+	}
+}
+
+// markerIn is the last marker in env, or "".
+func markerIn(env []string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], markerName+"=") {
+			return env[i]
+		}
+	}
+	return ""
 }
 
 // markerName is the variable that marks every process of one command.

@@ -340,7 +340,44 @@ func (n node) Events() (Events, error) {
 	if _, err := os.Stat(n.dir); err != nil {
 		return Events{}, fmt.Errorf("cgroup: events: %w", err)
 	}
-	return eventsFrom(string(mem), string(pid)), nil
+	ev := eventsFrom(string(mem), string(pid))
+	// Before Linux 6.14 pids.events counts a refused fork only in the
+	// forking task's own cgroup, a leaf below this one, though the limit hit
+	// is this one's; since, it counts them here for the whole subtree. The
+	// larger of the two readings is right under both.
+	ev.PidsMax = max(ev.PidsMax, n.childPidsMax())
+	return ev, nil
+}
+
+// OwnPidsMax is the refused forks n's own pids.events counts: since Linux
+// 6.14 those in its whole subtree, before it only those of its own tasks.
+func (n node) OwnPidsMax() uint64 {
+	b, err := os.ReadFile(filepath.Join(n.dir, "pids.events"))
+	if err != nil {
+		return 0
+	}
+	return keyed(string(b))["max"]
+}
+
+// childPidsMax sums the refused forks the cgroups below n count.
+func (n node) childPidsMax() uint64 {
+	entries, err := os.ReadDir(n.dir)
+	if err != nil {
+		return 0
+	}
+	var sum uint64
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		child := node{filepath.Join(n.dir, e.Name())}
+		b, err := os.ReadFile(filepath.Join(child.dir, "pids.events"))
+		if err != nil {
+			continue
+		}
+		sum += max(keyed(string(b))["max"], child.childPidsMax())
+	}
+	return sum
 }
 
 func (n node) populated() bool {

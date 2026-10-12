@@ -50,6 +50,14 @@ type Fence struct {
 	stateID   *folderID
 	stateHeld bool
 	madeState bool
+	// stateLock is shared by every fence on the workspace while it lasts.
+	stateLock *os.File
+	// eg is the session's egress proxy under the allowlist.
+	eg fenceEgress
+	// markPath is the session's mark under ~/.abhed/fence, removed at a
+	// clean close; watchStop ends the landlock_only check between commands.
+	markPath  string
+	watchStop chan struct{}
 	// aliases are the other mounts of the workspace's filesystem, which each
 	// command's namespace covers as it covers the workspace.
 	aliases []string
@@ -112,8 +120,9 @@ func (f *Fence) sessionRecord() func(string, map[string]any) error {
 // cgroup and private temp folder. Commands built after it do not start. A
 // .abhed a command left in the workspace is taken out and reported, and
 // Close fails when it finds one or cannot list the workspace. The empty
-// .abhed the fence made to mount over stays: other fences on the same
-// workspace mount over it too, and removing it would detach their mounts.
+// .abhed the fence mounted over, empty when it started, stays while another
+// fence on the workspace may mount over it, since removing it would detach
+// their mounts; the last to close removes it, still empty and the same folder.
 func (f *Fence) Close() error {
 	f.closed.Store(true)
 	// A fence never qualified is not qualified now; one qualifying finishes first.
@@ -128,6 +137,13 @@ func (f *Fence) Close() error {
 		if f.tmp != "" {
 			errs = append(errs, os.RemoveAll(f.tmp))
 		}
+		f.removeMadeState()
+		errs = append(errs, f.eg.close())
+		if f.watchStop != nil {
+			close(f.watchStop)
+		}
+		// Only after the last check: a mark left says that check never ran.
+		removeMark(f.markPath)
 		f.closeErr = errors.Join(errs...)
 	})
 	return f.closeErr
@@ -169,15 +185,20 @@ func (f *Fence) policyRefusal() string {
 		return "the workspace must be an absolute path"
 	case f.policy.CPUPercent < 0:
 		return "fence.cpu_percent is negative"
-	case f.policy.Egress != nil:
-		// Landlock limits TCP connects by port, not address, and seccomp
-		// cannot read the address a socket connects to: a command allowed the
-		// proxy's port could reach that port on any host.
-		return "sandbox.network is allowlist, and the fence cannot keep a command's sockets to the egress proxy alone " +
-			"(Landlock limits TCP by port, not by address, and seccomp cannot read the address); " +
-			"leave sandbox.tier unset to use the process tier, which enforces it, or turn the allowlist off"
 	}
 	return ""
+}
+
+// egressRefusal says why the fence in its mode cannot hold the allowlist,
+// or "": without a network namespace Landlock limits TCP by port, not
+// address, so a command allowed the proxy's port reaches it on any host.
+func (f *Fence) egressModeRefusal() string {
+	if f.policy.Egress == nil || f.mounts || f.policy.FenceEgressPortOnly {
+		return ""
+	}
+	return "sandbox.network is allowlist, and the fence's landlock_only mode cannot keep a command's sockets to the egress proxy alone " +
+		"(no network namespace here; Landlock limits TCP by port, not by address); the managed fence.egress_port_only accepts that, " +
+		"or leave sandbox.tier unset to use the process tier"
 }
 
 // The fence's modes, as fence.qualified and process.launched record them.
@@ -213,9 +234,20 @@ func (f *Fence) Describe() string {
 	if f.policy.AllowNetwork {
 		net = "network on: the host's network, unfiltered; unix sockets refused"
 	}
+	switch {
+	case f.policy.Egress != nil && f.mounts:
+		net = "network: the egress proxy alone, through a relay in each command's network namespace, inet streams only"
+	case f.policy.Egress != nil:
+		net = "network: TCP to the egress proxy's port alone, on any address (no network namespace: Landlock filters ports only), inet streams only"
+	}
 	signals := "Landlock scopes signals and abstract sockets"
-	if abi < 6 {
-		signals = "commands can signal your other processes, Abhed too by one of its thread ids (Landlock ABI 6, Linux 6.12, scopes them)"
+	switch {
+	case f.mounts:
+		signals = "a PID namespace and /proc of the command's own: it signals and sees only its own processes"
+	case abi < 6:
+		signals = "commands can signal your other processes, Abhed too by one of its thread ids (Landlock ABI 6, Linux 6.12, scopes them), and read other processes' command lines in /proc"
+	default:
+		signals += "; other processes' command lines in /proc are readable"
 	}
 	mode := "mode landlock_only: no mount namespace; a .abhed a command makes at the top of the workspace, in any case, " +
 		"is renamed out of the way once the command ends and moved to ~/.abhed/quarantine where it can be, the session's commands still running are ended and its further commands are refused, " +
@@ -240,8 +272,8 @@ func (f *Fence) Describe() string {
 	}
 	return fmt.Sprintf("fence (preview, Linux) · each command under Landlock ABI %d: reads and runs system folders, ~/.abhed/skills and skills.dirs, writes the workspace and a private temp folder, "+
 		"no other terminal, Abhed's state, record and secrets unreachable · %s · seccomp %s: no ptrace, namespaces, mounts, bpf, keyrings, unix sockets "+
-		"or signals to Abhed's process id · %s · cgroup per call: %s · not covered: Abhed itself and its in-process tools (file, web, MCP), network filtering, "+
-		"%s, other processes' command lines in /proc, a hard link to state made before the session, %s",
+		"or signals to Abhed's process id · %s · cgroup per call: %s · not covered: Abhed itself and its in-process tools (file, web, MCP), network filtering but the allowlist, "+
+		"%s, a hard link to state made before the session, %s",
 		abi, mode, seccomp.Profile, net, f.limitsText(), signals, planted)
 }
 
@@ -434,11 +466,35 @@ func (f *Fence) isStateMount(p string) bool {
 	return err == nil && !holds
 }
 
+// removeMadeState removes the workspace's .abhed when it was empty as this
+// fence started and still is, it is the same folder, and no other fence on
+// the workspace holds the lock: one made to mount over is not left behind.
+func (f *Fence) removeMadeState() {
+	if f.stateLock == nil {
+		return
+	}
+	defer func() { _ = f.stateLock.Close() }()
+	if f.stateHeld || f.stateID == nil || !lastUser(f.stateLock) {
+		return
+	}
+	p := filepath.Join(f.policy.Workspace, stateDir)
+	if id, err := folderIdentity(p); err == nil && id.dir && id.same(*f.stateID) {
+		if holds, err := folderHolds(p, id); err == nil && !holds {
+			_ = os.Remove(p)
+		}
+	}
+}
+
 // prepareStateMount finds the workspace's .abhed for each command's
 // namespace to cover, and makes it, empty, when it is missing: a tmpfs needs
 // a folder to mount on. One that is not a folder refuses the fence. Another
 // fence on the workspace may make it at the same time, and that one serves.
 func (f *Fence) prepareStateMount() error {
+	// Held while the session lasts, so the last fence to close can remove a
+	// folder it made, and one closing waits out a fence starting.
+	if f.stateLock == nil {
+		f.stateLock = stateUseLock(f.policy.Workspace)
+	}
 	p := filepath.Join(f.policy.Workspace, stateDir)
 	if err := os.Mkdir(p, 0o700); err == nil {
 		f.madeState = true
@@ -549,6 +605,14 @@ func (f *Fence) isSharedState(p string) bool {
 // protected path is held only once it exists when a command starts.
 func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 	ws := f.policy.Workspace
+	// A view made since the session qualified shows what the plan cannot cover.
+	if v, err := mountns.Views(ws); err != nil || len(v) > 0 {
+		if err == nil {
+			err = fmt.Errorf("%s shows the workspace's files through a filesystem of its own (FUSE, overlay or a network share), "+
+				"where Abhed's state and git's files are not covered; unmount it", strings.Join(v, ", "))
+		}
+		return nil, err
+	}
 	forms := PathForms(ws)
 	p := &mountns.Plan{Root: ws}
 	seen := map[string]bool{}
@@ -572,7 +636,7 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 		}
 	}
 	if f.policy.ProtectGit {
-		found, err := gitGuard(ctx, ws, string(TierFence), &f.git)
+		found, err := gitGuardFor(ctx, ws, string(TierFence), &f.git, f.policy.GitRequired)
 		if err != nil {
 			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
 		}
@@ -607,6 +671,13 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 		p.ReadOnly = append(p.ReadOnly, r)
 	}
 	p.Empty = append(p.Empty, stateDir)
+	// On a disk that folds case, another spelling reaches the same folder
+	// under a name the mount above may not cover; each is covered too.
+	for _, name := range caseSpellings(ws, stateDir) {
+		if info, err := os.Lstat(filepath.Join(ws, name)); name != stateDir && err == nil && info.IsDir() {
+			p.Empty = append(p.Empty, name)
+		}
+	}
 	for _, sp := range (&Process{policy: f.policy}).statePaths() {
 		r, ok := rel(sp)
 		if !ok || seen[r] || underState(r) {
@@ -804,17 +875,39 @@ func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 	if err != nil {
 		return nil, false
 	}
-	names, err := d.Readdirnames(-1)
-	_ = d.Close()
-	if err != nil {
-		return nil, false
+	// Read in batches to a bound, so a flooded folder cannot hold Abhed's memory.
+	var names []string
+	more := false
+	for {
+		batch, err := d.Readdirnames(512)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			_ = d.Close()
+			return nil, false
+		}
+		names = append(names, batch...)
+		if len(names) >= takeOutBound {
+			more, names = true, names[:takeOutBound]
+			break
+		}
 	}
-	out := make([]map[string]any, 0, len(names))
+	_ = d.Close()
+	out := make([]map[string]any, 0, len(names)+1)
 	for _, n := range names {
 		out = append(out, f.takeOutTo(filepath.Join(p, n), p, true))
 	}
+	if more {
+		out = append(out, map[string]any{"path": filepath.Join(p, fmt.Sprintf("entries past the first %d", takeOutBound)), "outcome": plantRemaining,
+			"error": fmt.Sprintf("more than %d entries; those past them are left, and the next check takes out more", takeOutBound)})
+	}
 	return out, true
 }
+
+// takeOutBound is how many entries one check takes out of the covered .abhed;
+// a variable, so a test can lower it.
+var takeOutBound = 4096
 
 // takeOut renames the planted entry p into dir, then quarantines it, and says
 // how; where the rename fails it is removed, else still present.
@@ -907,7 +1000,7 @@ var fenceKeep = []string{"PATH", "LANG", "LC_ALL", "TERM",
 // env is an allowlist, as on the process tier. Home is unreachable, so HOME,
 // TMPDIR and the caches point into the session's private temp.
 func (f *Fence) env() []string {
-	out := []string{"ABHED_SANDBOX=" + string(f.Tier()), "VIMINIT=" + vimInit}
+	out := []string{"ABHED_SANDBOX=" + string(f.Tier()), vimInitEnv()}
 	for _, k := range fenceKeep {
 		if v := os.Getenv(k); v != "" {
 			out = append(out, k+"="+v)
@@ -977,4 +1070,18 @@ func (f *Fence) Qualification() map[string]any {
 		out["cgroup"] = f.host.path()
 	}
 	return out
+}
+
+// sessionRefusals are the forks refused at the session's own pids.max while
+// a call ran, beyond those its own cgroup counted: before and after are the
+// session cgroup's own pids.events count, leaf the call's. Before Linux 6.14
+// the session's own count never moves (a refusal is counted in the forking
+// task's cgroup); since, it counts its whole subtree, the call's refusals
+// included, so those are taken off. Another call's refusals in the same
+// time count here too.
+func sessionRefusals(before, after, leaf uint64) uint64 {
+	if after <= before || after-before <= leaf {
+		return 0
+	}
+	return after - before - leaf
 }

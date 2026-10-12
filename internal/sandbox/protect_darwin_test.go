@@ -167,3 +167,145 @@ func TestProcessSandboxHoldsWhereLinkedHooksLead(t *testing.T) {
 		t.Errorf("the link was changed: %q %v", to, err)
 	}
 }
+
+// A nested repository whose .git is a link has the folder it leads to held:
+// a command can plant neither a config line nor a hook there.
+func TestProcessSandboxHoldsWhereANestedGitLinkLeads(t *testing.T) {
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{"store/real/HEAD": "ref: refs/heads/main\n", "store/real/config": "[core]\n",
+		"store/real/hooks/.keep": "", "sub/f": ""})
+	if err := os.Symlink("../store/real", filepath.Join(ws, "sub", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	_, _ = runIn(t, s, ws, "echo '  fsmonitor = x' >> store/real/config; echo x > store/real/hooks/pre-commit")
+	if b, _ := os.ReadFile(filepath.Join(ws, "store", "real", "config")); string(b) != "[core]\n" {
+		t.Errorf("the linked git folder's config was written: %q", b)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, "store", "real", "hooks", "pre-commit")); err == nil {
+		t.Error("a hook was planted in the linked git folder")
+	}
+}
+
+// Seatbelt checks rename only at its ends, so a repository can be moved into
+// the workspace; the next command finds it and takes out its fsmonitor.
+func TestProcessSandboxTakesOutAMovedInRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	if _, err := runIn(t, s, ws, "true"); err != nil {
+		t.Fatalf("first command: %v", err)
+	}
+	writeFiles(t, ws, map[string]string{"n/.git/HEAD": "ref: refs/heads/main\n", "n/.git/config": "[core]\n\tfsmonitor = ./x\n"})
+	if out, err := runIn(t, s, ws, "echo ran"); err == nil || strings.Contains(out, "ran") {
+		t.Fatalf("the command ran beside a planted repository: %v %s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "n", ".git", "config")); strings.Contains(string(b), "fsmonitor") {
+		t.Errorf("fsmonitor left: %q", b)
+	}
+}
+
+// Commands get toolchain caches of their own: the real ones, which programs
+// outside Abhed use, cannot be written, and the sandbox's are gone at Close.
+func TestProcessSandboxKeepsCachesApart(t *testing.T) {
+	// Outside the temp folders, which commands may write.
+	home, err := os.MkdirTemp(".", "home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home, err = filepath.Abs(home); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	for _, d := range []string{".npm", ".cache", "go/pkg/mod"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := workspace(t)
+	s := NewProcess(DefaultPolicy(ws))
+	available(t, s)
+	out, err := runIn(t, s, ws, `echo bad > "$HOME/.npm/poison" 2>/dev/null; echo ok > "$npm_config_cache.probe" 2>/dev/null; mkdir -p "$npm_config_cache" && echo ok > "$npm_config_cache/x" && echo "$npm_config_cache|$GOPROXY"`)
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".npm", "poison")); err == nil {
+		t.Fatal("a command wrote the real npm cache")
+	}
+	own, proxy, _ := strings.Cut(strings.TrimSpace(out), "|")
+	if !strings.Contains(own, "abhed-caches-") || !strings.HasPrefix(proxy, "file://") {
+		t.Fatalf("caches %q proxy %q", own, proxy)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(own); err == nil {
+		t.Fatal("the sandbox's caches outlived Close")
+	}
+	shared := NewProcess(Policy{Workspace: ws, MinTier: TierProcess, SharedCaches: true})
+	if out, err := runIn(t, shared, ws, `echo ok > "$HOME/.npm/shared" && echo done`); err != nil || !strings.Contains(out, "done") {
+		t.Fatalf("shared_caches: %v %s", err, out)
+	}
+}
+
+// Home is unreadable to commands but for the toolchains and the files git
+// and shells read; readable_home brings back the old deny list.
+func TestProcessSandboxReadsOnlyToolchainsInHome(t *testing.T) {
+	home, err := os.MkdirTemp(".", "home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home, err = filepath.Abs(home); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	writeFiles(t, home, map[string]string{".config/sometool/token": "secret", "Documents/notes.txt": "private",
+		".gitconfig": "[user]\n\tname = t\n", "go/pkg/mod/x": "mod", "tools/bin/tool": "bin", "tools/lib/x": "lib"})
+	t.Setenv("PATH", filepath.Join(home, "tools", "bin")+":"+os.Getenv("PATH"))
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{"a.txt": "work"})
+	s := NewProcess(DefaultPolicy(ws))
+	available(t, s)
+	read := func(sb Sandbox, p string) bool {
+		out, err := runIn(t, sb, ws, "cat "+p)
+		return err == nil && out != ""
+	}
+	for p, want := range map[string]bool{
+		filepath.Join(home, ".config/sometool/token"): false,
+		filepath.Join(home, "Documents/notes.txt"):    false,
+		filepath.Join(home, ".gitconfig"):             true,
+		filepath.Join(home, "go/pkg/mod/x"):           true,
+		filepath.Join(home, "tools/lib/x"):            true,
+		filepath.Join(ws, "a.txt"):                    true,
+	} {
+		if got := read(s, p); got != want {
+			t.Errorf("%s: read %v, want %v", p, got, want)
+		}
+	}
+	open := NewProcess(Policy{Workspace: ws, MinTier: TierProcess, ReadableHome: true})
+	if !read(open, filepath.Join(home, "Documents/notes.txt")) || read(open, filepath.Join(home, ".ssh/id")) {
+		t.Error("readable_home does not read home but the credential paths")
+	}
+}
+
+// A command cannot read the clipboard.
+func TestProcessSandboxDeniesTheClipboard(t *testing.T) {
+	ws := workspace(t)
+	s := NewProcess(DefaultPolicy(ws))
+	available(t, s)
+	if !strings.Contains(s.seatbeltProfile(), `"com.apple.pasteboard."`) {
+		t.Fatal("the profile does not deny the pasteboard")
+	}
+	out, _ := runIn(t, s, ws, "pbpaste >/dev/null 2>&1; echo status=$?")
+	if strings.Contains(out, "status=0") {
+		t.Fatalf("pbpaste ran: %s", out)
+	}
+}

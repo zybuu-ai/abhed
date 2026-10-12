@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os/exec"
 	"time"
 )
@@ -19,6 +20,8 @@ var (
 	signalOne   = signalMember
 	startOf     = startTime
 	canSweep    = sweepSupported
+	// cannotSignal reports a process this user may not signal (EPERM).
+	cannotSignal = signalRefused
 )
 
 // maxSweepPasses bounds the passes that stop a session's processes. Each
@@ -36,6 +39,8 @@ type Leader struct {
 	Pid   int
 	start uint64
 	ok    bool
+	// marker is what every process the shell started carries, or "".
+	marker string
 }
 
 // Lead names the session leader cmd started. Call it right after Start, on a
@@ -46,7 +51,7 @@ func Lead(cmd *exec.Cmd) Leader {
 	}
 	pid := cmd.Process.Pid
 	start, ok := startTime(pid)
-	return Leader{Pid: pid, start: start, ok: ok}
+	return Leader{Pid: pid, start: start, ok: ok, marker: markerIn(cmd.Env)}
 }
 
 // Wait waits for the shell to exit, ends every process left in its session
@@ -63,6 +68,10 @@ func (l Leader) Wait(cmd *exec.Cmd) (refused string, err error) {
 		} else {
 			refused = l.sweep()
 		}
+	}
+	// A process that left the session (setsid) still carries the marker.
+	if l.marker != "" {
+		endMarked(l.marker)
 	}
 	return refused, cmd.Wait()
 }
@@ -112,17 +121,29 @@ func (l Leader) sweep() string {
 	deadline := time.Now().Add(sweepGrace)
 	wait := sweepWaitMin
 	for {
-		left, fresh := 0, 0
+		left, fresh, unsignalled := 0, 0, 0
 		for _, pid := range listMembers(l.Pid) {
-			if pid != l.Pid && signalOne(pid, l.Pid, killSignal) {
-				left++
-				if !killed[pid] {
-					killed[pid] = true
-					fresh++
+			if pid == l.Pid {
+				continue
+			}
+			if !signalOne(pid, l.Pid, killSignal) {
+				// Gone, or no longer in the session, is not counted: only a refusal.
+				if cannotSignal(pid) {
+					unsignalled++
 				}
+				continue
+			}
+			left++
+			if !killed[pid] {
+				killed[pid] = true
+				fresh++
 			}
 		}
 		if left == 0 {
+			// Listed but not signalled: another user's, a setuid program's, say.
+			if unsignalled > 0 {
+				return fmt.Sprintf("%d processes in the shell's session could not be signalled (another user's, or one that changed its user) and may still run", unsignalled)
+			}
 			return ""
 		}
 		if time.Now().After(deadline) {

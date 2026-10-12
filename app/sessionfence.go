@@ -9,6 +9,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -18,7 +19,8 @@ import (
 func fenceSessionBash(cfg config.Config, workspace string) func(string, *agent.Recorder, tools.Bash) (tools.Bash, func() error) {
 	return func(_ string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error) {
 		sf := &sessionFence{build: func() (sandbox.Sandbox, error) { return buildSandbox(cfg, workspace) }, rec: rec}
-		shared.Sandbox, shared.Shell = sf.Command, sf.Shell
+		fence := func() sandbox.Tier { return sandbox.TierFence }
+		shared.Sandbox, shared.Shell = hostgit.Broker(workspace, fence, sf.Command), sf.Shell
 		return shared, sf.Close
 	}
 }

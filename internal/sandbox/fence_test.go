@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -477,7 +478,9 @@ func TestFencePlan(t *testing.T) {
 			t.Errorf("pins lack %s: %v", want, plan.Pin)
 		}
 	}
-	if !slices.Equal(plan.Empty, []string{".abhed", "state.d"}) {
+	// Other spellings of .abhed are covered too where the disk folds case.
+	hidden := slices.DeleteFunc(slices.Clone(plan.Empty), func(e string) bool { return e != ".abhed" && strings.EqualFold(e, ".abhed") })
+	if !slices.Equal(hidden, []string{".abhed", "state.d"}) {
 		t.Errorf("hidden: %v", plan.Empty)
 	}
 	if err := os.Symlink("/tmp", filepath.Join(ws, ".vscode", "link.json")); err != nil {
@@ -554,6 +557,13 @@ func TestFenceStateMountIsNotPlanted(t *testing.T) {
 	}
 	if err := other.checkPlanted(nil, "", "before_command"); err != nil {
 		t.Fatalf("the other fence took the .abhed for planted: %v", err)
+	}
+	// The last fence to close removes the empty folder, so none is left behind.
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(p.Workspace, ".abhed")); err == nil {
+		t.Fatal("the last fence left the empty .abhed it mounted over")
 	}
 	if runtime.GOOS == "darwin" {
 		return // APFS folds case: .ABHED is the same entry
@@ -701,6 +711,8 @@ func TestFenceStateMountRemovesWhatCannotBeQuarantined(t *testing.T) {
 	}
 	// ~/.abhed as a file: the quarantine folder cannot be made.
 	home, _ := os.UserHomeDir()
+	// The fence's lock folder is there already; the file takes its place.
+	_ = os.RemoveAll(filepath.Join(home, ".abhed"))
 	if err := os.WriteFile(filepath.Join(home, ".abhed"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -796,5 +808,70 @@ func TestFenceGitByDefaultNeedsNoMounts(t *testing.T) {
 	p.GitRequired = true
 	if !NewFence(p).needsMounts() {
 		t.Fatal("required git protection must need a mount namespace")
+	}
+}
+
+// Where the workspace's disk folds case, every spelling of .abhed is covered.
+func TestFencePlanCoversEverySpellingOfState(t *testing.T) {
+	p := fencePolicy(t)
+	ws := p.Workspace
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	folds := false
+	if _, err := os.Lstat(filepath.Join(ws, ".ABHED")); err == nil {
+		folds = true
+	}
+	f := NewFence(p)
+	f.mounts = true
+	plan, err := f.plan(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := slices.Contains(plan.Empty, ".ABHED"); got != folds {
+		t.Fatalf("disk folds case %v, .ABHED covered %v: %v", folds, got, plan.Empty)
+	}
+}
+
+// A flooded .abhed is taken out a bounded number of entries at a time, the
+// rest reported as left.
+func TestTakeOutContentsIsBounded(t *testing.T) {
+	p := fencePolicy(t)
+	old := takeOutBound
+	takeOutBound = 3
+	t.Cleanup(func() { takeOutBound = old })
+	dir := filepath.Join(p.Workspace, ".abhed")
+	for i := range 10 {
+		if err := os.MkdirAll(filepath.Join(dir, fmt.Sprint("f", i)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := NewFence(p).takeOutContents(dir)
+	if !ok || len(got) != 4 || got[3]["outcome"] != plantRemaining {
+		t.Fatalf("ok %v, %v", ok, got)
+	}
+	left, _ := os.ReadDir(dir)
+	if len(left) != 7 {
+		t.Fatalf("%d entries left, want 7", len(left))
+	}
+}
+
+// A fork refused at the session's pids.max is reported for the call under
+// both kernel behaviours, and the call's own refusals are not counted twice.
+func TestSessionRefusals(t *testing.T) {
+	for _, c := range []struct {
+		name                string
+		before, after, leaf uint64
+		want                uint64
+	}{
+		{"before 6.14: counted in the call's cgroup", 0, 0, 7, 0},
+		{"6.14: at the session's limit", 3, 10, 0, 7},
+		{"6.14: at the call's own limit, seen in both", 3, 10, 7, 0},
+		{"6.14: both", 0, 12, 5, 7},
+		{"nothing", 4, 4, 0, 0},
+	} {
+		if got := sessionRefusals(c.before, c.after, c.leaf); got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+		}
 	}
 }

@@ -141,6 +141,9 @@ type Policy struct {
 	// ProtectGit write-protects the gitPointers of every git folder in the
 	// workspace and each .git file; see gitprotect.go for how each backend does it.
 	ProtectGit bool
+	// ScopeSignals requires a TierFence that keeps signals to the command's
+	// own processes (ABI 6), for sessions of several accounts on one host.
+	ScopeSignals bool
 	// GitRequired refuses a fence that cannot hold ProtectGit (no mount
 	// namespace); without it, that fence runs and says git's files are not held.
 	GitRequired bool
@@ -148,12 +151,33 @@ type Policy struct {
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int
 	MaxProcs    int
+	// ReadableHome lets the macOS process tier read all of home but the
+	// HomeSecrets; otherwise only the toolchain folders there are readable.
+	ReadableHome bool
+	// RelayBinary is a Linux build of Abhed run inside a container as the
+	// egress relay where the engine is in a VM or on another host.
+	RelayBinary string
+	// SharedCaches lets the macOS process tier write the real toolchain
+	// caches; otherwise each sandbox's commands get caches of their own.
+	SharedCaches bool
+	// MemoryRequired refuses a Linux process tier command whose memory no
+	// cgroup can hold, for max_memory_mb set in a configuration file.
+	MemoryRequired bool
+	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
+	// CPU; zero means 200.
+	MaxCPUPercent int
 	// Tier, when set, is the one backend Select builds, in place of the
 	// strongest available; only TierFence can be chosen.
 	Tier Tier
 	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
 	// one CPU; zero leaves it unbounded.
 	CPUPercent int
+	// FenceEgressPortOnly lets the fence hold the egress allowlist without a
+	// network namespace, by the proxy's port alone.
+	FenceEgressPortOnly bool
+	// FenceSocketcall lets the fence's commands on s390x make sockets
+	// through socketcall(2) when AllowNetwork is set.
+	FenceSocketcall bool
 	// SkillDirs are the configured skills.dirs, absolute. The fence lets
 	// commands read and run them, as it does ~/.abhed/skills, but never one
 	// that holds or sits inside Abhed's state.

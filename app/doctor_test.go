@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -175,6 +176,11 @@ func TestLimitWarningsNameWhatATierIgnores(t *testing.T) {
 	// Set in a file to the default value: still set by someone.
 	set := config.Default()
 	set.SetKeys = []string{"sandbox.max_memory_mb"}
+	// The Linux process tier bounds each process's data by it.
+	var processMemory []string
+	if runtime.GOOS != "linux" {
+		processMemory = []string{"max_memory_mb"}
+	}
 	for _, c := range []struct {
 		cfg  config.Config
 		tier sandbox.Tier
@@ -184,7 +190,7 @@ func TestLimitWarningsNameWhatATierIgnores(t *testing.T) {
 		{config.Default(), sandbox.TierProcess, false, nil},
 		{config.Default(), sandbox.TierNone, false, []string{"max_procs"}},
 		{config.Default(), sandbox.TierProcess, true, []string{"runs as root"}},
-		{set, sandbox.TierProcess, false, []string{"max_memory_mb"}},
+		{set, sandbox.TierProcess, false, processMemory},
 		{set, sandbox.TierNone, false, []string{"max_memory_mb", "max_procs"}},
 		{set, sandbox.TierContainer, true, nil},
 		{set, sandbox.TierVM, false, nil},

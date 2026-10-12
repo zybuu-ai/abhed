@@ -21,6 +21,13 @@ type Policy struct {
 	// they reach host daemons that no file rule can stop; socketpair() is
 	// allowed either way.
 	AllowNetwork bool
+	// ProxyOnly, for the egress allowlist, allows inet and inet6 stream
+	// sockets alone, which Landlock then lets connect only to the proxy's port.
+	ProxyOnly bool
+	// Socketcall, with AllowNetwork, allows socketcall(SOCKET) where the
+	// architecture has it: the family is behind a pointer the filter cannot
+	// read, so unix sockets are reachable through it.
+	Socketcall bool
 	// Abhed is the process id of the Abhed that launches the command, and
 	// AbhedGroup its process group. Signals aimed at either are refused:
 	// kill, tgkill, tkill and the queued forms naming that process, kill of
@@ -39,12 +46,13 @@ func Command(allowNetwork bool, abhed, abhedGroup int) Policy {
 type cond int
 
 const (
-	always  cond = iota // the call is refused outright
-	maskSet             // refused when arg & k != 0
-	below               // refused when arg < k
-	equal               // refused when arg == k
-	family              // socket: refused unless inet, inet6 or route netlink
-	oneOf               // refused when arg equals any of ks
+	always     cond = iota // the call is refused outright
+	maskSet                // refused when arg & k != 0
+	below                  // refused when arg < k
+	equal                  // refused when arg == k
+	family                 // socket: refused unless inet, inet6 or route netlink
+	oneOf                  // refused when arg equals any of ks
+	streamInet             // socket: refused unless an inet or inet6 stream socket
 )
 
 type rule struct {
@@ -119,14 +127,18 @@ func (p Policy) rules(info archInfo) []rule {
 		rule{group: "signals to Abhed", name: "rt_sigqueueinfo", errno: errEPERM, cond: oneOf, arg: 0, ks: []uint32{pid}, note: "rt_sigqueueinfo of it"},
 		rule{group: "signals to Abhed", name: "rt_tgsigqueueinfo", errno: errEPERM, cond: oneOf, arg: 0, ks: []uint32{pid}, note: "rt_tgsigqueueinfo of it"},
 		rule{group: "signals to Abhed", name: "pidfd_send_signal", errno: errEPERM, note: "pidfd_send_signal to any process"})
-	if p.AllowNetwork {
+	switch {
+	case p.ProxyOnly:
+		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: streamInet,
+			note: "socket other than an inet or inet6 stream, unix and UDP included; socketpair allowed"})
+	case p.AllowNetwork:
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: family,
 			note: "socket families other than inet, inet6 and route netlink, unix included; socketpair allowed"})
-	} else {
+	default:
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM,
 			note: "socket for every family; socketpair allowed"})
 	}
-	if info.socketcall {
+	if info.socketcall && (!p.AllowNetwork || !p.Socketcall || p.ProxyOnly) {
 		// Its arguments are behind a pointer the filter cannot read, so the
 		// family is unknown: refused in both modes.
 		rs = append(rs, rule{group: "sockets", name: "socketcall", errno: errEPERM, cond: equal, arg: 0, k: sysSocket,
@@ -198,6 +210,14 @@ func build(arch string, rules []rule) (Program, error) {
 					a.jump(opJeq, k, deny, "")
 				}
 			}
+		case streamInet:
+			a.ld(info.argLow(0))
+			a.jump(opJeq, afInet, fmt.Sprintf("%d.type", i), "")
+			a.jump(opJeq, afInet6, fmt.Sprintf("%d.type", i), deny)
+			a.mark(fmt.Sprintf("%d.type", i))
+			// The type's low nibble is 1 for a stream and has another bit set for every other.
+			a.ld(info.argLow(1))
+			a.jump(opJset, 0xe, deny, allow)
 		case family:
 			a.ld(info.argLow(0))
 			a.jump(opJeq, afInet, allow, "")

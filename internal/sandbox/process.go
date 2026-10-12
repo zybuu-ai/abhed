@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +53,15 @@ type Process struct {
 	// host-root path. Probed once; empty means it is, so the tier fails closed.
 	capsOnce sync.Once
 	capsErr  string
+
+	// caches is the folder holding this sandbox's own toolchain caches on
+	// Seatbelt, made at its first command; "" when it could not be.
+	cachesOnce sync.Once
+	caches     string
+
+	// cg is the delegated cgroup bubblewrap's commands run in, on Linux.
+	cgOnce sync.Once
+	cg     *processCgroups
 }
 
 // rootCaps reports whether Abhed runs as uid 0, where bwrap keeps the host's full
@@ -125,6 +137,9 @@ func (s *Process) Available() (bool, string) {
 			return false, "running as root, bubblewrap needs a private /proc and /dev here, which the kernel refuses; use the container or vm tier"
 		}
 		if why := s.bwrapDropsCaps(); why != "" {
+			return false, why
+		}
+		if why := s.cgroupRefusal(); why != "" {
 			return false, why
 		}
 	}
@@ -279,8 +294,14 @@ func (s *Process) Describe() string {
 	if s.procLimit() > 0 {
 		procs = fmt.Sprintf("at most %d more processes per command", s.policy.MaxProcs)
 	}
-	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · memory, CPU and disk not bounded",
-		s.backend, net, procs)
+	mem := "memory, CPU and disk not bounded"
+	if c := s.cgroupDescribe(); c != "" {
+		mem = fmt.Sprintf("%s (at most %d processes and %d MB each); CPU and disk not bounded", c, s.policy.MaxProcs, s.policy.MaxMemoryMB)
+	} else if kb := s.dataLimitKB(); kb > 0 {
+		mem = fmt.Sprintf("each process's data at most %d MB (not the command's total); CPU and disk not bounded", kb/1024)
+	}
+	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · %s",
+		s.backend, net, procs, mem)
 	if s.Caveat() != "" {
 		d += " · no /proc: bubblewrap cannot mount one here, so commands that read it fail"
 	}
@@ -340,9 +361,18 @@ func cacheAreas() []string {
 // command may write on some backend: temp folders and toolchain caches. A
 // file there cannot be protected by the sandbox's rules, since a command can
 // move the folder around it.
-func WritableAreas() []string {
-	out := append([]string{"/tmp", "/var/tmp", os.TempDir()}, tempAreas...)
-	if tmp := userTemp(); tmp != "" {
+func WritableAreas() []string { return writableAreas(runtime.GOOS) }
+
+func writableAreas(goos string) []string {
+	var out []string
+	// On Linux no sandboxed command writes the host's /tmp or /var/tmp:
+	// bubblewrap and containers mount a tmpfs there, the fence a private folder.
+	if goos != "linux" {
+		out = append([]string{"/tmp", "/var/tmp", os.TempDir()}, tempAreas...)
+	} else if t := os.TempDir(); !insideAny(t, []string{"/tmp", "/var/tmp"}) {
+		out = append(out, t)
+	}
+	if tmp := userTemp(); tmp != "" && (goos != "linux" || !insideAny(tmp, []string{"/tmp", "/var/tmp"})) {
 		out = append(out, tmp)
 	}
 	return append(out, cacheAreas()...)
@@ -355,6 +385,21 @@ func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
 func (s *Process) seatbeltProfileFor(port uint16) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
+	// Home holds credentials no list names; only what toolchains need, the
+	// workspace and the named read-only paths are read there. First, so the
+	// state and credential denies below still win.
+	if home, err := os.UserHomeDir(); err == nil && !s.policy.ReadableHome {
+		b.WriteString(";; Home is unreadable but for the toolchains and the workspace.\n")
+		for _, h := range PathForms(home) {
+			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
+			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+		}
+		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...)
+		for _, p := range allow {
+			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
+		}
+		b.WriteString("\n")
+	}
 	// A command signals only processes in its own sandbox: never Abhed,
 	// which it could otherwise kill with kill $PPID, nor another command's,
 	// as bubblewrap's PID namespace keeps them apart on Linux.
@@ -362,6 +407,7 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 	// On every network setting: an app opened outside the sandbox has the
 	// network and the filesystem the command does not.
 	b.WriteString(";; No LaunchServices or Apple events.\n" + denyLaunchServices + "\n")
+	b.WriteString(";; Nor the person's clipboard or screen.\n" + denySessionServices + "\n")
 
 	// Other sandboxes' folders beside this one's: before the workspace's own
 	// rules, so its .abhed stays denied after the read allowed here.
@@ -399,9 +445,13 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 	}
 
 	// Toolchains need writable caches or builds fail in ways that look like
-	// agent errors rather than sandbox errors.
-	for _, c := range cacheAreas() {
-		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", c)
+	// agent errors rather than sandbox errors. They get folders of the
+	// sandbox's own, in the temp folder above; the real ones, which programs
+	// outside Abhed use, are read-only unless shared_caches is set.
+	if s.policy.SharedCaches {
+		for _, c := range cacheAreas() {
+			fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", c)
+		}
 	}
 
 	// Again after the temp and cache allows, which may hold the siblings' folder.
@@ -465,7 +515,9 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 			}
 			// Seatbelt matches the path a link resolves to, so what a linked
 			// pointer such as hooks names is held as well.
-			for _, l := range g.linked {
+			// A nested repository's .git that is a link, likewise: its git
+			// folder is read-only throughout, as the workspace's own is.
+			for _, l := range append(g.linked, linkedGits(ws)...) {
 				for _, t := range PathForms(RealPath(l)) {
 					fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", t)
 				}
@@ -621,6 +673,15 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 	}
 	switch s.backend {
 	case "sandbox-exec":
+		// Seatbelt holds git's files by pattern, so only a repository an
+		// earlier command made is looked at here.
+		if s.policy.ProtectGit {
+			for _, ws := range s.workspaces()[:1] {
+				if err := plantedGits(ctx, ws, s.backend, &s.git, walkGit(ws, false).gits); err != nil {
+					return &exec.Cmd{Err: err}
+				}
+			}
+		}
 		profile := s.seatbeltProfileFor(eg.portFor(egressCallOf(ctx)))
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
@@ -687,7 +748,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// pattern. A commondir no bind could have stopped is taken out first.
 		if s.policy.ProtectGit {
 			for _, ws := range s.workspaces() {
-				found, err := gitGuard(ctx, ws, s.backend, &s.git)
+				found, err := gitGuardFor(ctx, ws, s.backend, &s.git, s.policy.GitRequired)
 				if err != nil {
 					return &exec.Cmd{Err: err}
 				}
@@ -726,7 +787,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		cmd := s.bounded(ctx, "bwrap", args)
 		cmd.Dir = cwd
 		cmd.Env = env
-		return cmd
+		return s.place(ctx, cmd)
 	}
 
 	// Unreachable when Available() gated correctly, but fail closed rather than
@@ -738,18 +799,58 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 // backend, so it holds for all the command starts, bubblewrap's namespace included.
 func (s *Process) bounded(ctx context.Context, name string, args []string) *exec.Cmd {
 	n := s.procLimit()
-	if n == 0 {
+	data := s.dataLimitKB()
+	if n == 0 && data == 0 {
 		return exec.CommandContext(ctx, name, args...) // #nosec G204 -- the sandbox backend with its own argv
 	}
 	if p, err := exec.LookPath(name); err == nil {
 		name = p
 	}
-	wrapped := append([]string{"-c", `ulimit -u "$1" && shift && exec "$@"`, "abhed-limit", strconv.FormatUint(n, 10), name}, args...)
+	// "-" leaves a limit as it is; each is passed as an argument, never in the
+	// script. The data bound is hard, so the command cannot raise it; a lower
+	// hard bound already in force is kept.
+	procs, mem := "-", "-"
+	if n > 0 {
+		procs = strconv.FormatUint(n, 10)
+	}
+	if data > 0 {
+		mem = strconv.Itoa(data)
+	}
+	script := `{ [ "$1" = - ] || ulimit -u "$1"; } && { [ "$2" = - ] || ulimit -d "$2" 2>/dev/null || [ "$(ulimit -H -d)" != unlimited ]; } && shift 2 && exec "$@"`
+	wrapped := append([]string{"-c", script, "abhed-limit", procs, mem, name}, args...)
 	return exec.CommandContext(ctx, "/bin/bash", wrapped...) // #nosec G204 -- fixed script; the argv is passed as "$@"
 }
 
-// countUserProcesses counts the user's processes; a test replaces it.
-var countUserProcesses = userProcesses
+// dataLimitKB is each command's data segment bound, max_memory_mb, on Linux,
+// whose kernel counts a process's private writable memory against it; 0 on
+// macOS, which does not enforce it, or with no bound set.
+func (s *Process) dataLimitKB() int {
+	if s.backend != "bwrap" || s.policy.MaxMemoryMB <= 0 {
+		return 0
+	}
+	return s.policy.MaxMemoryMB * 1024
+}
+
+// countUserProcesses counts the user's processes; a test replaces it. The
+// count reads every process's status, so commands within a second share one.
+var countUserProcesses = cachedCount(userProcesses, time.Second)
+
+// cachedCount is count, its answer reused for ttl.
+func cachedCount(count func() (int, bool), ttl time.Duration) func() (int, bool) {
+	var mu sync.Mutex
+	var at time.Time
+	var n int
+	var ok bool
+	return func() (int, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.IsZero() || time.Since(at) >= ttl {
+			n, ok = count()
+			at = time.Now()
+		}
+		return n, ok
+	}
+}
 
 // procLimit is what the user runs now plus MaxProcs, as the kernel counts all the
 // user's processes, so concurrent commands and the desktop share that headroom;
@@ -820,17 +921,121 @@ func (s *Process) env() []string {
 		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE",
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
 		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
-	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), "VIMINIT=" + vimInit}
+	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), vimInitEnv()}
+	own := map[string]string{}
+	if s.backend == "sandbox-exec" && !s.policy.SharedCaches {
+		own = s.ownCaches()
+	}
 	for _, k := range keep {
+		if _, mine := own[k]; mine {
+			continue
+		}
 		if v := os.Getenv(k); v != "" {
 			out = append(out, k+"="+v)
 		}
 	}
+	for _, k := range slices.Sorted(maps.Keys(own)) {
+		out = append(out, k+"="+own[k])
+	}
 	return out
+}
+
+// ownCaches are the variables pointing the toolchains at this sandbox's own
+// caches. Go modules already in the shared cache are read from it through
+// GOPROXY, so a build that worked offline still does.
+func (s *Process) ownCaches() map[string]string {
+	s.cachesOnce.Do(func() {
+		parent := userTemp()
+		if parent == "" {
+			parent = os.TempDir()
+		}
+		if d, err := os.MkdirTemp(parent, "abhed-caches-"); err == nil {
+			s.caches = d
+		}
+	})
+	if s.caches == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for k, sub := range map[string]string{"XDG_CACHE_HOME": "cache", "GOCACHE": "go-build", "GOMODCACHE": "go-mod",
+		"npm_config_cache": "npm", "PIP_CACHE_DIR": "pip", "CARGO_HOME": "cargo"} {
+		out[k] = filepath.Join(s.caches, sub)
+	}
+	proxy := os.Getenv("GOPROXY")
+	if proxy == "" {
+		proxy = "https://proxy.golang.org,direct"
+	}
+	if shared := goModCache(); shared != "" {
+		out["GOPROXY"] = "file://" + filepath.ToSlash(filepath.Join(shared, "cache", "download")) + "," + proxy
+	}
+	return out
+}
+
+// goSetting is a Go setting as the go command reads it: the environment,
+// then the file go env -w writes.
+func goSetting(key string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "go", "env")) // #nosec G304 -- go's own settings file
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// goModCache is the shared Go module cache: GOMODCACHE, else the first
+// GOPATH's pkg/mod, else ~/go/pkg/mod.
+func goModCache() string {
+	if c := goSetting("GOMODCACHE"); c != "" {
+		return c
+	}
+	if p := filepath.SplitList(goSetting("GOPATH")); len(p) > 0 && p[0] != "" {
+		return filepath.Join(p[0], "pkg", "mod")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "go", "pkg", "mod")
+	}
+	return ""
+}
+
+// removeCaches removes the sandbox's own caches.
+func (s *Process) removeCaches() error {
+	// Ordered after the first command's making of them.
+	s.cachesOnce.Do(func() {})
+	if s.caches == "" {
+		return nil
+	}
+	// Go makes its module cache read-only; RemoveAll needs it writable.
+	_ = filepath.WalkDir(s.caches, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700) // #nosec G302 -- a folder of the sandbox's own being removed
+		}
+		return nil
+	})
+	return os.RemoveAll(s.caches)
 }
 
 // vimInit reads the person's vim config, then turns off the history file: the sandbox
 // refuses that write in home, and vim then waits at "Press ENTER" after :wq.
+// vimInitEnv is VIMINIT for a command: the server's own, kept, with the
+// history files turned off after it; else vimInit.
+func vimInitEnv() string {
+	if v := os.Getenv("VIMINIT"); v != "" {
+		return "VIMINIT=" + v + " | silent! set viminfo= | silent! set shada="
+	}
+	return "VIMINIT=" + vimInit
+}
+
 const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (filereadable(stdpath('config') . '/init.lua') ? '/init.lua' : '/init.vim')` +
 	` | if filereadable(g:abhed_rc) | let $MYVIMRC = g:abhed_rc | exe 'source' fnameescape(g:abhed_rc) | endif | unlet g:abhed_rc | set shada=` +
 	` | else | let g:abhed_rc = filter(['~/.vimrc', '~/.vim/vimrc', '~/.config/vim/vimrc', '~/.exrc'], 'filereadable(expand(v:val))')` +
@@ -905,3 +1110,86 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 
 // Backend says there is none.
 func (n *None) Backend() string { return "host" }
+
+// homeToolchainDirs and homeToolchainFiles are what commands may read in home
+// beside the workspace: toolchains, their package stores and caches, and the
+// configuration git, editors and shells read. Credential paths inside them
+// stay unreadable (HomeSecrets).
+var (
+	homeToolchainDirs = []string{"go", "sdk", ".cargo", ".rustup", ".npm", ".nvm", ".pyenv", ".rbenv", ".gem", ".bundle",
+		".local/bin", ".local/lib", ".local/share/mise", ".local/share/pnpm", ".local/share/uv", ".local/pipx",
+		".local/share/pipx", ".local/share/virtualenvs", ".pnpm-store", ".bun", ".deno", ".volta",
+		".asdf", ".sdkman", ".m2/repository", ".gradle/caches", ".gradle/wrapper", ".ivy2/cache", ".nuget/packages",
+		".dotnet", ".swiftpm", ".conda", "miniconda3", "anaconda3", "miniforge3", ".julia", ".ghcup", ".cabal", ".stack",
+		".opam", ".elan", ".nix-profile", ".cache", "Library/Caches", "Library/pnpm", "Library/Python",
+		".vim", ".config/nvim", ".config/git", ".oh-my-zsh", ".terraform.d/plugins"}
+	homeToolchainFiles = []string{".gitconfig", ".gitignore_global", ".gitignore", ".vimrc", ".exrc", ".bashrc",
+		".bash_profile", ".profile", ".zshrc", ".zprofile", ".zshenv", ".inputrc", ".editorconfig", ".tool-versions"}
+	// homeToolchainEnv name folders a toolchain lives in, wherever it was put.
+	homeToolchainEnv = []string{"GOPATH", "GOROOT", "GOMODCACHE", "CARGO_HOME", "RUSTUP_HOME", "JAVA_HOME",
+		"VIRTUAL_ENV", "NVM_DIR", "PYENV_ROOT", "SDKMAN_DIR", "CONDA_PREFIX", "BUN_INSTALL", "VOLTA_HOME"}
+)
+
+// homeToolchains are the paths under home commands may read: the lists
+// above, each folder an environment variable above names, and each folder
+// on PATH with the one holding it (a bin's toolchain), never home itself.
+func homeToolchains(home string) []string {
+	var out []string
+	add := func(p string) {
+		if p == "" || !filepath.IsAbs(p) {
+			return
+		}
+		p = filepath.Clean(p)
+		if _, in := Within(p, home); !in || p == filepath.Clean(home) {
+			return
+		}
+		for _, f := range PathForms(p) {
+			if !slices.Contains(out, f) {
+				out = append(out, f)
+			}
+		}
+	}
+	for _, d := range append(append([]string{}, homeToolchainDirs...), homeToolchainFiles...) {
+		add(filepath.Join(home, d))
+	}
+	for _, k := range homeToolchainEnv {
+		for _, p := range filepath.SplitList(goSetting(k)) {
+			add(p)
+		}
+	}
+	// Where go env -w keeps its settings, which the go command reads.
+	if dir, err := os.UserConfigDir(); err == nil {
+		add(filepath.Join(dir, "go"))
+	}
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		add(p)
+		// ~/.local holds keyrings and other programs' data beside its bin.
+		if filepath.Base(p) == "bin" && filepath.Dir(p) != filepath.Join(home, ".local") {
+			add(filepath.Dir(p))
+		}
+		// A program linked into a bin under home runs from where it was
+		// installed, with the folder that install holds.
+		if _, in := Within(p, home); !in {
+			continue
+		}
+		entries, _ := os.ReadDir(p)
+		for i, e := range entries {
+			if i >= 512 {
+				break
+			}
+			if e.Type()&fs.ModeSymlink == 0 {
+				continue
+			}
+			to := RealPath(filepath.Join(p, e.Name()))
+			root := filepath.Dir(to)
+			if filepath.Base(root) == "bin" {
+				root = filepath.Dir(root)
+			}
+			// Never a whole folder at the top of home, such as Documents.
+			if filepath.Dir(root) != filepath.Clean(home) {
+				add(root)
+			}
+		}
+	}
+	return out
+}

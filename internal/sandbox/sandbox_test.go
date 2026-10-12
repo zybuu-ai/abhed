@@ -457,6 +457,7 @@ func TestProcessDescribesTheBoundItSets(t *testing.T) {
 	was := countUserProcesses
 	t.Cleanup(func() { countUserProcesses = was })
 	s := &Process{backend: "bwrap", policy: Policy{MaxProcs: 64}}
+	s.cgOnce.Do(func() { s.cg = &processCgroups{} }) // no cgroup, whatever this host delegates
 	countUserProcesses = func() (int, bool) { return 10, true }
 	if d := s.Describe(); !strings.Contains(d, "at most 64 more processes") || !strings.Contains(d, "memory, CPU and disk not bounded") {
 		t.Fatalf("with a count: %s", d)
@@ -464,5 +465,101 @@ func TestProcessDescribesTheBoundItSets(t *testing.T) {
 	countUserProcesses = func() (int, bool) { return 0, false }
 	if d := s.Describe(); !strings.Contains(d, "processes not bounded") {
 		t.Fatalf("with no count: %s", d)
+	}
+}
+
+// On Linux no sandboxed command writes the host's /tmp, so it is not listed
+// as writable: a HOME or state file under /tmp is not refused for it.
+func TestWritableAreasLeaveLinuxTmpOut(t *testing.T) {
+	t.Setenv("TMPDIR", "")
+	has := func(areas []string, p string) bool {
+		for _, a := range areas {
+			if a == p {
+				return true
+			}
+		}
+		return false
+	}
+	if l := writableAreas("linux"); has(l, "/tmp") || has(l, "/var/tmp") {
+		t.Errorf("linux lists the host's /tmp: %v", l)
+	}
+	if d := writableAreas("darwin"); !has(d, "/tmp") {
+		t.Errorf("darwin leaves /tmp out: %v", d)
+	}
+	t.Setenv("TMPDIR", "/tmp/x")
+	if l := writableAreas("linux"); has(l, "/tmp/x") {
+		t.Errorf("linux lists a TMPDIR under /tmp: %v", l)
+	}
+}
+
+// A VIMINIT the server has is kept, with the history files turned off
+// after it, on the process tier and the fence alike.
+func TestServerVIMINITIsKept(t *testing.T) {
+	t.Setenv("VIMINIT", "source ~/.mine.vim")
+	for name, env := range map[string][]string{
+		"process": NewProcess(DefaultPolicy(t.TempDir())).env(),
+		"fence":   NewFence(DefaultPolicy(t.TempDir())).env(),
+	} {
+		got := ""
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, "VIMINIT="); ok {
+				got = v
+			}
+		}
+		if !strings.HasPrefix(got, "source ~/.mine.vim | ") || !strings.Contains(got, "viminfo=") {
+			t.Errorf("%s: VIMINIT %q", name, got)
+		}
+	}
+	t.Setenv("VIMINIT", "")
+	if !slices.Contains(NewProcess(DefaultPolicy(t.TempDir())).env(), "VIMINIT="+vimInit) {
+		t.Error("no VIMINIT of Abhed's own when the server has none")
+	}
+}
+
+// The user's processes are counted once for commands started close together,
+// not by reading every process's status for each.
+func TestProcessCountIsShortlyReused(t *testing.T) {
+	calls := 0
+	count := cachedCount(func() (int, bool) { calls++; return calls, true }, time.Hour)
+	for range 5 {
+		if n, ok := count(); !ok || n != 1 {
+			t.Fatalf("count %d %v", n, ok)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("counted %d times", calls)
+	}
+	fresh := cachedCount(func() (int, bool) { calls++; return calls, true }, 0)
+	fresh()
+	fresh()
+	if calls != 3 {
+		t.Fatalf("no reuse past the ttl: %d", calls)
+	}
+}
+
+// On Linux each process's data segment is bounded by max_memory_mb; macOS,
+// which does not enforce that limit, says memory is not bounded.
+func TestProcessBoundsDataOnLinux(t *testing.T) {
+	was := countUserProcesses
+	t.Cleanup(func() { countUserProcesses = was })
+	countUserProcesses = func() (int, bool) { return 0, false }
+	linux := &Process{backend: "bwrap", policy: Policy{MaxMemoryMB: 256}}
+	linux.cgOnce.Do(func() { linux.cg = &processCgroups{} })
+	cmd := linux.bounded(context.Background(), "/bin/true", nil)
+	if !slices.Contains(cmd.Args, "262144") || !strings.Contains(strings.Join(cmd.Args, " "), "ulimit -d") {
+		t.Fatalf("no data bound: %v", cmd.Args)
+	}
+	if d := linux.Describe(); !strings.Contains(d, "data at most 256 MB") {
+		t.Fatalf("describe: %s", d)
+	}
+	mac := &Process{backend: "sandbox-exec", policy: Policy{MaxMemoryMB: 256}}
+	if cmd := mac.bounded(context.Background(), "/bin/true", nil); filepath.Base(cmd.Path) == "bash" {
+		t.Fatalf("macOS was given a data bound: %v", cmd.Args)
+	}
+	if runtime.GOOS == "linux" {
+		out, err := exec.Command("/bin/bash", append(cmd.Args[1:3], "abhed-limit", "-", "262144", "/bin/sh", "-c", "ulimit -d")...).Output()
+		if err != nil || strings.TrimSpace(string(out)) != "262144" {
+			t.Fatalf("the limit was not set: %v %s", err, out)
+		}
 	}
 }

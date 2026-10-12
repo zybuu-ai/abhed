@@ -208,6 +208,15 @@ type FenceConfig struct {
 	// CPUPercent bounds a session's commands' CPU time, in percent of one
 	// core: 50 is half of one, 200 two whole ones. Zero leaves it unbounded.
 	CPUPercent int `json:"cpu_percent,omitempty"`
+	// Socketcall, on s390x with allow_network, lets commands make sockets
+	// through socketcall(2), as glibc does there. The filter cannot read the
+	// family it is given, so unix sockets are reachable that way too.
+	Socketcall bool `json:"socketcall,omitempty"`
+	// EgressPortOnly lets the fence hold sandbox.network allowlist without a
+	// network namespace (landlock_only), where Landlock can confine TCP to
+	// the proxy's port but not its address: a command reaches that port on
+	// any host. Managed only.
+	EgressPortOnly bool `json:"egress_port_only,omitempty"`
 }
 
 type SuggestConfig struct {
@@ -273,6 +282,7 @@ var managedOnly = map[string]string{
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
 	"sandbox.network":                    "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
+	"fence.egress_port_only":             "only the managed configuration lets the fence hold the allowlist by port alone",
 	"sandbox.microvm_socket":             "only the managed configuration names the microVM driver",
 	"egress.rules":                       "only the managed configuration sets which destinations commands reach",
 	"egress.default":                     "only the managed configuration sets which destinations commands reach",
@@ -333,6 +343,8 @@ func managedOnlyOf(path string) (key, why string, ok bool) {
 // clearManagedOnly resets a managed-only setting to its default.
 func clearManagedOnly(c *Config, key string) {
 	switch key {
+	case "fence.egress_port_only":
+		c.Fence.EgressPortOnly = false
 	case "cli.mode_cycle":
 		c.CLI.ModeCycle = nil
 	case "record.dir":
@@ -1297,6 +1309,17 @@ type SandboxConfig struct {
 	// every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
 	MaxProcs    int `json:"max_procs"`
+	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
+	// CPU; zero means 200.
+	MaxCPUPercent int `json:"max_cpu_percent,omitempty"`
+	// SharedCaches lets macOS process-tier commands write the real toolchain
+	// caches (~/.cache, ~/Library/Caches, ~/.npm, ~/.cargo/registry,
+	// ~/go/pkg/mod) instead of folders of the session's own.
+	SharedCaches bool `json:"shared_caches,omitempty"`
+	// ReadableHome lets macOS process-tier commands read the whole home
+	// folder but the known credential paths, as before 1.2.8, in place of
+	// only the toolchain folders, the workspace and read_only_paths.
+	ReadableHome bool `json:"readable_home,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
@@ -1314,6 +1337,10 @@ type SandboxConfig struct {
 	// workspace (config, hooks, commondir and the like); set as WriteProtected
 	// is, by a surface that requires it.
 	ProtectGit bool `json:"-"`
+	// ScopeSignals, set by a server accounts sign in to, refuses a fence
+	// whose Landlock cannot keep one session's commands from signalling
+	// another's (ABI 6, Linux 6.12).
+	ScopeSignals bool `json:"-"`
 	// GitProtect is sandbox.protect_git: unset, git's files are protected
 	// wherever the tier can hold them; true requires it; false turns it off
 	// where no surface requires it.

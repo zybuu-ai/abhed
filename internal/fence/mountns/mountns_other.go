@@ -23,3 +23,18 @@ func SelfTest(string) (string, error) { return "", errLinux }
 
 // Aliases refuses off Linux.
 func Aliases(string) (found, unreachable []string, err error) { return nil, nil, errLinux }
+
+// Views finds nothing off Linux.
+func Views(string) ([]string, error) { return nil, nil }
+
+// Spaces names namespaces off Linux, where none is made.
+type Spaces struct{ PID, Net bool }
+
+// AttrWith does nothing off Linux.
+func AttrWith(*syscall.SysProcAttr, Spaces) {}
+
+// MountProc refuses off Linux.
+func MountProc() error { return errLinux }
+
+// LoopbackUp refuses off Linux.
+func LoopbackUp() error { return errLinux }

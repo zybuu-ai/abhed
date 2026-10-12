@@ -13,6 +13,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -173,6 +174,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fail(err)
 	}
 	defer func() { _ = sb.Close() }()
+	// Abhed's own git in the workspace (the prompt's branch, worktrees) runs inside it too.
+	defer hostgit.Register(workspace, sb)()
 	// With a floor the session does not wait: a process floor is never
 	// none, and a none floor is shown as such until the answer is in.
 	if sb.floor == "" && sb.Tier() == sandbox.TierNone {
@@ -198,7 +201,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	vault := openVault()
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
-		Bash: tools.Bash{Sandbox: sb.Command,
+		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sb.Command),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
 		Parts:   toolset.All,

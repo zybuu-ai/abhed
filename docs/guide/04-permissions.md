@@ -745,17 +745,31 @@ repository; in a nested repository it can, as Abhed looks for those names
 only in the workspace's own. Git inside the sandbox therefore cannot make a
 linked worktree or a submodule's git folder: `git worktree add`, `git
 worktree remove` and `git submodule add` or `update --init` for a submodule
-not yet checked out fail there; run them yourself. A `hooks` (or other of
+not yet checked out fail there (`git submodule add` stays so; run it
+yourself; the others are run on the host, as below). A `hooks` (or other of
 those files) that is a link is held where it leads as well, as is the
 workspace's own `.git`, or a `modules` or `worktrees` folder or a folder in
 either, that is a link; a linked `.git` is then read-only throughout, so git
-cannot commit there. A nested repository's `.git` that is a link is not
-followed: the folder it leads to stays writable, so replace such a link with
-the folder itself.
+cannot commit there. So is the folder a nested repository's `.git` link
+leads to, for nested repositories the walk below reaches (six folders down,
+at most 20,000 folders): git cannot commit there either, so replace such a
+link with the folder itself.
 
 On every tier, plain `git submodule update` on a submodule already checked
 out fails inside the sandbox too, as git rewrites `core.worktree` in the
-submodule's protected config; run it yourself.
+submodule's protected config.
+
+So on the process tier and the fence, a command that is exactly `git
+worktree add`, `git worktree remove`, `git worktree prune` or `git submodule
+update` (plain words, the usual options only, no second command), already
+approved as any command is, runs through host git instead, with the settings
+Abhed's own git uses: hooks, fsmonitor, filters and every transport but https
+off. A path it names outside the workspace refuses it. Another spelling, an
+option outside the usual ones or a line with more on it runs in the sandbox
+and may fail there. The container and vm tiers do not broker them; run them
+yourself there. `git worktree remove --force` deletes the worktree's files as
+you asked, then its folder under `.git/worktrees`, instead of deleting the
+files and then failing.
 
 Under bubblewrap and in a container (the vm tier too) it is by binding
 read-only those found when each command starts; an empty hooks folder or
@@ -768,7 +782,10 @@ folders and looks at each folder's `.git` before what the folder holds.
 Repositories a session has found stay protected after a command fills the
 workspace with folders; one past that bound and not found before is not
 protected, and reaching the bound is recorded once a session as
-`sandbox.git_walk_bounded`. Modules holding more than 20,000 entries refuse
+`sandbox.git_walk_bounded`. Where git protection is required (Studio,
+`abhed serve`, or `"protect_git": true`), reaching the bound refuses the
+command instead, recorded with `refused: true`: remove folders that do not
+belong there, or run Abhed in a smaller folder. Modules holding more than 20,000 entries refuse
 the command, as no repository has them. A `hooks` (or other of those files)
 that is a link cannot be bound, and a command could point it elsewhere, so
 each command is refused until it is replaced with what it points to; so is a
@@ -792,14 +809,31 @@ a rename only at its two ends, so the same gap is open there: a command can
 build a repository in the writable temp area, with a config naming an
 fsmonitor, move it into the workspace and add it as a submodule entry, or
 move it over a nested repository that is not a submodule. Moving a
-registered submodule's work tree is refused. Before running git in a
-workspace a session has used, check `git status` and `git diff --submodule`
+registered submodule's work tree is refused.
+
+Before each command, a repository (a `.git` folder or file) found that was
+not there at the session's first command is checked: a setting in its
+`config` or `config.worktree` that `git init`, `git clone` or a submodule
+would not write (anything beyond the core settings, remotes, branches,
+submodule URLs, extensions, user, `init`, `pull`, `fetch`, `gc`, `index` and
+`lfs` format) is taken out, the file as it was copied to
+`~/.abhed/quarantine`, a hooks folder holding anything but git's samples is
+moved there, the command is not run, its error says what was done, and the
+record gains `sandbox.git_planted`. This runs under bubblewrap, in a
+container and on macOS; under the fence in `mount_namespace` mode too. Until
+the next command starts, git you run yourself there would read the setting,
+and a `.git/modules/<name>` made for a later `git submodule update --init` is
+not checked. A tool such as husky that sets `core.hooksPath` in a repository
+the agent cloned has it taken out as well; set it yourself. Before running
+git in a workspace a session has used, check `git status` and `git diff --submodule`
 for submodule entries you did not add. A root status never enters a nested
 repository that is not a submodule, so before running git in one, check its
 `.git/config` for settings that run a program, such as `core.fsmonitor` and
 `core.hooksPath`.
 
-Abhed's own git on the host refuses to run while a `commondir` names
+Abhed's own git (the prompt's branch, worktrees, a resolved issue's commit)
+runs inside the session's sandbox on the process tier and the fence; see
+[security posture](../trust/security-posture.md). It refuses to run while a `commondir` names
 anything but the repository's own git folder, by `../..` or its path
 through no symbolic link, while a work tree's `.git` file reaches its git
 folder through a symbolic link (`git worktree repair` writes it afresh),

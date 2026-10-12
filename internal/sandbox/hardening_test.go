@@ -183,3 +183,26 @@ func TestContainerBindsMissingGitHooksReadOnly(t *testing.T) {
 		t.Errorf("hooks is not an empty folder: %v", err)
 	}
 }
+
+// The CPU bound is sandbox.max_cpu_percent, two CPUs when unset.
+func TestContainerCPUsFollowTheConfiguration(t *testing.T) {
+	for pct, want := range map[int]string{0: "--cpus 2 ", 50: "--cpus 0.5 ", 400: "--cpus 4 "} {
+		c := &Container{policy: Policy{Workspace: "/w", MaxCPUPercent: pct}}
+		if got := strings.Join(c.Command(context.Background(), "/w", "x").Args, " "); !strings.Contains(got, want) {
+			t.Errorf("max_cpu_percent %d: no %q in %s", pct, want, got)
+		}
+	}
+}
+
+// Removing a container does not wait out a first process that ignores
+// SIGTERM: Podman is told so; Docker's rm -f kills at once.
+func TestContainerRemovalDoesNotWait(t *testing.T) {
+	podman := &Container{runtime: "/usr/bin/podman"}
+	if got := strings.Join(podman.rmArgs("x"), " "); got != "rm -f --time 0 x" {
+		t.Errorf("podman: %s", got)
+	}
+	docker := &Container{runtime: "docker"}
+	if got := strings.Join(docker.rmArgs("x"), " "); got != "rm -f x" {
+		t.Errorf("docker: %s", got)
+	}
+}

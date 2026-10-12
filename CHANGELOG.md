@@ -8,6 +8,28 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.7
 
+- On the Linux process tier, `sandbox.max_memory_mb` set in a configuration
+  file needs a delegated cgroup (`systemd-run --user --scope -p
+  Delegate=yes`); without one the process tier is refused.
+- The terminal CLI, `abhed -p` and `abhed rpc` keep commands from writing
+  git's config, hooks and the like, as Studio and `abhed serve` do;
+  `sandbox.protect_git: false` turns it off. A git command you allowed with
+  "always allow" is asked about again once the repository's config or hooks
+  change.
+- On macOS, process-tier commands read in your home folder only the
+  workspace, `read_only_paths`, toolchains, caches and the files git, editors
+  and shells read, and write caches of the session's own; add what a command
+  needs to `read_only_paths`, or set `sandbox.readable_home` or
+  `sandbox.shared_caches` to return to the old rules. The clipboard is no
+  longer reachable from a command.
+- On Linux, process-tier commands have each process's data bounded by
+  `sandbox.max_memory_mb` (4096 by default).
+- An `abhed serve` that accounts sign in to refuses the fence below Linux
+  6.12, and the fence refuses a FUSE, overlay or network view of the
+  workspace.
+- A repository made during a session has settings `git init` or `git clone`
+  would not write taken out before the next command, which is refused; set
+  such settings (a `core.hooksPath` a tool adds, say) yourself.
 - A managed `permissions.deny` list now adds to the user's and the
   workspace's deny rules instead of replacing them.
 - Rule tool names match built-in tools in any case: an allow rule written
@@ -148,15 +170,97 @@ All notable changes to Abhed are recorded here. The format follows
   `unlink FILE` and `rmdir -p`, so in `bypass` mode they ran without the
   question. They now always confirm. The list stays best effort; the
   sandbox and deny rules are the boundary. Affects 0.1.0 to 1.2.7.
+- On the Linux process tier `sandbox.max_memory_mb` bounded nothing, so one
+  command could take all the host's memory. Each of a command's processes now
+  has its data bounded by it (`RLIMIT_DATA`), as a hard limit the command
+  cannot raise; the command's total is bounded only on the container, vm and
+  fence tiers, and macOS still bounds no memory. Affects 0.1.0 to 1.2.7 on
+  Linux.
+- On macOS a process-tier command could read and set your clipboard and
+  capture your screen through per-session system services. The pasteboard,
+  the window server's session port and screen capture are now denied to
+  commands. Affects 0.1.0 to 1.2.7 on macOS.
+- On macOS the process tier let commands read everything in your home folder
+  but a list of known credential paths, so a token kept elsewhere
+  (`~/.config/<tool>/token`, `~/Documents`) was readable. Home is now
+  unreadable to commands but for the workspace, `read_only_paths`, the
+  toolchains and caches, and the files git, editors and shells read;
+  `sandbox.readable_home: true` restores the old rule. Affects 0.1.0 to
+  1.2.7 on macOS.
+- On macOS the process tier let commands write the real toolchain caches
+  (`~/.cache`, `~/Library/Caches`, `~/.npm`, `~/.cargo/registry`,
+  `~/go/pkg/mod`), so a command could leave a poisoned entry that a build
+  outside Abhed later used. Commands now get caches of the session's own,
+  removed when it ends, with Go modules read from your cache through
+  `GOPROXY`; `sandbox.shared_caches: true` restores the shared ones. Affects
+  0.1.0 to 1.2.7 on macOS.
+- Under the fence on Linux older than 6.12, one account's commands on an
+  `abhed serve` that accounts sign in to could signal another account's
+  commands, which run as the same user. Such a server now refuses the fence
+  below Landlock ABI 6, which scopes signals; command lines in `/proc` stay
+  readable across sessions, as there is no PID namespace. Affects 1.2.6 to
+  1.2.7 on Linux.
+- The fence's `mount_namespace` mode did not find a view of the workspace
+  through another filesystem (a bindfs or other FUSE mount, an overlay
+  layered on it, an NFS export of it mounted back), so a command could read
+  Abhed's state or write git's files through one. Such a view, found by the
+  source or layers its mount names, now refuses the fence and, made later,
+  the next command. Affects 1.2.7 on Linux.
+- In the fence's `landlock_only` mode a `.abhed` a long command made in the
+  workspace stayed there, readable by Abhed as its own state, until the
+  command ended, and one left after Abhed was killed was taken for state by
+  the next session. The fence now looks every second while a session is
+  open, and at start takes out a `.abhed` that a session which ended without
+  closing its fence left behind. Affects 1.2.6 to 1.2.7 on Linux.
+- In the fence's `mount_namespace` mode, on a disk that ignores case, the
+  workspace's `.abhed` reached by another spelling (`.ABHED`) was not under
+  the empty tmpfs, so a command could read or write Abhed's state through it
+  until the check after the command. Every spelling is covered now. Affects
+  1.2.7 on Linux.
+- A single command could make a repository in the workspace with a config
+  naming an fsmonitor or a hook and add it to the parent as a submodule, and
+  your next git command there ran it; on macOS a repository could be built
+  in the temp area and moved in. Before each command, a repository made
+  during the session now has every setting `git init` or `git clone` would
+  not write taken out (the file copied to `~/.abhed/quarantine`) and its
+  hooks moved there, and that command is refused and recorded as
+  `sandbox.git_planted`. Affects 1.2.3 to 1.2.7.
+- Under bubblewrap, a container or the fence, a repository past the
+  20,000-folder look for git folders was left unprotected in Studio and
+  `abhed serve` too, so a command could fill the workspace with folders and
+  plant a hook in a repository beyond them. Where git protection is required
+  (Studio, `abhed serve`, `sandbox.protect_git: true`) reaching the bound now
+  refuses the command. Affects 1.2.3 to 1.2.7.
+- On macOS, a nested repository whose `.git` is a symbolic link had the git
+  folder it leads to left writable to commands where git protection applies,
+  so a command could plant a hook or an fsmonitor there. That folder is now
+  held read-only, as the workspace's own linked `.git` is. Affects 1.2.3 to
+  1.2.7 on macOS.
+- `abhed resolve` refused to push when your global git configuration lay
+  where the run could write it, but not when a file it includes
+  (`include.path`, `includeIf`) or the system configuration did, so a run
+  could add a setting to the push through one of those. They are checked the
+  same way now. Affects 1.2.0 to 1.2.7.
+- On Windows a state file's hard links were never counted, so a second name
+  for the users, config or secrets file did not stop Abhed as it does
+  elsewhere. Those checks now read the link count from the file. Affects
+  1.2.0 to 1.2.7 on Windows.
+- Abhed's own git commands (the prompt's branch and change count, file
+  mentions, worktree bookkeeping, a resolved issue's commit) ran on the host
+  in a repository the agent can write, guarded only by a list of settings
+  known to run a program. They now run inside the session's sandbox on the
+  process tier and the fence, in the terminal CLI, `abhed -p`, `abhed rpc`,
+  Studio and `abhed serve`; `git worktree add` and `remove`, the push, and the
+  container, vm and none tiers stay on the host with the list. Affects 0.1.0
+  to 1.2.7.
 - The terminal CLI, `abhed -p` and `abhed rpc` let a command write what git
   reads in a git folder (`.git/config`, hooks, `info/attributes`,
-  `commondir`), as Studio and `abhed serve` did not, so a command could set
+  `commondir`), which Studio and `abhed serve` already prevented, so a command could set
   `core.fsmonitor` and a later git command you approved with "always allow",
   or your own git, ran it. Those surfaces now hold git's files too, on every
   tier but none; `sandbox.protect_git: false` turns it off. An "always allow"
   for a git command is also asked again once the repository's config, hooks,
   attributes or your global git configuration change. Affects 0.1.0 to 1.2.7.
-
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion
@@ -469,6 +573,38 @@ All notable changes to Abhed are recorded here. The format follows
   binary has an SPDX SBOM. "Verify a download" in the getting-started guide
   shows the commands. Releases up to 1.2.7 are not signed.
   `scripts/build-release.sh -s` writes the SBOMs (it needs syft).
+- `fence.limit` names `session_pids_max`: forks refused at the session's
+  process limit while the command ran, which Linux 6.14 and later count
+  only at the session's cgroup.
+- The fence holds `sandbox.network: "allowlist"`: in `mount_namespace` mode
+  each command gets a network namespace with only its loopback, where the
+  launcher relays the egress proxy's port to the proxy, and may make inet
+  stream sockets alone. In `landlock_only` mode, where Landlock can confine
+  TCP only to the proxy's port on any address, the managed
+  `fence.egress_port_only` accepts that; otherwise the fence still refuses
+  the allowlist there.
+- In `mount_namespace` mode each fenced command runs in a PID namespace of
+  its own with a `/proc` of its own, as the child of the launcher, which
+  stays as init: it passes on signals, reaps orphans and ends the namespace
+  with the command.
+- On the Linux process tier, where Abhed runs in a delegated cgroup, each
+  command runs in a cgroup of its own bounded by `max_procs` and
+  `max_memory_mb`, which ends whatever the command left. With
+  `max_memory_mb` set in a configuration file and no delegated cgroup, the
+  process tier is refused rather than run with memory unbounded.
+- The container and vm tiers enforce `sandbox.network: "allowlist"`: each
+  command's container has no network but a relay to the session's egress
+  proxy, over an `exec`'s stdio, so it also works where the engine runs in
+  a VM, given a Linux build of Abhed in the managed
+  `control_plane.<engine>.relay_binary`. Without one there, the tier is
+  refused as before.
+- `fence.socketcall` lets the fence's commands on s390x make sockets through
+  `socketcall()`, as glibc and Go do there, when `allow_network` is on and
+  the host has Landlock ABI 6 or later. The filter cannot read the socket's
+  family through it, so unix sockets are reachable that way too; it is off
+  by default.
+- `sandbox.max_cpu_percent` bounds a container tier command's CPU, in
+  percent of one CPU; it was always two CPUs, which stays the default.
 - What a sandbox command can reach of the server: on every tier, nothing
   in the control plane's state folder but its own sandbox folder (not the
   `:ssh` relay's host key, other sandboxes' folders or snapshots, or a
@@ -984,6 +1120,18 @@ on. A server with it off starts on the older schema as before.
   program is told from one typed at the prompt, and `abhed acp` logs to
   stderr the shell's process group, the first program to take the
   terminal, and bash's notice when it has no job control.
+- On the process tier and the fence, `git worktree add`, `remove` and
+  `prune` and `git submodule update`, given as the whole command, run through
+  host git with Abhed's safety settings instead of failing inside the
+  sandbox; `git worktree remove --force` no longer deletes the worktree's
+  files and then fails. A path outside the workspace refuses them.
+- The fence runs as root on Linux 6.12 or later (Landlock ABI 6), where it
+  refused root before: each command drops every capability, empties its
+  bounding set and locks the securebits, and Landlock keeps it from
+  signalling other root processes. Below ABI 6 root is still refused.
+- The fence's launcher in `mount_namespace` mode empties its capability
+  bounding set and locks the securebits before running a command, so the
+  command could not gain a capability even past no_new_privs.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of
@@ -1113,6 +1261,38 @@ on. A server with it off starts on the older schema as before.
 - `glob` matched case exactly on a disk that ignores case, so `core/Vault/**`
   found nothing where the folder is `vault`; it now matches as the disk opens
   names. The `glob` filter of `grep` does the same.
+- Before Linux 6.14 the kernel counts a fork refused at a session's
+  `pids.max` in the command's own cgroup, not the session's, so the fence
+  missed refused forks counted below the cgroup it read. Refused forks are
+  now counted across the subtree, under either kernel behaviour.
+- Stopping a container tier command or terminal on Podman waited ten seconds
+  for the container's first process to ignore SIGTERM before killing it, so
+  a cancel held the call that long; the container is now removed at once.
+- The container and vm tiers never found Podman: the check asked `podman info`
+  for a `ServerVersion` it does not have, so a host with only Podman was told
+  its daemon was not responding. The check now asks for plain `info`.
+- Choosing the container or vm tier asked the engine (`docker info`,
+  `podman info`) with no time limit, so an engine that never answered (a
+  stopped VM, a dead socket) held a session's start. Each question now ends
+  after five seconds, with what the engine started, and the tier is
+  reported unavailable saying the engine did not answer.
+- What a background shell left running after its own command ended
+  (`server &`) was no longer stopped by `shell_kill`, a stop or the session
+  closing, outside bubblewrap; and a process the workbench shell started in
+  a session of its own (`setsid`) outlived the shell. Both are now ended, by
+  the process group and by `ABHED_COMMAND_ID`, and processes the workbench
+  sweep cannot signal are counted in its log line.
+- The fence's `mount_namespace` mode left an empty `.abhed` in the workspace
+  after every session. The last fence on a workspace to close now removes it
+  when it is still the same, empty folder. The check of the covered
+  `.abhed` also takes out at most 4,096 entries at a time, so a flooded one
+  cannot hold Abhed's memory.
+- A `VIMINIT` set before starting Abhed was replaced by Abhed's own in every
+  process-tier and fence command, so your vim startup commands were dropped.
+  Yours is kept now, with the history files turned off after it.
+- On Linux, a home folder or state file under `/tmp` was refused as a place
+  sandboxed commands can write, though bubblewrap, the fence and containers
+  each give commands a `/tmp` of their own. It is accepted now.
 - `abhed acp` exited as soon as stdin closed, so requests read in a burst
   just before could go unanswered. It now answers every request it read
   first: a prompt still running ends as `cancelled`, and a request to the

@@ -17,6 +17,9 @@ type mountEntry struct {
 	Dev   string
 	Root  string
 	Point string
+	// Type, Source and Super follow the separator: the filesystem's type,
+	// what it was mounted from, and its own options.
+	Type, Source, Super string
 }
 
 // parseMountinfo reads /proc/self/mountinfo's lines.
@@ -34,7 +37,14 @@ func parseMountinfo(data string) ([]mountEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("a mountinfo line's id: %q", line)
 		}
-		out = append(out, mountEntry{ID: id, Dev: f[2], Root: unescapeMountinfo(f[3]), Point: unescapeMountinfo(f[4])})
+		e := mountEntry{ID: id, Dev: f[2], Root: unescapeMountinfo(f[3]), Point: unescapeMountinfo(f[4])}
+		if i := slices.Index(f, "-"); i > 5 && i+2 < len(f) {
+			e.Type, e.Source = f[i+1], unescapeMountinfo(f[i+2])
+			if i+3 < len(f) {
+				e.Super = unescapeMountinfo(f[i+3])
+			}
+		}
+		out = append(out, e)
 	}
 	return out, nil
 }
@@ -160,4 +170,68 @@ func rebase(p Plan, rel string) (sub Plan, whole string) {
 		}
 	}
 	return sub, ""
+}
+
+// viewTypes are filesystems that show another folder's files under a device
+// of their own, so the device check above does not find them.
+func viewType(t string) bool {
+	switch {
+	case strings.HasPrefix(t, "fuse"), t == "overlay", t == "aufs", strings.HasPrefix(t, "nfs"),
+		t == "cifs", t == "smb3", t == "9p", t == "virtiofs":
+		return true
+	}
+	return false
+}
+
+// views are the mounts of such a filesystem that name the workspace at
+// wsPath, a folder in it or one holding it, as their source or in an overlay
+// layer: they show its files under a device of their own, where no cover
+// the fence makes reaches. Only what they name is read; what a FUSE program
+// serves from elsewhere is not known.
+func views(entries []mountEntry, wsMount int, wsPath, hostname string) []string {
+	var out []string
+	related := func(p string) bool {
+		p = path.Clean(p)
+		if !strings.HasPrefix(p, "/") {
+			return false
+		}
+		_, in := within(p, wsPath)
+		_, holds := within(wsPath, p)
+		return (in || holds) && p != "/"
+	}
+	for _, e := range entries {
+		// The workspace's own mount, as on a network home folder, is no view of it.
+		if !viewType(e.Type) || e.ID == wsMount {
+			continue
+		}
+		var named []string
+		// A source host:/path shows this host's folder only when the host is this one.
+		if host, p, ok := strings.Cut(e.Source, ":"); ok && !strings.HasPrefix(e.Source, "/") {
+			if _, h, at := strings.Cut(host, "@"); at {
+				host = h
+			}
+			host = strings.Trim(host, "[]")
+			if host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.") || (hostname != "" && strings.EqualFold(host, hostname)) {
+				named = append(named, p)
+			}
+		} else {
+			named = append(named, e.Source)
+		}
+		for _, opt := range strings.Split(e.Super, ",") {
+			k, v, ok := strings.Cut(opt, "=")
+			if !ok {
+				continue
+			}
+			switch k {
+			case "lowerdir", "upperdir", "workdir", "lowerdir+", "datadir+":
+				named = append(named, strings.Split(v, ":")...)
+			}
+		}
+		for _, n := range named {
+			if related(n) && !slices.Contains(out, e.Point) {
+				out = append(out, e.Point)
+			}
+		}
+	}
+	return out
 }

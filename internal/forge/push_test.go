@@ -367,3 +367,21 @@ func TestCommitRefusesAnEmbeddedRepository(t *testing.T) {
 		t.Fatal("the embedded repository's program ran")
 	}
 }
+
+// A file the global configuration includes, kept where the run can write,
+// is refused as the global file itself is.
+func TestPushRefusesAnIncludeTheRunCanWrite(t *testing.T) {
+	repo := gitRepo(t)
+	writable := t.TempDir()
+	inc := filepath.Join(writable, "inc.conf")
+	if err := os.WriteFile(inc, []byte("[core]\n\tpager = less\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repo, "config", "--global", "include.path", inc)
+	areas(t, writable)
+	ref := Ref{Scheme: "https", Host: "git.example", Owner: "t", Repo: "r", Number: 5}
+	err := (&Work{Branch: "abhed/issue-5", Dir: t.TempDir()}).Push(context.Background(), repo, ref, token, "")
+	if err == nil || !strings.Contains(err.Error(), inc) {
+		t.Fatalf("an included file in a writable area was trusted: %v", err)
+	}
+}

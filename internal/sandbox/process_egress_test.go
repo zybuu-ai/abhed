@@ -30,12 +30,13 @@ func egressPolicy(t *testing.T, c egress.Config) *egress.Policy {
 	return p
 }
 
-// Every tier but the process tier refuses the allowlist, so the network is
-// never opened in its place.
+// The none tier refuses the allowlist, so the network is never opened in its
+// place; the container tiers hold it through a relay (container_egress_test.go)
+// and the fence through one in its network namespace (fence_egress_test.go).
 func TestEgressAllowlistRefusedOutsideTheProcessTier(t *testing.T) {
 	p := DefaultPolicy(t.TempDir())
 	p.Egress = egressPolicy(t, egress.Config{})
-	for _, sb := range []Sandbox{NewNone(p), NewContainer(p), NewGVisor(p), NewFence(p)} {
+	for _, sb := range []Sandbox{NewNone(p)} {
 		ok, why := sb.Available()
 		if ok || !strings.Contains(why, "allowlist") {
 			t.Errorf("%s: available %v, %q", sb.Tier(), ok, why)
@@ -43,12 +44,8 @@ func TestEgressAllowlistRefusedOutsideTheProcessTier(t *testing.T) {
 	}
 	p.MinTier = TierNone
 	sb, err := Select(p)
-	if err == nil && sb.Tier() != TierProcess {
+	if err == nil && (sb.Tier() == TierNone || sb.Tier() == TierFence) {
 		t.Fatalf("Select chose %s under the allowlist", sb.Tier())
-	}
-	p.Tier = TierFence
-	if _, err := Select(p); err == nil || !strings.Contains(err.Error(), "allowlist") {
-		t.Fatalf("the fence was chosen under the allowlist: %v", err)
 	}
 }
 

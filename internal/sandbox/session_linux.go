@@ -110,3 +110,6 @@ func signalMember(pid, sid int, sig unix.Signal) bool {
 	}
 	return unix.PidfdSendSignal(fd, sig, nil, 0) == nil
 }
+
+// signalRefused reports whether pid exists and refuses this user's signals.
+func signalRefused(pid int) bool { return errors.Is(unix.Kill(pid, 0), unix.EPERM) }

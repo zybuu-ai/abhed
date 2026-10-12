@@ -138,7 +138,9 @@ files the state check knows, in the workspace and the home directory, and the
 users, config and secrets files the user could rewrite in every folder above
 the workspace, other than a world-writable sticky one) has more than one name, and `config.Load` refuses
 a configuration file with more than one name (`internal/nlink`,
-`internal/sandboxconfig`). Link counts are not read on Windows.
+`internal/sandboxconfig`). On Windows these named-file checks read the link
+count from the file itself; the walk over the state folders, and files Abhed
+has already opened, are not counted there.
 
 A users file set with `auth.users_file`, or a secrets file set with
 `ABHED_SECRETS_FILE`, is refused by the same check. Abhed refuses to start
@@ -169,9 +171,18 @@ sandbox resolves these paths against serve's workspace, as serve does, and
 is denied that workspace's `.abhed` as well (`internal/sandboxconfig`,
 `driver/process`).
 
-Abhed's own git commands run on the host, outside the sandbox, in a repository
-the agent can write: the branch and change count in each prompt, worktrees for
-parallel runs, and a resolved issue's commit and push. They switch off, in
+Abhed's own git commands work in a repository the agent can write: the branch
+and change count in each prompt, file mentions, worktrees for parallel runs,
+and a resolved issue's commit and push. Where the session's sandbox runs
+commands on this host (the process tier, bubblewrap or Seatbelt, and the
+fence), they run inside it, as the agent's commands do: the terminal CLI,
+`abhed -p`, `abhed rpc`, Studio and `abhed serve` all do this. Three kinds stay
+on the host: `git worktree add` and `remove` (the sandbox holds the folders git
+writes them into), the push of a resolved issue from a repository Abhed makes
+itself, and every git command under the container, vm and none tiers, whose
+commands do not run on this host or run unconfined. A commit inside the
+sandbox takes the author's name and address from your configuration, read on
+the host. Wherever they run, they switch off, in
 git's command-line scope (through `GIT_CONFIG_COUNT`, which names any driver),
 the settings known to name a program git would run for these commands:
 fsmonitor, hooks, clean and smudge filters, merge drivers, textconv and
@@ -180,10 +191,10 @@ They do not enter submodules, refuse to commit a change holding a repository
 of its own, and drop git's environment variables (`internal/hostgit`). The git
 they run is the one on `PATH`, links followed, and is refused when it lies in
 the repository or in a folder sandboxed commands may write (temp folders,
-toolchain caches), where the agent could have planted one. This is
-a list, so it is best effort: a setting a later git adds is not covered until
-it is listed. Running these commands inside the sandbox is the complete
-answer, and is tracked as follow-up work. A resolved issue's branch is pushed
+toolchain caches), where the agent could have planted one. On the host
+this is a list, so it is best effort: a setting a later git adds is not
+covered until it is listed; inside the sandbox such a program runs as
+confined as the agent's own commands. A resolved issue's branch is pushed
 to an https address built from the issue, from a temporary repository with no
 configuration of its own that borrows the checkout's objects, so the
 agent-writable repository configuration cannot choose where the token goes;
@@ -191,7 +202,9 @@ agent-writable repository configuration cannot choose where the token goes;
 operator's global configuration still applies, and is trusted only while the
 agent cannot write it. Assuming the process sandbox tier, the push is refused
 when `~/.gitconfig`, `~/.config/git/config` or `$XDG_CONFIG_HOME/git/config`,
-or the folder it would be made in, lies in the run's worktree or a writable
+the system file (`/etc/gitconfig`, or `etc/gitconfig` under git's install
+prefix), a file any of them brings in with `include.path` or `includeIf`, or
+the folder one would be made in, lies in the run's worktree or a writable
 area of the sandbox (temp folders, toolchain caches). The temporary repository
 is made in `~/.abhed/push`, a private folder sandboxed commands cannot write;
 when that folder is in a writable area, is a file or a link, or is not the
@@ -283,8 +296,11 @@ inside it. So, for the terminal:
   there would need signalling by audit token. When the sweep cannot run (the
   start time unreadable, or no pidfd on a Linux kernel before 5.3) the server
   logs that containment did not run. A process that starts a session of its own
-  (`setsid`, a daemon) escapes and runs until it ends, within the sandbox;
-  bubblewrap and the container tier end everything regardless. A shell runs
+  (`setsid`, a daemon) is found by the `ABHED_COMMAND_ID` it inherits and
+  ended; one that also cleared its environment, or on macOS runs a program
+  Apple ships, escapes and runs until it ends, within the sandbox; macOS has
+  no cgroup to freeze. Bubblewrap and the container tier end everything
+  regardless. A shell runs
   as the server's user; on the process tier it can start at most
   `sandbox.max_procs` more processes than that user ran when it opened (see
   "Resource limits" below), and on the none tier nothing bounds it. A pids
@@ -299,21 +315,37 @@ and cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
 (`~/.netrc`, `~/.git-credentials`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`,
 …), database and model tokens, shell history, the keychains and browser
 profiles. Each is named both as given and with its links resolved, so a
-home reached through a link is covered. The list is a deny list: another
-file in home that holds a secret is readable, where Linux's bubblewrap
-leaves home out altogether. Signals stay inside the sandbox: the profile
+home reached through a link is covered. Beyond that list, home is unreadable
+by default: a command reads in home only the workspace, `read_only_paths`,
+the toolchains (`~/go`, `~/.cargo`, `~/.rustup`, `~/.npm`, `~/.nvm`,
+`~/.pyenv`, `~/.local/bin`, `~/.local/share/uv` and the like, the folders
+`GOPATH`, `GOROOT`, `CARGO_HOME`, `JAVA_HOME` and similar variables name, each
+`PATH` folder under home with the install a program linked there comes from,
+never a whole folder at the top of home), the caches (`~/.cache`,
+`~/Library/Caches`) and the files git, vim and shells read (`~/.gitconfig`,
+`~/.config/git`, `~/.vimrc`, `~/.zshrc`, …). The credential list above still
+applies inside those. What remains: a secret kept inside one of those
+folders, such as a token in `~/.cache`, is readable, since the rules are
+paths, not contents; the container or vm tier keeps home out altogether, as
+Linux's bubblewrap does. `sandbox.readable_home: true` returns to reading all
+of home but the credential list. Signals stay inside the sandbox: the profile
 allows a command or shell to signal only processes in its own Seatbelt
 sandbox (`(allow signal (target same-sandbox))`), so it cannot stop Abhed
 (`kill $PPID`), the server, or another command's processes, as bubblewrap's
 PID namespace keeps them apart on Linux (`TestSeatbeltSignalsStayInside`).
 One consequence: a command cannot stop a server an earlier command left
 running; Abhed's own stop for a background shell, sent from outside, does.
-The profile starts from `(allow default)`, and the only Mach lookups it
-denies are the network and system configuration services, with the network
-off or under the allowlist; other `mach-lookup` services stay reachable: a command can ask the user's per-session services
-(the pasteboard, Launch Services, which opens applications and URLs, and
-others) to act for it outside the sandbox. Linux has no equivalent. A
-deny-by-default profile for Mach services is not done yet. The environment is an allowlist
+The profile starts from `(allow default)`. The Mach services it denies are
+Launch Services and Apple events (which open applications and URLs), the
+pasteboard (`pbpaste` and `pbcopy` fail), the window server's session port
+and screen capture, on every network setting, and the network and system
+configuration services with the network off or under the allowlist. Other
+`mach-lookup` services stay reachable, and some act outside the sandbox for
+a command (`trustd` fetches a certificate's URLs, for one; TLS needs it). A
+deny-by-default Mach profile would break the system services every program
+uses, so what remains is that list's gap: a per-session service not named
+above can still be asked to act. The container and vm tiers have no Mach
+services at all. The environment is an allowlist
 (`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
 `ABHED_` settings. On macOS that does not keep them from a command: the
 kernel returns any same-user process's environment (`kern.procargs2`) unless

@@ -97,3 +97,6 @@ func signalMember(pid, sid int, sig syscall.Signal) bool {
 	}
 	return true
 }
+
+// signalRefused reports whether pid exists and refuses this user's signals.
+func signalRefused(pid int) bool { return errors.Is(syscall.Kill(pid, 0), syscall.EPERM) }

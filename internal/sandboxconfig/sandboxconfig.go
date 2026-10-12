@@ -71,6 +71,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.WriteProtected = cfg.Sandbox.WriteProtected
 	p.ProtectGit, p.GitRequired = cfg.Sandbox.GitProtected()
+	p.ScopeSignals = cfg.Sandbox.ScopeSignals
 	p.StatePaths = StatePaths(cfg, base)
 	for _, r := range stateRoots {
 		if filepath.Clean(r) != filepath.Clean(workspace) {
@@ -94,8 +95,19 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	if cfg.Sandbox.MaxProcs > 0 {
 		p.MaxProcs = cfg.Sandbox.MaxProcs
 	}
+	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
+	p.MemoryRequired = cfg.Sets("sandbox.max_memory_mb")
+	p.SharedCaches = cfg.Sandbox.SharedCaches
+	// The container tier picks its engine later; either engine's relay serves.
+	p.RelayBinary = cfg.ControlPlane.Podman.RelayBinary
+	if p.RelayBinary == "" {
+		p.RelayBinary = cfg.ControlPlane.Docker.RelayBinary
+	}
+	p.ReadableHome = cfg.Sandbox.ReadableHome
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
+	p.FenceSocketcall = cfg.Fence.Socketcall
+	p.FenceEgressPortOnly = cfg.Fence.EgressPortOnly
 	p.SkillDirs = skillDirs(cfg)
 	return p, nil
 }

@@ -120,6 +120,10 @@ func serverProfile(port uint16) string {
 	return b.String()
 }
 
+// denySessionServices keeps a command from the person's clipboard
+// (pbpaste, pbcopy) and from capturing their screen through the window server.
+const denySessionServices = `(deny mach-lookup (global-name-prefix "com.apple.pasteboard.") (global-name "com.apple.windowserver.active") (global-name-prefix "com.apple.screencapture"))` + "\n"
+
 // denyLaunchServices keeps LaunchServices and Apple events from a profile, which would
 // open a URL or run an app outside it; the coreservices/lsd part in any case, as Seatbelt names are case-sensitive.
 const denyLaunchServices = `(deny mach-lookup (global-name-regex #"^com\.apple\.[cC][oO][rR][eE][sS][eE][rR][vV][iI][cC][eE][sS]\.") (global-name-regex #"^com\.apple\.[lL][sS][dD]\."))` + "\n"

@@ -438,9 +438,13 @@ signalled by its number: if its id were reused in between, which needs the
 ids to wrap round within microseconds and is not reachable in practice, the
 stop or the kill would land on a stranger: a stop is undone at once with a
 continue signal, a kill is not.
-Closing that gap strictly would need signalling by audit token. What escapes is
-a process that makes a session of its own, with `setsid` or by daemonising;
-it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
+Closing that gap strictly would need signalling by audit token. A process
+that makes a session of its own, with `setsid` or by daemonising, is ended
+too, by the `ABHED_COMMAND_ID` every process the shell starts carries; one
+that also cleared its environment, or on macOS runs a program Apple ships
+(whose environment macOS hides), escapes and runs until it ends, within the
+sandbox. Processes in the session that cannot be signalled (another user's,
+after a setuid program) are counted in the server's log line. On Linux bubblewrap ends everything
 in the sandbox with the shell, and a container is removed. A shell runs as
 the server's user. On the process tier it starts with a process limit of what
 that user runs plus `sandbox.max_procs` (512 by default), so a fork bomb
@@ -457,11 +461,12 @@ configuration or follows elsewhere: `.git/config`, `.git/hooks`,
 [Permissions](04-permissions.md). So nothing run here can plant a program
 that your next `git status` outside Abhed would run. Git itself works as
 usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
-`git worktree add`. A few commands fail inside the sandbox and are run
-outside Abhed: `git submodule update` on a submodule already checked out, on
-every tier; `git worktree remove` on Linux and macOS; and on macOS also
-`git worktree add` and `git submodule add` or `update --init` for a
-submodule not yet checked out. **Changes** and **Review** compare each
+`git worktree add`. A few commands cannot work inside the sandbox: `git
+worktree add`, `remove` and `prune` and `git submodule update`, given as the
+whole line, run through host git with Abhed's safety settings on the process
+tier and the fence (see [Permissions](04-permissions.md)); `git submodule
+add` still fails there, and the container and vm tiers run none of them on
+the host, so run those outside Abhed. **Changes** and **Review** compare each
 file with what it held before its first edit, by the server rather than
 through a command, and are unaffected.
 
@@ -645,8 +650,10 @@ stopped at "Press ENTER" after every `:wq`. Your own vimrc (or `~/.exrc`) is
 still read, through `VIMINIT`, except by a vim built without scripting, such
 as `vim.tiny`, which then reads none. On Linux the sandbox shows no home
 directory, so vim there runs with its defaults. Neovim gets the same
-treatment for its history file, untested. The setting is part of every
-process-tier command's environment, so the agent's commands have it too.
+treatment for its history file, untested. A `VIMINIT` you set before
+starting Abhed is kept: commands get yours with the history files turned off
+after it. The setting is part of every process-tier and fence command's
+environment, so the agent's commands have it too.
 A character you type that draws nothing or changes the text's direction
 (a zero-width space, a bidi control) is shown in the line as one
 reverse-video `?`, so `cd d`, U+202E, `rlo` does not read as `cd drlo`; the line still

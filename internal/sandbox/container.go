@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Image is the default execution image. In an air-gapped install this is
@@ -40,6 +42,12 @@ type Container struct {
 	podman bool
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+
+	// The egress proxy under sandbox.network allowlist, started once.
+	egOnce  sync.Once
+	eg      *egressState
+	egProxy *egress.Proxy
+	egErr   error
 }
 
 func NewContainer(p Policy) *Container {
@@ -73,10 +81,12 @@ func (c *Container) Tier() Tier {
 }
 
 func (c *Container) Available() (bool, string) {
-	// The proxy listens on the host's loopback, which the container's
-	// network cannot reach without opening more than the proxy.
+	// The proxy listens on the host's loopback, which a container with no
+	// network reaches only through a relay inside it.
 	if c.policy.Egress != nil {
-		return false, egressRefusal(c.Tier())
+		if _, why := c.containerRelay(); why != "" {
+			return false, why
+		}
 	}
 	c.once.Do(func() {
 		for _, rt := range []string{"docker", "podman", "nerdctl"} {
@@ -85,9 +95,9 @@ func (c *Container) Available() (bool, string) {
 				continue
 			}
 			// A binary on PATH is not a working daemon; check for real.
-			probe := exec.Command(path, "info", "--format", "{{.ServerVersion}}")
-			if err := probe.Run(); err != nil {
-				c.reason = rt + " found but its daemon is not responding"
+			// Plain info: Podman's has no ServerVersion, so a format naming it failed there.
+			if _, err := engineProbe(path, "info"); err != nil {
+				c.reason = rt + " found but its daemon is not responding: " + err.Error()
 				continue
 			}
 			c.runtime = path
@@ -114,7 +124,7 @@ func (c *Container) runscInstalled() bool {
 	if _, err := exec.LookPath("runsc"); err == nil {
 		return true
 	}
-	out, err := exec.Command(c.runtime, "info", "--format", "{{json .Runtimes}}").Output()
+	out, err := engineProbe(c.runtime, "info", "--format", "{{json .Runtimes}}")
 	return err == nil && strings.Contains(string(out), "runsc")
 }
 
@@ -146,8 +156,28 @@ func (c *Container) engine() string {
 
 // saysPodman reports whether the runtime at path calls itself Podman.
 func saysPodman(path string) bool {
-	out, err := exec.Command(path, "--version").Output() // #nosec G204 -- the container runtime found on PATH
+	out, err := engineProbe(path, "--version")
 	return err == nil && strings.Contains(strings.ToLower(string(out)), "podman")
+}
+
+// engineProbeWait bounds each question put to the engine as the tier is
+// chosen, so a hung engine (a stopped VM, a dead socket) cannot hold a
+// session's start; a variable, so a test can shorten it.
+var engineProbeWait = 5 * time.Second
+
+// engineProbe runs the engine's CLI with args and returns its output, ended
+// with everything it started after engineProbeWait.
+func engineProbe(path string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), engineProbeWait)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- the container runtime found on PATH, fixed arguments
+	ownGroup(cmd)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return out, fmt.Errorf("%s %s did not answer within %s", filepath.Base(path), strings.Join(args, " "), engineProbeWait)
+	}
+	return out, err
 }
 
 // runArgs is everything up to the image: the confinement both a command and
@@ -194,7 +224,7 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 
 	// A CPU cap so one session cannot starve the host. Not security, but a
 	// session that pins every core is indistinguishable from an outage.
-	args = append(args, "--cpus", "2")
+	args = append(args, "--cpus", c.cpus())
 
 	// No IPC sharing, and a hostname of its own: the engine refuses a hostname
 	// with the host's UTS namespace, so the flag also fails closed.
@@ -240,6 +270,15 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 	return args, nil
 }
 
+// cpus is the --cpus value: MaxCPUPercent of one CPU, two when unset.
+func (c *Container) cpus() string {
+	pct := c.policy.MaxCPUPercent
+	if pct <= 0 {
+		pct = 200
+	}
+	return strconv.FormatFloat(float64(pct)/100, 'f', -1, 64)
+}
+
 // mountArgs are a container's host mounts for p: the workspace, the
 // read-only paths, the write-protected and git paths, and Abhed's state
 // hidden. backend names the tier in records; mem is what the git look keeps.
@@ -263,7 +302,7 @@ func mountArgs(ctx context.Context, p Policy, backend string, mem *gitMemory) ([
 	// The git folders found now, as on bubblewrap, after a planted
 	// commondir is taken out.
 	if p.ProtectGit {
-		found, err := gitGuard(ctx, p.Workspace, backend, mem)
+		found, err := gitGuardFor(ctx, p.Workspace, backend, mem, p.GitRequired)
 		if err != nil {
 			return nil, err
 		}
@@ -295,6 +334,9 @@ func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([
 }
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
+	if c.policy.Egress != nil {
+		return c.egressCommand(ctx, cwd, command)
+	}
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
 	args, err := c.runArgs(ctx, cwd)
@@ -320,11 +362,11 @@ func containerName(prefix string) string {
 
 // remove is a cancel that removes the named container, then kills the CLI.
 func (c *Container) remove(cmd *exec.Cmd, name string) func() error {
-	runtime := c.runtime
+	runtime, rm := c.runtime, c.rmArgs(name)
 	return func() error {
 		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
 		defer cancel()
-		_ = exec.CommandContext(rmCtx, runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
+		_ = exec.CommandContext(rmCtx, runtime, rm...).Run() // #nosec G204 -- the configured engine and a name this process made
 		return cmd.Process.Kill()
 	}
 }
@@ -379,7 +421,7 @@ func (c *Container) SweepShells() {
 		return
 	}
 	if ids := strings.Fields(string(out)); len(ids) > 0 {
-		_ = exec.CommandContext(ctx, c.runtime, append([]string{"rm", "-f"}, ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
+		_ = exec.CommandContext(ctx, c.runtime, c.rmArgs(ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
 	}
 }
 
@@ -409,7 +451,8 @@ func envOr(key, fallback string) string {
 func ForwardEnv(cmd *exec.Cmd, names []string) {
 	at := -1
 	for i, a := range cmd.Args {
-		if a == Image {
+		// An exec names its container in the image's place.
+		if a == Image || strings.HasPrefix(a, egressPrefix) {
 			at = i
 			break
 		}
@@ -480,4 +523,19 @@ func caseSpellings(dir, name string) []string {
 		out = append(out, string(b))
 	}
 	return out
+}
+
+// Close stops the egress proxy commands under the allowlist reach.
+func (c *Container) Close() error { return c.closeEgress() }
+
+// rmArgs removes the named containers at once. Podman's rm -f first waits
+// ten seconds for a process that ignores SIGTERM, as a shell or sleep as a
+// container's first process does; --time 0 kills it straight away, as
+// Docker's rm -f does.
+func (c *Container) rmArgs(names ...string) []string {
+	args := []string{"rm", "-f"}
+	if c.engine() == "podman" {
+		args = append(args, "--time", "0")
+	}
+	return append(args, names...)
 }

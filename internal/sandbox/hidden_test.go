@@ -14,7 +14,8 @@ func TestSeatbeltHidesSiblingFolders(t *testing.T) {
 	ws := filepath.Join(root, "sbx_a")
 	prof := NewProcess(Policy{Workspace: ws, Hidden: []string{root}}).seatbeltProfile()
 	deny := strings.Index(prof, fmt.Sprintf("(deny file-read* (subpath %q))", root))
-	allow := strings.Index(prof, fmt.Sprintf("(allow file-read* (subpath %q))", ws))
+	// The last allow: home's own section may allow the workspace earlier.
+	allow := strings.LastIndex(prof, fmt.Sprintf("(allow file-read* (subpath %q))", ws))
 	state := strings.Index(prof, fmt.Sprintf("(deny file-read* (subpath %q))", filepath.Join(ws, stateDir)))
 	if deny < 0 || allow < deny || state < allow {
 		t.Fatalf("order deny %d, allow %d, state %d in\n%s", deny, allow, state, prof)

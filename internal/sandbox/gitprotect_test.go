@@ -360,7 +360,7 @@ func TestGitGuardKeepsRepositoriesFoundEarlier(t *testing.T) {
 	})
 	var rec recorded
 	var mem gitMemory
-	found, err := gitGuard(rec.ctx(), ws, "bwrap", &mem)
+	found, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false)
 	if err != nil || !relSet(ws, found)["zz/.git/config"] {
 		t.Fatalf("the nested repository was not found: %v %v", err, found)
 	}
@@ -372,7 +372,7 @@ func TestGitGuardKeepsRepositoriesFoundEarlier(t *testing.T) {
 	if relSet(ws, scanGit(ws).protected)["zz/.git/config"] {
 		t.Fatal("the flood did not hide the nested repository from a fresh walk")
 	}
-	found, err = gitGuard(rec.ctx(), ws, "bwrap", &mem)
+	found, err = gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false)
 	if err != nil || !relSet(ws, found)["zz/.git/config"] {
 		t.Fatalf("the flood unprotected a repository found earlier: %v %v", err, relSet(ws, found))
 	}
@@ -388,7 +388,7 @@ func TestGitGuardKeepsRepositoriesFoundEarlier(t *testing.T) {
 	if err := os.Symlink(out, filepath.Join(ws, "zz")); err != nil {
 		t.Fatal(err)
 	}
-	if found, err = gitGuard(rec.ctx(), ws, "bwrap", &mem); err != nil || exists(filepath.Join(out, ".git", "config")) {
+	if found, err = gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil || exists(filepath.Join(out, ".git", "config")) {
 		t.Fatalf("followed a link out of the workspace: %v %v", err, found)
 	}
 }
@@ -455,19 +455,28 @@ func TestGitWalkBoundIsRecorded(t *testing.T) {
 	var rec recorded
 	var mem gitMemory
 	for range 2 {
-		if _, err := gitGuard(rec.ctx(), ws, "bwrap", &mem); err != nil {
+		if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
 			t.Fatalf("refused at the walk's bound: %v", err)
 		}
 	}
 	if got := rec.of(EvGitWalkBounded); len(got) != 1 || got[0]["refused"] != false {
 		t.Fatalf("the bound was not recorded once: %v", rec.events)
 	}
+	// Where git protection is required (serve, Studio, protect_git: true),
+	// the bound refuses the command instead.
+	var req recorded
+	if _, err := gitGuardFor(req.ctx(), ws, "bwrap", &gitMemory{}, true); err == nil || !strings.Contains(err.Error(), "folders within") {
+		t.Fatalf("a required guard ran at the walk's bound: %v", err)
+	}
+	if got := req.of(EvGitWalkBounded); len(got) != 1 || got[0]["refused"] != true {
+		t.Fatalf("the refusal was not recorded: %v", req.events)
+	}
 	for i := range 2 * gitModulesEntries {
 		if err := os.MkdirAll(filepath.Join(ws, ".git", "modules", "-"+strconv.Itoa(i)), 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := gitGuard(rec.ctx(), ws, "bwrap", &mem); err == nil || !strings.Contains(err.Error(), "modules") {
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "modules") {
 		t.Fatalf("ran with modules past their bound: %v", err)
 	}
 	if got := rec.of(EvGitWalkBounded); len(got) != 2 || got[1]["refused"] != true {
@@ -484,7 +493,7 @@ func TestLinkedGitHooksRefuseTheCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	var mem gitMemory
-	if _, err := gitGuard(context.Background(), ws, "bwrap", &mem); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+	if _, err := gitGuardFor(context.Background(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("a linked hooks folder did not refuse: %v", err)
 	}
 	c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}
@@ -541,7 +550,7 @@ func TestLinkedGitFoldersRefuseTheCommand(t *testing.T) {
 			ws := workspace(t)
 			setup(t, ws)
 			var mem gitMemory
-			if _, err := gitGuard(context.Background(), ws, "bwrap", &mem); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			if _, err := gitGuardFor(context.Background(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 				t.Fatalf("a linked git folder did not refuse: %v", err)
 			}
 			c := &Container{policy: Policy{Workspace: ws, ProtectGit: true}}

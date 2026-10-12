@@ -39,6 +39,11 @@ const commandWaitDelay = 2 * time.Second
 // shell leaves them running; on SIGHUP it hangs them up too. Jobs that left
 // its job table, `( cmd & )`, or ignore the hang-up are ended by Leader.Wait.
 func hangUp(cmd *exec.Cmd) *exec.Cmd {
+	// Every process the shell starts carries it, one that leaves the
+	// shell's session included, so Leader.Wait finds those too.
+	if m := commandMarker(); cmd.Env != nil && m != "" {
+		cmd.Env = append(cmd.Env, m)
+	}
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGHUP) }
 	cmd.WaitDelay = hangUpDelay
 	return cmd
