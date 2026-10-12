@@ -28,7 +28,8 @@
 // against the agent and against accidental or partial edits, and verifiable
 // offline. It is not proof against the machine's owner, who can rewrite a
 // file and compute a new chain. Options.Anchor is where a witness outside the
-// machine can be given each head; this edition does not provide one.
+// machine is given each head (package store/witness, record.witness), which
+// makes a rewrite or a restored older copy show against what it holds.
 //
 // # Writes
 //
