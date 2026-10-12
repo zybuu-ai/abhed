@@ -196,42 +196,39 @@ All notable changes to Abhed are recorded here. The format follows
   read as one and separators dropped; the approval's `user@addr` remains the
   control. Affects 1.2.2 to 1.2.7.
 - Deny and ask rules for `bash` did not see inside a shell script a command
-  ran, so `bash ./s.sh`, `source f` or `./tool` ran `curl` past
-  `bash(curl *)` when the script held it. The agent's commands now have the
-  shell scripts they run read from the folder they start in, two levels
-  deep, and their commands checked against deny and ask rules. A script that
-  does not exist, that the same line writes before running it (a
-  redirection, `cp`, `mv`, `ln`, `install`, `rsync`, `tee`, `dd`, `sed -i`,
-  `perl -i`, `curl -o`, `wget`, a file named by an expansion, or a folder's
-  contents copied over it, as `cp -r sub/. .` or `rsync -a sub/ .` do), that
-  is named by a relative path on a line that changes folder (`cd`, `pushd`,
-  `popd`, `env -C`, `sudo -D`, `find -execdir`, or a sourced script that
-  does), that is sourced by a bare name on a line that sets `PATH`
-  (`PATH=sub . s.sh`), or that is named from `~` is refused under a deny
-  rule and asked about otherwise. A bare program is read from each folder a
-  `PATH` the line sets names (`PATH=sub:$PATH tool`), and a shell's start-up
-  file is read as a script it runs (`BASH_ENV=f`, `ENV=f` for an
-  interactive shell, `--rcfile f`,
+  ran, so `bash ./s.sh`, `source f` or `./tool` ran `curl` past `bash(curl *)`
+  when the script held it. The agent's commands now have the shell scripts
+  they run read from the folder they start in, two levels deep, and their
+  commands checked against deny and ask rules. A script that does not exist,
+  that the same line writes before running it (a redirection, `cp`, `mv`,
+  `ln`, `install`, `rsync`, `tee`, `dd`, `sed -i`, `perl -i`, `curl -o`,
+  `wget`, a file named by an expansion, or a folder's contents copied over it,
+  as `cp -r sub/. .` or `rsync -a sub/ .` do), that is named by a relative
+  path on a line that changes folder (`cd`, `pushd`, `popd`, `env -C`, `sudo
+  -D`, `find -execdir`, or a sourced script that does), that is sourced by a
+  bare name on a line that sets `PATH` (`PATH=sub . s.sh`), or that is named
+  from `~` is refused under a deny rule and asked about otherwise. A bare
+  program is read from each folder a `PATH` the line sets names
+  (`PATH=sub:$PATH tool`), and a shell's start-up file is read as a script it
+  runs (`BASH_ENV=f`, `ENV=f` for an interactive shell, `--rcfile f`,
   `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
   `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` a shell the line
   starts reads, by its options, from a `ZDOTDIR` or `HOME` folder the line
-  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true` (a
-  shell typed into a terminal, as `bash`, or started by `script`, `tmux`,
-  `screen`, `su` or `sudo -s`, counted as interactive; `su -`, `sudo -i`
-  and `login` refused under a deny rule), or that
-  an exec sets in its environment, and those a shell reads from the
-  `HOME` the sandbox gives it, which an earlier command may have written:
-  read on the process tier, none and the fence (those matching the
-  baseline `abhed trust startup-files` records are not), and
-  refused under a deny rule where the host cannot read that `HOME`, as in a
-  container); one too long, unparsable, running built text, or itself
+  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true` (a shell
+  typed into a terminal, as `bash`, or started by `script`, `tmux`, `screen`,
+  `su` or `sudo -s`, counted as interactive; `su -`, `sudo -i` and `login`
+  refused under a deny rule), or that an exec sets in its environment, and
+  those a shell reads from the `HOME` the sandbox gives it, which an earlier
+  command may have written: read on the process tier, none and the fence
+  (those matching the baseline `abhed trust startup-files` records are not),
+  and refused under a deny rule where the host cannot read that `HOME`, as in
+  a container); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
-  interpreters' scripts are not read. An `:exec` in a sandbox, whose files
-  the server cannot read, refuses instead, while rules or hooks are in
-  force, a line that runs a script, sources a file, gives a shell a start-up
-  file or folder, or finds a program on a `PATH` it sets; plain commands
-  and programs in the image's own `bin` folders run.
-  Affects every release to 1.2.7.
+  interpreters' scripts are not read. An `:exec` in a sandbox, whose files the
+  server cannot read, refuses instead, while rules or hooks are in force, a
+  line that runs a script, sources a file, gives a shell a start-up file or
+  folder, or finds a program on a `PATH` it sets; plain commands and programs
+  in the image's own `bin` folders run. Affects every release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
   on a disk that ignores case (documented as a limit). Deny and ask path
