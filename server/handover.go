@@ -81,7 +81,7 @@ func (s *Server) HandOverRunning(ctx context.Context) int {
 			continue // it ended on its own first, or is still stopping
 		}
 		if stop != nil {
-			stop() // the claim is not released: the mark below replaces it
+			stop() // the claim is kept, not released: the mark below replaces it
 		}
 		mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), turnEndWait)
 		marked, err := h.HandOver(mctx, live.ID, s.holder)

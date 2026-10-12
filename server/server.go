@@ -3937,7 +3937,10 @@ func (s *Server) releaseNodeIfQuiet(live *liveSession) {
 	live.holdMu.Unlock()
 	live.mu.Lock()
 	stop := live.beatStop
-	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0
+	// A run handed over keeps its claim until HandOverRunning marks the row,
+	// so no writer slips in between the release and the mark.
+	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0 &&
+		live.Reason != agent.TermHandedOver
 	if quiet {
 		live.beatStop = nil
 	}
