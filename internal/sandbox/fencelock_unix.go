@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"crypto/sha256"
+	"errors"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -39,4 +40,10 @@ func stateUseLock(ws string) *os.File {
 // no other fence on the workspace holds it.
 func lastUser(l *os.File) bool {
 	return l != nil && unix.Flock(int(l.Fd()), unix.LOCK_EX|unix.LOCK_NB) == nil // #nosec G115 -- a descriptor
+}
+
+// processAlive reports whether pid names a running process.
+func processAlive(pid int) bool {
+	err := unix.Kill(pid, 0)
+	return err == nil || errors.Is(err, unix.EPERM)
 }

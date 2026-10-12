@@ -497,11 +497,22 @@ without running anything.
 
   In `mount_namespace` the same check runs as defence in depth, for the
   spellings the tmpfs does not cover. In `landlock_only` the check is not a guard. A file a command writes into the workspace's
-  `.abhed` is there while it runs and until the check that follows it, and
-  Abhed can read it then (for example its users or memory files). After an unclean exit (Abhed killed,
-  the machine down) nothing is checked or moved, so look for a `.abhed` in
-  the workspace yourself. A `.abhed` in a subfolder of the workspace or in a
-  folder added with `--add-dir` is not checked.
+  `.abhed` is there while it runs and until the next check, and Abhed can
+  read it then (for example its users or memory files); in `landlock_only`
+  the check also runs every second while the session is open, so that
+  window is about a second. After an unclean exit (Abhed killed, the machine
+  down), the next fenced session on the workspace looks at what the last one
+  left: each session keeps a mark in `~/.abhed/fence/` that a clean close
+  removes, and where a session's process is gone, it had no `.abhed` when
+  it started, and the `.abhed` there now dates from no later than its last
+  command, that `.abhed` is taken out as above and recorded with `when:
+  after_unclean_exit`. Nothing is taken while another session on the
+  workspace still runs. A `.abhed` you make after such an exit, before the
+  next session, is left. A folder added with `--add-dir` is read-only to
+  fenced commands, so none can be made there. A `.abhed` in a subfolder of
+  the workspace is not checked: it is not this session's state, but it would
+  be a later session's started in that subfolder, so look before starting
+  one there.
 - **Terminals.** Of the devices, a command opens only `/dev/null`,
   `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and `/dev/tty`,
   which reaches only its own terminal. Each command runs in a session of

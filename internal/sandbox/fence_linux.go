@@ -266,9 +266,13 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 			return false, "mode mount_namespace: " + err.Error() + "; the fence covers every other mount of the workspace's filesystem, and refuses where it cannot"
 		}
 		f.aliases, f.unreachableAliases = aliases, unreachable
+		f.sweepCrashed(f.sessionRecord())
 		if err := f.prepareStateMount(); err != nil {
 			return false, err.Error()
 		}
+	}
+	if !f.mounts {
+		f.sweepCrashed(f.sessionRecord())
 	}
 	// A .abhed made to mount over stays when the session cannot be made:
 	// another fence on the workspace may already mount over it.
@@ -317,6 +321,10 @@ func (f *Fence) qualifySession(base *cgroup.Base) (bool, string) {
 	leaf := limits
 	leaf.OOMGroup = true
 	f.host = &fenceHost{sb: sb, leaf: leaf}
+	f.markPath = f.writeMark()
+	if !f.mounts {
+		f.watchState()
+	}
 	return true, ""
 }
 
@@ -336,6 +344,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	}
 	// A .abhed left since the last check is moved out before anything runs.
 	_ = f.checkPlanted(rec, "", "before_command")
+	touchMark(f.markPath)
 	if why := f.planted.Load(); why != nil {
 		return refusedCmd("%s", *why)
 	}

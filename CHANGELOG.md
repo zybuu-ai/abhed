@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- In the fence's `landlock_only` mode a `.abhed` a long command made in the
+  workspace stayed there, readable by Abhed as its own state, until the
+  command ended, and one left after Abhed was killed was taken for state by
+  the next session. The fence now looks every second while a session is
+  open, and at start takes out a `.abhed` that a session which ended without
+  closing its fence left behind. Affects 1.2.4 to 1.2.7 on Linux.
 - In the fence's `mount_namespace` mode, on a disk that ignores case, the
   workspace's `.abhed` reached by another spelling (`.ABHED`) was not under
   the empty tmpfs, so a command could read or write Abhed's state through it

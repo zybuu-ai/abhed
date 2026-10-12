@@ -52,6 +52,10 @@ type Fence struct {
 	madeState bool
 	// stateLock is shared by every fence on the workspace while it lasts.
 	stateLock *os.File
+	// markPath is the session's mark under ~/.abhed/fence, removed at a
+	// clean close; watchStop ends the landlock_only check between commands.
+	markPath  string
+	watchStop chan struct{}
 	// aliases are the other mounts of the workspace's filesystem, which each
 	// command's namespace covers as it covers the workspace.
 	aliases []string
@@ -132,6 +136,11 @@ func (f *Fence) Close() error {
 			errs = append(errs, os.RemoveAll(f.tmp))
 		}
 		f.removeMadeState()
+		if f.watchStop != nil {
+			close(f.watchStop)
+		}
+		// Only after the last check: a mark left says that check never ran.
+		removeMark(f.markPath)
 		f.closeErr = errors.Join(errs...)
 	})
 	return f.closeErr
