@@ -15,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -80,12 +81,16 @@ type hoServer struct {
 }
 
 // newHOServer is one replica; replicas share the workspace, as on one volume.
-func newHOServer(t *testing.T, st EventStore, blk *blocker, ws string) *hoServer {
+func newHOServer(t *testing.T, st EventStore, blk *blocker, ws string, with ...func(*Options)) *hoServer {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
-	s := New(Options{Workspace: ws, Config: cfg, Adapter: hoAdapter{path: filepath.Join(ws, "x.txt")}, Store: st, ContinueTurns: true,
-		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, blk)})
+	opts := Options{Workspace: ws, Config: cfg, Adapter: hoAdapter{path: filepath.Join(ws, "x.txt")}, Store: st, ContinueTurns: true,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, blk)}
+	for _, f := range with {
+		f(&opts)
+	}
+	s := New(opts)
 	return &hoServer{t: t, s: s, h: s.Handler()}
 }
 
@@ -282,5 +287,126 @@ func TestTwoServersOnePostgresCrashedTurnIsContinued(t *testing.T) {
 	}
 	if h := pgHolder(t, id); h == a.s.holder {
 		t.Fatal("A holds the session again")
+	}
+}
+
+// A take-over that fails after its claim ends the session as recovered, and
+// first gives each open call its outcome: the question left open is refused,
+// and the call that may have run is answered as outcome unknown.
+func TestTwoServersOnePostgresFailedTakeOverSettlesOpenCalls(t *testing.T) {
+	broken := func(o *Options) {
+		o.SecretsFor = func(string, string) (*secrets.Store, error) { return nil, errors.New("vault down") }
+	}
+	t.Run("handed over", func(t *testing.T) {
+		blk := newBlocker()
+		ws := tempWorkspace(t)
+		a := newHOServer(t, openSharedPG(t), blk, ws)
+		b := newHOServer(t, openSharedPG(t), blk, ws, broken)
+		id := a.start("write")
+		waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+		a.s.drain()
+		if err := b.s.TakeOver(context.Background(), id); err == nil {
+			t.Fatal("B took over without its secrets")
+		}
+		evs := b.events(id)
+		end, ok := agent.LastEnd(evs)
+		if !ok || !end.Recovered {
+			t.Fatalf("not ended as recovered: %v %+v", ok, end)
+		}
+		oneOutcomeEach(t, evs)
+		var refused bool
+		for _, d := range payloadsOf(evs, agent.EvActionDenied) {
+			refused = refused || d["call_id"] == "w1" && d["step"] == "handover"
+		}
+		if !refused {
+			t.Fatal("the open question was not refused")
+		}
+	})
+	t.Run("crashed while running", func(t *testing.T) {
+		blk := newBlocker()
+		ws := tempWorkspace(t)
+		a := newHOServer(t, openSharedPG(t), blk, ws)
+		b := newHOServer(t, openSharedPG(t), blk, ws, broken)
+		id := a.start("block")
+		<-blk.started
+		aLive := a.live(id)
+		aLive.mu.Lock()
+		stop := aLive.beatStop
+		aLive.beatStop = nil
+		aLive.mu.Unlock()
+		stop()
+		pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
+		if err := b.s.TakeOver(context.Background(), id); err == nil {
+			t.Fatal("B took over without its secrets")
+		}
+		close(blk.release)
+		waitUntil(t, "A to be fenced", func() bool { return aLive.fenced.Load() })
+		evs := b.events(id)
+		if _, ok := agent.LastEnd(evs); !ok {
+			t.Fatal("the session was left open")
+		}
+		oneOutcomeEach(t, evs)
+		obs := payloadsOf(evs, agent.EvObservation)
+		if len(obs) != 1 || obs[0]["call_id"] != "b1" || obs[0]["outcome_unknown"] != true {
+			t.Fatalf("b1 results: %v", obs)
+		}
+	})
+}
+
+// A replica fenced while its call waits for approval: the approval given to
+// it cannot be recorded, so it never runs the call. The replica that takes
+// the session over sees no approval, asks again, and runs the call once.
+func TestTwoServersOnePostgresUnrecordedApprovalNeverRuns(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	a := newHOServer(t, openSharedPG(t), blk, ws)
+	b := newHOServer(t, openSharedPG(t), blk, ws)
+	id := a.start("write")
+	waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+	aLive := a.live(id)
+	aLive.mu.Lock()
+	stop := aLive.beatStop
+	aLive.beatStop = nil
+	aLive.mu.Unlock()
+	stop()
+	// Another process holds the row now: A's writes are refused.
+	pgExec(t, "UPDATE sessions SET node_id = 'node-z', node_seen_at = now() WHERE id = $1", id)
+	_ = a.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`)
+	waitUntil(t, "A's run to stop", func() bool {
+		aLive.mu.Lock()
+		defer aLive.mu.Unlock()
+		return aLive.ran == nil
+	})
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err == nil {
+		t.Fatal("A ran the write with no approval on record")
+	}
+	for _, e := range b.events(id) {
+		if e.Type == agent.EvActionApproved {
+			t.Fatalf("an approval reached the record: %s", e.Payload)
+		}
+	}
+
+	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
+	if err := b.s.TakeOver(context.Background(), id); err != nil {
+		t.Fatalf("take over: %v", err)
+	}
+	waitUntil(t, "B to ask again", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := b.do("GET", "/v1/sessions/"+id+"/replay", ""); rec.Code != http.StatusOK {
+		t.Fatalf("B cannot replay the session it took over: %d %s", rec.Code, rec.Body)
+	}
+	if rec := b.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("approve on B = %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "B's turn to end", func() bool {
+		end, ok := agent.LastEnd(b.events(id))
+		return ok && end.Reason == agent.TermCompleted
+	})
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err != nil {
+		t.Fatalf("the write asked again did not run: %v", err)
+	}
+	evs := b.events(id)
+	oneOutcomeEach(t, evs)
+	if n := countType(evs, agent.EvActionApproved); n != 1 {
+		t.Fatalf("%d approvals on record; want the one B ran", n)
 	}
 }

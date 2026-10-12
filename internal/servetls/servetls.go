@@ -403,6 +403,15 @@ func parseRevoked(b, caPEM []byte, now time.Time) (map[string]bool, []string, er
 		var stale []string
 		n := 0
 		for rest := b; ; {
+			// Text around the CRLs is skipped, but not a serial: the two
+			// forms do not mix, and a serial here would be ignored.
+			before := rest
+			if i := bytes.Index(rest, []byte("-----BEGIN")); i >= 0 {
+				before = rest[:i]
+			}
+			if line, ok := serialLine(before); ok {
+				return nil, nil, fmt.Errorf("it holds CRLs and the serial number %s: put serials in a file of their own, or revoke them in a CRL", line)
+			}
 			var blk *pem.Block
 			if blk, rest = pem.Decode(rest); blk == nil {
 				break
@@ -438,9 +447,7 @@ func parseRevoked(b, caPEM []byte, now time.Time) (map[string]bool, []string, er
 		return out, stale, nil
 	}
 	for i, line := range strings.Split(string(b), "\n") {
-		line, _, _ = strings.Cut(line, "#")
-		// As openssl prints it too: serial=0A1B...
-		line = strings.TrimPrefix(strings.ToLower(strings.ReplaceAll(strings.TrimSpace(line), ":", "")), "serial=")
+		line = serialText(line)
 		if line == "" {
 			continue
 		}
@@ -451,6 +458,25 @@ func parseRevoked(b, caPEM []byte, now time.Time) (map[string]bool, []string, er
 		out["*|"+v.Text(16)] = true
 	}
 	return out, nil, nil
+}
+
+// serialText is a revocation file's line as a serial would be written in it,
+// without its comment: as openssl prints it too, serial=0A1B...
+func serialText(line string) string {
+	line, _, _ = strings.Cut(line, "#")
+	return strings.TrimPrefix(strings.ToLower(strings.ReplaceAll(strings.TrimSpace(line), ":", "")), "serial=")
+}
+
+// serialLine reports the first line of b that reads as a serial number.
+func serialLine(b []byte) (string, bool) {
+	for _, line := range strings.Split(string(b), "\n") {
+		if t := serialText(line); t != "" {
+			if _, ok := new(big.Int).SetString(strings.TrimPrefix(t, "0x"), 16); ok {
+				return strings.TrimSpace(line), true
+			}
+		}
+	}
+	return "", false
 }
 
 func serverUsage(c *x509.Certificate) bool {

@@ -140,6 +140,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A call whose approval could not be written to the record (the database
+  failing, or the session held by another process) still ran, so the record
+  held no approval for what was done, and a process taking the session over
+  asked again and could run it a second time. Such a call, and a person's own
+  call in the workbench, is now not run, and the run ends on the failed
+  write. Affects 0.1.0 to 1.2.7.
 - An `ssh_connect` host name that read like an operator's host only by a
   look-alike character, such as `pr0d` or `buiId1` beside `prod` and
   `build1`, was accepted. Names are now compared with look-alike characters
@@ -1293,6 +1299,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A session recovered from a process that stopped mid-turn was ended with
+  the calls that turn had open left without an outcome. Each now gets one
+  before the end: an approved call, which may have run, is answered
+  "outcome unknown", and any other is denied with step `handover`. Affects
+  1.2.3 to 1.2.7.
 - A message sent in the web IDE before its first workbench session had
   finished opening could lose its view: the workbench session opened over
   it, so the new session's approval card was no longer shown and its call
@@ -1687,7 +1698,10 @@ All notable changes to Abhed are recorded here. The format follows
   and `ErrDraining` saying why TakeOver took nothing; `agent.InFlight`,
   `Loop.ContinueTurn`, `Loop.NoteUnknownOutcomes`, `agent.ReconcileChildren`,
   the `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are
-  the loop's side of it. `auth.Identity.Scopes`,
+  the loop's side of it; `agent.OpenTurn.Others` holds a person's own calls
+  and pipeline steps left open. `Server.ReleaseSessionsBefore` releases an
+  owner's sessions this process started or took up before a time, for an
+  account made again. `auth.Identity.Scopes`,
   `auth.Middleware.IdentifyToken` and `auth.IsForbidden` let a public handler
   answer for a bearer token. `config.Config.OIDCBoundClaims`,
   `ValidateBoundClaims` and `RelayKeyCommandArgv` read the new edition keys
@@ -1912,7 +1926,8 @@ All notable changes to Abhed are recorded here. The format follows
 - `auth.NewCLILogin`, `auth.OpenCLITokens` and `auth.NewClientCertAuth`
   build the types listed above.
 - `store/witness` (`Open`, `Config`, `Statement`, `Witness`) sends the
-  record's heads to a witness, and is experimental until 2.0 as
+  record's heads to a witness, and `Read`, `Check` (against the
+  installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
   `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
   and `ChainHashAt`, `store.ChainReport` and `store/local.Store.HashAt` read
   the hash chain; `store/local.Store.DeleteSession` prunes a session with a

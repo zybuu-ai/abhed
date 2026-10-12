@@ -1482,9 +1482,17 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			}
 		}
 	}
-	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
+	// A call runs only with its approval on record: one that ran unrecorded
+	// would be asked again, and could run again, wherever the session goes on.
+	if _, err := l.Recorder.Record(EvActionApproved, actorFor(approvedBy["by"]), Trusted, approvedBy); err != nil {
+		l.noteRecordErr(err)
+		return false, tools.Result{Content: notRecorded, IsError: true}, ""
+	}
 	return true, tools.Result{}, ""
 }
+
+// notRecorded answers a call left unrun because the record could not be written.
+const notRecorded = "Not run: the session's record could not be written, so the call was not run."
 
 // ownerGateKey carries a woken run's OwnerActive to its calls and to the
 // foreground subagents it starts.
@@ -1936,8 +1944,15 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	// not depend on which goroutine won.
 	var wg sync.WaitGroup
 	var mutating []int
+	unrecorded := func(i int) bool {
+		if l.recordFailure() == nil {
+			return false
+		}
+		results[i] = callOutcome{result: tools.Result{Content: notRecorded, IsError: true}, set: true}
+		return true
+	}
 	for i, call := range calls {
-		if !approved[i] {
+		if !approved[i] || unrecorded(i) {
 			continue
 		}
 		tool, found := l.Tools.Get(call.Name)
@@ -1955,6 +1970,9 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	wg.Wait()
 
 	for _, i := range mutating {
+		if unrecorded(i) {
+			continue
+		}
 		res, terminal := l.invoke(ctx, calls[i])
 		results[i] = callOutcome{result: res, terminal: terminal, set: true}
 		if terminal != "" {

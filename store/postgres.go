@@ -52,8 +52,8 @@ type Postgres struct {
 	owners        OwnerPolicy
 	ownerAccounts func() ([]*auth.User, error)
 
-	// keys caches each session's payload cipher by session id; see seal.go.
-	keys sync.Map
+	// keys caches the payload ciphers of sessions written lately; see seal.go.
+	keys keyCache
 	// anchor is given a session's chain head at each run's end.
 	anchor func(tenant, session string, pos int64, hash string)
 }
@@ -450,7 +450,7 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 
 	// Sealed with the session's key, so deleting the key erases it.
 	stored := []byte(ev.Payload)
-	if a, err := p.sealer(ctx, ev.SessionID, true); err != nil {
+	if a, err := p.sealer(ctx, ev.SessionID); err != nil {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	} else if a != nil {
 		if stored, err = sealPayload(a, ev.SessionID, ev.Seq, stored); err != nil {
@@ -641,6 +641,7 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 	defer rows.Close()
 
 	var out []agent.Event
+	keys := p.readKeys()
 	for rows.Next() {
 		var ev agent.Event
 		var payload []byte
@@ -652,7 +653,7 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
-		if payload, err = p.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+		if payload, err = keys.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
 			return nil, err
 		}
 		ev.Payload = payload
@@ -755,9 +756,9 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 func (h *Held) ClaimResume(ctx context.Context, sessionID string) (bool, error) {
 	tag, err := h.pool.Exec(ctx, `
 		UPDATE sessions SET ended_at = NULL, terminal_reason = NULL, node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL
+		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL AND node_id IS DISTINCT FROM $4
 		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
-		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String())
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String(), HandedOver)
 	if err != nil {
 		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
 	}
@@ -1012,13 +1013,14 @@ var ErrHeldElsewhere = errors.New("the session is held by another process")
 //
 // It never takes a session from another live holder: the row must hold no
 // one, this node, or a holder whose claim is older than HolderStale (a
-// process that went away). Otherwise it answers ErrHeldElsewhere.
+// process that went away). Otherwise it answers ErrHeldElsewhere. A row
+// handed over is taken only through ClaimHandedOver.
 func (p *Postgres) ClaimNode(ctx context.Context, sessionID, nodeID string) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND deleted_at IS NULL
+		WHERE id = $1 AND deleted_at IS NULL AND node_id IS DISTINCT FROM $4
 		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
-		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String())
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String(), HandedOver)
 	if err != nil {
 		return fmt.Errorf("claim node for %s: %w", sessionID, err)
 	}
@@ -1141,14 +1143,14 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
 	}
 	for _, id := range ids {
-		p.keys.Delete(id)
+		p.keys.drop(id)
 	}
 	return nil
 }
 
 // SaveCheckpoint records a file's prior content, backing /undo.
 func (p *Postgres) SaveCheckpoint(ctx context.Context, sessionID string, seq int64, path string, before []byte) error {
-	a, err := p.sealer(ctx, sessionID, true)
+	a, err := p.sealer(ctx, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1217,6 +1219,8 @@ func (p *Postgres) Scan(ctx context.Context, from, to time.Time, fn func(agent.E
 		return fmt.Errorf("scan events: %w", err)
 	}
 	defer rows.Close()
+	// A deleted session's events stay, for the chain, and open as erased.
+	keys := p.readKeys()
 	for rows.Next() {
 		var ev agent.Event
 		var payload []byte
@@ -1228,7 +1232,7 @@ func (p *Postgres) Scan(ctx context.Context, from, to time.Time, fn func(agent.E
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
-		if payload, err = p.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+		if payload, err = keys.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
 			return err
 		}
 		ev.Payload = payload

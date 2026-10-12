@@ -385,6 +385,9 @@ type Server struct {
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
+	// ownerSweep is set by the first sweepRemovedOwners: its OnChange listener
+	// is never removed, so a second would double every stop.
+	ownerSweep atomic.Bool
 	// holder is this process's liveness identity: NodeID when set, otherwise
 	// an id of its own for its lifetime. Every session it holds is claimed
 	// and heartbeated under it, so "no heartbeat" never reads as "dead".
@@ -3715,7 +3718,7 @@ const removedOwnerSweep = 15 * time.Second
 // the local accounts report a change, until ctx ends.
 func (s *Server) sweepRemovedOwners(ctx context.Context, every time.Duration) {
 	local := s.LocalAuth()
-	if local == nil || s.opts.OwnerActive != nil {
+	if local == nil || s.opts.OwnerActive != nil || !s.ownerSweep.CompareAndSwap(false, true) {
 		return
 	}
 	poke := make(chan struct{}, 1)
@@ -3762,7 +3765,9 @@ func (s *Server) stopRemovedOwners(ctx context.Context) int {
 	seen := map[target]bool{}
 	s.mu.RLock()
 	for _, live := range s.running {
-		owner := live.User
+		// releaseStale may have released it on a request's recheck already;
+		// its work still runs, so judge it by the owner it had.
+		owner := strings.TrimPrefix(live.User, auth.UnclaimedPrefix)
 		if !strings.HasPrefix(owner, auth.ProviderLocal+":") {
 			continue
 		}
@@ -3932,7 +3937,10 @@ func (s *Server) releaseNodeIfQuiet(live *liveSession) {
 	live.holdMu.Unlock()
 	live.mu.Lock()
 	stop := live.beatStop
-	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0
+	// A run handed over keeps its claim until HandOverRunning marks the row,
+	// so no writer slips in between the release and the mark.
+	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0 &&
+		live.Reason != agent.TermHandedOver
 	if quiet {
 		live.beatStop = nil
 	}
@@ -5008,6 +5016,25 @@ func (s *Server) ReleaseSessions(tenant, owner string) int {
 	return n
 }
 
+// ReleaseSessionsBefore is ReleaseSessions for the sessions this process
+// started or took up before before: an account made again at before owns
+// none of them, and keeps those it started or had taken up since.
+func (s *Server) ReleaseSessionsBefore(tenant, owner string, before time.Time) int {
+	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) || before.IsZero() {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, live := range s.running {
+		if live.Tenant == tenant && live.User == owner && live.Created.Before(before) {
+			live.User = auth.UnclaimedOwner(owner)
+			n++
+		}
+	}
+	return n
+}
+
 // elsewhere reports the node holding a session that this process does not,
 // so a caller can be told where to go rather than told it does not exist.
 //
@@ -5132,7 +5159,6 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	}
 	srv.Addr = ln.Addr().String()
 	go s.sweepOrphans(ctx, nodeStale)
-	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	stopped := make(chan struct{})
 	go func() {

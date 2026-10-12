@@ -631,6 +631,8 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 	// another creation time is another account under the same name.
 	if remade(s.accountMade, u.CreatedAt) {
 		l.endLocked(sid, WhyRemoved)
+		// As for a removal: what the old account held here is let go.
+		defer func() { go l.changed(old.Subject) }()
 		return nil, errSessionGone
 	}
 	if u.Revocations > s.revocations {

@@ -226,6 +226,14 @@ func TestUnknownOutcomeIsArmedFromTheRecord(t *testing.T) {
 	if !l.unknown.has("write", args) || l.unknown.has("write", json.RawMessage(`{}`)) {
 		t.Fatal("the unknown outcome was not armed from the record")
 	}
+	// A payload from before 1.2.8, as Postgres renders JSONB: spaced, keys in its own order.
+	l.NoteUnknownOutcomes([]Event{
+		{Seq: 3, Type: EvActionRequested, Payload: json.RawMessage(`{"call_id": "c2", "tool": "write", "args": {"content": "z", "path": "w"}}`)},
+		{Seq: 4, Type: EvObservation, Payload: mustJSON(Observation{CallID: "c2", Tool: "write", OutcomeUnknown: true})},
+	})
+	if !l.unknown.has("write", json.RawMessage(`{"path":"w","content":"z"}`)) {
+		t.Fatal("an unknown outcome recorded before 1.2.8 does not match the same call")
+	}
 }
 
 // A turn whose answer was recorded but not its end is ended, not answered twice.
@@ -262,5 +270,66 @@ func TestContinueTurnAfterTheAnswerOnlyEnds(t *testing.T) {
 	evs, _ = st.Events("sess1")
 	if end, ok := LastEnd(evs); !ok || end.Reason != TermCompleted {
 		t.Fatalf("no completed end: %s", types(evs))
+	}
+}
+
+// A turn taken over gives a person's own call and a pipeline's step, left
+// open, their outcome too, though neither is the model's to ask again.
+func TestContinueTurnSettlesOthersCalls(t *testing.T) {
+	st := NewMemStore()
+	p := NewRecorder(st, "sess1", "")
+	_, _ = p.Record(EvSessionStarted, ActorSystem, Trusted, map[string]string{})
+	_, _ = p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "go"})
+	_, _ = p.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 1})
+	args := mustJSON(map[string]string{"path": "x"})
+	_, _ = p.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{CallID: "mine", Tool: "read", Args: args})
+	_, _ = p.Record(EvActionApproved, ActorUser, Trusted, map[string]string{"call_id": "mine"})
+	_, _ = p.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: "step", Tool: "read", Args: args, Via: "skill research pipeline"})
+	evs, _ := st.Events("sess1")
+	open, ok := InFlight(evs)
+	if !ok || len(open.Calls) != 0 || len(open.Others) != 2 {
+		t.Fatalf("InFlight = %+v %v", open, ok)
+	}
+	sess, err := tools.NewSession(tempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := NewRecorder(st, "sess1", "")
+	rec.Advance(evs[len(evs)-1].Seq)
+	l := NewLoop(&scriptedAdapter{turns: []scriptedTurn{{text: "finished"}}}, tools.NewRegistry(tools.Read{}),
+		policy.New(policy.ModeDefault), AutoApprove{}, sess, rec, DefaultConfig())
+	msgs, err := Fork(evs, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.SetHistory(msgs, 1)
+	if reason, err := l.ContinueTurn(context.Background(), evs, open); err != nil || reason != TermCompleted {
+		t.Fatalf("ContinueTurn = %s, %v", reason, err)
+	}
+	evs, _ = st.Events("sess1")
+	var unknown, refused bool
+	ended := false
+	for _, e := range evs {
+		var p struct {
+			CallID         string `json:"call_id"`
+			Step           string `json:"step"`
+			OutcomeUnknown bool   `json:"outcome_unknown"`
+		}
+		_ = json.Unmarshal(e.Payload, &p)
+		switch {
+		case e.Type == EvSessionEnded:
+			ended = true
+		case ended:
+		case e.Type == EvObservation && p.CallID == "mine":
+			unknown = p.OutcomeUnknown
+		case e.Type == EvActionDenied && p.CallID == "step":
+			refused = p.Step == "handover"
+		}
+	}
+	if !unknown || !refused || !ended {
+		t.Fatalf("mine unknown %v, step refused %v, ended %v", unknown, refused, ended)
+	}
+	if !l.unknown.has("read", args) {
+		t.Fatal("the person's call that may have run is not asked before it runs again")
 	}
 }

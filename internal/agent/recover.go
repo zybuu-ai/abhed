@@ -133,6 +133,12 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 	if err := reconcileChildren(store, parent, sessionID, events); err != nil {
 		return err
 	}
+	// Every request keeps one outcome, so none is left open under the end.
+	if open, ok := InFlight(events); ok {
+		if err := settleOpenCalls(parent, append(open.Calls, open.Others...)); err != nil {
+			return err
+		}
+	}
 	end, ok := LastEnd(events)
 	settled := end.Background > 0 || len(unreturned(events)) > 0
 	if !ok || lastEndSeq(events) < lastRunSeq(events) {

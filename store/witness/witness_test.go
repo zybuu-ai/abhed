@@ -50,15 +50,40 @@ func TestWitnessCatchesACutAndARewrite(t *testing.T) {
 		}
 		return l[n-1], true, nil
 	}
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 0 {
+	key, err := PublicKey(filepath.Join(dir, "k", "witness.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 0 {
 		t.Fatalf("an intact record failed: %+v", p)
 	}
+	// Statements forged under a key of their own verify alone, but not as this installation's.
+	forger, err := Open(Config{File: filepath.Join(dir, "forged.jsonl"), KeyFile: filepath.Join(dir, "forger.key")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forger.Local("default", "s1", 2, 2, "h2")
+	ff, _ := os.Open(filepath.Join(dir, "forged.jsonl"))
+	defer ff.Close()
+	forged, bad := Read(ff)
+	if len(bad) != 0 || len(forged) != 1 {
+		t.Fatalf("forged: %d, %v", len(forged), bad)
+	}
+	if p, _ := Check(forged, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "not signed by this installation") {
+		t.Fatalf("a statement under another key passed: %+v", p)
+	}
+	if _, err := Check(stmts, nil, "local", "default", at); err == nil {
+		t.Fatal("a check with no installation key ran")
+	}
+	if _, err := PublicKey(filepath.Join(dir, "none.key")); err == nil {
+		t.Fatal("a missing key file gave a key")
+	}
 	record["s1"] = []string{"h1", "h2"} // cut back
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
+	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
 		t.Fatalf("a cut record passed: %+v", p)
 	}
 	record["s1"] = []string{"h1", "h2", "x3"} // rechained
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
+	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
 		t.Fatalf("a rewritten record passed: %+v", p)
 	}
 }
@@ -93,5 +118,51 @@ func TestWitnessRefusesALink(t *testing.T) {
 	_ = os.Symlink(filepath.Join(dir, "elsewhere"), filepath.Join(dir, "heads.jsonl"))
 	if _, err := Open(Config{File: filepath.Join(dir, "heads.jsonl"), KeyFile: filepath.Join(dir, "witness.key")}); err == nil {
 		t.Fatal("a link was taken as the witness file")
+	}
+}
+
+// A head that does not reach the URL or the file is reported as it fails,
+// not only at close.
+func TestWitnessReportsFailuresAsTheyHappen(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	got := make(chan error, 4)
+	file := filepath.Join(dir, "heads.jsonl")
+	w, err := Open(Config{File: file, URL: srv.URL, KeyFile: filepath.Join(dir, "witness.key"),
+		OnError: func(err error) { got <- err }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close(time.Second)
+	w.Postgres("t", "s1", 1, "h")
+	select {
+	case err := <-got:
+		if !strings.Contains(err.Error(), "503") {
+			t.Fatalf("reported %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the failed post was not reported before close")
+	}
+	// The file goes away (a share unmounted): reported at once, from the writer.
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(file, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w.Postgres("t", "s1", 2, "h2")
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case err := <-got:
+			if !strings.Contains(err.Error(), "503") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the failed append was not reported")
+		}
 	}
 }

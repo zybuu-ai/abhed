@@ -460,6 +460,23 @@ func TestClientCertificateRevocation(t *testing.T) {
 	if w := strings.Join(l.Warnings(), "\n"); !strings.Contains(w, "past its next update") {
 		t.Fatalf("no warning for a stale CRL: %q", w)
 	}
+	// CRLs and serials do not mix: a serial beside a CRL is refused, not ignored,
+	// before or after it; text openssl prints around a CRL is still read past.
+	bobLeaf, _ := x509.ParseCertificate(bob.Certificate[0])
+	clean := f.crl(t, time.Now().Add(time.Hour))
+	for name, body := range map[string][]byte{
+		"serial first": append([]byte(bobLeaf.SerialNumber.Text(16)+"\n"), clean...),
+		"serial after": append(append([]byte{}, clean...), []byte("serial="+bobLeaf.SerialNumber.Text(16)+"\n")...),
+	} {
+		_ = os.WriteFile(revoked, body, 0o600)
+		if _, err := l.Reload(); err == nil || !strings.Contains(err.Error(), "serial") {
+			t.Fatalf("%s: a serial beside a CRL was not refused: %v", name, err)
+		}
+	}
+	_ = os.WriteFile(revoked, append([]byte("Certificate Revocation List (CRL):\n    Version 2 (0x1)\n"), clean...), 0o600)
+	if _, err := l.Reload(); err != nil {
+		t.Fatalf("openssl's text around a CRL: %v", err)
+	}
 	// A missing or unreadable file stops startup.
 	if _, err := New(Spec{Certs: []Pair{srv}, ClientCAFile: ca, ClientRevokedFile: revoked + ".missing", ClientAuth: RequireClientCert, Logger: quiet()}); err == nil {
 		t.Fatal("a missing revocation file was accepted at startup")

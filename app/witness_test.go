@@ -1,12 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -83,7 +87,8 @@ func TestRecordVerifyPostgresChainAndWitness(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Storage.Driver, cfg.Storage.DSN, cfg.Storage.SingleRole = "postgres", dsn, true
 	heads := filepath.Join(t.TempDir(), "heads.jsonl")
-	w, err := witness.Open(witness.Config{File: heads, KeyFile: filepath.Join(t.TempDir(), "k")})
+	keyFile := filepath.Join(t.TempDir(), "k")
+	w, err := witness.Open(witness.Config{File: heads, KeyFile: keyFile})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,13 +107,54 @@ func TestRecordVerifyPostgresChainAndWitness(t *testing.T) {
 	_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
 	_, _ = r.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted})
 	var out, errb strings.Builder
-	if code := verifyPostgres(cfg, []string{"-witness", heads, id}, &out, &errb); code != 0 || !strings.Contains(out.String(), "ok      "+id) {
+	if code := verifyPostgres(cfg, []string{"-witness", heads, "-witness-key", keyFile, id}, &out, &errb); code != 0 || !strings.Contains(out.String(), "ok      "+id) {
 		t.Fatalf("verify: %d %s %s", code, out.String(), errb.String())
+	}
+	// Without the installation's key the heads are not checked at all.
+	if code := verifyPostgres(cfg, []string{"-witness", heads, id}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "-witness-key") {
+		t.Fatalf("heads checked with no key: %d %s", code, errb.String())
+	}
+	// A head signed by another key, though it matches the database, fails.
+	forged := filepath.Join(t.TempDir(), "forged.jsonl")
+	fw, err := witness.Open(witness.Config{File: forged, KeyFile: filepath.Join(t.TempDir(), "other")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, ok, err := pg.ChainHashAt(ctx, id, 2)
+	if err != nil || !ok {
+		t.Fatalf("head: %v %v", ok, err)
+	}
+	fw.Postgres("default", id, 2, h)
+	out.Reset()
+	if code := verifyPostgres(cfg, []string{"-witness", forged, "-witness-key", keyFile, id}, &out, &errb); code == 0 ||
+		!strings.Contains(out.String(), "not signed by this installation") {
+		t.Fatalf("a head under another key passed: %s", out.String())
 	}
 	// A witnessed head the database does not hold: as after a restore.
 	w.Postgres("default", id, 9, "f00")
 	out.Reset()
-	if code := verifyPostgres(cfg, []string{"-witness", heads, id}, &out, &errb); code == 0 || !strings.Contains(out.String(), "FAILED  "+id) {
+	if code := verifyPostgres(cfg, []string{"-witness", heads, "-witness-key", keyFile, id}, &out, &errb); code == 0 || !strings.Contains(out.String(), "FAILED  "+id) {
 		t.Fatalf("a missing witnessed head passed: %s", out.String())
+	}
+}
+
+// Failures to reach the witness are logged as they happen, the first at
+// once and then at most one per interval, saying how many were not logged.
+func TestWitnessReporterLogsAtOnceThenThrottles(t *testing.T) {
+	var buf bytes.Buffer
+	report := witnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), 50*time.Millisecond)
+	report(errors.New("first"))
+	if !strings.Contains(buf.String(), "first") {
+		t.Fatalf("the first failure was not logged at once: %q", buf.String())
+	}
+	report(errors.New("second"))
+	report(errors.New("third"))
+	if strings.Contains(buf.String(), "second") || strings.Contains(buf.String(), "third") {
+		t.Fatalf("failures within the interval were logged: %q", buf.String())
+	}
+	time.Sleep(60 * time.Millisecond)
+	report(errors.New("fourth"))
+	if !strings.Contains(buf.String(), "fourth") || !strings.Contains(buf.String(), "failures_not_logged=2") {
+		t.Fatalf("after the interval: %q", buf.String())
 	}
 }

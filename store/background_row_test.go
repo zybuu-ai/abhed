@@ -299,6 +299,19 @@ func TestHandOverAndClaim(t *testing.T) {
 	if node, err := p.NodeFor(ctx, id, HolderStale); err != nil || node != "" {
 		t.Fatalf("a handed-over session is routed to %q (%v)", node, err)
 	}
+	// Only ClaimHandedOver takes it: not a plain claim, nor a resume's.
+	if err := p.ClaimNode(ctx, id, "node-c"); !errors.Is(err, ErrHeldElsewhere) {
+		t.Fatalf("ClaimNode took a handed-over session: %v", err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET ended_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := p.HeldBy("node-c", nil).ClaimResume(ctx, id); err != nil || ok {
+		t.Fatalf("ClaimResume took a handed-over session: %v %v", ok, err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET ended_at = NULL WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
 	if ok, err := p.ClaimHandedOver(ctx, id, "node-b"); err != nil || !ok {
 		t.Fatalf("claim: %v %v", ok, err)
 	}

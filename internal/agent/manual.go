@@ -199,7 +199,11 @@ func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision poli
 	if asked && answer == Confirmed {
 		approved["confirmed"] = "true"
 	}
-	l.record(EvActionApproved, actorFor(ByUser), approved)
+	// Not run unless its approval is on record, as for the model's calls.
+	if _, err := l.Recorder.Record(EvActionApproved, actorFor(ByUser), Trusted, approved); err != nil {
+		l.noteRecordErr(err)
+		return nil, err
+	}
 	return nil, nil
 }
 

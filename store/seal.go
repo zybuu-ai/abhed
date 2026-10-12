@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -29,18 +30,19 @@ var erasedPayload = json.RawMessage(`{"erased":true}`)
 // sealedBlob marks a sealed checkpoint pre-image.
 var sealedBlob = []byte("abhed.sealed.v1:")
 
-// sealer returns the session's cipher, making its key when create is set and
-// the session has none and is not deleted. Nil with no error means the
-// session has no key: written before keys, or erased.
-func (p *Postgres) sealer(ctx context.Context, sessionID string, create bool) (cipher.AEAD, error) {
-	if a, ok := p.keys.Load(sessionID); ok {
-		return a.(cipher.AEAD), nil
+// sealer returns the session's cipher for a write, making its key when the
+// session has none and is not deleted. Nil with no error means the session
+// has no key: written before keys, or erased. Reads never use this cache: see
+// readKeys.
+func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, error) {
+	if a, ok := p.keys.load(sessionID); ok {
+		return a, nil
 	}
 	key, err := p.sessionKey(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if key == nil && create {
+	if key == nil {
 		fresh := make([]byte, 32)
 		if _, err := rand.Read(fresh); err != nil {
 			return nil, fmt.Errorf("make the key of session %s: %w", sessionID, err)
@@ -58,21 +60,78 @@ func (p *Postgres) sealer(ctx context.Context, sessionID string, create bool) (c
 	if key == nil {
 		return nil, nil
 	}
+	a, err := newAEAD(sessionID, key)
+	if err != nil {
+		return nil, err
+	}
+	p.keys.store(sessionID, a)
+	return a, nil
+}
+
+// keyCacheMax bounds the write ciphers a store keeps.
+const keyCacheMax = 1024
+
+// keyCache is the write ciphers of the sessions a store wrote lately, at most
+// max (keyCacheMax when 0); a full cache lets an arbitrary one go.
+type keyCache struct {
+	mu  sync.Mutex
+	m   map[string]cipher.AEAD
+	max int
+}
+
+func (c *keyCache) load(id string) (cipher.AEAD, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a, ok := c.m[id]
+	return a, ok
+}
+
+func (c *keyCache) store(id string, a cipher.AEAD) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = map[string]cipher.AEAD{}
+	}
+	limit := c.max
+	if limit <= 0 {
+		limit = keyCacheMax
+	}
+	for k := range c.m {
+		if len(c.m) < limit {
+			break
+		}
+		delete(c.m, k)
+	}
+	c.m[id] = a
+}
+
+func (c *keyCache) drop(id string) {
+	c.mu.Lock()
+	delete(c.m, id)
+	c.mu.Unlock()
+}
+
+func (c *keyCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.m)
+}
+
+func newAEAD(sessionID string, key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("the key of session %s: %w", sessionID, err)
 	}
-	a, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	p.keys.Store(sessionID, a)
-	return a, nil
+	return cipher.NewGCM(block)
 }
 
 func (p *Postgres) sessionKey(ctx context.Context, sessionID string) ([]byte, error) {
+	return p.queryKey(ctx, `SELECT key FROM session_keys WHERE session_id = $1`, sessionID)
+}
+
+func (p *Postgres) queryKey(ctx context.Context, q, sessionID string) ([]byte, error) {
 	var key []byte
-	err := p.pool.QueryRow(ctx, `SELECT key FROM session_keys WHERE session_id = $1`, sessionID).Scan(&key)
+	err := p.pool.QueryRow(ctx, q, sessionID).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -80,6 +139,36 @@ func (p *Postgres) sessionKey(ctx context.Context, sessionID string) ([]byte, er
 		return nil, fmt.Errorf("read the key of session %s: %w", sessionID, err)
 	}
 	return key, nil
+}
+
+// readKeys opens the payloads of one read. Each session's key is read from the
+// database once per read, never from the cache, so a session another process
+// erased opens as erased here too; a deleted session's key counts as gone.
+type readKeys struct {
+	p   *Postgres
+	got map[string]cipher.AEAD
+}
+
+func (p *Postgres) readKeys() *readKeys { return &readKeys{p: p, got: map[string]cipher.AEAD{}} }
+
+func (r *readKeys) key(ctx context.Context, sessionID string) (cipher.AEAD, error) {
+	if a, ok := r.got[sessionID]; ok {
+		return a, nil
+	}
+	key, err := r.p.queryKey(ctx, `
+		SELECT k.key FROM session_keys k JOIN sessions s ON s.id = k.session_id
+		WHERE k.session_id = $1 AND s.deleted_at IS NULL`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var a cipher.AEAD
+	if key != nil {
+		if a, err = newAEAD(sessionID, key); err != nil {
+			return nil, err
+		}
+	}
+	r.got[sessionID] = a
+	return a, nil
 }
 
 // aad binds a sealed payload to its place, so one cannot be moved to another step.
@@ -99,7 +188,7 @@ func sealPayload(a cipher.AEAD, sessionID string, seq int64, payload []byte) ([]
 
 // openPayload is a stored payload as it was written: unsealed with the
 // session's key, or the erased marker when the key is gone or does not open it.
-func (p *Postgres) openPayload(ctx context.Context, sessionID string, seq int64, stored []byte) ([]byte, error) {
+func (r *readKeys) openPayload(ctx context.Context, sessionID string, seq int64, stored []byte) ([]byte, error) {
 	if !bytes.Contains(stored, []byte(sealedKey)) {
 		return stored, nil
 	}
@@ -107,7 +196,7 @@ func (p *Postgres) openPayload(ctx context.Context, sessionID string, seq int64,
 	if json.Unmarshal(stored, &m) != nil || len(m) != 1 || m[sealedKey] == "" {
 		return stored, nil //nolint:nilerr // not a sealed payload: one written before keys, kept as it is
 	}
-	a, err := p.sealer(ctx, sessionID, false)
+	a, err := r.key(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}

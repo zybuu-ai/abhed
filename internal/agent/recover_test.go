@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -132,4 +133,73 @@ func TestReconcileKeepsACompletedRunBeforeASuggestion(t *testing.T) {
 			t.Fatalf("background %d: the completed run's end became %+v", bg, end)
 		}
 	}
+}
+
+// openCallsRecord is a run that stopped with four calls open: the model's
+// approved call and its pending ask, a person's approved call, and a
+// pipeline's pending step.
+func openCallsRecord(t *testing.T) (*MemStore, []Event) {
+	t.Helper()
+	st := NewMemStore()
+	p := NewRecorder(st, "p", "")
+	req := func(actor Actor, id, via string, approved bool) {
+		_, _ = p.Record(EvActionRequested, actor, Trusted, ActionRequested{CallID: id, Tool: "read", Args: mustJSON(map[string]string{"path": id}), Via: via})
+		if approved {
+			_, _ = p.Record(EvActionApproved, ActorSystem, Trusted, map[string]string{"call_id": id})
+		}
+	}
+	_, _ = p.Record(EvSessionStarted, ActorSystem, Trusted, map[string]string{})
+	_, _ = p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "go"})
+	_, _ = p.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 1})
+	req(ActorAgent, "ran", "", true)
+	req(ActorAgent, "asked", "", false)
+	req(ActorUser, "mine", "", true)
+	req(ActorAgent, "step", "skill research pipeline", false)
+	evs, _ := st.Events("p")
+	return st, evs
+}
+
+// checkSettled fails unless each of openCallsRecord's calls has its one
+// outcome before the end: unknown for the approved, a refusal for the rest.
+func checkSettled(t *testing.T, evs []Event) {
+	t.Helper()
+	unknown, denied := map[string]int{}, map[string]int{}
+	ended := false
+	for _, e := range evs {
+		var p struct {
+			CallID         string `json:"call_id"`
+			Step           string `json:"step"`
+			OutcomeUnknown bool   `json:"outcome_unknown"`
+		}
+		_ = json.Unmarshal(e.Payload, &p)
+		switch e.Type {
+		case EvSessionEnded:
+			ended = true
+		case EvObservation:
+			if p.OutcomeUnknown && !ended {
+				unknown[p.CallID]++
+			}
+		case EvActionDenied:
+			if p.Step == "handover" && !ended {
+				denied[p.CallID]++
+			}
+		}
+	}
+	if unknown["ran"] != 1 || unknown["mine"] != 1 || denied["asked"] != 1 || denied["step"] != 1 || len(unknown)+len(denied) != 4 {
+		t.Fatalf("outcomes: unknown %v, refused %v", unknown, denied)
+	}
+}
+
+// A record ended by Reconcile keeps one outcome for every request it left
+// open, whoever made it.
+func TestReconcileSettlesOpenCalls(t *testing.T) {
+	st, evs := openCallsRecord(t)
+	if err := Reconcile(st, "p", evs); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ = st.Events("p")
+	if end, ok := LastEnd(evs); !ok || !end.Recovered {
+		t.Fatalf("end = %+v %v", end, ok)
+	}
+	checkSettled(t, evs)
 }

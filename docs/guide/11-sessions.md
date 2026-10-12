@@ -211,9 +211,20 @@ An edition that runs replicas on one Postgres can move running turns too
   answered "outcome unknown", and the same call later in the session is
   asked of a person first, in every mode. Then the model goes on with the
   turn, on the owner's behalf while the owner may still act.
+- A call runs only once its approval is on record. A replica whose write is
+  refused (it no longer holds the session, or the database fails) does not
+  run the call, so the replica that goes on finds no approval and asks
+  again; nothing runs twice for want of a record.
 - Every request keeps exactly one outcome, and the record stays
   append-only: the old request is denied with step `handover` before its new
-  call is asked.
+  call is asked. A person's own call and a pipeline's step left open are not
+  asked again: an approved one is answered "outcome unknown" (and asks a
+  person before it runs again), any other is denied with step `handover`.
+- A take-over that fails after it claimed the session, and the recovery of a
+  turn by a replica that does not continue turns, end the session as
+  recovered. Before the end, each open call gets its outcome there too: one
+  that was approved is answered "outcome unknown", and any other is denied
+  with step `handover`.
 
 Not covered: a background task, or a foreground subagent, running on the
 replica that stopped is recorded as lost or ended and does not go on; an
@@ -277,7 +288,11 @@ pretending:
   is a property this store promises, but what is left in them is ciphertext
   no one can open: type, actor, time and hash remain, the words do not. Its
   subagents' sessions go the same way. The mark records who deleted it and
-  when. What erasure does not reach: sessions recorded before 1.2.8, whose
+  when. Every replica reads a session's key from the database on each read
+  rather than from memory, so once the delete commits no server that shares
+  the database opens those payloads again; an audit export over the time
+  range shows the deleted session's events as `{"erased":true}`. What
+  erasure does not reach: sessions recorded before 1.2.8, whose
   payloads were never sealed; a database backup taken before the delete,
   which still holds the key until it expires; and, until `VACUUM` runs, the
   deleted key's bytes in the table's free space.

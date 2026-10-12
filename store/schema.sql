@@ -523,6 +523,12 @@ BEGIN
      AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
     RAISE EXCEPTION 'a session''s owner changes only when its account is removed (to unclaimed:%), or by a migration', OLD.user_id;
   END IF;
+  -- A deletion is final: its key is gone, and the mark says who and when.
+  IF OLD.deleted_at IS NOT NULL
+     AND (NEW.deleted_at IS DISTINCT FROM OLD.deleted_at OR NEW.deleted_by IS DISTINCT FROM OLD.deleted_by)
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+    RAISE EXCEPTION 'a session''s deletion is not undone or rewritten';
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -571,5 +577,24 @@ DROP POLICY IF EXISTS session_keys_tenant_isolation ON session_keys;
 CREATE POLICY session_keys_tenant_isolation ON session_keys
   USING (tenant_id = current_setting('app.tenant_id', true))
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- A key goes only with its session's deletion, marked first in the same
+-- transaction, so the server's role cannot make a live session unreadable.
+CREATE OR REPLACE FUNCTION abhed_session_keys_guard() RETURNS trigger AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM sessions WHERE id = OLD.session_id AND deleted_at IS NOT NULL)
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+    RAISE EXCEPTION 'a session''s key is deleted only with the session';
+  END IF;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS session_keys_guard ON session_keys;
+CREATE TRIGGER session_keys_guard BEFORE DELETE ON session_keys
+  FOR EACH ROW EXECUTE FUNCTION abhed_session_keys_guard();
+DROP TRIGGER IF EXISTS session_keys_no_truncate ON session_keys;
+CREATE TRIGGER session_keys_no_truncate BEFORE TRUNCATE ON session_keys
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
 
 INSERT INTO schema_version (version) VALUES (10) ON CONFLICT DO NOTHING;

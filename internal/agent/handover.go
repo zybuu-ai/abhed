@@ -45,6 +45,9 @@ type OpenCall struct {
 type OpenTurn struct {
 	ThroughSeq int64
 	Calls      []OpenCall
+	// Others are a person's own calls and a pipeline's steps left open: not
+	// the model's to ask again, but each still owed an outcome.
+	Others []OpenCall
 }
 
 // InFlight reports the run a record left going: one that wrote after its
@@ -56,6 +59,8 @@ func InFlight(events []Event) (OpenTurn, bool) {
 	}
 	open := OpenTurn{ThroughSeq: events[len(events)-1].Seq}
 	from := lastEndSeq(events)
+	var all []OpenCall
+	others := map[string]bool{}
 	byID := map[string]int{}
 	settled := map[string]bool{}
 	for _, e := range events {
@@ -65,12 +70,13 @@ func InFlight(events []Event) (OpenTurn, bool) {
 		switch e.Type {
 		case EvActionRequested:
 			var a ActionRequested
-			// A person's own call and a pipeline's step are not the model's.
-			if e.Actor == ActorUser || json.Unmarshal(e.Payload, &a) != nil || a.Via != "" {
+			if json.Unmarshal(e.Payload, &a) != nil {
 				continue
 			}
-			byID[a.CallID] = len(open.Calls)
-			open.Calls = append(open.Calls, OpenCall{Request: e,
+			// A person's own call and a pipeline's step are not the model's.
+			others[a.CallID] = e.Actor == ActorUser || a.Via != ""
+			byID[a.CallID] = len(all)
+			all = append(all, OpenCall{Request: e,
 				Call: model.ToolCall{ID: a.CallID, Name: a.Tool, Args: objectOr(a.Args)}})
 		case EvActionApproved, EvActionDenied, EvObservation:
 			var p struct {
@@ -83,20 +89,45 @@ func InFlight(events []Event) (OpenTurn, bool) {
 			switch {
 			case !ok:
 			case e.Type == EvActionApproved:
-				open.Calls[i].Approved = true
+				all[i].Approved = true
 			default:
 				settled[p.CallID] = true
 			}
 		}
 	}
-	calls := open.Calls[:0]
-	for _, c := range open.Calls {
-		if !settled[c.Call.ID] {
-			calls = append(calls, c)
+	for _, c := range all {
+		switch {
+		case settled[c.Call.ID]:
+		case others[c.Call.ID]:
+			open.Others = append(open.Others, c)
+		default:
+			open.Calls = append(open.Calls, c)
 		}
 	}
-	open.Calls = calls
 	return open, true
+}
+
+// notRunStopped is why an open call that never ran is refused.
+const notRunStopped = "Not run: the process asking for it stopped."
+
+// settleOpenCalls gives each call its one outcome without running it: one
+// that may have run is answered as outcome unknown, any other is refused.
+func settleOpenCalls(rec *Recorder, calls []OpenCall) error {
+	for _, c := range calls {
+		var err error
+		if c.Approved {
+			_, err = rec.Record(EvObservation, ActorSystem, Trusted, Observation{CallID: c.Call.ID, Tool: c.Call.Name,
+				Content: unknownOutcome, IsError: true, OutcomeUnknown: true})
+		} else {
+			_, err = rec.Record(EvActionDenied, ActorSystem, Trusted, map[string]string{
+				"call_id": c.Call.ID, "reason": notRunStopped, "step": "handover", "by": BySystem,
+			})
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // unknownOutcome answers a call that may have run before its process stopped.
@@ -115,7 +146,17 @@ type mayHaveRun struct {
 	keys map[string]bool
 }
 
-func runKey(tool string, args json.RawMessage) string { return tool + "\x00" + string(args) }
+// runKey compares arguments as JSON values, not bytes: a payload from before
+// 1.2.8 comes back from Postgres re-rendered, with its own spacing and key order.
+func runKey(tool string, args json.RawMessage) string {
+	var v any
+	if json.Unmarshal(args, &v) == nil {
+		if b, err := json.Marshal(v); err == nil {
+			args = b
+		}
+	}
+	return tool + "\x00" + string(args)
+}
 
 func (m *mayHaveRun) add(tool string, args json.RawMessage) {
 	m.mu.Lock()
@@ -212,12 +253,20 @@ func (l *Loop) ContinueTurn(ctx context.Context, events []Event, open OpenTurn) 
 	if _, err := l.Recorder.Record(EvTurnContinued, ActorSystem, Trusted, note); err != nil {
 		return TermError, err
 	}
+	for _, c := range open.Others {
+		if c.Approved {
+			l.unknown.add(c.Call.Name, c.Call.Args)
+		}
+	}
+	if err := settleOpenCalls(l.Recorder, open.Others); err != nil {
+		return TermError, err
+	}
 	// Each old request gets its one outcome. A call that never ran is refused
 	// here, before its new call is asked; one that may have run is answered
 	// after the new calls, so a rebuild keeps them all in the one turn.
 	results := map[string]string{}
 	for _, c := range open.Calls {
-		why := "Not run: the process asking for it stopped."
+		why := notRunStopped
 		switch {
 		case c.Approved:
 			l.unknown.add(c.Call.Name, c.Call.Args)
