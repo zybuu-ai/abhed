@@ -118,7 +118,10 @@ the session's CA: its HTTPS then fails, and the failed handshake is recorded
 with rule `tls`. That is the one thing inspection cannot reach: a pinned
 client cannot be inspected, so keep host lists narrow and free of
 general-purpose hosts for such clients. Only HTTP/1.1 is spoken inside; a
-client that asks for HTTP/2 falls back to it. Inspection applies to
+client that asks for HTTP/2 falls back to it. A request sent with
+`Expect: 100-continue` (curl does so for uploads over 1 MB) is answered
+`100 Continue` by the proxy once it is allowed, and its body goes on to the
+server without the expectation. Inspection applies to
 commands; Abhed's own requests are judged in-process with their methods and
 paths already.
 

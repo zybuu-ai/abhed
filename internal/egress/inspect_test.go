@@ -218,7 +218,7 @@ func TestInspectedTunnelWithoutTLSIsJudgedByHostAndPort(t *testing.T) {
 // handshake, even for a client that would accept any certificate.
 func TestInspectedTunnelRefusesAnotherTLSName(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "reached") }))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close) // after the proxy and the client, which a failure leaves open
 	port := portOf(t, upstream.URL)
 	roots := x509.NewCertPool()
 	roots.AddCert(upstream.Certificate())
@@ -247,7 +247,7 @@ func TestInspectedTunnelRefusesAnotherTLSName(t *testing.T) {
 // never reaches the server.
 func TestInspectedTunnelRefusesAnUpgrade(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "reached") }))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close) // after the proxy and the client, which a failure leaves open
 	port := portOf(t, upstream.URL)
 	roots := x509.NewCertPool()
 	roots.AddCert(upstream.Certificate())
@@ -267,5 +267,47 @@ func TestInspectedTunnelRefusesAnUpgrade(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden || strings.Contains(string(b), "reached") {
 		t.Fatalf("an upgrade: %d %s", resp.StatusCode, b)
+	}
+}
+
+// A client that waits for 100 Continue before its body is answered by the
+// proxy once the request is allowed, and its upload goes through.
+func TestInspectedTunnelAnswersExpectContinue(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_, _ = io.WriteString(w, "got "+string(b))
+	}))
+	t.Cleanup(upstream.Close) // after the proxy and the client, which a failure leaves open
+	port := portOf(t, upstream.URL)
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	p, _ := inspecting(t, []Rule{{Host: "127.0.0.1", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}, roots)
+	ca := x509.NewCertPool()
+	ca.AppendCertsFromPEM(p.CA())
+	conn, br := openTunnel(t, p, "call-100", fmt.Sprintf("127.0.0.1:%d", port))
+	tc := tls.Client(&prefixed{Conn: conn, r: br}, &tls.Config{ServerName: "127.0.0.1", RootCAs: ca})
+	if _, err := fmt.Fprintf(tc, "POST /up HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n", port); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	tr := bufio.NewReader(tc)
+	line, err := tr.ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "HTTP/1.1 100") {
+		t.Fatalf("no 100 Continue before the body: %q %v", line, err)
+	}
+	if _, err := tr.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(tc, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(tr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || string(b) != "got hello" {
+		t.Fatalf("the upload: %d %q", resp.StatusCode, b)
 	}
 }
