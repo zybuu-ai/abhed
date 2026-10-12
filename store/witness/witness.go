@@ -113,6 +113,11 @@ func Open(cfg Config) (*Witness, error) {
 	if cfg.Client == nil {
 		cfg.Client = &http.Client{Timeout: 10 * time.Second}
 	}
+	if cfg.URL != "" {
+		if u, err := url.Parse(cfg.URL); err != nil || u.Host == "" || u.Scheme != "https" && u.Scheme != "http" {
+			return nil, errors.New("witness: the URL is not an http(s) address with a host")
+		}
+	}
 	key, err := loadKey(cfg.KeyFile)
 	if err != nil {
 		return nil, err
@@ -181,7 +186,10 @@ func (w *Witness) send(s Statement) {
 func (w *Witness) post(body []byte) error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		if ue, ok := err.(*url.Error); ok {
+			err = ue.Err
+		}
+		return fmt.Errorf("witness: a request to %s: %w", shown(w.cfg.URL), err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if w.cfg.Token != "" {

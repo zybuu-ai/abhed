@@ -274,7 +274,8 @@ is sent each statement as a JSON POST, with the named secret as a bearer
 token. Statements are signed with an Ed25519 key kept as `witness.key` in the
 records folder, which says which installation sent them; it does not stop the
 owner, who holds the key, so the witness's value is where it keeps them. A
-witness that is set and cannot be opened stops the start. A head that fails
+witness that is set and cannot be opened, or a `url` that is not an http(s)
+address, stops the start. A head that fails
 to reach the URL, or to be appended to the file, is logged as a warning when
 it fails, the first at once and then at most one a minute with a count of
 the rest, so a long-running `abhed serve` says so the same day. The URL is
