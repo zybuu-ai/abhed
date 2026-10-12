@@ -1,5 +1,6 @@
 // Package sandbox isolates agent-generated command execution. Tiers name
 // themselves honestly; none claims to stop a kernel exploit.
+// Design position: docs/architecture/03-security.md.
 package sandbox
 
 import (
