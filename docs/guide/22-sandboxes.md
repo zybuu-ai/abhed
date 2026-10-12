@@ -280,7 +280,10 @@ server.
 replica that made it, so `abhed serve` refuses `per_session` with
 `sessions.driver: process` there; use a driver every replica reaches
 (`docker` or `podman` on a shared engine, `microvm`, or an edition's
-cluster driver).
+cluster driver). This holds when `per_session` was turned on by itself for
+a server with several accounts too: such a server under HA with the
+`process` driver does not start until it names one of those drivers or sets
+`server.shared_sessions`.
 
 **Egress.** Under the network allowlist, a session's command on a driver
 that takes its egress from the control plane (`microvm`) gets a credential

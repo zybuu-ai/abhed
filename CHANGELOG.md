@@ -61,6 +61,11 @@ All notable changes to Abhed are recorded here. The format follows
   {"shared_sessions": true}` to keep every account in the server's one
   workspace as before. A server with a single local account is unchanged,
   but refuses a session for another account added while it runs.
+- Under `control_plane.ha`, a server with several accounts whose sessions
+  run on the `process` driver no longer starts: its per-session sandboxes
+  would live in one replica only. Set `control_plane.sessions.driver` to a
+  driver every replica reaches (`docker` or `podman` on a shared engine, or
+  `microvm`), or set `server.shared_sessions`.
 - A managed `permissions.ask` list now adds to the user's and the
   workspace's ask rules instead of replacing them. Under a managed file that
   sets aside the files' allow rules, a built-in allow rule your own list
