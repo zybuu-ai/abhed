@@ -1,10 +1,13 @@
 package egress
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -118,5 +121,151 @@ func TestInspectedTunnelRefusesAnotherHost(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != 403 || strings.Contains(string(b), "reached") {
 		t.Fatalf("another host: %d %s", resp.StatusCode, b)
+	}
+}
+
+// openTunnel sends a CONNECT for target through p as call and returns the
+// connection once the proxy answers 200.
+func openTunnel(t *testing.T, p *Proxy, call, target string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	c := issue(t, p, call)
+	conn, err := net.DialTimeout("tcp", p.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	auth := base64.StdEncoding.EncodeToString([]byte(call + ":" + c.token))
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", target, target, auth); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT %s: %v %v", target, resp, err)
+	}
+	return conn, br
+}
+
+func inspecting(t *testing.T, rules []Rule, roots *x509.CertPool) (*Proxy, *recorder) {
+	t.Helper()
+	rec := &recorder{}
+	p, err := Start(Options{Policy: mustCompile(t, Config{InspectTLS: true, Rules: rules}), Record: rec.add, Resolve: fakeDNS,
+		DialTimeout: 2 * time.Second, UpstreamRoots: roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	return p, rec
+}
+
+// Under inspection a tunnel that does not carry TLS is judged again by host
+// and port: a rule narrowed by path opened it, and does not let it through.
+func TestInspectedTunnelWithoutTLSIsJudgedByHostAndPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	got := make(chan int, 4)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+				b, _ := io.ReadAll(c)
+				got <- len(b)
+			}()
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", port)
+	for _, tc := range []struct {
+		name    string
+		paths   []string
+		through bool
+	}{{"narrowed", []string{"/ok"}, false}, {"whole host", nil, true}} {
+		p, rec := inspecting(t, []Rule{{Host: "127.0.0.1", Ports: []int{port}, Paths: tc.paths, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}, nil)
+		conn, br := openTunnel(t, p, "call-ssh", target)
+		if _, err := io.WriteString(conn, "SSH-2.0-OpenSSH_9.6\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		closeWrite(conn)
+		_, _ = io.ReadAll(br)
+		_ = conn.Close()
+		var n int
+		select {
+		case n = <-got:
+		case <-time.After(5 * time.Second):
+		}
+		if passed := n > 0; passed != tc.through {
+			t.Fatalf("%s: %d bytes reached the server, want through=%v", tc.name, n, tc.through)
+		}
+		if !tc.through {
+			e := rec.wait(t, "127.0.0.1")
+			if e.Decision != Deny || !strings.Contains(e.Reason, "does not carry TLS") {
+				t.Fatalf("%s: recorded %+v", tc.name, e)
+			}
+		}
+	}
+}
+
+// Under inspection a TLS name (SNI) other than the tunnel's host fails the
+// handshake, even for a client that would accept any certificate.
+func TestInspectedTunnelRefusesAnotherTLSName(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "reached") }))
+	defer upstream.Close()
+	port := portOf(t, upstream.URL)
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	p, rec := inspecting(t, []Rule{{Host: "127.0.0.1", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}, roots)
+	conn, br := openTunnel(t, p, "call-sni", fmt.Sprintf("127.0.0.1:%d", port))
+	tc := tls.Client(&prefixed{Conn: conn, r: br}, &tls.Config{ServerName: "elsewhere.example", InsecureSkipVerify: true}) // #nosec G402 -- the proxy must refuse even so
+	if err := tc.Handshake(); err == nil {
+		t.Fatal("a handshake naming another host was served")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		for _, e := range rec.evs {
+			if e.Rule == "tls" && e.Decision == Deny && strings.Contains(e.Reason, "elsewhere.example") {
+				rec.mu.Unlock()
+				return
+			}
+		}
+		rec.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no tls refusal recorded: %+v", rec.evs)
+}
+
+// A protocol upgrade inside an inspected tunnel is refused with 403 and
+// never reaches the server.
+func TestInspectedTunnelRefusesAnUpgrade(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "reached") }))
+	defer upstream.Close()
+	port := portOf(t, upstream.URL)
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	p, _ := inspecting(t, []Rule{{Host: "127.0.0.1", Ports: []int{port}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}, roots)
+	ca := x509.NewCertPool()
+	ca.AppendCertsFromPEM(p.CA())
+	u, _ := url.Parse(callURL(t, p, "call-up"))
+	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(u), TLSClientConfig: &tls.Config{RootCAs: ca}}}
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://127.0.0.1:%d/ws", port), nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || strings.Contains(string(b), "reached") {
+		t.Fatalf("an upgrade: %d %s", resp.StatusCode, b)
 	}
 }
