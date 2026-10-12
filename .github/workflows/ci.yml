@@ -106,10 +106,11 @@ jobs:
 
       # A tag can be moved to other code, and the release jobs hold the signing
       # identity: every action is used by full commit, its version in a comment.
-      - name: Actions are pinned to commits
+      # A self-hosted job runs only on a push here, never for a pull request.
+      - name: Actions are pinned, and self-hosted jobs never run for a pull request
         run: |
-          python3 scripts/ci/pinned-actions.py --self-test
-          python3 scripts/ci/pinned-actions.py .github/workflows/*.yml
+          python3 scripts/ci/workflow-rules.py --self-test
+          python3 scripts/ci/workflow-rules.py .github/workflows/*.yml
 
       # A ratchet, not a target: a PR may not lower coverage below what the
       # tree already achieves. Raising the floor is a deliberate commit.
@@ -465,9 +466,14 @@ jobs:
   # self-hosted runner labelled s390x is registered and the repository
   # variable ABHED_S390X_RUNNER is "true"; until then it is skipped, and the
   # docs say the fence on s390x is tested under emulation only.
+  # A pull request can rewrite this file, variable check and all, so the job
+  # runs only on a push to this repository, never a pull request. Before the
+  # runner is registered: it is ephemeral (--ephemeral, one job then gone), it
+  # sits in a runner group limited to this repository, and workflows from
+  # outside contributors' fork pull requests need approval (CONTRIBUTING.md).
   fence-s390x:
     name: Fence tier on a real s390x kernel
-    if: vars.ABHED_S390X_RUNNER == 'true'
+    if: github.event_name == 'push' && github.repository == 'zybuu-ai/abhed' && vars.ABHED_S390X_RUNNER == 'true'
     runs-on: [self-hosted, linux, s390x]
     timeout-minutes: 45
     env:

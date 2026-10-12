@@ -30,6 +30,15 @@ Some tests need more:
   `-short` to run them.
 - Postgres integration tests need `ABHED_TEST_DSN` pointed at a real database
   (`store`).
+- The `fence-s390x` CI job runs the fence's kernel tests on a self-hosted
+  Linux on Z runner, and only on a push to `zybuu-ai/abhed`, never on a pull
+  request. A self-hosted runner on a public repository runs whatever a
+  workflow tells it to, so before one is registered: it is ephemeral
+  (`config.sh --ephemeral`, a fresh machine or container for each job); it
+  is in a runner group limited to this repository; the repository's Actions
+  settings require approval to run workflows from fork pull requests by
+  outside contributors; and then the repository variable
+  `ABHED_S390X_RUNNER` is set to `true`.
 - The fuzz targets are `FuzzFoldOnlyTightensDeny` (`internal/policy`),
   `FuzzPolicySubjectIsExecutedSubject` (`internal/tools`), `FuzzCanonical`
   (`store/local`), `FuzzParseRequestLine` and `FuzzHostMatching`
