@@ -78,3 +78,26 @@ func TestServeSessionIsolation(t *testing.T) {
 		t.Fatalf("with shared_sessions set: %v", err)
 	}
 }
+
+// Under HA, a server with several accounts gets per-session sandboxes by
+// itself, and the process driver is refused for them as for a set per_session.
+func TestServeSessionIsolationUnderHANeedsASharedDriver(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "oidc"
+	cfg.ControlPlane.HA.Enabled = true
+	got, iso, err := serveSessionIsolation(cfg, t.TempDir())
+	if err != nil || !iso.auto {
+		t.Fatalf("auto %v: %v", iso.auto, err)
+	}
+	if err := checkPerSessionConfig(got); err == nil {
+		t.Fatal("several accounts under HA on the process driver were accepted")
+	}
+	got.ControlPlane.Sessions.Driver = "podman"
+	if err := checkPerSessionConfig(got); err != nil {
+		t.Fatalf("with a shared-engine driver: %v", err)
+	}
+	cfg.Server.SharedSessions = true
+	if got, _, _ := serveSessionIsolation(cfg, t.TempDir()); got.ControlPlane.PerSession {
+		t.Fatal("shared_sessions still turned per_session on")
+	}
+}
