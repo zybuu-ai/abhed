@@ -203,3 +203,46 @@ func TestReconcileSettlesOpenCalls(t *testing.T) {
 	}
 	checkSettled(t, evs)
 }
+
+// A lost child's open calls get their outcomes in its own record before the
+// end reconciling writes there.
+func TestReconcileSettlesALostChildsOpenCalls(t *testing.T) {
+	st := NewMemStore()
+	p := NewRecorder(st, "p", "")
+	c := NewRecorder(st, "c", "p")
+	_, _ = p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "go"})
+	_, _ = p.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "c", "task_id": "c", "background": true})
+	_, _ = c.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "c", "task_id": "c", "background": true})
+	_, _ = c.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "child work"})
+	_, _ = c.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 1})
+	_, _ = c.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: "ran", Tool: "read", Args: mustJSON(map[string]string{"path": "a"})})
+	_, _ = c.Record(EvActionApproved, ActorSystem, Trusted, map[string]string{"call_id": "ran"})
+	_, _ = c.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: "asked", Tool: "read", Args: mustJSON(map[string]string{"path": "b"})})
+	_, _ = p.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 1})
+	evs, _ := st.Events("p")
+	if err := Reconcile(st, "p", evs); err != nil {
+		t.Fatal(err)
+	}
+	child, _ := st.Events("c")
+	outcome, ended := map[string]EventType{}, false
+	for _, e := range child {
+		var x struct {
+			CallID string `json:"call_id"`
+		}
+		_ = json.Unmarshal(e.Payload, &x)
+		switch e.Type {
+		case EvSessionEnded:
+			ended = true
+		case EvObservation, EvActionDenied:
+			if !ended {
+				outcome[x.CallID] = e.Type
+			}
+		}
+	}
+	if !ended || outcome["ran"] != EvObservation || outcome["asked"] != EvActionDenied {
+		t.Fatalf("the lost child's calls: %v, ended %v", outcome, ended)
+	}
+	if open, ok := InFlight(child); ok && len(open.Calls)+len(open.Others) > 0 {
+		t.Fatalf("still open: %+v", open)
+	}
+}
