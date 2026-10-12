@@ -227,3 +227,40 @@ func TestUnknownOutcomeIsArmedFromTheRecord(t *testing.T) {
 		t.Fatal("the unknown outcome was not armed from the record")
 	}
 }
+
+// A turn whose answer was recorded but not its end is ended, not answered twice.
+func TestContinueTurnAfterTheAnswerOnlyEnds(t *testing.T) {
+	l, st := harnessIn(t, tempDir(t), []scriptedTurn{{text: "the answer"}}, policy.ModeDefault, true)
+	if _, err := l.Run(context.Background(), "q"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := st.Events("sess1")
+	var cut int64
+	for _, e := range evs {
+		if e.Type == EvAgentMessage {
+			cut = e.Seq
+		}
+	}
+	st = crashedAt(t, evs, cut)
+	evs, _ = st.Events("sess1")
+	open, ok := InFlight(evs)
+	if !ok || len(open.Calls) != 0 {
+		t.Fatalf("InFlight = %+v %v", open, ok)
+	}
+	ad := &scriptedAdapter{turns: []scriptedTurn{{text: "a second answer"}}}
+	rec := NewRecorder(st, "sess1", "")
+	rec.Advance(evs[len(evs)-1].Seq)
+	l2 := NewLoop(ad, tools.NewRegistry(tools.Read{}), policy.New(policy.ModeDefault), AutoApprove{}, l.Session, rec, DefaultConfig())
+	msgs, _ := Fork(evs, 0)
+	l2.SetHistory(msgs, 1)
+	if reason, err := l2.ContinueTurn(context.Background(), evs, open); err != nil || reason != TermCompleted {
+		t.Fatalf("ContinueTurn = %s, %v", reason, err)
+	}
+	if ad.seen != 0 {
+		t.Fatal("the model was asked again after it had answered")
+	}
+	evs, _ = st.Events("sess1")
+	if end, ok := LastEnd(evs); !ok || end.Reason != TermCompleted {
+		t.Fatalf("no completed end: %s", types(evs))
+	}
+}

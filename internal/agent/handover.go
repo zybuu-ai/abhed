@@ -256,6 +256,12 @@ func (l *Loop) ContinueTurn(ctx context.Context, events []Event, open OpenTurn) 
 	if terminal != "" {
 		return l.finishStopped(ctx, terminal), nil
 	}
+	// The model had answered and only the end was not written: the turn is
+	// over, and asking the model again would answer twice.
+	if n := len(l.messages); len(open.Calls) == 0 && n > 0 &&
+		l.messages[n-1].Role == model.RoleAssistant && len(l.messages[n-1].ToolCalls) == 0 && !l.hasWork() {
+		return l.finish(TermCompleted), nil
+	}
 	return l.run(ctx)
 }
 
