@@ -689,7 +689,11 @@ open.
   the text of files up to 1 MB, 16 MB in all. A file a shell command changed,
   created or removed since then, yours or the agent's, is listed under
   **Changes** beside the edit tools' changes and can be reviewed and accepted
-  the same way; one whose text was not kept is listed without a diff. In a
+  the same way; one whose text was not kept is listed without a diff. Only
+  the sizes and times are taken before the session starts; the contents are
+  read just after, and a file changed before its content was read is listed
+  without a diff. Each look at **Changes** reads only files whose size or
+  time moved since the last. In a
   workspace of more than 20,000 files the files past that are not compared,
   and **Changes** says so. A change undone before the list is read, or made
   and reverted by a command, is not listed, and the record holds only what

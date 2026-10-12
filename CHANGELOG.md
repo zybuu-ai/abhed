@@ -571,7 +571,8 @@ on. A server with it off starts on the older schema as before.
   commands, the person's or the agent's, not only edits made through the
   edit tools. Each session notes the workspace as it opens (size, time and
   hash of every file outside `.git`, `node_modules` and `.abhed`, and the
-  text of files up to 1 MB, 16 MB in all) and compares against it; such a
+  text of files up to 1 MB, 16 MB in all, read after the session starts)
+  and compares against it; such a
   file is marked `by_command` in `GET /v1/sessions/{id}/changes`, and in a
   workspace of more than 20,000 files `partial` says the rest were not
   compared.

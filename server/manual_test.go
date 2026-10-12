@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -248,6 +249,8 @@ func TestChangesShowWhatCommandsChanged(t *testing.T) {
 	wb.write("pre.txt", "a\n")
 	wb.write("gone.txt", "bye\n")
 	wb.session = wb.openIdle("acme") // opens with pre.txt and gone.txt in place
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	<-live.snap.filled
 	rec := wb.send("acme", "POST", "exec", execRequest{Command: "printf 'a\\nb\\n' > pre.txt && rm gone.txt && printf 'new\\n' > made.txt"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
