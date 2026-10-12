@@ -1140,6 +1140,8 @@ All notable changes to Abhed are recorded here. The format follows
   to the egress allowlist with `sandbox.network: "allowlist"` and `egress`
   rules of your own. They are set aside when they would widen anything:
   over no network, or when the managed file sets any network setting.
+  `egress.inspect_tls` and `egress.record_paths` stay managed only: they
+  change what is inspected and recorded, not what is reached.
 - `abhed serve` with sign-in logs a warning at start when deny rules for
   commands are in force and `sandbox.terminal` is not `"lines"`: in a
   workbench shell those rules only screen the lines as typed.

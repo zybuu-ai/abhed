@@ -441,6 +441,10 @@ type userNetwork struct {
 	keys    []SetAsideKey
 }
 
+// userOwnNever are the egress settings the person's own allowlist does not
+// carry: they change what is inspected and recorded, not what is reached.
+var userOwnNever = map[string]bool{"egress.inspect_tls": true, "egress.record_paths": true}
+
 // userAllowlistNarrows applies the person's own allowlist and egress rules
 // where they only narrow: allow_network is true and the managed file sets
 // none of allow_network, sandbox.network or egress. Otherwise they are set
@@ -456,6 +460,13 @@ func userAllowlistNarrows(c *Config) {
 	if u.network == NetworkAllowlist && c.Sandbox.AllowNetwork && !managedNet {
 		c.Sandbox.Network, c.Egress = NetworkAllowlist, u.egress
 		for _, k := range u.keys {
+			// Looking inside HTTPS and what the record keeps are not narrowing:
+			// they stay the managed file's, as their reasons say.
+			if userOwnNever[k.Key] {
+				clearManagedOnly(c, k.Key)
+				c.SetAside = append(c.SetAside, k)
+				continue
+			}
 			c.SetKeys = append(c.SetKeys, k.Key)
 		}
 		return

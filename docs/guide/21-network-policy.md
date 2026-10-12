@@ -14,8 +14,10 @@ configuration (`/etc/abhed/config.json`) and set aside, with a warning, in
 `-settings` or a workspace's file. Your own `~/.abhed/config.json` may use
 them only to narrow: with `sandbox.allow_network: true` in effect, your
 `sandbox.network: "allowlist"` and your `egress` rules apply in its place,
-so commands reach only the hosts you list. They are set aside when
-`allow_network` is false (commands already reach nothing), when the
+so commands reach only the hosts you list (`egress.inspect_tls` and
+`egress.record_paths` excepted: they change what is inspected and recorded
+rather than what is reached, so they stay the managed file's). Your own
+settings are set aside when `allow_network` is false (commands already reach nothing), when the
 `egress` settings come without the allowlist, and whenever the managed file
 sets `sandbox.allow_network`, `sandbox.network` or any `egress` key: the
 managed settings always win. Each one set aside
