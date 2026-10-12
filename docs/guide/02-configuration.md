@@ -407,8 +407,9 @@ command whose mounts cannot be made exits 126 having run nothing.
 
 **What it does.** Abhed re-executes itself as a small launcher for every
 command. In order, the launcher checks that this run's probe qualified the
-host; in the `mount_namespace` mode, makes its mounts, with `CAP_SYS_ADMIN` in
-its own user namespace and nothing else, then empties its capability
+host; in the `mount_namespace` mode, makes its mounts, with `CAP_SYS_ADMIN`
+(and `CAP_SETPCAP`, for the next step) in its own user namespace and nothing
+else, then empties its capability
 bounding set, locks the securebits that keep uid 0 from gaining any, and
 drops that capability (in `landlock_only` an ordinary user cannot change
 the bounding set, which stays full; no_new_privs and holding no capability

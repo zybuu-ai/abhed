@@ -20,6 +20,8 @@ var (
 	signalOne   = signalMember
 	startOf     = startTime
 	canSweep    = sweepSupported
+	// cannotSignal reports a process this user may not signal (EPERM).
+	cannotSignal = signalRefused
 )
 
 // maxSweepPasses bounds the passes that stop a session's processes. Each
@@ -125,7 +127,10 @@ func (l Leader) sweep() string {
 				continue
 			}
 			if !signalOne(pid, l.Pid, killSignal) {
-				unsignalled++
+				// Gone, or no longer in the session, is not counted: only a refusal.
+				if cannotSignal(pid) {
+					unsignalled++
+				}
 				continue
 			}
 			left++

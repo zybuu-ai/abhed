@@ -16,14 +16,15 @@ import (
 )
 
 // Attr starts the process it is given to in a new user and mount namespace,
-// as the same user and group, holding CAP_SYS_ADMIN there and nothing else,
-// so it can apply a Plan before it drops it.
+// as the same user and group, holding CAP_SYS_ADMIN and CAP_SETPCAP there and
+// nothing else, so it can apply a Plan and empty its bounding set before Drop.
 func Attr(a *syscall.SysProcAttr) {
 	a.Cloneflags |= unix.CLONE_NEWUSER | unix.CLONE_NEWNS
 	a.UidMappings = []syscall.SysProcIDMap{{ContainerID: os.Getuid(), HostID: os.Getuid(), Size: 1}}
 	a.GidMappings = []syscall.SysProcIDMap{{ContainerID: os.Getgid(), HostID: os.Getgid(), Size: 1}}
 	a.GidMappingsEnableSetgroups = false
-	a.AmbientCaps = []uintptr{unix.CAP_SYS_ADMIN}
+	// SETPCAP only to empty the bounding set and lock the securebits in Drop.
+	a.AmbientCaps = []uintptr{unix.CAP_SYS_ADMIN, unix.CAP_SETPCAP}
 }
 
 // Apply makes every mount private to this namespace, then applies p: the

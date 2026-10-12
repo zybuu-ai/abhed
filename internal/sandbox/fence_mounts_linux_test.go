@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"fmt"
 	"os"
 	"os/exec"
@@ -161,7 +162,7 @@ func TestFenceMountsStateDoesNotPersist(t *testing.T) {
 
 // Missing, the workspace's .abhed is made to mount over, and stays, empty,
 // after Close: another fence on the workspace may still mount over it.
-func TestFenceMountsMakesAndKeepsTheStateFolder(t *testing.T) {
+func TestFenceMountsMakesAndRemovesTheStateFolder(t *testing.T) {
 	p := fencePolicy(t)
 	p.MaxProcs, p.MaxMemoryMB = 64, 256
 	f := selectFence(t, p)
@@ -174,9 +175,10 @@ func TestFenceMountsMakesAndKeepsTheStateFolder(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	left, err := os.ReadDir(filepath.Join(p.Workspace, ".abhed"))
-	if err != nil || len(left) != 0 {
-		t.Fatalf("the made .abhed after Close: %v %v", err, left)
+	// Nothing written there stayed, and the last fence removed the folder it made.
+	if _, err := os.Lstat(filepath.Join(p.Workspace, ".abhed")); !errors.Is(err, fs.ErrNotExist) {
+		left, _ := os.ReadDir(filepath.Join(p.Workspace, ".abhed"))
+		t.Fatalf("the made .abhed after the last fence closed: %v %v", err, left)
 	}
 }
 

@@ -120,6 +120,9 @@ func TestSweepCountsWhatItCannotSignal(t *testing.T) {
 		f.sent[pid] = append(f.sent[pid], sig)
 		return pid != 102
 	}
+	was := cannotSignal
+	cannotSignal = func(pid int) bool { return pid == 102 }
+	t.Cleanup(func() { cannotSignal = was })
 	if why := named.sweep(); why == "" || !strings.Contains(why, "1 processes") {
 		t.Fatalf("sweep: %q", why)
 	}
