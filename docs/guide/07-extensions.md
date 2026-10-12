@@ -157,13 +157,17 @@ veto it stood for is gone. For the other events it is skipped: a
 `user_prompt_submit` hook that has stopped fails open, and the CLI says each
 message went unscreened. The session goes on either way.
 
-**One decision's policy hooks have a deadline.** A `tool_call` hook, with
-every other policy hook, must decide within 30 seconds of the decision, or by
-the deadline of the request it serves if that comes first, such as an
-Explorer rename or delete judging each file it touches. A call whose hooks
-have not all decided by then is refused, and once that deadline has passed
-the rest of the batch is refused without asking the hooks again, so a slow
-extension cannot hold the workbench for the length of a large folder.
+**One decision's policy hooks have a deadline.** A `tool_call` hook must
+decide within 30 seconds of the decision, or by the deadline of the request
+it serves if that comes first, such as an Explorer rename or delete judging
+each file it touches. A call whose hooks have not all decided by then is
+refused, and once that deadline has passed the rest of the batch is refused
+without asking the hooks again, so a slow extension cannot hold the
+workbench for the length of a large folder. The bound is kept by hooks given
+the decision's context, as extensions' are (`Engine.ContextHooks` in the Go
+API). A Go program's own `Engine.Hooks` or `Engine.EngineHooks` get no
+context: one that returns after the deadline has its allow refused, but one
+that never returns holds the decision, so give a slow hook a context.
 
 **A hung extension is not retried.** The read is abandoned but the stream is
 not, so a later reply would be matched to the wrong request.

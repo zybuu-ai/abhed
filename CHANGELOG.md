@@ -1707,8 +1707,9 @@ All notable changes to Abhed are recorded here. The format follows
   `ValidateBoundClaims` and `RelayKeyCommandArgv` read the new edition keys
   with their environment fallback.
 - `policy`: `Engine.EvaluateContext`, `ContextHook`, `Engine.ContextHooks`,
-  `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's hooks by
-  a deadline; `Engine.Cwd` lets deny and ask rules read the scripts a
+  `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's context
+  hooks by a deadline (`Engine.Hooks` and `EngineHooks` get no context, so
+  one that never returns is not cut off); `Engine.Cwd` lets deny and ask rules read the scripts a
   command runs; `Result.Suggest` is the allow rule for exactly a call that
   offers no scope. `tools.Subjector` with `RegisterSubjector` lets a tool
   name its own policy subject, as `ssh` does with `host/command`.
