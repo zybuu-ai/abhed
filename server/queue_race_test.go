@@ -164,6 +164,8 @@ func TestSettle(t *testing.T) {
 	}{
 		{"queued and completed", live, agent.TermCompleted, nil, true, true},
 		{"queued but cancelled", cancelled, agent.TermUserInterrupt, nil, true, false},
+		// Completed just as it was stopped: the stop wins, and the queue waits.
+		{"queued, completed, but cancelled", cancelled, agent.TermCompleted, nil, true, false},
 		{"queued but failed", live, agent.TermError, errors.New("model down"), true, false},
 		{"queued but out of turns", live, agent.TermMaxTurns, nil, true, false},
 		{"completed, nothing queued", live, agent.TermCompleted, nil, false, false},
@@ -252,8 +254,14 @@ func TestClientIDIsEchoed(t *testing.T) {
 	if rec.Code != http.StatusAccepted || out["queue_id"] == "" {
 		t.Fatalf("queued send = %d %s", rec.Code, rec.Body)
 	}
-	if rec := q.do("alice", "POST", "/messages", `{"prompt":"x","client_id":"<bad id>"}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("a malformed client_id was accepted: %d", rec.Code)
+	for _, bad := range []string{"<bad id>", strings.Repeat("a", 65)} {
+		if rec := q.do("alice", "POST", "/messages", `{"prompt":"x","client_id":"`+bad+`"}`); rec.Code != http.StatusBadRequest {
+			t.Fatalf("a malformed client_id %q was accepted: %d", bad, rec.Code)
+		}
+	}
+	// 64 characters is the most an id may have.
+	if !validClientID(strings.Repeat("a", 64)) {
+		t.Fatal("a 64-character client_id was refused")
 	}
 	close(q.adapter.gate)
 	q.waitEnded()

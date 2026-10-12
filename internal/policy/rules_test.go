@@ -298,3 +298,16 @@ func TestPathRulesMatchInEitherUnicodeForm(t *testing.T) {
 		}
 	}
 }
+
+// Folding lowers only a rule's program name: text after its first wildcard
+// keeps its case, so bash(git*TAG*) does not take `GIT tag` for TAG.
+func TestFoldingLowersOnlyTheProgramName(t *testing.T) {
+	defer tools.FoldCommandNamesForTest(tools.FoldsCommandNames())()
+	tools.FoldCommandNamesForTest(true)
+	if d := denyOnly(t, "git*TAG*", "GIT tag v1"); d == Deny {
+		t.Errorf("bash(git*TAG*) on %q: %s; folding lowered more than the program name", "GIT tag v1", d)
+	}
+	if d := denyOnly(t, "git*TAG*", "GIT push TAG"); d != Deny {
+		t.Errorf("bash(git*TAG*) on %q: %s, want deny", "GIT push TAG", d)
+	}
+}
