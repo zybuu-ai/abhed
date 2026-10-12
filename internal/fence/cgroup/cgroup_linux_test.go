@@ -14,10 +14,7 @@ import (
 	"time"
 )
 
-// The tests below need a delegated cgroup and run only with
-// ABHED_REQUIRE_FENCE=1, which also turns a missing delegation into a
-// failure instead of a skip, for example:
-//
+// These need a delegated cgroup and ABHED_REQUIRE_FENCE=1 (no skips), as in:
 //	systemd-run --user --scope -p Delegate=yes env ABHED_REQUIRE_FENCE=1 go test ./internal/fence/cgroup
 
 // helperEnv makes the test binary act as a helper process instead of testing.

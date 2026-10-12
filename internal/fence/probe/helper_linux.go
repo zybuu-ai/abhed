@@ -210,9 +210,8 @@ const (
 	fileExisting = "existing" // made by Run outside the grant, for truncation
 )
 
-// helperLandlock confines itself to allowed, then writes inside it, which
-// must succeed, and outside it, which must be refused, as must a truncation
-// outside it where the ABI controls truncation.
+// helperLandlock confines itself to allowed and requires a write inside to work
+// and a write (or truncation) outside to be refused.
 func helperLandlock(allowed, denied string) helperOut {
 	abi, err := landlockABI()
 	if err != nil {
@@ -299,11 +298,8 @@ func seccompArch() (uint32, bool) { return seccomp.AuditArch(runtime.GOARCH) }
 // call never gives on its own.
 const probeErrno = unix.EXDEV
 
-// helperSeccomp applies a filter refusing getppid with probeErrno and
-// requires the next getppid to be refused. It then installs the fence's own
-// filter guarding its parent, and requires a signal to the parent to be
-// refused and one to itself allowed: that takes this kernel reading the
-// architecture's system-call numbers and argument layout as the filter does.
+// helperSeccomp requires a test filter to refuse getppid, then the fence's own
+// filter to refuse a signal to the parent but not to itself.
 func helperSeccomp() helperOut {
 	parent, self := unix.Getppid(), unix.Getpid()
 	group, err := unix.Getpgid(parent)

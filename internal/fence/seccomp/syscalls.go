@@ -39,10 +39,8 @@ func (a archInfo) argLow(i uint32) uint32 {
 	return off
 }
 
-// Only the calls the profile names; the numbers come from the kernel's
-// arch/x86/entry/syscalls/syscall_64.tbl, include/uapi/asm-generic/unistd.h
-// and arch/s390/kernel/syscalls/syscall.tbl, and the tests hold them to
-// golang.org/x/sys/unix.
+// Only the calls the profile names, numbered from the kernel's syscall tables;
+// the tests hold them to golang.org/x/sys/unix.
 var arches = map[string]archInfo{
 	"amd64": {audit: 0xc000003e, x32: true, nr: map[string]uint32{
 		"socket":            41,

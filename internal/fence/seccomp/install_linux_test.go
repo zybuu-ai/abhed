@@ -24,9 +24,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The confined checks run in this test binary re-executed with stageEnv set:
-// TestMain answers before any test runs, so the test process itself is never
-// filtered.
+// Confined checks run in this binary re-executed with stageEnv; TestMain
+// answers before any test, so the test process is never filtered.
 const (
 	stageEnv = "ABHED_SECCOMP_TEST_STAGE"
 	dirEnv   = "ABHED_SECCOMP_TEST_DIR"
@@ -626,10 +625,8 @@ func refused(got string) bool {
 	return strings.Contains(got, "EPERM") || strings.Contains(strings.ToLower(got), "operation not permitted")
 }
 
-// Ordinary build work still succeeds under the filter, with the network on
-// and off; network use works only with it on, and unix sockets never. On
-// s390x the tools here make sockets through socketcall, which the filter
-// refuses in both modes.
+// Build work succeeds under the filter, network on or off; the network works
+// only when on, unix sockets never, and on s390x neither.
 func TestOrdinaryWorkUnderFilter(t *testing.T) {
 	requireFence(t)
 	required := []string{"sh pipeline and redirection", "child inherits the filter", "go version", "go build and run",

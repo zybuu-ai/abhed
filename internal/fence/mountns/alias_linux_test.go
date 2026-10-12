@@ -197,9 +197,8 @@ func aliasCase(name, dir string) error {
 	return fmt.Errorf("no case %q", name)
 }
 
-// Each case runs in a child holding CAP_SYS_ADMIN in a user namespace of its
-// own, where the bind mounts it makes stand for a host's: an ostree host's
-// /sysroot is the same case as alias-ws.
+// Each case runs in a child with CAP_SYS_ADMIN in its own user namespace, whose
+// bind mounts stand for a host's (ostree /sysroot is alias-ws).
 func TestApplyCoversAliases(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 where an ordinary user can make a user namespace")

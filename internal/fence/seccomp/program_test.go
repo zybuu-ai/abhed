@@ -18,9 +18,8 @@ type call struct {
 	args [6]uint64
 }
 
-// run interprets prog against c as the kernel would, failing the test on
-// anything the kernel's checker would refuse. seccomp_data is laid out in the
-// byte order c.arch names, as the kernel lays it out for that architecture.
+// run interprets prog against c as the kernel would, in c.arch's byte order,
+// failing on anything the kernel's checker would refuse.
 func run(t *testing.T, prog Program, c call) uint32 {
 	t.Helper()
 	var order binary.ByteOrder = binary.BigEndian
@@ -352,9 +351,8 @@ func TestAssemblerRefusesBadJumps(t *testing.T) {
 	}
 }
 
-// The programs are pinned: any change to a table, a rule or the assembler
-// shows here and needs a deliberate -update (and a new Profile if the rules
-// changed).
+// The programs are pinned: a change to a table, rule or assembler shows here
+// and needs a deliberate -update (and a new Profile for rules).
 func TestGoldenPrograms(t *testing.T) {
 	for _, arch := range archNames {
 		for _, network := range []string{"off", "on"} {

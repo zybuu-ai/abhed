@@ -11,9 +11,8 @@ import (
 	"testing"
 )
 
-// Every table agrees with golang.org/x/sys/unix for its architecture, read
-// from the module's source so it holds on any host; the native test checks
-// the constants a build for the table's own architecture compiles in.
+// Every table agrees with golang.org/x/sys/unix, read from the module's source
+// so it holds on any host; the native test checks compiled constants.
 func TestTablesMatchXSys(t *testing.T) {
 	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "golang.org/x/sys").Output()
 	if err != nil {

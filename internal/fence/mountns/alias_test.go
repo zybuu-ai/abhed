@@ -7,12 +7,8 @@ import (
 	"testing"
 )
 
-// An ostree host (Fedora CoreOS, Silverblue) as its mountinfo shows it: /var
-// and /sysroot are the same filesystem, so a workspace under /var/home is
-// reachable through /sysroot too. A bind mount of a folder holding the
-// workspace, and one of a folder inside it, are aliases as well; other
-// filesystems and unrelated folders are not.
-// ostree mounts a deployment folder; DEPL stands for its name in the sample.
+// An ostree host's mountinfo (DEPL is the deployment): /sysroot reaches
+// /var/home, as do binds of folders holding or inside the workspace.
 var ostreeMountinfo = strings.ReplaceAll(`
 1 0 0:30 / / ro,relatime - overlay composefs ro
 60 1 252:4 / /sysroot ro,relatime - xfs /dev/vda4 rw

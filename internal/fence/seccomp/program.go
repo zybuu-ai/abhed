@@ -153,8 +153,8 @@ func retName(k uint32) string {
 }
 
 // Digest is the SHA-256 of the program, in hex: each instruction laid out as
-// struct sock_filter, little-endian on every host so a digest names one
-// program wherever it is computed.
+// struct sock_filter, little-endian on every host so a digest names one program
+// wherever it is computed.
 func (p Program) Digest() string {
 	h := sha256.New()
 	var buf [8]byte

@@ -28,9 +28,7 @@ func Detect() (ABI, error) {
 }
 
 // Restrict confines the calling thread to the ruleset's domain. It locks the
-// calling goroutine to its OS thread for good, so the caller's exec runs from
-// the confined thread and the command inherits the domain. Every step must
-// succeed; on any error the caller must not run the command.
+// goroutine to the thread; on error, do not run the command.
 func (r *Ruleset) Restrict() error {
 	// Landlock and no_new_privs bind the thread, not the process. The thread
 	// is never unlocked: Go discards it when the goroutine ends.

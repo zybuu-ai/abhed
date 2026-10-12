@@ -18,10 +18,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The test binary re-executes itself in two roles. As the launcher it builds
-// the ruleset from the spec in its environment, restricts its thread and
-// execs itself again; as the probe, now confined, it performs one operation
-// and reports whether the kernel allowed it.
+// The binary re-executes itself: as launcher it confines its thread and execs
+// again; as probe it tries one operation and reports the result.
 const (
 	roleEnv    = "ABHED_FENCE_LANDLOCK_ROLE"
 	specEnv    = "ABHED_FENCE_LANDLOCK_SPEC"

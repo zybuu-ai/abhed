@@ -14,9 +14,9 @@ type Events struct {
 	// MemoryHigh and MemoryMax count the times memory.high throttled and
 	// memory.max was about to be passed.
 	MemoryHigh, MemoryMax uint64
-	// OOM counts the times memory.max was reached and reclaim failed;
-	// OOMKill the processes the OOM killer took; OOMGroupKill the times it
-	// took the whole cgroup, with memory.oom.group set.
+	// OOM counts the times memory.max was reached and reclaim failed; OOMKill
+	// the processes the OOM killer took; OOMGroupKill the times it took the
+	// whole cgroup, with memory.oom.group set.
 	OOM, OOMKill, OOMGroupKill uint64
 	// PidsMax counts the forks refused at pids.max.
 	PidsMax uint64

@@ -16,10 +16,8 @@ var ErrUnsupported = errors.New("seccomp: the fence's system-call filter needs L
 // Policy is the filter for one command.
 type Policy struct {
 	// AllowNetwork lets the command create inet, inet6 and route netlink
-	// sockets, reaching the host's network unfiltered. Off, socket() is
-	// refused for every family. Unix sockets are refused either way, since
-	// they reach host daemons that no file rule can stop; socketpair() is
-	// allowed either way.
+	// sockets, reaching the host's network unfiltered. Unix sockets, which
+	// reach host daemons no file rule stops, are refused either way.
 	AllowNetwork bool
 	// ProxyOnly, for the egress allowlist, allows inet and inet6 stream
 	// sockets alone, which Landlock then lets connect only to the proxy's port.
@@ -29,10 +27,7 @@ type Policy struct {
 	// read, so unix sockets are reachable through it.
 	Socketcall bool
 	// Abhed is the process id of the Abhed that launches the command, and
-	// AbhedGroup its process group. Signals aimed at either are refused:
-	// kill, tgkill, tkill and the queued forms naming that process, kill of
-	// its group or of every process, and pidfd_send_signal, whose target a
-	// filter cannot read.
+	// AbhedGroup its process group. Signals aimed at either are refused.
 	Abhed      int
 	AbhedGroup int
 }
