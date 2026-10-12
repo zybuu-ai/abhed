@@ -564,15 +564,16 @@ What a shell changes about the checks, stated plainly:
   terminal, so the server watches for a program switching to the alternate
   screen, and once one has, asks at each Enter whether the terminal's
   foreground group is the shell's. Nothing in the container is run for this,
-  since commands can replace its programs: the engine names the shell's host
-  process (`inspect`), whose `/proc` stat is read on the engine's host (on
-  Linux directly, through `podman machine ssh` elsewhere, after checking the
-  process is still that container's), or docker's own `top -o
-  pid,pgid,tpgid` answers. Only when that says a program has the terminal is
-  a line left unscreened and unrecorded; when it cannot say (docker or a
-  remote engine it cannot read, an engine that does not answer in three
-  seconds), the line is screened and recorded, which inside an editor
-  can refuse a line of text that matches a deny rule. A `printf` of the
+  since commands can replace its programs. The engine gives the shell's
+  process id on its host (`inspect`), and that process's `/proc` stat is read
+  there, once it is confirmed to be still that container's: directly on
+  Linux, and through `podman machine ssh` for podman elsewhere. Docker on
+  macOS or Windows is asked through its own `top -o pid,pgid,tpgid` instead.
+  Only when the answer is that a program has the terminal is a line left
+  unscreened and unrecorded; with no answer (a remote engine whose host this
+  machine cannot read, or none within three seconds), the line is screened
+  and recorded, which inside an editor can refuse a line of text that
+  matches a deny rule. A `printf` of the
   switch alone no longer turns anything off. Programs that do not switch
   screens (`python`, `cat`) have their lines screened and recorded there as
   commands. A program that takes the foreground and hands the terminal back
