@@ -7,9 +7,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// The fence holds the allowlist in mount_namespace mode, where each command
-// has a network namespace with only the relay in it; in landlock_only only
-// the managed fence.egress_port_only lets it, by the proxy's port alone.
+// The fence holds the allowlist only in mount_namespace mode (relay alone
+// in the netns), or landlock_only with managed fence.egress_port_only.
 func TestFenceEgressNeedsANetworkNamespaceOrConsent(t *testing.T) {
 	pol, err := egress.Compile(egress.Config{})
 	if err != nil {

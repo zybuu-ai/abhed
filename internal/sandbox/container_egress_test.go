@@ -14,9 +14,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// fakeEngine is an engine CLI that logs each call, runs "exec" on the host
-// (the relay as this test binary, which the stdiorelay package turns into
-// the relay), and does nothing for "run" and "rm".
+// fakeEngine is an engine CLI that logs each call, runs "exec" on the host as
+// the relay (this test binary), and ignores "run" and "rm".
 func fakeEngine(t *testing.T) (path, log string) {
 	t.Helper()
 	dir := t.TempDir()

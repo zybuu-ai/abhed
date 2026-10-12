@@ -16,9 +16,8 @@ import (
 	"time"
 )
 
-// These are the escape tests docs/architecture/03-security.md §7 requires
-// before Abhed may execute untrusted code. They assert the boundary actually
-// holds rather than that the configuration looks right.
+// Escape tests docs/architecture/03-security.md §7 requires before running
+// untrusted code: the boundary holds, not just the configuration.
 
 func workspace(t *testing.T) string {
 	t.Helper()
@@ -48,11 +47,8 @@ func processSandbox(t *testing.T, ws string, allowNet bool) Sandbox { //nolint:u
 	return s
 }
 
-// Denying network unshares the net namespace, and a runner without
-// CAP_NET_ADMIN cannot bring up loopback inside one, so bwrap fails before the
-// command runs. That is the environment's limit rather than a broken boundary,
-// so a test that needs it skips — never by letting the network through, which
-// is the downgrade Select refuses. Tracked in #44.
+// requireNetNS skips where bwrap cannot raise loopback (no CAP_NET_ADMIN),
+// never letting the network through, the downgrade Select refuses.
 func requireNetNS(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
@@ -180,9 +176,8 @@ func TestProcessSandboxHidesTheHostsNetwork(t *testing.T) {
 	}
 }
 
-// A key under the home directory is unreadable from inside the sandbox: the
-// Seatbelt profile denies it, and bubblewrap never binds the home directory.
-// HOME is pointed at a fresh directory so the test plants nothing real.
+// A key under home is unreadable in the sandbox (Seatbelt denies it,
+// bubblewrap never binds home); HOME is fresh so nothing real is planted.
 func TestProcessSandboxBlocksCredentialRead(t *testing.T) {
 	requireNetNS(t)
 	home := t.TempDir()
@@ -321,10 +316,8 @@ func needsBoundedUser(t *testing.T) {
 	}
 }
 
-// A command started with the process limit can start at most max_procs more
-// processes than the user runs: the forks stop on the kernel's refusal, far
-// short of the attempt. Other processes of the user may end meanwhile, so the
-// count is not checked as exact.
+// Under the process limit a command starts at most max_procs processes
+// more than the user runs (inexact: others may exit meanwhile).
 func TestProcessLimitHoldsForTheCommand(t *testing.T) {
 	needsBoundedUser(t)
 	s := NewProcess(Policy{MaxProcs: 40})
@@ -414,9 +407,8 @@ func TestProcessAvailableProbesBwrapNamespaces(t *testing.T) {
 	}
 }
 
-// A non-root user whose kernel refuses a fresh /proc (the --dev-bind fallback
-// case) still gets the tier: the capability probe reads the host /proc through
-// --ro-bind / / and does not pass --proc, matching what wrap does.
+// A non-root user denied a fresh /proc still gets the tier: the probe reads
+// host /proc via --ro-bind / / without --proc, matching wrap.
 func TestProcessCapProbeWithoutFreshProc(t *testing.T) {
 	if rootCaps() {
 		t.Skip("this case is for non-root; as root the fallback is refused")

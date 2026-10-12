@@ -9,9 +9,8 @@ import (
 	"time"
 )
 
-// A stdio server on the process tier cannot read or write the person's home,
-// but for a home of its own (its HOME, kept between runs) and its install
-// folder; the workspace stays writable and its .abhed hidden.
+// A process-tier stdio server sees none of the home but its own HOME and
+// install folder; the workspace stays writable and its .abhed hidden.
 func TestServerFilesAreConfined(t *testing.T) {
 	home := t.TempDir()
 	if r, err := filepath.EvalSymlinks(home); err == nil {

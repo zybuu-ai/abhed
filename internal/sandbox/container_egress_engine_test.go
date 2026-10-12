@@ -12,10 +12,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// On a real engine, with the engine in a VM where it is on macOS, a command
-// under the allowlist has no network of its own and reaches the proxy, which
-// refuses a host no rule allows. Set ABHED_TEST_RELAY_BINARY to a Linux build
-// of Abhed for the engine's architecture to run it.
+// On a real engine an allowlisted command has no network but the proxy,
+// which refuses unlisted hosts; needs ABHED_TEST_RELAY_BINARY (Linux).
 func TestContainerAllowlistOnARealEngine(t *testing.T) {
 	relay := os.Getenv("ABHED_TEST_RELAY_BINARY")
 	if relay == "" {

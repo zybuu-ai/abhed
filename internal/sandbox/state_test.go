@@ -51,9 +51,8 @@ func TestProcessSandboxShieldsHarnessState(t *testing.T) {
 	}
 }
 
-// The state directory's denial must not break what walks the workspace: ls
-// -R, pytest's collection and git stat it and pass it by, and none may read
-// it. On macOS find and du still report it; bubblewrap shows an empty folder.
+// Denying the state directory must not break walkers (ls -R, pytest, git)
+// and none may read it; macOS find and du still list it, bwrap shows empty.
 func TestProcessSandboxWalksPastHarnessState(t *testing.T) {
 	requireNetNS(t)
 	ws := workspace(t)
@@ -240,9 +239,8 @@ func TestReadableFileSwappedLosesItsAllow(t *testing.T) {
 	}
 }
 
-// Under bubblewrap a pinned file is bound read-only at its resolved path,
-// after every mount that could hide it, and not at all once swapped for a
-// link, another file or a folder.
+// Under bubblewrap a pinned file is bound read-only at its resolved path
+// after any mount that could hide it, and never once swapped out.
 func TestBwrapBindsReadableFilesLast(t *testing.T) {
 	ws := workspace(t)
 	dir := workspace(t)

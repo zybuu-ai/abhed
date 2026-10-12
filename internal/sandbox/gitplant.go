@@ -9,9 +9,8 @@ import (
 	"strings"
 )
 
-// safeGitKeys are the settings git init, clone and submodule write, which
-// name no program: section to keys, a subsection's under "section.*".
-// Anything else in a repository made during the session is taken out.
+// safeGitKeys are the settings git init, clone and submodule write, naming no
+// program; anything else in a new repository is taken out.
 var safeGitKeys = map[string]map[string]bool{
 	"core": set("repositoryformatversion", "filemode", "bare", "logallrefupdates", "ignorecase",
 		"precomposeunicode", "symlinks", "autocrlf", "safecrlf", "eol", "worktree", "sharedrepository",
@@ -129,10 +128,8 @@ func gitFolderOf(entry string) string {
 	return ""
 }
 
-// plantedGits takes out of each git folder found that was not there when the
-// session first looked what names a program git would run (a setting git init
-// or clone never writes, a hook), and says why the command is not run; nil
-// when nothing was. The first look is the baseline and takes nothing out.
+// plantedGits strips what names a program git would run from git folders new
+// since the session's first look, and says why the command is refused.
 func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits []string) error {
 	mem.mu.Lock()
 	if mem.based == nil {
@@ -193,9 +190,8 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 		"repository holding it, could run; %s", strings.Join(parts, "; "))
 }
 
-// cleanGitConfig keeps the configuration at p, in repository g, to the
-// settings git init or clone write, the whole file copied to the quarantine
-// first; nil when it held nothing else.
+// cleanGitConfig keeps p's config to what git init or clone write, quarantining
+// a copy first; nil when it held nothing else.
 func cleanGitConfig(p, g string) map[string]any {
 	b, err := readSmall(p)
 	if err != nil {

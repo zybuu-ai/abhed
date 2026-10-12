@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// A session that ended without its last check, with no .abhed when it
-// started, has the .abhed dating from it taken out at the next start; one
-// made after its last command, or a workspace that had one, is left.
+// A crashed session that began without .abhed has the .abhed it left
+// removed at the next start; one made later or already there stays.
 func TestFenceSweepsWhatACrashedSessionLeft(t *testing.T) {
 	p := fencePolicy(t)
 	f := NewFence(p)

@@ -24,16 +24,16 @@ type ServerLauncher interface {
 // id; no colon, which would end the user name in Basic credentials.
 func ServerKey(name string) string { return "mcp/" + name }
 
-// ServerCommand confines argv's files (see serverFiles) and, under the
-// egress allowlist, its network: it reaches nothing but its proxy, which
-// lives as long as ctx. With the allowlist off its network is as it was.
+// ServerCommand confines argv's files (see serverFiles) and, under the egress
+// allowlist, its network: it reaches nothing but its proxy, which lives as long
+// as ctx.
 func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
 	return s.serverCommand(ctx, name, argv, env, record, true)
 }
 
-// ServerNetCommand is ServerCommand with the server's files as the host's,
-// for a server configured with host_files; its network is still confined
-// under the allowlist.
+// ServerNetCommand is ServerCommand with the server's files as the host's, for
+// a server configured with host_files; its network is still confined under the
+// allowlist.
 func (s *Process) ServerNetCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
 	return s.serverCommand(ctx, name, argv, env, record, false)
 }

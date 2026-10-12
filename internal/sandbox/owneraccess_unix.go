@@ -12,11 +12,8 @@ import (
 // ownerAccessDepth bounds the walk, which holds a descriptor per level.
 const ownerAccessDepth = 128
 
-// restoreOwnerAccess gives the owner read, write and search on the folder
-// at p and every folder under it, and read and write on its files, so a
-// planted entry a command locked can be moved, read and removed. It never
-// follows a link: each entry is reached relative to its parent's open
-// descriptor, and anything that is not a plain folder or file is left alone.
+// restoreOwnerAccess makes p's tree owner-accessible so a locked planted entry
+// can be moved and removed; it never follows a link.
 func restoreOwnerAccess(p string) {
 	parent, err := unix.Open(filepath.Dir(p), dirSearchOpen|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {

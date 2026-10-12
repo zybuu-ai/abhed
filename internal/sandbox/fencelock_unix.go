@@ -12,9 +12,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// stateUseLock takes a shared lock that says a fence on ws mounts over its
-// .abhed; nil when none can be taken. Another fence that holds it alone may
-// remove the folder it made.
+// stateUseLock takes a shared lock marking a fence over ws's .abhed; only a
+// fence holding it alone may remove the folder it made.
 func stateUseLock(ws string) *os.File {
 	home, err := os.UserHomeDir()
 	if err != nil {

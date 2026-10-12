@@ -13,9 +13,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The workbench terminal tells a line typed into a program from one typed at
-// the prompt by the terminal's foreground group, so the shell must run each
-// program in a group of its own (job control) under every local tier.
+// The workbench terminal routes input by foreground group, so the shell
+// gives each program its own process group under every local tier.
 func TestShellGivesEachProgramItsOwnProcessGroup(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		ws := workspace(t)

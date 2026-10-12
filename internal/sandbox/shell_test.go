@@ -63,9 +63,8 @@ func typeInto(t *testing.T, s Interactive, cwd string, lines ...string) string {
 	return out.String()
 }
 
-// The workbench's shell keeps its state from line to line, starts where it is
-// told, and is held by the same boundary as a single command: nothing written
-// outside the workspace, and the harness's own state out of sight.
+// The workbench shell keeps state and starts where told, held by the same
+// boundary as a command: no writes outside, harness state hidden.
 func TestProcessSandboxShellIsInteractiveAndConfined(t *testing.T) {
 	requireNetNS(t)
 	ws := workspace(t)
@@ -99,10 +98,8 @@ func TestProcessSandboxShellIsInteractiveAndConfined(t *testing.T) {
 	}
 }
 
-// Ending a shell ends the jobs it started in the background. An interactive
-// bash gives each its own process group, so killing the shell alone left them
-// running; it is hung up instead, and what is left in its session is ended
-// while the exited shell still holds the session id.
+// Ending a shell ends its background jobs: it is hung up and what is left
+// in its session killed while the exited shell still holds the session id.
 func TestProcessSandboxShellEndsItsBackgroundJobs(t *testing.T) {
 	requireNetNS(t)
 	for _, job := range jobForms {
@@ -113,9 +110,8 @@ func TestProcessSandboxShellEndsItsBackgroundJobs(t *testing.T) {
 	}
 }
 
-// jobForms are the ways a job can be left running: in the job table, out of
-// it in a subshell, ignoring the hang-up, and forking again and again. None
-// may outlive the shell.
+// jobForms are ways to leave a job running (job table, subshell, nohup,
+// repeated forks); none may outlive the shell.
 var jobForms = []string{
 	"(sleep 3; touch late) &",
 	"((sleep 3; touch late) & )",
@@ -144,9 +140,8 @@ func TestSweepSaysWhyItDidNotRun(t *testing.T) {
 	}
 }
 
-// A session is swept only while the shell that led it is exited but not yet
-// reaped, and only if the process at its pid started when the shell did: a
-// reused pid can never be taken for the shell.
+// A session is swept only while its shell is exited but unreaped and the
+// pid's process started with it, so a reused pid is never taken for it.
 func TestSweepNeedsTheShellItNamed(t *testing.T) {
 	ws := workspace(t)
 	cmd := NewNone(DefaultPolicy(ws)).Shell(context.Background(), ws)
@@ -232,8 +227,7 @@ func TestNoneShellNamesItself(t *testing.T) {
 }
 
 // The container engine's CLI needs the host's environment (PATH, HOME,
-// DOCKER_HOST) to find the engine at all. It once ran with only TERM, because
-// the terminal appended to an environment the command had left unset.
+// DOCKER_HOST) to find the engine at all.
 func TestContainerCommandKeepsTheHostEnvironment(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix:///tmp/abhed-probe.sock")
 	ws := workspace(t)

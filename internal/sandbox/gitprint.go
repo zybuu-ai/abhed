@@ -20,12 +20,11 @@ const (
 	printDepth      = 3
 )
 
-// GitFingerprint sums what git reads as configuration or runs programs from
-// for the repository holding each of dirs: the git folder's config, hooks,
+// GitFingerprint sums what git reads as configuration or runs programs from for
+// the repository holding each of dirs: the git folder's config, hooks,
 // commondir and attributes (a linked worktree's and its common folder's too),
-// the .git entry itself, and the person's global git configuration. It
-// changes whenever any of them does, so an "always allow" for a git command
-// granted before a hook or fsmonitor was planted can be asked about again.
+// the .git entry itself, and the person's global git configuration.
+// A planted hook or fsmonitor changes it, so an "always allow" is asked again.
 func GitFingerprint(dirs ...string) string {
 	h := sha256.New()
 	seen := map[string]bool{}

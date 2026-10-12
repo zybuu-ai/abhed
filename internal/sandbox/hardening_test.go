@@ -8,13 +8,8 @@ import (
 	"testing"
 )
 
-// The container flags are the boundary that makes it safe to give a stranger a
-// shell. They are easy to weaken by accident — a flag dropped while debugging
-// stays dropped — so each one is asserted here with the reason it exists.
-//
-// This checks the command that would be run, not a live container: the flags
-// are the contract, and a test that needs a container runtime would be skipped
-// on the machines where it matters most.
+// The container flags make a stranger's shell safe and are easily dropped
+// in debugging; checked on the command, not a live container, never skips.
 func TestContainerFlagsForUntrustedSessions(t *testing.T) {
 	c := &Container{policy: Policy{
 		Workspace:    "/workspace",

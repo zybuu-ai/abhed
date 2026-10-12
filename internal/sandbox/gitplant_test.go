@@ -33,9 +33,8 @@ func TestFilterGitConfig(t *testing.T) {
 	}
 }
 
-// A repository made after the first look, with an fsmonitor or a hook, has
-// them taken out before the next command, which is refused and recorded;
-// one there from the start, and a plain clone, are left alone.
+// A repository made after the first look, with an fsmonitor or hook, is
+// removed and the next command refused and recorded; earlier ones stay.
 func TestPlantedRepositoryIsTakenOut(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ws := workspace(t)

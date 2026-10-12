@@ -79,9 +79,8 @@ func sessionMembers(sid int) []int {
 // sweepSupported: macOS has what the sweep needs.
 func sweepSupported() (bool, string) { return true, "" }
 
-// signalMember signals pid only if it is in session sid. macOS has no pidfd,
-// so a stop is checked again once it has taken effect, when the process can
-// no longer exit on its own, and undone if the pid turned out to be another's.
+// signalMember signals pid only if it is in session sid; with no pidfd, a stop
+// is rechecked once in effect and undone if the pid was reused.
 func signalMember(pid, sid int, sig syscall.Signal) bool {
 	if s, err := unix.Getsid(pid); err != nil || s != sid {
 		return false

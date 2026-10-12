@@ -24,10 +24,7 @@ var claimFiles = []string{
 }
 
 // A syscall filter named in the docs must be one the bwrap command applies:
-// the claim was once made with none in place. The fence tier's own text may
-// name its filters: a Markdown section headed by it, its row in a tier table,
-// its checklist items ("- [x] **Fence"), and the comment that defines it,
-// which fence_linux_test.go holds to them.
+// the claim was once made with none in place.
 func TestDocsClaimNoSyscallFilterTheSandboxLacks(t *testing.T) {
 	b := &Process{policy: DefaultPolicy(workspace(t)), backend: "bwrap"}
 	args := b.wrapEgress(t.Context(), b.policy.Workspace, nil, nil, "/bin/true").Args

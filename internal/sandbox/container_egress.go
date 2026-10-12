@@ -34,9 +34,8 @@ var relayPort = func(proxy uint16) uint16 { return proxy }
 // containerHostOS is runtime.GOOS; tests set it to check another host.
 var containerHostOS = runtime.GOOS
 
-// containerRelay is the Linux binary run inside a container as the relay:
-// this one on a Linux host whose engine is local, else the operator's build
-// named in control_plane.<engine>.relay_binary; "" with why when there is none.
+// containerRelay is the Linux relay binary run in a container: this one on a
+// Linux host, else the configured relay_binary; "" with why when none.
 func (c *Container) containerRelay() (string, string) {
 	remote := os.Getenv("DOCKER_HOST") != "" || os.Getenv("CONTAINER_HOST") != ""
 	if containerHostOS == "linux" && !remote {
@@ -66,12 +65,8 @@ func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 	return c.egProxy, c.eg, c.egErr
 }
 
-// egressCommand runs command in a container of its own whose only way out
-// is the sandbox's egress proxy: the container starts with no network and
-// idles, the relay inside listens on its loopback at the proxy's port and
-// carries each connection over a long-lived exec's stdio to the proxy, and
-// the command runs by a second exec with the call's proxy variables. The
-// container goes when ctx ends.
+// egressCommand runs command in a networkless container whose only way out is a
+// relay to the egress proxy over an exec's stdio.
 func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exec.Cmd {
 	relay, why := c.containerRelay()
 	if relay == "" {

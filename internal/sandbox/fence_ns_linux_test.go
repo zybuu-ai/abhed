@@ -68,9 +68,8 @@ func TestFenceInitPassesSignals(t *testing.T) {
 	}
 }
 
-// Under the allowlist a command reaches the proxy and nothing else: in
-// mount_namespace mode through the relay in its network namespace; in
-// landlock_only, with the managed consent, by the proxy's port alone.
+// Under the allowlist a command reaches only the proxy: via the netns relay
+// in mount_namespace mode, or by its port in landlock_only with consent.
 func TestFenceEgressThroughTheRelay(t *testing.T) {
 	t.Run("mount_namespace", func(t *testing.T) { fenceEgressCheck(t, false) })
 	t.Run("landlock_only", func(t *testing.T) { fenceEgressCheck(t, true) })

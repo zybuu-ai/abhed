@@ -11,9 +11,8 @@ import (
 	"time"
 )
 
-// engineContainer is a container tier on the engine this machine has. It
-// runs only with ABHED_REQUIRE_CONTAINER set, as the CI job sets it, since it
-// pulls an image and starts containers; there a missing engine fails.
+// engineContainer is a container tier on this machine's engine; it runs only
+// with ABHED_REQUIRE_CONTAINER set (as in CI), where a missing engine fails.
 func engineContainer(t *testing.T, p Policy) *Container {
 	t.Helper()
 	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
@@ -35,9 +34,8 @@ func runInEngine(t *testing.T, c *Container, ws, command string) (string, error)
 	return string(out), err
 }
 
-// The container tier's flags hold on a real engine: the workspace is the
-// one writable host path, the network is off, the memory bound includes swap,
-// the process bound is the pids limit, and the host's name and PIDs are hidden.
+// On a real engine the workspace is the only writable host path, with no
+// network, swap-inclusive memory and pids bounds, host name and PIDs hidden.
 func TestContainerTierOnARealEngine(t *testing.T) {
 	ws := t.TempDir()
 	if r, err := filepath.EvalSymlinks(ws); err == nil {

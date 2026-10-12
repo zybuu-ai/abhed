@@ -30,9 +30,8 @@ func egressPolicy(t *testing.T, c egress.Config) *egress.Policy {
 	return p
 }
 
-// The none tier refuses the allowlist, so the network is never opened in its
-// place; the container tiers hold it through a relay (container_egress_test.go)
-// and the fence through one in its network namespace (fence_egress_test.go).
+// The none tier refuses the allowlist, never opening the network instead;
+// container tiers and the fence hold it through relays (their own tests).
 func TestEgressAllowlistRefusedOutsideTheProcessTier(t *testing.T) {
 	p := DefaultPolicy(t.TempDir())
 	p.Egress = egressPolicy(t, egress.Config{})
@@ -49,10 +48,8 @@ func TestEgressAllowlistRefusedOutsideTheProcessTier(t *testing.T) {
 	}
 }
 
-// A command under the process tier reaches an allowed local server through
-// the session's proxy, plain and through CONNECT; a host no rule allows is
-// refused; a direct socket does not get out; and each decision is recorded
-// against the call.
+// On the process tier an allowed server is reached via the proxy (plain,
+// CONNECT); other hosts and direct sockets fail; each decision is recorded.
 func TestEgressAllowlistThroughTheProcessTier(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl is not installed")
@@ -263,10 +260,8 @@ func TestEgressSessionsAreKeptApart(t *testing.T) {
 	var recA2 eventLog
 	a2 := Launch{CallID: "call-a2", Session: "sess-A", Record: recA2.record}
 	stolen := strings.TrimSpace(runLaunched(t, s, ws, a2, `printf %s "$HTTP_PROXY"`))
-	// Each call reaches the proxy only by its own way in (a socket under
-	// bubblewrap, a port under Seatbelt), so a credential taken from another
-	// call goes nowhere; through the command's own way in, it is the
-	// command's call that is recorded.
+	// Each call has its own way to the proxy (bwrap socket, Seatbelt port),
+	// so a stolen credential goes nowhere; its own call is what's recorded.
 	late := fmt.Sprintf(`curl -sS -m 20 -o /dev/null -w 'code=%%{http_code}' -x '%s' http://denied.test/stolen`, stolen)
 	if out := runLaunched(t, s, ws, a, late); strings.Contains(out, "code=403") {
 		if got := recA.waitFor(t, "the stolen credential's request", func(e map[string]any) bool { return e["path"] == "/stolen" }); got["call_id"] == "call-a2" {
@@ -398,9 +393,8 @@ func TestEgressFailsClosedWhenTheProxyCannotStart(t *testing.T) {
 	}
 }
 
-// Under the allowlist the Seatbelt profile denies the network and allows
-// only the session's proxy port on localhost, after the deny; without a
-// proxy, or without the allowlist, no port is allowed.
+// Under the allowlist the Seatbelt profile denies network, then allows
+// only the proxy port on localhost; otherwise no port is allowed.
 func TestSeatbeltEgressProfile(t *testing.T) {
 	p := DefaultPolicy("/w")
 	p.Egress = egressPolicy(t, egress.Config{})
@@ -603,9 +597,8 @@ func TestEgressRelayArgsBindTheResolver(t *testing.T) {
 	}
 }
 
-// A process a command leaves running loses its way out when the command's
-// call ends: its traffic is refused, recorded under the ended call. On Linux
-// the sandbox's PID namespace ends it first, so nothing is recorded at all.
+// A process left running loses its way out when its call ends: refused and
+// recorded under the ended call (on Linux the PID namespace ends it first).
 func TestEgressOutlivingProcessIsRefused(t *testing.T) {
 	s, ws := egressProcess(t)
 	var rec eventLog
@@ -615,9 +608,8 @@ func TestEgressOutlivingProcessIsRefused(t *testing.T) {
 	if got := rec.find(func(e map[string]any) bool { return e["path"] == "/late" }); len(got) > 0 {
 		t.Fatalf("a process outliving its call was decided on: %v", got)
 	}
-	// Its call's own way to the proxy closed with the call, so it is refused
-	// at the connection (macOS) or the process is gone (Linux); a refusal
-	// that reaches the proxy is recorded under the ended call.
+	// Its way to the proxy closed with the call: refused at connect (macOS)
+	// or gone (Linux); a refusal at the proxy is recorded under that call.
 	auth := rec.find(func(e map[string]any) bool { return e["kind"] == "auth" })
 	for _, e := range auth {
 		if e["call_id"] != "call-left" {
