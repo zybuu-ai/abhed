@@ -113,7 +113,9 @@ func (e *Engine) homeScripts(canon tools.Canonical) (scripts []tools.Script, why
 		return nil, "starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
 	}
 	for _, n := range names {
-		scripts = append(scripts, tools.Script{Path: filepath.Join(dir, n), Startup: true})
+		if p := filepath.Join(dir, n); !e.unchangedHomeFile(p) {
+			scripts = append(scripts, tools.Script{Path: p, Startup: true})
+		}
 	}
 	return scripts, ""
 }
@@ -220,6 +222,7 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			case !visible || !filepath.IsAbs(dir):
 				out.refuse = "it runs the zsh script " + name + ", which reads .zshenv from a HOME the check cannot read"
 				return moves
+			case e.unchangedHomeFile(filepath.Join(dir, ".zshenv")):
 			default:
 				scripts = append(scripts, tools.Script{Path: filepath.Join(dir, ".zshenv"), Startup: true})
 			}

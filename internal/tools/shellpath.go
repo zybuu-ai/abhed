@@ -324,3 +324,6 @@ func (f *shellFacts) homeStartups() []string {
 	}
 	return out
 }
+
+// HomeStartupNames are the start-up files a shell may read from $HOME.
+func HomeStartupNames() []string { return append([]string(nil), startupDirFiles["HOME"]...) }

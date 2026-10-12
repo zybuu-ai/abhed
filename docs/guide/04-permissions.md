@@ -477,7 +477,11 @@ variable by name (`read BASH_ENV`, `read ZDOTDIR`), is refused or asked
 about as the scripts above are. A shell started with the `HOME` the
 sandbox gives commands reads its start-up files there, which an earlier
 command may have written, so those are read too, by the same rules (a
-`#!/bin/zsh` script reads `.zshenv`). That
+`#!/bin/zsh` script reads `.zshenv`). The files there when the session's
+first command is judged are your own, recorded by size, time and hash, and
+are not judged while they stay that way, so a package manager's line in
+your `.zprofile` does not make `zsh -lc` ask; one made or changed after
+that is read and judged. That
 `HOME` is the host's own on the process tier and none, the fence's private
 home folder under the fence, and, in a container, a microVM, a driver's
 sandbox or a control-plane sandbox exec, a folder the host cannot read:

@@ -212,8 +212,10 @@ All notable changes to Abhed are recorded here. The format follows
   shell typed into a terminal, as `bash`, counted as interactive), or that
   an exec sets in its environment, and those a shell reads from the
   `HOME` the sandbox gives it, which an earlier command may have written:
-  read on the process tier, none and the fence, and refused under a deny
-  rule where the host cannot read that `HOME`, as in a container); one too long, unparsable, running built text, or itself
+  read on the process tier, none and the fence (those there unchanged
+  since the session's first command, the person's own, are not), and
+  refused under a deny rule where the host cannot read that `HOME`, as in a
+  container); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
   interpreters' scripts are not read. An `:exec` in a sandbox, whose files
   the server cannot read, refuses instead, while rules or hooks are in

