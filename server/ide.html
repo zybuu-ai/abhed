@@ -980,6 +980,8 @@ function lspRel(c, uri){
   // A server's '..' is resolved, so a path that climbs out of the workspace is not offered.
   const out = [];
   for(const s of p.slice(c.root.length + 1).split('/')){
+    // A backslash or control character would name a different file on some hosts.
+    if(/[\\\x00-\x1f\x7f]/.test(s)) return null;
     if(s === '..'){ if(!out.length) return null; out.pop(); } else if(s && s !== '.') out.push(s);
   }
   return out.length ? out.join('/') : null;
