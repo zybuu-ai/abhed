@@ -35,6 +35,9 @@ type sandboxEgress struct {
 type sandboxProxy struct {
 	proxy *egress.Proxy
 	dir   string
+	// dns is the sandbox's own credential for the proxy's resolver, which
+	// the driver holds; the sandbox never sees it.
+	dns *egress.Call
 }
 
 // newSandboxEgress returns the proxies for cfg, or nil when the allowlist
@@ -76,6 +79,14 @@ func (e *sandboxEgress) Open(id string) (driver.Egress, error) {
 	if err == nil {
 		err = px.ListenUnix(filepath.Join(dir, "proxy.sock"))
 	}
+	if err == nil {
+		// Lookups are judged by the same rules, under the sandbox's own credential.
+		err = px.ListenDNS(filepath.Join(dir, "dns.sock"))
+	}
+	var dns *egress.Call
+	if err == nil {
+		dns, err = px.Issue(id + "/dns")
+	}
 	if err != nil {
 		_ = px.Close()
 		if dir != "" {
@@ -83,13 +94,14 @@ func (e *sandboxEgress) Open(id string) (driver.Egress, error) {
 		}
 		return driver.Egress{}, err
 	}
-	p := &sandboxProxy{proxy: px, dir: dir}
+	p := &sandboxProxy{proxy: px, dir: dir, dns: dns}
 	e.proxies[id] = p
 	return p.egress(), nil
 }
 
 func (p *sandboxProxy) egress() driver.Egress {
-	return driver.Egress{Socket: filepath.Join(p.dir, "proxy.sock"), Port: p.proxy.Addr().Port()}
+	return driver.Egress{Socket: filepath.Join(p.dir, "proxy.sock"), Port: p.proxy.Addr().Port(),
+		DNSSocket: filepath.Join(p.dir, "dns.sock"), DNSCredential: egress.Credential(p.dns.URL())}
 }
 
 func (e *sandboxEgress) Call(id string) ([]string, func(), error) {

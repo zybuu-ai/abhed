@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -165,6 +166,7 @@ func agent() error {
 		PowerOff:   powerOff,
 		Workspace:  tracker,
 		Network:    network,
+		DNS:        resolver,
 	}
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -230,4 +232,58 @@ func mounted(p string) bool {
 		return false
 	}
 	return a.Dev != b.Dev
+}
+
+var (
+	dnsMu sync.Mutex
+	dnsOn bool
+)
+
+// resolver starts, once, the resolver on 127.0.0.1:53 that passes lookups
+// to the host, and points /etc/resolv.conf at it. The host asks only for a
+// sandbox whose egress has a resolver.
+func resolver() error {
+	dnsMu.Lock()
+	defer dnsMu.Unlock()
+	if dnsOn {
+		return nil
+	}
+	udp, err := net.ListenPacket("udp", "127.0.0.1:53")
+	if err != nil {
+		return err
+	}
+	tcp, err := net.Listen("tcp", "127.0.0.1:53")
+	if err != nil {
+		_ = udp.Close()
+		return err
+	}
+	// The root filesystem is read-only: a file on /run is bound over it.
+	conf := "/run/abhed-resolv.conf"
+	err = os.WriteFile(conf, []byte("nameserver 127.0.0.1\n"), 0o644) // #nosec G306 -- read by every program
+	if err == nil {
+		err = unix.Mount(conf, "/etc/resolv.conf", "", unix.MS_BIND, "")
+	}
+	if err == nil {
+		err = unix.Mount("", "/etc/resolv.conf", "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY, "")
+	}
+	if err != nil {
+		_ = udp.Close()
+		_ = tcp.Close()
+		return fmt.Errorf("pointing /etc/resolv.conf at the resolver (the root filesystem needs the file): %w", err)
+	}
+	go guest.ServeDNS(udp, tcp, dialHostDNS)
+	dnsOn = true
+	return nil
+}
+
+func dialHostDNS() (io.ReadWriteCloser, error) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: guest.EgressDNSPort}); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), "vsock-dns"), nil
 }

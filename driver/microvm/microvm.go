@@ -301,6 +301,9 @@ func (d *Driver) Create(ctx context.Context, spec driver.Spec) (driver.Status, e
 	if eg := spec.Egress; eg != nil && (!filepath.IsAbs(eg.Socket) || eg.Port == 0) {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: egress needs an absolute socket path and a port")
 	}
+	if eg := spec.Egress; eg != nil && eg.DNSSocket != "" && (!filepath.IsAbs(eg.DNSSocket) || eg.DNSCredential == "") {
+		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: egress DNS needs an absolute socket path and a credential")
+	}
 	if err := d.be.check(); err != nil {
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "microvm: %v", err)
 	}
@@ -458,6 +461,9 @@ func (d *Driver) Start(ctx context.Context, id string) (driver.Status, error) {
 	eg := in.egress
 	if eg != nil {
 		b.guestPorts = []uint32{guest.EgressPort}
+		if eg.DNSSocket != "" {
+			b.guestPorts = append(b.guestPorts, guest.EgressDNSPort)
+		}
 	}
 	d.mu.Unlock()
 	if old != nil {
@@ -784,6 +790,21 @@ func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) er
 	}
 	if err != nil {
 		return driver.Errorf(driver.ErrUnavailable, "microvm: starting the guest's egress: %v", err)
+	}
+	if eg.DNSSocket == "" {
+		return nil
+	}
+	dln := m.guestListener(guest.EgressDNSPort)
+	if dln == nil {
+		return driver.Errorf(driver.ErrInternal, "microvm: the VM was booted without its DNS port")
+	}
+	go d.serveDNS(dln, eg.DNSSocket, eg.DNSCredential)
+	if c, err = m.dial(ctx); err == nil {
+		err = guest.DNS(ctx, c)
+	}
+	if err != nil {
+		// Without a resolver names fail inside; the proxy still resolves what is sent through it.
+		slog.Warn("microvm: the guest's resolver did not start", "err", err)
 	}
 	return nil
 }

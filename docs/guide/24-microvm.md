@@ -54,8 +54,6 @@ Not isolated, or not yet:
   VM's chroot naming its `state_dir`; a VM of another driver, a folder
   without the marker, or a link, is left alone. Changes in a VM ended this
   way that were not yet copied back are lost.
-- No DNS inside the guest. Names are resolved by the egress proxy for
-  requests sent through it; a program that resolves names itself fails.
 
 ## Copies, forwards and snapshots
 
@@ -133,6 +131,21 @@ A client of `:exec` cannot set the proxy variables itself. The driver then:
 - joins each to a new connection to the proxy's socket. Running as root,
   it first checks the socket is served by the server's user, so a socket
   path cannot point the guest at anything else on the host.
+
+The guest also gets a resolver. `abhed serve` serves the proxy's resolver
+on a second socket and gives the driver a DNS credential of the sandbox's
+own; the driver listens on a second vsock port (`v.sock_1026`), and the
+guest agent answers on `127.0.0.1:53` (UDP and TCP), with
+`/etc/resolv.conf` pointed at it (a file on `/run` bound over the read-only
+root's, which must exist). Each lookup is carried to the driver, which adds
+the credential, the guest never seeing it, and passes it to the proxy's
+resolver. The same egress rules judge it: a name the allowlist does not
+allow is `NXDOMAIN`, an allowed one gets one of the proxy's own addresses,
+which the proxy maps back to the name when a command connects through it,
+and each decision is recorded as the proxy's other decisions are. A
+program that resolves a name and then connects without the proxy still has
+no route out. A guest built before this release has no resolver; the
+driver logs it and names then do not resolve inside.
 
 Each command's per-call credential comes in its environment
 (`HTTP_PROXY`, `HTTPS_PROXY` and the lower-case forms), exactly as on the

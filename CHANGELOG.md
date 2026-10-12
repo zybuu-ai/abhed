@@ -345,7 +345,11 @@ All notable changes to Abhed are recorded here. The format follows
   and is unchanged. See [The microVM driver](docs/guide/24-microvm.md). It implements copy in
   and out and port forwarding through the guest agent, and snapshots with
   `snapshot_dir`; on Linux a watchdog per VM kills its cgroup if the driver
-  is killed, so no VM outlives it.
+  is killed, so no VM outlives it. Under the egress allowlist the guest has
+  a resolver on `127.0.0.1:53`: lookups go over vsock to the driver, which
+  passes them to the proxy's resolver with a DNS credential of the
+  sandbox's own (`driver.Egress.DNSSocket` and `DNSCredential`), judged and
+  recorded under the same egress rules.
   - The workspace is copied into the VM, and what commands change there is
     copied back after each command and before a stop: never through a link
     or onto another filesystem, never outside the workspace, never into

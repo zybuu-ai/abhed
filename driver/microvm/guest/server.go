@@ -41,6 +41,9 @@ type Server struct {
 	// Network, when set, starts forwarding 127.0.0.1:port to the host's
 	// egress broker. Without it the guest refuses, and has no way out.
 	Network func(port uint16) error
+	// DNS, when set, starts the resolver on 127.0.0.1:53 that passes
+	// lookups to the host. Without it the guest refuses.
+	DNS func() error
 }
 
 // ServeConn answers one call on rw and closes it.
@@ -71,6 +74,16 @@ func (s *Server) ServeConn(rw io.ReadWriteCloser) {
 			return
 		}
 		if err := s.Network(f.Port); err != nil {
+			_ = c.write(frame{Type: tError, Message: err.Error()})
+			return
+		}
+		_ = c.write(frame{Type: tOK})
+	case f.Type == tDNS:
+		if s.DNS == nil {
+			_ = c.write(frame{Type: tError, Message: "this guest has no resolver"})
+			return
+		}
+		if err := s.DNS(); err != nil {
 			_ = c.write(frame{Type: tError, Message: err.Error()})
 			return
 		}

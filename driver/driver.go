@@ -77,6 +77,11 @@ type Spec struct {
 type Egress struct {
 	Socket string `json:"socket"`
 	Port   uint16 `json:"port"`
+	// DNSSocket, when set, is the proxy's resolver, which answers under the
+	// same egress rules; DNSCredential is the sandbox's own credential for
+	// it, held by the driver and never given to the sandbox.
+	DNSSocket     string `json:"dns_socket,omitempty"`
+	DNSCredential string `json:"dns_credential,omitempty"`
 }
 
 // Phase is an instance's runtime phase as the driver sees it.

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,8 +12,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 func TestSandboxEgressOnlyUnderTheAllowlist(t *testing.T) {
@@ -25,6 +28,7 @@ func TestSandboxEgressOnlyUnderTheAllowlist(t *testing.T) {
 func TestSandboxEgressServesTheAllowlistPerSandbox(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.Network = config.NetworkAllowlist
+	cfg.Egress.Rules = append(cfg.Egress.Rules, egress.Rule{Host: "allowed.example", Decision: "allow"})
 	var mu sync.Mutex
 	var recorded []map[string]any
 	eg, err := newSandboxEgress(cfg, func(event string, p map[string]any) error {
@@ -88,6 +92,20 @@ func TestSandboxEgressServesTheAllowlistPerSandbox(t *testing.T) {
 	if resp.StatusCode < 400 {
 		t.Fatalf("an unlisted destination: %d", resp.StatusCode)
 	}
+	// The resolver socket takes the sandbox's DNS credential, which is not
+	// the command's, and judges a lookup by the same rules.
+	if e.DNSSocket == "" || e.DNSCredential == "" || strings.Contains(e.DNSCredential, auth) {
+		t.Fatalf("dns %q %q", e.DNSSocket, e.DNSCredential)
+	}
+	if rcode := lookupRcode(t, e.DNSSocket, e.DNSCredential, "allowed.example"); rcode != 0 {
+		t.Fatalf("a listed host: rcode %d", rcode)
+	}
+	if rcode := lookupRcode(t, e.DNSSocket, e.DNSCredential, "denied.example"); rcode != 3 {
+		t.Fatalf("an unlisted host: rcode %d, want NXDOMAIN", rcode)
+	}
+	if rcode := lookupRcode(t, e.DNSSocket, "Basic d3Jvbmc6Y3JlZA==", "allowed.example"); rcode != 5 {
+		t.Fatalf("a wrong credential: rcode %d, want REFUSED", rcode)
+	}
 	end()
 	if err := eg.Close(id); err != nil {
 		t.Fatal(err)
@@ -105,4 +123,35 @@ func TestSandboxEgressServesTheAllowlistPerSandbox(t *testing.T) {
 	if !found {
 		t.Fatalf("the refusal is not recorded with the sandbox: %v", recorded)
 	}
+}
+
+// lookupRcode asks the resolver socket for name's A record and returns the
+// answer's rcode.
+func lookupRcode(t *testing.T, sock, cred, name string) int {
+	t.Helper()
+	q := []byte{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0}
+	for _, l := range strings.Split(name, ".") {
+		q = append(append(q, byte(len(l))), l...)
+	}
+	q = append(q, 0, 0, 1, 0, 1)
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	for _, b := range [][]byte{[]byte(cred), q} {
+		if _, err := c.Write(append([]byte{byte(len(b) >> 8), byte(len(b))}, b...)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n [2]byte
+	if _, err := io.ReadFull(c, n[:]); err != nil {
+		return -1 // refused without an answer
+	}
+	a := make([]byte, int(n[0])<<8|int(n[1]))
+	if _, err := io.ReadFull(c, a); err != nil || len(a) < 4 {
+		t.Fatalf("answer: %v", err)
+	}
+	return int(a[3] & 0x0f)
 }
