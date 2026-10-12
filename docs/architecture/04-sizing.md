@@ -109,6 +109,20 @@ means the capacity model here does not hold for that stack. **Savings scale with
 count**, so a short run legitimately shows less than the 17× computed for 40 turns:
 an 8-turn validation run measured 7.6× prefill savings and 13.7× TTFT speedup.
 
+`-json FILE` writes the full report. Its fields:
+
+| Field | Meaning |
+|---|---|
+| `endpoint`, `model` | what was measured |
+| `prefix_tokens_est` | the stable prefix's size, estimated from its length |
+| `cache_reported` | whether the endpoint sent a cached-token figure at all |
+| `turns[]` | per turn: `turn`, `prompt_tokens`, `cached_tokens`, `cold_tokens` (prompt less cached), `ttft_ns`, `total_ns` |
+| `summary.total_prompt_tokens`, `total_cached_tokens`, `total_cold_tokens` | the turns' sums |
+| `summary.cache_hit_rate` | cached over prompt tokens |
+| `summary.prefill_savings_factor` | prompt over cold tokens |
+| `summary.cold_ttft_ms`, `warm_ttft_ms`, `ttft_speedup` | the first turn's time to first token, the warm turns' median, and their ratio |
+| `compaction` | with `-compaction` (on by default): `ttft_before_ms`, `ttft_after_ms`, `cold_penalty_factor` (after over before) and a `note` |
+
 ## 5. Quantization [E — unverified, must be measured]
 
 | Format | Memory | Expected quality | Use |

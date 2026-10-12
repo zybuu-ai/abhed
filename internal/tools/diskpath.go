@@ -83,6 +83,7 @@ func sameAs(dir string, names []string, info os.FileInfo) (string, bool) {
 }
 
 // foldKey is a name as a disk that ignores case and Unicode form compares it: STRASSE is straße.
+// It is Unicode folding; HFS+ and NTFS fold with their own tables, which differ for a few letters.
 func foldKey(n string) string {
 	c := folders.Get().(*cases.Caser)
 	defer folders.Put(c)
