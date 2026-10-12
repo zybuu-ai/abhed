@@ -298,3 +298,21 @@ func TestCLISandboxHoldsGitFilesByDefault(t *testing.T) {
 		t.Fatal("serve must require git protection whatever the configuration says")
 	}
 }
+
+// A server accounts sign in to asks the fence to scope signals; one without
+// accounts does not.
+func TestServeScopesSignalsForAccounts(t *testing.T) {
+	ws := t.TempDir()
+	for mode, want := range map[string]bool{"none": false, "local": true, "proxy": true} {
+		cfg := config.Default()
+		cfg.Auth.Mode = mode
+		served, sb, _, err := serveSandbox(cfg, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = sandbox.Close(sb)
+		if served.Sandbox.ScopeSignals != want {
+			t.Errorf("auth.mode %s: scope signals %v", mode, served.Sandbox.ScopeSignals)
+		}
+	}
+}

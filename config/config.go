@@ -1193,6 +1193,10 @@ type SandboxConfig struct {
 	// workspace (config, hooks, commondir and the like); set as WriteProtected
 	// is, by a surface that requires it.
 	ProtectGit bool `json:"-"`
+	// ScopeSignals, set by a server accounts sign in to, refuses a fence
+	// whose Landlock cannot keep one session's commands from signalling
+	// another's (ABI 6, Linux 6.12).
+	ScopeSignals bool `json:"-"`
 	// GitProtect is sandbox.protect_git: unset, git's files are protected
 	// wherever the tier can hold them; true requires it; false turns it off
 	// where no surface requires it.

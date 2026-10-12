@@ -556,10 +556,13 @@ without running anything.
   its first command, so a session opened only to be read records nothing.
   Sessions are not kept apart from each other's processes below Landlock ABI
   6 (Linux older than 6.12): there, one session's commands can signal
-  another session's commands, those of another account on the same server
-  included, and read their command lines in `/proc`. On Linux 6.12 or later
-  Landlock keeps each command's signals to its own processes; command lines
-  stay readable either way, since there is no PID namespace.
+  another session's commands and read their command lines in `/proc`. So an
+  `abhed serve` that accounts sign in to (`auth.mode` other than `none`)
+  refuses the fence below ABI 6, saying so; a server without accounts, the
+  command line and Studio still run there. On Linux 6.12 or later Landlock
+  keeps each command's signals to its own processes; command lines stay
+  readable either way, since there is no PID namespace, so keep secrets out
+  of command lines, or use the container tier, which gives each command one.
 - **The record.** `fence.qualified` holds the probe's report and the mode
   at the start of the session (for `serve`, before the session's first
   command), `process.launched` each command's launch with its call id

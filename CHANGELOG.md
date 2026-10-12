@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Under the fence on Linux older than 6.12, one account's commands on an
+  `abhed serve` that accounts sign in to could signal another account's
+  commands, which run as the same user. Such a server now refuses the fence
+  below Landlock ABI 6, which scopes signals; command lines in `/proc` stay
+  readable across sessions, as there is no PID namespace. Affects 1.2.6 to
+  1.2.7 on Linux.
 - The fence's `mount_namespace` mode did not find a view of the workspace
   through another filesystem (a bindfs or other FUSE mount, an overlay
   layered on it, an NFS export of it mounted back), so a command could read

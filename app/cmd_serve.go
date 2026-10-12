@@ -389,6 +389,8 @@ func (a *App) serveCmd(workspace, addr string) int {
 // as Studio's do: a planted hook or fsmonitor would run at the person's next git command.
 func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.Sandbox, tools.Bash, error) {
 	cfg.Sandbox.ProtectGit = true
+	// Accounts share the host's uid: under the fence, only Landlock keeps one's commands from signalling another's.
+	cfg.Sandbox.ScopeSignals = cfg.Auth.Mode != "" && cfg.Auth.Mode != "none"
 	sb, err := buildSandbox(cfg, workspace)
 	if err != nil {
 		return cfg, nil, tools.Bash{}, err

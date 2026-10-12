@@ -213,6 +213,10 @@ func FenceProbe(ctx context.Context, p Policy) probe.Report {
 func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	base, derr := cgroup.Discover()
 	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit && p.GitRequired}
+	if p.ScopeSignals {
+		// Below it, one account's commands could signal another's, which share the uid.
+		req.LandlockABI = signalScopeABI
+	}
 	if derr == nil {
 		req.CgroupDir = base.Path()
 	}
@@ -232,6 +236,10 @@ func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	r.Add(c)
 	return r, base
 }
+
+// signalScopeABI is the first Landlock ABI that scopes signals and abstract
+// unix sockets to the command's own domain.
+const signalScopeABI = 6
 
 // mountsRefusal is why a surface with protected paths is refused on a host
 // that gives commands no mount namespace of their own.

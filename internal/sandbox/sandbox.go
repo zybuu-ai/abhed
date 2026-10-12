@@ -141,6 +141,9 @@ type Policy struct {
 	// ProtectGit write-protects the gitPointers of every git folder in the
 	// workspace and each .git file; see gitprotect.go for how each backend does it.
 	ProtectGit bool
+	// ScopeSignals requires a fence whose Landlock scopes signals (ABI 6),
+	// for sessions of several accounts on one host.
+	ScopeSignals bool
 	// GitRequired refuses a fence that cannot hold ProtectGit (no mount
 	// namespace); without it, that fence runs and says git's files are not held.
 	GitRequired bool
