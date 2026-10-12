@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -159,5 +160,73 @@ func TestOneRemovedOwnerSweepPerServer(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a second sweep ran alongside the first")
+	}
+}
+
+// An account removed by another process, or removed and made again, is
+// noticed first by a request carrying the old cookie: releaseStale lets the
+// session go, and the sweep it pokes still stops the work that session runs.
+func TestRemovedAccountsWorkStopsOnTheOldCookie(t *testing.T) {
+	for _, recreate := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		users := auth.NewMemoryUserStore()
+		local := auth.NewLocalAuth(users, time.Hour, false)
+		for _, n := range []string{"bob", "carol"} {
+			if err := local.CreateUser(ctx, auth.User{Username: n}, "correct-horse-1"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cfg := config.Default()
+		cfg.Auth.Mode = "local"
+		cfg.Subagents.Wake = "auto"
+		cfg.Permissions.Allow = []string{"bash(sleep *)"}
+		st := agent.NewMemStore()
+		s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: &shellAdapter{calls: map[string]int{}},
+			Registry: tools.NewRegistry(tools.Read{}, tools.Bash{}), Store: st,
+			Auth: &auth.Middleware{Providers: []auth.Provider{local},
+				PublicPaths: append(PublicPaths(), local.PublicPaths()...)}})
+		b := &bgServer{t: t, s: s, h: s.Handler(), store: st}
+		g := &adminRig{h: b.h, local: local}
+		cookie := g.signIn(t, "bob")
+		start := func(owner string) string {
+			id, err := s.StartSession(ctx, StartSpec{Prompt: "sh:" + owner, Tenant: "default", User: owner})
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitUntil(t, owner+"'s shell", func() bool { return b.state(id) == "background" && b.live(id).Loop.Background.Live() == 1 })
+			return id
+		}
+		bob, carol := start(auth.LocalOwner("bob")), start(auth.LocalOwner("carol"))
+		// Only the poke can run it within the test.
+		go s.sweepRemovedOwners(ctx, time.Hour)
+		waitUntil(t, "the sweep", s.ownerSweep.Load)
+
+		time.Sleep(5 * time.Millisecond)
+		// Another process: this server's LocalAuth is not told.
+		if _, err := auth.RemoveUser(ctx, users, "bob"); err != nil {
+			t.Fatal(err)
+		}
+		if recreate {
+			if err := auth.NewLocalAuth(users, time.Hour, false).CreateUser(ctx, auth.User{Username: "bob"}, "another-horse-2"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		req := httptest.NewRequest("GET", "/v1/sessions", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		b.h.ServeHTTP(rec, req)
+		if rec.Code != 401 {
+			t.Fatalf("recreate=%v: old cookie = %d", recreate, rec.Code)
+		}
+		waitUntil(t, "bob's shell ended", func() bool { return countType(b.events(bob), agent.EvShellEnded) == 1 })
+		e := payloadsOf(b.events(bob), agent.EvShellEnded)[0]
+		if e["reason"] != string(agent.TermOwnerRevoked) {
+			t.Fatalf("recreate=%v: bob's shell ended %v", recreate, e)
+		}
+		if got := b.live(carol).Loop.Background.Live(); got != 1 {
+			t.Fatalf("carol's shell stopped too: %d live", got)
+		}
+		b.live(carol).Loop.Background.CancelAll(agent.TermSessionClosed)
+		cancel()
 	}
 }

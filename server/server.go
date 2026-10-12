@@ -3765,7 +3765,9 @@ func (s *Server) stopRemovedOwners(ctx context.Context) int {
 	seen := map[target]bool{}
 	s.mu.RLock()
 	for _, live := range s.running {
-		owner := live.User
+		// releaseStale may have released it on a request's recheck already;
+		// its work still runs, so judge it by the owner it had.
+		owner := strings.TrimPrefix(live.User, auth.UnclaimedPrefix)
 		if !strings.HasPrefix(owner, auth.ProviderLocal+":") {
 			continue
 		}
