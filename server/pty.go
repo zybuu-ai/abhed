@@ -972,13 +972,8 @@ func (p *ptyRun) ask(e *enteredLine) {
 	e.Ahead = p.prompt != nil && !p.prompt.At()
 }
 
-// engineForeground asks, from outside the container, whether the terminal's
-// foreground process group is not the shell's. The shell is the container's
-// pid 1, and nothing is run from the container's image, whose programs the
-// agent can replace: the engine names the shell's host pid, and its /proc
-// stat is read on the engine's host (here on Linux, through the machine for
-// podman elsewhere), or docker's own ps answers. Any doubt is "cannot say",
-// and the line is screened.
+// engineForeground asks from the engine's host, never the agent-writable image, whether a
+// program other than the shell (pid 1) has the terminal; any doubt screens the line.
 func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
 	name := ""
 	for i, a := range cmd.Args {
@@ -1248,10 +1243,8 @@ func (p *ptyRun) stop(why string) {
 	p.cancel()
 }
 
-// closeTerminals ends every shell and command the session has on a terminal,
-// and its language servers, recording why. Each returned channel closes once
-// that run's result is on the record.
-// A run that already ended and lingers for a late reader is not stopped or returned.
+// closeTerminals ends the session's live terminals and language servers, recording why;
+// each returned channel closes once that run's result is on the record.
 func (l *liveSession) closeTerminals(why string) []<-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()

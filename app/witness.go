@@ -61,9 +61,8 @@ func witnessKeyFile(cfg config.Config) (string, error) {
 	return filepath.Join(dir, "witness.key"), nil
 }
 
-// witnessKey is the key a witness's statements must be signed with: given
-// as a public key (base64, as statements carry it) or a key file, or else
-// this installation's own.
+// witnessKey is the key a witness's statements must be signed with: a given
+// public key (base64) or key file, or else this installation's own.
 func witnessKey(cfg config.Config, given string) (ed25519.PublicKey, error) {
 	if given != "" {
 		if k, err := witness.ParsePublicKey(given); err == nil {
@@ -93,9 +92,8 @@ func closeWitness(w *openedWitness) {
 	}
 }
 
-// witnessReporter logs a head that did not reach the witness as it fails, so
-// a long-running serve says so at once; after the first, at most one line per
-// every, counting the failures it did not log.
+// witnessReporter logs a head that did not reach the witness at once, then at
+// most one line per every, counting the failures it held back.
 type witnessReporter struct {
 	log   *slog.Logger
 	every time.Duration

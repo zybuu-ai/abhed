@@ -19,14 +19,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// The workbench editor's language servers (go to definition, hover,
-// diagnostics). A server is a command the operator names in
-// sandbox.language_servers, never a workspace file. Starting one is the
-// person's bash call: judged by the policy and recorded, then run by the
-// session's sandbox exactly as a command is. One with no sandbox around it,
-// on the none tier, is not started. Its messages travel over the session's
-// own authenticated routes; what it says is untrusted, and the page draws it
-// as text.
+// Workbench language servers: an operator-named command, started as the person's
+// judged and recorded bash call inside the session's sandbox; its output is untrusted.
 
 const (
 	// maxLSPs bounds the language servers one session runs.
@@ -88,9 +82,8 @@ var lspMethods = map[string]bool{
 // lspCapabilities are the editor's, as ide.html declares them.
 const lspCapabilities = `{"textDocument":{"hover":{"contentFormat":["markdown","plaintext"]},"definition":{"linkSupport":true},"publishDiagnostics":{},"synchronization":{}},"workspace":{"configuration":true}}`
 
-// lspAllowed returns the message from the page that may reach the server:
-// one of lspMethods, or a null answer to the server's own request. It is
-// rebuilt, so no other key, duplicate or case variant reaches the server.
+// lspAllowed returns, rebuilt, the page's message that may reach the server:
+// one of lspMethods, or a null answer to the server's own request.
 func lspAllowed(body []byte, root string) ([]byte, bool) {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil {
@@ -536,9 +529,8 @@ func (s *Server) stopLSP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// stopLSPs ends a session's language servers, as its terminals end with it,
-// and returns for each a channel that closes once its end is on the record.
-// Under l.mu; one starting meanwhile sees lspGen moved and does not start.
+// stopLSPs ends the session's language servers, returning channels closed once each end is
+// recorded. Under l.mu; one starting meanwhile sees lspGen moved and does not start.
 func (l *liveSession) stopLSPs() []<-chan struct{} {
 	l.lspGen++
 	var done []<-chan struct{}

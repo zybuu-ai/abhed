@@ -48,9 +48,8 @@ type Config struct {
 	Host string
 	// Client is the HTTP client for URL; nil is one with a 10 second timeout.
 	Client *http.Client
-	// OnError, when set, is told each failure to deliver a head as it
-	// happens, from the writer's or a sender's goroutine; it must not block.
-	// Errors then reports nothing.
+	// OnError, when set, is told each delivery failure as it happens, from any
+	// goroutine, and must not block; Errors then reports nothing.
 	OnError func(error)
 }
 
@@ -316,8 +315,7 @@ func Read(r io.Reader) ([]Statement, []error) {
 }
 
 // Problem is a head the witness holds that the record no longer does.
-// Removed marks one a recorded removal accounts for, such as a prune whose
-// tombstone keeps the session's head: reported, but not a failure.
+// Removed marks one a recorded removal (a prune's tombstone) accounts for.
 type Problem struct {
 	Statement Statement
 	Reason    string
@@ -346,18 +344,12 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
-// Removed says why a head the record no longer holds was removed on the
-// record (a prune's tombstone that covers that line and hash), or "" when
-// nothing recorded accounts for it.
+// Removed says why a head the record no longer holds was removed on the record (a prune's
+// tombstone that covers that line and hash), or "" when nothing recorded accounts for it.
 type Removed func(session string, line int64, hash string) (string, error)
 
-// Check compares statements for one store and tenant with the record as it
-// is now: hashAt gives the hash at a line and whether the record holds it.
-// A head the record no longer holds means lines were cut, rewritten or rolled
-// back since the witness was given it, unless removed (which may be nil)
-// names the recorded removal that took it. Each statement must be signed with
-// key, the installation's: one that verifies under a key of its own proves
-// nothing about who sent it.
+// Check compares statements for one store and tenant with the record as it is now: hashAt gives the hash
+// at a line and whether the record holds it. Each must be held, or taken by removed (may be nil), and signed with key.
 func Check(stmts []Statement, key ed25519.PublicKey, store, tenant string, hashAt func(session string, line int64) (string, bool, error), removed Removed) ([]Problem, error) {
 	if len(key) != ed25519.PublicKeySize {
 		return nil, errors.New("witness: no installation key to check the statements against")

@@ -14,9 +14,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// approvalRefusingStore refuses to record an approval (only those whose
-// payload holds only, when set), and every write once failAll is set, as a
-// fenced session's store or a failing database does.
+// approvalRefusingStore refuses approvals whose payload holds only, and every
+// write once failAll is set, as a fenced store or failing database does.
 type approvalRefusingStore struct {
 	*MemStore
 	only    string
@@ -51,9 +50,8 @@ func (c *countTool) Run(context.Context, *tools.Session, json.RawMessage) tools.
 	return tools.Result{Content: "ran"}
 }
 
-// A call whose approval cannot be recorded is never run, read-only or not:
-// a process that took the session over would see no approval and could run
-// it a second time. The run ends on the failed write.
+// A call whose approval cannot be recorded is never run, read-only or not, since a
+// process taking the session over could run it again; the run ends on the failed write.
 func TestCallWithUnrecordedApprovalNeverRuns(t *testing.T) {
 	dir := tempDir(t)
 	sess, err := tools.NewSession(dir)
@@ -85,10 +83,8 @@ func TestCallWithUnrecordedApprovalNeverRuns(t *testing.T) {
 	}
 }
 
-// Each guard holds alone: an approval refused for a later call keeps an
-// earlier, recorded one from running; a write failing while read-only calls
-// run keeps the mutating call after them from running; and a pipeline step
-// whose approval is unrecorded is not run.
+// Each guard holds alone: a later failed approval, a write failing during the
+// read-only batch, and an unrecorded pipeline-step approval each stop the run.
 func TestUnrecordedApprovalEachGuard(t *testing.T) {
 	sess, err := tools.NewSession(tempDir(t))
 	if err != nil {
