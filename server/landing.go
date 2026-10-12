@@ -368,6 +368,17 @@ async function load(){
 // renderFacts paints everything below the hero. Split out of load() so the
 // ten-second refresh can update the live numbers without touching a sign-in
 // or sign-up card the user is part-way through filling in.
+function webAccess(o){
+  const search = o.web_search !== 'disabled', fetch = !!o.web_fetch;
+  return search && fetch ? 'search and pages' : search ? 'search (' + o.web_search + ')' : fetch ? 'pages only' : 'off';
+}
+function webAccessDetail(o){
+  const search = o.web_search !== 'disabled', fetch = !!o.web_fetch;
+  return search && fetch ? 'the agent can search the internet and read web pages'
+    : search ? 'the agent can search the internet; it reads no web pages'
+    : fetch ? 'the agent can read web pages; it cannot search'
+    : 'the agent stays offline';
+}
 function renderFacts(o){
   // ---- what this deployment actually is
   const f = $('facts');
@@ -392,13 +403,10 @@ function renderFacts(o){
     o.storage, o.durable ? 'on' : 'off'));
   f.appendChild(card('Authentication', authValue(o), authDetail(o),
     o.auth_mode === 'none' ? 'off' : 'on'));
-  const online = o.web_search !== 'disabled' || o.web_fetch;
-  f.appendChild(card('Web search', o.web_search,
-    o.web_search_state || (online ? 'the agent can reach the internet' : 'the agent stays offline'),
-    o.web_search === 'disabled' ? 'off' : 'warn'));
-  f.appendChild(card('Web fetch', o.web_fetch ? 'enabled' : 'disabled',
-    o.web_fetch ? 'the agent can read web pages' : 'the agent reads no web pages',
-    o.web_fetch ? 'warn' : 'off'));
+  // One card for both ways out, so each says only what it allows: fetch alone reads a
+  // page the agent is given, and does not let it search.
+  f.appendChild(card('Web access', webAccess(o), webAccessDetail(o),
+    o.web_search !== 'disabled' || o.web_fetch ? 'warn' : 'off'));
   // The workspace's own config: whether it is trusted, and what was set aside.
   const wc = o.workspace_config;
   if(wc){

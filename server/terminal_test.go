@@ -1063,3 +1063,100 @@ func TestShellWithholdsAPasswordTypedAheadKeyByKey(t *testing.T) {
 		})
 	}
 }
+
+// A line longer than the terminal is wide is soft-wrapped by readline as it
+// is echoed; it is still recorded with its text.
+func TestShellRecordsAWrappedLine(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	long := "echo " + strings.Repeat("wrapped-", 19) + "end"
+	wb.drive(start.ID, step{keys: long, until: "-end"}, step{keys: "\r"}, step{keys: "exit\r"})
+	if !slices.ContainsFunc(wb.typed(), func(in agent.TerminalInput) bool { return in.Line == long }) {
+		t.Fatalf("the wrapped line was not recorded with its text: %+v", wb.typed())
+	}
+}
+
+// A server accounts sign in to warns at start when its deny rules for
+// commands are only a screen in the workbench shell.
+func TestShellScreeningWarnedOnAMultiUserServer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit func(*config.Config)
+		warn bool
+	}{
+		"multi-user, shell":    {func(c *config.Config) { c.Auth.Mode = "proxy" }, true},
+		"multi-user, lines":    {func(c *config.Config) { c.Auth.Mode = "proxy"; c.Sandbox.Terminal = "lines" }, false},
+		"single user":          {func(c *config.Config) { c.Auth.Mode = "none" }, false},
+		"no command deny rule": {func(c *config.Config) { c.Auth.Mode = "proxy"; c.Permissions.Deny = []string{"read(**/.env)"} }, false},
+		"managed rules force lines": {func(c *config.Config) {
+			c.Auth.Mode = "proxy"
+			c.Managed, c.ManagedKeys = true, []string{"permissions.deny"}
+		}, false},
+	} {
+		cfg := config.Default()
+		tc.edit(&cfg)
+		var buf bytes.Buffer
+		New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+		if got := strings.Contains(buf.String(), `set sandbox.terminal to \"lines\"`); got != tc.warn {
+			t.Errorf("%s: warned=%v\n%s", name, got, buf.String())
+		}
+	}
+}
+
+// A shell no page watches is listed for its owner to adopt; once a page says
+// it is closing, the shell waits a minute for a reload, not its idle time.
+func TestShellAdoptAndDetach(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	list := func(user string) []openShell {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/sessions/"+wb.session+"/pty", nil)
+		req.Header.Set("X-Abhed-Tenant", "acme")
+		if user != "" {
+			req.Header.Set("X-Abhed-User", user)
+		}
+		wb.h.ServeHTTP(rec, req)
+		var out []openShell
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Fatalf("list: %d %s", rec.Code, rec.Body)
+		}
+		return out
+	}
+	if got := list(""); len(got) != 1 || got[0].ID != start.ID || got[0].Isolation == nil || got[0].Workspace != wb.workspace {
+		t.Fatalf("the unwatched shell was not listed: %+v", got)
+	}
+	if got := list("mallory"); len(got) != 0 {
+		t.Fatalf("another account was offered the shell: %+v", got)
+	}
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	live.mu.Lock()
+	run := live.ptys[start.ID]
+	live.mu.Unlock()
+	// Watched, it is not offered.
+	ch := make(chan []byte)
+	run.mu.Lock()
+	run.subs[ch] = struct{}{}
+	run.mu.Unlock()
+	if got := list(""); len(got) != 0 {
+		t.Fatalf("a watched shell was offered: %+v", got)
+	}
+	run.mu.Lock()
+	delete(run.subs, ch)
+	run.mu.Unlock()
+
+	if rec := wb.send("acme", "POST", "pty/"+start.ID+"/detach", nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("detach: %d %s", rec.Code, rec.Body)
+	}
+	run.mu.Lock()
+	run.lastRead = time.Now().Add(-2 * shellDetachGrace)
+	run.mu.Unlock()
+	if !run.abandoned() {
+		t.Fatal("a detached shell waits its whole idle time")
+	}
+	run.detached.Store(false)
+	if run.abandoned() {
+		t.Fatal("a shell went before its idle time")
+	}
+	if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("kill: %d", rec.Code)
+	}
+}

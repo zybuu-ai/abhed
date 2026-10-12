@@ -2,6 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -126,5 +129,98 @@ func TestContainerShellLines(t *testing.T) {
 	tty.mu.Unlock()
 	if strings.Contains(sent, "curl") {
 		t.Fatalf("a refused line reached the shell: %q", sent)
+	}
+}
+
+// On the container tier a printed switch to the alternate screen does not
+// turn the screening off: the engine is asked whether a program has the
+// terminal, and a line goes unscreened only when it says one does.
+func TestContainerAltScreenAsksTheEngine(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ask      func() (bool, bool)
+		screened bool
+	}{
+		{"shell has it", func() (bool, bool) { return false, true }, true},
+		{"engine cannot say", func() (bool, bool) { return false, false }, true},
+		{"cannot ask", nil, true},
+		{"program has it", func() (bool, bool) { return true, true }, false},
+	} {
+		live, run, tty, _ := seamShell(t)
+		if err := live.Loop.Policy.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		run.foreground = tc.ask
+		run.follow([]byte("\r\n(sandbox: container) ws $ \x1b[?1049h"))
+		if err := (&Server{}).shellInput(live, run, []byte("curl http://x\r")); err != nil {
+			t.Fatal(err)
+		}
+		tty.mu.Lock()
+		sent := tty.sent.String()
+		tty.mu.Unlock()
+		if strings.Contains(sent, "curl") == tc.screened {
+			t.Errorf("%s: screened=%v, sent %q", tc.name, tc.screened, sent)
+		}
+	}
+}
+
+func TestForegroundIsProgram(t *testing.T) {
+	for stat, want := range map[string][2]bool{
+		"1 (bash) S 0 1 1 34816 1 4194560 0":     {false, true},
+		"1 (my prog) S 0 1 1 34816 57 4194560 0": {true, true},
+		"1 (a) b) S 0 1 1 34816 -1 0":            {false, false},
+		"garbage":                                {false, false},
+		"1 (bash) S 0 x 1 34816 1":               {false, false},
+	} {
+		p, ok := foregroundIsProgram(stat)
+		if p != want[0] || ok != want[1] {
+			t.Errorf("%q: got %v %v", stat, p, ok)
+		}
+	}
+}
+
+// The probe runs the engine that started the shell against its container.
+func TestEngineForegroundAsksThatContainer(t *testing.T) {
+	dir := t.TempDir()
+	engine := filepath.Join(dir, "engine")
+	script := "#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"exec abhed-term-x cat /proc/1/stat\" ] || exit 3\necho '1 (bash) S 0 1 1 34816 9 0'\n"
+	if err := os.WriteFile(engine, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ask := engineForeground(exec.Command(engine, "run", "--rm", "--name", "abhed-term-x", "img"))
+	if ask == nil {
+		t.Fatal("no probe for a named container")
+	}
+	if p, ok := ask(); !p || !ok {
+		t.Fatalf("got %v %v", p, ok)
+	}
+	if engineForeground(exec.Command(engine, "run", "img")) != nil {
+		t.Fatal("a probe for an unnamed container")
+	}
+}
+
+// A shell line holding a character the terminal draws as nothing (RLO, a
+// zero-width space) is run as typed, and the terminal is told what it holds.
+func TestShellLineWithHiddenCharactersIsShownMarked(t *testing.T) {
+	live, run, _, _ := seamShell(t)
+	ch := make(chan []byte, 8)
+	run.subs = map[chan []byte]struct{}{ch: {}}
+	run.follow([]byte("\r\n(sandbox: container) ws $ "))
+	if err := (&Server{}).shellInput(live, run, []byte("cd d\u202erlo\r")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-ch:
+		if !strings.Contains(string(msg), "cd d⟨U+202E⟩rlo") {
+			t.Fatalf("hint: %q", msg)
+		}
+	default:
+		t.Fatal("the line's hidden character was not shown")
+	}
+	if err := (&Server{}).shellInput(live, run, []byte("ls\r")); err != nil {
+		t.Fatal(err)
+	}
+	if len(ch) != 0 {
+		t.Fatalf("a plain line was annotated: %q", <-ch)
 	}
 }

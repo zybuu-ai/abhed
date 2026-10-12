@@ -206,7 +206,7 @@ const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => tru
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
 const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {}, loadDownloads = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
-const requestAnimationFrame = f => f(), idleTurns = new Map();
+const requestAnimationFrame = f => f(), idleTurns = new Map(), setConn = () => {};
 // api answers the session list from __sessions, after the next of __delays;
 // a route given to __defer answers when the test resolves it.
 let __sessions = [], __delays = []; const __pending = {};
@@ -553,9 +553,9 @@ func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
 	for fn, wants := range map[string][]string{
 		"function drawTabs(){":             {"el('span', 'nm', reveal(t.label))", "b.title = reveal(", "'Close ' + reveal(t.label)"},
 		"function crumbs(path, meta){":     {"reveal(p)"},
-		"function flushStream(){":          {"appendData(reveal(pendThink, true))", "appendData(reveal(pendText, true))"},
+		"function flushStream(){":          {"appendData(reveal(pendThink, true, true))", "appendData(reveal(pendText, true, true))"},
 		"async function loadChanges(){":    {"reveal(f.path)"},
-		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true)"},
+		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true, true)"},
 	} {
 		start := strings.Index(ideHTML, fn)
 		if start < 0 {
@@ -732,5 +732,43 @@ $('sdrop').hidden = true; $('sfilter').value = ''; $('sdropq').value = '';
 func TestIDESwitchesSessions(t *testing.T) {
 	if out, err := runConsoleCases(t, "ide-switch", ideSwitchHarness, "ide_switch_cases.mjs"); err != nil {
 		t.Fatalf("switching sessions failed:\n%s", out)
+	}
+}
+
+// Every pane of the workbench's grid is placed by column: with the side
+// panel hidden (⌘B) its tracks are empty, and auto-placement would move the
+// editor into them and the agent over the editor.
+func TestIDEGridPlacesEachPaneByColumn(t *testing.T) {
+	for id, col := range map[string]string{"act": "1", "side": "2", "split-side": "3", "center": "4", "split-agent": "5", "agent": "6"} {
+		if !strings.Contains(ideHTML, "#"+id+"{grid-column:"+col+"}") {
+			t.Errorf("#%s is not placed in column %s", id, col)
+		}
+	}
+	if !strings.Contains(ideHTML, `#app.noside[data-pane="side"] #side{display:flex}`) {
+		t.Error("on a phone a hidden side panel is drawn over the pane being shown")
+	}
+}
+
+// A terminal is fitted only when its panel is on screen with room: fitted
+// hidden or squeezed, it shrinks to two columns and the shell is told so.
+func TestIDETerminalFitsOnlyWithRoom(t *testing.T) {
+	for _, want := range []string{"  if(termRoom()) try{ fit.fit(); }catch{}", "const t = activeTerm; if(!t || !termRoom()) return;", "new ResizeObserver(() => fitActive()).observe($('tpanes'));"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("missing: %s", want)
+		}
+	}
+}
+
+// The Extensions view shows each extension's real status, never a fixed
+// "active"; Kill hands focus to the terminal, not to the button it disables.
+func TestIDEExtensionStatusAndKillFocus(t *testing.T) {
+	if strings.Contains(ideHTML, "el('span', 'pill on', 'active')") {
+		t.Error("every extension is labelled active")
+	}
+	if !strings.Contains(ideHTML, "if(e.status) top.appendChild(el('span', 'pill' + (e.status === 'running' ? ' on' : ''), visible(e.status)));") {
+		t.Error("the extension's status is not shown")
+	}
+	if !strings.Contains(ideHTML, "{method:'DELETE', credentials:'same-origin'}).catch(() => {}); if(t) t.term.focus(); });") {
+		t.Error("Kill leaves focus on itself")
 	}
 }

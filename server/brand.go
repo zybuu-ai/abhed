@@ -46,10 +46,34 @@ const brandCSS = `:root{--on-accent:#fff}
 :root[data-theme="dark"] .lk-dark{display:block!important}
 `
 
+// signOutJS is every page's sign-out: a same-origin fetch POST to /logout, then
+// where the answer says. A plain form post arrives from Chrome as Origin: null.
+const signOutJS = `async function signOut(){
+  try{
+    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
+    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
+  }catch{}
+  location.href = '/logout';
+}`
+
+// wsConfigJS says, for the console and the workbench as the front page does,
+// whether the workspace's own config is trusted and which settings it set
+// aside. Key names come from the file, so each page draws them through visible.
+const wsConfigJS = `function wsConfigLine(wc){
+  if(!wc) return null;
+  const ig = wc.ignored || [], n = ig.length;
+  return {warn: !wc.trusted || n > 0,
+    text: 'workspace config ' + (wc.trusted ? 'trusted' : 'not trusted') + ' · ' + (n ? n + ' setting' + (n === 1 ? '' : 's') + ' ignored: ' + ig.map(k => k.key).join(', ')
+      : wc.trusted ? 'every setting applies' : 'only settings that tighten apply'),
+    title: [wc.reason || ''].concat(ig.map(k => k.key + (k.reason ? ': ' + k.reason : ''))).filter(Boolean).join('\n')};
+}`
+
 var (
 	brandOuter = strings.NewReplacer(
+		"/*{{WS_CONFIG}}*/", wsConfigJS,
 		"{{BRAND_LOCKUP}}", brandLockup,
 		"/*{{BRAND_CSS}}*/", brandCSS,
+		"/*{{SIGN_OUT}}*/", signOutJS,
 	)
 	brandImages = strings.NewReplacer(
 		"{{BRAND_MARK}}", brandURI("mark.webp"),

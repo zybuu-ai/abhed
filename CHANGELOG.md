@@ -432,6 +432,25 @@ All notable changes to Abhed are recorded here. The format follows
   replayed its events before refusing; it now refuses first. Resuming a row
   the session owner migration set aside says so instead of "belongs to
   another user". Affects 0.1.0 to 1.2.7.
+- The documentation served at `/docs/` had no Content-Security-Policy, so a
+  page there was the one place on the server a browser would run script
+  from. Every `/docs/` response now carries
+  `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:`.
+  Affects 0.1.0 to 1.2.7.
+- In Studio's line-by-line terminal a command's output reached the terminal
+  with its escape sequences intact, so it could move the cursor, erase lines
+  and draw a fake prompt or status line over what was really there (display
+  only; the record was not affected). Only colour now passes; any other
+  escape or control character is shown as a symbol. Affects 1.2.7.
+- In a workbench shell on the container tier, printing the alternate-screen
+  sequence (`printf '\e[?1049h'`) made the server take every later line as
+  typed into a full-screen program, so a line a deny rule names ran and the
+  record kept no line, until the screen was switched back. The server now
+  asks the container engine at each such Enter whether a program really has
+  the terminal, and screens and records the line unless it does. The fence
+  tier's shell, which runs on the server's own terminal, is now asked as the
+  process tier's is, instead of being treated as a container's.
+  Affects 1.2.3 to 1.2.7.
 
 ### Added
 
@@ -845,10 +864,6 @@ on. A server with it off starts on the older schema as before.
   path, recorded as kind `https`. Commands are pointed at a bundle with the
   session's CA; a client that pins certificates or keeps its own trust
   store fails rather than going uninspected.
-- `GET /v1/overview` has `workspace_config`: whether the workspace's
-  `.abhed/config.json` is trusted, why, and the names of the settings it
-  set aside, for a signed-in caller or where nobody signs in; the front
-  page shows it as a card.
 - `server.tls.client_revoked_file`: client certificates that are refused
   although they verify, as PEM CRLs signed by the client CA or as hex
   serial numbers one to a line. It is reloaded like the CA; a revoked
@@ -860,6 +875,21 @@ on. A server with it off starts on the older schema as before.
   to the egress allowlist with `sandbox.network: "allowlist"` and `egress`
   rules of your own. They are set aside when they would widen anything:
   over no network, or when the managed file sets any network setting.
+- `abhed serve` with sign-in logs a warning at start when deny rules for
+  commands are in force and `sandbox.terminal` is not `"lines"`: in a
+  workbench shell those rules only screen the lines as typed.
+- `GET /v1/overview` has `workspace_config`: whether the workspace's
+  `.abhed/config.json` is trusted, why, and the names of the settings it
+  set aside, for a signed-in caller or where nobody signs in; the front
+  page shows it as a card, the console under its examples, and the
+  workbench in its **Tools** panel.
+- Language servers in the workbench editor: `sandbox.language_servers` names,
+  per editor language, a server (`{"go": ["gopls"]}`) for go to definition,
+  hover and diagnostics. It is started on the first file in that language,
+  as the person's recorded `bash` call judged by the policy, and runs in the
+  session's sandbox; none runs on the none tier, and a workspace file cannot
+  name one. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
+  `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed
 
@@ -1000,6 +1030,24 @@ on. A server with it off starts on the older schema as before.
   its own, so the guessing that paired an id-less call's approval and result
   with its card is gone; replaying an older record shows such a result as a
   card of its own.
+- A workbench shell whose page was closed ran on for 30 minutes, and only the
+  same browser tab could reattach to it. A closing page now tells the server,
+  and its shells end a minute later unless a reload reattaches; opening the
+  session in another tab or browser adopts your own shells no page is
+  watching (`GET /v1/sessions/{id}/pty`).
+- The workbench's **Changes** and review now list files changed by shell
+  commands, the person's or the agent's, not only edits made through the
+  edit tools. Each session notes the workspace as it opens (size, time and
+  hash of every file outside `.git`, `node_modules` and `.abhed`, and the
+  text of files up to 1 MB, 16 MB in all, read after the session starts)
+  and compares against it; such a
+  file is marked `by_command` in `GET /v1/sessions/{id}/changes`, and in a
+  workspace of more than 20,000 files `partial` says the rest were not
+  compared.
+- A line entered in a workbench shell that holds a bidi control or a
+  zero-width character, which the terminal draws as nothing, is now written
+  back on the terminal with those characters marked (`cd d⟨U+202E⟩rlo`) as it
+  runs.
 
 ### Fixed
 
@@ -1303,6 +1351,53 @@ on. A server with it off starts on the older schema as before.
   inside the workspace was searched as well, so every hit in the
   repository was listed twice. The limit now holds under any interleaving,
   and a linked worktree is passed over (a submodule is still searched).
+- A four-character line typed ahead in a workbench terminal, such as `make`,
+  took out every recorded output line holding it inside a longer word
+  (`makes`). Such a line now takes a line only where no letter, digit or `_`
+  follows it; longer lines are matched as before.
+- A save from the workbench editor that left a file no longer parsing was
+  made without a word, though the record carried the warning the agent's
+  edit gets. The save now answers with that warning (`note` on
+  `PUT /v1/sessions/{id}/file`) and the editor shows it.
+- A line typed into a workbench shell that was longer than the terminal was
+  wide was recorded without its text, as though it had not been echoed:
+  the shell's soft wrap at the right margin was read as part of the line.
+- The web IDE drew a narrow no-break space (U+202F) or any other space but a
+  plain one in a model's reply as `⟨U+202F⟩`. Replies, reasoning and
+  messages now draw such spaces as spaces; format, bidi and zero-width
+  characters are still marked, and file names, tool cards and output are
+  unchanged.
+- Hiding the web IDE's side panel (⌘B, or the palette's *Toggle the side
+  panel*) collapsed the editor to nothing and stretched the agent across
+  the page. The panes now keep their columns. On a phone the hidden side
+  panel no longer draws over the pane being shown.
+- A web IDE terminal opened while its panel was hidden or squeezed was
+  fitted to xterm's two-column minimum and its shell started that narrow. It
+  is now fitted only when the panel has room, and resized when it is shown.
+- A web IDE page left open on a session deleted elsewhere asked the server
+  for its state every two seconds for as long as it stayed open, each
+  answered `404`. After three such answers in a row it now says the session
+  was deleted and stops asking.
+- In the web IDE a call that an earlier *Always allow* let through drew an
+  approval card nobody was asked, and after a reload the answered cards were
+  gone and nothing said who had answered. A call a session scope allowed now
+  draws no card; an answered card says who answered and the scope chosen
+  (`allowed · by ana · always allowing bash(touch *)`), live and when the
+  session is reopened.
+- Small web IDE fixes: a request that cannot reach the server says so in
+  plain words instead of the browser's "Failed to fetch"; **Kill** hands
+  focus to the terminal instead of keeping it on the button it disables; the
+  Extensions view shows each extension's real status (`running`, `stopped`,
+  `not started`) instead of labelling every one "active", and none where the
+  server does not report it; a `skill` call is shown by the skill's name and
+  a `tasks` call by its subagents, not as raw JSON.
+- The landing page's *Web search* card said "the agent can reach the
+  internet" when only web fetch was on. Search and fetch now share one *Web
+  access* card that says what each allows: with fetch alone, the agent can
+  read web pages but cannot search. On a phone the web IDE's header no longer
+  lets a long account name push *sign out* off screen; the docs link is left
+  to the palette there. The console, the workbench, the account and the
+  sign-out pages now share one sign-out script instead of four copies.
 
 ### Dependencies
 

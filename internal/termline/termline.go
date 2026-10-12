@@ -448,6 +448,9 @@ func (c *Capture) Scrub(text string) string {
 	if lost {
 		return tooManyHeld
 	}
+	// A gram matches anywhere (true), except a held line of exactly four
+	// characters, which counts only where no word character follows it: its
+	// echo ends where Enter was typed, so a held "make" does not take "makes".
 	grams := map[string]bool{}
 	short := map[string]bool{}
 	for _, h := range held {
@@ -459,7 +462,8 @@ func (c *Capture) Scrub(text string) string {
 			continue
 		}
 		for i := 0; i+probeMin <= len(h.text); i++ {
-			grams[h.text[i:i+probeMin]] = true
+			g := h.text[i : i+probeMin]
+			grams[g] = grams[g] || len(h.text) > probeMin
 		}
 		// Bounded: at the extreme the pieces of every held line took
 		// hundreds of megabytes. Past the bound, nothing is searched for.
@@ -479,14 +483,20 @@ func (c *Capture) Scrub(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-// holdsGram reports whether line holds any of grams, each probeMin bytes.
+// holdsGram reports whether line holds any of grams, each probeMin bytes; a
+// gram that is a whole held line counts only where no word character follows.
 func holdsGram(line string, grams map[string]bool) bool {
 	for i := 0; i+probeMin <= len(line); i++ {
-		if grams[line[i:i+probeMin]] {
+		anywhere, ok := grams[line[i:i+probeMin]]
+		if ok && (anywhere || i+probeMin == len(line) || !wordByte(line[i+probeMin])) {
 			return true
 		}
 	}
 	return false
+}
+
+func wordByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= 0x80
 }
 
 // Echoed reports whether the terminal showed the line as it was typed: the
@@ -495,11 +505,26 @@ func holdsGram(line string, grams map[string]bool) bool {
 // with them never matches. When unsure it says no: a line wrongly withheld
 // costs the record its text, a line wrongly kept can put a password in it.
 func (e *Entered) Echoed() bool {
-	if e.Secret || e.Ahead || e.Edited || e.Line == "" || !strings.Contains(PlainText(e.echo), e.Line) {
+	if e.Secret || e.Ahead || e.Edited || e.Line == "" ||
+		!strings.Contains(PlainText(e.echo), e.Line) && !strings.Contains(PlainText(unwrap(e.echo)), e.Line) {
 		return false
 	}
 	// A short line needs the terminal to have said it was not reading a password.
 	return len(e.Line) >= probeMin || e.Known
+}
+
+// unwrap takes out readline's soft wraps: at the right margin it writes a
+// space and a carriage return to move to the next row, which is not text.
+func unwrap(echo []byte) []byte {
+	out := make([]byte, 0, len(echo))
+	for i := 0; i < len(echo); i++ {
+		if echo[i] == ' ' && i+1 < len(echo) && echo[i+1] == '\r' && (i+2 == len(echo) || echo[i+2] != '\n') {
+			i++
+			continue
+		}
+		out = append(out, echo[i])
+	}
+	return out
 }
 
 // altScreen follows the switches to and from a full-screen program's screen.

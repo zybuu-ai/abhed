@@ -20,7 +20,7 @@ postSignOut(ev);`
 	submit := `const ev = {prevented:false, preventDefault(){ this.prevented = true; }};
 __handlers.so.submit(ev);`
 	pages := map[string]page{
-		"ide":      {src: ideHTML, drive: click},
+		"ide":      {src: idePage, drive: click},
 		"console":  {src: consoleHTML, drive: click},
 		"account":  {src: accountHTML, drive: submit},
 		"sign-out": {src: signOutHTML, drive: submit},
@@ -101,3 +101,29 @@ func runNodeScript(t *testing.T, node, script string) (string, error) {
 	t.Log("\n" + strings.TrimSpace(string(out)))
 	return string(out), err
 }
+
+// The four pages share one sign-out script, filled in where each page has
+// its placeholder, rather than four copies to keep in step.
+func TestPagesShareOneSignOut(t *testing.T) {
+	for name, src := range map[string]string{"ide": ideHTML, "console": consoleSrc(t), "account": readSrc(t, "account.go")} {
+		if strings.Contains(src, "async function signOut(){") {
+			t.Errorf("the %s page keeps its own copy of signOut", name)
+		}
+	}
+	for name, page := range map[string]string{"ide": idePage, "console": consoleHTML, "account": accountHTML, "sign-out": signOutHTML} {
+		if strings.Count(page, "async function signOut(){") != 1 || strings.Contains(page, "{{SIGN_OUT}}") {
+			t.Errorf("the %s page does not carry the shared signOut once", name)
+		}
+	}
+}
+
+func readSrc(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func consoleSrc(t *testing.T) string { return readSrc(t, "console.go") }

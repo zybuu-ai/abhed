@@ -46,6 +46,10 @@ func (s *Server) originalFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before, existed, known := live.undo.Original(filepath.Join(v.sess.Root, rel))
+	if !known && live.snap != nil {
+		// Not changed by the edit tools: what the session opened with, if a command changed it.
+		before, existed, known = live.snap.original(relSlash(rel))
+	}
 	if !known {
 		WriteError(w, http.StatusNotFound, "no recorded change to this file")
 		return
@@ -86,7 +90,17 @@ func (s *Server) acceptChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := filepath.Join(v.sess.Root, rel)
-	if live.undo == nil || !live.undo.Accept(abs, []byte(req.Content)) {
+	switch {
+	case live.undo != nil && live.undo.Accept(abs, []byte(req.Content)):
+	case live.snap != nil && live.undo != nil:
+		// A file a command changed: its baseline is the snapshot's.
+		_, _, byTools := live.undo.Original(abs)
+		if _, _, known := live.snap.original(relSlash(rel)); !known || byTools {
+			WriteError(w, http.StatusNotFound, "no recorded change to this file")
+			return
+		}
+		live.snap.accept(relSlash(rel), []byte(req.Content))
+	default:
 		WriteError(w, http.StatusNotFound, "no recorded change to this file")
 		return
 	}

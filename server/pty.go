@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +21,11 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/visible"
 )
 
 // The workbench terminal runs in one of two ways. By default each tab is one
@@ -44,6 +48,9 @@ const (
 	// shellIdle is longer than ptyIdle: a shell outlives a laptop's sleep or a
 	// dropped connection, and a reloaded page reattaches to it.
 	shellIdle = 30 * time.Minute
+	// shellDetachGrace is how long a shell whose page said it was closing
+	// waits for a reader: long enough for a reload to reattach.
+	shellDetachGrace = time.Minute
 	// maxTerminals bounds the shells and commands one session runs at once.
 	maxTerminals = 8
 	// maxLinesPerInput bounds the lines one write to a shell may enter.
@@ -57,6 +64,7 @@ type shellInfo struct {
 	capture *lineCapture
 	local   bool
 	idle    time.Duration
+	user    string
 }
 
 // ptyRun is one command, or one interactive shell, on a terminal.
@@ -83,8 +91,15 @@ type ptyRun struct {
 	// prompt follows whether the shell is back at its prompt, where the
 	// terminal can be asked.
 	prompt *termline.Prompt
-	// idle is how long the run may go unwatched.
-	idle time.Duration
+	// foreground, on a container's shell, asks the engine whether a program
+	// other than the shell has the terminal; nil where it cannot be asked.
+	foreground func() (program, ok bool)
+	// idle is how long the run may go unwatched; detached shortens it to
+	// shellDetachGrace once the page watching it said it was closing.
+	idle     time.Duration
+	detached atomic.Bool
+	// user opened the shell; a page of theirs may adopt it when unwatched.
+	user string
 	// leader names a shell, so what it leaves in its session can be ended safely.
 	leader sandbox.Leader
 	// endedBy says who ended the run when the server did, for its record.
@@ -171,7 +186,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		live.shellMu.Lock()
 		defer live.shellMu.Unlock()
 		if !terminalsFull(w, live) {
-			s.startShell(w, live, sess, req)
+			s.startShell(w, r, live, sess, req)
 		}
 		return
 	}
@@ -313,13 +328,16 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 	run := &ptyRun{id: id, command: command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(), idle: ptyIdle,
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	if shell != nil {
-		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
+		run.capture, run.local, run.idle, run.user = shell.capture, shell.local, shell.idle, shell.user
 		run.prompt = termline.NewPrompt()
 		if run.local {
 			tty := run.tty
 			run.capture.Hidden = func() bool { return termline.Hidden(tty) }
 		}
 		run.leader = sandbox.Lead(cmd) // named now, while its pid is certainly its own
+		if !run.local {
+			run.foreground = engineForeground(cmd)
+		}
 	}
 	live.mu.Lock()
 	live.ptys[id] = run
@@ -342,10 +360,34 @@ func isolationOf(t tools.Tool) *tools.Isolation {
 	return &in
 }
 
+// warnShellScreening tells the operator of a server accounts sign in to that
+// its deny rules for commands only screen what is typed into a workbench
+// shell, unless the terminal judges each line.
+func (s *Server) warnShellScreening() {
+	cfg := s.opts.Config
+	if !s.multiUser() || cfg.Sandbox.Terminal == "lines" || cfg.ManagedScreens() {
+		return
+	}
+	for _, d := range cfg.Permissions.Deny {
+		if r, err := policy.ParseRule(d); err == nil && r.ForTool("bash") {
+			s.log.Warn("deny rules for commands only screen the lines typed into a workbench shell, "+
+				"which a shell can get around; set sandbox.terminal to \"lines\" to judge every line before it runs",
+				"rule", d)
+			return
+		}
+	}
+}
+
+// heldHere reports the tiers whose shell runs on this server's own terminal,
+// which can be asked who has the foreground: the fence's too, a process here.
+func heldHere(tier string) bool {
+	return tier == "process" || tier == "none" || tier == "fence"
+}
+
 // startShell starts one interactive shell in the session's sandbox, at the
 // workspace root. Starting it is the person's bash call: judged, and recorded
 // with the shell's exit and the tail of its output when it ends.
-func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tools.Session, req ptyStartRequest) {
+func (s *Server) startShell(w http.ResponseWriter, r *http.Request, live *liveSession, sess *tools.Session, req ptyStartRequest) {
 	resp := ptyStartResponse{Cwd: sess.Rel(sess.Root), Workspace: sess.Root}
 	tool, _ := live.Loop.Tools.Get("bash")
 	resp.Isolation = isolationOf(tool)
@@ -402,8 +444,9 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	cmd.Env = withTerm(cmd.Env)
 	shell := &shellInfo{
 		capture: newLineCapture(id, func(in agent.TerminalInput) { s.unrecorded(nil, live, live.Loop.ManualTerminalInput(in)) }),
-		local:   resp.Isolation != nil && (resp.Isolation.Tier == "process" || resp.Isolation.Tier == "none"),
+		local:   resp.Isolation != nil && heldHere(resp.Isolation.Tier),
 		idle:    shellIdle,
+		user:    UserOf(r.Context()),
 	}
 	if cfg.Sandbox.TerminalIdleMinutes > 0 {
 		shell.idle = time.Duration(cfg.Sandbox.TerminalIdleMinutes) * time.Minute
@@ -465,6 +508,17 @@ func (p *ptyRun) pump() {
 	}
 }
 
+// abandoned reports a run nobody has watched for longer than it may wait.
+func (p *ptyRun) abandoned() bool {
+	limit := p.idle
+	if p.detached.Load() {
+		limit = min(limit, shellDetachGrace)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.subs) == 0 && time.Since(p.lastRead) > limit
+}
+
 // noteSweep tells the operator when a shell's session was not swept, so that
 // containment not running is never silent.
 func (s *Server) noteSweep(live *liveSession, run *ptyRun, refused string) {
@@ -496,10 +550,7 @@ loop:
 		case err = <-waited:
 			break loop
 		case <-idle.C:
-			run.mu.Lock()
-			abandoned := len(run.subs) == 0 && time.Since(run.lastRead) > run.idle
-			run.mu.Unlock()
-			if abandoned {
+			if run.abandoned() {
 				run.stop("ended after going unwatched")
 			}
 		}
@@ -628,8 +679,13 @@ func (p *ptyRun) note(text string) {
 }
 
 // say shows a line from the server on the terminal, outside the record.
-func (p *ptyRun) say(text string) {
-	msg := []byte("\r\n\x1b[31m" + strings.ReplaceAll(text, "\n", "\r\n") + "\x1b[0m\r\n")
+func (p *ptyRun) say(text string) { p.tell("31", text) }
+
+// hint is say in yellow: a note, not a refusal.
+func (p *ptyRun) hint(text string) { p.tell("33", text) }
+
+func (p *ptyRun) tell(colour, text string) {
+	msg := []byte("\r\n\x1b[" + colour + "m" + strings.ReplaceAll(text, "\n", "\r\n") + "\x1b[0m\r\n")
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for ch := range p.subs {
@@ -669,6 +725,7 @@ func (s *Server) streamPTY(w http.ResponseWriter, r *http.Request) {
 	run.subs[ch] = struct{}{}
 	run.lastRead = time.Now()
 	run.mu.Unlock()
+	run.detached.Store(false)
 	defer func() {
 		run.mu.Lock()
 		delete(run.subs, ch)
@@ -823,6 +880,11 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 			if err := run.capture.Send(e, sendWrite(run, k.Data)); err != nil {
 				return err
 			}
+			// The terminal draws a bidi or zero-width character as nothing, so
+			// the line may not read as what runs: it is shown with them marked.
+			if shown := visible.Text(e.Line, false, false); shown != e.Line {
+				run.hint("abhed: this line holds characters that draw as nothing or reorder it; it runs as: " + shown)
+			}
 			continue
 		}
 		run.say(refused.Content)
@@ -880,8 +942,15 @@ func (p *ptyRun) send(b []byte) (int, error) {
 // the shell's prompt, so the line counts as typed ahead unless Abhed's own
 // prompt is plainly back (container tier), or at all (a failed ask).
 func (p *ptyRun) ask(e *enteredLine) {
-	e.Program = e.Alt
+	e.Program = false
 	if !p.local {
+		// A switch to the alternate screen is only printed text: the engine
+		// is asked before a line goes unscreened, and when it cannot say,
+		// the line is screened.
+		if e.Alt && p.foreground != nil {
+			program, ok := p.foreground()
+			e.Program = ok && program
+		}
 		e.Ahead = p.prompt == nil || !p.prompt.At()
 		return
 	}
@@ -899,6 +968,55 @@ func (p *ptyRun) ask(e *enteredLine) {
 	e.Ahead = p.prompt != nil && !p.prompt.At()
 }
 
+// engineForeground asks the engine that started a container's shell, named
+// by --name, whether the terminal's foreground process group is not the
+// shell's. The shell is the container's pid 1; its /proc stat holds both
+// its own group and the terminal's foreground group.
+func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
+	name := ""
+	for i, a := range cmd.Args {
+		if a == "--name" && i+1 < len(cmd.Args) {
+			name = cmd.Args[i+1]
+		}
+	}
+	if name == "" || cmd.Path == "" {
+		return nil
+	}
+	engine := cmd.Path
+	return func() (bool, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), engineAskWait)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, engine, "exec", name, "cat", "/proc/1/stat").Output() // #nosec G204 -- the engine that started the shell, and its container
+		if err != nil {
+			return false, false
+		}
+		return foregroundIsProgram(string(out))
+	}
+}
+
+// engineAskWait bounds asking the engine at a line's Enter.
+const engineAskWait = 3 * time.Second
+
+// foregroundIsProgram reads a /proc/<pid>/stat line: whether the terminal's
+// foreground group (tpgid) is set and is not the process's own group.
+func foregroundIsProgram(stat string) (program, ok bool) {
+	// The command name is in parentheses and may hold spaces.
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return false, false
+	}
+	f := strings.Fields(stat[i+1:])
+	if len(f) < 6 {
+		return false, false
+	}
+	pgrp, err1 := strconv.Atoi(f[2])
+	tpgid, err2 := strconv.Atoi(f[5])
+	if err1 != nil || err2 != nil || pgrp <= 0 || tpgid <= 0 {
+		return false, false
+	}
+	return tpgid != pgrp, true
+}
+
 // holdTyped keeps, for the record's scrub, each line typed into a single
 // command while its terminal reads lines (canonical mode, as sleep, cat or a
 // script's read leave it): such a line may be a password typed ahead that the
@@ -913,7 +1031,7 @@ func (p *ptyRun) holdTyped(live *liveSession, data []byte) {
 	asked := false
 	if tool, ok := live.Loop.Tools.Get("bash"); ok {
 		if in := isolationOf(tool); in != nil {
-			asked = in.Tier == "process" || in.Tier == "none"
+			asked = heldHere(in.Tier)
 		}
 	}
 	for _, k := range p.held.Keys(data) {
@@ -972,6 +1090,68 @@ func (s *Server) resizePTY(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// detachPTY is a page saying, as it closes, that it no longer watches a
+// shell: unless a page reattaches within shellDetachGrace, as a reload does,
+// the shell ends then rather than after its idle time.
+func (s *Server) detachPTY(w http.ResponseWriter, r *http.Request) {
+	_, run, ok := s.ptyFor(w, r)
+	if !ok {
+		return
+	}
+	run.mu.Lock()
+	run.lastRead = time.Now()
+	run.mu.Unlock()
+	run.detached.Store(true)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// openShell is a running shell a page can attach to.
+type openShell struct {
+	ID        string           `json:"id"`
+	Started   time.Time        `json:"started"`
+	Isolation *tools.Isolation `json:"isolation,omitempty"`
+	Workspace string           `json:"workspace,omitempty"`
+}
+
+// listShells lists the caller's own shells on a session that no page is
+// watching, so a page opened in another tab or browser can adopt them.
+func (s *Server) listShells(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	out := []openShell{}
+	live, found := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	if !validSessionID(id) || !found {
+		WriteJSON(w, http.StatusOK, out)
+		return
+	}
+	var in *tools.Isolation
+	if tool, ok := live.Loop.Tools.Get("bash"); ok {
+		in = isolationOf(tool)
+	}
+	user := UserOf(r.Context())
+	live.mu.Lock()
+	runs := make([]*ptyRun, 0, len(live.ptys))
+	for _, run := range live.ptys {
+		runs = append(runs, run)
+	}
+	live.mu.Unlock()
+	for _, run := range runs {
+		select {
+		case <-run.done:
+			continue
+		default:
+		}
+		run.mu.Lock()
+		watched := len(run.subs) > 0
+		run.mu.Unlock()
+		if run.capture == nil || watched || run.user != user {
+			continue
+		}
+		out = append(out, openShell{ID: run.id, Started: run.started, Isolation: in, Workspace: live.Loop.Session.Root})
+	}
+	slices.SortFunc(out, func(a, b openShell) int { return a.Started.Compare(b.Started) })
+	WriteJSON(w, http.StatusOK, out)
+}
+
 // killPTY ends the command.
 func (s *Server) killPTY(w http.ResponseWriter, r *http.Request) {
 	_, run, ok := s.ptyFor(w, r)
@@ -997,6 +1177,7 @@ func (p *ptyRun) stop(why string) {
 func (l *liveSession) closeTerminals(why string) []<-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.stopLSPs()
 	var done []<-chan struct{}
 	for _, r := range l.ptys {
 		select {

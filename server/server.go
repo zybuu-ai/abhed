@@ -460,6 +460,8 @@ type liveSession struct {
 	// undo holds each file's content from before the agent first changed it,
 	// which is what the console's changes view diffs against.
 	undo *agent.UndoLog
+	// snap is the workspace as the session opened, for changes made by commands.
+	snap *wsSnapshot
 	// manual is the tool session of the person at the workbench, and manualMu
 	// runs their calls one at a time so two commands never share a cd.
 	manual   *tools.Session
@@ -470,6 +472,8 @@ type liveSession struct {
 	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.
 	ptys map[string]*ptyRun
+	// lsps are the workbench editor's language servers.
+	lsps map[string]*lspRun
 	// unclaimed is a finished session opened from its record to view: its
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.
@@ -769,6 +773,7 @@ func New(opts Options) *Server {
 	}
 	srv = s
 	s.reportConfigAttempts()
+	s.warnShellScreening()
 	if local := s.LocalAuth(); local != nil {
 		local.OnChange(func(username string) {
 			s.releaseStale(local, username)
@@ -831,7 +836,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
+	mux.HandleFunc("POST /v1/sessions/{id}/lsp", s.startLSP)
+	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.streamLSP)
+	mux.HandleFunc("POST /v1/sessions/{id}/lsp/{lsp}", s.sendLSP)
+	mux.HandleFunc("DELETE /v1/sessions/{id}/lsp/{lsp}", s.stopLSP)
+	mux.HandleFunc("GET /v1/sessions/{id}/pty", s.listShells)
 	mux.HandleFunc("GET /v1/sessions/{id}/pty/{pty}", s.streamPTY)
+	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/detach", s.detachPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/input", s.writePTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/resize", s.resizePTY)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
@@ -1891,6 +1902,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		allowed: map[string]string{},
 		durable: s.approvalStore(),
 		undo:    undo,
+		snap:    takeSnapshot(sess.Root),
 		layer:   layer,
 		// A spec with no provider runs on the configured default.
 		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),

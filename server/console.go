@@ -377,6 +377,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .empty .k{font-family:var(--sans);font-size:24px;font-weight:750;letter-spacing:-.035em;color:var(--ink);line-height:1.15}
 .empty .k .hl{background:linear-gradient(92deg,var(--accent),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}
 .empty .s{font-size:13.5px;max-width:44ch;line-height:1.6}
+#wsconfig{margin-top:14px;font-size:12.5px;color:var(--muted)}#wsconfig.warn{color:var(--waiting)}
 .empty .ex{display:grid;grid-template-columns:1fr;gap:8px;margin-top:18px;width:100%;
   max-width:330px}
 /* Six examples in one column push the mark and the word Ready off the top of
@@ -709,6 +710,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
         <div class="s">Ask a question, describe a change, or attach a document. Every
           step the agent takes is recorded; pick any chat on the left to replay it.</div>
         <div class="ex" id="examples"></div>
+        <div class="s" id="wsconfig" hidden></div>
       </div>
     </div>
     <div class="dock">
@@ -2553,13 +2555,7 @@ function postSignOut(e){
   signOut();
 }
 // A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
-async function signOut(){
-  try{
-    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
-    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
-  }catch{}
-  location.href = '/logout';
-}
+/*{{SIGN_OUT}}*/
 async function whoami(){
   let me = null;
   try{ me = await api('/v1/whoami'); }catch{}
@@ -2600,6 +2596,13 @@ async function whoami(){
 // not on who is looking. The server decides who is an admin; the UI only
 // decides whether to draw the link. Flipping it in devtools yields a link to a
 // page that answers 403, because every /admin route is guarded server-side.
+/*{{WS_CONFIG}}*/
+// drawWsConfig shows the workspace config's trust under the examples, as the front page does.
+function drawWsConfig(wc){
+  const n = $('wsconfig'), w = wsConfigLine(wc); if(!n) return;
+  n.hidden = !w; if(!w) return;
+  n.textContent = visible(w.text); n.title = visible(w.title); n.classList.toggle('warn', w.warn);
+}
 async function capabilities(){
   try{
     const o = await api('/v1/overview');
@@ -2607,6 +2610,7 @@ async function capabilities(){
     // An admin page exists only in editions that serve one.
     const a = $('adminlink');
     if(a && o && o.admin && o.admin_url){ a.href = o.admin_url; a.hidden = false; }
+    drawWsConfig(o && o.workspace_config);
   }catch{ TOOLS = new Set(); }
   drawExamples();
 }

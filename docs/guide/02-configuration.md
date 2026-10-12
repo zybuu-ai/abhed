@@ -294,6 +294,10 @@ policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
+`"language_servers"` names, per editor language, the language server the
+workbench editor runs in the session's sandbox for go to definition, hover
+and diagnostics (`{"go": ["gopls"]}`); none runs unless named, and a
+workspace file cannot name one. See [The workbench](16-workbench.md#language-servers).
 
 `"network": "allowlist"`, set only in the managed configuration, sends
 commands' traffic through a per-session proxy that reaches only what the
@@ -1194,7 +1198,8 @@ server open.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
   list` lists every decision.
-- **`abhed serve`** says on its front page, and in `GET /v1/overview` as
+- **`abhed serve`** says on its front page, under the console's examples,
+  in the workbench's **Tools** panel, and in `GET /v1/overview` as
   `workspace_config`, whether the file is trusted, why, and the names of the
   settings it set aside (not their values): to a signed-in person, or to
   anyone where nobody signs in.
