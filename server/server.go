@@ -3787,6 +3787,7 @@ func (s *Server) stopRemovedOwners(ctx context.Context) int {
 		}
 		at, ok := made[owner]
 		// An account made after the session began is another person under the old name.
+		// The times are from two clocks; a skew between them is documented as the bound.
 		if ok && (at.IsZero() || live.Created.IsZero() || !at.After(live.Created)) {
 			continue
 		}
