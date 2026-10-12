@@ -211,8 +211,18 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedWriter{w: &stderr, n: 16 << 10}
+	// Unstarted, the command closes neither pipe itself.
+	closePipes := func() {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		if stdout != nil {
+			_ = stdout.Close()
+		}
+	}
 	if err := errors.Join(err1, err2); err != nil {
 		cancel()
+		closePipes()
 		fail(http.StatusInternalServerError, "the language server could not be started: "+err.Error())
 		return
 	}
@@ -223,6 +233,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	if live.lspGen != gen {
 		live.mu.Unlock()
 		cancel()
+		closePipes()
 		fail(http.StatusConflict, "the session's terminals closed before the language server started")
 		return
 	}
