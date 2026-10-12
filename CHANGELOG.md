@@ -156,6 +156,11 @@ All notable changes to Abhed are recorded here. The format follows
   host (`file:////server/share/x`, or with backslashes), which Windows reads
   as a network path the rules cannot judge. Both forms are now refused.
   Affects 1.2.4 to 1.2.7.
+- `abhed -p -json-schema @file` took any JSON object as the schema and sent
+  it to the model, so a credentials file named by mistake went out whole. A
+  schema must now have at least one schema keyword (`type`, `properties`,
+  `$schema` and the like); the refusal and stderr name the file. Affects
+  1.2.3 to 1.2.7.
 
 ### Added
 

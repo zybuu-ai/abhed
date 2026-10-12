@@ -85,7 +85,11 @@ the exit code below. The result line is written once, as the run ends.
 ### Structured answers
 
 `-json-schema` takes a JSON Schema, inline or as `@path` (relative to the
-workspace, `-C`, and at most 1 MiB; a schema must be a JSON object), and makes the
+workspace, `-C`, and at most 1 MiB; a schema must be a JSON object with at
+least one of `type`, `properties`, `$schema`, `$ref`, `anyOf`, `oneOf`,
+`allOf`, `enum`, `const` or `items`, so a JSON file named by mistake, such as
+a credentials file, is refused rather than sent to the model; a schema read
+from a file is named on stderr), and makes the
 answer a JSON value that matches it ([Structured output](13-structured-output.md)).
 With `-output-format text`, stdout is only that JSON; with `json` or
 `stream-json` it is the result line's `structured_output`.
