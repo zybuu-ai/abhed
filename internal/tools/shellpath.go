@@ -139,9 +139,8 @@ func (f *shellFacts) startupDir(name, value string, lit bool) {
 // startupDirSet is a folder named by HOME or ZDOTDIR.
 type startupDirSet struct{ name, dir string }
 
-// startups are the start-up files the shells the line starts read from the
-// HOME and ZDOTDIR folders it sets, as they start; why says when one is not
-// known. Neither counts when the line starts no shell and runs no script.
+// startups are the start-up files the line's shells read from the HOME and
+// ZDOTDIR it sets, by how they start; why says when one is not known.
 func (f *shellFacts) startups() (files []Script, why string) {
 	if !f.shellRun && len(f.scripts) == 0 {
 		return nil, ""
@@ -324,9 +323,8 @@ scan:
 	}
 }
 
-// homeStartups are the start-up files, by name, the shells the line starts
-// read from the HOME they inherit: none when the line sets HOME itself, and
-// no zsh file when it sets ZDOTDIR, as those folders are read instead.
+// homeStartups are the start-up files the line's shells read from the HOME
+// they inherit; none for a HOME, and no zsh's for a ZDOTDIR, it sets.
 func (f *shellFacts) homeStartups() []string {
 	var out []string
 	setsHome, setsZdot := f.startupDirHidden != "", f.startupDirHidden != ""

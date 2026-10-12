@@ -134,10 +134,8 @@ func (r *witnessReporter) flush() {
 	}
 }
 
-// witnessFile reads the heads of local sessions a witness file holds under
-// this installation's key, read again only when the file changes. A line
-// that is not one, or a statement under another key, fails verify by
-// itself, so it is passed over here.
+// witnessFile is the local heads a witness file holds under this key, read
+// again as it changes; a bad line fails verify by itself, so is passed over.
 type witnessFile struct {
 	cfg  config.Config
 	path string

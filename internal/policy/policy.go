@@ -412,15 +412,12 @@ type Engine struct {
 	// a sandbox whose files are not the host's.
 	Cwd func() string
 
-	// Home returns the HOME the sandbox gives a command, as a host path, and
-	// whether the host can read it ("" when it is made empty later). A shell
-	// a command starts reads start-up files there; one hidden from the host
-	// is refused under the rules. Nil is this process's own HOME.
+	// Home is the HOME commands get, as a host path ("" while not made yet),
+	// and whether the host can read it; nil is this process's own.
 	Home func() (dir string, visible bool)
 
-	// SandboxFiles marks an engine judging commands in a sandbox whose files
-	// the host cannot read, as a control-plane :exec: a line that runs a
-	// script or gives a shell a start-up file there is refused under rules.
+	// SandboxFiles marks an engine for a sandbox whose files the host cannot
+	// read (an :exec): a line that would run one is refused under rules.
 	SandboxFiles bool
 
 	// homeMarked holds the HOME's start-up files as the first bash call

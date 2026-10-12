@@ -21,9 +21,8 @@ var imageByDigest = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{
 // any other program could take such an argument and run something else.
 var containerEngines = map[string]bool{"docker": true, "podman": true, "nerdctl": true}
 
-// runFlags are the options of an engine's run that take no value; any other
-// option is taken to take the next word, so the image found is never an
-// option's value, and a flag missing here only fails the pin.
+// runFlags are run's options that take no value; any other takes the next
+// word, so a flag missing here only fails the pin.
 var runFlags = map[string]bool{"--interactive": true, "--tty": true, "--rm": true, "--detach": true, "--init": true,
 	"--read-only": true, "--privileged": true, "--publish-all": true, "--no-healthcheck": true, "--quiet": true,
 	"--oom-kill-disable": true, "--disable-content-trust": true}
@@ -31,9 +30,8 @@ var runFlags = map[string]bool{"--interactive": true, "--tty": true, "--rm": tru
 // runShort are the one-letter run options that take no value.
 const runShort = "itdPq"
 
-// runImage is the image operand of an engine's run (or container run): the
-// first word after the subcommand that is not an option or an option's
-// value; "" when the arguments are not a run.
+// runImage is the image an engine's run (or container run) names: the first
+// word past its options and their values; "" for anything else.
 func runImage(args []string) string {
 	i := 0
 	skip := func() bool { // past one option, and its value when it takes one

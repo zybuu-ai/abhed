@@ -96,9 +96,8 @@ type shellFacts struct {
 	pathDirs, bare                []string
 	// startupHidden says why a shell start-up file the command sets is not known.
 	startupHidden string
-	// startupDirs are the folders HOME and ZDOTDIR are set to, which a shell
-	// reads start-up files from, and startupDirHidden why one is not known;
-	// shellRun reports a shell started.
+	// startupDirs are what HOME and ZDOTDIR are set to, startupDirHidden why
+	// one is not known; shellRun reports a shell started.
 	startupDirs      []startupDirSet
 	startupDirHidden string
 	shellRun         bool

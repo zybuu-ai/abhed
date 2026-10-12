@@ -24,10 +24,8 @@ type homeMarks struct {
 	marks map[string]homeMark
 }
 
-// markHome records, at the session's first bash call and before it runs,
-// the start-up files in the HOME commands get: the person's own. A shell
-// reading one unchanged since is not judged on it; one made or changed
-// later is read and judged.
+// markHome records the HOME's start-up files at the first bash call, before
+// it runs: the person's own, not judged while they stay unchanged.
 func (e *Engine) markHome() {
 	if e.homeMarked == nil {
 		return
