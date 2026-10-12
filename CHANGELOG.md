@@ -867,6 +867,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- `GET /v1/whoami` honours a bearer token: it answers with the token's
+  principal (`"credential": "token"`) instead of `"authenticated": false`,
+  and `401` for a token that does not verify. A server with tokens and no
+  browser sign-in now answers whoami rather than saying sign-in is off.
 - A file tool's decision costs less: a workspace root's resolved and disk
   spellings are read at most once a second rather than on every decision,
   the disk's spelling of the path is looked up only when a deny or ask rule
