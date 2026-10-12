@@ -329,3 +329,11 @@ func TestLanguageServerPipeFailureRecorded(t *testing.T) {
 		t.Fatalf("asked %q, answered %v", asked, answered)
 	}
 }
+
+// A definition's URI with '..' in it lands where it points, and one that
+// climbs out of the workspace opens nothing.
+func TestIDELanguageServerPaths(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-lsp", "", "ide_lsp_cases.mjs"); err != nil {
+		t.Fatalf("the workbench mapped a language server's path wrongly:\n%s", out)
+	}
+}
