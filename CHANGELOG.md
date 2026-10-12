@@ -30,6 +30,9 @@ All notable changes to Abhed are recorded here. The format follows
 - A repository made during a session has settings `git init` or `git clone`
   would not write taken out before the next command, which is refused; set
   such settings (a `core.hooksPath` a tool adds, say) yourself.
+- With Abhed run as root on Linux (bubblewrap), a stdio MCP server is
+  refused unless it is set `"host_files": true`; run Abhed as an ordinary
+  user instead.
 - A managed `permissions.deny` list now adds to the user's and the
   workspace's deny rules instead of replacing them.
 - Rule tool names match built-in tools in any case: an allow rule written
@@ -492,6 +495,8 @@ All notable changes to Abhed are recorded here. The format follows
   user unit or a shell rc line. On the process tier its home is now hidden
   but for a home of its own under `~/.abhed/mcp` and its install folder,
   read-only; `"host_files": true` on a server keeps the old behaviour.
+  Under bubblewrap with Abhed run as root, which keeps root's capabilities,
+  a server without `host_files` is refused rather than run unconfined.
   Affects 0.1.0 to 1.2.7.
 - `abhed user remove` did not stop what a running `abhed serve` ran for
   the removed account: its live run, background shells and tasks, and

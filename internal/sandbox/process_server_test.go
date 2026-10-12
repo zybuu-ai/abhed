@@ -138,12 +138,18 @@ func TestServerRefusedAsRoot(t *testing.T) {
 		t.Errorf("an ordinary user was refused: %v", err)
 	}
 	if os.Geteuid() == 0 && runtime.GOOS == "linux" {
-		p := DefaultPolicy(t.TempDir())
-		p.Egress = egressPolicy(t, egress.Config{})
-		s := NewProcess(p)
-		if s.Backend() == "bwrap" {
-			if _, err := s.ServerCommand(context.Background(), "x", []string{"true"}, nil, nil); err == nil {
-				t.Fatal("a stdio server was given a command as root")
+		t.Setenv("HOME", t.TempDir())
+		for _, allowlist := range []bool{true, false} {
+			p := DefaultPolicy(t.TempDir())
+			if allowlist {
+				p.Egress = egressPolicy(t, egress.Config{})
+			}
+			s := NewProcess(p)
+			if s.Backend() != "bwrap" {
+				continue
+			}
+			if _, err := s.ServerCommand(context.Background(), "x", []string{"true"}, nil, nil); err == nil || !strings.Contains(err.Error(), "root") {
+				t.Fatalf("allowlist %v: a stdio server was given a command as root: %v", allowlist, err)
 			}
 		}
 	}

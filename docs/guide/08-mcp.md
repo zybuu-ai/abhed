@@ -37,8 +37,9 @@ needs your home (a credential file it reads, a tool installed elsewhere in
 it) is set `"host_files": true`, which runs it with your files as before;
 under the allowlist its network is still confined. Under bubblewrap the
 server is refused where a private `/proc` cannot be mounted (set
-`host_files`), and when Abhed runs as root its files are not confined, with a
-warning, since bubblewrap keeps root's capabilities. On the none tier and on
+`host_files`), and when Abhed runs as root, since bubblewrap keeps root's
+capabilities over the host: run Abhed as an ordinary user, or set
+`host_files` to run the server unconfined (refused under the allowlist). On the none tier and on
 Windows a stdio server's files are not confined. Its network is open,
 whatever `allow_network` says, except under `sandbox.network:
 "allowlist"`; see below. A URL server runs wherever it is hosted.

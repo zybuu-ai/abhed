@@ -40,6 +40,9 @@ func TestServerFilesAreConfined(t *testing.T) {
 	if ok, why := s.Available(); !ok {
 		t.Skipf("process sandbox unavailable: %s", why)
 	}
+	if s.Backend() == "bwrap" && os.Geteuid() == 0 {
+		t.Skip("as root bubblewrap starts no server; TestServerRefusedAsRoot covers it")
+	}
 	defer func() { _ = s.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
