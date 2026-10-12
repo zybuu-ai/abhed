@@ -784,3 +784,10 @@ markdown with hidden characters marked. A definition in another workspace
 file opens it in a tab; one outside the workspace is not offered. Settings a
 server asks the editor for are left at the server's defaults; set a server's
 options in its own files or on its command line in `language_servers`.
+Every language server runs with `GOTOOLCHAIN=local`, which the record of its
+start notes, so a `toolchain` line in a `go.mod`, saved or only typed in the
+editor, cannot have the go command fetch and run another Go; whatever else
+the server fetches goes through the sandbox's network policy like any
+command. What you type in a file is sent to the server as you type
+(opening and changing a file) and is not recorded until you save it; a
+save is a recorded write, and the server reads only from the sandbox.

@@ -1233,8 +1233,10 @@ All notable changes to Abhed are recorded here. The format follows
   `workspace/executeCommand` and other methods are refused, `initialize`
   carries only the workspace and the editor's capabilities (never
   `initializationOptions`), and answers to the server's requests must be
-  `null`. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
-  `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
+  `null`. Each runs with `GOTOOLCHAIN=local`, so a `go.mod` toolchain line
+  cannot fetch and run another Go; unsaved edits reach the server
+  unrecorded, as documented. Routes: `POST /v1/sessions/{id}/lsp`, and
+  `GET`, `POST` and `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed
 

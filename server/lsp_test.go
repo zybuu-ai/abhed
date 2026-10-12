@@ -474,3 +474,32 @@ func TestIDELanguageServerPaths(t *testing.T) {
 		t.Fatalf("the workbench mapped a language server's path wrongly:\n%s", out)
 	}
 }
+
+// A language server runs with GOTOOLCHAIN=local, so a go.mod toolchain line
+// cannot have the go command fetch and run another Go; the record says so.
+func TestLanguageServerKeepsTheLocalGo(t *testing.T) {
+	wb, _ := lspBench(t, "process", func(c *config.Config) {
+		c.Sandbox.LanguageServers = map[string][]string{"go": {"/bin/sh", "-c", `printf %s "$GOTOOLCHAIN" > tc.txt; sleep 30`}}
+	})
+	var start lspStartResponse
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	defer wb.send("acme", "DELETE", "lsp/"+start.ID, nil)
+	var got []byte
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if got, _ = os.ReadFile(filepath.Join(wb.workspace, "tc.txt")); len(got) > 0 {
+			break
+		}
+	}
+	if string(got) != "local" {
+		t.Fatalf("GOTOOLCHAIN in the language server: %q", got)
+	}
+	said := false
+	for _, e := range wb.events() {
+		said = said || e.Type == agent.EvActionRequested && strings.Contains(string(e.Payload), "run with GOTOOLCHAIN=local")
+	}
+	if !said {
+		t.Fatal("the record does not say the language server runs with GOTOOLCHAIN=local")
+	}
+}
