@@ -419,7 +419,8 @@ directory, so a `cd` there never moves the agent. Reloading the page
 reattaches to the shells it had open, with their recent output. Opening a
 session, in another tab or another browser, adopts your own shells on it that
 no page is watching (`GET /v1/sessions/{id}/pty` lists them), so a closed tab's
-shells are not lost. A page that closes tells the server
+shells are not lost. A shell or command answers only the account that started
+it, even after its session passes to another account. A page that closes tells the server
 (`POST /v1/sessions/{id}/pty/{pty}/detach`), and its shells end a minute later
 unless a page reattaches in that time, as a reload does. A shell nobody
 has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), which

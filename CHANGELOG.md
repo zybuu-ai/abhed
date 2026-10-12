@@ -153,6 +153,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A workbench shell or command could be read, typed into, resized or killed
+  by whichever account held its session, not only the one that started it,
+  so after a session changed hands (an account removed and made again under
+  the same name) the new holder could drive the old one's terminals. Each
+  now answers only the account that started it. Affects 1.2.7 and earlier.
 - A call whose approval could not be written to the record (the database
   failing, or the session held by another process) still ran, so the record
   held no approval for what was done, and a process taking the session over
