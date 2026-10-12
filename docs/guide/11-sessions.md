@@ -244,6 +244,11 @@ pretending:
   payloads were never sealed; a database backup taken before the delete,
   which still holds the key until it expires; and, until `VACUUM` runs, the
   deleted key's bytes in the table's free space.
+- **The local record** (`~/.abhed/records`) deletes as `abhed record prune`
+  does: the session's file, its subagents' and the pre-images no other session
+  names are removed, and a tombstone in the index keeps its id and head. Lines
+  the index wrote earlier, such as its title, stay, since the index is
+  append-only.
 - **Memory** drops the events outright.
 - A store built without deletion answers `501`, and the console reports that
   this deployment keeps an append-only record. A delete button that silently

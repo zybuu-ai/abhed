@@ -40,9 +40,11 @@
 //
 // # Retention
 //
-// Nothing is deleted automatically. There is no SessionDeleter: pruning is
-// an explicit command that writes a tombstone (id, head hash, time) to the
-// index, and a managed record.retention_days can require it.
+// Nothing is deleted automatically. Pruning is an explicit command that
+// writes a tombstone (id, head hash, time) to the index, and a managed
+// record.retention_days can require it. DeleteSession (agent.SessionDeleter)
+// is a prune by the person, used for a delete and for a start refused after
+// its session was recorded.
 package local
 
 import (

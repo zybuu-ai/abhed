@@ -107,6 +107,7 @@ var writeLine = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
 var (
 	_ Record                  = (*Store)(nil)
 	_ agent.SessionCreator    = (*Store)(nil)
+	_ agent.SessionDeleter    = (*Store)(nil)
 	_ agent.SubSessionChecker = (*Store)(nil)
 )
 

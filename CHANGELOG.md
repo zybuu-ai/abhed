@@ -717,6 +717,13 @@ on. A server with it off starts on the older schema as before.
 - `subagent.spawned` did not name the parent's call that started it, so a
   trace could only pair two subagents with the same description by guess.
   It now carries `call_id`.
+- A session start refused after its session was recorded in the local record
+  (a server draining, a policy layer or secrets that could not be read), or
+  a branch whose copy failed part way, left an empty session listed that
+  never ran. The local record can now delete a session, as a prune by the
+  person with a tombstone, and these paths use it; a delete in the console
+  over a local record does the same instead of answering that the record is
+  append-only.
 
 ### Dependencies
 
