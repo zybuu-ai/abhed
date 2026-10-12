@@ -631,6 +631,15 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 	}
 	switch s.backend {
 	case "sandbox-exec":
+		// Seatbelt holds git's files by pattern, so only a repository an
+		// earlier command made is looked at here.
+		if s.policy.ProtectGit {
+			for _, ws := range s.workspaces()[:1] {
+				if err := plantedGits(ctx, ws, s.backend, &s.git, walkGit(ws, false).gits); err != nil {
+					return &exec.Cmd{Err: err}
+				}
+			}
+		}
 		profile := s.seatbeltProfileFor(eg.port())
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.

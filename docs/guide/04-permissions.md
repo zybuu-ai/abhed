@@ -715,8 +715,23 @@ a rename only at its two ends, so the same gap is open there: a command can
 build a repository in the writable temp area, with a config naming an
 fsmonitor, move it into the workspace and add it as a submodule entry, or
 move it over a nested repository that is not a submodule. Moving a
-registered submodule's work tree is refused. Before running git in a
-workspace a session has used, check `git status` and `git diff --submodule`
+registered submodule's work tree is refused.
+
+Before each command, a repository (a `.git` folder or file) found that was
+not there at the session's first command is checked: a setting in its
+`config` or `config.worktree` that `git init`, `git clone` or a submodule
+would not write (anything beyond the core settings, remotes, branches,
+submodule URLs, extensions, user, `init`, `pull`, `fetch`, `gc`, `index` and
+`lfs` format) is taken out, the file as it was copied to
+`~/.abhed/quarantine`, a hooks folder holding anything but git's samples is
+moved there, the command is not run, its error says what was done, and the
+record gains `sandbox.git_planted`. This runs under bubblewrap, in a
+container and on macOS; under the fence in `mount_namespace` mode too. Until
+the next command starts, git you run yourself there would read the setting,
+and a `.git/modules/<name>` made for a later `git submodule update --init` is
+not checked. A tool such as husky that sets `core.hooksPath` in a repository
+the agent cloned has it taken out as well; set it yourself. Before running
+git in a workspace a session has used, check `git status` and `git diff --submodule`
 for submodule entries you did not add. A root status never enters a nested
 repository that is not a submodule, so before running git in one, check its
 `.git/config` for settings that run a program, such as `core.fsmonitor` and

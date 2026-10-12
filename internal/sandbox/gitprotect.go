@@ -447,6 +447,10 @@ type gitMemory struct {
 	noted atomic.Bool
 	mu    sync.Mutex
 	known map[string][]string // by workspace
+	// based are the workspaces looked at once, and seenGit every .git entry
+	// found since; one found later was made during the session.
+	based   map[string]bool
+	seenGit map[string]bool
 }
 
 // gitGuard returns the paths in ws to bind read-only before a command starts,
@@ -496,6 +500,9 @@ func gitGuardFor(ctx context.Context, ws, backend string, mem *gitMemory, requir
 	}
 	if entries, err := takeOutGitPlanted(g.planted); err != nil {
 		record(EvGitPlanted, map[string]any{"entries": entries, "reason": err.Error()})
+		return nil, err
+	}
+	if err := plantedGits(ctx, ws, backend, mem, g.gits); err != nil {
 		return nil, err
 	}
 	if len(g.linked) > 0 {

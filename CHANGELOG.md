@@ -35,6 +35,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A single command could make a repository in the workspace with a config
+  naming an fsmonitor or a hook and add it to the parent as a submodule, and
+  your next git command there ran it; on macOS a repository could be built
+  in the temp area and moved in. Before each command, a repository made
+  during the session now has every setting `git init` or `git clone` would
+  not write taken out (the file copied to `~/.abhed/quarantine`) and its
+  hooks moved there, and that command is refused and recorded as
+  `sandbox.git_planted`. Affects 1.2.3 to 1.2.7.
 - Under bubblewrap, a container or the fence, a repository past the
   20,000-folder look for git folders was left unprotected in Studio and
   `abhed serve` too, so a command could fill the workspace with folders and

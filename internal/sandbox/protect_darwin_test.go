@@ -189,3 +189,24 @@ func TestProcessSandboxHoldsWhereANestedGitLinkLeads(t *testing.T) {
 		t.Error("a hook was planted in the linked git folder")
 	}
 }
+
+// Seatbelt checks rename only at its ends, so a repository can be moved into
+// the workspace; the next command finds it and takes out its fsmonitor.
+func TestProcessSandboxTakesOutAMovedInRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	if _, err := runIn(t, s, ws, "true"); err != nil {
+		t.Fatalf("first command: %v", err)
+	}
+	writeFiles(t, ws, map[string]string{"n/.git/HEAD": "ref: refs/heads/main\n", "n/.git/config": "[core]\n\tfsmonitor = ./x\n"})
+	if out, err := runIn(t, s, ws, "echo ran"); err == nil || strings.Contains(out, "ran") {
+		t.Fatalf("the command ran beside a planted repository: %v %s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "n", ".git", "config")); strings.Contains(string(b), "fsmonitor") {
+		t.Errorf("fsmonitor left: %q", b)
+	}
+}
