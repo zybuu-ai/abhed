@@ -159,3 +159,17 @@ func TestContainerCommandGetsTheInspectionCA(t *testing.T) {
 		t.Fatalf("the bundle does not hold the session CA: %v", err)
 	}
 }
+
+// Under the allowlist the container has no network even where the policy
+// also says allow_network, as an SDK caller may set both.
+func TestContainerAllowlistHasNoNetworkWhateverAllowNetworkSays(t *testing.T) {
+	pol, _ := egress.Compile(egress.Config{})
+	c := &Container{runtime: "docker", policy: Policy{Workspace: t.TempDir(), AllowNetwork: true, Egress: pol}}
+	args, err := c.runArgs(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(" "+strings.Join(args, " ")+" ", " --network none ") {
+		t.Fatalf("no --network none: %v", args)
+	}
+}
