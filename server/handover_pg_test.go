@@ -352,3 +352,61 @@ func TestTwoServersOnePostgresFailedTakeOverSettlesOpenCalls(t *testing.T) {
 		}
 	})
 }
+
+// A replica fenced while its call waits for approval: the approval given to
+// it cannot be recorded, so it never runs the call. The replica that takes
+// the session over sees no approval, asks again, and runs the call once.
+func TestTwoServersOnePostgresUnrecordedApprovalNeverRuns(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	a := newHOServer(t, openSharedPG(t), blk, ws)
+	b := newHOServer(t, openSharedPG(t), blk, ws)
+	id := a.start("write")
+	waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+	aLive := a.live(id)
+	aLive.mu.Lock()
+	stop := aLive.beatStop
+	aLive.beatStop = nil
+	aLive.mu.Unlock()
+	stop()
+	// Another process holds the row now: A's writes are refused.
+	pgExec(t, "UPDATE sessions SET node_id = 'node-z', node_seen_at = now() WHERE id = $1", id)
+	_ = a.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`)
+	waitUntil(t, "A's run to stop", func() bool {
+		aLive.mu.Lock()
+		defer aLive.mu.Unlock()
+		return aLive.ran == nil
+	})
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err == nil {
+		t.Fatal("A ran the write with no approval on record")
+	}
+	for _, e := range b.events(id) {
+		if e.Type == agent.EvActionApproved {
+			t.Fatalf("an approval reached the record: %s", e.Payload)
+		}
+	}
+
+	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
+	if err := b.s.TakeOver(context.Background(), id); err != nil {
+		t.Fatalf("take over: %v", err)
+	}
+	waitUntil(t, "B to ask again", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := b.do("GET", "/v1/sessions/"+id+"/replay", ""); rec.Code != http.StatusOK {
+		t.Fatalf("B cannot replay the session it took over: %d %s", rec.Code, rec.Body)
+	}
+	if rec := b.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("approve on B = %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "B's turn to end", func() bool {
+		end, ok := agent.LastEnd(b.events(id))
+		return ok && end.Reason == agent.TermCompleted
+	})
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err != nil {
+		t.Fatalf("the write asked again did not run: %v", err)
+	}
+	evs := b.events(id)
+	oneOutcomeEach(t, evs)
+	if n := countType(evs, agent.EvActionApproved); n != 1 {
+		t.Fatalf("%d approvals on record; want the one B ran", n)
+	}
+}

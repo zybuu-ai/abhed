@@ -140,6 +140,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A call whose approval could not be written to the record (the database
+  failing, or the session held by another process) still ran, so the record
+  held no approval for what was done, and a process taking the session over
+  asked again and could run it a second time. Such a call, and a person's own
+  call in the workbench, is now not run, and the run ends on the failed
+  write. Affects 0.1.0 to 1.2.7.
 - An `ssh_connect` host name that read like an operator's host only by a
   look-alike character, such as `pr0d` or `buiId1` beside `prod` and
   `build1`, was accepted. Names are now compared with look-alike characters
