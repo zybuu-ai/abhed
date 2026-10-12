@@ -215,7 +215,8 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 		args = append(args, "--pid", "private", "--uts", "private")
 	}
 
-	if !c.policy.AllowNetwork {
+	// Under the allowlist the proxy is the only way out, whatever AllowNetwork says.
+	if !c.policy.AllowNetwork || c.policy.Egress != nil {
 		args = append(args, "--network", "none")
 	}
 	if c.policy.MaxMemoryMB > 0 {
