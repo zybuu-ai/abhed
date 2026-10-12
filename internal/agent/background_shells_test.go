@@ -381,7 +381,12 @@ func TestShellKilledBySessionEndAndStop(t *testing.T) {
 	pids := r.children(t, r.start(t, spawner))
 	r.l.Background.Close(TermSessionClosed)
 	waitFor(t, "every process of the shell to end", func() bool { return allGone(pids) })
-	ends := payloads[ShellEnded](r.events(t), EvShellEnded)
+	// The end is recorded after the processes go, so wait for the event itself.
+	var ends []ShellEnded
+	waitFor(t, "the second shell.ended", func() bool {
+		ends = payloads[ShellEnded](r.events(t), EvShellEnded)
+		return len(ends) >= 2
+	})
 	if len(ends) != 2 || ends[1].Reason != string(TermSessionClosed) || ends[1].State != ShellKilled {
 		t.Fatalf("shell.ended: %+v", ends)
 	}
