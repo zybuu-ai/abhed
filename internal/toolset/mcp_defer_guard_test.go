@@ -20,7 +20,9 @@ import (
 func TestDeferredToolAccountsForEveryOptionalInterface(t *testing.T) {
 	forwarded := map[string]bool{"Tool": true, "Hidden": true, "CallMutator": true, "Prechecker": true, "ArgResolver": true, "Targeter": true}
 	notDeferred := map[string]bool{"SecretArgs": true, "ModeScoped": true, "FixedArgs": true, "StoreBound": true}
-	notATools := map[string]bool{"Asker": true, "ShellHost": true}
+	// Subjector is found by tool name in a registry, never on the tool value;
+	// ScopedRewinder is a session's scoped value, not a tool.
+	notATools := map[string]bool{"Asker": true, "ShellHost": true, "Subjector": true, "ScopedRewinder": true}
 
 	dir := filepath.Join("..", "tools")
 	fset := token.NewFileSet()
