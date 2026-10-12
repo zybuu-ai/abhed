@@ -657,7 +657,9 @@ All notable changes to Abhed are recorded here. The format follows
   keyless, under the release workflow's GitHub identity; the container
   image is signed by digest; both carry SLSA build provenance, and each
   binary has an SPDX SBOM. "Verify a download" in the getting-started guide
-  shows the commands. Releases up to 1.2.7 are not signed.
+  shows the commands. Releases up to 1.2.7 are not signed. Every action
+  the workflows use is pinned to a full commit, and CI fails on one that is
+  not, since a moved tag would run with the signing identity.
   `scripts/build-release.sh -s` writes the SBOMs (it needs syft).
 - `fence.limit` names `session_pids_max`: forks refused at the session's
   process limit while the command ran, which Linux 6.14 and later count
