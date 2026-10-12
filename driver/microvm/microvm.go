@@ -683,7 +683,7 @@ func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest
 			}
 		}()
 	}
-	return d.run(ctx, id, guest.ExecRequest{TTY: true, Cwd: req.Cwd, Rows: req.Size.Rows, Cols: req.Size.Cols},
+	return d.run(ctx, id, guest.ExecRequest{TTY: true, Cwd: req.Cwd, Env: req.Env, Rows: req.Size.Rows, Cols: req.Size.Cols},
 		guest.Streams{Stdin: req.Stdin, Stdout: req.Stdout, Resize: resize})
 }
 

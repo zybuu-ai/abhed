@@ -250,15 +250,16 @@ func TestAttachWithResize(t *testing.T) {
 	var res driver.ExecResult
 	go func() {
 		var err error
-		res, err = d.Attach(context.Background(), id, driver.AttachRequest{Size: driver.WinSize{Rows: 10, Cols: 40}, Stdin: in, Stdout: &out, Resize: resize})
+		res, err = d.Attach(context.Background(), id, driver.AttachRequest{Size: driver.WinSize{Rows: 10, Cols: 40}, Env: []string{"ABHED_T_VIA=proxy-ok"},
+			Stdin: in, Stdout: &out, Resize: resize})
 		done <- err
 	}()
 	resize <- driver.WinSize{Rows: 21, Cols: 77}
 	time.Sleep(300 * time.Millisecond)
-	_, _ = io.WriteString(inw, "stty size; exit 5\n")
+	_, _ = io.WriteString(inw, "stty size; echo \"via=$ABHED_T_VIA\"; exit 5\n")
 	select {
 	case err := <-done:
-		if err != nil || res.ExitCode != 5 || !strings.Contains(out.String(), "21 77") {
+		if err != nil || res.ExitCode != 5 || !strings.Contains(out.String(), "21 77") || !strings.Contains(out.String(), "via=proxy-ok") {
 			t.Fatalf("attach: %+v %v %q", res, err, out.String())
 		}
 	case <-time.After(10 * time.Second):

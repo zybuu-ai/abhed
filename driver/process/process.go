@@ -531,6 +531,10 @@ func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest
 		cmd.Env = sandbox.HostCommandEnv()
 	}
 	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
+	if err := addEnv(cmd, req.Env); err != nil {
+		sandbox.Release(cmd)
+		return driver.ExecResult{}, err
+	}
 	release, err := placeOn(in.box, cmd)
 	if err != nil {
 		sandbox.Release(cmd)

@@ -905,7 +905,7 @@ func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest
 		return driver.ExecResult{}, err
 	}
 	fixed := []string{"TERM=xterm-256color", `PS1=(sandbox: container) \W \$ `, "HISTFILE=", "ABHED_TERMINAL=1"}
-	p, err := d.prepare(ctx, in, true, dir, shellLine, nil, fixed)
+	p, err := d.prepare(ctx, in, true, dir, shellLine, req.Env, fixed)
 	if err != nil {
 		return driver.ExecResult{}, err
 	}

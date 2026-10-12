@@ -435,7 +435,8 @@ An adapter over the existing sandbox tiers, with no change to how commands are
 confined: `Create` builds the sandbox the configuration selects
 (`sandboxconfig.Build`, so Seatbelt or bubblewrap, or the fence when
 `sandbox.tier` is `fence`), `Exec` runs a command through that sandbox's
-`Command`, `Attach` runs its interactive shell on a PTY, and `Command` (the
+`Command`, `Attach` runs its interactive shell on a PTY (with
+`AttachRequest.Env` added as `ExecRequest.Env` is), and `Command` (the
 driver capability) hands either out for the caller to run. `Stop` refuses
 further commands; `Start` builds the sandbox again; `Delete` closes it, which
 releases the fence's cgroup. `Forward` runs a relay inside the sandbox to

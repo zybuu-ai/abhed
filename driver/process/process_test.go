@@ -273,13 +273,13 @@ func TestAttach(t *testing.T) {
 	resize := make(chan driver.WinSize, 1)
 	resize <- driver.WinSize{Rows: 50, Cols: 120}
 	res, err := driver.Attach(ctx, d, "a", driver.AttachRequest{
-		Stdin:  strings.NewReader("echo attached-$((40+2))\nexit 7\n"),
-		Stdout: &out, Resize: resize, Size: driver.WinSize{Rows: 24, Cols: 80},
+		Stdin:  strings.NewReader("echo attached-$((40+2)) \"via=$ABHED_T_VIA\"\nexit 7\n"),
+		Stdout: &out, Resize: resize, Size: driver.WinSize{Rows: 24, Cols: 80}, Env: []string{"ABHED_T_VIA=proxy-ok"},
 	})
 	if err != nil || res.ExitCode != 7 {
 		t.Fatalf("attach %v %v: %q", res, err, out.String())
 	}
-	if !strings.Contains(out.String(), "attached-42") {
+	if !strings.Contains(out.String(), "attached-42") || !strings.Contains(out.String(), "via=proxy-ok") {
 		t.Fatalf("attach output %q", out.String())
 	}
 }

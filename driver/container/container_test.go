@@ -1169,3 +1169,24 @@ func TestEgressInspectionCAIsInTheContainer(t *testing.T) {
 		}
 	}
 }
+
+// A terminal's variables reach the shell by name, as a command's do.
+func TestAttachForwardsEnvByName(t *testing.T) {
+	f := &fakeRunner{podman: true}
+	d, ws := testDriver(t, f, Options{}, nil)
+	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Attach(context.Background(), "sbx_0123456789abcdef", driver.AttachRequest{Env: []string{"ABHED_T_VIA=secret-value"}}); err != nil {
+		t.Fatal(err)
+	}
+	var shell string
+	for _, c := range f.find("exec") {
+		if s := joined(c); strings.Contains(s, " -t ") || strings.Contains(s, "TERM=") {
+			shell = s
+		}
+	}
+	if !strings.Contains(shell, " -e ABHED_T_VIA ") || strings.Contains(shell, "secret-value") {
+		t.Fatalf("the shell's exec: %s", shell)
+	}
+}

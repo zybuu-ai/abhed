@@ -123,7 +123,7 @@ func runCommand(name, socket, id string) int {
 	}
 	var res driver.ExecResult
 	if req.Shell {
-		res, err = shell(ctx, cl, id, req.Cwd)
+		res, err = shell(ctx, cl, id, req.Cwd, env)
 	} else {
 		res, err = cl.Exec(ctx, id, driver.ExecRequest{Command: req.Command, Cwd: req.Cwd, Env: env,
 			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
@@ -136,8 +136,8 @@ func runCommand(name, socket, id string) int {
 }
 
 // shell attaches to the sandbox's shell on this terminal, raw, following
-// its size.
-func shell(ctx context.Context, cl *Client, id, cwd string) (driver.ExecResult, error) {
+// its size, with the forwarded variables, the call's proxy ones included.
+func shell(ctx context.Context, cl *Client, id, cwd string, env []string) (driver.ExecResult, error) {
 	fd := int(os.Stdin.Fd()) // #nosec G115 -- a file descriptor fits an int
 	var size driver.WinSize
 	if ws, err := pty.GetsizeFull(os.Stdin); err == nil {
@@ -167,5 +167,5 @@ func shell(ctx context.Context, cl *Client, id, cwd string) (driver.ExecResult, 
 			}
 		}
 	}()
-	return cl.Attach(ctx, id, driver.AttachRequest{Cwd: cwd, Size: size, Stdin: os.Stdin, Stdout: os.Stdout, Resize: resize})
+	return cl.Attach(ctx, id, driver.AttachRequest{Cwd: cwd, Size: size, Env: env, Stdin: os.Stdin, Stdout: os.Stdout, Resize: resize})
 }

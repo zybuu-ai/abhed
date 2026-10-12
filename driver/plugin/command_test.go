@@ -64,3 +64,34 @@ func TestCommandBridgesToExec(t *testing.T) {
 		t.Fatalf("command without attach: %v", err)
 	}
 }
+
+// A terminal through the bridge gets the forwarded variables too, as a
+// command does: under the allowlist it would have no proxy credential.
+func TestShellBridgeForwardsEnv(t *testing.T) {
+	ctx := context.Background()
+	fake := drivertest.New("fake", driver.CapAttach)
+	var gotEnv []string
+	fake.AttachFunc = func(_ context.Context, _ string, req driver.AttachRequest) (driver.ExecResult, error) {
+		gotEnv = req.Env
+		return driver.ExecResult{}, nil
+	}
+	cl, err := Dial(ctx, "fake", serve(t, fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.Create(ctx, driver.Spec{ID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := driver.Command(ctx, cl, "a", driver.CommandRequest{Shell: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(cmd.Env, "HTTP_PROXY=http://c:t@127.0.0.1:1", "OTHER=x")
+	cl.ForwardEnv(cmd, []string{"HTTP_PROXY"})
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if len(gotEnv) != 1 || gotEnv[0] != "HTTP_PROXY=http://c:t@127.0.0.1:1" {
+		t.Fatalf("env reaching the shell %q", gotEnv)
+	}
+}

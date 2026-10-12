@@ -140,8 +140,11 @@ type WinSize struct {
 
 // AttachRequest runs an interactive shell on a terminal in an instance.
 type AttachRequest struct {
-	Cwd    string         `json:"cwd,omitempty"`
-	Size   WinSize        `json:"size"`
+	Cwd  string  `json:"cwd,omitempty"`
+	Size WinSize `json:"size"`
+	// Env are NAME=value pairs the shell gets, as ExecRequest.Env: a
+	// variable the driver sets itself cannot be replaced.
+	Env    []string       `json:"env,omitempty"`
 	Stdin  io.Reader      `json:"-"`
 	Stdout io.Writer      `json:"-"`
 	Resize <-chan WinSize `json:"-"`
