@@ -639,6 +639,11 @@ on. A server with it off starts on the older schema as before.
   as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
   so the agent took the folder for empty. It now says the folder is skipped
   unless `path` names it, and gives that path.
+- A tool call the model sent without an id, or with an id it had already
+  used in the same turn, kept that id, so two such reads run in parallel
+  could have their results paired with the wrong call in the record and in
+  editor cards. Each such call now gets an id of its own (`call_` and a
+  unique suffix) before anything is recorded.
 
 ### Dependencies
 
