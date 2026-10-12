@@ -609,6 +609,8 @@ on. A server with it off starts on the older schema as before.
 - An SDK `Options.Warn` now also takes the configuration's warnings, which
   `New` used to write to stderr whatever the embedder wanted; with `Warn`
   nil they still go to stderr.
+- After `/model` moves to a model whose next turn fails, the CLI names the
+  `/model` command that goes back to the model you were on.
 
 ### Fixed
 

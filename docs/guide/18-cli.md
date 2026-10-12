@@ -113,7 +113,7 @@ to do.
 | Command | |
 |---|---|
 | `/model` | pick a configured model: its id, context window, and whether it is local |
-| `/model NAME` | switch to a configured provider, keeping the conversation; recorded |
+| `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on |
 | `/effort low\|medium\|high` | the reasoning effort, where the provider takes one |
 | `/effort on\|off` | thinking on or off, where the provider has the switch |
 | `/effort default` | back to the provider's own setting |

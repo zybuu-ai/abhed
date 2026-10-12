@@ -118,6 +118,13 @@ func switchModel(ctx context.Context, e *cmdEnv, name string) error {
 			return fmt.Errorf("model not switched: the switch could not be recorded: %w", switchErr)
 		}
 	}
+	// The model last known to work, kept across switches until a turn succeeds.
+	if st.switchedFrom == "" {
+		st.switchedFrom = st.appCfg.Model.Default
+	}
+	if st.switchedFrom == name {
+		st.switchedFrom = ""
+	}
 	st.appCfg.Model.Default = name
 	st.provider = p
 	st.adapter = next
@@ -408,4 +415,18 @@ func providersCmd() int {
 	fmt.Println("a parameter the provider cannot honour is reported at startup")
 	fmt.Println("rather than silently ignored.")
 	return 0
+}
+
+// switchBackHint is the line after a failed turn on a model /model chose:
+// the command that goes back to the one it left, or "".
+func switchBackHint(st *cliState, runErr error) string {
+	from := st.switchedFrom
+	if runErr == nil {
+		st.switchedFrom = ""
+		return ""
+	}
+	if from == "" || from == st.appCfg.Model.Default {
+		return ""
+	}
+	return "/model " + from + " switches back to the model you were on"
 }

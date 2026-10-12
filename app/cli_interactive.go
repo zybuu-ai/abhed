@@ -386,6 +386,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 		if line := runErrorLine(runErr, woken); line != "" {
 			fmt.Printf("%s %s\n", s.Red("error:"), friendlyModelError(runErr, sessionState.appCfg.Model.Default, sessionState.provider))
+			if hint := switchBackHint(sessionState, runErr); hint != "" {
+				fmt.Printf("  %s\n", s.Dim(hint))
+			}
+		} else if runErr == nil {
+			switchBackHint(sessionState, nil)
 		}
 		woken = false
 		if runErr == nil {
