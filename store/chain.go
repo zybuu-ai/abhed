@@ -67,3 +67,30 @@ func (p *Postgres) chainHead(ctx context.Context, sessionID string) (int64, stri
 		FROM events WHERE session_id = $1`, sessionID).Scan(&pos, &h)
 	return pos, h, err
 }
+
+// ChainSession is a session record verify walks, deleted and subagent ones included.
+type ChainSession struct {
+	ID      string
+	Parent  string
+	Deleted bool
+}
+
+// ChainSessions lists up to limit of the tenant's sessions, newest first,
+// including deleted and subagent sessions, whose chained rows stay.
+func (p *Postgres) ChainSessions(ctx context.Context, limit int) ([]ChainSession, error) {
+	rows, err := p.pool.Query(ctx, `SELECT id, COALESCE(parent_id, ''), deleted_at IS NOT NULL
+		FROM sessions ORDER BY started_at DESC, id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChainSession
+	for rows.Next() {
+		var s ChainSession
+		if err := rows.Scan(&s.ID, &s.Parent, &s.Deleted); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}

@@ -647,8 +647,9 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 	defer pg.Close()
 	ids := fs.Args()
 	capped := false
+	kind := map[string]string{}
 	if len(ids) == 0 {
-		rows, err := pg.ListSessions(ctx, pgVerifyLimit+1)
+		rows, err := pg.ChainSessions(ctx, pgVerifyLimit+1)
 		if err != nil {
 			fmt.Fprintf(stderr, "abhed: %v\n", err)
 			return 1
@@ -658,6 +659,12 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		}
 		for _, r := range rows {
 			ids = append(ids, r.ID)
+			switch {
+			case r.Deleted:
+				kind[r.ID] = " (deleted)"
+			case r.Parent != "":
+				kind[r.ID] = " (subagent of " + r.Parent + ")"
+			}
 		}
 	}
 	bad := false
@@ -675,7 +682,7 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 			if r.Unchained > 0 {
 				note = fmt.Sprintf(" (%d event(s) from before the chain, not covered)", r.Unchained)
 			}
-			fmt.Fprintf(stdout, "ok      %s: %d chained event(s), head %s%s\n", id, r.Rows, short(r.Head), note)
+			fmt.Fprintf(stdout, "ok      %s%s: %d chained event(s), head %s%s\n", id, kind[id], r.Rows, short(r.Head), note)
 		}
 	}
 	if *witnessed != "" {

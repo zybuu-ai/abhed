@@ -261,6 +261,49 @@ func TestRecordVerifyPostgresSaysWhenCapped(t *testing.T) {
 	}
 }
 
+// With no session named, verify walks deleted and subagent sessions too, and
+// says which they are.
+func TestRecordVerifyPostgresWalksDeletedAndSubagents(t *testing.T) {
+	dsn := os.Getenv("ABHED_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ABHED_TEST_DSN to run against Postgres")
+	}
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	cfg := config.Config{}
+	cfg.Storage.Driver, cfg.Storage.DSN, cfg.Storage.SingleRole = "postgres", dsn, true
+	pg, err := store.Open(ctx, storeConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	parent, child, gone := "sess-walk-"+newConversationID(), "sess-walk-"+newConversationID(), "sess-walk-"+newConversationID()
+	for _, id := range []string{parent, gone} {
+		if err := pg.CreateSession(ctx, store.SessionRecord{ID: id, Tenant: "default", User: "u", Workspace: "/w", Model: "m"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pg.CreateSubagentSession(ctx, child, parent, "a helper"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{parent, child, gone} {
+		r := agent.NewRecorder(pg, id, "")
+		_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+	}
+	if err := pg.DeleteSession(gone); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb strings.Builder
+	if code := verifyPostgres(cfg, nil, &out, &errb); code != 0 {
+		t.Fatalf("verify: %d %s %s", code, out.String(), errb.String())
+	}
+	for _, want := range []string{"ok      " + parent + ":", "ok      " + child + " (subagent of " + parent + "):", "ok      " + gone + " (deleted):"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("verify did not report %q:\n%s", want, out.String())
+		}
+	}
+}
+
 // A deleted Postgres session keeps its chained rows, erased by key, so the
 // witness's heads for it still verify.
 func TestRecordVerifyPostgresWitnessAfterDelete(t *testing.T) {

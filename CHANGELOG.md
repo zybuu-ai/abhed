@@ -2006,8 +2006,8 @@ All notable changes to Abhed are recorded here. The format follows
 - `store/witness` (`Open`, `Config`, `Statement`, `Witness`) sends the
   record's heads to a witness, and `Read`, `Check` (against the
   installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
-  `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
-  and `ChainHashAt`, `store.ChainReport`, `store/local.Store.HashAt` and
+  `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`,
+  `ChainHashAt` and `ChainSessions`, `store.ChainReport`, `store.ChainSession`, `store/local.Store.HashAt` and
   `Pruned`, and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
   tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
   `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.
