@@ -855,7 +855,7 @@ func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	pol.ProxyOnly = s.ProxyOnly
 	// Only where Landlock scopes abstract unix sockets: a pathname one is
 	// still reachable through it, as the setting's documentation says.
-	pol.Socketcall = s.Network && s.Socketcall && abi >= 6 && os.Geteuid() != 0
+	pol.Socketcall = s.Network && s.Socketcall && socketcallOff(int(abi), os.Geteuid() == 0) == ""
 	if err := seccomp.Install(pol); err != nil {
 		return launchFail("%v", err)
 	}

@@ -214,12 +214,32 @@ func (f *Fence) needsMounts() bool {
 	return len(f.policy.WriteProtected) > 0 || f.policy.ProtectGit && f.policy.GitRequired
 }
 
+// socketcallOff says why fence.socketcall cannot apply on Landlock ABI abi,
+// or "": the launcher allows it only from ABI 6, and never as root.
+func socketcallOff(abi int, root bool) string {
+	switch {
+	case root:
+		return "Abhed runs as root"
+	case abi < 6:
+		return fmt.Sprintf("Landlock ABI %d is below 6 (Linux 6.12), which scopes abstract unix sockets", abi)
+	}
+	return ""
+}
+
 // Describe states what the fence covers and what it does not.
 func (f *Fence) Describe() string {
 	abi := f.report.LandlockABI
 	net := "network off: every socket refused (Landlock refuses TCP as well)"
 	if f.policy.AllowNetwork {
 		net = "network on: the host's network, unfiltered; unix sockets refused"
+		// The launcher allows socketcall only from ABI 6 and not as root.
+		if f.policy.FenceSocketcall {
+			if why := socketcallOff(abi, os.Geteuid() == 0); why != "" {
+				net += "; fence.socketcall is set but off: " + why
+			} else {
+				net += "; socketcall sockets allowed (fence.socketcall), unix ones among them"
+			}
+		}
 	}
 	switch {
 	case f.policy.Egress != nil && f.mounts:

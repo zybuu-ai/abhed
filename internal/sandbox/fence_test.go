@@ -866,3 +866,17 @@ func TestSessionRefusals(t *testing.T) {
 		}
 	}
 }
+
+// fence.socketcall off below ABI 6 or as root is said, not silent.
+func TestFenceDescribesSocketcallOff(t *testing.T) {
+	p := fencePolicy(t)
+	p.AllowNetwork, p.FenceSocketcall = true, true
+	f := NewFence(p)
+	f.report.LandlockABI = 5
+	if d := f.Describe(); !strings.Contains(d, "fence.socketcall is set but off") {
+		t.Errorf("below ABI 6: %s", d)
+	}
+	if socketcallOff(6, true) == "" || socketcallOff(5, false) == "" || socketcallOff(6, false) != "" {
+		t.Error("socketcallOff judged wrongly")
+	}
+}
