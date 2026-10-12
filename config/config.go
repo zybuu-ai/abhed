@@ -1289,7 +1289,14 @@ func Default() Config {
 			// every later session reads as instructions.
 			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)",
 				"write(ABHED.md)", "edit(ABHED.md)", "write(ABHED.local.md)", "edit(ABHED.local.md)",
-				"write(AGENTS.md)", "edit(AGENTS.md)"},
+				"write(AGENTS.md)", "edit(AGENTS.md)",
+				// Files that commonly hold credentials are read only with a
+				// yes. A speed bump for the read tool, not credential protection:
+				// a command can still print them.
+				"read(.env)", "read(**/.env)", "read(.env.*)", "read(**/.env.*)",
+				"read(*.pem)", "read(**/*.pem)", "read(*.key)", "read(**/*.key)",
+				"read(id_rsa*)", "read(**/id_rsa*)", "read(id_ed25519*)", "read(**/id_ed25519*)",
+				"read(id_ecdsa*)", "read(**/id_ecdsa*)"},
 		},
 		Context: ContextConfig{
 			CompactAt:   0.90,

@@ -160,6 +160,17 @@ A rule is a tool name, optionally followed by a pattern:
 }
 ```
 
+The built-in ask rules include the read tool on files that commonly hold
+credentials, in the workspace or below it: `.env` and `.env.*`, `*.pem`,
+`*.key`, and SSH keys named `id_rsa*`, `id_ed25519*` or `id_ecdsa*`. This is
+a question before the read tool opens one, **not credential protection**: a
+command such as `cat .env` (allowed by the built-in `bash(cat *)`), a search,
+or a program the agent runs can still read the file. Keep credentials out of
+the workspace, give a secret only to the command that needs it
+([Secrets](#secrets)), and deny reads of such files and the commands that
+print them in your own or the managed rules. Your own `permissions.ask` list
+replaces the built-in one, so copy these rules into it if you set one.
+
 The tool name of a built-in tool, or of an action such as `secret`, `delete`
 or `forge_pr`, may be written in any case: `Bash(curl *)`, `BASH(curl *)` and
 `bash(curl *)` are the same rule, as are `Read(**/.env)` and `read(**/.env)`,

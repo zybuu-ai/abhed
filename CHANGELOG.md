@@ -36,6 +36,9 @@ All notable changes to Abhed are recorded here. The format follows
   workspace's ask rules instead of replacing them. Under a managed file that
   sets aside the files' allow rules, a built-in allow rule your own list
   left out is no longer brought back.
+- The read tool asks before opening `.env`, `*.pem`, `*.key` and SSH key
+  files in the workspace; a headless run with no one to answer refuses
+  them. A `permissions.ask` list of your own replaces these rules.
 
 ### Security
 
@@ -586,6 +589,10 @@ on. A server with it off starts on the older schema as before.
   nothing. `-disallowedTools` adds the name as written beside the lower-cased
   spelling it has always added, so an existing deny keeps matching and one for
   a capitalised name now does too. Built-in names are still folded.
+- The built-in ask rules ask before the read tool opens `.env`, `.env.*`,
+  `*.pem`, `*.key` or an SSH key (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`) in
+  the workspace. It is a question, not credential protection: a command can
+  still print such a file, and the guide says so.
 
 ### Fixed
 
