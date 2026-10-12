@@ -201,6 +201,23 @@ func (l *Loop) RestoreCheckpoints(cps []Checkpoint, current func(path string) ([
 	return done, nil
 }
 
+// renumberThrough moves a copied event's through_seq into the copy's numbering.
+func renumberThrough(payload json.RawMessage, renumber func(int64) int64) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(payload, &m) != nil {
+		return payload
+	}
+	var through int64
+	if raw, ok := m["through_seq"]; !ok || json.Unmarshal(raw, &through) != nil || through <= 0 {
+		return payload
+	}
+	m["through_seq"], _ = json.Marshal(renumber(through))
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return payload
+}
+
 func hashOf(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -244,6 +261,9 @@ func BranchCopy(events []Event, through int64, sessionID string, first int64) []
 	out := make([]Event, len(picked))
 	for i, ev := range picked {
 		ev.ID, ev.SessionID, ev.ParentID, ev.Seq = newID(), sessionID, "", first+int64(i)
+		if ev.Type == EvSessionStarted || ev.Type == EvSessionResumed {
+			ev.Payload = renumberThrough(ev.Payload, renumber)
+		}
 		if ev.Type == EvFileRestored {
 			var r FileRestored
 			if json.Unmarshal(ev.Payload, &r) == nil {

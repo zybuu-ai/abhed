@@ -673,6 +673,13 @@ on. A server with it off starts on the older schema as before.
   a stored value sat near the end, which with a long value such as a key
   file cost about 0.1 ms a fragment. A fragment with no stored value in
   reach is now redacted once.
+- A fork (`/fork`, `/rewind`, the SDK's `Fork`) closed every Kubernetes
+  login and SSH host of the conversation, even those made before the step
+  it goes on from. It now keeps those and closes only the ones made after.
+- A branch of a session (`-fork-session`, the editor's branch) copied a
+  `session.started` whose `through_seq` still counted in the source's
+  numbering. It is now renumbered to the branch's, as a restore's
+  checkpoint is.
 
 ### Dependencies
 
