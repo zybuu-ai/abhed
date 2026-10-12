@@ -575,6 +575,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- On the process tier and the fence, `git worktree add`, `remove` and
+  `prune` and `git submodule update`, given as the whole command, run through
+  host git with Abhed's safety settings instead of failing inside the
+  sandbox; `git worktree remove --force` no longer deletes the worktree's
+  files and then fails. A path outside the workspace refuses them.
 - The fence runs as root on Linux 6.12 or later (Landlock ABI 6), where it
   refused root before: each command drops every capability, empties its
   bounding set and locks the securebits, and Landlock keeps it from

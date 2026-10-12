@@ -436,11 +436,12 @@ configuration or follows elsewhere: `.git/config`, `.git/hooks`,
 [Permissions](04-permissions.md). So nothing run here can plant a program
 that your next `git status` outside Abhed would run. Git itself works as
 usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
-`git worktree add`. A few commands fail inside the sandbox and are run
-outside Abhed: `git submodule update` on a submodule already checked out, on
-every tier; `git worktree remove` on Linux and macOS; and on macOS also
-`git worktree add` and `git submodule add` or `update --init` for a
-submodule not yet checked out. **Changes** and **Review** compare each
+`git worktree add`. A few commands cannot work inside the sandbox: `git
+worktree add`, `remove` and `prune` and `git submodule update`, given as the
+whole line, run through host git with Abhed's safety settings on the process
+tier and the fence (see [Permissions](04-permissions.md)); `git submodule
+add` still fails there, and the container and vm tiers run none of them on
+the host, so run those outside Abhed. **Changes** and **Review** compare each
 file with what it held before its first edit, by the server rather than
 through a command, and are unaffected.
 

@@ -212,6 +212,11 @@ func (r *Repo) Command(ctx context.Context, args ...string) *exec.Cmd {
 // CommandWith is Command with more configuration, set in the same
 // command-line scope, and more environment, added after git's own is dropped.
 func (r *Repo) CommandWith(ctx context.Context, config [][2]string, env []string, args ...string) *exec.Cmd {
+	return r.commandWith(ctx, config, env, false, args...)
+}
+
+// commandWith is CommandWith; host keeps it on the host whatever is registered.
+func (r *Repo) commandWith(ctx context.Context, config [][2]string, env []string, host bool, args ...string) *exec.Cmd {
 	if len(args) > 0 {
 		switch args[0] {
 		case "diff", "show", "log":
@@ -229,7 +234,7 @@ func (r *Repo) CommandWith(ctx context.Context, config [][2]string, env []string
 	if err := r.redirected(); err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	host := onHost(args, env)
+	host = host || onHost(args, env)
 	if !host && len(args) > 0 && args[0] == "commit" && confinedBy(r.Dir) != nil {
 		// A sandbox may give git a home of its own, without the person's name.
 		env = append(r.identity(ctx), env...)

@@ -664,7 +664,8 @@ repository; in a nested repository it can, as Abhed looks for those names
 only in the workspace's own. Git inside the sandbox therefore cannot make a
 linked worktree or a submodule's git folder: `git worktree add`, `git
 worktree remove` and `git submodule add` or `update --init` for a submodule
-not yet checked out fail there; run them yourself. A `hooks` (or other of
+not yet checked out fail there (`git submodule add` stays so; run it
+yourself; the others are run on the host, as below). A `hooks` (or other of
 those files) that is a link is held where it leads as well, as is the
 workspace's own `.git`, or a `modules` or `worktrees` folder or a folder in
 either, that is a link; a linked `.git` is then read-only throughout, so git
@@ -675,7 +676,19 @@ link with the folder itself.
 
 On every tier, plain `git submodule update` on a submodule already checked
 out fails inside the sandbox too, as git rewrites `core.worktree` in the
-submodule's protected config; run it yourself.
+submodule's protected config.
+
+So on the process tier and the fence, a command that is exactly `git
+worktree add`, `git worktree remove`, `git worktree prune` or `git submodule
+update` (plain words, the usual options only, no second command), already
+approved as any command is, runs through host git instead, with the settings
+Abhed's own git uses: hooks, fsmonitor, filters and every transport but https
+off. A path it names outside the workspace refuses it. Another spelling, an
+option outside the usual ones or a line with more on it runs in the sandbox
+and may fail there. The container and vm tiers do not broker them; run them
+yourself there. `git worktree remove --force` deletes the worktree's files as
+you asked, then its folder under `.git/worktrees`, instead of deleting the
+files and then failing.
 
 Under bubblewrap and in a container (the vm tier too) it is by binding
 read-only those found when each command starts; an empty hooks folder or

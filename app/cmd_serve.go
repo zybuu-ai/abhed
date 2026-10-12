@@ -395,7 +395,7 @@ func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.S
 	if err != nil {
 		return cfg, nil, tools.Bash{}, err
 	}
-	bash := tools.Bash{Sandbox: sb.Command,
+	bash := tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sb.Command),
 		Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
