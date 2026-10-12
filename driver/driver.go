@@ -82,6 +82,10 @@ type Egress struct {
 	// it, held by the driver and never given to the sandbox.
 	DNSSocket     string `json:"dns_socket,omitempty"`
 	DNSCredential string `json:"dns_credential,omitempty"`
+	// CABundle, set under egress.inspect_tls, is the proxy's inspection CA
+	// with the system roots, which the driver places where the commands'
+	// certificate variables point; a driver that cannot refuses the sandbox.
+	CABundle []byte `json:"ca_bundle,omitempty"`
 }
 
 // Phase is an instance's runtime phase as the driver sees it.
@@ -140,8 +144,11 @@ type WinSize struct {
 
 // AttachRequest runs an interactive shell on a terminal in an instance.
 type AttachRequest struct {
-	Cwd    string         `json:"cwd,omitempty"`
-	Size   WinSize        `json:"size"`
+	Cwd  string  `json:"cwd,omitempty"`
+	Size WinSize `json:"size"`
+	// Env are NAME=value pairs the shell gets, as ExecRequest.Env: a
+	// variable the driver sets itself cannot be replaced.
+	Env    []string       `json:"env,omitempty"`
 	Stdin  io.Reader      `json:"-"`
 	Stdout io.Writer      `json:"-"`
 	Resize <-chan WinSize `json:"-"`

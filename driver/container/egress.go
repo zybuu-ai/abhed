@@ -100,6 +100,11 @@ func startEgress(id string, pol *egress.Policy, record func(string, map[string]a
 	if err == nil && !stdio {
 		err = placeRelay(exe, filepath.Join(dir, "relay"), selinux)
 	}
+	if err == nil && p.Inspecting() {
+		// Where the container sees it: in the folder bound in, or bound on its own.
+		err = os.WriteFile(filepath.Join(dir, "ca.pem"), p.CABundle(), 0o644) // #nosec G306 -- public certificates, read inside the container
+		p.SetCAPath(egressCA)
+	}
 	if err == nil {
 		err = p.ListenUnix(filepath.Join(dir, "proxy.sock"))
 	}
@@ -171,7 +176,8 @@ func (d *Driver) startStdioRelay(in *instance) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.stopRelay, e.relayDone = cancel, make(chan struct{})
 	ready := make(chan error, 1)
-	args := []string{"exec", "-i", "--user", in.user, in.name, egressRelay, stdiorelay.Arg, e.listen}
+	// Not the sandbox's user: its commands could otherwise write the relay's frames.
+	args := []string{"exec", "-i", "--user", stdiorelay.User(in.uid), in.name, egressRelay, stdiorelay.Arg, e.listen}
 	sock := filepath.Join(e.dir, "proxy.sock")
 	go func() {
 		defer close(e.relayDone)

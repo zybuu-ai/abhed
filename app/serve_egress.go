@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/microvm"
+	"github.com/zybuu-ai/abhed/driver/microvm/guest"
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
@@ -38,6 +39,8 @@ type sandboxProxy struct {
 	// dns is the sandbox's own credential for the proxy's resolver, which
 	// the driver holds; the sandbox never sees it.
 	dns *egress.Call
+	// ca is the inspection CA bundle the guest is given, under inspect_tls.
+	ca []byte
 }
 
 // newSandboxEgress returns the proxies for cfg, or nil when the allowlist
@@ -95,13 +98,18 @@ func (e *sandboxEgress) Open(id string) (driver.Egress, error) {
 		return driver.Egress{}, err
 	}
 	p := &sandboxProxy{proxy: px, dir: dir, dns: dns}
+	if px.Inspecting() {
+		// The driver places the bundle in the guest, where the calls' variables point.
+		px.SetCAPath(guest.CAFile)
+		p.ca = px.CABundle()
+	}
 	e.proxies[id] = p
 	return p.egress(), nil
 }
 
 func (p *sandboxProxy) egress() driver.Egress {
 	return driver.Egress{Socket: filepath.Join(p.dir, "proxy.sock"), Port: p.proxy.Addr().Port(),
-		DNSSocket: filepath.Join(p.dir, "dns.sock"), DNSCredential: egress.Credential(p.dns.URL())}
+		DNSSocket: filepath.Join(p.dir, "dns.sock"), DNSCredential: egress.Credential(p.dns.URL()), CABundle: p.ca}
 }
 
 func (e *sandboxEgress) Call(id string) ([]string, func(), error) {

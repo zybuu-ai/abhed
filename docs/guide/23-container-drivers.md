@@ -126,7 +126,15 @@ own in `HTTP_PROXY` and `HTTPS_PROXY`, passed to the engine by name so its
 value is never in an argument, and revoked when the command ends. Each
 decision goes to `Options.Record` as an `egress.decision` event with the
 sandbox's id. Names are resolved by the proxy, so tools must honour the
-proxy variables; there is no resolver inside.
+proxy variables; there is no resolver inside. The sandbox's commands share
+one container, so they share the relay (one sandbox is one trust unit): the token alone names a command's
+call, a command can read a concurrent one's token from its environment, and
+a client that sends no proxy credentials (a JVM) is answered 407. The
+session's container tier, with a container per command, gives each call a
+way in of its own instead. With `egress.inspect_tls` the session CA bundle
+is at `/run/abhed-egress/ca.pem` inside, in the folder bound in or, where
+the relay runs over an exec, bound on its own, and each command's
+certificate variables point there.
 
 Where the engine runs in a VM (Docker Desktop, Podman on macOS and
 Windows) or elsewhere (`DOCKER_HOST=tcp://…`), a host socket cannot reach
@@ -134,9 +142,16 @@ the container. There the relay is a Linux build of Abhed for the engine's
 architecture that you name in `control_plane.<engine>.relay_binary`
 (managed only), at an absolute path the engine's host can see (under your
 home folder for Podman's and Docker Desktop's VMs, which share it). It is
-bound in read-only, and the driver runs it with a long-lived `exec` as the
-sandbox's user: it listens on the container's loopback and carries each
-connection over that exec's input and output to the proxy on this host.
+bound in read-only, and the driver runs it with a long-lived `exec` as a
+user of its own, uid 65534 (65533 if the sandbox's user is 65534), so the
+sandbox's commands can neither write to its output nor signal it; the
+binary must be readable and executable by that user. It is never
+relabelled: on an SELinux engine host give it a label containers may run
+once yourself (`chcon -t container_ro_file_t <path>`), or the relay cannot
+start and the sandbox is refused. It listens on the
+container's loopback and carries each connection over that exec's input
+and output to the proxy on this host, at most 128 at once; a connection
+over that is closed, and a stream the relay opens twice is closed.
 The container still has no network. The sandbox is ready only once the
 relay listens; an exec that ends is started again while the sandbox runs,
 and connections made meanwhile fail rather than go anywhere else. Without
@@ -149,7 +164,7 @@ the allowlist.
 |---|---|
 | `Create` | checks the spec and the mounts, starts the container, verifies it |
 | `Exec` | `exec` as the sandbox's user, in a folder inside the workspace; `Env` may add variables but not replace `PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables or `LD_*` |
-| `Attach` | an interactive shell on a terminal, with resize |
+| `Attach` | an interactive shell on a terminal, with resize; `Env` adds variables as for `Exec`, passed by name, so a terminal under the allowlist has its call's proxy credential |
 | `Command` | the same `exec`, or the shell, handed to the caller to run: a session's bash tool and terminal; under the allowlist its credential is revoked when the caller's context ends, and a cancelled one is ended inside the container |
 | `CopyIn`, `CopyOut` | a tar stream through the engine's `cp`, to or from a folder inside the workspace; every entry is checked (no absolute names, no `..`, no links out, no devices), owners become the sandbox's user and setuid bits are dropped |
 | `Stop` | refuses new commands, then stops the container with the grace given |

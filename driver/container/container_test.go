@@ -965,8 +965,11 @@ func TestEgressAllowlistThroughAnExecWhereTheEngineIsInAVM(t *testing.T) {
 			relayCall = c
 		}
 	}
-	if want := " exec -i --user " + in.user + " " + in.name + " /run/abhed-egress/relay " + stdiorelay.Arg + " " + in.egress.listen + " "; joined(relayCall) != want {
+	if want := " exec -i --user " + stdiorelay.User(in.uid) + " " + in.name + " /run/abhed-egress/relay " + stdiorelay.Arg + " " + in.egress.listen + " "; joined(relayCall) != want {
 		t.Errorf("relay exec %q, want %q", joined(relayCall), want)
+	}
+	if strings.Contains(joined(relayCall), " --user "+in.user+" ") {
+		t.Errorf("the relay runs as the commands' user: %q", joined(relayCall))
 	}
 	if relays.Load() != 1 {
 		t.Fatalf("the relay ran %d times", relays.Load())
@@ -1102,5 +1105,120 @@ func TestMountRootsStayClearOfReservedFolders(t *testing.T) {
 	ok := Options{MountRoots: []MountRoot{{Path: root}}, Reserved: []string{other}, SnapshotDir: filepath.Join(other, "snaps")}
 	if err := ok.check(); err != nil {
 		t.Fatalf("a root clear of both: %v", err)
+	}
+}
+
+// With inspect_tls each command is pointed at the session CA bundle where
+// the container sees it: in the egress folder bound in on Linux, or bound
+// on its own beside the relay where the engine is in a VM.
+func TestEgressInspectionCAIsInTheContainer(t *testing.T) {
+	pol, err := egress.Compile(egress.Config{InspectTLS: true, Rules: []egress.Rule{{Host: "example.com", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(t.TempDir(), "abhed")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldExe, oldOS := relayExecutable, hostOS
+	t.Cleanup(func() { relayExecutable, hostOS = oldExe, oldOS })
+	relayExecutable = func() (string, error) { return exe, nil }
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vm := range []bool{false, true} {
+		hostOS = "linux"
+		opts := Options{}
+		f := &fakeRunner{podman: true, script: `echo "ca=$SSL_CERT_FILE"`}
+		if vm {
+			hostOS, opts.RelayBinary = "darwin", "/opt/abhed/abhed-linux-arm64"
+			f.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
+				if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
+					return nil
+				}
+				return exec.CommandContext(ctx, self, stdiorelay.Arg, "127.0.0.1:0")
+			}
+		}
+		d, ws := testDriver(t, f, opts, func(p *sandbox.Policy) { p.Egress = pol })
+		if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+			t.Fatal(err)
+		}
+		in := d.insts["sbx_0123456789abcdef"]
+		host := filepath.Join(in.egress.dir, "ca.pem")
+		if b, err := os.ReadFile(host); err != nil || !strings.Contains(string(b), string(in.egress.proxy.CA())) {
+			t.Fatalf("vm=%v: the bundle does not hold the session CA: %v", vm, err)
+		}
+		got := joined(f.runCall(t))
+		want := " -v " + in.egress.dir + ":/run/abhed-egress:ro "
+		if vm {
+			want = " -v " + host + ":" + egressCA + ":ro "
+		}
+		if !strings.Contains(got, want) {
+			t.Errorf("vm=%v: missing %q in %s", vm, want, got)
+		}
+		var out bytes.Buffer
+		if _, err := d.Exec(context.Background(), "sbx_0123456789abcdef", driver.ExecRequest{Command: "true", Stdout: &out}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "ca="+egressCA) {
+			t.Errorf("vm=%v: the command was not pointed at the bundle: %q", vm, out.String())
+		}
+		if err := d.Delete(context.Background(), "sbx_0123456789abcdef"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A terminal's variables reach the shell by name, as a command's do.
+func TestAttachForwardsEnvByName(t *testing.T) {
+	f := &fakeRunner{podman: true}
+	d, ws := testDriver(t, f, Options{}, nil)
+	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Attach(context.Background(), "sbx_0123456789abcdef", driver.AttachRequest{Env: []string{"ABHED_T_VIA=secret-value"}}); err != nil {
+		t.Fatal(err)
+	}
+	var shell string
+	for _, c := range f.find("exec") {
+		if s := joined(c); strings.Contains(s, " -t ") || strings.Contains(s, "TERM=") {
+			shell = s
+		}
+	}
+	if !strings.Contains(shell, " -e ABHED_T_VIA ") || strings.Contains(shell, "secret-value") {
+		t.Fatalf("the shell's exec: %s", shell)
+	}
+}
+
+// On an SELinux engine the operator's relay_binary is bound as it is: a
+// relabel would change the label of the operator's own file.
+func TestRelayBinaryIsNeverRelabelled(t *testing.T) {
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "example.com", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := hostOS
+	t.Cleanup(func() { hostOS = old })
+	hostOS = "darwin"
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{podman: true, selinux: true}
+	f.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
+		if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
+			return nil
+		}
+		return exec.CommandContext(ctx, self, stdiorelay.Arg, "127.0.0.1:0")
+	}
+	d, ws := testDriver(t, f, Options{RelayBinary: "/opt/abhed/abhed-linux-arm64"}, func(p *sandbox.Policy) { p.Egress = pol })
+	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Delete(context.Background(), "sbx_0123456789abcdef") })
+	got := joined(f.runCall(t))
+	if !strings.Contains(got, " -v /opt/abhed/abhed-linux-arm64:/run/abhed-egress/relay:ro ") {
+		t.Fatalf("the relay binary's mount: %s", got)
 	}
 }

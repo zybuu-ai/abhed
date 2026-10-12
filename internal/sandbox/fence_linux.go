@@ -375,16 +375,17 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	}
 	var relay *fenceEgressSpec
 	if f.policy.Egress != nil {
-		callEnv, err := f.eg.call(ctx, f.policy.Egress)
+		fc, err := f.eg.call(ctx, f.policy.Egress, f.mounts)
 		if err != nil {
 			return refusedCmd("%v", err)
 		}
-		env = append(append([]string{}, env...), callEnv...)
-		// TCP only to the proxy's port; in mount mode the port is the relay's,
-		// in a network namespace with nothing else in it.
-		spec.ConnectTCP = []uint16{f.eg.port()}
-		if f.mounts {
-			relay = f.eg.spec()
+		env = append(append([]string{}, env...), fc.env...)
+		// TCP only to the call's own way in; in mount mode the port is the
+		// relay's, in a network namespace with nothing else in it.
+		spec.ConnectTCP = []uint16{fc.port}
+		relay = fc.relay
+		if fc.ca != "" {
+			spec.Read = append(spec.Read, fc.ca) // the inspection CA bundle its clients are pointed at
 		}
 	}
 	leaf, err := f.host.sb.NewLeaf(f.leafName(launch.CallID), f.host.leaf)

@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/driver/microvm/guest"
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
@@ -52,7 +54,7 @@ func TestSandboxEgressServesTheAllowlistPerSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, _ := eg.Open(id)
-	if again != e || e.Port == 0 {
+	if again.Socket != e.Socket || again.Port != e.Port || e.Port == 0 {
 		t.Fatalf("open twice: %+v %+v", e, again)
 	}
 	other, _ := eg.Open("sbx_fedcba9876543210")
@@ -154,4 +156,33 @@ func lookupRcode(t *testing.T, sock, cred, name string) int {
 		t.Fatalf("answer: %v", err)
 	}
 	return int(a[3] & 0x0f)
+}
+
+// Under inspect_tls a microVM sandbox's egress carries the session's CA
+// bundle for the guest, and each call's clients are pointed at it there.
+func TestSandboxEgressGivesTheMicroVMTheInspectionCA(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sandbox.Network = config.NetworkAllowlist
+	cfg.Egress.InspectTLS = true
+	eg, err := newSandboxEgress(cfg, nil)
+	if err != nil || eg == nil {
+		t.Fatal(err)
+	}
+	const id = "sbx_0123456789abcdef"
+	e, err := eg.Open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = eg.Close(id) })
+	if !strings.Contains(string(e.CABundle), "BEGIN CERTIFICATE") {
+		t.Fatal("no CA bundle for the guest")
+	}
+	env, end, err := eg.Call(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer end()
+	if !slices.Contains(env, "SSL_CERT_FILE="+guest.CAFile) {
+		t.Fatalf("the call is not pointed at the guest's bundle: %v", env)
+	}
 }

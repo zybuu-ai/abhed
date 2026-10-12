@@ -9,7 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -155,6 +155,10 @@ func (p *Proxy) caEnv() []string {
 		"PIP_CERT=" + f, "NODE_EXTRA_CA_CERTS=" + f, "AWS_CA_BUNDLE=" + f, "CARGO_HTTP_CAINFO=" + f}
 }
 
+// serverFirstWait is how long an inspected tunnel waits for the client's
+// first byte before taking it for a protocol where the server speaks first.
+var serverFirstWait = 1500 * time.Millisecond
+
 // prefixed reads what a bufio.Reader holds before the connection's own bytes.
 type prefixed struct {
 	net.Conn
@@ -169,19 +173,27 @@ func (p *Proxy) inspectTunnel(c net.Conn, br *bufio.Reader, up *counted, t Targe
 	if _, err := io.WriteString(c, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return
 	}
-	_ = c.SetReadDeadline(time.Now().Add(headerTimeout))
+	// A client speaks first in TLS; one silent this long waits for the server
+	// (ssh, SMTP), so its tunnel is judged by host and port rather than held.
+	_ = c.SetReadDeadline(time.Now().Add(serverFirstWait))
 	first, err := br.Peek(1)
 	_ = c.SetReadDeadline(time.Time{})
-	if err != nil {
+	var ne net.Error
+	silent := errors.As(err, &ne) && ne.Timeout()
+	if err != nil && !silent {
 		return
 	}
-	if first[0] != 0x16 { // not a TLS handshake: nothing to look inside
+	if silent || first[0] != 0x16 { // not a TLS handshake: nothing to look inside
+		why := "the tunnel does not carry TLS"
+		if silent {
+			why = fmt.Sprintf("the client sent nothing for %s, so the tunnel is not TLS", serverFirstWait)
+		}
 		v := p.opts.Policy.Decide(t.Request())
 		if !v.Allowed() {
-			ev.Decision, ev.Rule, ev.Reason = v.Decision, v.Rule, v.Reason+"; the tunnel does not carry TLS, so it is judged by host and port"
+			ev.Decision, ev.Rule, ev.Reason = v.Decision, v.Rule, v.Reason+"; "+why+", so it is judged by host and port"
 			return
 		}
-		ev.Reason += "; not TLS, passed through as a tunnel"
+		ev.Reason += "; " + why + ", passed through as a tunnel"
 		p.tunnel(c, br, up, false)
 		return
 	}
@@ -275,12 +287,36 @@ func (p *Proxy) inspectOne(srv net.Conn, ur *bufio.Reader, upTLS net.Conn, req *
 	}
 	req.URL.Scheme, req.URL.Host = "", ""
 	req.RequestURI = ""
+	// A client waiting for 100 Continue would never send the body the write
+	// below reads: the proxy, having decided, answers it itself.
+	if strings.EqualFold(strings.TrimSpace(req.Header.Get("Expect")), "100-continue") {
+		req.Header.Del("Expect")
+		if _, err := io.WriteString(srv, "HTTP/1.1 100 Continue\r\n\r\n"); err != nil {
+			return false
+		}
+	}
 	if err := req.Write(upTLS); err != nil {
 		writeStatus(srv, http.StatusBadGateway, "abhed egress: sending the request failed\n", nil)
 		return false
 	}
 	resp, err := http.ReadResponse(ur, req)
-	if err != nil {
+	// Interim responses go on to the client; the loop waits for the final one.
+	for err == nil && resp.StatusCode >= 100 && resp.StatusCode < 200 && resp.StatusCode != http.StatusSwitchingProtocols {
+		for _, h := range hopHeaders {
+			resp.Header.Del(h)
+		}
+		if _, werr := fmt.Fprintf(srv, "HTTP/1.1 %s\r\n", resp.Status); werr != nil {
+			return false
+		}
+		if werr := resp.Header.Write(srv); werr != nil {
+			return false
+		}
+		if _, werr := io.WriteString(srv, "\r\n"); werr != nil {
+			return false
+		}
+		resp, err = http.ReadResponse(ur, req)
+	}
+	if err != nil || resp.StatusCode == http.StatusSwitchingProtocols {
 		writeStatus(srv, http.StatusBadGateway, "abhed egress: the upstream response was malformed\n", nil)
 		return false
 	}

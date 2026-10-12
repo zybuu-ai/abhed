@@ -28,6 +28,16 @@ func init() {
 	}
 }
 
+// User is the user:group the relay runs as inside a container whose commands
+// run as uid: never theirs, so no command can write frames to its output
+// through /proc or signal it.
+func User(uid int) string {
+	if uid == 65534 {
+		return "65533:65533"
+	}
+	return "65534:65534"
+}
+
 // runRelay listens on addr inside the container and serves each
 // connection over stdin and stdout until stdin ends.
 func runRelay(addr string) int {
@@ -55,6 +65,10 @@ const (
 
 // maxFrame bounds one frame's payload; a larger length ends the relay.
 const maxFrame = 64 << 10
+
+// maxStreams bounds the streams open at once over one relay; an open beyond
+// it is refused. The inside is untrusted: it could ask for any number.
+const maxStreams = 128
 
 // streamQueue bounds what one stream may have waiting to be written; a
 // stream whose reader falls that far behind is closed, not let stall the rest.
@@ -102,6 +116,12 @@ func (m *mux) send(typ byte, id uint32, p []byte) error {
 func (m *mux) add(id uint32, conn net.Conn, first func() error) {
 	s := &stream{conn: conn, in: make(chan []byte, streamQueue)}
 	m.mu.Lock()
+	if m.streams[id] != nil {
+		// An id in use is never taken over: its goroutines act by id.
+		m.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	m.streams[id] = s
 	m.mu.Unlock()
 	if first != nil && first() != nil {
@@ -140,6 +160,13 @@ func (m *mux) add(id uint32, conn net.Conn, first func() error) {
 			}
 		}
 	}()
+}
+
+// open is how many streams are open.
+func (m *mux) open() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.streams)
 }
 
 // live reports whether stream id is still open.
@@ -283,6 +310,10 @@ func Serve(ln net.Listener, r io.Reader, w io.Writer) error {
 			if err != nil {
 				return
 			}
+			if m.open() >= maxStreams {
+				_ = c.Close() // the host would refuse it
+				continue
+			}
 			next++
 			id := next
 			m.add(id, c, func() error { return m.send(frameOpen, id, nil) })
@@ -295,11 +326,21 @@ func Serve(ln net.Listener, r io.Reader, w io.Writer) error {
 
 // Dial is the host end: each stream the inside opens is joined to a new
 // connection from dial, until r ends; ready, when set, is called once the
-// inside listens.
+// inside listens. At most maxStreams are open at once, and an id opened
+// twice closes the first and refuses the second.
 func Dial(r io.Reader, w io.Writer, dial func() (net.Conn, error), ready func()) error {
 	m := newMux(w)
 	defer m.closeAll()
 	return m.readReady(r, func(id uint32) {
+		// An id already open is the inside misbehaving: both go.
+		if m.live(id) {
+			m.drop(id, true)
+			return
+		}
+		if m.open() >= maxStreams {
+			_ = m.send(frameClose, id, nil)
+			return
+		}
 		c, err := dial()
 		if err != nil {
 			_ = m.send(frameClose, id, nil)

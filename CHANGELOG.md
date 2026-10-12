@@ -522,7 +522,11 @@ All notable changes to Abhed are recorded here. The format follows
   call. Each call now reaches the proxy by its own way in, a unix socket
   bound into its sandbox on Linux and a loopback port only its Seatbelt
   profile allows on macOS, and what arrives there is recorded as that call.
-  Affects 1.2.7.
+  The new fence and container tiers do the same: a socket only the call's
+  relay joins, or on the fence in `landlock_only` mode a loopback port only
+  the call's Landlock rules allow. The sandbox drivers, whose commands share
+  one container or VM, still name the call by its token alone: there one
+  sandbox is one trust unit. Affects 1.2.7.
 - A stdio MCP server ran with your whole home folder readable and
   writable, so it could read `~/.ssh` or plant a LaunchAgent, a systemd
   user unit or a shell rc line. On the process tier its home is now hidden
@@ -707,10 +711,11 @@ All notable changes to Abhed are recorded here. The format follows
   only at the session's cgroup.
 - The fence holds `sandbox.network: "allowlist"`: in `mount_namespace` mode
   each command gets a network namespace with only its loopback, where the
-  launcher relays the egress proxy's port to the proxy, and may make inet
-  TCP stream sockets alone (no MPTCP or SCTP, which Landlock's TCP rules do
-  not hold). In `landlock_only` mode, where Landlock can confine
-  TCP only to the proxy's port on any address, the managed
+  launcher relays the egress proxy's port to the call's own socket on the
+  proxy, and may make inet TCP stream sockets alone (no MPTCP or SCTP, which
+  Landlock's TCP rules do not hold). In `landlock_only` mode, where Landlock
+  can confine TCP only to the call's own proxy port on any address, the
+  managed
   `fence.egress_port_only` accepts that; otherwise the fence still refuses
   the allowlist there.
 - In `mount_namespace` mode each fenced command runs in a PID namespace of
@@ -724,8 +729,9 @@ All notable changes to Abhed are recorded here. The format follows
   `max_memory_mb` set in a configuration file and no delegated cgroup, the
   process tier is refused rather than run with memory unbounded.
 - The container and vm tiers enforce `sandbox.network: "allowlist"`: each
-  command's container has no network but a relay to the session's egress
-  proxy, over an `exec`'s stdio, so it also works where the engine runs in
+  command's container has no network but a relay to its call's own socket
+  on the session's egress proxy, over an `exec`'s stdio and run as a user
+  apart from the command's, so it also works where the engine runs in
   a VM, given a Linux build of Abhed in the managed
   `control_plane.<engine>.relay_binary`. Without one there, the tier is
   refused as before.
@@ -1161,8 +1167,11 @@ All notable changes to Abhed are recorded here. The format follows
   configuration: each session's proxy makes a CA of its own, terminates
   commands' HTTPS with it, and decides every request inside by method and
   path, recorded as kind `https`. Commands are pointed at a bundle with the
-  session's CA; a client that pins certificates or keeps its own trust
-  store fails rather than going uninspected.
+  session's CA, given to them on the process, fence, container and vm
+  tiers and by the container and microVM drivers (a guest agent from an
+  earlier release refuses the CA, and the sandbox is not created); a client
+  that pins certificates or keeps its own trust store fails rather than
+  going uninspected.
 - `server.tls.client_revoked_file`: client certificates that are refused
   although they verify, as PEM CRLs signed by the client CA or as hex
   serial numbers one to a line. It is reloaded like the CA; a revoked
@@ -1849,8 +1858,9 @@ All notable changes to Abhed are recorded here. The format follows
   through a relay on its own loopback: over a bound-in socket on a Linux
   host with a local engine, and, where the engine is in a VM or on another
   host, over a long-lived `exec`'s stdio, with a Linux build of Abhed named
-  in the managed `control_plane.<engine>.relay_binary` as the relay; without
-  it the sandbox is refused there. With git protection on, a repository
+  in the managed `control_plane.<engine>.relay_binary` as the relay, run as
+  a user apart from the sandbox's; without it the sandbox is refused there.
+  With git protection on, a repository
   made inside a running container is protected by replacing the container,
   once nothing else uses it, within the same generation (recorded as
   `sandbox.restarted`); while it is in use, commands are refused with

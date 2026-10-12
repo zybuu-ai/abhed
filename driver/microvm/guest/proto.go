@@ -7,7 +7,7 @@
 //
 //	host  → {"type":"hello","version":1}
 //	guest → {"type":"hello","version":1}
-//	host  → {"type":"exec","exec":{…}}, ping, net, sync or shutdown
+//	host  → {"type":"exec","exec":{…}}, ping, net, dns, sync, dial, unpack, ca or shutdown
 //	host  → stdin, stdin_eof, resize frames   (exec only)
 //	guest → stdout, stderr frames, then {"type":"exit","code":N} or an error
 //

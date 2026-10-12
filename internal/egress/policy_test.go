@@ -286,3 +286,33 @@ func TestParseRequestLine(t *testing.T) {
 		}
 	}
 }
+
+// DecideHost opens a tunnel the proxy will look inside on any allow rule for
+// the host and port, narrowed or not; only an unnarrowed deny refuses it.
+func TestDecideHostForAnInspectedTunnel(t *testing.T) {
+	p := mustCompile(t, Config{InspectTLS: true, Rules: []Rule{
+		{Host: "api.example.com", Paths: []string{"/v1"}, Methods: []string{"GET"}, Decision: "allow"},
+		{Host: "api.example.com", Paths: []string{"/admin"}, Decision: "deny"},
+		{Host: "blocked.example.com", Decision: "deny"},
+		{Host: "blocked.example.com", Paths: []string{"/ok"}, Decision: "allow"},
+	}})
+	for _, tc := range []struct {
+		host string
+		port int
+		want Decision
+	}{
+		{"api.example.com", 443, Allow},
+		{"api.example.com", 22, Deny},
+		{"blocked.example.com", 443, Deny},
+		{"other.example.com", 443, Deny},
+	} {
+		v := p.DecideHost(Request{Host: tc.host, Port: uint16(tc.port), Method: "CONNECT"}) // #nosec G115 -- a port
+		if v.Decision != tc.want {
+			t.Errorf("%s:%d: %s (%s), want %s", tc.host, tc.port, v.Decision, v.Rule, tc.want)
+		}
+	}
+	// The same narrowed allow cannot open a tunnel it cannot look inside.
+	if v := p.Decide(Request{Host: "api.example.com", Port: 443, Method: "CONNECT"}); v.Allowed() {
+		t.Fatalf("a narrowed rule allowed an uninspected tunnel: %+v", v)
+	}
+}

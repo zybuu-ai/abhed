@@ -42,6 +42,8 @@ type Container struct {
 	eg      *egressState
 	egProxy *egress.Proxy
 	egErr   error
+	// egDir holds each call's own socket, on the host alone.
+	egDir string
 }
 
 func NewContainer(p Policy) *Container {
@@ -215,7 +217,7 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 		args = append(args, "--pid", "private", "--uts", "private")
 	}
 
-	// Under the allowlist the proxy is the only way out, whatever AllowNetwork says.
+	// Under the allowlist the relay is the only way out, whatever AllowNetwork says.
 	if !c.policy.AllowNetwork || c.policy.Egress != nil {
 		args = append(args, "--network", "none")
 	}

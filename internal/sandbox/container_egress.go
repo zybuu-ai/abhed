@@ -20,6 +20,9 @@ import (
 // relayInside is where the relay binary is bound in a container.
 const relayInside = "/run/abhed-relay"
 
+// caInside is where a container's commands find the inspection CA bundle.
+const caInside = "/run/abhed-ca.pem"
+
 // relayReady bounds how long a command waits for its container's relay.
 const relayReady = 30 * time.Second
 
@@ -56,11 +59,27 @@ func (c *Container) containerRelay() (string, string) {
 	return c.policy.RelayBinary, ""
 }
 
-// containerProxy starts the sandbox's egress proxy once.
+// containerProxy starts the sandbox's egress proxy once, with a private folder
+// for its calls' sockets.
 func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 	c.egOnce.Do(func() {
 		c.eg = &egressState{session: "container"}
-		c.egProxy, c.egErr = egress.Start(egress.Options{Policy: c.policy.Egress, Record: c.eg.route})
+		c.egProxy, c.egErr = egressStart(egress.Options{Policy: c.policy.Egress, Record: c.eg.route})
+		if c.egErr != nil {
+			return
+		}
+		c.egDir, c.egErr = os.MkdirTemp("", "abhed-egr-")
+		if c.egErr == nil && c.egProxy.Inspecting() {
+			// Bound into each command's container, where its clients are pointed.
+			c.egErr = os.WriteFile(filepath.Join(c.egDir, "ca.pem"), c.egProxy.CABundle(), 0o644) // #nosec G306 -- public certificates, read inside the container
+			c.egProxy.SetCAPath(caInside)
+		}
+		if c.egErr != nil {
+			_ = c.egProxy.Close()
+			if c.egDir != "" {
+				_ = os.RemoveAll(c.egDir)
+			}
+		}
 	})
 	return c.egProxy, c.eg, c.egErr
 }
@@ -81,6 +100,13 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	if err != nil {
 		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: an egress credential: %w", err)}
 	}
+	// The relay of this command's container alone reaches the call's own
+	// socket, so what arrives there is the call's, whatever it carries.
+	sock := filepath.Join(c.egDir, "c"+strconv.FormatUint(callSeq.Add(1), 36)+".sock")
+	if err := call.ListenUnix(sock); err != nil {
+		call.End()
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the call's own proxy listener: %w", err)}
+	}
 	routes.remember(l)
 	args, err := c.runArgs(ctx, cwd)
 	if err != nil {
@@ -90,7 +116,11 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	name := containerName(egressPrefix)
 	// Detached, with the relay bound read-only; it idles until removed.
 	run := append([]string{"run", "--rm", "-d"}, args[3:]...)
-	run = append(run, "-v", relay+":"+relayInside+":ro", "--name", name, Image,
+	run = append(run, "-v", relay+":"+relayInside+":ro")
+	if proxy.Inspecting() {
+		run = append(run, "-v", filepath.Join(c.egDir, "ca.pem")+":"+caInside+":ro")
+	}
+	run = append(run, "--name", name, Image,
 		"/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done")
 	end := func() {
 		call.End()
@@ -108,10 +138,9 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	relayCtx, stopRelay := context.WithCancel(context.WithoutCancel(ctx))
 	ready := make(chan struct{})
 	done := make(chan error, 1)
-	upstream := proxy.Addr().String()
 	go func() {
-		rc := c.engineCmd(relayCtx, "exec", "-i", name, relayInside, stdiorelay.Arg, listen)
-		done <- stdiorelay.Run(rc, func() (net.Conn, error) { return net.Dial("tcp", upstream) }, func() { close(ready) })
+		rc := c.engineCmd(relayCtx, "exec", "-i", "--user", stdiorelay.User(os.Getuid()), name, relayInside, stdiorelay.Arg, listen)
+		done <- stdiorelay.Run(rc, func() (net.Conn, error) { return net.Dial("unix", sock) }, func() { close(ready) })
 	}()
 	stop := func() {
 		stopRelay()
@@ -131,11 +160,16 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	if uid, gid := os.Getuid(), os.Getgid(); uid > 0 {
 		execArgs = append(execArgs, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
-	for _, kv := range call.Env() {
-		execArgs = append(execArgs, "-e", kv)
+	// By name only, the values in the engine CLI's environment: an argument
+	// would show the call's token to any process that lists command lines.
+	callEnv := call.Env()
+	for _, kv := range callEnv {
+		k, _, _ := strings.Cut(kv, "=")
+		execArgs = append(execArgs, "-e", k)
 	}
 	execArgs = append(execArgs, "-e", "ABHED_SANDBOX="+string(c.Tier()), name, "/bin/sh", "-c", command)
 	cmd := c.engineCmd(ctx, execArgs...)
+	cmd.Env = append(cmd.Env, callEnv...)
 	cmd.Cancel = func() error {
 		stop()
 		return cmd.Process.Kill()
@@ -151,11 +185,15 @@ func (c *Container) engineCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// closeEgress stops the sandbox's proxy.
+// closeEgress stops the sandbox's proxy and removes its calls' sockets.
 func (c *Container) closeEgress() error {
 	c.egOnce.Do(func() { c.egErr = errEgressClosed })
+	var err error
 	if c.egProxy != nil {
-		return c.egProxy.Close()
+		err = c.egProxy.Close()
 	}
-	return nil
+	if c.egDir != "" {
+		err = errors.Join(err, os.RemoveAll(c.egDir))
+	}
+	return err
 }

@@ -138,6 +138,7 @@ type fakeBackend struct {
 	mu       sync.Mutex
 	err      error // returned by check
 	silent   bool  // the guest never answers
+	noCA     bool  // the guest takes no CA bundle, as one built before the call
 	delay    time.Duration
 	boots    []bootSpec
 	machines []*fakeMachine
@@ -173,6 +174,9 @@ func (f *fakeBackend) boot(_ context.Context, b bootSpec) (machine, error) {
 		}
 		m.guest, m.guestDir = lns, dir
 		m.srv.Network = fakeNetwork(func(p uint32) string { return filepath.Join(dir, strconv.Itoa(int(p))) })
+		if !f.noCA {
+			m.srv.CAFile = filepath.Join(dir, "abhed-ca.pem")
+		}
 	}
 	f.boots = append(f.boots, b)
 	f.machines = append(f.machines, m)

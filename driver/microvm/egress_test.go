@@ -230,3 +230,23 @@ func TestEgressThroughFakeHelper(t *testing.T) {
 }
 
 func timeoutSoon() time.Time { return time.Now().Add(2 * time.Second) }
+
+// Under inspect_tls the session's CA bundle is placed in the guest before
+// the sandbox is ready; a guest that cannot take it refuses the sandbox.
+func TestEgressPlacesTheInspectionCA(t *testing.T) {
+	port := origin(t)
+	_, sock, _ := session(t, port)
+	bundle := []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+	d, be := newFake(t)
+	if _, err := d.Create(context.Background(), driver.Spec{ID: id, Egress: &driver.Egress{Socket: sock, Port: freePort(t), CABundle: bundle}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(be.last().srv.CAFile); err != nil || !bytes.Equal(got, bundle) {
+		t.Fatalf("the guest's CA file: %q %v", got, err)
+	}
+	old, oldBe := newFake(t)
+	oldBe.noCA = true
+	if _, err := old.Create(context.Background(), driver.Spec{ID: id, Egress: &driver.Egress{Socket: sock, Port: freePort(t), CABundle: bundle}}); !errors.Is(err, driver.ErrUnavailable) {
+		t.Fatalf("a guest without the call: %v", err)
+	}
+}

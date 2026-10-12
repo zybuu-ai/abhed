@@ -44,6 +44,9 @@ type Server struct {
 	// DNS, when set, starts the resolver on 127.0.0.1:53 that passes
 	// lookups to the host. Without it the guest refuses.
 	DNS func() error
+	// CAFile, when set, is where a ca call writes the egress proxy's
+	// inspection CA bundle. Without it the guest refuses the call.
+	CAFile string
 }
 
 // ServeConn answers one call on rw and closes it.
@@ -98,6 +101,16 @@ func (s *Server) ServeConn(rw io.ReadWriteCloser) {
 			return
 		}
 		_ = c.write(frame{Type: tOK})
+	case f.Type == tCA:
+		if s.CAFile == "" {
+			_ = c.write(frame{Type: tError, Message: "this guest takes no CA bundle"})
+			return
+		}
+		if err := s.placeCA(c); err != nil {
+			_ = c.write(frame{Type: tError, Message: err.Error()})
+			return
+		}
+		_ = c.write(frame{Type: tOK})
 	case f.Type == tDial:
 		s.dial(c, rw, f.Port)
 	case f.Type == tUnpack:
@@ -122,7 +135,7 @@ func (s *Server) ServeConn(rw io.ReadWriteCloser) {
 		}
 		_ = c.write(frame{Type: tExit, Code: &code})
 	default:
-		_ = c.write(frame{Type: tError, Message: "expected exec, dial, unpack, ping or shutdown, got " + f.Type})
+		_ = c.write(frame{Type: tError, Message: "expected exec, dial, unpack, ca, ping or shutdown, got " + f.Type})
 	}
 }
 
