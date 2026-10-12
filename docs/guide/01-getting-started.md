@@ -16,7 +16,9 @@ enclave and it works there.
 
 Each release on GitHub also carries a ready binary per platform, as a bare
 file and as a `.tar.gz` archive, and the container image is
-`ghcr.io/zybuu-ai/abhed:<version>`.
+`ghcr.io/zybuu-ai/abhed:<version>`. The Linux binaries are static. The macOS
+ones are built with cgo, so they can use the system's own facilities, and
+link only the system's libraries (`libSystem`); they need macOS 12 or later.
 
 ### Verify a download
 

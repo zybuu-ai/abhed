@@ -3,7 +3,8 @@
 # abhed-microvm and abhed-guest for Linux, a checksum file covering all of
 # them, and a multi-arch container image, and publishes them as a GitHub
 # Release. Nothing is built by hand, so a release is reproducible from its
-# tag.
+# tag. The macOS binaries are built with cgo on a macOS runner; every other
+# platform is built without cgo on Linux.
 #
 # abhed-vmhelper, the macOS microVM helper, is deliberately not published
 # yet: a copy others can run must be signed and notarized with the
@@ -24,8 +25,43 @@ env:
   SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
 
 jobs:
+  # The macOS binaries are built with cgo, so they can use the system's own
+  # logging, and so on a Mac; both architectures come from the one runner.
+  darwin:
+    name: macOS binaries (cgo)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.9"
+      - name: Build
+        run: scripts/build-release.sh -v "$GITHUB_REF_NAME" -o dist -p "darwin/arm64 darwin/amd64" -m ""
+      - name: Each binary is for its architecture and links only the system's libraries
+        run: |
+          set -euo pipefail
+          file "dist/abhed-$GITHUB_REF_NAME-darwin-arm64" | grep -q 'arm64'
+          file "dist/abhed-$GITHUB_REF_NAME-darwin-amd64" | grep -q 'x86_64'
+          for f in dist/abhed-*-darwin-arm64 dist/abhed-*-darwin-amd64; do
+            if otool -L "$f" | tail -n +2 | grep -v -E '^\s+/usr/lib/|^\s+/System/Library/'; then
+              echo "::error::$f links a library outside the system"; exit 1
+            fi
+          done
+          "dist/abhed-$GITHUB_REF_NAME-darwin-arm64" -version | grep -F "$GITHUB_REF_NAME"
+      # The checksums and signature are made once, over every platform, below.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: darwin
+          path: dist/abhed-*
+          if-no-files-found: error
+
   binaries:
     name: Binaries, SBOMs, checksums and signatures
+    needs: darwin
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,8 +86,14 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: ${{ env.COSIGN_VERSION }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: darwin
+          path: dist
+      # The Linux builds join the macOS ones in dist; the SBOMs and the
+      # checksum file then cover every binary and archive there.
       - name: Build
-        run: scripts/build-release.sh -v "$GITHUB_REF_NAME" -o dist -s
+        run: scripts/build-release.sh -v "$GITHUB_REF_NAME" -o dist -p "linux/amd64 linux/arm64 linux/s390x" -s
       # SHA256SUMS names every binary, archive and SBOM, so one signature
       # over it covers the release.
       - name: Sign the checksum file

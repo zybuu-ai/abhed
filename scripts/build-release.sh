@@ -3,8 +3,14 @@
 # holding the binary, the licence, the README and the changelog, the
 # microVM driver's two binaries (abhed-microvm and abhed-guest) for Linux,
 # with -s an SPDX SBOM beside each bare binary (needs syft), plus a checksum
-# file over all of them. What the release workflow runs; runs the same on a
-# laptop. Signing happens in the workflow, which has the OIDC identity.
+# file over every abhed-* file in OUTDIR. What the release workflow runs;
+# runs the same on a laptop. Signing happens in the workflow, which has the
+# OIDC identity.
+#
+# macOS binaries are built with cgo, so they can use the system's own
+# facilities such as os_log; that needs a Mac with Xcode's command line
+# tools, so on another host leave darwin out of -p and build those on a Mac.
+# Every other platform is built without cgo and is static.
 #
 #   scripts/build-release.sh [-v VERSION] [-o OUTDIR] [-p PLATFORMS] [-m MICROVM_PLATFORMS] [-s]
 set -euo pipefail
@@ -45,8 +51,17 @@ for platform in $PLATFORMS; do
   name="abhed-${VERSION}-${os}-${arch}"
   dir="$STAGE/$name"
   mkdir -p "$dir"
-  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
-    -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+  cgo=(CGO_ENABLED=0)
+  if [ "$os" = darwin ]; then
+    if [ "$(uname -s)" != Darwin ]; then
+      echo "darwin/$arch is built with cgo and needs a Mac; leave it out of -p here" >&2; exit 2
+    fi
+    # Either architecture from either Mac: clang targets the one asked for.
+    case $arch in amd64) carch=x86_64 ;; *) carch=$arch ;; esac
+    cgo=(CGO_ENABLED=1 "CC=clang -arch $carch" "MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-12.0}")
+  fi
+  env "${cgo[@]}" GOOS="$os" GOARCH="$arch" go build \
+    -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION}" \
     -o "$dir/abhed" "$ROOT/cmd/abhed"
   cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$dir/"
   tar -czf "$OUTDIR/$name.tar.gz" -C "$STAGE" "$name"

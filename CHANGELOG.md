@@ -507,6 +507,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- The macOS release binaries are built with cgo on a Mac, so they can use
+  the system's own facilities; they link only the system's libraries and
+  need macOS 12 or later. The Linux binaries stay static. To build them
+  yourself, `scripts/build-release.sh` builds darwin only on a Mac.
 - The statusline command may run for one second, not 300 ms. It still runs
   in the background, one run at a time and at most once a second; on a
   loaded Mac, starting the sandbox alone took longer than 300 ms, so the
