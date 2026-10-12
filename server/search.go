@@ -4,10 +4,10 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -98,20 +98,11 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	defer v.Close()
 	// A search can take seconds of CPU; a session gets a couple at a time.
-	n, _ := s.searching.LoadOrStore(r.PathValue("id"), new(atomic.Int32))
-	inFlight := n.(*atomic.Int32)
-	// An idle counter is dropped, so an ended session leaves none behind.
-	release := func() {
-		if inFlight.Add(-1) == 0 {
-			s.searching.CompareAndDelete(r.PathValue("id"), n)
-		}
-	}
-	if inFlight.Add(1) > maxSearchesInFlight {
-		release()
+	if !s.startSearch(r.PathValue("id")) {
 		WriteError(w, http.StatusTooManyRequests, "a search is already running for this session; wait for it to finish")
 		return
 	}
-	defer release()
+	defer s.endSearch(r.PathValue("id"))
 
 	ctx, cancel := context.WithTimeout(r.Context(), searchDeadline)
 	defer cancel()
@@ -133,7 +124,7 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 			return nil //nolint:nilerr // the root itself is not a match
 		}
 		if d.IsDir() {
-			if skipInView(d.Name()) || tools.SkipDir(d.Name()) {
+			if skipInView(d.Name()) || tools.SkipDir(d.Name()) || linkedWorktree(p) {
 				return filepath.SkipDir
 			}
 			if _, err := v.resolve(rel); err != nil {
@@ -166,6 +157,54 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	WriteJSON(w, http.StatusOK, out)
+}
+
+// startSearch counts a search for session id, refusing one over the limit.
+// One lock for the check and the count, so two at once cannot both pass.
+func (s *Server) startSearch(id string) bool {
+	s.searchMu.Lock()
+	defer s.searchMu.Unlock()
+	if s.searching == nil {
+		s.searching = map[string]int{}
+	}
+	if s.searching[id] >= maxSearchesInFlight {
+		return false
+	}
+	s.searching[id]++
+	return true
+}
+
+// endSearch uncounts a search; an idle session's entry is dropped.
+func (s *Server) endSearch(id string) {
+	s.searchMu.Lock()
+	defer s.searchMu.Unlock()
+	if s.searching[id]--; s.searching[id] <= 0 {
+		delete(s.searching, id)
+	}
+}
+
+// linkedWorktree reports whether dir is a linked git worktree, whose files
+// are the repository's again: its .git is a file naming a worktrees folder.
+// A submodule's .git is a file too, but its files are its own.
+func linkedWorktree(dir string) bool {
+	name := filepath.Join(dir, ".git")
+	// Not followed or opened unless a plain file: a planted FIFO would block.
+	if st, err := os.Lstat(name); err != nil || !st.Mode().IsRegular() || st.Size() > 4096 {
+		return false
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return false
+	}
+	head := make([]byte, 1024)
+	n, _ := f.Read(head)
+	line := strings.TrimSpace(string(head[:n]))
+	gitdir, ok := strings.CutPrefix(line, "gitdir:")
+	return ok && strings.Contains(filepath.ToSlash(strings.TrimSpace(gitdir)), "/worktrees/")
 }
 
 // searchLines returns the matches in one file's text, at most

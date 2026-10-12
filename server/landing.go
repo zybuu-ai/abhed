@@ -399,6 +399,15 @@ function renderFacts(o){
   f.appendChild(card('Web fetch', o.web_fetch ? 'enabled' : 'disabled',
     o.web_fetch ? 'the agent can read web pages' : 'the agent reads no web pages',
     o.web_fetch ? 'warn' : 'off'));
+  // The workspace's own config: whether it is trusted, and what was set aside.
+  const wc = o.workspace_config;
+  if(wc){
+    const n = (wc.ignored || []).length;
+    f.appendChild(card('Workspace config', wc.trusted ? 'trusted' : 'not trusted',
+      n ? n + ' setting' + (n === 1 ? '' : 's') + ' ignored: ' + wc.ignored.map(k => k.key).join(', ')
+        : (wc.trusted ? 'every setting applies' : 'only settings that tighten apply'),
+      wc.trusted ? 'on' : 'warn'));
+  }
 
   // ---- activity
   const st = $('stats');
@@ -465,6 +474,19 @@ function renderFacts(o){
   $('ver').textContent = 'abhed · ' + o.model;
 }
 
+// returnPath is where a sign-in goes next: the ?return= path a page sent
+// here, when it is a path on this server, else the workbench.
+function returnPath(){
+  try{
+    const r = new URLSearchParams(location.search).get('return');
+    if(r && r.startsWith('/') && !r.startsWith('//') && !r.startsWith('/\\')){
+      const u = new URL(r, location.origin);
+      if(u.origin === location.origin && u.pathname !== '/' && u.pathname !== '/logout') return u.pathname + u.search + u.hash;
+    }
+  }catch{}
+  return '/ide';
+}
+
 // signInForm builds the username/password card.
 function signInForm(o){
   const box = el('div','signin');
@@ -513,7 +535,7 @@ function signInForm(o){
       if(body.must_change_password){
         try{ sessionStorage.setItem('abhed.must_change', '1'); }catch{}
       }
-      location.href = body.must_change_password ? '/account?must_change=1' : '/ide';
+      location.href = body.must_change_password ? '/account?must_change=1' : returnPath();
     }catch(e){
       err.textContent = 'Cannot reach the server.';
       err.hidden = false;
@@ -650,7 +672,7 @@ function signUpForm(o){
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username:user.value, password:pass.value}),
       });
-      if(si.ok){ location.href = '/ide'; return; }
+      if(si.ok){ location.href = returnPath(); return; }
       fail('Account created — please sign in.');
     }catch(e){
       fail('Cannot reach the server.');

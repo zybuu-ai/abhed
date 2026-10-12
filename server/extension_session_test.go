@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,5 +151,34 @@ func TestCapabilitiesReportExtensionStatus(t *testing.T) {
 		if e.Name == "blocker.sh" && e.Status != "stopped" {
 			t.Fatalf("a closed extension reads as %q", e.Status)
 		}
+	}
+}
+
+// Whether an extension is running is shown to administrators only, where
+// people sign in: to anyone else it says when a veto is down.
+func TestExtensionStatusIsForAdministrators(t *testing.T) {
+	s, _ := scriptedServer(t, [2]string{}, [2]string{}, nil, withExtensions(t, "blocker.sh"), func(c *config.Config) {
+		c.Auth.Mode = "proxy"
+		c.Extensions = []config.ExtensionConfig{{Name: "blocker.sh", Command: "bash"}}
+	})
+	get := func(groups string) capExtension {
+		req := httptest.NewRequest("GET", "/v1/capabilities", nil)
+		req.Header.Set("X-Abhed-User", "dana")
+		if groups != "" {
+			req.Header.Set("X-Abhed-Groups", groups)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		var c capabilities
+		if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil || len(c.Extensions) != 1 {
+			t.Fatalf("capabilities: %d %s", rec.Code, rec.Body)
+		}
+		return c.Extensions[0]
+	}
+	if e := get(""); e.Status != "" || e.Name != "blocker.sh" {
+		t.Fatalf("a non-administrator sees %+v", e)
+	}
+	if e := get(DefaultAdminGroup); e.Status != "running" {
+		t.Fatalf("an administrator sees %+v", e)
 	}
 }

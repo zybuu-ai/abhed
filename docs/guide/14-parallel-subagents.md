@@ -64,8 +64,10 @@ sent while no run is live starts one rather than being queued as steering.
 A subagent's worktrees are made under the session's workspace, and on a
 server each session binds its own `task` and `tasks`, so one person's
 subagents run in, and record into, that person's session only. On a
-server every account shares one workspace, so those worktrees are
-in the same directory tree as everyone else's.
+server with several accounts each session has a sandbox and folder of its
+own, so its worktrees are too; with `server.shared_sessions` every account
+shares one workspace, and those worktrees are in the same directory tree as
+everyone else's.
 
 A subagent, in a worktree or not, uses the cluster logins and connected
 hosts of the session that started it, and never another session's: a
@@ -251,18 +253,17 @@ background shells and tasks, and terminals end as `owner_revoked` (a
 terminal's observation reads `exit 137 · on a terminal, owner_revoked`), and
 no wake runs for them afterwards. A call then waiting on an answer is refused
 as interrupted (`action.denied`, step `interrupted`, "interrupted before an
-answer"), not at step `owner`. The Community Edition does not call it:
-`abhed user remove` signs the account out, but a run already going for it
-goes on until it ends, or until a woken run or a background result finds
-the owner gone, as above.
-Signing a person out is not that. After Sign out everywhere, or after their
-administrator rights are removed, which also signs them out, the account is
+answer"), not at step `owner`. The Community Edition calls it for local
+accounts: a server checks its accounts every 15 seconds, and at once when
+it sees one change, so an account removed with `abhed user remove`, even
+from another process, or removed and made again under the same name, has
+its work there stopped this way. Removing a person's administrator rights
+stops their work too, as well as signing them out.
+Signing a person out is not that. After Sign out everywhere the account is
 still active: a background shell or task they started keeps running, and its
 result still starts a woken run in their session, under the same policy and
 with no one signed in to watch it. To stop that work, stop the session's
-tasks first (Stop, `/tasks`), or remove the account (`abhed user remove`),
-after which a result wakes nothing and the session's other tasks are
-cancelled as `owner_inactive`.
+tasks first (Stop, `/tasks`), or remove the account (`abhed user remove`).
 
 **Stop means stop.** An explicit stop cancels every background task: Stop or
 `/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The middleware is tested against a fake verifier and a fake provider, not
@@ -93,8 +94,9 @@ func TestMiddlewareRequiresToken(t *testing.T) {
 }
 
 // A session is checked before a token, so the console works without every
-// request carrying one; a browser with neither is sent to the first provider
-// that has an entry point, keeping where it was going.
+// request carrying one; a browser with neither is sent to the front door,
+// which offers the local form beside the provider's page, keeping where it
+// was going.
 func TestMiddlewarePrefersSessionAndRedirectsBrowsers(t *testing.T) {
 	local := fakeProvider{name: "local", held: "s1"}
 	sso := fakeProvider{name: "sso", entry: "/fake/login", held: "s2"}
@@ -109,7 +111,7 @@ func TestMiddlewarePrefersSessionAndRedirectsBrowsers(t *testing.T) {
 		t.Fatalf("session not honoured: %d %q", rec.Code, rec.Body.String())
 	}
 
-	// A browser navigation with nothing → redirect to the entry point.
+	// A browser navigation with nothing → redirect to the front door.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest("GET", "/console?tab=2", nil)
 	req.Header.Set("Accept", "text/html")
@@ -117,7 +119,7 @@ func TestMiddlewarePrefersSessionAndRedirectsBrowsers(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("browser should be redirected, got %d", rec.Code)
 	}
-	if loc := rec.Header().Get("Location"); loc != "/fake/login?return=%2Fconsole%3Ftab%3D2" {
+	if loc := rec.Header().Get("Location"); loc != "/?return=%2Fconsole%3Ftab%3D2" {
 		t.Errorf("redirect target %q", loc)
 	}
 
@@ -172,5 +174,31 @@ func TestRequireGroup(t *testing.T) {
 	RequireGroup("abhed-admins", ok).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("member should be allowed, got %d", rec.Code)
+	}
+}
+
+// With local accounts beside a provider that has its own page, a browser that
+// must sign in goes to the front door, which offers both, not to the provider.
+func TestChallengeGoesToTheFrontDoorWithLocalAccounts(t *testing.T) {
+	for _, order := range [][]Provider{
+		{fakeProvider{name: "sso", entry: "/fake/login"}, NewLocalAuth(NewMemoryUserStore(), time.Hour, false)},
+		{NewLocalAuth(NewMemoryUserStore(), time.Hour, false), fakeProvider{name: "sso", entry: "/fake/login"}},
+	} {
+		mw := Middleware{Providers: order}
+		req := httptest.NewRequest("GET", "/console", nil)
+		req.Header.Set("Accept", "text/html")
+		rec := httptest.NewRecorder()
+		mw.Wrap(echoSubject()).ServeHTTP(rec, req)
+		if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/?return=") {
+			t.Fatalf("%s first: sent to %q, want the front door", order[0].Name(), loc)
+		}
+	}
+	mw := Middleware{Providers: []Provider{fakeProvider{name: "sso", entry: "/fake/login"}}}
+	req := httptest.NewRequest("GET", "/console", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	mw.Wrap(echoSubject()).ServeHTTP(rec, req)
+	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/fake/login?return=") {
+		t.Fatalf("single sign-on alone: sent to %q", loc)
 	}
 }

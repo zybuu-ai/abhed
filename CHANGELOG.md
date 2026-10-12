@@ -45,6 +45,21 @@ All notable changes to Abhed are recorded here. The format follows
   add their secrets with `PUT /v1/secrets/{name}`.
 - A stdio MCP server on the process tier no longer sees your home folder;
   set `"host_files": true` on one that needs it.
+- On Postgres, run `abhed migrate` (or apply `store/schema.sql`) as the
+  schema owner before starting 1.2.8 servers against an existing database.
+  It adds the `approvals.request_id` column, which this release writes and
+  checks (a server whose database lacks it refuses to start and names the
+  column), and the `sessions_parent_same_tenant` key, which keeps a
+  session's parent in its own tenant.
+- `abhed serve` with more than one account, or able to gain one while it
+  runs (single sign-on, a trusted proxy, open sign-up, or local accounts
+  with none yet), now gives each session a sandbox of its own: it turns on
+  `control_plane.enabled` and `control_plane.per_session` for the run, and
+  refuses to start when the session driver cannot be used or
+  `control_plane.shared_workspace` is set. Set `"server":
+  {"shared_sessions": true}` to keep every account in the server's one
+  workspace as before. A server with a single local account is unchanged,
+  but refuses a session for another account added while it runs.
 
 ### Security
 
@@ -304,6 +319,63 @@ All notable changes to Abhed are recorded here. The format follows
   but for a home of its own under `~/.abhed/mcp` and its install folder,
   read-only; `"host_files": true` on a server keeps the old behaviour.
   Affects 0.1.0 to 1.2.7.
+- `abhed user remove` did not stop what a running `abhed serve` ran for
+  the removed account: its live run, background shells and tasks, and
+  workbench terminals went on, and so did those of an account removed and
+  made again under the same name, and of a person whose administrator
+  rights were taken away. The server now checks its local accounts every
+  15 seconds, and at once when it sees one change, and stops that work as
+  `owner_revoked`; removing administrator rights stops the person's work
+  too. Affects 1.2.3 to 1.2.7.
+- A local account's browser session outlived the account: once the name
+  was made again, the removed account's cookie worked for the new account,
+  unless the password was changed too. A session now ends when its
+  account's creation time differs from the one it was issued under.
+  Signing in as one person and then as another from the same browser also
+  left the first session valid; a sign-in now ends the session the browser
+  sent. Affects 0.1.0 to 1.2.7.
+- In a browser holding both a local session and a single sign-on session,
+  Sign out ended only the local one, and the single sign-on session went
+  on working. Both now end: the local session first, then the provider's
+  own sign-out. A signed-out reload on a server with local accounts beside
+  single sign-on now lands on the front door rather than at the identity
+  provider. Affects 1.0.0 to 1.2.7.
+- `POST /v1/sessions` answered a failure it had no case for with the raw
+  error, which could name store internals; it now logs the error and
+  answers a fixed message. A new session started while the operator's
+  secrets store could not be loaded ran with every payload in its record
+  withheld; it is now refused with `503` and `Retry-After`. A resumed or
+  running session still withholds until the store loads again. Affects
+  1.2.2 to 1.2.7.
+- An uploaded file went into `uploads/<session id>` in the shared
+  workspace, so any account on the server could list that folder and learn
+  other people's session ids. Each upload now goes into a folder of its
+  own with a random name. Affects 1.0.0 to 1.2.7.
+- Account and invite emails accepted zero-width, format and other
+  invisible characters and non-ASCII spaces, so `bob@example.com` with a
+  zero-width joiner inside could be made beside `bob@example.com`, and
+  such an email from single sign-on or a proxy could own sessions. They
+  are now refused. Under `auth.require_group`, a local sign-in by a
+  non-member answered `200 ok` and was only turned away on the next page;
+  it is now refused at the form with `403` and the reason. Group names
+  match case-sensitively, as documented now. Affects 1.0.0 to 1.2.7.
+- `/v1/capabilities` told every signed-in user whether each extension was
+  running, which showed when a veto was down. Where people sign in, an
+  extension's `status` is now given to administrators only. Affects 1.2.2
+  to 1.2.7.
+- On Postgres, a session's parent was checked by a key on its id alone,
+  outside row-level security, so a write in one tenant naming another
+  tenant's session as its parent succeeded, and so confirmed that the id
+  existed there. The parent is now looked up in the session's own tenant,
+  and a write naming another tenant's session is refused exactly as one
+  naming no session. Affects 0.1.0 to 1.2.7.
+- Every account on one `abhed serve` worked in the same workspace as the
+  same operating-system user, so one account's agent or terminal could
+  read and change another's files, worktrees and `.git` (`rm .git/HEAD`
+  from one broke everyone's). A server with more than one account now
+  gives each session a sandbox of its own by default;
+  `server.shared_sessions` keeps the shared workspace, where this cannot
+  be closed. Affects 0.1.0 to 1.2.7.
 
 ### Added
 
@@ -692,6 +764,15 @@ on. A server with it off starts on the older schema as before.
   path, recorded as kind `https`. Commands are pointed at a bundle with the
   session's CA; a client that pins certificates or keeps its own trust
   store fails rather than going uninspected.
+- `GET /v1/overview` has `workspace_config`: whether the workspace's
+  `.abhed/config.json` is trusted, why, and the names of the settings it
+  set aside, for a signed-in caller or where nobody signs in; the front
+  page shows it as a card.
+- `server.tls.client_revoked_file`: client certificates that are refused
+  although they verify, as PEM CRLs signed by the client CA or as hex
+  serial numbers one to a line. It is reloaded like the CA; a revoked
+  certificate is refused on the next handshake, and a request on a
+  connection made with it before gets `401`.
 
 ### Changed
 
@@ -776,6 +857,25 @@ on. A server with it off starts on the older schema as before.
 - A stdio MCP server's egress decisions made while several sessions call it
   go to each of their records, and those made before any call to each
   session's record at its first call; they were written to the log only.
+- Approval rows on Postgres carry the request they ask about, so an answer
+  naming its request (`request_id`) is recorded on any node when it names
+  the stored row's request; before, such an answer was always sent to the
+  node running the session with `421`.
+- An event or terminal stream ended because its local sign-in ended said
+  only "sign in required", and so did the next request. Both now say why:
+  signed out, signed out everywhere, the account removed, the password
+  changed, ended by an administrator, replaced by a new sign-in in the
+  same browser, or expired.
+- The administrative system log is written on Windows, to the Application
+  event log under the source `abhed-admin`; it was written only to
+  `admin.jsonl` there.
+- On macOS, `abhed` built with cgo (as the release binaries are) writes
+  the administrative system log through `os_log` itself, subsystem
+  `com.zybuu.abhed`, category `admin`, so the unified log records `abhed`
+  as the sender; it went through `/usr/bin/logger`, whose entries any
+  local user could imitate by tag. Find them with `log show --predicate
+  'subsystem == "com.zybuu.abhed"'`. A build without cgo still uses
+  `/usr/bin/logger` and warns once that its entries are not attributable.
 
 ### Fixed
 
@@ -976,6 +1076,53 @@ on. A server with it off starts on the older schema as before.
   JVM sends no credentials on `CONNECT` and reads no proxy variable. A
   request through a call's own way in needs no credentials now, and each
   command gets `JAVA_TOOL_OPTIONS` naming the proxy.
+- While the local account store could not be read, a request carrying a
+  stale local cookie got `503` even when a bearer token or a single
+  sign-on session identified it, and a browser opening a page got JSON.
+  The `503` now applies only when nothing else identifies the request,
+  carries `Retry-After`, and is a page for a browser.
+- Two sign-ups for one name at the same moment could both spend an invite,
+  though only one account was made. Sign-ups on one server now run one at
+  a time from the name check to the account, and a code redeemed for a
+  name another server made first is given back when the invite store can
+  do so.
+- Shutting down with Postgres stalled, `abhed serve` gave back its
+  workbench claims one session at a time, each with its own wait, so many
+  held sessions could keep it from exiting well past its grace period.
+  They are now given back together within one 15-second budget. A
+  workbench write's claim has a 10-second deadline; a write that began
+  claiming as the drain started has its hold released by that drain
+  instead of left behind; and a release the store refuses is tried again
+  rather than only logged.
+- The server's request log left out requests refused before they were
+  identified, such as a `401` for no sign-in or a sign-in `429` from the
+  throttle, so a password-guessing run left no trace there. Every request
+  now has its `request` line; one refused that early carries
+  `identified=false`.
+- A local sign-in ignored `?return=` and always landed on the workbench,
+  so opening `/admin` or `/account` signed out ended on `/ide` after
+  signing in; it now goes back to a same-origin return path. For a single
+  sign-on account, `/account` replaced the whole page with its message,
+  Back and Sign out included; it now replaces only the form.
+- `POST /v1/sessions/{id}/approve`: a `503` for an answer that arrived
+  before its request was recorded now carries `Retry-After: 1`; an answer
+  naming a request that is not the one waiting is told "no such pending
+  request" rather than "no longer pending"; and a body that is not JSON,
+  sent to a session the caller cannot see, gets `404` like any other body,
+  not `400`.
+- An administrator opening the event stream of a scheduled run that the
+  server was running got what had been recorded so far and a closed
+  stream, and had to reload to see more. The stream now follows the run
+  live, read-only.
+- `Server.StartSession` refused a client id only on the HTTP route; a
+  session started from Go with a client id over 64 characters, or with
+  characters other than letters, digits, `-` and `_`, was recorded with
+  it. It is now refused there too.
+- Workbench search: two searches starting as another ended could make a
+  session run one more than its limit of two; and a linked git worktree
+  inside the workspace was searched as well, so every hit in the
+  repository was listed twice. The limit now holds under any interleaving,
+  and a linked worktree is passed over (a submodule is still searched).
 
 ### Dependencies
 
@@ -1160,6 +1307,13 @@ on. A server with it off starts on the older schema as before.
 - `driver.Status.Caveat` names what the reported tier lacks on this host,
   such as `no /proc`, and the control plane adds it to the `IsolationVerified`
   condition; `drivertest.Fake.Caveat` reports one.
+- `server.InviteReleaser`: an invite store that implements `Release(ctx,
+  code, username)` gets back a code redeemed for an account that could not
+  then be made.
+- `auth.EndedReasoner`: a provider that implements
+  `EndedReason(*http.Request) string` has the cause added to the
+  middleware's "sign in required"; `LocalAuth` implements it, with the
+  `auth.Why*` constants.
 
 ## [1.2.7] - 2026-10-07
 

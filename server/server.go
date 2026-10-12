@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -168,6 +169,13 @@ type InviteRedeemer interface {
 	Redeemed(ctx context.Context, code, username string) error
 }
 
+// InviteReleaser is an InviteRedeemer that can give a spent code back. Signup
+// asks it when the account could not be made after the code was redeemed, as
+// when another sign-up took the name first.
+type InviteReleaser interface {
+	Release(ctx context.Context, code, username string) error
+}
+
 // InviteEmailChecker is an InviteRedeemer whose codes may be made out to one
 // address. Signup asks it before the code is spent, so a refusal keeps the code.
 type InviteEmailChecker interface {
@@ -286,6 +294,14 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// SoleOwner, when set, is the one account a server that shares its
+	// workspace between sessions was started for: a session for anyone else
+	// is refused, since another account would share that workspace.
+	SoleOwner string
+	// ClientCertRevoked, when set, says whether a verified client certificate
+	// has since been revoked; a request on a connection made with one is
+	// refused, though its handshake predates the revocation.
+	ClientCertRevoked func(*x509.Certificate) bool
 	// SessionEnded, when set, is told a session's id as the session leaves
 	// this process (deleted, or taken by another), so what the sandbox keeps
 	// for it, such as its egress proxy, goes with it.
@@ -348,8 +364,9 @@ type Options struct {
 // Server holds live sessions and serves the API.
 type Server struct {
 	opts Options
-	// searching counts the workspace searches running per session.
-	searching sync.Map
+	// searching counts the workspace searches running per session, under searchMu.
+	searchMu  sync.Mutex
+	searching map[string]int
 	store     EventStore
 	sessions  SessionRecorder // nil when the store is not durable
 	log       *slog.Logger
@@ -382,6 +399,10 @@ type Server struct {
 	// adminMu serialises admin-rights changes, so two demotions at once
 	// cannot leave nobody an administrator. It holds within one process only.
 	adminMu sync.Mutex
+	// signupMu holds one self-registration at a time (signup).
+	signupMu sync.Mutex
+	// claiming counts the workbench writes claiming a session now.
+	claiming atomic.Int64
 
 	// state holds what a settings change may replace, behind its own lock.
 	// Separate from opts, which stays immutable — mixing "set once" and
@@ -486,6 +507,38 @@ type liveSession struct {
 	// fresh while a run or a background child is live; guarded by mu.
 	beatStop func()
 	mu       sync.Mutex
+}
+
+// errSecretsUnreadable refuses a new session while the operator's secrets
+// store cannot be loaded: its record would have every payload withheld.
+var errSecretsUnreadable = errors.New("the secrets store cannot be read, so the session's record could not be redacted; " +
+	"the server log has the cause")
+
+// operatorSecretsReadable reports why the operator's secrets store cannot be
+// loaded now, nil when it can or when Redact reads no store.
+func (s *Server) operatorSecretsReadable() error {
+	if fresh, ok := s.opts.Redact.(interface {
+		Session() (*secrets.Fresh, error)
+	}); ok {
+		_, err := fresh.Session()
+		return err
+	}
+	if live, ok := s.opts.Redact.(interface {
+		Load() (*secrets.Redactor, error)
+	}); ok {
+		_, err := live.Load()
+		return err
+	}
+	return nil
+}
+
+// refuseUnreadableSecrets is the check a new session makes before it starts.
+func (s *Server) refuseUnreadableSecrets() error {
+	if err := s.operatorSecretsReadable(); err != nil {
+		s.log.Error("session refused: the secrets store cannot be read", "err", err)
+		return errSecretsUnreadable
+	}
+	return nil
 }
 
 // sessionRedactor is the redactor a session records with: the store read as it
@@ -721,6 +774,20 @@ func New(opts Options) *Server {
 			s.releaseStale(local, username)
 			s.RecheckStreams()
 		})
+		// A sign-in outside auth.require_group is refused at the form, rather
+		// than answered ok and then turned away on the first page.
+		if group := opts.Config.Auth.RequireGroup; group != "" {
+			next := local.Admit
+			local.Admit = func(ctx context.Context, u *auth.User) error {
+				if !slices.Contains(u.Groups, group) {
+					return notMember(group)
+				}
+				if next != nil {
+					return next(ctx, u)
+				}
+				return nil
+			}
+		}
 	}
 	return s
 }
@@ -906,7 +973,55 @@ func (s *Server) Handler() http.Handler {
 	// still a response a browser will act on.
 	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins, s.log)(limited)
 	headed := securityHeaders(s.bodyLimit(guarded), s.opts.Config.Server.HSTS)
-	return canonicalHost(s.opts.Config.Server.CanonicalHost, headed)
+	return s.logRefused(s.refuseRevokedCert(canonicalHost(s.opts.Config.Server.CanonicalHost, headed)))
+}
+
+// refuseRevokedCert answers 401 to a request whose connection was verified
+// with a client certificate revoked since its handshake.
+func (s *Server) refuseRevokedCert(next http.Handler) http.Handler {
+	revoked := s.opts.ClientCertRevoked
+	if revoked == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil {
+			for _, chain := range r.TLS.VerifiedChains {
+				for _, c := range chain {
+					if revoked(c) {
+						WriteError(w, http.StatusUnauthorized, "the client certificate has been revoked")
+						return
+					}
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// logMark records that withMiddleware logged the request.
+type logMark struct{ done bool }
+
+// logRefused is outermost, so a request answered before it reaches
+// withMiddleware (a 401 from sign-in, a 429 from the throttle, a refused
+// origin) is in the request log too.
+func (s *Server) logRefused(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		mark := &logMark{}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), ctxLogMark, mark)))
+		if !mark.done {
+			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+				"user", "", "duration", time.Since(start), "identified", false)
+		}
+	})
+}
+
+// markLogged tells logRefused that the request has its log line.
+func markLogged(r *http.Request) {
+	if m, ok := r.Context().Value(ctxLogMark).(*logMark); ok {
+		m.done = true
+	}
 }
 
 // PublicPaths answer before anyone signs in, whichever providers are
@@ -1003,7 +1118,16 @@ func (s *Server) accountOutage(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health says whether the server is up, and sign-out must work regardless.
 		if r.URL.Path != "/v1/health" && r.URL.Path != "/v1/ready" && r.URL.Path != "/logout" {
-			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) {
+			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) &&
+				!s.otherCredential(r, local) {
+				if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					w.Header().Set("Retry-After", "5")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(accountOutageHTML))
+					return
+				}
+				w.Header().Set("Retry-After", "5")
 				WriteError(w, http.StatusServiceUnavailable, auth.ErrAccountUnchecked.Error())
 				return
 			}
@@ -1011,6 +1135,31 @@ func (s *Server) accountOutage(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// otherCredential reports whether something other than the local session
+// identifies the request: a bearer token, or another provider's session.
+// Such a request is judged by that, not by a local cookie it also carries.
+func (s *Server) otherCredential(r *http.Request, local *auth.LocalAuth) bool {
+	if h := r.Header.Get("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
+		return true
+	}
+	for _, p := range s.signIns() {
+		if p == auth.Provider(local) {
+			continue
+		}
+		if _, ok := p.Identify(r); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// accountOutageHTML is what a browser is shown while the accounts cannot be read.
+const accountOutageHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Try again shortly</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}</style></head>
+<body><h1>Try again shortly</h1><p>This server could not check your sign-in just now, because it cannot read its accounts.
+You are still signed in. Reload the page in a moment.</p></body></html>`
 
 // authMiddleware builds the identity layer from config unless one was injected.
 func (s *Server) authMiddleware() auth.Middleware {
@@ -1080,6 +1229,7 @@ func (s *Server) requireGroup(next http.Handler) http.Handler {
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		markLogged(r)
 
 		// Identity comes from the auth layer, which has already verified it.
 		id, _ := auth.FromContext(r.Context())
@@ -1131,8 +1281,9 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 type ctxKey string
 
 const (
-	ctxUser   ctxKey = "user"
-	ctxTenant ctxKey = "tenant"
+	ctxUser    ctxKey = "user"
+	ctxTenant  ctxKey = "tenant"
+	ctxLogMark ctxKey = "logmark"
 )
 
 // UserOf is the caller the middleware resolved, for a handler that records
@@ -1228,6 +1379,22 @@ type createRequest struct {
 	// so the workbench has a sandbox to work in before anyone asks the agent.
 	Workbench bool `json:"workbench,omitempty"`
 }
+
+// errNotSoleOwner refuses a session on a shared server for another account.
+var errNotSoleOwner = errors.New("this server shares one workspace and was started for one account; " +
+	"an administrator restarts it to give each session a sandbox of its own")
+
+// checkSoleOwner refuses a session for anyone but Options.SoleOwner, when it
+// is set. A scheduled run owned by no identity is the server's own.
+func (s *Server) checkSoleOwner(user string) error {
+	if s.opts.SoleOwner == "" || user == s.opts.SoleOwner || strings.HasPrefix(user, auth.SchedulePrefix) {
+		return nil
+	}
+	return errNotSoleOwner
+}
+
+// errBadClientID refuses a client id validClientID does not accept.
+var errBadClientID = errors.New("client_id is up to 64 letters, digits, - and _")
 
 // validClientID keeps a client's id short and plain, since it is recorded.
 func validClientID(id string) bool {
@@ -1335,7 +1502,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validClientID(req.ClientID) {
-		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
+		WriteError(w, http.StatusBadRequest, errBadClientID.Error())
 		return
 	}
 	spec := StartSpec{
@@ -1356,6 +1523,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			writeHoldFailed(w)
 		case errors.Is(err, errBadMode):
 			WriteError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, errBadClientID):
+			WriteError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, errNotSoleOwner):
+			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, ErrPolicyLayer):
 			s.log.Error("session refused: its policy layer", "user", spec.User, "error", err)
 			w.Header().Set("Retry-After", "5")
@@ -1367,8 +1538,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, controlplane.ErrUnavailable):
 			w.Header().Set("Retry-After", "5")
 			WriteError(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, errSecretsUnreadable):
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
 		default:
-			WriteError(w, http.StatusInternalServerError, err.Error())
+			// The cause can name store internals, so it goes to the log only.
+			s.log.Error("session not started", "user", spec.User, "error", err)
+			WriteError(w, http.StatusInternalServerError, "the session could not be started; the server log has the cause")
 		}
 		return
 	}
@@ -1379,6 +1555,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 // agent is running. The context passed in governs creation only; the run
 // itself gets its own, cancelled through the live session.
 func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, error) {
+	// Checked here as well as on the route: a caller in Go reaches this directly.
+	if !validClientID(spec.ClientID) {
+		return "", errBadClientID
+	}
+	if err := s.checkSoleOwner(spec.User); err != nil {
+		return "", err
+	}
 	// The mode is resolved before anything is persisted or started, because a
 	// rejected mode must not leave a half-created session behind.
 	mode, ok := requestMode(s.opts.Config.Permissions.Mode, spec.Mode)
@@ -1408,6 +1591,9 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 	sessionID := newSessionID()
 	defer s.startingDone(s.startingNow(sessionID))
+	if err := s.refuseUnreadableSecrets(); err != nil {
+		return "", err
+	}
 	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, true); err != nil {
 		return "", err
 	}
@@ -1524,6 +1710,9 @@ func (s *Server) persistSession(ctx context.Context, id string, spec StartSpec, 
 // openWorkbench creates a session with no prompt: the same workspace, policy,
 // sandbox, owner and record as any other, idle until a message arrives.
 func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, error) {
+	if err := s.checkSoleOwner(spec.User); err != nil {
+		return "", err
+	}
 	mode, ok := requestMode(s.opts.Config.Permissions.Mode, spec.Mode)
 	if !ok {
 		return "", errBadMode
@@ -1542,6 +1731,9 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	}
 	sessionID := newSessionID()
 	defer s.startingDone(s.startingNow(sessionID))
+	if err := s.refuseUnreadableSecrets(); err != nil {
+		return "", err
+	}
 	vault, red, err := s.sessionSecrets(spec)
 	if err != nil {
 		return "", err
@@ -1939,6 +2131,9 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if s.sessions != nil && !ownsSession(rec.Tenant, rec.User, tenant, user) {
 		return nil, errNoSession
 	}
+	if err := s.checkSoleOwner(user); err != nil && claim {
+		return nil, err
+	}
 	// Before the claim, so a refusal leaves the session for its owner to retry.
 	vault, red, err := s.sessionSecrets(StartSpec{User: user, Tenant: tenant})
 	if err != nil {
@@ -2134,15 +2329,33 @@ func (s *Server) claimForWrite(id string, live *liveSession) error {
 		live.holdMu.Unlock()
 		return nil
 	}
+	// Counted before draining is read, so a drain waits for this claim to
+	// settle before it releases the holds.
+	s.claiming.Add(1)
+	defer s.claiming.Add(-1)
 	if s.draining.Load() {
 		return errDraining
 	}
-	newly, err := s.claimOpened(context.Background(), id, live)
+	ctx, cancel := context.WithTimeout(context.Background(), claimTimeout)
+	defer cancel()
+	newly, err := s.claimOpened(ctx, id, live)
 	if err != nil || !newly {
 		return err
 	}
 	s.holdClaim(id, live)
 	return nil
+}
+
+// claimTimeout bounds a workbench write's claim, so a stalled store cannot
+// hold claimMu, and the write, for ever.
+const claimTimeout = 10 * time.Second
+
+// waitClaims waits, up to limit, for the claims writes have started to settle.
+func (s *Server) waitClaims(limit time.Duration) {
+	deadline := time.Now().Add(limit)
+	for s.claiming.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // holdClaim keeps a claim taken for workbench work until it goes quiet, then
@@ -2670,10 +2883,22 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
-		backlog, err := s.store.Events(id)
-		if err != nil || len(backlog) == 0 {
-			WriteError(w, http.StatusNotFound, "session not found")
-			return
+		// An administrator watching a scheduled run this process is running
+		// follows it as it goes; the stream only reads.
+		if _, sched := s.scheduledForAdmin(r, id); sched {
+			s.mu.RLock()
+			l := s.running[id]
+			s.mu.RUnlock()
+			if l != nil && l.Tenant == TenantOf(r.Context()) {
+				live, running = l, true
+			}
+		}
+		if !running {
+			backlog, err := s.store.Events(id)
+			if err != nil || len(backlog) == 0 {
+				WriteError(w, http.StatusNotFound, "session not found")
+				return
+			}
 		}
 	}
 
@@ -3426,6 +3651,82 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 	return n
 }
 
+// removedOwnerSweep is how often stopRemovedOwners runs under local accounts.
+const removedOwnerSweep = 15 * time.Second
+
+// sweepRemovedOwners runs stopRemovedOwners every interval, and at once when
+// the local accounts report a change, until ctx ends.
+func (s *Server) sweepRemovedOwners(ctx context.Context, every time.Duration) {
+	local := s.LocalAuth()
+	if local == nil || s.opts.OwnerActive != nil {
+		return
+	}
+	poke := make(chan struct{}, 1)
+	local.OnChange(func(string) {
+		select {
+		case poke <- struct{}{}:
+		default:
+		}
+	})
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-poke:
+		}
+		s.stopRemovedOwners(ctx)
+	}
+}
+
+// stopRemovedOwners stops the work this process runs for local accounts that
+// were removed, perhaps by `abhed user remove` in another process, or removed
+// and made again after the session began. A store that cannot be read stops
+// nothing.
+func (s *Server) stopRemovedOwners(ctx context.Context) int {
+	local := s.LocalAuth()
+	if local == nil || s.opts.OwnerActive != nil {
+		return 0
+	}
+	lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	users, err := local.Store.List(lctx)
+	cancel()
+	if err != nil {
+		return 0
+	}
+	made := make(map[string]time.Time, len(users))
+	for _, u := range users {
+		made[auth.LocalOwner(u.Username)] = u.CreatedAt
+	}
+	type target struct{ tenant, user string }
+	var gone []target
+	seen := map[target]bool{}
+	s.mu.RLock()
+	for _, live := range s.running {
+		owner := live.User
+		if !strings.HasPrefix(owner, auth.ProviderLocal+":") {
+			continue
+		}
+		at, ok := made[owner]
+		// An account made after the session began is another person under the old name.
+		if ok && (at.IsZero() || live.Created.IsZero() || !at.After(live.Created)) {
+			continue
+		}
+		if t := (target{live.Tenant, owner}); !seen[t] {
+			seen[t] = true
+			gone = append(gone, t)
+		}
+	}
+	s.mu.RUnlock()
+	n := 0
+	for _, t := range gone {
+		n += s.StopOwnerBackground(ctx, t.tenant, t.user)
+	}
+	return n
+}
+
 // ownerActive asks Options.OwnerActive, or the local accounts when there
 // are any: the owner's account must still exist. live.User is an owner key.
 func (s *Server) ownerActive(live *liveSession) bool {
@@ -3741,20 +4042,23 @@ type approveRequest struct {
 func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req approveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		badBody(w, err, "invalid JSON body")
-		return
-	}
+	// The session is looked up first, so an unknown one is 404 whatever the body.
+	decErr := json.NewDecoder(r.Body).Decode(&req)
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	}
+	// Too large is refused as such whoever sends it.
+	if tooBig := new(http.MaxBytesError); errors.As(decErr, &tooBig) {
+		badBody(w, decErr, "invalid JSON body")
+		return
 	}
 	if !ok {
 		// The session is not here. If the store holds the approval, answer it
 		// anyway: the waiting node polls for the result, so the reviewer's
 		// decision still arrives. This is the case sticky routing exists to
 		// avoid and the one durability exists to survive when it does not.
-		if s.answerElsewhere(w, r, id, req) {
+		if decErr == nil && s.answerElsewhere(w, r, id, req) {
 			return
 		}
 		if node := s.elsewhere(r.Context(), id); node != "" {
@@ -3764,6 +4068,10 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		WriteError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if decErr != nil {
+		badBody(w, decErr, "invalid JSON body")
 		return
 	}
 	s.answerHere(w, r, live, req)
@@ -3833,17 +4141,27 @@ func (c *redirectCapture) Write(b []byte) (int, error) {
 }
 
 func (s *Server) endSignIn(w http.ResponseWriter, r *http.Request) {
-	// The local session the cookie names ends even when its account cannot be read.
-	if l := s.LocalAuth(); l != nil && l.HasSession(r) {
-		l.SignOut(w, r)
-		return
+	// The local session the cookie names ends even when its account cannot be
+	// read; a single sign-on session the browser also holds is ended after it.
+	l := s.LocalAuth()
+	endedLocal := false
+	if l != nil && l.HasSession(r) {
+		l.EndRequestSession(w, r)
+		endedLocal = true
 	}
 	providers := s.signIns()
 	for _, p := range providers {
+		if p == auth.Provider(l) {
+			continue
+		}
 		if _, found := p.Identify(r); found {
 			p.SignOut(w, r)
 			return
 		}
+	}
+	if endedLocal {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
 	}
 	providers[0].SignOut(w, r)
 }
@@ -3951,6 +4269,11 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 	//
 	// A new account gets NO groups, so an invited user is an ordinary user
 	// until an administrator promotes them.
+	// One sign-up at a time here, from the name check to the account, so two
+	// for one name cannot both spend an invite.
+	s.signupMu.Lock()
+	defer s.signupMu.Unlock()
+	redeemed := false
 	if !s.opts.Config.Auth.AllowSignup {
 		if s.opts.Invites == nil {
 			WriteJSON(w, http.StatusForbidden, map[string]string{
@@ -3984,6 +4307,7 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 				"error": err.Error()})
 			return
 		}
+		redeemed = true
 	}
 
 	u := auth.User{
@@ -3991,6 +4315,12 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		Tenant: orDefaultStr(s.opts.Config.Auth.DefaultTenant, "default"),
 	}
 	if err := local.CreateUser(r.Context(), u, req.Password); err != nil {
+		// Another server may have made the name meanwhile: the code goes back.
+		if rel, ok := s.opts.Invites.(InviteReleaser); ok && redeemed {
+			if rerr := rel.Release(r.Context(), req.Invite, req.Username); rerr != nil {
+				s.log.Error("give back an invite after a failed sign-up", "user", req.Username, "err", rerr)
+			}
+		}
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -4104,6 +4434,24 @@ type overviewResponse struct {
 	Sessions       int      `json:"sessions"`
 	Events         int64    `json:"events"`
 	Running        int      `json:"running"`
+	// WorkspaceConfig is whether the workspace's .abhed/config.json is
+	// trusted and which of its settings were set aside, for a signed-in
+	// caller or where nobody signs in; absent when the workspace has none.
+	WorkspaceConfig *overviewTrust `json:"workspace_config,omitempty"`
+}
+
+// overviewTrust is the workspace configuration's trust, without its values.
+type overviewTrust struct {
+	Trusted bool              `json:"trusted"`
+	Reason  string            `json:"reason"`
+	Applied []string          `json:"applied,omitempty"`
+	Ignored []overviewIgnored `json:"ignored,omitempty"`
+}
+
+// overviewIgnored is one setting set aside; its value stays in the file.
+type overviewIgnored struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -4177,6 +4525,14 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	// disclosed only to someone who has already authenticated.
 	if o.Authenticated {
 		o.Workspace = s.opts.Workspace
+	}
+	if mw := s.authMiddleware(); (o.Authenticated || len(mw.Providers) == 0 && mw.Verifier == nil && !mw.TrustHeaders) &&
+		cfg.Workspace.File != "" {
+		t := &overviewTrust{Trusted: cfg.Workspace.Trusted, Reason: cfg.Workspace.Reason, Applied: cfg.Workspace.Applied}
+		for _, k := range cfg.Workspace.Ignored {
+			t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+		}
+		o.WorkspaceConfig = t
 	}
 
 	s.mu.RLock()
@@ -4347,21 +4703,34 @@ func (s *Server) releaseNode(sessionID string) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Tried again within one budget: a claim left behind holds the session
+	// from every other node until it goes stale.
+	ctx, cancel := context.WithTimeout(context.Background(), releaseRetry)
 	defer cancel()
-	if err := r.ReleaseNode(ctx, sessionID, s.holder); err != nil {
-		s.log.Warn("could not release session claim", "session", sessionID, "err", err)
+	var err error
+	for wait := 200 * time.Millisecond; ; wait *= 2 {
+		if err = r.ReleaseNode(ctx, sessionID, s.holder); err == nil || errors.Is(err, store.ErrHeldElsewhere) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			s.log.Warn("could not release session claim; it lapses once stale", "session", sessionID,
+				"err", err, "stale_after", nodeStale)
+			return
+		case <-time.After(wait):
+		}
 	}
 }
+
+// releaseRetry bounds the tries at giving a claim back; a variable for tests.
+var releaseRetry = 10 * time.Second
 
 // answerElsewhere records a decision for a session this node is not running,
 // and reports whether it did. The node that is waiting polls for the result,
 // so the answer is delivered without the request ever reaching it.
 func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, sessionID string, req approveRequest) bool {
 	d := s.approvalStore()
-	// The store's rows do not carry the request id, so an answer naming one
-	// is left to the node running the session, which can check it.
-	if d == nil || req.RequestID != "" {
+	if d == nil {
 		return false
 	}
 	// The same owner check the local path makes, against the stored row:
@@ -4372,6 +4741,12 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 	}
 	pending, found, err := d.PendingApproval(r.Context(), sessionID)
 	if err != nil || !found {
+		return false
+	}
+	// An answer naming a request is recorded only on that request's row. One
+	// naming another (perhaps not asked yet), or a row from before rows carried
+	// the id, is left to the node running the session.
+	if req.RequestID != "" && req.RequestID != pending.RequestID {
 		return false
 	}
 	// Only a node running the session waits on the row. A row left by a
@@ -4667,6 +5042,8 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	}
 	srv.Addr = ln.Addr().String()
 	go s.sweepOrphans(ctx, nodeStale)
+	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
+	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -4705,7 +5082,14 @@ func (s *Server) drain() {
 	s.draining.Store(true)
 	// Alongside the drain, so closing terminals adds nothing to the worst case.
 	idleClosed := make(chan struct{})
-	go func() { defer close(idleClosed); s.closeIdle() }()
+	go func() {
+		defer close(idleClosed)
+		// A first write that passed the draining check before it was set may
+		// still be claiming; its hold is released with the others.
+		deadline := time.Now().Add(idleBudget)
+		s.waitClaims(time.Until(deadline) - turnEndWait)
+		s.closeIdle(deadline)
+	}()
 	defer func() { <-idleClosed }()
 	streamsEnded := make(chan struct{})
 	go func() { defer close(streamsEnded); s.cpStreams.shutdown(turnEndWait) }()
@@ -4738,7 +5122,7 @@ func (s *Server) drain() {
 
 // closeIdle ends the terminals of sessions opened with no prompt and marks
 // their records ended, so a restarted server can reopen them from the record.
-func (s *Server) closeIdle() {
+func (s *Server) closeIdle(by time.Time) {
 	s.mu.Lock()
 	var idle []*liveSession
 	for _, live := range s.running {
@@ -4769,21 +5153,40 @@ wait:
 			break wait
 		}
 	}
+	// In parallel under one deadline: one at a time, a stalled store cost each
+	// session its own wait.
+	var wg sync.WaitGroup
 	for _, live := range idle {
 		if live.unclaimed.Load() {
 			continue // its row still holds the end it was opened with
 		}
-		live.holdMu.Lock()
-		held := live.held
-		live.holdMu.Unlock()
-		if held {
-			s.releaseHeld(live.ID, live, true) // workbench work alone: ended as it was opened
-			continue
-		}
-		_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
-			agent.SessionEnded{Reason: agent.TermShutdown})
+		wg.Add(1)
+		go func(live *liveSession) {
+			defer wg.Done()
+			live.holdMu.Lock()
+			held := live.held
+			live.holdMu.Unlock()
+			if held {
+				s.releaseHeld(live.ID, live, true) // workbench work alone: ended as it was opened
+				return
+			}
+			_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
+				agent.SessionEnded{Reason: agent.TermShutdown})
+		}(live)
+	}
+	ended := make(chan struct{})
+	go func() { wg.Wait(); close(ended) }()
+	select {
+	case <-ended:
+	case <-time.After(max(time.Until(by), time.Second)):
+		s.log.Warn("idle sessions did not record their end before shutdown")
 	}
 }
+
+// idleBudget bounds everything a shutdown does for idle sessions: waiting for
+// claims in flight, closing their terminals, and recording their ends and
+// giving back their claims, all of them together.
+const idleBudget = 15 * time.Second
 
 func (s *Server) runningCount() int {
 	s.mu.Lock()

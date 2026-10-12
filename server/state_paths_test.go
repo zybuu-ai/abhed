@@ -59,11 +59,7 @@ func TestEndpointsRefuseStateThroughLinksAndSpellings(t *testing.T) {
 // it onto Abhed's state.
 func TestUploadRefusesALinkIntoTheState(t *testing.T) {
 	h, id, ws := downloadServer(t)
-	dir := filepath.Join(ws, uploadDirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(ws, ".abhed"), filepath.Join(dir, id)); err != nil {
+	if err := os.Symlink(filepath.Join(ws, ".abhed"), filepath.Join(ws, uploadDirName)); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	body := &bytes.Buffer{}

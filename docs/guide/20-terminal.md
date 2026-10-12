@@ -234,6 +234,15 @@ followed by Enter while the question is open answers it, typed or pasted.
 A line typed before the question appeared is your next message, not an
 answer.
 
+Asks reach you one at a time, so answers piped in answer them in the order
+they arrive. After each answer the terminal prints what it answered, such as
+`accepted: bash touch made.txt (subagent scan logs)`. What remains is that a
+blind pipe cannot know which ask it is answering: with subagents or a
+pipeline running, the next ask may not be the one the script expected. To
+answer one ask and only that one, use the server's API, which takes the
+request's id (`request_id` on `POST /v1/sessions/{id}/approve`), or set
+rules so the calls are allowed or denied without asking.
+
 A key counts as an answer only when it is meant as one:
 
 - no key counts until the question has been on screen for 300 ms;

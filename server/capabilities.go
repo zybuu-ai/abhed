@@ -202,8 +202,9 @@ type capTool struct {
 type capExtension struct {
 	Name   string   `json:"name"`
 	Events []string `json:"events"`
-	// Status is running, stopped or not started; only a running one's veto applies.
-	Status string `json:"status"`
+	// Status is running, stopped or not started; only a running one's veto
+	// applies. Administrators only: it says when a veto is down.
+	Status string `json:"status,omitempty"`
 }
 
 // perSessionTools are the tools every session adds to the shared registry,
@@ -226,7 +227,7 @@ func (s *Server) perSessionTools() []capTool {
 	return out
 }
 
-func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) getCapabilities(w http.ResponseWriter, r *http.Request) {
 	reg, sk, cfg := s.state.snapshot()
 	prof := s.opts.Adapter.Profile()
 	c := capabilities{
@@ -273,7 +274,12 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 	}
 	// Names and events only. An extension's command line and environment are
 	// the operator's business and may carry credentials.
-	status := toolset.ExtensionStatus(cfg, s.opts.Extensions)
+	// Whether each is running only to an administrator, or where nobody signs
+	// in: to anyone else it says when a veto is down.
+	var status map[string]string
+	if mw := s.authMiddleware(); s.isAdminCtx(r.Context()) || len(mw.Providers) == 0 && mw.Verifier == nil && !mw.TrustHeaders {
+		status = toolset.ExtensionStatus(cfg, s.opts.Extensions)
+	}
 	for _, e := range cfg.Extensions {
 		c.Extensions = append(c.Extensions, capExtension{Name: e.Name, Events: nonNil(e.Events), Status: status[e.Name]})
 	}

@@ -20,6 +20,7 @@ func (c Config) ResolvedTLS(workspace string) ServerTLSConfig {
 	t.CertFile = serverPath(workspace, t.CertFile)
 	t.KeyFile = serverPath(workspace, t.KeyFile)
 	t.ClientCAFile = serverPath(workspace, t.ClientCAFile)
+	t.ClientRevokedFile = serverPath(workspace, t.ClientRevokedFile)
 	extra := make([]CertificatePair, len(t.AdditionalCertificates))
 	for i, p := range t.AdditionalCertificates {
 		extra[i] = CertificatePair{CertFile: serverPath(workspace, p.CertFile), KeyFile: serverPath(workspace, p.KeyFile)}
@@ -75,6 +76,10 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 		// mint a certificate for any account.
 		if t.ClientCAFile != "" {
 			out = append(out, t.ClientCAFile)
+		}
+		// Whoever could rewrite the revocation file could restore a revoked certificate.
+		if t.ClientRevokedFile != "" {
+			out = append(out, t.ClientRevokedFile)
 		}
 	}
 	if ha := c.ResolvedHA(workspace); ha.Enabled {

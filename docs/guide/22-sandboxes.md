@@ -162,10 +162,13 @@ migrate it. `abhed doctor` names the store too, on its
 
 ## Per-session sandboxes
 
-By default every session `abhed serve` runs shares one sandbox and the
-server's workspace. With `per_session` on, each session gets a control-plane
-sandbox of its own instead, made from a template, and works in that
-sandbox's folder:
+A server with one person (sign-in off, or a single local account) runs every
+session in one sandbox and the server's workspace. With `per_session` on,
+each session gets a control-plane sandbox of its own instead, made from a
+template, and works in that sandbox's folder. A server with more than one
+account turns `per_session` (and `enabled`) on by itself unless
+`server.shared_sessions` is set; see
+[what accounts share](../ops/enabling-auth.md#what-accounts-share):
 
 ```json
 "control_plane": {

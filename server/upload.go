@@ -65,8 +65,8 @@ type uploadResponse struct {
 	MediaType string `json:"media_type,omitempty"`
 }
 
-// uploadFile accepts a multipart file and stores it under the session's
-// upload directory.
+// uploadFile accepts a multipart file and stores it in a folder of its own
+// under the upload directory.
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	// An empty id means the file was attached before the chat existed, which
 	// is the normal case in a new conversation: someone drops in a document
@@ -167,7 +167,11 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	dir := filepath.Join(ws, uploadDirName, sessionID)
+	// A random folder per upload: named by the session, the shared uploads
+	// folder told every account on the server the ids of everyone's sessions.
+	var folder [8]byte
+	_, _ = rand.Read(folder[:])
+	dir := filepath.Join(ws, uploadDirName, hex.EncodeToString(folder[:]))
 	dest := filepath.Join(dir, name)
 	// The upload folder is in the workspace, where the agent can plant a
 	// link: a write through one could replace Abhed's state or leave it. The

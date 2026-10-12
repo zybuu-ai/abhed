@@ -944,6 +944,10 @@ type ServerConfig struct {
 	// TLS makes `abhed serve` terminate TLS itself instead of behind a proxy.
 	// Unset, the server speaks plain HTTP as it always has.
 	TLS ServerTLSConfig `json:"tls,omitempty"`
+	// SharedSessions keeps every account's sessions in the server's one
+	// workspace and sandbox, as before 1.2.8. Unset, a server with more than
+	// one account gives each session a sandbox of its own.
+	SharedSessions bool `json:"shared_sessions,omitempty"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
@@ -959,6 +963,10 @@ type ServerTLSConfig struct {
 	MinVersion string `json:"min_version,omitempty"`
 	// ClientCAFile turns on client certificates, verified against this CA.
 	ClientCAFile string `json:"client_ca_file,omitempty"`
+	// ClientRevokedFile lists client certificates refused although they
+	// verify: PEM CRLs signed by the client CA, or hex serial numbers one to
+	// a line. Re-read like the CA.
+	ClientRevokedFile string `json:"client_revoked_file,omitempty"`
 	// ClientAuth is "require" (the default once client_ca_file is set), or
 	// "optional" to let a browser without a certificate use another sign-in.
 	ClientAuth string `json:"client_auth,omitempty"`
@@ -979,7 +987,7 @@ type CertificatePair struct {
 // and refuses to start without a usable certificate.
 func (t ServerTLSConfig) Enabled() bool {
 	return t.CertFile != "" || t.KeyFile != "" || len(t.AdditionalCertificates) > 0 ||
-		t.ClientCAFile != "" || t.ClientAuth != "" || t.ClientCertAccounts || t.MinVersion != ""
+		t.ClientCAFile != "" || t.ClientRevokedFile != "" || t.ClientAuth != "" || t.ClientCertAccounts || t.MinVersion != ""
 }
 
 // CLILoginConfig is command-line sign-in (`abhed login`) for local accounts.

@@ -227,11 +227,14 @@ POST /v1/sessions/{id}/approve       {approved, scope?, request_id?} → on the 
                                        applied:false} recorded after the turn stopped waiting
                                        (nothing ran on it); 409 nothing pending, another or an
                                        ended request named, or already answered; 429 with
-                                       Retry-After too many answers waiting; 503 row not
-                                       written in time. Elsewhere: 421
-                                       for a bound answer, 204 for an unbound one recorded on
-                                       the store, 409 when no node runs the session or its
-                                       request ended (request_id: the action.requested event's id)
+                                       Retry-After too many answers waiting; 503 with
+                                       Retry-After row not written in time; 404 a session
+                                       the caller cannot see, whatever the body. Elsewhere: 204 for an unbound answer,
+                                       or one bound to the stored row's request, recorded on
+                                       the store; 421 for one bound to another request or to a
+                                       row from before rows carried request_id; 409 when no
+                                       node runs the session or its request ended
+                                       (request_id: the action.requested event's id)
 POST /v1/sessions/{id}/compact       → 202
 GET  /v1/sessions/{id}/replay        → full event list
 DELETE /v1/sessions/{id}             → end session

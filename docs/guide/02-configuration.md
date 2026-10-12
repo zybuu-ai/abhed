@@ -40,7 +40,7 @@ configuration](#trusting-the-workspace-configuration).
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
-| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server) |
+| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in one workspace instead of a sandbox per session (off) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
@@ -656,10 +656,10 @@ entries with:
 
 | System | Where | Query |
 |---|---|---|
-| macOS | the unified log, through `/usr/bin/logger` | `log show --last 7d --predicate 'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` |
+| macOS | the unified log, written by `abhed` itself through `os_log`, subsystem `com.zybuu.abhed`, category `admin` | `log show --last 7d --predicate 'subsystem == "com.zybuu.abhed"'` |
 | Linux, journald | the journal, through its native socket, identifier `abhed-admin`, facility auth | `journalctl -t abhed-admin` (as root or a member of `adm` or `systemd-journal` to see every user's attempts); `journalctl -t abhed-admin -o verbose` shows the `_UID` journald attached itself |
 | Linux, no journald | syslog, tag `abhed-admin`, facility auth | `grep abhed-admin /var/log/auth.log` (Debian, Ubuntu) or `/var/log/secure` (RHEL, Fedora) |
-| Windows | not written yet | the attempt is in `admin.jsonl` only, and the command says so on stderr |
+| Windows | the Application event log, source `abhed-admin`, event id 1 | `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='abhed-admin'}` |
 
 **Telling real entries apart.** The tag is not a credential: any local user
 can add a line tagged `abhed-admin` to the system log with `logger -t
@@ -671,13 +671,26 @@ message are what `abhed` wrote only when the log itself says who sent it:
   `_COMM=abhed` (a forged one usually `_COMM=logger`, though a user can
   name their own program `abhed`) and a `_UID` that
   matches the `uid=` in the message; for a change, `_UID=0`.
-- **macOS:** every entry is sent by `/usr/bin/logger`, so the process name
-  does not tell them apart. `log show --last 7d --style json --predicate
-  'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` gives each
-  entry's `userID`, the uid the system recorded for the sender; it must match
-  the `uid=` in the message, and is `0` for a change.
+- **macOS:** the system records the sender of each entry itself. `log show
+  --last 7d --style json --predicate 'subsystem == "com.zybuu.abhed"'` gives
+  each entry's `processImagePath`, which must be the `abhed` binary you
+  installed, and `userID`, which must match the `uid=` in the message and is
+  `0` for a change. Another program can use the same subsystem name, but not
+  the installed binary's path.
 - **syslog files** carry no sender the system vouches for; trust them only as
   far as `admin.jsonl` beside the managed file, which only root can write.
+- **Windows:** any program can write an event under the source name
+  `abhed-admin`, and the event carries no sender the system vouches for;
+  trust it only as far as `admin.jsonl`, which only an administrator can
+  write. The source is not registered, so Event Viewer notes that the
+  description is missing and shows the message as the event's data.
+
+A macOS `abhed` built without cgo (`CGO_ENABLED=0`, as `make build` does)
+cannot call `os_log`: it writes through `/usr/bin/logger` instead, with tag
+`abhed-admin`, and warns once that its entries are not attributable to
+`abhed`. Find those with `log show --predicate 'process == "logger" AND
+eventMessage CONTAINS "abhed-admin"'`, where only `userID` tells them apart.
+The release binaries for macOS are built with cgo.
 
 A system log that cannot be written is reported on stderr and does not change
 the command's result. The unified log keeps entries for days, not forever;
@@ -898,11 +911,15 @@ still running, recorded as `shutdown`, including a turn stopped before the
 model's first reply, and kills the command each is running with everything
 it started. A message steered into a turn that is ended this way is recorded
 as `message.dropped`, not delivered. The terminals of an idle workbench
-session are closed and their results recorded before its end. It then waits
-up to five seconds for turns to record their end, and up to ten more for
-open HTTP requests. The worst case is `drain_seconds` + 15 seconds, so give the
-process at least that much grace: with Kubernetes' default
-`terminationGracePeriodSeconds` of 30, keep `drain_seconds` at 15 or less.
+session are closed and their results recorded before its end. Alongside the
+drain, idle sessions are ended and their claims given back all together,
+within 15 seconds; a release the store refuses is tried again within ten
+seconds, and one that never lands lapses when its claim goes stale. It then
+waits up to five seconds for turns to record their end, and up to ten more
+for open HTTP requests. The worst case is `drain_seconds` + 15 seconds, or
+25 seconds when `drain_seconds` is under 10, so give the process at least
+that much grace: with Kubernetes' default `terminationGracePeriodSeconds` of
+30, keep `drain_seconds` at 15 or less.
 Without `drain_seconds`, running turns are ended at once. SIGINT and a
 hang-up (SIGHUP) stop the server the same way; a hang-up is not a reload.
 Signals that arrive while it drains are ignored, so a second SIGTERM does
@@ -1156,6 +1173,10 @@ server open.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
   list` lists every decision.
+- **`abhed serve`** says on its front page, and in `GET /v1/overview` as
+  `workspace_config`, whether the file is trusted, why, and the names of the
+  settings it set aside (not their values): to a signed-in person, or to
+  anyone where nobody signs in.
 
 The prompt and `abhed trust` list a managed-only setting the file makes, such
 as `sandbox.network` or the `egress` rules, apart from the rest, under "Not

@@ -91,7 +91,12 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		fmt.Printf("            ⚠ %s\n", w)
 	}
 	fmt.Println("git         held read-only from commands in `abhed serve`'s and Studio's sessions; not in the terminal's (docs/guide/04-permissions.md)")
-	if printDrivers(os.Stdout, cfg) {
+	// The sessions line as serve would run them: a sandbox each with several accounts.
+	served := cfg
+	if c, iso, err := serveSessionIsolation(cfg, workspace); err == nil && iso.auto {
+		served = c
+	}
+	if printDrivers(os.Stdout, served) {
 		findings.driverDown = true
 	}
 	if cfg.Sandbox.Tier == string(sandbox.TierFence) {

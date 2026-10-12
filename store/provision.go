@@ -222,8 +222,8 @@ var errNoSchema = errors.New("the schema has not been applied")
 // requiredColumns are columns this build writes that an older schema lacks.
 // The runtime role cannot add them, so a missing one is found at start rather
 // than as a failed write the first time someone answers an approval.
-var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"users", "revocations"}, {"sessions", "title"}, {"events", "inserted_at"},
-	{"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"}}
+var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"approvals", "request_id"}, {"users", "revocations"}, {"sessions", "title"},
+	{"events", "inserted_at"}, {"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"}}
 
 // missingColumns names the required columns the connected database lacks.
 func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {

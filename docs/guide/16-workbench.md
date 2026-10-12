@@ -153,9 +153,10 @@ answers `202` with `"delivery": "steered"` and a `queue_id`,
 delivers a queued message carries the same id as `queue_id`, and a
 `client_id` sent with any message comes back on its `user.message` too.
 Posting with `"interrupt": true` is Send now. On a server with node routing,
-the queue routes, `/interrupt` and an `/approve` that names its request
-answer `421` with `Abhed-Session-Node` for
-a session running on another node. Streamed reasoning is recorded as
+the queue routes and `/interrupt` answer `421` with `Abhed-Session-Node` for
+a session running on another node. An `/approve` there is recorded on the
+stored approval when it names no request or names the one the stored row
+asks about; one naming another request also gets the `421`. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
 text, so a reader that ignores the parts is unaffected.
 
@@ -182,7 +183,9 @@ agent panel, or an image pasted into the message box attaches it to the next
 message. Nothing is uploaded until you send; × takes a file off. On send each
 file goes through the same upload route as the console's (`POST
 /v1/sessions/{id}/upload`, 32 MiB a file, refused before upload when larger),
-into the session's own folder under `uploads/`, and the message names its path
+into a folder of its own under `uploads/`, named at random rather than after
+the session so that other accounts sharing the workspace cannot read session
+ids off the folder names, and the message names its path
 for the agent to open with `read`, under the read rules every workspace file
 meets. An image is recognised by its bytes, not its name, and a model that can
 see reads it as an image. A file the server refuses keeps the message unsent
@@ -377,7 +380,10 @@ command in the terminal.
 **Search.** Search reads what the Explorer shows and nothing more: a folder or
 file a read rule withholds is not opened, and neither is `.abhed/`, `.git/` or
 a folder the `grep` tool passes over (`node_modules`, `vendor`, `dist`, `.venv`
-and the like). Binary files are skipped. A regular expression is RE2, as in
+and the like). A linked git worktree inside the workspace (a folder whose
+`.git` is a file pointing into `.git/worktrees/`) is passed over too, since
+its files are the repository's again; a submodule is searched. Binary files
+are skipped. A regular expression is RE2, as in
 `grep`. A search stops at 2,000 results, 20,000 files or five seconds and
 says which; a file with more than 100 matches is listed with its first 100 and
 marked. A line is shown as at most 240 bytes around the match. A session runs

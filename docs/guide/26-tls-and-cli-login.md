@@ -129,11 +129,35 @@ with no account signs nobody in. The account is read again at least every two
 seconds, so removing it ends the certificate's access, and the
 `LocalAuth.Admit` hook of an edition is asked as at a password sign-in.
 
-A certificate cannot be signed out. To end one, remove the account, or issue
-the client certificates from a new CA and replace `client_ca_file`; there is
-no revocation list yet. A browser sends a client certificate on every request
-to the site, so the same origin checks guard state-changing requests as for a
+A certificate cannot be signed out. To end one, revoke it, remove the
+account, or issue the client certificates from a new CA and replace
+`client_ca_file`. A browser sends a client certificate on every request to
+the site, so the same origin checks guard state-changing requests as for a
 session cookie.
+
+**Revoking a certificate.** `client_revoked_file` names the client
+certificates refused although they verify:
+
+```json
+"tls": { "client_ca_file": "/etc/abhed/tls/clients-ca.pem",
+         "client_revoked_file": "/etc/abhed/tls/clients-revoked" }
+```
+
+The file holds either PEM CRLs (`-----BEGIN X509 CRL-----`), each signed by a
+certificate in `client_ca_file`, or serial numbers in hex, one to a line
+(colons, a `0x` and openssl's `serial=` are allowed, `#` starts a
+comment). A listed serial is
+refused whichever CA in `client_ca_file` issued it. The file is reloaded like
+the CA: a revoked certificate is refused on the next handshake, and a request
+on a connection made with it before the change gets `401`. A file that is
+missing or unreadable, a line that is not a serial, or a CRL no certificate
+in the CA file signed stops `abhed serve` at startup; on a reload it is
+reported and the revocations already in force stay. A CRL past its next
+update still applies, and the banner warns that newer revocations are not in
+it. `abhed pki` does not write CRLs; the serial list is the way to revoke a
+certificate it issued (`openssl x509 -noout -serial -in alice.pem`). Keep the
+file where commands cannot write it: like the CA, it is among the server's
+private files that the agent's tools refuse.
 
 ## `abhed login`
 

@@ -561,7 +561,9 @@ is part of the Enterprise Edition and documented with it.
   administrator puts it in the admin group (`-admin`). Invites, access
   requests and grants are part of the Enterprise Edition.
 - **Sign-in is rate-limited** for anonymous callers (`throttle` in
-  `server/server.go`).
+  `server/server.go`). Every request has a `request` line in the server
+  log, including one refused before it was identified (a `401`, a sign-in
+  `429` or a refused origin), which carries `identified=false`.
 
 ## Container hardening
 
