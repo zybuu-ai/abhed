@@ -131,8 +131,9 @@ type Policy struct {
 	// GitRequired refuses a fence that cannot hold ProtectGit (no mount
 	// namespace); without it, that fence runs and says git's files are not held.
 	GitRequired bool
-	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
-	// container and vm tiers only, processes on those and the process tier.
+	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): both on
+	// the fence, container and vm tiers and the Linux process tier (a cgroup
+	// per command, else each process's data); on macOS processes alone.
 	MaxMemoryMB int
 	MaxProcs    int
 	// ReadableHome lets the macOS process tier read all of home but the
@@ -159,6 +160,9 @@ type Policy struct {
 	// FenceEgressPortOnly lets the fence hold the egress allowlist without a
 	// network namespace, by the proxy's port alone.
 	FenceEgressPortOnly bool
+	// FenceAllowRoot lets the fence run as root; files under /etc only root
+	// may read are then hidden from commands. Managed only.
+	FenceAllowRoot bool
 	// FenceSocketcall lets the fence's commands on s390x make sockets
 	// through socketcall(2) when AllowNetwork is set.
 	FenceSocketcall bool

@@ -92,3 +92,25 @@ func TestPathLocksShrink(t *testing.T) {
 		t.Fatal("two stores on one path must share a lock")
 	}
 }
+
+// A file path is matched against a value as written, never its encoded or
+// other-case forms, which name ordinary files too often.
+func TestFindInPathMatchesTheValueAsWritten(t *testing.T) {
+	const v = "s3cr3t-Value-0123456789"
+	s := Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := s.Set("TOKEN", v); err != nil {
+		t.Fatal(err)
+	}
+	r := s.Redactor()
+	if label, found := r.FindInPath("/tmp/" + v + "/x"); !found || !strings.Contains(label, "TOKEN") {
+		t.Fatalf("the value in a path: %q %v", label, found)
+	}
+	for name, form := range map[string]string{
+		"lower": strings.ToLower(v), "upper": strings.ToUpper(v),
+		"hex": hex.EncodeToString([]byte(v)), "HEX": strings.ToUpper(hex.EncodeToString([]byte(v))),
+	} {
+		if _, found := r.FindInPath("/tmp/" + form + "/x"); found {
+			t.Errorf("%s: an encoded form in a path was taken for the value", name)
+		}
+	}
+}

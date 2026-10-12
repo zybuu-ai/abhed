@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -45,4 +48,33 @@ func lastUser(l *os.File) bool {
 func processAlive(pid int) bool {
 	err := unix.Kill(pid, 0)
 	return err == nil || errors.Is(err, unix.EPERM)
+}
+
+// madeKey names folder id for the state lock: device, inode and birth.
+func madeKey(id folderID) string {
+	st, ok := id.info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("made %d %d %d %v", st.Dev, st.Ino, id.birth, id.hasBirth)
+}
+
+// noteMade records in the state lock that a fence made the folder id.
+func noteMade(l *os.File, id folderID) {
+	if k := madeKey(id); l != nil && k != "" {
+		_ = l.Truncate(0)
+		_, _ = l.WriteAt([]byte(k), 0)
+	}
+}
+
+// madeNoted reports whether the state lock records that a fence made id,
+// clearing the record.
+func madeNoted(l *os.File, id folderID) bool {
+	if l == nil {
+		return false
+	}
+	b, _ := io.ReadAll(io.NewSectionReader(l, 0, 256))
+	_ = l.Truncate(0)
+	k := madeKey(id)
+	return k != "" && string(b) == k
 }

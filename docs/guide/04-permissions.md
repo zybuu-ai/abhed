@@ -774,7 +774,12 @@ worktree add`, `git worktree remove`, `git worktree prune` or `git submodule
 update` (plain words, the usual options only, no second command), already
 approved as any command is, runs through host git instead, with the settings
 Abhed's own git uses: hooks, fsmonitor, filters and every transport but https
-off. A path it names outside the workspace refuses it. Another spelling, an
+off. A path it names outside the workspace refuses it. Host git is not
+held by the sandbox's network rules, so with `allow_network` off or the
+egress allowlist on, `git submodule update` is brokered only with
+`--no-fetch` (or `-N`) and runs with no transport at all: it checks out
+commits already fetched and fails on a submodule not yet cloned. Without
+`--no-fetch` it is refused; fetch the submodules yourself, outside Abhed. Another spelling, an
 option outside the usual ones or a line with more on it runs in the sandbox
 and may fail there. The container and vm tiers do not broker them; run them
 yourself there. `git worktree remove --force` deletes the worktree's files as
@@ -829,8 +834,14 @@ submodule URLs, extensions, user, `init`, `pull`, `fetch`, `gc`, `index` and
 `lfs` format) is taken out, the file as it was copied to
 `~/.abhed/quarantine`, a hooks folder holding anything but git's samples is
 moved there, the command is not run, its error says what was done, and the
-record gains `sandbox.git_planted`. This runs under bubblewrap, in a
-container and on macOS; under the fence in `mount_namespace` mode too. Until
+record gains `sandbox.git_planted`. A new `.git` file naming a git folder
+outside the workspace or under `.abhed` (in any case), or a new repository
+whose `config` is a link, is never changed by Abhed: every command is
+refused, naming it, until you remove it; so is one Abhed could not clean
+(a read-only git folder, say), until it can be. A config is replaced rather than
+written through, so a hard link to it keeps its other contents. This runs
+under bubblewrap, in a container and on macOS; under the fence in
+`mount_namespace` mode too. Until
 the next command starts, git you run yourself there would read the setting,
 and a `.git/modules/<name>` made for a later `git submodule update --init` is
 not checked. A tool such as husky that sets `core.hooksPath` in a repository

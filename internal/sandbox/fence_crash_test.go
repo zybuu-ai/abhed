@@ -56,6 +56,19 @@ func TestFenceSweepsWhatACrashedSessionLeft(t *testing.T) {
 	if left, _ := filepath.Glob(filepath.Join(dir, markPrefix(p.Workspace)+"*.mark")); len(left) != 0 {
 		t.Fatalf("marks left: %v", left)
 	}
+	// Dated into the future by the command that made it: still taken.
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(24 * time.Hour)
+	if err := os.Chtimes(state, future, future); err != nil {
+		t.Fatal(err)
+	}
+	mark("c", false, time.Now())
+	f.sweepCrashed(rec)
+	if _, err := os.Lstat(state); err == nil || len(got) != 2 {
+		t.Fatalf("a .abhed dated into the future was left: %v", got)
+	}
 }
 
 // deadPID is a process id no process has.

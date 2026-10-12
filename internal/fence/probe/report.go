@@ -31,6 +31,9 @@ type Requirements struct {
 	// Mounts requires a mount namespace of the command's own, for a surface
 	// that keeps paths inside the workspace read-only.
 	Mounts bool
+	// AllowRoot lets the fence run as root, which the managed fence.allow_root
+	// alone turns on.
+	AllowRoot bool
 }
 
 // minABI is the Landlock ABI r asks for, never below the fence's floor.

@@ -73,7 +73,7 @@ func helperMain(args []string) int {
 			fmt.Fprintln(os.Stderr, "abhed: the fence probe's mounts stage needs a folder")
 			return 2
 		}
-		if v, err := mountns.SelfTest(args[1]); err != nil {
+		if v, err := mountns.SelfTest(args[1], true); err != nil {
 			out = failed("%v", err)
 		} else {
 			out = helperOut{OK: true, Reason: v}

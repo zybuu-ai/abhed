@@ -177,13 +177,17 @@ func (d *Driver) Snapshot(ctx context.Context, id, name string) (driver.Snapshot
 		d.mu.Unlock()
 		return driver.SnapshotRef{}, err
 	}
-	m, gen, ws := in.m, in.spec.Generation, in.ws
+	gen, ws := in.spec.Generation, in.ws
 	d.mu.Unlock()
 	if ws == "" {
 		return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnsupported, "microvm: the sandbox has no workspace")
 	}
-	if m != nil && !exited(m) {
-		if err := d.syncBack(ctx, in, m, nil); err != nil {
+	// As a call on the running VM, so a stop waits for the copy and ends it;
+	// a VM not running has nothing to copy back.
+	if in, m, cctx, done, err := d.begin(ctx, id); err == nil {
+		err = d.syncBack(cctx, in, m, nil)
+		done()
+		if err != nil {
 			return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnavailable, "microvm: copying the VM's changes back first: %v", err)
 		}
 	}

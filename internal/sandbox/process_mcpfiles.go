@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,12 +166,10 @@ func (s *Process) serverFilesOnly(ctx context.Context, f serverFiles, argv, env 
 		profile := "(version 1)\n(allow default)\n" + denyLaunchServices + f.seatbeltRules()
 		cmd = exec.CommandContext(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...)...) // #nosec G204 -- the configured server, confined
 	case "bwrap":
-		if os.Getuid() == 0 || os.Geteuid() == 0 {
-			// bwrap as root keeps root's capabilities over the host, so a
-			// confinement there would be in name only; said, not hidden.
-			slog.Warn("a stdio MCP server runs with its files unconfined: Abhed runs as root, where bubblewrap keeps root's capabilities", "server", argv[0])
-			cmd = exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- the configured server
-			break
+		// bwrap as root keeps root's capabilities over the host, so a
+		// confinement there would be in name only.
+		if err := serverRootRefusal(os.Getuid(), os.Geteuid()); err != nil {
+			return nil, fmt.Errorf("%w, or set host_files on the server to run it unconfined", err)
 		}
 		if !s.bwrapFreshOK() {
 			return nil, errors.New("sandbox: bubblewrap cannot mount a private /proc here, so a server's files cannot be confined; " +

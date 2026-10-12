@@ -60,3 +60,24 @@ func TestFenceStateMountReportsWhatCannotBeRemoved(t *testing.T) {
 		t.Fatalf("the next fence: %v held %v", err, g.stateHeld)
 	}
 }
+
+// An empty .abhed that was there before the fence is left at Close; only one
+// a fence made is removed.
+func TestFenceLeavesAnEmptyStateItDidNotMake(t *testing.T) {
+	p := fencePolicy(t)
+	state := filepath.Join(p.Workspace, ".abhed")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFence(p)
+	f.mounts = true
+	if err := f.prepareStateMount(); err != nil || f.madeState || f.stateHeld {
+		t.Fatalf("prepare: %v made %v held %v", err, f.madeState, f.stateHeld)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(state); err != nil || !info.IsDir() {
+		t.Fatalf("an empty .abhed the fence did not make was removed: %v", err)
+	}
+}

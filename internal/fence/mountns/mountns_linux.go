@@ -604,8 +604,9 @@ func DropBounding() error {
 
 // SelfTest applies a plan over dir, which holds the folders ro, pin and hidden
 // (with a file secret), as a launcher would; checks a write to ro is refused
-// and secret is hidden; and drops the capabilities.
-func SelfTest(dir string) (string, error) {
+// and secret is hidden; with proc, mounts a /proc of its own, as a launcher
+// in a PID namespace does; and drops the capabilities.
+func SelfTest(dir string, proc bool) (string, error) {
 	p := Plan{Root: dir, Pin: []string{"pin"}, ReadOnly: []string{"ro"}, Empty: []string{"hidden"}}
 	if err := apply(p, false); err != nil {
 		return "", err
@@ -620,10 +621,17 @@ func SelfTest(dir string) (string, error) {
 	if err := unix.Rename(filepath.Join(dir, "pin"), filepath.Join(dir, "moved")); !errors.Is(err, unix.EBUSY) {
 		return "", fmt.Errorf("a pinned folder was not kept in place (%w)", err)
 	}
+	what := "read-only bind, tmpfs and pin applied in a user namespace"
+	if proc {
+		if err := MountProc(); err != nil {
+			return "", err
+		}
+		what += ", /proc of its own mounted"
+	}
 	if err := Drop(); err != nil {
 		return "", err
 	}
-	return "read-only bind, tmpfs and pin applied in a user namespace; capabilities dropped", nil
+	return what + "; capabilities dropped", nil
 }
 
 // Views are the FUSE, overlay and network mounts that name the workspace at

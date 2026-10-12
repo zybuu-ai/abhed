@@ -201,7 +201,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	vault := openVault()
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
-		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sb.Command),
+		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
 		Parts:   toolset.All,

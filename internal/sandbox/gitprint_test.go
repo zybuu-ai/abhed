@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,5 +80,32 @@ func TestGitFingerprintCoversTheCommonFolder(t *testing.T) {
 	}
 	if GitFingerprint(wt) == before {
 		t.Fatal("the common folder's config changed and the worktree's fingerprint did not")
+	}
+}
+
+// A hooks folder flooded past the bound still has its real hooks read.
+func TestGitFingerprintSeesHooksPastTheBound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	ws := t.TempDir()
+	hooks := filepath.Join(ws, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range printDirEntries + 10 {
+		if err := os.WriteFile(filepath.Join(hooks, fmt.Sprintf("a%04d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hook := filepath.Join(hooks, "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntrue\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := GitFingerprint(ws)
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nevil\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if GitFingerprint(ws) == before {
+		t.Fatal("a hook past the bound left the fingerprint unchanged")
 	}
 }

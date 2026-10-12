@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -18,7 +19,9 @@ import (
 // command line, in plain words, with every path it names inside the
 // workspace. Anything else goes to command as it was. Only the process tier
 // and the fence are brokered, as only they run commands on this host.
-func Broker(workspace string, tier func() sandbox.Tier, command func(ctx context.Context, cwd, line string) *exec.Cmd) func(ctx context.Context, cwd, line string) *exec.Cmd {
+// Unless netOpen (network on, no allowlist), host git reaches no remote: a
+// submodule update must say --no-fetch and can only check out what is there.
+func Broker(workspace string, tier func() sandbox.Tier, netOpen bool, command func(ctx context.Context, cwd, line string) *exec.Cmd) func(ctx context.Context, cwd, line string) *exec.Cmd {
 	return func(ctx context.Context, cwd, line string) *exec.Cmd {
 		args, ok := brokered(line)
 		if !ok || tier == nil {
@@ -32,10 +35,23 @@ func Broker(workspace string, tier func() sandbox.Tier, command func(ctx context
 		if err := brokerPaths(workspace, cwd, args); err != nil {
 			return &exec.Cmd{Err: err}
 		}
+		var env []string
+		if args[0] == "submodule" && !netOpen {
+			if !slices.Contains(args, "--no-fetch") && !slices.Contains(args, "-N") {
+				return &exec.Cmd{Err: errors.New("git submodule update: the sandbox's network is off or held to an allowlist, " +
+					"and git run for it on the host would reach the network outside both; add --no-fetch to check out " +
+					"what is already fetched, or fetch the submodules yourself")}
+			}
+			// --no-fetch still clones a submodule not yet cloned; no transport is allowed.
+			env = []string{"GIT_ALLOW_PROTOCOL=" + noProtocol}
+		}
 		// On the host, whatever sandbox is registered for the workspace.
-		return New(ctx, cwd).commandWith(ctx, nil, nil, true, args...)
+		return New(ctx, cwd).commandWith(ctx, nil, env, true, args...)
 	}
 }
+
+// noProtocol names no transport git has, so git reaches no remote.
+const noProtocol = "abhed-none"
 
 // brokered is the git arguments of a line that is one of the brokered
 // commands, in plain words: no quoting, expansion or second command.

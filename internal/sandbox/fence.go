@@ -214,18 +214,38 @@ func (f *Fence) needsMounts() bool {
 	return len(f.policy.WriteProtected) > 0 || f.policy.ProtectGit && f.policy.GitRequired
 }
 
+// socketcallOff says why fence.socketcall cannot apply on Landlock ABI abi,
+// or "": the launcher allows it only from ABI 6, and never as root.
+func socketcallOff(abi int, root bool) string {
+	switch {
+	case root:
+		return "Abhed runs as root"
+	case abi < 6:
+		return fmt.Sprintf("Landlock ABI %d is below 6 (Linux 6.12), which scopes abstract unix sockets", abi)
+	}
+	return ""
+}
+
 // Describe states what the fence covers and what it does not.
 func (f *Fence) Describe() string {
 	abi := f.report.LandlockABI
 	net := "network off: every socket refused (Landlock refuses TCP as well)"
 	if f.policy.AllowNetwork {
 		net = "network on: the host's network, unfiltered; unix sockets refused"
+		// The launcher allows socketcall only from ABI 6 and not as root.
+		if f.policy.FenceSocketcall {
+			if why := socketcallOff(abi, os.Geteuid() == 0); why != "" {
+				net += "; fence.socketcall is set but off: " + why
+			} else {
+				net += "; socketcall sockets allowed (fence.socketcall), unix ones among them"
+			}
+		}
 	}
 	switch {
 	case f.policy.Egress != nil && f.mounts:
-		net = "network: the egress proxy alone, through a relay in each command's network namespace, inet streams only"
+		net = "network: the egress proxy alone, through a relay in each command's network namespace, inet TCP streams only"
 	case f.policy.Egress != nil:
-		net = "network: TCP to the egress proxy's port alone, on any address (no network namespace: Landlock filters ports only), inet streams only"
+		net = "network: TCP to the egress proxy's port alone, on any address (no network namespace: Landlock filters ports only), inet TCP streams only"
 	}
 	signals := "Landlock scopes signals and abstract sockets"
 	switch {
@@ -310,8 +330,13 @@ var fenceDevices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random"
 // so a protected path that appeared since refuses the next one.
 func (f *Fence) spec() landlock.Spec {
 	deny := f.denied()
+	system := fenceSystem
+	if os.Geteuid() == 0 {
+		// Root keeps its uid, so what only root may read under /etc is not granted.
+		system = append(slices.DeleteFunc(slices.Clone(fenceSystem), func(p string) bool { return p == "/etc" }), rootEtcGrants("/etc")...)
+	}
 	s := landlock.Spec{
-		Exec:    absAll(append(append([]string{}, fenceSystem...), f.policy.ReadOnlyPaths...)),
+		Exec:    absAll(append(append([]string{}, system...), f.policy.ReadOnlyPaths...)),
 		Read:    []string{"/proc", "/sys"},
 		Devices: fenceDevices,
 		Write:   absAll([]string{f.policy.Workspace}),
@@ -439,7 +464,7 @@ func (f *Fence) isStateMount(p string) bool {
 	return err == nil && !holds
 }
 
-// removeMadeState removes the .abhed this fence found empty, if still empty,
+// removeMadeState removes the .abhed a fence made and this one found empty, if still empty,
 // the same folder, and no other fence holds the lock.
 func (f *Fence) removeMadeState() {
 	if f.stateLock == nil {
@@ -450,7 +475,8 @@ func (f *Fence) removeMadeState() {
 		return
 	}
 	p := filepath.Join(f.policy.Workspace, stateDir)
-	if id, err := folderIdentity(p); err == nil && id.dir && id.same(*f.stateID) {
+	// Only a folder a fence made: an empty .abhed that was there before stays.
+	if id, err := folderIdentity(p); err == nil && id.dir && id.same(*f.stateID) && madeNoted(f.stateLock, id) {
 		if holds, err := folderHolds(p, id); err == nil && !holds {
 			_ = os.Remove(p)
 		}
@@ -493,6 +519,9 @@ func (f *Fence) prepareStateMount() error {
 		return fmt.Errorf("the workspace's %s cannot be listed to tell whether it holds state (%w); restore its permissions, and the fence will cover it", stateDir, err)
 	}
 	f.stateID, f.stateHeld = &id, holds
+	if f.madeState {
+		noteMade(f.stateLock, id)
+	}
 	return nil
 }
 

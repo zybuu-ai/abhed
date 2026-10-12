@@ -108,6 +108,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.CPUPercent = cfg.Fence.CPUPercent
 	p.FenceSocketcall = cfg.Fence.Socketcall
 	p.FenceEgressPortOnly = cfg.Fence.EgressPortOnly
+	p.FenceAllowRoot = cfg.Fence.AllowRoot
 	p.SkillDirs = skillDirs(cfg)
 	return p, nil
 }
@@ -465,6 +466,12 @@ func under(spellings, dirs []string) bool {
 		}
 	}
 	return false
+}
+
+// NetworkOpen reports whether cfg gives commands the network with no
+// allowlist, so git run for them on the host reaches no more than they could.
+func NetworkOpen(cfg config.Config) bool {
+	return cfg.Sandbox.AllowNetwork && cfg.Sandbox.Network != config.NetworkAllowlist
 }
 
 // Isolation is what the bash tool tells the model of the sandbox of tier:

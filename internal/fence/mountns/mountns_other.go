@@ -19,7 +19,7 @@ func Apply(Plan) error { return errLinux }
 func Drop() error { return errLinux }
 
 // SelfTest refuses off Linux.
-func SelfTest(string) (string, error) { return "", errLinux }
+func SelfTest(string, bool) (string, error) { return "", errLinux }
 
 // Aliases refuses off Linux.
 func Aliases(string) (found, unreachable []string, err error) { return nil, nil, errLinux }

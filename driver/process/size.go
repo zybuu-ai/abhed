@@ -94,6 +94,16 @@ func (d *Driver) sizer() sizing {
 // engine's or the guest's, and the none tier could move itself out.
 func sizedTier(t sandbox.Tier) bool { return t == sandbox.TierProcess }
 
+// nestIn has sb's own per-command cgroups made inside b, where b can hold them.
+func nestIn(b box, sb sandbox.Sandbox) error {
+	if n, ok := b.(interface{ nest(sandbox.Sandbox) error }); ok {
+		if err := n.nest(sb); err != nil {
+			return driver.Errorf(driver.ErrUnavailable, "holding the sandbox's commands to the instance's size: %v", err)
+		}
+	}
+	return nil
+}
+
 // placeOn puts cmd in the instance's box, if it has one; the release it
 // returns does nothing when it has none.
 func placeOn(b box, cmd *exec.Cmd) (func(), error) {

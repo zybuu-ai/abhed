@@ -59,7 +59,9 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 A size is passed to the driver, which holds the sandbox to it or refuses
 it. On Linux the `process` driver gives each sized sandbox a cgroup of its
 own (`cpu.max`, `memory.max` with no swap, and the whole cgroup killed on
-an out-of-memory), with every command, shell and forward in a leaf of it.
+an out-of-memory), with every command, shell and forward in a leaf of it;
+on bubblewrap each command's own bounded cgroup (`max_procs`,
+`max_memory_mb`) is that leaf, so both bounds hold.
 It needs a delegated cgroup v2 subtree, as the fence does (for example
 `systemd-run --user --scope -p Delegate=yes abhed serve`), and sizes only
 the `process` tier: the fence, container and vm tiers keep their commands

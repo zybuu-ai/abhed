@@ -83,7 +83,7 @@ func (f *Fence) sweepCrashed(rec func(string, map[string]any) error) {
 		var taken []map[string]any
 		for _, s := range found {
 			si, err := os.Lstat(s)
-			if err != nil || si.ModTime().After(last) {
+			if err != nil || entryTime(si).After(last) {
 				continue
 			}
 			taken = append(taken, f.takeOut(s, filepath.Dir(s)))
@@ -93,6 +93,18 @@ func (f *Fence) sweepCrashed(rec func(string, map[string]any) error) {
 				"reason": "a session that ended without closing its fence had no .abhed when it started, and one dating from it was found"})
 		}
 	}
+}
+
+// entryTime is when fi last changed as a command could not fake it: its
+// ctime, or else its mtime, a future one counted as now's past.
+func entryTime(fi os.FileInfo) time.Time {
+	if ns, ok := changeTime(fi); ok {
+		return time.Unix(0, ns)
+	}
+	if t := fi.ModTime(); !t.After(time.Now()) {
+		return t
+	}
+	return time.Time{}
 }
 
 // removeMark removes this session's mark at a clean close.

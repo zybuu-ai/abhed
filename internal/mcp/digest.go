@@ -14,6 +14,18 @@ import (
 
 var digestForm = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
+// imageByDigest is an OCI image reference by digest, as an engine pulls it.
+var imageByDigest = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
+
+// containerEngines are the programs whose image argument a digest may pin:
+// any other program could take such an argument and run something else.
+var containerEngines = map[string]bool{"docker": true, "podman": true, "nerdctl": true}
+
+// engineName is command's program name, without a folder or .exe.
+func engineName(command string) string {
+	return strings.TrimSuffix(filepath.Base(filepath.ToSlash(command)), ".exe")
+}
+
 // ErrDigestMismatch refuses a server whose program is not the one its
 // digest pins.
 var ErrDigestMismatch = errors.New("the server's program does not match its digest")
@@ -34,9 +46,11 @@ func pinnedCommand(cfg ServerConfig, env []string) (string, error) {
 	if cfg.URL != "" {
 		return "", errors.New("digest pins a program Abhed starts; a URL server's cannot be checked, so remove digest or run the server over stdio")
 	}
-	for _, a := range cfg.Args {
-		if strings.HasSuffix(strings.ToLower(a), "@"+want) {
-			return cfg.Command, nil
+	if containerEngines[engineName(cfg.Command)] {
+		for _, a := range cfg.Args {
+			if !strings.HasPrefix(a, "-") && imageByDigest.MatchString(strings.ToLower(a)) && strings.HasSuffix(strings.ToLower(a), "@"+want) {
+				return cfg.Command, nil
+			}
 		}
 	}
 	path, err := resolveProgram(cfg.Command, env)

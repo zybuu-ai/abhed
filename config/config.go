@@ -217,6 +217,9 @@ type FenceConfig struct {
 	// the proxy's port but not its address: a command reaches that port on
 	// any host. Managed only.
 	EgressPortOnly bool `json:"egress_port_only,omitempty"`
+	// AllowRoot lets the fence run as root (Landlock ABI 6 or later), with
+	// the files under /etc only root may read hidden. Managed only.
+	AllowRoot bool `json:"allow_root,omitempty"`
 }
 
 type SuggestConfig struct {
@@ -283,6 +286,7 @@ var managedOnly = map[string]string{
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
 	"sandbox.network":                    "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
 	"fence.egress_port_only":             "only the managed configuration lets the fence hold the allowlist by port alone",
+	"fence.allow_root":                   "only the managed configuration lets the fence run as root",
 	"sandbox.microvm_socket":             "only the managed configuration names the microVM driver",
 	"egress.rules":                       "only the managed configuration sets which destinations commands reach",
 	"egress.default":                     "only the managed configuration sets which destinations commands reach",
@@ -345,6 +349,8 @@ func clearManagedOnly(c *Config, key string) {
 	switch key {
 	case "fence.egress_port_only":
 		c.Fence.EgressPortOnly = false
+	case "fence.allow_root":
+		c.Fence.AllowRoot = false
 	case "cli.mode_cycle":
 		c.CLI.ModeCycle = nil
 	case "record.dir":

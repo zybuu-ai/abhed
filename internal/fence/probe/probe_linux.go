@@ -41,7 +41,7 @@ func Run(ctx context.Context, req Requirements) Report {
 	}
 	abi, abiErr := landlockABI()
 	r.LandlockABI = abi
-	r.Checks = append(r.Checks, platformCheck(r), notRootCheck(abi))
+	r.Checks = append(r.Checks, platformCheck(r), notRootCheck(abi, req.AllowRoot))
 	r.Checks = append(r.Checks, childChecks(ctx)...)
 
 	c := abiCheck(CheckLandlockABI, abi, req.minABI(), "the fence")
@@ -67,16 +67,22 @@ func platformCheck(r Report) Check {
 // command run as root could signal every other root process on the host.
 const rootLandlockABI = 6
 
-func notRootCheck(abi int) Check {
+func notRootCheck(abi int, allow bool) Check {
 	c := Check{ID: CheckNotRoot, Required: true}
 	ru, eu, su := unix.Getresuid()
 	rg, eg, sg := unix.Getresgid()
 	c.Value = fmt.Sprintf("uid %d/%d/%d gid %d/%d/%d", ru, eu, su, rg, eg, sg)
-	return rootVerdict(c, ru == 0 || eu == 0 || su == 0, abi)
+	return rootVerdict(c, ru == 0 || eu == 0 || su == 0, abi, allow)
 }
 
-// rootVerdict judges c for a process that is root or not, on Landlock ABI abi.
-func rootVerdict(c Check, root bool, abi int) Check {
+// rootVerdict judges c for a process that is root or not, on Landlock ABI
+// abi, with root allowed by the managed configuration or not.
+func rootVerdict(c Check, root bool, abi int, allow bool) Check {
+	if root && !allow {
+		c.Status, c.Reason = Fail, "running as root, which the fence refuses unless the managed fence.allow_root is true; "+
+			"run Abhed as an ordinary user"
+		return c
+	}
 	if root {
 		if abi < rootLandlockABI {
 			c.Status, c.Reason = Fail, fmt.Sprintf("running as root, which the fence supports only with Landlock ABI %d (Linux 6.12), "+
@@ -84,8 +90,8 @@ func rootVerdict(c Check, root bool, abi int) Check {
 				"Run Abhed as an ordinary user", rootLandlockABI, abi)
 			return c
 		}
-		c.Status, c.Reason = Pass, "running as root: each command drops every capability, empties its bounding set and locks the securebits, "+
-			"and Landlock scopes its signals"
+		c.Status, c.Reason = Pass, "running as root, as the managed fence.allow_root allows: each command drops every capability, empties its "+
+			"bounding set and locks the securebits, Landlock scopes its signals, and files under /etc only root may read are hidden"
 		return c
 	}
 	c.Status, c.Reason = Pass, "running as an ordinary user"
@@ -312,7 +318,7 @@ func mountsCheck(ctx context.Context, req Requirements) Check {
 	case err != nil:
 		c.Status, c.Reason = Fail, "an ordinary user cannot have a user and mount namespace of its own here: "+err.Error()
 	case !out.OK:
-		c.Status, c.Reason = Fail, "a user and mount namespace was made, but could not hold paths read-only: "+out.Reason
+		c.Status, c.Reason = Fail, "a user and mount namespace was made, but the fence's mounts in it failed: "+out.Reason
 	default:
 		c.Status, c.Reason, c.Value = Pass, out.Reason, "mount_namespace"
 	}

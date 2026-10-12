@@ -20,6 +20,13 @@ const (
 	printDepth      = 3
 )
 
+// gitHookNames are the hooks git runs.
+var gitHookNames = set("applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+	"prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push",
+	"pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout",
+	"pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist",
+	"p4-post-changelist", "p4-pre-submit", "post-index-change")
+
 // GitFingerprint sums what git reads as configuration or runs programs from for
 // the repository holding each of dirs: the git folder's config, hooks,
 // commondir and attributes (a linked worktree's and its common folder's too),
@@ -98,13 +105,16 @@ func printPath(h hash.Hash, p string, depth int) {
 			fmt.Fprintf(h, "unlistable\n")
 			return
 		}
-		names := make([]string, 0, len(entries))
+		names := make([]string, 0, min(len(entries), printDirEntries))
 		for i, e := range entries {
-			if i >= printDirEntries {
+			// Past the bound, names git runs as hooks are still read, so a
+			// flood of other names cannot hide a changed hook.
+			if i == printDirEntries {
 				fmt.Fprintf(h, "more %d\n", len(entries))
-				break
 			}
-			names = append(names, e.Name())
+			if i < printDirEntries || gitHookNames[e.Name()] {
+				names = append(names, e.Name())
+			}
 		}
 		sort.Strings(names)
 		for _, n := range names {

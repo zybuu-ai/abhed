@@ -24,7 +24,7 @@ func processGroup() int { return 0 }
 
 // FenceProbe runs the fence's probe, which reports the fence needs Linux.
 func FenceProbe(ctx context.Context, p Policy) probe.Report {
-	return probe.Run(ctx, probe.Requirements{AllowNetwork: p.AllowNetwork})
+	return probe.Run(ctx, probe.Requirements{AllowNetwork: p.AllowNetwork, AllowRoot: p.FenceAllowRoot})
 }
 
 // qualifyHost reports the probe's refusal: the fence needs Linux.

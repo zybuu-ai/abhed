@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // typeInto runs an interactive shell on a terminal, types each line into it a
@@ -380,5 +382,20 @@ func TestNoneCommandLeavesOutWorkspaceTrust(t *testing.T) {
 	out, err := NewNone(DefaultPolicy(ws)).Command(context.Background(), ws, `echo "[$ABHED_TRUST_WORKSPACE]"`).CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "[]") {
 		t.Fatalf("the host command inherited ABHED_TRUST_WORKSPACE: %v\n%s", err, out)
+	}
+}
+
+// Under the allowlist a container has no network of its own, whatever
+// allow_network says: the relay to the proxy is its only way out.
+func TestContainerAllowlistHasNoNetwork(t *testing.T) {
+	ws := workspace(t)
+	p := DefaultPolicy(ws)
+	p.AllowNetwork, p.Egress = true, egressPolicy(t, egress.Config{})
+	args, err := (&Container{policy: p, runtime: "docker"}).runArgs(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.Index(args, "--network"); i < 0 || args[i+1] != "none" {
+		t.Fatalf("the container keeps a network under the allowlist: %v", args)
 	}
 }

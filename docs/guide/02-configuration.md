@@ -36,7 +36,7 @@ configuration](#trusting-the-workspace-configuration).
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
 | `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
-| `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall` and the managed `egress_port_only` — [below](#the-fence-tier-preview-linux) |
+| `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall`, and the managed `egress_port_only` and `allow_root` — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
@@ -378,16 +378,24 @@ counts as the process tier.
 - cgroups v2, with a cgroup delegated to you. Abhed asks systemd whether the
   scope it runs in has `Delegate=yes`, and refuses when it does not; a
   cgroup you can merely write is not enough, since systemd still manages it.
-- An ordinary user, or root on Linux 6.12 or later (Landlock ABI 6). As
-  root, each command keeps uid 0 but drops every capability, empties its
-  capability bounding set and locks the securebits that would give them
-  back, so it cannot override file permissions, bind a low port or change
-  its uid; Landlock's signal scoping keeps it from signalling the host's
-  other root processes, which below ABI 6 it could, so the fence refuses
-  root there. Files root owns outside the workspace stay out of reach only
-  through Landlock's rules, as for any user. `fence.socketcall` does not
-  apply as root. Running Abhed as an ordinary user is still the
-  recommendation.
+- An ordinary user. Root only where the managed configuration sets
+  `"fence": { "allow_root": true }` (a user's or workspace's file cannot),
+  on Linux 6.12 or later (Landlock ABI 6). As root, each command keeps uid
+  0 but drops every capability, empties its capability bounding set and
+  locks the securebits that would give them back, so it cannot override
+  file permissions, bind a low port or change its uid; Landlock's signal
+  scoping keeps it from signalling the host's other root processes, which
+  below ABI 6 it could, so the fence refuses root there. Keeping uid 0, it
+  still reads every file root's own permission bits allow wherever Landlock
+  grants reading, which an ordinary user's command cannot. So under `/etc`
+  the fence grants root only what every user may read: `shadow`, `gshadow`,
+  `sudoers`, `sudoers.d`, the SSH host keys and anything not world-readable
+  (a folder: not world-searchable) are hidden, and listing `/etc` itself is
+  refused. What root can still read that a user could not: root-only files
+  under `/usr`, `/opt`, `/lib`, `/bin` and `/sbin`, under `/sys` (such as
+  ACPI tables in `/sys/firmware`), in the host's `/proc` in `landlock_only`
+  mode, and under any `read_only_paths`. `fence.socketcall` does not apply
+  as root. Running Abhed as an ordinary user is still the recommendation.
 - For `abhed serve` and Abhed Studio, a host that lets an ordinary user make
   a user namespace (see the modes below). Ubuntu 24.04 and later restrict
   this with AppArmor (`kernel.apparmor_restrict_unprivileged_userns`), and a
@@ -410,7 +418,7 @@ picks its mode from that; `fence.qualified` records it as `mode`, and each
 
 | Mode | When | What it adds | Surfaces |
 |---|---|---|---|
-| `mount_namespace` | the host allows unprivileged user namespaces | each command in a user, mount and PID namespace of its own (and a network namespace under the egress allowlist): git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered, a `/proc` showing only its own processes | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
+| `mount_namespace` | the host allows unprivileged user namespaces, and a `/proc` of the namespace's own | each command in a user, mount and PID namespace of its own (and a network namespace under the egress allowlist): git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered, a `/proc` showing only its own processes | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
 | `landlock_only` | it does not | nothing: Landlock and seccomp alone | the command line and the SDK; Studio and `serve` are refused, saying why |
 
 The fence never moves from one mode to the other on its own: a surface that
@@ -543,8 +551,8 @@ without running anything.
   down), the next fenced session on the workspace looks at what the last one
   left: each session keeps a mark in `~/.abhed/fence/` that a clean close
   removes, and where a session's process is gone, it had no `.abhed` when
-  it started, and the `.abhed` there now dates from no later than its last
-  command, that `.abhed` is taken out as above and recorded with `when:
+  it started, and the `.abhed` there now last changed (by its ctime, which
+  a command cannot set) no later than its last command, that `.abhed` is taken out as above and recorded with `when:
   after_unclean_exit`. Nothing is taken while another session on the
   workspace still runs. A `.abhed` you make after such an exit, before the
   next session, is left. A folder added with `--add-dir` is read-only to
@@ -579,7 +587,8 @@ without running anything.
   the filter cannot read their family, unix sockets with them (abstract ones
   scoped by Landlock, named ones not). A workspace file cannot set it.
   Under `sandbox.network: "allowlist"` a command may make inet and inet6
-  stream sockets only (no UDP, no unix sockets), and Landlock lets TCP
+  TCP stream sockets only (no UDP, unix, MPTCP or SCTP sockets, the last two
+  being streams Landlock's TCP rules do not hold), and Landlock lets TCP
   connect only to the session's egress proxy's port. In `mount_namespace`
   mode each command also gets a network namespace of its own holding only its
   loopback, where the launcher relays that port to the proxy's socket on the
@@ -603,9 +612,10 @@ without running anything.
   passes on the signals sent to it (a stop, Ctrl-C), reaps what is orphaned
   and exits as the command does, which ends everything left in the
   namespace. The command sees, signals and traces only its own processes,
-  through a `/proc` of its own (where the kernel refuses a new `/proc`, as
-  under some container runtimes, the inherited one stays and other command
-  lines are visible, but not signalled). In `landlock_only` there is no PID
+  through a `/proc` of its own. Where the kernel refuses a new `/proc`, as
+  in a container that masks parts of it, the probe fails `userns_mounts`, so
+  the fence runs in `landlock_only` or is refused, and a launcher whose
+  mount is refused all the same does not run the command. In `landlock_only` there is no PID
   namespace: below Landlock ABI 6 (Linux older than 6.12) one session's
   commands can signal another session's and read their command lines in
   `/proc`, so an `abhed serve` that accounts sign in to (`auth.mode` other

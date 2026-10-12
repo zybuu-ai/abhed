@@ -375,7 +375,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		sbox = sb
 		unconfine = hostgit.Register(opts.Workspace, sb)
-		bash.Sandbox = hostgit.Broker(opts.Workspace, sb.Tier, sb.Command)
+		bash.Sandbox = hostgit.Broker(opts.Workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command)
 		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))
 		fence, _ = sb.(*sandbox.Fence)
 		if in, ok := sb.(sandbox.Interactive); ok {

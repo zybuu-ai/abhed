@@ -30,6 +30,9 @@ All notable changes to Abhed are recorded here. The format follows
 - A repository made during a session has settings `git init` or `git clone`
   would not write taken out before the next command, which is refused; set
   such settings (a `core.hooksPath` a tool adds, say) yourself.
+- With Abhed run as root on Linux (bubblewrap), a stdio MCP server is
+  refused unless it is set `"host_files": true`; run Abhed as an ordinary
+  user instead.
 - A managed `permissions.deny` list now adds to the user's and the
   workspace's deny rules instead of replacing them.
 - Rule tool names match built-in tools in any case: an allow rule written
@@ -272,7 +275,10 @@ All notable changes to Abhed are recorded here. The format follows
   during the session now has every setting `git init` or `git clone` would
   not write taken out (the file copied to `~/.abhed/quarantine`) and its
   hooks moved there, and that command is refused and recorded as
-  `sandbox.git_planted`. Affects 1.2.3 to 1.2.7.
+  `sandbox.git_planted`. A `.git` file naming a folder outside the workspace
+  or under `.abhed`, or a linked config, is left untouched and refuses every
+  command until removed; so does one that could not be cleaned. Affects
+  1.2.3 to 1.2.7.
 - Under bubblewrap, a container or the fence, a repository past the
   20,000-folder look for git folders was left unprotected in Studio and
   `abhed serve` too, so a command could fill the workspace with folders and
@@ -451,7 +457,8 @@ All notable changes to Abhed are recorded here. The format follows
   reported such a server as pinned, so a changed program started all the
   same. The program a stdio server's command resolves to is now hashed
   before it starts and a mismatch refuses it; an OCI image named by the
-  digest in the arguments is accepted as pinned by the engine. A URL server
+  digest in the arguments of `docker`, `podman` or `nerdctl` is accepted as
+  pinned by the engine. A URL server
   with a `digest`, or a malformed digest, is refused. Affects 0.1.0 to
   1.2.7.
 - Once the managed file turned `web_search` on, a search ran without
@@ -495,6 +502,8 @@ All notable changes to Abhed are recorded here. The format follows
   user unit or a shell rc line. On the process tier its home is now hidden
   but for a home of its own under `~/.abhed/mcp` and its install folder,
   read-only; `"host_files": true` on a server keeps the old behaviour.
+  Under bubblewrap with Abhed run as root, which keeps root's capabilities,
+  a server without `host_files` is refused rather than run unconfined.
   Affects 0.1.0 to 1.2.7.
 - `abhed user remove` did not stop what a running `abhed serve` ran for
   the removed account: its live run, background shells and tasks, and
@@ -671,14 +680,16 @@ All notable changes to Abhed are recorded here. The format follows
 - The fence holds `sandbox.network: "allowlist"`: in `mount_namespace` mode
   each command gets a network namespace with only its loopback, where the
   launcher relays the egress proxy's port to the proxy, and may make inet
-  stream sockets alone. In `landlock_only` mode, where Landlock can confine
+  TCP stream sockets alone (no MPTCP or SCTP, which Landlock's TCP rules do
+  not hold). In `landlock_only` mode, where Landlock can confine
   TCP only to the proxy's port on any address, the managed
   `fence.egress_port_only` accepts that; otherwise the fence still refuses
   the allowlist there.
 - In `mount_namespace` mode each fenced command runs in a PID namespace of
   its own with a `/proc` of its own, as the child of the launcher, which
   stays as init: it passes on signals, reaps orphans and ends the namespace
-  with the command.
+  with the command. Where a new `/proc` cannot be mounted (a container that
+  masks parts of it), `mount_namespace` does not qualify.
 - On the Linux process tier, where Abhed runs in a delegated cgroup, each
   command runs in a cgroup of its own bounded by `max_procs` and
   `max_memory_mb`, which ends whatever the command left. With
@@ -1041,7 +1052,8 @@ All notable changes to Abhed are recorded here. The format follows
   `control_plane.sandbox_memory_mb`, or `resources.cpus` and
   `resources.memory_mb` on one sandbox, are passed to its driver. On Linux the
   `process` driver holds a sized sandbox in a cgroup of its own under a
-  delegated subtree, on the `process` tier; on macOS or without a delegated
+  delegated subtree, on the `process` tier, each command's own cgroup made
+  inside it; on macOS or without a delegated
   subtree it refuses the create up front (`400`, with the reason), and on
   another tier the sandbox goes to `Error`, rather than run unbounded. A
   driver can refuse a size at create time through `driver.ConfigChecker`.
@@ -1204,11 +1216,18 @@ All notable changes to Abhed are recorded here. The format follows
   `prune` and `git submodule update`, given as the whole command, run through
   host git with Abhed's safety settings instead of failing inside the
   sandbox; `git worktree remove --force` no longer deletes the worktree's
-  files and then fails. A path outside the workspace refuses them.
-- The fence runs as root on Linux 6.12 or later (Landlock ABI 6), where it
-  refused root before: each command drops every capability, empties its
-  bounding set and locks the securebits, and Landlock keeps it from
-  signalling other root processes. Below ABI 6 root is still refused.
+  files and then fails. A path outside the workspace refuses them. With
+  the network off or held to an allowlist, host git would reach the network
+  outside both, so `git submodule update` there needs `--no-fetch` and is
+  run with no transport: it checks out only what is already fetched.
+- The fence runs as root on Linux 6.12 or later (Landlock ABI 6) where the
+  managed `fence.allow_root` is `true`, where it refused root before: each
+  command drops every capability, empties its bounding set and locks the
+  securebits, and Landlock keeps it from signalling other root processes.
+  Root keeps uid 0, so under `/etc` only what every user may read is granted
+  (no `shadow`, `gshadow`, `sudoers` or SSH host keys); root-only files
+  elsewhere that Landlock grants, such as under `/usr` or `/sys`, stay
+  readable. Below ABI 6, or without the key, root is still refused.
 - The fence's launcher in `mount_namespace` mode empties its capability
   bounding set and locks the securebits before running a command, so the
   command could not gain a capability even past no_new_privs.

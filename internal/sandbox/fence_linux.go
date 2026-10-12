@@ -221,7 +221,8 @@ func FenceProbe(ctx context.Context, p Policy) probe.Report {
 
 func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	base, derr := cgroup.Discover()
-	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit && p.GitRequired}
+	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit && p.GitRequired,
+		AllowRoot: p.FenceAllowRoot}
 	if p.ScopeSignals {
 		// Below it, one account's commands could signal another's, which share the uid.
 		req.LandlockABI = signalScopeABI
@@ -692,10 +693,12 @@ func runLauncher(args []string) int {
 		if err != nil {
 			return launchFail("entering the working folder again: %v", err)
 		}
-		// A namespace-own /proc shows only its processes; without one the
-		// namespace still keeps signals and ptrace inside.
+		// A namespace-own /proc shows only its processes; the host's would
+		// show every command line, so a refused mount refuses the command.
 		if s.PIDNS {
-			_ = mountns.MountProc()
+			if err := mountns.MountProc(); err != nil {
+				return launchFail("%v", err)
+			}
 		}
 		if s.Egress != nil {
 			if err := mountns.LoopbackUp(); err != nil {
@@ -852,7 +855,7 @@ func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	pol.ProxyOnly = s.ProxyOnly
 	// Only where Landlock scopes abstract unix sockets: a pathname one is
 	// still reachable through it, as the setting's documentation says.
-	pol.Socketcall = s.Network && s.Socketcall && abi >= 6 && os.Geteuid() != 0
+	pol.Socketcall = s.Network && s.Socketcall && socketcallOff(int(abi), os.Geteuid() == 0) == ""
 	if err := seccomp.Install(pol); err != nil {
 		return launchFail("%v", err)
 	}
