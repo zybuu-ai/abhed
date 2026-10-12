@@ -717,7 +717,8 @@ in force, and so is an interactive terminal's, unless it is the one the
 server starts (`bash --noprofile --norc -i`), which reads none.
 
 The server cannot read a sandbox's files, so while bash rules or hooks are
-in force an `:exec` or SSH exec line that would have a shell run one is
+in force an `:exec` or SSH exec line, or a line typed into an attached
+shell, that would have a shell run one is
 refused (`403`, code `forbidden`) rather than passed unread: a script run
 by path or through a shell (`./s.sh`, `sh s.sh`), a file sourced
 (`. f`, `source f`), a start-up file (`BASH_ENV=`, `ENV=`, `--rcfile`,

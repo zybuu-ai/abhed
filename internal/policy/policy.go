@@ -412,16 +412,17 @@ type Engine struct {
 	// a sandbox whose files are not the host's.
 	Cwd func() string
 
-	// Home returns the HOME the sandbox gives a command, as a host path, and
-	// whether the host can read it ("" when it is made empty later). A shell
-	// a command starts reads start-up files there; one hidden from the host
-	// is refused under the rules. Nil is this process's own HOME.
+	// Home is the HOME commands get, as a host path ("" while not made yet),
+	// and whether the host can read it; nil is this process's own.
 	Home func() (dir string, visible bool)
 
-	// SandboxFiles marks an engine judging commands in a sandbox whose files
-	// the host cannot read, as a control-plane :exec: a line that runs a
-	// script or gives a shell a start-up file there is refused under rules.
+	// SandboxFiles marks an engine for a sandbox whose files the host cannot
+	// read (an :exec): a line that would run one is refused under rules.
 	SandboxFiles bool
+
+	// homeMarked holds the HOME's start-up files as the first bash call
+	// found them; copies of the engine share it.
+	homeMarked *homeMarks
 
 	// AskReadOnly names read-only tools that may still ask in the default,
 	// accept-edits, auto and plan modes. Each is given the call's subject and
@@ -437,7 +438,7 @@ type Engine struct {
 	GitExtensions map[string]bool
 }
 
-func New(mode Mode) *Engine { return &Engine{Mode: mode} }
+func New(mode Mode) *Engine { return &Engine{Mode: mode, homeMarked: new(homeMarks)} }
 
 // WithoutHooks is a copy of e that asks no hook of any kind, for a dry run
 // that must not show a hook a call that is not being made.
@@ -829,6 +830,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		if line {
 			canon = canon.AsTerminalLine()
 		}
+		e.markHome()
 		subjects, complete = commandSegments(subject)
 		narrowAllows = !hasShellControl(subject)
 		if canon.Text != subject {

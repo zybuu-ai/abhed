@@ -3,7 +3,9 @@ package app
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -132,10 +134,8 @@ func (r *witnessReporter) flush() {
 	}
 }
 
-// witnessFile reads the heads of local sessions a witness file holds under
-// this installation's key, read again only when the file changes. A line
-// that is not one, or a statement under another key, fails verify by
-// itself, so it is passed over here.
+// witnessFile is the local heads a witness file holds under this key, read
+// again as it changes; a bad line fails verify by itself, so is passed over.
 type witnessFile struct {
 	cfg  config.Config
 	path string
@@ -150,11 +150,17 @@ func (w *witnessFile) heads(tenant, session string) ([]local.WitnessedHead, erro
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	f, err := os.Open(w.path) // #nosec G304 -- the managed witness file
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil // no head sent yet: nothing to check against
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = fmt.Errorf("%s is not a file", w.path)
+	}
 	if err != nil {
 		return nil, err
 	}

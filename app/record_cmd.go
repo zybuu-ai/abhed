@@ -323,10 +323,8 @@ func (c recordCtx) checkWitness(path, keyGiven string) bool {
 	return len(unreadable) > 0 || witness.Failed(problems) > 0
 }
 
-// prunedHead accounts for a witnessed head of a session that was pruned: the
-// tombstone must hold the witnessed hash at that line, as its head or as a
-// head the prune checked against the witness file, of a record that was
-// there and verified when it was pruned.
+// prunedHead accounts for a pruned session's witnessed head: its tombstone must
+// hold that hash at that line, of a record that verified when it was pruned.
 func (c recordCtx) prunedHead(session string, line int64, hash string) (string, bool, error) {
 	t, pruned := c.rec.Pruned(session)
 	h := t.Head

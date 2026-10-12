@@ -59,8 +59,10 @@ func (f *shellFacts) setsByName(v string) {
 	switch n {
 	case "PATH":
 		f.pathSet, f.pathUnknown = true, true
-	case "BASH_ENV", "ENV":
+	case "BASH_ENV":
 		f.startupHidden = "a shell start-up file set by a command (" + n + ")"
+	case "ENV":
+		f.envHidden = "a shell start-up file set by a command (ENV)"
 	case "HOME", "ZDOTDIR":
 		f.startupDir(n, "", false)
 	}
@@ -92,6 +94,13 @@ func (f *shellFacts) envAssign(w *syntax.Word) {
 // script it runs; one named by an expansion is a script no rule can read.
 func (f *shellFacts) startupFile(name, value string, lit bool) {
 	switch {
+	case name == "ENV" && !lit:
+		// Only an interactive shell reads ENV: kept for startups to weigh.
+		f.envHidden = "a shell start-up file named by an expansion (ENV)"
+	case name == "ENV":
+		if value != "" && value != "/dev/null" {
+			f.envFiles = append(f.envFiles, value)
+		}
 	case !lit:
 		f.startupHidden = "a shell start-up file named by an expansion (" + name + ")"
 	case value != "" && value != "/dev/null":
@@ -130,9 +139,8 @@ func (f *shellFacts) startupDir(name, value string, lit bool) {
 // startupDirSet is a folder named by HOME or ZDOTDIR.
 type startupDirSet struct{ name, dir string }
 
-// startups are the start-up files the shells the line starts read from the
-// HOME and ZDOTDIR folders it sets, as they start; why says when one is not
-// known. Neither counts when the line starts no shell and runs no script.
+// startups are the start-up files the line's shells read from the HOME and
+// ZDOTDIR it sets, by how they start; why says when one is not known.
 func (f *shellFacts) startups() (files []Script, why string) {
 	if !f.shellRun && len(f.scripts) == 0 {
 		return nil, ""
@@ -145,7 +153,16 @@ func (f *shellFacts) startups() (files []Script, why string) {
 			}
 		}
 	}
-	return files, f.startupDirHidden
+	why = f.startupDirHidden
+	if f.interactive {
+		for _, e := range f.envFiles {
+			files = append(files, Script{Path: e})
+		}
+		if why == "" {
+			why = f.envHidden
+		}
+	}
+	return files, why
 }
 
 // pathEntries records the folders a PATH value names; an empty entry or
@@ -231,7 +248,7 @@ func (f *shellFacts) shellStart(name string, args []*syntax.Word) {
 	if !ok {
 		return
 	}
-	login, interactive, command, rc, profile := false, false, false, true, true
+	login, interactive, command, rc, profile, operand := false, false, false, true, true, false
 scan:
 	for j := 0; j < len(args); j++ {
 		v, lit := literal(args[j])
@@ -243,6 +260,7 @@ scan:
 			login, interactive = true, true
 			break scan
 		case v == "--":
+			operand = j+1 < len(args)
 			break scan
 		case v == "--login" || v == "-login":
 			login = true
@@ -273,7 +291,19 @@ scan:
 				}
 			}
 		default:
+			operand = true
 			break scan
+		}
+	}
+	f.interactive = f.interactive || interactive
+	f.ttyShell = f.ttyShell || !command && !operand
+	// With no command and no script it reads its input: a terminal's, typed at one.
+	if !command && !operand && rc {
+		if f.ttyFiles == nil {
+			f.ttyFiles = map[string]bool{}
+		}
+		for _, n := range files[2] {
+			f.ttyFiles[n] = true
 		}
 	}
 	if f.homeFiles == nil {
@@ -293,9 +323,8 @@ scan:
 	}
 }
 
-// homeStartups are the start-up files, by name, the shells the line starts
-// read from the HOME they inherit: none when the line sets HOME itself, and
-// no zsh file when it sets ZDOTDIR, as those folders are read instead.
+// homeStartups are the start-up files the line's shells read from the HOME
+// they inherit; none for a HOME, and no zsh's for a ZDOTDIR, it sets.
 func (f *shellFacts) homeStartups() []string {
 	var out []string
 	setsHome, setsZdot := f.startupDirHidden != "", f.startupDirHidden != ""
@@ -313,3 +342,6 @@ func (f *shellFacts) homeStartups() []string {
 	}
 	return out
 }
+
+// HomeStartupNames are the start-up files a shell may read from $HOME.
+func HomeStartupNames() []string { return append([]string(nil), startupDirFiles["HOME"]...) }

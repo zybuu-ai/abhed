@@ -96,15 +96,21 @@ type shellFacts struct {
 	pathDirs, bare                []string
 	// startupHidden says why a shell start-up file the command sets is not known.
 	startupHidden string
-	// startupDirs are the folders HOME and ZDOTDIR are set to, which a shell
-	// reads start-up files from, and startupDirHidden why one is not known;
-	// shellRun reports a shell started.
+	// startupDirs are what HOME and ZDOTDIR are set to, startupDirHidden why
+	// one is not known; shellRun reports a shell started.
 	startupDirs      []startupDirSet
 	startupDirHidden string
 	shellRun         bool
 	// homeFiles are the start-up files the shells the line starts read from
 	// the HOME they inherit, by name.
 	homeFiles map[string]bool
+	// ttyFiles are those a shell reading its input reads when that is a terminal.
+	ttyFiles map[string]bool
+	// envFiles and envHidden are what ENV names, read by an interactive shell
+	// only; interactive reports one started, ttyShell one reading its input.
+	envFiles              []string
+	envHidden             string
+	interactive, ttyShell bool
 }
 
 // Script is a file a command runs as shell text, as named on its line.

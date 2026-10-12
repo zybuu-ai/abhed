@@ -50,8 +50,14 @@ All notable changes to Abhed are recorded here. The format follows
 - On macOS `abhed` runs itself again as it starts, with secrets kept out of
   the environment other processes can read; `ABHED_SHOW_ENV=1` turns it off.
 - `auth.session_hours` must be between 0 and 8760.
-- An extension may no longer provide a tool named like a built-in tool, in
-  any case; such a tool is refused with a warning.
+- An interactive terminal's shell is now judged as `bash --noprofile --norc
+  -i`. A deny rule `bash(bash -i)` or `bash(bash *)` still refuses it;
+  `bash(bash -i*)` and `bash(bash)` no longer do, so rewrite such a rule as
+  `bash(bash -i)` to keep refusing terminals.
+- With only `record.witness.url` set, `abhed record verify` now fails a
+  pruned session whose witness holds a line before the session's last:
+  the prune could not check those lines. Set `record.witness.file` too if
+  sessions are pruned.
 - `-allowedTools` keeps an MCP or extension tool's name as written, so an
   allow flag with capital letters now matches that tool.
 - Studio's and the web IDE's terminals are interactive again under a managed
@@ -158,9 +164,10 @@ All notable changes to Abhed are recorded here. The format follows
   when a session's owner changed in the store under a running server (as
   `abhed migrate --owners local-only` moving it from an old owner key to an
   account does), the server took the new owner as the session's, and that
-  account could drive the terminals started under the old key. Each now answers only the account that started it. (An
-  account removed and made again under the same name has the same owner key;
-  the account sweep below ends its terminals.) Affects 1.0.0 to 1.2.7.
+  account could drive the terminals started under the old key. Each now
+  answers only the account that started it. (An account removed and made
+  again under the same name has the same owner key; the account sweep below
+  ends its terminals.) Affects 1.0.0 to 1.2.7.
 - A call whose approval could not be written to the record (the database
   failing, or the session held by another process) still ran, so the record
   held no approval for what was done, and a process taking the session over
@@ -198,15 +205,19 @@ All notable changes to Abhed are recorded here. The format follows
   (`PATH=sub . s.sh`), or that is named from `~` is refused under a deny
   rule and asked about otherwise. A bare program is read from each folder a
   `PATH` the line sets names (`PATH=sub:$PATH tool`), and a shell's start-up
-  file is read as a script it runs (`BASH_ENV=f`, `ENV=f`, `--rcfile f`,
+  file is read as a script it runs (`BASH_ENV=f`, `ENV=f` for an
+  interactive shell, `--rcfile f`,
   `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
   `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` a shell the line
   starts reads, by its options, from a `ZDOTDIR` or `HOME` folder the line
-  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true`, or that
+  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true` (a
+  shell typed into a terminal, as `bash`, counted as interactive), or that
   an exec sets in its environment, and those a shell reads from the
   `HOME` the sandbox gives it, which an earlier command may have written:
-  read on the process tier, none and the fence, and refused under a deny
-  rule where the host cannot read that `HOME`, as in a container); one too long, unparsable, running built text, or itself
+  read on the process tier, none and the fence (those there unchanged
+  since the session's first command, the person's own, are not), and
+  refused under a deny rule where the host cannot read that `HOME`, as in a
+  container); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
   interpreters' scripts are not read. An `:exec` in a sandbox, whose files
   the server cannot read, refuses instead, while rules or hooks are in
@@ -1205,8 +1216,9 @@ All notable changes to Abhed are recorded here. The format follows
   advises allowing the paths needed instead.
 - `egress.inspect_tls`, off by default and set only in the managed
   configuration: each session's proxy makes a CA of its own (valid two days,
-  replaced daily, the bundle rewritten), terminates commands' HTTPS with it, and decides every request inside by method and
-  path, recorded as kind `https`. Commands are pointed at a bundle with the
+  replaced daily, the bundle rewritten), terminates commands' HTTPS with it,
+  and decides every request inside by method and path, recorded as kind
+  `https`. Commands are pointed at a bundle with the
   session's CA, given to them on the process, fence, container and vm
   tiers and by the container and microVM drivers (a guest agent from an
   earlier release refuses the CA, and the sandbox is not created); a client
@@ -1249,11 +1261,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- A command on the host (the none tier, and the CLI's bash with no sandbox)
+  no longer inherits `ZDOTDIR`, so zsh reads its start-up files from
+  `HOME`, where the rules' check reads them.
 - An interactive terminal's shell (the workbench's, Studio's, `:attach`
   and SSH) is judged and recorded as `bash --noprofile --norc -i`, as it
-  runs, rather than `bash -i`; a deny rule written on `bash -i` no longer
-  names it. An exec's `HOME` or `ZDOTDIR` is no longer refused by itself
-  under rules: it is judged with the command it is given (see Security).
+  runs, rather than `bash -i`; deny rules `bash(bash -i*)` and
+  `bash(bash)` no longer name it (see Upgrading). An exec's `HOME` or
+  `ZDOTDIR` is no longer refused by itself under rules: it is judged with
+  the command it is given (see Security).
 - Studio's line-by-line terminal shows any escape sequence but colour as a
   symbol, so a progress bar or spinner that redraws its line now prints
   each frame on its own; run such a command in the interactive shell to

@@ -455,7 +455,8 @@ A line that sets `PATH` to folders it names (`PATH=sub:$PATH tool`,
 read as a script from each of those folders, an empty entry and `$PWD` being
 the start folder; one the line may write first there is refused. A file a
 shell runs as it starts is read as a script the line runs: `BASH_ENV=f`,
-`ENV=f` (also through `env` or `export`), `--rcfile f` and `--init-file f`.
+`ENV=f` for an interactive shell (`sh -i`; a plain `sh -c` reads no `ENV`),
+all also through `env` or `export`, `--rcfile f` and `--init-file f`.
 So is each start-up file a shell the line starts reads from a folder the
 line sets `ZDOTDIR` or `HOME` to, by how it starts: zsh reads
 `$ZDOTDIR/.zshenv` (`$HOME` when `ZDOTDIR` is not set) on every start,
@@ -465,7 +466,10 @@ shell (`-l`, `--login`, `-o login`) and `.zshrc` as an interactive one
 `.bash_logout` as a login shell (not with `--noprofile`) and `.bashrc` as an
 interactive one (not with `--norc`); sh, dash and ksh read `.profile` as a
 login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
-A plain `bash -c` or `sh -c` reads none; a script the line runs may be
+A plain `bash -c` or `sh -c` reads none. A shell typed into a terminal with
+no command and no script (`bash`, `exec bash`, `zsh`) reads the terminal,
+so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
+A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
 or asked about. A start-up file or folder named by an
@@ -474,7 +478,11 @@ variable by name (`read BASH_ENV`, `read ZDOTDIR`), is refused or asked
 about as the scripts above are. A shell started with the `HOME` the
 sandbox gives commands reads its start-up files there, which an earlier
 command may have written, so those are read too, by the same rules (a
-`#!/bin/zsh` script reads `.zshenv`). That
+`#!/bin/zsh` script reads `.zshenv`). The files there when the session's
+first command is judged are your own, recorded by size, time and hash, and
+are not judged while they stay that way, so a package manager's line in
+your `.zprofile` does not make `zsh -lc` ask; one made or changed after
+that is read and judged. That
 `HOME` is the host's own on the process tier and none, the fence's private
 home folder under the fence, and, in a container, a microVM, a driver's
 sandbox or a control-plane sandbox exec, a folder the host cannot read:

@@ -60,10 +60,8 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 var systemBins = map[string]bool{"/bin": true, "/sbin": true, "/usr/bin": true, "/usr/sbin": true,
 	"/usr/local/bin": true, "/usr/local/sbin": true}
 
-// SandboxScripts says why canon cannot be judged where its files are not the
-// host's, as on a sandbox's :exec: it runs a script, sources a file, gives a
-// shell a start-up file or folder, or finds a program on a PATH it sets, none
-// of which the check can read. "" for a command that does none of that.
+// SandboxScripts says why canon would run a file the check cannot read in a
+// sandbox (a script, a sourced or start-up file, a PATH it sets), or "".
 func SandboxScripts(canon tools.Canonical) string {
 	if names := canon.HomeStartups(); len(names) > 0 {
 		return "it starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
@@ -113,7 +111,9 @@ func (e *Engine) homeScripts(canon tools.Canonical) (scripts []tools.Script, why
 		return nil, "starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
 	}
 	for _, n := range names {
-		scripts = append(scripts, tools.Script{Path: filepath.Join(dir, n), Startup: true})
+		if p := filepath.Join(dir, n); !e.unchangedHomeFile(p) {
+			scripts = append(scripts, tools.Script{Path: p, Startup: true})
+		}
 	}
 	return scripts, ""
 }
@@ -220,6 +220,7 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			case !visible || !filepath.IsAbs(dir):
 				out.refuse = "it runs the zsh script " + name + ", which reads .zshenv from a HOME the check cannot read"
 				return moves
+			case e.unchangedHomeFile(filepath.Join(dir, ".zshenv")):
 			default:
 				scripts = append(scripts, tools.Script{Path: filepath.Join(dir, ".zshenv"), Startup: true})
 			}
