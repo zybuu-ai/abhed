@@ -228,9 +228,7 @@ func explainDecision(e *cmdEnv, tool, what string) string {
 		resolved = what + ": "
 	}
 	args, _ := json.Marshal(map[string]string{key: what})
-	dry := *e.pol
-	dry.Hooks, dry.EngineHooks = nil, nil
-	res := dry.Evaluate(tool, mutatesTool(e, tool, args), args)
+	res := e.pol.WithoutHooks().Evaluate(tool, mutatesTool(e, tool, args), args)
 	rule := res.Rule
 	if rule == "" {
 		rule = "no rule"

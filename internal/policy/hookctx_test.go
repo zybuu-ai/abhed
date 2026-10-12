@@ -49,3 +49,24 @@ func TestHooksAreBoundByADeadline(t *testing.T) {
 		t.Fatal("an engine with hooks does not screen")
 	}
 }
+
+// A dry run asks no hook of any kind, and leaves the engine's own hooks in place.
+func TestWithoutHooksAsksNoHook(t *testing.T) {
+	asked := ""
+	e := New(ModeDefault)
+	e.Hooks = []Hook{func(string, json.RawMessage) *Result { asked += "hook "; return nil }}
+	e.EngineHooks = []func(*Engine) Hook{func(*Engine) Hook {
+		return func(string, json.RawMessage) *Result { asked += "engine "; return nil }
+	}}
+	e.ContextHooks = []func(*Engine) ContextHook{func(*Engine) ContextHook {
+		return func(context.Context, string, json.RawMessage) *Result { asked += "context "; return nil }
+	}}
+	e.WithoutHooks().Evaluate("write", true, args(map[string]string{"path": "a"}))
+	if asked != "" {
+		t.Fatalf("a dry run asked: %s", asked)
+	}
+	e.Evaluate("write", true, args(map[string]string{"path": "a"}))
+	if asked != "hook engine context " {
+		t.Fatalf("the engine's own hooks were changed: %q", asked)
+	}
+}

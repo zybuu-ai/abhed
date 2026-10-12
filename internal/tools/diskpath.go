@@ -183,13 +183,46 @@ func FoldsCaseAt(p string) bool {
 
 // caseFolds holds, per folder, whether names in it open in another case: every
 // entry of one folder is on the same disk, so one answer serves them all.
-var caseFolds sync.Map // folder -> bool
+var caseFolds = foldMemo{max: maxCaseFolds}
+
+// maxCaseFolds bounds the folders caseFolds keeps; past it, it starts again.
+const maxCaseFolds = 4096
+
+// foldMemo is a map of folder answers that empties itself when full, so a
+// long-lived server reading many folders does not grow it without end.
+type foldMemo struct {
+	mu  sync.Mutex
+	m   map[string]bool
+	max int
+}
+
+func (c *foldMemo) Load(dir string) (folds, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.m[dir]
+	return v, ok
+}
+
+func (c *foldMemo) Store(dir string, folds bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil || len(c.m) >= c.max {
+		c.m = make(map[string]bool)
+	}
+	c.m[dir] = folds
+}
+
+func (c *foldMemo) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.m)
+}
 
 // namesFold judges dir by name, one of its entries, or with name empty by the
 // first of its entries whose names have case.
 func namesFold(dir, name string) (folds, known bool) {
-	if v, ok := caseFolds.Load(dir); ok {
-		return v.(bool), true
+	if folds, ok := caseFolds.Load(dir); ok {
+		return folds, true
 	}
 	names := []string{name}
 	if name == "" {

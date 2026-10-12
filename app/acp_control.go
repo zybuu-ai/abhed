@@ -185,9 +185,7 @@ func (c *acpConn) explain(msg rpcMessage) {
 	}
 	// A dry run: no hook is consulted, nothing is recorded, and the
 	// session's "always" scopes are neither read nor changed.
-	dry := *parts.Loop.Policy
-	dry.Hooks, dry.EngineHooks = nil, nil
-	d := dry.Evaluate(p.Tool, mutates, p.Args)
+	d := parts.Loop.Policy.WithoutHooks().Evaluate(p.Tool, mutates, p.Args)
 	res := map[string]any{"decision": string(d.Decision), "step": d.Step, "reason": redacted(d.Reason)}
 	if d.Rule != "" {
 		res["rule"] = redacted(d.Rule)

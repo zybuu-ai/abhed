@@ -149,6 +149,14 @@ All notable changes to Abhed are recorded here. The format follows
   asked again and could run it a second time. Such a call, and a person's own
   call in the workbench, is now not run, and the run ends on the failed
   write. Affects 0.1.0 to 1.2.7.
+- A brace sequence such as `{c..c}url` or `c{u..u}rl` was not read as the
+  words bash makes of it, so it ran `curl` past `bash(curl *)` in any mode
+  that runs commands unasked, and on `:exec`. A literal sequence of letters
+  or integers is now read as bash expands it, up to 1,024 words, and deny
+  and ask rules see the result; one with an increment, zero padding or
+  letters of both cases, or a longer one, is asked about, and refused on
+  `:exec`, while a deny or ask rule for `bash` has a pattern. Affects every
+  release to 1.2.7.
 - An `ssh_connect` host name that read like an operator's host only by a
   look-alike character, such as `pr0d` or `buiId1` beside `prod` and
   `build1`, was accepted. Names are now compared with look-alike characters
@@ -159,11 +167,16 @@ All notable changes to Abhed are recorded here. The format follows
   `bash(curl *)` when the script held it. The agent's commands now have the
   shell scripts they run read from the folder they start in, two levels
   deep, and their commands checked against deny and ask rules. A script that
-  does not exist, that the same line writes before running it, or that is
-  named from `~` is refused under a deny rule; one too long, unparsable or
-  running built text is asked about. Binaries and other interpreters'
-  scripts are not read, and an `:exec` reads no script. Affects every
-  release to 1.2.7.
+  does not exist, that the same line writes before running it (a
+  redirection, `cp`, `mv`, `ln`, `install`, `rsync`, `tee`, `dd`, `sed -i`,
+  `perl -i`, `curl -o`, `wget`, or a file named by an expansion), that is
+  named by a relative path on a line that changes folder (`cd`, `pushd`,
+  `popd`, `env -C`, `sudo -D`, `find -execdir`, or a sourced script that
+  does), or that is named from `~` is refused under a deny rule and asked
+  about otherwise; one too long, unparsable, running built text, or itself
+  running a script after a `cd` is asked about. Binaries and other
+  interpreters' scripts are not read, and an `:exec` reads no script.
+  Affects every release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
   on a disk that ignores case (documented as a limit). Deny and ask path
@@ -183,13 +196,15 @@ All notable changes to Abhed are recorded here. The format follows
   scope is now offered only when the program `PATH` finds is outside every
   workspace root and no relative `PATH` entry comes first. Affects 1.2.0 to
   1.2.7.
-- The ask before a bash command naming `ABHED_TRUST_WORKSPACE` or
-  `trust-workspace` was a default `permissions.ask` entry, so a configuration
-  with its own ask list dropped it, and a command that assembled the name
-  (`X=ABHED_TRUST_WORKSPACE; env $X=1 abhed …`) or set it in a script was not
-  caught. The ask is now built in, in every mode and any case, and a nested
-  `abhed` inside an agent's command ignores `ABHED_TRUST_WORKSPACE` with a
-  warning. Affects 1.2.2 to 1.2.7.
+- A nested `abhed` inside an agent's command honoured
+  `ABHED_TRUST_WORKSPACE`, however the command set it: a name the command
+  assembled (`X=ABHED_TRUST_WORKSPACE; env $X=1 abhed …`) or one set in a
+  script passed the ask, which was only a default `permissions.ask` entry
+  that a configuration with its own ask list dropped. A nested `abhed` now
+  ignores `ABHED_TRUST_WORKSPACE` with a warning, which is the control. The
+  ask is also built in, in every mode and any case, for a command whose text
+  names it; it sees inside a script the command runs only while a bash deny
+  or ask rule has a pattern, when scripts are read. Affects 1.2.2 to 1.2.7.
 - A deny or ask rule naming flags, such as `bash(rm -rf *)`, did not match
   the same flags moved or split (`rm x -rf`, `rm -r -f x`). Such a rule now
   also matches a command with the same program and subcommands that has
@@ -314,7 +329,8 @@ All notable changes to Abhed are recorded here. The format follows
   allow", or your own git, ran it. Those surfaces now hold git's files too, on
   every tier but none; `sandbox.protect_git: false` turns it off. An "always
   allow" for a git command is also asked again once the repository's config,
-  hooks, attributes or your global git configuration change. Affects 0.1.0 to
+  hooks, attributes or your global git configuration change, the nested
+  repository the shell has moved into included. Affects 0.1.0 to
   1.2.7.
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
@@ -1726,8 +1742,9 @@ All notable changes to Abhed are recorded here. The format follows
   `ValidateBoundClaims` and `RelayKeyCommandArgv` read the new edition keys
   with their environment fallback.
 - `policy`: `Engine.EvaluateContext`, `ContextHook`, `Engine.ContextHooks`,
-  `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's hooks by
-  a deadline; `Engine.Cwd` lets deny and ask rules read the scripts a
+  `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's context
+  hooks by a deadline (`Engine.Hooks` and `EngineHooks` get no context, so
+  one that never returns is not cut off); `Engine.Cwd` lets deny and ask rules read the scripts a
   command runs; `Result.Suggest` is the allow rule for exactly a call that
   offers no scope. `tools.Subjector` with `RegisterSubjector` lets a tool
   name its own policy subject, as `ssh` does with `host/command`.

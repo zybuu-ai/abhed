@@ -428,6 +428,14 @@ type Engine struct {
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
 
+// WithoutHooks is a copy of e that asks no hook of any kind, for a dry run
+// that must not show a hook a call that is not being made.
+func (e *Engine) WithoutHooks() *Engine {
+	dry := *e
+	dry.Hooks, dry.EngineHooks, dry.ContextHooks = nil, nil, nil
+	return &dry
+}
+
 // AllowGitExtensions opts the named git extensions in; a name that is not a
 // plain subcommand, or is one of git's own, is refused.
 func (e *Engine) AllowGitExtensions(names ...string) error {
@@ -710,7 +718,14 @@ func (e *Engine) pathSubjects(p string, disk bool) (all, allow []string) {
 // kept: a decision's own path is read each time, its roots at most this often.
 const rootSpellingsFor = time.Second
 
-var rootMemo sync.Map // root -> rootSpelling
+// rootMemo holds rootSpellings' answers; past maxRootMemo roots it starts again.
+var rootMemo = struct {
+	sync.Mutex
+	m map[string]rootSpelling
+}{}
+
+// maxRootMemo bounds the roots rootMemo keeps, as a server sees many workspaces.
+const maxRootMemo = 1024
 
 type rootSpelling struct {
 	real, disk string
@@ -719,14 +734,20 @@ type rootSpelling struct {
 
 // rootSpellings is root with its links resolved, and that as the disk spells it.
 func rootSpellings(root string) (real, disk string) {
-	if v, ok := rootMemo.Load(root); ok {
-		if s := v.(rootSpelling); time.Since(s.at) < rootSpellingsFor {
-			return s.real, s.disk
-		}
+	rootMemo.Lock()
+	s, ok := rootMemo.m[root]
+	rootMemo.Unlock()
+	if ok && time.Since(s.at) < rootSpellingsFor {
+		return s.real, s.disk
 	}
 	real = tools.RealPath(root)
 	disk = tools.DiskPath(real)
-	rootMemo.Store(root, rootSpelling{real: real, disk: disk, at: time.Now()})
+	rootMemo.Lock()
+	if rootMemo.m == nil || len(rootMemo.m) >= maxRootMemo {
+		rootMemo.m = make(map[string]rootSpelling)
+	}
+	rootMemo.m[root] = rootSpelling{real: real, disk: disk, at: time.Now()}
+	rootMemo.Unlock()
 	return real, disk
 }
 
@@ -961,7 +982,9 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	}
 
 	// 2c'. A command naming workspace trust for a nested run asks in every
-	// mode, whatever ask rules a configuration sets.
+	// mode, whatever ask rules a configuration sets. It is a prompt, not the
+	// control: scripts are read only under patterned rules, and a nested
+	// abhed ignores the variable whatever this sees.
 	if tool == "bash" && namesTrust(append(subjects, canon.Text)) {
 		return Result{Decision: Ask, Reason: "the command names ABHED_TRUST_WORKSPACE or -trust-workspace, which would trust a workspace for a nested run — always requires confirmation", Scope: "", Step: "ask"}
 	}

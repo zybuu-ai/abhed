@@ -35,3 +35,30 @@ func TestGitScopeIsGuardedByTheRepository(t *testing.T) {
 		t.Fatalf("mkdir: offer %q guard %q", r.Offer(), r.Guard)
 	}
 }
+
+// A session in a nested repository has that repository's hooks in its guard:
+// one planted there after the grant is asked about again.
+func TestGitScopeGuardsTheNestedRepositoryTheSessionIsIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	nested := filepath.Join(ws, "vendor", "lib")
+	for _, d := range []string{filepath.Join(ws, ".git", "hooks"), filepath.Join(nested, ".git", "hooks")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := New(ModeDefault)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return nested }
+	args := []byte(`{"command":"git status --short"}`)
+	first := e.Evaluate("bash", true, args)
+	if first.Guard == "" {
+		t.Fatalf("no guard: %+v", first)
+	}
+	if err := os.WriteFile(filepath.Join(nested, ".git", "config"), []byte("[core]\n\tfsmonitor = ./x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if e.Evaluate("bash", true, args).Covers(first.Offer(), first.Guard) {
+		t.Fatal("a scope granted before fsmonitor was set in the nested repository still covers git status there")
+	}
+}

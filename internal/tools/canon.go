@@ -597,8 +597,9 @@ func ifsValue(rest string) bool {
 	return rest != "" && !strings.ContainsRune(" \t\n;&|", rune(rest[0]))
 }
 
-// braceList returns the index of the } closing a brace expansion with a comma
-// that opens at command[i], or 0: {rm,-rf,x} expands to three words.
+// braceList returns the index of the } closing a brace expansion that opens
+// at command[i], or 0: a list with a comma, {rm,-rf,x}, or a sequence,
+// {c..c} or {1..3}.
 func braceList(command string, i int) int {
 	depth, comma := 0, false
 	for j := i; j < len(command); j++ {
@@ -607,7 +608,7 @@ func braceList(command string, i int) int {
 			depth++
 		case '}':
 			if depth--; depth == 0 {
-				if comma {
+				if comma || braceSequence.MatchString(command[i+1:j]) {
 					return j
 				}
 				return 0
@@ -642,8 +643,14 @@ func braceWords(prefix, command string, open, end int) (string, int, bool) {
 	if isAssignment(prefix) {
 		return "", 0, false
 	}
-	parts := strings.Split(items, ",")
-	if len(parts) > maxBraceWords {
+	parts, limit := strings.Split(items, ","), maxBraceWords
+	if len(parts) == 1 {
+		if parts = sequenceWords(items); parts == nil {
+			return "", 0, false
+		}
+		limit = maxSequenceWords
+	}
+	if len(parts) > limit {
 		return "", 0, false
 	}
 	words := make([]string, len(parts))
@@ -651,6 +658,73 @@ func braceWords(prefix, command string, open, end int) (string, int, bool) {
 		words[k] = prefix + p + suffix
 	}
 	return strings.Join(words, " "), wordEnd, true
+}
+
+// braceSequence matches what bash may read as a sequence between braces: two
+// integers or two letters, and an increment.
+var braceSequence = regexp.MustCompile(`^(?:-?[0-9]+\.\.-?[0-9]+|[A-Za-z]\.\.[A-Za-z])(?:\.\.-?[0-9]+)?$`)
+
+// maxSequenceWords bounds the words a brace sequence is read as.
+const maxSequenceWords = 1024
+
+// sequenceWords are the words bash makes of the sequence items, {c..c} or
+// {1..3}, or nil when they are too many or bash versions read them apart:
+// an increment or zero padding (bash 3.2 keeps those as written), or letters
+// of both cases, whose run takes in [ \ ] ^ _ and `.
+func sequenceWords(items string) []string {
+	ends := strings.Split(items, "..")
+	if len(ends) != 2 {
+		return nil
+	}
+	from, to := ends[0], ends[1]
+	if len(from) == 1 && len(to) == 1 && !unicode.IsDigit(rune(from[0])) {
+		a, b := from[0], to[0]
+		if unicode.IsUpper(rune(a)) != unicode.IsUpper(rune(b)) {
+			return nil
+		}
+		var words []string
+		for c := int(a); ; {
+			words = append(words, string(rune(c)))
+			if c == int(b) {
+				return words
+			}
+			if a < b {
+				c++
+			} else {
+				c--
+			}
+		}
+	}
+	padded := func(n string) bool {
+		n = strings.TrimPrefix(n, "-")
+		return len(n) > 1 && n[0] == '0'
+	}
+	if padded(from) || padded(to) || len(from) > 9 || len(to) > 9 {
+		return nil
+	}
+	a, errA := strconv.Atoi(from)
+	b, errB := strconv.Atoi(to)
+	if errA != nil || errB != nil || abs(b-a) >= maxSequenceWords {
+		return nil
+	}
+	step := 1
+	if b < a {
+		step = -1
+	}
+	words := make([]string, 0, abs(b-a)+1)
+	for n := a; ; n += step {
+		words = append(words, strconv.Itoa(n))
+		if n == b {
+			return words
+		}
+	}
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // ansiC decodes a $'...' string from command[i], just past its opening quote,
@@ -873,8 +947,22 @@ func (c Canonical) Unparsed() bool { return c.shell.unparsed }
 // a shell's script operand, source and . files, and programs named by a path.
 func (c Canonical) Scripts() []Script { return c.shell.scripts }
 
-// Writes are the literal targets of the command's output redirections.
+// Writes are the literal files the command writes: its output redirections'
+// targets and what cp, mv, ln, install, rsync, tee, dd, sed -i, perl -i,
+// curl -o and wget -O write. A copy into a folder is also named as the file
+// it makes there.
 func (c Canonical) Writes() []string { return c.shell.writes }
+
+// WriteHidden says why a file the command writes is not known, as one named
+// by an expansion, or "" when every one is in Writes.
+func (c Canonical) WriteHidden() string { return c.shell.writeHidden }
+
+// MovesFolder reports a command that may change the folder the commands
+// after it run in: cd, pushd, popd, env -C, sudo -D, find -execdir.
+func (c Canonical) MovesFolder() bool { return c.shell.moves }
+
+// ScriptsCut reports a command naming more scripts than Scripts holds.
+func (c Canonical) ScriptsCut() bool { return c.shell.scriptsCut }
 
 // Commands are the simple commands a bash parser finds, from each word that
 // may be the program, quoting undone: inside functions, subshells and the

@@ -12,6 +12,14 @@ func (e *Engine) guarded(r Result) Result {
 	if !strings.HasPrefix(r.Scope, "bash(git ") || e.Roots == nil {
 		return r
 	}
-	r.Guard = sandbox.GitFingerprint(e.Roots()...)
+	dirs := e.Roots()
+	// A session moved into a nested repository runs git there, so its config
+	// and hooks are summed as well.
+	if e.Cwd != nil {
+		if cwd := e.Cwd(); cwd != "" {
+			dirs = append(append([]string(nil), dirs...), cwd)
+		}
+	}
+	r.Guard = sandbox.GitFingerprint(dirs...)
 	return r
 }

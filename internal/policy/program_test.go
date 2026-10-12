@@ -47,6 +47,11 @@ func TestProgramExpansionCannotPassADenyRule(t *testing.T) {
 		"eval 'curl x'",
 		// What the parser cannot read is refused, not guessed at.
 		"echo \"unclosed; x=git; ${x%/} reset --hard",
+		// A brace sequence is read as the words bash makes of it.
+		"{c..c}url http://e",
+		"c{u..u}rl http://e",
+		"cur{l..l} http://e",
+		"git reset --{h..h}ard",
 	}
 	// A run of runners, option values and durations before a quoted or escaped name.
 	refused = append(refused,
@@ -154,6 +159,8 @@ func TestProgramExpansionCannotPassADenyRule(t *testing.T) {
 		"git push --receive-pack='curl x' o",
 	)
 	notAllowed := append([]string{
+		"c{u..u..1}rl http://e",
+		"c{u..u}rl{1..2000} http://e",
 		"x=git; ${x} reset --hard",
 		"x=git; $x reset --hard",
 		"x='git reset --hard '; $x/.",
