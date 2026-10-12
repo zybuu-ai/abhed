@@ -444,7 +444,7 @@ func (f *Fence) isStateMount(p string) bool {
 	return err == nil && !holds
 }
 
-// removeMadeState removes the .abhed this fence found empty, if still empty,
+// removeMadeState removes the .abhed a fence made and this one found empty, if still empty,
 // the same folder, and no other fence holds the lock.
 func (f *Fence) removeMadeState() {
 	if f.stateLock == nil {
@@ -455,7 +455,8 @@ func (f *Fence) removeMadeState() {
 		return
 	}
 	p := filepath.Join(f.policy.Workspace, stateDir)
-	if id, err := folderIdentity(p); err == nil && id.dir && id.same(*f.stateID) {
+	// Only a folder a fence made: an empty .abhed that was there before stays.
+	if id, err := folderIdentity(p); err == nil && id.dir && id.same(*f.stateID) && madeNoted(f.stateLock, id) {
 		if holds, err := folderHolds(p, id); err == nil && !holds {
 			_ = os.Remove(p)
 		}
@@ -498,6 +499,9 @@ func (f *Fence) prepareStateMount() error {
 		return fmt.Errorf("the workspace's %s cannot be listed to tell whether it holds state (%w); restore its permissions, and the fence will cover it", stateDir, err)
 	}
 	f.stateID, f.stateHeld = &id, holds
+	if f.madeState {
+		noteMade(f.stateLock, id)
+	}
 	return nil
 }
 
