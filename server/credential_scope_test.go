@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -116,7 +117,7 @@ users:
 	cfg.Permissions.Allow = []string{"secret(ALICE_TOKEN)"}
 	st := agent.NewMemStore()
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: adapter,
-		Registry: reg, Store: st, Redact: noRedact{}})
+		Registry: reg, Store: st, Redact: noRedact{}, SecretsFor: aliceHolds(t, aliceToken)})
 	h := s.Handler()
 
 	run := func(user, prompt string) string {
@@ -284,7 +285,7 @@ func TestSubagentUsesItsParentSessionsLogin(t *testing.T) {
 	cfg.Permissions.Allow = []string{"secret(ALICE_TOKEN)"}
 	st := agent.NewMemStore()
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: adapter,
-		Registry: reg, Store: st, Redact: noRedact{}})
+		Registry: reg, Store: st, Redact: noRedact{}, SecretsFor: aliceHolds(t, aliceToken)})
 
 	ended := func(id string, n int) []agent.Event {
 		t.Helper()
@@ -357,5 +358,21 @@ func TestSubagentUsesItsParentSessionsLogin(t *testing.T) {
 				t.Errorf("alice's token reached the record in %s: %s", e.Type, e.Payload)
 			}
 		}
+	}
+}
+
+// aliceHolds is SecretsFor giving alice a store with ALICE_TOKEN and anyone
+// else an empty one, as a server keeping a store per account does.
+func aliceHolds(t *testing.T, token string) func(string, string) (*secrets.Store, error) {
+	dir := t.TempDir()
+	alice := secrets.Open(filepath.Join(dir, "alice.json"))
+	if err := alice.Set("ALICE_TOKEN", token); err != nil {
+		t.Fatal(err)
+	}
+	return func(_, user string) (*secrets.Store, error) {
+		if user == "alice" {
+			return alice, nil
+		}
+		return secrets.Open(filepath.Join(dir, "other.json")), nil
 	}
 }

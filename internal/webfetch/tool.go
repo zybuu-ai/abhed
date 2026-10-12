@@ -44,27 +44,35 @@ const (
 const AskReason = "web_fetch asks: no allowed_hosts configured, so any public site could receive what the URL carries. " +
 	"Always allow covers any URL on this site for the session, and whatever such a URL carries"
 
-// AskReadOnly is the policy setting for a deployment's web_fetch. With no
-// host list every call asks unless an allow rule matches. With one, a listed
-// host runs unasked on its scheme's default port only: another port there is
-// another service, which listing the host did not name.
+// SearchAskReason is the policy reason a web_search call asks.
+const SearchAskReason = "web_search asks: a query goes to a search service outside the machine and can carry what the agent read. " +
+	"An allow rule such as web_search in the managed configuration runs searches unasked"
+
+// AskReadOnly is the policy setting for a deployment's web_fetch and
+// web_search. Every search asks unless an allow rule matches, as a query can
+// carry data out. For web_fetch with no host list every call asks unless an
+// allow rule matches; with one, a listed host runs unasked on its scheme's
+// default port only: another port there is another service, which listing
+// the host did not name.
 func AskReadOnly(enabled bool, allowedHosts []string) map[string]func(string) string {
-	if !enabled {
-		return nil
-	}
-	if len(allowedHosts) == 0 {
-		return map[string]func(string) string{"web_fetch": func(string) string { return AskReason }}
-	}
-	return map[string]func(string) string{"web_fetch": func(subject string) string {
-		u, err := url.Parse(subject)
-		if err != nil {
-			return PortAskReason
+	asks := map[string]func(string) string{"web_search": func(string) string { return SearchAskReason }}
+	switch {
+	case !enabled:
+	case len(allowedHosts) == 0:
+		asks["web_fetch"] = func(string) string { return AskReason }
+	default:
+		asks["web_fetch"] = func(subject string) string {
+			u, err := url.Parse(subject)
+			if err != nil {
+				return PortAskReason
+			}
+			if p := u.Port(); p != "" {
+				return PortAskReason
+			}
+			return ""
 		}
-		if p := u.Port(); p != "" {
-			return PortAskReason
-		}
-		return ""
-	}}
+	}
+	return asks
 }
 
 // PortAskReason is the policy reason a call to a listed host asks.
@@ -78,6 +86,10 @@ type Tool struct {
 	// Secrets reads the stored values for each call; a URL holding one is
 	// refused. Nil checks nothing, for a deployment with no store.
 	Secrets func() (*secrets.Redactor, error)
+	// PathRuled reports whether a deny or ask rule names a path on a host; an
+	// encoded slash is fetched only on a host it says no to. Nil refuses an
+	// encoded slash on every host. See PathRuled.
+	PathRuled func(host string) bool
 	// MaxBytes caps the body read; MaxChars the text returned per call.
 	MaxBytes int64
 	MaxChars int
@@ -163,7 +175,7 @@ func (t *Tool) check(raw string) (*url.URL, error) {
 	if raw != strings.TrimSpace(raw) {
 		return nil, errors.New("the URL has spaces or line breaks around it; pass it without them")
 	}
-	u, err := canonical(raw)
+	u, err := canonical(raw, t.PathRuled)
 	if err != nil {
 		return nil, err
 	}

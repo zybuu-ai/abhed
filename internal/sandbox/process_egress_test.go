@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -267,13 +266,17 @@ func TestEgressSessionsAreKeptApart(t *testing.T) {
 	var recA2 eventLog
 	a2 := Launch{CallID: "call-a2", Session: "sess-A", Record: recA2.record}
 	stolen := strings.TrimSpace(runLaunched(t, s, ws, a2, `printf %s "$HTTP_PROXY"`))
+	// Each call reaches the proxy only by its own way in (a socket under
+	// bubblewrap, a port under Seatbelt), so a credential taken from another
+	// call goes nowhere; through the command's own way in, it is the
+	// command's call that is recorded.
 	late := fmt.Sprintf(`curl -sS -m 20 -o /dev/null -w 'code=%%{http_code}' -x '%s' http://denied.test/stolen`, stolen)
-	if out := runLaunched(t, s, ws, a, late); !strings.Contains(out, "code=407") {
+	if out := runLaunched(t, s, ws, a, late); strings.Contains(out, "code=403") {
+		if got := recA.waitFor(t, "the stolen credential's request", func(e map[string]any) bool { return e["path"] == "/stolen" }); got["call_id"] == "call-a2" {
+			t.Fatalf("an ended call's credential moved traffic to it: %v", got)
+		}
+	} else if !strings.Contains(out, "code=407") && !strings.Contains(out, "code=000") {
 		t.Fatalf("an ended call's credential was accepted: %s", out)
-	}
-	ended := recA2.waitFor(t, "the stolen credential's refusal", func(e map[string]any) bool { return e["kind"] == "auth" })
-	if ended["call_id"] != "call-a2" || ended["decision"] != "deny" {
-		t.Fatalf("stolen credential recorded as %v", ended)
 	}
 	// B's proxy, reached directly with A's token, refuses it.
 	cross := fmt.Sprintf(`curl -sS -m 20 -o /dev/null -w 'code=%%{http_code}' -x "$(printf %%s "$HTTP_PROXY" | sed 's#:[0-9]*$#:%d#')" http://denied.test/cross`, pb.Addr().Port())
@@ -427,23 +430,21 @@ func TestSeatbeltEgressProfile(t *testing.T) {
 	}
 }
 
-// proxyOf is the address the command's proxy variables name.
-func proxyOf(t *testing.T, cmd *exec.Cmd) string {
+// mustHaveProxy fails unless the command was built with proxy variables.
+func mustHaveProxy(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
 	if cmd.Err != nil {
 		t.Fatalf("command not built: %v", cmd.Err)
 	}
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "HTTP_PROXY="); ok {
-			u, err := url.Parse(v)
-			if err != nil {
+			if _, err := url.Parse(v); err != nil {
 				t.Fatal(err)
 			}
-			return u.Host
+			return
 		}
 	}
 	t.Fatalf("no proxy in the command's environment")
-	return ""
 }
 
 func listening(addr string) bool {
@@ -464,11 +465,13 @@ func TestEgressProxyClosesWhenQuiet(t *testing.T) {
 
 	ctx1, cancel1 := context.WithCancel(WithLaunch(context.Background(), l))
 	ctx2, cancel2 := context.WithCancel(WithLaunch(context.Background(), l))
-	addr := proxyOf(t, s.Command(ctx1, ws, "true"))
-	if a2 := proxyOf(t, s.Command(ctx2, ws, "true")); a2 != addr {
-		t.Fatalf("two commands of one session got proxies %s and %s", addr, a2)
-	}
+	mustHaveProxy(t, s.Command(ctx1, ws, "true"))
 	first := s.sessionProxy("sess-Q")
+	addr := first.proxy.Addr().String()
+	mustHaveProxy(t, s.Command(ctx2, ws, "true"))
+	if s.sessionProxy("sess-Q") != first {
+		t.Fatal("two commands of one session got proxies of their own")
+	}
 	cancel1()
 	time.Sleep(400 * time.Millisecond)
 	if s.sessionProxy("sess-Q") != first || !listening(addr) {
@@ -492,7 +495,8 @@ func TestEgressProxyClosesWhenQuiet(t *testing.T) {
 	}
 	ctx3, cancel3 := context.WithCancel(WithLaunch(context.Background(), l))
 	defer cancel3()
-	if a3 := proxyOf(t, s.Command(ctx3, ws, "true")); !listening(a3) {
+	mustHaveProxy(t, s.Command(ctx3, ws, "true"))
+	if next := s.sessionProxy("sess-Q"); next == nil || !listening(next.proxy.Addr().String()) {
 		t.Fatal("the next command's proxy does not listen")
 	}
 	if next := s.sessionProxy("sess-Q"); next == first || next.proxy == first.proxy {
@@ -551,7 +555,7 @@ func TestEgressCloseStopsEveryProxy(t *testing.T) {
 	for _, id := range []string{"sess-1", "sess-2", "sess-3"} {
 		ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "c", Session: id, Record: (&eventLog{}).record}))
 		defer cancel()
-		_ = proxyOf(t, s.Command(ctx, ws, "true"))
+		mustHaveProxy(t, s.Command(ctx, ws, "true"))
 		ap := s.sessionProxy(id).proxy.Addr()
 		addrs = append(addrs, ap)
 		v6 = append(v6, listening(net.JoinHostPort("::1", fmt.Sprint(ap.Port()))))
@@ -614,10 +618,10 @@ func TestEgressOutlivingProcessIsRefused(t *testing.T) {
 	if got := rec.find(func(e map[string]any) bool { return e["path"] == "/late" }); len(got) > 0 {
 		t.Fatalf("a process outliving its call was decided on: %v", got)
 	}
+	// Its call's own way to the proxy closed with the call, so it is refused
+	// at the connection (macOS) or the process is gone (Linux); a refusal
+	// that reaches the proxy is recorded under the ended call.
 	auth := rec.find(func(e map[string]any) bool { return e["kind"] == "auth" })
-	if runtime.GOOS == "darwin" && len(auth) == 0 {
-		t.Fatal("the left-over process's request was not recorded")
-	}
 	for _, e := range auth {
 		if e["call_id"] != "call-left" {
 			t.Fatalf("recorded as %v", e)

@@ -639,6 +639,12 @@ func New(opts Options) *Server {
 		opts.Logger.Warn("the node id holds '#', which separates a lease's incarnation; it is used with '_' in its place", "node_id", opts.NodeID)
 		opts.NodeID = strings.ReplaceAll(opts.NodeID, "#", "_")
 	}
+	// Accounts that sign in each get their own secrets store, unless the
+	// embedder gives one of its own.
+	accounts := defaultAccountSecrets(opts)
+	if accounts != nil {
+		opts.SecretsFor = accounts.For
+	}
 	if rules := sharedSecretRules(opts); len(rules) > 0 {
 		opts.Logger.Warn("every account on this server shares one secrets store: any account can use, "+
 			"and by transforming the value read, every secret these allow rules name; run a server per person "+
@@ -696,6 +702,9 @@ func New(opts Options) *Server {
 	}
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
+	}
+	if accounts != nil {
+		s.mounts = append(s.mounts, accounts.mount)
 	}
 	if cp := opts.ControlPlane; cp != nil {
 		v := cp.Settings().For(nil)

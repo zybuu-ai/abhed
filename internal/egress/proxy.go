@@ -3,6 +3,7 @@ package egress
 import (
 	"bufio"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -50,7 +51,7 @@ func (e Event) Payload() map[string]any {
 	if e.IP != "" {
 		m["ip"] = e.IP
 	}
-	if e.Kind == "http" {
+	if e.Kind == "http" || e.Kind == "https" {
 		m["method"], m["path"] = e.Method, e.Path
 	}
 	if e.Repeats > 0 {
@@ -88,6 +89,9 @@ type Options struct {
 	// AllowBudget bounds the allowed decisions recorded one by one in each
 	// Interval; the rest are counted into summaries. Zero means 200.
 	AllowBudget int
+	// UpstreamRoots verify the servers an inspected tunnel reaches; nil uses
+	// the system's. Tests set it.
+	UpstreamRoots *x509.CertPool
 }
 
 // Timeouts and bounds.
@@ -120,6 +124,10 @@ type Proxy struct {
 	dnsSlots chan struct{}
 	// served counts connections handled, for tests and doctor.
 	served atomic.Int64
+	// ins terminates HTTPS when the policy inspects it; nil otherwise.
+	ins *inspector
+	// caPath is where commands find the CA bundle, as they see it.
+	caPath atomic.Pointer[string]
 }
 
 // Start listens on a random loopback port and serves until Close.
@@ -140,6 +148,14 @@ func Start(opts Options) (*Proxy, error) {
 	p := &Proxy{opts: opts, tcp: lns[0], conns: map[net.Conn]struct{}{},
 		slots: make(chan struct{}, opts.MaxConns), dnsSlots: make(chan struct{}, maxDNSInFlight)}
 	p.limit = newLimiter(opts.Burst, opts.AllowBudget, opts.Interval, p.emit)
+	if opts.Policy.InspectTLS() {
+		if p.ins, err = newInspector(opts.UpstreamRoots); err != nil {
+			for _, ln := range lns {
+				_ = ln.Close()
+			}
+			return nil, err
+		}
+	}
 	p.addr = lns[0].Addr().(*net.TCPAddr).AddrPort()
 	for _, ln := range lns {
 		p.serve(ln, p.handle)
@@ -209,6 +225,7 @@ func (p *Proxy) serve(ln net.Listener, handle func(net.Conn)) {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
+				p.forget(ln) // a call's own listener ends with its call
 				return
 			}
 			select {
@@ -234,6 +251,18 @@ func (p *Proxy) serve(ln net.Listener, handle func(net.Conn)) {
 			}()
 		}
 	}()
+}
+
+// forget drops a listener that has stopped from those Close would close.
+func (p *Proxy) forget(ln net.Listener) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, l := range p.listeners {
+		if l == ln {
+			p.listeners = append(p.listeners[:i], p.listeners[i+1:]...)
+			return
+		}
+	}
 }
 
 func (p *Proxy) track(c net.Conn) bool {
@@ -294,7 +323,13 @@ func (p *Proxy) emit(e Event) {
 }
 
 // handle serves one client connection: one request, then it is closed.
-func (p *Proxy) handle(raw net.Conn) {
+func (p *Proxy) handle(raw net.Conn) { p.handleAs(raw, nil) }
+
+// handleAs serves one connection. One made through a call's own listener is
+// that call's whatever credentials it sends, or none, so a token passed to
+// another command cannot move its traffic to another call's record, and a
+// client that sends no credentials on CONNECT (a JVM) is served.
+func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 	act := &activity{}
 	c := &active{Conn: raw, act: act}
 	_ = c.SetReadDeadline(time.Now().Add(headerTimeout))
@@ -313,7 +348,13 @@ func (p *Proxy) handle(raw net.Conn) {
 	// The request's life: ending its call cancels the dial and closes the upstream.
 	life, endLife := context.WithCancel(context.Background())
 	defer endLife()
-	callID, key, err := p.authorize(req.Header.Get("Proxy-Authorization"))
+	var callID string
+	var key [32]byte
+	if bound != nil {
+		callID, key, err = p.authorizeKey(tokenKey(bound.token))
+	} else {
+		callID, key, err = p.authorize(req.Header.Get("Proxy-Authorization"))
+	}
 	if err == nil && !p.bind(key, raw, endLife) {
 		err = errCallEnded
 	}
@@ -351,6 +392,11 @@ func (p *Proxy) handle(raw net.Conn) {
 		ev.Method, ev.Path = t.Method, t.Path
 	}
 	v := p.opts.Policy.Decide(t.Request())
+	inspect := false
+	if t.Tunnel && p.ins != nil {
+		// Each request inside is judged once the tunnel is opened.
+		v, inspect = p.opts.Policy.DecideHost(t.Request()), true
+	}
 	ev.Decision, ev.Rule, ev.Reason = v.Decision, v.Rule, v.Reason
 	if !v.Allowed() {
 		p.record(ev)
@@ -402,8 +448,12 @@ func (p *Proxy) handle(raw net.Conn) {
 		ev.BytesIn, ev.BytesOut = cu.in.Load(), cu.out.Load()
 		p.record(ev)
 	}()
+	if inspect {
+		p.inspectTunnel(c, br, cu, t, callID, &ev)
+		return
+	}
 	if t.Tunnel {
-		p.tunnel(c, br, cu)
+		p.tunnel(c, br, cu, true)
 		return
 	}
 	p.forward(c, req, t, cu)
@@ -491,9 +541,11 @@ func (p *Proxy) resolve(ctx context.Context, host string) ([]netip.Addr, error) 
 }
 
 // tunnel answers a CONNECT and copies both ways until either side ends.
-func (p *Proxy) tunnel(c net.Conn, br *bufio.Reader, up *counted) {
-	if _, err := io.WriteString(c, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
-		return
+func (p *Proxy) tunnel(c net.Conn, br *bufio.Reader, up *counted, answer bool) {
+	if answer {
+		if _, err := io.WriteString(c, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+			return
+		}
 	}
 	done := make(chan struct{}, 2)
 	go func() {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -83,6 +84,12 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
 	fmt.Printf("egress      %s\n", egressLabel(cfg))
+	for _, w := range internalModelEndpoints(cfg) {
+		fmt.Printf("            ⚠ %s\n", w)
+	}
+	if w := pathDenyWarning(cfg); w != "" {
+		fmt.Printf("            ⚠ %s\n", w)
+	}
 	fmt.Println("git         held read-only from commands in `abhed serve`'s and Studio's sessions; not in the terminal's (docs/guide/04-permissions.md)")
 	if printDrivers(os.Stdout, cfg) {
 		findings.driverDown = true
@@ -361,6 +368,48 @@ func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 	return out
 }
 
+// internalModelEndpoints warns, under the allowlist, of each configured
+// model endpoint on an internal address: the model client is Abhed's own and
+// is not held to the address check commands are, so such a base_url (a cloud
+// metadata address, say) is reached all the same.
+func internalModelEndpoints(cfg config.Config) []string {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Model.Providers))
+	for name := range cfg.Model.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []string
+	for _, name := range names {
+		if why := egress.InternalEndpoint(context.Background(), cfg.Model.Providers[name].BaseURL, nil); why != "" {
+			out = append(out, fmt.Sprintf("provider %s: %s, which the model client reaches though the allowlist refuses it to commands; "+
+				"make sure only trusted configuration sets it", config.Printable(name), why))
+		}
+	}
+	return out
+}
+
+// pathDenyWarning warns, under the allowlist, of deny rules narrowed by a
+// path, which a server's other spellings of the path step around.
+func pathDenyWarning(cfg config.Config) string {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return ""
+	}
+	pol, err := egress.Compile(cfg.Egress)
+	if err != nil {
+		return ""
+	}
+	names := pol.PathDenies()
+	if len(names) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s deny by path, which a server may also serve as /ADMIN, /admin/ or /admin.json; "+
+		"allow the paths commands need and let the default deny the rest (docs/guide/21-network-policy.md#path-rules)",
+		strings.Join(names, ", "))
+}
+
 // egressLabel states the commands' network policy: off, open, or the
 // allowlist with its rules and mode.
 func egressLabel(cfg config.Config) string {
@@ -380,6 +429,9 @@ func egressLabel(cfg config.Config) string {
 	}
 	if pol.Audit() {
 		mode = "audit (denials recorded, not enforced)"
+	}
+	if pol.InspectTLS() {
+		mode += ", HTTPS inspected with a CA per session"
 	}
 	return fmt.Sprintf("allowlist — %d rules, default %s, mode %s; a proxy on loopback per session, "+
 		"each decision recorded as %s; direct sockets blocked on the process tier only", pol.Rules(), def, mode, sandbox.EvEgressDecision)

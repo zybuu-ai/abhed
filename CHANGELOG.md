@@ -32,6 +32,19 @@ All notable changes to Abhed are recorded here. The format follows
   file that sets neither deny rules nor extensions.
 - `POST /v1/admin/mcp` answers `400` for a server whose name overlaps a
   configured one's.
+- `web_search` asks for each search unless an allow rule names it; add
+  `"allow": ["web_search"]` to the managed file to keep searches unasked.
+- An MCP server with a `digest` starts only when its program matches; a URL
+  server with a `digest` is refused.
+- An extension no longer inherits Abhed's environment: list each variable
+  it needs in its `env`, an empty value passing your own.
+- Under the egress allowlist, `ssh_connect`, the `k8s_*` tools, `rag` and
+  `abhed resolve` need allow rules for their hosts.
+- On `abhed serve` with sign-in, each account reads only its own secrets
+  store; the operator's store serves scheduled runs only. Have each person
+  add their secrets with `PUT /v1/secrets/{name}`.
+- A stdio MCP server on the process tier no longer sees your home folder;
+  set `"host_files": true` on one that needs it.
 
 ### Security
 
@@ -222,9 +235,82 @@ All notable changes to Abhed are recorded here. The format follows
   database. Its payloads are now sealed with a per-session key that delete
   removes (see Added). Affects 1.0.0 to 1.2.7; sessions recorded by those
   versions keep their plaintext.
+- Redaction matched only a stored value exactly as written, so a value
+  that a command printed base64-encoded (a Basic auth header from
+  `curl -v`), hex-encoded, percent-encoded or in another case reached the
+  record, and `web_fetch` and `web_search` would send it. A value of 12
+  characters or more is now also matched in those forms. Plain text passed
+  for redaction, such as the prompt history, was left alone unless it was
+  quoted; it is now redacted as text.
+  Values were replaced one after another, so a shorter value could rewrite
+  a label already written; they are now replaced in one pass. Affects 1.0.0
+  to 1.2.7.
+- An error a run returned was not redacted, and a model request that could
+  not connect quoted its whole URL, so a key in `base_url`
+  (`?api_key=…`, `user:key@host`) or a stored value in a provider's error
+  body reached the terminal, the API and the server log. The URL is now
+  reported without its query and user information, and the error is
+  redacted. Affects 1.0.0 to 1.2.7.
+- `abhed resolve` pushed whatever the run wrote, so a stored secret the
+  agent put in a file, a file name or a commit message went to the forge
+  and into the pull request's description. A change that holds a stored
+  value, as written or encoded, now refuses the push. Affects 1.0.0 to
+  1.2.7.
+- An MCP server's `digest` was accepted and never checked, and Studio
+  reported such a server as pinned, so a changed program started all the
+  same. The program a stdio server's command resolves to is now hashed
+  before it starts and a mismatch refuses it; an OCI image named by the
+  digest in the arguments is accepted as pinned by the engine. A URL server
+  with a `digest`, or a malformed digest, is refused. Affects 0.1.0 to
+  1.2.7.
+- Once the managed file turned `web_search` on, a search ran without
+  asking as a read-only tool, so a query could carry what the agent read to
+  the search service. A search now asks in every mode short of bypass
+  unless an allow rule names `web_search`. Affects 1.2.2 to 1.2.7.
+- The `mcp.added` admin audit kept an MCP server URL's path, which can
+  carry a key (`/s/<key>/mcp`); it now keeps the scheme and host only. A
+  command whose path holds a space was recorded cut at the first space; it
+  is now recorded as its program's base name. Affects 0.1.0 to 1.2.7.
+- `web_fetch` dropped only format characters before judging whether a path
+  segment reads as `.` or `..`, so a variation selector (U+FE0F), the
+  grapheme joiner (U+034F) or a Hangul filler (U+3164) beside `..` passed.
+  Every default-ignorable character is now dropped first. Affects 1.2.2 to
+  1.2.7.
+- Under `sandbox.network: "allowlist"`, `ssh_connect`, the `k8s_*` tools,
+  `rag` retrieval over HTTP and `abhed resolve`'s forge API and push went
+  around the egress rules. They are now judged and recorded as Abhed's own
+  requests of kind `ssh`, `k8s`, `rag` and `forge`. Extensions and a
+  kubeconfig's credential helper inherited Abhed's whole environment,
+  `ABHED_API_KEY` and model provider keys included; they now get only what
+  a program needs to run (and, for a credential helper, what cloud sign-in
+  tools read), then their configured variables. Affects 1.2.7 for the
+  allowlist, 0.1.0 to 1.2.7 for the environment.
+- On `abhed serve` with sign-in (local, proxy or OIDC authentication) every
+  account shared the operator's secrets store, so any account could use,
+  and by printing it transformed read, every secret an allow rule named.
+  Each account now has its own store under `~/.abhed/secrets.d`, managed
+  through `GET /v1/secrets` and `PUT` and `DELETE /v1/secrets/{name}`; the
+  operator's store serves scheduled runs only. Affects 0.1.0 to 1.2.7.
+- Under `sandbox.network: "allowlist"` a command could hand its proxy token
+  to a concurrent call, through the workspace or (on macOS) by reading its
+  environment, and that call's traffic was then recorded under the first
+  call. Each call now reaches the proxy by its own way in, a unix socket
+  bound into its sandbox on Linux and a loopback port only its Seatbelt
+  profile allows on macOS, and what arrives there is recorded as that call.
+  Affects 1.2.7.
+- A stdio MCP server ran with your whole home folder readable and
+  writable, so it could read `~/.ssh` or plant a LaunchAgent, a systemd
+  user unit or a shell rc line. On the process tier its home is now hidden
+  but for a home of its own under `~/.abhed/mcp` and its install folder,
+  read-only; `"host_files": true` on a server keeps the old behaviour.
+  Affects 0.1.0 to 1.2.7.
 
 ### Added
 
+- `abhed doctor` and `abhed serve -check` warn, under the egress allowlist,
+  of a model provider whose `base_url` is on a loopback, private,
+  link-local or metadata address, which the model client reaches though the
+  allowlist refuses it to commands.
 - What a sandbox command can reach of the server: on every tier, nothing
   in the control plane's state folder but its own sandbox folder (not the
   `:ssh` relay's host key, other sandboxes' folders or snapshots, or a
@@ -597,6 +683,15 @@ on. A server with it off starts on the older schema as before.
   pre-images are sealed with a per-session key, and delete removes the key,
   the session's label and title, and its approvals' arguments. The event
   rows and their hashes stay. Sessions recorded before 1.2.8 are not sealed.
+- `abhed doctor` names, under the egress allowlist, each deny rule
+  narrowed by a path, which other spellings of the path step around, and
+  advises allowing the paths needed instead.
+- `egress.inspect_tls`, off by default and set only in the managed
+  configuration: each session's proxy makes a CA of its own, terminates
+  commands' HTTPS with it, and decides every request inside by method and
+  path, recorded as kind `https`. Commands are pointed at a bundle with the
+  session's CA; a client that pins certificates or keeps its own trust
+  store fails rather than going uninspected.
 
 ### Changed
 
@@ -632,6 +727,13 @@ on. A server with it off starts on the older schema as before.
   refuses it. Deny and ask rules see the words it makes. A list with an
   expansion, a quote, a nested or second list, or in an assignment's value
   is still asked about, and refused on `:exec`.
+- `web_fetch` fetches a URL with an encoded slash (`%2F`), such as GitLab's
+  `group%2Fproject` or a URL carried in the path, on a host that no deny or
+  ask rule names a path on; it was refused on every host.
+- `abhed doctor` and the server's MCP status count the tools a server
+  offers that were left out for their names (over 64 characters, or
+  characters other than letters, digits, `_`, `.` and `-`), and the warning
+  gives the name's length.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of
@@ -671,6 +773,9 @@ on. A server with it off starts on the older schema as before.
   nothing. `-disallowedTools` adds the name as written beside the lower-cased
   spelling it has always added, so an existing deny keeps matching and one for
   a capitalised name now does too. Built-in names are still folded.
+- A stdio MCP server's egress decisions made while several sessions call it
+  go to each of their records, and those made before any call to each
+  session's record at its first call; they were written to the log only.
 
 ### Fixed
 
@@ -867,6 +972,10 @@ on. A server with it off starts on the older schema as before.
   person with a tombstone, and these paths use it; a delete in the console
   over a local record does the same instead of answering that the record is
   append-only.
+- HTTPS from a JVM (Maven, Gradle) behind the egress allowlist got 407: the
+  JVM sends no credentials on `CONNECT` and reads no proxy variable. A
+  request through a call's own way in needs no credentials now, and each
+  command gets `JAVA_TOOL_OPTIONS` naming the proxy.
 
 ### Dependencies
 

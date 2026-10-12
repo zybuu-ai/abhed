@@ -172,12 +172,22 @@ What it refuses:
   [Permissions](04-permissions.md#rules)), including a port with leading
   zeros, an IPv4 address written as IPv6 or as one number, and a path
   segment of dots, a control character or a doubly encoded `.`, `/` or `\`.
-  A URL that carries another URL in its path, as `web.archive.org` links do
-  (`https://web.archive.org/web/2020/https://example.com/`), has an empty
-  segment and cannot be fetched. Nor can one with an encoded slash (`%2F`)
-  in its path, such as GitLab's `projects/group%2Fproject` or npm's
-  `@scope%2Fname`: written with `/` it names another resource, so no
-  spelling is suggested.
+  Characters a reader cannot see (format characters, variation selectors,
+  the grapheme joiner, Hangul fillers) are dropped before a segment is
+  judged, so they cannot make one that reads as `..` pass.
+
+An encoded slash (`%2F`) in the path, such as GitLab's
+`projects/group%2Fproject` or npm's `@scope%2Fname`, is fetched only on a host
+that no deny or ask rule in the configuration names a path on: a rule such
+as `web_fetch(https://gitlab.com/api/*)` refuses it there, since a server
+reads `group%2Fproject` as another spelling of a path the rule names, while a
+rule on the whole host (`https://gitlab.com/*`) does not. It is written
+upper-case (`%2F`), and each part between slashes, encoded or not, is checked
+as a segment, so `a%2F..%2Fadmin` is refused as `a/../admin` is. A URL that
+carries another URL in its path, as `web.archive.org` links do, is fetched
+with that URL's slashes encoded
+(`https://web.archive.org/web/2020/https:%2F%2Fexample.com%2F`); written
+with plain slashes it has an empty segment and is refused.
 
 It follows a redirect only to the same URL or its upgrade from `http` to
 `https`, up to five. Any other redirect, including to another path on the

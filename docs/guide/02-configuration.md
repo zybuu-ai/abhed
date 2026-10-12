@@ -291,7 +291,7 @@ stays open; unset means 30.
 commands' traffic through a per-session proxy that reaches only what the
 `egress` rules allow, and records each decision; it takes the place of
 `allow_network`. Only the process tier enforces it. The `egress` section
-(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
+(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`, `inspect_tls`) is managed only
 too. See [Network policy](21-network-policy.md).
 
 `"microvm_socket"`, set only in the managed configuration, is the socket of
@@ -582,6 +582,13 @@ working on, its queries, to a service outside the machine, so it is an
 administrator's setting: **only the managed configuration**
 (`/etc/abhed/config.json`) turns it on or says where the queries go. The
 same holds for [`web_fetch`](#web-fetch).
+
+Once on, every search asks in the default, accept-edits, auto and plan
+modes, as `web_fetch` does without a host list: a query can carry what the
+agent read to the search service. An allow rule runs searches unasked, such
+as `"permissions": {"allow": ["web_search"]}` in the managed file, and
+bypass mode runs them. Before 1.2.8 a search ran unasked as a read-only
+tool.
 
 Every other layer, `~/.abhed/config.json`, `-settings`, a workspace's
 `.abhed/config.json` trusted or not and an SDK `ConfigDir`, may only turn it

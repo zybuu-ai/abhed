@@ -31,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Cluster is a connection to one Kubernetes API server.
@@ -351,9 +353,11 @@ func OpenLogin(lc LoginCluster, defaultCA, token, namespace string) (*Cluster, e
 
 // newTransport keeps idle connections for a while only: a session's clients
 // outlive its last call until the session goes, and should not hold sockets.
-func newTransport(tlsCfg *tls.Config) *http.Transport {
-	return &http.Transport{TLSClientConfig: tlsCfg, IdleConnTimeout: 90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second}
+// It is judged by the egress allowlist when one is in force, as a command's
+// kubectl through the proxy would be.
+func newTransport(tlsCfg *tls.Config) http.RoundTripper {
+	return &egress.Transport{Kind: egress.KindK8s, Base: &http.Transport{TLSClientConfig: tlsCfg,
+		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second}}
 }
 
 func contextNames(kc *kubeconfig) []string {
@@ -393,6 +397,33 @@ func clientCert(certData, certFile, keyData, keyFile string) (*tls.Certificate, 
 	return &pair, nil
 }
 
+// helperEnv is a credential helper's environment: what a program needs to
+// run, and what cloud sign-in helpers read (their own variables, proxies,
+// certificate bundles), never Abhed's own keys such as ABHED_API_KEY or a
+// model provider's. The kubeconfig's exec env is added after.
+func helperEnv() []string {
+	names := map[string]bool{}
+	for _, k := range []string{"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
+		"KUBECONFIG", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+		"SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"} {
+		names[k] = true
+	}
+	prefixes := []string{"AWS_", "AZURE_", "GOOGLE_", "CLOUDSDK_", "GCE_", "OCI_", "IBMCLOUD_", "DIGITALOCEAN_", "KUBE"}
+	var out []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		keep := names[k]
+		for _, p := range prefixes {
+			keep = keep || strings.HasPrefix(k, p)
+		}
+		if keep {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // refreshExecToken runs the credential helper named in the kubeconfig.
 func (c *Cluster) refreshExecToken() error {
 	if c.execCfg == nil {
@@ -402,7 +433,7 @@ func (c *Cluster) refreshExecToken() error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, c.execCfg.Command, c.execCfg.Args...)
-	cmd.Env = os.Environ()
+	cmd.Env = helperEnv()
 	for _, e := range c.execCfg.Env {
 		cmd.Env = append(cmd.Env, e.Name+"="+e.Value)
 	}

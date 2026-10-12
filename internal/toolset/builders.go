@@ -34,7 +34,7 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 		out = append(out, mcp.ServerConfig{
 			Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env,
 			URL: s.URL, Headers: s.Headers, HeadersEnv: s.HeadersEnv,
-			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest,
+			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest, HostFiles: s.HostFiles,
 		})
 	}
 	return out
@@ -54,8 +54,9 @@ func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
 	if vault != nil {
 		load = vault.LoadRedactor
 	}
+	ruled := append(append([]string(nil), cfg.Permissions.Deny...), cfg.Permissions.Ask...)
 	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts,
-		Secrets: load, MaxChars: cfg.WebFetch.MaxChars}
+		Secrets: load, MaxChars: cfg.WebFetch.MaxChars, PathRuled: webfetch.PathRuled(ruled)}
 }
 
 // WebSearchTool constructs the web search tool when enabled. Returns nil, nil

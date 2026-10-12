@@ -10,17 +10,22 @@ package secrets
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
+	"weak"
 )
 
 // EnvFile names the environment variable that overrides the store's location.
@@ -33,7 +38,8 @@ func ValidName(name string) bool { return validName.MatchString(name) }
 
 // Store is a file of named values, readable by its owner only. Every Store
 // opened on one path in this process shares one lock, so a server that opens
-// a store per request cannot lose one write to another.
+// a store per request cannot lose one write to another; a write also takes a
+// file lock beside the store, so another process writing it cannot either.
 type Store struct {
 	path string
 	mu   *sync.Mutex
@@ -42,15 +48,42 @@ type Store struct {
 	name string
 }
 
-var pathLocks sync.Map // cleaned absolute path -> *sync.Mutex
+// pathLocks holds each path's lock weakly: the entry goes once no Store on
+// the path is left, so a long-lived server opening a store per account does
+// not keep a lock for every path it ever saw.
+var (
+	pathLocksMu sync.Mutex
+	pathLocks   = map[string]weak.Pointer[sync.Mutex]{} // cleaned absolute path
+)
 
 func lockFor(path string) *sync.Mutex {
 	key := filepath.Clean(path)
 	if abs, err := filepath.Abs(path); err == nil {
 		key = abs
 	}
-	mu, _ := pathLocks.LoadOrStore(key, new(sync.Mutex))
-	return mu.(*sync.Mutex)
+	pathLocksMu.Lock()
+	defer pathLocksMu.Unlock()
+	if mu := pathLocks[key].Value(); mu != nil {
+		return mu
+	}
+	mu := new(sync.Mutex)
+	w := weak.Make(mu)
+	pathLocks[key] = w
+	runtime.AddCleanup(mu, func(key string) {
+		pathLocksMu.Lock()
+		defer pathLocksMu.Unlock()
+		if cur, ok := pathLocks[key]; ok && cur.Value() == nil {
+			delete(pathLocks, key)
+		}
+	}, key)
+	return mu
+}
+
+// lockedPaths is how many paths hold a lock entry, for tests.
+func lockedPaths() int {
+	pathLocksMu.Lock()
+	defer pathLocksMu.Unlock()
+	return len(pathLocks)
 }
 
 // DefaultPath is $ABHED_SECRETS_FILE, else ~/.abhed/secrets.json: outside any
@@ -195,6 +228,11 @@ func (s *Store) Set(name, value string) error {
 	if s.src != nil {
 		return s.srcCall(func(ctx context.Context) error { return s.src.Set(ctx, name, value) })
 	}
+	unlock, err := fileLock(s.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m, err := s.loadFixable()
 	if err != nil {
 		return err
@@ -210,6 +248,11 @@ func (s *Store) Remove(name string) error {
 	if s.src != nil {
 		return s.srcCall(func(ctx context.Context) error { return s.src.Remove(ctx, name) })
 	}
+	unlock, err := fileLock(s.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m, err := s.loadFixable()
 	if err != nil {
 		return err
@@ -227,6 +270,11 @@ func (s *Store) Delete() error {
 	if s.src != nil {
 		return fmt.Errorf("%s is kept by its driver; remove its secrets by name", s.name)
 	}
+	unlock, err := fileLock(s.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -298,12 +346,18 @@ type Redactor struct {
 	pairs []pair
 	// broken marks a store that could not be loaded: everything is withheld.
 	broken bool
+
+	once      sync.Once
+	all, keys *strings.Replacer
 }
 
 type pair struct {
 	needle, label string
 	// short marks a value under MinLength, which leaves JSON keys alone.
 	short bool
+	// encoded marks a form the value takes encoded or in another case, which
+	// file path checks leave out.
+	encoded bool
 }
 
 // MinLength is the fewest characters `abhed secret set` accepts. A shorter value
@@ -518,10 +572,17 @@ func (s *Store) LoadRedactor() (*Redactor, error) {
 		// Text that embeds JSON holds the value escaped, so that form is a
 		// needle too, with and without HTML escaping.
 		seen := map[string]bool{}
+		short := utf8.RuneCountInString(value) < MinLength
 		for _, n := range []string{value, escaped(value, true), escaped(value, false)} {
 			if !seen[n] {
 				seen[n] = true
-				pairs = append(pairs, pair{n, label, utf8.RuneCountInString(value) < MinLength})
+				pairs = append(pairs, pair{needle: n, label: label, short: short})
+			}
+		}
+		for _, n := range encodedForms(value) {
+			if n != "" && !seen[n] {
+				seen[n] = true
+				pairs = append(pairs, pair{needle: n, label: label, encoded: true})
 			}
 		}
 	}
@@ -538,13 +599,20 @@ func escaped(v string, html bool) string {
 	return out[1 : len(out)-1]
 }
 
-// Redact returns the payload with every stored value replaced. A payload that
-// is not valid JSON is scanned the same way, literal by literal.
+// Redact returns the payload with every stored value replaced. In valid JSON
+// each string literal is matched on its own; a payload that is not valid JSON,
+// such as plain text, is matched as text, whole.
 func (r *Redactor) Redact(b []byte) []byte {
 	if r.broken {
 		return nil // not JSON, so every caller withholds the payload
 	}
 	if len(r.pairs) == 0 {
+		return b
+	}
+	if !json.Valid(b) {
+		if red := r.replace(string(b), false); red != string(b) {
+			return []byte(red)
+		}
 		return b
 	}
 	var out []byte
@@ -584,15 +652,59 @@ func (r *Redactor) Redact(b []byte) []byte {
 	return append(out, b[last:]...)
 }
 
-// replace redacts one string; in a key, a short value is left alone.
+// replace redacts one string in a single pass, longest value first, so a
+// label already written is never matched again; in a key, a short value is
+// left alone.
 func (r *Redactor) replace(s string, key bool) string {
-	for _, p := range r.pairs {
-		if key && p.short {
-			continue
+	r.once.Do(func() {
+		var all, keys []string
+		for _, p := range r.pairs {
+			all = append(all, p.needle, p.label)
+			if !p.short {
+				keys = append(keys, p.needle, p.label)
+			}
 		}
-		s = strings.ReplaceAll(s, p.needle, p.label)
+		r.all, r.keys = strings.NewReplacer(all...), strings.NewReplacer(keys...)
+	})
+	if key {
+		return r.keys.Replace(s)
 	}
-	return s
+	return r.all.Replace(s)
+}
+
+// EncodedMinLength is the fewest characters a value must have to be looked
+// for in its encoded forms; shorter encodings match ordinary text too often.
+const EncodedMinLength = 12
+
+// encodedForms are the spellings a value takes when a command or a client
+// encodes it: base64 and base64url at each of the three byte alignments,
+// hex, percent-encoding, and its lower and upper case. A value split,
+// reversed or only partly sent is not among them.
+func encodedForms(v string) []string {
+	if utf8.RuneCountInString(v) < EncodedMinLength {
+		return nil
+	}
+	out := []string{strings.ToLower(v), strings.ToUpper(v),
+		hex.EncodeToString([]byte(v)), strings.ToUpper(hex.EncodeToString([]byte(v))),
+		url.QueryEscape(v), url.PathEscape(v), strings.ReplaceAll(url.QueryEscape(v), "+", "%20")}
+	for _, enc := range []*base64.Encoding{base64.RawStdEncoding, base64.RawURLEncoding} {
+		for off := 0; off < 3; off++ {
+			out = append(out, alignedBase64(enc, v, off))
+		}
+	}
+	return out
+}
+
+// alignedBase64 is the run of base64 characters that v alone decides when it
+// starts off bytes into a 3-byte group, whatever bytes surround it.
+func alignedBase64(enc *base64.Encoding, v string, off int) string {
+	full := enc.EncodeToString(append(make([]byte, off), v...))
+	start := (8*off + 5) / 6
+	end := 8 * (off + len(v)) / 6
+	if start >= end {
+		return ""
+	}
+	return full[start:end]
 }
 
 // Span is the byte length of the longest text a value is matched as, or 0
@@ -718,7 +830,7 @@ func (r *Redactor) FindInPath(path string) (label string, found bool) {
 		return "", true
 	}
 	for _, p := range r.pairs {
-		if utf8.RuneCountInString(p.needle) >= PathMinLength && strings.Contains(path, p.needle) {
+		if !p.encoded && utf8.RuneCountInString(p.needle) >= PathMinLength && strings.Contains(path, p.needle) {
 			return p.label, true
 		}
 	}

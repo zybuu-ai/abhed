@@ -22,11 +22,37 @@ of the file.
 
 ## Where a server runs
 
-A stdio server is a process Abhed starts on your machine, as you, **outside the
-sandbox**. It can read and write what your user can and reach the network,
-whatever the sandbox tier and `allow_network` say. The one exception is the
-network under `sandbox.network: "allowlist"`; see below. A URL server runs
-wherever it is hosted. `digest` is accepted in the configuration but not checked yet.
+A stdio server is a process Abhed starts on your machine, as you, outside
+the commands' sandbox. On the process tier (macOS Seatbelt, Linux
+bubblewrap) its **files are confined**, whatever the network setting: your
+home folder is hidden from it, but for a home of its own,
+`~/.abhed/mcp/<server>/home`, which is its `HOME`, which it may write and
+which keeps its caches (`npx`, `uv`) between runs, and the folder it was
+installed in when that is under your home (a node version's folder, a
+toolchain's, never all of `~/.local` or `~/.cargo`), read-only. The workspace
+stays readable and writable, with its `.abhed` hidden. So a server cannot read
+`~/.ssh` or plant a LaunchAgent, a systemd user unit or a shell rc line.
+Files outside your home that your user can write stay writable. A server that
+needs your home (a credential file it reads, a tool installed elsewhere in
+it) is set `"host_files": true`, which runs it with your files as before;
+under the allowlist its network is still confined. Under bubblewrap the
+server is refused where a private `/proc` cannot be mounted (set
+`host_files`), and when Abhed runs as root its files are not confined, with a
+warning, since bubblewrap keeps root's capabilities. On the none tier and on
+Windows a stdio server's files are not confined. Its network is open,
+whatever `allow_network` says, except under `sandbox.network:
+"allowlist"`; see below. A URL server runs wherever it is hosted.
+
+`digest` pins a stdio server's program, as `"sha256:<64 hex digits>"`: just
+before the server starts, the file its `command` resolves to (on the
+server's own `PATH`, links followed) is hashed, a mismatch refuses the
+server, and the resolved path is what starts. When an argument names an OCI
+image by that digest (`ghcr.io/org/server@sha256:…`), the container engine
+pulls by it and the program is not hashed. A digest pins the one program
+file: an interpreter's script or packages it loads (`npx`, `python
+server.py`) are not covered, so pin the image or a single binary. A URL
+server with a `digest` is refused, since its program cannot be checked. A
+malformed digest refuses the server too.
 Add a server as you would install any program: only one you trust.
 
 A stdio server does not inherit Abhed's environment, which holds model
@@ -67,9 +93,9 @@ With `sandbox.network: "allowlist"` (see
 only servers you trust, as before. What remains open to a server that
 means to get out:
 
-- **Its files are not confined.** It reads and writes what your user can,
-  so it can plant a LaunchAgent, a systemd user unit or a line in a shell
-  rc file that runs later, outside any sandbox, with your network.
+- **Files outside your home.** Its home is hidden (see above), but what
+  your user can write elsewhere stays writable, and a server set to
+  `host_files` reads and writes what your user can.
 - **Unix sockets it can reach.** On Linux, any AF_UNIX socket in a folder
   that is not hidden (under your home, `/var/tmp`, `/var/run/postgresql`,
   and so on) can be connected to, and whatever listens there acts for it.
@@ -87,10 +113,13 @@ means to get out:
 
 A stdio server's decisions go to the record of the session whose call to
 it is in flight, with that call's id, or with none in flight, the session
-that called it last. Its traffic before any call, or while calls from two
-sessions to the same server are in flight at once (possible under
-`abhed serve`, where servers are shared), cannot be put to one session; it
-is written to Abhed's log instead of a record.
+that called it last. Under `abhed serve`, where servers are shared, its
+traffic while calls from several sessions are in flight cannot be put to
+one of them, so it goes to each of their records, with no call id and
+`shared_sessions` saying how many; its traffic before any call (the latest
+64 decisions) goes to each session's record when that session first calls
+it, marked `before_call`. A session therefore sees what the shared server
+did while it was in use, including on another session's behalf.
 
 ## From the command line
 
@@ -143,6 +172,13 @@ argument names are not letters, digits, `_`, `.` and `-` is left out with a
 warning. Built-in commands, and your own and the workspace's custom
 commands, keep their names: an MCP prompt that would take one is left out,
 and the session says so.
+
+A remote tool's name may hold only letters, digits, `_`, `.` and `-`, up to
+64 characters. The MCP specification allows names of up to 128, but model
+providers refuse tool names over 64, so a longer one is left out: a warning
+names it and gives its length, `/mcp` and Studio list it under its server,
+and `abhed doctor` and the server's MCP status count the tools left out for
+their names beside each server.
 
 ## Namespacing and policy
 

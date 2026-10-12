@@ -72,6 +72,12 @@ func TestRemoteToolNamesAreValidated(t *testing.T) {
 	if strings.Contains(out, "\u202e") {
 		t.Errorf("the warning carries the raw RLO:\n%s", out)
 	}
+	if !strings.Contains(out, "up to 64 characters (65 here)") {
+		t.Errorf("the warning does not give the limit and the length:\n%s", out)
+	}
+	if st := g.Status(); len(st) != 1 || st[0] != "hid (2 tools, 4 left out for their names)" {
+		t.Errorf("status: %q", st)
+	}
 }
 
 // A server whose name fails validation is refused before anything keeps its

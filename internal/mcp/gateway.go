@@ -41,16 +41,14 @@ type ServerConfig struct {
 	// AllowTools optionally restricts which of the server's tools are exposed.
 	// Empty means all of them, which is the riskier choice.
 	AllowTools []string `json:"allow_tools,omitempty"`
-	// Digest is NOT YET ENFORCED. It is carried through configuration and
-	// verified nowhere — connectOne does not read it — so setting it today
-	// buys an air-gapped operator no protection at all. It is left in place
-	// because the field is the right shape and removing it would break
-	// configs that already set it, but anything that reads like a
-	// supply-chain guarantee must not be claimed until this is wired up.
-	//
-	// Intended: pins the server artifact. Air-gapped installs must set this;
-	// a tag or floating command is not reproducible (docs/ops/air-gap.md).
+	// Digest pins the server's program as sha256:<hex>: the file its command
+	// resolves to is hashed before it starts and a mismatch refuses it, or an
+	// OCI image named by that digest in the arguments is pulled by it. A URL
+	// server with a digest is refused, since it cannot be checked.
 	Digest string `json:"digest,omitempty"`
+	// HostFiles runs a stdio server with the host's files, not confined to
+	// its own home and the workspace on the process tier.
+	HostFiles bool `json:"host_files,omitempty"`
 }
 
 var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
@@ -86,9 +84,12 @@ type Gateway struct {
 	// both start a process and leave one running unowned.
 	restarting sync.Mutex
 
-	// Confine, when set, builds each stdio server's command with its network
-	// confined; MustConfine refuses a stdio server when it cannot be.
+	// Confine, when set, builds each stdio server's command with its files
+	// and, under the allowlist, its network confined; ConfineNet confines the
+	// network alone, for a server set to host_files. MustConfine refuses a
+	// stdio server whose network cannot be confined.
 	Confine     Launcher
+	ConfineNet  Launcher
 	MustConfine bool
 	// Egress is the tool set's egress guard for HTTP servers, egress.Unguarded
 	// outside the allowlist; nil uses the request's.
@@ -166,6 +167,9 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 	var transport Transport
 	var err error
 	if cfg.URL != "" {
+		if _, err := pinnedCommand(cfg, nil); err != nil {
+			return err
+		}
 		headers := map[string]string{}
 		for k, v := range cfg.Headers {
 			headers[k] = v
@@ -407,7 +411,11 @@ func (g *Gateway) Status() []string {
 	defer g.mu.RUnlock()
 	var out []string
 	for name, c := range g.clients {
-		out = append(out, fmt.Sprintf("%s (%d tools)", name, len(c.Tools())))
+		line := fmt.Sprintf("%s (%d tools)", name, len(c.Tools()))
+		if n := len(c.Refused()); n > 0 {
+			line = fmt.Sprintf("%s (%d tools, %d left out for their names)", name, len(c.Tools()), n)
+		}
+		out = append(out, line)
 	}
 	sort.Strings(out)
 	return out

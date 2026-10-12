@@ -91,11 +91,23 @@ echo "bus=${DBUS_SESSION_BUS_ADDRESS:-none} socket=$(test -S /run/user/$(id -u)/
 	})
 }
 
-// Without an egress policy there is nothing to confine a server to.
-func TestServerCommandNeedsTheAllowlist(t *testing.T) {
+// Without an egress policy a server's files are still confined, with no
+// proxy; its network alone has nothing to be confined to.
+func TestServerCommandWithoutTheAllowlist(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	s := NewProcess(DefaultPolicy(t.TempDir()))
-	if _, err := s.ServerCommand(context.Background(), "x", []string{"true"}, nil, nil); err == nil {
-		t.Fatal("a server was given a command with no egress policy")
+	if ok, why := s.Available(); !ok {
+		t.Skipf("process sandbox unavailable: %s", why)
+	}
+	cmd, err := s.ServerCommand(context.Background(), "x", []string{"/bin/true"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := strings.Join(cmd.Args, " "); strings.Contains(args, "deny network") || strings.Contains(args, "unshare-net") {
+		t.Fatalf("the network was confined with no allowlist: %s", args)
+	}
+	if _, err := s.ServerNetCommand(context.Background(), "x", []string{"/bin/true"}, nil, nil); err == nil {
+		t.Fatal("a network-only confinement was given with no egress policy")
 	}
 }
 

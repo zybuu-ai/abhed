@@ -947,20 +947,33 @@ Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.
 
-On a Community server that several accounts sign in to (local, proxy or OIDC
-authentication), every account shares the operator's one store. Any account
-can then use every secret an allow rule names, and can read it too: redaction
-hides the stored value, not a command that prints it reversed, encoded or
-split. The server logs a warning at startup when it finds such a rule, and
-again as each session starts, naming its account. Give
-each person who must not see another's secrets their own server.
+On a server that several accounts sign in to (local, proxy or OIDC
+authentication), each account has its own store, and a session reads only
+the store of the account it runs as: one account never uses or reads
+another's secrets, nor the operator's. The stores are files in
+`~/.abhed/secrets.d` (`ABHED_ACCOUNT_SECRETS_DIR` overrides; it must be an
+absolute path), one per account, named by a digest so no account's name is
+on disk; the tools and sandbox refuse that folder as they refuse the
+operator's store. A local account made again under a removed one's name
+starts with an empty store. The operator's store, which `abhed secret`
+manages, serves scheduled runs only. A caller with no account (anonymous)
+gets an empty store and cannot add to it. Each account manages its own
+secrets through the API, names only, values never read back:
 
-A server embedding Abhed for several accounts can instead give each account
-its own store, through `server.Options.SecretsFor`: a session's commands,
-logins and fetches then read only its owner's store, and its record is
-redacted with it. Such stores belong in `~/.abhed/secrets.d`
-(`ABHED_ACCOUNT_SECRETS_DIR` overrides), which the tools and sandbox refuse
-as they refuse the operator's store.
+```sh
+curl -X PUT  https://abhed.example/v1/secrets/GITHUB_TOKEN -d '{"value":"ghp_…"}'
+curl         https://abhed.example/v1/secrets            # {"names":["GITHUB_TOKEN"]}
+curl -X DELETE https://abhed.example/v1/secrets/GITHUB_TOKEN
+```
+
+A value is 8 characters to 64 KiB. Allow rules still decide which names a
+session may use. Before 1.2.8 every account on such a server shared the
+operator's one store.
+
+A server embedding Abhed can give each account a store of its own choosing
+through `server.Options.SecretsFor` instead: a session's commands, logins
+and fetches then read only what it returns, and its record is redacted with
+it and the operator's store.
 
 ```json
 "allow": ["secret(GITHUB_TOKEN)"],
@@ -980,8 +993,10 @@ When it fires, [HawkEYE](15-hawkeye.md) reports `secret-redacted`: the value
 was caught, and the command or the model exposed it, which is worth knowing.
 
 The reply and the reasoning stream as many fragments, and a value may be split
-between two, so streamed text is held back by about the length of the longest stored value
-and redacted together with what follows. The live view lags by that much, and
+between two, so streamed text is held back by about the length of the
+longest form a stored value is matched in (for a value of 12 characters or
+more, its percent-encoded or hex form, two to three times its length) and
+redacted together with what follows. The live view lags by that much, and
 only when secrets are stored; the whole text is redacted as one event too.
 A stored key file makes that lag visible, a few kilobytes of text, and values
 that occur close together hold the text back until the last one is complete.
@@ -992,7 +1007,12 @@ Text that cannot be redacted is never written as it was: it becomes
 refused, in every mode, whether the agent or a person at the workbench makes
 it: the editor's save, and the explorer's New file, New folder and the new
 name of a Rename, are checked the same way. `bash` is not: a command can still
-create a file whose name holds a value the person typed or the agent built. The path is matched as written, in its case, and
+create a file whose name holds a value the person typed or the agent built
+(`touch "$TOKEN"`). The file then exists on disk under that name; every event
+that names it, a later `ls` or `git status` included, is redacted as any
+output is, in the encoded forms above too. Give such a command its secret
+only when it needs it, and use the sandbox's egress allowlist so a name
+cannot carry the value out. The path is matched as written, in its case, and
 only against values of 12 characters or more, so a value such as `postgres`
 does not refuse ordinary files. A value of 8 to 11 characters can therefore
 still become a file name in a mode that approves writes without asking;
@@ -1032,17 +1052,33 @@ ordinary text. A shorter value stored before that rule is still redacted, but
 not in JSON object keys, so a value such as `type` cannot break the structure
 of an event.
 
-What redaction does not catch. It matches the exact value, in its JSON-escaped
-and HTML-escaped forms, and nothing else:
+Redaction matches the exact value and its JSON-escaped and HTML-escaped
+forms. For a value of 12 characters or more it also matches the forms a
+command or client encodes it in: base64 and base64url at any byte alignment
+(as in a Basic auth header that `curl -v` prints), hex in either case,
+percent-encoding, and the whole value in lower or upper case. The same forms
+are looked for in what `web_fetch` and `web_search` would send. All values
+are replaced in one pass, longest first, so a label already written is never
+matched again by a shorter value. Plain text (the sandbox control plane's
+record, the prompt history) is redacted as text. An error a run returns, such
+as a provider's error body, is redacted too, and a request to the model that
+cannot connect reports its URL without the query or user information, where
+a `base_url` may carry a key (`?api_key=`, `user:key@host`).
 
-- An encoded form is not caught: base64 (as in a Basic auth header that
-  `curl -v` prints), URL-encoded, hex, or a change of case.
+What redaction does not catch:
+
+- A value split, reversed, partly sent, or encoded in another way (gzip,
+  base32, a custom cipher) is not caught. No redactor can know every
+  encoding, so give a secret only to the command that needs it, keep the
+  [egress allowlist](21-network-policy.md) on, and rotate a value that was
+  exposed.
+- A value of 8 to 11 characters is matched only as written and escaped.
 - Part of a value is not caught, such as a truncated one.
-- An error returned from a run, such as a provider's error body, is not
-  redacted.
-- Files are not redacted. What the agent writes to a file stays there, and
-  `abhed resolve` pushes it and quotes the diff in the pull request's
-  description.
+- Files are not redacted. What the agent writes to a file stays there.
+  `abhed resolve` checks the change before it pushes: a diff, file name or
+  commit message that holds a stored value, in any of the forms above,
+  refuses the push and the pull request, and the change stays on its local
+  branch.
 - The model's own text and calls go back to the same model unredacted in the
   conversation. They are redacted everywhere else.
 

@@ -63,7 +63,7 @@ Deny rules win over allow rules. A request no rule matches gets `default`:
 `deny` unless set to `allow`. `mode: "audit"` lets a denied request through and
 records it as `would_deny`, so a rule set can be tried before it is enforced.
 
-Two more settings, also managed only:
+Three more settings, also managed only:
 
 - `record_paths`: `true` (the default) records each plain HTTP request's
   path; `false` records the host, port and method only. A path can hold a
@@ -73,6 +73,41 @@ Two more settings, also managed only:
   way for this long is closed. Left out, 300 (five minutes). It applies after
   the request head, which has its own 30-second limit, so a command cannot
   hold the proxy's connections open by sending nothing.
+- `inspect_tls`: `false` (the default) decides HTTPS by host and port only.
+  `true` has the proxy look inside it; see "Inspecting HTTPS" below.
+
+## Inspecting HTTPS
+
+With `"inspect_tls": true` each session's proxy makes a certificate
+authority of its own when it starts, whose key never leaves Abhed's process
+and is gone when the proxy stops. A `CONNECT` is opened when an allow rule
+names its host and port, narrowed by method or path or not, and a deny rule
+not narrowed by them refuses it. If the client then speaks TLS, the proxy
+answers it with a certificate for the tunnel's host from that CA, and
+decides each request inside by host, port, method and path exactly as it
+decides plain HTTP, recording each as kind `https` with its method and path.
+Allowed requests go on to the host over TLS, verified against the system's
+roots as any client would. So a rule such as
+`{"host": "api.github.com", "methods": ["GET"], "decision": "allow"}` lets a
+command read but not `POST`, and data cannot leave through a path or method
+no rule allows. A request inside that names another host in its `Host`
+header, or a TLS name (SNI) other than the tunnel's host, is refused, and so
+is a protocol upgrade. A tunnel that does not carry TLS (ssh over
+`CONNECT`) is decided by host and port, as without inspection.
+
+Each command is pointed at a CA bundle holding the system's roots and the
+session's CA: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+`GIT_SSL_CAINFO`, `PIP_CERT`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE` and
+`CARGO_HTTP_CAINFO`. curl, git, pip, Python `requests`, Node and Go on Linux
+read them. A client with a trust store of its own (a JVM's `cacerts`, Go on
+macOS, which asks the system), or one that pins its certificates, refuses
+the session's CA: its HTTPS then fails, and the failed handshake is recorded
+with rule `tls`. That is the one thing inspection cannot reach: a pinned
+client cannot be inspected, so keep host lists narrow and free of
+general-purpose hosts for such clients. Only HTTP/1.1 is spoken inside; a
+client that asks for HTTP/2 falls back to it. Inspection applies to
+commands; Abhed's own requests are judged in-process with their methods and
+paths already.
 
 ## Path rules
 
@@ -93,7 +128,9 @@ path as the one a deny rule names: `/ADMIN` (a case-insensitive server),
 bump, not a boundary. To keep commands away from part of a service, allow
 the paths they need and let the default deny the rest: an allow-list fails
 closed when the server spells a path in a way the rule did not foresee, and
-a deny-list fails open.
+a deny-list fails open. `abhed doctor` names each deny rule narrowed by a
+path under the allowlist, with this advice. No proxy can know every server's
+own path rules, so this stays a limit of path deny rules.
 
 ## How a decision is made
 
@@ -136,12 +173,19 @@ revoked when the command's call ends:
 - Any launch bound to a session gets a token the same way, an MCP server
   started as `mcp/<name>` included, for as long as it runs.
 
-The proxy remembers the last 1,024 ended tokens, so their late traffic is
-recorded under the right call; an older one, or one never issued, is
-refused with no call id. A token is given only in its command's environment,
-though a command can pass it on: one written to the workspace and read by a
-concurrent call makes that call's traffic recorded as the first call's, until
-the first call ends.
+Each call also reaches the proxy by a way in of its own: on Linux a unix
+socket bound into its sandbox in place of the session's, on macOS a loopback
+port its Seatbelt profile allows and no other call's profile does. What
+arrives there is that call's, whatever credentials it carries or lacks, so a
+token passed to another command (written to the workspace and read by a
+concurrent call) does not move that command's traffic to the first call's
+record: it goes nowhere, or is recorded as the command's own call. That way
+in closes when the call ends. The proxy remembers the last 1,024 ended
+tokens, so late traffic that still reaches it is recorded under the right
+call; an older one, or one never issued, is refused with no call id. What
+remains: a stdio MCP server on Linux has the session's socket folder bound
+back, so it can still present another call's token there, and a name lookup
+through the session's resolver is attributed by the token it carries.
 On Linux each command has its own PID namespace, so no command can see
 another's environment. On macOS it can: `ps` is refused inside the sandbox,
 but the kernel returns the arguments and environment of any process of the
@@ -153,10 +197,12 @@ extension Abhed started, keys included. Abhed's own environment is hidden
 from it (it restarts itself with only a few variables in view); see
 [Configuration](02-configuration.md#sandbox).
 
-- **HTTPS** goes through `CONNECT` and is decided by host and port only: the
-  proxy does not see inside TLS. So a rule narrowed by `methods` or `paths`
-  cannot allow a tunnel, and a deny rule narrowed by them refuses the tunnel to
-  that host and port, since the proxy cannot check it.
+- **HTTPS** goes through `CONNECT` and, unless `inspect_tls` is on, is
+  decided by host and port only: the proxy does not see inside TLS. So a rule
+  narrowed by `methods` or `paths` cannot allow a tunnel, and a deny rule
+  narrowed by them refuses the tunnel to that host and port, since the proxy
+  cannot check it. With `inspect_tls` each request inside is decided; see
+  "Inspecting HTTPS".
 - **Plain HTTP** is decided by host, port, method and path. The proxy strips
   its own credentials and the hop-by-hop headers before forwarding, refuses
   upgrades, and closes after each response.
@@ -174,21 +220,17 @@ closed unread. Clients that keep connections open should be within it.
 
 ### Clients that do not send proxy credentials
 
-The proxy asks for its credentials (the user and password in the proxy
-variables) on every request, `CONNECT` included, and answers 407 without
-them. Most clients send them: curl, wget, git, pip, npm, Go and Python
-`requests`. Java's `HttpURLConnection`, which Maven and Gradle use, does
-not send Basic credentials on a `CONNECT` by default, so HTTPS from a JVM
-gets 407. The JVM's own flag turns that default off:
-
-```
--Djdk.http.auth.tunneling.disabledSchemes=
-```
-
-(an empty value; set it with `JAVA_TOOL_OPTIONS`, `MAVEN_OPTS` or
-`org.gradle.jvmargs`), together with `-Dhttps.proxyHost`, `-Dhttps.proxyPort`,
-`-Dhttps.proxyUser` and `-Dhttps.proxyPassword` from the proxy URL, since the
-JVM does not read `HTTPS_PROXY`.
+A request that arrives through a call's own way in (above) needs no
+credentials: it is the call's. So a client that sends none is served, Java's
+`HttpURLConnection` among them, which Maven and Gradle use and which sends
+no Basic credentials on a `CONNECT`. The JVM does not read `HTTP_PROXY` or
+`HTTPS_PROXY`, so each command is also given `JAVA_TOOL_OPTIONS` naming the
+proxy (`-Dhttp.proxyHost`, `-Dhttp.proxyPort`, `-Dhttps.proxyHost`,
+`-Dhttps.proxyPort` and `-Dhttp.nonProxyHosts` for loopback); a JVM prints
+`Picked up JAVA_TOOL_OPTIONS` on its standard error when it reads it. A
+request that reaches the proxy any other way (the session's shared port,
+which a sandboxed command cannot reach) still needs the credentials in the
+proxy variables and is answered 407 without them.
 
 A denied request gets 403 with the rule and the reason in the body, which the
 agent sees in the command's output.
@@ -329,11 +371,18 @@ request as an `egress.decision` event:
 | `web_fetch` | `web_fetch` | by the rules, then by `web_fetch`'s own checks as before (its `allowed_hosts`, and internal addresses, which it never reaches even when an egress rule names them in `allow_ips`) |
 | `web_search` | `web_search` | by the rules |
 | MCP over HTTP | `mcp` | by the rules |
+| `ssh_connect` | `ssh` | by the rules as a tunnel (host and port; a rule narrowed by method or path never allows it), then the address check |
+| the `k8s_*` tools | `k8s` | by the rules, as HTTPS to the API server |
+| `rag` retrieval over HTTP | `rag` | by the rules |
+| `abhed resolve`'s forge API and push | `forge` | by the rules; the push is judged by host and port before git connects, and its address is git's to resolve |
 
 The `model` rule follows whatever provider configuration is in force: it
 skips the address check, so a `base_url` or IAM URL on loopback, a private
 address or a metadata address such as `169.254.169.254` is reached without
 a rule. The model cannot change it, but anyone who can set the provider can.
+`abhed doctor` and `abhed serve -check` warn, under the allowlist, of each
+configured provider whose `base_url` is or resolves to such an address, so
+an endpoint set by mistake or by an untrusted layer is seen before it is used.
 
 Each tool set has its own guard: the rules of the configuration it was
 built from judge its tools' requests and its sessions' model requests,
@@ -379,15 +428,15 @@ credential, revoked when the server stops:
 
 | Tier | Stdio MCP server under the allowlist |
 |---|---|
-| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker, containerd and snapd sockets under `/run`, the resolvers' `/run/systemd/resolve` and `/run/nscd`, `/run/cups`, `/run/avahi-daemon`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Names resolve through the proxy's resolver, as for commands, where the relay can serve it. When Abhed runs as root the server is refused, with that reason, and not started; so is it where bubblewrap cannot mount a private `/proc`. |
+| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker, containerd and snapd sockets under `/run`, the resolvers' `/run/systemd/resolve` and `/run/nscd`, `/run/cups`, `/run/avahi-daemon`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its home folder is hidden but for its own and its install folder (see [MCP](08-mcp.md)). Names resolve through the proxy's resolver, as for commands, where the relay can serve it. When Abhed runs as root the server is refused, with that reason, and not started; so is it where bubblewrap cannot mount a private `/proc`. |
 | process, macOS (Seatbelt) | **Direct sockets confined.** The profile denies all network use, AF_UNIX included, but outbound to the proxy's port on `localhost`, and denies the LaunchServices and Apple event services (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, the `coreservices` and `lsd` part matched in any case; the whole family is denied, which also cuts Handoff's clipboard and the shared file lists), which would open a URL or an app outside the sandbox. `trustd` is reachable: TLS verification needs it, and it fetches a certificate's AIA and OCSP URLs outside the proxy. Its filesystem is not confined, and it can read the environment of Abhed and of commands (see [Per-call credentials](#per-call-credentials)). |
 | fence, container, vm, none | Not reached: these tiers refuse the allowlist, so no session starts on them. |
 | Windows, or a surface with no process-tier sandbox | **Not started.** It cannot be confined, so it is refused with that reason. |
 
 This confines a server's direct network use, **not a hostile server**. A
-server that means to get out still can: its files are not confined, so it
-can plant a LaunchAgent, a systemd user unit or a shell rc line that runs
-later, outside any sandbox; and on Linux it can connect to any AF_UNIX
+server that means to get out still can: what your user can write outside
+the home stays writable, as does everything for a server set to
+`host_files`; and on Linux it can connect to any AF_UNIX
 socket in a folder that is not hidden, whose listener then acts for it.
 System services also make requests on its behalf, outside the proxy and
 unrecorded: on macOS `trustd` fetches the issuer (AIA) and revocation
@@ -400,9 +449,11 @@ trust.
 The server is given `HTTP_PROXY` and `HTTPS_PROXY` pointing at its proxy.
 Its decisions are recorded in the record of the session whose tool call to
 it is in flight, with that call's id, or with none in flight, of the
-session that called it last, with `mcp_server` naming it. Decisions made
-before any call, or while calls from two sessions are in flight at once,
-are logged instead. See [MCP](08-mcp.md).
+session that called it last, with `mcp_server` naming it. A decision made
+while calls from several sessions are in flight goes to each of their
+records, with no call id and `shared_sessions` counting them; one made
+before any call is kept (the latest 64) and written to each session's record
+when it first calls the server, marked `before_call`. See [MCP](08-mcp.md).
 
 ## What each tier enforces
 
@@ -429,12 +480,19 @@ names the tier and says whether it holds it.
 ## Not covered yet
 
 - Abhed's other own connections: the start-up check that the model endpoint
-  is up (a TCP connect to it), embeddings for retrieval and `rag` corpora,
-  the Kubernetes and SSH tools, the forge client, extensions' processes,
-  and the checks `abhed doctor` and onboarding make. These keep their own
-  settings.
-- The filesystem of a stdio MCP server: only its network is confined.
-- Inspecting HTTPS: no TLS termination, so HTTPS rules are host and port only.
+  is up (a TCP connect to it), embeddings for the code index, extensions'
+  processes, and the checks `abhed doctor` and onboarding make. These keep
+  their own settings. An extension, and a Kubernetes credential helper, no
+  longer inherit Abhed's whole environment: an extension gets `PATH`,
+  `HOME`, the locale and the temporary folder, then its `env`; a credential
+  helper gets those and what cloud sign-in tools read (`AWS_*`, `AZURE_*`,
+  `GOOGLE_*`, `CLOUDSDK_*`, `KUBECONFIG`, the proxy and certificate
+  variables), then the kubeconfig's `env`. Neither gets `ABHED_API_KEY` or a
+  model provider's key.
+- The filesystem of a stdio MCP server outside your home, and all of it for
+  one set to `host_files`.
+- HTTPS from a client that pins its certificates or keeps its own trust
+  store, under `inspect_tls`; and all HTTPS by method and path without it.
 - UDP and raw TCP other than through `CONNECT`, QUIC among them.
 - A resolver inside the macOS sandbox; see Names.
 - Asking a person to approve a destination; a request is allowed or denied.

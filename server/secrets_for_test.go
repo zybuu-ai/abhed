@@ -114,14 +114,59 @@ func ended(t *testing.T, events *servertest.Events, who, id string) string {
 	return all.String()
 }
 
-// With no SecretsFor, every caller's sessions read the operator's store: the
-// single-user default, and what a server shared by several accounts must not keep.
-func TestSessionsShareTheOperatorStoreByDefault(t *testing.T) {
+// With no SecretsFor, a server accounts sign in to gives each account its
+// own store: alice stores a value through the API and her command gets it,
+// bob's is told there is none, and neither gets the operator's. The routes
+// list names only and reach the caller's own store.
+func TestAccountsGetTheirOwnStoreByDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(secretstore.EnvAccountsDir, dir)
 	h, events := secretsServer(t, nil)
-	for _, who := range []string{"alice", "bob"} {
-		if got := run(t, h, events, who); !strings.Contains(got, operatorToken[1:]) {
-			t.Errorf("%s's command did not get the operator's value:\n%s", who, got)
+	put := func(who, name, body string) int {
+		req := httptest.NewRequest("PUT", "/v1/secrets/"+name, strings.NewReader(body))
+		req.Header.Set("X-Abhed-User", who)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := put("alice", "TEAM_TOKEN", `{"value":"`+aliceToken+`"}`); code != http.StatusNoContent {
+		t.Fatalf("alice could not store her value: %d", code)
+	}
+	if code := put("alice", "lower", `{"value":"`+aliceToken+`"}`); code != http.StatusBadRequest {
+		t.Errorf("a bad name: %d", code)
+	}
+	if code := put("alice", "SHORT", `{"value":"abc"}`); code != http.StatusBadRequest {
+		t.Errorf("a short value: %d", code)
+	}
+	alice := run(t, h, events, "alice")
+	if !strings.Contains(alice, aliceToken[1:]) || strings.Contains(alice, operatorToken[1:]) {
+		t.Errorf("alice's command did not get her own value alone:\n%s", alice)
+	}
+	bob := run(t, h, events, "bob")
+	for _, v := range []string{aliceToken[1:], operatorToken[1:]} {
+		if strings.Contains(bob, v) {
+			t.Errorf("bob's command got a value that is not his (%s):\n%s", v, bob)
 		}
+	}
+	if !strings.Contains(bob, "no secret named TEAM_TOKEN") {
+		t.Errorf("bob's command was not refused for want of his own secret:\n%s", bob)
+	}
+	list := func(who string) string {
+		req := httptest.NewRequest("GET", "/v1/secrets", nil)
+		req.Header.Set("X-Abhed-User", who)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+	if got := list("alice"); !strings.Contains(got, `"TEAM_TOKEN"`) || strings.Contains(got, aliceToken) {
+		t.Errorf("alice's list: %s", got)
+	}
+	if got := list("bob"); strings.Contains(got, "TEAM_TOKEN") {
+		t.Errorf("bob's list shows alice's name: %s", got)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(files) != 1 || strings.Contains(files[0], "alice") {
+		t.Errorf("stores on disk: %v", files)
 	}
 }
 
@@ -270,17 +315,18 @@ func TestSecretsForKeepsOperatorValuesRedacted(t *testing.T) {
 	}
 }
 
-// A server several accounts sign in to that gives them all the operator's
-// store warns at startup of each allow rule that lets a session name a secret.
-func TestSharedSecretRulesWarnAtStartup(t *testing.T) {
+// A server several accounts sign in to gives each its own store, so no
+// account shares the operator's and there is nothing to warn of; 1.2.7 and
+// earlier shared it and warned of each allow rule that named a secret.
+func TestNoSharedStoreWarningWithAccounts(t *testing.T) {
 	for _, c := range []struct {
 		name, mode string
 		allow      []string
 		scoped     bool
 		want       bool
 	}{
-		{"local auth and a secret rule", "local", []string{"bash(ls*)", "secret(GITHUB_TOKEN)"}, false, true},
-		{"proxy auth and every tool", "proxy", []string{"*"}, false, true},
+		{"local auth and a secret rule", "local", []string{"bash(ls*)", "secret(GITHUB_TOKEN)"}, false, false},
+		{"proxy auth and every tool", "proxy", []string{"*"}, false, false},
 		{"no auth", "none", []string{"secret(GITHUB_TOKEN)"}, false, false},
 		{"no secret rule", "local", []string{"bash(ls*)"}, false, false},
 		{"a store per account", "oidc", []string{"secret(GITHUB_TOKEN)"}, true, false},
@@ -288,6 +334,7 @@ func TestSharedSecretRulesWarnAtStartup(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			var buf strings.Builder
 			var mu sync.Mutex
+			t.Setenv(secretstore.EnvAccountsDir, t.TempDir())
 			servertest.New(t, func(o *server.Options) {
 				o.Logger = slog.New(slog.NewTextHandler(&lockedWriter{w: &buf, mu: &mu}, nil))
 				o.Config.Auth.Mode = c.mode

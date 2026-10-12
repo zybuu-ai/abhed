@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -77,6 +78,8 @@ type egressState struct {
 	dir      string // the unix socket's folder, Linux only
 	exe      string // this binary, run as the relay, Linux only
 	dns      bool   // the session's resolver is served, Linux only
+	ca       string // the inspection CA bundle commands trust, when the policy inspects TLS
+	caDir    string // its own folder, where there is no socket folder (macOS)
 
 	mu     sync.Mutex
 	routes map[string]recordFn
@@ -128,8 +131,66 @@ func (s *Process) egressFor(ctx context.Context) (*egressState, *egress.Call, er
 	}
 	// The command's ctx outlives it when it runs on in the background, so the credential does too.
 	context.AfterFunc(ctx, call.End)
+	if err := s.bindCall(e, call); err != nil {
+		call.End()
+		return nil, nil, fmt.Errorf("the call's own proxy listener: %w", err)
+	}
 	e.remember(l)
 	return e, call, nil
+}
+
+// callSeq names each call's socket in the session's folder.
+var callSeq atomic.Uint64
+
+// bindCall gives the call a way to the proxy of its own, which the sandbox
+// lets it reach and no other: a unix socket bound in place of the session's
+// under bubblewrap, a loopback port the Seatbelt profile allows under macOS.
+// Whatever it sends there is its own call's, so a token passed to another
+// command cannot move traffic between calls, and a client that sends no
+// credentials on CONNECT, as a JVM does, is served.
+func (s *Process) bindCall(e *egressState, call *egress.Call) error {
+	switch {
+	case e.dir != "":
+		return call.ListenUnix(filepath.Join(e.dir, "c"+strconv.FormatUint(callSeq.Add(1), 36)+".sock"))
+	case s.backend == "sandbox-exec":
+		return call.ListenLoopback(true)
+	}
+	return nil
+}
+
+type egressCallKey struct{}
+
+// withEgressCall names the command's call credential in ctx for wrapEgress.
+func withEgressCall(ctx context.Context, c *egress.Call) context.Context {
+	if c == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, egressCallKey{}, c)
+}
+
+func egressCallOf(ctx context.Context) *egress.Call {
+	c, _ := ctx.Value(egressCallKey{}).(*egress.Call)
+	return c
+}
+
+// writeCA writes the system's CA bundle with the proxy's inspection CA
+// after it where commands can read it, and points their clients at it.
+func (e *egressState) writeCA(p *egress.Proxy) error {
+	dir := e.dir
+	if dir == "" {
+		d, err := os.MkdirTemp("", "abhed-egress-ca-")
+		if err != nil {
+			return err
+		}
+		dir, e.caDir = d, d
+	}
+	path := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(path, p.CABundle(), 0o644); err != nil { // #nosec G306 -- public certificates, read inside the sandbox
+		return err
+	}
+	e.ca = path
+	p.SetCAPath(path)
+	return nil
 }
 
 // egressDone notes that a command of e's session ended, and closes the
@@ -215,6 +276,16 @@ func (s *Process) startEgress(e *egressState) error {
 				e.dns = true
 			}
 		}
+		if p.Inspecting() {
+			if err := e.writeCA(p); err != nil {
+				_ = p.Close()
+				if e.dir != "" {
+					_ = os.RemoveAll(e.dir)
+				}
+				e.err = fmt.Errorf("the egress inspection CA: %w", err)
+				return
+			}
+		}
 		e.proxy = p
 	})
 	if e.err != nil {
@@ -277,17 +348,20 @@ func (e *egressState) close() error {
 	if e.dir != "" {
 		err = errors.Join(err, os.RemoveAll(e.dir))
 	}
+	if e.caDir != "" {
+		err = errors.Join(err, os.RemoveAll(e.caDir))
+	}
 	return err
 }
 
 // egressEnv is the proxy environment for a command of the call ctx names,
 // starting its session's proxy if need be.
-func (s *Process) egressEnv(ctx context.Context) ([]string, *egressState, error) {
+func (s *Process) egressEnv(ctx context.Context) ([]string, *egressState, *egress.Call, error) {
 	e, call, err := s.egressFor(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return call.Env(), e, nil
+	return call.Env(), e, call, nil
 }
 
 // port is the proxy's loopback port, or 0 with none.
@@ -298,10 +372,34 @@ func (e *egressState) port() uint16 {
 	return e.proxy.Addr().Port()
 }
 
+// portFor is the loopback port the call reaches the proxy on: its own when
+// it has one, else the session's.
+func (e *egressState) portFor(c *egress.Call) uint16 {
+	if c != nil {
+		if p := c.Port(); p != 0 && e.port() != 0 {
+			return p
+		}
+	}
+	return e.port()
+}
+
 // relayArgs are the bwrap arguments binding the relay, the proxy's socket and, with the
 // resolver, its socket and resolv.conf; and the argv running the command behind the relay.
 func (e *egressState) relayArgs(argv []string) (binds, wrapped []string) {
-	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", filepath.Join(e.dir, "proxy.sock"), relaySocket}
+	return e.relayArgsFor(nil, argv)
+}
+
+// relayArgsFor is relayArgs binding the call's own socket, when it has one,
+// in place of the session's, so the command reaches the proxy only as itself.
+func (e *egressState) relayArgsFor(c *egress.Call, argv []string) (binds, wrapped []string) {
+	sock := filepath.Join(e.dir, "proxy.sock")
+	if c != nil && c.Socket() != "" {
+		sock = c.Socket()
+	}
+	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", sock, relaySocket}
+	if e.ca != "" {
+		binds = append(binds, "--ro-bind", e.ca, e.ca) // the inspection CA, where the command is told it is
+	}
 	listen := e.proxy.Addr().String()
 	wrapped = []string{relayBinary, egress.RelayArg, relaySocket, listen}
 	if e.dns {

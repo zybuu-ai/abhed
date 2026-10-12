@@ -318,15 +318,21 @@ func (s *Set) EndSession(id string) {
 	}
 }
 
-// ConfineMCP has gw start stdio servers with their network confined by sb
-// under sandbox.network allowlist, and refuse them where sb cannot.
+// ConfineMCP has gw start stdio servers confined by sb where it can (the
+// process tier): their files always, their network under sandbox.network
+// allowlist, where a server sb cannot confine is refused.
 func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
-	if cfg.Sandbox.Network != config.NetworkAllowlist {
+	allowlist := cfg.Sandbox.Network == config.NetworkAllowlist
+	gw.MustConfine = allowlist
+	if p, ok := sb.(*sandbox.Process); ok {
+		gw.Confine = p.ServerCommand
+		if allowlist {
+			gw.ConfineNet = p.ServerNetCommand
+		}
 		return
 	}
-	gw.MustConfine = true
-	if l, ok := sb.(sandbox.ServerLauncher); ok {
-		gw.Confine = l.ServerCommand
+	if l, ok := sb.(sandbox.ServerLauncher); ok && allowlist {
+		gw.Confine, gw.ConfineNet = l.ServerCommand, l.ServerCommand
 	}
 }
 

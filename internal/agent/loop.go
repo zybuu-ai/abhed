@@ -631,7 +631,8 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 
 // RunMessage is Run for a prompt that carries a client's id, which the
 // recorded user.message echoes so the client can match it.
-func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error) {
+func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err error) {
+	defer func() { err = l.redactErr(err) }()
 	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
@@ -2155,14 +2156,30 @@ func (b *fragmentBuffer) push(s string) string {
 		b.carry = raw[cut:]
 		return raw[:cut]
 	}
+	safe := func(cut int) (string, bool) {
+		head := redactedText(b.redact, raw[:cut])
+		return head, head+redactedText(b.redact, raw[cut:]) == whole
+	}
 	for cut := len(raw) - (b.span - 1); cut > 0; cut -= max(b.span-1, 1) {
 		for cut > 0 && cut < len(raw) && !utf8.RuneStart(raw[cut]) {
 			cut--
 		}
 		// A cut is safe only where splitting changes nothing. A secret that
 		// crosses it starts less than a span before it, so the next try is there.
-		head := redactedText(b.redact, raw[:cut])
-		if cut > 0 && head+redactedText(b.redact, raw[cut:]) == whole {
+		if cut > 0 {
+			if head, ok := safe(cut); ok {
+				b.carry = raw[cut:]
+				return head
+			}
+		}
+	}
+	// Each try fell inside a value (encoded values are longer than the text
+	// between them): look rune by rune below the first try before holding all.
+	for cut := len(raw) - b.span; cut > 0; cut-- {
+		if !utf8.RuneStart(raw[cut]) {
+			continue
+		}
+		if head, ok := safe(cut); ok {
 			b.carry = raw[cut:]
 			return head
 		}

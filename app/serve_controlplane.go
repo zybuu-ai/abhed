@@ -498,6 +498,9 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 	} else {
 		add("model", nil, p.Model)
 	}
+	for _, warning := range internalModelEndpoints(cfg) {
+		lines = append(lines, checkLine{name: "  warning", ok: true, detail: warning})
+	}
 	add("secrets", vaultLoads(), "readable")
 
 	cfg, sb, _, err := serveSandbox(cfg, workspace)

@@ -35,6 +35,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -183,7 +184,9 @@ type Config struct {
 	Timeout time.Duration `json:"-"`
 	// TimeoutMS is the config-file form of Timeout.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
-	// Env is passed to the process on top of Abhed's own environment.
+	// Env is passed to the process on top of the few names it gets from
+	// Abhed's environment (PATH, HOME, the locale); an empty value passes
+	// Abhed's own value of that name.
 	Env map[string]string `json:"env,omitempty"`
 	// Match narrows tool_call and permission_request to calls a rule matches,
 	// as a deny rule would: bash(git *), write(src/**). None takes every call.
@@ -424,19 +427,37 @@ func (e *Extension) Close() error {
 	return nil
 }
 
+// baseEnv are the names an extension gets from Abhed's environment: what a
+// program needs to find its tools, its home and a temporary folder. None
+// holds a credential; Abhed's own keys (ABHED_API_KEY, a provider's key)
+// stay out.
+var baseEnv = []string{"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
+	"SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
+
+// environ is an extension's environment: the base names from Abhed's own,
+// then its configured variables, which win. A variable configured with an
+// empty value passes Abhed's own value of that name, which is how an
+// extension is handed something from the environment on purpose.
 func environ(extra map[string]string) []string {
-	if len(extra) == 0 {
-		return nil // inherit Abhed's environment unchanged
+	out := []string{}
+	for _, k := range baseEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			out = append(out, k+"="+v)
+		}
 	}
-	// The extension's own variables are layered ON TOP of Abhed's environment,
-	// which is what the Config.Env doc promises ("passed to the process on top
-	// of Abhed's own environment"). Returning only `extra` — as this once did —
-	// silently dropped HOME, the locale and PATH, so setting a single variable
-	// broke the extension in ways that were hard to trace back to the cause.
-	// A key present in both wins from `extra`, since exec takes the last value
-	// for a repeated name.
-	out := os.Environ()
-	for k, v := range extra {
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := extra[k]
+		if v == "" {
+			var ok bool
+			if v, ok = os.LookupEnv(k); !ok {
+				continue
+			}
+		}
 		out = append(out, k+"="+v)
 	}
 	return out

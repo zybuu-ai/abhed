@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Passage is one retrieved chunk.
@@ -107,7 +109,8 @@ func New(cfg Config) (*Retriever, error) {
 	}
 	client := cfg.Client
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		// Judged by the egress allowlist when one is in force.
+		client = &http.Client{Timeout: cfg.Timeout, Transport: &egress.Transport{Kind: egress.KindRAG}}
 	}
 	return &Retriever{cfg: cfg, client: client}, nil
 }
