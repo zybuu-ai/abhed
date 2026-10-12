@@ -186,7 +186,8 @@ func (w *Witness) send(s Statement) {
 func (w *Witness) post(body []byte) error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		if ue, ok := err.(*url.Error); ok {
+		var ue *url.Error
+		if errors.As(err, &ue) {
 			err = ue.Err
 		}
 		return fmt.Errorf("witness: a request to %s: %w", shown(w.cfg.URL), err)
