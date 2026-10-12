@@ -91,11 +91,10 @@ type egressState struct {
 // sandbox, was closed.
 var errEgressClosed = errors.New("the session's sandbox is closed")
 
-// egressRefusal says why this tier cannot hold sandbox.network allowlist,
-// or "".
+// egressRefusal says why tier t cannot hold sandbox.network allowlist.
 func egressRefusal(t Tier) string {
-	return fmt.Sprintf("sandbox.network is allowlist, which only the process tier enforces (on Linux and macOS); "+
-		"the %s tier is not used for it, so the network is not opened in its place", t)
+	return fmt.Sprintf("sandbox.network is allowlist, which the process, fence, container and vm tiers enforce; "+
+		"the %s tier cannot, so it is not used and the network is not opened in its place", t)
 }
 
 // egressFor is the session's proxy, started if need be, and a credential for the launch's
