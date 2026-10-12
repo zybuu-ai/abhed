@@ -300,10 +300,13 @@ All notable changes to Abhed are recorded here. The format follows
   during the session now has every setting `git init` or `git clone` would
   not write taken out (the file copied to `~/.abhed/quarantine`) and its
   hooks moved there, and that command is refused and recorded as
-  `sandbox.git_planted`. A `.git` file naming a folder outside the workspace
-  or under `.abhed`, or a linked config, is left untouched and refuses every
-  command until removed; so does one that could not be cleaned. Affects
-  1.2.3 to 1.2.7.
+  `sandbox.git_planted`. Only a `.git` folder made during the session is
+  changed: a `.git` file naming a folder outside the workspace or under
+  `.abhed`, a `.git` file naming a git folder (the workspace's own, say) that
+  names a program, a git folder there from the start moved elsewhere, a
+  repository past a bounded first look, or a linked config, is left untouched
+  and refuses every command until removed; so does one that could not be
+  cleaned. Affects 1.2.3 to 1.2.7.
 - Under bubblewrap, a container or the fence, a repository past the
   20,000-folder look for git folders was left unprotected in Studio and
   `abhed serve` too, so a command could fill the workspace with folders and

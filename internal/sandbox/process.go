@@ -648,7 +648,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// earlier command made is looked at here.
 		if s.policy.ProtectGit {
 			for _, ws := range s.workspaces()[:1] {
-				if err := plantedGits(ctx, ws, s.backend, &s.git, walkGit(ws, false).gits); err != nil {
+				if err := plantedGits(ctx, ws, s.backend, &s.git, walkGit(ws, false)); err != nil {
 					return &exec.Cmd{Err: err}
 				}
 			}
