@@ -329,7 +329,7 @@ stays open; unset means 30.
 `"language_servers"` names, per editor language, the language server the
 workbench editor runs in the session's sandbox for go to definition, hover
 and diagnostics (`{"go": ["gopls"]}`); none runs unless named, and a
-workspace file cannot name one. See [The workbench](16-workbench.md#language-servers).
+workspace file cannot name one, trusted or not. See [The workbench](16-workbench.md#language-servers).
 
 `"network": "allowlist"`, set only in the managed configuration, sends
 commands' traffic through a per-session proxy that reaches only what the

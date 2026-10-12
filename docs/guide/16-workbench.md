@@ -751,7 +751,7 @@ file:
 ```
 
 None runs unless it is named there; a workspace's `.abhed/config.json` cannot
-name one. The first file opened in a language with a server starts it for the
+name one, even a trusted one. The first file opened in a language with a server starts it for the
 session (`POST /v1/sessions/{id}/lsp`), and that start is your `bash` call, as
 opening a shell is: the policy judges its command line (a deny rule naming it
 refuses it, and plan mode does too), it is recorded as yours, and its end and
