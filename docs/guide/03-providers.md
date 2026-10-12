@@ -147,8 +147,9 @@ model the next one starts on; with one open it switches that session
 its model when it is continued from its record, after a restart or on another
 node; if that provider is no longer configured it continues on the default,
 and its next turn records the move. A switch is refused while a turn is
-running, for a provider that is not configured, and when the switch cannot be
-recorded; the picker says why and goes back to the model still in use.
+running, for a provider that is not configured or that a managed
+`model.default` does not allow, and when the switch cannot be recorded; the
+picker says why and goes back to the model still in use.
 
 A switch is recorded as a `model.switched` event (`provider`, `model`,
 `from`), each `model.call` names the model it went to, and the session list

@@ -36,11 +36,11 @@ configuration](#trusting-the-workspace-configuration).
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
 | `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
-| `fence` | `cpu_percent`: the fence tier's CPU bound — [below](#the-fence-tier-preview-linux) |
+| `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall` and the managed `egress_port_only` — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
-| `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
+| `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
-| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in one workspace instead of a sandbox per session (off) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
+| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in the server's one workspace instead of the sandbox per session a multi-account server gets by default (off) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
@@ -247,8 +247,8 @@ of variables, but the kernel returns the arguments and environment of any
 process of the same user (the `kern.procargs2` sysctl) that is not a
 restricted program, as Apple's own are, and Seatbelt has no rule that
 refuses it. So a command, a workbench terminal or a stdio MCP server can
-read an MCP server's or an extension's environment, which holds Abhed's,
-and what a concurrent command was handed: its egress token and its
+read what an MCP server or an extension was given in its `env`, and what a
+concurrent command was handed: its egress token and its
 `secrets`, and any process's arguments, Abhed's included (an inline
 `-settings` among them). This cannot be closed on the process tier. What
 limits it: each egress token is the call's own and is revoked when the call
@@ -268,8 +268,7 @@ exported to it is no longer readable there. `ABHED_SHOW_ENV=1` turns this
 off; Abhed also leaves its environment as it is when the rest is over
 16 KiB, and warns when it cannot run itself again. Still, put a provider
 key in `api_key` in `~/.abhed/config.json`, which commands cannot read,
-rather than in the environment, since the MCP servers and extensions Abhed
-starts inherit it, and use the container or vm tier where commands must not
+rather than in the environment, and use the container or vm tier where commands must not
 see one another's secrets. On Linux each command's PID namespace hides
 other processes' environments.
 
@@ -335,8 +334,10 @@ workspace file cannot name one. See [The workbench](16-workbench.md#language-ser
 `"network": "allowlist"`, set only in the managed configuration, sends
 commands' traffic through a per-session proxy that reaches only what the
 `egress` rules allow, and records each decision; it takes the place of
-`allow_network`. The process tier and the container and vm tiers enforce it;
-the fence refuses it. The `egress` section
+`allow_network`. The process, container, vm and fence tiers enforce it; in
+`landlock_only` mode the fence refuses it unless the managed
+`fence.egress_port_only` is `true` ([below](#the-fence-tier-preview-linux)).
+The `egress` section
 (`rules`, `default`, `mode`, `record_paths`, `idle_seconds`, `inspect_tls`) is managed only
 too. See [Network policy](21-network-policy.md).
 
@@ -630,10 +631,12 @@ your other processes, and can reach Abhed by one of its thread ids, which the
 filter does not know; Landlock ABI 6 keeps signals inside the command's own
 processes; and a command can read other processes' command lines in `/proc`
 (not their environment or memory). The Landlock ABI 6 paths (signal
-scoping, root) were tested only on Linux 6.9, where they are refused. A hard
-link inside the workspace to a file of Abhed's state, made before the
-session, stays readable through the link: Landlock checks the path a file is
-opened by, and the fence makes no such link, but does not look for one. The
+scoping, root) were tested only on Linux 6.9, where they are refused. Abhed
+refuses to start when one of its state files has a second name
+([Permissions](04-permissions.md#what-the-agent-may-touch)). A hard link
+made before the session to another file in a state folder, one the state
+check does not know, stays readable through the link: Landlock checks the
+path a file is opened by. The
 planted-state check above has the limits it states in `landlock_only`: a
 file written into the workspace's `.abhed` is visible while its command
 runs, nothing is moved after an unclean exit, and a `.abhed` in a subfolder
@@ -1065,8 +1068,9 @@ no accounts from it, `abhed user list` warns that it is ignoring the file, and
 and one outside the workspace, are read either way. See [Accounts in the
 workspace](../architecture/workspace-trust.md#accounts-in-the-workspace).
 
-A change to an account reaches its live sessions on their next request,
-whichever process made it: an account removed with `abhed user remove` is
+A change to an account reaches its live sessions on their next request with
+a users file, and within about 2 seconds over Postgres, whichever process
+made it: an account removed with `abhed user remove` is
 signed out, and a group added or removed applies at once. Removing
 administrator rights through `POST /v1/admin/users/admin` also ends that
 person's sessions, on every server sharing the account store: at once on the
@@ -1075,11 +1079,13 @@ Postgres. An event or terminal stream already open is authorised again while
 it runs, and ends when its sign-in would now be refused: at once for a change
 made on the same server, within 10 seconds otherwise.
 
-Signing out ends sign-ins, not work. After Sign out everywhere, or a removal
-of administrator rights, a background shell or task the person started keeps
-running, and its result still starts a woken run in their session, since the
-account is still active. Stop the session's tasks, or remove the account, to
-end it; see [background tasks](14-parallel-subagents.md#background-tasks).
+Signing out ends sign-ins, not work. After Sign out everywhere, a background
+shell or task the person started keeps running, and its result still starts
+a woken run in their session, since the account is still active. Stop the
+session's tasks to end it; see
+[background tasks](14-parallel-subagents.md#background-tasks). Removing the
+account, or its administrator rights, stops that work, recorded as
+`owner_revoked`.
 
 `auth.require_group` names a group everyone must be in to use the server.
 It is checked once someone has signed in: the sign-in page, sign-in,
@@ -1126,9 +1132,13 @@ Later sources win, except that an org-managed file cannot be overridden:
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
-`hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
-`studio.disable_host_terminal`, every key under `control_plane.docker` and
-`control_plane.podman` but `enabled` and `image`
+`record.witness`, `hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
+`studio.disable_host_terminal`, `sandbox.network` (which your own file may
+use only to narrow `allow_network`), `sandbox.microvm_socket`,
+`fence.egress_port_only`, every key under `egress`,
+`control_plane.kubernetes`, `control_plane.interceptors`, `binary`,
+`images`, `mounts`, `mount_roots`, `gpus`, `cpus`, `seccomp_profile` and
+`relay_binary` under `control_plane.docker` and `control_plane.podman`
 ([Sandboxes over the API](22-sandboxes.md#the-docker-and-podman-drivers)),
 and the whole of `web_search` and `web_fetch`, which a lower layer may only
 turn off or narrow ([Web search](#web-search)), and, of the settings below
@@ -1205,7 +1215,7 @@ may tighten what the managed file set and never loosen it:
 | `tools.syntax_check` | make it stricter only (`off` < `report` < `refuse`) |
 | `limits.max_turns` | lower it |
 | `permissions.allow` | add nothing when the file sets any `permissions` setting (the `-allow` and `-allowedTools` flags, `/permissions allow`, `Options.Allow`, rpc `start`); the user's and workspace's files' allow rules are dropped with a warning |
-| `additional_dirs` | add nothing |
+| `additional_dirs` | add nothing when the file sets `additional_dirs` |
 | `permissions.deny` | add rules; the managed ones stay |
 
 A refused override stops the command with an error naming the setting. The
@@ -1233,7 +1243,7 @@ is an error: Abhed stops rather than run unmanaged. So is a managed folder
 (`/etc/abhed`) that is itself a link to nothing; a folder that does not
 exist at all means no managed file.
 
-The environment variables in step 4 never change a setting the managed file
+The environment variables in step 5 never change a setting the managed file
 makes. Each one is ignored where the managed file sets its key, and Abhed
 warns at startup naming the key, without the value:
 

@@ -186,8 +186,10 @@ Remote tools are namespaced by server, so two servers offering `search` do not
 collide, and a policy rule can name one precisely:
 
 ```json
-"deny": ["github__create_issue"]
+"deny": ["mcp__github__create_issue"]
 ```
+
+`mcp__github__*` names every tool of that server.
 
 Every MCP tool routes through the policy engine, because Abhed cannot know what
 someone else's tool does. A remote tool is subject to approval exactly as `bash`

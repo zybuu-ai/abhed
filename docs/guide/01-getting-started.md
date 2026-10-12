@@ -2,7 +2,8 @@
 
 ## Install
 
-Abhed is a single static binary with no runtime to install.
+Abhed is a single binary with no runtime to install. The Linux binaries are
+static; the macOS ones link only the system's libraries.
 
 ```bash
 go build -o ~/.local/bin/abhed ./cmd/abhed

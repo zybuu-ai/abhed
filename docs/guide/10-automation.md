@@ -122,7 +122,9 @@ a managed configuration refuses them the same way, and deny rules win.
 | `-disallowedTools` / `-disallowed-tools` | `-deny` |
 | `-dangerously-skip-permissions` | `-mode bypass`, after typing `yes` on a terminal |
 
-Tool names are matched without regard to case, and a trailing `:*` in a
+Built-in tool names are matched without regard to case; an MCP or extension
+tool's name is allowed only as written, and denied both as written and in
+lower case. A trailing `:*` in a
 pattern is a prefix. `-dangerously-skip-permissions` is refused under a
 managed configuration and wherever there is no terminal to confirm on,
 which includes `-p` in a script; `-mode bypass` is the explicit spelling.
@@ -276,7 +278,9 @@ configuration do not match it: give a forge's certificate authority with
 
 On the process sandbox tier, the push is refused, rather than trusting a file
 the run could have written, when `~/.gitconfig`, `~/.config/git/config` or
-`$XDG_CONFIG_HOME/git/config`, or the folder it would be made in, lies in the
+`$XDG_CONFIG_HOME/git/config`, a file one of them includes (`include.path`,
+`includeIf`), the system configuration, or the folder one would be made in,
+lies in the
 run's worktree, a temp folder or a toolchain cache (for example a home
 directory under `/tmp`). The rest of the checkout is not the run's to write,
 so a home directory kept as a dotfiles checkout still pushes. The temporary
@@ -498,8 +502,11 @@ abhed serve -addr :8420
 A web console with an event stream, inline approvals and session history, plus a
 JSON API. This is the multi-user path: local accounts or a reverse proxy's
 identity headers, and with Postgres storage it enforces tenant isolation in the
-database with row-level security. OIDC sign-in is part of the Enterprise
-Edition.
+database with row-level security. With more than one account, or able to gain
+one, `abhed serve` gives each session a sandbox of its own and refuses to
+start when the session driver cannot be used; `"server": {"shared_sessions":
+true}` keeps every account in one workspace. OIDC sign-in is part of the
+Team and Enterprise editions.
 
 ```bash
 B=http://127.0.0.1:8420

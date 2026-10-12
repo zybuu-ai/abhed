@@ -8,8 +8,7 @@ be written in any language and need no build step in Abhed.
 
 **An extension may veto, never permit.**
 
-It can block a call, force it to an approval prompt, rewrite arguments before a
-tool runs, rewrite a result before the model reads it, drop messages before they
+It can block a call, force it to an approval prompt, rewrite a result before the model reads it, drop messages before they
 go upstream, supply a compaction summary, and add tools. It cannot turn a denied
 action into an allowed one.
 
@@ -36,7 +35,7 @@ exactly one reply.
 
 | Event | When | The reply may |
 |---|---|---|
-| `tool_call` | before a tool runs | `block`, `ask`, rewrite `args` |
+| `tool_call` | before a tool runs | `block`, `ask` (an `args` in the reply is ignored) |
 | `tool_result` | before the model sees output | rewrite `content`, set `is_error` |
 | `context` | before each model call | `keep` a subset of messages, by index |
 | `before_agent_start` | once per run | append to `system` |

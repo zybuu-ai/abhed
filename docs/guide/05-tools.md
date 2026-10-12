@@ -30,7 +30,8 @@ pass. On a disk that ignores case, such as the default macOS one, a glob
 matches without case, as the disk opens names: `core/Vault/**` finds
 `core/vault`.
 
-`bash` takes an optional `secrets` list: names from the operator's store,
+`bash` takes an optional `secrets` list: names from the secrets store (on a
+server people sign in to, the account's own),
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
@@ -164,10 +165,11 @@ What it refuses:
   address is checked where the connection is made, on every hop, so a name
   that resolves to a public address once and an internal one the next time
   is refused;
-- a URL that holds a value from the secrets store, as written or
-  percent-encoded, in any case. A value encoded otherwise (base64, hex) or
-  split across the URL is not caught: the ask, or the host list, is the
-  control for that;
+- a URL that holds a value from the secrets store, as written,
+  percent-encoded or in any case, and for a value of 12 characters or more
+  also base64- or hex-encoded. A value split across the URL, or encoded
+  another way, is not caught: the ask, or the host list, is the control for
+  that;
 - a host not on `web_fetch.allowed_hosts`, when that is set;
 - a URL written in any but its one form (see
   [Permissions](04-permissions.md#rules)), including a port with leading
@@ -200,8 +202,7 @@ the connection goes.
 
 `web_search`'s description points at `web_fetch` only when both are on, and
 the system prompt names only the web tools the session has. A search query
-that holds a stored secret, as written, percent-encoded or in another case,
-is refused before it reaches the provider, as a URL holding one is for
+that holds a stored secret, in the same forms, is refused before it reaches the provider, as a URL holding one is for
 `web_fetch`.
 
 ### An edit that would break the file

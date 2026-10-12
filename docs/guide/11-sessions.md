@@ -13,7 +13,8 @@ number, an actor, and a **trust tag**: content read from files, tool output and
 search results is data, never instruction, and the tag travels with it.
 
 Before any event is written it passes the redactor: a value from the secrets
-store, wherever it appears in a payload, is replaced with `[secret:NAME]`. The
+store, as written or in the encoded forms
+[Secrets](04-permissions.md#secrets) lists, is replaced with `[secret:NAME]`. The
 record is append-only, so this is the only moment a secret can be kept out of
 it. A streamed reply or reasoning is redacted across its fragments, not one
 fragment at a time, so a value split between two is still caught. See
@@ -233,8 +234,10 @@ curl -s "$B/v1/sessions/$SID/file?path=cmd/main.go"
 curl -s  $B/v1/sessions/$SID/changes               # unified diffs
 ```
 
-It is read-only. Nothing can be edited or saved from the browser: a change to
-the workspace that no event accounts for would make the record incomplete.
+This panel is read-only; edits from the browser go through the
+[workbench](16-workbench.md), where each save is a recorded action, since a
+change to the workspace that no event accounts for would make the record
+incomplete.
 
 What it will not show:
 
@@ -248,8 +251,10 @@ What it will not show:
 - more than 512 KB of one file (`truncated` is set), or a binary file's bytes
   (`binary` is set and there is no content).
 
-**Changes** covers edits made with the `write` and `edit` tools. A file the
-agent changed through `bash` is not listed. The originals are kept in memory
+**Changes** covers edits made with the `write` and `edit` tools, and files
+changed by shell commands, marked `by_command`, against a note of the
+workspace taken as the session opens; past 20,000 files `partial` says the
+rest were not compared. The originals are kept in memory
 with the running session, so a session reopened from its record after a
 restart reports `"available": false` rather than an empty list, and once it is
 continued it lists changes from that point on.

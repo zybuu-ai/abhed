@@ -237,7 +237,11 @@ always lowered names; `-allowedTools` allows it only as written.
 command or path, or for a tool with neither, the first of its `pattern`,
 `action`, `resource`, `host`, `namespace`, `name` or `url` arguments. So an
 MCP tool that takes only a `url` is matched on it:
-`mcp__browser__open(https://intranet.example/*)`.
+`mcp__browser__open(https://intranet.example/*)`. `ssh` is matched as
+`host/command` (`ssh(build1/uptime)`, `ssh(*/uptime)`), so an answer for one
+host never covers another; deny and ask rules also read the command alone.
+A subject given as a list of strings is read as its words joined by blanks;
+any other kind is refused while a deny or ask rule with a pattern applies.
 
 For `web_fetch` the pattern is matched against the URL exactly as the model
 wrote it, and the tool fetches that string or nothing. It only fetches a URL
@@ -446,6 +450,10 @@ A deny pattern matches the words, so it is easy to step around.
   `… | xargs -I{} bash -c {}`, a pipe into a function that runs a shell
   (`f() { bash; }; cat f | f`), or a process substitution written to
   (`echo 'curl x' > >(bash)`, `tee >(bash)`)
+- git's own options before the subcommand: `bash(git push *)` does not
+  match `git -C d push`, `git --no-pager push` or `git -c x=y push`; write
+  the rule for each form or deny `bash(git *)`. The destructive step still
+  finds a force push past them
 - a flag spelled another way: `bash(rm -rf *)` does not match
   `rm --recursive --force x`, `rm --rec -f x`, or a flag hidden in an
   option's value, because no rule knows each program's own flag grammar
@@ -534,7 +542,9 @@ the program's word, and an unquoted glob (`cur? x`, `c*l x`), confirms; see
 
 Deny rules guard against mistakes, not against a command written to get past
 them. What a command can reach is decided by the sandbox, and that is the
-boundary to rely on.
+boundary to rely on. A deny refuses one call, not what it was for: the agent
+may reach the same end another way, so deny the means only where the
+sandbox cannot.
 
 A malformed rule is **refused at startup** rather than silently matching
 nothing — for a deny rule, quietly accepting one that can never fire tells you
@@ -855,7 +865,9 @@ CLI, the server, `abhed rpc`, `abhed acp` and `abhed resolve` — and
 of every folder above the workspace counts too, so a run started in a
 repository's subfolder checks the repository's `.abhed`; there only the
 users, config and secrets files you could rewrite count, and a
-world-writable sticky folder such as `/tmp` is skipped), and a
+world-writable sticky folder such as `/tmp` is skipped, so a workspace
+directly in `/tmp` leaves the folders above it unchecked: start Abhed in a
+folder of your own), and a
 configuration file with more than one name is not loaded at all. The message
 names the file and how to fix it: find the other name with
 `find / -xdev -samefile <file>` and remove it, or give the file a single name
@@ -1047,8 +1059,10 @@ it. A deny rule wins over an allow rule, as everywhere else.
 
 **Redaction.** The record is append-only, so a value that reached it could
 never be taken out. Every event is checked before it is written: a stored
-value, wherever it appears, becomes `[secret:NAME]`. Redaction matches the
-stored values exactly; it is not a pattern guessing at what a key looks like.
+value, as written and, for 12 characters or more, in the encoded forms
+below, becomes `[secret:NAME]`. Redaction matches the stored values; it is
+not a pattern guessing at what a key looks like. A split or partial value
+is not caught (see below).
 When it fires, [HawkEYE](15-hawkeye.md) reports `secret-redacted`: the value
 was caught, and the command or the model exposed it, which is worth knowing.
 
