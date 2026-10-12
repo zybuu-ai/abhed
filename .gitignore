@@ -9,6 +9,8 @@
 # is the source; the rendered tree is a build product.
 internal/docsite/site/*
 !internal/docsite/site/.keep
+# scripts/docsite/build.py without --embed-only writes the public site here.
+/web/zybuu/
 
 # Build outputs
 bin/
