@@ -77,7 +77,7 @@ func (Glob) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		root = resolved
 	}
 
-	matcher, err := compileGlob(a.Pattern, diskFoldsCase(root))
+	matcher, err := compileGlob(a.Pattern, FoldsCaseAt(root))
 	if err != nil {
 		return errf("Invalid glob pattern %q: %v", a.Pattern, err)
 	}
@@ -321,7 +321,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 
 	var globMatch func(string) bool
 	if a.Glob != "" {
-		globMatch, err = compileGlob(a.Glob, diskFoldsCase(root))
+		globMatch, err = compileGlob(a.Glob, FoldsCaseAt(root))
 		if err != nil {
 			return errf("Invalid glob %q: %v", a.Glob, err)
 		}

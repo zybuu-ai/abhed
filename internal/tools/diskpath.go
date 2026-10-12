@@ -158,81 +158,54 @@ func listDir(dir string) *dirListing {
 }
 
 // FoldsCaseAt reports whether the disk holding p opens a name in another
-// case, judged on the deepest existing folder above p with a letter in its
-// name. A path with no such folder is taken to keep case.
+// case. It only reads: an entry of p is tried first, as an ancestor may sit on
+// another volume, then p and each folder above it by its name in its parent.
+// A path with nothing to judge by is taken to keep case.
 func FoldsCaseAt(p string) bool {
 	dir := filepath.Clean(p)
 	if !filepath.IsAbs(dir) {
 		return false
 	}
-	for {
-		base := filepath.Base(dir)
-		if swapped := swapCase(base); swapped != base {
-			if folds, known := caseProbe(dir, swapped); known {
-				return folds
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
+	if folds, known := namesFold(dir, ""); known {
+		return folds
+	}
+	for q := dir; ; q = filepath.Dir(q) {
+		parent := filepath.Dir(q)
+		if parent == q {
 			return false
 		}
-		dir = parent
-	}
-}
-
-var caseProbes sync.Map // folder -> bool
-
-// caseProbe reports whether dir opens under swapped, its name in another
-// case, and whether dir exists to say.
-func caseProbe(dir, swapped string) (folds, known bool) {
-	if v, ok := caseProbes.Load(dir); ok {
-		return v.(bool), true
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
-		return false, false
-	}
-	other, err := os.Stat(filepath.Join(filepath.Dir(dir), swapped))
-	folds = err == nil && os.SameFile(info, other)
-	caseProbes.Store(dir, folds)
-	return folds, true
-}
-
-// swapCase is s with each ASCII letter's case swapped.
-func swapCase(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		switch {
-		case c >= 'a' && c <= 'z':
-			b[i] = c - 'a' + 'A'
-		case c >= 'A' && c <= 'Z':
-			b[i] = c - 'A' + 'a'
-		}
-	}
-	return string(b)
-}
-
-// diskFoldsCase reports whether the disk holding dir opens a name in another case. It only reads:
-// an entry of dir is tried first, as an ancestor may sit on another volume.
-func diskFoldsCase(dir string) bool {
-	if f, err := openDir(dir); err == nil {
-		names, _ := f.Readdirnames(64)
-		_ = f.Close()
-		for _, n := range names {
-			if folds, known := opensFlipped(dir, n); known {
-				return folds
-			}
-		}
-	}
-	for p := filepath.Clean(dir); ; p = filepath.Dir(p) {
-		parent := filepath.Dir(p)
-		if parent == p {
-			return false
-		}
-		if folds, known := opensFlipped(parent, filepath.Base(p)); known {
+		if folds, known := namesFold(parent, filepath.Base(q)); known {
 			return folds
 		}
 	}
+}
+
+// caseFolds holds, per folder, whether names in it open in another case: every
+// entry of one folder is on the same disk, so one answer serves them all.
+var caseFolds sync.Map // folder -> bool
+
+// namesFold judges dir by name, one of its entries, or with name empty by the
+// first of its entries whose names have case.
+func namesFold(dir, name string) (folds, known bool) {
+	if v, ok := caseFolds.Load(dir); ok {
+		return v.(bool), true
+	}
+	names := []string{name}
+	if name == "" {
+		f, err := openDir(dir)
+		if err != nil {
+			return false, false
+		}
+		names, _ = f.Readdirnames(64)
+		_ = f.Close()
+	}
+	for _, n := range names {
+		if folds, known := opensFlipped(dir, n); known {
+			caseFolds.Store(dir, folds)
+			return folds, true
+		}
+	}
+	return false, false
 }
 
 // opensFlipped reports whether name in dir opens under its case swapped; known is false when

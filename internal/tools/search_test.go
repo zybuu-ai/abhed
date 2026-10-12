@@ -111,8 +111,8 @@ func TestGlobFoldsCaseAsTheDiskDoes(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(dir, "core/vault"), 0o755)
 	_ = os.WriteFile(filepath.Join(dir, "core/vault/keys.go"), nil, 0o644)
 	folds := foldsCase(t, dir)
-	if got := diskFoldsCase(dir); got != folds {
-		t.Fatalf("diskFoldsCase = %v, the disk folds = %v", got, folds)
+	if got := FoldsCaseAt(dir); got != folds {
+		t.Fatalf("FoldsCaseAt = %v, the disk folds = %v", got, folds)
 	}
 	res := run(t, Glob{}, s, globArgs{Pattern: "core/Vault/**"})
 	if found := strings.Contains(res.Content, "core/vault/keys.go"); found != folds {

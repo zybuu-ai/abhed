@@ -208,3 +208,25 @@ func TestFoldKeyConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A path is judged by the disk it would be on: a file not made yet by its
+// folder, a folder by its own entries; a relative path keeps case.
+func TestFoldsCaseAtJudgesByTheDisk(t *testing.T) {
+	dir := t.TempDir()
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = r
+	}
+	sub := filepath.Join(dir, "Keys")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	folds := foldsCase(t, sub)
+	for _, p := range []string{sub, filepath.Join(sub, "not-yet", "x.go"), filepath.Join(dir, "new.txt")} {
+		if got := FoldsCaseAt(p); got != folds {
+			t.Errorf("FoldsCaseAt(%s) = %v, the disk folds = %v", p, got, folds)
+		}
+	}
+	if FoldsCaseAt("rel/Path") {
+		t.Error("a relative path was taken to fold case")
+	}
+}
