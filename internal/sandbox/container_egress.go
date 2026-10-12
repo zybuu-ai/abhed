@@ -101,7 +101,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 		call.End()
 		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
 		defer cancel()
-		_ = exec.CommandContext(rmCtx, c.runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
+		_ = exec.CommandContext(rmCtx, c.runtime, c.rmArgs(name)...).Run() // #nosec G204 -- the configured engine and a name this process made
 	}
 	startCtx, cancel := context.WithTimeout(ctx, relayReady)
 	defer cancel()

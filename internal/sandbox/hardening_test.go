@@ -193,3 +193,16 @@ func TestContainerCPUsFollowTheConfiguration(t *testing.T) {
 		}
 	}
 }
+
+// Removing a container does not wait out a first process that ignores
+// SIGTERM: Podman is told so; Docker's rm -f kills at once.
+func TestContainerRemovalDoesNotWait(t *testing.T) {
+	podman := &Container{runtime: "/usr/bin/podman"}
+	if got := strings.Join(podman.rmArgs("x"), " "); got != "rm -f --time 0 x" {
+		t.Errorf("podman: %s", got)
+	}
+	docker := &Container{runtime: "docker"}
+	if got := strings.Join(docker.rmArgs("x"), " "); got != "rm -f x" {
+		t.Errorf("docker: %s", got)
+	}
+}

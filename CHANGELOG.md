@@ -678,6 +678,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- Stopping a container tier command or terminal on Podman waited ten seconds
+  for the container's first process to ignore SIGTERM before killing it, so
+  a cancel held the call that long; the container is now removed at once.
 - The container and vm tiers never found Podman: the check asked `podman info`
   for a `ServerVersion` it does not have, so a host with only Podman was told
   its daemon was not responding. The check now asks for plain `info`.

@@ -362,11 +362,11 @@ func containerName(prefix string) string {
 
 // remove is a cancel that removes the named container, then kills the CLI.
 func (c *Container) remove(cmd *exec.Cmd, name string) func() error {
-	runtime := c.runtime
+	runtime, rm := c.runtime, c.rmArgs(name)
 	return func() error {
 		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
 		defer cancel()
-		_ = exec.CommandContext(rmCtx, runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
+		_ = exec.CommandContext(rmCtx, runtime, rm...).Run() // #nosec G204 -- the configured engine and a name this process made
 		return cmd.Process.Kill()
 	}
 }
@@ -421,7 +421,7 @@ func (c *Container) SweepShells() {
 		return
 	}
 	if ids := strings.Fields(string(out)); len(ids) > 0 {
-		_ = exec.CommandContext(ctx, c.runtime, append([]string{"rm", "-f"}, ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
+		_ = exec.CommandContext(ctx, c.runtime, c.rmArgs(ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
 	}
 }
 
@@ -527,3 +527,15 @@ func caseSpellings(dir, name string) []string {
 
 // Close stops the egress proxy commands under the allowlist reach.
 func (c *Container) Close() error { return c.closeEgress() }
+
+// rmArgs removes the named containers at once. Podman's rm -f first waits
+// ten seconds for a process that ignores SIGTERM, as a shell or sleep as a
+// container's first process does; --time 0 kills it straight away, as
+// Docker's rm -f does.
+func (c *Container) rmArgs(names ...string) []string {
+	args := []string{"rm", "-f"}
+	if c.engine() == "podman" {
+		args = append(args, "--time", "0")
+	}
+	return append(args, names...)
+}
