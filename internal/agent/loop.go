@@ -32,6 +32,8 @@ func terminalForCancel(ctx context.Context) TerminalReason {
 		return stop.Reason
 	case errors.Is(context.Cause(ctx), ErrShutdown):
 		return TermShutdown
+	case errors.Is(context.Cause(ctx), ErrHandOver):
+		return TermHandedOver
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return TermDeadline
 	}
@@ -218,7 +220,7 @@ func unanswered(ctx context.Context, held bool) string {
 		what = "before the answer was applied"
 	}
 	switch {
-	case errors.Is(context.Cause(ctx), ErrShutdown):
+	case errors.Is(context.Cause(ctx), ErrShutdown), errors.Is(context.Cause(ctx), ErrHandOver):
 		return "server shut down " + what
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return "deadline passed " + what
@@ -281,6 +283,9 @@ type Loop struct {
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
 	OwnerActive func() bool
+	// unknown holds the calls answered as outcome unknown after a hand-over,
+	// which are asked of a person before they run again.
+	unknown mayHaveRun
 	// reasoning and recentCalls are the monitor's short memory: the agent's
 	// last few stated thoughts, and the last few calls with their outcomes.
 	// Calls in one turn run concurrently, so both sit behind monitorMu.
@@ -1312,6 +1317,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	} else if refused := l.pathSecretRefused(call); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
+	} else if decision.Decision == policy.Allow && l.unknown.has(call.Name, call.Args) {
+		// It may already have run on a process that stopped: a person says whether to run it again.
+		decision = policy.Result{Decision: policy.Ask, Step: "handover",
+			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
@@ -1402,6 +1411,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			// left without one when the turn ends here.
 			// Its own step, so a refusal no one gave is not counted as the ask rule's.
 			cancelled := ctx.Err() != nil || errors.Is(err, context.Canceled)
+			if cancelled && l.handingOver(ctx) {
+				// Left open: the process taking the turn over asks again.
+				return false, tools.Result{Content: "Interrupted.", IsError: true}, TermHandedOver
+			}
 			why, step := "approval failed: "+err.Error(), "unanswered"
 			if cancelled {
 				why, step = unanswered(ctx, answer.Held), "interrupted"
@@ -1681,6 +1694,12 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 
 // finishStopped is finish with the detail a person's Interrupt gave, if any.
 func (l *Loop) finishStopped(ctx context.Context, reason TerminalReason) TerminalReason {
+	if reason == TermHandedOver {
+		if l.handingOver(ctx) {
+			return l.handedOver()
+		}
+		reason = TermShutdown // a subagent does not move with its parent
+	}
 	var in Interrupt
 	if reason == TermUserInterrupt && errors.As(context.Cause(ctx), &in) {
 		l.endDetail = in.Detail

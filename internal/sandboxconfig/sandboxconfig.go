@@ -333,6 +333,7 @@ func stateSetting(cfg config.Config, workspace, p string) string {
 	if ha := cfg.ResolvedHA(workspace); ha.Enabled {
 		add(ha.RelayKeyFile, "control_plane.ha.relay_key_file")
 		add(ha.RelayCAFile, "control_plane.ha.relay_ca_file")
+		add(ha.RelayCertKeyFile, "control_plane.ha.relay_cert_key_file")
 	}
 	if cfg.Auth.CLI.Enabled {
 		if k, err := cfg.CLIKeyFile(workspace); err == nil {

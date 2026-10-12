@@ -186,7 +186,7 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	if useDevice {
 		host, _ := os.Hostname()
 		tok, err = profiles.DeviceLogin(ctx, client, base, m, "abhed on "+host, func(code, uri, complete string) {
-			fmt.Fprintf(errOut, "To sign in, open %s in a browser where you are signed in to the server, and enter the code\n\n    %s\n\n", uri, code)
+			fmt.Fprint(errOut, devicePrompt(base, uri, code))
 			if complete != "" {
 				fmt.Fprintf(errOut, "or open %s\n", complete)
 			}
@@ -411,4 +411,23 @@ func profileCmd(workspace string, args []string, out, errOut io.Writer) int {
 		return 0
 	}
 	return usage()
+}
+
+// devicePrompt tells the person where to enter a device code. Single sign-on
+// hands out the identity provider's page, where one signs in to the provider.
+func devicePrompt(base, uri, code string) string {
+	where := "in a browser where you are signed in to the server"
+	if u, err := url.Parse(uri); err == nil && u.Host != "" && !strings.EqualFold(u.Host, hostOf(base)) {
+		where = "in a browser and sign in there"
+	}
+	return fmt.Sprintf("To sign in, open %s %s, and enter the code\n\n    %s\n\n", uri, where, code)
+}
+
+// hostOf is a URL's host:port, or "" when it does not parse.
+func hostOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }

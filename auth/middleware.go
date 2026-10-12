@@ -282,6 +282,40 @@ func (m Middleware) Identify(w http.ResponseWriter, r *http.Request) (id *Identi
 	return nil, "", nil
 }
 
+// IdentifyToken reports who a request's bearer token names, with Check and
+// Authorize applied as on any other route, for a public handler that says who
+// is calling. ok is false when there is no token or no verifier to read it.
+func (m Middleware) IdentifyToken(r *http.Request) (id *Identity, ok bool, err error) {
+	token := bearerToken(r)
+	if m.Verifier == nil || token == "" {
+		return nil, false, nil
+	}
+	if id, err = m.Verifier.Verify(r.Context(), token); err != nil {
+		return nil, true, err
+	}
+	if err := m.check(r.Context(), id); err != nil {
+		return nil, true, err
+	}
+	if err := m.authorize(r, id); err != nil {
+		return nil, true, forbiddenError{err}
+	}
+	return id, true, nil
+}
+
+// forbiddenError is an Authorize refusal: the caller is known, the credential
+// does not cover the request.
+type forbiddenError struct{ err error }
+
+func (e forbiddenError) Error() string { return e.err.Error() }
+func (e forbiddenError) Unwrap() error { return e.err }
+
+// IsForbidden reports whether IdentifyToken's error is an Authorize refusal,
+// answered 403 rather than 401.
+func IsForbidden(err error) bool {
+	var f forbiddenError
+	return errors.As(err, &f)
+}
+
 func (m Middleware) check(ctx context.Context, id *Identity) error {
 	if m.Check == nil {
 		return nil

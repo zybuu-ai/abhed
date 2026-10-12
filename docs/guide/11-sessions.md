@@ -183,10 +183,42 @@ after its last write, once no terminal is open and no result is owed, by recordi
 opened with again, so that work appears in the record after an end. A
 session running elsewhere is not opened at all.
 
-What this is not: a running turn on a node that dies is not migrated. It
+A running turn on a node that dies is, by default, not migrated. It
 ends, is recorded as interrupted, and the session can be continued from
-there. High availability of *sessions* is this; high availability of
-*turns in flight* is not something Abhed claims.
+there.
+
+### A running turn, between replicas
+
+An edition that runs replicas on one Postgres can move running turns too
+(`server.Options.ContinueTurns`, with `Server.TakeOver` and
+`Server.HandOverRunning` as its hooks). Then:
+
+- A replica that drains hands the turns still running after `drain_seconds`
+  over instead of ending them. A run stops where it is without an end; a
+  question it was waiting on is left without an answer; a message queued for
+  it is recorded as `message.dropped`; background tasks end as a shutdown,
+  since they cannot move; and the session is marked handed over, which no
+  process holds and none may write to.
+- Another replica takes the turn over: at once for a handed-over session,
+  and once the holder's claim is stale (two minutes) for one whose replica
+  died. Its orphan sweep does it, as does a message for the session, which
+  then steers the turn; one claimer wins.
+- The taker records `turn.continued` and goes on from the last recorded
+  step. A call that never ran is asked again as a new call, through policy
+  and approval as any call is, so a pending question is offered again. A
+  call that was approved and may have started is never run again: it is
+  answered "outcome unknown", and the same call later in the session is
+  asked of a person first, in every mode. Then the model goes on with the
+  turn, on the owner's behalf while the owner may still act.
+- Every request keeps exactly one outcome, and the record stays
+  append-only: the old request is denied with step `handover` before its new
+  call is asked.
+
+Not covered: a background task, or a foreground subagent, running on the
+replica that stopped is recorded as lost or ended and does not go on; an
+answer given on the old replica's approval row while no replica held the
+session is not carried over, so the question is asked again; and a tool's
+own side effects in a call that was cut short are whatever the tool left.
 
 ## Reading the workspace and what changed
 

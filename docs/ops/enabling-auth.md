@@ -370,6 +370,9 @@ answer everyone. Group names match exactly, case included: `Abhed-Users` is
 not `abhed-users`, here and for the administrator group. `/v1/whoami` answers `200` to every caller:
 with no sign-in, or a cookie whose sign-in has ended or expired, it reads
 `"authenticated": false`, while every other API route answers `401`. A
+bearer token is honoured as on every route: whoami names its principal, with
+`"credential": "token"` and the `scopes` it was narrowed to, and answers
+`401` for a token that does not verify. A
 signed-in person outside the group is signed
 out and told why: a browser lands on the front page with the reason, and an
 API client gets `403` with it, marked `"refused": true`. The workbench shows

@@ -29,6 +29,9 @@ type Identity struct {
 	// EmailVerified is set only when Provider vouched for Email itself.
 	// A local account's email is typed by the person and never is.
 	EmailVerified bool `json:"email_verified,omitempty"`
+	// Scopes are what a bearer token was narrowed to, set by the verifier that
+	// accepted it; empty means the account's own rights, unnarrowed.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // Providers this package sets on the identities it builds.

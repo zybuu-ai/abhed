@@ -748,9 +748,36 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed logout`, sign-out everywhere, a password change or reset, or the
   account's removal. `abhed profile list | use | rm` keeps one profile per
   server in `~/.abhed/profiles.json` (mode 600). A Team edition provider adds
-  its own sign-in method through `auth.CLILoginAdvertiser`.
+  its own sign-in method through `auth.CLILoginAdvertiser`. When a method's
+  device page is on another host (an identity provider), the prompt says to
+  sign in there rather than to the server.
+- Configuration keys for settings the paid editions read only from the
+  environment until now: `auth.bound_claims` (`ABHED_OIDC_BOUND_CLAIMS`) and
+  `control_plane.ha.relay_cert_file`, `relay_cert_key_file`, `relay_peer`,
+  `relay_key_vault` and `relay_key_command` (`ABHED_HA_RELAY_*`). The claims,
+  the peer and the key command are managed only; the variables still apply
+  where a key is unset. `Config.OIDCBoundClaims` and `Config.ResolvedHA`
+  give an edition the result, and the relay's client key is state the agent
+  cannot reach. A managed-only map's entries are set aside with it.
+- Running turns can move between replicas on one Postgres, for an edition
+  that sets `server.Options.ContinueTurns`: a drain hands the turns still
+  running over (`Server.HandOverRunning`), and another replica takes each
+  over (`Server.TakeOver`, also run by its orphan sweep and by a message to
+  the session) at once, or once a dead replica's claim is stale. It records
+  `turn.continued`, asks again as a new call each call that never ran, never
+  runs again a call that may have started (answered `outcome_unknown`, and
+  asked of a person before the same call runs again), and goes on with the
+  turn. See [Sessions](docs/guide/11-sessions.md#a-running-turn-between-replicas).
+- `abhed egress-proxy -listen ADDR -config FILE` serves the egress allowlist
+  on its own, for a sandbox whose only way out is to it (a Kubernetes egress
+  pod): every connection on its port is one call's, each decision is a JSON
+  line on standard output, and a configuration it cannot honour
+  (`inspect_tls`, an unknown or repeated key) stops it. `-check` only reads
+  the file. See [Network policy](docs/guide/21-network-policy.md).
 - `GET /v1/cli` (public) says how a command line signs in; `GET
-  /v1/cli/whoami` answers for a bearer token too.
+  /v1/cli/whoami` and `GET /v1/whoami` answer for a bearer token too, naming
+  the principal and, for a narrowed token, its `scopes` (`auth.Identity.Scopes`,
+  set by the verifier; `auth.Middleware.IdentifyToken` for a public handler).
 - Extension points for an edition's sign-in: `auth.Middleware.Authorize`
   sees each request after the caller is identified and may refuse it (403,
   no session ended), for a credential that covers some requests only;
@@ -898,6 +925,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- `GET /v1/whoami` honours a bearer token: it answers with the token's
+  principal (`"credential": "token"`) instead of `"authenticated": false`,
+  and `401` for a token that does not verify. A server with tokens and no
+  browser sign-in now answers whoami rather than saying sign-in is off.
 - A file tool's decision costs less: a workspace root's resolved and disk
   spellings are read at most once a second rather than on every decision,
   the disk's spelling of the path is looked up only when a deny or ask rule
@@ -1416,6 +1447,18 @@ on. A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `server.Options.ContinueTurns`, `Server.TakeOver`, `Server.HandOverRunning`
+  and `server.TurnHandOver` (implemented by `store.Postgres` as `HandOver`
+  and `ClaimHandedOver`, with the `store.HandedOver` holder) move running
+  turns between replicas, `ErrNothingToTakeOver`, `ErrSessionBusy`,
+  `ErrNoSession` and `ErrDraining` saying why TakeOver took nothing; `agent.InFlight`, `Loop.ContinueTurn`,
+  `Loop.NoteUnknownOutcomes`, `agent.ReconcileChildren`, the
+  `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are the
+  loop's side of it. `auth.Identity.Scopes`, `auth.Middleware.IdentifyToken`
+  and `auth.IsForbidden` let a public handler answer for a bearer token.
+  `config.Config.OIDCBoundClaims`, `ValidateBoundClaims` and
+  `RelayKeyCommandArgv` read the new edition keys with their environment
+  fallback.
 - `policy`: `Engine.EvaluateContext`, `ContextHook`, `Engine.ContextHooks`,
   `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's hooks by
   a deadline; `Engine.Cwd` lets deny and ask rules read the scripts a

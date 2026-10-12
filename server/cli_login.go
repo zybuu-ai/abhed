@@ -51,10 +51,14 @@ func (s *Server) cliWhoami(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{
+	me := map[string]any{
 		"subject": id.Subject, "name": id.Name, "email": id.Email, "tenant": id.Tenant,
 		"provider": id.Provider, "owner": id.Owner(), "expires": id.Expires,
-	})
+	}
+	if len(id.Scopes) > 0 {
+		me["scopes"] = id.Scopes
+	}
+	WriteJSON(w, http.StatusOK, me)
 }
 
 func (s *Server) serveCLILogin(w http.ResponseWriter, r *http.Request) {

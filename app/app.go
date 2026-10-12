@@ -208,6 +208,7 @@ var subcommands = []subcommand{
 	{name: "profile", about: "the servers this command line knows: list, use, rm"},
 	{name: "sandbox", about: "a server's sandboxes: " + strings.Join(sandboxcli.Commands(), ", ")},
 	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
+	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
 	{name: "record", about: "the local record: list, show, verify, export, prune", trust: true},

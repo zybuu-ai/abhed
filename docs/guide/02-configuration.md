@@ -940,7 +940,10 @@ for open HTTP requests. The worst case is `drain_seconds` + 15 seconds, or
 25 seconds when `drain_seconds` is under 10, so give the process at least
 that much grace: with Kubernetes' default `terminationGracePeriodSeconds` of
 30, keep `drain_seconds` at 15 or less.
-Without `drain_seconds`, running turns are ended at once. SIGINT and a
+Without `drain_seconds`, running turns are ended at once. Under an edition
+that moves turns between replicas, the turns still running then are handed
+over to another replica instead of ended
+([A running turn, between replicas](11-sessions.md#a-running-turn-between-replicas)). SIGINT and a
 hang-up (SIGHUP) stop the server the same way; a hang-up is not a reload.
 Signals that arrive while it drains are ignored, so a second SIGTERM does
 not cut the drain short; SIGKILL, as an orchestrator sends at the end of its
@@ -1037,8 +1040,22 @@ warning and a record event. They are `record.dir`, `record.retention_days`,
 `control_plane.podman` but `enabled` and `image`
 ([Sandboxes over the API](22-sandboxes.md#the-docker-and-podman-drivers)),
 and the whole of `web_search` and `web_fetch`, which a lower layer may only
-turn off or narrow ([Web search](#web-search)). A lower layer's value the managed file replaces
+turn off or narrow ([Web search](#web-search)), and, of the settings below
+that the paid editions read, `auth.bound_claims`,
+`control_plane.ha.relay_peer` and `control_plane.ha.relay_key_command`. A lower layer's value the managed file replaces
 is recorded too, as `config.refused` with the decision `overridden`.
+
+The Community Edition checks these settings and the paid editions act on
+them; each was an environment variable first, which still applies where the
+configuration leaves the key unset and never overrides it:
+
+| Key | Variable | Meaning |
+|---|---|---|
+| `auth.bound_claims` | `ABHED_OIDC_BOUND_CLAIMS` | managed only: an object of claim names to lists of values a bearer token from the identity provider must carry, exactly or, for a value ending in `*`, by prefix; every claim needs a value, and `*` alone is refused |
+| `control_plane.ha.relay_cert_file`, `relay_cert_key_file` | `ABHED_HA_RELAY_CERT_FILE`, `ABHED_HA_RELAY_CERT_KEY_FILE` | this replica's client certificate for relayed calls; both or neither. The key is state the agent cannot reach |
+| `control_plane.ha.relay_peer` | `ABHED_HA_RELAY_PEER` | managed only: the identity the other replicas' certificates must carry; needs the certificate |
+| `control_plane.ha.relay_key_vault` | `ABHED_HA_RELAY_KEY_VAULT` | the relay key from Vault KV, `entry#field` |
+| `control_plane.ha.relay_key_command` | `ABHED_HA_RELAY_KEY_COMMAND` | managed only: a program and its arguments, the program an absolute path, that prints the relay key |
 
 Inside an agent's command, a nested `abhed` ignores `ABHED_TRUST_WORKSPACE`
 with a warning, and refuses `-trust-workspace`, `-settings` and

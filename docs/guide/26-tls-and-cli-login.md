@@ -238,6 +238,7 @@ you trust. With `-ca`, only that CA is trusted for the server.
 | `POST /v1/cli/authorize` | no | issues a PKCE code for the signed-in person; JSON from a browser session only |
 | `POST /v1/cli/logout` | bearer | ends the token it is sent with |
 | `GET /v1/cli/whoami` | no | who the request is signed in as, bearer tokens included |
+| `GET /v1/whoami` | yes | the same for a bearer token (`"credential": "token"`, with `scopes` when the token was narrowed), and for a browser session; `401` for a token that does not verify, `403` for one an edition's `Authorize` refuses |
 
 Approving accepts only `application/json` from a page of the same origin, so
 another site cannot approve a sign-in with a form, and only from a browser
@@ -280,7 +281,8 @@ a token endpoint, and optionally a revocation endpoint, a client id, scopes
 and an issuer; endpoints may be absolute URLs on an identity provider (https
 only). `abhed login -method NAME` uses it with the same device and PKCE
 flows, sending standard form-encoded requests, and keeps a refresh token
-when one is given. `Profile.Do` sends a request with the profile's token
+when one is given. When the device page is on another host than the server,
+the prompt says to open it and sign in there, to the identity provider. `Profile.Do` sends a request with the profile's token
 and, when it holds a refresh token, refreshes it first if a tenth or less of
 its life is left, and once more if the server answers `401`, then sends the
 request again; `profiles.Refresh` does it by hand. The middleware's `Verifier` must accept the
