@@ -33,7 +33,7 @@ exec)
     case "$1" in
       -i) shift ;;
       -w|--user) shift 2 ;;
-      -e) envs="$envs $2"; shift 2 ;;
+      -e) case "$2" in *=*) envs="$envs $2" ;; esac; shift 2 ;;
       *) break ;;
     esac
   done
@@ -87,10 +87,15 @@ func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 	}
 	b, _ := os.ReadFile(log)
 	calls := string(b)
-	for _, want := range []string{"run --rm -d", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none", "exec -i " + egressPrefix} {
+	for _, want := range []string{"run --rm -d", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none", "exec -i " + egressPrefix,
+		"-e HTTPS_PROXY "} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("no %q in the engine's calls:\n%s", want, calls)
 		}
+	}
+	// The token is passed by name, never in an argument others can list.
+	if strings.Contains(calls, "http://") {
+		t.Errorf("the call's proxy URL is on the engine's command line:\n%s", calls)
 	}
 	// The relay answered for the proxy: the denied host was refused by it,
 	// as the call's, though the request carried no credentials.

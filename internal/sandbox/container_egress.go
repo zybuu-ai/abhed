@@ -160,11 +160,16 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	if uid, gid := os.Getuid(), os.Getgid(); uid > 0 {
 		execArgs = append(execArgs, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
-	for _, kv := range call.Env() {
-		execArgs = append(execArgs, "-e", kv)
+	// By name only, the values in the engine CLI's environment: an argument
+	// would show the call's token to any process that lists command lines.
+	callEnv := call.Env()
+	for _, kv := range callEnv {
+		k, _, _ := strings.Cut(kv, "=")
+		execArgs = append(execArgs, "-e", k)
 	}
 	execArgs = append(execArgs, "-e", "ABHED_SANDBOX="+string(c.Tier()), name, "/bin/sh", "-c", command)
 	cmd := c.engineCmd(ctx, execArgs...)
+	cmd.Env = append(cmd.Env, callEnv...)
 	cmd.Cancel = func() error {
 		stop()
 		return cmd.Process.Kill()
