@@ -472,6 +472,8 @@ func TestWildcardWarnsOnce(t *testing.T) {
 	old := warnWildcard
 	warnWildcard = func(h string) { warned = append(warned, h) }
 	t.Cleanup(func() { warnWildcard = old })
+	// Once per process by design; an earlier run of this test already warned.
+	wildcardWarned.Delete("*.warn-once.test")
 	c := Config{Rules: []Rule{
 		{Host: "*.warn-once.test", Decision: "allow"},
 		{Host: "exact.warn-once.test", Decision: "allow"},
