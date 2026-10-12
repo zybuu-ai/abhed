@@ -469,6 +469,10 @@ func TestResumeRefusesASubagentsSession(t *testing.T) {
 	if st.loop != nil || st.sessionID == "s-kid" {
 		t.Fatal("a subagent's session was resumed on its own")
 	}
+	// Refused before its events are replayed.
+	if strings.Contains(shown.String(), "ZEBRA-77") {
+		t.Fatalf("the subagent's record was replayed before the refusal:\n%s", shown.String())
+	}
 	if err := resumeConversation(context.Background(), st, "s-kid", mustEvents(t, ms, "s-kid")); err == nil || !strings.Contains(err.Error(), "s-top") {
 		t.Fatalf("the refusal does not name the session to resume: %v", err)
 	}
@@ -674,5 +678,60 @@ func TestCLIUserIsNeverAReservedOwner(t *testing.T) {
 		if got := cliUser(); got != want {
 			t.Errorf("$USER=%q recorded as %q, want %q", user, got, want)
 		}
+	}
+}
+
+// listingRows is rowStore with the listing a Postgres store has.
+type listingRows struct{ *rowStore }
+
+func (l listingRows) ListSessions(context.Context, int) ([]store.SessionRecord, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []store.SessionRecord
+	for _, r := range l.rows {
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// /sessions on a shared database lists only this user's own sessions, never
+// another's title or email, nor an unclaimed row.
+func TestSessionsListsOnlyMine(t *testing.T) {
+	st, rs, r, sess := resumeRig(t, "me", "default")
+	ended := time.Now()
+	for id, rec := range map[string]store.SessionRecord{
+		"s-theirs":    {User: "mallory@corp.test", Title: "MALLORY-TITLE"},
+		"s-unclaimed": {User: "unclaimed:me", Title: "UNCLAIMED-TITLE"},
+		"s-tenant":    {User: "me", Tenant: "other", Title: "OTHER-TENANT"},
+		"s-mine":      {User: "local:me", Title: "MINE-TITLE"},
+	} {
+		rec.ID, rec.EndedAt = id, &ended
+		if rec.Tenant == "" {
+			rec.Tenant = "default"
+		}
+		rs.rows[id] = rec
+	}
+	st.store = listingRows{rs}
+	out, _ := stdoutOf(t, func() int {
+		handleCommand(context.Background(), "/sessions", r, policy.New(policy.ModeDefault), sess, st)
+		return 0
+	})
+	for _, hidden := range []string{"MALLORY-TITLE", "mallory@corp.test", "UNCLAIMED-TITLE", "OTHER-TENANT"} {
+		if strings.Contains(out, hidden) {
+			t.Errorf("/sessions shows %s:\n%s", hidden, out)
+		}
+	}
+	if !strings.Contains(out, "MINE-TITLE") || !strings.Contains(out, "s-old") {
+		t.Errorf("/sessions lacks my sessions:\n%s", out)
+	}
+}
+
+// Resuming a row the owner migration set aside says so, not that another
+// user owns it.
+func TestResumeNamesAnUnclaimedSession(t *testing.T) {
+	st, _, _, _ := resumeRig(t, "unclaimed:me", "default")
+	err := resumeConversation(context.Background(), st, "s-old", nil)
+	if err == nil || !strings.Contains(err.Error(), "set aside by the session owner migration") {
+		t.Fatalf("%v", err)
 	}
 }

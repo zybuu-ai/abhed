@@ -127,6 +127,12 @@ func startSession(ctx context.Context, st *cliState, r *ui.Renderer) {
 // fork when another Abhed process has it open.
 func continueSession(ctx context.Context, st *cliState, r *ui.Renderer, id string, events []agent.Event) {
 	s := r.Style()
+	// Refused before anything is replayed: a subagent's record is shown
+	// through the session that started it.
+	if err := subagentRefusal(id, events); err != nil {
+		fmt.Printf("  %s not resumed: %v\n", s.Red("✕"), err)
+		return
+	}
 	if rec, ok, _ := storedSession(ctx, st, id); ok && rec.EndedAt == nil && id != st.sessionID {
 		answer, err := st.ui().Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm,
 			Title: fmt.Sprintf("Session %s is open in another Abhed process. Fork it into a new session?", id),

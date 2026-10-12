@@ -187,6 +187,12 @@ All notable changes to Abhed are recorded here. The format follows
   off. It is now an error, as a dangling link at the file's own path is. A
   managed file removed while it was read is said to be removed, not called
   a link to nothing. Affects 1.1.0 to 1.2.7.
+- The terminal CLI's `/sessions` on a shared Postgres store listed every
+  owner's sessions in every tenant, with their titles and the owners'
+  emails. It now lists only your own. `/resume` of a subagent's session
+  replayed its events before refusing; it now refuses first. Resuming a row
+  the session owner migration set aside says so instead of "belongs to
+  another user". Affects 0.1.0 to 1.2.7.
 
 ### Added
 
