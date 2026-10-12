@@ -478,9 +478,10 @@ A deny pattern matches the words, so it is easy to step around.
   `patch`, `python3 -c`)
 - a program or script found through a `PATH` entry built from another
   expansion (`$HOME/bin`, `$(go env GOPATH)/bin`, `~/bin`), or through the
-  `PATH`, `BASH_ENV` or `ENV` the command starts with rather than sets; and
-  the files a login or interactive shell reads by default (`bash -l`,
-  `bash -i` and `~/.bashrc`)
+  `PATH`, `BASH_ENV` or `ENV` the command inherits rather than sets (a
+  command on the host drops an inherited `BASH_ENV`); and the files a login
+  or interactive shell reads by default (`bash -l`, `bash -i` and
+  `~/.bashrc`)
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,
