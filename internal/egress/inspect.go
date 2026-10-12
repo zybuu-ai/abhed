@@ -268,9 +268,8 @@ func withSystem(ca []byte) []byte {
 	return append(b, ca...)
 }
 
-// WriteCABundle writes the CA bundle as ca.pem in dir, a folder of its own
-// that commands are given whole, and replaces it there whenever the CAs
-// rotate, until the proxy closes; it returns the file's path.
+// WriteCABundle writes ca.pem in dir, a folder commands are given whole, and
+// replaces it as the CAs rotate until the proxy closes; it returns its path.
 func (p *Proxy) WriteCABundle(dir string) (string, error) {
 	if p.ins == nil {
 		return "", errors.New("the proxy does not inspect HTTPS")

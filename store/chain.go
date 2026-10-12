@@ -50,9 +50,8 @@ type ChainSession struct {
 	Subagent bool // a subagent's own session, listed under its parent
 }
 
-// ChainSessions lists every session of the tenant whose events are chained,
-// newest first and at most limit: deleted and subagent sessions too, which
-// ListSessions leaves out.
+// ChainSessions lists the tenant's chained sessions, newest first and at most
+// limit, with the deleted and subagent ones ListSessions leaves out.
 func (p *Postgres) ChainSessions(ctx context.Context, limit int) ([]ChainSession, error) {
 	rows, err := p.pool.Query(ctx, `SELECT id, deleted_at IS NOT NULL, parent_id IS NOT NULL
 		FROM sessions ORDER BY started_at DESC, id LIMIT $1`, limit)
