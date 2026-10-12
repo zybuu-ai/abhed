@@ -785,6 +785,12 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   IDE's interactive terminal does the same. Only the process and none tiers
   can ask the terminal; in a container a typed-ahead line is judged by its
   echo alone.
+- A line typed while a program has the terminal is told from one typed at the
+  shell's prompt by the terminal's foreground process group: the shell runs
+  with job control (`bash -i -m`), so each program gets a group of its own.
+  The engine logs to stderr the shell's group, the first time a program has
+  the terminal, and bash's notice when it has no job control; lines typed
+  into a program are then judged as the shell's.
 - `confirm` is answered only from a modal whose default is No.
 - In `lines` mode the engine draws the prompt (the workspace folder and the
   path under it, then `$`), echoes typed text in bold, and shows each line's

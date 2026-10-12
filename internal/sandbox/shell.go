@@ -21,8 +21,10 @@ type Interactive interface {
 // shellArgv is bash without the operator's profile or rc files: they live
 // outside the workspace, and a sandboxed shell should not depend on them. It
 // is a login shell with huponexit, so jobs still running when it exits are
-// hung up rather than left behind.
-var shellArgv = []string{"/bin/bash", "--noprofile", "--norc", "-l", "-O", "huponexit", "-i"}
+// hung up rather than left behind. -m asks for job control outright: each
+// program then gets a process group of its own, which is how the workbench
+// terminal tells a line typed into a program from one typed at the prompt.
+var shellArgv = []string{"/bin/bash", "--noprofile", "--norc", "-l", "-O", "huponexit", "-i", "-m"}
 
 // hangUpDelay is how long a shell has to pass a hang-up on to its jobs
 // before it is killed.
