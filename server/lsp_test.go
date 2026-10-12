@@ -230,9 +230,9 @@ func TestLSPMethodAllowlist(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{}}`,
 		`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{}}`,
 		`{"jsonrpc":"2.0","id":7,"result":null}`,
-		`{"jsonrpc":"2.0","id":"a","error":{"code":1,"message":"x"}}`,
+		`{"jsonrpc":"2.0","id":8,"result":[null,null]}`,
 	} {
-		if _, ok := lspAllowed([]byte(m)); !ok {
+		if _, ok := lspAllowed([]byte(m), "/w"); !ok {
 			t.Errorf("refused %s", m)
 		}
 	}
@@ -244,13 +244,18 @@ func TestLSPMethodAllowlist(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction"}`,
 		`{"jsonrpc":"2.0","id":null,"result":null}`,
 		`{"jsonrpc":"2.0","result":null}`,
+		`{"jsonrpc":"2.0","id":"a","error":{"code":1,"message":"x"}}`,
+		`{"jsonrpc":"2.0","id":7,"result":[{"env":{"GOPACKAGESDRIVER":"/tmp/x"}}]}`,
+		`{"jsonrpc":"2.0","id":7,"result":[null,{"buildFlags":["-toolexec=/tmp/x"]}]}`,
+		`{"jsonrpc":"2.0","id":7,"result":{}}`,
+		`{"jsonrpc":"2.0","id":7}`,
 	} {
-		if out, ok := lspAllowed([]byte(m)); ok {
+		if out, ok := lspAllowed([]byte(m), "/w"); ok {
 			t.Errorf("allowed %s as %s", m, out)
 		}
 	}
 	// A duplicate key reaches the server once, as checked.
-	if out, ok := lspAllowed([]byte(`{"method":"workspace/executeCommand","method":"textDocument/hover","id":1}`)); ok && strings.Contains(string(out), "executeCommand") {
+	if out, ok := lspAllowed([]byte(`{"method":"workspace/executeCommand","method":"textDocument/hover","id":1}`), "/w"); ok && strings.Contains(string(out), "executeCommand") {
 		t.Errorf("sent %s", out)
 	}
 
@@ -271,6 +276,138 @@ func TestLSPMethodAllowlist(t *testing.T) {
 		t.Fatalf("executeCommand: %d", res.StatusCode)
 	}
 	wb.send("acme", "DELETE", "lsp/"+start.ID, nil)
+}
+
+// initialize reaches the server as the editor's fixed shape: options that
+// set its environment or tools, and a root elsewhere, are not passed on.
+func TestLSPInitializeRebuilt(t *testing.T) {
+	in := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":1,"rootUri":"file:///etc","initializationOptions":{"env":{"GOPACKAGESDRIVER":"/tmp/x"}},"capabilities":{"experimental":{"x":1}},"trace":"verbose"}}`
+	out, ok := lspAllowed([]byte(in), "/home/a b/w")
+	if !ok {
+		t.Fatal("initialize refused")
+	}
+	var m struct {
+		ID     int                        `json:"id"`
+		Method string                     `json:"method"`
+		Params map[string]json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil || m.ID != 1 || m.Method != "initialize" {
+		t.Fatalf("%s %v", out, err)
+	}
+	want := map[string]string{
+		"processId":        `null`,
+		"rootUri":          `"file:///home/a%20b/w"`,
+		"workspaceFolders": `[{"name":"w","uri":"file:///home/a%20b/w"}]`,
+		"capabilities":     lspCapabilities,
+	}
+	if len(m.Params) != len(want) {
+		t.Fatalf("params %s", out)
+	}
+	for k, v := range want {
+		if string(m.Params[k]) != v {
+			t.Errorf("%s = %s, want %s", k, m.Params[k], v)
+		}
+	}
+	if out, _ := lspAllowed([]byte(`{"jsonrpc":"2.0","method":"initialized","params":{"settings":{"env":{}}}}`), "/w"); !strings.Contains(string(out), `"params":{}`) {
+		t.Errorf("initialized: %s", out)
+	}
+}
+
+// With a real gopls, an environment slipped into initialize or into an answer
+// to its configuration request does not run a program.
+func TestLSPGoplsRunsNothingThePageNames(t *testing.T) {
+	gopls, err := exec.LookPath("gopls")
+	if err != nil {
+		t.Skip("gopls not installed")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not installed")
+	}
+	marker := filepath.Join(t.TempDir(), "ran")
+	driver := filepath.Join(t.TempDir(), "driver.sh")
+	if err := os.WriteFile(driver, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wb, _ := lspBench(t, "process", func(c *config.Config) {
+		c.Sandbox.LanguageServers = map[string][]string{"go": {gopls}}
+	})
+	for name, body := range map[string]string{"go.mod": "module m\n\ngo 1.21\n", "a.go": "package m\n\nfunc A() {}\n"} {
+		if err := os.WriteFile(filepath.Join(wb.workspace, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var start lspStartResponse
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	defer wb.send("acme", "DELETE", "lsp/"+start.ID, nil)
+	srv := httptest.NewServer(wb.h)
+	defer srv.Close()
+	base := "/v1/sessions/" + wb.session + "/lsp/" + start.ID
+	req, _ := http.NewRequest("GET", srv.URL+base, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	res, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed by the deferred call below
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	events := make(chan string, 64)
+	go func() {
+		sc := bufio.NewScanner(res.Body)
+		sc.Buffer(make([]byte, 1<<20), 8<<20)
+		for sc.Scan() {
+			if d, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+				if raw, err := base64.StdEncoding.DecodeString(d); err == nil && len(raw) > 0 {
+					events <- string(raw)
+				}
+			}
+		}
+		close(events)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	post := func(msg string) int {
+		req, _ := http.NewRequest("POST", srv.URL+base, strings.NewReader(msg))
+		req.Header.Set("X-Abhed-Tenant", "acme")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		return res.StatusCode
+	}
+	env, _ := json.Marshal(map[string]any{"env": map[string]string{"GOPACKAGESDRIVER": driver, "GOFLAGS": "-toolexec=" + driver}})
+	uri := lspURI(wb.workspace)
+	post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"` + uri + `","initializationOptions":` + string(env) + `,"capabilities":{"workspace":{"configuration":true}}}}`)
+	post(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)
+	post(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"` + uri + `/a.go","languageId":"go","version":1,"text":"package m\n\nfunc A() {}\n"}}}`)
+	deadline := time.After(60 * time.Second)
+	for loaded := false; !loaded; {
+		select {
+		case m, open := <-events:
+			if !open {
+				t.Fatal("the stream ended")
+			}
+			var in struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			_ = json.Unmarshal([]byte(m), &in)
+			if in.Method == "workspace/configuration" {
+				if code := post(`{"jsonrpc":"2.0","id":` + string(in.ID) + `,"result":[` + string(env) + `]}`); code != http.StatusForbidden {
+					t.Errorf("a configuration answer with env: %d", code)
+				}
+				post(`{"jsonrpc":"2.0","id":` + string(in.ID) + `,"result":[null]}`)
+			} else if in.ID != nil && in.Method != "" {
+				post(`{"jsonrpc":"2.0","id":` + string(in.ID) + `,"result":null}`)
+			}
+			loaded = in.Method == "textDocument/publishDiagnostics" && strings.Contains(m, "a.go")
+		case <-deadline:
+			t.Fatal("gopls published no diagnostics for a.go")
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("gopls ran a program the page named")
+	}
 }
 
 // Closing the session records each language server's end before the

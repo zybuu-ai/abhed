@@ -44,6 +44,7 @@ const (
 
 type lspRun struct {
 	id, language string
+	root         string
 	cancel       context.CancelFunc
 	stdin        io.WriteCloser
 	writeMu      sync.Mutex
@@ -84,11 +85,13 @@ var lspMethods = map[string]bool{
 	"textDocument/hover": true, "textDocument/definition": true,
 }
 
+// lspCapabilities are the editor's, as ide.html declares them.
+const lspCapabilities = `{"textDocument":{"hover":{"contentFormat":["markdown","plaintext"]},"definition":{"linkSupport":true},"publishDiagnostics":{},"synchronization":{}},"workspace":{"configuration":true}}`
+
 // lspAllowed returns the message from the page that may reach the server:
-// one of lspMethods, or an answer to the server's own request. It is sent
-// re-encoded, so a duplicate key or another key's case cannot make the server
-// read a method other than the one checked here.
-func lspAllowed(body []byte) ([]byte, bool) {
+// one of lspMethods, or a null answer to the server's own request. It is
+// rebuilt, so no other key, duplicate or case variant reaches the server.
+func lspAllowed(body []byte, root string) ([]byte, bool) {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil {
 		return nil, false // a batch, or not an object
@@ -106,15 +109,71 @@ func lspAllowed(body []byte) ([]byte, bool) {
 		if json.Unmarshal(raw, &method) != nil || !lspMethods[method] {
 			return nil, false
 		}
+		switch method {
+		case "initialize":
+			// initializationOptions and the like can set a server's environment
+			// or tools, so the server is told only the workspace and capabilities.
+			m["params"] = lspInitParams(root)
+		case "initialized":
+			m["params"] = json.RawMessage(`{}`)
+		}
 	} else {
-		_, result := m["result"]
-		_, failed := m["error"]
-		if id := string(m["id"]); id == "" || id == "null" || result == failed {
+		if id := string(m["id"]); id == "" || id == "null" {
 			return nil, false
 		}
+		// Settings the server asks for stay its defaults: a setting such as env
+		// or build flags can have it run programs, so only nulls are passed.
+		if _, failed := m["error"]; failed || !lspNulls(m["result"]) {
+			return nil, false
+		}
+		m = map[string]json.RawMessage{"jsonrpc": json.RawMessage(`"2.0"`), "id": m["id"], "result": m["result"]}
 	}
 	out, err := json.Marshal(m)
 	return out, err == nil
+}
+
+// lspNulls reports whether an answer is null or a list of nulls.
+func lspNulls(raw json.RawMessage) bool {
+	if raw == nil {
+		return false
+	}
+	var list []json.RawMessage
+	if json.Unmarshal(raw, &list) == nil {
+		for _, v := range list {
+			if string(v) != "null" {
+				return false
+			}
+		}
+		return true
+	}
+	return string(bytes.TrimSpace(raw)) == "null"
+}
+
+// lspInitParams are the initialize params the server gets for the workspace at root.
+func lspInitParams(root string) json.RawMessage {
+	uri := lspURI(root)
+	name := root[strings.LastIndex(root, "/")+1:]
+	b, _ := json.Marshal(map[string]any{
+		"processId": nil, "rootUri": uri,
+		"workspaceFolders": []map[string]string{{"uri": uri, "name": name}},
+		"capabilities":     json.RawMessage(lspCapabilities),
+	})
+	return b
+}
+
+// lspURI is root's file URI, escaped as the editor's encodeURIComponent does.
+func lspURI(root string) string {
+	var b strings.Builder
+	b.WriteString("file://")
+	for i := 0; i < len(root); i++ {
+		c := root[i]
+		if c == '/' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte("-_.!~*'()", c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 var safeWord = regexp.MustCompile(`^[A-Za-z0-9_./=:@%+,-]+$`)
@@ -226,7 +285,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusInternalServerError, "the language server could not be started: "+err.Error())
 		return
 	}
-	run := &lspRun{id: id, language: req.Language, cancel: cancel, stdin: stdin,
+	run := &lspRun{id: id, language: req.Language, root: sess.Root, cancel: cancel, stdin: stdin,
 		subs: map[*lspSub]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
 	// Listed before it starts, so a session closing from here on waits for its end.
 	live.mu.Lock()
@@ -375,7 +434,7 @@ func (s *Server) sendLSP(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "the message is not JSON")
 		return
 	}
-	body, ok = lspAllowed(body)
+	body, ok = lspAllowed(body, run.root)
 	if !ok {
 		WriteError(w, http.StatusForbidden, "the workbench sends a language server only editor requests")
 		return

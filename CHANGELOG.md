@@ -1199,7 +1199,10 @@ All notable changes to Abhed are recorded here. The format follows
   as the person's recorded `bash` call judged by the policy, and runs in the
   session's sandbox; none runs on the none tier, and a workspace file cannot
   name one, even a trusted one. Only the editor's own requests reach it;
-  `workspace/executeCommand` and other methods are refused. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
+  `workspace/executeCommand` and other methods are refused, `initialize`
+  carries only the workspace and the editor's capabilities (never
+  `initializationOptions`), and answers to the server's requests must be
+  `null`. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
   `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed

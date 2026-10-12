@@ -769,10 +769,16 @@ only what the editor needs reaches it: `initialize`, `initialized`, opening,
 changing and closing a file, hover, definition, `shutdown`, `exit`,
 `$/cancelRequest` and answers to the server's own requests. Anything else,
 such as `workspace/executeCommand`, which can have a server run programs the
-policy never judged, is refused with 403. On a tier this version does not
+policy never judged, is refused with 403. The server's `initialize` is made by
+Abhed from the workspace and the editor's capabilities, whatever the page
+sent, so `initializationOptions` (where a server such as gopls takes its
+environment and build flags) never reach it, and an answer to the server's
+own requests must be `null` or a list of nulls; any other answer is refused
+with 403. On a tier this version does not
 know, as on none, no server starts. A server's header lines are bounded, and
 a page that falls 16 MiB behind its messages has its stream ended. What
 it says is untrusted: the editor shows hovers and diagnostics as plain
 markdown with hidden characters marked. A definition in another workspace
 file opens it in a tab; one outside the workspace is not offered. Settings a
-server asks the editor for are left at the server's defaults.
+server asks the editor for are left at the server's defaults; set a server's
+options in its own files or on its command line in `language_servers`.
