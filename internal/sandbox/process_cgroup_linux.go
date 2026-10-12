@@ -26,9 +26,8 @@ type processCgroups struct {
 	prefix   string
 }
 
-// NestCgroups makes each command's cgroup a leaf of parent, a cgroup the
-// caller made and removes (a sized instance's), in place of one of the
-// sandbox's own; false once the sandbox has looked for its own.
+// NestCgroups puts each command's cgroup under parent, the caller's (a sized
+// instance's), in place of the sandbox's own; false once that was looked for.
 func (s *Process) NestCgroups(parent *cgroup.Sandbox) bool {
 	set := false
 	s.cgOnce.Do(func() {

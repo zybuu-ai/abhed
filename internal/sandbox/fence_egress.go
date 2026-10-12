@@ -13,9 +13,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// fenceEgress is a fenced session's egress proxy. Each call reaches it by a
-// way in of its own: a loopback port for landlock_only, a unix socket joined
-// by the relay in its network namespace otherwise.
+// fenceEgress is a fenced session's egress proxy, reached by each call its own
+// way: a loopback port in landlock_only, else a socket for its relay.
 type fenceEgress struct {
 	once  sync.Once
 	proxy *egress.Proxy
@@ -69,8 +68,7 @@ func (e *fenceEgress) start(pol *egress.Policy) error {
 }
 
 // call is a credential for the launch's call, revoked when ctx ends, with a
-// way in no other call has: in mount mode a socket for its relay alone, else
-// a loopback port only its Landlock domain may connect to.
+// way in of its own: its relay's socket, or a port only its Landlock domain reaches.
 func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy, mounts bool) (fenceCall, error) {
 	if err := e.start(pol); err != nil {
 		return fenceCall{}, fmt.Errorf("the egress proxy: %w", err)

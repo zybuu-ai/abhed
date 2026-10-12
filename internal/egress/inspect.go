@@ -239,9 +239,8 @@ func (p *Proxy) CA() []byte {
 var systemBundles = []string{"/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
 	"/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"}
 
-// CABundle is the system's CA bundle with the proxy's CAs after it, for a
-// command's clients to trust in place of the system's alone. The CAs rotate
-// daily; WriteCABundle keeps a file of it current.
+// CABundle is the system's CA bundle with the proxy's CAs after it, which
+// rotate daily; WriteCABundle keeps a file of it current.
 func (p *Proxy) CABundle() []byte { return withSystem(p.CA()) }
 
 func withSystem(ca []byte) []byte {

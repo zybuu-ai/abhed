@@ -131,9 +131,8 @@ type Policy struct {
 	// GitRequired refuses a fence that cannot hold ProtectGit (no mount
 	// namespace); without it, that fence runs and says git's files are not held.
 	GitRequired bool
-	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): both on
-	// the fence, container and vm tiers and the Linux process tier (a cgroup
-	// per command, else each process's data); on macOS processes alone.
+	// MaxMemoryMB and MaxProcs bound resource exhaustion (T7) on Linux tiers (a
+	// cgroup per command, else each process's data); on macOS MaxProcs alone.
 	MaxMemoryMB int
 	MaxProcs    int
 	// ReadableHome lets the macOS process tier read all of home but the

@@ -176,9 +176,8 @@ func TestPlantedRepositoryUncleanedStaysRefused(t *testing.T) {
 	}
 }
 
-// A .git file made during the session naming a git folder already there, the
-// workspace's own say, never has that folder changed: the command is refused
-// while it names a program, and one naming nothing is let through.
+// A new .git file naming a git folder already there never has it changed: it
+// is refused while that names a program, and let through when it names none.
 func TestPlantedPointerToAKnownFolderChangesNothing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ws := workspace(t)

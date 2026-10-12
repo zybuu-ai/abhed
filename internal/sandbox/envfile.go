@@ -7,9 +7,8 @@ import (
 	"strings"
 )
 
-// EnvFile writes env to a file only this user can read, in a folder of its
-// own, for an engine CLI's --env-file: values passed by name would sit in
-// the CLI's own environment, where its client to the engine reads proxies.
+// EnvFile writes env to a file only this user reads, for an engine CLI's
+// --env-file: in the CLI's own environment its client would follow proxies.
 func EnvFile(env []string) (string, func(), error) {
 	var b strings.Builder
 	for _, kv := range env {

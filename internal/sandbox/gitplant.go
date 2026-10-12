@@ -131,9 +131,8 @@ func gitFolderOf(entry string) string {
 	return ""
 }
 
-// gitFolderIn is the real path of the git folder g is or names when it is in
-// ws and not under any-case .abhed; inside reports whether it is, and dir is
-// "" when there is none yet.
+// gitFolderIn is the real path of the git folder g is or names, "" if none
+// yet; inside is whether it is in ws and not under any-case .abhed.
 func gitFolderIn(ws, g string) (dir string, inside bool) {
 	named := gitFolderOf(g)
 	if named == "" {
@@ -160,10 +159,8 @@ func gitFolderIn(ws, g string) (dir string, inside bool) {
 	return real, true
 }
 
-// plantedGits strips what names a program git would run from git folders new
-// since the session's first look, and says why the command is refused. A
-// repository counts as seen only once it is clean, so a failed rewrite refuses
-// every command until it is.
+// plantedGits strips what names a program from .git folders new since the
+// first look and refuses the command; one is seen only once clean.
 func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, scan *gitScan) error {
 	mem.mu.Lock()
 	if mem.based == nil {
@@ -346,9 +343,8 @@ func openNewGitFolder(ws, g string, known []os.FileInfo) (*os.Root, error) {
 	return cur, nil
 }
 
-// cleanGitConfig keeps the config name in the git folder root, shown as p, to
-// what git init or clone write, quarantining a copy first; nil when it held
-// nothing else.
+// cleanGitConfig keeps config name in root, shown as p, to what git init or
+// clone write, quarantining a copy first; nil when it held nothing else.
 func cleanGitConfig(root *os.Root, name, p, g string) map[string]any {
 	info, err := root.Lstat(name)
 	if err != nil {
