@@ -656,3 +656,18 @@ func (d *durableMem) OpenSessions(_ context.Context, after string, limit int) ([
 	}
 	return ids, nil
 }
+
+// A message that resumed a finished session here, and then could not take
+// its hold, gives the resume's claim back: the session is ended as it was.
+func TestResumedClaimIsGivenBackWhenTheHoldFails(t *testing.T) {
+	v := newViewRig(t)
+	v.st.mu.Lock()
+	v.st.failHold = true
+	v.st.mu.Unlock()
+	if w := v.do("POST", "/v1/sessions/"+v.id+"/messages", `{"prompt":"late"}`); w.Code == http.StatusAccepted {
+		t.Fatalf("a message whose hold failed started a turn: %d %s", w.Code, w.Body.String())
+	}
+	if v.claims() != 1 || !v.ended() {
+		t.Fatalf("the resumed claim was kept: %d claims, ended %v", v.claims(), v.ended())
+	}
+}
