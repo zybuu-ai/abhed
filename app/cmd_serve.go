@@ -370,12 +370,24 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 
+	// Port 0 asks the system for one, so the listener is opened now and the
+	// banner names the port it got, not ":0".
+	var ln net.Listener
+	shown := addr
+	if _, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
+		if ln, err = net.Listen("tcp", addr); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 1
+		}
+		shown = ln.Addr().String()
+	}
 	bs := ui.NewStyle(os.Stdout)
 	fmt.Printf("%s %s %s  %s\n", bs.Accent(ui.Glyph),
-		bs.Bold("ABHED"), bs.Dim(a.version), serveURL(addr, tlsL != nil))
+		bs.Bold("ABHED"), bs.Dim(a.version), serveURL(shown, tlsL != nil))
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
+	fmt.Printf("  git       %s\n", gitHeldLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("  managed   %s\n", line)
 	}
@@ -384,14 +396,18 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	switch {
 	case docsite.Available():
-		fmt.Printf("  docs      %s/docs\n", serveURL(addr, tlsL != nil))
+		fmt.Printf("  docs      %s/docs\n", serveURL(shown, tlsL != nil))
 	case docsite.PublicURL != "":
 		// Not embedded in this build; say where the same pages are, once,
 		// here — never from a page, which must stay usable with no route out.
 		fmt.Printf("  docs      %s (not embedded in this build)\n", docsite.PublicURL)
 	}
 
-	if err := srv.ListenAndServe(ctx); err != nil && err.Error() != "http: Server closed" {
+	serve := srv.ListenAndServe
+	if ln != nil {
+		serve = func(ctx context.Context) error { return srv.Serve(ctx, ln) }
+	}
+	if err := serve(ctx); err != nil && err.Error() != "http: Server closed" {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}

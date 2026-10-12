@@ -70,7 +70,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.WriteProtected = cfg.Sandbox.WriteProtected
-	p.ProtectGit = cfg.Sandbox.ProtectGit
+	p.ProtectGit, p.GitRequired = cfg.Sandbox.GitProtected()
 	p.StatePaths = StatePaths(cfg, base)
 	for _, r := range stateRoots {
 		if filepath.Clean(r) != filepath.Clean(workspace) {

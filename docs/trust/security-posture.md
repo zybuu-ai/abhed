@@ -31,7 +31,8 @@ unnoticed; `abhed doctor` reports the tier actually in force.
 subcommands that change Abhed's own state are refused: `record prune`,
 `trust grant`, `init`, `user add|passwd|remove|import`, `secret set|rm`,
 `mcp add|remove` and `migrate`, as are `-trust-workspace`,
-`-dangerously-skip-permissions` and `-mode bypass` on a nested session,
+`-dangerously-skip-permissions` and a `-mode` looser than the configured
+one (`bypass`, or `auto` over `default`) on a nested session,
 and bypass mode, an allow rule or a git extension that `-settings`, `-agents`,
 `-mcp-config` or `-allowedTools` would add to its configuration.
 A command counts as the agent's when `ABHED_SANDBOX` is set, or when an

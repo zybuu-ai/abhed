@@ -1,6 +1,7 @@
 package app
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,9 @@ func TestHoistGlobalFlags(t *testing.T) {
 		{args: []string{"doctor", "--C=/ws"}, left: "doctor", workdir: "/ws"},
 		{args: []string{"doctor", "-model", "x"}, err: "-model does not apply to doctor"},
 		{args: []string{"doctor", "-C"}, err: "-C needs a value"},
-		{args: []string{"doctor", "extra"}, err: "doctor takes only --json; got extra"},
+		{args: []string{"doctor", "extra"}, err: "doctor takes only --json and -timeout; got extra"},
+		{args: []string{"doctor", "-timeout", "2m", "-C", "/ws"}, left: "doctor -timeout 2m", workdir: "/ws"},
+		{args: []string{"doctor", "--timeout=5s"}, left: "doctor --timeout=5s"},
 		{args: []string{"doctor", "-h"}, left: "doctor -h"},
 		{args: []string{"version", "-C", "/ws", "-json"}, left: "version -json", workdir: "/ws"},
 		{args: []string{"acp", "-C", "/ws", "-trust-workspace"}, left: "acp", workdir: "/ws", trust: true},
@@ -88,13 +91,38 @@ func TestHoistGlobalFlags(t *testing.T) {
 // does not read stops it with exit code 2 before anything is checked.
 func TestDoctorTakesWorkspaceAfterTheSubcommand(t *testing.T) {
 	_, ws := trustWorkspace(t, `{"permissions":{"mode":"accept-edits"}}`)
-	out, code := stdoutOf(t, func() int { return Main([]string{"doctor", "-C", ws, "-trust-workspace"}) })
+	out, code := stdoutOf(t, func() int { return Main([]string{"doctor", "-C", ws, "-trust-workspace", "-timeout", "5s"}) })
 	if !strings.Contains(out, "workspace   "+ws) || !strings.Contains(out, "mode        accept-edits") {
 		t.Fatalf("exit %d; -C after doctor was not taken:\n%s", code, out)
+	}
+	// It names the edition and the files it judged.
+	if !strings.Contains(out, "edition     Community Edition\n") ||
+		!strings.Contains(out, "config      ") || !strings.Contains(out, filepath.Join(ws, ".abhed", "config.json")) {
+		t.Fatalf("no edition or config line:\n%s", out)
+	}
+	for _, args := range [][]string{{"doctor", "-timeout", "soon"}, {"doctor", "-timeout", "0s"}} {
+		if _, code := stdoutOf(t, func() int { return Main(append(args, "-C", ws)) }); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
 	}
 	for _, args := range [][]string{{"doctor", "-model", "x"}, {"doctor", "-C", ws, "now"}, {"index", "-C", ws, "extra"}} {
 		if out, code := stdoutOf(t, func() int { return Main(args) }); code != 2 || out != "" {
 			t.Errorf("%v: exit %d, output %q; want 2 and nothing run", args, code, out)
 		}
+	}
+}
+
+// A top-level flag written before a subcommand that does not read it stops
+// the command with exit code 2, as it does written after; one it reads is taken.
+func TestFlagsBeforeASubcommandItDoesNotRead(t *testing.T) {
+	ws := t.TempDir()
+	for _, args := range [][]string{{"-allow", "secret(X)", "acp"}, {"-mode", "plan", "index"}, {"-model", "x", "doctor"}} {
+		out, code := stderrOf(t, append([]string{"-C", ws}, args...))
+		if code != 2 || !strings.Contains(out, "does not apply to "+args[len(args)-1]) || !strings.Contains(out, args[0]) {
+			t.Errorf("%v: exit %d, %q", args, code, out)
+		}
+	}
+	if out, code := stderrOf(t, []string{"-C", ws, "providers"}); code == 2 {
+		t.Errorf("-C before providers, which ignores it as it always has: %q", out)
 	}
 }

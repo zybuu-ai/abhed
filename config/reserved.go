@@ -22,15 +22,10 @@ func (c Config) NotYetInEffect() []string {
 	return out
 }
 
-// warnNotYetInEffect writes each such setting once per process.
-func warnNotYetInEffect(c Config) {
-	warnedMu.Lock()
-	defer warnedMu.Unlock()
+// warnNotYetInEffect warns of each such setting.
+func warnNotYetInEffect(w warnSink, c Config) {
 	for _, k := range c.NotYetInEffect() {
-		if id := "reserved\x00" + k; !warned[id] {
-			warned[id] = true
-			fmt.Fprintf(warnOut, "abhed: warning: %s\n", NotYetInEffectMessage(k))
-		}
+		w.emit("reserved\x00"+k, NotYetInEffectMessage(k))
 	}
 }
 

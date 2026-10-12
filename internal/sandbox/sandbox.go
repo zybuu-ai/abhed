@@ -141,6 +141,9 @@ type Policy struct {
 	// ProtectGit write-protects the gitPointers of every git folder in the
 	// workspace and each .git file; see gitprotect.go for how each backend does it.
 	ProtectGit bool
+	// GitRequired refuses a fence that cannot hold ProtectGit (no mount
+	// namespace); without it, that fence runs and says git's files are not held.
+	GitRequired bool
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int

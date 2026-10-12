@@ -49,7 +49,7 @@ configuration](#trusting-the-workspace-configuration).
 | `custom_providers` | providers added without a rebuild |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
-| `retrieval`, `rag` | the local index, and external corpora |
+| `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
@@ -280,6 +280,14 @@ only; the none and process tiers do not bound memory. `abhed doctor` warns when
 you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
 none tier, and when root runs the process tier, whose processes the kernel
 does not bound.
+
+`"protect_git"` keeps commands from writing what git reads in every git
+folder in the workspace (config, hooks and the like; see
+[Permissions](04-permissions.md)). Unset, it is on wherever the tier can hold
+those files; `true` also refuses a tier that cannot (the fence without a
+mount namespace); `false` turns it off for the terminal CLI, `abhed -p` and
+`abhed rpc`. Studio and `abhed serve` hold them whatever it says. A workspace
+file you have not trusted cannot set it.
 
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
@@ -881,6 +889,14 @@ witness that show it). After an upgrade
 that adds columns, run `abhed migrate` again before starting the server: on a
 schema older than the binary it refuses to start and names what is missing.
 
+The session owner move runs once. Its `--owners` (`local-only` or
+`unclaim`; another value exits `2`) has no effect on a later run, which says
+so. `local-only` refuses when it finds no account while old sessions exist,
+and then records nothing: import the accounts first (`abhed user import`),
+or pass `--owners=unclaim` or `--force-no-accounts`. Like `serve`, `migrate`
+refuses an `auth.users_file` in a place commands can write, such as the
+workspace or a temp folder.
+
 **Abhed refuses to start** if the role in `storage.dsn` could alter the record
 — if it owns `events`, or holds `UPDATE`, `DELETE` or `TRUNCATE` on it — and
 says which. It asks the database what the connection can do rather than
@@ -1023,19 +1039,21 @@ is recorded too, as `config.refused` with the decision `overridden`.
 Inside an agent's command, a nested `abhed` ignores `ABHED_TRUST_WORKSPACE`
 with a warning, and refuses `-trust-workspace`, `-settings` and
 `-mcp-config` whatever they hold: either can name an endpoint the nested
-session would send the code or its queries to. A nested run narrows with
+session would send the code or its queries to. It also refuses a `-mode`
+looser than the configured mode (`accept-edits` or `auto` when the
+configuration says `default`), not only `bypass`. A nested run narrows with
 `-mode plan`, `-disallowedTools` or `-max-turns`.
 
 ### The managed file
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
 key it sets replaces what the user and project files said. A list it sets,
-such as `permissions.ask`, replaces the lower files' list; so does a map
-entry, such as one provider under `model.providers`. `permissions.deny` is
-the exception: the managed rules are added to the deny rules already in
-force (the built-in ones, `~/.abhed/config.json`, `-settings` and a trusted
-workspace's file), so a managed file can add a deny rule but never take one
-away. `/permissions` shows each rule with the layer it came from. Its
+such as `permissions.allow`, replaces the lower files' list; so does a map
+entry, such as one provider under `model.providers`. `permissions.deny` and
+`permissions.ask` are the exceptions: the managed rules are added to the
+deny and ask rules already in force (the built-in ones,
+`~/.abhed/config.json`, `-settings` and a trusted workspace's file), so a
+managed file can add a deny rule or a question but never take one away. `/permissions` shows each rule with the layer it came from. Its
 presence makes the policy engine managed: `bypass` mode is refused wherever
 it comes from. A call that bypass would approve asks as in default mode, and
 the reason names the managed file; `abhed doctor` shows the mode as
@@ -1054,18 +1072,17 @@ organisation's rules must not depend on which reading wins.
 When the managed file sets any `permissions` setting but not
 `permissions.allow`, the allow rules `~/.abhed/config.json` and a trusted
 workspace's `.abhed/config.json` add are left out, and Abhed warns at startup
-naming each rule and its file; the built-in allow rules stay. Put rules the
+naming each rule and its file; the built-in allow rules the files' list
+still held stay. Put rules the
 organisation accepts in the managed `permissions.allow`. When the managed file
 sets `permissions.allow`, exactly its list applies. The same holds for
 `permissions.git_extensions`, the git extensions that run without the
 destructive step's question ([Permissions](04-permissions.md#the-order)).
 
 Two effects to plan for. A call that a dropped rule approved now asks, and in
-`-p`, `rpc` and other runs with no one to approve, it is refused. And once
-any file rule is dropped, every built-in allow rule comes back, even one the
-file had left out of a shorter list. To keep a built-in rule from applying
-under a managed file, add an ask or deny rule for it; a shorter allow list
-does not do it.
+`-p`, `rpc` and other runs with no one to approve, it is refused. And a
+built-in allow rule the files' list left out stays out: a shorter list
+removes it under a managed file as it does without one.
 
 What a caller sets over the files, the CLI's flags and the SDK's `Options`,
 may tighten what the managed file set and never loosen it:
@@ -1100,7 +1117,9 @@ managed file.
 
 A managed file that exists but cannot be read, including one in a directory
 that cannot be searched, or a link at the managed path that points nowhere,
-is an error: Abhed stops rather than run unmanaged.
+is an error: Abhed stops rather than run unmanaged. So is a managed folder
+(`/etc/abhed`) that is itself a link to nothing; a folder that does not
+exist at all means no managed file.
 
 The environment variables in step 4 never change a setting the managed file
 makes. Each one is ignored where the managed file sets its key, and Abhed
@@ -1122,11 +1141,13 @@ user's and workspace's files. An administrator who means to pin the endpoint
 sets the provider in the managed file; one who sets only `model.default` leaves
 that provider's endpoint to the lower files and the environment.
 
-The model is not pinned by the managed file alone: `-model` and the console's
-picker choose among the providers any file defines, and the SDK's `Provider`
-names any endpoint.
-An editor over `abhed acp` and the SDK's `SwitchModelNamed` are the
-exception: a managed `model.default` pins them to that model.
+A managed `model.default` pins the model on every surface: `-model`,
+`/model`, a custom command's `model`, the console's picker and the sessions
+it starts, an editor over `abhed acp`, subagents, and the SDK's
+`SwitchModelNamed`, `SetModel` and `Options.Provider` all refuse another
+model. Fallbacks under a managed default are only those the managed
+`model.fallback` names. Without a managed `model.default`, any provider a
+file defines may be chosen, and the SDK's `Provider` names any endpoint.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say. With Postgres storage it

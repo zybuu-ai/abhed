@@ -203,7 +203,7 @@ func (f *Fence) Mode() string {
 // read-only, which only a mount namespace can hold: Landlock grants a folder
 // and everything under it.
 func (f *Fence) needsMounts() bool {
-	return len(f.policy.WriteProtected) > 0 || f.policy.ProtectGit
+	return len(f.policy.WriteProtected) > 0 || f.policy.ProtectGit && f.policy.GitRequired
 }
 
 // Describe states what the fence covers and what it does not.
@@ -226,7 +226,7 @@ func (f *Fence) Describe() string {
 		mode = "mode mount_namespace: each command in a user and mount namespace of its own, the workspace's .abhed under an empty tmpfs that is gone when the command ends; " +
 			"where the workspace has none, the fence makes an empty .abhed to mount over and leaves it in place, and one empty when the session started must stay empty, " +
 			"or what is found in it is taken out, the folder left, and the session ends as below"
-		if f.needsMounts() {
+		if f.needsMounts() || f.policy.ProtectGit {
 			mode += ", the surface's protected paths (git's config and hooks, its editor settings) bound read-only, and a file in a read-only folder with a name outside it refused"
 		}
 		mode += ", the same done at every other mount of the workspace's filesystem (such as /sysroot on an ostree host, or a bind mount), or the command refused where it cannot be" +
@@ -234,6 +234,9 @@ func (f *Fence) Describe() string {
 			"; one behind another user's folder you cannot search is left, and stays out of reach only while that folder stays closed: opened during a command, it lets that command through, and the next command covers it"
 		mode += "; another spelling of .abhed a command makes is still taken out and ends the session"
 		planted = "a .abhed in a subfolder or an added folder (not covered)"
+	} else if f.policy.ProtectGit {
+		planted += ", git's config and hooks (not held read-only without a mount namespace: an \"always allow\" for a git command is asked again once they change; " +
+			"sandbox.protect_git: true refuses this mode instead)"
 	}
 	return fmt.Sprintf("fence (preview, Linux) · each command under Landlock ABI %d: reads and runs system folders, ~/.abhed/skills and skills.dirs, writes the workspace and a private temp folder, "+
 		"no other terminal, Abhed's state, record and secrets unreachable · %s · seccomp %s: no ptrace, namespaces, mounts, bpf, keyrings, unix sockets "+

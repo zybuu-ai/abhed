@@ -100,10 +100,9 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		var p agent.ActionRequested
 		_ = json.Unmarshal(ev.Payload, &p)
 		if p.CallID == "" {
+			// Only a record from before every call had an id: the card is
+			// named by its request, as the permission request names it.
 			p.CallID = ev.ID
-			s.mu.Lock()
-			s.lastIdless = idlessCall{id: ev.ID, tool: p.Tool}
-			s.mu.Unlock()
 		}
 		meta := map[string]any{"tool": p.Tool}
 		if p.Via != "" {
@@ -120,11 +119,8 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		_ = json.Unmarshal(ev.Payload, &p)
 		if p.CallID == "" {
-			// Calls are approved one at a time, right after their request.
-			s.mu.Lock()
-			p.CallID = s.lastIdless.id
-			s.ranIdless = append(s.ranIdless, s.lastIdless)
-			s.mu.Unlock()
+			// A record from before every call had an id: nothing names its card.
+			break
 		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": "in_progress"})
 	case agent.EvActionDenied:
@@ -136,11 +132,6 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			By     string `json:"by"`
 		}
 		_ = json.Unmarshal(ev.Payload, &p)
-		if p.CallID == "" {
-			s.mu.Lock()
-			p.CallID = s.lastIdless.id
-			s.mu.Unlock()
-		}
 		// The why of a denial, as an ask carries it: the step, the rule and who settled it.
 		denied := map[string]any{}
 		for k, v := range map[string]string{"step": p.Step, "by": p.By, "rule": p.Rule} {
@@ -148,21 +139,28 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 				denied[k] = redacted(v)
 			}
 		}
-		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": "failed",
+		u := map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": "failed",
 			"content": []any{map[string]any{"type": "content", "content": text("Denied: " + redacted(p.Reason))}},
-			"_meta":   map[string]any{acpMetaKey: map[string]any{"denied": denied}}})
+			"_meta":   map[string]any{acpMetaKey: map[string]any{"denied": denied}}}
+		if p.CallID == "" {
+			// A record from before every call had an id: a card of its own.
+			u["sessionUpdate"], u["toolCallId"], u["title"] = "tool_call", ev.ID, "denied call"
+		}
+		update(u)
 	case agent.EvObservation:
 		var p agent.Observation
 		_ = json.Unmarshal(ev.Payload, &p)
-		if p.CallID == "" {
-			p.CallID = s.takeIdless(p.Tool)
-		}
 		status := "completed"
 		if p.IsError {
 			status = "failed"
 		}
-		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": status,
-			"content": []any{map[string]any{"type": "content", "content": text(p.Content)}}, "rawOutput": p.Content})
+		u := map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": status,
+			"content": []any{map[string]any{"type": "content", "content": text(p.Content)}}, "rawOutput": p.Content}
+		if p.CallID == "" {
+			// A record from before every call had an id: a card of its own.
+			u["sessionUpdate"], u["toolCallId"], u["title"], u["kind"] = "tool_call", ev.ID, toolTitle(p.Tool, nil), toolKind(p.Tool)
+		}
+		update(u)
 	case agent.EvSubagentAsk:
 		if replay {
 			break

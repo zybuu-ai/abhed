@@ -86,7 +86,7 @@ func TestTUICommandOutputPreviewExpands(t *testing.T) {
 	r.waitScreen("please big")
 	// One page at a time, each confirmed by the header, so no frame has to
 	// be caught in passing.
-	page := 30 - 2
+	page := r.pageRows()
 	for top := 1; !hasLine(r.term.Text(), "1500"); {
 		if top > 3000 {
 			t.Fatalf("paged past the middle of the output:\n%s", r.term.Text())

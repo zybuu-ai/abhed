@@ -51,6 +51,9 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 		{"-trust-workspace", "-p", "hi"},
 		{"-dangerously-skip-permissions", "-p", "hi"},
 		{"-mode", "bypass", "-p", "hi"},
+		// Any mode looser than the configured one, not only bypass.
+		{"-mode", "accept-edits", "-p", "hi"},
+		{"-mode", "auto", "-p", "hi"},
 		// The merged configuration counts, not only the flags that name a mode.
 		{"-settings", `{"permissions":{"mode":"bypass"}}`, "-p", "hi"},
 		{"-settings", settingsFile, "-p", "hi"},
@@ -77,7 +80,7 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 	}
 	// Reading, and a session with one more deny rule or a narrower mode, are still allowed.
 	for _, args := range [][]string{{"record", "list"}, {"trust", "show"}, {"mcp", "list"},
-		{"-p", "hi"}, {"-mode", "plan", "-p", "hi"},
+		{"-p", "hi"}, {"-mode", "plan", "-p", "hi"}, {"-mode", "default", "-p", "hi"},
 		{"-disallowedTools", "Bash(wget:*)", "-p", "hi"}} {
 		if out, _ := stderrOf(t, append([]string{"-C", ws}, args...)); strings.Contains(out, "refused inside") {
 			t.Errorf("%v refused: %s", args, out)
@@ -115,6 +118,23 @@ func TestWidenedNamesOnlyAdditions(t *testing.T) {
 	base.Permissions.Mode, eff.Permissions.Mode = "bypass", "bypass"
 	if got := widened(base, eff); got != "" {
 		t.Errorf("bypass already configured: %q", got)
+	}
+}
+
+// A mode looser than the configured one widens; the same or a narrower does not.
+func TestWidenedNamesALooserMode(t *testing.T) {
+	for _, c := range []struct {
+		base, eff string
+		want      bool
+	}{{"", "accept-edits", true}, {"default", "auto", true}, {"plan", "default", true},
+		{"accept-edits", "accept-edits", false}, {"auto", "plan", false}, {"", "", false}, {"", "nonsense", true}} {
+		var base config.Config
+		base.Permissions.Mode = c.base
+		eff := base
+		eff.Permissions.Mode = c.eff
+		if got := widened(base, eff); (got != "") != c.want {
+			t.Errorf("%q -> %q: %q", c.base, c.eff, got)
+		}
 	}
 }
 

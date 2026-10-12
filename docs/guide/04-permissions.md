@@ -161,6 +161,17 @@ A rule is a tool name, optionally followed by a pattern:
 }
 ```
 
+The built-in ask rules include the read tool on files that commonly hold
+credentials, in the workspace or below it: `.env` and `.env.*`, `*.pem`,
+`*.key`, and SSH keys named `id_rsa*`, `id_ed25519*` or `id_ecdsa*`. This is
+a question before the read tool opens one, **not credential protection**: a
+command such as `cat .env` (allowed by the built-in `bash(cat *)`), a search,
+or a program the agent runs can still read the file. Keep credentials out of
+the workspace, give a secret only to the command that needs it
+([Secrets](#secrets)), and deny reads of such files and the commands that
+print them in your own or the managed rules. Your own `permissions.ask` list
+replaces the built-in one, so copy these rules into it if you set one.
+
 The tool name of a built-in tool, or of an action such as `secret`, `delete`
 or `forge_pr`, may be written in any case: `Bash(curl *)`, `BASH(curl *)` and
 `bash(curl *)` are the same rule, as are `Read(**/.env)` and `read(**/.env)`,
@@ -698,16 +709,30 @@ The `write` and `edit` tools also refuse anything inside a `.git` folder, and
 a `.git` file, in any case and through a link, in every mode: a hook or a
 config line written there runs a program at the next git command, Abhed's
 own or yours. Git commands still change the repository. Commands are not
-held to this by the file tools. Abhed Studio's sessions, and every session
-`abhed serve` runs (the web IDE and the API), also keep out of their
-commands' reach what git reads in a git folder as configuration or follows
-elsewhere: `config`, `config.worktree`, `hooks`, `commondir`, `gitdir`,
+held to this by the file tools. Every surface (the terminal CLI, `abhed -p`,
+`abhed rpc`, Abhed Studio and every session `abhed serve` runs) also keeps
+out of its commands' reach what git reads in a git folder as configuration
+or follows elsewhere: `config`, `config.worktree`, `hooks`, `commondir`, `gitdir`,
 `info/attributes` and `objects/info/alternates`, in every git folder, its
 linked worktrees' (`.git/worktrees/*`) and its submodules'
 (`.git/modules/**`). In a served session that covers the agent's commands,
 its background shells, `!` commands and the workbench terminal, in both of
-its modes. The terminal CLI, `abhed -p` and `abhed rpc` do not hold these
-files; there the sandbox tier is what contains a planted hook.
+its modes. The none tier holds nothing. For the terminal CLI, `abhed -p` and
+`abhed rpc`, `"sandbox": {"protect_git": false}` turns this off, and `true`
+also refuses the fence in `landlock_only` mode, which cannot hold these files
+(unset, that fence runs and says so); Studio and `abhed serve` always hold
+them.
+
+An "always allow" for a git command (`bash(git status *)`) is remembered
+with a fingerprint of what git reads in the workspace's repositories and
+added folders' (the git folder's `config`, `config.worktree`, `hooks`,
+`commondir`, `gitdir`, `info/attributes` and `objects/info/alternates`, a
+linked worktree's common folder's too, the `.git` entry itself) and of your
+`~/.gitconfig` and `~/.config/git/config` and `attributes`. When any of them
+changes, the next such command is asked again, wherever the change came
+from. A grant restored when an editor reloads a session is asked again too.
+A nested repository the shell has moved into with `cd` is not part of the
+fingerprint; the sandbox's protection above is what holds it.
 
 On macOS this is by pattern, at any depth and for repositories and files
 made later. The folders holding those files (`modules` and each folder in
@@ -784,7 +809,8 @@ mount namespace binds them read-only and pins the folders holding them, a
 planted `commondir` is taken out before the next command, which is refused,
 and a linked git folder, or a held file with a second name, refuses the
 command. In `landlock_only` the fence cannot hold paths inside the writable
-workspace, so Studio and `abhed serve` are refused there.
+workspace, so Studio and `abhed serve` are refused there, as is the CLI with
+`protect_git: true`.
 
 The command sandbox guards `.abhed/` by path, not by file: a hardlink to a
 state file elsewhere in the workspace is an ordinary path to it, which a

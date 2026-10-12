@@ -44,6 +44,9 @@ type cliState struct {
 	// moved is the switch a resumed session makes by continuing on another
 	// model, recorded when its first task has claimed it.
 	moved *agent.ModelSwitched
+	// switchedFrom is the model /model last moved away from, until a turn on
+	// the new one succeeds; a failed turn names it as the way back.
+	switchedFrom string
 	// sess is the tool session, whose undo log a new conversation replaces.
 	sess *tools.Session
 	// transcript accumulates the session for /export.

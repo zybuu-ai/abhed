@@ -108,3 +108,61 @@ func TestManagedZeroMaxTurnsBindsNothing(t *testing.T) {
 		t.Errorf("%v %d", err, got.Limits.MaxTurns)
 	}
 }
+
+// /etc/abhed itself a link to nothing is an error, not an unmanaged run; a
+// folder that is simply missing is unmanaged.
+func TestDanglingManagedFolderIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "abhed")
+	if err := os.Symlink(filepath.Join(dir, "gone"), folder); err != nil {
+		t.Skip(err)
+	}
+	old := managed.ConfigFile
+	t.Cleanup(func() { managed.ConfigFile = old })
+	t.Setenv("HOME", t.TempDir())
+	managed.ConfigFile = filepath.Join(folder, "config.json")
+	if _, err := Load(t.TempDir()); err == nil || !strings.Contains(err.Error(), "folder "+folder+" is a link to nothing") {
+		t.Errorf("Load: %v", err)
+	}
+	managed.ConfigFile = filepath.Join(dir, "missing", "config.json")
+	if cfg, err := Load(t.TempDir()); err != nil || cfg.Managed {
+		t.Errorf("a missing folder: managed %v, %v", cfg.Managed, err)
+	}
+}
+
+// LoadOptions.Warn takes a load's warnings, every time, and nothing reaches
+// stderr; without it each goes to stderr once per process.
+func TestLoadWarnTakesTheWarnings(t *testing.T) {
+	old := managed.ConfigFile
+	managed.ConfigFile = filepath.Join(t.TempDir(), "none.json")
+	t.Cleanup(func() { managed.ConfigFile = old })
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(`{"no_such_key_g20":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	warnOut = &stderr
+	t.Cleanup(func() { warnOut = os.Stderr })
+	for i := 0; i < 2; i++ {
+		var got []string
+		if _, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(s string) { got = append(got, s) }}); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || !strings.Contains(got[0], "no_such_key_g20") {
+			t.Fatalf("load %d: warnings %q", i, got)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr got %q", stderr.String())
+	}
+	if _, err := Load(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "no_such_key_g20") {
+		t.Fatalf("without Warn, nothing on stderr: %q", stderr.String())
+	}
+}

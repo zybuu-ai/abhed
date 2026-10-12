@@ -11,7 +11,14 @@ The agent's shell commands have three network settings:
 The allowlist is set by the administrator. `sandbox.network` and the whole
 `egress` section are **managed only**: they are read from the managed
 configuration (`/etc/abhed/config.json`) and set aside, with a warning, in
-`~/.abhed/config.json`, `-settings` or a workspace's file. Each one set aside
+`-settings` or a workspace's file. Your own `~/.abhed/config.json` may use
+them only to narrow: with `sandbox.allow_network: true` in effect, your
+`sandbox.network: "allowlist"` and your `egress` rules apply in its place,
+so commands reach only the hosts you list. They are set aside when
+`allow_network` is false (commands already reach nothing), when the
+`egress` settings come without the allowlist, and whenever the managed file
+sets `sandbox.allow_network`, `sandbox.network` or any `egress` key: the
+managed settings always win. Each one set aside
 is recorded as a `config.refused` event with the value asked for (an
 untrusted workspace's with the decision `ignored_untrusted`). With the
 allowlist on, `allow_network` is not read.

@@ -236,6 +236,19 @@ func TestManagedDefaultPinsTheModel(t *testing.T) {
 	if err := a.SwitchModelNamed("beta"); !errors.Is(err, ErrUnknownModel) {
 		t.Fatalf("switch away from the managed model: %v, want ErrUnknownModel", err)
 	}
+	// Nor by naming an endpoint, mid-session or at New.
+	var pinned *config.ManagedError
+	if err := a.SetModel(Provider{Type: "openai-compatible", BaseURL: b1.URL, Model: "m-b", ContextWindow: 8192}); !errors.As(err, &pinned) {
+		t.Fatalf("SetModel away from the managed model: %v", err)
+	}
+	if got := a.loop.Adapter.Profile().Name; got != "m-a" {
+		t.Fatalf("the agent moved to %s", got)
+	}
+	ws := t.TempDir()
+	if _, err := New(context.Background(), Options{Workspace: ws, ConfigDir: ws,
+		Provider: &Provider{Type: "openai-compatible", BaseURL: b1.URL, Model: "m-b", ContextWindow: 8192}}); !errors.As(err, &pinned) {
+		t.Fatalf("Options.Provider under a managed model: %v", err)
+	}
 }
 
 // SetModel and SwitchModelNamed from two goroutines never interleave: under
@@ -267,4 +280,38 @@ func TestSetModelAndSwitchModelNamedExcludeEachOther(t *testing.T) {
 	if got := a.loop.Adapter.Profile().Name; got != want {
 		t.Fatalf("current %q names %s, but the loop is on %s", a.current, want, got)
 	}
+}
+
+// Options.Warn takes the configuration's warnings, so an embedder can show
+// or drop them instead of having them written to stderr.
+func TestWarnTakesTheConfigurationsWarnings(t *testing.T) {
+	a1 := newModelStub(t, "a", false)
+	modelsEnv(t, `{"no_such_key_sdk":1,"model":{"default":"alpha","providers":{"alpha":`+provider(a1.URL, "m-a")+`}}}`, "")
+	ws := t.TempDir()
+	var mu sync.Mutex
+	var got []string
+	a, err := New(context.Background(), Options{Workspace: ws, ConfigDir: ws, AllowDefaultModel: true,
+		Warn: func(format string, args ...any) {
+			mu.Lock()
+			got = append(got, fmt.Sprintf(format, args...))
+			mu.Unlock()
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	mu.Lock()
+	defer mu.Unlock()
+	if !slicesContainsSub(got, "no_such_key_sdk") {
+		t.Fatalf("warnings %q", got)
+	}
+}
+
+func slicesContainsSub(list []string, sub string) bool {
+	for _, s := range list {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }

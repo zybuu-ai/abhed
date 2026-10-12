@@ -70,6 +70,9 @@ type ProvisionConfig struct {
 	OwnerAccounts   []*auth.User
 	AllowNoAccounts bool
 	AccountsFound   func(table, extra, distinct int)
+	// OwnersDone, when set, is told the owner migration ran before, so this
+	// run's Owners has no effect.
+	OwnersDone func()
 }
 
 // Provision applies the schema as the owner and grants the runtime role what
@@ -106,6 +109,16 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 	if err := applySchema(ctx, pool); err != nil {
 		return err
 	}
+	// The owner move reads the accounts table and may refuse; it runs before
+	// version 5 is recorded, so a refused migration records nothing new.
+	if err := ensureUsersTable(ctx, pool); err != nil {
+		return err
+	}
+	if _, err := migrateOwners(ctx, pool, OwnerMigration{Policy: cfg.Owners,
+		Accounts: cfg.OwnerAccounts, AllowNoAccounts: cfg.AllowNoAccounts, Found: cfg.AccountsFound,
+		Done: cfg.OwnersDone}); err != nil {
+		return err
+	}
 	if err := migrateUsersSchema(ctx, pool); err != nil {
 		return err
 	}
@@ -120,11 +133,6 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			}
 			grants = append(grants, struct{ table, privileges string }{table, privs})
 		}
-	}
-
-	if _, err := migrateOwners(ctx, pool, OwnerMigration{Policy: cfg.Owners,
-		Accounts: cfg.OwnerAccounts, AllowNoAccounts: cfg.AllowNoAccounts, Found: cfg.AccountsFound}); err != nil {
-		return err
 	}
 
 	role := pgx.Identifier{cfg.RuntimeRole}.Sanitize()

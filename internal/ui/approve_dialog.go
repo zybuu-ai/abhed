@@ -33,7 +33,7 @@ func (a *DialogApprover) Approve(ctx context.Context, tool string, args json.Raw
 	}
 	scope := res.Offer()
 	header := a.header(tool, args)
-	if scope != "" && a.Base.Session.Has(scope) {
+	if scope != "" && a.Base.Session.Covers(res) {
 		agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: scope})
 		a.Reader.commitItem(&dialogRecord{spec: DialogSpec{Title: header, Choices: []Choice{{ID: "yes",
 			Label: "Allowed for this session by " + a.showScope(scope)}}}})
@@ -66,7 +66,7 @@ func (a *DialogApprover) Approve(ctx context.Context, tool string, args json.Raw
 		if scope == "" {
 			return false, nil // never offered: nothing to grant
 		}
-		a.Base.Session.Add(scope)
+		a.Base.Session.Grant(res)
 		agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
 		a.noteDiff(tool, args)
 		return true, nil

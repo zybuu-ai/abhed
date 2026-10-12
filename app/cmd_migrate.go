@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -22,6 +23,14 @@ func migrateCmd(workspace string, args []string, extensions []store.Extension, t
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
 		fmt.Fprintln(os.Stderr, "usage: abhed migrate [--owners=local-only|unclaim] [--force-no-accounts]")
 		return 2
+	}
+	var asked store.OwnerPolicy
+	if *owners != "" {
+		var err error
+		if asked, err = store.ParseOwnerPolicy(*owners); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 2
+		}
 	}
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err == nil {
@@ -45,9 +54,13 @@ func migrateCmd(workspace string, args []string, extensions []store.Extension, t
 	}
 	policy := ownerPolicy(cfg)
 	if *owners != "" {
-		if policy, err = store.ParseOwnerPolicy(*owners); err != nil {
-			fail(err)
-		}
+		policy = asked
+	}
+	// The same check serve makes, so the accounts read here are ones the
+	// server will start with.
+	if err := sandboxconfig.CheckStatePaths(cfg, workspace); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
 	}
 	fmt.Printf("Session owners: %s (%s).\n", policy, ownerPolicyWhy(cfg, *owners != ""))
 	fileAccounts, filePath, err := fileOwnerAccounts(cfg, workspace, *noAccounts)
@@ -67,9 +80,15 @@ func migrateCmd(workspace string, args []string, extensions []store.Extension, t
 				fmt.Fprintln(os.Stderr, "abhed: WARNING: no local accounts found; sessions under old owners cannot be moved to anyone")
 			}
 		},
+		OwnersDone: func() {
+			if *owners != "" {
+				fmt.Fprintf(os.Stderr, "abhed: the session owner migration ran before (schema version 4), so --owners=%s has no effect\n", *owners)
+			}
+		},
 	})
 	if errors.Is(err, store.ErrNoOwnerAccounts) {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		fmt.Fprintln(os.Stderr, "abhed: if the accounts are in a file, import them first with `abhed user import`, then run `abhed migrate` again; nothing was recorded")
 		return 1
 	}
 	if err != nil {

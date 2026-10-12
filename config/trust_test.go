@@ -108,6 +108,7 @@ func TestUntrustedWorkspaceIgnoresWhatWidens(t *testing.T) {
 		{"tier none", "sandbox.min_tier", `{"sandbox":{"min_tier":"none"}}`, func(c Config) bool { return c.Sandbox.MinTier == "none" }},
 		{"read-only mounts", "sandbox.read_only_paths", `{"sandbox":{"read_only_paths":["/Users"]}}`, func(c Config) bool { return len(c.Sandbox.ReadOnlyPaths) > 0 }},
 		{"fence tier", "sandbox.tier", `{"sandbox":{"tier":"fence"}}`, func(c Config) bool { return c.Sandbox.Tier == "fence" }},
+		{"git protection off", "sandbox.protect_git", `{"sandbox":{"protect_git":false}}`, func(c Config) bool { return c.Sandbox.GitProtect != nil }},
 		{"fence cpu", "fence.cpu_percent", `{"fence":{"cpu_percent":50}}`, func(c Config) bool { return c.Fence.CPUPercent == 50 }},
 		{"more processes", "sandbox.max_procs", `{"sandbox":{"max_procs":100000}}`, func(c Config) bool { return c.Sandbox.MaxProcs == 100000 }},
 		{"shell terminal", "sandbox.terminal", `{"sandbox":{"terminal":"shell"}}`, func(c Config) bool { return c.Sandbox.Terminal == "shell" }},
@@ -656,5 +657,19 @@ func TestUntrustedWarningIsSaidOnce(t *testing.T) {
 	}
 	if n := strings.Count(out.String(), "is not trusted"); n != 1 {
 		t.Fatalf("warned %d times:\n%s", n, out.String())
+	}
+}
+
+// A refusal names what running without each ignored deployment setting
+// would lose: a require_group alone is not a sign-in or record matter.
+func TestDeploymentErrorNamesTheReasonPerKey(t *testing.T) {
+	w := WorkspaceTrust{File: "/ws/.abhed/config.json", Ignored: []IgnoredKey{{Key: "auth.require_group"}}}
+	err := w.DeploymentError("serve")
+	if err == nil || !strings.Contains(err.Error(), "without the group a person must be in") || strings.Contains(err.Error(), "durable record") {
+		t.Fatalf("%v", err)
+	}
+	w.Ignored = append(w.Ignored, IgnoredKey{Key: "storage.dsn"})
+	if err := w.DeploymentError("serve"); err == nil || !strings.Contains(err.Error(), "durable record") {
+		t.Fatalf("%v", err)
 	}
 }

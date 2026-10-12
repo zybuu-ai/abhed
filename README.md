@@ -72,7 +72,7 @@ go build -o abhed ./cmd/abhed
 ./abhed                     # interactive
 ./abhed serve -addr :8080   # web console + API
 ./abhed eval                # run the evaluation corpus
-./abhed index               # build the retrieval index
+./abhed index               # build the retrieval index and keep its embeddings
 ```
 
 Air-gapped: the binary is static, the console is self-contained, and nothing

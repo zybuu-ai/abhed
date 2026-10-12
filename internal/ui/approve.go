@@ -47,16 +47,26 @@ type Approver struct {
 	reader *bufio.Reader
 }
 
-// AllowList holds scopes the user approved with "always" during this session.
+// AllowList holds scopes the user approved with "always" during this
+// session, each with the policy's Guard at the time it was granted.
 type AllowList struct {
-	scopes map[string]bool
+	scopes map[string]string
 }
 
-func NewAllowList() *AllowList { return &AllowList{scopes: map[string]bool{}} }
+func NewAllowList() *AllowList { return &AllowList{scopes: map[string]string{}} }
 
-func (a *AllowList) Add(scope string) { a.scopes[scope] = true }
+func (a *AllowList) Add(scope string) { a.scopes[scope] = "" }
 
-func (a *AllowList) Has(scope string) bool { return a.scopes[scope] }
+func (a *AllowList) Has(scope string) bool { _, ok := a.scopes[scope]; return ok }
+
+// Grant remembers res's offered scope with its guard.
+func (a *AllowList) Grant(res policy.Result) { a.scopes[res.Offer()] = res.Guard }
+
+// Covers reports whether a remembered scope covers res, its guard unchanged.
+func (a *AllowList) Covers(res policy.Result) bool {
+	g, ok := a.scopes[res.Offer()]
+	return ok && res.Covers(res.Offer(), g)
+}
 
 // Reset forgets every scope, for a new session: a scope lasts one session.
 func (a *AllowList) Reset() { clear(a.scopes) }
@@ -67,7 +77,7 @@ func NewApprover(out io.Writer) *Approver {
 
 func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
 	scope := res.Offer()
-	if scope != "" && a.Session.Has(scope) {
+	if scope != "" && a.Session.Covers(res) {
 		agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: scope})
 		return true, nil
 	}
@@ -128,7 +138,7 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	}
 	switch id {
 	case "always":
-		a.Session.Add(scope)
+		a.Session.Grant(res)
 		agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
 		answered("always allowed " + VisibleLine(scope))
 		return true, nil

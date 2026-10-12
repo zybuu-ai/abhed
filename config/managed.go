@@ -8,29 +8,36 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
 	"strings"
 	"unicode"
 
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // LoadManaged is the built-in defaults with only the managed configuration
 // applied: what a program that keeps no config file of its own runs under.
-func LoadManaged() (Config, error) {
+func LoadManaged() (Config, error) { return LoadManagedWith(LoadOptions{}) }
+
+// LoadManagedWith is LoadManaged with o.Warn taking its warnings; the other
+// options do not apply.
+func LoadManagedWith(o LoadOptions) (Config, error) {
+	w := warnSink(o.Warn)
 	cfg := Default()
 	cfg.noteRuleLayer(LayerDefault)
 	if err := mergeManaged(&cfg); err != nil {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
-	warnUnknown(cfg.Unknown)
-	warnNeverAllows(cfg.Permissions.Allow)
-	warnNotYetInEffect(cfg)
+	warnUnknown(w, cfg.Unknown)
+	warnNeverAllows(w, cfg.Permissions.Allow)
+	warnNotYetInEffect(w, cfg)
 	findings := cfg.RuleFindings()
-	warnRuleFindings(findings)
+	warnRuleFindings(w, findings)
 	return cfg, managedNeverDenies(findings)
 }
 
@@ -40,13 +47,24 @@ func mergeManaged(cfg *Config) error {
 	path := managed.ConfigFile
 	// Only nothing at the path means unmanaged; a file that cannot be read,
 	// or a link to nothing, is an error.
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Nor is a folder that is a link to nothing: the file is gone, not absent.
+		dir := filepath.Dir(path)
+		if di, derr := os.Lstat(dir); derr == nil && di.Mode()&fs.ModeSymlink != 0 {
+			if _, serr := os.Stat(dir); errors.Is(serr, fs.ErrNotExist) {
+				return fmt.Errorf("managed configuration folder %s is a link to nothing", dir)
+			}
+		}
 		return nil
 	}
-	below := slices.Clone(cfg.Permissions.Deny)
+	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return fmt.Errorf("managed configuration %s is a link to nothing", path)
+		if info != nil && info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("managed configuration %s is a link to nothing", path)
+		}
+		return fmt.Errorf("managed configuration %s was removed while it was read", path)
 	}
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
@@ -66,6 +84,11 @@ func mergeManaged(cfg *Config) error {
 		// Its deny rules join the others: a managed file may add a deny rule, never take one away.
 		cfg.Permissions.Deny = dedupe(append(slices.Clone(cfg.Permissions.Deny), below...))
 		delete(cfg.origins, "permissions.deny")
+	}
+	if cfg.ManagedSets("permissions.ask") {
+		// So do its ask rules: a managed ask list adds questions, never drops the user's.
+		cfg.Permissions.Ask = dedupe(append(slices.Clone(cfg.Permissions.Ask), belowAsk...))
+		delete(cfg.origins, "permissions.ask")
 	}
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
@@ -230,7 +253,16 @@ func (c Config) ManagedScreens() bool {
 		// Nothing is known of what the file set, so assume it set the rules.
 		return true
 	}
-	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && len(c.Extensions) > 0)
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && c.extensionHooksRun())
+}
+
+// extensionHooksRun reports whether an extension is sent a hook event, not
+// only its tools' calls: with hooks.disabled none is, so none can screen.
+func (c Config) extensionHooksRun() bool {
+	return slices.ContainsFunc(c.ExtensionSpecs(), func(s extension.Config) bool {
+		// No events listed means every event, hooks included.
+		return len(s.Events) == 0 || len(toolEventsOnly(s.Events)) < len(s.Events)
+	})
 }
 
 // dropLockedAllow sets aside the allow rules the user's and the workspace's
@@ -272,9 +304,12 @@ func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {
 			Reason: "the managed configuration sets the permissions, so only its own permissions.allow adds allow rules"})
 	}
 	if len(kept) < len(c.Permissions.Allow) {
-		// The files' list had replaced the built-in rules; put those back.
-		c.Permissions.Allow = dedupe(append(slices.Clone(Default().Permissions.Allow), kept...))
-		c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+		// Only the built-in rules the files' list still held stay: one it
+		// left out was removed on purpose, and is not brought back.
+		c.Permissions.Allow = dedupe(kept)
+		if slices.Equal(c.Permissions.Allow, Default().Permissions.Allow) {
+			c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+		}
 	}
 }
 
@@ -302,6 +337,45 @@ func (c Config) Offered(name string) bool {
 	return !builtIn
 }
 
+// ErrNoSuchModel is ModelAllowed's answer for a name that is not an offered,
+// configured provider.
+var ErrNoSuchModel = errors.New("no such provider is configured")
+
+// ModelAllowed says whether a session may start on, or switch to, the
+// configured provider name: nil, ErrNoSuchModel, or a ManagedError when a
+// managed model.default pins the model to another. The CLI, the console, ACP
+// and the SDK all ask it, so the pin holds on every surface.
+func (c Config) ModelAllowed(name string) error {
+	if _, ok := c.Model.Providers[name]; !ok || !c.Offered(name) {
+		return fmt.Errorf("%w: %q", ErrNoSuchModel, Printable(name))
+	}
+	return c.PinnedAway(name)
+}
+
+// PinnedAway is the refusal of a model other than the one a managed
+// model.default pins every choice to, or nil.
+func (c Config) PinnedAway(name string) error {
+	if c.ModelPinned() && name != c.Model.Default {
+		return refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
+	}
+	return nil
+}
+
+// EndpointPinnedAway is the refusal of a model named by its endpoint rather
+// than by a configured provider (desc says which) under a managed
+// model.default, or nil when nothing pins the model.
+func (c Config) EndpointPinnedAway(desc string) error {
+	if c.ModelPinned() {
+		return refuse("model.default", desc, "the managed configuration sets the model to "+c.Model.Default)
+	}
+	return nil
+}
+
+// ModelPinned reports whether a managed model.default pins the model. A model
+// that is not from the configuration, such as an endpoint an embedder names,
+// is refused then too.
+func (c Config) ModelPinned() bool { return c.ManagedSets("model.default") }
+
 // Sets reports whether a configuration file made the setting at path, a
 // dotted path such as "sandbox.max_memory_mb", whatever value it gave.
 func (c Config) Sets(path string) bool {
@@ -324,6 +398,9 @@ type Overrides struct {
 	AdditionalDirs []string
 	// MemoryAuto, when set, turns auto memory on or off.
 	MemoryAuto *bool
+	// Warn, when set, takes the warnings about the rules added here, as
+	// LoadOptions.Warn does.
+	Warn func(string)
 }
 
 // ManagedError is an override refused because it would loosen a setting the
@@ -403,13 +480,13 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
-	warnNeverAllows(o.Allow)
+	warnNeverAllows(warnSink(o.Warn), o.Allow)
 	c.ruleLayers = maps.Clone(c.ruleLayers)
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)
 	c.noteRuleLayer(LayerFlag)
 	if len(o.Allow)+len(o.Deny) > 0 {
-		warnRuleFindings(c.RuleFindings())
+		warnRuleFindings(warnSink(o.Warn), c.RuleFindings())
 	}
 	// Copied, so the result never shares a list with the configuration it came from.
 	c.AdditionalDirs = append(append([]string{}, c.AdditionalDirs...), o.AdditionalDirs...)

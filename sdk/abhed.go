@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -144,7 +145,10 @@ type Options struct {
 	// Warn receives what the tool set skipped or found unsafe as it was
 	// built: an MCP server or extension that did not start, a cluster or
 	// host that skips verification; and, at Close, a fence that found state
-	// planted in the workspace or could not list it. Nil discards it.
+	// planted in the workspace or could not list it. Nil discards it. When
+	// set, it also takes the configuration's warnings (an unknown key, a set
+	// aside setting, a rule that never matches), which otherwise go to stderr;
+	// a function that does nothing silences them.
 	Warn func(format string, args ...any)
 
 	// ConfiguredTools gives the agent the tool set the CLI runs with, as the
@@ -243,29 +247,50 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: Workspace is required")
 	}
 
+	// The configuration's warnings go to Warn when it is set, else to stderr.
+	var cfgWarn func(string)
+	if opts.Warn != nil {
+		cfgWarn = func(s string) { opts.Warn("abhed: warning: %s", s) }
+	}
 	// The managed configuration applies with or without a config file.
-	load := config.LoadManaged
+	load := func() (config.Config, error) { return config.LoadManagedWith(config.LoadOptions{Warn: cfgWarn}) }
 	if opts.ConfigDir != "" {
 		load = func() (config.Config, error) {
-			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust})
+			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust, Warn: cfgWarn})
 		}
 	}
 	cfg, err := load()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
-	if keys := untrustedModelKeys(cfg.Workspace); len(keys) > 0 && opts.Provider == nil &&
+	keys := untrustedModelKeys(cfg.Workspace)
+	if len(keys) > 0 && opts.Provider == nil && opts.AllowDefaultModel {
+		// Not silently: the person expects the workspace's model.
+		msg := fmt.Sprintf("the workspace configuration %s sets %s, which waits for trust; this session runs on %s instead",
+			config.Printable(cfg.Workspace.File), strings.Join(keys, ", "), config.Printable(cfg.Model.Default))
+		if cfgWarn != nil {
+			cfgWarn(msg)
+		} else {
+			fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", msg)
+		}
+	}
+	if len(keys) > 0 && opts.Provider == nil &&
 		opts.WorkspaceTrust == config.TrustAsStored && !opts.AllowDefaultModel {
 		return nil, fmt.Errorf("abhed: %w (%s in %s): trust it with `abhed trust grant`, or set Options.WorkspaceTrust, "+
 			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
 		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
-		Allow: opts.Allow, Deny: opts.Deny,
+		Allow: opts.Allow, Deny: opts.Deny, Warn: cfgWarn,
 	}); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 	if p := opts.Provider; p != nil {
+		// A managed model.default pins the model; an endpoint the caller
+		// names is not it.
+		if err := cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+			return nil, fmt.Errorf("abhed: Options.Provider: %w", err)
+		}
 		cfg.Model.Default = "embedded"
 		cfg.Model.Providers = map[string]config.ProviderConfig{"embedded": {
 			Type: p.Type, BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
@@ -650,8 +675,12 @@ var ErrForkDuringRun = errors.New("abhed: cannot fork while a run is in progress
 func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) }
 
 // SetModel swaps the provider mid-conversation, keeping the history. A switch
-// the record refuses is not made.
+// the record refuses is not made, nor one a managed model.default pins away
+// from: an endpoint named here is not the managed model.
 func (a *Agent) SetModel(p Provider) error {
+	if err := a.cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+		return fmt.Errorf("abhed: SetModel: %w", err)
+	}
 	cfg := config.ProviderConfig{
 		Type: p.Type, BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
 		ContextWindow: p.ContextWindow,

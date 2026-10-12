@@ -54,7 +54,7 @@ func TestRememberedScopeIsRecordedAsTheSessionScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	live := &liveSession{allowed: map[string]bool{"write(*)": true}}
+	live := &liveSession{allowed: map[string]string{"write(*)": ""}}
 	store := agent.NewMemStore()
 	ad := &editingAdapter{calls: [][]model.ToolCall{{
 		toolCall("c1", "write", map[string]string{"path": filepath.Join(ws, "x.txt"), "content": "x"}),

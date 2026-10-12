@@ -85,7 +85,11 @@ the exit code below. The result line is written once, as the run ends.
 ### Structured answers
 
 `-json-schema` takes a JSON Schema, inline or as `@path` (relative to the
-workspace, `-C`, and at most 1 MiB; a schema must be a JSON object), and makes the
+workspace, `-C`, and at most 1 MiB; a schema must be a JSON object with at
+least one of `type`, `properties`, `$schema`, `$ref`, `anyOf`, `oneOf`,
+`allOf`, `enum`, `const` or `items`, so a JSON file named by mistake, such as
+a credentials file, is refused rather than sent to the model; a schema read
+from a file is named on stderr), and makes the
 answer a JSON value that matches it ([Structured output](13-structured-output.md)).
 With `-output-format text`, stdout is only that JSON; with `json` or
 `stream-json` it is the result line's `structured_output`.
@@ -213,6 +217,11 @@ The session has the CLI's tool set, subagents, MCP servers, skills and the
 other tools the configuration enables included. There is no approver, so a
 call that needs approval, a subagent's too, is refused.
 
+A tool call's arguments in the events are the model's, unescaped: a value
+can hold a right-to-left override, a terminal escape or a zero-width
+character. A caller that shows them to a person must mark such characters
+first; a Go caller can use `abhed.Visible` from the SDK.
+
 Commands run in the sandbox tier the workspace's configuration sets
 (`sandbox.min_tier`, `process` by default), as from the terminal: `start`
 answers `{"type":"error"}` when no backend meets that tier, rather than running
@@ -238,6 +247,12 @@ opens a pull request that links the issue and summarises the diff. **GitHub,
 GitLab and Gitea/Forgejo** are one command; a self-hosted instance is the
 ordinary case: the kind is inferred from the host, `-kind` names it, and
 `-ca file.pem` (or `ABHED_FORGE_CA`) trusts your certificate authority.
+
+`-allow` takes rules separated by commas; a comma inside a rule's
+parentheses (`bash(x a,b)`) stays part of that rule. The commit carries
+the `user.name` and `user.email` git's configuration gives for the
+checkout; resolve refuses to start when either is unset, rather than let
+git guess an identity from the host.
 
 The run is sandboxed in the worktree, and your checkout's `.abhed/` is
 Abhed's state for it as well: its commands can neither read nor write it.
@@ -289,7 +304,8 @@ Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule
 (`forge_pr(team/tool)`) or `-y` permits it, and otherwise you are asked at
 the terminal by number: `1` No (keep) or `2` Yes, push, with nothing
-chosen for Enter. No mode opens a pull request on its own. A run that changes
+chosen for Enter. Without a terminal, or when the request is refused, resolve
+says which local branch holds the change. No mode opens a pull request on its own. A run that changes
 nothing pushes nothing, removes its worktree and its branch, and exits 2; if
 it left ignored files, the worktree and branch are kept for them. The run is
 asked not to commit, but a commit it made on its branch, on top of where it

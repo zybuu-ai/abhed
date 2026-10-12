@@ -43,6 +43,9 @@ type LoadOptions struct {
 	Trust TrustChoice
 	// Quiet leaves the untrusted warning to the caller, which may prompt instead.
 	Quiet bool
+	// Warn, when set, takes each of this load's warnings instead of stderr,
+	// every time, for an embedder that shows or drops them itself.
+	Warn func(string)
 	// Settings is a file the person named for this run (-settings), merged
 	// over their own file as one of their own: managed-only keys are set
 	// aside, and the managed file still binds. SettingsName says where it came from.
@@ -122,11 +125,33 @@ func (w WorkspaceTrust) DeploymentError(command string) error {
 	if len(keys) == 0 {
 		return nil
 	}
+	var why []string
+	for _, k := range keys {
+		if r := deploymentReason(k); !slices.Contains(why, r) {
+			why = append(why, r)
+		}
+	}
 	return fmt.Errorf("the workspace configuration %s sets %s, but it is not trusted. "+
-		"%s refuses to run without them: it would start with no sign-in or no durable record. "+
+		"%s refuses to run without them: it would start %s. "+
 		"Review it with `abhed trust`, then trust it with `abhed trust grant` or run `abhed -trust-workspace %s`; "+
 		"or move these settings to ~/.abhed/config.json or the managed /etc/abhed/config.json",
-		Printable(w.File), strings.Join(keys, ", "), command, command)
+		Printable(w.File), strings.Join(keys, ", "), command, strings.Join(why, ", "), command)
+}
+
+// deploymentReason says what running without one ignored deployment setting
+// would lose.
+func deploymentReason(key string) string {
+	switch {
+	case key == "auth.require_group" || strings.HasPrefix(key, "auth.require_group"):
+		return "without the group a person must be in to sign in"
+	case key == "auth" || strings.HasPrefix(key, "auth."):
+		return "with sign-in other than the file sets"
+	case key == "storage" || strings.HasPrefix(key, "storage."):
+		return "without the durable record the file names"
+	case key == "control_plane" || strings.HasPrefix(key, "control_plane."):
+		return "with the sandbox API's settings other than the file sets"
+	}
+	return "with server settings other than the file sets"
 }
 
 // NeedsDecision reports whether the person should be asked: an untrusted file
@@ -183,17 +208,9 @@ func (w WorkspaceTrust) Warning() string {
 
 // warnUntrusted warns once per process: a command that loads the workspace
 // twice (resolve, then its agent; ACP, per session) used to say it twice.
-func warnUntrusted(w WorkspaceTrust) {
-	s := w.Warning()
-	if s == "" {
-		return
-	}
-	warnedMu.Lock()
-	first := !warned["untrusted\x00"+s]
-	warned["untrusted\x00"+s] = true
-	warnedMu.Unlock()
-	if first {
-		fmt.Fprintf(warnOut, "abhed: warning: %s\n", s)
+func warnUntrusted(sink warnSink, w WorkspaceTrust) {
+	if s := w.Warning(); s != "" {
+		sink.emit("untrusted\x00"+s, s)
 	}
 }
 
@@ -642,6 +659,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.terminal":              {onlyLines, "only lines"},
 	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
+	"sandbox.protect_git":           {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
 	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
 	"fence":                         {nil, "tunes the fence tier's limits"},
 	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},

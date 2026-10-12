@@ -2,6 +2,8 @@ package app
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -108,5 +110,29 @@ func TestAdminInAgentCommandGoesToTheSystemLog(t *testing.T) {
 	}
 	if len(*sent) != 1 || !strings.Contains((*sent)[0], `result="refused"`) || !strings.Contains((*sent)[0], `agent_command="ABHED_SANDBOX is set"`) {
 		t.Fatalf("sent: %q", *sent)
+	}
+}
+
+// Inside an agent's command, where neither admin log file can be written,
+// the refusal says the attempt is in the system log, not that it could not
+// be logged; without the system log it says it could not.
+func TestAdminInAgentCommandNamesTheSystemLog(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(home, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home) // ~/.abhed cannot be made under a file
+	managedAt(t, filepath.Join(t.TempDir(), "missing"), "")
+	captureSysLog(t, nil)
+	var errw strings.Builder
+	logAdminInAgent([]string{"web-search", "on"}, "ABHED_SANDBOX is set", &errw)
+	if got := errw.String(); !strings.Contains(got, "the attempt is in the system log") || strings.Contains(got, "could not be logged") {
+		t.Fatalf("%q", got)
+	}
+	captureSysLog(t, errors.New("no syslog"))
+	errw.Reset()
+	logAdminInAgent([]string{"web-search", "on"}, "ABHED_SANDBOX is set", &errw)
+	if !strings.Contains(errw.String(), "could not be logged") {
+		t.Fatalf("%q", errw.String())
 	}
 }

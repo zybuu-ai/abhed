@@ -24,10 +24,7 @@ var ErrSwitchDuringRun = errors.New("abhed: cannot switch the model while a run 
 // offered reports whether a configured provider may be chosen by name. A
 // managed file that sets model.default pins the model to it.
 func (a *Agent) offered(name string) bool {
-	if _, ok := a.cfg.Model.Providers[name]; !ok || !a.cfg.Offered(name) {
-		return false
-	}
-	return !a.cfg.ManagedSets("model.default") || name == a.cfg.Model.Default
+	return a.cfg.ModelAllowed(name) == nil
 }
 
 // Models lists the configured models SwitchModelNamed accepts, by name. Only

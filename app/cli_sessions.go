@@ -64,26 +64,43 @@ func slashSessions(ctx context.Context, fields []string, r *ui.Renderer,
 		fmt.Println(s.Dim("  session history needs storage.driver = postgres"))
 		return false
 	}
-	records, err := lister.ListSessions(ctx, 20)
+	// A shared database holds every user's sessions: only this user's are
+	// listed, so another's titles and email never show here.
+	var all []store.SessionRecord
+	var err error
+	if owned, ok := st.store.(interface {
+		ListSessionsOwnedBy(context.Context, string, int) ([]store.SessionRecord, error)
+	}); ok {
+		for _, owner := range []string{cliUser(), auth.LocalOwner(cliUser())} {
+			recs, lerr := owned.ListSessionsOwnedBy(ctx, owner, 50)
+			all, err = append(all, recs...), errors.Join(err, lerr)
+		}
+	} else {
+		all, err = lister.ListSessions(ctx, 200)
+	}
 	if err != nil {
 		fmt.Printf("  %s %v\n", s.Red("✕"), err)
 		return false
 	}
+	tenant := cliTenant(st.appCfg)
+	var records []store.SessionRecord
+	for _, rec := range all {
+		if mineToList(rec, tenant) {
+			records = append(records, rec)
+		}
+	}
 	if len(records) == 0 {
-		fmt.Println(s.Dim("  no sessions recorded"))
+		fmt.Println(s.Dim("  no sessions of yours recorded"))
 		return false
 	}
 	sortByActivity(records)
-	for _, rec := range records {
-		if rec.ParentID != "" {
-			continue // a subagent's own row
-		}
+	for _, rec := range records[:min(len(records), 20)] {
 		mark := "  "
 		if rec.ID == st.sessionID {
 			mark = "* "
 		}
-		fmt.Printf("%s%-27s %-10s %-9s %s  %s\n", mark, rec.ID, recordState(rec), age(activityOf(rec)),
-			ui.VisibleLine(orDefault(recordLabel(rec), "(no prompt)")), s.Dim(rec.User))
+		fmt.Printf("%s%-27s %-10s %-9s %s\n", mark, rec.ID, recordState(rec), age(activityOf(rec)),
+			ui.VisibleLine(orDefault(recordLabel(rec), "(no prompt)")))
 	}
 	fmt.Println(s.Dim("  /resume <id> continues one"))
 	return false
@@ -394,18 +411,27 @@ func cliUser() string {
 	return user
 }
 
+// subagentRefusal refuses a subagent's record: it goes on only through the
+// session that started it.
+func subagentRefusal(id string, events []agent.Event) error {
+	parent, child := agent.SubagentRecord(events)
+	switch {
+	case !child:
+		return nil
+	case parent == "":
+		return fmt.Errorf("session %s is a subagent's; resume the session that started it", id)
+	}
+	return fmt.Errorf("session %s is a subagent's; resume %s, the session that started it", id, parent)
+}
+
 // resumeConversation makes recorded session id the conversation the next task
 // continues, rebuilt from its record with its turn count, as in the server.
 func resumeConversation(ctx context.Context, st *cliState, id string, events []agent.Event) error {
 	if err := ownedHere(ctx, st, id); err != nil {
 		return err
 	}
-	// A subagent's record goes on only through the session that started it.
-	if parent, child := agent.SubagentRecord(events); child {
-		if parent == "" {
-			return fmt.Errorf("session %s is a subagent's; resume the session that started it", id)
-		}
-		return fmt.Errorf("session %s is a subagent's; resume %s, the session that started it", id, parent)
+	if err := subagentRefusal(id, events); err != nil {
+		return err
 	}
 	live := id == st.sessionID && st.loop != nil
 	if rec, ok, err := storedSession(ctx, st, id); err != nil {
@@ -509,10 +535,24 @@ func ownedHere(ctx context.Context, st *cliState, id string) error {
 	if ownsNoOne(owner.User) || ownsNoOne(rec.User) {
 		mine = false
 	}
+	if (ownsNoOne(owner.User) || ownsNoOne(rec.User)) && rec.Tenant == tenant {
+		return fmt.Errorf("session %s was set aside by the session owner migration (its owner is %s), so no one resumes it; "+
+			"an administrator can reassign it", id, ui.VisibleLine(owner.User))
+	}
 	if owner.User == store.SubagentUser || !mine || rec.Tenant != tenant || owner.Tenant != tenant {
 		return fmt.Errorf("session %s belongs to another user", id)
 	}
 	return nil
+}
+
+// mineToList reports whether a session row is this user's own top-level
+// session in this tenant, as /sessions lists them: no one else's row, and
+// no unclaimed one, is shown.
+func mineToList(rec store.SessionRecord, tenant string) bool {
+	if rec.ParentID != "" || rec.Tenant != tenant || ownsNoOne(rec.User) {
+		return false
+	}
+	return rec.User == cliUser() || rec.User == auth.LocalOwner(cliUser())
 }
 
 // ownsNoOne reports whether owner is an unclaimed or nobody key, in any case.
@@ -575,19 +615,22 @@ func claimForWrite(ctx context.Context, st *cliState) (release func(), err error
 	}, nil
 }
 
-// endAsBefore records the session's last end again, reason and totals, so a
-// row claimed only to write a fork or a compaction is released unchanged.
+// endAsBefore ends the session again with its last end's reason, so a row
+// claimed only to write a fork or a compaction is released as it was. The
+// totals are the loop's own, since the write may have changed them; the
+// context size is left out, as the last end's no longer holds.
 func endAsBefore(st *cliState) {
-	end := json.RawMessage(nil)
+	reason := agent.TermCompleted
 	if events, err := st.store.Events(st.sessionID); err == nil {
-		for _, ev := range events {
-			if ev.Type == agent.EvSessionEnded {
-				end = ev.Payload
-			}
+		if last, ok := agent.LastEnd(events); ok && last.Reason != "" {
+			reason = last.Reason
 		}
 	}
-	if end == nil {
-		end, _ = json.Marshal(agent.SessionEnded{Reason: agent.TermCompleted, Turns: st.loop.Usage().Turns})
+	u := st.loop.Usage()
+	end := agent.SessionEnded{Reason: reason, Turns: u.Turns, TokensIn: u.InputTokens,
+		TokensOut: u.OutputTokens, TokensCached: u.CachedTokens, Compactions: u.Compactions}
+	if st.loop.Adapter != nil {
+		end.ContextWindow = st.loop.Adapter.Profile().ContextWindow
 	}
 	_, _ = st.loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, end)
 }

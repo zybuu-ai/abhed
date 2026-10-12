@@ -186,7 +186,7 @@ func schemaFlag(v, workspace string) (json.RawMessage, error) {
 	if v == "" {
 		return nil, nil
 	}
-	data := []byte(v)
+	data, from := []byte(v), "-json-schema"
 	if strings.HasPrefix(v, "@") {
 		path := v[1:]
 		if !filepath.IsAbs(path) {
@@ -203,13 +203,25 @@ func schemaFlag(v, workspace string) (json.RawMessage, error) {
 		if len(data) > maxSchema {
 			return nil, fmt.Errorf("-json-schema: %s is larger than 1 MiB", path)
 		}
+		from = "-json-schema " + path
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) != nil {
-		return nil, errors.New("-json-schema is not a JSON object")
+		return nil, fmt.Errorf("%s is not a JSON object", from)
+	}
+	// The schema goes to the model, so a JSON file that is not one (a
+	// credentials file named by mistake) is refused rather than sent.
+	if !slices.ContainsFunc(schemaKeywords, func(k string) bool { _, ok := obj[k]; return ok }) {
+		return nil, fmt.Errorf("%s is not a JSON Schema: it has none of %s", from, strings.Join(schemaKeywords, ", "))
+	}
+	if from != "-json-schema" {
+		fmt.Fprintf(os.Stderr, "abhed: the answer's schema is %s\n", strings.TrimPrefix(from, "-json-schema "))
 	}
 	return json.RawMessage(data), nil
 }
+
+// schemaKeywords are the top-level keys of which a schema has at least one.
+var schemaKeywords = []string{"type", "properties", "$schema", "$ref", "anyOf", "oneOf", "allOf", "enum", "const", "items"}
 
 // systemPrompt is what the command line does to the system prompt.
 type systemPrompt struct {

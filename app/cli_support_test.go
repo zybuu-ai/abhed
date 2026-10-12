@@ -1,8 +1,11 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,5 +121,25 @@ func TestForkPointsNameAPipelineStep(t *testing.T) {
 	})
 	if !strings.Contains(out, `bash {"command":"ls"} (skill research pipeline)`) {
 		t.Fatalf("listed:\n%s", out)
+	}
+}
+
+// /bug's opener is reaped once it exits, not left a zombie.
+func TestOpenLinkReapsTheOpener(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"open", "xdg-open"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	reaped, err := openLink(context.Background(), "https://example.invalid/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reaped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the opener was not reaped")
 	}
 }

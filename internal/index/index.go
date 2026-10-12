@@ -79,6 +79,7 @@ type Index struct {
 	symbols map[string][]int
 
 	embedder Embedder
+	vcache   VectorCache
 	root     string
 	built    time.Time
 }
@@ -309,20 +310,47 @@ func (ix *Index) embedAll(ctx context.Context) error {
 	}
 	ix.mu.RUnlock()
 
+	// Chunks the cache already holds keep their vectors; only the rest go
+	// to the embedder.
+	var todo []int
+	for i, t := range texts {
+		if ix.vcache != nil {
+			if v, ok := ix.vcache.Get(vectorKey(t)); ok {
+				ix.mu.Lock()
+				if i < len(ix.docs) {
+					ix.docs[i].Vector = v
+				}
+				ix.mu.Unlock()
+				continue
+			}
+		}
+		todo = append(todo, i)
+	}
 	const batch = 64
-	for start := 0; start < len(texts); start += batch {
+	for start := 0; start < len(todo); start += batch {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		end := min(start+batch, len(texts))
-		vecs, err := ix.embedder.Embed(ctx, texts[start:end])
+		end := min(start+batch, len(todo))
+		in := make([]string, 0, end-start)
+		for _, i := range todo[start:end] {
+			in = append(in, texts[i])
+		}
+		vecs, err := ix.embedder.Embed(ctx, in)
 		if err != nil {
 			return fmt.Errorf("embedding batch %d-%d: %w", start, end, err)
 		}
 		ix.mu.Lock()
-		for i, v := range vecs {
-			if start+i < len(ix.docs) {
-				ix.docs[start+i].Vector = v
+		for k, v := range vecs {
+			if k >= len(in) {
+				break
+			}
+			i := todo[start+k]
+			if i < len(ix.docs) {
+				ix.docs[i].Vector = v
+			}
+			if ix.vcache != nil {
+				ix.vcache.Put(vectorKey(in[k]), v)
 			}
 		}
 		ix.mu.Unlock()

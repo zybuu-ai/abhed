@@ -3,8 +3,10 @@ package abhed_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -28,6 +30,17 @@ func TestNewRefusesAnIgnoredModel(t *testing.T) {
 	ctx := context.Background()
 	if _, err := abhed.New(ctx, abhed.Options{Workspace: dir, ConfigDir: dir}); !errors.Is(err, abhed.ErrUntrustedModel) {
 		t.Fatalf("New: %v, want ErrUntrustedModel", err)
+	}
+	// Running on the default instead is said, naming the model in use.
+	var warned []string
+	warn := func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
+	if a, err := abhed.New(ctx, abhed.Options{Workspace: dir, ConfigDir: dir, AllowDefaultModel: true, Warn: warn}); err != nil {
+		t.Fatal(err)
+	} else {
+		a.Close()
+	}
+	if !strings.Contains(strings.Join(warned, "\n"), "waits for trust; this session runs on ") {
+		t.Fatalf("no warning of the fallback: %q", warned)
 	}
 	for name, opts := range map[string]abhed.Options{
 		"allow default": {Workspace: dir, ConfigDir: dir, AllowDefaultModel: true},

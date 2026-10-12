@@ -289,6 +289,17 @@ func TestManagedScreensOnlyForManagedDenyOrExtensions(t *testing.T) {
 	if !withExt.ManagedScreens() {
 		t.Error("a managed extension did not screen")
 	}
+	// With hooks.disabled an extension is sent only its tools' calls, so it
+	// screens nothing either.
+	withExt.Hooks.Disabled = true
+	if withExt.ManagedScreens() {
+		t.Error("a managed extension screened with hooks disabled")
+	}
+	withExt.Extensions = []ExtensionConfig{{Name: "x", Events: []string{"invoke_tool"}}}
+	withExt.Hooks.Disabled = false
+	if withExt.ManagedScreens() {
+		t.Error("a tools-only managed extension screened")
+	}
 	unmanaged := Default()
 	unmanaged.ManagedKeys = []string{"permissions.deny"}
 	if unmanaged.ManagedScreens() {
@@ -298,7 +309,8 @@ func TestManagedScreensOnlyForManagedDenyOrExtensions(t *testing.T) {
 
 // Under a managed file that sets any permissions setting but not
 // permissions.allow, the allow rules the user's and a trusted workspace's
-// files add are left out and each is named; the defaults stay.
+// files add are left out and each is named. A built-in rule the files' list
+// still held stays; one it left out is not brought back.
 func TestManagedLockDropsFileAllowRules(t *testing.T) {
 	for name, body := range map[string]string{
 		"deny only": `{"permissions":{"deny":["bash(curl*)"]}}`,
@@ -318,8 +330,8 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 			if !cfg.AllowLocked() || !cfg.Workspace.Trusted {
 				t.Fatalf("locked %v trusted %v", cfg.AllowLocked(), cfg.Workspace.Trusted)
 			}
-			if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) || cfg.Sets("permissions.allow") {
-				t.Fatalf("allow %v; want exactly the built-in rules", cfg.Permissions.Allow)
+			if len(cfg.Permissions.Allow) != 0 {
+				t.Fatalf("allow %v; the files' list held no built-in rule, so none is brought back", cfg.Permissions.Allow)
 			}
 			userFile := filepath.Join(home, ".abhed", "config.json")
 			for rule, file := range map[string]string{"bash(rm*)": userFile, "bash(*)": cfg.Workspace.File} {
@@ -354,8 +366,8 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) {
-			t.Fatalf("allow %v; want exactly the built-in rules, once each", cfg.Permissions.Allow)
+		if got := strings.Join(cfg.Permissions.Allow, "|"); strings.ReplaceAll(got, " ", "") != "bash(ls*)|bash(pwd)" {
+			t.Fatalf("allow %v; want the built-in rules the file kept, once each", cfg.Permissions.Allow)
 		}
 	})
 
@@ -501,5 +513,24 @@ func TestManagedDenyMergeKeepsEachRulesLayer(t *testing.T) {
 		if f.FailsDoctor() {
 			t.Errorf("a person's rule fails the doctor: %+v", f)
 		}
+	}
+}
+
+// A managed ask list joins the user's ask rules, as a managed deny list
+// joins deny rules: it adds questions and never drops one.
+func TestManagedAskJoinsTheUsersAskRules(t *testing.T) {
+	withManaged(t, `{"permissions":{"ask":["bash(gh *)"]}}`)
+	_, ws := trustHome(t, `{"permissions":{"ask":["bash(kubectl *)"]}}`, "")
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []string{"bash(gh *)", "bash(kubectl *)"} {
+		if !slices.Contains(cfg.Permissions.Ask, r) {
+			t.Errorf("ask %v lacks %s", cfg.Permissions.Ask, r)
+		}
+	}
+	if l := cfg.RuleLayer("ask", "bash(kubectl *)"); l != LayerUser {
+		t.Errorf("the user's ask rule is credited to %s", l)
 	}
 }

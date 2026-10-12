@@ -126,6 +126,7 @@ func WithCommand(name string, run Command) Option {
 	return func(a *App) {
 		if _, builtin := builtinCommands[name]; !builtin {
 			a.commands[name] = run
+			delete(a.about, name)
 		}
 	}
 }
@@ -216,7 +217,7 @@ var subcommands = []subcommand{
 	{name: "resolve", about: "work on a forge issue in its own branch and open a pull request", trust: true},
 	{name: "acp", about: "speak the Agent Client Protocol on stdio, for editors", trust: true},
 	{name: "rpc", about: "take line-delimited JSON requests on stdin, answer on stdout", trust: true},
-	{name: "index", about: "build the workspace's search index ahead of a session", trust: true},
+	{name: "index", about: "build the search index and keep its embeddings, so a session embeds only what changed", trust: true},
 	{name: "eval", about: "run the evaluation corpus against the configured model", trust: true},
 	{name: "version", about: "print the version and exit"},
 }
@@ -249,9 +250,20 @@ type EditionError struct {
 }
 
 func (e *EditionError) Error() string {
-	return fmt.Sprintf("%s is a %s feature and is not in this %s binary. "+
+	return fmt.Sprintf("%s is %s feature and is not in this %s binary. "+
 		"Remove the key to run here, or run the edition that includes it "+
-		"(README: Editions)", e.Key, paidFeatures[e.Feature], e.Edition)
+		"(README: Editions)", e.Key, withArticle(paidFeatures[e.Feature]), e.Edition)
+}
+
+// withArticle puts "a" or "an" before an edition name ("an Enterprise").
+func withArticle(edition string) string {
+	if edition == "" {
+		return "a paid"
+	}
+	if strings.ContainsRune("AEIOUaeiou", rune(edition[0])) {
+		return "an " + edition
+	}
+	return "a " + edition
 }
 
 // checkEdition refuses a config that names a feature this binary lacks.

@@ -45,7 +45,7 @@ func TestSelectRefusesAnUnknownChosenTier(t *testing.T) {
 // without a mount namespace, naming why; no other tier is chosen in its place.
 func TestSelectRefusesTheFenceForProtectedWorkspacesWithoutMounts(t *testing.T) {
 	for name, set := range map[string]func(*Policy){
-		"protect git":     func(p *Policy) { p.ProtectGit = true },
+		"protect git":     func(p *Policy) { p.ProtectGit, p.GitRequired = true, true },
 		"write protected": func(p *Policy) { p.WriteProtected = []string{filepath.Join(p.Workspace, ".vscode")} },
 	} {
 		p := fencePolicy(t)
@@ -278,7 +278,7 @@ func TestReleaseOnlyUnstarted(t *testing.T) {
 // A fence that did not qualify builds commands that never start.
 func TestUnqualifiedFenceRunsNothing(t *testing.T) {
 	p := fencePolicy(t)
-	p.ProtectGit, p.fenceNoMounts = true, true
+	p.ProtectGit, p.GitRequired, p.fenceNoMounts = true, true, true
 	f := NewFence(p)
 	marker := filepath.Join(p.Workspace, "ran")
 	err := f.Command(context.Background(), p.Workspace, "touch "+marker).Run()
@@ -778,5 +778,23 @@ func TestFenceSpecGrantsConfiguredSkills(t *testing.T) {
 	q := f.Qualification()
 	if !slices.Contains(q["skills"].([]string), RealPath(team)) || len(q["skills_left_out"].([]string)) != 4 {
 		t.Errorf("qualification: skills %v left out %v", q["skills"], q["skills_left_out"])
+	}
+}
+
+// Git protection by default, not required, does not refuse the fence without
+// a mount namespace: it says git's files are not held there instead.
+func TestFenceGitByDefaultNeedsNoMounts(t *testing.T) {
+	p := fencePolicy(t)
+	p.ProtectGit = true
+	f := NewFence(p)
+	if f.needsMounts() {
+		t.Fatal("default git protection made the fence need a mount namespace")
+	}
+	if d := f.Describe(); !strings.Contains(d, "git's config and hooks (not held read-only") {
+		t.Errorf("Describe does not say git's files are not held:\n%s", d)
+	}
+	p.GitRequired = true
+	if !NewFence(p).needsMounts() {
+		t.Fatal("required git protection must need a mount namespace")
 	}
 }

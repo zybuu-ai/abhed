@@ -112,6 +112,8 @@ type OwnerMigration struct {
 	AllowNoAccounts bool
 	// Found, when set, is told how many accounts the move will use.
 	Found func(table, extra, distinct int)
+	// Done, when set, is told the move ran before and does nothing now.
+	Done func()
 }
 
 // ErrNoOwnerAccounts refuses a local-only move that found no account while
@@ -137,6 +139,9 @@ func migrateOwners(ctx context.Context, pool *pgxpool.Pool, m OwnerMigration) ([
 		return nil, fmt.Errorf("owner migration: %w", err)
 	}
 	if done, err := ownersMigrated(ctx, tx); err != nil || done {
+		if done && m.Done != nil {
+			m.Done()
+		}
 		return nil, err
 	}
 	remaps, folds, err := runOwnerMigration(ctx, tx, m, policy)

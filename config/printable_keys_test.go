@@ -72,7 +72,7 @@ func TestNeverAllowsWarningShowsControlBytes(t *testing.T) {
 	var warned bytes.Buffer
 	warnOut = &warned
 	t.Cleanup(func() { warnOut = os.Stderr })
-	warnNeverAllows([]string{"bash(a\x1b[2J && b\x07\x00)"})
+	warnNeverAllows(nil, []string{"bash(a\x1b[2J && b\x07\x00)"})
 	if warned.Len() == 0 {
 		t.Fatal("no warning")
 	}

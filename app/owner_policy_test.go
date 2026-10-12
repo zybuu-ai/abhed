@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/auth"
@@ -138,7 +139,7 @@ func TestMigrateCommandPassesFileAccounts(t *testing.T) {
 	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	t.Setenv("ABHED_DATABASE_URL", "postgres://rt@127.0.0.1:1/x")
 	t.Setenv("ABHED_MIGRATE_DATABASE_URL", "postgres://owner@127.0.0.1:1/x")
-	users := filepath.Join(ws, "state", "users.json")
+	users := filepath.Join(ws, ".abhed", "users.json")
 	fs, err := auth.NewFileUserStore(users)
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +150,7 @@ func TestMigrateCommandPassesFileAccounts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	conf := `{"auth":{"mode":"local","users_file":"state/users.json"},"storage":{"driver":"postgres"}}`
+	conf := `{"auth":{"mode":"local","users_file":".abhed/users.json"},"storage":{"driver":"postgres"}}`
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(conf), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +167,16 @@ func TestMigrateCommandPassesFileAccounts(t *testing.T) {
 	}
 	if code := migrateCmd(ws, []string{"--force-no-accounts"}, nil, config.TrustGranted); code != 0 || !got.AllowNoAccounts {
 		t.Fatalf("--force-no-accounts: exit %d, allow %v", code, got.AllowNoAccounts)
+	}
+	// A users_file serve would refuse, here in the workspace where commands
+	// write, is refused before anything is migrated.
+	conf = `{"auth":{"mode":"local","users_file":"state/users.json"},"storage":{"driver":"postgres"}}`
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got = store.ProvisionConfig{}
+	if code := migrateCmd(ws, nil, nil, config.TrustGranted); code != 1 || got.RuntimeRole != "" {
+		t.Fatalf("a users_file serve refuses: exit %d, provisioned %v", code, got.RuntimeRole != "")
 	}
 }
 
@@ -200,4 +211,42 @@ func TestSingleRoleStartReadsTheUsersFile(t *testing.T) {
 	if _, err := storeConfig(cfg).OwnerAccounts(); err == nil {
 		t.Fatal("a missing users_file did not stop a single-role start")
 	}
+}
+
+// A misspelled --owners is a usage error; a second migration's --owners is
+// said to have no effect; a refused one says to import the accounts first.
+func TestMigrateOwnersFlagMistakes(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
+	t.Setenv("ABHED_DATABASE_URL", "postgres://rt@127.0.0.1:1/x")
+	t.Setenv("ABHED_MIGRATE_DATABASE_URL", "postgres://owner@127.0.0.1:1/x")
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(`{"storage":{"driver":"postgres"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := migrateCmd(ws, []string{"--owners=local"}, nil, config.TrustGranted); code != 2 {
+		t.Fatalf("a bad --owners exited %d, want 2", code)
+	}
+	saved := provision
+	defer func() { provision = saved }()
+	provision = func(_ context.Context, c store.ProvisionConfig) error { c.OwnersDone(); return nil }
+	out, code := stderrCapture(t, func() int { return migrateCmd(ws, []string{"--owners=unclaim"}, nil, config.TrustGranted) })
+	if code != 0 || !strings.Contains(out, "--owners=unclaim has no effect") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	provision = func(context.Context, store.ProvisionConfig) error { return store.ErrNoOwnerAccounts }
+	out, code = stderrCapture(t, func() int { return migrateCmd(ws, nil, nil, config.TrustGranted) })
+	if code != 1 || !strings.Contains(out, "abhed user import") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+}
+
+func stderrCapture(t *testing.T, fn func() int) (string, int) {
+	t.Helper()
+	var code int
+	out := captureStderr(t, func() { code = fn() })
+	return out, code
 }

@@ -66,6 +66,7 @@ person's action, or a command.
 | -32001 | Refused by policy: managed configuration, workspace trust or a policy rule. `data.meta.rule` names the rule when there is one. |
 | -32002 | Busy: a prompt is running and the request must wait for it to end. |
 | -32003 | The record is unavailable or failed verification. |
+| -32004 | Another Abhed process (the CLI) has the session open; it can be forked. |
 
 The engine never answers a refusal with an empty success.
 
@@ -290,13 +291,16 @@ interface SessionMeta {
 
 - **Replay.** `session/load` sends the recorded conversation as the same
   updates a live run would, with the recorded tool call ids and final
-  statuses, and each update's `meta.seq`. It **never re-runs a tool**. Then it
+  statuses (every call has an id from 1.2.8; in an older record a call
+  without one is named by its request's event id, and its result arrives as
+  a `tool_call` of its own rather than being guessed onto a card), and each update's `meta.seq`. It **never re-runs a tool**. Then it
   restores the model, the mode (within today's ceiling), the approval scopes
   recorded as `approval.scope_granted` (only those today's policy still
   allows), the budget and the todo list.
 - **One writer.** A session held by another Abhed process (the CLI) is
-  refused with -32000 "open in another Abhed process"; Studio offers to fork
-  it instead.
+  refused with -32004 "open in another Abhed process"; Studio offers to fork
+  it instead, matching the code rather than the words (engines before 1.2.8
+  sent -32000).
 - **Requested trust.** `session/load`, `session/resume` and
   `_abhed/session/fork` take `meta.trust: "untrusted"` as `session/new` does
   (§5.6): the session opens taking only the workspace settings that tighten,

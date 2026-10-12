@@ -202,3 +202,31 @@ func TestSwitchModelRefusedUnderAManagedModel(t *testing.T) {
 		t.Fatal("the default moved")
 	}
 }
+
+// After /model moves to a model whose turn then fails, the next line names
+// the way back; a turn that succeeds forgets it.
+func TestFailedTurnAfterModelSwitchNamesTheWayBack(t *testing.T) {
+	cfg := config.Default()
+	cfg.Model.Default = "a"
+	cfg.Model.Providers = map[string]config.ProviderConfig{
+		"a": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m"},
+		"b": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m"},
+		"c": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m"}}
+	cfg.SetKeys = []string{"model.providers.a", "model.providers.b", "model.providers.c"}
+	e, _ := configEnv(cfg, "")
+	for _, name := range []string{"b", "c"} {
+		if err := switchModel(context.Background(), e, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed := errors.New("connection refused")
+	if got := switchBackHint(e.st, failed); got != "/model a switches back to the model you were on" {
+		t.Fatalf("hint %q", got)
+	}
+	if got := switchBackHint(e.st, nil); got != "" {
+		t.Fatalf("a good turn: %q", got)
+	}
+	if got := switchBackHint(e.st, failed); got != "" {
+		t.Fatalf("after a good turn the hint stays: %q", got)
+	}
+}

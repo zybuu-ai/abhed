@@ -24,7 +24,7 @@ func doctorWithRules(t *testing.T, permissions string) (text string, code int, j
 		t.Fatal(err)
 	}
 	t.Setenv(config.TrustEnv, "1")
-	text, code = stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
+	text, code = stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	var b strings.Builder
 	jsonCode = newApp().doctorJSON(&b, ws, flagSettings{})
 	return text, code, b.String(), jsonCode

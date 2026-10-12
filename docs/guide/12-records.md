@@ -156,7 +156,7 @@ Inside a session:
 
 | Command | What it does |
 |---|---|
-| `/sessions` | this workspace's sessions, latest active first; `*` marks the one you are in |
+| `/sessions` | this workspace's sessions, latest active first; `*` marks the one you are in. On a shared Postgres store, only your own sessions in your tenant |
 | `/resume [id or name]` | continue a session; with no argument, pick one |
 | `/switch [id or name]` | the same as `/resume` |
 | `/rename <name>` | name this session (recorded as `session.named`) |

@@ -17,7 +17,7 @@ func TestOwnerChangesWhileReadStress(t *testing.T) {
 	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
 		Registry:    tools.NewRegistry(tools.Read{}),
 		OwnerActive: func(_ context.Context, _, owner string) bool { return owner == "local:bob" }})
-	live := &liveSession{ID: "s-1", Tenant: "default", User: "local:bob", allowed: map[string]bool{}}
+	live := &liveSession{ID: "s-1", Tenant: "default", User: "local:bob", allowed: map[string]string{}}
 	s.mu.Lock()
 	s.running[live.ID] = live
 	s.mu.Unlock()

@@ -19,8 +19,9 @@ All notable changes to Abhed are recorded here. The format follows
   object (also in different cases), or a number too large to read.
 - Of two configured MCP servers whose names overlap (`a` and `a__b`), only
   the shorter-named starts; rename one.
-- Flags after a subcommand are taken when the subcommand reads them and
-  refused with exit `2` when it does not, instead of being ignored.
+- Flags before or after a subcommand are taken when the subcommand reads
+  them and refused with exit `2` when it does not, instead of being ignored
+  (`-C` is accepted before any subcommand).
 - On macOS `abhed` runs itself again as it starts, with secrets kept out of
   the environment other processes can read; `ABHED_SHOW_ENV=1` turns it off.
 - `auth.session_hours` must be between 0 and 8760.
@@ -60,6 +61,13 @@ All notable changes to Abhed are recorded here. The format follows
   {"shared_sessions": true}` to keep every account in the server's one
   workspace as before. A server with a single local account is unchanged,
   but refuses a session for another account added while it runs.
+- A managed `permissions.ask` list now adds to the user's and the
+  workspace's ask rules instead of replacing them. Under a managed file that
+  sets aside the files' allow rules, a built-in allow rule your own list
+  left out is no longer brought back.
+- The read tool asks before opening `.env`, `*.pem`, `*.key` and SSH key
+  files in the workspace; a headless run with no one to answer refuses
+  them. A `permissions.ask` list of your own replaces these rules.
 
 ### Security
 
@@ -135,6 +143,15 @@ All notable changes to Abhed are recorded here. The format follows
   `unlink FILE` and `rmdir -p`, so in `bypass` mode they ran without the
   question. They now always confirm. The list stays best effort; the
   sandbox and deny rules are the boundary. Affects 0.1.0 to 1.2.7.
+- The terminal CLI, `abhed -p` and `abhed rpc` let a command write what git
+  reads in a git folder (`.git/config`, hooks, `info/attributes`,
+  `commondir`), as Studio and `abhed serve` did not, so a command could set
+  `core.fsmonitor` and a later git command you approved with "always allow",
+  or your own git, ran it. Those surfaces now hold git's files too, on every
+  tier but none; `sandbox.protect_git: false` turns it off. An "always allow"
+  for a git command is also asked again once the repository's config, hooks,
+  attributes or your global git configuration change. Affects 0.1.0 to 1.2.7.
+
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion
@@ -376,6 +393,45 @@ All notable changes to Abhed are recorded here. The format follows
   gives each session a sandbox of its own by default;
   `server.shared_sessions` keeps the shared workspace, where this cannot
   be closed. Affects 0.1.0 to 1.2.7.
+- Inside an agent's command, a nested `abhed` refused `-mode bypass` but
+  took `-mode accept-edits` or `-mode auto`, so a command could start a
+  session that approved edits or ran by rule where the configuration said to
+  ask. A nested run now refuses any mode looser than the configured one.
+  Affects 1.2.4 to 1.2.7.
+- `abhed acp` refused a `file:` attachment on another host
+  (`file://server/share/x`) but not the same share written with an empty
+  host (`file:////server/share/x`, or with backslashes), which Windows reads
+  as a network path the rules cannot judge. Both forms are now refused.
+  Affects 1.2.4 to 1.2.7.
+- `abhed -p -json-schema @file` took any JSON object as the schema and sent
+  it to the model, so a credentials file named by mistake went out whole. A
+  schema must now have at least one schema keyword (`type`, `properties`,
+  `$schema` and the like); the refusal and stderr name the file. Affects
+  1.2.3 to 1.2.7.
+- A managed `model.default` was applied unevenly: `-model`, `/model` and
+  `abhed acp` kept to it, but the console's picker listed, and ran
+  sessions on, any provider the person's own file added; a custom command's
+  `model` switched to another; and the SDK's `SetModel` and
+  `Options.Provider` named any endpoint. Every surface now asks one check,
+  and a managed `model.default` pins the model on all of them. Affects
+  1.1.0 to 1.2.7.
+- A managed `permissions.ask` list replaced the user's and a trusted
+  workspace's ask rules, so a managed file that added one question dropped
+  the person's own. It now joins them, as a managed deny list does. And when
+  a managed file set aside the files' allow rules, every built-in allow rule
+  came back, even one the files' shorter list had removed; only the built-in
+  rules that list still held now stay. Affects 1.1.0 to 1.2.7.
+- When `/etc/abhed` itself was a link to nothing, the run was treated as
+  unmanaged, so removing the link's target turned the organisation's rules
+  off. It is now an error, as a dangling link at the file's own path is. A
+  managed file removed while it was read is said to be removed, not called
+  a link to nothing. Affects 1.1.0 to 1.2.7.
+- The terminal CLI's `/sessions` on a shared Postgres store listed every
+  owner's sessions in every tenant, with their titles and the owners'
+  emails. It now lists only your own. `/resume` of a subagent's session
+  replayed its events before refusing; it now refuses first. Resuming a row
+  the session owner migration set aside says so instead of "belongs to
+  another user". Affects 0.1.0 to 1.2.7.
 
 ### Added
 
@@ -792,6 +848,12 @@ on. A server with it off starts on the older schema as before.
   serial numbers one to a line. It is reloaded like the CA; a revoked
   certificate is refused on the next handshake, and a request on a
   connection made with it before gets `401`.
+- `abhed doctor` names the edition and the configuration files it read,
+  and takes `-timeout` for the endpoint checks (60 seconds by default).
+- Your own `~/.abhed/config.json` may narrow `sandbox.allow_network: true`
+  to the egress allowlist with `sandbox.network: "allowlist"` and `egress`
+  rules of your own. They are set aside when they would widen anything:
+  over no network, or when the managed file sets any network setting.
 
 ### Changed
 
@@ -895,6 +957,27 @@ on. A server with it off starts on the older schema as before.
   local user could imitate by tag. Find them with `log show --predicate
   'subsystem == "com.zybuu.abhed"'`. A build without cgo still uses
   `/usr/bin/logger` and warns once that its entries are not attributable.
+- The built-in ask rules ask before the read tool opens `.env`, `.env.*`,
+  `*.pem`, `*.key` or an SSH key (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`) in
+  the workspace. It is a question, not credential protection: a command can
+  still print such a file, and the guide says so.
+- An SDK `Options.Warn` now also takes the configuration's warnings, which
+  `New` used to write to stderr whatever the embedder wanted; with `Warn`
+  nil they still go to stderr.
+- After `/model` moves to a model whose next turn fails, the CLI names the
+  `/model` command that goes back to the model you were on.
+- `abhed index` said a repository "can be indexed once rather than on every
+  session start", but nothing was kept. With `retrieval.embed`, the
+  embeddings are now kept in `~/.abhed/index`, one file per workspace and
+  embedding model, so `abhed index` builds them ahead and a session start
+  embeds only the chunks that changed. The symbol and BM25 tiers are still
+  rebuilt by each session.
+- `abhed acp` refuses a session another Abhed process has open with code
+  `-32004`, not the generic `-32000`, so an editor can offer the fork
+  without matching the message's words. Every tool call now has an id of
+  its own, so the guessing that paired an id-less call's approval and result
+  with its card is gone; replaying an older record shows such a result as a
+  card of its own.
 
 ### Fixed
 
@@ -1033,6 +1116,62 @@ on. A server with it off starts on the older schema as before.
   as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
   so the agent took the folder for empty. It now says the folder is skipped
   unless `path` names it, and gives that path.
+- A config key for a feature this edition lacks was reported as "a
+  Enterprise feature"; it now reads "an Enterprise feature".
+- `abhed resolve -allow` split every comma, so a rule such as
+  `bash(x a,b)` became two broken rules; commas inside a rule's parentheses
+  now stay in it. Resolve committed with whatever identity git guessed from
+  the host when `user.name` or `user.email` was unset; it now refuses to
+  start and names the missing setting. A headless resolve that stopped at
+  the pull request's approval did not say where the change was; it now
+  names the local branch.
+- After `/compact`, `/rename`, `/rewind`, `/models` or `/fork` on a resumed
+  session in a shared (Postgres) store, the CLI released the row by copying
+  its last `session.ended`, so the record kept that end's context size and
+  compaction count though the command had changed them. The release now
+  keeps only the reason and takes the totals from the session as it stands.
+- A `/model` typed while a custom command with its own `model` ran was
+  undone when the command's turn switched back; the model chosen during
+  the turn now stands. `/bug`'s browser opener is waited for, so it no
+  longer stays behind as a defunct process.
+- Under a managed file that configured extensions and set
+  `hooks.disabled`, the terminals were held to line-by-line mode and
+  `:attach` refused, though no extension was sent a hook event that could
+  refuse a line. Extensions now count only when their hooks can run.
+- `abhed doctor` printed skill names as written, so a skill folder named
+  with a right-to-left override could show as another name. A skill whose
+  name holds a character that does not print as itself is now refused at
+  load and named in the warning, escaped. Doctor's `git` line said git's
+  files were held only in served and Studio sessions; it now says what
+  `sandbox.protect_git` holds.
+- The command line's own flags written before a subcommand that does not
+  read them (`abhed -allow 'secret(X)' acp`) were silently ignored. They now
+  stop the command with exit `2` and a message naming them, as they do
+  written after it; `-C` is still accepted before any subcommand.
+- A session in an untrusted workspace whose file names its own model (an
+  editor over `abhed acp`, `abhed rpc`, an SDK agent with
+  `AllowDefaultModel`) ran on the configured default without a word; it now
+  warns, naming the model in use. `abhed serve`, `migrate` and `user`
+  refused an untrusted workspace that set only `auth.require_group` saying
+  it would start with no sign-in or no durable record; the refusal now says
+  what each ignored setting would lose.
+- `abhed migrate`: a misspelled `--owners` exited `1`; it is a usage error,
+  exit `2`. A second run's `--owners` did nothing without a word; it now
+  says it has no effect. An `auth.users_file` that `serve` refuses (in the
+  workspace or a temp folder) was read; it is now refused the same way. A
+  `local-only` migration refused for finding no accounts still recorded the
+  accounts schema (version 5); it now records nothing, and says to import
+  the accounts with `abhed user import` first.
+- `abhed serve -addr 127.0.0.1:0` printed `:0` in its banner; it now names
+  the port the system gave it. The banner also says whether git's files
+  are held read-only from commands.
+- `abhed admin web-search`, refused inside an agent's command, said "the
+  attempt could not be logged" although the system log had it; it now says
+  the attempt is in the system log.
+- When the banner said the sandbox was "none or stronger (checking)" and the
+  check found nothing stronger, nothing said so; one stderr line now does.
+  The status line's JSON carries `sandbox_checking` while the tier is still
+  being chosen, and `/bug`'s report says it.
 - A tool call the model sent without an id, or with an id it had already
   used in the same turn, kept that id, so two such reads run in parallel
   could have their results paired with the wrong call in the record and in
@@ -1341,6 +1480,17 @@ on. A server with it off starts on the older schema as before.
   `EndedReason(*http.Request) string` has the cause added to the
   middleware's "sign in required"; `LocalAuth` implements it, with the
   `auth.Why*` constants.
+- `config.Config.ModelAllowed`, `PinnedAway`, `EndpointPinnedAway` and
+  `ModelPinned`, and `config.ErrNoSuchModel`: the one check every surface
+  makes before a session runs on a model. `sdk.Agent.SetModel` and
+  `sdk.New` with `Options.Provider` return a `*config.ManagedError` under a
+  managed `model.default`.
+- `config.LoadOptions.Warn`, `config.Overrides.Warn` and
+  `config.LoadManagedWith` route a load's warnings to the caller instead of
+  stderr.
+- `sdk.Visible`, `sdk.VisibleLine` and `sdk.ArgsHidden` mark the characters
+  in a call's arguments that would not print as themselves; the SDK guide
+  says showing `Approve`'s arguments safely is the embedder's duty.
 
 ## [1.2.7] - 2026-10-07
 

@@ -21,7 +21,7 @@ import (
 func TestAskRuleIgnoresARememberedScope(t *testing.T) {
 	h, live, _, id := approvalSession(t, false)
 	live.mu.Lock()
-	live.allowed["web_search"] = true
+	live.allowed["web_search"] = ""
 	live.mu.Unlock()
 	c := make(chan turnResult, 1)
 	go func() {
@@ -114,7 +114,7 @@ func (s *Server) anyLive(t *testing.T) *liveSession {
 // An answer whose scope is not the one offered approves once: the session
 // remembers nothing, and the record names no scope granted.
 func TestAnAnswerWithAnotherScopeIsNotRemembered(t *testing.T) {
-	live := &liveSession{allowed: map[string]bool{}}
+	live := &liveSession{allowed: map[string]string{}}
 	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)"}
 	go func() {
 		p := waitAsked(live, "")
@@ -136,7 +136,7 @@ func TestAnAnswerWithAnotherScopeIsNotRemembered(t *testing.T) {
 // then names no approver, as on the in-memory path.
 func TestAnAnonymousDurableAnswerNamesNoApprover(t *testing.T) {
 	f := newFakeApprovals()
-	l := &liveSession{ID: "s-anon", allowed: map[string]bool{}, durable: f}
+	l := &liveSession{ID: "s-anon", allowed: map[string]string{}, durable: f}
 	go func() {
 		for f.askedCount() == 0 {
 			time.Sleep(time.Millisecond)

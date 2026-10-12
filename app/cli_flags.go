@@ -323,6 +323,10 @@ func Main(args []string, opts ...Option) int {
 		return 1
 	}
 	if len(rest) > 0 {
+		if ignored := ignoredBefore(fs, rest[0]); len(ignored) > 0 {
+			fmt.Fprintf(os.Stderr, "abhed: %s does not apply to %s; see abhed %s -h\n", strings.Join(ignored, ", "), rest[0], rest[0])
+			return 2
+		}
 		if refuseInAgent(selfAdmin(rest)) {
 			switch rest[0] {
 			case "admin":
@@ -384,10 +388,15 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 				return 2
 			}
 		}
-		if len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
+		asJSON, timeout, err := doctorArgs(rest[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: doctor: %v\n", err)
+			return 2
+		}
+		if asJSON {
 			return a.doctorJSON(os.Stdout, workspace, set)
 		}
-		return a.doctor(workspace, set)
+		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
 	case "record":

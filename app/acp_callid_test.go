@@ -294,7 +294,7 @@ func TestACPAnswersNotOfferedAreRefusedBySystem(t *testing.T) {
 		{"unreadable", defaultAsk, "yes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+			s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 			c, _ := answeringConn(t, func(json.RawMessage) any { return tc.reply })
 			ctx, answer := agent.ExpectAnswer(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"))
 			ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), tc.d)
@@ -371,7 +371,7 @@ func TestACPWithheldRequestIsRefusedWithoutAsking(t *testing.T) {
 	c, asked := answeringConn(t, func(json.RawMessage) any {
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:ev-a"}}
 	})
-	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
 	withheld := abhed.Event{ID: "ev-a", Type: agent.EvActionRequested, Payload: json.RawMessage(`{"withheld":"x"}`)}
 	ctx, answer := agent.ExpectAnswer(agent.WithRequested(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"), withheld))
@@ -389,7 +389,7 @@ func TestACPUnshownScopeIsNotOffered(t *testing.T) {
 		params = p
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:ev-a"}}
 	})
-	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
 	rec, _ := json.Marshal(agent.ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`)})
 	ctx, answer := agent.ExpectAnswer(agent.WithRequested(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"),
@@ -431,7 +431,7 @@ func TestACPCallWithoutAnIDIsAsked(t *testing.T) {
 		params = p
 		return chosen(p, "allow_once")
 	})
-	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
 	rec, _ := json.Marshal(agent.ActionRequested{Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`), Reason: d.Reason, Scope: d.Offer()})
 	ctx := agent.WithRequested(agent.WithRequestID(context.Background(), "ev-a"), abhed.Event{ID: "ev-a", Payload: rec})
@@ -443,35 +443,33 @@ func TestACPCallWithoutAnIDIsAsked(t *testing.T) {
 	}
 }
 
-// Calls salvaged from a model's prose have no id. Each is named by its
-// request's event id, the same in its tool_call, its permission request and
-// its updates, so two of them never share one.
-func TestACPSalvagedCallsGetMatchingDistinctIDs(t *testing.T) {
+// Every call the loop makes has an id now; only a record from before that
+// holds calls without one. Each such request is named by its event id, in its
+// tool_call and its permission request, and nothing later is guessed onto
+// it: a result arrives as a card of its own, never on another call's card.
+func TestACPCallsWithoutIDsAreNotGuessed(t *testing.T) {
 	calls := []askedCall{
 		{event: "ev-x", args: json.RawMessage(`{"command":"ls a"}`), d: abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}},
 		{event: "ev-y", args: json.RawMessage(`{"command":"ls b"}`), d: abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}},
 	}
 	cl, asked, updates := runCalls(t, calls, func(p json.RawMessage) any { return chosen(p, "allow_once") })
-	if want := []string{"call ev-x", "ask ev-x", "call ev-y", "ask ev-y"}; !slices.Equal(cl.arrived(), want) {
-		t.Fatalf("editor read %v, want %v", cl.arrived(), want)
+	if want, got := []string{"call ev-x", "ask ev-x", "call ev-y", "ask ev-y"}, cl.arrived(); len(got) < 4 || !slices.Equal(got[:4], want) {
+		t.Fatalf("editor read %v, want %v first", got, want)
 	}
 	if len(asked) != 2 {
 		t.Fatalf("asked %d", len(asked))
 	}
-	got := map[string][]string{}
+	results := 0
 	for _, u := range updates {
-		if u["sessionUpdate"] == "tool_call_update" {
-			id := u["toolCallId"].(string)
-			got[id] = append(got[id], u["status"].(string))
+		switch {
+		case u["sessionUpdate"] == "tool_call_update":
+			t.Fatalf("an update was guessed onto a card: %v", u)
+		case u["sessionUpdate"] == "tool_call" && u["status"] == "completed":
+			results++
 		}
 	}
-	for _, id := range []string{"ev-x", "ev-y"} {
-		if !slices.Equal(got[id], []string{"in_progress", "completed"}) {
-			t.Fatalf("updates by id %v", got)
-		}
-	}
-	if len(got) != 2 {
-		t.Fatalf("updates went to other ids: %v", got)
+	if results != 2 {
+		t.Fatalf("%d results shown, want 2: %v", results, updates)
 	}
 }
 
@@ -491,7 +489,7 @@ func TestACPDestructiveCommandIsMarkedWhateverTheStep(t *testing.T) {
 			params = p
 			return chosen(p, "reject_once")
 		})
-		s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
+		s := &acpSession{id: "s1", cancel: func() {}, always: map[string]string{}}
 		args, _ := json.Marshal(map[string]string{"command": tc.command})
 		d := abhed.Decision{Decision: policy.Ask, Step: tc.step, Reason: "asked by " + tc.step}
 		if _, err := c.askEditor(context.Background(), s, "bash", args, d); err != nil {

@@ -52,7 +52,7 @@ func tasksRig(t *testing.T) (*studioClient, *acpSession, *taskAgent) {
 		{ID: "t1", Description: "scan \x1b[31mred", Status: "running", Started: time.Now()},
 		{ID: "t2", Description: "build", Status: "running", Started: time.Now()},
 	}}
-	s := &acpSession{id: "s1", cwd: "/ws", agent: a, always: map[string]bool{}}
+	s := &acpSession{id: "s1", cwd: "/ws", agent: a, always: map[string]string{}}
 	cl.conn.sessMu.Lock()
 	cl.conn.sessions[s.id] = s
 	cl.conn.sessMu.Unlock()

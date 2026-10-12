@@ -257,32 +257,44 @@ func TestServedSessionHoldsGitFiles(t *testing.T) {
 	}
 }
 
-// The CLI's sandbox is unchanged: serve alone turns git protection on.
-func TestCLISandboxLeavesGitFilesAlone(t *testing.T) {
-	ws, _ := servedRepo(t)
-	cfg := config.Default()
-	sb, err := buildSandbox(cfg, ws)
-	if err != nil {
-		t.Fatal(err)
+// The CLI's sandbox holds git's files by default, as serve's does, so a
+// planted fsmonitor cannot run at a scoped git command or the person's own;
+// sandbox.protect_git: false turns that off for the CLI, never for serve.
+func TestCLISandboxHoldsGitFilesByDefault(t *testing.T) {
+	ws, before := servedRepo(t)
+	run := func(cfg config.Config) (string, error) {
+		t.Helper()
+		sb, err := buildSandbox(cfg, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sandbox.Close(sb) }()
+		if sb.Tier() != sandbox.TierProcess {
+			t.Skipf("this host runs the CLI under the %s tier; the process tier is the one tested here", sb.Tier())
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := sb.Command(ctx, ws, "echo '[core]' >> .git/config; echo '  fsmonitor = x' >> .git/config; echo '# cli' >> .git/info/attributes").CombinedOutput()
+		return string(out), err
 	}
-	t.Cleanup(func() { _ = sandbox.Close(sb) })
-	if sb.Tier() != sandbox.TierProcess {
-		t.Skipf("this host runs the CLI under the %s tier; the process tier is the one tested here", sb.Tier())
+	_, _ = run(config.Default())
+	checkServedPlant(t, ws, before, "a CLI command")
+
+	off := config.Default()
+	no := false
+	off.Sandbox.GitProtect = &no
+	if out, err := run(off); err != nil {
+		t.Fatalf("protect_git false still refused a git file: %v %s", err, out)
 	}
-	if cfg.Sandbox.ProtectGit {
-		t.Fatal("the default configuration protects git")
+	if b, _ := os.ReadFile(filepath.Join(ws, ".git", "info", "attributes")); !strings.Contains(string(b), "# cli") {
+		t.Fatal("protect_git false: the command could not write git's files")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if out, err := sb.Command(ctx, ws, "echo '# cli' >> .git/info/attributes").CombinedOutput(); err != nil {
-		t.Fatalf("the CLI's sandbox refused a git file: %v %s", err, out)
-	}
-	served, ssb, _, err := serveSandbox(cfg, ws)
+	served, ssb, _, err := serveSandbox(off, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = sandbox.Close(ssb)
-	if !served.Sandbox.ProtectGit || cfg.Sandbox.ProtectGit {
-		t.Fatal("serve's configuration must protect git, and leave the caller's alone")
+	if on, required := served.Sandbox.GitProtected(); !on || !required {
+		t.Fatal("serve must require git protection whatever the configuration says")
 	}
 }

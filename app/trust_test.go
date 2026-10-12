@@ -159,7 +159,7 @@ func TestAskTrustAnswers(t *testing.T) {
 // longer once it is trusted.
 func TestDoctorNamesIgnoredSettings(t *testing.T) {
 	_, ws := trustWorkspace(t, `{"permissions":{"mode":"bypass","allow":["bash(*)"],"deny":["bash(curl*)"]}}`)
-	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
+	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	for _, w := range []string{"trust       NOT TRUSTED — " + filepath.Join(ws, ".abhed", "config.json"),
 		`⚠ ignored permissions.mode "bypass"`, `⚠ ignored permissions.allow ["bash(*)"]`, "abhed trust grant"} {
 		if !strings.Contains(out, w) {
@@ -173,7 +173,7 @@ func TestDoctorNamesIgnoredSettings(t *testing.T) {
 	if err := config.GrantTrust(ws, st.SHA256); err != nil {
 		t.Fatal(err)
 	}
-	out, _ = stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
+	out, _ = stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	if !strings.Contains(out, "trust       trusted — ") || strings.Contains(out, "ignored") || !strings.Contains(out, "mode        bypass") {
 		t.Fatalf("doctor after a grant:\n%s", out)
 	}

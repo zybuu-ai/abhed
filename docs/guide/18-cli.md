@@ -36,14 +36,15 @@ more often a mistyped command than a task.
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 
 These flags come before a subcommand or after it: `abhed -C ~/src/app
-doctor` and `abhed doctor -C ~/src/app` are the same. After a subcommand,
-only the ones it reads are taken: `-C` by every subcommand that works on a
+doctor` and `abhed doctor -C ~/src/app` are the same. Before or after a
+subcommand, only the ones it reads are taken (`-C` is always accepted before
+one): `-C` by every subcommand that works on a
 workspace (all but `providers`, `secret`, `pki` and `admin`),
 `-trust-workspace` by those that load its configuration, and `-settings` by
 `doctor`. Any other one there stops the command with exit code 2 and a
 message naming it, as does an argument to a subcommand that takes none
-(`init`, `acp`, `rpc`, `index`, `providers`; `doctor` and `version` take
-only `--json`). A subcommand's own flag keeps its meaning (`serve -addr`,
+(`init`, `acp`, `rpc`, `index`, `providers`; `doctor` takes only `--json`
+and `-timeout`, and `version` only `--json`). A subcommand's own flag keeps its meaning (`serve -addr`,
 `record list -n`, `resolve -mode`), and nothing after `--` or in a command
 passed on as given (`mcp add NAME COMMAND ARGS`, `sandbox exec ID COMMAND
 ARGS`) is read as one of these.
@@ -112,7 +113,7 @@ to do.
 | Command | |
 |---|---|
 | `/model` | pick a configured model: its id, context window, and whether it is local |
-| `/model NAME` | switch to a configured provider, keeping the conversation; recorded |
+| `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on |
 | `/effort low\|medium\|high` | the reasoning effort, where the provider takes one |
 | `/effort on\|off` | thinking on or off, where the provider has the switch |
 | `/effort default` | back to the provider's own setting |
@@ -170,6 +171,11 @@ The command reads the session's status as one JSON object on stdin:
  "background_tasks":0,"waiting_ask":false,"sandbox_tier":"process","network":false,
  "record":"local","git_branch":"main","cwd":"~/src/app"}
 ```
+
+While the sandbox is still being chosen at start, `sandbox_tier` is the
+least it will be and `"sandbox_checking": true` is added; if the answer is
+`none`, one line on stderr says so, since the banner said "none or stronger
+(checking)".
 
 `record` is the store the session writes to: `local` for the local record,
 `unverified` for Postgres, which this process has not verified, and `memory`

@@ -107,6 +107,8 @@ type Config struct {
 	// Overridden are the settings a lower layer made that the managed file
 	// replaced with another value.
 	Overridden []SetAsideKey `json:"-"`
+	// userNet is the person's own network settings, held until the managed file.
+	userNet *userNetwork
 	// webIntents and origins are what loading holds until the managed file.
 	webIntents []webIntent
 	origins    map[string]origin
@@ -269,7 +271,7 @@ var managedOnly = map[string]string{
 	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
-	"sandbox.network":              "only the managed configuration turns on the egress allowlist",
+	"sandbox.network":              "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
 	"sandbox.microvm_socket":       "only the managed configuration names the microVM driver",
 	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
 	"egress.default":               "only the managed configuration sets which destinations commands reach",
@@ -374,6 +376,16 @@ func setAside(c *Config, file, layer string, data []byte) {
 	setAsideWeb(c, file, layer)
 	kept := c.SetKeys[:0:0]
 	for _, k := range c.SetKeys {
+		if why, ok := managedOnly[k]; ok && layer == LayerUser && (k == "sandbox.network" || strings.HasPrefix(k, "egress.")) {
+			// Held until the managed file is read: the person's own file may
+			// narrow allow_network to an allowlist of their own.
+			if c.userNet == nil {
+				c.userNet = &userNetwork{network: c.Sandbox.Network, egress: c.Egress}
+			}
+			c.userNet.keys = append(c.userNet.keys, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
+			clearManagedOnly(c, k)
+			continue
+		}
 		if why, ok := managedOnly[k]; ok {
 			clearManagedOnly(c, k)
 			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
@@ -382,6 +394,45 @@ func setAside(c *Config, file, layer string, data []byte) {
 		kept = append(kept, k)
 	}
 	c.SetKeys = kept
+}
+
+// userNetwork is the person's own sandbox.network and egress settings, held
+// until the managed file is read.
+type userNetwork struct {
+	network string
+	egress  egress.Config
+	keys    []SetAsideKey
+}
+
+// userAllowlistNarrows applies the person's own allowlist and egress rules
+// where they only narrow: allow_network is true and the managed file sets
+// none of allow_network, sandbox.network or egress. Otherwise they are set
+// aside, so they never open a host that no network, or the managed rules,
+// would have kept closed.
+func userAllowlistNarrows(c *Config) {
+	u := c.userNet
+	c.userNet = nil
+	if u == nil {
+		return
+	}
+	managedNet := c.ManagedSets("sandbox.allow_network") || c.ManagedSets("sandbox.network") || c.ManagedSets("egress")
+	if u.network == NetworkAllowlist && c.Sandbox.AllowNetwork && !managedNet {
+		c.Sandbox.Network, c.Egress = NetworkAllowlist, u.egress
+		for _, k := range u.keys {
+			c.SetKeys = append(c.SetKeys, k.Key)
+		}
+		return
+	}
+	for _, k := range u.keys {
+		switch {
+		case managedNet:
+		case u.network != NetworkAllowlist:
+			k.Reason = "your own egress settings apply only with sandbox.network \"allowlist\" in the same file"
+		default:
+			k.Reason = "your own allowlist applies only over sandbox.allow_network true, which it narrows; without it commands already reach nothing"
+		}
+		c.SetAside = append(c.SetAside, k)
+	}
 }
 
 // valueIn is the value data gives the setting at key, as a record shows it,
@@ -400,15 +451,10 @@ func valueIn(data []byte, key string) string {
 	return out
 }
 
-// warnSetAside writes each set-aside setting once per process.
-func warnSetAside(keys []SetAsideKey) {
-	warnedMu.Lock()
-	defer warnedMu.Unlock()
+// warnSetAside warns of each set-aside setting.
+func warnSetAside(w warnSink, keys []SetAsideKey) {
 	for _, k := range keys {
-		if id := "aside\x00" + k.File + "\x00" + k.Key + "\x00" + k.Value; !warned[id] {
-			warned[id] = true
-			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
-		}
+		w.emit("aside\x00"+k.File+"\x00"+k.Key+"\x00"+k.Value, k.String())
 	}
 }
 
@@ -1221,11 +1267,28 @@ type SandboxConfig struct {
 	// surface that runs the session, never by a file.
 	WriteProtected []string `json:"-"`
 	// ProtectGit write-protects what git reads in every git folder in the
-	// workspace (config, hooks, commondir and the like); set as WriteProtected is.
+	// workspace (config, hooks, commondir and the like); set as WriteProtected
+	// is, by a surface that requires it.
 	ProtectGit bool `json:"-"`
+	// GitProtect is sandbox.protect_git: unset, git's files are protected
+	// wherever the tier can hold them; true requires it; false turns it off
+	// where no surface requires it.
+	GitProtect *bool `json:"protect_git,omitempty"`
 	// MicroVMSocket is the socket of an abhed-microvm driver; when set, the
 	// control plane can choose the microvm driver by name. Managed only.
 	MicroVMSocket string `json:"microvm_socket,omitempty"`
+}
+
+// GitProtected reports whether commands are kept from writing git's files,
+// and required reports whether a tier that cannot hold them is refused.
+func (s SandboxConfig) GitProtected() (on, required bool) {
+	switch {
+	case s.ProtectGit:
+		return true, true
+	case s.GitProtect == nil:
+		return true, false
+	}
+	return *s.GitProtect, *s.GitProtect
 }
 
 type LimitsConfig struct {
@@ -1310,7 +1373,14 @@ func Default() Config {
 			// every later session reads as instructions.
 			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)",
 				"write(ABHED.md)", "edit(ABHED.md)", "write(ABHED.local.md)", "edit(ABHED.local.md)",
-				"write(AGENTS.md)", "edit(AGENTS.md)"},
+				"write(AGENTS.md)", "edit(AGENTS.md)",
+				// Files that commonly hold credentials are read only with a
+				// yes. A speed bump for the read tool, not credential protection:
+				// a command can still print them.
+				"read(.env)", "read(**/.env)", "read(.env.*)", "read(**/.env.*)",
+				"read(*.pem)", "read(**/*.pem)", "read(*.key)", "read(**/*.key)",
+				"read(id_rsa*)", "read(**/id_rsa*)", "read(id_ed25519*)", "read(**/id_ed25519*)",
+				"read(id_ecdsa*)", "read(**/id_ecdsa*)"},
 		},
 		Context: ContextConfig{
 			CompactAt:   0.90,
@@ -1390,15 +1460,17 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg.origins = nil
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
+	userAllowlistNarrows(&cfg)
 
 	applyEnv(&cfg)
-	warnUnknown(cfg.Unknown)
-	warnSetAside(cfg.SetAside)
-	warnNotYetInEffect(cfg)
-	warnNeverAllows(cfg.Permissions.Allow)
-	warnRuleFindings(cfg.RuleFindings())
+	w := warnSink(o.Warn)
+	warnUnknown(w, cfg.Unknown)
+	warnSetAside(w, cfg.SetAside)
+	warnNotYetInEffect(w, cfg)
+	warnNeverAllows(w, cfg.Permissions.Allow)
+	warnRuleFindings(w, cfg.RuleFindings())
 	if !o.Quiet {
-		warnUntrusted(cfg.Workspace)
+		warnUntrusted(w, cfg.Workspace)
 	}
 	return cfg, cfg.Validate()
 }
