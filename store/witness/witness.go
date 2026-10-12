@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -180,14 +181,29 @@ func (w *Witness) post(body []byte) error {
 	}
 	resp, err := w.cfg.Client.Do(req)
 	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = &url.Error{Op: ue.Op, URL: shown(w.cfg.URL), Err: ue.Err}
+		}
 		return fmt.Errorf("witness: %w", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("witness: %s answered %s", w.cfg.URL, resp.Status)
+		return fmt.Errorf("witness: %s answered %s", shown(w.cfg.URL), resp.Status)
 	}
 	return nil
+}
+
+// shown is the witness's URL for an error, without user information, query
+// or fragment, any of which may carry a credential.
+func shown(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(unparsable URL)"
+	}
+	u.RawQuery, u.User, u.Fragment, u.RawFragment, u.ForceQuery = "", nil, "", "", false
+	return u.String()
 }
 
 // Close waits up to timeout for heads still being posted.

@@ -109,3 +109,35 @@ func TestWitnessRefusesALink(t *testing.T) {
 		t.Fatal("a link was taken as the witness file")
 	}
 }
+
+// A delivery error names the witness without a credential its URL carries.
+func TestWitnessErrorHidesURLCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	for _, base := range []string{srv.URL, dead.URL} {
+		u := strings.Replace(base, "://", "://alice:hunter2@", 1) + "/heads?token=sekrit#frag"
+		w, err := Open(Config{URL: u, KeyFile: filepath.Join(t.TempDir(), "witness.key")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Local("default", "s1", 1, 1, "h1")
+		w.Close(5 * time.Second)
+		select {
+		case err := <-w.Errors():
+			for _, secret := range []string{"hunter2", "alice", "sekrit", "frag"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("the error shows %q: %v", secret, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "/heads") {
+				t.Errorf("the error does not name the witness: %v", err)
+			}
+		default:
+			t.Fatalf("no error from %s", base)
+		}
+	}
+}

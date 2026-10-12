@@ -275,7 +275,8 @@ token. Statements are signed with an Ed25519 key kept as `witness.key` in the
 records folder, which says which installation sent them; it does not stop the
 owner, who holds the key, so the witness's value is where it keeps them. A
 witness that is set and cannot be opened stops the start; a head that fails
-to reach the URL is reported on stderr.
+to reach the URL is reported on stderr, naming the URL without its user
+information, query or fragment.
 
 `abhed record verify` then also checks every head in `record.witness.file`
 (or a copy named with `-witness <file>`): each must still be in the record,
