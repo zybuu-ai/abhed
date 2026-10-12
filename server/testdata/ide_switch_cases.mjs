@@ -85,4 +85,17 @@ e = key('k', {code:'KeyK', ctrlKey:true});
 check('Ctrl+K opens the sessions alone', switchKeys(e) && e.prevented && __drops === 1);
 e = key('p', {code:'KeyP', ctrlKey:true});
 check('Ctrl+P is left to the palette', !switchKeys(e));
+
+// The workbench session the page opens by itself does not take the view from
+// one the person opened while it was being made, as by sending at once.
+let made; __created = new Promise(r => { made = r; });
+current = null; __opened.length = 0;
+let opening = createWorkbench();
+openSession('s-sent');
+made({session_id:'s-wb'}); await opening;
+check('a workbench session made late leaves the session opened meanwhile', current === 's-sent' && __opened.join() === 's-sent');
+check('and is still listed', sessionList.some(s => s.id === 's-wb'));
+__created = Promise.resolve({session_id:'s-wb2'}); current = null; __opened.length = 0;
+await createWorkbench();
+check('with nothing opened meanwhile it is opened', current === 's-wb2' && __opened.join() === 's-wb2');
 if(!ok) process.exit(1);

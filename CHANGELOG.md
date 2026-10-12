@@ -1290,6 +1290,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A message sent in the web IDE before its first workbench session had
+  finished opening could lose its view: the workbench session opened over
+  it, so the new session's approval card was no longer shown and its call
+  waited unanswered until the session was opened again. A session opened in the meantime now keeps the
+  view, and the workbench session is only listed. Affects 1.1.0 to 1.2.7.
 - Bypass mode under a managed file asked about every call with the reason
   "bypass mode is disabled by organization policy", naming no file, while
   `abhed doctor` still showed the mode as `bypass`. The reason now names the

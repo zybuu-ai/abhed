@@ -1857,11 +1857,14 @@ function openSession(id, state, opts){
 }
 // A session with no prompt: the workspace and sandbox, ready for the terminal and the editor.
 async function createWorkbench(note){
+  const was = current;
   try{
     const mode = $('mode').value;
     const provider = chosenProvider();
     const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({workbench:true, mode, provider})});
     sessionList.unshift({id:r.session_id, prompt:'', state:'idle', mode, provider, model: modelOf(provider)});
+    // A session opened while this one was made, as by a message sent at once, keeps the view.
+    if(current !== was) return;
     openSession(r.session_id, 'idle', {note});
   }catch(e){ noTerminal('Could not open a workbench session: ' + visible(e.message)); }
 }

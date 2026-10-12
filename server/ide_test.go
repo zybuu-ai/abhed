@@ -716,12 +716,15 @@ globalThis.__opened = []; globalThis.__states = {}; globalThis.__tab = {}; globa
 globalThis.location = {href:'https://h/ide', search:''};
 globalThis.history = {state:null, replaceState(_, __, url){ const u = new URL(url, 'https://h'); location.href = u.href; location.search = u.search; }};
 globalThis.sessionStorage = {getItem: k => k in __tab ? __tab[k] : null, setItem(k, v){ __tab[k] = String(v); }, removeItem(k){ delete __tab[k]; }};
-const api = async path => {
+const api = async (path, opts) => {
+  if(path === '/v1/sessions' && opts && opts.method === 'POST') return __created;
   const m = /^\/v1\/sessions\/([^/]+)\/state$/.exec(path);
   if(m && __states[m[1]]) return __states[m[1]];
   const e = new Error('session not found'); e.status = 404; throw e;
 };
 const add = () => {}, editTitle = () => {}, sessionMenu = () => {}, deleteSession = () => {};
+const chosenProvider = () => 'p', modelOf = () => 'm', noTerminal = () => {};
+let __created = null;
 const openSession = id => { __opened.push(id); current = id; };
 const openDrop = () => { __drops++; $('sdrop').hidden = false; }, closeDrop = () => { $('sdrop').hidden = true; };
 $('sdrop').hidden = true; $('sfilter').value = ''; $('sdropq').value = '';

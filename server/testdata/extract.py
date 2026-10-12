@@ -90,7 +90,7 @@ sets = {
     'ide-switch': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const sessionLabel = ',
           'const sessionTime = ','function sortSessions(list){','function matchSession(s, q){','function ageOf(iso){','const dayOf = ','function drawSessions(){',
           'const SESSION_ID = ','function sessionFromURL(){','function setURL(id){','let startNote = ','async function startingSession(){','function neighbour(dir){',
-          'let dropSel = ','function drawDrop(){','function switchKeys(e){'],
+          'let dropSel = ','function drawDrop(){','function switchKeys(e){','async function createWorkbench(note){'],
     'ide-modes': ['function limitModes(m){', 'function modeForNewSession(){'],
     # From ide.html: the Events and HawkEYE panels, which draw record text.
     'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function reveal(s, lines){','function tail(p){','function subjectOf(tool, args){',
