@@ -13,10 +13,8 @@ import (
 	"time"
 )
 
-// With inspect_tls on, a command's HTTPS is judged request by request: a
-// rule narrowed to a path allows that path inside the tunnel and denies the
-// rest, each recorded with its method and path. Off, the same rule cannot
-// allow the tunnel at all.
+// With inspect_tls on, a path-narrowed rule allows that path in the tunnel and
+// denies the rest; off, the same rule cannot allow the tunnel.
 func TestInspectedTunnelIsJudgedByPath(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "secret-ok "+r.URL.Path)

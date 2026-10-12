@@ -23,9 +23,8 @@ import (
 	"time"
 )
 
-// inspector terminates commands' HTTPS for a proxy that inspects it, with
-// leaf certificates from a CA made for this proxy alone, whose key never
-// leaves the process.
+// inspector terminates commands' HTTPS with leaf certificates from a CA made
+// for this proxy alone, whose key never leaves the process.
 type inspector struct {
 	ca    *x509.Certificate
 	key   *ecdsa.PrivateKey
@@ -164,12 +163,8 @@ type prefixed struct {
 
 func (c *prefixed) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-// inspectTunnel answers the CONNECT, then, when the client speaks TLS,
-// terminates it with a certificate for the tunnel's host and judges each
-// request inside by method and path, sending the allowed ones on to the
-// host over TLS verified as any client would. A client that does not speak
-// TLS is judged as a tunnel is, by host and port, and passed through or
-// closed. ev is the CONNECT's own event.
+// inspectTunnel terminates a CONNECT's TLS and judges each request inside by
+// method and path; a client not speaking TLS is judged by host and port.
 func (p *Proxy) inspectTunnel(c net.Conn, br *bufio.Reader, up *counted, t Target, callID string, ev *Event) {
 	if _, err := io.WriteString(c, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
 		return

@@ -26,10 +26,8 @@ func sendTo(t *testing.T, network, addr, raw string) string {
 	return line
 }
 
-// A connection through a call's own listener is that call's: without
-// credentials (as a JVM's CONNECT comes) it is served, and with another
-// call's token it is still recorded under the listener's call. Once the call
-// ends its listener is gone.
+// A call's own listener binds its connections to the call, with no credentials
+// (a JVM) or another call's token, so traffic cannot change records.
 func TestCallListenerBindsTheCall(t *testing.T) {
 	p, rec := startProxy(t, Config{})
 	a, b := issue(t, p, "call-a"), issue(t, p, "call-b")

@@ -8,10 +8,8 @@ import (
 	"testing"
 )
 
-// A non-HTTP client's connection, such as ssh_connect's, is judged as a
-// tunnel: an allowed host connects and is recorded with its kind, one no rule
-// allows is refused before any connection, and an internal address no rule
-// names is refused at the dial.
+// A non-HTTP client is judged as a tunnel: an allowed host connects and is
+// recorded, others are refused, and an unnamed internal address fails at dial.
 func TestDialIsJudgedAsATunnel(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -9,11 +9,8 @@ import (
 	"time"
 )
 
-// InternalEndpoint says why a model endpoint is on an internal address, or
-// "" when it is not or cannot be told. The model client is Abhed's own and
-// skips the internal-address check the allowlist makes of commands, since a
-// local model or gateway is ordinary; only trusted configuration can set
-// base_url, so doctor and serve -check warn rather than refuse.
+// InternalEndpoint says why a model endpoint is on an internal address, or ""
+// when it is not or cannot be told.
 func InternalEndpoint(ctx context.Context, baseURL string, lookup func(context.Context, string) ([]netip.Addr, error)) string {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Hostname() == "" {
