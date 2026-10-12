@@ -759,6 +759,9 @@ on. A server with it off starts on the older schema as before.
 - `abhed serve -addr 127.0.0.1:0` printed `:0` in its banner; it now names
   the port the system gave it. The banner also says whether git's files
   are held read-only from commands.
+- `abhed admin web-search`, refused inside an agent's command, said "the
+  attempt could not be logged" although the system log had it; it now says
+  the attempt is in the system log.
 
 ### Dependencies
 

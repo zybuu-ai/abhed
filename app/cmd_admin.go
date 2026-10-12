@@ -394,8 +394,9 @@ func sameJSONValue(a, b any) bool {
 // own ~/.abhed/admin.jsonl instead, and told so.
 func logAdmin(e adminEntry, errw io.Writer) {
 	// The system log first: the file below is one its writer can erase.
-	if err := sysLogWrite(sysLogMessage(e)); err != nil {
-		fmt.Fprintf(errw, "abhed admin: the attempt is not in the system log: %v\n", err)
+	sysErr := sysLogWrite(sysLogMessage(e))
+	if sysErr != nil {
+		fmt.Fprintf(errw, "abhed admin: the attempt is not in the system log: %v\n", sysErr)
 	}
 	line, err := json.Marshal(e)
 	if err != nil {
@@ -414,6 +415,12 @@ func logAdmin(e adminEntry, errw io.Writer) {
 				return
 			}
 		}
+	}
+	if e.Agent != "" && sysErr == nil {
+		// Inside an agent's command the sandbox keeps both files out of
+		// reach, as it should; the system log is the record then.
+		fmt.Fprintln(errw, "abhed admin: the attempt is in the system log; an agent's command cannot write the admin log files")
+		return
 	}
 	fmt.Fprintf(errw, "abhed admin: the attempt could not be logged: %v\n", err)
 }
