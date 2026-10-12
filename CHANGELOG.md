@@ -140,6 +140,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A brace sequence such as `{c..c}url` or `c{u..u}rl` was not read as the
+  words bash makes of it, so it ran `curl` past `bash(curl *)` in any mode
+  that runs commands unasked, and on `:exec`. A literal sequence of letters
+  or integers is now read as bash expands it, up to 1,024 words, and deny
+  and ask rules see the result; one with an increment, zero padding or
+  letters of both cases, or a longer one, is asked about, and refused on
+  `:exec`, while a deny or ask rule for `bash` has a pattern. Affects every
+  release to 1.2.7.
 - An `ssh_connect` host name that read like an operator's host only by a
   look-alike character, such as `pr0d` or `buiId1` beside `prod` and
   `build1`, was accepted. Names are now compared with look-alike characters

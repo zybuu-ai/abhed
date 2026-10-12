@@ -523,7 +523,12 @@ are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as
 `curl`. A brace list in a word that is literal text throughout
 (`mkdir -p src/{a,b}`) is read exactly as bash expands it and is not asked
 about for that; one holding an expansion, a quote, a nested or second list
-is asked about while a deny or ask rule for `bash` has a pattern. A command that sets `IFS` to a separator other than blanks is also read
+is asked about while a deny or ask rule for `bash` has a pattern. So is a
+brace sequence: `{c..c}url` and `c{u..u}rl` are read as `curl`, and
+`{1..3}` and `{a..c}` as their words, up to 1,024 of them. A sequence that
+bash versions expand differently (an increment such as `{1..9..2}`, zero
+padding such as `{01..10}`, or letters of both cases such as `{Z..a}`), or a
+longer one, is asked about as a list that hides its words is. A command that sets `IFS` to a separator other than blanks is also read
 split on it, so `IFS=_; curl_x` is matched as `curl x`. Where such a command,
 or one that sets `IFS` in a way the text does not show (`IFS=$v`, `read IFS`,
 `${IFS:=_}`), then expands anything (`IFS=_; c=curl_x; $c`), the words that
