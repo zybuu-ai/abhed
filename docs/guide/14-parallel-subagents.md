@@ -258,7 +258,13 @@ accounts: a server checks its accounts every 15 seconds, and at once when
 it sees one change, so an account removed with `abhed user remove`, even
 from another process, or removed and made again under the same name, has
 its work there stopped this way. Only sessions begun before the account was
-made again are stopped; the new account's own sessions run on. Removing a person's administrator rights
+made again are stopped; the new account's own sessions run on. The two times
+come from different clocks: the account's from the machine that made it, a
+session's start from the server that began it. A session begun within the
+clocks' difference of the account being made again can be judged the wrong
+way, so keep the servers' and that machine's clocks in step (NTP); a
+difference of a second matters only for a session begun in that second.
+Removing a person's administrator rights
 stops their work too, as well as signing them out.
 Signing a person out is not that. After Sign out everywhere the account is
 still active: a background shell or task they started keeps running, and its

@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -129,4 +130,54 @@ func (r *witnessReporter) flush() {
 	if missed > 0 {
 		r.log.Warn("heads of the record did not reach the witness and were not logged", "failures_not_logged", missed)
 	}
+}
+
+// witnessFile reads the heads of local sessions a witness file holds under
+// this installation's key, read again only when the file changes. A line
+// that is not one, or a statement under another key, fails verify by
+// itself, so it is passed over here.
+type witnessFile struct {
+	cfg  config.Config
+	path string
+
+	mu    sync.Mutex
+	size  int64
+	mtime time.Time
+	stmts []witness.Statement
+}
+
+func (w *witnessFile) heads(tenant, session string) ([]local.WitnessedHead, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	f, err := os.Open(w.path) // #nosec G304 -- the managed witness file
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if w.stmts == nil || info.Size() != w.size || !info.ModTime().Equal(w.mtime) {
+		key, err := witnessKey(w.cfg, "")
+		if err != nil {
+			return nil, err
+		}
+		want := base64.StdEncoding.EncodeToString(key)
+		all, _ := witness.Read(f)
+		w.stmts = []witness.Statement{}
+		for _, s := range all {
+			if s.Store == "local" && s.Key == want {
+				w.stmts = append(w.stmts, s)
+			}
+		}
+		w.size, w.mtime = info.Size(), info.ModTime()
+	}
+	var out []local.WitnessedHead
+	for _, s := range w.stmts {
+		if s.Tenant == tenant && s.Session == session {
+			out = append(out, local.WitnessedHead{Lines: s.Lines, Hash: s.Hash})
+		}
+	}
+	return out, nil
 }

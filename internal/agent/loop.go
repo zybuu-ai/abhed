@@ -602,6 +602,10 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	if cfg.OffloadAt > 0 {
 		l.Offloader = NewOffloader(cfg.OffloadAt)
 	}
+	// Start-up files are read from the HOME the session's bash gives a command.
+	if pol != nil && pol.Home == nil && reg != nil {
+		pol.Home = tools.CommandHome(reg)
+	}
 	// recall is bound to this session's record, so it goes on a copy: a server
 	// shares one registry across sessions, and adding it there would hand
 	// every session the tool that reads the last one's record.

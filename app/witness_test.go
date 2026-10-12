@@ -3,6 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -17,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/store"
+	"github.com/zybuu-ai/abhed/store/local"
 	"github.com/zybuu-ai/abhed/store/witness"
 )
 
@@ -381,5 +385,134 @@ func TestRecordVerifyPostgresWitnessAfterDelete(t *testing.T) {
 	if !strings.Contains(out.String(), "ok      "+id+": 2 chained event(s)") || !strings.Contains(out.String(), "(deleted, erased by key)") ||
 		!strings.Contains(out.String(), "ok      "+child+": 1 chained event(s)") || !strings.Contains(out.String(), "(a subagent's)") {
 		t.Fatalf("verify left out the deleted or the subagent session: %s %s", out.String(), errb.String())
+	}
+}
+
+// rechain rewrites a session's lines with edit applied, and a copy of the
+// last as one more, every hash and prev worked out again, as the machine's
+// owner can, and its head to match.
+func rechain(t *testing.T, path string, edit func(string) string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type line struct {
+		Seq       int64           `json:"seq"`
+		ID        string          `json:"id"`
+		SessionID string          `json:"session_id"`
+		ParentID  string          `json:"parent_id,omitempty"`
+		Type      string          `json:"type"`
+		Actor     string          `json:"actor"`
+		Trust     string          `json:"trust"`
+		CreatedAt string          `json:"created_at"`
+		Payload   json.RawMessage `json:"payload"`
+		Prev      string          `json:"prev"`
+		Hash      string          `json:"hash,omitempty"`
+	}
+	encode := func(v any) []byte {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(v); err != nil {
+			t.Fatal(err)
+		}
+		return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
+	}
+	var out bytes.Buffer
+	prev, n, seq := strings.Repeat("0", 64), 0, int64(0)
+	raws := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+	for i, raw := range append(raws, raws[len(raws)-1]) {
+		var l line
+		if err := json.Unmarshal([]byte(edit(string(raw))), &l); err != nil {
+			t.Fatal(err)
+		}
+		if i == len(raws) {
+			l.Seq, l.ID = l.Seq+1, l.ID[:len(l.ID)-1]+"Z"
+		}
+		l.Prev, l.Hash = prev, ""
+		sum := sha256.Sum256(encode(l))
+		l.Hash = hex.EncodeToString(sum[:])
+		out.Write(append(encode(l), '\n'))
+		prev, n, seq = l.Hash, n+1, l.Seq
+	}
+	if err := os.WriteFile(path, out.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	head := encode(struct {
+		Lines int64  `json:"lines"`
+		Seq   int64  `json:"seq"`
+		Hash  string `json:"hash"`
+	}{int64(n), seq, prev})
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "head", strings.TrimSuffix(filepath.Base(path), ".jsonl")), append(head, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A record re-chained by its owner, then grown and pruned, does not pass the
+// witness as pruned: the prune checks the witness's heads and keeps them.
+func TestWitnessCatchesARechainedRecordThatWasPruned(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	heads := filepath.Join(t.TempDir(), "heads.jsonl")
+	cfg := config.Config{Record: config.RecordConfig{Witness: config.WitnessConfig{File: heads}}, ManagedKeys: []string{"record.witness"}}
+	ws := t.TempDir()
+	session := func(rec interface {
+		CreateSession(context.Context, store.SessionRecord) error
+	}, id string) {
+		if err := rec.CreateSession(context.Background(), store.SessionRecord{ID: id, Workspace: ws, User: cliUser()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec, err := openRecord(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{newConversationID(), newConversationID(), newConversationID()}
+	for _, id := range ids {
+		session(rec, id)
+		r := agent.NewRecorder(rec, id, "")
+		// No run ends, so the index holds no head of its own to compare.
+		_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+		_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "and"})
+		if err := rec.Release(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec.Close()
+	// The witness holds line 2 of each. The first two are re-chained with
+	// what they said changed, and grow a line, so each verifies alone.
+	rec, err = openRecord(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids[:2] {
+		rechain(t, rec.Path(id), func(s string) string { return strings.Replace(s, `"hi"`, `"ho"`, 1) })
+		if rep, err := rec.Verify(id); err != nil || !rep.OK {
+			t.Fatalf("the re-chained record does not verify on its own: %+v %v", rep, err)
+		}
+	}
+	// One is pruned with the witness file read, the other by a store that
+	// has none to read, as one with only a witness URL is.
+	if _, err := rec.Prune(ids[0], "user", "abhed record prune"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rec.Prune(ids[2], "user", "abhed record prune"); err != nil {
+		t.Fatal(err)
+	}
+	rec.Close()
+	bare, err := local.Open(local.Options{Tenant: cliTenant(cfg), User: cliUser()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bare.Prune(ids[1], "user", "abhed record prune"); err != nil {
+		t.Fatal(err)
+	}
+	bare.Close()
+	code, out, _ := runRecord(t, ws, "verify", "-witness", heads)
+	if code == 0 ||
+		!strings.Contains(out, "FAILED  "+ids[0]+": the witness holds line 2, and the record held another line there when it was pruned") ||
+		!strings.Contains(out, "FAILED  "+ids[1]+": the witness holds line 2, and the prune kept the record's hash only at its head (line 3), with no witness file to check") ||
+		!strings.Contains(out, "pruned  "+ids[2]) {
+		t.Fatalf("a re-chained record passed once pruned: %d %s", code, out)
 	}
 }

@@ -428,11 +428,11 @@ func TestStdinShellRefusedForItsOwnStartupVariables(t *testing.T) {
 		{"sh", []string{"A-B=1"}, "not an identifier"},
 		{"env IFS=/ sh", nil, "IFS"},
 		{"IFS=/ sh", nil, "IFS"},
-		{"env MODE=1 BASH_ENV=/x nice sh", nil, "BASH_ENV is set"},
+		{"env MODE=1 BASH_ENV=/x nice sh", nil, "it runs /x"},
 	} {
 		q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader("echo hi\n"))
 		err := s.r.srv.screenStdinExec(pol, c.command, c.env, q)
-		if !errors.Is(err, controlplane.ErrForbidden) || q.on || !strings.Contains(err.Error(), "cannot be checked") || !strings.Contains(err.Error(), c.names) {
+		if !errors.Is(err, controlplane.ErrForbidden) || q.on || !strings.Contains(err.Error(), "cannot") || !strings.Contains(err.Error(), c.names) {
 			t.Errorf("%s with %q: %v, screened %v", c.command, c.env, err, q.on)
 		}
 	}
@@ -595,5 +595,65 @@ func TestStdinShellCodeDepthIsBounded(t *testing.T) {
 	w = &scriptWalk{sc: newStdinScript(), depth: maxShellDepth}
 	if w.shellCode("sh", "ls", nil); !strings.Contains(w.why, "deep") {
 		t.Fatalf("past the bound: %q", w.why)
+	}
+}
+
+// A HOME or ZDOTDIR the exec sets is judged with its command: a shell that
+// would read start-up files from it, which the check cannot read inside the
+// sandbox, is refused under rules; a command that starts none runs.
+func TestExecJudgesItsHomeWithTheCommand(t *testing.T) {
+	s := newScreenRig(t, func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)"} })
+	pol, err := s.r.srv.sandboxPolicy(context.Background(), s.sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		command string
+		env     []string
+		refused bool
+	}{
+		{"zsh -c true", []string{"ZDOTDIR=/tmp/z"}, true},
+		{"zsh -c true", []string{"HOME=/tmp/h"}, true},
+		{"bash -l -c true", []string{"HOME=/tmp/h"}, true},
+		{"go version", []string{"HOME=/tmp/h", "ZDOTDIR=/tmp/z"}, false},
+		{"bash -c 'echo hi'", []string{"HOME=/tmp/h"}, false},
+		{"ls", []string{"ZDOTDIR=/tmp/z"}, false},
+	} {
+		err := screenExec(pol, c.command, c.env)
+		if refused := errors.Is(err, controlplane.ErrForbidden); refused != c.refused {
+			t.Errorf("%s with %q: %v", c.command, c.env, err)
+		}
+	}
+	// A stdin shell, which reads no start-up file, keeps being screened.
+	for _, env := range [][]string{{"HOME=/tmp/h"}, {"ZDOTDIR=/tmp/z"}} {
+		q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader("echo hi\n"))
+		if err := s.r.srv.screenStdinExec(pol, "sh", env, q); err != nil || !q.on {
+			t.Errorf("sh with %q: %v, screened %v", env, err, q.on)
+		}
+	}
+}
+
+// On a sandbox's :exec the check cannot read the sandbox's files, so a line
+// that points a shell at one is refused under rules, and so is one under a
+// hook alone; a plain command runs.
+func TestExecRefusesWhatItCannotReadInTheSandbox(t *testing.T) {
+	s := newScreenRig(t, func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)"} })
+	pol, err := s.r.srv.sandboxPolicy(context.Background(), s.sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for command, refused := range map[string]bool{
+		"BASH_ENV=/w/s.sh bash -c true": true, "ENV=/w/s.sh sh -i -c true": true, "export BASH_ENV=/w/s.sh; bash -c true": true,
+		"env BASH_ENV=/w/s.sh bash -c true": true, "bash --rcfile /w/s.sh -i": true, "bash --init-file /w/s.sh -i": true,
+		"HOME=/w zsh -c true": true, "ZDOTDIR=/w zsh -c true": true, "HOME=/w bash -l -c true": true, "zsh -c true": true,
+		". /w/s.sh": true, "source s.sh": true, "sh s.sh": true, "bash /w/s.sh": true, "./s.sh": true,
+		"PATH=/w:$PATH tool": true, "cd /w && ./s.sh": true, "BASH_ENV=$f bash -c true": true,
+		"ls -la": false, "go version": false, "bash -c 'echo hi'": false, "/usr/bin/env python3 -V": false,
+		"HOME=/w go version": false, "sh -c 'ls'": false, "/bin/ls": false,
+	} {
+		err := screenExec(pol, command, nil)
+		if got := errors.Is(err, controlplane.ErrForbidden); got != refused {
+			t.Errorf("%q: %v", command, err)
+		}
 	}
 }

@@ -142,6 +142,15 @@ func (l *lazySandbox) Available() (bool, string) {
 	return sb.Available()
 }
 
+// CommandHome is the chosen sandbox's, hidden while no choice is made.
+func (l *lazySandbox) CommandHome() (string, bool) {
+	sb, err := l.wait()
+	if err != nil {
+		return "", false
+	}
+	return sandbox.CommandHome(sb)
+}
+
 // Command waits for the choice; a failed choice gives a command that does
 // not start, with the reason.
 func (l *lazySandbox) Command(ctx context.Context, cwd, command string) *exec.Cmd {

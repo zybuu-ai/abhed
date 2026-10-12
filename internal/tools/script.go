@@ -62,6 +62,14 @@ func ReadScript(p string, direct bool) (text string, shell bool, err error) {
 }
 
 // shebangProgram is the program a #! line names, past env and its options.
+// ScriptShell is the program a script's #! line names, "" when it has none.
+func ScriptShell(text string) string {
+	if line, ok := strings.CutPrefix(text, "#!"); ok {
+		return shebangProgram(line)
+	}
+	return ""
+}
+
 func shebangProgram(line string) string {
 	line, _, _ = strings.Cut(line, "\n")
 	fields := strings.Fields(line)

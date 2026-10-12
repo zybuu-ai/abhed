@@ -519,3 +519,50 @@ func TestFirstHeadFailurePoisons(t *testing.T) {
 		t.Fatalf("after: %+v", rep)
 	}
 }
+
+// A prune reads the witness's heads first: when they cannot be read nothing
+// is pruned, and when they are read the tombstone keeps the record's hash at
+// each, and a line that differs makes it unverified.
+func TestPruneKeepsTheWitnessedHeads(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	record(t, s, "s-1", "one", "two", "three")
+	record(t, s, "s-2", "one", "two")
+	h1, _, _ := s.HashAt("s-1", 1)
+	_ = s.Close()
+	witnessed := map[string][]WitnessedHead{
+		"s-1": {{Lines: 1, Hash: h1}, {Lines: 2, Hash: "not-the-hash"}},
+		"s-2": nil,
+	}
+	fail := true
+	s2, err := Open(Options{Dir: dir, User: "tester", Witnessed: func(_, id string) ([]WitnessedHead, error) {
+		if fail {
+			return nil, errors.New("unreachable")
+		}
+		return witnessed[id], nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, err := s2.Prune("s-1", "user", "test"); err == nil || !strings.Contains(err.Error(), "nothing was pruned") {
+		t.Fatalf("a prune went ahead without the witness's heads: %v", err)
+	}
+	if _, pruned := s2.Pruned("s-1"); pruned {
+		t.Fatal("pruned without the witness's heads")
+	}
+	fail = false
+	for _, id := range []string{"s-1", "s-2"} {
+		if _, err := s2.Prune(id, "user", "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t1, _ := s2.Pruned("s-1")
+	if t1.Verified || !t1.WitnessChecked || !strings.Contains(t1.Unverified, "line 2 is not the one the witness holds") ||
+		len(t1.Witnessed) != 2 || t1.Witnessed[0] != (WitnessedHead{1, h1}) || t1.Witnessed[1].Hash == "not-the-hash" {
+		t.Fatalf("tombstone: %+v", t1)
+	}
+	if t2, _ := s2.Pruned("s-2"); !t2.Verified || !t2.WitnessChecked || len(t2.Witnessed) != 0 {
+		t.Fatalf("tombstone: %+v", t2)
+	}
+}

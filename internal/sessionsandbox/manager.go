@@ -658,6 +658,8 @@ func (m *Manager) bash(b Binding, who controlplane.Caller, sb controlplane.Sandb
 		return s.command(ctx, driver.CommandRequest{Shell: true, Cwd: cwd})
 	}
 	bash.Forward = func(cmd *exec.Cmd, names []string) { m.cfg.Service.ForwardEnv(sb, cmd, names) }
+	// The driver's HOME is inside its sandbox, which the host cannot read.
+	bash.Home = func() (string, bool) { return "", false }
 	bash.Isolation = m.cfg.Isolation(sb)
 	bash.RanUnder = nil
 	return bash

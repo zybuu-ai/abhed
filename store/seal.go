@@ -45,9 +45,11 @@ func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, e
 		if _, err := rand.Read(fresh); err != nil {
 			return nil, fmt.Errorf("make the key of session %s: %w", sessionID, err)
 		}
+		// FOR SHARE waits out a delete in progress and then sees it, so no
+		// key is left behind for a session deleted meanwhile.
 		if _, err := p.pool.Exec(ctx, `
 			INSERT INTO session_keys (session_id, tenant_id, key)
-			SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND deleted_at IS NULL)
+			SELECT $1, $2, $3 FROM sessions WHERE id = $1 AND deleted_at IS NULL FOR SHARE
 			ON CONFLICT (session_id) DO NOTHING`, sessionID, p.tenant, fresh); err != nil {
 			return nil, fmt.Errorf("store the key of session %s: %w", sessionID, err)
 		}

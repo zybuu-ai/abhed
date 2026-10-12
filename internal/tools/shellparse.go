@@ -96,6 +96,15 @@ type shellFacts struct {
 	pathDirs, bare                []string
 	// startupHidden says why a shell start-up file the command sets is not known.
 	startupHidden string
+	// startupDirs are the folders HOME and ZDOTDIR are set to, which a shell
+	// reads start-up files from, and startupDirHidden why one is not known;
+	// shellRun reports a shell started.
+	startupDirs      []startupDirSet
+	startupDirHidden string
+	shellRun         bool
+	// homeFiles are the start-up files the shells the line starts read from
+	// the HOME they inherit, by name.
+	homeFiles map[string]bool
 }
 
 // Script is a file a command runs as shell text, as named on its line.
@@ -107,6 +116,9 @@ type Script struct {
 	// Sourced marks a file read by source or ., which runs in the shell
 	// itself, so a cd in it moves the commands after it.
 	Sourced bool
+	// Startup marks a start-up file in a HOME or ZDOTDIR folder the line
+	// sets, which a shell reads only when it is there.
+	Startup bool
 }
 
 // maxReadings bounds the commands read from one simple command's words, so a
@@ -615,8 +627,11 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		f.gitCall(args, depth)
 		return false
 	case name == "su" || name == "flock" || name == "script":
+		f.shellRun = true
 		f.runner(args, depth)
 	case cShells[name]:
+		f.shellRun = true
+		f.shellStart(name, args)
 		f.shell(st, args, depth)
 	case ifsSetters[name]:
 		if name == "read" && !f.posix {

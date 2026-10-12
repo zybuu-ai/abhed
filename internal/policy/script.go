@@ -3,6 +3,8 @@ package policy
 import (
 	"errors"
 	"io/fs"
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -26,12 +28,94 @@ type scriptRead struct {
 // another folder, or may write before it runs, is not read but refused.
 func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 	var out scriptRead
-	cwd := e.Cwd()
+	cwd := ""
+	if e.Cwd != nil {
+		cwd = e.Cwd()
+	}
 	if cwd == "" {
+		if e.SandboxFiles {
+			out.refuse = SandboxScripts(canon)
+			return out
+		}
+		// Nothing is read; a start-up file a shell reads still cannot be passed over.
+		if names := canon.HomeStartups(); len(names) > 0 {
+			out.refuse = "it starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
+		}
+		for _, s := range canon.Scripts() {
+			if s.Startup && out.refuse == "" {
+				out.refuse = "it starts a shell that reads start-up files from a folder the check cannot read (" + s.Path + ")"
+			}
+		}
+		if why := canon.StartupHidden(); why != "" && out.refuse == "" {
+			out.refuse = "it names " + why
+		}
 		return out
 	}
 	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{})
 	return out
+}
+
+// systemBins are folders a sandbox's image holds its programs in: a program
+// named by a path there is taken as the image's, not a script.
+var systemBins = map[string]bool{"/bin": true, "/sbin": true, "/usr/bin": true, "/usr/sbin": true,
+	"/usr/local/bin": true, "/usr/local/sbin": true}
+
+// SandboxScripts says why canon cannot be judged where its files are not the
+// host's, as on a sandbox's :exec: it runs a script, sources a file, gives a
+// shell a start-up file or folder, or finds a program on a PATH it sets, none
+// of which the check can read. "" for a command that does none of that.
+func SandboxScripts(canon tools.Canonical) string {
+	if names := canon.HomeStartups(); len(names) > 0 {
+		return "it starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
+	}
+	if why := canon.StartupHidden(); why != "" {
+		return "it names " + why
+	}
+	if canon.ScriptsCut() {
+		return "it runs more scripts than the check reads"
+	}
+	for _, s := range canon.Scripts() {
+		switch {
+		case s.Startup:
+			return "it starts a shell that reads start-up files from a folder the check cannot read (" + s.Path + ")"
+		case s.Direct && path.IsAbs(s.Path) && systemBins[path.Dir(path.Clean(s.Path))]:
+		default:
+			return "it runs " + s.Path + ", which the check cannot read in the sandbox"
+		}
+	}
+	if canon.PathSet() && len(canon.Bare()) > 0 && (len(canon.PathDirs()) > 0 || canon.PathUnknown()) {
+		return "it runs " + canon.Bare()[0] + " through a PATH it sets, which the check cannot read in the sandbox"
+	}
+	return ""
+}
+
+// home is the HOME the sandbox gives a command, and whether the host can read it.
+func (e *Engine) home() (string, bool) {
+	if e.Home != nil {
+		return e.Home()
+	}
+	h := os.Getenv("HOME")
+	return h, h != ""
+}
+
+// homeScripts are the start-up files the shells canon starts read from the
+// HOME the sandbox gives them; why says when that HOME cannot be read.
+func (e *Engine) homeScripts(canon tools.Canonical) (scripts []tools.Script, why string) {
+	names := canon.HomeStartups()
+	if len(names) == 0 {
+		return nil, ""
+	}
+	dir, visible := e.home()
+	if visible && dir == "" {
+		return nil, "" // a home not made yet, which starts empty
+	}
+	if !visible || !filepath.IsAbs(dir) {
+		return nil, "starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
+	}
+	for _, n := range names {
+		scripts = append(scripts, tools.Script{Path: filepath.Join(dir, n), Startup: true})
+	}
+	return scripts, ""
 }
 
 // lineWrites are the files the lines around a script write, and the PATH
@@ -64,6 +148,10 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		}
 	}
 	scripts, why := pathScripts(canon, writes)
+	if why == "" {
+		home, hwhy := e.homeScripts(canon)
+		scripts, why = append(scripts, home...), hwhy
+	}
 	if why != "" {
 		if depth == 0 {
 			out.refuse = "it " + why
@@ -71,7 +159,9 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		}
 		out.ask = "a script it runs " + why
 	}
-	for _, s := range scripts {
+	zshenv := false
+	for i := 0; i < len(scripts); i++ {
+		s := scripts[i]
 		if out.refuse != "" {
 			return moves
 		}
@@ -107,6 +197,8 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		case errors.Is(err, tools.ErrScriptTooLong):
 			out.ask = "the script " + name + " is too long to check against the rules"
 			continue
+		case errors.Is(err, fs.ErrNotExist) && s.Startup:
+			continue // a shell starts without it
 		case err != nil && s.Direct:
 			// A program the line may build first (make && ./bin/app), or one
 			// no shell could read as a script either.
@@ -120,6 +212,18 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		case !shell:
 			continue
 		}
+		// A zsh script reads .zshenv from the HOME it inherits, as zsh -c does.
+		if s.Direct && !zshenv && tools.ScriptShell(text) == "zsh" && !canon.SetsStartupDir() {
+			zshenv = true
+			switch dir, visible := e.home(); {
+			case visible && dir == "":
+			case !visible || !filepath.IsAbs(dir):
+				out.refuse = "it runs the zsh script " + name + ", which reads .zshenv from a HOME the check cannot read"
+				return moves
+			default:
+				scripts = append(scripts, tools.Script{Path: filepath.Join(dir, ".zshenv"), Startup: true})
+			}
+		}
 		// What a script hides from the rules is put to a person, not refused:
 		// build scripts often run built text, and before this none was read.
 		sc := tools.CanonicalCommand(text)
@@ -132,6 +236,8 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			out.ask = "the script " + name + " names a program by an expansion that edits its value"
 		case sc.IFSSplit:
 			out.ask = "the script " + name + " may split its words by a changed IFS"
+		case s.Startup && sc.SetsStartupDir():
+			out.ask = "the start-up file " + name + " moves where the shell reads its other start-up files"
 		}
 		segments, complete := commandSegments(text)
 		if !complete {

@@ -67,6 +67,10 @@ type lspStartResponse struct {
 	Root string `json:"root"`
 }
 
+// lspEnv is set for every language server: a go.mod's toolchain line, saved
+// or only in the editor, cannot have the go command fetch and run another Go.
+const lspEnv = "GOTOOLCHAIN=local "
+
 // lspTiers are the sandboxes a language server may run in; an empty or
 // unknown tier is not one of them.
 var lspTiers = map[string]bool{"process": true, "container": true, "vm": true, "fence": true}
@@ -240,7 +244,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 
 	id := "u" + newSessionID()
 	command := commandLine(argv)
-	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + req.Language + " in the workbench editor"})
+	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + req.Language + " in the workbench editor, run with " + strings.TrimSpace(lspEnv)})
 	if _, refused, err := live.Loop.ManualAuthorize("bash", id, args); err != nil {
 		writeUnrecorded(w, err, "the language server could not be recorded, so it was not started")
 		return
@@ -258,7 +262,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
-	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, command)
+	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lspEnv+command)
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer

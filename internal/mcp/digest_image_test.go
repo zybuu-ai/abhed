@@ -18,6 +18,12 @@ func TestImageDigestPinsOnlyAnEngine(t *testing.T) {
 		{"/usr/bin/podman", []string{"run", "-i", "registry.example.com:5000/s@" + d}, true},
 		{"nerdctl", []string{"run", "ghcr.io/org/server@" + d}, true},
 		{"docker", []string{"run", "--label=x@" + d, "ghcr.io/org/server:latest"}, false},
+		{"docker", []string{"run", "--label", "x@" + d, "ghcr.io/org/server:latest"}, false},
+		{"docker", []string{"run", "-v", "x@" + d, "ghcr.io/org/server:latest"}, false},
+		{"podman", []string{"run", "--rm", "ghcr.io/org/server:latest", "x@" + d}, false},
+		{"docker", []string{"--context", "ctx", "run", "-it", "--rm", "--name", "s", "ghcr.io/org/server@" + d}, true},
+		{"docker", []string{"container", "run", "--env=A=1", "--", "ghcr.io/org/server@" + d}, true},
+		{"docker", []string{"pull", "ghcr.io/org/server@" + d}, false},
 		{"/no/such/sh", []string{"x@" + d}, false},
 		{"/no/such/docker-wrapper", []string{"ghcr.io/org/server@" + d}, false},
 	} {

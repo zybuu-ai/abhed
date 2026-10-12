@@ -83,7 +83,7 @@ jobs:
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
           # The page tests need node and python3; here a missing one fails, not skips.
           ABHED_REQUIRE_PAGE_TESTS: "1"
-        run: go test ./... -count=1 -coverprofile=coverage.out
+        run: go test ./... -count=1 -timeout 30m -coverprofile=coverage.out
 
       # abhed_app owns the tables; abhed_runtime is what a server should run
       # as. These tests are the evidence that the audit record cannot be

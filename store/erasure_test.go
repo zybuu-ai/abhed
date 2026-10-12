@@ -104,3 +104,50 @@ func TestDeleteErasesWhatTheSessionSaid(t *testing.T) {
 		t.Fatalf("%d rows written to the deleted session", clear)
 	}
 }
+
+// A key made for a session while another server deletes it is not left
+// behind: the key's insert waits for the delete and then finds it deleted.
+func TestKeyIsNotMadeForASessionBeingDeleted(t *testing.T) {
+	p := openStore(t, "default")
+	ctx := context.Background()
+	id := testID(t, "sess-keyrace-")
+	if err := p.CreateSession(ctx, SessionRecord{ID: id, Tenant: "default", User: "tester", Workspace: "/w",
+		Model: "m", StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	// The delete's statements, run and held open as another server's would be.
+	other, cold := openStore(t, "default"), openStore(t, "default")
+	tx, err := other.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, q := range []string{
+		`UPDATE sessions SET deleted_at = now(), deleted_by = user_id WHERE id = $1`,
+		`DELETE FROM session_keys WHERE session_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, q, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() { _, err := cold.sealer(ctx, id); done <- err }()
+	time.Sleep(300 * time.Millisecond)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var sealed error
+	select {
+	case sealed = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the key's insert did not finish")
+	}
+	if !errors.Is(sealed, ErrSessionDeleted) {
+		t.Errorf("a key was made for a session being deleted: %v", sealed)
+	}
+	var keys int
+	_ = p.pool.QueryRow(ctx, `SELECT count(*) FROM session_keys WHERE session_id = $1`, id).Scan(&keys)
+	if keys != 0 {
+		t.Fatalf("%d key row(s) left for a deleted session", keys)
+	}
+}

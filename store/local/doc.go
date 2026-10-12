@@ -135,6 +135,16 @@ type Tombstone struct {
 	Missing    bool
 	Verified   bool
 	Unverified string // why it did not verify
+	// Witnessed are the record's hashes at the lines the witness held when
+	// it was pruned, and WitnessChecked marks a prune that read the witness.
+	Witnessed      []WitnessedHead
+	WitnessChecked bool
+}
+
+// WitnessedHead is a line of a session's chain and its hash.
+type WitnessedHead struct {
+	Lines int64  `json:"lines"`
+	Hash  string `json:"hash"`
 }
 
 // Head is the last line of a session's chain: how many lines it has, and

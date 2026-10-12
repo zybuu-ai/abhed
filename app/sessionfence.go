@@ -76,6 +76,18 @@ func (s *sessionFence) get() (*sandbox.Fence, error) {
 	return f, nil
 }
 
+// CommandHome is the fence's home folder; before the fence is made there is
+// none yet, and its home starts empty.
+func (s *sessionFence) CommandHome() (string, bool) {
+	s.mu.Lock()
+	f := s.fence
+	s.mu.Unlock()
+	if f == nil {
+		return "", true
+	}
+	return f.CommandHome()
+}
+
 // Command runs command under the session's fence, or not at all.
 func (s *sessionFence) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	f, err := s.get()

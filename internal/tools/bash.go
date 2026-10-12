@@ -45,6 +45,9 @@ type Bash struct {
 	// Sandbox, when set, wraps the command (e.g. a bubblewrap, container or gVisor exec).
 	// Nil means direct execution, which is only appropriate for local dev.
 	Sandbox func(ctx context.Context, cwd, command string) *exec.Cmd
+	// Home is the HOME Sandbox gives a command, as a host path, and whether
+	// the host can read it. Nil with a Sandbox is taken as hidden.
+	Home func() (string, bool)
 	// Secrets resolves names the model asked for into NAME=value pairs for
 	// one command's environment. Policy has allowed each name by the time
 	// this runs. Nil means no secrets are available.
@@ -1002,4 +1005,21 @@ func shellWord(s string) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// CommandHome is the HOME the registry's bash tool gives a command, as the
+// policy reads start-up files from it: the host's when commands run directly.
+func CommandHome(reg *Registry) func() (string, bool) {
+	return func() (string, bool) {
+		t, _ := reg.Get("bash")
+		b, ok := t.(Bash)
+		switch {
+		case ok && b.Home != nil:
+			return b.Home()
+		case ok && b.Sandbox != nil:
+			return "", false
+		}
+		h := os.Getenv("HOME")
+		return h, h != ""
+	}
 }

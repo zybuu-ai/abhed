@@ -794,8 +794,15 @@ func (c Canonical) AsTerminalLine() Canonical {
 func (c Canonical) Unparsed() bool { return c.shell.unparsed }
 
 // Scripts are the files, named literally, the command runs as shell text:
-// a shell's script operand, source and . files, and programs named by a path.
-func (c Canonical) Scripts() []Script { return c.shell.scripts }
+// a shell's script operand, source and . files, programs named by a path, and
+// the start-up files in a HOME or ZDOTDIR folder the line sets for a shell.
+func (c Canonical) Scripts() []Script {
+	startups, _ := c.shell.startups()
+	if len(startups) == 0 {
+		return c.shell.scripts
+	}
+	return append(append([]Script(nil), c.shell.scripts...), startups...)
+}
 
 // Writes are the literal files the command writes, by redirection or a
 // copying command; a copy into a folder is named as the file it makes there.
@@ -833,7 +840,22 @@ func (c Canonical) BareCut() bool { return c.shell.bareCut }
 
 // StartupHidden says why a start-up file the command gives a shell, as
 // BASH_ENV=$f does, is not known; "" when each is literal.
-func (c Canonical) StartupHidden() string { return c.shell.startupHidden }
+func (c Canonical) StartupHidden() string {
+	if _, why := c.shell.startups(); why != "" && c.shell.startupHidden == "" {
+		return why
+	}
+	return c.shell.startupHidden
+}
+
+// HomeStartups are the start-up files, by name, the shells the command
+// starts read from the HOME the command inherits.
+func (c Canonical) HomeStartups() []string { return c.shell.homeStartups() }
+
+// SetsStartupDir reports HOME or ZDOTDIR set, which moves where a shell
+// reads its start-up files from.
+func (c Canonical) SetsStartupDir() bool {
+	return len(c.shell.startupDirs) > 0 || c.shell.startupDirHidden != ""
+}
 
 // Commands are the simple commands a bash parser finds, from each word that
 // may be the program, quoting undone: inside functions, subshells and the

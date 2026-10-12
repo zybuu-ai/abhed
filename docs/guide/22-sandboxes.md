@@ -707,7 +707,24 @@ The exec's own variables (`env` in the request) are held to the same list
 while any such rule or hook is in force, for every exec and not only one fed
 stdin, since `BASH_ENV` runs a file even for a judged `bash -c`: setting one
 of those, an exported function (`BASH_FUNC_…`) or a name that is not an
-identifier is refused with `403` and code `forbidden`. For a shell fed
+identifier is refused with `403` and code `forbidden`. `HOME` and
+`ZDOTDIR` are judged with the command instead: a shell it starts that would
+read start-up files from that folder (`zsh -c`, `bash -l -c`) is refused,
+since the check cannot read files inside the sandbox; a command that starts
+none, a plain `bash -c`, or a shell fed stdin keeps them. A shell started
+with the sandbox's own `HOME` is refused the same way while the rules are
+in force, and so is an interactive terminal's, unless it is the one the
+server starts (`bash --noprofile --norc -i`), which reads none.
+
+The server cannot read a sandbox's files, so while bash rules or hooks are
+in force an `:exec` or SSH exec line that would have a shell run one is
+refused (`403`, code `forbidden`) rather than passed unread: a script run
+by path or through a shell (`./s.sh`, `sh s.sh`), a file sourced
+(`. f`, `source f`), a start-up file (`BASH_ENV=`, `ENV=`, `--rcfile`,
+`--init-file`), a `HOME` or `ZDOTDIR` with a shell that reads start-up
+files from it, and a program found through a `PATH` the line sets. A
+program named by its path in `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin`,
+`/usr/local/bin` or `/usr/local/sbin` is taken as the image's own; plain commands run as before. For a shell fed
 stdin, `IFS` is refused too, and the shell is refused as uncheckable rather
 than judged statement by statement; the message names the variable to leave
 out.

@@ -13,6 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/wsconn"
@@ -378,6 +379,7 @@ func (s *Server) sandboxCallerFunc() func(r *http.Request) (controlplane.Caller,
 // the workbench's terminal. A layer that cannot be had refuses the call.
 func (s *Server) sandboxPolicy(ctx context.Context, id string) (*policy.Engine, error) {
 	pol := s.newPolicy(policy.ModeDefault)
+	pol.SandboxFiles = true
 	toolset.Police(s.opts.Extensions, pol, "sandbox:"+id)
 	layer, err := s.sessionLayer(StartSpec{Tenant: TenantOf(ctx), User: UserOf(ctx)})
 	if err == nil {
@@ -400,6 +402,9 @@ func denied(pol *policy.Engine, command string) error {
 	return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
 }
 
+// terminalDenied refuses an interactive shell a deny rule or hook refuses.
+func terminalDenied(pol *policy.Engine) error { return denied(pol, sandbox.TerminalCommand) }
+
 // execRefused refuses what denied does, and, while rules or hooks are in
 // force, a command line they cannot read whole: a session would put it to a
 // person, and an exec has no one to confirm it, so it fails closed.
@@ -410,6 +415,10 @@ func execRefused(pol *policy.Engine, command string) error {
 		return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
 	}
 	if why := unreadable(d, tools.CanonicalCommand(command), pol.GitExtensions); why != "" && screensStdin(pol) {
+		return fmt.Errorf("%w: %s, and no one can confirm it on an exec", controlplane.ErrForbidden, why)
+	}
+	// Hooks too: what a sandbox's files hold is out of the check's reach.
+	if why := policy.SandboxScripts(tools.CanonicalCommand(command)); why != "" && pol.SandboxFiles && screensStdin(pol) {
 		return fmt.Errorf("%w: %s, and no one can confirm it on an exec", controlplane.ErrForbidden, why)
 	}
 	return nil

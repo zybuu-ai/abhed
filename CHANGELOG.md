@@ -154,10 +154,13 @@ All notable changes to Abhed are recorded here. The format follows
 ### Security
 
 - A workbench shell or command could be read, typed into, resized or killed
-  by whichever account held its session, not only the one that started it,
-  so after a session changed hands (an account removed and made again under
-  the same name) the new holder could drive the old one's terminals. Each
-  now answers only the account that started it. Affects 1.0.0 to 1.2.7.
+  by whichever account held its session, not only the one that started it:
+  when a session's owner changed in the store under a running server (as
+  `abhed migrate --owners local-only` moving it from an old owner key to an
+  account does), the server took the new owner as the session's, and that
+  account could drive the terminals started under the old key. Each now answers only the account that started it. (An
+  account removed and made again under the same name has the same owner key;
+  the account sweep below ends its terminals.) Affects 1.0.0 to 1.2.7.
 - A call whose approval could not be written to the record (the database
   failing, or the session held by another process) still ran, so the record
   held no approval for what was done, and a process taking the session over
@@ -196,9 +199,20 @@ All notable changes to Abhed are recorded here. The format follows
   rule and asked about otherwise. A bare program is read from each folder a
   `PATH` the line sets names (`PATH=sub:$PATH tool`), and a shell's start-up
   file is read as a script it runs (`BASH_ENV=f`, `ENV=f`, `--rcfile f`,
-  `--init-file f`); one too long, unparsable, running built text, or itself
+  `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
+  `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` a shell the line
+  starts reads, by its options, from a `ZDOTDIR` or `HOME` folder the line
+  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true`, or that
+  an exec sets in its environment, and those a shell reads from the
+  `HOME` the sandbox gives it, which an earlier command may have written:
+  read on the process tier, none and the fence, and refused under a deny
+  rule where the host cannot read that `HOME`, as in a container); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
-  interpreters' scripts are not read, and an `:exec` reads no script.
+  interpreters' scripts are not read. An `:exec` in a sandbox, whose files
+  the server cannot read, refuses instead, while rules or hooks are in
+  force, a line that runs a script, sources a file, gives a shell a start-up
+  file or folder, or finds a program on a `PATH` it sets; plain commands
+  and programs in the image's own `bin` folders run.
   Affects every release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
@@ -499,8 +513,9 @@ All notable changes to Abhed are recorded here. The format follows
   reported such a server as pinned, so a changed program started all the
   same. The program a stdio server's command resolves to is now hashed
   before it starts and a mismatch refuses it; an OCI image named by the
-  digest in the arguments of `docker`, `podman` or `nerdctl` is accepted as
-  pinned by the engine. A URL server
+  digest as the image `docker`, `podman` or `nerdctl` runs (`run`'s first
+  operand, past its options and their values) is accepted as pinned by the
+  engine. A URL server
   with a `digest`, or a malformed digest, is refused. Affects 0.1.0 to
   1.2.7.
 - Once the managed file turned `web_search` on, a search ran without
@@ -1168,9 +1183,12 @@ All notable changes to Abhed are recorded here. The format follows
   storage, and/or a `url` sent each signed head). `abhed record verify`
   checks every head the witness holds is still in the record, which catches
   a record cut back, re-chained or restored from an older copy. A session
-  pruned with a tombstone that covers the witnessed head is reported as
-  pruned, not failed, unless its file was gone or did not verify when it
-  was pruned.
+  pruned with a tombstone that holds the witnessed hash at that line is
+  reported as pruned, not failed, unless its file was gone or did not verify
+  when it was pruned. With a witness `file`, a prune checks the record
+  against each head the file holds for the session first and keeps the
+  hashes in the tombstone, so a re-chained record still fails once pruned;
+  a prune that cannot read the file is refused.
 - Postgres events are hash-chained per session by the database itself
   (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
   sends), as is the control plane's `sandbox_audit` per tenant. `abhed
@@ -1224,11 +1242,18 @@ All notable changes to Abhed are recorded here. The format follows
   `workspace/executeCommand` and other methods are refused, `initialize`
   carries only the workspace and the editor's capabilities (never
   `initializationOptions`), and answers to the server's requests must be
-  `null`. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
-  `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
+  `null`. Each runs with `GOTOOLCHAIN=local`, so a `go.mod` toolchain line
+  cannot fetch and run another Go; unsaved edits reach the server
+  unrecorded, as documented. Routes: `POST /v1/sessions/{id}/lsp`, and
+  `GET`, `POST` and `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed
 
+- An interactive terminal's shell (the workbench's, Studio's, `:attach`
+  and SSH) is judged and recorded as `bash --noprofile --norc -i`, as it
+  runs, rather than `bash -i`; a deny rule written on `bash -i` no longer
+  names it. An exec's `HOME` or `ZDOTDIR` is no longer refused by itself
+  under rules: it is judged with the command it is given (see Security).
 - Studio's line-by-line terminal shows any escape sequence but colour as a
   symbol, so a progress bar or spinner that redraws its line now prints
   each frame on its own; run such a command in the interactive shell to
@@ -1405,8 +1430,9 @@ All notable changes to Abhed are recorded here. The format follows
 - A session recovered from a process that stopped mid-turn was ended with
   the calls that turn had open left without an outcome. Each now gets one
   before the end: an approved call, which may have run, is answered
-  "outcome unknown", and any other is denied with step `handover`. Affects
-  1.2.3 to 1.2.7.
+  "outcome unknown", and any other is denied with step `handover`; so do
+  the open calls of a background subagent the process lost, in its own
+  record before its end. Affects 1.2.3 to 1.2.7.
 - A message sent in the web IDE before its first workbench session had
   finished opening could lose its view: the workbench session opened over
   it, so the new session's approval card was no longer shown and its call
@@ -2035,7 +2061,7 @@ All notable changes to Abhed are recorded here. The format follows
   installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
   `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`,
   `ChainHashAt` and `ChainSessions` (with `store.ChainSession`), `store.ChainReport`, `store/local.Store.HashAt` and
-  `Pruned` (with `Tombstone`), and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
+  `Pruned` (with `Tombstone` and `WitnessedHead`), `store/local.Options.Witnessed`, and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
   tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
   `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.
 - `hawkeye`: `Report.Network` with `NetworkStats` and `NetworkRefusal`,

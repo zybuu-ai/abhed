@@ -172,6 +172,12 @@ func reconcileChildren(store Store, parent *Recorder, sessionID string, events [
 			// is written now. Either way the return names that end.
 			endSeq := runEndSeq(evs)
 			if endSeq == 0 {
+				// Its open calls get their outcomes before its end, as the parent's do.
+				if open, ok := InFlight(evs); ok {
+					if err := settleOpenCalls(child, append(open.Calls, open.Others...)); err != nil {
+						return err
+					}
+				}
 				ev, err := child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermShutdown, Recovered: true})
 				if err != nil {
 					return err
