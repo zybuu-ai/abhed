@@ -643,7 +643,7 @@ func TestCLIRefusesUnclaimedOwnerViaUser(t *testing.T) {
 	for _, owner := range []string{"unclaimed:bob@example.test", "nobody:local", "Unclaimed:Bob"} {
 		rs.rows["s-x"] = store.SessionRecord{ID: "s-x", User: owner, Tenant: "default", EndedAt: &ended}
 		t.Setenv("USER", owner)
-		if err := ownedHere(context.Background(), st, "s-x"); err == nil || !strings.Contains(err.Error(), "another user") {
+		if err := ownedHere(context.Background(), st, "s-x"); err == nil || !strings.Contains(err.Error(), "set aside by the session owner migration") {
 			t.Errorf("$USER=%q resumed a row owned by %q: %v", owner, owner, err)
 		}
 		// Nor is a session started under that $USER stored as no one's.
