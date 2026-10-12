@@ -68,6 +68,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_username_key ON users (lower(username));
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users (lower(btrim(email))) WHERE btrim(email) <> '';
 `
 
+// ensureUsersTable creates the accounts table, if missing, without the
+// version 5 indexes, so the owner move can read it first.
+func ensureUsersTable(ctx context.Context, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("apply users schema: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('abhed.users.schema'))`); err != nil {
+		return fmt.Errorf("apply users schema: %w", err)
+	}
+	if _, err := tx.Exec(ctx, usersSchema); err != nil {
+		return fmt.Errorf("apply users schema: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
 // migrateUsersSchema applies the accounts table and the version 5 indexes in
 // one transaction, one process at a time, refusing with the accounts to fix
 // when existing rows already share a key. Idempotent.

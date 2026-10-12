@@ -859,6 +859,14 @@ runs the server; whoever holds them can alter the record. After an upgrade
 that adds columns, run `abhed migrate` again before starting the server: on a
 schema older than the binary it refuses to start and names what is missing.
 
+The session owner move runs once. Its `--owners` (`local-only` or
+`unclaim`; another value exits `2`) has no effect on a later run, which says
+so. `local-only` refuses when it finds no account while old sessions exist,
+and then records nothing: import the accounts first (`abhed user import`),
+or pass `--owners=unclaim` or `--force-no-accounts`. Like `serve`, `migrate`
+refuses an `auth.users_file` in a place commands can write, such as the
+workspace or a temp folder.
+
 **Abhed refuses to start** if the role in `storage.dsn` could alter the record
 — if it owns `events`, or holds `UPDATE`, `DELETE` or `TRUNCATE` on it — and
 says which. It asks the database what the connection can do rather than

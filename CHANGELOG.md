@@ -741,6 +741,13 @@ on. A server with it off starts on the older schema as before.
   refused an untrusted workspace that set only `auth.require_group` saying
   it would start with no sign-in or no durable record; the refusal now says
   what each ignored setting would lose.
+- `abhed migrate`: a misspelled `--owners` exited `1`; it is a usage error,
+  exit `2`. A second run's `--owners` did nothing without a word; it now
+  says it has no effect. An `auth.users_file` that `serve` refuses (in the
+  workspace or a temp folder) was read; it is now refused the same way. A
+  `local-only` migration refused for finding no accounts still recorded the
+  accounts schema (version 5); it now records nothing, and says to import
+  the accounts with `abhed user import` first.
 
 ### Dependencies
 

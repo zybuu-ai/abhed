@@ -117,9 +117,10 @@ func TestOwnerMigrationIsRecordedAndRunsOnce(t *testing.T) {
 	if err != nil || !done {
 		t.Fatalf("schema version 4 not recorded after Open: %v %v", done, err)
 	}
-	remaps, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: OwnersLocalOnly})
-	if err != nil || remaps != nil {
-		t.Fatalf("second run: %+v %v", remaps, err)
+	told := false
+	remaps, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: OwnersLocalOnly, Done: func() { told = true }})
+	if err != nil || remaps != nil || !told {
+		t.Fatalf("second run: %+v %v, told it ran before %v", remaps, err, told)
 	}
 }
 
