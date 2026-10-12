@@ -226,6 +226,14 @@ func TestUnknownOutcomeIsArmedFromTheRecord(t *testing.T) {
 	if !l.unknown.has("write", args) || l.unknown.has("write", json.RawMessage(`{}`)) {
 		t.Fatal("the unknown outcome was not armed from the record")
 	}
+	// A payload from before 1.2.8, as Postgres renders JSONB: spaced, keys in its own order.
+	l.NoteUnknownOutcomes([]Event{
+		{Seq: 3, Type: EvActionRequested, Payload: json.RawMessage(`{"call_id": "c2", "tool": "write", "args": {"content": "z", "path": "w"}}`)},
+		{Seq: 4, Type: EvObservation, Payload: mustJSON(Observation{CallID: "c2", Tool: "write", OutcomeUnknown: true})},
+	})
+	if !l.unknown.has("write", json.RawMessage(`{"path":"w","content":"z"}`)) {
+		t.Fatal("an unknown outcome recorded before 1.2.8 does not match the same call")
+	}
 }
 
 // A turn whose answer was recorded but not its end is ended, not answered twice.

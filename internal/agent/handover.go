@@ -146,7 +146,17 @@ type mayHaveRun struct {
 	keys map[string]bool
 }
 
-func runKey(tool string, args json.RawMessage) string { return tool + "\x00" + string(args) }
+// runKey compares arguments as JSON values, not bytes: a payload from before
+// 1.2.8 comes back from Postgres re-rendered, with its own spacing and key order.
+func runKey(tool string, args json.RawMessage) string {
+	var v any
+	if json.Unmarshal(args, &v) == nil {
+		if b, err := json.Marshal(v); err == nil {
+			args = b
+		}
+	}
+	return tool + "\x00" + string(args)
+}
 
 func (m *mayHaveRun) add(tool string, args json.RawMessage) {
 	m.mu.Lock()
