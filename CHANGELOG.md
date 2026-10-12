@@ -47,6 +47,9 @@ All notable changes to Abhed are recorded here. The format follows
   store; the operator's store serves scheduled runs only. Have each person
   add their secrets with `PUT /v1/secrets/{name}`.
 
+- A stdio MCP server on the process tier no longer sees your home folder;
+  set `"host_files": true` on one that needs it.
+
 ### Security
 
 - A shell's `-c` text was taken to be the word right after `-c`, so in
@@ -214,6 +217,12 @@ All notable changes to Abhed are recorded here. The format follows
   bound into its sandbox on Linux and a loopback port only its Seatbelt
   profile allows on macOS, and what arrives there is recorded as that call.
   Affects 1.2.7.
+- A stdio MCP server ran with your whole home folder readable and
+  writable, so it could read `~/.ssh` or plant a LaunchAgent, a systemd
+  user unit or a shell rc line. On the process tier its home is now hidden
+  but for a home of its own under `~/.abhed/mcp` and its install folder,
+  read-only; `"host_files": true` on a server keeps the old behaviour.
+  Affects 0.1.0 to 1.2.7.
 
 ### Added
 

@@ -22,11 +22,26 @@ of the file.
 
 ## Where a server runs
 
-A stdio server is a process Abhed starts on your machine, as you, **outside the
-sandbox**. It can read and write what your user can and reach the network,
-whatever the sandbox tier and `allow_network` say. The one exception is the
-network under `sandbox.network: "allowlist"`; see below. A URL server runs
-wherever it is hosted.
+A stdio server is a process Abhed starts on your machine, as you, outside
+the commands' sandbox. On the process tier (macOS Seatbelt, Linux
+bubblewrap) its **files are confined**, whatever the network setting: your
+home folder is hidden from it, but for a home of its own,
+`~/.abhed/mcp/<server>/home`, which is its `HOME`, which it may write and
+which keeps its caches (`npx`, `uv`) between runs, and the folder it was
+installed in when that is under your home (a node version's folder, a
+toolchain's, never all of `~/.local` or `~/.cargo`), read-only. The workspace
+stays readable and writable, with its `.abhed` hidden. So a server cannot read
+`~/.ssh` or plant a LaunchAgent, a systemd user unit or a shell rc line.
+Files outside your home that your user can write stay writable. A server that
+needs your home (a credential file it reads, a tool installed elsewhere in
+it) is set `"host_files": true`, which runs it with your files as before;
+under the allowlist its network is still confined. Under bubblewrap the
+server is refused where a private `/proc` cannot be mounted (set
+`host_files`), and when Abhed runs as root its files are not confined, with a
+warning, since bubblewrap keeps root's capabilities. On the none tier and on
+Windows a stdio server's files are not confined. Its network is open,
+whatever `allow_network` says, except under `sandbox.network:
+"allowlist"`; see below. A URL server runs wherever it is hosted.
 
 `digest` pins a stdio server's program, as `"sha256:<64 hex digits>"`: just
 before the server starts, the file its `command` resolves to (on the
@@ -78,9 +93,9 @@ With `sandbox.network: "allowlist"` (see
 only servers you trust, as before. What remains open to a server that
 means to get out:
 
-- **Its files are not confined.** It reads and writes what your user can,
-  so it can plant a LaunchAgent, a systemd user unit or a line in a shell
-  rc file that runs later, outside any sandbox, with your network.
+- **Files outside your home.** Its home is hidden (see above), but what
+  your user can write elsewhere stays writable, and a server set to
+  `host_files` reads and writes what your user can.
 - **Unix sockets it can reach.** On Linux, any AF_UNIX socket in a folder
   that is not hidden (under your home, `/var/tmp`, `/var/run/postgresql`,
   and so on) can be connected to, and whatever listens there acts for it.

@@ -1154,6 +1154,9 @@ type MCPServerConfig struct {
 	Enabled    bool              `json:"enabled"`
 	AllowTools []string          `json:"allow_tools,omitempty"`
 	Digest     string            `json:"digest,omitempty"`
+	// HostFiles runs a stdio server with the host's files rather than
+	// confined to its own home and the workspace on the process tier.
+	HostFiles bool `json:"host_files,omitempty"`
 }
 
 // SandboxConfig controls execution isolation. Defaults deny egress, because a

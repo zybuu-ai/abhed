@@ -25,7 +25,13 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 	if err != nil {
 		return nil, err
 	}
-	if g.Confine == nil {
+	launch := g.Confine
+	if cfg.HostFiles {
+		// Its files as the host's, by the operator's choice; its network is
+		// still confined under the allowlist.
+		launch = g.ConfineNet
+	}
+	if launch == nil {
 		if g.MustConfine {
 			return nil, errUnconfined
 		}
@@ -34,10 +40,10 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 	argv := append([]string{command}, cfg.Args...)
 	// The server's own life: ending it revokes its credential and lets its proxy go.
 	sctx, cancel := context.WithCancel(life)
-	cmd, err := g.Confine(sctx, cfg.Name, argv, env, g.calls.recordFor(cfg.Name))
+	cmd, err := launch(sctx, cfg.Name, argv, env, g.calls.recordFor(cfg.Name))
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("confining the server's network under sandbox.network allowlist: %w", err)
+		return nil, fmt.Errorf("confining the server in the sandbox: %w", err)
 	}
 	t, err := startStdio(cmd, cfg.Command)
 	if err != nil {

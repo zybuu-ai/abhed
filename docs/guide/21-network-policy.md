@@ -389,15 +389,15 @@ credential, revoked when the server stops:
 
 | Tier | Stdio MCP server under the allowlist |
 |---|---|
-| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker, containerd and snapd sockets under `/run`, the resolvers' `/run/systemd/resolve` and `/run/nscd`, `/run/cups`, `/run/avahi-daemon`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its filesystem is otherwise not confined. Names resolve through the proxy's resolver, as for commands, where the relay can serve it. When Abhed runs as root the server is refused, with that reason, and not started; so is it where bubblewrap cannot mount a private `/proc`. |
+| process, Linux (bubblewrap) | **Direct sockets confined.** It runs in its own network namespace with loopback only, behind the same relay commands use, and in its own process namespace with a private `/proc`. `/run/user` (the session bus and user services), `XDG_RUNTIME_DIR`, `/run/dbus`, the podman, docker, containerd and snapd sockets under `/run`, the resolvers' `/run/systemd/resolve` and `/run/nscd`, `/run/cups`, `/run/avahi-daemon`, and the temporary folder (other sessions' egress sockets) are hidden; bus, agent and container variables are left out of its environment. Its home folder is hidden but for its own and its install folder (see [MCP](08-mcp.md)). Names resolve through the proxy's resolver, as for commands, where the relay can serve it. When Abhed runs as root the server is refused, with that reason, and not started; so is it where bubblewrap cannot mount a private `/proc`. |
 | process, macOS (Seatbelt) | **Direct sockets confined.** The profile denies all network use, AF_UNIX included, but outbound to the proxy's port on `localhost`, and denies the LaunchServices and Apple event services (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, the `coreservices` and `lsd` part matched in any case; the whole family is denied, which also cuts Handoff's clipboard and the shared file lists), which would open a URL or an app outside the sandbox. `trustd` is reachable: TLS verification needs it, and it fetches a certificate's AIA and OCSP URLs outside the proxy. Its filesystem is not confined, and it can read the environment of Abhed and of commands (see [Per-call credentials](#per-call-credentials)). |
 | fence, container, vm, none | Not reached: these tiers refuse the allowlist, so no session starts on them. |
 | Windows, or a surface with no process-tier sandbox | **Not started.** It cannot be confined, so it is refused with that reason. |
 
 This confines a server's direct network use, **not a hostile server**. A
-server that means to get out still can: its files are not confined, so it
-can plant a LaunchAgent, a systemd user unit or a shell rc line that runs
-later, outside any sandbox; and on Linux it can connect to any AF_UNIX
+server that means to get out still can: what your user can write outside
+the home stays writable, as does everything for a server set to
+`host_files`; and on Linux it can connect to any AF_UNIX
 socket in a folder that is not hidden, whose listener then acts for it.
 System services also make requests on its behalf, outside the proxy and
 unrecorded: on macOS `trustd` fetches the issuer (AIA) and revocation
@@ -448,7 +448,8 @@ names the tier and says whether it holds it.
   `GOOGLE_*`, `CLOUDSDK_*`, `KUBECONFIG`, the proxy and certificate
   variables), then the kubeconfig's `env`. Neither gets `ABHED_API_KEY` or a
   model provider's key.
-- The filesystem of a stdio MCP server: only its network is confined.
+- The filesystem of a stdio MCP server outside your home, and all of it for
+  one set to `host_files`.
 - Inspecting HTTPS: no TLS termination, so HTTPS rules are host and port only.
 - UDP and raw TCP other than through `CONNECT`, QUIC among them.
 - A resolver inside the macOS sandbox; see Names.

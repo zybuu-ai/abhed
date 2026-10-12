@@ -46,6 +46,9 @@ type ServerConfig struct {
 	// OCI image named by that digest in the arguments is pulled by it. A URL
 	// server with a digest is refused, since it cannot be checked.
 	Digest string `json:"digest,omitempty"`
+	// HostFiles runs a stdio server with the host's files, not confined to
+	// its own home and the workspace on the process tier.
+	HostFiles bool `json:"host_files,omitempty"`
 }
 
 var errGatewayClosed = errors.New("the MCP gateway was closed while the server connected")
@@ -81,9 +84,12 @@ type Gateway struct {
 	// both start a process and leave one running unowned.
 	restarting sync.Mutex
 
-	// Confine, when set, builds each stdio server's command with its network
-	// confined; MustConfine refuses a stdio server when it cannot be.
+	// Confine, when set, builds each stdio server's command with its files
+	// and, under the allowlist, its network confined; ConfineNet confines the
+	// network alone, for a server set to host_files. MustConfine refuses a
+	// stdio server whose network cannot be confined.
 	Confine     Launcher
+	ConfineNet  Launcher
 	MustConfine bool
 	// Egress is the tool set's egress guard for HTTP servers, egress.Unguarded
 	// outside the allowlist; nil uses the request's.

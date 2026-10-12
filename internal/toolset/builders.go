@@ -34,7 +34,7 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 		out = append(out, mcp.ServerConfig{
 			Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env,
 			URL: s.URL, Headers: s.Headers, HeadersEnv: s.HeadersEnv,
-			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest,
+			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest, HostFiles: s.HostFiles,
 		})
 	}
 	return out
