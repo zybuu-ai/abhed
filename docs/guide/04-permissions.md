@@ -763,8 +763,8 @@ linked worktree's common folder's too, the `.git` entry itself) and of your
 `~/.gitconfig` and `~/.config/git/config` and `attributes`. When any of them
 changes, the next such command is asked again, wherever the change came
 from. A grant restored when an editor reloads a session is asked again too.
-A nested repository the shell has moved into with `cd` is not part of the
-fingerprint; the sandbox's protection above is what holds it.
+The repository holding the folder the shell is in counts too, so a nested
+repository the shell has moved into with `cd` is part of the fingerprint.
 
 On macOS this is by pattern, at any depth and for repositories and files
 made later. The folders holding those files (`modules` and each folder in

@@ -315,7 +315,8 @@ All notable changes to Abhed are recorded here. The format follows
   allow", or your own git, ran it. Those surfaces now hold git's files too, on
   every tier but none; `sandbox.protect_git: false` turns it off. An "always
   allow" for a git command is also asked again once the repository's config,
-  hooks, attributes or your global git configuration change. Affects 0.1.0 to
+  hooks, attributes or your global git configuration change, the nested
+  repository the shell has moved into included. Affects 0.1.0 to
   1.2.7.
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
