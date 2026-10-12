@@ -175,6 +175,10 @@ func TestPermissionsExplain(t *testing.T) {
 	env, surface, _ := permEnv(t, config.Default())
 	asked := false
 	env.pol.Hooks = []policy.Hook{func(string, json.RawMessage) *policy.Result { asked = true; return nil }}
+	// Extension hooks are context hooks.
+	env.pol.ContextHooks = []func(*policy.Engine) policy.ContextHook{func(*policy.Engine) policy.ContextHook {
+		return func(context.Context, string, json.RawMessage) *policy.Result { asked = true; return nil }
+	}}
 	if err := env.pol.AddDeny("bash(curl *)"); err != nil {
 		t.Fatal(err)
 	}

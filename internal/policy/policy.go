@@ -428,6 +428,14 @@ type Engine struct {
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
 
+// WithoutHooks is a copy of e that asks no hook of any kind, for a dry run
+// that must not show a hook a call that is not being made.
+func (e *Engine) WithoutHooks() *Engine {
+	dry := *e
+	dry.Hooks, dry.EngineHooks, dry.ContextHooks = nil, nil, nil
+	return &dry
+}
+
 // AllowGitExtensions opts the named git extensions in; a name that is not a
 // plain subcommand, or is one of git's own, is refused.
 func (e *Engine) AllowGitExtensions(names ...string) error {
