@@ -183,13 +183,15 @@ func (d *Driver) Snapshot(ctx context.Context, id, name string) (driver.Snapshot
 		return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnsupported, "microvm: the sandbox has no workspace")
 	}
 	// As a call on the running VM, so a stop waits for the copy and ends it;
-	// a VM not running has nothing to copy back.
-	if in, m, cctx, done, err := d.begin(ctx, id); err == nil {
-		err = d.syncBack(cctx, in, m, nil)
+	// only a VM stopped has nothing to copy back.
+	if run, m, cctx, done, err := d.begin(ctx, id); err == nil {
+		err = d.syncBack(cctx, run, m, nil)
 		done()
 		if err != nil {
 			return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnavailable, "microvm: copying the VM's changes back first: %v", err)
 		}
+	} else if !d.stopped(id, in) {
+		return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnavailable, "microvm: the VM's changes could not be copied back first: %v", err)
 	}
 	ref, st, err := d.snaps.Take(ctx, id, gen, name, ws)
 	if err != nil {
@@ -200,6 +202,14 @@ func (d *Driver) Snapshot(ctx context.Context, id, name string) (driver.Snapshot
 		return driver.SnapshotRef{}, driver.Errorf(driver.ErrUnavailable, "recording the snapshot: %v", err)
 	}
 	return ref, nil
+}
+
+// stopped reports whether id is still in and stopped, rather than failed or gone.
+func (d *Driver) stopped(id string, in *instance) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cur, ok := d.insts[id]
+	return ok && cur == in && (in.stopped || in.m == nil)
 }
 
 // Restore replaces a stopped instance's workspace with the snapshot, once

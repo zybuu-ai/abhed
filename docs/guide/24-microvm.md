@@ -74,7 +74,9 @@ The driver declares `attach`, `copy` and `forward`, and `snapshot` when
   device. A stream ends when it is closed or the sandbox stops, and each is
   recorded (`sandbox.forward`) when the driver has a record.
 - **Snapshot** copies the guest's changes back and archives the host
-  workspace, without `.abhed`, by its SHA-256. **Restore** needs the
+  workspace, without `.abhed`, by its SHA-256; of a stopped sandbox it
+  archives the host workspace as it is, and of one whose VM failed it is
+  refused (`unavailable`), as those changes could not be copied back. **Restore** needs the
   sandbox stopped, checks the digest, replaces the host workspace and builds
   the workspace image again, so the next start boots with it.
 
