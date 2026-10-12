@@ -28,6 +28,7 @@ type tuiRun struct {
 	stub *tuiStub
 	ws   string
 	done chan struct{}
+	rows int // the terminal's height, as started or last resized
 
 	mu     sync.Mutex
 	raw    []byte
@@ -115,7 +116,7 @@ func startTUIDelayed(t *testing.T, stub *tuiStub, ws string, cols, rows int, bac
 	if err != nil {
 		t.Skipf("no pty: %v", err)
 	}
-	r := &tuiRun{t: t, tty: tty, cmd: cmd, term: vt.New(cols, rows), stub: stub, ws: ws, done: make(chan struct{})}
+	r := &tuiRun{t: t, tty: tty, cmd: cmd, term: vt.New(cols, rows), stub: stub, ws: ws, done: make(chan struct{}), rows: rows}
 	go func() {
 		defer close(r.done)
 		buf := make([]byte, 64*1024)
@@ -234,10 +235,18 @@ func (r *tuiRun) rawSinceMark() string {
 func (r *tuiRun) resize(cols, rows int) {
 	r.t.Helper()
 	r.term.Resize(cols, rows)
+	r.rows = rows
 	if err := pty.Setsize(r.tty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
 		r.t.Fatal(err)
 	}
 }
+
+// pagerChrome is the rows the transcript pager keeps for its header and
+// footer; a page is the rest.
+const pagerChrome = 2
+
+// pageRows is how many lines one page of the transcript pager moves.
+func (r *tuiRun) pageRows() int { return max(1, r.rows-pagerChrome) }
 
 // capture is the screen as text, for the before and after captures a
 // failure or a log shows.
