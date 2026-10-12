@@ -556,6 +556,27 @@ jobs:
             jq -e --arg t "$t" 'select(.Test == $t and .Action == "pass")' case.json >/dev/null || { echo "$t did not run and pass"; exit 1; }
           done
 
+  # The workbench in a real browser: a built abhed serve with a scripted
+  # model, checked by headless Chromium through a pinned Playwright. The
+  # header keeps Sign out on screen at 320, 900 and 1440 px, the side-panel
+  # toggle keeps the grid whole, and a first turn's call is asked and runs.
+  workbench-browser:
+    name: Workbench in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.9"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Header, grid and first-turn approval
+        env:
+          WITH_DEPS: "1"
+        run: scripts/ci/workbench-e2e/run.sh "$RUNNER_TEMP/wbe2e"
+
   # The container tier on a real engine: the hosted runner has Docker, so
   # the flags are checked by what they do, not only by what is passed.
   container-tier:
