@@ -148,3 +148,21 @@ func closePanel(h Harness) {
 	h.Key(Esc)
 	h.WaitScreen(func(s Screen) bool { return !s.Modes().AltScreen }, DefaultTimeout)
 }
+
+// A trust grant that cannot be written does not end the session: it warns,
+// and the workspace's file stays untrusted.
+func TestFailedTrustGrantGoesOnUntrusted(t *testing.T) {
+	t.Parallel()
+	h := StartRun(t, Opts{Cols: 120, Script: `text "done"`, Setup: func(home, ws string) {
+		writeFile(t, filepath.Join(ws, ".abhed", "config.json"), `{"statusline":{"command":"echo from-the-repo"}}`)
+		// A folder where the trust store's file goes: the grant cannot be written.
+		if err := os.MkdirAll(filepath.Join(home, ".abhed", "trust.json"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}})
+	h.WaitText("Trust this file?")
+	h.Type("2\n") // yes, trust it
+	h.WaitText("could not record trust")
+	h.WaitText("Type a task")
+	h.Exit(0)
+}
