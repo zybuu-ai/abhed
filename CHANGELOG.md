@@ -737,7 +737,9 @@ All notable changes to Abhed are recorded here. The format follows
   apart from the command's, so it also works where the engine runs in
   a VM, given a Linux build of Abhed in the managed
   `control_plane.<engine>.relay_binary`. Without one there, the tier is
-  refused as before.
+  refused as before. The call's proxy settings reach the engine in an
+  `--env-file` only your user reads, removed after, never in an argument or
+  the engine CLI's own environment; so do the container driver's.
 - `fence.socketcall` lets the fence's commands on s390x make sockets through
   `socketcall()`, as glibc and Go do there, when `allow_network` is on and
   the host has Landlock ABI 6 or later. The filter cannot read the socket's

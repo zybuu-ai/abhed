@@ -36,6 +36,8 @@ type fakeRunner struct {
 	script string
 	// commandFor, when set and returning a command, runs in place of script.
 	commandFor func(ctx context.Context, args []string) *exec.Cmd
+	// cmds are the commands made, as the caller finished them.
+	cmds []*exec.Cmd
 }
 
 func (f *fakeRunner) record(args []string) {
@@ -113,7 +115,22 @@ func (f *fakeRunner) command(ctx context.Context, args []string) *exec.Cmd {
 	if script == "" {
 		script = "exit 0"
 	}
-	return exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	// As the engine would: the env file's settings reach the command.
+	if i := slices.Index(args, "--env-file"); i >= 0 && i+1 < len(args) {
+		script = `while IFS= read -r l; do export "$l"; done < "$ABHED_TEST_ENV_FILE"; ` + script
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+		cmd.Env = append(os.Environ(), "ABHED_TEST_ENV_FILE="+args[i+1])
+		f.keep(cmd)
+		return cmd
+	}
+	return f.keep(exec.CommandContext(ctx, "/bin/sh", "-c", script))
+}
+
+func (f *fakeRunner) keep(cmd *exec.Cmd) *exec.Cmd {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cmds = append(f.cmds, cmd)
+	return cmd
 }
 
 func (f *fakeRunner) find(verb string) [][]string {
@@ -910,8 +927,24 @@ func TestEgressAllowlist(t *testing.T) {
 			execCall = c
 		}
 	}
-	if s := joined(execCall); !strings.Contains(s, " -e HTTPS_PROXY ") || strings.Contains(s, "http://") {
-		t.Errorf("the credential was not forwarded by name only: %s", s)
+	s := joined(execCall)
+	if strings.Contains(s, "HTTPS_PROXY") || strings.Contains(s, "http://") || !strings.Contains(s, " --env-file ") {
+		t.Errorf("the credential was not forwarded in an env file: %s", s)
+	}
+	// Not in the engine CLI's own environment, and the file is gone after.
+	for _, c := range f.cmds {
+		for _, kv := range c.Env {
+			if strings.Contains(kv, "@"+in.egress.listen) {
+				t.Errorf("the engine CLI's environment holds %s", kv)
+			}
+		}
+	}
+	if _, after, ok := strings.Cut(s, " --env-file "); ok {
+		if file, _, _ := strings.Cut(after, " "); file != "" {
+			if _, err := os.Stat(file); err == nil {
+				t.Errorf("the env file outlived the command: %s", file)
+			}
+		}
 	}
 	dir := in.egress.dir
 	if err := d.Delete(context.Background(), "sbx_0123456789abcdef"); err != nil {

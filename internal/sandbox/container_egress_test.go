@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/stdiorelay"
@@ -26,20 +27,27 @@ func fakeEngine(t *testing.T) (path, log string) {
 		t.Fatal(err)
 	}
 	script := fmt.Sprintf(`#!/bin/sh
-echo "$*" >> %q
+log=%q
+echo "$*" >> "$log"
+env | grep '@127\.0\.0\.1' | sed 's/^/engine env: /' >> "$log"
 case "$1" in
 exec)
-  shift; envs=""
+  shift; envs=""; envfile=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -i) shift ;;
       -w|--user) shift 2 ;;
       -e) case "$2" in *=*) envs="$envs $2" ;; esac; shift 2 ;;
+      --env-file) envfile=$2; shift 2 ;;
       *) break ;;
     esac
   done
   shift  # the container's name
   if [ "$1" = %q ]; then shift; exec %q "$@"; fi
+  if [ -n "$envfile" ]; then
+    ls -l "$envfile" | sed 's/^/env file: /' >> "$log"
+    while IFS= read -r l; do export "$l"; done < "$envfile"
+  fi
   exec env $envs "$@" ;;
 esac
 exit 0
@@ -89,14 +97,28 @@ func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 	b, _ := os.ReadFile(log)
 	calls := string(b)
 	for _, want := range []string{"run --rm -d", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none",
-		"-e HTTPS_PROXY ", "exec -i --user " + stdiorelay.User(os.Getuid()) + " " + egressPrefix} {
+		"--env-file ", "exec -i --user " + stdiorelay.User(os.Getuid()) + " " + egressPrefix} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("no %q in the engine's calls:\n%s", want, calls)
 		}
 	}
-	// The token is passed by name, never in an argument others can list.
-	if strings.Contains(calls, "http://") {
-		t.Errorf("the call's proxy URL is on the engine's command line:\n%s", calls)
+	// The token is in a private file, never in an argument others can list
+	// nor in the engine CLI's own environment.
+	if strings.Contains(calls, "http://") || strings.Contains(calls, "engine env:") {
+		t.Errorf("the call's proxy URL reached the engine's command line or environment:\n%s", calls)
+	}
+	if !strings.Contains(calls, "env file: -rw-------") {
+		t.Errorf("the call's settings were not in a file only this user reads:\n%s", calls)
+	}
+	if _, after, ok := strings.Cut(calls, "--env-file "); ok {
+		f, _, _ := strings.Cut(after, " ")
+		deadline := time.Now().Add(5 * time.Second)
+		for _, err := os.Stat(f); err == nil && time.Now().Before(deadline); _, err = os.Stat(f) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if _, err := os.Stat(f); err == nil {
+			t.Errorf("the env file outlived the command: %s", f)
+		}
 	}
 	// The relay answered for the proxy: the denied host was refused by it,
 	// as the call's, though the request carried no credentials.

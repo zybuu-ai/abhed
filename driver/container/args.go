@@ -181,7 +181,7 @@ func insideAny(p string, roots []string) bool {
 // execArgs is the argv running line in the container, as the sandbox user,
 // in dir, with the named variables forwarded by name from the CLI's own
 // environment, so no value appears in an argument.
-func (d *Driver) execArgs(in *instance, tty bool, dir, pidFile, line string, names, fixed []string) []string {
+func (d *Driver) execArgs(in *instance, tty bool, dir, pidFile, line string, names, fixed []string, envFile string) []string {
 	args := []string{"exec", "-i"}
 	if tty {
 		args = append(args, "-t")
@@ -192,6 +192,9 @@ func (d *Driver) execArgs(in *instance, tty bool, dir, pidFile, line string, nam
 	}
 	for _, n := range names {
 		args = append(args, "-e", n)
+	}
+	if envFile != "" {
+		args = append(args, "--env-file", envFile)
 	}
 	return append(args, in.name, "/bin/sh", "-c", execWrapper, "abhed-exec", pidFile, line)
 }

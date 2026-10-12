@@ -155,21 +155,24 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 		stop()
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: its egress relay did not start in time")}
 	}
-	context.AfterFunc(ctx, stop)
+	// In a private file, not an argument any process can list nor the CLI's
+	// own environment, whose proxy settings its client would follow.
+	envFile, removeEnv, err := EnvFile(call.Env())
+	if err != nil {
+		stop()
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its proxy settings: %w", err)}
+	}
+	stopAll := func() {
+		stop()
+		removeEnv()
+	}
+	context.AfterFunc(ctx, stopAll)
 	execArgs := []string{"exec", "-i", "-w", cwd}
 	if uid, gid := os.Getuid(), os.Getgid(); uid > 0 {
 		execArgs = append(execArgs, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
-	// By name only, the values in the engine CLI's environment: an argument
-	// would show the call's token to any process that lists command lines.
-	callEnv := call.Env()
-	for _, kv := range callEnv {
-		k, _, _ := strings.Cut(kv, "=")
-		execArgs = append(execArgs, "-e", k)
-	}
-	execArgs = append(execArgs, "-e", "ABHED_SANDBOX="+string(c.Tier()), name, "/bin/sh", "-c", command)
+	execArgs = append(execArgs, "--env-file", envFile, "-e", "ABHED_SANDBOX="+string(c.Tier()), name, "/bin/sh", "-c", command)
 	cmd := c.engineCmd(ctx, execArgs...)
-	cmd.Env = append(cmd.Env, callEnv...)
 	cmd.Cancel = func() error {
 		stop()
 		return cmd.Process.Kill()

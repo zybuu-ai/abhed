@@ -122,8 +122,11 @@ applies the same `egress` rules as the process tier. The container still has
 no network: its first process is a relay, bound in from the host, that
 listens on the container's own loopback and joins each connection to the
 proxy's Unix socket, also bound in. Each command gets a credential of its
-own in `HTTP_PROXY` and `HTTPS_PROXY`, passed to the engine by name so its
-value is never in an argument, and revoked when the command ends. Each
+own in `HTTP_PROXY` and `HTTPS_PROXY`, passed to the engine in an
+`--env-file` only your user can read, removed when the command ends, so its
+value is neither in an argument nor in the engine CLI's own environment
+(whose client to the engine would follow it), and revoked when the command
+ends. Each
 decision goes to `Options.Record` as an `egress.decision` event with the
 sandbox's id. Names are resolved by the proxy, so tools must honour the
 proxy variables; there is no resolver inside. The sandbox's commands share
@@ -164,7 +167,7 @@ the allowlist.
 |---|---|
 | `Create` | checks the spec and the mounts, starts the container, verifies it |
 | `Exec` | `exec` as the sandbox's user, in a folder inside the workspace; `Env` may add variables but not replace `PATH`, `HOME`, `ABHED_SANDBOX`, the proxy variables or `LD_*` |
-| `Attach` | an interactive shell on a terminal, with resize; `Env` adds variables as for `Exec`, passed by name, so a terminal under the allowlist has its call's proxy credential |
+| `Attach` | an interactive shell on a terminal, with resize; `Env` adds variables as for `Exec`, passed by name, and a terminal under the allowlist has its call's proxy credential in an env file |
 | `Command` | the same `exec`, or the shell, handed to the caller to run: a session's bash tool and terminal; under the allowlist its credential is revoked when the caller's context ends, and a cancelled one is ended inside the container |
 | `CopyIn`, `CopyOut` | a tar stream through the engine's `cp`, to or from a folder inside the workspace; every entry is checked (no absolute names, no `..`, no links out, no devices), owners become the sandbox's user and setuid bits are dropped |
 | `Stop` | refuses new commands, then stops the container with the grace given |
