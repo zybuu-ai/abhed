@@ -172,7 +172,7 @@ func TestWitnessAcceptsAPrunedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ids []string
-	for range 3 {
+	for range 4 {
 		id := newConversationID()
 		if err := rec.CreateSession(context.Background(), store.SessionRecord{ID: id, Workspace: ws, User: cliUser()}); err != nil {
 			t.Fatal(err)
@@ -204,6 +204,26 @@ func TestWitnessAcceptsAPrunedSession(t *testing.T) {
 	code, out, _ = runRecord(t, ws, "verify", "-witness", heads)
 	if code == 0 || !strings.Contains(out, "FAILED  "+ids[2]) {
 		t.Fatalf("a removed session passed: %d %s", code, out)
+	}
+	// Nor does a prune afterwards launder it, or a record edited before its prune.
+	if code, out, errOut := runRecord(t, ws, "prune", "-yes", ids[2]); code != 0 {
+		t.Fatalf("prune of the removed session: %d %s %s", code, out, errOut)
+	}
+	b, err := os.ReadFile(rec.Path(ids[3]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rec.Path(ids[3]), []byte(strings.Replace(string(b), `"hi"`, `"ho"`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := runRecord(t, ws, "prune", "-yes", ids[3]); code != 0 {
+		t.Fatalf("prune of the edited session: %d %s %s", code, out, errOut)
+	}
+	code, out, _ = runRecord(t, ws, "verify", "-witness", heads)
+	if code == 0 || !strings.Contains(out, "FAILED  "+ids[2]+": the witness holds line 2, and the session's file was gone before it was pruned") ||
+		!strings.Contains(out, "FAILED  "+ids[3]+": the witness holds line 2, and the record did not verify when it was pruned") ||
+		!strings.Contains(out, "pruned  "+ids[0]) {
+		t.Fatalf("a prune after the damage passed: %d %s", code, out)
 	}
 }
 

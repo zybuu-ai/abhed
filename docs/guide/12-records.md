@@ -293,7 +293,10 @@ the heads are not checked and `verify` fails.
 A session pruned on the record (by `record.retention_days`, `abhed record
 prune`, or a delete) is reported as `pruned`, not failed, when the index's
 tombstone keeps its head at or past the line the witness holds, with the same
-hash at that line; a session file gone with no tombstone still fails.
+hash at that line, and says the record was there and verified when it was
+pruned. A session file gone with no tombstone still fails, and so does one
+pruned after its file was removed or edited: the prune does not account for
+what was done before it.
 
 What a witness still cannot show: lines written after the last head it was
 sent (the last sync), and anything before it was configured.

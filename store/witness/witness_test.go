@@ -88,14 +88,19 @@ func TestWitnessCatchesACutAndARewrite(t *testing.T) {
 	}
 	// A removal on the record accounts for a missing head; nothing else does.
 	delete(record, "s1")
-	removed := func(session string, line int64, hash string) (string, error) {
+	removed := func(session string, line int64, hash string) (string, bool, error) {
 		if session == "s1" && line <= 3 {
-			return "pruned", nil
+			return "pruned", true, nil
 		}
-		return "", nil
+		return "", false, nil
 	}
 	if p, _ := Check(stmts, key, "local", "default", at, removed); len(p) != 1 || !p[0].Removed || Failed(p) != 0 {
 		t.Fatalf("a pruned session's heads failed: %+v", p)
+	}
+	// A removal that does not account for the head fails, with its reason.
+	refused := func(string, int64, string) (string, bool, error) { return "gone before the prune", false, nil }
+	if p, _ := Check(stmts, key, "local", "default", at, refused); Failed(p) != 1 || p[0].Reason != "gone before the prune" {
+		t.Fatalf("a refused removal: %+v", p)
 	}
 	if p, _ := Check(stmts, key, "local", "default", at, nil); Failed(p) != 1 {
 		t.Fatalf("a missing session passed: %+v", p)

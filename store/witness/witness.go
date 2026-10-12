@@ -340,9 +340,10 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 }
 
 // Removed says why a head the record no longer holds was removed on the
-// record (a prune's tombstone that covers that line and hash), or "" when
-// nothing recorded accounts for it.
-type Removed func(session string, line int64, hash string) (string, error)
+// record (a prune's tombstone that covers that line and hash), with removed
+// true; or, with removed false, why a removal does not account for it ("" for
+// the general reason).
+type Removed func(session string, line int64, hash string) (why string, removed bool, err error)
 
 // Check compares statements for one store and tenant with the record as it
 // is now: hashAt gives the hash at a line and whether the record holds it.
@@ -372,14 +373,14 @@ func Check(stmts []Statement, key ed25519.PublicKey, store, tenant string, hashA
 		}
 		switch {
 		case !ok:
-			why := ""
+			why, gone := "", false
 			if removed != nil {
-				if why, err = removed(s.Session, s.Lines, s.Hash); err != nil {
+				if why, gone, err = removed(s.Session, s.Lines, s.Hash); err != nil {
 					return out, err
 				}
 			}
 			if why != "" {
-				out = append(out, Problem{s, why, true})
+				out = append(out, Problem{s, why, gone})
 				continue
 			}
 			out = append(out, Problem{s, fmt.Sprintf("the witness holds line %d of %s, sent %s, and the record no longer has it: lines were cut or an older copy was put back",

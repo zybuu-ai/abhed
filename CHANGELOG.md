@@ -1151,7 +1151,8 @@ All notable changes to Abhed are recorded here. The format follows
   checks every head the witness holds is still in the record, which catches
   a record cut back, re-chained or restored from an older copy. A session
   pruned with a tombstone that covers the witnessed head is reported as
-  pruned, not failed.
+  pruned, not failed, unless its file was gone or did not verify when it
+  was pruned.
 - Postgres events are hash-chained per session by the database itself
   (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
   sends), as is the control plane's `sandbox_audit` per tenant. `abhed
@@ -2007,7 +2008,7 @@ All notable changes to Abhed are recorded here. The format follows
   installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
   `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
   and `ChainHashAt`, `store.ChainReport`, `store/local.Store.HashAt` and
-  `Pruned`, and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
+  `Pruned` (with `Tombstone`), and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
   tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
   `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.
 - `hawkeye`: `Report.Network` with `NetworkStats` and `NetworkRefusal`,

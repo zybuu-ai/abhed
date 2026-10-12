@@ -124,6 +124,17 @@ type Entry struct {
 	Subagent bool
 	// Pruned marks a session removed by prune; only its tombstone remains.
 	Pruned bool
+	// Tombstone is what the prune found, set when Pruned.
+	Tombstone Tombstone
+}
+
+// Tombstone is what a prune recorded of the session it removed: its head,
+// whether its file was already gone, and whether it verified.
+type Tombstone struct {
+	Head       Head
+	Missing    bool
+	Verified   bool
+	Unverified string // why it did not verify
 }
 
 // Head is the last line of a session's chain: how many lines it has, and
