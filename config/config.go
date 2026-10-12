@@ -188,6 +188,10 @@ type FenceConfig struct {
 	// CPUPercent bounds a session's commands' CPU time, in percent of one
 	// core: 50 is half of one, 200 two whole ones. Zero leaves it unbounded.
 	CPUPercent int `json:"cpu_percent,omitempty"`
+	// Socketcall, on s390x with allow_network, lets commands make sockets
+	// through socketcall(2), as glibc does there. The filter cannot read the
+	// family it is given, so unix sockets are reachable that way too.
+	Socketcall bool `json:"socketcall,omitempty"`
 }
 
 type SuggestConfig struct {

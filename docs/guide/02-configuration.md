@@ -514,7 +514,11 @@ without running anything.
   stops those). With it true, commands get the host's network, unfiltered.
   Unix sockets are refused either way. On s390x the filter also refuses
   every socket made through `socketcall()`, which is how glibc and Go make
-  them there, so most programs get no network.
+  them there, so most programs get no network, unless
+  `"fence": {"socketcall": true}` is set with `allow_network` on a host with
+  Landlock ABI 6 or later: then `socketcall()` sockets are allowed, and since
+  the filter cannot read their family, unix sockets with them (abstract ones
+  scoped by Landlock, named ones not). A workspace file cannot set it.
   `sandbox.network: "allowlist"` refuses the fence in both modes, since it
   cannot keep a command's sockets to the egress proxy alone
   ([Network policy](21-network-policy.md)).

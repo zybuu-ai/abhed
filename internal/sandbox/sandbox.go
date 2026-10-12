@@ -157,6 +157,9 @@ type Policy struct {
 	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
 	// one CPU; zero leaves it unbounded.
 	CPUPercent int
+	// FenceSocketcall lets the fence's commands on s390x make sockets
+	// through socketcall(2) when AllowNetwork is set.
+	FenceSocketcall bool
 	// SkillDirs are the configured skills.dirs, absolute. The fence lets
 	// commands read and run them, as it does ~/.abhed/skills, but never one
 	// that holds or sits inside Abhed's state.

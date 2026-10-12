@@ -189,6 +189,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `fence.socketcall` lets the fence's commands on s390x make sockets through
+  `socketcall()`, as glibc and Go do there, when `allow_network` is on and
+  the host has Landlock ABI 6 or later. The filter cannot read the socket's
+  family through it, so unix sockets are reachable that way too; it is off
+  by default.
 - `sandbox.max_cpu_percent` bounds a container tier command's CPU, in
   percent of one CPU; it was always two CPUs, which stays the default.
 - What a sandbox command can reach of the server: on every tier, nothing

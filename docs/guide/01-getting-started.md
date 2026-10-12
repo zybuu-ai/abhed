@@ -43,8 +43,12 @@ first system call, as another architecture's program is on any host. And
 with `allow_network` on, most programs still cannot open a socket: glibc and
 Go open sockets through `socketcall()`, the filter cannot see which kind of
 socket that asks for, and so it refuses all of them. Programs that call
-`socket()` directly, such as those built with musl, get the network. If
-commands need the network, use the container tier.
+`socket()` directly, such as those built with musl, get the network.
+`"fence": {"socketcall": true}` allows sockets made through `socketcall()`
+on a host with Landlock ABI 6 (Linux 6.12) or later, at a cost: unix
+sockets are then reachable through it, abstract ones scoped by Landlock but
+named ones (a daemon's socket file you can open, such as Docker's) not. If
+commands need the network without that, use the container tier.
 
 CI builds and vets every package for s390x and runs the unit tests under
 emulation (qemu-user). Emulation cannot load a seccomp filter, so the fence's

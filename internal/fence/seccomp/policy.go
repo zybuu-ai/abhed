@@ -21,6 +21,10 @@ type Policy struct {
 	// they reach host daemons that no file rule can stop; socketpair() is
 	// allowed either way.
 	AllowNetwork bool
+	// Socketcall, with AllowNetwork, allows socketcall(SOCKET) where the
+	// architecture has it: the family is behind a pointer the filter cannot
+	// read, so unix sockets are reachable through it.
+	Socketcall bool
 	// Abhed is the process id of the Abhed that launches the command, and
 	// AbhedGroup its process group. Signals aimed at either are refused:
 	// kill, tgkill, tkill and the queued forms naming that process, kill of
@@ -126,7 +130,7 @@ func (p Policy) rules(info archInfo) []rule {
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM,
 			note: "socket for every family; socketpair allowed"})
 	}
-	if info.socketcall {
+	if info.socketcall && !(p.AllowNetwork && p.Socketcall) {
 		// Its arguments are behind a pointer the filter cannot read, so the
 		// family is unknown: refused in both modes.
 		rs = append(rs, rule{group: "sockets", name: "socketcall", errno: errEPERM, cond: equal, arg: 0, k: sysSocket,

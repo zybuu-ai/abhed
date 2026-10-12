@@ -73,6 +73,8 @@ const fenceLaunchWait = 2 * time.Minute
 type fenceSpec struct {
 	Landlock landlock.Spec `json:"landlock"`
 	Network  bool          `json:"network"`
+	// Socketcall allows socketcall(SOCKET) with Network, on s390x.
+	Socketcall bool `json:"socketcall,omitempty"`
 	// Leaf is the call's cgroup, which the launcher joins first.
 	Leaf string `json:"leaf"`
 	// Qualified and ProbePID pass this run's probe: the launcher trusts it
@@ -363,7 +365,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 			return refusedCmd("%v", err)
 		}
 	}
-	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: f.policy.AllowNetwork, Leaf: leaf.Path(),
+	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: f.policy.AllowNetwork, Socketcall: f.policy.AllowNetwork && f.policy.FenceSocketcall, Leaf: leaf.Path(),
 		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan})
 	if err != nil {
 		drop()
@@ -643,6 +645,9 @@ func runLauncher(args []string) int {
 	}
 	// 4. seccomp, on every thread, refusing signals to Abhed by its id.
 	pol := seccomp.Command(s.Network, abhed, abhedGroup)
+	// Only where Landlock scopes abstract unix sockets: a pathname one is
+	// still reachable through it, as the setting's documentation says.
+	pol.Socketcall = s.Network && s.Socketcall && abi >= 6
 	if err := seccomp.Install(pol); err != nil {
 		return fail("%v", err)
 	}

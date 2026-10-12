@@ -97,6 +97,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
+	p.FenceSocketcall = cfg.Fence.Socketcall
 	p.SkillDirs = skillDirs(cfg)
 	return p, nil
 }
