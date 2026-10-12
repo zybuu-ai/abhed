@@ -494,9 +494,13 @@ func emptyFD(fd int, reopen func() (int, error)) error {
 }
 
 // Drop clears this thread's capabilities, ambient, inheritable, permitted and
-// effective, and checks none is left. The command is executed from this
-// thread, so it starts with none.
+// effective, empties its bounding set, locks the securebits that keep uid 0
+// from regaining any, and checks none is left. The command is executed from
+// this thread, so it starts with none and can gain none.
 func Drop() error {
+	if err := DropBounding(); err != nil {
+		return err
+	}
 	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
 		return fmt.Errorf("clearing the ambient capabilities: %w", err)
 	}
@@ -512,6 +516,37 @@ func Drop() error {
 		if d.Effective|d.Permitted|d.Inheritable != 0 {
 			return errors.New("a capability is left after dropping them")
 		}
+	}
+	return nil
+}
+
+// lockedSecurebits are libcap's pure-capability mode: uid 0 gains nothing by
+// exec (noroot), a uid change touches no set (no_setuid_fixup), no ambient
+// capability can be raised, keep_caps stays off, and each is locked.
+const lockedSecurebits = 1<<0 | 1<<1 | 1<<2 | 1<<3 | 1<<5 | 1<<6 | 1<<7
+
+// DropBounding empties this thread's capability bounding set and locks its
+// securebits, which needs CAP_SETPCAP: a launcher in a user namespace of its
+// own holds it until Drop, and root does.
+func DropBounding() error {
+	last := 40
+	if b, err := os.ReadFile("/proc/sys/kernel/cap_last_cap"); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 && n < 64 {
+			last = n
+		}
+	}
+	for c := 0; c <= last; c++ {
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(c), 0, 0, 0); err != nil && !errors.Is(err, unix.EINVAL) {
+			return fmt.Errorf("dropping capability %d from the bounding set: %w", c, err)
+		}
+	}
+	for c := 0; c <= last; c++ {
+		if v, err := unix.PrctlRetInt(unix.PR_CAPBSET_READ, uintptr(c), 0, 0, 0); err == nil && v != 0 {
+			return fmt.Errorf("capability %d is left in the bounding set", c)
+		}
+	}
+	if err := unix.Prctl(unix.PR_SET_SECUREBITS, lockedSecurebits, 0, 0, 0); err != nil {
+		return fmt.Errorf("locking the securebits: %w", err)
 	}
 	return nil
 }

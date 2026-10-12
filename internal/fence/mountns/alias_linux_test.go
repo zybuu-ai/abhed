@@ -96,6 +96,13 @@ func aliasCase(name, dir string) error {
 		if err := Drop(); err != nil {
 			return err
 		}
+		// Nothing can be gained back: the bounding set is empty, the securebits locked.
+		if st, err := os.ReadFile("/proc/thread-self/status"); err != nil || !strings.Contains(string(st), "CapBnd:\t0000000000000000") {
+			return fmt.Errorf("the bounding set is not empty after Drop: %v %s", err, st)
+		}
+		if v, err := unix.PrctlRetInt(unix.PR_GET_SECUREBITS, 0, 0, 0, 0); err != nil || v != lockedSecurebits {
+			return fmt.Errorf("securebits %#x, want %#x: %v", v, lockedSecurebits, err)
+		}
 		for _, w := range []string{"alias-ws/.git/config", "alias-ws/.git/hooks/pre-commit", "alias-ws/.git/hooks/x", "alias-git/config", "alias-git/hooks/x", "alias-config"} {
 			f, err := os.OpenFile(filepath.Join(dir, w), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 			if err == nil {

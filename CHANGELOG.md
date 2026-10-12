@@ -552,6 +552,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- The fence's launcher in `mount_namespace` mode empties its capability
+  bounding set and locks the securebits before running a command, so the
+  command could not gain a capability even past no_new_privs.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of

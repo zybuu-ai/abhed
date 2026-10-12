@@ -376,8 +376,11 @@ command whose mounts cannot be made exits 126 having run nothing.
 **What it does.** Abhed re-executes itself as a small launcher for every
 command. In order, the launcher checks that this run's probe qualified the
 host; in the `mount_namespace` mode, makes its mounts, with `CAP_SYS_ADMIN` in
-its own user namespace and nothing else, then drops that capability; checks
-it holds no privileges; joins a cgroup made for the tool call, confines
+its own user namespace and nothing else, then empties its capability
+bounding set, locks the securebits that keep uid 0 from gaining any, and
+drops that capability (in `landlock_only` an ordinary user cannot change
+the bounding set, which stays full; no_new_privs and holding no capability
+keep anything in it from being gained); checks it holds no privileges; joins a cgroup made for the tool call, confines
 itself with Landlock and a seccomp filter, reports what it applied, and waits.
 Abhed writes `process.launched` to the record, and only then lets the launcher
 run the command in its place. A launcher that cannot do any step exits 126
