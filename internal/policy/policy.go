@@ -718,7 +718,14 @@ func (e *Engine) pathSubjects(p string, disk bool) (all, allow []string) {
 // kept: a decision's own path is read each time, its roots at most this often.
 const rootSpellingsFor = time.Second
 
-var rootMemo sync.Map // root -> rootSpelling
+// rootMemo holds rootSpellings' answers; past maxRootMemo roots it starts again.
+var rootMemo = struct {
+	sync.Mutex
+	m map[string]rootSpelling
+}{}
+
+// maxRootMemo bounds the roots rootMemo keeps, as a server sees many workspaces.
+const maxRootMemo = 1024
 
 type rootSpelling struct {
 	real, disk string
@@ -727,14 +734,20 @@ type rootSpelling struct {
 
 // rootSpellings is root with its links resolved, and that as the disk spells it.
 func rootSpellings(root string) (real, disk string) {
-	if v, ok := rootMemo.Load(root); ok {
-		if s := v.(rootSpelling); time.Since(s.at) < rootSpellingsFor {
-			return s.real, s.disk
-		}
+	rootMemo.Lock()
+	s, ok := rootMemo.m[root]
+	rootMemo.Unlock()
+	if ok && time.Since(s.at) < rootSpellingsFor {
+		return s.real, s.disk
 	}
 	real = tools.RealPath(root)
 	disk = tools.DiskPath(real)
-	rootMemo.Store(root, rootSpelling{real: real, disk: disk, at: time.Now()})
+	rootMemo.Lock()
+	if rootMemo.m == nil || len(rootMemo.m) >= maxRootMemo {
+		rootMemo.m = make(map[string]rootSpelling)
+	}
+	rootMemo.m[root] = rootSpelling{real: real, disk: disk, at: time.Now()}
+	rootMemo.Unlock()
 	return real, disk
 }
 
