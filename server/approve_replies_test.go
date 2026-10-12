@@ -39,13 +39,23 @@ func TestApproveWhileStillRecordingSaysWhenToRetry(t *testing.T) {
 	approvalReadyWait = 200 * time.Millisecond
 	t.Cleanup(func() { approvalReadyWait = wait })
 	h, live, rows, id := approvalSession(t, true)
-	gate := make(chan struct{})
+	gate, entered := make(chan struct{}), make(chan struct{}, 1)
 	// Held past the reply's wait, whatever the write's own deadline.
 	rows.askHook = func(context.Context) error {
+		entered <- struct{}{}
 		<-gate
 		return nil
 	}
 	defer close(gate)
+	// The write read approvalReadyWait before it reached the hook; the cleanup
+	// that restores it must come after that read.
+	defer func() {
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Error("the row's write never reached the store")
+		}
+	}()
 	c := askTurn(context.Background(), live, "ev-slow")
 	waitAsked(live, "ev-slow")
 	rec := postApprove(h, id, `{"approved":true,"request_id":"ev-slow"}`)
