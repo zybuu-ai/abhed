@@ -506,6 +506,7 @@ abhed egress-proxy -config /etc/abhed-egress/egress.json -check
 | `-config FILE` | JSON holding the egress section alone: `rules`, `default`, `mode`, `record_paths`, `idle_seconds`, as under [Configuration](#configuration) (required) |
 | `-call ID` | the call id every decision is recorded under (`sandbox`) |
 | `-check` | read and compile the file, print the rule count and default, and exit |
+| `-open` | serve a `default: allow` policy on an address other than loopback (below) |
 
 The file is read strictly: an unknown or repeated key, a second JSON value or
 a rule that does not compile stops it with exit `1`, as does `inspect_tls`,
@@ -515,6 +516,14 @@ line on standard output, `{"time": …, "event": "egress.decision", "payload":
 to standard error. `SIGTERM` or `SIGINT` closes the port, ends open
 connections, writes the pending denial summaries and exits `0`. Bad flags
 exit `2`.
+
+The proxy takes no credential, so with `"default": "allow"` anyone who can
+reach its port can send anything no rule denies through it. On an address
+other than loopback (`:3128`, `0.0.0.0`, a pod IP) that is refused with exit
+`1` unless `-open` is given, which says a NetworkPolicy or firewall in front
+of it decides who reaches it; with `"default": "deny"` nothing changes. If
+its listener stops accepting connections, it exits `1` so whatever runs it
+starts it again, rather than serving nothing.
 
 It does not resolve names for the sandbox (clients send names to it, as
 proxy clients do) and it keeps no record of its own: whoever runs it reads

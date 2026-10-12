@@ -1002,7 +1002,10 @@ All notable changes to Abhed are recorded here. The format follows
   on its own, for a sandbox whose only way out is to it (a Kubernetes egress
   pod): every connection on its port is one call's, each decision is a JSON
   line on standard output, and a configuration it cannot honour
-  (`inspect_tls`, an unknown or repeated key) stops it. `-check` only reads
+  (`inspect_tls`, an unknown or repeated key) stops it. It takes no
+  credential, so a default of allow on an address other than loopback is
+  refused unless `-open` says a network policy decides who reaches it; it
+  exits `1` if its listener stops accepting. `-check` only reads
   the file. See [Network policy](docs/guide/21-network-policy.md).
 - `GET /v1/cli` (public) says how a command line signs in; `GET
   /v1/cli/whoami` and `GET /v1/whoami` answer for a bearer token too, naming

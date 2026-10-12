@@ -145,3 +145,53 @@ func TestEgressProxyRefusesWhatItCannotHonour(t *testing.T) {
 		t.Errorf("an unsupported config = %d", code)
 	}
 }
+
+// The proxy takes no credential, so a default of allow on an address other
+// than loopback is an open proxy: refused unless -open says something in front decides.
+func TestEgressProxyRefusesAnOpenProxy(t *testing.T) {
+	allow := writeEgressConfig(t, `{"default":"allow","rules":[{"host":"metadata.internal.test","decision":"deny"}]}`)
+	for _, addr := range []string{":8851", "0.0.0.0:8851", "192.0.2.1:8851"} {
+		var out, errOut bytes.Buffer
+		if code := egressProxyCmd([]string{"-config", allow, "-listen", addr}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "open proxy") {
+			t.Errorf("%s: %d %q", addr, code, errOut.String())
+		}
+	}
+	for addr, want := range map[string]bool{"127.0.0.1:8851": true, "[::1]:8851": true, "localhost:8851": true, ":8851": false, "10.0.0.1:8851": false} {
+		if got := loopbackListen(addr); got != want {
+			t.Errorf("loopbackListen(%s) = %v", addr, got)
+		}
+	}
+}
+
+// failingListener stops accepting at once, as a listener whose socket died.
+type failingListener struct{ net.Listener }
+
+func (failingListener) Accept() (net.Conn, error) {
+	return nil, fmt.Errorf("accept: too many open files")
+}
+
+// A proxy whose listener stops accepting exits with an error, so whatever
+// runs it restarts it, rather than serving nothing until it is signalled.
+func TestEgressProxyExitsWhenTheListenerDies(t *testing.T) {
+	pol, err := loadEgressPolicy(writeEgressConfig(t, `{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- serveEgressProxy(context.Background(), failingListener{ln}, pol, "c", io.Discard, io.Discard)
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "stopped accepting") {
+			t.Fatalf("returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the proxy kept running with no listener")
+	}
+}
