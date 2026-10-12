@@ -467,6 +467,12 @@ func under(spellings, dirs []string) bool {
 	return false
 }
 
+// NetworkOpen reports whether cfg gives commands the network with no
+// allowlist, so git run for them on the host reaches no more than they could.
+func NetworkOpen(cfg config.Config) bool {
+	return cfg.Sandbox.AllowNetwork && cfg.Sandbox.Network != config.NetworkAllowlist
+}
+
 // Isolation is what the bash tool tells the model of the sandbox of tier:
 // no network, any host, or, under the allowlist, only the destinations the
 // egress rules allow, through the session's proxy.

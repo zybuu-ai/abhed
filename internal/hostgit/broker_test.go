@@ -45,7 +45,7 @@ func TestBrokerRunsWorktreesOnTheHost(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 	process := func() sandbox.Tier { return sandbox.TierProcess }
-	run := Broker(ws, process, inner)
+	run := Broker(ws, process, true, inner)
 	ctx := context.Background()
 	if out, err := run(ctx, ws, "git worktree add -q -b w1 wt HEAD").CombinedOutput(); err != nil {
 		t.Fatalf("worktree add: %v %s", err, out)
@@ -65,8 +65,46 @@ func TestBrokerRunsWorktreesOnTheHost(t *testing.T) {
 	}
 	// The container tier is left to its sandbox.
 	container := func() sandbox.Tier { return sandbox.TierContainer }
-	_ = Broker(ws, container, inner)(ctx, ws, "git worktree prune").Run()
+	_ = Broker(ws, container, true, inner)(ctx, ws, "git worktree prune").Run()
 	if len(seen) != 2 {
 		t.Fatalf("a container tier's line was brokered: %v", seen)
 	}
+}
+
+// With the network off or held to an allowlist, a brokered submodule update
+// needs --no-fetch and runs with no transport git could reach a remote by.
+func TestBrokerSubmoduleUpdateStaysOffline(t *testing.T) {
+	ws := gitRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	inner := func(ctx context.Context, _, _ string) *exec.Cmd { return exec.CommandContext(ctx, "true") }
+	process := func() sandbox.Tier { return sandbox.TierProcess }
+	ctx := context.Background()
+	offline := Broker(ws, process, false, inner)
+	for _, line := range []string{"git submodule update --init", "git submodule update --init --recursive"} {
+		if err := offline(ctx, ws, line).Run(); err == nil || !strings.Contains(err.Error(), "--no-fetch") {
+			t.Fatalf("%q ran on the host with the network off: %v", line, err)
+		}
+	}
+	for _, line := range []string{"git submodule update --init --no-fetch", "git submodule update -N"} {
+		cmd := offline(ctx, ws, line)
+		if cmd.Err != nil {
+			t.Fatalf("%q: %v", line, cmd.Err)
+		}
+		if got := lastEnv(cmd.Env, "GIT_ALLOW_PROTOCOL"); got != noProtocol {
+			t.Fatalf("%q runs with GIT_ALLOW_PROTOCOL=%q", line, got)
+		}
+	}
+	if got := lastEnv(Broker(ws, process, true, inner)(ctx, ws, "git submodule update --init").Env, "GIT_ALLOW_PROTOCOL"); got != "https" {
+		t.Fatalf("with the network open, GIT_ALLOW_PROTOCOL=%q", got)
+	}
+}
+
+func lastEnv(env []string, key string) string {
+	v := ""
+	for _, kv := range env {
+		if k, val, ok := strings.Cut(kv, "="); ok && k == key {
+			v = val
+		}
+	}
+	return v
 }

@@ -774,7 +774,12 @@ worktree add`, `git worktree remove`, `git worktree prune` or `git submodule
 update` (plain words, the usual options only, no second command), already
 approved as any command is, runs through host git instead, with the settings
 Abhed's own git uses: hooks, fsmonitor, filters and every transport but https
-off. A path it names outside the workspace refuses it. Another spelling, an
+off. A path it names outside the workspace refuses it. Host git is not
+held by the sandbox's network rules, so with `allow_network` off or the
+egress allowlist on, `git submodule update` is brokered only with
+`--no-fetch` (or `-N`) and runs with no transport at all: it checks out
+commits already fetched and fails on a submodule not yet cloned. Without
+`--no-fetch` it is refused; fetch the submodules yourself, outside Abhed. Another spelling, an
 option outside the usual ones or a line with more on it runs in the sandbox
 and may fail there. The container and vm tiers do not broker them; run them
 yourself there. `git worktree remove --force` deletes the worktree's files as
