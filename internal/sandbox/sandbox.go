@@ -160,6 +160,9 @@ type Policy struct {
 	// SharedCaches lets the macOS process tier write the real toolchain
 	// caches; otherwise each sandbox's commands get caches of their own.
 	SharedCaches bool
+	// MemoryRequired refuses a Linux process tier command whose memory no
+	// cgroup can hold, for max_memory_mb set in a configuration file.
+	MemoryRequired bool
 	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
 	// CPU; zero means 200.
 	MaxCPUPercent int
@@ -169,6 +172,9 @@ type Policy struct {
 	// CPUPercent bounds the fence tier's commands' CPU time, in percent of
 	// one CPU; zero leaves it unbounded.
 	CPUPercent int
+	// FenceEgressPortOnly lets the fence hold the egress allowlist without a
+	// network namespace, by the proxy's port alone.
+	FenceEgressPortOnly bool
 	// FenceSocketcall lets the fence's commands on s390x make sockets
 	// through socketcall(2) when AllowNetwork is set.
 	FenceSocketcall bool

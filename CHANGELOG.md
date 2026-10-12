@@ -8,6 +8,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.7
 
+- On the Linux process tier, `sandbox.max_memory_mb` set in a configuration
+  file needs a delegated cgroup (`systemd-run --user --scope -p
+  Delegate=yes`); without one the process tier is refused.
 - The terminal CLI, `abhed -p` and `abhed rpc` keep commands from writing
   git's config, hooks and the like, as Studio and `abhed serve` do;
   `sandbox.protect_git: false` turns it off. A git command you allowed with
@@ -250,6 +253,22 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The fence holds `sandbox.network: "allowlist"`: in `mount_namespace` mode
+  each command gets a network namespace with only its loopback, where the
+  launcher relays the egress proxy's port to the proxy, and may make inet
+  stream sockets alone. In `landlock_only` mode, where Landlock can confine
+  TCP only to the proxy's port on any address, the managed
+  `fence.egress_port_only` accepts that; otherwise the fence still refuses
+  the allowlist there.
+- In `mount_namespace` mode each fenced command runs in a PID namespace of
+  its own with a `/proc` of its own, as the child of the launcher, which
+  stays as init: it passes on signals, reaps orphans and ends the namespace
+  with the command.
+- On the Linux process tier, where Abhed runs in a delegated cgroup, each
+  command runs in a cgroup of its own bounded by `max_procs` and
+  `max_memory_mb`, which ends whatever the command left. With
+  `max_memory_mb` set in a configuration file and no delegated cgroup, the
+  process tier is refused rather than run with memory unbounded.
 - The container and vm tiers enforce `sandbox.network: "allowlist"`: each
   command's container has no network but a relay to the session's egress
   proxy, over an `exec`'s stdio, so it also works where the engine runs in

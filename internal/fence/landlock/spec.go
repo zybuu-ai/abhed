@@ -33,6 +33,13 @@ type Spec struct {
 	// DenyTCP refuses every TCP connect and bind, for when the network is
 	// off. It needs ABI 4 (Linux 6.7) or later, and does not cover MPTCP.
 	DenyTCP bool `json:"deny_tcp,omitempty"`
+	// ConnectTCP are the ports TCP may still connect to with DenyTCP, such
+	// as the egress proxy's: on any address, since Landlock filters ports only.
+	ConnectTCP []uint16 `json:"connect_tcp,omitempty"`
+	// Root lets uid 0 be confined: the caller has dropped every capability,
+	// emptied the bounding set and locked the securebits, so root cannot
+	// leave the domain by them.
+	Root bool `json:"root,omitempty"`
 }
 
 type grantKind struct {

@@ -307,7 +307,8 @@ func mountsCheck(ctx context.Context, req Requirements) Check {
 		return c
 	}
 	attr := &syscall.SysProcAttr{}
-	mountns.Attr(attr)
+	// As the launcher starts: in a PID namespace of its own too.
+	mountns.AttrWith(attr, mountns.Spaces{PID: true})
 	out, err := runHelperAttr(ctx, attr, stageMounts, dir)
 	switch {
 	case err != nil:

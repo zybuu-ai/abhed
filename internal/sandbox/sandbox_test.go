@@ -457,6 +457,7 @@ func TestProcessDescribesTheBoundItSets(t *testing.T) {
 	was := countUserProcesses
 	t.Cleanup(func() { countUserProcesses = was })
 	s := &Process{backend: "bwrap", policy: Policy{MaxProcs: 64}}
+	s.cgOnce.Do(func() { s.cg = &processCgroups{} }) // no cgroup, whatever this host delegates
 	countUserProcesses = func() (int, bool) { return 10, true }
 	if d := s.Describe(); !strings.Contains(d, "at most 64 more processes") || !strings.Contains(d, "memory, CPU and disk not bounded") {
 		t.Fatalf("with a count: %s", d)
@@ -543,6 +544,7 @@ func TestProcessBoundsDataOnLinux(t *testing.T) {
 	t.Cleanup(func() { countUserProcesses = was })
 	countUserProcesses = func() (int, bool) { return 0, false }
 	linux := &Process{backend: "bwrap", policy: Policy{MaxMemoryMB: 256}}
+	linux.cgOnce.Do(func() { linux.cg = &processCgroups{} })
 	cmd := linux.bounded(context.Background(), "/bin/true", nil)
 	if !slices.Contains(cmd.Args, "262144") || !strings.Contains(strings.Join(cmd.Args, " "), "ulimit -d") {
 		t.Fatalf("no data bound: %v", cmd.Args)

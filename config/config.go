@@ -192,6 +192,11 @@ type FenceConfig struct {
 	// through socketcall(2), as glibc does there. The filter cannot read the
 	// family it is given, so unix sockets are reachable that way too.
 	Socketcall bool `json:"socketcall,omitempty"`
+	// EgressPortOnly lets the fence hold sandbox.network allowlist without a
+	// network namespace (landlock_only), where Landlock can confine TCP to
+	// the proxy's port but not its address: a command reaches that port on
+	// any host. Managed only.
+	EgressPortOnly bool `json:"egress_port_only,omitempty"`
 }
 
 type SuggestConfig struct {
@@ -257,6 +262,7 @@ var managedOnly = map[string]string{
 	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
 	"sandbox.network":              "only the managed configuration turns on the egress allowlist",
 	"sandbox.microvm_socket":       "only the managed configuration names the microVM driver",
+	"fence.egress_port_only":       "only the managed configuration lets the fence hold the allowlist by port alone",
 	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
 	"egress.default":               "only the managed configuration sets which destinations commands reach",
 	"egress.mode":                  "only the managed configuration sets the egress mode",
@@ -297,6 +303,8 @@ func ManagedOnly(path string) bool {
 // clearManagedOnly resets a managed-only setting to its default.
 func clearManagedOnly(c *Config, key string) {
 	switch key {
+	case "fence.egress_port_only":
+		c.Fence.EgressPortOnly = false
 	case "cli.mode_cycle":
 		c.CLI.ModeCycle = nil
 	case "record.dir":

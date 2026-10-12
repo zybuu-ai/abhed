@@ -58,6 +58,10 @@ type Process struct {
 	// Seatbelt, made at its first command; "" when it could not be.
 	cachesOnce sync.Once
 	caches     string
+
+	// cg is the delegated cgroup bubblewrap's commands run in, on Linux.
+	cgOnce sync.Once
+	cg     *processCgroups
 }
 
 // rootCaps reports whether Abhed runs as uid 0, where bwrap keeps the host's full
@@ -133,6 +137,9 @@ func (s *Process) Available() (bool, string) {
 			return false, "running as root, bubblewrap needs a private /proc and /dev here, which the kernel refuses; use the container or vm tier"
 		}
 		if why := s.bwrapDropsCaps(); why != "" {
+			return false, why
+		}
+		if why := s.cgroupRefusal(); why != "" {
 			return false, why
 		}
 	}
@@ -288,7 +295,9 @@ func (s *Process) Describe() string {
 		procs = fmt.Sprintf("at most %d more processes per command", s.policy.MaxProcs)
 	}
 	mem := "memory, CPU and disk not bounded"
-	if kb := s.dataLimitKB(); kb > 0 {
+	if c := s.cgroupDescribe(); c != "" {
+		mem = fmt.Sprintf("%s (at most %d processes and %d MB each); CPU and disk not bounded", c, s.policy.MaxProcs, s.policy.MaxMemoryMB)
+	} else if kb := s.dataLimitKB(); kb > 0 {
 		mem = fmt.Sprintf("each process's data at most %d MB (not the command's total); CPU and disk not bounded", kb/1024)
 	}
 	d := fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · %s",
@@ -777,7 +786,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		cmd := s.bounded(ctx, "bwrap", args)
 		cmd.Dir = cwd
 		cmd.Env = env
-		return cmd
+		return s.place(ctx, cmd)
 	}
 
 	// Unreachable when Available() gated correctly, but fail closed rather than

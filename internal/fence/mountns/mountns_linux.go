@@ -27,6 +27,58 @@ func Attr(a *syscall.SysProcAttr) {
 	a.AmbientCaps = []uintptr{unix.CAP_SYS_ADMIN, unix.CAP_SETPCAP}
 }
 
+// Spaces are the namespaces beside the user and mount ones a command gets.
+type Spaces struct {
+	// PID gives the launcher a PID namespace of its own, where it is init.
+	PID bool
+	// Net gives it a network namespace of its own, with CAP_NET_ADMIN there
+	// to bring its loopback up before Drop.
+	Net bool
+}
+
+// AttrWith is Attr with the namespaces sp asks for too.
+func AttrWith(a *syscall.SysProcAttr, sp Spaces) {
+	Attr(a)
+	if sp.PID {
+		a.Cloneflags |= unix.CLONE_NEWPID
+	}
+	if sp.Net {
+		a.Cloneflags |= unix.CLONE_NEWNET
+		a.AmbientCaps = append(a.AmbientCaps, unix.CAP_NET_ADMIN)
+	}
+}
+
+// MountProc mounts a /proc of this PID namespace over the inherited one, so
+// it shows only the namespace's processes. It needs CAP_SYS_ADMIN in the
+// user namespace that owns the PID namespace.
+func MountProc() error {
+	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+		return fmt.Errorf("mounting a /proc of the command's own: %w", err)
+	}
+	return nil
+}
+
+// LoopbackUp brings the network namespace's loopback up, its only interface.
+func LoopbackUp() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("bringing the loopback up: %w", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	ifr, err := unix.NewIfreq("lo")
+	if err != nil {
+		return err
+	}
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("reading the loopback's flags: %w", err)
+	}
+	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("bringing the loopback up: %w", err)
+	}
+	return nil
+}
+
 // Apply makes every mount private to this namespace, then applies p: the
 // pins, the read-only binds and the empty folders, in that order, at the
 // workspace and at every other mount that reaches its files (an alias), so

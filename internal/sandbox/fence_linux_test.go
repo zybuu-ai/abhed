@@ -242,13 +242,15 @@ func TestFenceNetworkOnKeepsUnixSocketsOut(t *testing.T) {
 	}
 }
 
-// Without a PID namespace a command sees other processes' command lines,
-// but Landlock keeps their environment out of its reach, as the docs say.
+// Without a PID namespace (landlock_only) a command sees other processes'
+// command lines, but Landlock keeps their environment out of its reach; in
+// mount_namespace mode it has a /proc of its own and sees neither.
 func TestFenceProcVisibility(t *testing.T) {
 	f, p := fenced(t, nil)
 	pid := os.Getpid()
-	if out, err := fenceRun(t, f, p.Workspace, fmt.Sprintf("tr '\\0' ' ' < /proc/%d/cmdline", pid), nil, ""); err != nil || !strings.Contains(out, "test") {
-		t.Errorf("cmdline: %v\n%s", err, out)
+	out, err := fenceRun(t, f, p.Workspace, fmt.Sprintf("tr '\\0' ' ' < /proc/%d/cmdline", pid), nil, "")
+	if seen := err == nil && strings.Contains(out, "test"); seen == (f.Mode() == FenceModeMounts) {
+		t.Errorf("mode %s, cmdline seen %v: %v\n%s", f.Mode(), seen, err, out)
 	}
 	if out, err := fenceRun(t, f, p.Workspace, fmt.Sprintf("cat /proc/%d/environ", pid), nil, ""); err == nil {
 		t.Errorf("another process's environment was readable:\n%s", out)

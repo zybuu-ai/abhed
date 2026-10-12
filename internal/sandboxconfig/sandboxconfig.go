@@ -96,6 +96,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		p.MaxProcs = cfg.Sandbox.MaxProcs
 	}
 	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
+	p.MemoryRequired = cfg.Sets("sandbox.max_memory_mb")
 	p.SharedCaches = cfg.Sandbox.SharedCaches
 	// The container tier picks its engine later; either engine's relay serves.
 	p.RelayBinary = cfg.ControlPlane.Podman.RelayBinary
@@ -106,6 +107,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
 	p.FenceSocketcall = cfg.Fence.Socketcall
+	p.FenceEgressPortOnly = cfg.Fence.EgressPortOnly
 	p.SkillDirs = skillDirs(cfg)
 	return p, nil
 }

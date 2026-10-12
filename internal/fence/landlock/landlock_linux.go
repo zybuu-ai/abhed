@@ -35,7 +35,7 @@ func (r *Ruleset) Restrict() error {
 	// Landlock and no_new_privs bind the thread, not the process. The thread
 	// is never unlocked: Go discards it when the goroutine ends.
 	runtime.LockOSThread()
-	if err := refuseRoot(unix.Getuid(), unix.Geteuid()); err != nil {
+	if err := refuseRoot(unix.Getuid(), unix.Geteuid()); err != nil && !r.spec.Root {
 		return err
 	}
 	// The filesystem may have changed since New: a link could now hide an
@@ -83,6 +83,13 @@ func (r *Ruleset) Restrict() error {
 			}
 		}
 	}
+	if r.spec.DenyTCP {
+		for _, port := range r.spec.ConnectTCP {
+			if err := allowConnect(ruleset, port); err != nil {
+				return err
+			}
+		}
+	}
 	if _, _, errno := unix.Syscall(unix.SYS_LANDLOCK_RESTRICT_SELF, uintptr(ruleset), 0, 0); errno != 0 {
 		return fmt.Errorf("entering the Landlock domain: %w", errno)
 	}
@@ -112,6 +119,26 @@ func allowBeneath(ruleset int, path string, rights uint64) error {
 	if _, _, errno := unix.Syscall6(unix.SYS_LANDLOCK_ADD_RULE, uintptr(ruleset), unix.LANDLOCK_RULE_PATH_BENEATH,
 		uintptr(unsafe.Pointer(&rule)), 0, 0, 0); errno != 0 {
 		return fmt.Errorf("granting %s: %w", path, errno)
+	}
+	return nil
+}
+
+// netPortAttr is struct landlock_net_port_attr, which x/sys does not name.
+type netPortAttr struct {
+	allowed uint64
+	port    uint64
+}
+
+// ruleNetPort is LANDLOCK_RULE_NET_PORT.
+const ruleNetPort = 2
+
+// allowConnect lets TCP connect to port, on any address.
+func allowConnect(ruleset int, port uint16) error {
+	rule := netPortAttr{allowed: netConnectTCP, port: uint64(port)}
+	// #nosec G103 -- the kernel ABI's struct, passed by address to the syscall that reads it
+	if _, _, errno := unix.Syscall6(unix.SYS_LANDLOCK_ADD_RULE, uintptr(ruleset), ruleNetPort,
+		uintptr(unsafe.Pointer(&rule)), 0, 0, 0); errno != 0 {
+		return fmt.Errorf("allowing TCP connect to port %d: %w", port, errno)
 	}
 	return nil
 }

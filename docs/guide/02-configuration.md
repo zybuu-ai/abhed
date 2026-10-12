@@ -294,10 +294,15 @@ start: on the process tier, as a limit of what your user runs plus this many
 (the kernel counts all of the user's processes, and does not bound root), and
 on the container and vm tiers, as the container's own limit. The none tier
 ignores it. `"max_memory_mb"` (4096) bounds a command's memory on the
-container and vm tiers and the fence. On the Linux process tier it bounds each
-process's data (its private writable memory, `RLIMIT_DATA`), a hard limit the
-command cannot raise, but not the command's total: many processes can each
-use that much, up to `max_procs` of them. The macOS process tier and the none
+container and vm tiers and the fence. On the Linux process tier, where Abhed
+runs in a cgroup delegated to you (`systemd-run --user --scope -p
+Delegate=yes abhed ...`), each command runs in a cgroup of its own bounded by
+`max_memory_mb` and `max_procs`, and what it leaves running is ended with
+it; without one, each process's data is bounded (its private writable
+memory, `RLIMIT_DATA`), a hard limit the command cannot raise, but not the
+command's total, and `max_procs` is a limit on your user's processes. With
+`max_memory_mb` set in a configuration file and no delegated cgroup, the
+process tier is refused rather than run with memory unbounded. The macOS process tier and the none
 tier do not bound memory; macOS has no cgroups and does not enforce the data
 limit. `abhed doctor` warns when you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
 none tier, and when root runs the process tier, whose processes the kernel
@@ -398,7 +403,7 @@ picks its mode from that; `fence.qualified` records it as `mode`, and each
 
 | Mode | When | What it adds | Surfaces |
 |---|---|---|---|
-| `mount_namespace` | the host allows unprivileged user namespaces | each command in a user and mount namespace of its own: git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
+| `mount_namespace` | the host allows unprivileged user namespaces | each command in a user, mount and PID namespace of its own (and a network namespace under the egress allowlist): git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered, a `/proc` showing only its own processes | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
 | `landlock_only` | it does not | nothing: Landlock and seccomp alone | the command line and the SDK; Studio and `serve` are refused, saying why |
 
 The fence never moves from one mode to the other on its own: a surface that
@@ -566,8 +571,16 @@ without running anything.
   Landlock ABI 6 or later: then `socketcall()` sockets are allowed, and since
   the filter cannot read their family, unix sockets with them (abstract ones
   scoped by Landlock, named ones not). A workspace file cannot set it.
-  `sandbox.network: "allowlist"` refuses the fence in both modes, since it
-  cannot keep a command's sockets to the egress proxy alone
+  Under `sandbox.network: "allowlist"` a command may make inet and inet6
+  stream sockets only (no UDP, no unix sockets), and Landlock lets TCP
+  connect only to the session's egress proxy's port. In `mount_namespace`
+  mode each command also gets a network namespace of its own holding only its
+  loopback, where the launcher relays that port to the proxy's socket on the
+  host, so the proxy is the one way out. In `landlock_only` there is no
+  network namespace, and Landlock filters ports, not addresses, so a command
+  could reach that port number on any host; the fence refuses the allowlist
+  there unless the managed `fence.egress_port_only` is `true`, which accepts
+  that. Names are resolved by the proxy, not inside the sandbox
   ([Network policy](21-network-policy.md)).
 - **Limits.** Each session's commands share a cgroup bounded by
   `max_memory_mb` (with no swap), `max_procs` (processes and threads) and
@@ -578,15 +591,18 @@ without running anything.
   fence of its own, with its own cgroup that its tool calls' cgroups sit
   under, closed with the session. A served session qualifies its fence at
   its first command, so a session opened only to be read records nothing.
-  Sessions are not kept apart from each other's processes below Landlock ABI
-  6 (Linux older than 6.12): there, one session's commands can signal
-  another session's commands and read their command lines in `/proc`. So an
-  `abhed serve` that accounts sign in to (`auth.mode` other than `none`)
-  refuses the fence below ABI 6, saying so; a server without accounts, the
-  command line and Studio still run there. On Linux 6.12 or later Landlock
-  keeps each command's signals to its own processes; command lines stay
-  readable either way, since there is no PID namespace, so keep secrets out
-  of command lines, or use the container tier, which gives each command one.
+  In `mount_namespace` mode each command runs in a PID namespace of its
+  own, as the child of the launcher, which stays as the namespace's init: it
+  passes on the signals sent to it (a stop, Ctrl-C), reaps what is orphaned
+  and exits as the command does, which ends everything left in the
+  namespace. The command sees, signals and traces only its own processes,
+  through a `/proc` of its own (where the kernel refuses a new `/proc`, as
+  under some container runtimes, the inherited one stays and other command
+  lines are visible, but not signalled). In `landlock_only` there is no PID
+  namespace: below Landlock ABI 6 (Linux older than 6.12) one session's
+  commands can signal another session's and read their command lines in
+  `/proc`, so an `abhed serve` that accounts sign in to (`auth.mode` other
+  than `none`) refuses the fence there below ABI 6, saying so.
 - **The record.** `fence.qualified` holds the probe's report and the mode
   at the start of the session (for `serve`, before the session's first
   command), `process.launched` each command's launch with its call id
@@ -599,11 +615,13 @@ without running anything.
 
 **What it does not cover.** Abhed itself and what it runs in-process (the
 file, web and MCP tools, extensions) stay outside the fence, as on every tier.
-There is no network filtering. Below Landlock ABI 6 (Linux 6.12) a command can
-signal your other processes, and can reach Abhed by one of its thread ids,
-which the filter does not know; Landlock ABI 6 keeps signals inside the
-command's own processes. With no PID namespace a command can read other
-processes' command lines in `/proc` (not their environment or memory). A hard
+There is no network filtering beyond the egress allowlist above. In
+`landlock_only` mode, below Landlock ABI 6 (Linux 6.12) a command can signal
+your other processes, and can reach Abhed by one of its thread ids, which the
+filter does not know; Landlock ABI 6 keeps signals inside the command's own
+processes; and a command can read other processes' command lines in `/proc`
+(not their environment or memory). The Landlock ABI 6 paths (signal
+scoping, root) were tested only on Linux 6.9, where they are refused. A hard
 link inside the workspace to a file of Abhed's state, made before the
 session, stays readable through the link: Landlock checks the path a file is
 opened by, and the fence makes no such link, but does not look for one. The

@@ -52,6 +52,8 @@ type Fence struct {
 	madeState bool
 	// stateLock is shared by every fence on the workspace while it lasts.
 	stateLock *os.File
+	// eg is the session's egress proxy under the allowlist.
+	eg fenceEgress
 	// markPath is the session's mark under ~/.abhed/fence, removed at a
 	// clean close; watchStop ends the landlock_only check between commands.
 	markPath  string
@@ -136,6 +138,7 @@ func (f *Fence) Close() error {
 			errs = append(errs, os.RemoveAll(f.tmp))
 		}
 		f.removeMadeState()
+		errs = append(errs, f.eg.close())
 		if f.watchStop != nil {
 			close(f.watchStop)
 		}
@@ -182,15 +185,20 @@ func (f *Fence) policyRefusal() string {
 		return "the workspace must be an absolute path"
 	case f.policy.CPUPercent < 0:
 		return "fence.cpu_percent is negative"
-	case f.policy.Egress != nil:
-		// Landlock limits TCP connects by port, not address, and seccomp
-		// cannot read the address a socket connects to: a command allowed the
-		// proxy's port could reach that port on any host.
-		return "sandbox.network is allowlist, and the fence cannot keep a command's sockets to the egress proxy alone " +
-			"(Landlock limits TCP by port, not by address, and seccomp cannot read the address); " +
-			"leave sandbox.tier unset to use the process tier, which enforces it, or turn the allowlist off"
 	}
 	return ""
+}
+
+// egressRefusal says why the fence in its mode cannot hold the allowlist,
+// or "": without a network namespace Landlock limits TCP by port, not
+// address, so a command allowed the proxy's port reaches it on any host.
+func (f *Fence) egressModeRefusal() string {
+	if f.policy.Egress == nil || f.mounts || f.policy.FenceEgressPortOnly {
+		return ""
+	}
+	return "sandbox.network is allowlist, and the fence's landlock_only mode cannot keep a command's sockets to the egress proxy alone " +
+		"(no network namespace here; Landlock limits TCP by port, not by address); the managed fence.egress_port_only accepts that, " +
+		"or leave sandbox.tier unset to use the process tier"
 }
 
 // The fence's modes, as fence.qualified and process.launched record them.
@@ -226,9 +234,20 @@ func (f *Fence) Describe() string {
 	if f.policy.AllowNetwork {
 		net = "network on: the host's network, unfiltered; unix sockets refused"
 	}
+	switch {
+	case f.policy.Egress != nil && f.mounts:
+		net = "network: the egress proxy alone, through a relay in each command's network namespace, inet streams only"
+	case f.policy.Egress != nil:
+		net = "network: TCP to the egress proxy's port alone, on any address (no network namespace: Landlock filters ports only), inet streams only"
+	}
 	signals := "Landlock scopes signals and abstract sockets"
-	if abi < 6 {
-		signals = "commands can signal your other processes, Abhed too by one of its thread ids (Landlock ABI 6, Linux 6.12, scopes them)"
+	switch {
+	case f.mounts:
+		signals = "a PID namespace and /proc of the command's own: it signals and sees only its own processes"
+	case abi < 6:
+		signals = "commands can signal your other processes, Abhed too by one of its thread ids (Landlock ABI 6, Linux 6.12, scopes them), and read other processes' command lines in /proc"
+	default:
+		signals += "; other processes' command lines in /proc are readable"
 	}
 	mode := "mode landlock_only: no mount namespace; a .abhed a command makes at the top of the workspace, in any case, " +
 		"is renamed out of the way once the command ends and moved to ~/.abhed/quarantine where it can be, the session's commands still running are ended and its further commands are refused, " +
@@ -253,8 +272,8 @@ func (f *Fence) Describe() string {
 	}
 	return fmt.Sprintf("fence (preview, Linux) · each command under Landlock ABI %d: reads and runs system folders, ~/.abhed/skills and skills.dirs, writes the workspace and a private temp folder, "+
 		"no other terminal, Abhed's state, record and secrets unreachable · %s · seccomp %s: no ptrace, namespaces, mounts, bpf, keyrings, unix sockets "+
-		"or signals to Abhed's process id · %s · cgroup per call: %s · not covered: Abhed itself and its in-process tools (file, web, MCP), network filtering, "+
-		"%s, other processes' command lines in /proc, a hard link to state made before the session, %s",
+		"or signals to Abhed's process id · %s · cgroup per call: %s · not covered: Abhed itself and its in-process tools (file, web, MCP), network filtering but the allowlist, "+
+		"%s, a hard link to state made before the session, %s",
 		abi, mode, seccomp.Profile, net, f.limitsText(), signals, planted)
 }
 

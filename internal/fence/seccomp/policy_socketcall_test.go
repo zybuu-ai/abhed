@@ -33,3 +33,24 @@ func TestSocketcallFollowsTheSetting(t *testing.T) {
 		t.Error("a socketcall rule on amd64")
 	}
 }
+
+// Under the egress allowlist only inet and inet6 stream sockets are made.
+func TestProxyOnlyAllowsStreamsAlone(t *testing.T) {
+	p := Policy{Abhed: 9, ProxyOnly: true}
+	for _, arch := range []string{"amd64", "arm64", "s390x"} {
+		prog, err := p.Program(arch)
+		if err != nil {
+			t.Fatalf("%s: %v", arch, err)
+		}
+		nr := arches[arch].nr["socket"]
+		for _, c := range []struct {
+			family, typ uint32
+			allow       bool
+		}{{2, 1, true}, {10, 1 | 0x80000, true}, {2, 2, false}, {10, 2, false}, {2, 3, false}, {1, 1, false}, {16, 3, false}, {2, 5, false}} {
+			got := run(t, prog, call{arch: arches[arch].audit, nr: nr, args: [6]uint64{uint64(c.family), uint64(c.typ)}}) == retAllow
+			if got != c.allow {
+				t.Errorf("%s socket(%d, %#x): allowed %v", arch, c.family, c.typ, got)
+			}
+		}
+	}
+}

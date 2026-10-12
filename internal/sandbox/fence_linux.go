@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -21,6 +23,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/fence/cgroup"
 	"github.com/zybuu-ai/abhed/internal/fence/landlock"
 	"github.com/zybuu-ai/abhed/internal/fence/mountns"
@@ -36,6 +39,10 @@ func init() {
 	if len(os.Args) > 1 && os.Args[1] == fenceLauncherArg {
 		runtime.LockOSThread()
 		os.Exit(runLauncher(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == fenceChildArg {
+		runtime.LockOSThread()
+		os.Exit(runChild(os.Args[2:]))
 	}
 }
 
@@ -73,6 +80,14 @@ const fenceLaunchWait = 2 * time.Minute
 type fenceSpec struct {
 	Landlock landlock.Spec `json:"landlock"`
 	Network  bool          `json:"network"`
+	// ProxyOnly allows inet stream sockets alone, which Landlock confines to
+	// the egress proxy's port; Egress, in mount_namespace mode, is the relay
+	// the launcher runs in the command's network namespace.
+	ProxyOnly bool             `json:"proxy_only,omitempty"`
+	Egress    *fenceEgressSpec `json:"egress,omitempty"`
+	// PIDNS is set when the launcher is init of a PID namespace of its own:
+	// it runs the command as its child and passes signals on.
+	PIDNS bool `json:"pidns,omitempty"`
 	// Socketcall allows socketcall(SOCKET) with Network, on s390x.
 	Socketcall bool `json:"socketcall,omitempty"`
 	// Leaf is the call's cgroup, which the launcher joins first.
@@ -263,6 +278,9 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 		}
 		return false, mountsRefusal(why)
 	}
+	if why := f.egressModeRefusal(); why != "" {
+		return false, why
+	}
 	if !f.report.Qualified {
 		return false, f.report.Summary
 	}
@@ -360,6 +378,20 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	if err := spec.Validate(); err != nil {
 		return refusedCmd("%v", err)
 	}
+	var relay *fenceEgressSpec
+	if f.policy.Egress != nil {
+		callEnv, err := f.eg.call(ctx, f.policy.Egress)
+		if err != nil {
+			return refusedCmd("%v", err)
+		}
+		env = append(append([]string{}, env...), callEnv...)
+		// TCP only to the proxy's port; in mount mode the port is the relay's,
+		// in a network namespace with nothing else in it.
+		spec.ConnectTCP = []uint16{f.eg.port()}
+		if f.mounts {
+			relay = f.eg.spec()
+		}
+	}
 	leaf, err := f.host.sb.NewLeaf(f.leafName(launch.CallID), f.host.leaf)
 	if err != nil {
 		return refusedCmd("%v", err)
@@ -383,7 +415,8 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 		}
 	}
 	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: f.policy.AllowNetwork, Socketcall: f.policy.AllowNetwork && f.policy.FenceSocketcall, Leaf: leaf.Path(),
-		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan})
+		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan,
+		ProxyOnly: f.policy.Egress != nil, Egress: relay, PIDNS: plan != nil})
 	if err != nil {
 		drop()
 		return refusedCmd("%v", err)
@@ -406,7 +439,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	cmd.ExtraFiles = []*os.File{theirs}
 	if plan != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
-		mountns.Attr(cmd.SysProcAttr)
+		mountns.AttrWith(cmd.SysProcAttr, mountns.Spaces{PID: true, Net: relay != nil})
 	}
 	// Release ends the wait at once for a command that never starts.
 	abandoned := make(chan struct{})
@@ -417,7 +450,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 			_ = ours.SetReadDeadline(time.Now())
 		})
 	})
-	sup := supervision{ours: ours, theirs: theirs, leaf: leaf, launch: launch, rec: rec, source: source, drop: drop, plan: plan,
+	sup := supervision{ours: ours, theirs: theirs, leaf: leaf, launch: launch, rec: rec, source: source, drop: drop, plan: plan, pidns: plan != nil,
 		abandoned: abandoned, done: func() { pendingLaunches.Delete(cmd) }}
 	// The supervisor outlives this call by design: it holds the launch until
 	// the command exits, and cleans up with contexts of its own.
@@ -435,8 +468,10 @@ type supervision struct {
 	rec    func(string, map[string]any) error
 	source string
 	drop   func()
-	// plan is what the command's mount namespace holds, nil without one.
-	plan *mountns.Plan
+	// plan is what the command's mount namespace holds, nil without one;
+	// pidns is set when the command runs in a PID namespace of its own.
+	plan  *mountns.Plan
+	pidns bool
 	// abandoned closes when the command is released unstarted; done
 	// forgets it once the launcher has reported or the wait is over.
 	abandoned <-chan struct{}
@@ -462,6 +497,10 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	leaf := sv.leaf
+	// In a PID namespace the launcher names the command by its pid there.
+	if sv.pidns {
+		rep.PID = hostPid(leaf.Path(), rep.PID)
+	}
 	pidfd, err := unix.PidfdOpen(rep.PID, 0)
 	if err != nil || !slices.Contains(leafPids(leaf.Path()), rep.PID) {
 		if err == nil {
@@ -565,6 +604,26 @@ func waitExit(pidfd int) {
 	}
 }
 
+// hostPid is the process in the cgroup at dir whose pid in its innermost PID
+// namespace is nspid, as this process sees it; 0 when there is none.
+func hostPid(dir string, nspid int) int {
+	for _, p := range leafPids(dir) {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", p)) // #nosec G304 -- a numbered /proc entry
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if rest, ok := strings.CutPrefix(line, "NSpid:"); ok {
+				f := strings.Fields(rest)
+				if len(f) > 1 && f[len(f)-1] == strconv.Itoa(nspid) {
+					return p
+				}
+			}
+		}
+	}
+	return 0
+}
+
 // leafPids are the processes in the cgroup at dir.
 func leafPids(dir string) []int {
 	b, _ := os.ReadFile(filepath.Join(dir, "cgroup.procs")) // #nosec G304 -- a cgroup interface file
@@ -585,28 +644,30 @@ const launcherFD = 3
 // to record it, and executes the command in its own place. Any failure
 // exits 126 having run nothing.
 func runLauncher(args []string) int {
-	fail := func(format string, a ...any) int {
-		fmt.Fprintf(os.Stderr, "abhed: the command was not run: the fence could not confine it: "+format+"\n", a...)
-		return 126
-	}
 	if len(args) < 3 || args[1] != "--" {
-		return fail("the launcher was started without a command")
+		return launchFail("the launcher was started without a command")
 	}
 	var s fenceSpec
 	if err := json.Unmarshal([]byte(args[0]), &s); err != nil {
-		return fail("the launcher's spec cannot be read: %v", err)
+		return launchFail("the launcher's spec cannot be read: %v", err)
 	}
 	// 1. The probe: this run's pass, from the Abhed that started this
 	// launcher, never one kept from another run; and what it checked of the
-	// would-be command, checked again here.
-	if !s.Qualified || s.ProbePID != os.Getppid() {
-		return fail("no qualification from the Abhed process that started it")
+	// would-be command, checked again here. In a PID namespace of its own
+	// the launcher is init, whose parent is outside it: only the process
+	// that made the namespace can have started it.
+	started := s.ProbePID == os.Getppid()
+	if s.PIDNS {
+		started = os.Getpid() == 1 && os.Getppid() == 0
+	}
+	if !s.Qualified || !started {
+		return launchFail("no qualification from the Abhed process that started it")
 	}
 	// 1a. The mounts, in this launcher's own namespace, where it holds
 	// CAP_SYS_ADMIN only to make them; then every capability is dropped.
 	if s.Mounts != nil {
 		if err := mountns.Apply(*s.Mounts); err != nil {
-			return fail("%v", err)
+			return launchFail("%v", err)
 		}
 		// The working folder was entered before the mounts; entered again,
 		// it is seen through them.
@@ -615,80 +676,190 @@ func runLauncher(args []string) int {
 			err = unix.Chdir(wd)
 		}
 		if err != nil {
-			return fail("entering the working folder again: %v", err)
+			return launchFail("entering the working folder again: %v", err)
+		}
+		// A /proc of the namespace's own shows only its processes; where the
+		// kernel refuses one (an inherited /proc with parts hidden), the
+		// namespace still keeps signals and ptrace from reaching outside.
+		if s.PIDNS {
+			_ = mountns.MountProc()
+		}
+		if s.Egress != nil {
+			if err := mountns.LoopbackUp(); err != nil {
+				return launchFail("%v", err)
+			}
 		}
 		if err := mountns.Drop(); err != nil {
-			return fail("%v", err)
+			return launchFail("%v", err)
 		}
 	}
 	// Root keeps its uid but gives up every capability, its bounding set
 	// and its way back to them, before anything else confines it.
 	if os.Geteuid() == 0 && s.Mounts == nil {
 		if err := mountns.Drop(); err != nil {
-			return fail("%v", err)
+			return launchFail("%v", err)
 		}
 	}
 	if err := holdsNothing(); err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
-	// 2. The call's cgroup, and a session and process group apart from
-	// Abhed's: the command's own kill(0) cannot reach Abhed, and /dev/tty
-	// opens only a terminal it was started on, never Abhed's.
+	// 2. The call's cgroup.
 	if err := joinLeaf(s.Leaf); err != nil {
-		return fail("joining the call's cgroup: %v", err)
+		return launchFail("joining the call's cgroup: %v", err)
 	}
+	if s.PIDNS {
+		return runInit(s, args)
+	}
+	// A session and process group apart from Abhed's: the command's own
+	// kill(0) cannot reach Abhed, and /dev/tty opens only a terminal it was
+	// started on, never Abhed's.
 	if sid, err := unix.Getsid(0); err != nil || sid != os.Getpid() {
 		if _, err := unix.Setsid(); err != nil {
-			return fail("leaving Abhed's session: %v", err)
+			return launchFail("leaving Abhed's session: %v", err)
 		}
 	}
 	abhed := os.Getppid()
 	abhedGroup, err := unix.Getpgid(abhed)
 	if err != nil {
-		return fail("reading Abhed's process group: %v", err)
+		return launchFail("reading Abhed's process group: %v", err)
 	}
 	if unix.Getpgrp() == abhedGroup {
 		if err := unix.Setpgid(0, 0); err != nil {
-			return fail("leaving Abhed's process group: %v", err)
+			return launchFail("leaving Abhed's process group: %v", err)
 		}
 	}
+	return confineAndRun(s, args[2:], abhed, abhedGroup)
+}
+
+// launchFail says why the command was not run and is the launcher's exit code.
+func launchFail(format string, a ...any) int {
+	fmt.Fprintf(os.Stderr, "abhed: the command was not run: the fence could not confine it: "+format+"\n", a...)
+	return 126
+}
+
+// fenceChildArg starts the command's stage under an init launcher: the child
+// it starts in its PID namespace, which confines itself and runs the command.
+const fenceChildArg = "__abhed_fence_child"
+
+// initSignals are passed from the init launcher to the command, as a
+// process outside the namespace sends them to init.
+var initSignals = []os.Signal{unix.SIGINT, unix.SIGTERM, unix.SIGHUP, unix.SIGQUIT, unix.SIGUSR1, unix.SIGUSR2,
+	unix.SIGWINCH, unix.SIGCONT, unix.SIGALRM}
+
+// runInit is the launcher as init of the command's PID namespace. A command
+// that is init ignores every signal it has no handler for, Ctrl-C and a
+// stop among them, so it runs as init's child instead: init relays to the
+// egress proxy where there is one, passes signals on, reaps what is
+// orphaned, and exits as the command does, which ends the namespace.
+func runInit(s fenceSpec, args []string) int {
+	if s.Egress != nil {
+		ln, err := net.Listen("tcp", s.Egress.Listen)
+		if err != nil {
+			return launchFail("the egress relay: %v", err)
+		}
+		go egress.Relay(ln, s.Egress.Sock)
+	}
+	// A terminal goes to the command's session: init gives it up first.
+	_, terr := unix.IoctlGetTermios(0, unix.TCGETS)
+	tty := terr == nil
+	if tty {
+		signal.Ignore(unix.SIGHUP)
+		_ = unix.IoctlSetInt(0, unix.TIOCNOTTY, 0)
+	}
+	sigs := make(chan os.Signal, 16)
+	signal.Notify(sigs, initSignals...)
+	argv := append([]string{"/proc/self/exe", fenceChildArg}, args...)
+	p, err := os.StartProcess("/proc/self/exe", argv, &os.ProcAttr{
+		Env:   os.Environ(),
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr, os.NewFile(launcherFD, "fence-channel")},
+		Sys:   &syscall.SysProcAttr{Setsid: true, Setctty: tty, Ctty: 0},
+	})
+	if err != nil {
+		return launchFail("starting the command under init: %v", err)
+	}
+	_ = unix.Close(launcherFD)
+	go func() {
+		for sig := range sigs {
+			_ = p.Signal(sig)
+		}
+	}()
+	for {
+		var ws unix.WaitStatus
+		pid, err := unix.Wait4(-1, &ws, 0, nil)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return 126
+		}
+		if pid != p.Pid {
+			continue
+		}
+		if ws.Signaled() {
+			return 128 + int(ws.Signal())
+		}
+		return ws.ExitStatus()
+	}
+}
+
+// runChild is the command's stage under an init launcher: in a session of
+// its own already, it confines itself and runs the command.
+func runChild(args []string) int {
+	if len(args) < 3 || args[1] != "--" {
+		return launchFail("the command's stage was started without a command")
+	}
+	var s fenceSpec
+	if err := json.Unmarshal([]byte(args[0]), &s); err != nil || !s.PIDNS || os.Getppid() != 1 {
+		return launchFail("the command's stage was not started by the fence's init")
+	}
+	if err := holdsNothing(); err != nil {
+		return launchFail("%v", err)
+	}
+	// Abhed is outside the namespace: no signal names it from here.
+	return confineAndRun(s, args[2:], s.ProbePID, 0)
+}
+
+// confineAndRun applies Landlock and seccomp to this thread, reports what it
+// applied, waits for Abhed to record it, and runs argv in this process's place.
+func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{}); err != nil {
-		return fail("turning core dumps off: %v", err)
+		return launchFail("turning core dumps off: %v", err)
 	}
 	// 3. Landlock, on this thread, from which the command is executed.
 	abi, err := landlock.Detect()
 	if err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
+	s.Landlock.Root = os.Geteuid() == 0
 	rs, err := landlock.New(s.Landlock, abi)
 	if err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
 	if err := rs.Restrict(); err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
 	// 4. seccomp, on every thread, refusing signals to Abhed by its id.
 	pol := seccomp.Command(s.Network, abhed, abhedGroup)
+	pol.ProxyOnly = s.ProxyOnly
 	// Only where Landlock scopes abstract unix sockets: a pathname one is
 	// still reachable through it, as the setting's documentation says.
 	pol.Socketcall = s.Network && s.Socketcall && abi >= 6 && os.Geteuid() != 0
 	if err := seccomp.Install(pol); err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
 	prog, _ := pol.Program(runtime.GOARCH)
 	rep, _ := json.Marshal(fenceReport{PID: os.Getpid(), Cgroup: s.Leaf, ABI: int(abi), Landlock: rs.Describe(),
 		Seccomp: seccomp.Profile, Digest: prog.Digest()})
 	if _, err := unix.Write(launcherFD, rep); err != nil {
-		return fail("reporting to Abhed: %v", err)
+		return launchFail("reporting to Abhed: %v", err)
 	}
 	ack := make([]byte, 1)
 	if n, err := unix.Read(launcherFD, ack); err != nil || n != 1 || ack[0] != ackByte {
-		return fail("Abhed did not record the launch")
+		return launchFail("Abhed did not record the launch")
 	}
 	_ = unix.Close(launcherFD)
 
 	// 5. The command, in this process's place.
-	argv := args[2:]
 	path := argv[0]
 	if p, err := exec.LookPath(path); err == nil {
 		path = p

@@ -403,7 +403,7 @@ func (s *Process) Close() error {
 	for _, e := range all {
 		err = errors.Join(err, e.close())
 	}
-	return errors.Join(err, s.removeCaches())
+	return errors.Join(err, s.removeCaches(), s.removeCgroups())
 }
 
 // egressAvailable says why the process tier cannot enforce the allowlist
