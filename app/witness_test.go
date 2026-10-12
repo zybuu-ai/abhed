@@ -158,3 +158,122 @@ func TestWitnessReporterLogsAtOnceThenThrottles(t *testing.T) {
 		t.Fatalf("after the interval: %q", buf.String())
 	}
 }
+
+// A session pruned or deleted on the record is reported as pruned against
+// the witness, not as tampering; one removed with no tombstone still fails.
+func TestWitnessAcceptsAPrunedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	heads := filepath.Join(t.TempDir(), "heads.jsonl")
+	cfg := config.Config{Record: config.RecordConfig{Witness: config.WitnessConfig{File: heads}}, ManagedKeys: []string{"record.witness"}}
+	ws := t.TempDir()
+	rec, err := openRecord(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for range 3 {
+		id := newConversationID()
+		if err := rec.CreateSession(context.Background(), store.SessionRecord{ID: id, Workspace: ws, User: cliUser()}); err != nil {
+			t.Fatal(err)
+		}
+		r := agent.NewRecorder(rec, id, "")
+		_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+		_, _ = r.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted, Turns: 1})
+		ids = append(ids, id)
+		if err := rec.Release(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rec.Prune(ids[0], "user", "retention"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.DeleteSession(ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	third := rec.Path(ids[2])
+	rec.Close()
+	code, out, _ := runRecord(t, ws, "verify", "-witness", heads)
+	if code != 0 || strings.Contains(out, "FAILED") || !strings.Contains(out, "pruned  "+ids[0]) || !strings.Contains(out, "pruned  "+ids[1]) {
+		t.Fatalf("a pruned session failed against the witness: %d %s", code, out)
+	}
+	// A file taken away with no tombstone is still caught.
+	if err := os.Remove(third); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ = runRecord(t, ws, "verify", "-witness", heads)
+	if code == 0 || !strings.Contains(out, "FAILED  "+ids[2]) {
+		t.Fatalf("a removed session passed: %d %s", code, out)
+	}
+}
+
+// With no session named, verify says when it walked only the most recent
+// sessions rather than all of them.
+func TestRecordVerifyPostgresSaysWhenCapped(t *testing.T) {
+	dsn := os.Getenv("ABHED_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ABHED_TEST_DSN to run against Postgres")
+	}
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	cfg := config.Config{}
+	cfg.Storage.Driver, cfg.Storage.DSN, cfg.Storage.SingleRole = "postgres", dsn, true
+	pg, err := store.Open(ctx, storeConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	for range 2 {
+		if err := pg.CreateSession(ctx, store.SessionRecord{ID: "sess-cap-" + newConversationID(), Tenant: "default", User: "u", Workspace: "/w", Model: "m"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := pgVerifyLimit
+	pgVerifyLimit = 1
+	t.Cleanup(func() { pgVerifyLimit = old })
+	var out, errb strings.Builder
+	verifyPostgres(cfg, nil, &out, &errb)
+	if !strings.Contains(out.String(), "only the 1 most recent sessions were checked") {
+		t.Fatalf("a capped verify did not say so: %s %s", out.String(), errb.String())
+	}
+}
+
+// A deleted Postgres session keeps its chained rows, erased by key, so the
+// witness's heads for it still verify.
+func TestRecordVerifyPostgresWitnessAfterDelete(t *testing.T) {
+	dsn := os.Getenv("ABHED_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ABHED_TEST_DSN to run against Postgres")
+	}
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	cfg := config.Config{}
+	cfg.Storage.Driver, cfg.Storage.DSN, cfg.Storage.SingleRole = "postgres", dsn, true
+	heads := filepath.Join(t.TempDir(), "heads.jsonl")
+	keyFile := filepath.Join(t.TempDir(), "k")
+	w, err := witness.Open(witness.Config{File: heads, KeyFile: keyFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := storeConfig(cfg)
+	sc.Anchor = w.Postgres
+	pg, err := store.Open(ctx, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	id := "sess-del-" + newConversationID()
+	if err := pg.CreateSession(ctx, store.SessionRecord{ID: id, Tenant: "default", User: "u", Workspace: "/w", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	r := agent.NewRecorder(pg, id, "")
+	_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+	_, _ = r.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted})
+	if err := pg.DeleteSession(id); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb strings.Builder
+	if code := verifyPostgres(cfg, []string{"-witness", heads, "-witness-key", keyFile, id}, &out, &errb); code != 0 || strings.Contains(out.String(), "FAILED") {
+		t.Fatalf("a deleted session failed against the witness: %d %s %s", code, out.String(), errb.String())
+	}
+}

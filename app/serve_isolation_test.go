@@ -67,6 +67,16 @@ func TestServeSessionIsolation(t *testing.T) {
 			t.Fatalf("%s: per_session changed", c.name)
 		}
 	}
+	// Turned on for the sessions alone, the sandbox API is for administrators;
+	// an operator who enabled the control plane keeps it open to every account.
+	if _, iso, _ := serveSessionIsolation(withUsers("ann", "bob"), ws); !iso.adminAPI {
+		t.Fatal("the sandbox API turned on by itself is open to every account")
+	}
+	enabled := withUsers("ann", "bob")
+	enabled.ControlPlane.Enabled = true
+	if _, iso, _ := serveSessionIsolation(enabled, ws); !iso.auto || iso.adminAPI {
+		t.Fatalf("control_plane.enabled set by the operator: %+v", iso)
+	}
 	// Several accounts and control_plane.shared_workspace contradict each other.
 	bad := withUsers("ann", "bob")
 	bad.ControlPlane.SharedWorkspace = true

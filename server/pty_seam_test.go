@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -179,23 +181,102 @@ func TestForegroundIsProgram(t *testing.T) {
 	}
 }
 
-// The probe runs the engine that started the shell against its container.
-func TestEngineForegroundAsksThatContainer(t *testing.T) {
+// The probe asks the engine for the shell's host pid and reads its stat on
+// the engine's host; nothing in the container is run, so a cat the agent
+// replaced there is never asked.
+func TestEngineForegroundAsksTheHostNotTheContainer(t *testing.T) {
 	dir := t.TempDir()
-	engine := filepath.Join(dir, "engine")
-	script := "#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"exec abhed-term-x cat /proc/1/stat\" ] || exit 3\necho '1 (bash) S 0 1 1 34816 9 0'\n"
+	engine := filepath.Join(dir, "podman")
+	ran := filepath.Join(dir, "exec-ran")
+	script := "#!/bin/sh\ncase \"$1 $2 $3 $4\" in\n" +
+		"\"inspect -f {{.State.Pid}} {{.Id}} abhed-term-x\") echo '4242 0123456789abcdef' ;;\n" +
+		"exec*) touch " + ran + "; echo '1 (bash) S 0 1 1 34816 9 0' ;;\n" +
+		"*) exit 3 ;;\nesac\n"
 	if err := os.WriteFile(engine, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
+	}
+	cgroup := "0::/machine.slice/libpod-0123456789abcdef.scope/container\n"
+	stat := "4242 (bash) S 1 4242 4242 34816 4242 0\n"
+	old := engineHostProc
+	t.Cleanup(func() { engineHostProc = old })
+	engineHostProc = func(_ context.Context, _ string, paths ...string) ([]byte, error) {
+		if len(paths) != 2 || paths[0] != "/proc/4242/cgroup" || paths[1] != "/proc/4242/stat" {
+			t.Fatalf("read %v", paths)
+		}
+		return []byte(cgroup + stat), nil
 	}
 	ask := engineForeground(exec.Command(engine, "run", "--rm", "--name", "abhed-term-x", "img"))
 	if ask == nil {
 		t.Fatal("no probe for a named container")
 	}
+	if p, ok := ask(); p || !ok {
+		t.Fatalf("the shell has the terminal: got %v %v", p, ok)
+	}
+	stat = "4242 (bash) S 1 4242 4242 34816 4300 0\n"
 	if p, ok := ask(); !p || !ok {
-		t.Fatalf("got %v %v", p, ok)
+		t.Fatalf("a program has the terminal: got %v %v", p, ok)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("the probe ran a program inside the container")
+	}
+	// A pid that is no longer this container's is not asked about.
+	cgroup = "0::/machine.slice/libpod-ffffffffffffffff.scope/container\n"
+	if _, ok := ask(); ok {
+		t.Fatal("another container's process answered")
 	}
 	if engineForeground(exec.Command(engine, "run", "img")) != nil {
 		t.Fatal("a probe for an unnamed container")
+	}
+}
+
+// docker's top, run by the engine on its host, names the shell's group and
+// the terminal's.
+func TestDockerTopForeground(t *testing.T) {
+	engine := filepath.Join(t.TempDir(), "docker")
+	out := "PID PGID TPGID\n4242 4242 4300\n4300 4300 4300\n"
+	script := "#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"top abhed-term-x -o pid,pgid,tpgid\" ] || exit 3\nprintf '" + out + "'\n"
+	if err := os.WriteFile(engine, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := dockerTopForeground(context.Background(), engine, "abhed-term-x", 4242); !p || !ok {
+		t.Fatalf("got %v %v", p, ok)
+	}
+	if _, ok := dockerTopForeground(context.Background(), engine, "abhed-term-x", 1); ok {
+		t.Fatal("a pid docker did not list answered")
+	}
+}
+
+// On a real engine, a container whose cat lies about the terminal does not
+// change the answer: the shell, not a program, has it.
+func TestEngineForegroundIgnoresALyingCat(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
+		t.Skip("set ABHED_REQUIRE_CONTAINER=1 to ask a real engine")
+	}
+	t.Setenv("HOME", engineHome) // the engine's connection is under the real home
+	engine, err := exec.LookPath("podman")
+	if err != nil {
+		if engine, err = exec.LookPath("docker"); err != nil {
+			t.Fatal("no container engine")
+		}
+	}
+	name := os.Getenv("ABHED_TEST_NAME_PREFIX") + "abhed-fg-" + newSessionID()[:12]
+	// pid 1 is bash on a terminal, with no job control: its own group holds the terminal.
+	liar := `printf '#!/bin/sh\necho "1 (bash) S 0 1 1 34816 999 0"\n' > /usr/bin/cat; chmod +x /usr/bin/cat; while :; do sleep 1; done`
+	run := exec.Command(engine, "run", "-d", "-t", "--rm", "--name", name, "docker.io/library/debian:trixie-slim", "bash", "-c", liar)
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("start: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command(engine, "rm", "-f", "-t", "0", name).Run() })
+	if out, _ := exec.Command(engine, "exec", name, "cat", "/proc/1/stat").Output(); !strings.Contains(string(out), " 999 ") {
+		t.Fatalf("the container's cat does not lie yet: %q", out)
+	}
+	ask := engineForeground(exec.Command(engine, "run", "--name", name, "img"))
+	p, ok := ask()
+	if p {
+		t.Fatal("the lying cat was believed: a program has the terminal")
+	}
+	if !ok && runtime.GOOS == "linux" {
+		t.Fatal("the engine's host could not be asked")
 	}
 }
 

@@ -241,7 +241,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 		if exposed != nil {
 			defer exposed.Close()
 		}
-		fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", built.label)
+		if iso.adminAPI {
+			fmt.Printf("sandboxes   /v1/sandboxes (store %s; administrators only, as control_plane.enabled is unset)\n", built.label)
+		} else {
+			fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", built.label)
+		}
 		if cfg.ControlPlane.PerSession {
 			if perSession, err = buildSessionSandboxes(cfg, built); err != nil {
 				if iso.auto {
@@ -290,8 +294,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 		CLILogin:      cliLogin,
 		// Nil unless control_plane.per_session: sessions then share sb as before.
-		SessionSandboxes: perSession,
-		SoleOwner:        iso.sole,
+		SessionSandboxes:    perSession,
+		SoleOwner:           iso.sole,
+		SandboxAPIAdminOnly: iso.adminAPI,
 	}
 	if tlsL != nil {
 		opts.TLS = tlsL.Config()

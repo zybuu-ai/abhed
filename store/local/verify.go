@@ -361,6 +361,13 @@ func (s *Store) VerifyAll() (Report, []Report, error) {
 	return idx, out, nil
 }
 
+// Pruned is the head the index's tombstone keeps for session id, and
+// whether id was pruned (by retention, abhed record prune, or a delete).
+func (s *Store) Pruned(id string) (Head, bool) {
+	e, ok := s.index.get(id)
+	return e.Head, ok && e.Pruned
+}
+
 // HashAt is the hash of line n (from 1) of session id's chain, or of the
 // index when id is "index", and whether the record holds that line; for
 // checking a head a witness kept against the record as it is now.

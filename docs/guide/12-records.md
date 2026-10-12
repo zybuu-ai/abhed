@@ -277,7 +277,8 @@ owner, who holds the key, so the witness's value is where it keeps them. A
 witness that is set and cannot be opened stops the start. A head that fails
 to reach the URL, or to be appended to the file, is logged as a warning when
 it fails, the first at once and then at most one a minute with a count of
-the rest, so a long-running `abhed serve` says so the same day.
+the rest, so a long-running `abhed serve` says so the same day. The URL is
+named without its user information, query or fragment.
 
 `abhed record verify` then also checks every head in `record.witness.file`
 (or a copy named with `-witness <file>`): each must still be in the record,
@@ -289,6 +290,10 @@ of its own proves nothing about who sent it. To check on another machine,
 give the key with `-witness-key`: the public key as statements carry it
 (base64, printed by every check), or a copy of `witness.key`. Without a key
 the heads are not checked and `verify` fails.
+A session pruned on the record (by `record.retention_days`, `abhed record
+prune`, or a delete) is reported as `pruned`, not failed, when the index's
+tombstone keeps its head at or past the line the witness holds, with the same
+hash at that line; a session file gone with no tombstone still fails.
 
 What a witness still cannot show: lines written after the last head it was
 sent (the last sync), and anything before it was configured.
@@ -300,12 +305,14 @@ the database itself: a trigger sets `chain_pos`, `prev_hash` and `hash`,
 whatever the server sent, and holds a lock per session so concurrent writers
 make one chain. The control plane's `sandbox_audit` is chained per tenant the
 same way. `abhed record verify [session ...]` with `storage.driver: postgres`
-walks each chain in the database and reports the first event that was
+walks each chain in the database (with no session named, the 100000 most
+recent, and it says so when there are more) and reports the first event that was
 changed, removed or reordered; events written before 1.2.8 are counted as
 unchained, not as broken. The runtime role cannot change a row, but the
 tables' owner can, and can recompute the chain: with `record.witness` each
 session's head is sent at the end of every run, and `verify` checks that the
-database still holds every head the witness has.
+database still holds every head the witness has. A deleted session's rows stay, erased by
+key, so its witnessed heads still verify.
 
 ## Exporting
 

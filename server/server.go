@@ -337,6 +337,10 @@ type Options struct {
 	// ControlPlane, when set, serves /v1/sandboxes from it and joins the
 	// readiness check. Nil leaves the routes unregistered.
 	ControlPlane *controlplane.Service
+	// SandboxAPIAdminOnly answers /v1/sandboxes and /v1/sandbox-templates
+	// for administrators only: the control plane was turned on to give each
+	// session a sandbox, not to let every account make its own.
+	SandboxAPIAdminOnly bool
 	// Expose serves the control plane's :expose and the exposed services'
 	// path; nil, or off, and :expose answers 501.
 	Expose *expose.Server
@@ -482,8 +486,10 @@ type liveSession struct {
 	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.
 	ptys map[string]*ptyRun
-	// lsps are the workbench editor's language servers.
-	lsps map[string]*lspRun
+	// lsps are the workbench editor's language servers; lspGen moves each
+	// time closeTerminals stops them.
+	lsps   map[string]*lspRun
+	lspGen int
 	// unclaimed is a finished session opened from its record to view: its
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.

@@ -15,6 +15,9 @@ type sessionIsolation struct {
 	// auto is set when per-session sandboxes were turned on because the
 	// server has, or can gain, more than one account.
 	auto bool
+	// adminAPI is set when the control plane was off and turned on only for
+	// those sandboxes: its own routes then answer administrators alone.
+	adminAPI bool
 	// sole is the one local account a shared server was started for; a
 	// session for anyone else is refused.
 	sole string
@@ -46,6 +49,7 @@ func serveSessionIsolation(cfg config.Config, workspace string) (config.Config, 
 			"which control_plane.shared_workspace forbids: set server.shared_sessions to keep every account in one workspace, " +
 			"or unset control_plane.shared_workspace")
 	}
+	iso.adminAPI = !cfg.ControlPlane.Enabled
 	cfg.ControlPlane.Enabled = true
 	cfg.ControlPlane.PerSession = true
 	iso.auto = true

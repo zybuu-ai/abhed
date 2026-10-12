@@ -2,13 +2,16 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -156,6 +159,12 @@ func TestLanguageServerRefusals(t *testing.T) {
 	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusConflict {
 		t.Errorf("on the none tier: %d %s", rec.Code, rec.Body)
 	}
+	for _, tier := range []string{"", "host", "None"} {
+		wb, _ = lspBench(t, tier, nil)
+		if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusConflict {
+			t.Errorf("on tier %q: %d %s", tier, rec.Code, rec.Body)
+		}
+	}
 	wb, _ = lspBench(t, "process", nil)
 	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "python"}); rec.Code != http.StatusNotFound {
 		t.Errorf("an unconfigured language: %d %s", rec.Code, rec.Body)
@@ -177,5 +186,154 @@ func TestLSPFraming(t *testing.T) {
 	}
 	if _, err := readLSPMessage(br); err == nil {
 		t.Fatal("an oversized message was read")
+	}
+}
+
+// A language server's header line is bounded: one with no end, or one too
+// long, is an error rather than memory the host keeps growing.
+func TestLSPHeaderBounded(t *testing.T) {
+	for name, in := range map[string]string{
+		"no newline":   strings.Repeat("x", 200<<10),
+		"long line":    "X-Pad: " + strings.Repeat("x", 4<<10) + "\r\nContent-Length: 2\r\n\r\n{}",
+		"many headers": strings.Repeat("X-Pad: 1\r\n", 100) + "Content-Length: 2\r\n\r\n{}",
+	} {
+		br := bufio.NewReaderSize(strings.NewReader(in), 64<<10)
+		if _, err := readLSPMessage(br); err == nil || !strings.Contains(err.Error(), "header too long") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A page that does not read is ended once its queue passes lspQueue; the
+// server's output is not held for it without bound.
+func TestLSPSlowReaderEnded(t *testing.T) {
+	body := `{"x":"` + strings.Repeat("a", 1<<20) + `"}`
+	frame := "Content-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + body
+	run := &lspRun{cancel: func() {}, subs: map[*lspSub]struct{}{}}
+	sub := &lspSub{ch: make(chan []byte, 256), behind: make(chan struct{})}
+	run.subs[sub] = struct{}{}
+	run.read(strings.NewReader(strings.Repeat(frame, 40)))
+	select {
+	case <-sub.behind:
+	default:
+		t.Fatal("a reader 40 MiB behind was kept")
+	}
+	if len(sub.ch)*len(body) > lspQueue {
+		t.Fatalf("%d messages queued", len(sub.ch))
+	}
+}
+
+// Only what the editor sends reaches a language server: executeCommand and
+// the like would run programs the policy never judged.
+func TestLSPMethodAllowlist(t *testing.T) {
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{}}`,
+		`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{}}`,
+		`{"jsonrpc":"2.0","id":7,"result":null}`,
+		`{"jsonrpc":"2.0","id":"a","error":{"code":1,"message":"x"}}`,
+	} {
+		if _, ok := lspAllowed([]byte(m)); !ok {
+			t.Errorf("refused %s", m)
+		}
+	}
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand","params":{"command":"gopls.generate"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand","METHOD":"textDocument/hover"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","method":"workspace/executeCommand"}`,
+		`[{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand"}]`,
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction"}`,
+		`{"jsonrpc":"2.0","id":null,"result":null}`,
+		`{"jsonrpc":"2.0","result":null}`,
+	} {
+		if out, ok := lspAllowed([]byte(m)); ok {
+			t.Errorf("allowed %s as %s", m, out)
+		}
+	}
+	// A duplicate key reaches the server once, as checked.
+	if out, ok := lspAllowed([]byte(`{"method":"workspace/executeCommand","method":"textDocument/hover","id":1}`)); ok && strings.Contains(string(out), "executeCommand") {
+		t.Errorf("sent %s", out)
+	}
+
+	wb, _ := lspBench(t, "process", nil)
+	var start lspStartResponse
+	_ = json.Unmarshal(wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}).Body.Bytes(), &start)
+	srv := httptest.NewServer(wb.h)
+	defer srv.Close()
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/sessions/"+wb.session+"/lsp/"+start.ID,
+		strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand","params":{"command":"x"}}`))
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("executeCommand: %d", res.StatusCode)
+	}
+	wb.send("acme", "DELETE", "lsp/"+start.ID, nil)
+}
+
+// Closing the session records each language server's end before the
+// session's own: the start was authorized and recorded, so its result is too.
+func TestLanguageServerEndRecordedBeforeSessionEnd(t *testing.T) {
+	wb, _ := lspBench(t, "process", nil)
+	var start lspStartResponse
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	wb.s.closeIdle(time.Now().Add(10 * time.Second))
+	observed, ended := -1, -1
+	for i, e := range wb.events() {
+		switch {
+		case e.Type == agent.EvObservation && strings.Contains(string(e.Payload), start.ID):
+			observed = i
+		case e.Type == agent.EvSessionEnded && ended < 0:
+			ended = i
+		}
+	}
+	if observed < 0 || ended < 0 || observed > ended {
+		t.Fatalf("language server's end at %d, session's end at %d", observed, ended)
+	}
+}
+
+// A start whose pipes cannot be made is still answered on the record.
+func TestLanguageServerPipeFailureRecorded(t *testing.T) {
+	wb, _ := lspBench(t, "process", nil)
+	wb.s.mu.Lock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.Unlock()
+	bash, _ := live.Loop.Tools.Get("bash")
+	b := bash.(tools.Bash)
+	b.Sandbox = func(ctx context.Context, cwd, command string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "true")
+		cmd.Stdout = io.Discard // StdoutPipe refuses a command with Stdout set
+		return cmd
+	}
+	live.Loop.Tools = tools.NewRegistry(tools.Read{}, tools.Write{}, b)
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	asked, answered := "", false
+	for _, e := range wb.events() {
+		var p struct {
+			CallID  string `json:"call_id"`
+			IsError bool   `json:"is_error"`
+		}
+		_ = json.Unmarshal(e.Payload, &p)
+		if e.Type == agent.EvActionRequested && strings.Contains(string(e.Payload), "language server for go") {
+			asked = p.CallID
+		}
+		answered = answered || e.Type == agent.EvObservation && asked != "" && p.CallID == asked && p.IsError
+	}
+	if asked == "" || !answered {
+		t.Fatalf("asked %q, answered %v", asked, answered)
+	}
+}
+
+// A definition's URI with '..' in it lands where it points, and one that
+// climbs out of the workspace opens nothing.
+func TestIDELanguageServerPaths(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-lsp", "", "ide_lsp_cases.mjs"); err != nil {
+		t.Fatalf("the workbench mapped a language server's path wrongly:\n%s", out)
 	}
 }

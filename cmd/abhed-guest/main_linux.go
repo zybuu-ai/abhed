@@ -261,10 +261,7 @@ func resolver() error {
 	conf := "/run/abhed-resolv.conf"
 	err = os.WriteFile(conf, []byte("nameserver 127.0.0.1\n"), 0o644) // #nosec G306 -- read by every program
 	if err == nil {
-		err = unix.Mount(conf, "/etc/resolv.conf", "", unix.MS_BIND, "")
-	}
-	if err == nil {
-		err = unix.Mount("", "/etc/resolv.conf", "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY, "")
+		err = bindReadOnly(conf, "/etc/resolv.conf")
 	}
 	if err != nil {
 		_ = udp.Close()
@@ -273,6 +270,27 @@ func resolver() error {
 	}
 	go guest.ServeDNS(udp, tcp, dialHostDNS)
 	dnsOn = true
+	return nil
+}
+
+// sysMount and sysUnmount are the system calls bindReadOnly makes; a test stands in.
+var (
+	sysMount   = unix.Mount
+	sysUnmount = unix.Unmount
+)
+
+// bindReadOnly binds src over dst read-only. A bind that cannot be made
+// read-only is undone, never left writable in place.
+func bindReadOnly(src, dst string) error {
+	if err := sysMount(src, dst, "", unix.MS_BIND, ""); err != nil {
+		return err
+	}
+	if err := sysMount("", dst, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY, ""); err != nil {
+		if uerr := sysUnmount(dst, unix.MNT_DETACH); uerr != nil {
+			return fmt.Errorf("%w; and the writable bind could not be undone: %w", err, uerr)
+		}
+		return err
+	}
 	return nil
 }
 

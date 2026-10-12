@@ -35,6 +35,11 @@ const (
 	lspIdle = 2 * time.Minute
 	// lspMaxMessage bounds one message either way.
 	lspMaxMessage = 8 << 20
+	// lspMaxHeader bounds one header line, and lspMaxHeaders their count.
+	lspMaxHeader  = 1 << 10
+	lspMaxHeaders = 16
+	// lspQueue bounds what one reader may have waiting; a reader past it is ended.
+	lspQueue = 16 << 20
 )
 
 type lspRun struct {
@@ -44,9 +49,17 @@ type lspRun struct {
 	writeMu      sync.Mutex
 
 	mu       sync.Mutex
-	subs     map[chan []byte]struct{}
+	subs     map[*lspSub]struct{}
 	lastRead time.Time
 	done     chan struct{}
+}
+
+// lspSub is one page reading a language server. queued is the bytes handed
+// to it and not yet written; behind closes when it falls past lspQueue.
+type lspSub struct {
+	ch     chan []byte
+	queued int
+	behind chan struct{}
 }
 
 type lspStartRequest struct {
@@ -57,6 +70,51 @@ type lspStartResponse struct {
 	ID string `json:"id"`
 	// Root is the workspace's path as the server sees it, for its file URIs.
 	Root string `json:"root"`
+}
+
+// lspTiers are the sandboxes a language server may run in; an empty or
+// unknown tier is not one of them.
+var lspTiers = map[string]bool{"process": true, "container": true, "vm": true, "fence": true}
+
+// lspMethods are what the workbench editor sends. Anything else, such as
+// workspace/executeCommand, can have the server run programs past the policy.
+var lspMethods = map[string]bool{
+	"initialize": true, "initialized": true, "shutdown": true, "exit": true, "$/cancelRequest": true,
+	"textDocument/didOpen": true, "textDocument/didChange": true, "textDocument/didClose": true,
+	"textDocument/hover": true, "textDocument/definition": true,
+}
+
+// lspAllowed returns the message from the page that may reach the server:
+// one of lspMethods, or an answer to the server's own request. It is sent
+// re-encoded, so a duplicate key or another key's case cannot make the server
+// read a method other than the one checked here.
+func lspAllowed(body []byte) ([]byte, bool) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return nil, false // a batch, or not an object
+	}
+	for k := range m {
+		switch k {
+		case "jsonrpc", "id", "method", "params", "result", "error":
+		default:
+			return nil, false
+		}
+	}
+	raw, isCall := m["method"]
+	if isCall {
+		var method string
+		if json.Unmarshal(raw, &method) != nil || !lspMethods[method] {
+			return nil, false
+		}
+	} else {
+		_, result := m["result"]
+		_, failed := m["error"]
+		if id := string(m["id"]); id == "" || id == "null" || result == failed {
+			return nil, false
+		}
+	}
+	out, err := json.Marshal(m)
+	return out, err == nil
 }
 
 var safeWord = regexp.MustCompile(`^[A-Za-z0-9_./=:@%+,-]+$`)
@@ -95,7 +153,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 	tool, _ := live.Loop.Tools.Get("bash")
 	b, isBash := tool.(tools.Bash)
-	if in := isolationOf(tool); !isBash || b.Sandbox == nil || in == nil || in.Tier == "none" {
+	if in := isolationOf(tool); !isBash || b.Sandbox == nil || in == nil || !lspTiers[in.Tier] {
 		WriteError(w, http.StatusConflict, "a language server runs only inside a sandbox, and this session has none")
 		return
 	}
@@ -107,9 +165,10 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		live.lsps = map[string]*lspRun{}
 	}
 	running := 0
-	for _, l := range live.lsps {
+	for lid, l := range live.lsps {
 		select {
 		case <-l.done:
+			delete(live.lsps, lid)
 			continue
 		default:
 		}
@@ -120,6 +179,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		}
 		running++
 	}
+	gen := live.lspGen
 	live.mu.Unlock()
 	if running >= maxLSPs {
 		WriteError(w, http.StatusTooManyRequests, "four language servers are already running in this session")
@@ -137,6 +197,13 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusForbidden, refused.Content)
 		return
 	}
+	// From here the call is on the record, so every way out records its result.
+	start := time.Now()
+	fail := func(status int, why string) {
+		res := tools.Result{Content: why, IsError: true}
+		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, time.Since(start)))
+		WriteError(w, status, why)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
 	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, command)
@@ -144,24 +211,40 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedWriter{w: &stderr, n: 16 << 10}
+	// Unstarted, the command closes neither pipe itself.
+	closePipes := func() {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		if stdout != nil {
+			_ = stdout.Close()
+		}
+	}
 	if err := errors.Join(err1, err2); err != nil {
 		cancel()
-		WriteError(w, http.StatusInternalServerError, "the language server could not be started")
-		return
-	}
-	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		cancel()
-		res := tools.Result{Content: "Failed to run command: " + err.Error(), IsError: true}
-		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, 0))
-		WriteError(w, http.StatusInternalServerError, res.Content)
+		closePipes()
+		fail(http.StatusInternalServerError, "the language server could not be started: "+err.Error())
 		return
 	}
 	run := &lspRun{id: id, language: req.Language, cancel: cancel, stdin: stdin,
-		subs: map[chan []byte]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
+		subs: map[*lspSub]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
+	// Listed before it starts, so a session closing from here on waits for its end.
 	live.mu.Lock()
+	if live.lspGen != gen {
+		live.mu.Unlock()
+		cancel()
+		closePipes()
+		fail(http.StatusConflict, "the session's terminals closed before the language server started")
+		return
+	}
 	live.lsps[id] = run
 	live.mu.Unlock()
+	if err := cmd.Start(); err != nil {
+		cancel()
+		fail(http.StatusInternalServerError, "Failed to run command: "+err.Error())
+		close(run.done)
+		return
+	}
 
 	go run.read(stdout)
 	go func() {
@@ -185,13 +268,14 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cancel()
-		close(run.done)
 		code := 0
 		if err != nil {
 			code = -1
 		}
 		res := tools.Result{Content: fmt.Sprintf("exit %d · language server for %s ended\n%s", code, req.Language, stderr.String()), ExitCode: &code}
 		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, time.Since(start)))
+		// Only now: closing the session waits on done for this end to be recorded.
+		close(run.done)
 	}()
 	WriteJSON(w, http.StatusOK, lspStartResponse{ID: id, Root: sess.Root})
 }
@@ -206,25 +290,42 @@ func (l *lspRun) read(out io.Reader) {
 			return
 		}
 		l.mu.Lock()
-		for ch := range l.subs {
+		for sub := range l.subs {
+			if sub.queued+len(msg) > lspQueue {
+				l.drop(sub)
+				continue
+			}
 			select {
-			case ch <- msg:
-			default: // a reader that has fallen behind drops messages, not the server
+			case sub.ch <- msg:
+				sub.queued += len(msg)
+			default:
+				l.drop(sub)
 			}
 		}
 		l.mu.Unlock()
 	}
 }
 
-// readLSPMessage reads one Content-Length framed message.
+// drop ends a reader that has fallen behind: a message lost would leave the
+// page waiting on an answer, and one kept would grow without bound. Under l.mu.
+func (l *lspRun) drop(sub *lspSub) {
+	delete(l.subs, sub)
+	close(sub.behind)
+}
+
+// readLSPMessage reads one Content-Length framed message. The server is
+// untrusted, so its header lines are bounded in length and number.
 func readLSPMessage(br *bufio.Reader) ([]byte, error) {
 	size := -1
-	for {
-		line, err := br.ReadString('\n')
+	for headers := 0; ; headers++ {
+		raw, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) || len(raw) > lspMaxHeader || headers >= lspMaxHeaders {
+			return nil, errors.New("language server header too long")
+		}
 		if err != nil {
 			return nil, err
 		}
-		line = strings.TrimRight(line, "\r\n")
+		line := strings.TrimRight(string(raw), "\r\n")
 		if line == "" {
 			break
 		}
@@ -274,6 +375,11 @@ func (s *Server) sendLSP(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "the message is not JSON")
 		return
 	}
+	body, ok = lspAllowed(body)
+	if !ok {
+		WriteError(w, http.StatusForbidden, "the workbench sends a language server only editor requests")
+		return
+	}
 	select {
 	case <-run.done:
 		WriteError(w, http.StatusGone, "the language server has ended")
@@ -306,14 +412,14 @@ func (s *Server) streamLSP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	ch := make(chan []byte, 256)
+	sub := &lspSub{ch: make(chan []byte, 256), behind: make(chan struct{})}
 	run.mu.Lock()
-	run.subs[ch] = struct{}{}
+	run.subs[sub] = struct{}{}
 	run.lastRead = time.Now()
 	run.mu.Unlock()
 	defer func() {
 		run.mu.Lock()
-		delete(run.subs, ch)
+		delete(run.subs, sub)
 		run.lastRead = time.Now()
 		run.mu.Unlock()
 	}()
@@ -328,13 +434,21 @@ func (s *Server) streamLSP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case msg := <-ch:
+		case msg := <-sub.ch:
 			if err := guard.allowed(); err != nil {
 				endStream(w, err)
 				return
 			}
 			fmt.Fprintf(w, "event: msg\ndata: %s\n\n", base64.StdEncoding.EncodeToString(msg))
 			flusher.Flush()
+			run.mu.Lock()
+			sub.queued -= len(msg)
+			run.mu.Unlock()
+		case <-sub.behind:
+			// Ended as the server's end would be: what it missed is not replayed.
+			fmt.Fprint(w, "event: exit\ndata: \n\n")
+			flusher.Flush()
+			return
 		case <-guard.tick():
 			if err := guard.check(); err != nil {
 				endStream(w, err)
@@ -363,11 +477,23 @@ func (s *Server) stopLSP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// stopLSPs ends a session's language servers, as its terminals end with it.
-func (l *liveSession) stopLSPs() {
-	for _, run := range l.lsps {
+// stopLSPs ends a session's language servers, as its terminals end with it,
+// and returns for each a channel that closes once its end is on the record.
+// Under l.mu; one starting meanwhile sees lspGen moved and does not start.
+func (l *liveSession) stopLSPs() []<-chan struct{} {
+	l.lspGen++
+	var done []<-chan struct{}
+	for id, run := range l.lsps {
+		select {
+		case <-run.done:
+			delete(l.lsps, id)
+			continue
+		default:
+		}
 		run.cancel()
+		done = append(done, run.done)
 	}
+	return done
 }
 
 // limitedWriter keeps the first n bytes written to it.

@@ -1156,6 +1156,19 @@ func TestShellAdoptAndDetach(t *testing.T) {
 	if run.abandoned() {
 		t.Fatal("a shell went before its idle time")
 	}
+	// A shell another account started in this session is neither offered
+	// nor reachable, though the session is the caller's.
+	own := run.user
+	run.user = "mallory"
+	if got := list(""); len(got) != 0 {
+		t.Fatalf("another account's shell was offered: %+v", got)
+	}
+	for _, c := range []struct{ method, path string }{{"DELETE", ""}, {"POST", "/detach"}, {"POST", "/resize"}} {
+		if rec := wb.send("acme", c.method, "pty/"+start.ID+c.path, map[string]int{"cols": 80, "rows": 24}); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s on another account's shell: %d", c.method, c.path, rec.Code)
+		}
+	}
+	run.user = own
 	if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
 		t.Fatalf("kill: %d", rec.Code)
 	}

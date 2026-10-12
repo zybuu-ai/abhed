@@ -125,3 +125,26 @@ func TestGuardRefusalsOverHTTP(t *testing.T) {
 		t.Fatalf("the guard saw approval %q", g.approval)
 	}
 }
+
+// A control plane turned on only to give each session a sandbox answers its
+// own routes for administrators alone; every other account is refused.
+func TestSandboxAPIAdminOnly(t *testing.T) {
+	r := newCPRig(t, nil, func(o *Options) { o.SandboxAPIAdminOnly = true })
+	for _, c := range []cpCall{
+		{method: "GET", path: "/v1/sandboxes"},
+		{method: "POST", path: "/v1/sandboxes", body: `{"template":"default"}`},
+		{method: "GET", path: "/v1/sandboxes/sb-x"},
+		{method: "GET", path: "/v1/sandbox-templates"},
+		{method: "POST", path: "/v1/sandbox-templates", body: `{"name":"t"}`},
+	} {
+		c.token = "alice"
+		if rec := r.do(t, c); rec.Code != http.StatusForbidden || errCode(t, rec) != "forbidden" {
+			t.Errorf("%s %s by an account: %d %s", c.method, c.path, rec.Code, rec.Body.String())
+		}
+	}
+	for _, path := range []string{"/v1/sandboxes", "/v1/sandbox-templates"} {
+		if rec := r.do(t, cpCall{method: "GET", path: path, token: "admin"}); rec.Code != http.StatusOK {
+			t.Errorf("GET %s by an administrator: %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+}

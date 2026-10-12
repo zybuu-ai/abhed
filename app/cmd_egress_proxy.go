@@ -25,6 +25,7 @@ type egressProxyOptions struct {
 	config string
 	call   string
 	check  bool
+	open   bool
 }
 
 // egressProxyCmd runs the egress allowlist proxy on its own, for a sandbox
@@ -37,8 +38,9 @@ func egressProxyCmd(args []string, out, errOut io.Writer) int {
 	fs.StringVar(&o.config, "config", "", "JSON file holding the egress section: rules, default, mode, record_paths, idle_seconds (required)")
 	fs.StringVar(&o.call, "call", "sandbox", "the call id every decision is recorded under")
 	fs.BoolVar(&o.check, "check", false, "check the configuration, then exit without serving")
+	fs.BoolVar(&o.open, "open", false, "serve a default-allow policy on an address other than loopback; a network policy in front must decide who reaches it")
 	fs.Usage = func() {
-		fmt.Fprintln(errOut, "usage: abhed egress-proxy -listen ADDR -config FILE [-call ID] [-check]")
+		fmt.Fprintln(errOut, "usage: abhed egress-proxy -listen ADDR -config FILE [-call ID] [-open] [-check]")
 		fmt.Fprintln(errOut, "Serves the egress allowlist; each decision is one JSON line on standard output.")
 		fs.PrintDefaults()
 	}
@@ -60,6 +62,13 @@ func egressProxyCmd(args []string, out, errOut io.Writer) int {
 	if o.check {
 		fmt.Fprintf(out, "abhed egress-proxy: %s: %d rules, default %s\n", o.config, pol.Rules(), egressDefault(pol))
 		return 0
+	}
+	// The proxy takes no credential: with a default of allow, anyone who can
+	// reach a wider address has an open proxy, unless something in front decides.
+	if pol.DefaultAllow() && !loopbackListen(o.listen) && !o.open {
+		fmt.Fprintf(errOut, "abhed egress-proxy: %s is not loopback and the default is allow, so anyone who reaches it has an open proxy; "+
+			"set default deny, or pass -open once a network policy decides who reaches it\n", o.listen)
+		return 1
 	}
 	ln, err := net.Listen("tcp", o.listen)
 	if err != nil {
@@ -101,6 +110,30 @@ func loadEgressPolicy(path string) (*egress.Policy, error) {
 	return egress.Compile(c)
 }
 
+// loopbackListen reports whether -listen names a loopback address only; an
+// unspecified one (":3128") is every interface.
+func loopbackListen(addr string) bool {
+	t, err := net.ResolveTCPAddr("tcp", addr)
+	return err == nil && t.IP.IsLoopback()
+}
+
+// watchedListener closes dead when its Accept fails, so the command ends
+// instead of serving nothing.
+type watchedListener struct {
+	net.Listener
+	once sync.Once
+	dead chan struct{}
+	err  error
+}
+
+func (l *watchedListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		l.once.Do(func() { l.err = err; close(l.dead) })
+	}
+	return c, err
+}
+
 func egressDefault(p *egress.Policy) string {
 	if p.DefaultAllow() {
 		return "allow"
@@ -132,12 +165,19 @@ func serveEgressProxy(ctx context.Context, ln net.Listener, pol *egress.Policy, 
 		_ = p.Close()
 		return err
 	}
-	if err := c.Serve(ln); err != nil {
+	wl := &watchedListener{Listener: ln, dead: make(chan struct{})}
+	if err := c.Serve(wl); err != nil {
 		_ = p.Close()
 		return err
 	}
 	fmt.Fprintf(errOut, "abhed egress-proxy: serving on %s, %d rules, default %s\n", ln.Addr(), pol.Rules(), egressDefault(pol))
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-wl.dead:
+		c.End()
+		_ = p.Close()
+		return fmt.Errorf("the listener stopped accepting connections: %w", wl.err)
+	}
 	c.End()
 	return p.Close()
 }

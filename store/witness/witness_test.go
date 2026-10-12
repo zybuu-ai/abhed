@@ -54,7 +54,7 @@ func TestWitnessCatchesACutAndARewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 0 {
+	if p, _ := Check(stmts, key, "local", "default", at, nil); len(p) != 0 {
 		t.Fatalf("an intact record failed: %+v", p)
 	}
 	// Statements forged under a key of their own verify alone, but not as this installation's.
@@ -69,22 +69,36 @@ func TestWitnessCatchesACutAndARewrite(t *testing.T) {
 	if len(bad) != 0 || len(forged) != 1 {
 		t.Fatalf("forged: %d, %v", len(forged), bad)
 	}
-	if p, _ := Check(forged, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "not signed by this installation") {
+	if p, _ := Check(forged, key, "local", "default", at, nil); len(p) != 1 || !strings.Contains(p[0].Reason, "not signed by this installation") {
 		t.Fatalf("a statement under another key passed: %+v", p)
 	}
-	if _, err := Check(stmts, nil, "local", "default", at); err == nil {
+	if _, err := Check(stmts, nil, "local", "default", at, nil); err == nil {
 		t.Fatal("a check with no installation key ran")
 	}
 	if _, err := PublicKey(filepath.Join(dir, "none.key")); err == nil {
 		t.Fatal("a missing key file gave a key")
 	}
 	record["s1"] = []string{"h1", "h2"} // cut back
-	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
+	if p, _ := Check(stmts, key, "local", "default", at, nil); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
 		t.Fatalf("a cut record passed: %+v", p)
 	}
 	record["s1"] = []string{"h1", "h2", "x3"} // rechained
-	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
+	if p, _ := Check(stmts, key, "local", "default", at, nil); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
 		t.Fatalf("a rewritten record passed: %+v", p)
+	}
+	// A removal on the record accounts for a missing head; nothing else does.
+	delete(record, "s1")
+	removed := func(session string, line int64, hash string) (string, error) {
+		if session == "s1" && line <= 3 {
+			return "pruned", nil
+		}
+		return "", nil
+	}
+	if p, _ := Check(stmts, key, "local", "default", at, removed); len(p) != 1 || !p[0].Removed || Failed(p) != 0 {
+		t.Fatalf("a pruned session's heads failed: %+v", p)
+	}
+	if p, _ := Check(stmts, key, "local", "default", at, nil); Failed(p) != 1 {
+		t.Fatalf("a missing session passed: %+v", p)
 	}
 }
 
@@ -163,6 +177,38 @@ func TestWitnessReportsFailuresAsTheyHappen(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("the failed append was not reported")
+		}
+	}
+}
+
+// A delivery error names the witness without a credential its URL carries.
+func TestWitnessErrorHidesURLCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	for _, base := range []string{srv.URL, dead.URL} {
+		u := strings.Replace(base, "://", "://alice:hunter2@", 1) + "/heads?token=sekrit#frag"
+		w, err := Open(Config{URL: u, KeyFile: filepath.Join(t.TempDir(), "witness.key")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Local("default", "s1", 1, 1, "h1")
+		w.Close(5 * time.Second)
+		select {
+		case err := <-w.Errors():
+			for _, secret := range []string{"hunter2", "alice", "sekrit", "frag"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("the error shows %q: %v", secret, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "/heads") {
+				t.Errorf("the error does not name the witness: %v", err)
+			}
+		default:
+			t.Fatalf("no error from %s", base)
 		}
 	}
 }

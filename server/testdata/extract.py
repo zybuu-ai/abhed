@@ -11,6 +11,7 @@
 #   extract.py ide.html ide-lines     the line-by-line terminal
 #   extract.py ide.html ide-term      the agent's terminal tab
 #   extract.py ide.html ide-call      an opened call and the plan
+#   extract.py ide.html ide-lsp       a language server's file URI as a workspace path
 #   extract.py ide.html ide-files     downloads, a session's title and delete, notifications
 #   extract.py console.go model       the model picker (ide-model: the workbench's)
 #   extract.py console.go switch      the chat list, the address and the switcher (ide-switch: the workbench's)
@@ -86,6 +87,8 @@ sets = {
     'ide-at': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function drawAt(){'],
     'ide-pal': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const sessionLabel = ','function palItems(){','function drawPal(){'],
     'ide-subject': ['function tail(p){','function subjectOf(tool, args){'],
+    # From ide.html: where a language server's file URI lands in the workspace.
+    'ide-lsp': ['function lspRel(c, uri){'],
     # From ide.html: the session list's order and filter, the address, the dropdown and its keys.
     'ide-switch': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const sessionLabel = ',
           'const sessionTime = ','function sortSessions(list){','function matchSession(s, q){','function ageOf(iso){','const dayOf = ','function drawSessions(){',

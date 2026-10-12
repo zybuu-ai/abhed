@@ -976,7 +976,13 @@ const lspConns = new Map(), lspNone = new Set(), lspProviders = new Set();
 const lspURI = (c, path) => 'file://' + (c.root + path).split('/').map(encodeURIComponent).join('/');
 function lspRel(c, uri){
   let p; try{ p = decodeURIComponent(String(uri).replace(/^file:\/\//, '')); }catch{ return null; }
-  return p.startsWith(c.root + '/') ? p.slice(c.root.length + 1) : null;
+  if(!p.startsWith(c.root + '/')) return null;
+  // A server's '..' is resolved, so a path that climbs out of the workspace is not offered.
+  const out = [];
+  for(const s of p.slice(c.root.length + 1).split('/')){
+    if(s === '..'){ if(!out.length) return null; out.pop(); } else if(s && s !== '.') out.push(s);
+  }
+  return out.length ? out.join('/') : null;
 }
 const lspRange = r => new M.Range(r.start.line + 1, r.start.character + 1, r.end.line + 1, r.end.character + 1);
 function lspFor(lang){

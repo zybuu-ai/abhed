@@ -313,16 +313,36 @@ func (c recordCtx) checkWitness(path, keyGiven string) bool {
 	for _, err := range unreadable {
 		fmt.Fprintf(c.out, "FAILED  witness: %v\n", err)
 	}
-	problems, err := witness.Check(stmts, key, "local", cliTenant(c.cfg), c.rec.HashAt)
+	problems, err := witness.Check(stmts, key, "local", cliTenant(c.cfg), c.rec.HashAt, c.prunedHead)
 	if err != nil {
 		fmt.Fprintf(c.err, "abhed: the witness's heads: %v\n", err)
 		return true
 	}
-	for _, p := range problems {
-		fmt.Fprintf(c.out, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
-	}
+	printWitnessProblems(c.out, problems)
 	fmt.Fprintf(c.out, "%d witnessed head(s) checked from %s against key %s\n", len(stmts), path, base64.StdEncoding.EncodeToString(key))
-	return len(unreadable) > 0 || len(problems) > 0
+	return len(unreadable) > 0 || witness.Failed(problems) > 0
+}
+
+// prunedHead accounts for a witnessed head of a session that was pruned: the
+// tombstone must keep at least that many lines, and at that line the same hash.
+func (c recordCtx) prunedHead(session string, line int64, hash string) (string, error) {
+	h, pruned := c.rec.Pruned(session)
+	if !pruned || line > h.Lines || line == h.Lines && hash != h.Hash {
+		return "", nil
+	}
+	return fmt.Sprintf("pruned; the witness holds line %d, and the index's tombstone keeps its head at line %d (%s)", line, h.Lines, short(h.Hash)), nil
+}
+
+// printWitnessProblems names each witnessed head the record no longer holds:
+// FAILED, or pruned when a recorded removal accounts for it.
+func printWitnessProblems(w io.Writer, problems []witness.Problem) {
+	for _, p := range problems {
+		label := "FAILED"
+		if p.Removed {
+			label = "pruned"
+		}
+		fmt.Fprintf(w, "%-6s  %s: %s\n", label, p.Statement.Session, p.Reason)
+	}
 }
 
 // verifyScope says what a passing verify does and does not show.
@@ -601,6 +621,9 @@ func reorderFlags(args []string) []string {
 	return append(flags, rest...)
 }
 
+// pgVerifyLimit is how many sessions record verify walks when none is named.
+var pgVerifyLimit = 100000
+
 // verifyPostgres walks the event chain of each named session in the
 // database, or of every session the tenant lists, and checks the heads a
 // witness file holds for it.
@@ -623,11 +646,15 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 	}
 	defer pg.Close()
 	ids := fs.Args()
+	capped := false
 	if len(ids) == 0 {
-		rows, err := pg.ListSessions(ctx, 100000)
+		rows, err := pg.ListSessions(ctx, pgVerifyLimit+1)
 		if err != nil {
 			fmt.Fprintf(stderr, "abhed: %v\n", err)
 			return 1
+		}
+		if capped = len(rows) > pgVerifyLimit; capped {
+			rows = rows[:pgVerifyLimit]
 		}
 		for _, r := range rows {
 			ids = append(ids, r.ID)
@@ -667,18 +694,20 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		for _, err := range unreadable {
 			fmt.Fprintf(stdout, "FAILED  witness: %v\n", err)
 		}
+		// A deleted session's rows stay, erased by key, so nothing removed needs accounting for.
 		problems, err := witness.Check(stmts, key, "postgres", pg.Tenant(), func(session string, n int64) (string, bool, error) {
 			return pg.ChainHashAt(ctx, session, n)
-		})
+		}, nil)
 		if err != nil {
 			fmt.Fprintf(stderr, "abhed: the witness's heads: %v\n", err)
 			return 1
 		}
-		for _, p := range problems {
-			fmt.Fprintf(stdout, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
-		}
+		printWitnessProblems(stdout, problems)
 		fmt.Fprintf(stdout, "%d witnessed head(s) checked from %s against key %s\n", len(stmts), *witnessed, base64.StdEncoding.EncodeToString(key))
-		bad = bad || len(unreadable) > 0 || len(problems) > 0
+		bad = bad || len(unreadable) > 0 || witness.Failed(problems) > 0
+	}
+	if capped {
+		fmt.Fprintf(stdout, "NOTE    only the %d most recent sessions were checked; name the others to check them\n", pgVerifyLimit)
 	}
 	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered by anyone short of the tables' owner. "+
 		"An owner can recompute the chain; with record.witness each head the witness holds must still be in the database.")

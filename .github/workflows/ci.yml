@@ -32,9 +32,9 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
 
@@ -103,6 +103,14 @@ jobs:
             grep -q -- "--- PASS: $t" record.log || { echo "$t did not run and pass:"; grep -- "$t" record.log || true; exit 1; }
           done
           echo "all seven ran and passed"
+
+      # A tag can be moved to other code, and the release jobs hold the signing
+      # identity: every action is used by full commit, its version in a comment.
+      # A self-hosted job runs only on a push here, never for a pull request.
+      - name: Actions are pinned, and self-hosted jobs never run for a pull request
+        run: |
+          python3 scripts/ci/workflow-rules.py --self-test
+          python3 scripts/ci/workflow-rules.py .github/workflows/*.yml
 
       # A ratchet, not a target: a PR may not lower coverage below what the
       # tree already achieves. Raising the floor is a deliberate commit.
@@ -202,7 +210,7 @@ jobs:
       image: golang:1.26.9
       options: --privileged
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install bubblewrap and vim
         run: apt-get update && apt-get install -y --no-install-recommends bubblewrap vim
       - name: Every process-sandbox boundary runs under bubblewrap
@@ -458,9 +466,14 @@ jobs:
   # self-hosted runner labelled s390x is registered and the repository
   # variable ABHED_S390X_RUNNER is "true"; until then it is skipped, and the
   # docs say the fence on s390x is tested under emulation only.
+  # A pull request can rewrite this file, variable check and all, so the job
+  # runs only on a push to this repository, never a pull request. Before the
+  # runner is registered: it is ephemeral (--ephemeral, one job then gone), it
+  # sits in a runner group limited to this repository, and workflows from
+  # outside contributors' fork pull requests need approval (CONTRIBUTING.md).
   fence-s390x:
     name: Fence tier on a real s390x kernel
-    if: vars.ABHED_S390X_RUNNER == 'true'
+    if: github.event_name == 'push' && github.repository == 'zybuu-ai/abhed' && vars.ABHED_S390X_RUNNER == 'true'
     runs-on: [self-hosted, linux, s390x]
     timeout-minutes: 45
     env:
@@ -495,9 +508,9 @@ jobs:
     name: macOS case-folding paths
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
 
@@ -534,8 +547,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
       - name: go build and vet
@@ -567,11 +580,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
       - name: Header, grid and first-turn approval, per-session and shared
@@ -585,8 +598,8 @@ jobs:
     name: Container tier on Docker
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
       - name: Pull the sandbox image
@@ -614,8 +627,8 @@ jobs:
       matrix:
         engine: [docker, podman]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
       - name: Pull the sandbox image
@@ -635,7 +648,7 @@ jobs:
     name: Container image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build the image
         run: docker build --build-arg VERSION=v0.0.0-ci -t abhed:ci -f Dockerfile .
       - name: The image runs and reports its version
@@ -645,7 +658,7 @@ jobs:
     name: Helm chart
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Lint, render every values file in the chart's ci/ folder, validate the
       # result against the Kubernetes schemas, and check the refusals; helm
       # and kubeconform are pinned and checksummed by the script.
@@ -658,9 +671,9 @@ jobs:
     name: CVE scans and report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
 
@@ -681,7 +694,7 @@ jobs:
 
       # Dependency and OS package CVEs in the tree.
       - name: Trivy filesystem
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -696,7 +709,7 @@ jobs:
 
       # The shipped artefact, not just the source it was built from.
       - name: Trivy image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: abhed:scan
@@ -716,7 +729,7 @@ jobs:
         if: always()
         run: cat scans/report.md >> "$GITHUB_STEP_SUMMARY" || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: security-scans

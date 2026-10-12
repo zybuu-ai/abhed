@@ -140,3 +140,27 @@ func TestUserFileMayNarrowToTheAllowlist(t *testing.T) {
 		t.Fatalf("over a managed allow_network false: network %q allow %v", cfg.Sandbox.Network, cfg.Sandbox.AllowNetwork)
 	}
 }
+
+// The person's own allowlist does not carry inspect_tls or record_paths: they
+// stay managed only, as their set-aside reasons say.
+func TestUserAllowlistLeavesInspectionManaged(t *testing.T) {
+	own := `{"sandbox":{"allow_network":true,"network":"allowlist"},"egress":{"inspect_tls":true,"record_paths":false,"rules":[{"host":"proxy.golang.org","decision":"allow"}]}}`
+	_, ws := trustHome(t, own, "")
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.Network != NetworkAllowlist || len(cfg.Egress.Rules) != 1 {
+		t.Fatalf("the user's allowlist was not applied: %+v", cfg.Egress)
+	}
+	if cfg.Egress.InspectTLS || cfg.Egress.RecordPaths != nil || cfg.Sets("egress.inspect_tls") || cfg.Sets("egress.record_paths") {
+		t.Fatalf("inspection settings came from the user's file: %+v", cfg.Egress)
+	}
+	aside := map[string]string{}
+	for _, k := range cfg.SetAside {
+		aside[k.Key] = k.Reason
+	}
+	if !strings.Contains(aside["egress.inspect_tls"], "managed") || !strings.Contains(aside["egress.record_paths"], "managed") {
+		t.Fatalf("set aside: %+v", cfg.SetAside)
+	}
+}

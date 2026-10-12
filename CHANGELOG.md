@@ -87,7 +87,9 @@ All notable changes to Abhed are recorded here. The format follows
   with none yet), now gives each session a sandbox of its own: it turns on
   `control_plane.enabled` and `control_plane.per_session` for the run, and
   refuses to start when the session driver cannot be used or
-  `control_plane.shared_workspace` is set. Set `"server":
+  `control_plane.shared_workspace` is set. Turned on this way, the sandbox
+  API (`/v1/sandboxes`, `/v1/sandbox-templates`) answers administrators
+  only; set `control_plane.enabled` to open it to every account. Set `"server":
   {"shared_sessions": true}` to keep every account in the server's one
   workspace as before. A server with a single local account is unchanged,
   but refuses a session for another account added while it runs.
@@ -140,6 +142,14 @@ All notable changes to Abhed are recorded here. The format follows
 - Under `auth.require_group`, a local sign-in by a non-member is refused at
   the form with `403`.
 - The statusline command may run for one second, not 300 ms.
+- `abhed resolve` refuses to start without git's `user.name` and
+  `user.email`; an identity git guesses from the host, or `GIT_AUTHOR_*`
+  alone, no longer does. Set both (`git config user.name ...`) in CI.
+- `abhed resolve` refuses to push a change that holds a stored secret, as
+  written or encoded, in a file, a file name or a commit message.
+- `abhed migrate` checks state paths as `abhed serve` does, and exits `1`
+  on an `auth.users_file` or other state path that `serve` would refuse
+  (in the workspace or a temp folder), where 1.2.7 migrated.
 
 ### Security
 
@@ -688,7 +698,9 @@ All notable changes to Abhed are recorded here. The format follows
   keyless, under the release workflow's GitHub identity; the container
   image is signed by digest; both carry SLSA build provenance, and each
   binary has an SPDX SBOM. "Verify a download" in the getting-started guide
-  shows the commands. Releases up to 1.2.7 are not signed.
+  shows the commands. Releases up to 1.2.7 are not signed. Every action
+  the workflows use is pinned to a full commit, and CI fails on one that is
+  not, since a moved tag would run with the signing identity.
   `scripts/build-release.sh -s` writes the SBOMs (it needs syft).
 - `fence.limit` names `session_pids_max`: forks refused at the session's
   process limit while the command ran, which Linux 6.14 and later count
@@ -1025,7 +1037,10 @@ All notable changes to Abhed are recorded here. The format follows
   on its own, for a sandbox whose only way out is to it (a Kubernetes egress
   pod): every connection on its port is one call's, each decision is a JSON
   line on standard output, and a configuration it cannot honour
-  (`inspect_tls`, an unknown or repeated key) stops it. `-check` only reads
+  (`inspect_tls`, an unknown or repeated key) stops it. It takes no
+  credential, so a default of allow on an address other than loopback is
+  refused unless `-open` says a network policy decides who reaches it; it
+  exits `1` if its listener stops accepting. `-check` only reads
   the file. See [Network policy](docs/guide/21-network-policy.md).
 - `GET /v1/cli` (public) says how a command line signs in; `GET
   /v1/cli/whoami` and `GET /v1/whoami` answer for a bearer token too, naming
@@ -1127,7 +1142,9 @@ All notable changes to Abhed are recorded here. The format follows
   control (managed `record.witness`: an append-only `file` on WORM or remote
   storage, and/or a `url` sent each signed head). `abhed record verify`
   checks every head the witness holds is still in the record, which catches
-  a record cut back, re-chained or restored from an older copy.
+  a record cut back, re-chained or restored from an older copy. A session
+  pruned with a tombstone that covers the witnessed head is reported as
+  pruned, not failed.
 - Postgres events are hash-chained per session by the database itself
   (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
   sends), as is the control plane's `sandbox_audit` per tenant. `abhed
@@ -1157,6 +1174,8 @@ All notable changes to Abhed are recorded here. The format follows
   to the egress allowlist with `sandbox.network: "allowlist"` and `egress`
   rules of your own. They are set aside when they would widen anything:
   over no network, or when the managed file sets any network setting.
+  `egress.inspect_tls` and `egress.record_paths` stay managed only: they
+  change what is inspected and recorded, not what is reached.
 - `abhed serve` with sign-in logs a warning at start when deny rules for
   commands are in force and `sandbox.terminal` is not `"lines"`: in a
   workbench shell those rules only screen the lines as typed.
@@ -1170,11 +1189,16 @@ All notable changes to Abhed are recorded here. The format follows
   hover and diagnostics. It is started on the first file in that language,
   as the person's recorded `bash` call judged by the policy, and runs in the
   session's sandbox; none runs on the none tier, and a workspace file cannot
-  name one. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
+  name one, even a trusted one. Only the editor's own requests reach it;
+  `workspace/executeCommand` and other methods are refused. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
   `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed
 
+- Studio's line-by-line terminal shows any escape sequence but colour as a
+  symbol, so a progress bar or spinner that redraws its line now prints
+  each frame on its own; run such a command in the interactive shell to
+  see it animate (see Security).
 - `GET /v1/whoami` honours a bearer token: it answers with the token's
   principal (`"credential": "token"`) instead of `"authenticated": false`,
   and `401` for a token that does not verify. A server with tokens and no
@@ -1965,8 +1989,8 @@ All notable changes to Abhed are recorded here. The format follows
   record's heads to a witness, and `Read`, `Check` (against the
   installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
   `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
-  and `ChainHashAt`, `store.ChainReport` and `store/local.Store.HashAt` read
-  the hash chain; `store/local.Store.DeleteSession` prunes a session with a
+  and `ChainHashAt`, `store.ChainReport`, `store/local.Store.HashAt` and
+  `Pruned`, and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
   tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
   `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.
 - `hawkeye`: `Report.Network` with `NetworkStats` and `NetworkRefusal`,
