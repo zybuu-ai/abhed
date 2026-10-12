@@ -483,6 +483,15 @@ func (a *App) serveCheck(w io.Writer, workspace, addr string) int {
 		}
 		return 1
 	}
+	cfg, iso, err := serveSessionIsolation(cfg, workspace)
+	switch {
+	case err != nil:
+		add("session isolation", err, "")
+	case iso.auto:
+		add("session isolation", nil, "a sandbox per session (several accounts; server.shared_sessions to share)")
+	case iso.sole != "":
+		add("session isolation", nil, "one shared workspace, for "+iso.sole+" only")
+	}
 	var unknown []string
 	for _, u := range cfg.Unknown {
 		unknown = append(unknown, u.String())

@@ -64,8 +64,10 @@ sent while no run is live starts one rather than being queued as steering.
 A subagent's worktrees are made under the session's workspace, and on a
 server each session binds its own `task` and `tasks`, so one person's
 subagents run in, and record into, that person's session only. On a
-server every account shares one workspace, so those worktrees are
-in the same directory tree as everyone else's.
+server with several accounts each session has a sandbox and folder of its
+own, so its worktrees are too; with `server.shared_sessions` every account
+shares one workspace, and those worktrees are in the same directory tree as
+everyone else's.
 
 A subagent, in a worktree or not, uses the cluster logins and connected
 hosts of the session that started it, and never another session's: a

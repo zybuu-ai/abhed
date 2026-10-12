@@ -294,6 +294,10 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// SoleOwner, when set, is the one account a server that shares its
+	// workspace between sessions was started for: a session for anyone else
+	// is refused, since another account would share that workspace.
+	SoleOwner string
 	// ClientCertRevoked, when set, says whether a verified client certificate
 	// has since been revoked; a request on a connection made with one is
 	// refused, though its handshake predates the revocation.
@@ -1367,6 +1371,19 @@ type createRequest struct {
 	Workbench bool `json:"workbench,omitempty"`
 }
 
+// errNotSoleOwner refuses a session on a shared server for another account.
+var errNotSoleOwner = errors.New("this server shares one workspace and was started for one account; " +
+	"an administrator restarts it to give each session a sandbox of its own")
+
+// checkSoleOwner refuses a session for anyone but Options.SoleOwner, when it
+// is set. A scheduled run owned by no identity is the server's own.
+func (s *Server) checkSoleOwner(user string) error {
+	if s.opts.SoleOwner == "" || user == s.opts.SoleOwner || strings.HasPrefix(user, auth.SchedulePrefix) {
+		return nil
+	}
+	return errNotSoleOwner
+}
+
 // errBadClientID refuses a client id validClientID does not accept.
 var errBadClientID = errors.New("client_id is up to 64 letters, digits, - and _")
 
@@ -1499,6 +1516,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, errBadClientID):
 			WriteError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, errNotSoleOwner):
+			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, ErrPolicyLayer):
 			s.log.Error("session refused: its policy layer", "user", spec.User, "error", err)
 			w.Header().Set("Retry-After", "5")
@@ -1530,6 +1549,9 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	// Checked here as well as on the route: a caller in Go reaches this directly.
 	if !validClientID(spec.ClientID) {
 		return "", errBadClientID
+	}
+	if err := s.checkSoleOwner(spec.User); err != nil {
+		return "", err
 	}
 	// The mode is resolved before anything is persisted or started, because a
 	// rejected mode must not leave a half-created session behind.
@@ -1679,6 +1701,9 @@ func (s *Server) persistSession(ctx context.Context, id string, spec StartSpec, 
 // openWorkbench creates a session with no prompt: the same workspace, policy,
 // sandbox, owner and record as any other, idle until a message arrives.
 func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, error) {
+	if err := s.checkSoleOwner(spec.User); err != nil {
+		return "", err
+	}
 	mode, ok := requestMode(s.opts.Config.Permissions.Mode, spec.Mode)
 	if !ok {
 		return "", errBadMode
@@ -2095,6 +2120,9 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	if s.sessions != nil && !ownsSession(rec.Tenant, rec.User, tenant, user) {
 		return nil, errNoSession
+	}
+	if err := s.checkSoleOwner(user); err != nil && claim {
+		return nil, err
 	}
 	// Before the claim, so a refusal leaves the session for its owner to retry.
 	vault, red, err := s.sessionSecrets(StartSpec{User: user, Tenant: tenant})

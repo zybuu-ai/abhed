@@ -162,13 +162,29 @@ the changelog's Upgrading notes for 1.2.2.
 
 ### What accounts share
 
-Accounts separate sessions, not the machine. Every account on one server:
+A server that has more than one account, or can gain one while it runs
+(single sign-on, a trusted proxy, open sign-up, or local accounts with none
+yet), gives **each session a sandbox of its own** by default: the session
+works in its sandbox's folder, not in the server's workspace, and its
+commands and terminals run in that sandbox (see
+[per-session sandboxes](../guide/22-sandboxes.md#per-session-sandboxes)).
+This turns on `control_plane.enabled` and `control_plane.per_session` for
+the run; `abhed serve` says so on its `sessions` line, and refuses to start
+when the session driver cannot be used. A server with exactly one local
+account and no sign-up keeps the shared workspace, and refuses a session
+for any other account added while it runs, until it is restarted. Sign-in
+off is one person and unchanged.
+
+`"server": {"shared_sessions": true}` keeps the earlier arrangement, in which
+every account on one server:
 
 - works in the **same workspace directory**. One account's files, and the
   files its agent or terminal writes, are visible to every other account's
   explorer, agent and shell, which can read and change them. The file API
   returns a file's raw contents, including any secret written into it;
   redaction applies to the record and the model, not to a person's editor.
+  That cannot be closed while they share: give each session a sandbox, or
+  run one server per group of people who may see each other's files.
 - runs its tools and terminals as the **same operating-system user**, the one
   the server runs as.
 - draws on the **same secret store** (`abhed secret`). A secret an allow rule

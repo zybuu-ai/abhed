@@ -55,6 +55,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	cfg, iso, err := serveSessionIsolation(cfg, workspace)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
 	if err := checkPerSessionConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -236,10 +241,17 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", built.label)
 		if cfg.ControlPlane.PerSession {
 			if perSession, err = buildSessionSandboxes(cfg, built); err != nil {
+				if iso.auto {
+					err = fmt.Errorf("%w (each session gets a sandbox of its own because this server has more than one account; "+
+						"set server.shared_sessions to share one workspace instead)", err)
+				}
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 				return 1
 			}
 			fmt.Printf("sessions    each gets a sandbox: %s\n", perSessionLabel(cfg))
+			if iso.auto {
+				fmt.Println("            (several accounts; server.shared_sessions keeps one shared workspace)")
+			}
 		}
 	}
 
@@ -276,6 +288,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		CLILogin:      cliLogin,
 		// Nil unless control_plane.per_session: sessions then share sb as before.
 		SessionSandboxes: perSession,
+		SoleOwner:        iso.sole,
 	}
 	if tlsL != nil {
 		opts.TLS = tlsL.Config()

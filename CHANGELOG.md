@@ -38,6 +38,15 @@ All notable changes to Abhed are recorded here. The format follows
   checks (a server whose database lacks it refuses to start and names the
   column), and the `sessions_parent_same_tenant` key, which keeps a
   session's parent in its own tenant.
+- `abhed serve` with more than one account, or able to gain one while it
+  runs (single sign-on, a trusted proxy, open sign-up, or local accounts
+  with none yet), now gives each session a sandbox of its own: it turns on
+  `control_plane.enabled` and `control_plane.per_session` for the run, and
+  refuses to start when the session driver cannot be used or
+  `control_plane.shared_workspace` is set. Set `"server":
+  {"shared_sessions": true}` to keep every account in the server's one
+  workspace as before. A server with a single local account is unchanged,
+  but refuses a session for another account added while it runs.
 
 ### Security
 
@@ -193,6 +202,13 @@ All notable changes to Abhed are recorded here. The format follows
   existed there. The parent is now looked up in the session's own tenant,
   and a write naming another tenant's session is refused exactly as one
   naming no session. Affects 0.1.0 to 1.2.7.
+- Every account on one `abhed serve` worked in the same workspace as the
+  same operating-system user, so one account's agent or terminal could
+  read and change another's files, worktrees and `.git` (`rm .git/HEAD`
+  from one broke everyone's). A server with more than one account now
+  gives each session a sandbox of its own by default;
+  `server.shared_sessions` keeps the shared workspace, where this cannot
+  be closed. Affects 0.1.0 to 1.2.7.
 
 ### Added
 

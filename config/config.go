@@ -923,6 +923,10 @@ type ServerConfig struct {
 	// TLS makes `abhed serve` terminate TLS itself instead of behind a proxy.
 	// Unset, the server speaks plain HTTP as it always has.
 	TLS ServerTLSConfig `json:"tls,omitempty"`
+	// SharedSessions keeps every account's sessions in the server's one
+	// workspace and sandbox, as before 1.2.8. Unset, a server with more than
+	// one account gives each session a sandbox of its own.
+	SharedSessions bool `json:"shared_sessions,omitempty"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
