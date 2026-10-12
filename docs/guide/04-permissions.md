@@ -522,7 +522,9 @@ Every call goes through the same steps, and the order is the design:
    and similar always confirm, in every mode, because there is no undo. For git
    these are the forms that discard work which Abhed recognises: `git restore`
    of the working tree (anything but `--staged` alone), `git checkout` with a
-   pathspec (`.`, `:/`, a glob, a path after `--`, two operands) or `-f`,
+   pathspec (`.`, `:/`, a glob, a path after `--`, two operands, or one
+   operand named like a file, such as `main.go`) or `-f`,
+   `git commit --amend`,
    `git switch --discard-changes` or `-f`, `git stash drop` and `clear`,
    `git branch -d`, `-D`, `-f`, `-M` or `-C`, `git tag -d` or `-f`,
    `git worktree remove -f`, `git clean` other than a dry run,
@@ -580,9 +582,13 @@ Every call goes through the same steps, and the order is the design:
    any part of a chain, after git's own options such as `-C dir`, and behind a
    wrapper; a single command with more than 16 words named `git` is taken as
    destructive. The list is best effort, like the rest of this step, and the
-   sandbox is the boundary. It misses, among others: `git checkout FILE` with a
-   single word, which git reads as a branch first and otherwise as a path;
-   and `git commit --amend`, which the reflog can undo. A command that sets
+   sandbox is the boundary. Outside git, `unlink FILE` and `rmdir -p` confirm
+   too. It misses, among others: `git checkout FILE` with one word and no
+   file extension (`Makefile`), which git reads as a branch first and
+   otherwise as a path; `--amend` built when the command runs; and deletion
+   through any program the list does not name (a script, `python3 -c`). The
+   list cannot be complete: it is a speed bump for the common cases, and the
+   sandbox, deny rules and committed history are what hold. A command that sets
    `IFS` to a separator, or in a way the text does not show, and then
    expands anything is taken as destructive
    - no scope is offered for a destructive command, and none remembered

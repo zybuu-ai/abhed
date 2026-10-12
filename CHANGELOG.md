@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The destructive-command step missed `git checkout FILE` for a file named
+  with an extension (`git checkout main.go`), `git commit --amend`,
+  `unlink FILE` and `rmdir -p`, so in `bypass` mode they ran without the
+  question. They now always confirm. The list stays best effort; the
+  sandbox and deny rules are the boundary. Affects 0.1.0 to 1.2.7.
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion

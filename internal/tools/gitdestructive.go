@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -93,6 +94,8 @@ var gitValues = map[string]struct {
 	"branch":   {"u", []string{"set-upstream-to", "sort", "format", "contains", "no-contains", "points-at", "merged", "no-merged"}},
 	"stash":    {"m", []string{"message", "pathspec-from-file"}},
 	"archive":  {"o", []string{"output", "format", "prefix", "remote", "exec"}},
+	"commit": {"mFCct", []string{"message", "file", "reuse-message", "reedit-message", "template", "author", "date",
+		"cleanup", "fixup", "squash", "pathspec-from-file", "trailer"}},
 }
 
 // maxGitWords bounds the git words read in one simple command, each to its
@@ -351,6 +354,16 @@ func pathLike(w string) bool {
 		strings.HasPrefix(w, ":") || strings.ContainsAny(w, "*?[")
 }
 
+// fileLike reports a single checkout operand named like a file, `main.go`, which
+// git restores from the index when no branch has that name.
+func fileLike(w string) bool {
+	base := w[strings.LastIndexByte(w, '/')+1:]
+	dot := strings.LastIndexByte(base, '.')
+	return dot > 0 && fileExt.MatchString(base[dot+1:])
+}
+
+var fileExt = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,9}$`)
+
 // gitDiscards reads the words after git. run is true when that git is the
 // program the shell runs, so a subcommand git does not have is an alias or an
 // extension whose effect cannot be read here.
@@ -448,8 +461,12 @@ func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (strin
 				return "discard uncommitted changes to the named paths (git checkout)", true
 			}
 		}
-		if len(g.operands) > 1 {
+		if len(g.operands) > 1 || (len(g.operands) == 1 && fileLike(g.operands[0])) {
 			return "discard uncommitted changes to the named paths (git checkout)", true
+		}
+	case "commit":
+		if g.risky("amend", "") {
+			return "replace the last commit (git commit --amend)", true
 		}
 	case "switch":
 		if g.risky("discard-changes", "") || g.risky("force", "f") {

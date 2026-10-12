@@ -202,6 +202,8 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\btruncate\s+-s\s*0\b`), "file truncation"},
 	{regexp.MustCompile(`\bgit\s+checkout\s+--\s+\.`), "discard all working-tree changes"},
 	{regexp.MustCompile(`\bgit\s+branch\s+-D\b`), "force branch delete"},
+	{regexp.MustCompile(`\bunlink\s+\S`), "delete via unlink"},
+	{regexp.MustCompile(`\brmdir\b.*\s(?:-[a-zA-Z]*p[a-zA-Z]*|--parents?)\b`), "delete parent folders (rmdir -p)"},
 }
 
 // Note on completeness: this list cannot be exhaustive. Shell affords endless

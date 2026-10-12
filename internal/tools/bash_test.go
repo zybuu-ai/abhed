@@ -343,6 +343,15 @@ func TestIsDestructive(t *testing.T) {
 	cases := map[string]bool{
 		"rm -rf /": true,
 
+		// Deletion and rewriting the list had missed.
+		"unlink notes.txt":          true,
+		"cd x && unlink a":          true,
+		"rmdir -p a/b/c":            true,
+		"rmdir -vp a/b":             true,
+		"rmdir --parents a/b":       true,
+		"rmdir empty":               false,
+		"python3 -c 'os.unlink(x)'": false,
+
 		// Line continuations and word-splitting tricks hide the words from a plain read.
 		"rm \\\n-rf scratch":                     true,
 		"rm -\\\nrf scratch":                     true,
