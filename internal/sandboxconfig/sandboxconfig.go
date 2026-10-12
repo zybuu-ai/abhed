@@ -97,6 +97,11 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	}
 	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
 	p.SharedCaches = cfg.Sandbox.SharedCaches
+	// The container tier picks its engine later; either engine's relay serves.
+	p.RelayBinary = cfg.ControlPlane.Podman.RelayBinary
+	if p.RelayBinary == "" {
+		p.RelayBinary = cfg.ControlPlane.Docker.RelayBinary
+	}
 	p.ReadableHome = cfg.Sandbox.ReadableHome
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent

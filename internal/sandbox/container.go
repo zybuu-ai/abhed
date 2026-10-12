@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Image is the default execution image. In an air-gapped install this is
@@ -40,6 +42,12 @@ type Container struct {
 	podman bool
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+
+	// The egress proxy under sandbox.network allowlist, started once.
+	egOnce  sync.Once
+	eg      *egressState
+	egProxy *egress.Proxy
+	egErr   error
 }
 
 func NewContainer(p Policy) *Container {
@@ -73,10 +81,12 @@ func (c *Container) Tier() Tier {
 }
 
 func (c *Container) Available() (bool, string) {
-	// The proxy listens on the host's loopback, which the container's
-	// network cannot reach without opening more than the proxy.
+	// The proxy listens on the host's loopback, which a container with no
+	// network reaches only through a relay inside it.
 	if c.policy.Egress != nil {
-		return false, egressRefusal(c.Tier())
+		if _, why := c.containerRelay(); why != "" {
+			return false, why
+		}
 	}
 	c.once.Do(func() {
 		for _, rt := range []string{"docker", "podman", "nerdctl"} {
@@ -304,6 +314,9 @@ func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([
 }
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
+	if c.policy.Egress != nil {
+		return c.egressCommand(ctx, cwd, command)
+	}
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
 	args, err := c.runArgs(ctx, cwd)
@@ -418,7 +431,8 @@ func envOr(key, fallback string) string {
 func ForwardEnv(cmd *exec.Cmd, names []string) {
 	at := -1
 	for i, a := range cmd.Args {
-		if a == Image {
+		// An exec names its container in the image's place.
+		if a == Image || strings.HasPrefix(a, egressPrefix) {
 			at = i
 			break
 		}
@@ -490,3 +504,6 @@ func caseSpellings(dir, name string) []string {
 	}
 	return out
 }
+
+// Close stops the egress proxy commands under the allowlist reach.
+func (c *Container) Close() error { return c.closeEgress() }

@@ -154,6 +154,9 @@ type Policy struct {
 	// ReadableHome lets the macOS process tier read all of home but the
 	// HomeSecrets; otherwise only the toolchain folders there are readable.
 	ReadableHome bool
+	// RelayBinary is a Linux build of Abhed run inside a container as the
+	// egress relay where the engine is in a VM or on another host.
+	RelayBinary string
 	// SharedCaches lets the macOS process tier write the real toolchain
 	// caches; otherwise each sandbox's commands get caches of their own.
 	SharedCaches bool

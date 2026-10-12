@@ -250,6 +250,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The container and vm tiers enforce `sandbox.network: "allowlist"`: each
+  command's container has no network but a relay to the session's egress
+  proxy, over an `exec`'s stdio, so it also works where the engine runs in
+  a VM, given a Linux build of Abhed in the managed
+  `control_plane.<engine>.relay_binary`. Without one there, the tier is
+  refused as before.
 - `fence.socketcall` lets the fence's commands on s390x make sockets through
   `socketcall()`, as glibc and Go do there, when `allow_network` is on and
   the host has Landlock ABI 6 or later. The filter cannot read the socket's

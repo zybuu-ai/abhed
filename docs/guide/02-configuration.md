@@ -324,7 +324,8 @@ stays open; unset means 30.
 `"network": "allowlist"`, set only in the managed configuration, sends
 commands' traffic through a per-session proxy that reaches only what the
 `egress` rules allow, and records each decision; it takes the place of
-`allow_network`. Only the process tier enforces it. The `egress` section
+`allow_network`. The process tier and the container and vm tiers enforce it;
+the fence refuses it. The `egress` section
 (`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
 too. See [Network policy](21-network-policy.md).
 
