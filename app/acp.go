@@ -98,6 +98,7 @@ const (
 	errPolicy     = -32001 // refused by managed configuration, trust or a rule
 	errBusy       = -32002 // a prompt is running
 	errRecord     = -32003 // the record is unavailable or failed verification
+	errHeld       = -32004 // another Abhed process has the session open; fork it
 	errParseInput = -32700
 )
 
@@ -174,11 +175,6 @@ type acpSession struct {
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
 	always map[string]string
-	// A call salvaged from prose has no id, so the editor knows it by its
-	// action.requested id: the last one requested, and those approved and
-	// awaiting a result, oldest first.
-	lastIdless idlessCall
-	ranIdless  []idlessCall
 	// subAsks are the subagent asks shown as tool calls, by request id, so
 	// their answer settles the card and no other subagent.action draws one.
 	subAsks map[string]bool
@@ -251,7 +247,6 @@ func (s *acpSession) claimTurn(ctx context.Context, cancel context.CancelFunc) (
 
 func (s *acpSession) beginTurnLocked(ctx context.Context, cancel context.CancelFunc) {
 	s.cancel, s.turn = cancel, ctx
-	s.ranIdless = nil // a result the last turn never recorded will not come
 	if w := s.window; w != nil {
 		// Its open asks stay bound to it; new ones go out inside the turn.
 		w.open = false
@@ -297,8 +292,6 @@ func (s *acpSession) pokeLocked() {
 // subagentCallID names a subagent's ask to the editor. A child's call ids are
 // its own and may repeat the parent's, so its request id is used instead.
 func subagentCallID(requestID string) string { return "subagent-" + requestID }
-
-type idlessCall struct{ id, tool string }
 
 type acpConn struct {
 	out     io.Writer
@@ -824,7 +817,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	a, err := newACPAgent(embedded.With(c.root(), settings), opts)
 	if err != nil {
 		if errors.Is(err, local.ErrHeldElsewhere) {
-			return refusal(errRefused, "open in another Abhed process; fork it to go on here")
+			return refusal(errHeld, "open in another Abhed process; fork it to go on here")
 		}
 		return refusal(errRefused, "%s", err.Error())
 	}
@@ -1410,20 +1403,6 @@ func rawToolTitle(tool string, args json.RawMessage) string {
 		}
 	}
 	return ui.VisibleLine(tool)
-}
-
-// takeIdless names the result of an approved call without an id: the oldest
-// such call of that tool still awaiting one.
-func (s *acpSession) takeIdless(tool string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, c := range s.ranIdless {
-		if c.tool == tool {
-			s.ranIdless = append(s.ranIdless[:i], s.ranIdless[i+1:]...)
-			return c.id
-		}
-	}
-	return ""
 }
 
 func acpID() string {

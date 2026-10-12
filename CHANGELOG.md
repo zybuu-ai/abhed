@@ -617,6 +617,12 @@ on. A server with it off starts on the older schema as before.
   embedding model, so `abhed index` builds them ahead and a session start
   embeds only the chunks that changed. The symbol and BM25 tiers are still
   rebuilt by each session.
+- `abhed acp` refuses a session another Abhed process has open with code
+  `-32004`, not the generic `-32000`, so an editor can offer the fork
+  without matching the message's words. Every tool call now has an id of
+  its own, so the guessing that paired an id-less call's approval and result
+  with its card is gone; replaying an older record shows such a result as a
+  card of its own.
 
 ### Fixed
 
