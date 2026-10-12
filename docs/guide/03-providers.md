@@ -87,7 +87,7 @@ policy decision, not a limit that clears. Abhed recognises the shape (a 429
 carrying none of the headers a real rate limit carries), reports it as what it
 is, and does not retry.
 
-Abhed reads `CLAUDE_CODE_OAUTH_TOKEN` and `oauth_token` because the mechanism is
+Abhed reads `ABHED_ANTHROPIC_OAUTH_TOKEN` and `oauth_token` because the mechanism is
 correct and the restriction may not be permanent. Today it is useful only for
 models outside the check.
 
