@@ -287,7 +287,11 @@ func TestRulesReadTheStartupFilesAFolderTheLineSetsHolds(t *testing.T) {
 			}
 		}
 	}
-	// The rows hold for the shells themselves: each denied one runs the file.
+	// The rows hold for the shells themselves: each denied one runs the file,
+	// as the bash tool runs it.
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not installed")
+	}
 	for command, r := range rows {
 		if r.real == "" {
 			continue
@@ -297,10 +301,9 @@ func TestRulesReadTheStartupFilesAFolderTheLineSetsHolds(t *testing.T) {
 			continue
 		}
 		_ = os.Remove(ran)
-		cmd := exec.Command("/bin/sh", "-c", command)
+		cmd := exec.Command("bash", "-c", command)
 		cmd.Dir = ws
 		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + filepath.Join(ws, "empty")}
-		cmd.Stdin = nil
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Logf("%q: %v\n%s", command, err, out)
 		}
