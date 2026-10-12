@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -177,5 +178,39 @@ func TestLSPFraming(t *testing.T) {
 	}
 	if _, err := readLSPMessage(br); err == nil {
 		t.Fatal("an oversized message was read")
+	}
+}
+
+// A language server's header line is bounded: one with no end, or one too
+// long, is an error rather than memory the host keeps growing.
+func TestLSPHeaderBounded(t *testing.T) {
+	for name, in := range map[string]string{
+		"no newline":   strings.Repeat("x", 200<<10),
+		"long line":    "X-Pad: " + strings.Repeat("x", 4<<10) + "\r\nContent-Length: 2\r\n\r\n{}",
+		"many headers": strings.Repeat("X-Pad: 1\r\n", 100) + "Content-Length: 2\r\n\r\n{}",
+	} {
+		br := bufio.NewReaderSize(strings.NewReader(in), 64<<10)
+		if _, err := readLSPMessage(br); err == nil || !strings.Contains(err.Error(), "header too long") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A page that does not read is ended once its queue passes lspQueue; the
+// server's output is not held for it without bound.
+func TestLSPSlowReaderEnded(t *testing.T) {
+	body := `{"x":"` + strings.Repeat("a", 1<<20) + `"}`
+	frame := "Content-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + body
+	run := &lspRun{cancel: func() {}, subs: map[*lspSub]struct{}{}}
+	sub := &lspSub{ch: make(chan []byte, 256), behind: make(chan struct{})}
+	run.subs[sub] = struct{}{}
+	run.read(strings.NewReader(strings.Repeat(frame, 40)))
+	select {
+	case <-sub.behind:
+	default:
+		t.Fatal("a reader 40 MiB behind was kept")
+	}
+	if len(sub.ch)*len(body) > lspQueue {
+		t.Fatalf("%d messages queued", len(sub.ch))
 	}
 }

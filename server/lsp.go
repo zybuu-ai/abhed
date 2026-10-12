@@ -35,6 +35,11 @@ const (
 	lspIdle = 2 * time.Minute
 	// lspMaxMessage bounds one message either way.
 	lspMaxMessage = 8 << 20
+	// lspMaxHeader bounds one header line, and lspMaxHeaders their count.
+	lspMaxHeader  = 1 << 10
+	lspMaxHeaders = 16
+	// lspQueue bounds what one reader may have waiting; a reader past it is ended.
+	lspQueue = 16 << 20
 )
 
 type lspRun struct {
@@ -44,9 +49,17 @@ type lspRun struct {
 	writeMu      sync.Mutex
 
 	mu       sync.Mutex
-	subs     map[chan []byte]struct{}
+	subs     map[*lspSub]struct{}
 	lastRead time.Time
 	done     chan struct{}
+}
+
+// lspSub is one page reading a language server. queued is the bytes handed
+// to it and not yet written; behind closes when it falls past lspQueue.
+type lspSub struct {
+	ch     chan []byte
+	queued int
+	behind chan struct{}
 }
 
 type lspStartRequest struct {
@@ -158,7 +171,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run := &lspRun{id: id, language: req.Language, cancel: cancel, stdin: stdin,
-		subs: map[chan []byte]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
+		subs: map[*lspSub]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
 	live.mu.Lock()
 	live.lsps[id] = run
 	live.mu.Unlock()
@@ -206,25 +219,42 @@ func (l *lspRun) read(out io.Reader) {
 			return
 		}
 		l.mu.Lock()
-		for ch := range l.subs {
+		for sub := range l.subs {
+			if sub.queued+len(msg) > lspQueue {
+				l.drop(sub)
+				continue
+			}
 			select {
-			case ch <- msg:
-			default: // a reader that has fallen behind drops messages, not the server
+			case sub.ch <- msg:
+				sub.queued += len(msg)
+			default:
+				l.drop(sub)
 			}
 		}
 		l.mu.Unlock()
 	}
 }
 
-// readLSPMessage reads one Content-Length framed message.
+// drop ends a reader that has fallen behind: a message lost would leave the
+// page waiting on an answer, and one kept would grow without bound. Under l.mu.
+func (l *lspRun) drop(sub *lspSub) {
+	delete(l.subs, sub)
+	close(sub.behind)
+}
+
+// readLSPMessage reads one Content-Length framed message. The server is
+// untrusted, so its header lines are bounded in length and number.
 func readLSPMessage(br *bufio.Reader) ([]byte, error) {
 	size := -1
-	for {
-		line, err := br.ReadString('\n')
+	for headers := 0; ; headers++ {
+		raw, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) || len(raw) > lspMaxHeader || headers >= lspMaxHeaders {
+			return nil, errors.New("language server header too long")
+		}
 		if err != nil {
 			return nil, err
 		}
-		line = strings.TrimRight(line, "\r\n")
+		line := strings.TrimRight(string(raw), "\r\n")
 		if line == "" {
 			break
 		}
@@ -306,14 +336,14 @@ func (s *Server) streamLSP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	ch := make(chan []byte, 256)
+	sub := &lspSub{ch: make(chan []byte, 256), behind: make(chan struct{})}
 	run.mu.Lock()
-	run.subs[ch] = struct{}{}
+	run.subs[sub] = struct{}{}
 	run.lastRead = time.Now()
 	run.mu.Unlock()
 	defer func() {
 		run.mu.Lock()
-		delete(run.subs, ch)
+		delete(run.subs, sub)
 		run.lastRead = time.Now()
 		run.mu.Unlock()
 	}()
@@ -328,13 +358,21 @@ func (s *Server) streamLSP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case msg := <-ch:
+		case msg := <-sub.ch:
 			if err := guard.allowed(); err != nil {
 				endStream(w, err)
 				return
 			}
 			fmt.Fprintf(w, "event: msg\ndata: %s\n\n", base64.StdEncoding.EncodeToString(msg))
 			flusher.Flush()
+			run.mu.Lock()
+			sub.queued -= len(msg)
+			run.mu.Unlock()
+		case <-sub.behind:
+			// Ended as the server's end would be: what it missed is not replayed.
+			fmt.Fprint(w, "event: exit\ndata: \n\n")
+			flusher.Flush()
+			return
 		case <-guard.tick():
 			if err := guard.check(); err != nil {
 				endStream(w, err)
