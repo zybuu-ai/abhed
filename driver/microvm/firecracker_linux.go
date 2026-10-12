@@ -111,6 +111,12 @@ func killCgroup(parent, vmID string) error {
 // killProcs kills every process in the cgroup dir, for a kernel without
 // cgroup.kill (before 5.14), until none is left or a second passes.
 func killProcs(dir string) error {
+	// Frozen first, so none forks a child the loop has not read; a fatal
+	// signal still ends a frozen process.
+	if f, err := os.OpenFile(filepath.Join(dir, "cgroup.freeze"), os.O_WRONLY, 0); err == nil {
+		_, _ = f.Write([]byte("1"))
+		_ = f.Close()
+	}
 	for range 50 {
 		b, err := os.ReadFile(filepath.Join(dir, "cgroup.procs")) // #nosec G304 -- the VM's cgroup
 		if errors.Is(err, os.ErrNotExist) {

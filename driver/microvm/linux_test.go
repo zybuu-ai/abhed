@@ -78,3 +78,30 @@ func TestTrustedBinary(t *testing.T) {
 		t.Fatal("a missing binary was trusted")
 	}
 }
+
+// Without cgroup.kill the cgroup is frozen before its processes are killed,
+// and a missing freeze file is never made.
+func TestKillProcsFreezesFirst(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{"cgroup.freeze": "0", "cgroup.procs": ""} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := killProcs(dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "cgroup.freeze")); string(b) != "1" {
+		t.Fatalf("cgroup.freeze holds %q", b)
+	}
+	bare := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bare, "cgroup.procs"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := killProcs(bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(bare, "cgroup.freeze")); !os.IsNotExist(err) {
+		t.Fatalf("a freeze file was made: %v", err)
+	}
+}
