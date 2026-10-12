@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/fence/cgroup"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // hostSizer gives each sized instance a cgroup of its own under the
@@ -58,9 +61,26 @@ type cgroupBox struct {
 	n  atomic.Int64
 }
 
+// nest has a process-tier sandbox make each command's own cgroup inside the box.
+func (b *cgroupBox) nest(sb sandbox.Sandbox) error {
+	p, ok := sb.(*sandbox.Process)
+	if !ok {
+		return nil
+	}
+	if !p.NestCgroups(b.sb) {
+		return errors.New("the sandbox's commands already have cgroups outside the instance's")
+	}
+	return nil
+}
+
 func (b *cgroupBox) Place(cmd *exec.Cmd) (func(), error) {
 	if cmd.SysProcAttr != nil && cmd.SysProcAttr.UseCgroupFD {
-		return nil, errors.New("the command already has a cgroup of its own")
+		// The sandbox placed it already, which must be inside this box.
+		dir, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", cmd.SysProcAttr.CgroupFD))
+		if err != nil || !strings.HasPrefix(dir, b.sb.Path()+string(os.PathSeparator)) {
+			return nil, fmt.Errorf("the command has a cgroup outside the instance's (%s)", dir)
+		}
+		return func() {}, nil
 	}
 	leaf, err := b.sb.NewLeaf("c"+strconv.FormatInt(b.n.Add(1), 10), cgroup.Limits{})
 	if err != nil {

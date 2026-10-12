@@ -1040,7 +1040,8 @@ All notable changes to Abhed are recorded here. The format follows
   `control_plane.sandbox_memory_mb`, or `resources.cpus` and
   `resources.memory_mb` on one sandbox, are passed to its driver. On Linux the
   `process` driver holds a sized sandbox in a cgroup of its own under a
-  delegated subtree, on the `process` tier; on macOS or without a delegated
+  delegated subtree, on the `process` tier, each command's own cgroup made
+  inside it; on macOS or without a delegated
   subtree it refuses the create up front (`400`, with the reason), and on
   another tier the sandbox goes to `Error`, rather than run unbounded. A
   driver can refuse a size at create time through `driver.ConfigChecker`.

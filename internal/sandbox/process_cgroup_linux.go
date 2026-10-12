@@ -20,6 +20,23 @@ type processCgroups struct {
 	sb   *cgroup.Sandbox
 	err  error
 	next atomic.Int64
+	// borrowed is set when sb is the caller's, which it removes; its leaves
+	// then carry prefix, apart from the caller's and an earlier sandbox's.
+	borrowed bool
+	prefix   string
+}
+
+// NestCgroups makes each command's cgroup a leaf of parent, a cgroup the
+// caller made and removes (a sized instance's), in place of one of the
+// sandbox's own; false once the sandbox has looked for its own.
+func (s *Process) NestCgroups(parent *cgroup.Sandbox) bool {
+	set := false
+	s.cgOnce.Do(func() {
+		var raw [4]byte
+		_, _ = rand.Read(raw[:])
+		s.cg, set = &processCgroups{sb: parent, borrowed: true, prefix: "p" + hex.EncodeToString(raw[:]) + "-"}, true
+	})
+	return set
 }
 
 // cgroups finds and makes the sandbox's cgroup once.
@@ -61,7 +78,7 @@ func (s *Process) place(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
 	if s.policy.MaxMemoryMB > 0 {
 		l.MemoryMax = int64(s.policy.MaxMemoryMB) << 20
 	}
-	leaf, err := cg.sb.NewLeaf("c"+strconv.FormatInt(cg.next.Add(1), 10), l)
+	leaf, err := cg.sb.NewLeaf(cg.prefix+"c"+strconv.FormatInt(cg.next.Add(1), 10), l)
 	if err == nil {
 		err = leaf.Place(cmd)
 	}
@@ -105,7 +122,7 @@ func (s *Process) cgroupDescribe() string {
 // removeCgroups ends what the sandbox's commands left and removes its cgroup.
 func (s *Process) removeCgroups() error {
 	s.cgOnce.Do(func() { s.cg = &processCgroups{} })
-	if s.cg.sb == nil {
+	if s.cg.sb == nil || s.cg.borrowed {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

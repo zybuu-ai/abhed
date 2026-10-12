@@ -224,6 +224,10 @@ func (d *Driver) sizedBox(id string, sb sandbox.Sandbox, sz size) (box, error) {
 	if err != nil {
 		return nil, driver.Errorf(driver.ErrUnavailable, "making the sandbox's cgroup: %v", err)
 	}
+	if err := nestIn(bx, sb); err != nil {
+		_ = bx.Remove(context.Background())
+		return nil, err
+	}
 	return bx, nil
 }
 
@@ -278,6 +282,12 @@ func (d *Driver) Start(_ context.Context, id string) (driver.Status, error) {
 	if in.box != nil && !sizedTier(sb.Tier()) {
 		_ = sandbox.Close(sb)
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "the sandbox here is now %s, which the instance's size cannot hold", sb.Tier())
+	}
+	if in.box != nil {
+		if err := nestIn(in.box, sb); err != nil {
+			_ = sandbox.Close(sb)
+			return driver.Status{}, err
+		}
 	}
 	// Starting again is a new incarnation, as the control plane counts it.
 	in.spec.Generation++
