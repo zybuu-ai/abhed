@@ -399,11 +399,13 @@ Headless runs never prompt; trust comes from a stored grant,
   person has read, not a sandbox for it.
 - The `none` sandbox tier confines nothing, so a command there can write
   `~/.abhed/trust.json` as it can every other file of the user's.
-- The default configuration asks before a bash command that mentions
-  `ABHED_TRUST_WORKSPACE` or `trust-workspace`, so the agent cannot quietly
-  start a nested trusted run. A configuration that sets its own
-  `permissions.ask` replaces those rules, and a command that assembles the
-  name or runs a script is not caught by them.
+- Abhed asks before a bash command that mentions `ABHED_TRUST_WORKSPACE`
+  or `trust-workspace`, in every mode and whatever `permissions.ask` a
+  configuration sets. A command that assembles the name or sets it in a
+  script is not caught by that, so a nested `abhed` inside an agent's
+  command ignores `ABHED_TRUST_WORKSPACE` and refuses `-trust-workspace`.
+  That nesting is found by `ABHED_SANDBOX` or an `abhed` parent process; a
+  command that daemonises out of both at the `none` tier is not seen.
 
 Design and the classification of every setting:
 `docs/architecture/workspace-trust.md`.

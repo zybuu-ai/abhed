@@ -94,6 +94,32 @@ func escaped(command string, i int) bool {
 	return n%2 == 1
 }
 
+// withBaseNames is subjects with each one whose first word is a path added
+// again with that word cut to its base name. It only adds subjects.
+func withBaseNames(subjects []string) []string {
+	out := subjects
+	seen := make(map[string]bool, len(subjects))
+	for _, s := range subjects {
+		seen[s] = true
+	}
+	for _, s := range subjects {
+		lead := len(s) - len(strings.TrimLeft(s, " \t"))
+		first, rest, _ := strings.Cut(s[lead:], " ")
+		if !strings.Contains(first, "/") || strings.HasSuffix(first, "/") {
+			continue
+		}
+		based := path.Base(first)
+		if rest != "" {
+			based += " " + rest
+		}
+		if !seen[based] {
+			seen[based] = true
+			out = append(out, based)
+		}
+	}
+	return out
+}
+
 // shellPrefixWords come before a command without being it.
 var shellPrefixWords = map[string]bool{
 	"{": true, "}": true, "!": true, "if": true, "then": true, "else": true, "elif": true,

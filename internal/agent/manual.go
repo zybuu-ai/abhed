@@ -49,10 +49,13 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 	if !found {
 		return tools.Result{}, fmt.Errorf("unknown tool %q", run)
 	}
-	decision := l.Policy.Evaluate(action, true, args)
+	// ctx bounds the policy hooks of every subject, so a slow hook cannot
+	// hold a large batch of them past its deadline.
+	decision := l.Policy.EvaluateContext(ctx, action, true, args)
 	if refused := l.namesSecret(action, args); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	}
+	seen := make(map[string]bool, len(also))
 	for _, a := range also {
 		if decision.Decision == policy.Deny {
 			break
@@ -61,7 +64,12 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 		if name == "" {
 			name = action
 		}
-		if d := l.Policy.Evaluate(name, true, a.Args); weight(d) > weight(decision) {
+		key := name + "\x00" + string(a.Args)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if d := l.Policy.EvaluateContext(ctx, name, true, a.Args); weight(d) > weight(decision) {
 			decision = d
 		}
 	}

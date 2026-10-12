@@ -54,6 +54,9 @@ type shellFacts struct {
 	seps       string
 	ifsUnknown bool
 	ifsNamed   bool
+	// ifsLoop and ifsArith report IFS set by a for loop with literal words or
+	// by arithmetic; ifsOther that it is set some other way the text hides.
+	ifsLoop, ifsArith, ifsOther bool
 	// commands are the simple commands whose words are all literal, decoded,
 	// from each word that may be the program: function bodies, subshells,
 	// and the text eval, trap and a shell's -c run included.
@@ -68,6 +71,20 @@ type shellFacts struct {
 	// prefixes are assignments before read, which set how read splits its
 	// input and not the shell's words.
 	prefixes map[*syntax.Assign]bool
+	// scripts are the files, named literally, that a shell, source or . runs,
+	// and programs named by a path, which run as shell text when they are not
+	// a binary or another interpreter's script.
+	scripts []Script
+	// writes are the literal targets of output redirections.
+	writes []string
+}
+
+// Script is a file a command runs as shell text, as named on its line.
+type Script struct {
+	Path string
+	// Direct marks a program named by a path, run as a script only when it
+	// has no #! line or a shell's.
+	Direct bool
 }
 
 // maxReadings bounds the commands read from one simple command's words, so a
@@ -195,6 +212,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 				f.feed(n.Y)
 			}
 		case *syntax.Stmt:
+			f.redirectTargets(n)
 			// Visited before what it holds, so its input passes inward.
 			if f.fed[n] || inputRedirect(n) {
 				for _, in := range innerStmts(n.Cmd) {
@@ -215,6 +233,16 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 		case *syntax.ForClause:
 			if it, ok := n.Loop.(*syntax.WordIter); ok && it.Name != nil && it.Name.Value == "IFS" {
 				f.ifsUnknown, f.ifsNamed = true, true
+				literalWords := true
+				for _, w := range it.Items {
+					_, lit := literal(w)
+					literalWords = literalWords && lit
+				}
+				if literalWords {
+					f.ifsLoop = true
+				} else {
+					f.ifsOther = true
+				}
 			}
 		case *syntax.CoprocClause:
 			if n.Name != nil {
@@ -233,13 +261,15 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 				(n.Excl || n.Param == nil || n.Param.Value == "IFS") {
 				f.ifsUnknown = true
 				f.ifsNamed = f.ifsNamed || !n.Excl && n.Param != nil
+				f.ifsOther = f.ifsOther || !n.Excl && n.Param != nil
 			}
 		}
 		return true
 	})
 }
 
-// bareExec reports an exec with no command, also behind command or builtin.
+// bareExec reports an exec with no command, also behind command or builtin,
+// and past exec's own options: -c, -l, -a NAME and --.
 func bareExec(args []*syntax.Word) bool {
 	i := 0
 	for i < len(args) {
@@ -255,7 +285,23 @@ func bareExec(args []*syntax.Word) bool {
 			}
 			continue
 		case "exec":
-			return i == len(args)-1
+			for i++; i < len(args); i++ {
+				o, lit := literal(args[i])
+				if !lit {
+					return true // it may expand to nothing
+				}
+				if !strings.HasPrefix(o, "-") || o == "-" {
+					return false
+				}
+				if o == "--" {
+					return i == len(args)-1
+				}
+				// -a takes the next word as the name, or what follows it glued.
+				if k := strings.IndexByte(o, 'a'); k > 0 && k == len(o)-1 {
+					i++
+				}
+			}
+			return true
 		}
 		return false
 	}
@@ -284,10 +330,22 @@ func (f *shellFacts) arithTarget(x syntax.ArithmExpr) {
 		return
 	}
 	name, lit := literal(w)
-	if !lit || strings.Contains(name, "IFS") {
+	if !lit || NamesIFS(name) {
 		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsArith = f.ifsArith || lit
 	}
 }
+
+// NamesIFS reports a variable name, or name=value, that sets IFS itself:
+// IFS, IFS+= or an index of it, and not a name that only holds the letters.
+func NamesIFS(v string) bool {
+	n, _, _ := strings.Cut(v, "=")
+	n = strings.TrimSuffix(n, "+")
+	return n == "IFS" || strings.HasPrefix(n, "IFS[")
+}
+
+// ifsHidden marks IFS set, by a name that is IFS, to a value the text hides.
+func (f *shellFacts) ifsHidden() { f.ifsUnknown, f.ifsNamed, f.ifsOther = true, true, true }
 
 // assign reads an assignment: a literal value of IFS is its separators; any
 // other value, or an index, leaves it unknown.
@@ -305,7 +363,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		return
 	}
 	if a.Naked {
-		f.ifsUnknown, f.ifsNamed = true, true
+		f.ifsHidden()
 		return
 	}
 	value, lit := "", true
@@ -313,7 +371,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		value, lit = literal(a.Value)
 	}
 	if !lit || a.Index != nil || a.Array != nil {
-		f.ifsUnknown, f.ifsNamed = true, true
+		f.ifsHidden()
 		return
 	}
 	f.seps += value
@@ -362,8 +420,9 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 	}
 	for _, a := range d.Args {
 		if a.Value != nil && !a.Naked {
-			if v, lit := literal(a.Value); !lit || strings.Contains(v, "IFS") {
+			if v, lit := literal(a.Value); !lit || NamesIFS(v) {
 				f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+				f.ifsOther = f.ifsOther || lit
 			}
 		}
 	}
@@ -373,15 +432,17 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 // "${v}FS=_": a name built from an expansion, or one spelled IFS, may set it.
 func (f *shellFacts) declWord(w *syntax.Word) {
 	v, lit := literal(w)
-	if !lit || !strings.HasPrefix(v, "-") && strings.Contains(v, "IFS") {
+	if !lit || !strings.HasPrefix(v, "-") && NamesIFS(v) {
 		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsOther = f.ifsOther || lit
 	}
 }
 
 // name reads a word a command sets as a variable.
 func (f *shellFacts) name(w *syntax.Word) {
-	if v, lit := literal(w); !lit || strings.Contains(v, "IFS") {
+	if v, lit := literal(w); !lit || NamesIFS(v) {
 		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsOther = f.ifsOther || lit
 	}
 }
 
@@ -441,6 +502,10 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 			continue
 		}
 		if !dispatched {
+			// A program named by a path may be a script the shell runs.
+			if !value && strings.Contains(words[i], "/") && !strings.HasSuffix(words[i], "/") && !isAssignment(words[i]) {
+				f.script(words[i], true)
+			}
 			dispatched = f.runs(c, st, path.Base(words[i]), c.Args[i+1:], depth)
 		}
 	}
@@ -471,8 +536,11 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		}
 	case name == "source" || name == ".":
 		if len(args) > 0 {
-			if v, _ := literal(args[0]); stdinFile(v) {
+			v, lit := literal(args[0])
+			if stdinFile(v) {
 				f.opaque = "a script read from its input"
+			} else if lit {
+				f.script(v, false)
 			}
 			if hasProcSubst(args[0]) {
 				f.opaque = "a script made when it runs"
@@ -544,8 +612,12 @@ scan:
 		case v == "--":
 			script = j+1 < len(args)
 			if script {
-				if w, _ := literal(args[j+1]); stdinFile(w) {
+				w, lit := literal(args[j+1])
+				switch {
+				case stdinFile(w):
 					stdin = true
+				case lit:
+					f.script(w, false)
 				}
 			}
 			break scan
@@ -579,6 +651,9 @@ scan:
 		default:
 			script = true
 			stdin = stdin || stdinFile(v) || v == "-"
+			if !stdin {
+				f.script(v, false)
+			}
 			break scan
 		}
 	}
@@ -1029,6 +1104,29 @@ func globWord(w *syntax.Word) bool {
 	return false
 }
 
+// maxScripts bounds the scripts one command records.
+const maxScripts = 16
+
+// script records a file the command runs as shell text.
+func (f *shellFacts) script(name string, direct bool) {
+	if name == "" || len(f.scripts) >= maxScripts {
+		return
+	}
+	f.scripts = append(f.scripts, Script{Path: name, Direct: direct})
+}
+
+// redirectTargets records the literal files st's output redirections write.
+func (f *shellFacts) redirectTargets(st *syntax.Stmt) {
+	for _, r := range st.Redirs {
+		switch r.Op {
+		case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
+			if v, lit := literal(r.Word); lit && len(f.writes) < maxScripts {
+				f.writes = append(f.writes, v)
+			}
+		}
+	}
+}
+
 // command keeps one command the rules and checks read, failing closed past
 // maxCommandBytes.
 func (f *shellFacts) command(text string) {
@@ -1080,8 +1178,8 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 			for j := 1; j < len(v); j++ {
 				if strings.IndexByte(names, v[j]) >= 0 {
 					if rest := v[j+1:]; rest != "" {
-						if strings.Contains(rest, "IFS") {
-							f.ifsUnknown, f.ifsNamed = true, true
+						if NamesIFS(rest) {
+							f.ifsHidden()
 						}
 					} else {
 						name = true
@@ -1099,8 +1197,8 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 		case operands:
 			if !lit {
 				f.ifsUnknown = true
-			} else if n, _, _ := strings.Cut(v, "="); n == "IFS" || strings.HasPrefix(n, "IFS[") || strings.HasSuffix(n, "+") && strings.TrimSuffix(n, "+") == "IFS" {
-				f.ifsUnknown, f.ifsNamed = true, true
+			} else if NamesIFS(v) {
+				f.ifsHidden()
 			}
 		}
 	}

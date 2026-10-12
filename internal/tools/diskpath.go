@@ -82,7 +82,14 @@ func sameAs(dir string, names []string, info os.FileInfo) (string, bool) {
 }
 
 // foldKey is a name as a disk that ignores case and Unicode form compares it: STRASSE is straße.
-func foldKey(n string) string { return norm.NFC.String(cases.Fold().String(norm.NFC.String(n))) }
+func foldKey(n string) string {
+	c := folders.Get().(*cases.Caser)
+	defer folders.Put(c)
+	return norm.NFC.String(c.String(norm.NFC.String(n)))
+}
+
+// folders keeps Casers for foldKey, which are costly to make and not safe to share at once.
+var folders = sync.Pool{New: func() any { c := cases.Fold(); return &c }}
 
 // A folder's listing is kept while its identity and times are unchanged. Where the disk keeps
 // whole seconds, a folder changed in the last few could change again unseen, so it is not kept.
@@ -147,4 +154,59 @@ func listDir(dir string) *dirListing {
 		listings.Unlock()
 	}
 	return l
+}
+
+// FoldsCaseAt reports whether the disk holding p opens a name in another
+// case, judged on the deepest existing folder above p with a letter in its
+// name. A path with no such folder is taken to keep case.
+func FoldsCaseAt(p string) bool {
+	dir := filepath.Clean(p)
+	if !filepath.IsAbs(dir) {
+		return false
+	}
+	for {
+		base := filepath.Base(dir)
+		if swapped := swapCase(base); swapped != base {
+			if folds, known := caseProbe(dir, swapped); known {
+				return folds
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+var caseProbes sync.Map // folder -> bool
+
+// caseProbe reports whether dir opens under swapped, its name in another
+// case, and whether dir exists to say.
+func caseProbe(dir, swapped string) (folds, known bool) {
+	if v, ok := caseProbes.Load(dir); ok {
+		return v.(bool), true
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false, false
+	}
+	other, err := os.Stat(filepath.Join(filepath.Dir(dir), swapped))
+	folds = err == nil && os.SameFile(info, other)
+	caseProbes.Store(dir, folds)
+	return folds, true
+}
+
+// swapCase is s with each ASCII letter's case swapped.
+func swapCase(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - 'a' + 'A'
+		case c >= 'A' && c <= 'Z':
+			b[i] = c - 'A' + 'a'
+		}
+	}
+	return string(b)
 }

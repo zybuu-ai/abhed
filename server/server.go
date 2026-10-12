@@ -1669,6 +1669,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 
 	pol := s.newPolicy(policy.Mode(mode))
 	pol.Roots = sess.PolicyRoots
+	pol.Cwd = sess.WorkDir
 	layer, err := s.sessionLayer(spec)
 	if err == nil {
 		err = applyLayer(pol, layer)

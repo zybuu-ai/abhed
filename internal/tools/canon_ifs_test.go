@@ -1,6 +1,9 @@
 package tools
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Every way of setting IFS is read: its separators beyond blanks when the text
 // shows them, and unknown when it does not.
@@ -116,6 +119,56 @@ func TestProgramNamedByAnExpansion(t *testing.T) {
 		c := CanonicalCommand(command)
 		if _, got := hiddenWords(command, c.Text); got != hidden {
 			t.Errorf("%q hidden = %v, want %v", command, got, hidden)
+		}
+	}
+}
+
+// IFSCause says why IFS is unknown, and the destructive reason follows it: a
+// command that does not parse is not said to change IFS.
+func TestIFSCause(t *testing.T) {
+	for command, want := range map[string]string{
+		"IFS=_; $x":                   "",
+		"IFS=$v; $x":                  IFSByName,
+		"for IFS in a b; do $c; done": IFSByLoop,
+		"for IFS in $v; do $c; done":  IFSByName,
+		"((IFS=1)); $x":               IFSByArithmetic,
+		"((MYIFS=1)); $x":             "",
+		`eval "$x"`:                   IFSByBuilt,
+		`echo "open $x`:               IFSByUnparsed,
+	} {
+		if got := CanonicalCommand(command).IFSCause; got != want {
+			t.Errorf("%q: IFSCause %q, want %q", command, got, want)
+		}
+	}
+	if what, _ := CanonicalCommand(`echo "open $x`).Destructive(); !strings.Contains(what, "cannot be parsed") {
+		t.Errorf("unparsed command: destructive reason %q", what)
+	}
+}
+
+// A brace list in a literal word is read as the words it makes; one with an
+// expansion, a nested list or in an assignment's value still hides its words.
+func TestLiteralBraceListIsExpanded(t *testing.T) {
+	for command, want := range map[string]string{
+		"mkdir -p src/{a,b}":      "mkdir -p src/a src/b",
+		"cp f{,.bak}":             "cp f f.bak",
+		"touch {a,b}.go; ls":      "touch a.go b.go; ls",
+		"{curl,x}":                "curl x",
+		"echo --x={1,2} y":        "echo --x=1 --x=2 y",
+		"mkdir -p a/{b,c}/d{1,2}": "",
+		"echo {$a,b}":             "",
+		"echo {a,{b,c}}":          "",
+		"x={a,b} cmd":             "",
+		"echo 'q'{a,b}":           "",
+	} {
+		c := CanonicalCommand(command)
+		if want == "" {
+			if !c.Hidden {
+				t.Errorf("%q: not hidden (%q)", command, c.Text)
+			}
+			continue
+		}
+		if c.Text != want || c.Hidden {
+			t.Errorf("%q: text %q hidden %v, want %q", command, c.Text, c.Hidden, want)
 		}
 	}
 }

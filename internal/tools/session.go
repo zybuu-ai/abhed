@@ -343,6 +343,13 @@ func (s *Session) PolicyRoots() []string {
 	return append(out, s.rawRoots...)
 }
 
+// WorkDir is where the next bash call starts, read under the session's lock.
+func (s *Session) WorkDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Cwd
+}
+
 // within reports whether an absolute, cleaned path sits inside any root.
 func within(path string, roots []string) bool {
 	for _, root := range roots {

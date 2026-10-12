@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // foldsCase reports whether dir's disk opens a name in another case. The
@@ -91,5 +93,42 @@ func TestRelativeRulesHoldUnderARootNamedInAnotherCase(t *testing.T) {
 		if d := e.Evaluate("write", true, args); d.Decision != Deny {
 			t.Errorf("%s: %s, want deny", p, d.Decision)
 		}
+	}
+}
+
+// A deny or ask path rule spelled in another case than the disk holds still
+// holds on a disk that folds case: write(**/VAULT/**) covers vault/.
+func TestPathRuleInAnotherCaseHoldsOnAFoldingDisk(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "core/vault"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	folds := foldsCase(t, ws)
+	restore := tools.FoldCommandNamesForTest(false) // judged by the disk alone
+	defer restore()
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	if err := e.AddDeny("write(**/VAULT/**)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.AddAsk("edit(CORE/Vault/*)"); err != nil {
+		t.Fatal(err)
+	}
+	p := func(rel string) json.RawMessage {
+		b, _ := json.Marshal(map[string]string{"path": filepath.Join(ws, rel)})
+		return b
+	}
+	write := e.Evaluate("write", true, p("core/vault/key.txt"))
+	edit := e.Evaluate("edit", true, p("core/vault/key.txt"))
+	if folds && (write.Decision != Deny || edit.Step != "ask") {
+		t.Errorf("folding disk: write %s (%s), edit %s at %s", write.Decision, write.Reason, edit.Decision, edit.Step)
+	}
+	if !folds && (write.Decision == Deny || edit.Step == "ask") {
+		t.Errorf("case-keeping disk: another spelling matched: write %s, edit %s", write.Decision, edit.Step)
+	}
+	// Where the system ignores case, the rule holds whatever the disk.
+	tools.FoldCommandNamesForTest(true)
+	if res := e.Evaluate("write", true, p("core/vault/key.txt")); res.Decision != Deny {
+		t.Errorf("folding system: write %s (%s)", res.Decision, res.Reason)
 	}
 }

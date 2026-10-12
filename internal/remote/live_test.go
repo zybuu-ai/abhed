@@ -570,7 +570,7 @@ func TestSessionHostCannotPassForAnOperatorHost(t *testing.T) {
 	pinHome(t, srv)
 	reg, _ := NewRegistry([]HostConfig{{Name: "prod", Addr: "10.0.0.1", User: "ops"}})
 	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
-	for _, name := range []string{"Prod", "PROD", "prоd" /* Cyrillic о */} {
+	for _, name := range []string{"Prod", "PROD", "prоd" /* Cyrillic о */, "pr0d", "PR0D", "pr-od", "prod."} {
 		args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": name,
 			"password_secret": "VM_PASSWORD"})
 		if res := connect.Run(context.Background(), newSession(t), args); !res.IsError {

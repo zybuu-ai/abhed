@@ -248,7 +248,7 @@ func TestPathSubjectsStayInsideRoots(t *testing.T) {
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	_ = e.AddDeny("write(../*)")
-	all, allow := e.pathSubjects(filepath.Join(filepath.Dir(ws), "sibling"))
+	all, allow := e.pathSubjects(filepath.Join(filepath.Dir(ws), "sibling"), true)
 	for _, s := range append(all, allow...) {
 		if strings.HasPrefix(s, "..") || strings.HasPrefix(s, "./..") {
 			t.Errorf("spelling %q climbs out of the root", s)

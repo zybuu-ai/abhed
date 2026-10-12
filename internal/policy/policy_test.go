@@ -31,8 +31,9 @@ func TestAskReasonNamesWhatIsAsked(t *testing.T) {
 		tool, want string
 		args       json.RawMessage
 	}{
-		{ModeDefault, "bash", "running a command needs approval in default mode", args(map[string]string{"command": "whoami"})},
-		{ModeAcceptEdits, "bash", "running a command needs approval in accept-edits mode", args(map[string]string{"command": "uname -a"})},
+		{ModeDefault, "bash", "running a command needs approval in default mode (to always allow exactly this, add bash(whoami) to permissions.allow)", args(map[string]string{"command": "whoami"})},
+		{ModeAcceptEdits, "bash", "running a command needs approval in accept-edits mode (to always allow exactly this, add bash(uname -a) to permissions.allow)", args(map[string]string{"command": "uname -a"})},
+		{ModeDefault, "bash", "running a command needs approval in default mode", args(map[string]string{"command": "git status"})},
 		{ModeDefault, "write", "changing a file needs approval in default mode", args(map[string]string{"path": "a.txt"})},
 		{ModeDefault, "k8s_apply", "k8s_apply can make changes, so it needs approval in default mode", args(map[string]string{})},
 	} {

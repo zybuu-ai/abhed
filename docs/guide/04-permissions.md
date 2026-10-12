@@ -96,8 +96,9 @@ permissions without its own `permissions.allow`.
   `permissions` setting. A "Yes, and don't ask again" answer to a prompt is
   not a rule: it covers only the scope the prompt names (for `bash`, one of
   the short list below; for a file, that one path; for `web_fetch`, the site;
-  for another tool, that call's subject, such as an MCP tool's `path`, `url`
-  or `command`, or every call to the tool when the call has none) for the
+  for `ssh`, the host and command, as `host/command`; for another tool,
+  that call's subject, such as an MCP tool's `path`, `url` or `command`,
+  or every call to the tool when the call has none) for the
   rest of the session, and
   still applies under a managed configuration.
 - Session rules are evaluated after the configured ones in each list, so a
@@ -279,10 +280,12 @@ holds; a name that does not exist yet, such as a new file or folder, keeps
 its spelling, under its folder's real name. Allow patterns still compare case
 as written, so another spelling never gains an allow. On a disk that keeps
 case, `DOCS/` and `docs/` are different folders and are compared as written.
-A pattern's case is never folded. **On macOS and Windows, write a path rule
-in the case the disk holds the name:** `write(**/VAULT/**)` does not protect a
-folder the disk holds as `vault`, whatever spelling a tool is given. Check the
-disk's spelling with `ls` (or `dir` on Windows) before you write the rule.
+A deny or ask path pattern is also matched without regard to case on macOS and
+Windows, and on any disk found to open a name in another case (a Linux
+case-folding folder), so `write(**/VAULT/**)` protects a folder the disk holds
+as `vault`. On macOS and Windows this holds even on a volume formatted to keep
+case, where it can refuse or ask about a folder of another name that differs
+only in case; that only tightens. An allow pattern's case is never folded.
 
 A pattern's Unicode form does not matter for deny and ask rules. A name with
 an accent can be spelled in two forms, NFC (`é` as one character) and NFD
@@ -332,9 +335,16 @@ program alone, as in `bash(ls *)`; for `git stash`, the one read-only word
 after it too, as in `bash(git stash list *)`. The program must be spelled
 exactly so (on macOS and Windows, without regard to case): `/usr/bin/git`, a wrapper or a `VAR=value` assignment in
 front gets no scope. Nor does a command with `--eval` or `--exec` among its
-arguments, or any single-dash word containing `c` or `e`, such as `-ec`,
-`wc -c` or `head -c`; nor one with a quote, backslash, `$`, glob, brace or
-backtick in the words the scope keeps. Interpreters, shells, package runners,
+arguments; for `git`, `npm`, `pip` and `docker`, any single-dash word
+containing `c` or `e`, such as `git commit -c` (the tools without
+subcommands take `-c` and `-e` as counts or patterns, so `wc -c`, `head -c`,
+`du -sch` and `grep -e` keep theirs); nor one with a quote, backslash, `$`,
+glob, brace or backtick in the words the scope keeps. Nor does a program
+that `PATH` finds inside the workspace or an added directory (a planted
+`./venv/bin/ls`), or behind a relative `PATH` entry. When no scope is
+offered for a simple command, the reason names the allow rule that would
+allow exactly that command, such as `bash(python3 -m unittest)`, for you to
+add to `permissions.allow` if you want it. Interpreters, shells, package runners,
 `make`, `npm install` and `npm test`, `go` (a `toolchain` line in `go.mod`
 makes it run another go binary), `yarn`, `pnpm`, `cargo` and `kubectl` are left
 off because a word on the line, or a file the agent can write, can make them
@@ -396,24 +406,52 @@ is the boundary. A command too long or complex to split in full (over
 asked about while any deny or ask rule for `bash` has a pattern, in every
 mode.
 
+Deny and ask rules also read the shell scripts a command runs, from the
+folder the agent's command starts in: a shell's script (`bash ./s.sh`,
+`sh -e -- s.sh`), `source f` and `. f`, a program named by a path that is a
+shell script (`./tool` with a `#!/bin/sh` line, or no `#!` line at all), and
+the scripts those source, two levels deep. So `bash ./s.sh` is refused under
+`bash(curl *)` when `s.sh` holds `curl`. A script that does not exist, that
+the same line writes before it runs it (`echo … > s.sh; sh s.sh`), or that
+is named from `~`, is refused while a deny rule for `bash` has a pattern. One
+the rules cannot read in full, because it is over 64 KiB, does not parse, or
+runs text built when it runs (`eval "$x"`), is asked about, in every mode.
+A binary, or a script for another interpreter (`#!/usr/bin/env python3`),
+is not read. A script is read when the decision is made, so one changed
+between then and the run is not seen; the sandbox is the boundary there.
+
 A deny pattern matches the words, so it is easy to step around.
 `bash(curl *)` does not catch any of these, and every one of them runs curl:
 
-- an absolute or relative path to the program: `/usr/bin/curl x`
-- a command in a file the shell reads: `bash ./script.sh`, `source ./f`
+- a script another program reads (`python3 x.py`, `node x.js`, `make`), a
+  shell script over 64 KiB, one the agent's own commands judge from a folder
+  the server cannot see (an `:exec` in a sandbox), or a program the line
+  builds before it runs it (`make && ./bin/app`)
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,
-  `core.sshCommand`, `git clone -u`, or an `ext::` remote taken from the
-  configuration)
+  `core.sshCommand` or `git clone -u`)
 - a shell another program starts with its input: `… | xargs bash -c`,
   `… | xargs -I{} bash -c {}`, a pipe into a function that runs a shell
   (`f() { bash; }; cat f | f`), or a process substitution written to
   (`echo 'curl x' > >(bash)`, `tee >(bash)`)
-- flags in another place or split up: `bash(rm -rf *)` does not match
-  `rm x -rf` or `rm -r -f x`
+- a flag spelled another way: `bash(rm -rf *)` does not match
+  `rm --recursive --force x`, `rm --rec -f x`, or a flag hidden in an
+  option's value, because no rule knows each program's own flag grammar
 
-A quoted or escaped name (`'curl' x`, `c\url x`) is read as the program,
+A deny or ask rule that names flags after the program and any literal
+subcommands also holds with those flags moved or split: `bash(rm -rf *)`
+matches `rm x -rf`, `rm -r -f x` and `rm -v x -f -r`, and
+`bash(git push --force *)` matches `git push origin --force`. The command
+must have every flag the rule names, anywhere before `--`, and its other
+words, in order, must match the rest of the pattern. This reading only adds
+matches, and allow rules do not use it. For the destructive commands
+themselves, the destructive step and the sandbox remain the control.
+
+A program named by a path (`/usr/bin/curl x`, `./curl x`) is also matched by
+its base name, so `bash(curl *)` holds for it; an allow rule still sees only
+the path as written. A quoted or escaped name (`'curl' x`, `c\url x`) is read
+as the program,
 and literal text another command runs is read as the commands it is:
 `bash -c 'curl x'`, `eval 'curl x'`, `trap 'curl x' EXIT`,
 `bash <<< 'curl x'`, `su --command`, `flock`, `env -S 'curl x'`,
@@ -425,12 +463,31 @@ Such text built from an expansion is refused while a deny rule for `bash`
 has a pattern. So is any git argument built from an expansion once the line
 enables the ext protocol (`protocol.ext.allow` or `protocol.allow` in `-c`,
 or `GIT_ALLOW_PROTOCOL`). An `ext::` in the text of `git commit`, `grep`,
-`log`, `show`, `shortlog`, `tag` or `notes` is not read as a URL.
+`log`, `show`, `shortlog`, `tag` or `notes` is not read as a URL. Every
+command the agent runs gets `protocol.ext.allow=never` as git environment
+config, so an `ext::` URL from `.gitmodules` or a repository's own config
+(`git submodule update`, `git fetch o`) is refused by git itself; only `-c`
+or `GIT_ALLOW_PROTOCOL` on the line, which the checks read, lifts it. The
+same environment config sets `core.fsmonitor=false`, so a repository's
+config cannot make `git status` run a command.
+
+A command git runs from configuration it reads itself is still not on the
+line for any rule to see: `core.sshCommand`, `core.hooksPath` and the hooks,
+`diff.external`, a filter driver named in `.gitattributes`, or
+`credential.helper`. On the line, `-c` and an alias confirm as destructive
+in a session and are refused on `:exec`; `core.pager` runs only when git
+writes to a terminal, which an agent's command never is. For the rest, keep
+the agent from writing `.git` (the sandbox's git protection) and limit
+where its commands can connect (`sandbox.network`), so a command git runs
+cannot reach out.
 
 Words the shell builds are read as it would build them: line continuations
 are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as
 `{curl,x}` are read as the words they make, so `c${IFS}url` is matched as
-`curl`. A command that sets `IFS` to a separator other than blanks is also read
+`curl`. A brace list in a word that is literal text throughout
+(`mkdir -p src/{a,b}`) is read exactly as bash expands it and is not asked
+about for that; one holding an expansion, a quote, a nested or second list
+is asked about while a deny or ask rule for `bash` has a pattern. A command that sets `IFS` to a separator other than blanks is also read
 split on it, so `IFS=_; curl_x` is matched as `curl x`. Where such a command,
 or one that sets `IFS` in a way the text does not show (`IFS=$v`, `read IFS`,
 `${IFS:=_}`), then expands anything (`IFS=_; c=curl_x; $c`), the words that
@@ -442,7 +499,13 @@ quotes, backslashes and `$'…'` (`eval I""FS=_`), in arithmetic
 expansion where it could become `IFS`: given to `eval` or a shell's `-c`,
 or as the name a setter is given (`read ${v}FS`, `printf -v "$v"`). A prefix
 to `read` (`IFS=, read -r a b`), `IFS` set only to blanks (`IFS=$'\n'`) and
-`IFS` as another command's argument (`grep IFS f`) are not refused. Some
+`IFS` as another command's argument (`grep IFS f`) and a name that only holds
+the letters (`(( MYIFS = 1 ))`, `read MYIFS`) are not refused. A prefix to
+`read` is not asked about either, as it splits only what `read` reads, so
+`IFS=, read -r a b < f` runs on `:exec`. The refusal
+says how `IFS` was set: to a separator the text shows, in a `for` loop, by
+arithmetic, to a value the text does not show, or by text built from an
+expansion. Some
 commands that set nothing are refused with an expansion after them, because
 the text cannot tell them apart: a setter's name in quoted text
 (`echo "read IFS"`), any `x=IFS`, `IFS` beside a blank and `=` (`[ IFS = x ]`),

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -188,4 +189,22 @@ func TestDiskPathKeepsAPathThatNeedsNoChange(t *testing.T) {
 	if got := DiskPath("relative/Path"); got != filepath.Clean("relative/Path") {
 		t.Errorf("a relative path became %s", got)
 	}
+}
+
+// foldKey shares its Casers through a pool, safely from many goroutines.
+func TestFoldKeyConcurrent(t *testing.T) {
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				if got := foldKey("STRASSE"); got != foldKey("straße") {
+					t.Errorf("foldKey: %q", got)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

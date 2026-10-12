@@ -260,6 +260,12 @@ func (c Canonical) DestructiveWith(gitExtensions map[string]bool) (string, bool)
 // are read. Destructive counts each of these as needing a person's yes.
 func (c Canonical) Unreadable() string {
 	if c.IFSSplit {
+		switch c.IFSCause {
+		case IFSByUnparsed:
+			return "a command that cannot be parsed, so where it sets IFS is not known"
+		case IFSByBuilt:
+			return "text built from an expansion that could set IFS"
+		}
 		return "words split by a changed IFS"
 	}
 	// The program is read in the text as written and as canonicalised, and by the parser.
@@ -541,6 +547,11 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	// A stopped turn ends what the command started, not only its shell.
 	sandbox.EndWithCommand(cmd)
 
+	// git never runs a command a repository's own config names for ext:: or fsmonitor.
+	var gitNames []string
+	cmd.Env, gitNames = WithGitSafeConfig(cmd.Env)
+	b.forward(cmd, gitNames)
+
 	if len(a.Secrets) > 0 {
 		env, err := b.Secrets(a.Secrets)
 		if err != nil {
@@ -554,14 +565,18 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 				names = append(names, k)
 			}
 		}
-		// A container sees only what is forwarded to it by name.
-		if b.Forward != nil {
-			b.Forward(cmd, names)
-		} else {
-			sandbox.ForwardEnv(cmd, names)
-		}
+		b.forward(cmd, names)
 	}
 	return cmd, nil
+}
+
+// forward gives a container the variables named, which it sees only by name.
+func (b Bash) forward(cmd *exec.Cmd, names []string) {
+	if b.Forward != nil {
+		b.Forward(cmd, names)
+	} else {
+		sandbox.ForwardEnv(cmd, names)
+	}
 }
 
 // moveToBackground hands a running foreground command to the session's host
@@ -808,7 +823,9 @@ func asExitError(err error, target **exec.ExitError) bool {
 func (s *Session) FollowCd(command string) string {
 	next, why := detectCd(command, s)
 	if next != "" {
+		s.mu.Lock()
 		s.Cwd = next
+		s.mu.Unlock()
 	}
 	return why
 }

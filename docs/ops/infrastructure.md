@@ -255,8 +255,11 @@ connection works, and registers the host **for that conversation only**.
 Nothing is written to `~/.ssh/config`. Another session on the same server
 cannot run on it or see its name, and in the terminal `/clear`, `/resume` and
 a fork close it; connect again there. A name an `ssh.hosts` entry uses, in any case, cannot
-be taken, and names are plain ASCII. That does not stop every look-alike:
-`pr0d` or `buiId1` still pass beside `prod` and `build1`. The approval for
+be taken, and names are plain ASCII. Nor can one that reads like it once
+look-alike characters are read as one (`0` as `o`, `1`, `I` and `i` as `l`,
+`5` as `s`, `rn` as `m`, and the like) and `-`, `_` and `.` are dropped:
+`pr0d`, `pr-od` and `buiId1` are refused beside `prod` and `build1`. No list
+covers every look-alike, so the name is not the control. The approval for
 each `ssh` command names the account and address it runs on, as
 `runs as user@addr`, and says whether the host was declared by the operator
 or added in this session; that address, not the name, is what to check.
@@ -308,6 +311,20 @@ rather than the consequence.
 
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.
+
+### Rules on a host
+
+Permission rules and "always allow" read an `ssh` call as `host/command`,
+so a rule or an answer for one host never covers another:
+`ssh(build1/*)` allows every command on `build1` and nothing elsewhere, and
+"don't ask again" for `uptime` on `build1` offers `ssh(build1/uptime)`.
+Deny and ask rules also read the command alone, so `ssh(rm *)` still stops
+`rm` on every host.
+
+```json
+"deny":  ["ssh(db1/*)", "ssh(rm *)"],
+"allow": ["ssh(build1/uptime)"]
+```
 
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment

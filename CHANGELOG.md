@@ -35,6 +35,73 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- An `ssh_connect` host name that read like an operator's host only by a
+  look-alike character, such as `pr0d` or `buiId1` beside `prod` and
+  `build1`, was accepted. Names are now compared with look-alike characters
+  read as one and separators dropped; the approval's `user@addr` remains the
+  control. Affects 1.2.2 to 1.2.7.
+- Deny and ask rules for `bash` did not see inside a shell script a command
+  ran, so `bash ./s.sh`, `source f` or `./tool` ran `curl` past
+  `bash(curl *)` when the script held it. The agent's commands now have the
+  shell scripts they run read from the folder they start in, two levels
+  deep, and their commands checked against deny and ask rules. A script that
+  does not exist, that the same line writes before running it, or that is
+  named from `~` is refused under a deny rule; one too long, unparsable or
+  running built text is asked about. Binaries and other interpreters'
+  scripts are not read, and an `:exec` reads no script. Affects every
+  release to 1.2.7.
+- A deny or ask path rule written in another case than the disk holds the
+  name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
+  on a disk that ignores case (documented as a limit). Deny and ask path
+  rules now also match without regard to case on macOS and Windows and on
+  any disk found to fold case. Allow rules are unchanged. Affects every
+  release to 1.2.7.
+- A call whose first subject argument was not a string, such as an MCP
+  tool's `command` given as a list or an object, was judged on the next
+  argument, a `path` say, so a deny rule on the command never saw it. A list
+  of strings is now read as its words joined by blanks; any other kind is
+  refused at step `args` while a deny or ask rule with a pattern applies to
+  the tool, and is otherwise judged on its JSON text. Affects every release
+  to 1.2.7.
+- An "always allow" scope for a listed program such as `ls` was offered
+  though `PATH` found it inside the workspace (a planted `./venv/bin/ls`
+  first on `PATH`), so the remembered scope ran the workspace's file. The
+  scope is now offered only when the program `PATH` finds is outside every
+  workspace root and no relative `PATH` entry comes first. Affects 1.2.0 to
+  1.2.7.
+- The ask before a bash command naming `ABHED_TRUST_WORKSPACE` or
+  `trust-workspace` was a default `permissions.ask` entry, so a configuration
+  with its own ask list dropped it, and a command that assembled the name
+  (`X=ABHED_TRUST_WORKSPACE; env $X=1 abhed …`) or set it in a script was not
+  caught. The ask is now built in, in every mode and any case, and a nested
+  `abhed` inside an agent's command ignores `ABHED_TRUST_WORKSPACE` with a
+  warning. Affects 1.2.2 to 1.2.7.
+- A deny or ask rule naming flags, such as `bash(rm -rf *)`, did not match
+  the same flags moved or split (`rm x -rf`, `rm -r -f x`). Such a rule now
+  also matches a command with the same program and subcommands that has
+  every flag it names anywhere before `--`, its other words matching the
+  rest of the pattern. Allow rules are unchanged. A flag spelled another way
+  (`--recursive`) is still not matched. Affects every release to 1.2.7.
+- A deny or ask rule naming a program, such as `bash(curl *)`, did not match
+  the program named by a path (`/usr/bin/curl x`, `./curl x`); only wrappers
+  were matched by their base name. Deny and ask rules now also see each
+  command with its program cut to its base name. Allow rules are unchanged.
+  Affects every release to 1.2.7.
+- git followed an `ext::` URL taken from `.gitmodules` or a repository's own
+  config (`protocol.ext.allow=always` with an `ext::` remote, then
+  `git fetch` or `git submodule update`), running the command it names where
+  no rule could read it, and a repository's `core.fsmonitor` made
+  `git status` run a command. Every command the agent runs now gets
+  `protocol.ext.allow=never` and `core.fsmonitor=false` as git environment
+  config, after any the environment already holds; `-c` or
+  `GIT_ALLOW_PROTOCOL` on the line still win and are read by the checks.
+  Affects every release to 1.2.7.
+- An `exec` given its own options and no program, such as `exec -- < f` or
+  `exec -a x < f`, was not read as one that gives the shell new input, so a
+  later `bash` reading its commands from that input was not refused under a
+  deny rule. `-c`, `-l`, `-a NAME` and `--` are now passed over, and an
+  expansion that may be empty is taken as no program. Affects 1.2.4 to
+  1.2.7.
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion
@@ -501,6 +568,38 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- A file tool's decision costs less: a workspace root's resolved and disk
+  spellings are read at most once a second rather than on every decision,
+  the disk's spelling of the path is looked up only when a deny or ask rule
+  reads paths for that tool, and the case folding Casers are reused. A
+  write decision with path rules takes about a quarter less time, and one
+  with only allow rules about a third of what it did.
+- Policy hooks, an extension's `tool_call` among them, now get the
+  decision's context with a deadline: 30 seconds, or the request's own, such
+  as an Explorer rename's. A call whose hooks have not decided by then is
+  refused, and once the deadline has passed the rest of a batch is refused
+  without asking the hooks, so renaming a large folder under a slow hook no
+  longer holds the workbench for every file in it. A manual action judges
+  each repeated subject once.
+- `ssh` calls are judged by host as well as command: rules and "always allow"
+  read them as `host/command`, so an answer for one host never covers
+  another, and deny and ask rules also read the command alone as before. An
+  allow rule written on the command alone, such as `ssh(uptime)`, no longer
+  matches; write `ssh(build1/uptime)` or `ssh(*/uptime)`. A tool can name its
+  own subject the same way with `tools.Subjector`.
+- The one-click scope is offered for `wc -c`, `head -c`, `du -sch`,
+  `grep -e` and the other listed tools without subcommands, which take `-c`
+  and `-e` as counts or patterns; `git`, `npm`, `pip` and `docker` still get
+  none with such a flag. When no scope is offered for a simple command, the
+  reason names the allow rule that would allow exactly that command, and
+  `Result.Suggest` carries it.
+- A brace list in a word that is literal text throughout, such as
+  `mkdir -p src/{a,b}` or `cp f{,.bak}`, is read as the words it makes
+  (`src/a src/b`) instead of being asked about as words no rule can read
+  while a deny or ask rule for `bash` has a pattern, so `:exec` no longer
+  refuses it. Deny and ask rules see the words it makes. A list with an
+  expansion, a quote, a nested or second list, or in an assignment's value
+  is still asked about, and refused on `:exec`.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of
@@ -543,6 +642,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- Bypass mode under a managed file asked about every call with the reason
+  "bypass mode is disabled by organization policy", naming no file, while
+  `abhed doctor` still showed the mode as `bypass`. The reason now names the
+  managed file and says the call asks as in default mode, and `abhed doctor`
+  and the `abhed serve` banner say `bypass disabled by <path>`.
 - `abhed acp` exited as soon as stdin closed, so requests read in a burst
   just before could go unanswered. It now answers every request it read
   first: a prompt still running ends as `cancelled`, and a request to the
@@ -557,6 +661,19 @@ on. A server with it off starts on the older schema as before.
 - A command refused because IFS could split its words, such as `eval "$x"`
   under a deny rule, was said to change IFS when its text sets none. The
   reason now says it runs text built from an expansion that could set IFS.
+- `IFS=, read -r a b < f` and other prefixes to `read` were asked about as
+  words built by IFS, or confirmed as words split by a changed IFS, while a
+  deny or ask rule for `bash` had a pattern, so `:exec` refused them though
+  the guide said they were not refused. A prefix to `read` splits only what
+  `read` reads and is no longer flagged; an `IFS` set elsewhere on the line
+  still is.
+- A command that sets `IFS` in a `for` loop over literal words, or by
+  arithmetic, was refused as setting it "to a value its text does not show";
+  each now has its own reason, and the destructive step no longer says a
+  command that cannot be parsed changes IFS. A variable whose name only holds
+  the letters, such as `(( MYIFS = 1 ))`, `read MYIFS` or
+  `declare -n r=MYIFS`, was taken as setting `IFS` and refused a following
+  expansion under a deny rule; only `IFS` itself counts now.
 - `abhed -h` and `abhed sandbox -h` named only `sandbox connect --stdio`;
   both now list every sandbox command, as `abhed sandbox help` does.
 - `abhed serve -check` said "Ready to serve" for a `server.tls` that serve
@@ -652,6 +769,17 @@ on. A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `policy`: `Engine.EvaluateContext`, `ContextHook`, `Engine.ContextHooks`,
+  `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's hooks by
+  a deadline; `Engine.Cwd` lets deny and ask rules read the scripts a
+  command runs; `Result.Suggest` is the allow rule for exactly a call that
+  offers no scope. `tools.Subjector` with `RegisterSubjector` lets a tool
+  name its own policy subject, as `ssh` does with `host/command`.
+  `tools.Canonical` gains `IFSCause` (one of the `IFSBy` constants),
+  `Scripts` and `Writes`; `tools.ReadScript`, `WithGitSafeConfig`,
+  `FoldsCaseAt`, `NamesIFS` and `Session.WorkDir` are new, and
+  `extension.Host.ContextPolicyHookFor` asks extensions under each
+  decision's context.
 - `app.WithCommandAbout` adds an edition's subcommand with the line
   `abhed -h` shows for it; `WithCommand` still shows "a command of this
   edition".

@@ -1283,6 +1283,8 @@ func childPolicy(pol *policy.Engine, session *tools.Session) *policy.Engine {
 		}
 		return roots
 	}
+	// A script a command names is found from the child's own folder.
+	child.Cwd = session.WorkDir
 	return &child
 }
 

@@ -52,7 +52,7 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 	fmt.Printf("provider    %s (%s)\n", cfg.Model.Default, provider.Type)
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
-	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
+	fmt.Printf("mode        %s\n", modeLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)
 	}
@@ -567,6 +567,25 @@ func modelAwaitsTrust(cfg config.Config) bool {
 		}
 	}
 	return false
+}
+
+// modeLabel is the permission mode, and when it is bypass under a managed
+// file, that the file disables it, so a call asks as in default mode.
+func modeLabel(cfg config.Config) string {
+	mode := orDefault(cfg.Permissions.Mode, "default")
+	if line := bypassDisabled(cfg); line != "" {
+		return mode + " (" + line + ")"
+	}
+	return mode
+}
+
+// bypassDisabled says that the managed file disables bypass mode, when the
+// mode is bypass under one; "" otherwise.
+func bypassDisabled(cfg config.Config) string {
+	if !cfg.Managed || cfg.Permissions.Mode != "bypass" {
+		return ""
+	}
+	return "bypass disabled by " + config.Printable(managed.ConfigFile) + "; calls ask as in default mode"
 }
 
 // managedLine names the managed file in force and how much it sets, for the

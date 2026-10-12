@@ -391,8 +391,8 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 	if h == nil || h.Len() == 0 || pol == nil {
 		return
 	}
-	pol.EngineHooks = append(pol.EngineHooks, func(e *policy.Engine) policy.Hook {
-		return h.PolicyHookFor(context.Background(), sessionID, e)
+	pol.ContextHooks = append(pol.ContextHooks, func(e *policy.Engine) policy.ContextHook {
+		return h.ContextPolicyHookFor(sessionID, e)
 	})
 }
 

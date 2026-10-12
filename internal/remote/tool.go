@@ -70,7 +70,31 @@ func (r *Registry) resembles(name string) string {
 	return ""
 }
 
-func foldName(n string) string { return strings.ToLower(n) }
+// foldName is a host name as it is compared for look-alikes: lowered, with
+// the letters and digits that pass for one another read as one (pr0d is
+// prod, buiId1 is build1, rn is m) and separators dropped (db-1 is db1).
+func foldName(n string) string {
+	n = lookAlikePairs.Replace(strings.ToLower(n))
+	var b strings.Builder
+	for _, r := range n {
+		if c, ok := lookAlike[r]; ok {
+			r = c
+		}
+		if r != '-' && r != '_' && r != '.' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// lookAlike maps a character to the one it passes for in a host name.
+var lookAlike = map[rune]rune{
+	'0': 'o', '1': 'l', 'i': 'l', '|': 'l', '!': 'l', '5': 's', '$': 's',
+	'3': 'e', '4': 'a', '@': 'a', '7': 't', '8': 'b', '6': 'g', '9': 'g', '2': 'z',
+}
+
+// lookAlikePairs are pairs of letters that pass for one.
+var lookAlikePairs = strings.NewReplacer("rn", "m", "vv", "w", "cl", "d")
 
 // plainName reports whether a session host's name is printable ASCII: with
 // no look-alike letters, case folding is all it takes to compare names.
@@ -99,6 +123,25 @@ func (r *Registry) Close() {
 
 // Tool runs a command on a declared host.
 type Tool struct{ R *Registry }
+
+func init() { tools.RegisterSubjector("ssh", Tool{}) }
+
+// PolicySubject is host/command, so a rule or an "always allow" for one host
+// never covers another; deny and ask rules also see the command alone.
+func (Tool) PolicySubject(args json.RawMessage) (string, bool) {
+	m, err := tools.DecodeArgs(args)
+	if err != nil {
+		return "", false
+	}
+	h, _ := tools.Lookup(m, "host")
+	c, _ := tools.Lookup(m, "command")
+	host, _ := h.(string)
+	command, _ := c.(string)
+	if host == "" {
+		return "", false
+	}
+	return host + "/" + command, true
+}
 
 func (Tool) Name() string { return "ssh" }
 

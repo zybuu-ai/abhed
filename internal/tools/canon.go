@@ -30,6 +30,8 @@ type Canonical struct {
 	// IFSNamed reports that what leaves IFS unknown names IFS itself, as
 	// IFS=$v or read IFS do, rather than only running built text.
 	IFSNamed bool
+	// IFSCause says why IFS is unknown, when IFSUnknown: one of the IFSBy values.
+	IFSCause string
 	// IFSSplit reports a changed IFS and an expansion it may split, so the
 	// words that run are not in the text; deny rules cannot be checked then.
 	IFSSplit bool
@@ -38,6 +40,41 @@ type Canonical struct {
 	shell   shellFacts
 	// textHidden and textIFSUnknown are what the text checks alone found.
 	textHidden, textIFSUnknown bool
+	// textIFSNamed is what the text checks alone found of IFSNamed.
+	textIFSNamed bool
+}
+
+// Why IFS is unknown, in Canonical.IFSCause.
+const (
+	// IFSByName is an assignment or setter naming IFS with a value the text hides.
+	IFSByName = "named"
+	// IFSByLoop is a for loop over literal words setting IFS to each.
+	IFSByLoop = "loop"
+	// IFSByArithmetic is an arithmetic assignment to IFS.
+	IFSByArithmetic = "arithmetic"
+	// IFSByUnparsed is a command the parser cannot read, so where IFS is set is not known.
+	IFSByUnparsed = "unparsed"
+	// IFSByBuilt is text built from an expansion that is run, and could set IFS.
+	IFSByBuilt = "built"
+)
+
+// ifsCause is why IFS is unknown, from what the text and the parser found.
+func (c Canonical) ifsCause(textNamed bool) string {
+	switch {
+	case !c.IFSUnknown:
+		return ""
+	case c.shell.ifsOther:
+		return IFSByName
+	case c.shell.ifsLoop:
+		return IFSByLoop
+	case c.shell.ifsArith:
+		return IFSByArithmetic
+	case textNamed:
+		return IFSByName
+	case c.shell.unparsed && !c.textIFSUnknown && !c.shell.ifsUnknown:
+		return IFSByUnparsed
+	}
+	return IFSByBuilt
 }
 
 // CanonicalCommand reads command as the shell would split it into words, as
@@ -88,6 +125,18 @@ func CanonicalCommand(command string) Canonical {
 			i += ifsAt(command, i+1)
 		case ch == '{' && !double && (i == 0 || command[i-1] != '$'):
 			if end := braceList(command, i); end > 0 {
+				// A list in a literal word is read as the words it makes.
+				s := b.String()
+				ws := strings.LastIndexAny(s, " \t\n;&|()`<>") + 1
+				if words, wordEnd, ok := braceWords(s[ws:], command, i, end); ok {
+					prefix := s[:ws]
+					b.Reset()
+					b.WriteString(prefix)
+					b.WriteString(words)
+					c.Reworded = true
+					i = wordEnd - 1
+					continue
+				}
 				b.WriteString(strings.NewReplacer(",", " ").Replace(command[i+1 : end]))
 				b.WriteByte(' ')
 				c.Reworded, c.Hidden = true, true
@@ -99,7 +148,7 @@ func CanonicalCommand(command string) Canonical {
 			b.WriteByte(' ')
 			c.Reworded = true
 		default:
-			if !double && wordStart() && strings.HasPrefix(command[i:], "IFS=") && ifsValue(command[i+4:]) {
+			if !double && wordStart() && strings.HasPrefix(command[i:], "IFS=") && ifsValue(command[i+4:]) && !readPrefix(command[i+4:]) {
 				c.Reworded, c.Hidden = true, true
 			}
 			b.WriteByte(ch)
@@ -115,6 +164,8 @@ func CanonicalCommand(command string) Canonical {
 	c.IFS = blankless(c.IFS + c.shell.seps)
 	c.IFSUnknown = c.IFSUnknown || c.shell.ifsUnknown || c.shell.unparsed
 	c.IFSNamed = named || c.shell.ifsNamed
+	c.textIFSNamed = named
+	c.IFSCause = c.ifsCause(named)
 	c.Hidden = c.Hidden || c.shell.unparsed || c.shell.tooLong
 	c.IFSSplit = (c.IFS != "" || c.IFSUnknown) && strings.ContainsAny(command, "$`")
 	return c
@@ -208,10 +259,10 @@ func ifsScan(text string) (string, bool) {
 			unknown = true
 		case strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "+="):
 			rest = rest[strings.IndexByte(rest, '=')+1:]
-			value, end, known := ifsWord(rest)
+			value, _, known := ifsWord(rest)
 			unknown = !known
 			// A prefix to read sets how read splits its input, not the shell's words.
-			if after := strings.TrimLeft(rest[end:], " \t"); strings.HasPrefix(after, "read") && (len(after) == 4 || !isNameByte(after[4])) {
+			if readPrefix(rest) {
 				continue
 			}
 			seps.WriteString(value)
@@ -570,6 +621,38 @@ func braceList(command string, i int) int {
 	return 0
 }
 
+// maxBraceWords bounds the words a literal brace list is read as.
+const maxBraceWords = 64
+
+// braceWords expands the brace list command[open:end+1] in a word that is
+// literal text throughout, prefix before it: the words joined by blanks and
+// where the word ends. ok is false for a list with a nested list, an
+// expansion, a quote or an escape in the word, a second list after it, or
+// an assignment's value, where bash does not expand it.
+func braceWords(prefix, command string, open, end int) (string, int, bool) {
+	wordEnd := end + 1
+	for wordEnd < len(command) && strings.IndexByte(" \t\n;&|()`<>", command[wordEnd]) < 0 {
+		wordEnd++
+	}
+	suffix, items := command[end+1:wordEnd], command[open+1:end]
+	const special = "{}$`'\"\\"
+	if strings.ContainsAny(prefix, special) || strings.ContainsAny(suffix, special) || strings.ContainsAny(items, special) {
+		return "", 0, false
+	}
+	if isAssignment(prefix) {
+		return "", 0, false
+	}
+	parts := strings.Split(items, ",")
+	if len(parts) > maxBraceWords {
+		return "", 0, false
+	}
+	words := make([]string, len(parts))
+	for k, p := range parts {
+		words[k] = prefix + p + suffix
+	}
+	return strings.Join(words, " "), wordEnd, true
+}
+
 // ansiC decodes a $'...' string from command[i], just past its opening quote,
 // and returns the text and the index of its closing quote.
 func ansiC(command string, i int) (string, int) {
@@ -690,14 +773,39 @@ func hexValue(d byte) byte {
 	return d - 'A' + 10
 }
 
-// ifsSet finds an IFS assignment with a value followed later by an expansion.
-var ifsSet = regexp.MustCompile(`(?s)(?:^|[\s;&|(])IFS=[^\s;&|].*\$`)
+// readPrefix reports an IFS value, rest being the text after IFS=, that is a
+// prefix to read: it sets how read splits its input, and the words of read's
+// own line are expanded before it is assigned, so it splits nothing else.
+func readPrefix(rest string) bool {
+	_, end, _ := ifsWord(rest)
+	after := strings.TrimLeft(rest[end:], " \t")
+	return strings.HasPrefix(after, "read") && (len(after) == 4 || !isNameByte(after[4]))
+}
+
+// ifsSetAndExpanded reports an IFS assignment with a value, not a prefix to
+// read, followed later by an expansion.
+func ifsSetAndExpanded(command string) bool {
+	for i := 0; ; {
+		j := strings.Index(command[i:], "IFS=")
+		if j < 0 {
+			return false
+		}
+		at := i + j
+		i = at + 4
+		if at > 0 && !strings.ContainsRune(" \t\n;&|(", rune(command[at-1])) {
+			continue
+		}
+		if ifsValue(command[i:]) && !readPrefix(command[i:]) && strings.Contains(command[i:], "$") {
+			return true
+		}
+	}
+}
 
 // hiddenWords reports a command whose program, or whose split into words, is
 // only known when it runs: an expansion as the program, or IFS set and expanded.
 // The IFS assignment is read as written, the program in the canonical text.
 func hiddenWords(command, canon string) (string, bool) {
-	if ifsSet.MatchString(command) || ifsSet.MatchString(canon) {
+	if ifsSetAndExpanded(command) || ifsSetAndExpanded(canon) {
 		return "words split by a changed IFS", true
 	}
 	for _, words := range shellWords(canon) {
@@ -751,6 +859,7 @@ func (c Canonical) AsTerminalLine() Canonical {
 	c.Hidden = c.textHidden || c.shell.tooLong
 	c.IFS = blankless(c.IFS)
 	c.IFSUnknown = c.textIFSUnknown || c.shell.ifsUnknown || c.shell.unparsed
+	c.IFSCause = c.ifsCause(c.textIFSNamed)
 	c.Hidden = c.Hidden || c.shell.unparsed
 	c.IFSSplit = (c.IFS != "" || c.IFSUnknown) && strings.ContainsAny(c.command, "$`")
 	return c
@@ -759,6 +868,13 @@ func (c Canonical) AsTerminalLine() Canonical {
 // Unparsed reports a command a bash parser cannot read, such as one with an
 // unclosed quote: where its words start and end is not known.
 func (c Canonical) Unparsed() bool { return c.shell.unparsed }
+
+// Scripts are the files, named literally, the command runs as shell text:
+// a shell's script operand, source and . files, and programs named by a path.
+func (c Canonical) Scripts() []Script { return c.shell.scripts }
+
+// Writes are the literal targets of the command's output redirections.
+func (c Canonical) Writes() []string { return c.shell.writes }
 
 // Commands are the simple commands a bash parser finds, from each word that
 // may be the program, quoting undone: inside functions, subshells and the

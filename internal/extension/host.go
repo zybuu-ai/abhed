@@ -335,7 +335,14 @@ func (h *Host) PolicyHook(ctx context.Context, sessionID string) policy.Hook {
 // PolicyHookFor is PolicyHook for engine p, whose roots place the relative
 // paths in extensions' match rules.
 func (h *Host) PolicyHookFor(ctx context.Context, sessionID string, p *policy.Engine) policy.Hook {
-	return func(tool string, args json.RawMessage) *policy.Result {
+	hook := h.ContextPolicyHookFor(sessionID, p)
+	return func(tool string, args json.RawMessage) *policy.Result { return hook(ctx, tool, args) }
+}
+
+// ContextPolicyHookFor is PolicyHookFor asking the extensions under each
+// decision's own context, so its deadline bounds them.
+func (h *Host) ContextPolicyHookFor(sessionID string, p *policy.Engine) policy.ContextHook {
+	return func(ctx context.Context, tool string, args json.RawMessage) *policy.Result {
 		d := h.onToolCall(ctx, sessionID, tool, args, p)
 		switch {
 		case d.Block:
