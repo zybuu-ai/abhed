@@ -243,6 +243,14 @@ func (l *Loop) ContinueTurn(ctx context.Context, events []Event, open OpenTurn) 
 	if _, err := l.Recorder.Record(EvTurnContinued, ActorSystem, Trusted, note); err != nil {
 		return TermError, err
 	}
+	for _, c := range open.Others {
+		if c.Approved {
+			l.unknown.add(c.Call.Name, c.Call.Args)
+		}
+	}
+	if err := settleOpenCalls(l.Recorder, open.Others); err != nil {
+		return TermError, err
+	}
 	// Each old request gets its one outcome. A call that never ran is refused
 	// here, before its new call is asked; one that may have run is answered
 	// after the new calls, so a rebuild keeps them all in the one turn.

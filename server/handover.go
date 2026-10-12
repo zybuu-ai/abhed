@@ -284,7 +284,7 @@ func (s *Server) endOpenApprovals(ctx context.Context, id string, open agent.Ope
 	if err != nil || !ok || a.Ended {
 		return
 	}
-	for _, c := range open.Calls {
+	for _, c := range append(open.Calls, open.Others...) {
 		if c.Request.ID == a.RequestID || a.RequestID == "" {
 			_ = d.EndApproval(ctx, a.ID)
 			return

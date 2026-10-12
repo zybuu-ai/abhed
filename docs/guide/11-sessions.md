@@ -213,7 +213,9 @@ An edition that runs replicas on one Postgres can move running turns too
   turn, on the owner's behalf while the owner may still act.
 - Every request keeps exactly one outcome, and the record stays
   append-only: the old request is denied with step `handover` before its new
-  call is asked.
+  call is asked. A person's own call and a pipeline's step left open are not
+  asked again: an approved one is answered "outcome unknown" (and asks a
+  person before it runs again), any other is denied with step `handover`.
 - A take-over that fails after it claimed the session, and the recovery of a
   turn by a replica that does not continue turns, end the session as
   recovered. Before the end, each open call gets its outcome there too: one
