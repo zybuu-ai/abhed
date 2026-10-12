@@ -137,6 +137,14 @@ All notable changes to Abhed are recorded here. The format follows
 - Under `auth.require_group`, a local sign-in by a non-member is refused at
   the form with `403`.
 - The statusline command may run for one second, not 300 ms.
+- `abhed resolve` refuses to start without git's `user.name` and
+  `user.email`; an identity git guesses from the host, or `GIT_AUTHOR_*`
+  alone, no longer does. Set both (`git config user.name ...`) in CI.
+- `abhed resolve` refuses to push a change that holds a stored secret, as
+  written or encoded, in a file, a file name or a commit message.
+- `abhed migrate` checks state paths as `abhed serve` does, and exits `1`
+  on an `auth.users_file` or other state path that `serve` would refuse
+  (in the workspace or a temp folder), where 1.2.7 migrated.
 
 ### Security
 
