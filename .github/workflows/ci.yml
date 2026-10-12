@@ -453,6 +453,42 @@ jobs:
             grep -q -- "--- PASS: $t" table.log || { echo "$t did not run and pass:"; cat table.log; exit 1; }
           done
 
+  # The fence's kernel tests on a real Linux on Z kernel, which qemu-user
+  # cannot give. Hosted runners have no s390x, so this runs only once a
+  # self-hosted runner labelled s390x is registered and the repository
+  # variable ABHED_S390X_RUNNER is "true"; until then it is skipped, and the
+  # docs say the fence on s390x is tested under emulation only.
+  fence-s390x:
+    name: Fence tier on a real s390x kernel
+    if: vars.ABHED_S390X_RUNNER == 'true'
+    runs-on: [self-hosted, linux, s390x]
+    timeout-minutes: 45
+    env:
+      FENCE_DIR: /var/tmp/abhed-fence-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: Build the test binaries
+        run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
+      - name: Allow user namespaces to those binaries, mount the alias, start the user manager
+        run: scripts/ci/fence-gated.sh prepare "$FENCE_DIR"
+      - name: The kernel offers what the fence needs
+        run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
+      - name: Every gated fence test runs and passes in a delegated scope
+        run: |
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fence-logs-s390x
+          path: |
+            ${{ env.FENCE_DIR }}/*.log
+            ${{ env.FENCE_DIR }}/*.json
+
   # Case-folding path tests skip on Linux; macOS folds case, so a skip here
   # means the check stopped running, and it fails the build.
   macos:

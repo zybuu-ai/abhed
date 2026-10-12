@@ -118,7 +118,8 @@ commands need the network, use the container tier.
 CI builds and vets every package for s390x and runs the unit tests under
 emulation (qemu-user). Emulation cannot load a seccomp filter, so the fence's
 kernel-level tests have not run on an s390x kernel, and the fence on s390x is
-less proven than on amd64 and arm64.
+less proven than on amd64 and arm64. A CI job runs them on a real Linux on Z
+machine once one is registered as a runner; none is yet.
 
 ## Point it at a model
 
