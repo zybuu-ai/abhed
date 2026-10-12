@@ -18,8 +18,8 @@ const (
 	pathBuilt     = "\x00"
 )
 
-// setsVar reads an assignment that changes which file runs: PATH, or the
-// start-up file BASH_ENV or ENV names.
+// setsVar reads an assignment that changes which file runs: PATH, the
+// start-up file BASH_ENV or ENV names, or the folder HOME or ZDOTDIR names.
 func (f *shellFacts) setsVar(a *syntax.Assign) {
 	if a.Name == nil || a.Naked {
 		return
@@ -42,6 +42,12 @@ func (f *shellFacts) setsVar(a *syntax.Assign) {
 			v, lit = literal(a.Value)
 		}
 		f.startupFile(a.Name.Value, v, lit)
+	case "HOME", "ZDOTDIR":
+		v, lit := "", a.Value == nil && a.Index == nil && a.Array == nil
+		if a.Value != nil && a.Index == nil && a.Array == nil {
+			v, lit = literal(a.Value)
+		}
+		f.startupDir(a.Name.Value, v, lit)
 	}
 }
 
@@ -55,6 +61,8 @@ func (f *shellFacts) setsByName(v string) {
 		f.pathSet, f.pathUnknown = true, true
 	case "BASH_ENV", "ENV":
 		f.startupHidden = "a shell start-up file set by a command (" + n + ")"
+	case "HOME", "ZDOTDIR":
+		f.startupDir(n, "", false)
 	}
 }
 
@@ -75,6 +83,8 @@ func (f *shellFacts) envAssign(w *syntax.Word) {
 		f.pathEntries(value)
 	case "BASH_ENV", "ENV":
 		f.startupFile(name, value, lit)
+	case "HOME", "ZDOTDIR":
+		f.startupDir(name, value, lit)
 	}
 }
 
@@ -87,6 +97,52 @@ func (f *shellFacts) startupFile(name, value string, lit bool) {
 	case value != "" && value != "/dev/null":
 		f.script(value, false)
 	}
+}
+
+// maxStartupDirs bounds the HOME and ZDOTDIR folders one command keeps.
+const maxStartupDirs = 4
+
+// startupDirFiles are the files zsh reads from $ZDOTDIR, and the files zsh,
+// bash, sh and ksh read from $HOME, as they start, log in or run as a
+// terminal's shell, and as a login shell ends.
+var startupDirFiles = map[string][]string{
+	"ZDOTDIR": {".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"},
+	"HOME": {".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
+		".bash_profile", ".bash_login", ".profile", ".bashrc", ".bash_logout", ".kshrc", ".mkshrc"},
+}
+
+// startupDir records a folder HOME or ZDOTDIR names, whose start-up files a
+// shell the line starts reads; an empty value is taken as the current folder.
+func (f *shellFacts) startupDir(name, value string, lit bool) {
+	switch {
+	case !lit:
+		f.startupDirHidden = "a shell start-up folder named by an expansion (" + name + ")"
+	case len(f.startupDirs) >= maxStartupDirs:
+		f.startupDirHidden = "more shell start-up folders than the check reads (" + name + ")"
+	default:
+		if value == "" {
+			value = "."
+		}
+		f.startupDirs = append(f.startupDirs, startupDirSet{name, value})
+	}
+}
+
+// startupDirSet is a folder named by HOME or ZDOTDIR.
+type startupDirSet struct{ name, dir string }
+
+// startups are the start-up files a shell the line runs may read from the
+// HOME and ZDOTDIR folders it sets; why says when one is not known. Neither
+// counts when the line starts no shell and runs no script.
+func (f *shellFacts) startups() (files []Script, why string) {
+	if !f.shellRun && len(f.scripts) == 0 {
+		return nil, ""
+	}
+	for _, d := range f.startupDirs {
+		for _, name := range startupDirFiles[d.name] {
+			files = append(files, Script{Path: path.Join(d.dir, name), Startup: true})
+		}
+	}
+	return files, f.startupDirHidden
 }
 
 // pathEntries records the folders a PATH value names; an empty entry or

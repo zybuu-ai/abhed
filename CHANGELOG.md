@@ -196,7 +196,10 @@ All notable changes to Abhed are recorded here. The format follows
   rule and asked about otherwise. A bare program is read from each folder a
   `PATH` the line sets names (`PATH=sub:$PATH tool`), and a shell's start-up
   file is read as a script it runs (`BASH_ENV=f`, `ENV=f`, `--rcfile f`,
-  `--init-file f`); one too long, unparsable, running built text, or itself
+  `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
+  `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` in a `ZDOTDIR` or
+  `HOME` folder the line sets for a shell it starts, as `ZDOTDIR=sub zsh -c
+  true` or `HOME=sub bash -l -c true`); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
   interpreters' scripts are not read, and an `:exec` reads no script.
   Affects every release to 1.2.7.

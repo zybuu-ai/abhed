@@ -107,6 +107,8 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		case errors.Is(err, tools.ErrScriptTooLong):
 			out.ask = "the script " + name + " is too long to check against the rules"
 			continue
+		case errors.Is(err, fs.ErrNotExist) && s.Startup:
+			continue // a shell starts without it
 		case err != nil && s.Direct:
 			// A program the line may build first (make && ./bin/app), or one
 			// no shell could read as a script either.
@@ -132,6 +134,8 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			out.ask = "the script " + name + " names a program by an expansion that edits its value"
 		case sc.IFSSplit:
 			out.ask = "the script " + name + " may split its words by a changed IFS"
+		case s.Startup && sc.SetsStartupDir():
+			out.ask = "the start-up file " + name + " moves where the shell reads its other start-up files"
 		}
 		segments, complete := commandSegments(text)
 		if !complete {

@@ -456,9 +456,21 @@ read as a script from each of those folders, an empty entry and `$PWD` being
 the start folder; one the line may write first there is refused. A file a
 shell runs as it starts is read as a script the line runs: `BASH_ENV=f`,
 `ENV=f` (also through `env` or `export`), `--rcfile f` and `--init-file f`.
-One named by an expansion (`BASH_ENV=$f`), or set by a command that sets a
-variable by name (`read BASH_ENV`), is refused or asked about as the
-scripts above are.
+So is each start-up file in a folder the line sets `ZDOTDIR` or `HOME` to,
+when the line starts a shell or runs a script: zsh reads `$ZDOTDIR/.zshenv`
+(`$HOME` when `ZDOTDIR` is not set) on every start, `zsh -c` included, and
+`.zprofile`, `.zshrc`, `.zlogin` and `.zlogout` as a login or terminal
+shell; bash, sh and ksh read `.bash_profile`, `.bash_login`, `.profile`,
+`.bashrc`, `.bash_logout`, `.kshrc` and `.mkshrc` from `$HOME` the same way.
+All of them are read, whatever the shell's options; one that is not there
+is skipped, and one that cannot be read, or that sets `ZDOTDIR` or `HOME`
+again, is refused or asked about. A start-up file or folder named by an
+expansion (`BASH_ENV=$f`, `ZDOTDIR=$d`), or set by a command that sets a
+variable by name (`read BASH_ENV`, `read ZDOTDIR`), is refused or asked
+about as the scripts above are. The start-up files in the `HOME` the
+sandbox gives a command, which the line does not set, are not read; an
+earlier command may have written them, and the sandbox is the boundary
+there.
 
 One the rules cannot read in full, because it is over 64 KiB, does not
 parse, runs text built when it runs (`eval "$x"`), or itself runs a script

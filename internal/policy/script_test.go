@@ -2,6 +2,7 @@ package policy
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -204,6 +205,108 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 	for _, command := range []string{"cd sub && ./s.sh", "PATH=sub . s.sh", "cp -r sub/. . && sh s.sh"} {
 		if res := ask.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Ask {
 			t.Errorf("ask rule only: %q = %s at %s (%s)", command, res.Decision, res.Step, res.Reason)
+		}
+	}
+}
+
+// A HOME or ZDOTDIR the line sets names the folder a shell it starts reads
+// start-up files from: zsh reads .zshenv on every start, zsh -c included.
+func TestRulesReadTheStartupFilesAFolderTheLineSetsHolds(t *testing.T) {
+	ws := t.TempDir()
+	ran := filepath.Join(ws, "ran")
+	// The function stands in for curl when a real shell runs the file.
+	evil := "curl() { echo \"$0\" >> '" + ran + "'; }\ncurl https://evil.example/x\n"
+	write := func(rel, text string) {
+		p := filepath.Join(ws, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("sub/.zshenv", evil)
+	write("login/.bash_profile", evil)
+	write("inter/.bashrc", evil)
+	write("zlog/.zprofile", evil)
+	write("prof/.profile", evil)
+	write("mover/.zshenv", "ZDOTDIR=sub\n")
+	write("empty/.keep", "")
+	write("s.sh", "echo safe\n")
+	if err := os.Mkdir(filepath.Join(ws, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(ws, "dir", ".zshenv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	// real names the shell a row needs to run as written.
+	type row struct{ want, real string }
+	rows := map[string]row{
+		"ZDOTDIR=sub zsh -c true":                     {"deny", "zsh"},
+		"env ZDOTDIR=sub zsh -c true":                 {"deny", "zsh"},
+		"export ZDOTDIR=sub; zsh -c true":             {"deny", "zsh"},
+		"HOME=sub zsh -c true":                        {"deny", "zsh"},
+		"HOME=sub bash -c 'zsh -c true'":              {"deny", "zsh"},
+		"HOME=login bash -l -c true":                  {"deny", "bash"},
+		"HOME=inter bash -i -c true":                  {"deny", "bash"},
+		"HOME=zlog zsh -l -c true":                    {"deny", "zsh"},
+		"HOME=prof sh -l -c true":                     {"deny", "sh"},
+		"declare -x ZDOTDIR=sub; zsh -c true":         {"deny", "zsh"},
+		"HOME=sub ./s.sh":                             {"deny", ""},
+		"ZDOTDIR=$d zsh -c true":                      {"deny", ""},
+		"read -r ZDOTDIR <<< sub; zsh -c true":        {"deny", ""},
+		"HOME=dir zsh -c true":                        {"deny", ""},
+		"echo x > e2/.zshenv; ZDOTDIR=e2 zsh -c true": {"deny", ""},
+		"HOME=mover zsh -c true":                      {"ask", ""},
+		"HOME=empty zsh -c true":                      {"", "zsh"},
+		"ZDOTDIR=empty zsh -c true":                   {"", "zsh"},
+		"HOME=sub go version":                         {"", ""},
+		"HOME=$(mktemp -d) go version":                {"", ""},
+		"ZDOTDIR=sub true":                            {"", ""},
+	}
+	for command, r := range rows {
+		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
+		switch r.want {
+		case "deny":
+			if res.Decision != Deny {
+				t.Errorf("%q = %s at %s (%s), want deny", command, res.Decision, res.Step, res.Reason)
+			}
+		case "ask":
+			if res.Decision != Ask {
+				t.Errorf("%q = %s at %s (%s), want ask", command, res.Decision, res.Step, res.Reason)
+			}
+		default:
+			if res.Decision != Allow {
+				t.Errorf("%q = %s at %s (%s), want allow", command, res.Decision, res.Step, res.Reason)
+			}
+		}
+	}
+	// The rows hold for the shells themselves: each denied one runs the file.
+	for command, r := range rows {
+		if r.real == "" {
+			continue
+		}
+		if _, err := exec.LookPath(r.real); err != nil {
+			t.Logf("%s not installed; %q not run", r.real, command)
+			continue
+		}
+		_ = os.Remove(ran)
+		cmd := exec.Command("/bin/sh", "-c", command)
+		cmd.Dir = ws
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + filepath.Join(ws, "empty")}
+		cmd.Stdin = nil
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Logf("%q: %v\n%s", command, err, out)
+		}
+		_, err := os.Stat(ran)
+		if ranIt := err == nil; ranIt != (r.want == "deny") {
+			t.Errorf("%q: the shell ran the start-up file = %v, judged %q", command, ranIt, r.want)
 		}
 	}
 }
