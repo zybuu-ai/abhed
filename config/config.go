@@ -376,15 +376,10 @@ func valueIn(data []byte, key string) string {
 	return out
 }
 
-// warnSetAside writes each set-aside setting once per process.
-func warnSetAside(keys []SetAsideKey) {
-	warnedMu.Lock()
-	defer warnedMu.Unlock()
+// warnSetAside warns of each set-aside setting.
+func warnSetAside(w warnSink, keys []SetAsideKey) {
 	for _, k := range keys {
-		if id := "aside\x00" + k.File + "\x00" + k.Key + "\x00" + k.Value; !warned[id] {
-			warned[id] = true
-			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
-		}
+		w.emit("aside\x00"+k.File+"\x00"+k.Key+"\x00"+k.Value, k.String())
 	}
 }
 
@@ -1378,13 +1373,14 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
 
 	applyEnv(&cfg)
-	warnUnknown(cfg.Unknown)
-	warnSetAside(cfg.SetAside)
-	warnNotYetInEffect(cfg)
-	warnNeverAllows(cfg.Permissions.Allow)
-	warnRuleFindings(cfg.RuleFindings())
+	w := warnSink(o.Warn)
+	warnUnknown(w, cfg.Unknown)
+	warnSetAside(w, cfg.SetAside)
+	warnNotYetInEffect(w, cfg)
+	warnNeverAllows(w, cfg.Permissions.Allow)
+	warnRuleFindings(w, cfg.RuleFindings())
 	if !o.Quiet {
-		warnUntrusted(cfg.Workspace)
+		warnUntrusted(w, cfg.Workspace)
 	}
 	return cfg, cfg.Validate()
 }

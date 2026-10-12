@@ -21,18 +21,23 @@ import (
 
 // LoadManaged is the built-in defaults with only the managed configuration
 // applied: what a program that keeps no config file of its own runs under.
-func LoadManaged() (Config, error) {
+func LoadManaged() (Config, error) { return LoadManagedWith(LoadOptions{}) }
+
+// LoadManagedWith is LoadManaged with o.Warn taking its warnings; the other
+// options do not apply.
+func LoadManagedWith(o LoadOptions) (Config, error) {
+	w := warnSink(o.Warn)
 	cfg := Default()
 	cfg.noteRuleLayer(LayerDefault)
 	if err := mergeManaged(&cfg); err != nil {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
-	warnUnknown(cfg.Unknown)
-	warnNeverAllows(cfg.Permissions.Allow)
-	warnNotYetInEffect(cfg)
+	warnUnknown(w, cfg.Unknown)
+	warnNeverAllows(w, cfg.Permissions.Allow)
+	warnNotYetInEffect(w, cfg)
 	findings := cfg.RuleFindings()
-	warnRuleFindings(findings)
+	warnRuleFindings(w, findings)
 	return cfg, managedNeverDenies(findings)
 }
 
@@ -393,6 +398,9 @@ type Overrides struct {
 	AdditionalDirs []string
 	// MemoryAuto, when set, turns auto memory on or off.
 	MemoryAuto *bool
+	// Warn, when set, takes the warnings about the rules added here, as
+	// LoadOptions.Warn does.
+	Warn func(string)
 }
 
 // ManagedError is an override refused because it would loosen a setting the
@@ -472,13 +480,13 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
-	warnNeverAllows(o.Allow)
+	warnNeverAllows(warnSink(o.Warn), o.Allow)
 	c.ruleLayers = maps.Clone(c.ruleLayers)
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)
 	c.noteRuleLayer(LayerFlag)
 	if len(o.Allow)+len(o.Deny) > 0 {
-		warnRuleFindings(c.RuleFindings())
+		warnRuleFindings(warnSink(o.Warn), c.RuleFindings())
 	}
 	// Copied, so the result never shares a list with the configuration it came from.
 	c.AdditionalDirs = append(append([]string{}, c.AdditionalDirs...), o.AdditionalDirs...)

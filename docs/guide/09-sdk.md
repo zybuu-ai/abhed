@@ -72,7 +72,11 @@ the agent has. `Close` ends the MCP connections and extension processes, and
 the cluster logins and hosts the agent's session made. `Options.Warn`
 receives what the tool set skipped or found unsafe as it was built, such as
 an MCP server that did not start or a cluster that skips TLS verification;
-nil discards it.
+nil discards it. When set, it also takes the configuration's warnings (an
+unknown key, a setting set aside, a rule that never matches), which `New`
+otherwise writes to stderr; a function that does nothing silences them.
+`config.LoadOptions.Warn` does the same for a program that loads the
+configuration itself.
 
 A subagent's own events stay in the agent's store; `Events` and `OnEvent`
 carry the agent's own record, where `subagent.spawned`, `subagent.ask`,

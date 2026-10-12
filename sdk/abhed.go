@@ -144,7 +144,10 @@ type Options struct {
 	// Warn receives what the tool set skipped or found unsafe as it was
 	// built: an MCP server or extension that did not start, a cluster or
 	// host that skips verification; and, at Close, a fence that found state
-	// planted in the workspace or could not list it. Nil discards it.
+	// planted in the workspace or could not list it. Nil discards it. When
+	// set, it also takes the configuration's warnings (an unknown key, a set
+	// aside setting, a rule that never matches), which otherwise go to stderr;
+	// a function that does nothing silences them.
 	Warn func(format string, args ...any)
 
 	// ConfiguredTools gives the agent the tool set the CLI runs with, as the
@@ -243,11 +246,16 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: Workspace is required")
 	}
 
+	// The configuration's warnings go to Warn when it is set, else to stderr.
+	var cfgWarn func(string)
+	if opts.Warn != nil {
+		cfgWarn = func(s string) { opts.Warn("abhed: warning: %s", s) }
+	}
 	// The managed configuration applies with or without a config file.
-	load := config.LoadManaged
+	load := func() (config.Config, error) { return config.LoadManagedWith(config.LoadOptions{Warn: cfgWarn}) }
 	if opts.ConfigDir != "" {
 		load = func() (config.Config, error) {
-			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust})
+			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust, Warn: cfgWarn})
 		}
 	}
 	cfg, err := load()
@@ -261,7 +269,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
 		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
-		Allow: opts.Allow, Deny: opts.Deny,
+		Allow: opts.Allow, Deny: opts.Deny, Warn: cfgWarn,
 	}); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}

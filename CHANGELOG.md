@@ -596,6 +596,9 @@ on. A server with it off starts on the older schema as before.
   `*.pem`, `*.key` or an SSH key (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`) in
   the workspace. It is a question, not credential protection: a command can
   still print such a file, and the guide says so.
+- An SDK `Options.Warn` now also takes the configuration's warnings, which
+  `New` used to write to stderr whatever the embedder wanted; with `Warn`
+  nil they still go to stderr.
 
 ### Fixed
 
@@ -905,6 +908,9 @@ on. A server with it off starts on the older schema as before.
   makes before a session runs on a model. `sdk.Agent.SetModel` and
   `sdk.New` with `Options.Provider` return a `*config.ManagedError` under a
   managed `model.default`.
+- `config.LoadOptions.Warn`, `config.Overrides.Warn` and
+  `config.LoadManagedWith` route a load's warnings to the caller instead of
+  stderr.
 
 ## [1.2.7] - 2026-10-07
 

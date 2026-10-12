@@ -43,6 +43,9 @@ type LoadOptions struct {
 	Trust TrustChoice
 	// Quiet leaves the untrusted warning to the caller, which may prompt instead.
 	Quiet bool
+	// Warn, when set, takes each of this load's warnings instead of stderr,
+	// every time, for an embedder that shows or drops them itself.
+	Warn func(string)
 	// Settings is a file the person named for this run (-settings), merged
 	// over their own file as one of their own: managed-only keys are set
 	// aside, and the managed file still binds. SettingsName says where it came from.
@@ -183,17 +186,9 @@ func (w WorkspaceTrust) Warning() string {
 
 // warnUntrusted warns once per process: a command that loads the workspace
 // twice (resolve, then its agent; ACP, per session) used to say it twice.
-func warnUntrusted(w WorkspaceTrust) {
-	s := w.Warning()
-	if s == "" {
-		return
-	}
-	warnedMu.Lock()
-	first := !warned["untrusted\x00"+s]
-	warned["untrusted\x00"+s] = true
-	warnedMu.Unlock()
-	if first {
-		fmt.Fprintf(warnOut, "abhed: warning: %s\n", s)
+func warnUntrusted(sink warnSink, w WorkspaceTrust) {
+	if s := w.Warning(); s != "" {
+		sink.emit("untrusted\x00"+s, s)
 	}
 }
 
