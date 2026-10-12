@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"maps"
 	"path"
 	"regexp"
 	"strconv"
@@ -776,6 +777,15 @@ func (c Canonical) Incomplete() bool { return c.shell.incomplete }
 // after: a line the parser cannot read on its own (for x in *; do, done, an
 // open quote) is left to the text checks rather than refused for that.
 func (c Canonical) AsTerminalLine() Canonical {
+	if len(c.shell.ttyFiles) > 0 {
+		// A shell typed at a terminal reads it, so it starts interactive.
+		files := maps.Clone(c.shell.homeFiles)
+		if files == nil {
+			files = map[string]bool{}
+		}
+		maps.Copy(files, c.shell.ttyFiles)
+		c.shell.homeFiles = files
+	}
 	if !c.shell.top {
 		return c
 	}

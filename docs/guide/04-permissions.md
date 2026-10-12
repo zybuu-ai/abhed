@@ -465,7 +465,10 @@ shell (`-l`, `--login`, `-o login`) and `.zshrc` as an interactive one
 `.bash_logout` as a login shell (not with `--noprofile`) and `.bashrc` as an
 interactive one (not with `--norc`); sh, dash and ksh read `.profile` as a
 login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
-A plain `bash -c` or `sh -c` reads none; a script the line runs may be
+A plain `bash -c` or `sh -c` reads none. A shell typed into a terminal with
+no command and no script (`bash`, `exec bash`, `zsh`) reads the terminal,
+so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
+A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
 or asked about. A start-up file or folder named by an

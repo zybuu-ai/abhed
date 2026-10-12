@@ -231,7 +231,7 @@ func (f *shellFacts) shellStart(name string, args []*syntax.Word) {
 	if !ok {
 		return
 	}
-	login, interactive, command, rc, profile := false, false, false, true, true
+	login, interactive, command, rc, profile, operand := false, false, false, true, true, false
 scan:
 	for j := 0; j < len(args); j++ {
 		v, lit := literal(args[j])
@@ -243,6 +243,7 @@ scan:
 			login, interactive = true, true
 			break scan
 		case v == "--":
+			operand = j+1 < len(args)
 			break scan
 		case v == "--login" || v == "-login":
 			login = true
@@ -273,7 +274,17 @@ scan:
 				}
 			}
 		default:
+			operand = true
 			break scan
+		}
+	}
+	// With no command and no script it reads its input: a terminal's, typed at one.
+	if !command && !operand && rc {
+		if f.ttyFiles == nil {
+			f.ttyFiles = map[string]bool{}
+		}
+		for _, n := range files[2] {
+			f.ttyFiles[n] = true
 		}
 	}
 	if f.homeFiles == nil {

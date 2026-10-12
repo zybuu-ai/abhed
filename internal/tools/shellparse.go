@@ -105,6 +105,8 @@ type shellFacts struct {
 	// homeFiles are the start-up files the shells the line starts read from
 	// the HOME they inherit, by name.
 	homeFiles map[string]bool
+	// ttyFiles are those a shell reading its input reads when that is a terminal.
+	ttyFiles map[string]bool
 }
 
 // Script is a file a command runs as shell text, as named on its line.
