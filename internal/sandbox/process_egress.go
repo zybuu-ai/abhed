@@ -79,7 +79,7 @@ type egressState struct {
 	exe      string // this binary, run as the relay, Linux only
 	dns      bool   // the session's resolver is served, Linux only
 	ca       string // the inspection CA bundle commands trust, when the policy inspects TLS
-	caDir    string // its own folder, where there is no socket folder (macOS)
+	caDir    string // the bundle's own folder, bound whole
 
 	mu     sync.Mutex
 	routes map[string]recordFn
@@ -171,16 +171,14 @@ func egressCallOf(ctx context.Context) *egress.Call {
 // writeCA writes the system's CA bundle with the proxy's inspection CA
 // after it where commands can read it, and points their clients at it.
 func (e *egressState) writeCA(p *egress.Proxy) error {
-	dir := e.dir
-	if dir == "" {
-		d, err := os.MkdirTemp("", "abhed-egress-ca-")
-		if err != nil {
-			return err
-		}
-		dir, e.caDir = d, d
+	// A folder of its own, bound whole, so a rotated bundle renamed in is seen.
+	d, err := os.MkdirTemp("", "abhed-egress-ca-")
+	if err != nil {
+		return err
 	}
-	path := filepath.Join(dir, "ca.pem")
-	if err := p.WriteCABundle(path); err != nil {
+	e.caDir = d
+	path, err := p.WriteCABundle(d)
+	if err != nil {
 		return err
 	}
 	e.ca = path
@@ -393,7 +391,7 @@ func (e *egressState) relayArgsFor(c *egress.Call, argv []string) (binds, wrappe
 	}
 	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", sock, relaySocket}
 	if e.ca != "" {
-		binds = append(binds, "--ro-bind", e.ca, e.ca) // the inspection CA, where the command is told it is
+		binds = append(binds, "--ro-bind", e.caDir, e.caDir) // the inspection CA's folder, where the command is told it is
 	}
 	listen := e.proxy.Addr().String()
 	wrapped = []string{relayBinary, egress.RelayArg, relaySocket, listen}

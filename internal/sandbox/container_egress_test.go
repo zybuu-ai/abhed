@@ -172,9 +172,9 @@ func TestContainerCommandGetsTheInspectionCA(t *testing.T) {
 	if want := "ca=" + caInside + " node=" + caInside; !strings.Contains(string(out), want) {
 		t.Fatalf("the command was not pointed at the bundle: %s", out)
 	}
-	host := filepath.Join(c.egDir, "ca.pem")
+	host := filepath.Join(c.egDir, "ca", "ca.pem")
 	b, _ := os.ReadFile(log)
-	if !strings.Contains(string(b), "-v "+host+":"+caInside+":ro") {
+	if !strings.Contains(string(b), "-v "+filepath.Dir(host)+":"+caDirInside+":ro") {
 		t.Fatalf("the bundle was not bound into the container:\n%s", b)
 	}
 	bundle, err := os.ReadFile(host)

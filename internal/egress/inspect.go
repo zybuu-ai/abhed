@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,20 +134,32 @@ func (in *inspector) rotate() error {
 	in.leaves = map[string]*tls.Certificate{}
 	bundle := withSystem(in.pem)
 	for _, f := range in.files {
-		err = errors.Join(err, rewriteInPlace(f, bundle))
+		err = errors.Join(err, replaceWhole(f, bundle))
 	}
 	return err
 }
 
-// rewriteInPlace writes b over the file at p without replacing it, so a
-// bind of that one file into a container sees the new contents.
-func rewriteInPlace(p string, b []byte) error {
-	f, err := os.OpenFile(p, os.O_WRONLY, 0) // #nosec G304 -- a bundle file this proxy wrote
+// replaceWhole puts b at p by renaming a synced file over it in p's folder,
+// so a reader sees the old bundle or the new, never part of one.
+func replaceWhole(p string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(p), ".ca-*")
 	if err != nil {
 		return err
 	}
-	_, werr := f.WriteAt(b, 0)
-	return errors.Join(werr, f.Truncate(int64(len(b))), f.Close())
+	_, werr := f.Write(b)
+	err = errors.Join(werr, f.Chmod(0o644), f.Sync(), f.Close()) // #nosec G302 -- public certificates, read by commands
+	if err == nil {
+		// The old file keeps a name, so a reader holding a cached name for it (a
+		// VM's shared folder) still finds the old bundle until it looks again.
+		prev := filepath.Join(filepath.Dir(p), ".ca-prev.pem")
+		_ = os.Remove(prev)
+		_ = os.Link(p, prev)
+		err = os.Rename(f.Name(), p)
+	}
+	if err != nil {
+		_ = os.Remove(f.Name())
+	}
+	return err
 }
 
 // tick rotates on schedule, so the files are current before a client reads them.
@@ -255,19 +268,21 @@ func withSystem(ca []byte) []byte {
 	return append(b, ca...)
 }
 
-// WriteCABundle writes the CA bundle to path, readable by all, and rewrites
-// it in place whenever the CAs rotate, until the proxy closes.
-func (p *Proxy) WriteCABundle(path string) error {
+// WriteCABundle writes the CA bundle as ca.pem in dir, a folder of its own
+// that commands are given whole, and replaces it there whenever the CAs
+// rotate, until the proxy closes; it returns the file's path.
+func (p *Proxy) WriteCABundle(dir string) (string, error) {
 	if p.ins == nil {
-		return errors.New("the proxy does not inspect HTTPS")
+		return "", errors.New("the proxy does not inspect HTTPS")
 	}
 	p.ins.mu.Lock()
 	defer p.ins.mu.Unlock()
-	if err := os.WriteFile(path, withSystem(p.ins.pem), 0o644); err != nil { // #nosec G306 -- public certificates, read by commands
-		return err
+	path := filepath.Join(dir, "ca.pem")
+	if err := replaceWhole(path, withSystem(p.ins.pem)); err != nil {
+		return "", err
 	}
 	p.ins.files = append(p.ins.files, path)
-	return nil
+	return path, nil
 }
 
 // SetCAPath names where commands find CABundle, as they see the path; their

@@ -135,8 +135,8 @@ call, a command can read a concurrent one's token from its environment, and
 a client that sends no proxy credentials (a JVM) is answered 407. The
 session's container tier, with a container per command, gives each call a
 way in of its own instead. With `egress.inspect_tls` the session CA bundle
-is at `/run/abhed-egress/ca.pem` inside, in the folder bound in or, where
-the relay runs over an exec, bound on its own, and each command's
+is at `/run/abhed-egress/ca/ca.pem` inside, in the folder bound in or, where
+the relay runs over an exec, in its own folder bound on its own, and each command's
 certificate variables point there.
 
 Where the engine runs in a VM (Docker Desktop, Podman on macOS and

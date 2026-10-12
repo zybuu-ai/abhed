@@ -20,8 +20,12 @@ import (
 // relayInside is where the relay binary is bound in a container.
 const relayInside = "/run/abhed-relay"
 
-// caInside is where a container's commands find the inspection CA bundle.
-const caInside = "/run/abhed-ca.pem"
+// caDirInside holds the inspection CA bundle in a container, bound whole so a
+// rotated bundle renamed in is seen; caInside is the bundle.
+const (
+	caDirInside = "/run/abhed-ca"
+	caInside    = caDirInside + "/ca.pem"
+)
 
 // relayReady bounds how long a command waits for its container's relay.
 const relayReady = 30 * time.Second
@@ -71,7 +75,10 @@ func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 		c.egDir, c.egErr = os.MkdirTemp("", "abhed-egr-")
 		if c.egErr == nil && c.egProxy.Inspecting() {
 			// Bound into each command's container, where its clients are pointed.
-			c.egErr = c.egProxy.WriteCABundle(filepath.Join(c.egDir, "ca.pem"))
+			ca := filepath.Join(c.egDir, "ca")
+			if c.egErr = os.Mkdir(ca, 0o755); c.egErr == nil { // #nosec G301 -- public certificates, read inside the container
+				_, c.egErr = c.egProxy.WriteCABundle(ca)
+			}
 			c.egProxy.SetCAPath(caInside)
 		}
 		if c.egErr != nil {
@@ -118,7 +125,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	run := append([]string{"run", "--rm", "-d"}, args[3:]...)
 	run = append(run, "-v", relay+":"+relayInside+":ro")
 	if proxy.Inspecting() {
-		run = append(run, "-v", filepath.Join(c.egDir, "ca.pem")+":"+caInside+":ro")
+		run = append(run, "-v", filepath.Join(c.egDir, "ca")+":"+caDirInside+":ro")
 	}
 	run = append(run, "--name", name, Image,
 		"/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done")

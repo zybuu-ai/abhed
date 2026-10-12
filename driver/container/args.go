@@ -14,7 +14,7 @@ const (
 	egressRelay  = egressDir + "/relay"
 	egressSocket = egressDir + "/proxy.sock"
 	// egressCA is the inspection CA bundle, under egress.inspect_tls.
-	egressCA = egressDir + "/ca.pem"
+	egressCA = egressDir + "/ca/ca.pem"
 )
 
 // keepAlive is the container's own process: it waits, and ends on a stop.
@@ -124,7 +124,7 @@ func (d *Driver) runArgs(in *instance) []string {
 			if eng.selinux {
 				ca += ",Z"
 			}
-			args = append(args, "-v", filepath.Join(in.egress.dir, "ca.pem")+":"+egressCA+":"+ca)
+			args = append(args, "-v", filepath.Join(in.egress.dir, "ca")+":"+filepath.Dir(egressCA)+":"+ca)
 		}
 	case in.egress != nil:
 		opt := "ro"

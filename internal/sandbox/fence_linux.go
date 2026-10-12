@@ -384,8 +384,8 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 		// relay's, in a network namespace with nothing else in it.
 		spec.ConnectTCP = []uint16{fc.port}
 		relay = fc.relay
-		if fc.ca != "" {
-			spec.Read = append(spec.Read, fc.ca) // the inspection CA bundle its clients are pointed at
+		if fc.caDir != "" {
+			spec.Read = append(spec.Read, fc.caDir) // the inspection CA bundle's folder, where its clients are pointed
 		}
 	}
 	leaf, err := f.host.sb.NewLeaf(f.leafName(launch.CallID), f.host.leaf)

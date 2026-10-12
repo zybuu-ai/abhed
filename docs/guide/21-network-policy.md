@@ -91,7 +91,8 @@ With `"inspect_tls": true` each session's proxy makes a certificate
 authority of its own when it starts, whose key never leaves Abhed's process
 and is gone when the proxy stops. Each CA signs for one day and is valid
 for two days and an hour; the bundle holds the one signing and the next, and
-the proxy moves to the next daily, rewriting the bundle in place (and
+the proxy moves to the next daily, putting a new bundle file in place of
+the old by a rename in its folder, so a reader sees one or the other whole (and
 placing it in a microVM guest again before its next command). A process that
 read the bundle once and keeps running more than a day after the next
 rotation fails HTTPS; restart it. A `CONNECT` is opened when an allow rule
@@ -117,11 +118,11 @@ until the 30-second header timeout.
 Each command is pointed at a CA bundle holding the system's roots and the
 session's CA: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
 `GIT_SSL_CAINFO`, `PIP_CERT`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE` and
-`CARGO_HTTP_CAINFO`. The bundle is a file on the host, bound into the
-sandbox read-only on the process tier, readable through the fence's
-Landlock rules, and bound into each container on the container and vm tiers
-(`/run/abhed-ca.pem`) and by the `docker` and `podman` drivers
-(`/run/abhed-egress/ca.pem`). The microVM driver sends it to the guest
+`CARGO_HTTP_CAINFO`. The bundle is a file on the host in a folder of its
+own, which is bound into the sandbox read-only on the process tier, readable
+through the fence's Landlock rules, and bound into each container on the
+container and vm tiers (`/run/abhed-ca/ca.pem`) and by the `docker` and
+`podman` drivers (`/run/abhed-egress/ca/ca.pem`). The microVM driver sends it to the guest
 agent when the VM boots, which keeps it at `/run/abhed-ca.pem` outside the
 workspace; a guest built before this release does not know that call, and
 the sandbox is then not created rather than run with every HTTPS request

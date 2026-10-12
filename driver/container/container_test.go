@@ -1178,14 +1178,14 @@ func TestEgressInspectionCAIsInTheContainer(t *testing.T) {
 			t.Fatal(err)
 		}
 		in := d.insts["sbx_0123456789abcdef"]
-		host := filepath.Join(in.egress.dir, "ca.pem")
+		host := filepath.Join(in.egress.dir, "ca", "ca.pem")
 		if b, err := os.ReadFile(host); err != nil || !strings.Contains(string(b), string(in.egress.proxy.CA())) {
 			t.Fatalf("vm=%v: the bundle does not hold the session CA: %v", vm, err)
 		}
 		got := joined(f.runCall(t))
 		want := " -v " + in.egress.dir + ":/run/abhed-egress:ro "
 		if vm {
-			want = " -v " + host + ":" + egressCA + ":ro "
+			want = " -v " + filepath.Dir(host) + ":" + filepath.Dir(egressCA) + ":ro "
 		}
 		if !strings.Contains(got, want) {
 			t.Errorf("vm=%v: missing %q in %s", vm, want, got)
