@@ -6,11 +6,36 @@
 > some of them now live in the Enterprise repository.
 
 Independent, third-party tooling run against this repository and its
-container image on 2026-09-14. Every finding below is listed with its
+container image, first on 2026-09-14 and again for 1.2.8. Every finding below is listed with its
 severity, its `file:line`, and a one-line triage — true positive, false
 positive, accepted with reason, or to fix. Nothing here was fixed as part of
 this pass; fixes are listed, most severe first, in
 [Recommended fixes](#recommended-fixes) at the end.
+
+## Re-run for 1.2.8 — 12 October 2026
+
+Run against the 1.2.8 release candidate with Go 1.26.9. The sections after
+this one are the first scan of 14 September 2026, kept as its record; their
+`file:line` citations give where the code was then.
+
+| Tool | Command | Result |
+|---|---|---|
+| govulncheck v1.8.0 | `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` | No vulnerability reached by the code or in an imported package. One in a required module, not called: GO-2026-5932, `golang.org/x/crypto/openpgp` unmaintained (no fix exists; Abhed does not import `openpgp`) |
+| gosec v2.29.0 | as CI runs it (`scripts/ci/gosec-gate.py`) | See "Refreshed 12 October 2026" under gosec below: 32 new findings triaged, one real bug fixed, 97 in the baseline |
+| gitleaks 8.30.1 | `gitleaks git --redact .` (all 870 commits) | 57 matches, all placeholders: test fixtures (`sk-live-abcdef0123456789`, `AKIAABCDEFGHIJKLMNOP`, `ghp_0123456789abcdef`), the benchmark rig's tests, the e2e check's throwaway password, an xterm.js constant, and the documentation's example password. No live credential |
+| trivy 0.74.0 | `trivy fs --scanners vuln,misconfig .` | `go.mod`: the same GO-2026-5932. `web/ide/package-lock.json`: DOMPurify 3.4.8, which the workbench editor bundle carries, has five advisories (two medium, three low), fixed by 3.4.16; **to fix** by rebuilding the bundle. Helm chart: three findings, all accepted: the chart leaves the namespace to `helm install -n` (KSV-0110) and the image registry to the operator's values (KSV-0125, for the server and its preflight container) |
+
+The container image was not rescanned in this pass; `trivy image` against the
+1.2.8 image is due before the release is published.
+
+**G306, file modes.** `app/cmd_eval.go` (the eval report) and
+`internal/eval/eval.go` (an eval task's fixture files) still write `0644`, and
+stay so: the report holds scores and the model's name, and the fixtures are
+the eval's own source files in a scratch workspace, neither of them
+credential-bearing. Undo snapshots, the written config and `abhed init`'s
+output were made `0600` on 14 September.
+
+## The first scan — 14 September 2026
 
 **Since this scan,** the CLI's code moved out of `cmd/abhed/main.go`, which
 now only starts the `app` package. Rows citing `cmd/abhed/main.go` give
@@ -436,10 +461,10 @@ injected content run in a reviewer's browser", not as boilerplate.
 | file:line | Finding | Triage |
 |---|---|---|
 | cmd/abhed-bench/main.go:141 | Benchmark results written 0644 | Accepted with reason — dev/CI tool output, not sensitive |
-| cmd/abhed/main.go:845 | Written 0644 | To fix (verify) — confirm this path never carries credentials/tokens before accepting; tighten to 0600 if unsure |
-| cmd/abhed/main.go:1221 | Eval/report JSON written 0644 | Accepted with reason — report output meant to be read by other tooling, not credential-bearing |
-| internal/agent/undo.go:122 | Undo-log snapshot written 0644 | **To fix** — snapshots can contain the full content of any file the agent touched, including ones holding secrets; tighten to 0600 to match the precedent already set by `FileUserStore` (`internal/auth/filestore.go:87`) |
-| internal/config/config.go:662 | Config file written 0644 | To fix (verify) — if this path can persist secrets (API keys, a DSN with a password) it must be 0600; confirm and tighten |
+| cmd/abhed/main.go:845 | Written 0644 | Fixed 14 September: `abhed init`'s output is written 0600 |
+| cmd/abhed/main.go:1221 | Eval/report JSON written 0644 | Accepted with reason — report output meant to be read by other tooling, not credential-bearing (now `app/cmd_eval.go`) |
+| internal/agent/undo.go:122 | Undo-log snapshot written 0644 | Fixed 14 September: snapshots are written 0600 |
+| internal/config/config.go:662 | Config file written 0644 | Fixed 14 September: the config is written 0600 (now `config/config.go`) |
 | internal/eval/eval.go:142 | Eval fixture/output written 0644 | Accepted with reason — dev/CI harness, non-sensitive |
 
 #### G301 — directory permissions looser than 0750 (5 findings, MEDIUM)
