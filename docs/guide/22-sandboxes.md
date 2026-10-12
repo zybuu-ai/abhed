@@ -52,6 +52,9 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `reconcile_seconds` | 10 | How often every sandbox is checked against its driver. |
 | `sandbox_cpus` | unset | CPUs each sandbox may use, such as `0.5` or `2`. Unset leaves it to the driver. |
 | `sandbox_memory_mb` | unset | Memory each sandbox may use, in MiB. Unset leaves it to the driver. |
+| `per_session` | `false` | Give each session of `abhed serve` a sandbox of its own; see [per-session sandboxes](#per-session-sandboxes). |
+| `sessions` | | How those sandboxes are made; see below. |
+| `docker`, `podman` | off | Register the container drivers; see [below](#the-docker-and-podman-drivers). |
 
 A size is passed to the driver, which holds the sandbox to it or refuses
 it. On Linux the `process` driver gives each sized sandbox a cgroup of its
@@ -69,10 +72,6 @@ container or microvm driver there.
 
 The weakest isolation a sandbox may run under is your existing
 `sandbox.min_tier`.
-
-| `per_session` | `false` | Give each session of `abhed serve` a sandbox of its own; see [per-session sandboxes](#per-session-sandboxes). |
-| `sessions` | | How those sandboxes are made; see below. |
-| `docker`, `podman` | off | Register the container drivers; see [below](#the-docker-and-podman-drivers). |
 
 ## Where sandboxes are kept
 
