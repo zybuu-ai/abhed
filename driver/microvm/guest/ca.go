@@ -1,9 +1,7 @@
 package guest
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 )
@@ -52,29 +50,4 @@ func PlaceCA(ctx context.Context, rw io.ReadWriteCloser, bundle []byte) error {
 		return &Error{Message: f.Message}
 	}
 	return fmt.Errorf("%w: unexpected %q frame", errProtocol, f.Type)
-}
-
-// readCA reads the bundle a host streams, within MaxCABundle.
-func readCA(c *conn) ([]byte, error) {
-	var b bytes.Buffer
-	for {
-		f, err := c.read()
-		if err != nil {
-			return nil, err
-		}
-		switch f.Type {
-		case tStdin:
-			if b.Len()+len(f.Data) > MaxCABundle {
-				return nil, fmt.Errorf("the CA bundle is over %d bytes", MaxCABundle)
-			}
-			b.Write(f.Data)
-		case tStdinEOF:
-			if !bytes.Contains(b.Bytes(), []byte("-----BEGIN CERTIFICATE-----")) {
-				return nil, errors.New("the CA bundle holds no certificate")
-			}
-			return b.Bytes(), nil
-		default:
-			return nil, fmt.Errorf("%w: unexpected %q frame in a CA bundle", errProtocol, f.Type)
-		}
-	}
 }
