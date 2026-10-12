@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/stdiorelay"
 )
 
 // fakeEngine is an engine CLI that logs each call, runs "exec" on the host as
@@ -87,8 +88,8 @@ func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 	}
 	b, _ := os.ReadFile(log)
 	calls := string(b)
-	for _, want := range []string{"run --rm -d", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none", "exec -i " + egressPrefix,
-		"-e HTTPS_PROXY "} {
+	for _, want := range []string{"run --rm -d", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none",
+		"-e HTTPS_PROXY ", "exec -i --user " + stdiorelay.User(os.Getuid()) + " " + egressPrefix} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("no %q in the engine's calls:\n%s", want, calls)
 		}

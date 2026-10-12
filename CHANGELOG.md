@@ -685,7 +685,8 @@ All notable changes to Abhed are recorded here. The format follows
   process tier is refused rather than run with memory unbounded.
 - The container and vm tiers enforce `sandbox.network: "allowlist"`: each
   command's container has no network but a relay to its call's own socket
-  on the session's egress proxy, over an `exec`'s stdio, so it also works where the engine runs in
+  on the session's egress proxy, over an `exec`'s stdio and run as a user
+  apart from the command's, so it also works where the engine runs in
   a VM, given a Linux build of Abhed in the managed
   `control_plane.<engine>.relay_binary`. Without one there, the tier is
   refused as before.
@@ -1783,8 +1784,9 @@ All notable changes to Abhed are recorded here. The format follows
   through a relay on its own loopback: over a bound-in socket on a Linux
   host with a local engine, and, where the engine is in a VM or on another
   host, over a long-lived `exec`'s stdio, with a Linux build of Abhed named
-  in the managed `control_plane.<engine>.relay_binary` as the relay; without
-  it the sandbox is refused there. With git protection on, a repository
+  in the managed `control_plane.<engine>.relay_binary` as the relay, run as
+  a user apart from the sandbox's; without it the sandbox is refused there.
+  With git protection on, a repository
   made inside a running container is protected by replacing the container,
   once nothing else uses it, within the same generation (recorded as
   `sandbox.restarted`); while it is in use, commands are refused with

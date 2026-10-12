@@ -965,8 +965,11 @@ func TestEgressAllowlistThroughAnExecWhereTheEngineIsInAVM(t *testing.T) {
 			relayCall = c
 		}
 	}
-	if want := " exec -i --user " + in.user + " " + in.name + " /run/abhed-egress/relay " + stdiorelay.Arg + " " + in.egress.listen + " "; joined(relayCall) != want {
+	if want := " exec -i --user " + stdiorelay.User(in.uid) + " " + in.name + " /run/abhed-egress/relay " + stdiorelay.Arg + " " + in.egress.listen + " "; joined(relayCall) != want {
 		t.Errorf("relay exec %q, want %q", joined(relayCall), want)
+	}
+	if strings.Contains(joined(relayCall), " --user "+in.user+" ") {
+		t.Errorf("the relay runs as the commands' user: %q", joined(relayCall))
 	}
 	if relays.Load() != 1 {
 		t.Fatalf("the relay ran %d times", relays.Load())

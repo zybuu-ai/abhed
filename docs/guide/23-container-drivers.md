@@ -142,9 +142,13 @@ the container. There the relay is a Linux build of Abhed for the engine's
 architecture that you name in `control_plane.<engine>.relay_binary`
 (managed only), at an absolute path the engine's host can see (under your
 home folder for Podman's and Docker Desktop's VMs, which share it). It is
-bound in read-only, and the driver runs it with a long-lived `exec` as the
-sandbox's user: it listens on the container's loopback and carries each
-connection over that exec's input and output to the proxy on this host.
+bound in read-only, and the driver runs it with a long-lived `exec` as a
+user of its own, uid 65534 (65533 if the sandbox's user is 65534), so the
+sandbox's commands can neither write to its output nor signal it; the
+binary must be readable and executable by that user. It listens on the
+container's loopback and carries each connection over that exec's input
+and output to the proxy on this host, at most 128 at once; a connection
+over that is closed, and a stream the relay opens twice is closed.
 The container still has no network. The sandbox is ready only once the
 relay listens; an exec that ends is started again while the sandbox runs,
 and connections made meanwhile fail rather than go anywhere else. Without

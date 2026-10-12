@@ -139,7 +139,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		rc := c.engineCmd(relayCtx, "exec", "-i", name, relayInside, stdiorelay.Arg, listen)
+		rc := c.engineCmd(relayCtx, "exec", "-i", "--user", stdiorelay.User(os.Getuid()), name, relayInside, stdiorelay.Arg, listen)
 		done <- stdiorelay.Run(rc, func() (net.Conn, error) { return net.Dial("unix", sock) }, func() { close(ready) })
 	}()
 	stop := func() {

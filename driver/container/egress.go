@@ -176,7 +176,8 @@ func (d *Driver) startStdioRelay(in *instance) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.stopRelay, e.relayDone = cancel, make(chan struct{})
 	ready := make(chan error, 1)
-	args := []string{"exec", "-i", "--user", in.user, in.name, egressRelay, stdiorelay.Arg, e.listen}
+	// Not the sandbox's user: its commands could otherwise write the relay's frames.
+	args := []string{"exec", "-i", "--user", stdiorelay.User(in.uid), in.name, egressRelay, stdiorelay.Arg, e.listen}
 	sock := filepath.Join(e.dir, "proxy.sock")
 	go func() {
 		defer close(e.relayDone)
