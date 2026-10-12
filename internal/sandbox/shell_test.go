@@ -399,3 +399,19 @@ func TestContainerAllowlistHasNoNetwork(t *testing.T) {
 		t.Fatalf("the container keeps a network under the allowlist: %v", args)
 	}
 }
+
+// A host command does not inherit ZDOTDIR, so zsh reads its start-up files
+// from HOME, where the policy reads them.
+func TestNoneCommandLeavesOutZDOTDIR(t *testing.T) {
+	ws := workspace(t)
+	t.Setenv("ZDOTDIR", filepath.Join(ws, "z"))
+	out, err := NewNone(DefaultPolicy(ws)).Command(context.Background(), ws, `echo "[$ZDOTDIR]"`).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "[]") {
+		t.Fatalf("the host command kept ZDOTDIR: %v\n%s", err, out)
+	}
+	for _, kv := range HostCommandEnv() {
+		if strings.HasPrefix(kv, "ZDOTDIR=") {
+			t.Errorf("HostCommandEnv kept %s", kv)
+		}
+	}
+}

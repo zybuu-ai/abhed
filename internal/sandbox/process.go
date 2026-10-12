@@ -1033,10 +1033,8 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	return cmd
 }
 
-// HostCommandEnv is the server's environment for a command run on the host,
-// without what would make bash run a file first (BASH_ENV) or send a plain cd
-// somewhere other than the folder named (CDPATH), which the tracker follows.
-// BASH_FUNC_*, SHELLOPTS and BASHOPTS go too, as does ABHED_TRUST_WORKSPACE.
+// HostCommandEnv is the server's environment for a host command, without
+// what runs a file first or moves a cd (BASH_ENV, ZDOTDIR, CDPATH and kin).
 func HostCommandEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
@@ -1048,7 +1046,7 @@ func HostCommandEnv() []string {
 }
 
 func hostDropped(kv string) bool {
-	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ABHED_TRUST_WORKSPACE="} {
+	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ABHED_TRUST_WORKSPACE="} {
 		if strings.HasPrefix(kv, p) {
 			return true
 		}
