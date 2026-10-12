@@ -752,7 +752,21 @@ func waitForProgram(t *testing.T, r *studioRig, terminalID string) {
 // to the deny rules at its Enter and recorded as the person's, and a line the
 // terminal did not show, as at a password prompt, is recorded withheld.
 func TestStudioInteractiveTerminal(t *testing.T) {
-	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"]}`)
+	studioInteractiveTerminal(t, "", "")
+}
+
+// The same on the container tier, where this process does not hold the
+// shell's terminal and judges lines by Abhed's prompt alone. It needs an
+// engine, so it runs only with ABHED_REQUIRE_CONTAINER set, as CI sets it.
+func TestStudioInteractiveTerminalInAContainer(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
+		t.Skip("set ABHED_REQUIRE_CONTAINER=1 to run the container tier on a real engine")
+	}
+	studioInteractiveTerminal(t, `,"sandbox":{"min_tier":"container"}`, "container")
+}
+
+func studioInteractiveTerminal(t *testing.T, extra, wantTier string) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"]}`+extra)
 	id := r.open()
 	var term struct {
 		TerminalID string `json:"terminalId"`
@@ -760,8 +774,8 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	}
 	from := r.cl.mark()
 	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
-	if term.TerminalID == "" || term.Tier == "none" {
-		t.Fatalf("create: %+v", term)
+	if term.TerminalID == "" || term.Tier == "none" || (wantTier != "" && term.Tier != wantTier) {
+		t.Fatalf("create: %+v, want tier %q", term, wantTier)
 	}
 	prompted := func(s string) bool {
 		p := strings.TrimRight(termline.PlainText([]byte(s)), " ")
