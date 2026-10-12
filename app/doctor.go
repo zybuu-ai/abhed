@@ -87,6 +87,9 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 	for _, w := range internalModelEndpoints(cfg) {
 		fmt.Printf("            ⚠ %s\n", w)
 	}
+	if w := pathDenyWarning(cfg); w != "" {
+		fmt.Printf("            ⚠ %s\n", w)
+	}
 	fmt.Println("git         held read-only from commands in `abhed serve`'s and Studio's sessions; not in the terminal's (docs/guide/04-permissions.md)")
 	if printDrivers(os.Stdout, cfg) {
 		findings.driverDown = true
@@ -386,6 +389,25 @@ func internalModelEndpoints(cfg config.Config) []string {
 		}
 	}
 	return out
+}
+
+// pathDenyWarning warns, under the allowlist, of deny rules narrowed by a
+// path, which a server's other spellings of the path step around.
+func pathDenyWarning(cfg config.Config) string {
+	if cfg.Sandbox.Network != config.NetworkAllowlist {
+		return ""
+	}
+	pol, err := egress.Compile(cfg.Egress)
+	if err != nil {
+		return ""
+	}
+	names := pol.PathDenies()
+	if len(names) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s deny by path, which a server may also serve as /ADMIN, /admin/ or /admin.json; "+
+		"allow the paths commands need and let the default deny the rest (docs/guide/21-network-policy.md#path-rules)",
+		strings.Join(names, ", "))
 }
 
 // egressLabel states the commands' network policy: off, open, or the

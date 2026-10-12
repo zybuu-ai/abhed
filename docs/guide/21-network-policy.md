@@ -93,7 +93,9 @@ path as the one a deny rule names: `/ADMIN` (a case-insensitive server),
 bump, not a boundary. To keep commands away from part of a service, allow
 the paths they need and let the default deny the rest: an allow-list fails
 closed when the server spells a path in a way the rule did not foresee, and
-a deny-list fails open.
+a deny-list fails open. `abhed doctor` names each deny rule narrowed by a
+path under the allowlist, with this advice. No proxy can know every server's
+own path rules, so this stays a limit of path deny rules.
 
 ## How a decision is made
 

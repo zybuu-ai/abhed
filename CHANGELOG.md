@@ -588,6 +588,9 @@ All notable changes to Abhed are recorded here. The format follows
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
+- `abhed doctor` names, under the egress allowlist, each deny rule
+  narrowed by a path, which other spellings of the path step around, and
+  advises allowing the paths needed instead.
 
 ### Changed
 

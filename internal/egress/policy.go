@@ -225,6 +225,19 @@ func (p *Policy) Audit() bool { return p.audit }
 // Rules is how many rules the policy holds.
 func (p *Policy) Rules() int { return len(p.rules) }
 
+// PathDenies names the deny rules narrowed by a path: each is a speed bump,
+// since a server may route a spelling the rule does not match (/ADMIN,
+// /admin/, /admin.json) to the same place.
+func (p *Policy) PathDenies() []string {
+	var out []string
+	for _, ru := range p.rules {
+		if !ru.allow && len(ru.paths) > 0 {
+			out = append(out, ru.name)
+		}
+	}
+	return out
+}
+
 // DefaultAllow reports whether a request no rule matches is allowed.
 func (p *Policy) DefaultAllow() bool { return p.defaultAllow }
 

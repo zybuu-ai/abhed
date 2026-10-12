@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Under the allowlist, doctor and serve -check warn of a model endpoint on an
@@ -22,5 +23,20 @@ func TestInternalModelEndpointIsWarnedUnderTheAllowlist(t *testing.T) {
 	got := internalModelEndpoints(cfg)
 	if len(got) != 1 || !strings.Contains(got[0], "provider meta") || !strings.Contains(got[0], "link-local") {
 		t.Fatalf("warnings: %v", got)
+	}
+}
+
+// Under the allowlist, doctor warns of a deny rule narrowed by a path.
+func TestPathDenyIsWarned(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sandbox.Network = config.NetworkAllowlist
+	cfg.Egress.Rules = []egress.Rule{{Host: "api.example.com", Paths: []string{"/admin/*"}, Decision: "deny"},
+		{Host: "api.example.com", Decision: "allow"}}
+	if w := pathDenyWarning(cfg); !strings.Contains(w, "deny by path") {
+		t.Fatalf("warning: %q", w)
+	}
+	cfg.Egress.Rules = cfg.Egress.Rules[1:]
+	if w := pathDenyWarning(cfg); w != "" {
+		t.Fatalf("warned with no path deny: %q", w)
 	}
 }
