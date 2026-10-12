@@ -13,6 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/wsconn"
@@ -399,6 +400,9 @@ func denied(pol *policy.Engine, command string) error {
 	}
 	return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
 }
+
+// terminalDenied refuses an interactive shell a deny rule or hook refuses.
+func terminalDenied(pol *policy.Engine) error { return denied(pol, sandbox.TerminalCommand) }
 
 // execRefused refuses what denied does, and, while rules or hooks are in
 // force, a command line they cannot read whole: a session would put it to a

@@ -76,7 +76,7 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 	}
 	loop := parts.Loop
 	id := "u" + acpID()
-	args, _ := json.Marshal(map[string]any{"command": "bash -i", "description": "interactive Abhed terminal in the session sandbox", "interactive": true})
+	args, _ := json.Marshal(map[string]any{"command": sandbox.TerminalCommand, "description": "interactive Abhed terminal in the session sandbox", "interactive": true})
 	_, refused, err := loop.ManualAuthorize("bash", id, args)
 	if err != nil {
 		return refusal(errRecord, "the terminal could not be recorded, so it was not opened: %v", err)

@@ -37,6 +37,14 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 		if names := canon.HomeStartups(); len(names) > 0 {
 			out.refuse = "it starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
 		}
+		for _, s := range canon.Scripts() {
+			if s.Startup && out.refuse == "" {
+				out.refuse = "it starts a shell that reads start-up files from a folder the check cannot read (" + s.Path + ")"
+			}
+		}
+		if why := canon.StartupHidden(); why != "" && out.refuse == "" {
+			out.refuse = "it names " + why
+		}
 		return out
 	}
 	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{})

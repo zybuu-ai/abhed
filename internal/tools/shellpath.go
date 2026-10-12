@@ -130,16 +130,19 @@ func (f *shellFacts) startupDir(name, value string, lit bool) {
 // startupDirSet is a folder named by HOME or ZDOTDIR.
 type startupDirSet struct{ name, dir string }
 
-// startups are the start-up files a shell the line runs may read from the
-// HOME and ZDOTDIR folders it sets; why says when one is not known. Neither
-// counts when the line starts no shell and runs no script.
+// startups are the start-up files the shells the line starts read from the
+// HOME and ZDOTDIR folders it sets, as they start; why says when one is not
+// known. Neither counts when the line starts no shell and runs no script.
 func (f *shellFacts) startups() (files []Script, why string) {
 	if !f.shellRun && len(f.scripts) == 0 {
 		return nil, ""
 	}
 	for _, d := range f.startupDirs {
 		for _, name := range startupDirFiles[d.name] {
-			files = append(files, Script{Path: path.Join(d.dir, name), Startup: true})
+			// What the shells started read; a script run may be zsh's.
+			if f.homeFiles[name] || name == ".zshenv" && len(f.scripts) > 0 {
+				files = append(files, Script{Path: path.Join(d.dir, name), Startup: true})
+			}
 		}
 	}
 	return files, f.startupDirHidden
@@ -228,7 +231,7 @@ func (f *shellFacts) shellStart(name string, args []*syntax.Word) {
 	if !ok {
 		return
 	}
-	login, interactive, command := false, false, false
+	login, interactive, command, rc, profile := false, false, false, true, true
 scan:
 	for j := 0; j < len(args); j++ {
 		v, lit := literal(args[j])
@@ -245,6 +248,10 @@ scan:
 			login = true
 		case v == "--interactive":
 			interactive = true
+		case v == "--norc" && name == "bash":
+			rc = false
+		case v == "--noprofile" && name == "bash":
+			profile = false
 		case v == "--rcfile" || v == "--init-file":
 			j++
 		case strings.HasPrefix(v, "--"):
@@ -278,10 +285,10 @@ scan:
 		}
 	}
 	add(files[0])
-	if login {
+	if login && profile {
 		add(files[1])
 	}
-	if interactive {
+	if interactive && rc {
 		add(files[2])
 	}
 }
@@ -300,7 +307,7 @@ func (f *shellFacts) homeStartups() []string {
 		return nil
 	}
 	for _, n := range startupDirFiles["HOME"] {
-		if f.homeFiles[n] && !(setsZdot && strings.HasPrefix(n, ".z")) {
+		if f.homeFiles[n] && (!setsZdot || !strings.HasPrefix(n, ".z")) {
 			out = append(out, n)
 		}
 	}

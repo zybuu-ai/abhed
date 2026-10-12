@@ -707,7 +707,14 @@ The exec's own variables (`env` in the request) are held to the same list
 while any such rule or hook is in force, for every exec and not only one fed
 stdin, since `BASH_ENV` runs a file even for a judged `bash -c`: setting one
 of those, an exported function (`BASH_FUNC_…`) or a name that is not an
-identifier is refused with `403` and code `forbidden`. For a shell fed
+identifier is refused with `403` and code `forbidden`. `HOME` and
+`ZDOTDIR` are judged with the command instead: a shell it starts that would
+read start-up files from that folder (`zsh -c`, `bash -l -c`) is refused,
+since the check cannot read files inside the sandbox; a command that starts
+none, a plain `bash -c`, or a shell fed stdin keeps them. A shell started
+with the sandbox's own `HOME` is refused the same way while the rules are
+in force, and so is an interactive terminal's, unless it is the one the
+server starts (`bash --noprofile --norc -i`), which reads none. For a shell fed
 stdin, `IFS` is refused too, and the shell is refused as uncheckable rather
 than judged statement by statement; the message names the variable to leave
 out.

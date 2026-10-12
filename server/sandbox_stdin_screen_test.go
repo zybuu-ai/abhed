@@ -597,3 +597,38 @@ func TestStdinShellCodeDepthIsBounded(t *testing.T) {
 		t.Fatalf("past the bound: %q", w.why)
 	}
 }
+
+// A HOME or ZDOTDIR the exec sets is judged with its command: a shell that
+// would read start-up files from it, which the check cannot read inside the
+// sandbox, is refused under rules; a command that starts none runs.
+func TestExecJudgesItsHomeWithTheCommand(t *testing.T) {
+	s := newScreenRig(t, func(o *Options) { o.Config.Permissions.Deny = []string{"bash(curl *)"} })
+	pol, err := s.r.srv.sandboxPolicy(context.Background(), s.sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		command string
+		env     []string
+		refused bool
+	}{
+		{"zsh -c true", []string{"ZDOTDIR=/tmp/z"}, true},
+		{"zsh -c true", []string{"HOME=/tmp/h"}, true},
+		{"bash -l -c true", []string{"HOME=/tmp/h"}, true},
+		{"go version", []string{"HOME=/tmp/h", "ZDOTDIR=/tmp/z"}, false},
+		{"bash -c 'echo hi'", []string{"HOME=/tmp/h"}, false},
+		{"ls", []string{"ZDOTDIR=/tmp/z"}, false},
+	} {
+		err := screenExec(pol, c.command, c.env)
+		if refused := errors.Is(err, controlplane.ErrForbidden); refused != c.refused {
+			t.Errorf("%s with %q: %v", c.command, c.env, err)
+		}
+	}
+	// A stdin shell, which reads no start-up file, keeps being screened.
+	for _, env := range [][]string{{"HOME=/tmp/h"}, {"ZDOTDIR=/tmp/z"}} {
+		q := s.r.srv.newStdinScreen(context.Background(), pol, controlplane.Caller{Principal: "alice"}, s.sb, strings.NewReader("echo hi\n"))
+		if err := s.r.srv.screenStdinExec(pol, "sh", env, q); err != nil || !q.on {
+			t.Errorf("sh with %q: %v, screened %v", env, err, q.on)
+		}
+	}
+}

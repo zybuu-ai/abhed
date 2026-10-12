@@ -456,23 +456,25 @@ read as a script from each of those folders, an empty entry and `$PWD` being
 the start folder; one the line may write first there is refused. A file a
 shell runs as it starts is read as a script the line runs: `BASH_ENV=f`,
 `ENV=f` (also through `env` or `export`), `--rcfile f` and `--init-file f`.
-So is each start-up file in a folder the line sets `ZDOTDIR` or `HOME` to,
-when the line starts a shell or runs a script: zsh reads `$ZDOTDIR/.zshenv`
-(`$HOME` when `ZDOTDIR` is not set) on every start, `zsh -c` included, and
-`.zprofile`, `.zshrc`, `.zlogin` and `.zlogout` as a login or terminal
-shell; bash, sh and ksh read `.bash_profile`, `.bash_login`, `.profile`,
-`.bashrc`, `.bash_logout`, `.kshrc` and `.mkshrc` from `$HOME` the same way.
-All of them are read, whatever the shell's options; one that is not there
-is skipped, and one that cannot be read, or that sets `ZDOTDIR` or `HOME`
-again, is refused or asked about. A start-up file or folder named by an
+So is each start-up file a shell the line starts reads from a folder the
+line sets `ZDOTDIR` or `HOME` to, by how it starts: zsh reads
+`$ZDOTDIR/.zshenv` (`$HOME` when `ZDOTDIR` is not set) on every start,
+`zsh -c` included, and `.zprofile`, `.zlogin` and `.zlogout` as a login
+shell (`-l`, `--login`, `-o login`) and `.zshrc` as an interactive one
+(`-i`); bash reads `.bash_profile`, `.bash_login`, `.profile` and
+`.bash_logout` as a login shell (not with `--noprofile`) and `.bashrc` as an
+interactive one (not with `--norc`); sh, dash and ksh read `.profile` as a
+login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
+A plain `bash -c` or `sh -c` reads none; a script the line runs may be
+zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
+one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
+or asked about. A start-up file or folder named by an
 expansion (`BASH_ENV=$f`, `ZDOTDIR=$d`), or set by a command that sets a
 variable by name (`read BASH_ENV`, `read ZDOTDIR`), is refused or asked
 about as the scripts above are. A shell started with the `HOME` the
 sandbox gives commands reads its start-up files there, which an earlier
-command may have written, so those are read too, by how the shell starts:
-zsh's `.zshenv` always (a `#!/bin/zsh` script included), and the login
-files with `-l`, `--login` or `-o login`, and `.zshrc`, `.bashrc`, `.kshrc`
-or `.mkshrc` with `-i`. A plain `bash -c` or `sh -c` reads none. That
+command may have written, so those are read too, by the same rules (a
+`#!/bin/zsh` script reads `.zshenv`). That
 `HOME` is the host's own on the process tier and none, the fence's private
 home folder under the fence, and, in a container, a microVM, a driver's
 sandbox or a control-plane sandbox exec, a folder the host cannot read:
@@ -499,9 +501,10 @@ A deny pattern matches the words, so it is easy to step around.
 - a program or script found through a `PATH` entry built from another
   expansion (`$HOME/bin`, `$(go env GOPATH)/bin`, `~/bin`), or through the
   `PATH`, `BASH_ENV` or `ENV` the command inherits rather than sets (a
-  command on the host drops an inherited `BASH_ENV`); and the files a login
-  or interactive shell reads by default (`bash -l`, `bash -i` and
-  `~/.bashrc`)
+  command on the host drops an inherited `BASH_ENV`); and the start-up files
+  of a shell another program starts (`make`, a `#!/usr/bin/env -S zsh`
+  line the check does not read as zsh's), or of one a line starts with
+  options built when it runs
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,

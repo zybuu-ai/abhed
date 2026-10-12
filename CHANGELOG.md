@@ -200,9 +200,10 @@ All notable changes to Abhed are recorded here. The format follows
   `PATH` the line sets names (`PATH=sub:$PATH tool`), and a shell's start-up
   file is read as a script it runs (`BASH_ENV=f`, `ENV=f`, `--rcfile f`,
   `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
-  `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` in a `ZDOTDIR` or
-  `HOME` folder the line sets for a shell it starts, as `ZDOTDIR=sub zsh -c
-  true` or `HOME=sub bash -l -c true`, and those a shell reads from the
+  `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` a shell the line
+  starts reads, by its options, from a `ZDOTDIR` or `HOME` folder the line
+  sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true`, or that
+  an exec sets in its environment, and those a shell reads from the
   `HOME` the sandbox gives it, which an earlier command may have written:
   read on the process tier, none and the fence, and refused under a deny
   rule where the host cannot read that `HOME`, as in a container); one too long, unparsable, running built text, or itself
@@ -1244,6 +1245,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- An interactive terminal's shell (the workbench's, Studio's, `:attach`
+  and SSH) is judged and recorded as `bash --noprofile --norc -i`, as it
+  runs, rather than `bash -i`; a deny rule written on `bash -i` no longer
+  names it. An exec's `HOME` or `ZDOTDIR` is no longer refused by itself
+  under rules: it is judged with the command it is given (see Security).
 - Studio's line-by-line terminal shows any escape sequence but colour as a
   symbol, so a progress bar or spinner that redraws its line now prints
   each frame on its own; run such a command in the interactive shell to

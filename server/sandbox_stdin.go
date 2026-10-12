@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"regexp"
@@ -158,11 +159,16 @@ func (s *Server) screenStdinExec(pol *policy.Engine, command string, env []strin
 	}
 	what := stdinReader(command)
 	if what == "" {
-		return execEnvRefused(env)
+		return execEnvRefused(pol, command, env)
 	}
 	shell, unsafe := stdinShellVar(command)
 	if shell && unsafe == "" {
 		unsafe = shellEnvVar(env, true)
+	}
+	if shell && unsafe == "" {
+		if err := startupEnvRefused(pol, command, env); err != nil {
+			return err
+		}
 	}
 	if in != nil && shell && unsafe == "" {
 		in.script.seed(env)
@@ -190,15 +196,40 @@ func screenExec(pol *policy.Engine, command string, env []string) error {
 	if !screensStdin(pol) {
 		return nil
 	}
-	return execEnvRefused(env)
+	return execEnvRefused(pol, command, env)
 }
 
 // execEnvRefused refuses an exec's own variable that has any shell it starts
 // run commands no rule sees, as BASH_ENV does even for a judged bash -c.
-func execEnvRefused(env []string) error {
+func execEnvRefused(pol *policy.Engine, command string, env []string) error {
 	if name := shellEnvVar(env, false); name != "" {
 		return fmt.Errorf("%w: %s in the exec's environment has a shell run or read commands no rule or hook sees; leave it out",
 			controlplane.ErrForbidden, name)
+	}
+	return startupEnvRefused(pol, command, env)
+}
+
+// startupEnvRefused judges a HOME or ZDOTDIR the exec sets as if the command
+// set them itself: the start-up files a shell it starts reads from there
+// are read under the rules, and one the check cannot read is refused.
+func startupEnvRefused(pol *policy.Engine, command string, env []string) error {
+	var set []string
+	for _, kv := range env {
+		if name, value, _ := strings.Cut(kv, "="); name == "HOME" || name == "ZDOTDIR" {
+			set = append(set, name+"="+shellQuote(value))
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	judge := func(line string) policy.Result {
+		args, _ := json.Marshal(map[string]string{"command": line})
+		return pol.Evaluate("bash", true, args)
+	}
+	with, without := judge("export "+strings.Join(set, " ")+"; "+command), judge(command)
+	screened := func(r policy.Result) bool { return r.Decision == policy.Ask && r.Step == "screen" }
+	if with.Decision == policy.Deny && without.Decision != policy.Deny || screened(with) && !screened(without) {
+		return fmt.Errorf("%w: with the exec's %s, %s; leave it out", controlplane.ErrForbidden, strings.Join(set, " "), with.Reason)
 	}
 	return nil
 }
@@ -224,6 +255,8 @@ func shellEnvVar(env []string, stdin bool) string {
 		switch {
 		case !envName.MatchString(name):
 			return "a variable whose name is not an identifier"
+		case name == "HOME" || name == "ZDOTDIR":
+			// Judged with the command it is given: see startupEnvRefused.
 		case shellStartFiles[name] || strings.HasPrefix(name, "BASH_FUNC_") || stdin && name == "IFS":
 			return name
 		}

@@ -17,6 +17,10 @@ type Interactive interface {
 	Backend() string
 }
 
+// TerminalCommand is an interactive terminal's shell as it is judged and
+// recorded: it reads no start-up file, as every tier starts it.
+const TerminalCommand = "bash --noprofile --norc -i"
+
 // shellArgv is bash without the operator's rc files; huponexit hangs up jobs
 // left at exit, and -m gives each program its own process group.
 var shellArgv = []string{"/bin/bash", "--noprofile", "--norc", "-l", "-O", "huponexit", "-i", "-m"}
