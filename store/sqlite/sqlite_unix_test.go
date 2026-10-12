@@ -13,6 +13,16 @@ import (
 
 // File modes, links and owners are checked where the system has them.
 
+// privateTemp is a temporary folder closed to other users, as the store needs.
+func privateTemp(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestCreatesPrivateFile(t *testing.T) {
 	path := dbPath(t)
 	s := open(t, path)

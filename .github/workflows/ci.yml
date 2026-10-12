@@ -485,6 +485,39 @@ jobs:
           done
           echo "$(grep -c -- "--- PASS" seatbelt.log) boundary tests ran under Seatbelt"
 
+  # Windows folds case as macOS does, so the path-fold fix is tested here
+  # too, and the build and lint run natively (unused code behind a unix-only
+  # build tag shows only under GOOS=windows). The sandbox tiers do not run
+  # on Windows; only the path rules are claimed for it.
+  windows:
+    name: Windows build, lint and case-folding paths
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.9"
+      - name: go build and vet
+        run: go build ./... && go vet ./...
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
+      # NTFS keeps Unicode forms apart and its link count is not read, so
+      # those two tests may skip; these must run and pass.
+      - name: Path rules hold on a disk that folds case
+        run: |
+          set -euo pipefail
+          go test -count=1 -json -run '^TestDiskPath|^TestIdentityScan' ./internal/tools/ > case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          go test -count=1 -json -run '^(TestPathRulesHoldForEveryCaseTheDiskOpens|TestRelativeRulesHoldUnderARootNamedInAnotherCase)$' ./internal/policy/ >> case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          go test -count=1 -json -run '^TestPushComparesPathsWithoutCase$' ./internal/forge/ >> case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          jq -r 'select(.Action == "skip" and .Test != null) | "skipped: \(.Test)"' case.json
+          for t in TestDiskPathSpellsWhatTheDiskHolds TestDiskPathFollowsARenameToAnotherCase TestDiskPathFoldsAsTheDiskDoes \
+                   TestPathRulesHoldForEveryCaseTheDiskOpens TestRelativeRulesHoldUnderARootNamedInAnotherCase TestPushComparesPathsWithoutCase; do
+            jq -e --arg t "$t" 'select(.Test == $t and .Action == "pass")' case.json >/dev/null || { echo "$t did not run and pass"; exit 1; }
+          done
+
   # The container tier on a real engine: the hosted runner has Docker, so
   # the flags are checked by what they do, not only by what is passed.
   container-tier:

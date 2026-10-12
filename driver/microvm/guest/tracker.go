@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// slack is how far back a change is looked for before the last sync began:
+// an inode's change time comes from a clock up to one kernel tick behind.
+const slack = 50 * time.Millisecond
+
 // Tracker remembers what the host was last sent of the folder at root.
 type Tracker struct {
 	root string

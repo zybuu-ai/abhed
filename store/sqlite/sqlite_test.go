@@ -20,16 +20,6 @@ import (
 
 var t0 = time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)
 
-// privateTemp is a temporary folder closed to other users, as the store needs.
-func privateTemp(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
 func dbPath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "cp", DefaultName)
