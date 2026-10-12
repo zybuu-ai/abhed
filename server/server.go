@@ -4398,8 +4398,6 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// whoamiDisabled reports that this deployment runs without authentication.
-// The console uses it to decide whether to show a user chip at all.
 // tokenWhoami is whoami's answer for a bearer token: who it names and what
 // it was narrowed to, with no browser session to sign out of or switch.
 func tokenWhoami(id *auth.Identity, mode string) map[string]any {
@@ -4415,6 +4413,8 @@ func tokenWhoami(id *auth.Identity, mode string) map[string]any {
 	return me
 }
 
+// whoamiDisabled reports that this deployment runs without authentication.
+// The console uses it to decide whether to show a user chip at all.
 func (s *Server) whoamiDisabled(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"authenticated": false,
