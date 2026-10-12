@@ -50,15 +50,40 @@ func TestWitnessCatchesACutAndARewrite(t *testing.T) {
 		}
 		return l[n-1], true, nil
 	}
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 0 {
+	key, err := PublicKey(filepath.Join(dir, "k", "witness.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 0 {
 		t.Fatalf("an intact record failed: %+v", p)
 	}
+	// Statements forged under a key of their own verify alone, but not as this installation's.
+	forger, err := Open(Config{File: filepath.Join(dir, "forged.jsonl"), KeyFile: filepath.Join(dir, "forger.key")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forger.Local("default", "s1", 2, 2, "h2")
+	ff, _ := os.Open(filepath.Join(dir, "forged.jsonl"))
+	defer ff.Close()
+	forged, bad := Read(ff)
+	if len(bad) != 0 || len(forged) != 1 {
+		t.Fatalf("forged: %d, %v", len(forged), bad)
+	}
+	if p, _ := Check(forged, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "not signed by this installation") {
+		t.Fatalf("a statement under another key passed: %+v", p)
+	}
+	if _, err := Check(stmts, nil, "local", "default", at); err == nil {
+		t.Fatal("a check with no installation key ran")
+	}
+	if _, err := PublicKey(filepath.Join(dir, "none.key")); err == nil {
+		t.Fatal("a missing key file gave a key")
+	}
 	record["s1"] = []string{"h1", "h2"} // cut back
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
+	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
 		t.Fatalf("a cut record passed: %+v", p)
 	}
 	record["s1"] = []string{"h1", "h2", "x3"} // rechained
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
+	if p, _ := Check(stmts, key, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
 		t.Fatalf("a rewritten record passed: %+v", p)
 	}
 }

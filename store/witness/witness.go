@@ -298,14 +298,47 @@ type Problem struct {
 	Reason    string
 }
 
+// PublicKey is the installation's public key from its key file, which must
+// exist: a check is never made against a key made for it.
+func PublicKey(keyFile string) (ed25519.PublicKey, error) {
+	if _, err := os.Stat(keyFile); err != nil {
+		return nil, fmt.Errorf("witness: the installation's key: %w", err)
+	}
+	k, err := loadKey(keyFile)
+	if err != nil {
+		return nil, err
+	}
+	return k.Public().(ed25519.PublicKey), nil
+}
+
+// ParsePublicKey reads a public key as a statement carries it (base64).
+func ParsePublicKey(s string) (ed25519.PublicKey, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil, errors.New("witness: not a public key")
+	}
+	return ed25519.PublicKey(b), nil
+}
+
 // Check compares statements for one store and tenant with the record as it
 // is now: hashAt gives the hash at a line and whether the record holds it.
 // A head the record no longer holds means lines were cut, rewritten or rolled
-// back since the witness was given it.
-func Check(stmts []Statement, store, tenant string, hashAt func(session string, line int64) (string, bool, error)) ([]Problem, error) {
+// back since the witness was given it. Each statement must be signed with
+// key, the installation's: one that verifies under a key of its own proves
+// nothing about who sent it.
+func Check(stmts []Statement, key ed25519.PublicKey, store, tenant string, hashAt func(session string, line int64) (string, bool, error)) ([]Problem, error) {
+	if len(key) != ed25519.PublicKeySize {
+		return nil, errors.New("witness: no installation key to check the statements against")
+	}
+	want := base64.StdEncoding.EncodeToString(key)
 	var out []Problem
 	for _, s := range stmts {
 		if s.Store != store || s.Tenant != tenant {
+			continue
+		}
+		if s.Key != want || s.Verify() != nil {
+			out = append(out, Problem{s, fmt.Sprintf("a head of %s sent %s is not signed by this installation's key: it was not sent by this installation",
+				s.Session, s.At.Format(time.RFC3339))})
 			continue
 		}
 		h, ok, err := hashAt(s.Session, s.Lines)

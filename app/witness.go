@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,13 +22,9 @@ func openWitness(cfg config.Config) (*witness.Witness, error) {
 	if !wc.On() || !cfg.ManagedSets("record.witness") {
 		return nil, nil
 	}
-	dir := cfg.Record.Dir
-	if dir == "" {
-		d, err := local.DefaultDir()
-		if err != nil {
-			return nil, err
-		}
-		dir = d
+	keyFile, err := witnessKeyFile(cfg)
+	if err != nil {
+		return nil, err
 	}
 	token := ""
 	if wc.TokenSecret != "" {
@@ -37,12 +34,42 @@ func openWitness(cfg config.Config) (*witness.Witness, error) {
 		}
 		token = v
 	}
-	w, err := witness.Open(witness.Config{File: wc.File, URL: wc.URL, Token: token, KeyFile: filepath.Join(dir, "witness.key"),
+	w, err := witness.Open(witness.Config{File: wc.File, URL: wc.URL, Token: token, KeyFile: keyFile,
 		OnError: witnessReporter(slog.Default(), time.Minute)})
 	if err != nil {
 		return nil, fmt.Errorf("record.witness: %w", err)
 	}
 	return w, nil
+}
+
+// witnessKeyFile is where the installation keeps its witness signing key.
+func witnessKeyFile(cfg config.Config) (string, error) {
+	dir := cfg.Record.Dir
+	if dir == "" {
+		d, err := local.DefaultDir()
+		if err != nil {
+			return "", err
+		}
+		dir = d
+	}
+	return filepath.Join(dir, "witness.key"), nil
+}
+
+// witnessKey is the key a witness's statements must be signed with: given
+// as a public key (base64, as statements carry it) or a key file, or else
+// this installation's own.
+func witnessKey(cfg config.Config, given string) (ed25519.PublicKey, error) {
+	if given != "" {
+		if k, err := witness.ParsePublicKey(given); err == nil {
+			return k, nil
+		}
+		return witness.PublicKey(given)
+	}
+	f, err := witnessKeyFile(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return witness.PublicKey(f)
 }
 
 // closeWitness waits for heads still being sent and says which failed.

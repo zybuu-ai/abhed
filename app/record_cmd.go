@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -32,7 +33,7 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 		fmt.Fprint(stderr, `usage: abhed record <command>
   list    [-all|-repo] [-n N] [-json]   sessions in this workspace, latest active first
   show    <session> [-json]            a session's events
-  verify  [-witness file] [session|file ...]
+  verify  [-witness file] [-witness-key key] [session|file ...]
                                        check the chain; no argument checks everything,
                                        and the heads a witness holds (record.witness.file)
   export  <session> [-o path] [-format jsonl|html|txt] [-unverified]
@@ -230,6 +231,7 @@ func (c recordCtx) verify(args []string) int {
 	fs := flag.NewFlagSet("record verify", flag.ContinueOnError)
 	fs.SetOutput(c.err)
 	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the record against")
+	witnessKey := fs.String("witness-key", "", "the installation's public key, or its witness.key file, the heads must be signed with")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -247,7 +249,7 @@ func (c recordCtx) verify(args []string) int {
 			bad = printReport(c.out, r.ID, r) || bad
 		}
 		fmt.Fprintf(c.out, "%d session(s) checked in %s\n", len(reps), c.rec.Dir())
-		bad = c.checkWitness(*witnessed) || bad
+		bad = c.checkWitness(*witnessed, *witnessKey) || bad
 		fmt.Fprintln(c.out, verifyScope)
 		if bad {
 			return 1
@@ -282,7 +284,7 @@ func (c recordCtx) verify(args []string) int {
 		}
 		bad = printReport(c.out, a, rep) || bad
 	}
-	bad = c.checkWitness(*witnessed) || bad
+	bad = c.checkWitness(*witnessed, *witnessKey) || bad
 	fmt.Fprintln(c.out, verifyScope)
 	if bad {
 		return 1
@@ -292,9 +294,14 @@ func (c recordCtx) verify(args []string) int {
 
 // checkWitness checks the record against every head the witness file holds
 // for this tenant, and reports whether any is no longer in it.
-func (c recordCtx) checkWitness(path string) bool {
+func (c recordCtx) checkWitness(path, keyGiven string) bool {
 	if path == "" {
 		return false
+	}
+	key, err := witnessKey(c.cfg, keyGiven)
+	if err != nil {
+		fmt.Fprintf(c.err, "abhed: the witness's heads cannot be checked without the installation's key (-witness-key): %v\n", err)
+		return true
 	}
 	f, err := os.Open(path) // #nosec G304 -- the managed witness file, or one the person names
 	if err != nil {
@@ -306,7 +313,7 @@ func (c recordCtx) checkWitness(path string) bool {
 	for _, err := range unreadable {
 		fmt.Fprintf(c.out, "FAILED  witness: %v\n", err)
 	}
-	problems, err := witness.Check(stmts, "local", cliTenant(c.cfg), c.rec.HashAt)
+	problems, err := witness.Check(stmts, key, "local", cliTenant(c.cfg), c.rec.HashAt)
 	if err != nil {
 		fmt.Fprintf(c.err, "abhed: the witness's heads: %v\n", err)
 		return true
@@ -314,7 +321,7 @@ func (c recordCtx) checkWitness(path string) bool {
 	for _, p := range problems {
 		fmt.Fprintf(c.out, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
 	}
-	fmt.Fprintf(c.out, "%d witnessed head(s) checked from %s\n", len(stmts), path)
+	fmt.Fprintf(c.out, "%d witnessed head(s) checked from %s against key %s\n", len(stmts), path, base64.StdEncoding.EncodeToString(key))
 	return len(unreadable) > 0 || len(problems) > 0
 }
 
@@ -601,6 +608,7 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 	fs := flag.NewFlagSet("record verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the database against")
+	witnessKeyGiven := fs.String("witness-key", "", "the installation's public key, or its witness.key file, the heads must be signed with")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -644,6 +652,11 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		}
 	}
 	if *witnessed != "" {
+		key, err := witnessKey(cfg, *witnessKeyGiven)
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: the witness's heads cannot be checked without the installation's key (-witness-key): %v\n", err)
+			return 1
+		}
 		f, err := os.Open(*witnessed) // #nosec G304 -- the managed witness file, or one the person names
 		if err != nil {
 			fmt.Fprintf(stderr, "abhed: the witness's heads: %v\n", err)
@@ -654,7 +667,7 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		for _, err := range unreadable {
 			fmt.Fprintf(stdout, "FAILED  witness: %v\n", err)
 		}
-		problems, err := witness.Check(stmts, "postgres", pg.Tenant(), func(session string, n int64) (string, bool, error) {
+		problems, err := witness.Check(stmts, key, "postgres", pg.Tenant(), func(session string, n int64) (string, bool, error) {
 			return pg.ChainHashAt(ctx, session, n)
 		})
 		if err != nil {
@@ -664,7 +677,7 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		for _, p := range problems {
 			fmt.Fprintf(stdout, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
 		}
-		fmt.Fprintf(stdout, "%d witnessed head(s) checked from %s\n", len(stmts), *witnessed)
+		fmt.Fprintf(stdout, "%d witnessed head(s) checked from %s against key %s\n", len(stmts), *witnessed, base64.StdEncoding.EncodeToString(key))
 		bad = bad || len(unreadable) > 0 || len(problems) > 0
 	}
 	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered by anyone short of the tables' owner. "+

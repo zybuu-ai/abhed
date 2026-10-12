@@ -1917,7 +1917,8 @@ All notable changes to Abhed are recorded here. The format follows
 - `auth.NewCLILogin`, `auth.OpenCLITokens` and `auth.NewClientCertAuth`
   build the types listed above.
 - `store/witness` (`Open`, `Config`, `Statement`, `Witness`) sends the
-  record's heads to a witness, and is experimental until 2.0 as
+  record's heads to a witness, and `Read`, `Check` (against the
+  installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
   `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
   and `ChainHashAt`, `store.ChainReport` and `store/local.Store.HashAt` read
   the hash chain; `store/local.Store.DeleteSession` prunes a session with a
