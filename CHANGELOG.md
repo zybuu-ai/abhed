@@ -483,7 +483,11 @@ All notable changes to Abhed are recorded here. The format follows
   call. Each call now reaches the proxy by its own way in, a unix socket
   bound into its sandbox on Linux and a loopback port only its Seatbelt
   profile allows on macOS, and what arrives there is recorded as that call.
-  Affects 1.2.7.
+  The new fence and container tiers do the same: a socket only the call's
+  relay joins, or on the fence in `landlock_only` mode a loopback port only
+  the call's Landlock rules allow. The sandbox drivers, whose commands share
+  one container or VM, still name the call by its token alone. Affects
+  1.2.7.
 - A stdio MCP server ran with your whole home folder readable and
   writable, so it could read `~/.ssh` or plant a LaunchAgent, a systemd
   user unit or a shell rc line. On the process tier its home is now hidden
@@ -664,9 +668,10 @@ All notable changes to Abhed are recorded here. The format follows
   only at the session's cgroup.
 - The fence holds `sandbox.network: "allowlist"`: in `mount_namespace` mode
   each command gets a network namespace with only its loopback, where the
-  launcher relays the egress proxy's port to the proxy, and may make inet
-  stream sockets alone. In `landlock_only` mode, where Landlock can confine
-  TCP only to the proxy's port on any address, the managed
+  launcher relays the egress proxy's port to the call's own socket on the
+  proxy, and may make inet stream sockets alone. In `landlock_only` mode,
+  where Landlock can confine TCP only to the call's own proxy port on any
+  address, the managed
   `fence.egress_port_only` accepts that; otherwise the fence still refuses
   the allowlist there.
 - In `mount_namespace` mode each fenced command runs in a PID namespace of
@@ -679,8 +684,8 @@ All notable changes to Abhed are recorded here. The format follows
   `max_memory_mb` set in a configuration file and no delegated cgroup, the
   process tier is refused rather than run with memory unbounded.
 - The container and vm tiers enforce `sandbox.network: "allowlist"`: each
-  command's container has no network but a relay to the session's egress
-  proxy, over an `exec`'s stdio, so it also works where the engine runs in
+  command's container has no network but a relay to its call's own socket
+  on the session's egress proxy, over an `exec`'s stdio, so it also works where the engine runs in
   a VM, given a Linux build of Abhed in the managed
   `control_plane.<engine>.relay_binary`. Without one there, the tier is
   refused as before.

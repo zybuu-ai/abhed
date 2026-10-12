@@ -56,11 +56,18 @@ func (c *Container) containerRelay() (string, string) {
 	return c.policy.RelayBinary, ""
 }
 
-// containerProxy starts the sandbox's egress proxy once.
+// containerProxy starts the sandbox's egress proxy once, with a private folder
+// for its calls' sockets.
 func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 	c.egOnce.Do(func() {
 		c.eg = &egressState{session: "container"}
 		c.egProxy, c.egErr = egress.Start(egress.Options{Policy: c.policy.Egress, Record: c.eg.route})
+		if c.egErr != nil {
+			return
+		}
+		if c.egDir, c.egErr = os.MkdirTemp("", "abhed-egr-"); c.egErr != nil {
+			_ = c.egProxy.Close()
+		}
 	})
 	return c.egProxy, c.eg, c.egErr
 }
@@ -80,6 +87,13 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	call, err := proxy.Issue(l.CallID)
 	if err != nil {
 		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: an egress credential: %w", err)}
+	}
+	// The relay of this command's container alone reaches the call's own
+	// socket, so what arrives there is the call's, whatever it carries.
+	sock := filepath.Join(c.egDir, "c"+strconv.FormatUint(callSeq.Add(1), 36)+".sock")
+	if err := call.ListenUnix(sock); err != nil {
+		call.End()
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the call's own proxy listener: %w", err)}
 	}
 	routes.remember(l)
 	args, err := c.runArgs(ctx, cwd)
@@ -108,10 +122,9 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	relayCtx, stopRelay := context.WithCancel(context.WithoutCancel(ctx))
 	ready := make(chan struct{})
 	done := make(chan error, 1)
-	upstream := proxy.Addr().String()
 	go func() {
 		rc := c.engineCmd(relayCtx, "exec", "-i", name, relayInside, stdiorelay.Arg, listen)
-		done <- stdiorelay.Run(rc, func() (net.Conn, error) { return net.Dial("tcp", upstream) }, func() { close(ready) })
+		done <- stdiorelay.Run(rc, func() (net.Conn, error) { return net.Dial("unix", sock) }, func() { close(ready) })
 	}()
 	stop := func() {
 		stopRelay()
@@ -151,11 +164,15 @@ func (c *Container) engineCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// closeEgress stops the sandbox's proxy.
+// closeEgress stops the sandbox's proxy and removes its calls' sockets.
 func (c *Container) closeEgress() error {
 	c.egOnce.Do(func() { c.egErr = errEgressClosed })
+	var err error
 	if c.egProxy != nil {
-		return c.egProxy.Close()
+		err = c.egProxy.Close()
 	}
-	return nil
+	if c.egDir != "" {
+		err = errors.Join(err, os.RemoveAll(c.egDir))
+	}
+	return err
 }

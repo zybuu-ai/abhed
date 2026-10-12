@@ -126,7 +126,12 @@ own in `HTTP_PROXY` and `HTTPS_PROXY`, passed to the engine by name so its
 value is never in an argument, and revoked when the command ends. Each
 decision goes to `Options.Record` as an `egress.decision` event with the
 sandbox's id. Names are resolved by the proxy, so tools must honour the
-proxy variables; there is no resolver inside.
+proxy variables; there is no resolver inside. The sandbox's commands share
+one container, so they share the relay: the token alone names a command's
+call, a command can read a concurrent one's token from its environment, and
+a client that sends no proxy credentials (a JVM) is answered 407. The
+session's container tier, with a container per command, gives each call a
+way in of its own instead.
 
 Where the engine runs in a VM (Docker Desktop, Podman on macOS and
 Windows) or elsewhere (`DOCKER_HOST=tcp://…`), a host socket cannot reach

@@ -223,9 +223,9 @@ func (f *Fence) Describe() string {
 	}
 	switch {
 	case f.policy.Egress != nil && f.mounts:
-		net = "network: the egress proxy alone, through a relay in each command's network namespace, inet streams only"
+		net = "network: the egress proxy alone, through a relay in each command's network namespace to its call's own socket, inet streams only"
 	case f.policy.Egress != nil:
-		net = "network: TCP to the egress proxy's port alone, on any address (no network namespace: Landlock filters ports only), inet streams only"
+		net = "network: TCP to its call's own egress proxy port alone, on any address (no network namespace: Landlock filters ports only), inet streams only"
 	}
 	signals := "Landlock scopes signals and abstract sockets"
 	switch {

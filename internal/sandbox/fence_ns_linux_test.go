@@ -125,4 +125,24 @@ func fenceEgressCheck(t *testing.T, portOnly bool) {
 	if out := run("exec 3<>/dev/udp/1.1.1.1/53 && echo UDP-OPEN || echo UDP-REFUSED"); !strings.Contains(out, "UDP-REFUSED") {
 		t.Fatalf("a UDP socket was made under the allowlist:\n%s", out)
 	}
+	// Each call has its own way in: a live call's token, read from the
+	// workspace, does not move another call's traffic to it, and a request
+	// with no credentials is the sending call's.
+	var rec eventLog
+	live, keep := context.WithCancel(context.Background())
+	defer keep()
+	if out, err := f.Command(WithLaunch(live, Launch{CallID: "call-x", Record: rec.record}), p.Workspace, `printf %s "$HTTP_PROXY" > tok`).CombinedOutput(); err != nil {
+		t.Fatalf("x: %v %s", err, out)
+	}
+	_, _ = fenceRun(t, f, p.Workspace, fmt.Sprintf(`curl -sS -m 10 -o /dev/null -x "$(cat tok)" http://denied.test:%d/borrowed; `+
+		`curl -sS -m 10 -o /dev/null -x "http://127.0.0.1:${HTTP_PROXY##*:}" http://denied.test:%d/nocred`, port, port), rec.record, "call-y")
+	if e := rec.waitFor(t, "the request without credentials", func(e map[string]any) bool { return e["path"] == "/nocred" }); e["call_id"] != "call-y" {
+		t.Fatalf("a request without credentials was recorded as %v", e)
+	}
+	time.Sleep(300 * time.Millisecond)
+	for _, e := range rec.find(func(e map[string]any) bool { return e["path"] == "/borrowed" }) {
+		if e["call_id"] == "call-x" {
+			t.Fatalf("a borrowed token moved y's traffic to x: %v", e)
+		}
+	}
 }

@@ -7,13 +7,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// fenceEgress is a fenced session's egress proxy: on loopback for
-// landlock_only, on a Unix socket for each command's namespace relay otherwise.
+// fenceEgress is a fenced session's egress proxy. Each call reaches it by a
+// way in of its own: a loopback port for landlock_only, a unix socket joined
+// by the relay in its network namespace otherwise.
 type fenceEgress struct {
 	once  sync.Once
 	proxy *egress.Proxy
@@ -29,48 +31,61 @@ type fenceEgressSpec struct {
 	Listen string `json:"listen"`
 }
 
+// fenceCall is what one command is given to reach the proxy.
+type fenceCall struct {
+	env []string
+	// port is the one TCP port the command may connect to: its call's own in
+	// landlock_only, the relay's in mount mode.
+	port  uint16
+	relay *fenceEgressSpec // mount mode only
+}
+
 // start starts the session's proxy once.
 func (e *fenceEgress) start(pol *egress.Policy) error {
 	e.once.Do(func() {
 		e.eg = &egressState{session: "fence"}
-		e.proxy, e.err = egress.Start(egress.Options{Policy: pol, Record: e.eg.route, Resolve: egressResolve})
+		e.proxy, e.err = egress.Start(egress.Options{Policy: pol, Record: e.eg.route, Resolve: egressResolve, IPv6Loopback: true})
 		if e.err != nil {
 			return
 		}
 		// Outside every write grant: a command cannot put another socket in its place.
-		if e.dir, e.err = os.MkdirTemp("", "abhed-fence-egress-"); e.err == nil {
-			e.err = e.proxy.ListenUnix(filepath.Join(e.dir, "proxy.sock"))
-		}
-		if e.err != nil {
+		if e.dir, e.err = os.MkdirTemp("", "abhed-fence-egress-"); e.err != nil {
 			_ = e.proxy.Close()
 		}
 	})
 	return e.err
 }
 
-// call is a credential for the launch's call, revoked when ctx ends, with
-// the variables that name the proxy.
-func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy) ([]string, error) {
+// call is a credential for the launch's call, revoked when ctx ends, with a
+// way in no other call has: in mount mode a socket for its relay alone, else
+// a loopback port only its Landlock domain may connect to.
+func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy, mounts bool) (fenceCall, error) {
 	if err := e.start(pol); err != nil {
-		return nil, fmt.Errorf("the egress proxy: %w", err)
+		return fenceCall{}, fmt.Errorf("the egress proxy: %w", err)
 	}
 	l := LaunchOf(ctx)
 	c, err := e.proxy.Issue(l.CallID)
 	if err != nil {
-		return nil, fmt.Errorf("an egress credential: %w", err)
+		return fenceCall{}, fmt.Errorf("an egress credential: %w", err)
+	}
+	if mounts {
+		err = c.ListenUnix(filepath.Join(e.dir, "c"+strconv.FormatUint(callSeq.Add(1), 36)+".sock"))
+	} else {
+		err = c.ListenLoopback(true)
+	}
+	if err != nil {
+		c.End()
+		return fenceCall{}, fmt.Errorf("the call's own proxy listener: %w", err)
 	}
 	e.eg.remember(l)
 	context.AfterFunc(ctx, c.End)
-	return c.Env(), nil
+	fc := fenceCall{env: c.Env(), port: c.Port()}
+	if mounts {
+		fc.port = e.proxy.Addr().Port()
+		fc.relay = &fenceEgressSpec{Sock: c.Socket(), Listen: e.proxy.Addr().String()}
+	}
+	return fc, nil
 }
-
-// spec is the relay's part of the launch.
-func (e *fenceEgress) spec() *fenceEgressSpec {
-	return &fenceEgressSpec{Sock: filepath.Join(e.dir, "proxy.sock"), Listen: e.proxy.Addr().String()}
-}
-
-// port is the proxy's port, the one TCP port a command may connect to.
-func (e *fenceEgress) port() uint16 { return e.proxy.Addr().Port() }
 
 // close stops the proxy and removes its socket's folder.
 func (e *fenceEgress) close() error {

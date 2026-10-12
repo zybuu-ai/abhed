@@ -42,6 +42,8 @@ type Container struct {
 	eg      *egressState
 	egProxy *egress.Proxy
 	egErr   error
+	// egDir holds each call's own socket, on the host alone.
+	egDir string
 }
 
 func NewContainer(p Policy) *Container {

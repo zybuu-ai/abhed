@@ -51,7 +51,8 @@ exit 0
 }
 
 // Under the allowlist a container tier command reaches the proxy, and only
-// it, through the relay its container runs; the container goes with the call.
+// it, through the relay its container runs, by its call's own way in: a
+// request with no credentials is the call's. The container goes with the call.
 func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 	engine, log := fakeEngine(t)
 	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
@@ -72,7 +73,8 @@ func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 	_ = ln.Close()
 	relayPort = func(uint16) uint16 { return uint16(port) } // #nosec G115 -- a port
 	t.Cleanup(func() { containerHostOS, relayPort = old, oldPort; _ = c.Close() })
-	ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "call-1"}))
+	var rec eventLog
+	ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "call-1", Record: rec.record}))
 	// The command connects to its proxy on its own loopback, as a client would.
 	cmd := c.Command(ctx, ws, `printf 'CONNECT denied.test:443 HTTP/1.1\r\nHost: denied.test:443\r\n\r\n' | nc -w 2 127.0.0.1 `+fmt.Sprint(port)+` | head -1; echo "proxy=$HTTP_PROXY"`)
 	if cmd.Err != nil {
@@ -90,10 +92,14 @@ func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 			t.Errorf("no %q in the engine's calls:\n%s", want, calls)
 		}
 	}
-	// The relay answered for the proxy: the denied host was refused by it.
-	if line := strings.SplitN(string(out), "\n", 2)[0]; !strings.HasPrefix(line, "HTTP/1.1 4") {
-		t.Fatalf("the proxy did not answer through the relay: %q\n%s", line, out)
+	// The relay answered for the proxy: the denied host was refused by it,
+	// as the call's, though the request carried no credentials.
+	if line := strings.SplitN(string(out), "\n", 2)[0]; !strings.HasPrefix(line, "HTTP/1.1 403") {
+		t.Fatalf("the proxy did not refuse the call's request through the relay: %q\n%s", line, out)
 	}
+	rec.waitFor(t, "the call's refused CONNECT", func(e map[string]any) bool {
+		return e["call_id"] == "call-1" && e["host"] == "denied.test" && e["decision"] == "deny"
+	})
 }
 
 // Without a relay for an engine in a VM, the tier is refused, never given the network.
