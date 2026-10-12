@@ -130,7 +130,7 @@ func (p Policy) rules(info archInfo) []rule {
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM,
 			note: "socket for every family; socketpair allowed"})
 	}
-	if info.socketcall && !(p.AllowNetwork && p.Socketcall) {
+	if info.socketcall && (!p.AllowNetwork || !p.Socketcall) {
 		// Its arguments are behind a pointer the filter cannot read, so the
 		// family is unknown: refused in both modes.
 		rs = append(rs, rule{group: "sockets", name: "socketcall", errno: errEPERM, cond: equal, arg: 0, k: sysSocket,

@@ -453,14 +453,10 @@ type gitMemory struct {
 	seenGit map[string]bool
 }
 
-// gitGuard returns the paths in ws to bind read-only before a command starts,
+// gitGuardFor returns the paths in ws to bind read-only before a command starts,
 // or why the command is not run; a planted commondir is taken out first.
-func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string, error) {
-	return gitGuardFor(ctx, ws, backend, mem, false)
-}
-
-// gitGuardFor is gitGuard; when required, a walk stopped by its bound
-// refuses the command rather than leave a repository past it unprotected.
+// When required, a walk stopped by its bound refuses the command rather than
+// leave a repository past it unprotected.
 func gitGuardFor(ctx context.Context, ws, backend string, mem *gitMemory, required bool) ([]string, error) {
 	mem.mu.Lock()
 	known := mem.known[ws]

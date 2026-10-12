@@ -42,14 +42,14 @@ func TestPlantedRepositoryIsTakenOut(t *testing.T) {
 	writeFiles(t, ws, map[string]string{"old/.git/HEAD": "ref: refs/heads/main\n", "old/.git/config": "[core]\n\tfsmonitor = ./mine\n"})
 	var mem gitMemory
 	var rec recorded
-	if _, err := gitGuard(rec.ctx(), ws, "bwrap", &mem); err != nil {
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
 		t.Fatalf("the first look refused: %v", err)
 	}
 	writeFiles(t, ws, map[string]string{
 		"clone/.git/HEAD": "ref: refs/heads/main\n", "clone/.git/config": "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = x\n",
 		"n/.git/HEAD": "ref: refs/heads/main\n", "n/.git/config": "[core]\n\tbare = false\n\tfsmonitor = ./x\n", "n/.git/hooks/post-checkout": "#!/bin/sh\n",
 	})
-	_, err := gitGuard(rec.ctx(), ws, "bwrap", &mem)
+	_, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false)
 	if err == nil || !strings.Contains(err.Error(), "core.fsmonitor") {
 		t.Fatalf("a planted repository ran: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestPlantedRepositoryIsTakenOut(t *testing.T) {
 	if got := rec.of(EvGitPlanted); len(got) != 1 {
 		t.Fatalf("recorded %v", rec.events)
 	}
-	if _, err := gitGuard(rec.ctx(), ws, "bwrap", &mem); err != nil {
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
 		t.Fatalf("the command after was refused: %v", err)
 	}
 }

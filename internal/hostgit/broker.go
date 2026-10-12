@@ -42,7 +42,8 @@ func Broker(workspace string, tier func() sandbox.Tier, command func(ctx context
 func brokered(line string) ([]string, bool) {
 	line = strings.TrimSpace(line)
 	for _, r := range line {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" ./_-+@:=", r)) {
+		plain := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" ./_-+@:=", r)
+		if !plain {
 			return nil, false
 		}
 	}

@@ -706,7 +706,7 @@ func holdsNothing() error {
 	root := os.Getuid() == 0 || os.Geteuid() == 0
 	if root {
 		if v, err := unix.PrctlRetInt(unix.PR_GET_SECUREBITS, 0, 0, 0, 0); err != nil || v&0x3 != 0x3 {
-			return fmt.Errorf("running as root without the securebits that keep it from regaining capabilities (%#x, %v)", v, err)
+			return fmt.Errorf("running as root without the securebits that keep it from regaining capabilities (%#x, %w)", v, err)
 		}
 	}
 	f, err := os.Open("/proc/thread-self/status")
@@ -717,7 +717,8 @@ func holdsNothing() error {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), ":")
-		if !ok || !(slices.Contains([]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}, k) || root && k == "CapBnd") {
+		checked := slices.Contains([]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}, k) || root && k == "CapBnd"
+		if !ok || !checked {
 			continue
 		}
 		if n, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64); err != nil || n != 0 {

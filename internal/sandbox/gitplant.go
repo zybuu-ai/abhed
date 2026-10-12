@@ -38,20 +38,6 @@ func set(words ...string) map[string]bool {
 	return m
 }
 
-// unsafeGitConfig names the first setting in the configuration file at p
-// that git init or clone would not write, or "" when there is none.
-func unsafeGitConfig(p string) string {
-	b, err := readSmall(p)
-	if err != nil {
-		return ""
-	}
-	_, bad := filterGitConfig(b)
-	if len(bad) == 0 {
-		return ""
-	}
-	return bad[0]
-}
-
 func readSmall(p string) ([]byte, error) {
 	f, err := os.Open(p) // #nosec G304 -- a git folder's config the walk found
 	if err != nil {
