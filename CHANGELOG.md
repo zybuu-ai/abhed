@@ -154,10 +154,13 @@ All notable changes to Abhed are recorded here. The format follows
 ### Security
 
 - A workbench shell or command could be read, typed into, resized or killed
-  by whichever account held its session, not only the one that started it,
-  so after a session changed hands (an account removed and made again under
-  the same name) the new holder could drive the old one's terminals. Each
-  now answers only the account that started it. Affects 1.0.0 to 1.2.7.
+  by whichever account held its session, not only the one that started it:
+  when a session's owner changed in the store under a running server (as
+  `abhed migrate --owners local-only` moving it from an old owner key to an
+  account does), the server took the new owner as the session's, and that
+  account could drive the terminals started under the old key. Each now answers only the account that started it. (An
+  account removed and made again under the same name has the same owner key;
+  the account sweep below ends its terminals.) Affects 1.0.0 to 1.2.7.
 - A call whose approval could not be written to the record (the database
   failing, or the session held by another process) still ran, so the record
   held no approval for what was done, and a process taking the session over
