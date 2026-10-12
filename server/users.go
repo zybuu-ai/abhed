@@ -122,8 +122,6 @@ func (s *Server) setUserAdmin(w http.ResponseWriter, r *http.Request) {
 		detail["sessions_ended"] = n
 		// Work started with the rights stops with them; the owner can start it again.
 		detail["work_stopped"] = s.StopOwnerBackground(r.Context(), "", auth.LocalOwner(name))
-		// Work started with the rights stops with them; the owner can start it again.
-		detail["work_stopped"] = s.StopOwnerBackground(r.Context(), "", auth.LocalOwner(name))
 		if err != nil {
 			// The rights are gone on every server already; only their sessions stay.
 			s.log.Error("sign-out everywhere not recorded", "user", name, "err", err)

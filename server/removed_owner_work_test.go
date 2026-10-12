@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,9 +92,12 @@ func TestRemovedAccountsWorkIsStopped(t *testing.T) {
 	}
 }
 
-// Taking administrator rights away stops the work the person started with them.
+// Taking administrator rights away stops the work the person started with them,
+// and the audit counts what was stopped.
 func TestDemotionStopsTheAdministratorsWork(t *testing.T) {
 	ctx := context.Background()
+	var mu sync.Mutex
+	var audited map[string]any
 	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
 	for _, u := range []auth.User{
 		{Username: "alice", Groups: []string{DefaultAdminGroup}},
@@ -109,6 +113,13 @@ func TestDemotionStopsTheAdministratorsWork(t *testing.T) {
 	st := agent.NewMemStore()
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: &shellAdapter{calls: map[string]int{}},
 		Registry: tools.NewRegistry(tools.Read{}, tools.Bash{}), Store: st,
+		AdminAudit: func(_ context.Context, action, _ string, detail map[string]any) {
+			if action == "user.admin_revoked" {
+				mu.Lock()
+				audited = detail
+				mu.Unlock()
+			}
+		},
 		Auth: &auth.Middleware{Providers: []auth.Provider{local},
 			PublicPaths: append(PublicPaths(), local.PublicPaths()...)}})
 	b := &bgServer{t: t, s: s, h: s.Handler(), store: st}
@@ -122,4 +133,9 @@ func TestDemotionStopsTheAdministratorsWork(t *testing.T) {
 		t.Fatalf("demote bob = %d %s", rec.Code, rec.Body)
 	}
 	waitUntil(t, "bob's shell ended", func() bool { return countType(b.events(id), agent.EvShellEnded) == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if n, _ := audited["work_stopped"].(int); n != 1 {
+		t.Fatalf("audit detail = %v; want work_stopped 1", audited)
+	}
 }
