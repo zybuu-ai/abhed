@@ -137,6 +137,19 @@ All notable changes to Abhed are recorded here. The format follows
   `govulncheck` reports against 1.26.8. `go.mod`, the container image and CI
   pin it.
   Affects the binaries and images of 1.2.7 and earlier.
+- The Postgres runtime role, which is meant to append and not alter, could
+  move any session to another owner (`UPDATE sessions SET user_id = …`),
+  rewrite a session's tenant or parent, and change an account's groups, with
+  no record of it. It may now update only the columns a session's life
+  changes; a trigger allows an owner change only to the unclaimed form when
+  an account is removed, and every owner change and every change to an
+  account's groups or tenant is written to `owner_changes` and
+  `account_changes` by triggers the runtime role can neither skip nor write.
+  Run `abhed migrate` to apply it. Affects 1.0.0 to 1.2.7.
+- Deleting a session in Postgres left its whole transcript readable in the
+  database. Its payloads are now sealed with a per-session key that delete
+  removes (see Added). Affects 1.0.0 to 1.2.7; sessions recorded by those
+  versions keep their plaintext.
 
 ### Added
 
@@ -498,6 +511,20 @@ All notable changes to Abhed are recorded here. The format follows
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
+- The record's heads can be sent to a witness the machine's owner does not
+  control (managed `record.witness`: an append-only `file` on WORM or remote
+  storage, and/or a `url` sent each signed head). `abhed record verify`
+  checks every head the witness holds is still in the record, which catches
+  a record cut back, re-chained or restored from an older copy.
+- Postgres events are hash-chained per session by the database itself
+  (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
+  sends), as is the control plane's `sandbox_audit` per tenant. `abhed
+  record verify` with `storage.driver: postgres` walks each chain, and with a
+  witness each session's head is sent at the end of every run.
+- Deleting a Postgres session now erases what it said: payloads and file
+  pre-images are sealed with a per-session key, and delete removes the key,
+  the session's label and title, and its approvals' arguments. The event
+  rows and their hashes stay. Sessions recorded before 1.2.8 are not sealed.
 
 ### Changed
 

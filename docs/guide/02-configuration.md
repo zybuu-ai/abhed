@@ -848,8 +848,16 @@ ABHED_DATABASE_URL='postgres://abhed_runtime:…@db/abhed' abhed serve
 
 `abhed migrate` applies the schema as the owner and grants the runtime role
 exactly what the server uses: `INSERT` and `SELECT` on `events`, and nothing
-that changes or removes one. Keep the owner's credentials off the host that
-runs the server; whoever holds them can alter the record. After an upgrade
+that changes or removes one. On `sessions` it may update only the columns a
+session's life changes, never its id, tenant, parent or start; its owner
+(`user_id`) only to the unclaimed form when the account is removed, which a
+trigger enforces. Every owner change is written to `owner_changes`, and every
+change to an account's groups or tenant to `account_changes`, by triggers
+that run as the tables' owner: the runtime role can read those tables but
+neither write nor skip a row. Keep the owner's credentials off the host that
+runs the server; whoever holds them can alter the record (see
+[the Postgres record](12-records.md#the-postgres-record) for the chain and
+witness that show it). After an upgrade
 that adds columns, run `abhed migrate` again before starting the server: on a
 schema older than the binary it refuses to start and names what is missing.
 

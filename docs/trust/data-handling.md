@@ -74,15 +74,17 @@ mechanism is not implemented in this repository today; there is no scheduled
 job that drops old partitions. Rows persist until an operator does something
 about it at the database level.
 
-**Deleting a session marks it; the rows stay.** Schema version 3 in
-`store/schema.sql` adds `sessions.deleted_at` and `deleted_by`.
-The comment is explicit about what this does and does not do: "Events are
-append-only by trigger, so a delete cannot remove the transcript rows and
-does not try. It marks the session; every read path treats a marked session
-as absent. The rows remain for the audit the deployment promised, reachable
-only by someone with the database, never through the API again." A deleted
-session is gone from the console and the API; it is not gone from the
-database.
+**Deleting a session erases what it said; the rows stay.** Schema version
+3 in `store/schema.sql` adds `sessions.deleted_at` and `deleted_by`, and
+version 10 adds `session_keys`. Since 1.2.8 each session's event payloads
+and file pre-images are sealed (AES-256-GCM) with a key of the session's own,
+and a delete removes that key, the session's label and title, and its
+approvals' arguments. The event rows stay, append-only by trigger, but hold
+ciphertext no one can open; what remains is that each step happened, its
+type, actor, time and hash. Not erased: sessions recorded before 1.2.8, whose
+payloads were never sealed; database backups taken before the delete, which
+hold the key until they expire; and the deleted key's bytes until `VACUUM`
+reclaims them.
 
 ## What the operator can export or delete
 
@@ -90,8 +92,8 @@ database.
   sessions while their account is active. An operator with database access
   can export anything directly via `pg_dump`.
 - **Delete**: A user can delete their own session from the console UI, which
-  marks it per schema version 3 above — it stops being reachable through the
-  product but the rows remain in Postgres. An operator with direct database
+  marks it and erases its content by key, as above — it stops being reachable
+  through the product, and the rows that remain in Postgres cannot be read. An operator with direct database
   access is the only path to actually removing rows, and doing so against an
   append-only `events` table means operating below the API (the immutability
   triggers block `UPDATE`/`DELETE` from any client, including an

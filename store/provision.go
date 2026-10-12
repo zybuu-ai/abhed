@@ -24,10 +24,18 @@ import (
 // or removes an event, so the role is not given the means to.
 var runtimeGrants = []struct{ table, privileges string }{
 	{"events", "SELECT, INSERT"},
-	{"sessions", "SELECT, INSERT, UPDATE"},
+	// Only the columns a session's life changes: never its id, tenant,
+	// parent or start, and its owner only as the sessions_guard trigger allows.
+	{"sessions", "SELECT, INSERT, UPDATE (user_id, model, mode, prompt, title, ended_at, terminal_reason, turns, " +
+		"tokens_in, tokens_out, tokens_cached, compactions, gpu_seconds, cost_usd, context_tokens, context_window, " +
+		"node_id, node_seen_at, deleted_at, deleted_by)"},
+	{"owner_changes", "SELECT"},
+	// A key is deleted to erase its session; it is never rewritten.
+	{"session_keys", "SELECT, INSERT, DELETE"},
 	{"approvals", "SELECT, INSERT, UPDATE"},
 	{"checkpoints", "SELECT, INSERT"},
 	{"users", "SELECT, INSERT, UPDATE, DELETE"},
+	{"account_changes", "SELECT"},
 	{"models", "SELECT"},
 	{"schema_version", "SELECT"},
 	// The control plane: sandboxes are rewritten and removed by design; its
@@ -214,7 +222,8 @@ var errNoSchema = errors.New("the schema has not been applied")
 // requiredColumns are columns this build writes that an older schema lacks.
 // The runtime role cannot add them, so a missing one is found at start rather
 // than as a failed write the first time someone answers an approval.
-var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"users", "revocations"}, {"sessions", "title"}, {"events", "inserted_at"}}
+var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"users", "revocations"}, {"sessions", "title"}, {"events", "inserted_at"},
+	{"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"}}
 
 // missingColumns names the required columns the connected database lacks.
 func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {

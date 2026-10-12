@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,7 +19,9 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
+	"github.com/zybuu-ai/abhed/store/witness"
 )
 
 // recordCmd is `abhed record`: list, show, verify, export and prune the local
@@ -29,7 +32,9 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 		fmt.Fprint(stderr, `usage: abhed record <command>
   list    [-all|-repo] [-n N] [-json]   sessions in this workspace, latest active first
   show    <session> [-json]            a session's events
-  verify  [session|file ...]           check the chain; no argument checks everything
+  verify  [-witness file] [session|file ...]
+                                       check the chain; no argument checks everything,
+                                       and the heads a witness holds (record.witness.file)
   export  <session> [-o path] [-format jsonl|html|txt] [-unverified]
                                        jsonl carries its head for checking elsewhere
   prune   <session> | -older-than 90d [-yes]
@@ -48,6 +53,9 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 	}
 	// A moved record is state here too, so no export is written into it.
 	registerState(cfg, workspace)
+	if args[0] == "verify" && cfg.Storage.Driver == "postgres" {
+		return verifyPostgres(cfg, args[1:], stdout, stderr)
+	}
 	rec, err := openRecord(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
@@ -219,6 +227,16 @@ func eventSummary(ev agent.Event) string {
 }
 
 func (c recordCtx) verify(args []string) int {
+	fs := flag.NewFlagSet("record verify", flag.ContinueOnError)
+	fs.SetOutput(c.err)
+	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the record against")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	args = fs.Args()
+	if *witnessed == "" && c.cfg.ManagedSets("record.witness") {
+		*witnessed = c.cfg.Record.Witness.File
+	}
 	if len(args) == 0 {
 		idx, reps, err := c.rec.VerifyAll()
 		if err != nil {
@@ -229,6 +247,7 @@ func (c recordCtx) verify(args []string) int {
 			bad = printReport(c.out, r.ID, r) || bad
 		}
 		fmt.Fprintf(c.out, "%d session(s) checked in %s\n", len(reps), c.rec.Dir())
+		bad = c.checkWitness(*witnessed) || bad
 		fmt.Fprintln(c.out, verifyScope)
 		if bad {
 			return 1
@@ -263,6 +282,7 @@ func (c recordCtx) verify(args []string) int {
 		}
 		bad = printReport(c.out, a, rep) || bad
 	}
+	bad = c.checkWitness(*witnessed) || bad
 	fmt.Fprintln(c.out, verifyScope)
 	if bad {
 		return 1
@@ -270,8 +290,36 @@ func (c recordCtx) verify(args []string) int {
 	return 0
 }
 
+// checkWitness checks the record against every head the witness file holds
+// for this tenant, and reports whether any is no longer in it.
+func (c recordCtx) checkWitness(path string) bool {
+	if path == "" {
+		return false
+	}
+	f, err := os.Open(path) // #nosec G304 -- the managed witness file, or one the person names
+	if err != nil {
+		fmt.Fprintf(c.err, "abhed: the witness's heads: %v\n", err)
+		return true
+	}
+	defer f.Close()
+	stmts, unreadable := witness.Read(f)
+	for _, err := range unreadable {
+		fmt.Fprintf(c.out, "FAILED  witness: %v\n", err)
+	}
+	problems, err := witness.Check(stmts, "local", cliTenant(c.cfg), c.rec.HashAt)
+	if err != nil {
+		fmt.Fprintf(c.err, "abhed: the witness's heads: %v\n", err)
+		return true
+	}
+	for _, p := range problems {
+		fmt.Fprintf(c.out, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
+	}
+	fmt.Fprintf(c.out, "%d witnessed head(s) checked from %s\n", len(stmts), path)
+	return len(unreadable) > 0 || len(problems) > 0
+}
+
 // verifyScope says what a passing verify does and does not show.
-const verifyScope = "A passing check shows no line was edited, added, moved or removed, and none the head counts was cut, by the agent or by accident. Lines after the last sync are not covered, and the head and index files can be rewritten by the machine's owner, who can also re-chain the record: it is not proof against them."
+const verifyScope = "A passing check shows no line was edited, added, moved or removed, and none the head counts was cut, by the agent or by accident. Lines after the last sync are not covered. Without a witness the head and index files can be rewritten by the machine's owner, who can also re-chain the record or put back an older copy; with record.witness each head the witness holds must still be in the record."
 
 // inRecordFolder reports whether path is in this records directory at all.
 func (c recordCtx) inRecordFolder(path string) bool {
@@ -544,4 +592,85 @@ func reorderFlags(args []string) []string {
 		rest = append(rest, a)
 	}
 	return append(flags, rest...)
+}
+
+// verifyPostgres walks the event chain of each named session in the
+// database, or of every session the tenant lists, and checks the heads a
+// witness file holds for it.
+func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("record verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the database against")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	if *witnessed == "" && cfg.ManagedSets("record.witness") {
+		*witnessed = cfg.Record.Witness.File
+	}
+	ctx := context.Background()
+	pg, err := store.Open(ctx, storeConfig(cfg))
+	if err != nil {
+		fmt.Fprintf(stderr, "abhed: %v\n", err)
+		return 1
+	}
+	defer pg.Close()
+	ids := fs.Args()
+	if len(ids) == 0 {
+		rows, err := pg.ListSessions(ctx, 100000)
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: %v\n", err)
+			return 1
+		}
+		for _, r := range rows {
+			ids = append(ids, r.ID)
+		}
+	}
+	bad := false
+	for _, id := range ids {
+		r, err := pg.VerifyChain(ctx, id)
+		switch {
+		case err != nil:
+			fmt.Fprintf(stderr, "abhed: %s: %v\n", id, err)
+			bad = true
+		case !r.OK():
+			fmt.Fprintf(stdout, "FAILED  %s: the chain breaks at event %d of %d: a row was changed, removed or put out of order\n", id, r.FirstBad, r.Rows)
+			bad = true
+		default:
+			note := ""
+			if r.Unchained > 0 {
+				note = fmt.Sprintf(" (%d event(s) from before the chain, not covered)", r.Unchained)
+			}
+			fmt.Fprintf(stdout, "ok      %s: %d chained event(s), head %s%s\n", id, r.Rows, short(r.Head), note)
+		}
+	}
+	if *witnessed != "" {
+		f, err := os.Open(*witnessed) // #nosec G304 -- the managed witness file, or one the person names
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: the witness's heads: %v\n", err)
+			return 1
+		}
+		defer f.Close()
+		stmts, unreadable := witness.Read(f)
+		for _, err := range unreadable {
+			fmt.Fprintf(stdout, "FAILED  witness: %v\n", err)
+		}
+		problems, err := witness.Check(stmts, "postgres", pg.Tenant(), func(session string, n int64) (string, bool, error) {
+			return pg.ChainHashAt(ctx, session, n)
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: the witness's heads: %v\n", err)
+			return 1
+		}
+		for _, p := range problems {
+			fmt.Fprintf(stdout, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
+		}
+		fmt.Fprintf(stdout, "%d witnessed head(s) checked from %s\n", len(stmts), *witnessed)
+		bad = bad || len(unreadable) > 0 || len(problems) > 0
+	}
+	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered by anyone short of the tables' owner. "+
+		"An owner can recompute the chain; with record.witness each head the witness holds must still be in the database.")
+	if bad {
+		return 1
+	}
+	return 0
 }
