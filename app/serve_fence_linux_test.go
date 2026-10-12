@@ -132,3 +132,29 @@ func TestServeRunsEachSessionUnderItsOwnFence(t *testing.T) {
 		t.Error("a session's command made a hook")
 	}
 }
+
+// Once its fence is made, a served session's bash reads start-up files from
+// that fence's home, not the server's.
+func TestServedFenceSessionHomeIsItsFencesOnceMade(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
+		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
+	}
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	cfg := config.Default()
+	cfg.Sandbox.Tier = string(sandbox.TierFence)
+	cfg.Sandbox.MaxProcs, cfg.Sandbox.MaxMemoryMB = 128, 512
+	shared := tools.Bash{Home: func() (string, bool) { return "/server/fence/home", true }}
+	b, closeFn := fenceSessionBash(cfg, ws)("s1", agent.NewRecorder(agent.NewMemStore(), "s1", ""), shared)
+	defer func() { _ = closeFn() }()
+	if out, err := b.Sandbox(t.Context(), ws, "true").CombinedOutput(); err != nil {
+		t.Fatalf("the session's first command: %v\n%s", err, out)
+	}
+	dir, visible := b.Home()
+	if !visible || dir == "/server/fence/home" || filepath.Base(dir) != "home" {
+		t.Fatalf("home once the fence is made: %q %v", dir, visible)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the fence's home: %v", err)
+	}
+}
