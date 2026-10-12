@@ -4,6 +4,9 @@ package sandbox
 
 import "os/exec"
 
+// ownGroup leaves cmd as it is: a cancel kills the process alone.
+func ownGroup(*exec.Cmd) {}
+
 // EndLeft does nothing here: there is no marker to find processes by.
 func EndLeft(*exec.Cmd) {}
 

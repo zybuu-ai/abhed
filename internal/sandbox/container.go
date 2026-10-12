@@ -95,9 +95,8 @@ func (c *Container) Available() (bool, string) {
 				continue
 			}
 			// A binary on PATH is not a working daemon; check for real.
-			probe := exec.Command(path, "info", "--format", "{{.ServerVersion}}")
-			if err := probe.Run(); err != nil {
-				c.reason = rt + " found but its daemon is not responding"
+			if _, err := engineProbe(path, "info", "--format", "{{.ServerVersion}}"); err != nil {
+				c.reason = rt + " found but its daemon is not responding: " + err.Error()
 				continue
 			}
 			c.runtime = path
@@ -124,7 +123,7 @@ func (c *Container) runscInstalled() bool {
 	if _, err := exec.LookPath("runsc"); err == nil {
 		return true
 	}
-	out, err := exec.Command(c.runtime, "info", "--format", "{{json .Runtimes}}").Output()
+	out, err := engineProbe(c.runtime, "info", "--format", "{{json .Runtimes}}")
 	return err == nil && strings.Contains(string(out), "runsc")
 }
 
@@ -156,8 +155,28 @@ func (c *Container) engine() string {
 
 // saysPodman reports whether the runtime at path calls itself Podman.
 func saysPodman(path string) bool {
-	out, err := exec.Command(path, "--version").Output() // #nosec G204 -- the container runtime found on PATH
+	out, err := engineProbe(path, "--version")
 	return err == nil && strings.Contains(strings.ToLower(string(out)), "podman")
+}
+
+// engineProbeWait bounds each question put to the engine as the tier is
+// chosen, so a hung engine (a stopped VM, a dead socket) cannot hold a
+// session's start; a variable, so a test can shorten it.
+var engineProbeWait = 5 * time.Second
+
+// engineProbe runs the engine's CLI with args and returns its output, ended
+// with everything it started after engineProbeWait.
+func engineProbe(path string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), engineProbeWait)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- the container runtime found on PATH, fixed arguments
+	ownGroup(cmd)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return out, fmt.Errorf("%s %s did not answer within %s", filepath.Base(path), strings.Join(args, " "), engineProbeWait)
+	}
+	return out, err
 }
 
 // runArgs is everything up to the image: the confinement both a command and

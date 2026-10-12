@@ -114,6 +114,21 @@ func endTree(root int) {
 	}
 }
 
+// ownGroup starts cmd in a process group of its own, which a cancel kills
+// whole: a helper the command started cannot keep its pipes open.
+func ownGroup(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	cmd.Cancel = func() error {
+		if err := killGroup(cmd.Process.Pid); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+}
+
 // EndLeft ends what cmd's command left running, found by its marker, after
 // the command itself has exited: a server it started in the background, or
 // a child that left its session. A cancel does this only while the command runs.

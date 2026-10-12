@@ -678,6 +678,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- Choosing the container or vm tier asked the engine (`docker info`,
+  `podman info`) with no time limit, so an engine that never answered (a
+  stopped VM, a dead socket) held a session's start. Each question now ends
+  after five seconds, with what the engine started, and the tier is
+  reported unavailable saying the engine did not answer.
 - What a background shell left running after its own command ended
   (`server &`) was no longer stopped by `shell_kill`, a stop or the session
   closing, outside bubblewrap; and a process the workbench shell started in
