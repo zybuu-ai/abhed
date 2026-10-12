@@ -104,6 +104,9 @@ const (
 	// EvPolicyLayer records the permission rules an edition added to the
 	// session's policy as a layer of their own, such as a workspace's.
 	EvPolicyLayer EventType = "policy.layer"
+	// EvStartupTrusted names the shell start-up files left unjudged this run
+	// because they match the person's baseline (path and sha256).
+	EvStartupTrusted EventType = "policy.startup_trusted"
 )
 
 type Actor string

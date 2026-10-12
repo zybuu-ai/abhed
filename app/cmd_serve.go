@@ -311,6 +311,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 			_ = es.EndSession(id)
 		}
 	}
+	opts.StartupBaseline = config.StartupBaseline
 	// Under per-session sandboxes each session's sandbox is a fence of its own already.
 	if fence != nil && perSession == nil {
 		opts.SessionBash = fenceSessionBash(cfg, workspace)

@@ -8,6 +8,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.7
 
+- Under deny or ask rules, a shell the agent starts on the process tier or
+  none is judged on your own start-up files too, so one a package manager
+  wrote (`eval "$(brew shellenv)"` in `.zprofile`) can make `zsh -lc` ask.
+  Run `abhed trust startup-files` once in your own terminal to trust them
+  as they are; `abhed doctor` lists them.
 - On the Linux process tier, `sandbox.max_memory_mb` set in a configuration
   file needs a delegated cgroup (`systemd-run --user --scope -p
   Delegate=yes`); without one the process tier is refused.
@@ -214,8 +219,8 @@ All notable changes to Abhed are recorded here. The format follows
   shell typed into a terminal, as `bash`, counted as interactive), or that
   an exec sets in its environment, and those a shell reads from the
   `HOME` the sandbox gives it, which an earlier command may have written:
-  read on the process tier, none and the fence (those there unchanged
-  since the session's first command, the person's own, are not), and
+  read on the process tier, none and the fence (those matching the
+  baseline `abhed trust startup-files` records are not), and
   refused under a deny rule where the host cannot read that `HOME`, as in a
   container); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
@@ -735,6 +740,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `abhed trust startup-files` records the shell start-up files in your home
+  folder, once you have seen them, as your own: while each keeps its path,
+  size and sha256 a shell the agent starts is not judged on it. Kept in
+  `~/.abhed/startup-files.json`; refused inside an agent's command;
+  `abhed doctor` lists the files and any changed since, and each session's
+  record notes those it trusted (`policy.startup_trusted`).
 - `ABHED_ANTHROPIC_OAUTH_TOKEN` supplies an Anthropic subscription token;
   it is read before the variable the setup-token flow writes, which still
   works.
@@ -1837,6 +1848,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `config.TrustedStartupFiles`, `TrustStartupFiles`, `StartupBaseline`
+  and `StartupFilesPath` keep the start-up file baseline;
+  `policy.Engine.StartupBaseline` (with `policy.StartupFile`,
+  `StartupFileMark`, `TrustedStartupFile`), `server.Options.StartupBaseline`
+  and `agent.EvStartupTrusted` apply and record it.
 - `server.Options.ContinueTurns`, `Server.TakeOver`, `Server.HandOverRunning`
   and `server.TurnHandOver` (implemented by `store.Postgres` as `HandOver` and
   `ClaimHandedOver`, with the `store.HandedOver` holder) move running turns

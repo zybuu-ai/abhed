@@ -193,8 +193,11 @@ type TenantResolver interface {
 }
 
 type Options struct {
-	Addr      string
-	Workspace string
+	// StartupBaseline, when set, gives each new session's policy the shell
+	// start-up files the person trusted (abhed trust startup-files).
+	StartupBaseline func() map[string]policy.StartupFile
+	Addr            string
+	Workspace       string
 	// NodeID identifies this process among several behind a load balancer.
 	// It holds no '#', which separates it from a lease's incarnation token.
 	// Empty means a single-node deployment: nothing is claimed and routing
@@ -1845,6 +1848,9 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine {
 	pol := policy.New(mode)
 	pol.Managed = s.opts.Config.Managed
+	if s.opts.StartupBaseline != nil {
+		pol.StartupBaseline = s.opts.StartupBaseline()
+	}
 	// Path rules relative to the workspace; buildLive gives a session its own roots.
 	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)

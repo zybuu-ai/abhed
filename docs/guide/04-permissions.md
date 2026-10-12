@@ -478,11 +478,18 @@ variable by name (`read BASH_ENV`, `read ZDOTDIR`), is refused or asked
 about as the scripts above are. A shell started with the `HOME` the
 sandbox gives commands reads its start-up files there, which an earlier
 command may have written, so those are read too, by the same rules (a
-`#!/bin/zsh` script reads `.zshenv`). The files there when the session's
-first command is judged are your own, recorded by size, time and hash, and
-are not judged while they stay that way, so a package manager's line in
-your `.zprofile` does not make `zsh -lc` ask; one made or changed after
-that is read and judged. That
+`#!/bin/zsh` script reads `.zshenv`). Every one is judged by what it
+holds, whoever wrote it and whenever, unless you have trusted it: `abhed
+trust startup-files` shows each start-up file in your home folder (path,
+size, sha256, first lines) and, when you confirm (`-y` in a script),
+records them in `~/.abhed/startup-files.json`, which the agent cannot
+reach; run it in your own terminal, as it is refused inside an agent's
+command, and again after you change one. A file whose path, size and
+sha256 still match is not judged, so a package manager's line in your
+`.zprofile` does not make `zsh -lc` ask; any other file, a same-size edit,
+a link or a folder in its place is. Each session's record notes the files
+it trusted this way (`policy.startup_trusted`, path and sha256), and
+`abhed doctor` lists them and any changed since. That
 `HOME` is the host's own on the process tier and none, the fence's private
 home folder under the fence, and, in a container, a microVM, a driver's
 sandbox or a control-plane sandbox exec, a folder the host cannot read:

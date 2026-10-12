@@ -420,9 +420,9 @@ type Engine struct {
 	// read (an :exec): a line that would run one is refused under rules.
 	SandboxFiles bool
 
-	// homeMarked holds the HOME's start-up files as the first bash call
-	// found them; copies of the engine share it.
-	homeMarked *homeMarks
+	// StartupBaseline are the start-up files, by path, the person trusted
+	// with abhed trust startup-files; one that still matches is not judged.
+	StartupBaseline map[string]StartupFile
 
 	// AskReadOnly names read-only tools that may still ask in the default,
 	// accept-edits, auto and plan modes. Each is given the call's subject and
@@ -438,7 +438,7 @@ type Engine struct {
 	GitExtensions map[string]bool
 }
 
-func New(mode Mode) *Engine { return &Engine{Mode: mode, homeMarked: new(homeMarks)} }
+func New(mode Mode) *Engine { return &Engine{Mode: mode} }
 
 // WithoutHooks is a copy of e that asks no hook of any kind, for a dry run
 // that must not show a hook a call that is not being made.
@@ -830,7 +830,6 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		if line {
 			canon = canon.AsTerminalLine()
 		}
-		e.markHome()
 		subjects, complete = commandSegments(subject)
 		narrowAllows = !hasShellControl(subject)
 		if canon.Text != subject {

@@ -339,6 +339,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
 	pol.Cwd = sess.WorkDir
+	pol.StartupBaseline = config.StartupBaseline()
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
 		return nil, fmt.Errorf("abhed: deny rule: %w", err)
 	}
