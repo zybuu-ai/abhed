@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -103,10 +104,59 @@ func TestFenceMountsRefusesALinkedWorktree(t *testing.T) {
 	})
 	ev := &events{}
 	out, err := fenceRun(t, f, ws, "echo ran", ev.record(nil), "call-linked")
-	if err == nil || !strings.Contains(err.Error()+out, "symbolic link") {
+	// Refused by the git guard, in its words, not by the fence's own plan check.
+	if err == nil || !strings.Contains(err.Error()+out, "cannot hold read-only") {
 		t.Fatalf("a linked worktree folder did not refuse the command: %v\n%s", err, out)
 	}
 	if got := ev.of(EvGitLinked); len(got) != 1 {
 		t.Errorf("%s: %v", EvGitLinked, got)
+	}
+}
+
+// At the walk's bound the fence runs the command and records the stop once;
+// with modules past theirs it refuses the command, in the guard's words.
+func TestFenceMountsWalkAndModulesBounds(t *testing.T) {
+	oldWalk, oldModules := gitWalkFolders, gitModulesEntries
+	gitWalkFolders, gitModulesEntries = 5, 10
+	t.Cleanup(func() { gitWalkFolders, gitModulesEntries = oldWalk, oldModules })
+	var ws string
+	f, _ := mounted(t, func(p *Policy) {
+		ws = p.Workspace
+		gitInit(t, ws)
+		for i := range 10 {
+			if err := os.MkdirAll(filepath.Join(ws, "-a", strconv.Itoa(i)), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p.ProtectGit = true
+	})
+	ev := &events{}
+	for _, id := range []string{"call-walk", "call-walk-again"} {
+		if out, err := fenceRun(t, f, ws, "echo ran", ev.record(nil), id); err != nil || !strings.Contains(out, "ran") {
+			t.Fatalf("refused at the walk's bound: %v\n%s", err, out)
+		}
+	}
+	got := ev.of(EvGitWalkBounded)
+	if len(got) != 1 || got[0]["refused"] != false {
+		t.Fatalf("the walk's bound was not recorded once: %v", got)
+	}
+	if why, _ := got[0]["reason"].(string); !strings.Contains(why, "is not protected") {
+		t.Errorf("the walk's bound says %q", why)
+	}
+	for i := range 2 * gitModulesEntries {
+		if err := os.MkdirAll(filepath.Join(ws, ".git", "modules", "-"+strconv.Itoa(i)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := fenceRun(t, f, ws, "echo ran", ev.record(nil), "call-modules")
+	if err == nil || strings.Contains(out, "ran") {
+		t.Fatalf("ran with modules past their bound: %v\n%s", err, out)
+	}
+	if msg := err.Error() + out; !strings.Contains(msg, "fence: the command was not run") || !strings.Contains(msg, "modules hold more than") ||
+		strings.Contains(msg, "sandbox: the command was not run") {
+		t.Errorf("the refusal says %q", msg)
+	}
+	if got := ev.of(EvGitWalkBounded); len(got) != 2 || got[1]["refused"] != true {
+		t.Errorf("the refusal was not recorded: %v", got)
 	}
 }
