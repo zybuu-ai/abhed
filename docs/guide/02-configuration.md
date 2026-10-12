@@ -551,8 +551,8 @@ without running anything.
   down), the next fenced session on the workspace looks at what the last one
   left: each session keeps a mark in `~/.abhed/fence/` that a clean close
   removes, and where a session's process is gone, it had no `.abhed` when
-  it started, and the `.abhed` there now dates from no later than its last
-  command, that `.abhed` is taken out as above and recorded with `when:
+  it started, and the `.abhed` there now last changed (by its ctime, which
+  a command cannot set) no later than its last command, that `.abhed` is taken out as above and recorded with `when:
   after_unclean_exit`. Nothing is taken while another session on the
   workspace still runs. A `.abhed` you make after such an exit, before the
   next session, is left. A folder added with `--add-dir` is read-only to
