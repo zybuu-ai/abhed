@@ -284,7 +284,11 @@ pretending:
   is a property this store promises, but what is left in them is ciphertext
   no one can open: type, actor, time and hash remain, the words do not. Its
   subagents' sessions go the same way. The mark records who deleted it and
-  when. What erasure does not reach: sessions recorded before 1.2.8, whose
+  when. Every replica reads a session's key from the database on each read
+  rather than from memory, so once the delete commits no server that shares
+  the database opens those payloads again; an audit export over the time
+  range shows the deleted session's events as `{"erased":true}`. What
+  erasure does not reach: sessions recorded before 1.2.8, whose
   payloads were never sealed; a database backup taken before the delete,
   which still holds the key until it expires; and, until `VACUUM` runs, the
   deleted key's bytes in the table's free space.

@@ -450,7 +450,7 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 
 	// Sealed with the session's key, so deleting the key erases it.
 	stored := []byte(ev.Payload)
-	if a, err := p.sealer(ctx, ev.SessionID, true); err != nil {
+	if a, err := p.sealer(ctx, ev.SessionID); err != nil {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	} else if a != nil {
 		if stored, err = sealPayload(a, ev.SessionID, ev.Seq, stored); err != nil {
@@ -641,6 +641,7 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 	defer rows.Close()
 
 	var out []agent.Event
+	keys := p.readKeys()
 	for rows.Next() {
 		var ev agent.Event
 		var payload []byte
@@ -652,7 +653,7 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
-		if payload, err = p.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+		if payload, err = keys.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
 			return nil, err
 		}
 		ev.Payload = payload
@@ -1148,7 +1149,7 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 
 // SaveCheckpoint records a file's prior content, backing /undo.
 func (p *Postgres) SaveCheckpoint(ctx context.Context, sessionID string, seq int64, path string, before []byte) error {
-	a, err := p.sealer(ctx, sessionID, true)
+	a, err := p.sealer(ctx, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1217,6 +1218,8 @@ func (p *Postgres) Scan(ctx context.Context, from, to time.Time, fn func(agent.E
 		return fmt.Errorf("scan events: %w", err)
 	}
 	defer rows.Close()
+	// A deleted session's events stay, for the chain, and open as erased.
+	keys := p.readKeys()
 	for rows.Next() {
 		var ev agent.Event
 		var payload []byte
@@ -1228,7 +1231,7 @@ func (p *Postgres) Scan(ctx context.Context, from, to time.Time, fn func(agent.E
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
-		if payload, err = p.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+		if payload, err = keys.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
 			return err
 		}
 		ev.Payload = payload
