@@ -206,7 +206,7 @@ func TestShellLineWithHiddenCharactersIsShownMarked(t *testing.T) {
 	ch := make(chan []byte, 8)
 	run.subs = map[chan []byte]struct{}{ch: {}}
 	run.follow([]byte("\r\n(sandbox: container) ws $ "))
-	if err := (&Server{}).shellInput(live, run, []byte("cd d‮rlo\r")); err != nil {
+	if err := (&Server{}).shellInput(live, run, []byte("cd d\u202erlo\r")); err != nil {
 		t.Fatal(err)
 	}
 	select {

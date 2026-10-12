@@ -82,7 +82,7 @@ func walkWorkspace(root string, visit func(rel string, info fs.FileInfo, read fu
 	n, partial := 0, ""
 	_ = fs.WalkDir(r.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // an unreadable entry is left out, not the end of the walk
 		}
 		if p != "." && skipInView(d.Name()) {
 			if d.IsDir() {
@@ -106,7 +106,7 @@ func walkWorkspace(root string, visit func(rel string, info fs.FileInfo, read fu
 		}
 		info, err := d.Info()
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // a file gone since it was listed is left out
 		}
 		visit(p, info, func() ([]byte, error) { return fs.ReadFile(r.FS(), p) })
 		return nil
