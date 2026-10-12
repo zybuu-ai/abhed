@@ -46,6 +46,19 @@ type Approver interface {
 
 type requestIDKey struct{}
 
+// withCallID gives a call the model left without an id, or with one already
+// used this turn, an id of its own, so its events and result pair with it alone.
+func withCallID(c model.ToolCall, prior []model.ToolCall) model.ToolCall {
+	taken := c.ID == ""
+	for _, p := range prior {
+		taken = taken || p.ID == c.ID
+	}
+	if taken {
+		c.ID = "call_" + newID()
+	}
+	return c
+}
+
 // RequestIDOf reports the id of the action.requested event an Approver is
 // asked about. Unlike a model's call id it is unique, so an answer that names
 // it cannot be taken for the answer to a later request.
@@ -1002,7 +1015,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				flushThinking(false)
 			}
 		case model.ChunkToolCall:
-			calls = append(calls, *chunk.ToolCall)
+			calls = append(calls, withCallID(*chunk.ToolCall, calls))
 		case model.ChunkError:
 			streamErr = chunk.Err
 		case model.ChunkDone:

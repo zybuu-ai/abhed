@@ -772,6 +772,11 @@ on. A server with it off starts on the older schema as before.
   check found nothing stronger, nothing said so; one stderr line now does.
   The status line's JSON carries `sandbox_checking` while the tier is still
   being chosen, and `/bug`'s report says it.
+- A tool call the model sent without an id, or with an id it had already
+  used in the same turn, kept that id, so two such reads run in parallel
+  could have their results paired with the wrong call in the record and in
+  editor cards. Each such call now gets an id of its own (`call_` and a
+  unique suffix) before anything is recorded.
 
 ### Dependencies
 
