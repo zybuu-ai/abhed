@@ -3,6 +3,7 @@ package policy
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,5 +38,19 @@ func BenchmarkEvaluateWriteAllowOnly(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		e.Evaluate("write", true, a)
+	}
+}
+
+// BenchmarkEvaluateBraces is a 55 KB command of brace sequences under a deny
+// rule; past the brace budget it asks, in tens of milliseconds.
+func BenchmarkEvaluateBraces(b *testing.B) {
+	e := New(ModeBypass)
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		b.Fatal(err)
+	}
+	a := args(map[string]string{"command": strings.Repeat("echo {1..1000}\n", 3600)})
+	b.ResetTimer()
+	for range b.N {
+		e.Evaluate("bash", true, a)
 	}
 }

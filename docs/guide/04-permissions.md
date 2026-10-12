@@ -434,14 +434,31 @@ rule for `bash` has a pattern, and asked about otherwise, when it:
   (`echo … > s.sh; sh s.sh`), `cp`, `mv`, `ln`, `install`, `rsync`, `tee`,
   `dd of=`, `sed -i`, `perl -i`, `curl -o` or `wget`, including a copy into
   its folder (`cp sub/s.sh . && ./s.sh`) and any file those name by an
-  expansion or a pattern (`cp "$f" s.sh`, `cp sub/*.sh .`); names are
-  compared in any case, and a write to a folder on the script's path counts
+  expansion or a pattern (`cp "$f" s.sh`, `cp sub/*.sh .`) and any folder's
+  contents copied without naming its files (`cp -r sub/. .`, `cp -T sub .`,
+  `rsync -a sub/ .`, `ditto sub .`, and `cp -R sub/ .`, which copies the
+  contents on macOS); names are compared in any case, and a write to a
+  folder on the script's path counts
 - is named by a relative path on a line that may change folder first: `cd`,
   `pushd`, `popd`, `env -C`, `sudo -D`, `find -execdir`, or a script the
   line sources that runs `cd` (`cd sub && ./s.sh`, `. ./setup.sh && ./s.sh`).
   The check does not follow the folder; it refuses. A script named by an
   absolute path is still read.
 - is one of more than 16 scripts the line runs
+- is sourced by a name without a folder (`. s.sh`, `source s.sh`) on a line
+  that sets `PATH` in any way (`PATH=sub . s.sh`,
+  `export PATH=sub:$PATH; source s.sh`, `read PATH`), as bash then looks
+  for it on that `PATH` first
+
+A line that sets `PATH` to folders it names (`PATH=sub:$PATH tool`,
+`export PATH="$PWD/bin:$PATH"`) has each program it names without a folder
+read as a script from each of those folders, an empty entry and `$PWD` being
+the start folder; one the line may write first there is refused. A file a
+shell runs as it starts is read as a script the line runs: `BASH_ENV=f`,
+`ENV=f` (also through `env` or `export`), `--rcfile f` and `--init-file f`.
+One named by an expansion (`BASH_ENV=$f`), or set by a command that sets a
+variable by name (`read BASH_ENV`), is refused or asked about as the
+scripts above are.
 
 One the rules cannot read in full, because it is over 64 KiB, does not
 parse, runs text built when it runs (`eval "$x"`), or itself runs a script
@@ -459,6 +476,12 @@ A deny pattern matches the words, so it is easy to step around.
   builds before it runs it (`make && ./bin/app`), or a script another
   program on the line writes or unpacks (`tar x`, `unzip`, `git checkout`,
   `patch`, `python3 -c`)
+- a program or script found through a `PATH` entry built from another
+  expansion (`$HOME/bin`, `$(go env GOPATH)/bin`, `~/bin`), or through the
+  `PATH`, `BASH_ENV` or `ENV` the command inherits rather than sets (a
+  command on the host drops an inherited `BASH_ENV`); and the files a login
+  or interactive shell reads by default (`bash -l`, `bash -i` and
+  `~/.bashrc`)
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,
@@ -518,17 +541,19 @@ where its commands can connect (`sandbox.network`), so a command git runs
 cannot reach out.
 
 Words the shell builds are read as it would build them: line continuations
-are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as
+are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and braces such as
 `{curl,x}` are read as the words they make, so `c${IFS}url` is matched as
-`curl`. A brace list in a word that is literal text throughout
-(`mkdir -p src/{a,b}`) is read exactly as bash expands it and is not asked
-about for that; one holding an expansion, a quote, a nested or second list
-is asked about while a deny or ask rule for `bash` has a pattern. So is a
-brace sequence: `{c..c}url` and `c{u..u}rl` are read as `curl`, and
-`{1..3}` and `{a..c}` as their words, up to 1,024 of them. A sequence that
-bash versions expand differently (an increment such as `{1..9..2}`, zero
-padding such as `{01..10}`, or letters of both cases such as `{Z..a}`), or a
-longer one, is asked about as a list that hides its words is. A command that sets `IFS` to a separator other than blanks is also read
+`curl`. Braces are read as bash expands them, lists and sequences alike,
+nested or side by side (`mkdir -p a/{b,c}/d{1,2}`, `{c..c}url`,
+`echo {a..c}{1..2}`), and are not asked about for that. Where bash 3.2
+reads a sequence apart from later versions (an increment such as
+`{1..9..2}`, zero padding such as `{01..10}`), the rules see both readings.
+Braces are read so at any depth: in text given to `eval`, `trap`, a shell's
+`-c`, a here-string or a heredoc (`bash -c '{curl,x}'`,
+`eval 'c{u..u}rl x'`), in function bodies and in substitutions. A `for`
+loop's list (`for i in {1..2000}`) runs no command and is not asked about.
+A command whose braces make more than 16,384 words in all is asked about
+while a deny or ask rule for `bash` has a pattern. A command that sets `IFS` to a separator other than blanks is also read
 split on it, so `IFS=_; curl_x` is matched as `curl x`. Where such a command,
 or one that sets `IFS` in a way the text does not show (`IFS=$v`, `read IFS`,
 `${IFS:=_}`), then expands anything (`IFS=_; c=curl_x; $c`), the words that

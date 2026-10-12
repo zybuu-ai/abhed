@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -145,39 +146,50 @@ func TestIFSCause(t *testing.T) {
 	}
 }
 
-// A brace list in a literal word is read as the words it makes; one with an
-// expansion, a nested list or in an assignment's value still hides its words.
-func TestLiteralBraceListIsExpanded(t *testing.T) {
-	for command, want := range map[string]string{
-		"mkdir -p src/{a,b}":      "mkdir -p src/a src/b",
-		"cp f{,.bak}":             "cp f f.bak",
-		"touch {a,b}.go; ls":      "touch a.go b.go; ls",
-		"{curl,x}":                "curl x",
-		"echo --x={1,2} y":        "echo --x=1 --x=2 y",
-		"{c..c}url https://x":     "curl https://x",
-		"c{u..u}rl https://x":     "curl https://x",
-		"echo {a..c} {C..A}":      "echo a b c C B A",
-		"echo {3..1} {-1..1}":     "echo 3 2 1 -1 0 1",
-		"echo {1..5..2}":          "",
-		"echo {01..03}":           "",
-		"echo {Z..a}":             "",
-		"echo {1..2000}":          "",
-		"echo {a..c}{1..2}":       "",
-		"mkdir -p a/{b,c}/d{1,2}": "",
-		"echo {$a,b}":             "",
-		"echo {a,{b,c}}":          "",
-		"x={a,b} cmd":             "",
-		"echo 'q'{a,b}":           "",
+// Braces are read as the words each bash version makes of them, at any
+// depth; only an expansion past the budget hides its words.
+func TestBracesAreReadAsTheWordsTheyMake(t *testing.T) {
+	for command, want := range map[string][]string{
+		"mkdir -p src/{a,b}":             {"mkdir -p src/a src/b"},
+		"cp f{,.bak}":                    {"cp f f.bak"},
+		"touch {a,b}.go; ls":             {"touch a.go b.go"},
+		"{curl,x}":                       {"curl x"},
+		"echo --x={1,2} y":               {"echo --x=1 --x=2 y"},
+		"{c..c}url https://x":            {"curl https://x"},
+		"c{u..u}rl https://x":            {"curl https://x"},
+		"echo {a..c} {C..A}":             {"echo a b c C B A"},
+		"echo {3..1} {-1..1}":            {"echo 3 2 1 -1 0 1"},
+		"echo {1..5..2}":                 {"echo 1 3 5", "echo {1..5..2}"},
+		"echo {01..03}":                  {"echo 01 02 03", "echo 1 2 3"},
+		"echo {Z..a}":                    {"echo Z [ \\ ] ^ _ ` a"},
+		"mkdir -p a/{b,c}/d{1,2}":        {"mkdir -p a/b/d1 a/b/d2 a/c/d1 a/c/d2"},
+		"echo {a,{b,c}}":                 {"echo a b c"},
+		"echo 'q'{a,b}":                  {"echo qa qb"},
+		"echo {a..c}{1..2}":              {"echo a1 a2 b1 b2 c1 c2"},
+		"bash -c 'c{u..u}rl x'":          {"curl x"},
+		"eval 'git reset --{h,}ard'":     {"git reset --hard --ard"},
+		"f() { {c..c}url x; }; f":        {"curl x"},
+		"x=$(c{u,}rl x)":                 {"curl crl x"},
+		"bash <<< 'echo {1..3..1}'":      {"echo 1 2 3", "echo {1..3..1}"},
+		"for i in {1..5000}; do :; done": nil,
+		"x={a,b} cmd":                    nil,
 	} {
 		c := CanonicalCommand(command)
-		if want == "" {
-			if !c.Hidden {
-				t.Errorf("%q: not hidden (%q)", command, c.Text)
-			}
-			continue
+		if c.Hidden {
+			t.Errorf("%q: hidden", command)
 		}
-		if c.Text != want || c.Hidden {
-			t.Errorf("%q: text %q hidden %v, want %q", command, c.Text, c.Hidden, want)
+		for _, w := range want {
+			if !slices.Contains(c.Commands(), w) {
+				t.Errorf("%q: commands %q, want %q among them", command, c.Commands(), w)
+			}
+		}
+	}
+	if c := CanonicalCommand("echo {1..2000}"); c.Hidden || !slices.ContainsFunc(c.Commands(), func(s string) bool { return strings.HasSuffix(s, " 1999 2000") }) {
+		t.Errorf("echo {1..2000}: hidden %v", c.Hidden)
+	}
+	for _, command := range []string{"echo {1..20000}", "c{u..u}rl{1..20000} x", "bash -c 'echo {1..9}{1..9}{1..9}{1..9}{1..9}'"} {
+		if c := CanonicalCommand(command); !c.Hidden {
+			t.Errorf("%q: not hidden", command)
 		}
 	}
 }

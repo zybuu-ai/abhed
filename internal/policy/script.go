@@ -34,17 +34,24 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 	return out
 }
 
-// lineWrites are the files the lines around a script write: a script they
-// replace is read as it will be, which the check cannot do.
+// lineWrites are the files the lines around a script write, and the PATH
+// they set, which a script started from them inherits.
 type lineWrites struct {
-	files  []string
-	hidden string
+	files    []string
+	hidden   string
+	pathSet  bool
+	pathDirs []string
 }
 
 // readScriptsIn reads the scripts canon runs and reports whether canon, run
 // in the caller's shell as a sourced script is, may change its folder.
 func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd string, depth int, outer lineWrites) (moves bool) {
-	writes := lineWrites{files: append(append([]string(nil), outer.files...), canon.Writes()...), hidden: firstNonEmpty(outer.hidden, canon.WriteHidden())}
+	writes := lineWrites{
+		files:    append(append([]string(nil), outer.files...), canon.Writes()...),
+		hidden:   firstNonEmpty(outer.hidden, canon.WriteHidden()),
+		pathSet:  outer.pathSet || canon.PathSet(),
+		pathDirs: append(append([]string(nil), outer.pathDirs...), canon.PathDirs()...),
+	}
 	moves = canon.MovesFolder()
 	// In a script these ask, as what else a script hides does; on the line
 	// itself they refuse.
@@ -56,7 +63,15 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			return moves
 		}
 	}
-	for _, s := range canon.Scripts() {
+	scripts, why := pathScripts(canon, writes)
+	if why != "" {
+		if depth == 0 {
+			out.refuse = "it " + why
+			return moves
+		}
+		out.ask = "a script it runs " + why
+	}
+	for _, s := range scripts {
 		if out.refuse != "" {
 			return moves
 		}
@@ -133,6 +148,43 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		moves = moves || (s.Sourced && inner)
 	}
 	return moves
+}
+
+// pathScripts are the scripts canon runs, with each bare program looked up in
+// the folders a PATH the line sets names; why says what cannot be read.
+func pathScripts(canon tools.Canonical, writes lineWrites) (scripts []tools.Script, why string) {
+	scripts = canon.Scripts()
+	if why := canon.StartupHidden(); why != "" {
+		return nil, "names " + why
+	}
+	if !writes.pathSet {
+		return scripts, ""
+	}
+	for _, s := range scripts {
+		if s.Sourced && !strings.Contains(s.Path, "/") {
+			return nil, "sources " + s.Path + " by a name a PATH it sets may find in another folder"
+		}
+	}
+	if len(writes.pathDirs) > 0 && canon.BareCut() {
+		return nil, "names more programs than the check looks up on the PATH it sets"
+	}
+	scripts = append([]tools.Script(nil), scripts...)
+	for _, name := range canon.Bare() {
+		for _, dir := range writes.pathDirs {
+			p := filepath.Join(dir, name)
+			if writes.hidden != "" {
+				return nil, "runs " + name + " through the PATH it sets and may write it first (" + writes.hidden + ")"
+			}
+			for _, w := range writes.files {
+				if writesScript(w, p) {
+					return nil, "writes " + p + " and then runs it as " + name + " through the PATH it sets"
+				}
+			}
+			// Read as a program named by a path: one that is not there is skipped.
+			scripts = append(scripts, tools.Script{Path: p, Direct: true})
+		}
+	}
+	return scripts, ""
 }
 
 // writesScript reports a written file that is the script or a folder on its

@@ -11,8 +11,8 @@ import (
 // Canonical is a shell command with the tricks that hide its words undone,
 // for the policy checks only: the command runs as written.
 type Canonical struct {
-	// Text is the command with line continuations joined, IFS expansions and
-	// brace lists turned into spaces, and $'...' decoded.
+	// Text is the command with line continuations joined, IFS expansions
+	// turned into spaces, and $'...' decoded; braces are read by the parser.
 	Text string
 	// Joined reports that a backslash-newline continuation was removed.
 	Joined bool
@@ -123,27 +123,6 @@ func CanonicalCommand(command string) Canonical {
 			b.WriteByte(' ')
 			c.Reworded, c.Hidden = true, true
 			i += ifsAt(command, i+1)
-		case ch == '{' && !double && (i == 0 || command[i-1] != '$'):
-			if end := braceList(command, i); end > 0 {
-				// A list in a literal word is read as the words it makes.
-				s := b.String()
-				ws := strings.LastIndexAny(s, " \t\n;&|()`<>") + 1
-				if words, wordEnd, ok := braceWords(s[ws:], command, i, end); ok {
-					prefix := s[:ws]
-					b.Reset()
-					b.WriteString(prefix)
-					b.WriteString(words)
-					c.Reworded = true
-					i = wordEnd - 1
-					continue
-				}
-				b.WriteString(strings.NewReplacer(",", " ").Replace(command[i+1 : end]))
-				b.WriteByte(' ')
-				c.Reworded, c.Hidden = true, true
-				i = end
-				continue
-			}
-			b.WriteByte(ch)
 		case ch == '\t' || ch == '\r' || ch == '\f' || ch == '\v':
 			b.WriteByte(' ')
 			c.Reworded = true
@@ -166,7 +145,8 @@ func CanonicalCommand(command string) Canonical {
 	c.IFSNamed = named || c.shell.ifsNamed
 	c.textIFSNamed = named
 	c.IFSCause = c.ifsCause(named)
-	c.Hidden = c.Hidden || c.shell.unparsed || c.shell.tooLong
+	c.Hidden = c.Hidden || c.shell.unparsed || c.shell.tooLong || c.shell.braceHidden
+	c.Reworded = c.Reworded || c.shell.braced
 	c.IFSSplit = (c.IFS != "" || c.IFSUnknown) && strings.ContainsAny(command, "$`")
 	return c
 }
@@ -597,136 +577,6 @@ func ifsValue(rest string) bool {
 	return rest != "" && !strings.ContainsRune(" \t\n;&|", rune(rest[0]))
 }
 
-// braceList returns the index of the } closing a brace expansion that opens
-// at command[i], or 0: a list with a comma, {rm,-rf,x}, or a sequence,
-// {c..c} or {1..3}.
-func braceList(command string, i int) int {
-	depth, comma := 0, false
-	for j := i; j < len(command); j++ {
-		switch command[j] {
-		case '{':
-			depth++
-		case '}':
-			if depth--; depth == 0 {
-				if comma || braceSequence.MatchString(command[i+1:j]) {
-					return j
-				}
-				return 0
-			}
-		case ',':
-			comma = comma || depth == 1
-		case ' ', '\t', '\n', ';', '&', '|', '\'', '"':
-			return 0
-		}
-	}
-	return 0
-}
-
-// maxBraceWords bounds the words a literal brace list is read as.
-const maxBraceWords = 64
-
-// braceWords expands the brace list command[open:end+1] in a word that is
-// literal text throughout, prefix before it: the words joined by blanks and
-// where the word ends. ok is false for a list with a nested list, an
-// expansion, a quote or an escape in the word, a second list after it, or
-// an assignment's value, where bash does not expand it.
-func braceWords(prefix, command string, open, end int) (string, int, bool) {
-	wordEnd := end + 1
-	for wordEnd < len(command) && strings.IndexByte(" \t\n;&|()`<>", command[wordEnd]) < 0 {
-		wordEnd++
-	}
-	suffix, items := command[end+1:wordEnd], command[open+1:end]
-	const special = "{}$`'\"\\"
-	if strings.ContainsAny(prefix, special) || strings.ContainsAny(suffix, special) || strings.ContainsAny(items, special) {
-		return "", 0, false
-	}
-	if isAssignment(prefix) {
-		return "", 0, false
-	}
-	parts, limit := strings.Split(items, ","), maxBraceWords
-	if len(parts) == 1 {
-		if parts = sequenceWords(items); parts == nil {
-			return "", 0, false
-		}
-		limit = maxSequenceWords
-	}
-	if len(parts) > limit {
-		return "", 0, false
-	}
-	words := make([]string, len(parts))
-	for k, p := range parts {
-		words[k] = prefix + p + suffix
-	}
-	return strings.Join(words, " "), wordEnd, true
-}
-
-// braceSequence matches what bash may read as a sequence between braces: two
-// integers or two letters, and an increment.
-var braceSequence = regexp.MustCompile(`^(?:-?[0-9]+\.\.-?[0-9]+|[A-Za-z]\.\.[A-Za-z])(?:\.\.-?[0-9]+)?$`)
-
-// maxSequenceWords bounds the words a brace sequence is read as.
-const maxSequenceWords = 1024
-
-// sequenceWords are the words bash makes of the sequence items, {c..c} or
-// {1..3}, or nil when they are too many or bash versions read them apart:
-// an increment or zero padding (bash 3.2 keeps those as written), or letters
-// of both cases, whose run takes in [ \ ] ^ _ and `.
-func sequenceWords(items string) []string {
-	ends := strings.Split(items, "..")
-	if len(ends) != 2 {
-		return nil
-	}
-	from, to := ends[0], ends[1]
-	if len(from) == 1 && len(to) == 1 && !unicode.IsDigit(rune(from[0])) {
-		a, b := from[0], to[0]
-		if unicode.IsUpper(rune(a)) != unicode.IsUpper(rune(b)) {
-			return nil
-		}
-		var words []string
-		for c := int(a); ; {
-			words = append(words, string(rune(c)))
-			if c == int(b) {
-				return words
-			}
-			if a < b {
-				c++
-			} else {
-				c--
-			}
-		}
-	}
-	padded := func(n string) bool {
-		n = strings.TrimPrefix(n, "-")
-		return len(n) > 1 && n[0] == '0'
-	}
-	if padded(from) || padded(to) || len(from) > 9 || len(to) > 9 {
-		return nil
-	}
-	a, errA := strconv.Atoi(from)
-	b, errB := strconv.Atoi(to)
-	if errA != nil || errB != nil || abs(b-a) >= maxSequenceWords {
-		return nil
-	}
-	step := 1
-	if b < a {
-		step = -1
-	}
-	words := make([]string, 0, abs(b-a)+1)
-	for n := a; ; n += step {
-		words = append(words, strconv.Itoa(n))
-		if n == b {
-			return words
-		}
-	}
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
-}
-
 // ansiC decodes a $'...' string from command[i], just past its opening quote,
 // and returns the text and the index of its closing quote.
 func ansiC(command string, i int) (string, int) {
@@ -930,7 +780,7 @@ func (c Canonical) AsTerminalLine() Canonical {
 		return c
 	}
 	c.shell.unparsed, c.shell.incomplete, c.shell.top = c.shell.nested || c.shell.misplaced, false, false
-	c.Hidden = c.textHidden || c.shell.tooLong
+	c.Hidden = c.textHidden || c.shell.tooLong || c.shell.braceHidden
 	c.IFS = blankless(c.IFS)
 	c.IFSUnknown = c.textIFSUnknown || c.shell.ifsUnknown || c.shell.unparsed
 	c.IFSCause = c.ifsCause(c.textIFSNamed)
@@ -947,10 +797,8 @@ func (c Canonical) Unparsed() bool { return c.shell.unparsed }
 // a shell's script operand, source and . files, and programs named by a path.
 func (c Canonical) Scripts() []Script { return c.shell.scripts }
 
-// Writes are the literal files the command writes: its output redirections'
-// targets and what cp, mv, ln, install, rsync, tee, dd, sed -i, perl -i,
-// curl -o and wget -O write. A copy into a folder is also named as the file
-// it makes there.
+// Writes are the literal files the command writes, by redirection or a
+// copying command; a copy into a folder is named as the file it makes there.
 func (c Canonical) Writes() []string { return c.shell.writes }
 
 // WriteHidden says why a file the command writes is not known, as one named
@@ -963,6 +811,29 @@ func (c Canonical) MovesFolder() bool { return c.shell.moves }
 
 // ScriptsCut reports a command naming more scripts than Scripts holds.
 func (c Canonical) ScriptsCut() bool { return c.shell.scriptsCut }
+
+// PathSet reports a PATH the command sets, so a program or sourced script
+// named without a folder may be found in another folder than usual.
+func (c Canonical) PathSet() bool { return c.shell.pathSet }
+
+// PathDirs are the folders the PATH values the command sets name, as
+// written; "." is the folder it runs in.
+func (c Canonical) PathDirs() []string { return c.shell.pathDirs }
+
+// PathUnknown reports a PATH set to a value built from an expansion other
+// than $PATH or $PWD, whose folders are not known.
+func (c Canonical) PathUnknown() bool { return c.shell.pathUnknown }
+
+// Bare are the programs the command names without a folder, and BareCut
+// reports more than it keeps.
+func (c Canonical) Bare() []string { return c.shell.bare }
+
+// BareCut reports programs named without a folder past those Bare keeps.
+func (c Canonical) BareCut() bool { return c.shell.bareCut }
+
+// StartupHidden says why a start-up file the command gives a shell, as
+// BASH_ENV=$f does, is not known; "" when each is literal.
+func (c Canonical) StartupHidden() string { return c.shell.startupHidden }
 
 // Commands are the simple commands a bash parser finds, from each word that
 // may be the program, quoting undone: inside functions, subshells and the
