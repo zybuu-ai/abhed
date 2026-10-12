@@ -649,9 +649,9 @@ func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *
 	live.mu.Lock()
 	run := live.ptys[r.PathValue("pty")]
 	live.mu.Unlock()
-	// Started by someone else, such as the owner before the session changed
-	// hands: not this caller's to drive, as listShells does not offer it.
-	if run == nil || run.user != UserOf(r.Context()) {
+	// A shell started by someone else, such as the owner before the session
+	// changed hands, is not this caller's to drive, as listShells does not offer it.
+	if run == nil || run.capture != nil && run.user != UserOf(r.Context()) {
 		WriteError(w, http.StatusNotFound, "that command is not running")
 		return nil, nil, false
 	}
