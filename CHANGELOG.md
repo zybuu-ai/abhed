@@ -913,6 +913,11 @@ on. A server with it off starts on the older schema as before.
 - The interactive terminal starts git for the prompt's "Git:" line only
   where a repository could be: outside one it starts none, which on macOS
   took hundreds of milliseconds before the first prompt was drawn.
+- The interactive terminal's bash (Studio, the web IDE) is started with job
+  control asked for outright (`-m`), which is how a line typed into a
+  program is told from one typed at the prompt, and `abhed acp` logs to
+  stderr the shell's process group, the first program to take the
+  terminal, and bash's notice when it has no job control.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of

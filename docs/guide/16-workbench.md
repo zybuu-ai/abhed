@@ -473,7 +473,11 @@ What a shell changes about the checks, stated plainly:
   line that only asks, such as a program named by `$x`, is not refused here
   at all. It does not screen lines typed ahead while a command still runs:
   they go to the terminal while that command has it, and the shell reads them
-  after. Such a line is not recorded while another program has the terminal,
+  after. Another program is told from the shell by the terminal's
+  foreground process group: the shell runs with job control on, so each
+  program it starts has a group of its own (where bash reports it has no job
+  control, the server logs it and treats every line as the shell's).
+  Such a line is not recorded while another program has the terminal,
   and is recorded without its text while the shell itself is busy (the
   terminal is then in the mode a password is read in). Nor does it see what
   the shell makes of a line: history recall (the arrow keys, `!!`, Ctrl-R,
