@@ -112,3 +112,51 @@ func TestRecordVerifyPostgresChainAndWitness(t *testing.T) {
 		t.Fatalf("a missing witnessed head passed: %s", out.String())
 	}
 }
+
+// A session pruned or deleted on the record is reported as pruned against
+// the witness, not as tampering; one removed with no tombstone still fails.
+func TestWitnessAcceptsAPrunedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	heads := filepath.Join(t.TempDir(), "heads.jsonl")
+	cfg := config.Config{Record: config.RecordConfig{Witness: config.WitnessConfig{File: heads}}, ManagedKeys: []string{"record.witness"}}
+	ws := t.TempDir()
+	rec, err := openRecord(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for range 3 {
+		id := newConversationID()
+		if err := rec.CreateSession(context.Background(), store.SessionRecord{ID: id, Workspace: ws, User: cliUser()}); err != nil {
+			t.Fatal(err)
+		}
+		r := agent.NewRecorder(rec, id, "")
+		_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+		_, _ = r.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted, Turns: 1})
+		ids = append(ids, id)
+		if err := rec.Release(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rec.Prune(ids[0], "user", "retention"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.DeleteSession(ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	third := rec.Path(ids[2])
+	rec.Close()
+	code, out, _ := runRecord(t, ws, "verify", "-witness", heads)
+	if code != 0 || strings.Contains(out, "FAILED") || !strings.Contains(out, "pruned  "+ids[0]) || !strings.Contains(out, "pruned  "+ids[1]) {
+		t.Fatalf("a pruned session failed against the witness: %d %s", code, out)
+	}
+	// A file taken away with no tombstone is still caught.
+	if err := os.Remove(third); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ = runRecord(t, ws, "verify", "-witness", heads)
+	if code == 0 || !strings.Contains(out, "FAILED  "+ids[2]) {
+		t.Fatalf("a removed session passed: %d %s", code, out)
+	}
+}

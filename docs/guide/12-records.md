@@ -281,6 +281,10 @@ to reach the URL is reported on stderr.
 (or a copy named with `-witness <file>`): each must still be in the record,
 line for line. A record cut back, re-chained, or put back from an older copy
 fails there, though it passes every other check.
+A session pruned on the record (by `record.retention_days`, `abhed record
+prune`, or a delete) is reported as `pruned`, not failed, when the index's
+tombstone keeps its head at or past the line the witness holds, with the same
+hash at that line; a session file gone with no tombstone still fails.
 
 What a witness still cannot show: lines written after the last head it was
 sent (the last sync), and anything before it was configured.

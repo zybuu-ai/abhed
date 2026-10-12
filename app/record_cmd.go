@@ -306,16 +306,36 @@ func (c recordCtx) checkWitness(path string) bool {
 	for _, err := range unreadable {
 		fmt.Fprintf(c.out, "FAILED  witness: %v\n", err)
 	}
-	problems, err := witness.Check(stmts, "local", cliTenant(c.cfg), c.rec.HashAt)
+	problems, err := witness.Check(stmts, "local", cliTenant(c.cfg), c.rec.HashAt, c.prunedHead)
 	if err != nil {
 		fmt.Fprintf(c.err, "abhed: the witness's heads: %v\n", err)
 		return true
 	}
-	for _, p := range problems {
-		fmt.Fprintf(c.out, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
-	}
+	printWitnessProblems(c.out, problems)
 	fmt.Fprintf(c.out, "%d witnessed head(s) checked from %s\n", len(stmts), path)
-	return len(unreadable) > 0 || len(problems) > 0
+	return len(unreadable) > 0 || witness.Failed(problems) > 0
+}
+
+// prunedHead accounts for a witnessed head of a session that was pruned: the
+// tombstone must keep at least that many lines, and at that line the same hash.
+func (c recordCtx) prunedHead(session string, line int64, hash string) (string, error) {
+	h, pruned := c.rec.Pruned(session)
+	if !pruned || line > h.Lines || line == h.Lines && hash != h.Hash {
+		return "", nil
+	}
+	return fmt.Sprintf("pruned; the witness holds line %d, and the index's tombstone keeps its head at line %d (%s)", line, h.Lines, short(h.Hash)), nil
+}
+
+// printWitnessProblems names each witnessed head the record no longer holds:
+// FAILED, or pruned when a recorded removal accounts for it.
+func printWitnessProblems(w io.Writer, problems []witness.Problem) {
+	for _, p := range problems {
+		label := "FAILED"
+		if p.Removed {
+			label = "pruned"
+		}
+		fmt.Fprintf(w, "%-6s  %s: %s\n", label, p.Statement.Session, p.Reason)
+	}
 }
 
 // verifyScope says what a passing verify does and does not show.
@@ -654,18 +674,17 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		for _, err := range unreadable {
 			fmt.Fprintf(stdout, "FAILED  witness: %v\n", err)
 		}
+		// A deleted session's rows stay, erased by key, so nothing removed needs accounting for.
 		problems, err := witness.Check(stmts, "postgres", pg.Tenant(), func(session string, n int64) (string, bool, error) {
 			return pg.ChainHashAt(ctx, session, n)
-		})
+		}, nil)
 		if err != nil {
 			fmt.Fprintf(stderr, "abhed: the witness's heads: %v\n", err)
 			return 1
 		}
-		for _, p := range problems {
-			fmt.Fprintf(stdout, "FAILED  %s: %s\n", p.Statement.Session, p.Reason)
-		}
+		printWitnessProblems(stdout, problems)
 		fmt.Fprintf(stdout, "%d witnessed head(s) checked from %s\n", len(stmts), *witnessed)
-		bad = bad || len(unreadable) > 0 || len(problems) > 0
+		bad = bad || len(unreadable) > 0 || witness.Failed(problems) > 0
 	}
 	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered by anyone short of the tables' owner. "+
 		"An owner can recompute the chain; with record.witness each head the witness holds must still be in the database.")

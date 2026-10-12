@@ -285,16 +285,25 @@ func Read(r io.Reader) ([]Statement, []error) {
 }
 
 // Problem is a head the witness holds that the record no longer does.
+// Removed marks one a recorded removal accounts for, such as a prune whose
+// tombstone keeps the session's head: reported, but not a failure.
 type Problem struct {
 	Statement Statement
 	Reason    string
+	Removed   bool
 }
+
+// Removed says why a head the record no longer holds was removed on the
+// record (a prune's tombstone that covers that line and hash), or "" when
+// nothing recorded accounts for it.
+type Removed func(session string, line int64, hash string) (string, error)
 
 // Check compares statements for one store and tenant with the record as it
 // is now: hashAt gives the hash at a line and whether the record holds it.
 // A head the record no longer holds means lines were cut, rewritten or rolled
-// back since the witness was given it.
-func Check(stmts []Statement, store, tenant string, hashAt func(session string, line int64) (string, bool, error)) ([]Problem, error) {
+// back since the witness was given it, unless removed (which may be nil)
+// names the recorded removal that took it.
+func Check(stmts []Statement, store, tenant string, hashAt func(session string, line int64) (string, bool, error), removed Removed) ([]Problem, error) {
 	var out []Problem
 	for _, s := range stmts {
 		if s.Store != store || s.Tenant != tenant {
@@ -306,12 +315,33 @@ func Check(stmts []Statement, store, tenant string, hashAt func(session string, 
 		}
 		switch {
 		case !ok:
+			why := ""
+			if removed != nil {
+				if why, err = removed(s.Session, s.Lines, s.Hash); err != nil {
+					return out, err
+				}
+			}
+			if why != "" {
+				out = append(out, Problem{s, why, true})
+				continue
+			}
 			out = append(out, Problem{s, fmt.Sprintf("the witness holds line %d of %s, sent %s, and the record no longer has it: lines were cut or an older copy was put back",
-				s.Lines, s.Session, s.At.Format(time.RFC3339))})
+				s.Lines, s.Session, s.At.Format(time.RFC3339)), false})
 		case h != s.Hash:
 			out = append(out, Problem{s, fmt.Sprintf("line %d of %s is not the one the witness was given %s: the record was rewritten",
-				s.Lines, s.Session, s.At.Format(time.RFC3339))})
+				s.Lines, s.Session, s.At.Format(time.RFC3339)), false})
 		}
 	}
 	return out, nil
+}
+
+// Failed counts the problems no recorded removal accounts for.
+func Failed(problems []Problem) int {
+	n := 0
+	for _, p := range problems {
+		if !p.Removed {
+			n++
+		}
+	}
+	return n
 }

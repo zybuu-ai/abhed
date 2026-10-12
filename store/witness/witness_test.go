@@ -50,16 +50,30 @@ func TestWitnessCatchesACutAndARewrite(t *testing.T) {
 		}
 		return l[n-1], true, nil
 	}
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 0 {
+	if p, _ := Check(stmts, "local", "default", at, nil); len(p) != 0 {
 		t.Fatalf("an intact record failed: %+v", p)
 	}
 	record["s1"] = []string{"h1", "h2"} // cut back
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
+	if p, _ := Check(stmts, "local", "default", at, nil); len(p) != 1 || !strings.Contains(p[0].Reason, "no longer has it") {
 		t.Fatalf("a cut record passed: %+v", p)
 	}
 	record["s1"] = []string{"h1", "h2", "x3"} // rechained
-	if p, _ := Check(stmts, "local", "default", at); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
+	if p, _ := Check(stmts, "local", "default", at, nil); len(p) != 1 || !strings.Contains(p[0].Reason, "rewritten") {
 		t.Fatalf("a rewritten record passed: %+v", p)
+	}
+	// A removal on the record accounts for a missing head; nothing else does.
+	delete(record, "s1")
+	removed := func(session string, line int64, hash string) (string, error) {
+		if session == "s1" && line <= 3 {
+			return "pruned", nil
+		}
+		return "", nil
+	}
+	if p, _ := Check(stmts, "local", "default", at, removed); len(p) != 1 || !p[0].Removed || Failed(p) != 0 {
+		t.Fatalf("a pruned session's heads failed: %+v", p)
+	}
+	if p, _ := Check(stmts, "local", "default", at, nil); Failed(p) != 1 {
+		t.Fatalf("a missing session passed: %+v", p)
 	}
 }
 
