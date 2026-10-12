@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -557,6 +558,13 @@ func TestFenceStateMountIsNotPlanted(t *testing.T) {
 	if err := other.checkPlanted(nil, "", "before_command"); err != nil {
 		t.Fatalf("the other fence took the .abhed for planted: %v", err)
 	}
+	// The last fence to close removes the empty folder, so none is left behind.
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(p.Workspace, ".abhed")); err == nil {
+		t.Fatal("the last fence left the empty .abhed it mounted over")
+	}
 	if runtime.GOOS == "darwin" {
 		return // APFS folds case: .ABHED is the same entry
 	}
@@ -703,6 +711,8 @@ func TestFenceStateMountRemovesWhatCannotBeQuarantined(t *testing.T) {
 	}
 	// ~/.abhed as a file: the quarantine folder cannot be made.
 	home, _ := os.UserHomeDir()
+	// The fence's lock folder is there already; the file takes its place.
+	_ = os.RemoveAll(filepath.Join(home, ".abhed"))
 	if err := os.WriteFile(filepath.Join(home, ".abhed"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -820,5 +830,28 @@ func TestFencePlanCoversEverySpellingOfState(t *testing.T) {
 	}
 	if got := slices.Contains(plan.Empty, ".ABHED"); got != folds {
 		t.Fatalf("disk folds case %v, .ABHED covered %v: %v", folds, got, plan.Empty)
+	}
+}
+
+// A flooded .abhed is taken out a bounded number of entries at a time, the
+// rest reported as left.
+func TestTakeOutContentsIsBounded(t *testing.T) {
+	p := fencePolicy(t)
+	old := takeOutBound
+	takeOutBound = 3
+	t.Cleanup(func() { takeOutBound = old })
+	dir := filepath.Join(p.Workspace, ".abhed")
+	for i := range 10 {
+		if err := os.MkdirAll(filepath.Join(dir, fmt.Sprint("f", i)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := NewFence(p).takeOutContents(dir)
+	if !ok || len(got) != 4 || got[3]["outcome"] != plantRemaining {
+		t.Fatalf("ok %v, %v", ok, got)
+	}
+	left, _ := os.ReadDir(dir)
+	if len(left) != 7 {
+		t.Fatalf("%d entries left, want 7", len(left))
 	}
 }

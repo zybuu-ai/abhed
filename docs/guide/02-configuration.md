@@ -442,9 +442,13 @@ without running anything.
   Abhed keeps there is out of sight, and whatever a command writes there is
   gone when it ends, so nothing it writes there ever reaches Abhed. Where the
   workspace has no `.abhed`, the fence makes an empty one to mount over and
-  leaves it in place: other fences on the same workspace (two Studio tabs,
-  Studio beside the command line) mount over it too, and removing it would
-  uncover their commands; empty, it holds nothing. A `.abhed` that was
+  leaves it in place while other fences on the same workspace (two Studio
+  tabs, Studio beside the command line) may mount over it too, since
+  removing it would uncover their commands. Each fence holds a shared lock
+  in `~/.abhed/fence/` while it lasts, and the last to close removes the
+  folder when it is still the same one and was empty from the start, so none
+  is left behind. A fence of 1.2.7 or earlier takes no lock, so run it on its
+  own workspace. A `.abhed` that was
   empty when the session started must stay empty while it runs: anything
   that appears in it is taken out of it one entry at a time, each first
   renamed inside that `.abhed`, where every fence's tmpfs still hides it,

@@ -35,6 +35,8 @@ func TestFenceStateMountReportsWhatCannotBeRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	home, _ := os.UserHomeDir()
+	// The fence's lock folder is there already; the file takes its place.
+	_ = os.RemoveAll(filepath.Join(home, ".abhed"))
 	if err := os.WriteFile(filepath.Join(home, ".abhed"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -597,6 +597,11 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- The fence's `mount_namespace` mode left an empty `.abhed` in the workspace
+  after every session. The last fence on a workspace to close now removes it
+  when it is still the same, empty folder. The check of the covered
+  `.abhed` also takes out at most 4,096 entries at a time, so a flooded one
+  cannot hold Abhed's memory.
 - A `VIMINIT` set before starting Abhed was replaced by Abhed's own in every
   process-tier and fence command, so your vim startup commands were dropped.
   Yours is kept now, with the history files turned off after it.

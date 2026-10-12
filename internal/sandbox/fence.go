@@ -50,6 +50,8 @@ type Fence struct {
 	stateID   *folderID
 	stateHeld bool
 	madeState bool
+	// stateLock is shared by every fence on the workspace while it lasts.
+	stateLock *os.File
 	// aliases are the other mounts of the workspace's filesystem, which each
 	// command's namespace covers as it covers the workspace.
 	aliases []string
@@ -112,8 +114,9 @@ func (f *Fence) sessionRecord() func(string, map[string]any) error {
 // cgroup and private temp folder. Commands built after it do not start. A
 // .abhed a command left in the workspace is taken out and reported, and
 // Close fails when it finds one or cannot list the workspace. The empty
-// .abhed the fence made to mount over stays: other fences on the same
-// workspace mount over it too, and removing it would detach their mounts.
+// .abhed the fence mounted over, empty when it started, stays while another
+// fence on the workspace may mount over it, since removing it would detach
+// their mounts; the last to close removes it, still empty and the same folder.
 func (f *Fence) Close() error {
 	f.closed.Store(true)
 	// A fence never qualified is not qualified now; one qualifying finishes first.
@@ -128,6 +131,7 @@ func (f *Fence) Close() error {
 		if f.tmp != "" {
 			errs = append(errs, os.RemoveAll(f.tmp))
 		}
+		f.removeMadeState()
 		f.closeErr = errors.Join(errs...)
 	})
 	return f.closeErr
@@ -434,11 +438,35 @@ func (f *Fence) isStateMount(p string) bool {
 	return err == nil && !holds
 }
 
+// removeMadeState removes the workspace's .abhed when it was empty as this
+// fence started and still is, it is the same folder, and no other fence on
+// the workspace holds the lock: one made to mount over is not left behind.
+func (f *Fence) removeMadeState() {
+	if f.stateLock == nil {
+		return
+	}
+	defer func() { _ = f.stateLock.Close() }()
+	if f.stateHeld || f.stateID == nil || !lastUser(f.stateLock) {
+		return
+	}
+	p := filepath.Join(f.policy.Workspace, stateDir)
+	if id, err := folderIdentity(p); err == nil && id.dir && id.same(*f.stateID) {
+		if holds, err := folderHolds(p, id); err == nil && !holds {
+			_ = os.Remove(p)
+		}
+	}
+}
+
 // prepareStateMount finds the workspace's .abhed for each command's
 // namespace to cover, and makes it, empty, when it is missing: a tmpfs needs
 // a folder to mount on. One that is not a folder refuses the fence. Another
 // fence on the workspace may make it at the same time, and that one serves.
 func (f *Fence) prepareStateMount() error {
+	// Held while the session lasts, so the last fence to close can remove a
+	// folder it made, and one closing waits out a fence starting.
+	if f.stateLock == nil {
+		f.stateLock = stateUseLock(f.policy.Workspace)
+	}
 	p := filepath.Join(f.policy.Workspace, stateDir)
 	if err := os.Mkdir(p, 0o700); err == nil {
 		f.madeState = true
@@ -811,17 +839,39 @@ func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 	if err != nil {
 		return nil, false
 	}
-	names, err := d.Readdirnames(-1)
-	_ = d.Close()
-	if err != nil {
-		return nil, false
+	// Read in batches to a bound, so a flooded folder cannot hold Abhed's memory.
+	var names []string
+	more := false
+	for {
+		batch, err := d.Readdirnames(512)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			_ = d.Close()
+			return nil, false
+		}
+		names = append(names, batch...)
+		if len(names) >= takeOutBound {
+			more, names = true, names[:takeOutBound]
+			break
+		}
 	}
-	out := make([]map[string]any, 0, len(names))
+	_ = d.Close()
+	out := make([]map[string]any, 0, len(names)+1)
 	for _, n := range names {
 		out = append(out, f.takeOutTo(filepath.Join(p, n), p, true))
 	}
+	if more {
+		out = append(out, map[string]any{"path": filepath.Join(p, fmt.Sprintf("entries past the first %d", takeOutBound)), "outcome": plantRemaining,
+			"error": fmt.Sprintf("more than %d entries; those past them are left, and the next check takes out more", takeOutBound)})
+	}
 	return out, true
 }
+
+// takeOutBound is how many entries one check takes out of the covered .abhed;
+// a variable, so a test can lower it.
+var takeOutBound = 4096
 
 // takeOut renames the planted entry p into dir, then quarantines it, and says
 // how; where the rename fails it is removed, else still present.
