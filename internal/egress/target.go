@@ -65,10 +65,8 @@ func ParseRequestLine(line string) (Target, error) {
 	return ParseTarget(method, target)
 }
 
-// ParseTarget parses a request's method and target as a client of a
-// forward proxy sends them. Anything that is not one plain spelling is
-// refused rather than cleaned, so a rule cannot be stepped around by
-// writing the host or path another way.
+// ParseTarget parses a request's method and target as a client of a forward
+// proxy sends them. Other spellings are refused, not cleaned.
 func ParseTarget(method, target string) (Target, error) {
 	if method == "" || strings.Trim(method, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
 		return Target{}, errors.New("the method is not an upper-case method name")
@@ -158,11 +156,8 @@ func parsePort(p string) (uint16, error) {
 	return uint16(n), nil // #nosec G115 -- checked above
 }
 
-// CanonicalHost gives a host its one spelling: lower case, no trailing dot,
-// an address as netip writes it. A name whose last label is a number is
-// refused, as resolvers read 2130706433 or 0x7f.1 as addresses; so is a
-// non-ASCII name (write its xn-- form), an address with a zone, and an
-// IPv4 address written as IPv6.
+// CanonicalHost gives a host its one spelling: lower case, no trailing dot, an
+// address as netip writes it. Ambiguous forms are refused.
 func CanonicalHost(host string) (string, error) {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	if h == "" || len(h) > 253 {
@@ -196,10 +191,8 @@ func CanonicalHost(host string) (string, error) {
 	return h, nil
 }
 
-// plainPath refuses a decoded path a server would rewrite before acting on
-// it: a . or .. segment, an empty one, a backslash, a control character or
-// a ;. A rule on /admin must not be dodged by /public/../admin, nor by
-// /admin;x, which servers that read path parameters route as /admin.
+// plainPath refuses a decoded path a server would rewrite (., .., empty,
+// backslash, control, ;), so /public/../admin or /admin;x cannot dodge /admin.
 func plainPath(p string) error {
 	if !strings.HasPrefix(p, "/") {
 		return errors.New("the path must start with /")

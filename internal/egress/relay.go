@@ -103,9 +103,8 @@ func RunRelay(args []string) int {
 	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 -- the sandboxed command, inside its sandbox
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.SysProcAttr = attr
-	// A terminal's interrupt and quit reach the command through its process
-	// group already, so the relay only survives them; a termination or
-	// hang-up sent to the relay alone is passed on.
+	// A terminal's interrupt and quit reach the command via its process group,
+	// so the relay only survives them; a TERM or HUP to it alone is passed on.
 	tty := make(chan os.Signal, 8)
 	signal.Notify(tty, syscall.SIGINT, syscall.SIGQUIT)
 	go func() {

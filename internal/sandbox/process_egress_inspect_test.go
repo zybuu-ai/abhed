@@ -15,9 +15,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// With inspect_tls, a command's curl trusts the session's CA from the
-// environment it is given, and a rule narrowed to one path lets that path
-// through HTTPS and refuses another.
+// With inspect_tls a command's curl trusts the session CA it is given, and
+// a path-narrowed rule allows that path over HTTPS and refuses another.
 func TestEgressInspectsACommandsHTTPS(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl is not installed")

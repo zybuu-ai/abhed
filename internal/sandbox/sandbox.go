@@ -1,16 +1,6 @@
-// Package sandbox isolates agent-generated command execution.
-//
-// Design position (docs/architecture/03-security.md): the deep-research pass
-// produced ZERO verified claims on sandboxing and REFUTED two candidate claims,
-// so the isolation posture of comparable agents is unverified. Abhed therefore
-// treats isolation as a requirement to establish rather than a solved problem
-// to copy, and this package is written to that stance:
-//
-//   - Tiers are explicit and self-reporting, so an operator can always answer
-//     "what is actually containing this command right now?"
-//   - The weakest tier refuses untrusted work rather than pretending.
-//   - Nothing here claims to stop a determined kernel exploit. The boundary is
-//     the tier, and the tier is named honestly.
+// Package sandbox isolates agent-generated command execution. Tiers name
+// themselves honestly; none claims to stop a kernel exploit.
+// Design position: docs/architecture/03-security.md.
 package sandbox
 
 import (
@@ -33,7 +23,6 @@ const (
 	TierNone Tier = "none"
 	// TierProcess adds process-level confinement (macOS sandbox-exec, Linux
 	// bubblewrap namespaces and mounts; no seccomp filter and no Landlock).
-	// Filesystem and network scoping, but a shared kernel.
 	TierProcess Tier = "process"
 	// TierContainer runs in an OCI container: namespace isolation, shared
 	// kernel. Not sufficient for genuinely hostile code.
@@ -42,8 +31,7 @@ const (
 	// intercepts system calls. Not a microVM; the name is kept for compatibility.
 	TierVM Tier = "vm"
 	// TierFence confines each command with Landlock, a seccomp filter and a
-	// cgroup of its own, on Linux, as a preview chosen with sandbox.tier. It
-	// counts as the process tier for min_tier.
+	// cgroup of its own, on Linux, as a preview chosen with sandbox.tier.
 	TierFence Tier = "fence"
 )
 
@@ -84,9 +72,9 @@ func PinReadable(path string) (ReadableFile, error) {
 	return ReadableFile{Path: real, Info: info}, nil
 }
 
-// Same reports whether the file at Path is still the one pinned: a swap
-// of it, or of a folder above it, for another file or a folder is not, nor
-// is the same file changed since.
+// Same reports whether the file at Path is still the one pinned: a swap of it,
+// or of a folder above it, for another file or a folder is not, nor is the same
+// file changed since.
 func (f ReadableFile) Same() bool {
 	if f.Info == nil {
 		return false
@@ -111,25 +99,21 @@ type Policy struct {
 	MinTier Tier
 	// Workspace is the only host path the command may reach.
 	Workspace string
-	// AllowNetwork permits egress from inside the sandbox. Default false: a
-	// successful prompt injection then has no channel to exfiltrate through
-	// (docs §03 L4).
+	// AllowNetwork permits egress from inside the sandbox. Default false, so a
+	// prompt injection has no exfiltration channel.
 	AllowNetwork bool
 	// Egress, when set, is sandbox.network allowlist: commands reach the
 	// network only through the session's egress proxy, which applies this
-	// policy, and AllowNetwork is not read. Only the process tier holds it;
-	// every other tier refuses it.
+	// policy, and AllowNetwork is not read. Other tiers refuse it.
 	Egress *egress.Policy
 	// ReadOnlyPaths are additional paths mounted read-only (toolchains, caches).
 	ReadOnlyPaths []string
 	// ReadableFiles are single files a command may read, and run, even where
-	// they sit in an area the process tier hides, such as a statusline
-	// script outside the workspace on Linux. The process tier only; each is
-	// read-only, and dropped unless it is still the file that was pinned.
+	// they sit in an area the process tier hides, such as a statusline script
+	// outside the workspace on Linux.
 	ReadableFiles []ReadableFile
 	// StatePaths are files or folders holding Abhed's state outside .abhed,
-	// such as a configured users file. Commands can neither read nor write
-	// them, as for .abhed.
+	// such as a configured users file. Commands cannot read or write them.
 	StatePaths []string
 	// WriteProtected are paths inside the workspace a command may read but
 	// not write, such as an editor's own settings there.
@@ -179,8 +163,7 @@ type Policy struct {
 	// through socketcall(2) when AllowNetwork is set.
 	FenceSocketcall bool
 	// SkillDirs are the configured skills.dirs, absolute. The fence lets
-	// commands read and run them, as it does ~/.abhed/skills, but never one
-	// that holds or sits inside Abhed's state.
+	// commands run them, never inside Abhed's state.
 	SkillDirs []string
 	// fenceNoMounts keeps the fence from giving commands a mount
 	// namespace of their own, for tests of the mode without one.
@@ -188,9 +171,8 @@ type Policy struct {
 }
 
 func DefaultPolicy(workspace string) Policy {
-	// No time limit here: a command's is its caller's (the bash tool's
-	// timeout_ms, a background shell's lifetime), and a shell runs for as
-	// long as its terminal is open.
+	// No time limit here: a command's is its caller's, and a shell lives as
+	// long as its terminal.
 	return Policy{
 		MinTier:      TierProcess,
 		Workspace:    workspace,
@@ -222,11 +204,8 @@ func Caveat(sb Sandbox) string {
 	return ""
 }
 
-// Select returns the strongest available backend meeting policy.MinTier.
-//
-// It never silently downgrades: if nothing meets the minimum, it returns an
-// error naming what was tried. A sandbox that quietly weakens itself is worse
-// than no sandbox, because the operator stops checking.
+// Select returns the strongest available backend meeting policy.MinTier. It
+// never silently downgrades: with none meeting it, it errors.
 func Select(p Policy) (Sandbox, error) {
 	if err := checkHidden(p); err != nil {
 		return nil, err

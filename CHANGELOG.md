@@ -646,6 +646,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `ABHED_ANTHROPIC_OAUTH_TOKEN` supplies an Anthropic subscription token;
+  it is read before the variable the setup-token flow writes, which still
+  works.
 - `abhed doctor` and `abhed serve -check` warn, under the egress allowlist,
   of a model provider whose `base_url` is on a loopback, private,
   link-local or metadata address, which the model client reaches though the

@@ -43,12 +43,11 @@ func newAnthropicAdapter(s Spec) (Adapter, error) {
 			},
 		})
 		a.Defaults = s.Params
-		// A subscription token, if the operator supplied one. Named
-		// explicitly in config, or from the environment variable Claude
-		// Code's own `setup-token` writes — matching the name means an
-		// existing token works here without being moved.
+		// A subscription token, if the operator supplied one: config first, then
+		// Abhed's own variable, then the name an existing setup-token writes.
 		a.Bearer = firstNonEmptyString(
 			s.Get("oauth_token"),
+			os.Getenv("ABHED_ANTHROPIC_OAUTH_TOKEN"),
 			os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"),
 			os.Getenv("ANTHROPIC_AUTH_TOKEN"),
 		)

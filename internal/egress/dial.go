@@ -7,9 +7,9 @@ import (
 )
 
 // Dial connects for one of Abhed's own clients that does not speak HTTP, such
-// as ssh, judged by the guard in force as a tunnel to host:port is: by host
-// and port, a rule narrowed by method or path never allowing it, and the
-// address check after. With no guard in force it dials as the client would.
+// as ssh, judged by the guard in force as a tunnel to host:port is: by host and
+// port, a rule narrowed by method or path never allowing it, and the address
+// check after.
 func Dial(ctx context.Context, kind, network, addr string) (net.Conn, error) {
 	g := CallerOf(ctx).Guard
 	if g == nil {
@@ -78,9 +78,7 @@ func (g *Guard) dialOwn(ctx context.Context, kind, network, addr string) (net.Co
 }
 
 // Allow judges and records a connection a client makes itself, such as git
-// pushing over HTTPS, before it is made: by host and port, as a tunnel. The
-// address is not checked, since the client resolves it. Nil or Unguarded
-// allows everything.
+// pushing over HTTPS, before it is made: by host and port, as a tunnel.
 func (g *Guard) Allow(ctx context.Context, kind, host string, port uint16) error {
 	if g == nil || g == Unguarded {
 		return nil

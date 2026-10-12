@@ -142,12 +142,8 @@ func (s *Process) egressFor(ctx context.Context) (*egressState, *egress.Call, er
 // callSeq names each call's socket in the session's folder.
 var callSeq atomic.Uint64
 
-// bindCall gives the call a way to the proxy of its own, which the sandbox
-// lets it reach and no other: a unix socket bound in place of the session's
-// under bubblewrap, a loopback port the Seatbelt profile allows under macOS.
-// Whatever it sends there is its own call's, so a token passed to another
-// command cannot move traffic between calls, and a client that sends no
-// credentials on CONNECT, as a JVM does, is served.
+// bindCall gives the call a route to the proxy no other can reach, so a token
+// passed to another command cannot move traffic between calls.
 func (s *Process) bindCall(e *egressState, call *egress.Call) error {
 	switch {
 	case e.dir != "":
@@ -473,8 +469,7 @@ func dnsProbeArgs(exe string) []string {
 }
 
 // EndSession stops the egress proxy of the session id, if it has one, and
-// removes its socket's folder. A later command of that session starts a
-// new proxy, with a new token.
+// removes its socket's folder. A later command gets a new token.
 func (s *Process) EndSession(id string) error {
 	ss := &s.egress
 	ss.mu.Lock()
@@ -487,9 +482,8 @@ func (s *Process) EndSession(id string) error {
 	return e.close()
 }
 
-// Close stops every session's egress proxy and removes their sockets'
-// folders, and the sandbox's own caches. Every command built after it is refused, under the allowlist,
-// rather than given a proxy that is gone.
+// Close stops every session's egress proxy and removes their sockets' folders,
+// and the sandbox's own caches. Later commands are refused.
 func (s *Process) Close() error {
 	ss := &s.egress
 	ss.mu.Lock()

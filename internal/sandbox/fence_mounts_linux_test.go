@@ -47,9 +47,8 @@ func gitInit(t *testing.T, ws string) {
 	}
 }
 
-// Under ProtectGit and a write-protected file, a fenced command cannot write
-// git's hooks or config, move the git folder away, or write the protected
-// file, from the workspace or from inside the hooks folder; it can commit.
+// Under ProtectGit a fenced command cannot write git hooks or config, move
+// the git folder or write a protected file from anywhere; it can commit.
 func TestFenceMountsProtectGit(t *testing.T) {
 	var ws string
 	f, p := mounted(t, func(p *Policy) {
@@ -115,9 +114,8 @@ func TestFenceMountsProtectGit(t *testing.T) {
 	_ = p
 }
 
-// The workspace's .abhed is covered by an empty tmpfs in each command: what
-// Abhed keeps there is out of sight, and what a command writes there is gone
-// when it ends, so nothing is planted and the session goes on.
+// The workspace's .abhed is an empty tmpfs in each command: Abhed's state
+// is out of sight and writes there vanish, so nothing is planted.
 func TestFenceMountsStateDoesNotPersist(t *testing.T) {
 	var ws string
 	f, _ := mounted(t, func(p *Policy) {
@@ -199,10 +197,8 @@ func selectFence(t *testing.T, p Policy) *Fence {
 	return f
 }
 
-// Two fences on one workspace, as two Studio tabs or Studio beside the
-// command line: one closing while the other's command runs leaves that
-// command's .abhed covered, so what it writes there does not persist, and
-// the other's next command runs.
+// Two fences on one workspace: one closing mid-command leaves the other's
+// .abhed covered, so its writes do not persist, and its next command runs.
 func TestFenceMountsTwoFencesOnOneWorkspace(t *testing.T) {
 	p := fencePolicy(t)
 	p.MaxProcs, p.MaxMemoryMB = 64, 256
@@ -260,9 +256,8 @@ func TestFenceMountsTwoFencesOnOneWorkspace(t *testing.T) {
 	}
 }
 
-// A protected file with a second name, a hard link elsewhere in the
-// workspace, refuses the command: held read-only by one name, it would stay
-// writable through the other.
+// A protected file hard-linked elsewhere in the workspace refuses the command:
+// read-only by one name, it would stay writable through the other.
 func TestFenceMountsRefusesAHardLinkedProtectedFile(t *testing.T) {
 	var ws string
 	f, _ := mounted(t, func(p *Policy) {
@@ -350,9 +345,8 @@ func TestFenceCapabilityCheckReadsTheExecutingThread(t *testing.T) {
 	t.Logf("%s", strings.TrimSpace(string(out)))
 }
 
-// A skill's script in ~/.abhed/skills or in a skills.dirs folder runs under
-// the fence, and cannot be changed from it; the rest of ~/.abhed stays out
-// of reach.
+// A skill script in ~/.abhed/skills or skills.dirs runs under the fence
+// but cannot be changed from it; the rest of ~/.abhed stays out of reach.
 func TestFenceRunsASkillScript(t *testing.T) {
 	for _, mode := range []func(*Policy){nil, noMounts} {
 		var home, script, team string
@@ -392,9 +386,8 @@ func TestFenceRunsASkillScript(t *testing.T) {
 	}
 }
 
-// Where user namespaces are not allowed, run with ABHED_FENCE_NO_USERNS=1:
-// the probe says so, a surface with protected paths is refused, naming why,
-// and the command line's fence runs in the landlock_only mode, saying so.
+// Without user namespaces (ABHED_FENCE_NO_USERNS=1) protected paths are
+// refused, naming why, and the CLI fence runs landlock_only, saying so.
 func TestFenceWithoutUserNamespaces(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
@@ -472,13 +465,8 @@ func TestFenceMountsShellOnATerminal(t *testing.T) {
 	}
 }
 
-// A second mount of the workspace's files reaches them by another path: on
-// an ostree host (Fedora CoreOS, Silverblue) /var is also mounted at
-// the deployment's var folder under /sysroot/ostree, and a bind mount does the same. Run with
-// ABHED_TEST_ALIAS=<dir>:<mirror>, where mirror shows dir through another
-// mount (/var/tmp and its copy under /sysroot/ostree on such a
-// host). Through the alias a command can neither write git's config and
-// hooks nor read or plant Abhed's state.
+// Through a second mount (ostree /var, a bind mount; ABHED_TEST_ALIAS=d:m)
+// a command can neither write git config or hooks nor touch Abhed's state.
 func TestFenceMountsCoversAnAlias(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
@@ -548,9 +536,8 @@ func TestFenceMountsCoversAnAlias(t *testing.T) {
 	}
 }
 
-// A hook with a second name outside the hooks folder, such as a file in the
-// workspace hard-linked to it, refuses the command: the folder is held
-// read-only by one name, and the hook would stay writable through the other.
+// A hook hard-linked from outside the hooks folder refuses the command:
+// read-only by one name, it would stay writable through the other.
 func TestFenceMountsRefusesAHookLinkedOutside(t *testing.T) {
 	var ws string
 	f, _ := mounted(t, func(p *Policy) {

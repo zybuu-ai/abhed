@@ -9,21 +9,16 @@ import (
 	"time"
 )
 
-// Interactive is implemented by backends that can host a long-lived shell on
-// a terminal, under the same confinement as Command. A person at the
-// workbench gets one per terminal tab.
+// Interactive is implemented by backends that can host a long-lived shell on a
+// terminal, under the same confinement as Command.
 type Interactive interface {
 	Shell(ctx context.Context, cwd string) *exec.Cmd
 	// Backend names the mechanism, for a person reading a terminal banner.
 	Backend() string
 }
 
-// shellArgv is bash without the operator's profile or rc files: they live
-// outside the workspace, and a sandboxed shell should not depend on them. It
-// is a login shell with huponexit, so jobs still running when it exits are
-// hung up rather than left behind. -m asks for job control outright: each
-// program then gets a process group of its own, which is how the workbench
-// terminal tells a line typed into a program from one typed at the prompt.
+// shellArgv is bash without the operator's rc files; huponexit hangs up jobs
+// left at exit, and -m gives each program its own process group.
 var shellArgv = []string{"/bin/bash", "--noprofile", "--norc", "-l", "-O", "huponexit", "-i", "-m"}
 
 // hangUpDelay is how long a shell has to pass a hang-up on to its jobs
@@ -34,10 +29,8 @@ const hangUpDelay = 2 * time.Second
 // exited or been cancelled, before closing pipes something else still holds.
 const commandWaitDelay = 2 * time.Second
 
-// hangUp ends a shell the way closing a terminal does. An interactive bash
-// puts each background job in a process group of its own, so killing the
-// shell leaves them running; on SIGHUP it hangs them up too. Jobs that left
-// its job table, `( cmd & )`, or ignore the hang-up are ended by Leader.Wait.
+// hangUp ends a shell as closing a terminal does, so bash hangs up its jobs;
+// jobs that escape that are ended by Leader.Wait.
 func hangUp(cmd *exec.Cmd) *exec.Cmd {
 	// Every process the shell starts carries it, one that leaves the
 	// shell's session included, so Leader.Wait finds those too.

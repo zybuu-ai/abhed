@@ -17,18 +17,12 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// Image is the default execution image. In an air-gapped install this is
-// digest-pinned and ships inside the signed bundle (docs/ops/air-gap.md);
-// a tag is mutable and therefore unreproducible.
+// Image is the default execution image. Air-gapped installs pin it by digest: a
+// tag is mutable.
 var Image = envOr("ABHED_SANDBOX_IMAGE", "docker.io/library/debian:bookworm-slim")
 
-// Container runs commands in an OCI container.
-//
-// Namespace isolation with a SHARED KERNEL. Adequate for confining accidental
-// damage and scoping the filesystem; NOT adequate against code actively trying
-// to escape, because a kernel exploit crosses this boundary. That is why
-// TierContainer sits below TierVM and why untrusted work should require the
-// latter.
+// Container runs commands in an OCI container. The kernel is shared, so an
+// exploit crosses it: untrusted work needs TierVM.
 type Container struct {
 	policy  Policy
 	runtime string // docker | podman | nerdctl
@@ -54,12 +48,8 @@ func NewContainer(p Policy) *Container {
 	return &Container{policy: p}
 }
 
-// NewGVisor is a Container pinned to the runsc runtime.
-//
-// gVisor intercepts syscalls in userspace, which is a materially stronger
-// boundary than namespaces: the guest kernel surface the workload can reach is
-// a reimplementation, not the host kernel. Reported overhead is roughly
-// 10-20% on syscall-heavy work — worth it for untrusted code.
+// NewGVisor is a Container pinned to the runsc runtime. gVisor serves syscalls
+// in userspace, keeping the host kernel out of reach.
 func NewGVisor(p Policy) *Container {
 	return &Container{policy: p, extra: []string{"--runtime", "runsc"}}
 }
@@ -143,9 +133,8 @@ func (c *Container) Describe() string {
 	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, Image)
 }
 
-// engine is the runtime's program name, such as docker or podman: podman
-// for Podman under any name (podman-remote, or the podman-docker wrapper
-// named docker), which reads PID and UTS from its own configuration.
+// engine is the runtime's program name: podman for Podman under any name, which
+// reads PID and UTS from its own configuration.
 func (c *Container) engine() string {
 	base := filepath.Base(c.runtime)
 	if c.podman || strings.HasPrefix(base, "podman") {
@@ -160,9 +149,8 @@ func saysPodman(path string) bool {
 	return err == nil && strings.Contains(strings.ToLower(string(out)), "podman")
 }
 
-// engineProbeWait bounds each question put to the engine as the tier is
-// chosen, so a hung engine (a stopped VM, a dead socket) cannot hold a
-// session's start; a variable, so a test can shorten it.
+// engineProbeWait bounds each engine query while the tier is chosen, so a hung
+// engine cannot hold a session's start.
 var engineProbeWait = 5 * time.Second
 
 // engineProbe runs the engine's CLI with args and returns its output, ended
@@ -180,9 +168,8 @@ func engineProbe(path string, args ...string) ([]byte, error) {
 	return out, err
 }
 
-// runArgs is everything up to the image: the confinement both a command and
-// a shell run under. It begins with "run --rm -i". An error is why the
-// command is not run.
+// runArgs is the confinement a command and a shell both run under, up to the
+// image; an error is why the command is not run.
 func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 	args := []string{"run", "--rm", "-i"}
 	args = append(args, c.extra...)
@@ -194,25 +181,18 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 		"--security-opt", "no-new-privileges",
 	)
 
-	// The image itself is immutable. A writable rootfs lets a session drop a
-	// binary somewhere on PATH, or edit a shell profile, and lets one command
-	// leave something behind for the next — the container is per-command, so
-	// without this the filesystem is the one place state could persist.
+	// A read-only rootfs stops a command leaving a binary on PATH or an edited
+	// profile behind for the next one.
 	args = append(args, "--read-only")
 
-	// Somewhere to write, sized and mounted noexec so it cannot become the
-	// place a downloaded binary is run from. Compilers and package managers
-	// need a scratch directory; an attacker needs an executable one, and
-	// these are not the same requirement.
+	// Scratch space is sized and noexec, so it cannot run a downloaded binary.
 	args = append(args,
 		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=256m",
 		"--tmpfs", "/run:rw,noexec,nosuid,nodev,size=16m",
 	)
 
-	// Fork bombs and disk-fill are denial of service against the host, which
-	// the memory and pid caps below do not cover on their own. Processes are
-	// bounded by --pids-limit when there is one: an nproc limit counts every
-	// process of the same uid on the host under rootful Docker.
+	// Fork bombs and disk-fill are host DoS. --pids-limit is preferred: under
+	// rootful Docker nproc counts the uid's every host process.
 	if c.policy.MaxProcs <= 0 {
 		args = append(args, "--ulimit", "nproc=256:256")
 	}
@@ -279,9 +259,8 @@ func (c *Container) cpus() string {
 	return strconv.FormatFloat(float64(pct)/100, 'f', -1, 64)
 }
 
-// mountArgs are a container's host mounts for p: the workspace, the
-// read-only paths, the write-protected and git paths, and Abhed's state
-// hidden. backend names the tier in records; mem is what the git look keeps.
+// mountArgs are a container's host mounts for p, Abhed's state hidden; backend
+// names the tier in records, mem is what the git look keeps.
 func mountArgs(ctx context.Context, p Policy, backend string, mem *gitMemory) ([]string, error) {
 	var args []string
 	// The workspace is the only writable host path. Mounted at the same path
@@ -386,9 +365,8 @@ func (c *Container) shellLabel() string {
 	return "abhed.term=" + hex.EncodeToString(sum[:6])
 }
 
-// Shell starts an interactive shell in a container of its own, with a
-// terminal (-t). The container is named so that ending the shell removes it,
-// even when the engine's CLI is killed before it can.
+// Shell starts an interactive shell in a container of its own, with a terminal
+// (-t).
 func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	run, err := c.runArgs(ctx, cwd)
 	if err != nil {
@@ -445,9 +423,7 @@ func envOr(key, fallback string) string {
 }
 
 // ForwardEnv passes the named variables, already set in cmd.Env, into a
-// container command. `-e NAME` makes the engine read the value from its own
-// environment, so no value appears in its arguments. Other commands are left
-// alone: their cmd.Env already reaches the shell.
+// container command. `-e NAME` keeps each value out of its arguments.
 func ForwardEnv(cmd *exec.Cmd, names []string) {
 	at := -1
 	for i, a := range cmd.Args {
@@ -468,9 +444,8 @@ func ForwardEnv(cmd *exec.Cmd, names []string) {
 	cmd.Args = args
 }
 
-// stateMounts hide Abhed's own state that the mounts above would show: an
-// empty throwaway folder over the workspace's .abhed, as the process tier
-// mounts, and the same over a state folder, /dev/null over a state file.
+// stateMounts cover Abhed's state the mounts above would show: an empty folder
+// over each state folder, /dev/null over a state file.
 func stateMounts(p Policy) []string {
 	ws := p.Workspace
 	dir := filepath.Join(ws, stateDir)
@@ -528,10 +503,8 @@ func caseSpellings(dir, name string) []string {
 // Close stops the egress proxy commands under the allowlist reach.
 func (c *Container) Close() error { return c.closeEgress() }
 
-// rmArgs removes the named containers at once. Podman's rm -f first waits
-// ten seconds for a process that ignores SIGTERM, as a shell or sleep as a
-// container's first process does; --time 0 kills it straight away, as
-// Docker's rm -f does.
+// rmArgs removes the named containers; --time 0 stops Podman waiting ten
+// seconds on a process that ignores SIGTERM.
 func (c *Container) rmArgs(names ...string) []string {
 	args := []string{"rm", "-f"}
 	if c.engine() == "podman" {

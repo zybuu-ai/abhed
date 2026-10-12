@@ -12,9 +12,8 @@ import (
 	"time"
 )
 
-// fenceMark is what a fenced session leaves while it runs, under
-// ~/.abhed/fence: removed at a clean close, so one whose process is gone
-// marks a session that ended without its last check.
+// fenceMark is left under ~/.abhed/fence while a fenced session runs; one whose
+// process is gone marks a session that skipped its last check.
 type fenceMark struct {
 	PID int `json:"pid"`
 	// State is whether the workspace had a .abhed as the session started.
@@ -37,10 +36,8 @@ func markPrefix(ws string) string {
 	return hex.EncodeToString(sum[:8]) + "-"
 }
 
-// sweepCrashed takes out a .abhed that a session which ended without
-// closing its fence left behind: one with no .abhed when it started, whose
-// .abhed now dates from no later than its last command. Each stale mark is
-// removed. rec hears what was taken out.
+// sweepCrashed takes out a .abhed a crashed fenced session left behind and
+// removes stale marks; rec hears what was taken out.
 func (f *Fence) sweepCrashed(rec func(string, map[string]any) error) {
 	dir, err := markDir()
 	if err != nil {

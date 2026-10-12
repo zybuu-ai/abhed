@@ -52,11 +52,9 @@ type Config struct {
 	// IdleSeconds ends a tunnel or a forwarded request after this long
 	// with no bytes either way; zero means DefaultIdle.
 	IdleSeconds int `json:"idle_seconds,omitempty"`
-	// InspectTLS, off by default, has the proxy terminate commands' HTTPS
-	// with a certificate from a CA made for each session's proxy, so every
-	// request inside is judged by method and path as plain HTTP is. Commands
-	// are pointed at the CA; a client that pins its certificates or keeps
-	// its own trust store refuses it.
+	// InspectTLS, off by default, has the proxy terminate commands' HTTPS with
+	// a certificate from a CA made for each session's proxy, so every request
+	// inside is judged by method and path as plain HTTP is.
 	InspectTLS bool `json:"inspect_tls,omitempty"`
 }
 
@@ -234,8 +232,8 @@ func (p *Policy) Audit() bool { return p.audit }
 func (p *Policy) Rules() int { return len(p.rules) }
 
 // PathDenies names the deny rules narrowed by a path: each is a speed bump,
-// since a server may route a spelling the rule does not match (/ADMIN,
-// /admin/, /admin.json) to the same place.
+// since a server may route a spelling the rule does not match (/ADMIN, /admin/,
+// /admin.json) to the same place.
 func (p *Policy) PathDenies() []string {
 	var out []string
 	for _, ru := range p.rules {
@@ -256,10 +254,10 @@ func (p *Policy) RecordPaths() bool { return !p.hidePaths }
 // request by request.
 func (p *Policy) InspectTLS() bool { return p.inspect }
 
-// DecideHost is the decision on a tunnel the proxy will look inside: any
-// allow rule for its host and port lets it open, narrowed or not, since each
-// request inside is then decided on its own; a deny rule refuses it only when
-// it is not narrowed by method or path.
+// DecideHost is the decision on a tunnel the proxy will look inside: any allow
+// rule for its host and port lets it open, narrowed or not, since each request
+// inside is then decided on its own; a deny rule refuses it only when it is not
+// narrowed by method or path.
 func (p *Policy) DecideHost(r Request) Verdict {
 	var ips []netip.Prefix
 	allowed, denied := "", ""
@@ -323,9 +321,8 @@ func (p *Policy) AllowedHosts() []string {
 // Decide applies the rules to r: a matching deny rule wins, then a matching
 // allow rule, then the default. In audit mode a deny becomes would_deny.
 func (p *Policy) Decide(r Request) Verdict {
-	// A ; in a path is a parameter some servers drop before routing, so
-	// /admin;x would be /admin to them and no rule on /admin to us. It is
-	// refused, in audit mode as well, as an unplain spelling is.
+	// A ; is a path parameter some servers drop before routing (/admin;x is
+	// /admin), so it is refused, in audit mode too.
 	if !r.Tunnel && strings.Contains(r.Path, ";") {
 		return Verdict{Decision: Deny, Rule: "path", Reason: errSemicolon.Error()}
 	}
@@ -384,8 +381,7 @@ func (p *Policy) deny(name, why string) Verdict {
 }
 
 // matches reports whether the rule covers r. A tunnel's method and path are
-// not seen, so a rule narrowed by them cannot allow one, and a deny rule
-// narrowed by them refuses it: unverifiable, it is read the strict way.
+// unseen, so a rule narrowed by them is read the strict way.
 func (ru rule) matches(r Request) bool {
 	if !HostMatches(ru.host, ru.wildcard, r.Host) || !slices.Contains(ru.ports, r.Port) {
 		return false
@@ -409,9 +405,8 @@ func (ru rule) matches(r Request) bool {
 }
 
 // HostMatches matches a canonical host against a rule's: exactly, or for a
-// wildcard (suffix with its leading dot), any name ending in that suffix on
-// a label boundary. *.example.com matches a.example.com, never example.com
-// or example.com.evil.net.
+// wildcard (suffix with its leading dot), any name ending in that suffix on a
+// label boundary.
 func HostMatches(ruleHost string, wildcard bool, host string) bool {
 	if !wildcard {
 		return host == ruleHost

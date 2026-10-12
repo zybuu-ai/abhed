@@ -8,9 +8,8 @@ import (
 	"testing"
 )
 
-// Seatbelt can allow only "localhost", which is ::1 as well as 127.0.0.1:
-// the proxy holds the port on both, so what a command reaches on [::1] is
-// the proxy, never another process.
+// Seatbelt can allow only "localhost" (::1 and 127.0.0.1), so the proxy
+// holds the port on both and [::1] never reaches another process.
 func TestSeatbeltIPv6LoopbackIsTheProxy(t *testing.T) {
 	s, ws := egressProcess(t)
 	var rec eventLog

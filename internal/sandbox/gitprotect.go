@@ -103,9 +103,8 @@ func walkGit(ws string, mk bool, known ...string) *gitScan {
 	return g
 }
 
-// linkedGits are the .git entries in ws, at any depth the walk reaches, that
-// are symbolic links: seatbelt cannot name what such a git folder holds by
-// pattern, so the folder each leads to is held whole.
+// linkedGits are the symlinked .git entries in ws: seatbelt cannot match them
+// by pattern, so each target folder is held whole.
 func linkedGits(ws string) []string {
 	var out []string
 	for _, l := range walkGit(ws, false).linked {
@@ -453,10 +452,8 @@ type gitMemory struct {
 	seenGit map[string]bool
 }
 
-// gitGuardFor returns the paths in ws to bind read-only before a command starts,
-// or why the command is not run; a planted commondir is taken out first.
-// When required, a walk stopped by its bound refuses the command rather than
-// leave a repository past it unprotected.
+// gitGuardFor returns the paths in ws to bind read-only, or why the command is
+// refused; when required, a bounded walk refuses rather than miss one.
 func gitGuardFor(ctx context.Context, ws, backend string, mem *gitMemory, required bool) ([]string, error) {
 	mem.mu.Lock()
 	known := mem.known[ws]

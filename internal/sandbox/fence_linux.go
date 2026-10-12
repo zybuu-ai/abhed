@@ -31,10 +31,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
 )
 
-// The launcher runs before anything else in any binary that links this
-// package, so the abhed command and an SDK embedder fence commands alike.
-// It runs whole on this thread, which executes the command: the mounts'
-// capability, its drop, Landlock and the checks of them are all per thread.
+// The launcher runs first in any binary linking this package, whole on this
+// thread: capabilities and Landlock are per thread.
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == fenceLauncherArg {
 		runtime.LockOSThread()
@@ -46,9 +44,8 @@ func init() {
 	}
 }
 
-// folderIdentity is p's identity, not following a link, with its birth time
-// where the filesystem records one; both are read from one descriptor, so a
-// folder swapped in between cannot lend the other its birth time.
+// folderIdentity is p's identity with birth time, both from one descriptor, so
+// a folder swapped in between cannot lend the other its birth time.
 func folderIdentity(p string) (folderID, error) {
 	fd, err := unix.Open(p, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -158,9 +155,8 @@ func sweepFenceTemps() {
 	}
 }
 
-// sweepFenceCgroups removes the cgroups of runs that ended without closing
-// their fence, killing what they left running: those whose Abhed process,
-// named first in the id, is gone.
+// sweepFenceCgroups removes cgroups whose Abhed process is gone, killing what
+// they left running.
 func sweepFenceCgroups(base *cgroup.Base) {
 	for _, id := range base.Sandboxes() {
 		pidText, _, ok := strings.Cut(id, "-")
@@ -180,10 +176,8 @@ func sweepFenceCgroups(base *cgroup.Base) {
 // path only, so a workspace with search permission alone still serves.
 const dirSearchOpen = unix.O_PATH
 
-// chmodNoFollow changes the mode of name in the folder parent, never
-// following a link there. Before Linux 6.6 there is no fchmodat2, so the
-// entry is opened by path alone, checked to be no link, and changed through
-// its descriptor.
+// chmodNoFollow changes name's mode in parent, never following a link; before
+// Linux 6.6 it goes through a descriptor checked to be no link.
 func chmodNoFollow(parent int, name string, mode uint32) error {
 	err := unix.Fchmodat(parent, name, mode, unix.AT_SYMLINK_NOFOLLOW)
 	if !errors.Is(err, unix.EOPNOTSUPP) && !errors.Is(err, unix.ENOSYS) {
@@ -481,10 +475,8 @@ type supervision struct {
 // ackByte lets the launcher run the command, once its launch is recorded.
 const ackByte = 'y'
 
-// supervise answers one launcher: it records the launch before acking, so
-// a command runs only once the record holds it, then waits for the command
-// to exit, ends what it left running, records the limits it ran into, and
-// checks the command planted no state.
+// supervise records the launch before acking, so a command runs only once the
+// record holds it, then reaps it and checks for planted state.
 func (f *Fence) supervise(ctx context.Context, sv supervision) {
 	defer func() { _ = sv.ours.Close() }()
 	rep, err := readReport(ctx, sv.ours, sv.abandoned)
@@ -497,9 +489,8 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	leaf := sv.leaf
-	// In a PID namespace the launcher names the command by its pid there,
-	// and stays as init until the command has ended: its exit, the status the
-	// caller reads, comes before the leaf is removed, which would kill it.
+	// In a PID namespace the launcher stays init until the command ends, so its
+	// exit status comes before the leaf's removal kills it.
 	initfd := -1
 	if sv.pidns {
 		rep.PID = hostPid(leaf.Path(), rep.PID)
@@ -553,9 +544,8 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	waitExit(pidfd)
-	// The limits are recorded before what the command left is ended: while
-	// it runs, it holds the output the caller waits on, so the event comes
-	// before the call's result.
+	// Limits are recorded before leftovers are ended, so the event comes before
+	// the call's result.
 	if ev, err := leaf.Events(); err == nil && sv.rec != nil {
 		session := sessionRefusals(sessionBefore, f.host.sb.OwnPidsMax(), ev.PidsMax)
 		if ev.OOM > 0 || ev.OOMKill > 0 || ev.OOMGroupKill > 0 || ev.PidsMax > 0 || session > 0 {
@@ -668,10 +658,8 @@ func leafPids(dir string) []int {
 // launcherFD is the channel to Abhed, the launcher's first extra file.
 const launcherFD = 3
 
-// runLauncher fences this process, in order: the probe's pass, the call's
-// cgroup, Landlock, then seccomp; reports what it applied, waits for Abhed
-// to record it, and executes the command in its own place. Any failure
-// exits 126 having run nothing.
+// runLauncher fences this process, reports it, waits for Abhed to record it,
+// then execs the command; any failure exits 126 having run nothing.
 func runLauncher(args []string) int {
 	if len(args) < 3 || args[1] != "--" {
 		return launchFail("the launcher was started without a command")
@@ -680,11 +668,8 @@ func runLauncher(args []string) int {
 	if err := json.Unmarshal([]byte(args[0]), &s); err != nil {
 		return launchFail("the launcher's spec cannot be read: %v", err)
 	}
-	// 1. The probe: this run's pass, from the Abhed that started this
-	// launcher, never one kept from another run; and what it checked of the
-	// would-be command, checked again here. In a PID namespace of its own
-	// the launcher is init, whose parent is outside it: only the process
-	// that made the namespace can have started it.
+	// 1. The probe: this run's pass, rechecked. As init of its own PID
+	// namespace, only the namespace's maker can have started the launcher.
 	started := s.ProbePID == os.Getppid()
 	if s.PIDNS {
 		started = os.Getpid() == 1 && os.Getppid() == 0
@@ -707,9 +692,8 @@ func runLauncher(args []string) int {
 		if err != nil {
 			return launchFail("entering the working folder again: %v", err)
 		}
-		// A /proc of the namespace's own shows only its processes; where the
-		// kernel refuses one (an inherited /proc with parts hidden), the
-		// namespace still keeps signals and ptrace from reaching outside.
+		// A namespace-own /proc shows only its processes; without one the
+		// namespace still keeps signals and ptrace inside.
 		if s.PIDNS {
 			_ = mountns.MountProc()
 		}
@@ -739,9 +723,8 @@ func runLauncher(args []string) int {
 	if s.PIDNS {
 		return runInit(s, args)
 	}
-	// A session and process group apart from Abhed's: the command's own
-	// kill(0) cannot reach Abhed, and /dev/tty opens only a terminal it was
-	// started on, never Abhed's.
+	// A session apart from Abhed's: kill(0) cannot reach Abhed, and /dev/tty
+	// opens only the command's own terminal.
 	if sid, err := unix.Getsid(0); err != nil || sid != os.Getpid() {
 		if _, err := unix.Setsid(); err != nil {
 			return launchFail("leaving Abhed's session: %v", err)
@@ -775,11 +758,8 @@ const fenceChildArg = "__abhed_fence_child"
 var initSignals = []os.Signal{unix.SIGINT, unix.SIGTERM, unix.SIGHUP, unix.SIGQUIT, unix.SIGUSR1, unix.SIGUSR2,
 	unix.SIGWINCH, unix.SIGCONT, unix.SIGALRM}
 
-// runInit is the launcher as init of the command's PID namespace. A command
-// that is init ignores every signal it has no handler for, Ctrl-C and a
-// stop among them, so it runs as init's child instead: init relays to the
-// egress proxy where there is one, passes signals on, reaps what is
-// orphaned, and exits as the command does, which ends the namespace.
+// runInit is the launcher as PID namespace init: init ignores unhandled
+// signals, so the command runs as its child and init relays them.
 func runInit(s fenceSpec, args []string) int {
 	if s.Egress != nil {
 		ln, err := net.Listen("tcp", s.Egress.Listen)
@@ -898,10 +878,8 @@ func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	return 127
 }
 
-// holdsNothing refuses any capability this thread holds, and for root also a
-// bounding set not empty or securebits not locked: the one
-// that executes the command, whose capabilities the command starts with.
-// Other threads may still hold the mounts' capability, which an exec drops.
+// holdsNothing refuses any capability the exec'ing thread holds, and for root a
+// non-empty bounding set or unlocked securebits.
 func holdsNothing() error {
 	root := os.Getuid() == 0 || os.Geteuid() == 0
 	if root {

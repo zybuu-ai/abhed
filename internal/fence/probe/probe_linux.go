@@ -222,9 +222,8 @@ func seccompCheck(ctx context.Context) Check {
 	return c
 }
 
-// cgroupCheck requires the unified hierarchy and a subtree this user may make
-// a child cgroup in and move a process into. It creates and removes one empty
-// child; managing cgroups is not the probe's job.
+// cgroupCheck requires cgroup v2 and a subtree this user may make a child in
+// and move a process into; it makes and removes one empty child.
 func cgroupCheck(req Requirements) Check {
 	c := Check{ID: CheckCgroup, Required: !req.CgroupOptional}
 	dir, value, err := cgroupWritable(req.CgroupDir)
@@ -285,9 +284,8 @@ func ownCgroup() (string, error) {
 	return "", errors.New("this process is in no cgroup v2 (no 0:: line in /proc/self/cgroup)")
 }
 
-// mountsCheck starts a helper in a user and mount namespace of its own, as
-// the launcher would be, and has it hold a folder read-only, hide another and
-// drop its capabilities.
+// mountsCheck has a helper in its own user and mount namespace hold a folder
+// read-only, hide another and drop its capabilities.
 func mountsCheck(ctx context.Context, req Requirements) Check {
 	c := Check{ID: CheckMounts, Required: req.Mounts}
 	dir, err := os.MkdirTemp("", "abhed-fence-probe-mounts-")

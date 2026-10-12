@@ -43,10 +43,8 @@ func (s *Process) cgroups() *processCgroups {
 	return s.cg
 }
 
-// place puts cmd, not yet started, in a leaf of its own bounded by
-// max_procs and max_memory_mb; the leaf, with whatever the command left in
-// it, goes when ctx ends. Without a delegated cgroup nothing is placed, or,
-// where a memory bound was asked for, cmd is refused.
+// place puts cmd in its own bounded cgroup leaf, gone when ctx ends; without a
+// delegated cgroup, a memory bound refuses cmd.
 func (s *Process) place(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
 	if s.backend != "bwrap" || cmd.Err != nil {
 		return cmd

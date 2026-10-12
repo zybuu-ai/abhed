@@ -9,12 +9,8 @@ import (
 	"time"
 )
 
-// Compilers put their work directories in TMPDIR. On macOS that is a per-user
-// path under /var/folders, and without an explicit allow every `go build`, `cc`
-// and `cargo build` inside the sandbox fails with "operation not permitted" —
-// which reads as an agent error rather than a sandbox one.
-//
-// Found by running the USAGE.md quickstart end to end.
+// Compilers need TMPDIR (per-user /var/folders on macOS); without an allow
+// builds fail "operation not permitted", which reads as an agent error.
 func TestSandboxAllowsToolchainTempDir(t *testing.T) {
 	requireNetNS(t)
 	if runtime.GOOS != "darwin" {

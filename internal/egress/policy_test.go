@@ -107,9 +107,8 @@ func TestMethodsAndPaths(t *testing.T) {
 			t.Errorf("%s %s allowed %v, want %v", c.method, c.path, got, c.want)
 		}
 	}
-	// Deny rules on paths under an open host: a server that reads path
-	// parameters routes /admin;x as /admin and /secret;x/a as /secret/a, so
-	// a ; is refused before any rule is read.
+	// Deny rules on paths under an open host: servers route /admin;x as /admin,
+	// so a ; is refused before any rule is read.
 	d := mustCompile(t, Config{Rules: []Rule{
 		{Host: "api.test", Ports: []int{80}, Decision: "allow"},
 		{Host: "api.test", Ports: []int{80}, Paths: []string{"/admin", "/secret/*"}, Decision: "deny"},
@@ -121,9 +120,8 @@ func TestMethodsAndPaths(t *testing.T) {
 			t.Errorf("deny rules: GET %s allowed %v, want %v", path, got, want)
 		}
 	}
-	// A tunnel's path is not seen: a narrowed allow cannot allow it, and a
-	// narrowed deny refuses it. The narrowed allows alone, with no deny rule
-	// to refuse the tunnel for them.
+	// A tunnel's path is unseen: a narrowed allow cannot allow it, a narrowed
+	// deny refuses it. Here the narrowed allows alone.
 	n := mustCompile(t, Config{Rules: []Rule{
 		{Host: "api.test", Ports: []int{80}, Methods: []string{"GET"}, Decision: "allow"},
 		{Host: "api.test", Ports: []int{80}, Paths: []string{"/v1/*"}, Decision: "allow"},

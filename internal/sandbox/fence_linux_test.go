@@ -19,12 +19,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/fence/cgroup"
 )
 
-// The tests below fence real commands. They need Linux 6.7 or later, an
-// ordinary user and a delegated cgroup, and run only with
-// ABHED_REQUIRE_FENCE=1, which also turns a host that does not qualify into
-// a failure instead of a skip:
-//
-//	systemd-run --user --scope -p Delegate=yes env ABHED_REQUIRE_FENCE=1 go test ./internal/sandbox -run Fence
+// These need Linux 6.7+, a plain user, a delegated cgroup (systemd-run -p
+// Delegate=yes) and ABHED_REQUIRE_FENCE=1, which fails an unqualified host.
 
 // fenced selects the fence for a fresh workspace and home, or skips.
 func fenced(t *testing.T, mutate func(*Policy)) (*Fence, Policy) {
@@ -242,9 +238,8 @@ func TestFenceNetworkOnKeepsUnixSocketsOut(t *testing.T) {
 	}
 }
 
-// Without a PID namespace (landlock_only) a command sees other processes'
-// command lines, but Landlock keeps their environment out of its reach; in
-// mount_namespace mode it has a /proc of its own and sees neither.
+// In landlock_only a command sees other processes' command lines but Landlock
+// keeps their environment out of reach; mount_namespace's own /proc hides both.
 func TestFenceProcVisibility(t *testing.T) {
 	f, p := fenced(t, nil)
 	pid := os.Getpid()
@@ -269,10 +264,8 @@ func eventually(t *testing.T, what string, d time.Duration, ok func() bool) {
 	}
 }
 
-// A command that plants an account in the workspace's .abhed, in any case,
-// leaves nothing there for a later Abhed to read: it is moved out once the
-// command ends, recorded, and the session's fence runs nothing more. One
-// left running in the background to plant later is ended with its command.
+// State planted in .abhed (any case) is moved out and recorded, the fence
+// runs nothing more, and a background job left to plant later is ended.
 func TestFencePlantedStateDoesNotPersist(t *testing.T) {
 	for _, plant := range []string{
 		`mkdir .abhed && echo '{"users":[{"name":"mallory","role":"admin"}]}' > .abhed/users.json`,
@@ -357,10 +350,8 @@ func fencedApart(t *testing.T, p Policy) (*Fence, *events) {
 	return f, ev
 }
 
-// A command that makes the workspace unlistable, here by its mode, has
-// planted state as far as the fence can tell: a .abhed is still found by
-// name, the next command is refused, fence.state_planted names the reason,
-// and Close fails.
+// A workspace made unlistable counts as planted state: .abhed is still found by
+// name, the next command is refused with fence.state_planted, and Close fails.
 func TestFenceUnlistableWorkspaceRefusesTheSession(t *testing.T) {
 	for _, tc := range []struct {
 		mode  string
@@ -410,9 +401,8 @@ func TestFenceUnlistableWorkspaceRefusesTheSession(t *testing.T) {
 	}
 }
 
-// A .abhed a command locks (mode 0100) in a workspace on another filesystem
-// than home, where it cannot be moved to the quarantine, is renamed in place
-// to a name Abhed never reads, still readable by its owner, and said so.
+// A locked .abhed on another filesystem than home's is renamed in place to
+// a name Abhed never reads, kept readable by its owner, and reported.
 func TestFencePlantedStateOnAnotherFilesystem(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
@@ -476,9 +466,8 @@ func TestFenceCommandsHaveTheirOwnSession(t *testing.T) {
 	}
 }
 
-// A command cannot open another terminal of the user's, here a stand-in pty
-// the test owns, nor make one; it keeps its own output through its
-// descriptors.
+// A command cannot open or create another of the user's terminals (here a
+// stand-in pty), yet keeps its own output through its descriptors.
 func TestFenceCannotOpenAnotherTerminal(t *testing.T) {
 	f, p := fenced(t, nil)
 	ptmx, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
@@ -612,9 +601,8 @@ func TestFenceSweepsStaleCgroups(t *testing.T) {
 	}
 }
 
-// Giving a planted folder back to its owner never follows a link: not one
-// planted in its place, not one inside it, and not one swapped in for it
-// while it is walked. The folder outside keeps its mode throughout.
+// Giving a planted folder back to its owner never follows a link planted in its
+// place, inside it, or swapped in mid-walk; the folder outside keeps its mode.
 func TestFenceRestoreOwnerAccessFollowsNoLink(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")

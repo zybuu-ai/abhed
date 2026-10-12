@@ -50,9 +50,8 @@ type Base struct {
 // Path is the delegated cgroup's directory.
 func (b *Base) Path() string { return b.dir }
 
-// NewSandbox makes the cgroup of sandbox id with limits l. It fails, and
-// makes nothing, when a controller l needs is not delegated or a limit
-// cannot be written.
+// NewSandbox makes the cgroup of sandbox id with limits l. It fails, making
+// nothing, if a controller is undelegated or a limit unwritable.
 func (b *Base) NewSandbox(id string, l Limits) (*Sandbox, error) {
 	if !validName(id) {
 		return nil, fmt.Errorf("cgroup: sandbox id %q: want letters, digits, '.', '_' or '-', at most 64", id)
@@ -85,9 +84,8 @@ func (b *Base) NewSandbox(id string, l Limits) (*Sandbox, error) {
 	return s, nil
 }
 
-// enable turns on ctrls for b's children. Writing cgroup.subtree_control is
-// refused while b itself holds processes, so they move to the host leaf
-// first, as delegation requires.
+// enable turns on ctrls for b's children, first moving b's processes to the
+// host leaf, as subtree_control is refused while b holds any.
 func (b *Base) enable(ctrls []string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -176,9 +174,8 @@ func (s *Sandbox) NewLeaf(callID string, l Limits) (*Leaf, error) {
 	if s.removed {
 		return nil, fmt.Errorf("cgroup: call %s: the sandbox was removed", callID)
 	}
-	// The kernel cannot tell a scope delegated to Abhed from one systemd still
-	// manages, and a manager that turns a controller off drops its limits.
-	// Each call checks they still hold rather than run unbounded.
+	// systemd may drop limits in a scope it still manages, so each call checks
+	// they still hold rather than run unbounded.
 	if err := s.controllersHeld(); err != nil {
 		return nil, fmt.Errorf("cgroup: call %s: %w", callID, err)
 	}
@@ -300,8 +297,7 @@ func (n node) freeze(ctx context.Context, on bool) error {
 var useKillFile = true
 
 // Kill ends every process in the cgroup and its descendants, and returns once
-// none is left. Below Linux 5.14, which has no cgroup.kill, it freezes the
-// cgroup, so nothing forks while it is swept, and signals each process.
+// none is left. Below Linux 5.14 it freezes the cgroup first.
 func (n node) Kill(ctx context.Context) error {
 	kill := filepath.Join(n.dir, "cgroup.kill")
 	if _, err := os.Stat(kill); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -341,10 +337,8 @@ func (n node) Events() (Events, error) {
 		return Events{}, fmt.Errorf("cgroup: events: %w", err)
 	}
 	ev := eventsFrom(string(mem), string(pid))
-	// Before Linux 6.14 pids.events counts a refused fork only in the
-	// forking task's own cgroup, a leaf below this one, though the limit hit
-	// is this one's; since, it counts them here for the whole subtree. The
-	// larger of the two readings is right under both.
+	// Before Linux 6.14 pids.events counts a refused fork only in the forking
+	// leaf, after it here; the larger reading is right on both.
 	ev.PidsMax = max(ev.PidsMax, n.childPidsMax())
 	return ev, nil
 }
@@ -396,9 +390,8 @@ func (n node) allPids() []int {
 	return out
 }
 
-// apply writes l's limits to the cgroup at dir. A file that is missing means
-// a controller or a kernel feature is missing, and the limit is not applied:
-// that is an error, never a skip.
+// apply writes l's limits to the cgroup at dir. A missing file means a missing
+// controller or feature: an error, never a skip.
 func apply(dir string, l Limits) error {
 	for _, s := range l.settings() {
 		if err := writeFile(filepath.Join(dir, s.file), s.value); err != nil {

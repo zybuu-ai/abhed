@@ -9,9 +9,8 @@ import (
 	"strings"
 )
 
-// mountEntry is one line of /proc/self/mountinfo: the mount's id, its
-// filesystem's device, the folder of that filesystem it shows (root), and
-// where it is mounted (point).
+// mountEntry is one /proc/self/mountinfo line: mount id, device, the folder of
+// the filesystem it shows (root) and where it is mounted (point).
 type mountEntry struct {
 	ID    int
 	Dev   string
@@ -87,9 +86,8 @@ func deletedRoot(root string) bool {
 	return strings.HasSuffix(root, "//deleted") || strings.HasSuffix(root, " (deleted)")
 }
 
-// alias is another mount that reaches the workspace's files: Path is where
-// it does. Rel is "" when Path is the workspace itself, else the mount shows
-// only the workspace's Rel, and Path is that.
+// alias is another mount reaching the workspace's files at Path. Rel is "" when
+// Path is the workspace itself, else the folder Path alone shows.
 type alias struct {
 	Path string
 	Rel  string
@@ -146,9 +144,8 @@ const (
 	wholeEmpty    = "empty"
 )
 
-// rebase is the part of p that falls inside the workspace's folder rel, as
-// a plan relative to rel. When rel itself lies in a folder p hides or holds
-// read-only, the whole of it is covered instead, and whole says how.
+// rebase is p's part inside workspace folder rel, relative to rel; if rel is in
+// a folder p hides or holds read-only, all of it is covered (whole).
 func rebase(p Plan, rel string) (sub Plan, whole string) {
 	inside := func(q string) (string, bool) { return within("/"+rel, "/"+q) }
 	covers := func(q string) bool { _, ok := within("/"+q, "/"+rel); return ok }
@@ -183,11 +180,8 @@ func viewType(t string) bool {
 	return false
 }
 
-// views are the mounts of such a filesystem that name the workspace at
-// wsPath, a folder in it or one holding it, as their source or in an overlay
-// layer: they show its files under a device of their own, where no cover
-// the fence makes reaches. Only what they name is read; what a FUSE program
-// serves from elsewhere is not known.
+// views are mounts of such a filesystem naming the workspace, or a folder in or
+// above it, as source or overlay layer: the fence's covers miss them.
 func views(entries []mountEntry, wsMount int, wsPath, hostname string) []string {
 	var out []string
 	related := func(p string) bool {

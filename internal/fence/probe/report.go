@@ -29,8 +29,7 @@ type Requirements struct {
 	// process's own cgroup.
 	CgroupDir string
 	// Mounts requires a mount namespace of the command's own, for a surface
-	// that keeps paths inside the workspace read-only. Without it the check
-	// is still made, and reported, but does not refuse.
+	// that keeps paths inside the workspace read-only.
 	Mounts bool
 }
 

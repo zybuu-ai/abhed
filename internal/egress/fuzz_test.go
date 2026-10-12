@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// FuzzParseRequestLine checks that whatever parses is one plain spelling:
-// the host is canonical, the port is in range, and a plain request's path
-// has no segment a server would rewrite.
+// FuzzParseRequestLine checks whatever parses is one plain spelling: canonical
+// host, port in range, no path segment a server would rewrite.
 func FuzzParseRequestLine(f *testing.F) {
 	for _, s := range []string{
 		"CONNECT example.com:443 HTTP/1.1", "GET http://example.com/a?b HTTP/1.1",

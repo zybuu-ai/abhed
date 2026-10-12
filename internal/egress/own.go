@@ -16,10 +16,8 @@ import (
 	"time"
 )
 
-// Abhed's own requests (the model client, web_fetch, web_search, MCP over
-// HTTP, ssh_connect, the k8s_* tools, remote retrieval and abhed resolve's
-// forge API) are judged in-process by the same policy the commands' proxy
-// uses.
+// Abhed's own requests (model, web tools, MCP over HTTP, ssh, k8s, retrieval,
+// forge API) are judged in-process by the commands' proxy policy.
 
 // Kinds of Abhed's own requests, as an Event's Kind records them.
 const (

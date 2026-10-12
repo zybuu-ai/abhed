@@ -38,7 +38,6 @@ func groupTarget(pgid int) (int, error) {
 
 // EndWithCommand runs cmd in a session of its own, which a cancel kills whole,
 // together with every process descended from it.
-// With no terminal, a /dev/tty read fails at once instead of stopping unseen.
 func EndWithCommand(cmd *exec.Cmd) *exec.Cmd {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -81,9 +80,8 @@ func EndWithCommand(cmd *exec.Cmd) *exec.Cmd {
 	return cmd
 }
 
-// endTree stops root and its descendants pass after pass, a setsid child included
-// while its parent lives, then kills them; an orphan reparented elsewhere is not
-// reached. Each is stopped only once its parent is checked to be in the tree.
+// endTree stops then kills root and its descendants, each stopped only once its
+// parent is checked to be in the tree.
 func endTree(root int) {
 	if syscall.Kill(root, stopSignal) != nil {
 		return
@@ -129,13 +127,12 @@ func ownGroup(cmd *exec.Cmd) {
 	}
 }
 
-// EndLeft ends what cmd's command left running, found by its marker, after
-// the command itself has exited: a server it started in the background, or
-// a child that left its session. A cancel does this only while the command runs.
+// EndLeft ends what cmd's command left running, found by its marker, after the
+// command itself has exited: a server it started in the background, or a child
+// that left its session.
 func EndLeft(cmd *exec.Cmd) {
-	// The group it led outlives it while a member is left, and its id is not
-	// given to another process meanwhile; a program Apple ships, whose
-	// environment macOS hides from the marker's search, is found this way.
+	// The group it led keeps its id while a member is left, which finds
+	// programs whose environment macOS hides from the marker search.
 	if cmd.Process != nil && cmd.SysProcAttr != nil && cmd.SysProcAttr.Setsid {
 		_ = killGroup(cmd.Process.Pid)
 	}
@@ -164,9 +161,8 @@ func commandMarker() string {
 	return markerName + "=" + hex.EncodeToString(b[:])
 }
 
-// endMarked stops, pass after pass, every process of this user that carries
-// marker, then kills them: what a command left running after its parent and
-// its session were gone. One that cleared its environment is not found.
+// endMarked stops then kills every process of this user carrying marker; one
+// that cleared its environment is not found.
 func endMarked(marker string) {
 	stopped := map[int]bool{}
 	for range maxSweepPasses {

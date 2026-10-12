@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// A call's token written to the workspace and used by a concurrent call no
-// longer records that call's traffic under the first: each call reaches the
-// proxy only by its own way in. A client that sends no credentials, as a
-// JVM's CONNECT does not, is served as its call.
+// A token leaked through the workspace cannot carry another call's traffic:
+// each call has its own way in; a credential-less client is its own call.
 func TestEgressCallsCannotBorrowAnotherCallsToken(t *testing.T) {
 	s, ws := egressProcess(t)
 	var rec eventLog

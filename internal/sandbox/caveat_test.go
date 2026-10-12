@@ -36,9 +36,8 @@ func TestProcessCaveatNamesAMissingProc(t *testing.T) {
 	}
 }
 
-// The Localhost seccomp profile the chart ships is the engine default plus
-// the namespace and mount calls bubblewrap needs, on every architecture the
-// image is built for, and denies the rest.
+// The chart's Localhost seccomp profile is the engine default plus only the
+// namespace and mount calls bubblewrap needs, on every image architecture.
 func TestShippedBubblewrapSeccompProfile(t *testing.T) {
 	data, err := os.ReadFile("../../deploy/helm/abhed/files/seccomp-bwrap.json")
 	if err != nil {

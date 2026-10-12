@@ -12,9 +12,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// fenceEgress is a fenced session's egress proxy under the allowlist: on
-// the host's loopback for landlock_only, and on a Unix socket a relay in
-// each command's network namespace reaches in mount_namespace mode.
+// fenceEgress is a fenced session's egress proxy: on loopback for
+// landlock_only, on a Unix socket for each command's namespace relay otherwise.
 type fenceEgress struct {
 	once  sync.Once
 	proxy *egress.Proxy
@@ -23,9 +22,8 @@ type fenceEgress struct {
 	eg    *egressState
 }
 
-// fenceEgressSpec is what a launcher needs to give its command the proxy:
-// the socket its relay joins connections to, and the address the relay
-// listens on inside the command's network namespace.
+// fenceEgressSpec is the proxy socket a launcher's relay joins and the address
+// it listens on in the command's network namespace.
 type fenceEgressSpec struct {
 	Sock   string `json:"sock"`
 	Listen string `json:"listen"`

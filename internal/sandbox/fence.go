@@ -24,13 +24,9 @@ import (
 
 // Fence is the fence tier, a preview on Linux: Abhed re-executes itself as a
 // launcher for every command, which joins the call's own cgroup, confines
-// itself with Landlock and a seccomp filter, reports what it applied, and
-// only once Abhed has recorded the launch runs the command in its place.
-// Abhed itself stays outside the fence, as on every tier.
-//
-// It is chosen with sandbox.tier, never picked by Select's walk, and it never
-// falls back: a host the probe does not qualify, or a policy it cannot hold,
-// refuses the tier, naming why.
+// itself with Landlock and a seccomp filter, reports what it applied, and only
+// once Abhed has recorded the launch runs the command in its place.
+// Chosen only by sandbox.tier; it never falls back, it refuses naming why.
 type Fence struct {
 	policy Policy
 
@@ -39,14 +35,11 @@ type Fence struct {
 	why  string
 	// report is this run's probe; a pass is never kept past the process.
 	report probe.Report
-	// mounts is the mode: each command gets a mount namespace of its own,
-	// where protected paths are read-only and Abhed's state in the workspace
-	// is covered by an empty tmpfs. Without it, Landlock alone confines the
-	// command, and a surface with protected paths is refused.
+	// mounts gives each command a mount namespace: protected paths read-only,
+	// .abhed hidden. Without it protected paths are refused.
 	mounts bool
-	// stateID is the workspace's .abhed each command's namespace covers;
-	// stateHeld is whether it held anything when the fence qualified, and
-	// madeState whether the fence made it, empty, to mount over.
+	// stateID is the .abhed each namespace covers; stateHeld is whether it held
+	// anything at start, madeState whether the fence made it.
 	stateID   *folderID
 	stateHeld bool
 	madeState bool
@@ -101,9 +94,9 @@ func (f *Fence) Available() (bool, string) {
 	return f.ok, f.why
 }
 
-// SetRecord gives the fence the session's record: a launch whose caller
-// passes none, such as one the harness makes itself, is recorded there as
-// the harness's, and so is state found planted when the session closes.
+// SetRecord gives the fence the session's record: a launch whose caller passes
+// none, such as one the harness makes itself, is recorded there as the
+// harness's, and so is state found planted when the session closes.
 func (f *Fence) SetRecord(rec func(event string, payload map[string]any) error) {
 	f.recMu.Lock()
 	defer f.recMu.Unlock()
@@ -116,13 +109,9 @@ func (f *Fence) sessionRecord() func(string, map[string]any) error {
 	return f.record
 }
 
-// Close ends what the session's commands left running and removes their
-// cgroup and private temp folder. Commands built after it do not start. A
-// .abhed a command left in the workspace is taken out and reported, and
-// Close fails when it finds one or cannot list the workspace. The empty
-// .abhed the fence mounted over, empty when it started, stays while another
-// fence on the workspace may mount over it, since removing it would detach
-// their mounts; the last to close removes it, still empty and the same folder.
+// Close ends what the session's commands left running and removes their cgroup
+// and private temp folder. A planted .abhed fails Close; the last fence to
+// close removes the .abhed it mounted over, so others' mounts stay attached.
 func (f *Fence) Close() error {
 	f.closed.Store(true)
 	// A fence never qualified is not qualified now; one qualifying finishes first.
@@ -189,9 +178,8 @@ func (f *Fence) policyRefusal() string {
 	return ""
 }
 
-// egressRefusal says why the fence in its mode cannot hold the allowlist,
-// or "": without a network namespace Landlock limits TCP by port, not
-// address, so a command allowed the proxy's port reaches it on any host.
+// egressRefusal says why this mode cannot hold the allowlist, or "": Landlock
+// alone limits TCP by port, not address, so any host is reachable.
 func (f *Fence) egressModeRefusal() string {
 	if f.policy.Egress == nil || f.mounts || f.policy.FenceEgressPortOnly {
 		return ""
@@ -203,9 +191,9 @@ func (f *Fence) egressModeRefusal() string {
 
 // The fence's modes, as fence.qualified and process.launched record them.
 const (
-	// FenceModeMounts gives each command a user and mount namespace of its
-	// own, with protected paths bound read-only and the workspace's .abhed
-	// covered by an empty tmpfs, before Landlock and seccomp.
+	// FenceModeMounts gives each command a user and mount namespace of its own,
+	// with protected paths bound read-only and the workspace's .abhed covered
+	// by an empty tmpfs, before Landlock and seccomp.
 	FenceModeMounts = "mount_namespace"
 	// FenceModeLandlock confines each command with Landlock and seccomp
 	// alone, where the host gives an ordinary user no user namespace.
@@ -220,9 +208,8 @@ func (f *Fence) Mode() string {
 	return FenceModeLandlock
 }
 
-// needsMounts is whether the policy keeps paths inside the workspace
-// read-only, which only a mount namespace can hold: Landlock grants a folder
-// and everything under it.
+// needsMounts is whether paths inside the workspace must stay read-only, which
+// needs a mount namespace: Landlock grants a folder whole.
 func (f *Fence) needsMounts() bool {
 	return len(f.policy.WriteProtected) > 0 || f.policy.ProtectGit && f.policy.GitRequired
 }
@@ -315,9 +302,8 @@ func refusedCmd(format string, a ...any) *exec.Cmd {
 // fenceSystem are the folders a command reads and runs programs from.
 var fenceSystem = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/opt", "/etc"}
 
-// fenceDevices are the device files a command may open. No pty: a command
-// keeps the terminal it was given through its descriptors, and /dev/tty
-// reaches only its own, so the user's other terminals are out of reach.
+// fenceDevices are the devices a command may open. No pty: /dev/tty reaches
+// only its own terminal, never the user's others.
 var fenceDevices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty"}
 
 // spec is what every command may reach. It is built afresh for each command,
@@ -366,11 +352,8 @@ func (f *Fence) skillDirs() []string {
 	return out
 }
 
-// configuredSkills splits skills.dirs into the folders a command may read
-// and run, as written and resolved, and those left out: one that holds or
-// sits inside Abhed's state, which ~/.abhed/skills alone may, one inside the
-// workspace, which is granted already and whose .abhed is covered, and one
-// that is not a folder.
+// configuredSkills splits skills.dirs into folders a command may run and those
+// left out: inside Abhed's state or the workspace, or not a folder.
 func (f *Fence) configuredSkills(deny []string) (granted, left []string) {
 	home := f.skillDirs()
 	ws := PathForms(f.policy.Workspace)
@@ -403,19 +386,15 @@ func (f *Fence) configuredSkills(deny []string) (granted, left []string) {
 	return granted, left
 }
 
-// denied are the paths no command may reach: home's .abhed, the state the
-// configuration keeps elsewhere, and the workspace's .abhed in any case
-// when it exists, each as written and resolved. Landlock is an allowlist, so these only
-// check that no grant covers them.
+// denied are the state paths no command may reach, as written and resolved;
+// Landlock is an allowlist, so they check that no grant covers them.
 func (f *Fence) denied() []string {
 	var out []string
 	if home, err := os.UserHomeDir(); err == nil {
 		out = append(out, PathForms(filepath.Join(home, stateDir))...)
 	}
-	// A state path that does not exist holds nothing yet, such as the
-	// workspace's users file a command-line run never makes; once it does,
-	// the next command is refused. sandboxconfig refuses one a command could
-	// create in the workspace.
+	// A missing state path holds nothing yet; once it exists, the next command
+	// is refused.
 	for _, p := range (&Process{policy: f.policy}).statePaths() {
 		cands := []string{p}
 		if strings.HasPrefix(filepath.Base(p), "secrets") {
@@ -443,14 +422,8 @@ func (f *Fence) denied() []string {
 	return absAll(out)
 }
 
-// isStateMount is whether p is the workspace's .abhed that each command's
-// mount namespace covers. It must be that folder by its own name, a real
-// folder, and the same one the fence qualified with: the same device, inode
-// and, where the filesystem records one, birth time, so a folder made again
-// on a reused inode is not taken for it. One that was empty then, as one a
-// fence made always is, must still be empty: no command can write there
-// past its mounts, so anything in it now came from elsewhere and is planted.
-// One that already held state is Abhed's own, which the mounts cover.
+// isStateMount is whether p is the same .abhed (name, inode, birth time) the
+// fence qualified with, still empty if it was: else it was planted.
 func (f *Fence) isStateMount(p string) bool {
 	if !f.mounts || f.stateID == nil || filepath.Base(p) != stateDir {
 		return false
@@ -466,9 +439,8 @@ func (f *Fence) isStateMount(p string) bool {
 	return err == nil && !holds
 }
 
-// removeMadeState removes the workspace's .abhed when it was empty as this
-// fence started and still is, it is the same folder, and no other fence on
-// the workspace holds the lock: one made to mount over is not left behind.
+// removeMadeState removes the .abhed this fence found empty, if still empty,
+// the same folder, and no other fence holds the lock.
 func (f *Fence) removeMadeState() {
 	if f.stateLock == nil {
 		return
@@ -485,10 +457,8 @@ func (f *Fence) removeMadeState() {
 	}
 }
 
-// prepareStateMount finds the workspace's .abhed for each command's
-// namespace to cover, and makes it, empty, when it is missing: a tmpfs needs
-// a folder to mount on. One that is not a folder refuses the fence. Another
-// fence on the workspace may make it at the same time, and that one serves.
+// prepareStateMount finds, or makes empty, the .abhed each namespace covers: a
+// tmpfs needs a folder. A non-folder refuses the fence.
 func (f *Fence) prepareStateMount() error {
 	// Held while the session lasts, so the last fence to close can remove a
 	// folder it made, and one closing waits out a fence starting.
@@ -539,9 +509,8 @@ func (a folderID) same(b folderID) bool {
 	return os.SameFile(a.info, b.info) && a.hasBirth == b.hasBirth && a.birth == b.birth
 }
 
-// folderHolds is whether the folder p, still the folder id, holds anything.
-// One that cannot be listed, or changed meanwhile, is not known either way,
-// and is the error.
+// folderHolds is whether folder p, still id, holds anything; one that cannot be
+// listed, or changed meanwhile, is the error.
 func folderHolds(p string, id folderID) (bool, error) {
 	d, err := os.Open(p) // #nosec G304 -- the workspace's .abhed
 	if err != nil {
@@ -587,9 +556,8 @@ func plantedEntry(p string) (string, error) {
 	}
 }
 
-// isSharedState is whether p is the workspace's .abhed each command's
-// namespace covers, by name and identity, whatever it holds now. Other
-// fences on the workspace mount over it, so it is never moved itself.
+// isSharedState is whether p is the .abhed each namespace covers; other fences
+// mount over it, so it is never moved.
 func (f *Fence) isSharedState(p string) bool {
 	if !f.mounts || f.stateID == nil || filepath.Base(p) != stateDir {
 		return false
@@ -598,11 +566,8 @@ func (f *Fence) isSharedState(p string) bool {
 	return err == nil && id.dir && id.same(*f.stateID)
 }
 
-// plan is what the command's mount namespace holds read-only or hides: the
-// protected paths and the folders holding them (pinned, so they cannot be
-// renamed away), git's config and hooks, the workspace's .abhed, and another
-// state folder in the workspace. It is built afresh for each command, so a
-// protected path is held only once it exists when a command starts.
+// plan is what the command's namespace holds read-only or hides, built per
+// command; holders are pinned so they cannot be renamed away.
 func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 	ws := f.policy.Workspace
 	// A view made since the session qualified shows what the plan cannot cover.
@@ -687,9 +652,8 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 		if err != nil {
 			continue
 		}
-		// sandboxconfig refuses a state file in the workspace outside its
-		// .abhed, so only a folder reaches here, such as another
-		// checkout's .abhed; a file that does is refused, not left open.
+		// Only a folder should reach here; a state file is refused, not left
+		// open.
 		if !info.IsDir() {
 			return nil, fmt.Errorf("%s is a state file inside the workspace and outside its %s, which the fence does not hide", sp, stateDir)
 		}
@@ -699,12 +663,8 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 	return p, p.Validate()
 }
 
-// stateEntries are the workspace's entries named .abhed in any case: where
-// Abhed keeps its own state, on a filesystem that folds case as well. Each
-// spelling is also looked up by name, which needs only search permission,
-// so a workspace that cannot be listed still shows one there. A listing
-// or a lookup that fails is returned as the error: what it hides cannot be
-// ruled out.
+// stateEntries are the workspace's .abhed entries in any case; a failed listing
+// or lookup is the error, as what it hides cannot be ruled out.
 func stateEntries(workspace string) ([]string, error) {
 	var out []string
 	var seen []os.FileInfo
@@ -781,15 +741,8 @@ const (
 	plantEmptied = "contents_taken_out"
 )
 
-// checkPlanted looks for a .abhed in the workspace, which none can hold when
-// the fence qualifies, so one there now was made by a command (or beside the
-// session). Each is first renamed within the workspace to a name Abhed never
-// reads, which cannot fail across filesystems, then moved to
-// ~/.abhed/quarantine where it can be. A workspace that cannot be listed
-// counts as holding one. Either way it is reported to rec, and the session's
-// commands are refused from then on. callID is the command just ended, if
-// any, and when says which check found it. It reports why, or nil when the
-// workspace was listed and held none.
+// checkPlanted quarantines any .abhed a command made in the workspace, reports
+// it and refuses later commands; an unlistable workspace counts as one.
 func (f *Fence) checkPlanted(rec func(string, map[string]any) error, callID, when string) error {
 	f.plantMu.Lock()
 	defer f.plantMu.Unlock()
@@ -949,9 +902,8 @@ func (f *Fence) takeOutTo(p, dir string, removeStuck bool) map[string]any {
 	return m
 }
 
-// quarantine moves p, a planted entry first named name, into a folder of its
-// own under ~/.abhed/quarantine, named from prefix, which nothing reads as
-// state, and returns where it went.
+// quarantine moves planted p into its own folder under ~/.abhed/quarantine,
+// which nothing reads as state, and returns where it went.
 func quarantine(p, name, prefix string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -1072,13 +1024,8 @@ func (f *Fence) Qualification() map[string]any {
 	return out
 }
 
-// sessionRefusals are the forks refused at the session's own pids.max while
-// a call ran, beyond those its own cgroup counted: before and after are the
-// session cgroup's own pids.events count, leaf the call's. Before Linux 6.14
-// the session's own count never moves (a refusal is counted in the forking
-// task's cgroup); since, it counts its whole subtree, the call's refusals
-// included, so those are taken off. Another call's refusals in the same
-// time count here too.
+// sessionRefusals are forks refused at the session pids.max beyond the leaf's;
+// since Linux 6.14 the session count includes the leaf's, so they come off.
 func sessionRefusals(before, after, leaf uint64) uint64 {
 	if after <= before || after-before <= leaf {
 		return 0

@@ -79,3 +79,34 @@ func TestBetaHeaderKeepsConfiguredFlags(t *testing.T) {
 		t.Errorf("betaHeader() = %q, want the flag once", twice)
 	}
 }
+
+// Abhed's own variable wins over the setup-token name, and config wins over both.
+func TestAnthropicSubscriptionTokenPrecedence(t *testing.T) {
+	cases := []struct {
+		name, cfg, own, legacy, auth, want string
+	}{
+		{name: "own beats legacy", own: "own", legacy: "legacy", auth: "auth", want: "own"},
+		{name: "legacy fallback", legacy: "legacy", auth: "auth", want: "legacy"},
+		{name: "auth token last", auth: "auth", want: "auth"},
+		{name: "config first", cfg: "cfg", own: "own", legacy: "legacy", want: "cfg"},
+		{name: "none", want: ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("ABHED_ANTHROPIC_OAUTH_TOKEN", c.own)
+			t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", c.legacy)
+			t.Setenv("ANTHROPIC_AUTH_TOKEN", c.auth)
+			s := Spec{Type: "anthropic", Model: "m"}
+			if c.cfg != "" {
+				s.Extra = map[string]string{"oauth_token": c.cfg}
+			}
+			ad, err := newAnthropicAdapter(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ad.(*Anthropic).Bearer; got != c.want {
+				t.Errorf("Bearer = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

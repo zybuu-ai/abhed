@@ -12,12 +12,8 @@ import (
 	"strings"
 )
 
-// serverFiles is how an MCP stdio server's files are confined on the process
-// tier: the home folder is hidden, but for the server's own install folder
-// (read-only) and a home of its own under ~/.abhed/mcp, which it may write
-// and which keeps its caches between runs; the workspace stays writable, its
-// .abhed hidden. So a server cannot read ~/.ssh or plant a LaunchAgent, a
-// systemd unit or a shell rc file.
+// serverFiles confines an MCP server's files: home hidden but its install and
+// its own home, so it cannot read ~/.ssh or plant an autostart.
 type serverFiles struct {
 	realHome   string   // the person's home, hidden
 	home       string   // the server's own, its HOME
@@ -76,10 +72,8 @@ func resolveIn(program string, env []string) string {
 	return path
 }
 
-// installPrefix is the folder a program under the home was installed in:
-// the parent of its bin folder (a node or Go toolchain's root), or the bin
-// folder alone where the parent is the home, ~/.local or ~/.cargo, which
-// hold more than the program (keyrings, a registry token). "" outside it.
+// installPrefix is the folder a home program was installed in, never all of
+// home, ~/.local or ~/.cargo, which hold keyrings and tokens.
 func installPrefix(home, program string) string {
 	if program == "" || !insideAny(program, []string{home}) {
 		return ""
@@ -114,9 +108,8 @@ func (f serverFiles) bwrapArgs() []string {
 	return args
 }
 
-// seatbeltRules deny reading and writing the home but for what the server
-// is given, and the workspace's state. A file's metadata stays readable, so
-// a path through the home resolves.
+// seatbeltRules deny reading and writing home but what the server is given, and
+// the workspace's state.
 func (f serverFiles) seatbeltRules() string {
 	if f.realHome == "" {
 		return "" // not confined: host_files

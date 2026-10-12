@@ -109,7 +109,7 @@ credential and then refuses the request unless the first system block is its
 own client's identity line; the refusal arrives as `429 rate_limit_error`,
 which reads as a limit that will clear and is not one.
 
-Abhed still reads `CLAUDE_CODE_OAUTH_TOKEN` and `oauth_token`: the mechanism is
+Abhed still reads `ABHED_ANTHROPIC_OAUTH_TOKEN` and `oauth_token`: the mechanism is
 correct, the restriction may not be permanent, and models outside the check do
 answer. It recognises the refusal by its shape — a 429 carrying none of the
 headers a real rate limit carries — reports what it actually is, and does not

@@ -91,9 +91,7 @@ func (c *Call) Addr() netip.AddrPort {
 }
 
 // ListenUnix serves the call alone on a unix socket of its own: every
-// connection made there is the call's, whatever credentials it sends. A
-// sandbox binds it, not the session's socket, so a command cannot reach the
-// proxy as another call. It closes when the call ends.
+// connection made there is the call's, whatever credentials it sends.
 func (c *Call) ListenUnix(path string) error {
 	ln, err := net.Listen("unix", path)
 	if err != nil {
@@ -122,9 +120,9 @@ func (c *Call) Port() uint16 {
 	return c.addr.Port()
 }
 
-// ListenLoopback serves the call alone on a loopback port of its own, on
-// [::1] as well when v6 is set, for a sandbox that can allow one port; see
-// ListenUnix. URL and Env then name that port.
+// ListenLoopback serves the call alone on a loopback port of its own, on [::1]
+// as well when v6 is set, for a sandbox that can allow one port; see
+// ListenUnix.
 func (c *Call) ListenLoopback(v6 bool) error {
 	lns, err := listenLoopback(v6)
 	if err != nil {
@@ -140,8 +138,7 @@ func (c *Call) ListenLoopback(v6 bool) error {
 }
 
 // Serve serves ln, a listener the caller made, as the call's own: every
-// connection there is the call's, whatever credentials it sends. For a
-// stand-alone proxy that a network policy lets only one sandbox reach.
+// connection there is the call's, whatever credentials it sends.
 func (c *Call) Serve(ln net.Listener) error { return c.own(ln, netip.AddrPort{}) }
 
 // own serves ln as the call's; a call already ended refuses it.
@@ -170,8 +167,6 @@ func (c *Call) own(ln net.Listener, addr netip.AddrPort) error {
 
 // Env sends the call's HTTP clients, upper and lower case, through the proxy;
 // loopback stays direct, as on the sandbox tiers it is the sandbox's own.
-// A call with a listener of its own also points a JVM at it, which reads no
-// proxy variable and sends no credentials on CONNECT.
 func (c *Call) Env() []string {
 	u := c.URL()
 	const noProxy = "localhost,127.0.0.1,::1"

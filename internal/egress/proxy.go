@@ -80,10 +80,9 @@ type Options struct {
 	Idle time.Duration
 	// MaxConns bounds the connections served at once; zero means 256.
 	MaxConns int
-	// Burst and Interval rate-limit denials in the record: the first Burst
-	// of a kind in each Interval are recorded one by one, then counted and
-	// recorded as one summary at the interval's end. Zero means 10 and a
-	// minute.
+	// Burst and Interval rate-limit denials in the record: the first Burst of a
+	// kind in each Interval are recorded one by one, then counted and recorded
+	// as one summary at the interval's end.
 	Burst    int
 	Interval time.Duration
 	// AllowBudget bounds the allowed decisions recorded one by one in each
@@ -163,9 +162,8 @@ func Start(opts Options) (*Proxy, error) {
 	return p, nil
 }
 
-// listenLoopback takes a random port on 127.0.0.1 and, when asked and the
-// host has IPv6 loopback, the same port on [::1]; a port whose IPv6 half is
-// taken is given back and another tried.
+// listenLoopback takes a random port on 127.0.0.1 and, when asked, the same on
+// [::1]; a port whose IPv6 half is taken is dropped and retried.
 func listenLoopback(v6 bool) ([]net.Listener, error) {
 	for range 20 {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -325,10 +323,8 @@ func (p *Proxy) emit(e Event) {
 // handle serves one client connection: one request, then it is closed.
 func (p *Proxy) handle(raw net.Conn) { p.handleAs(raw, nil) }
 
-// handleAs serves one connection. One made through a call's own listener is
-// that call's whatever credentials it sends, or none, so a token passed to
-// another command cannot move its traffic to another call's record, and a
-// client that sends no credentials on CONNECT (a JVM) is served.
+// handleAs serves one connection; one from a call's own listener is that call's
+// whatever it sends, so a token cannot move traffic to another call.
 func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 	act := &activity{}
 	c := &active{Conn: raw, act: act}

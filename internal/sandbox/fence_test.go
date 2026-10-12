@@ -162,9 +162,8 @@ func permsMatter(t *testing.T) {
 	}
 }
 
-// A workspace a command made unlistable counts as holding planted state: a
-// .abhed in it is still found by name, and the session is refused, recorded
-// and reported however much of it could be taken out.
+// A workspace made unlistable counts as planted: .abhed is still found by
+// name, and the session is refused, recorded and reported.
 func TestFenceUnlistableWorkspaceCountsAsPlanted(t *testing.T) {
 	permsMatter(t)
 	for _, tc := range []struct {
@@ -435,9 +434,8 @@ func TestFenceDescribeMounts(t *testing.T) {
 	}
 }
 
-// The plan holds git's config and hooks and the write-protected paths
-// read-only, pins the folders holding them, covers the workspace's .abhed
-// and hides state kept elsewhere in the workspace; a link is refused.
+// The plan holds git config, hooks and protected paths read-only, pins
+// their folders, covers and hides Abhed's state, and refuses a link.
 func TestFencePlan(t *testing.T) {
 	p := fencePolicy(t)
 	ws := p.Workspace
@@ -492,9 +490,8 @@ func TestFencePlan(t *testing.T) {
 	}
 }
 
-// ~/.abhed/skills is granted read and run, inside the denied state, and the
-// rest of ~/.abhed stays denied; in the mount mode the covered .abhed and
-// the state the mounts hide are not denied, since no grant can reach them.
+// ~/.abhed/skills alone is granted read and run inside the denied state;
+// in mount mode the covered .abhed and hidden state need no deny.
 func TestFenceSpecGrantsSkills(t *testing.T) {
 	p := fencePolicy(t)
 	home, _ := os.UserHomeDir()
@@ -530,10 +527,8 @@ func TestFenceSpecGrantsSkills(t *testing.T) {
 	}
 }
 
-// In the mount mode the fence makes the workspace's .abhed to mount over
-// when it is missing, does not take it for planted state, and leaves it at
-// Close, for another fence on the workspace mounts over it too; that one
-// takes it for its own as well. Another spelling is still planted.
+// In mount mode a .abhed the fence makes to mount over is not planted and
+// stays at Close for another fence; another spelling is still planted.
 func TestFenceStateMountIsNotPlanted(t *testing.T) {
 	p := fencePolicy(t)
 	f := NewFence(p)
@@ -581,10 +576,8 @@ func TestFenceStateMountIsNotPlanted(t *testing.T) {
 	}
 }
 
-// The .abhed the fence covers is its own only while it is the same folder
-// and, when it was empty at qualifying, still empty: a file found in it is
-// planted, and so is a folder made again in its place. One that already
-// held state is Abhed's, whatever it holds now.
+// The covered .abhed is the fence's own only while the same folder and,
+// if empty at qualifying, still empty; one that held state is Abhed's.
 func TestFenceStateMountRule(t *testing.T) {
 	p := fencePolicy(t)
 	state := filepath.Join(p.Workspace, ".abhed")
@@ -656,9 +649,8 @@ func TestFenceStateMountRule(t *testing.T) {
 	}
 }
 
-// Two fences on one workspace: content that appears in the covered .abhed
-// after the first qualified with it empty is taken out by the first, and
-// the folder stays for the second, which held state then.
+// Two fences: content added to the covered .abhed after the first saw it
+// empty is removed by the first; the folder stays for the second.
 func TestFenceStateMountKeepsTheSharedFolder(t *testing.T) {
 	p := fencePolicy(t)
 	state := filepath.Join(p.Workspace, ".abhed")
@@ -756,9 +748,8 @@ func TestFenceStateMountRefusesAnUnlistableFolder(t *testing.T) {
 	}
 }
 
-// skills.dirs are read and run beside ~/.abhed/skills; one that holds or
-// sits inside Abhed's state, or inside the workspace, is left out, and the
-// spec still validates.
+// skills.dirs are read and run beside ~/.abhed/skills; one in or around
+// Abhed's state or the workspace is left out, and the spec still validates.
 func TestFenceSpecGrantsConfiguredSkills(t *testing.T) {
 	p := fencePolicy(t)
 	home, _ := os.UserHomeDir()

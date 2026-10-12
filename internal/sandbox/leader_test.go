@@ -73,9 +73,8 @@ func TestSweepSaysWhenMembersRemain(t *testing.T) {
 	}
 }
 
-// A killed member starved of CPU stays listed for longer than any fixed count
-// of passes before it dies; the sweep waits for it rather than report a
-// session it has in fact emptied. The macOS runners showed this under load.
+// A killed member starved of CPU can stay listed past any fixed pass
+// count; the sweep waits for it rather than misreport a session it emptied.
 func TestSweepWaitsForKilledMembersToGo(t *testing.T) {
 	saved := sweepWaitMax
 	sweepWaitMax = time.Millisecond // the passes, not the waits, are under test
