@@ -1305,8 +1305,8 @@ type SandboxConfig struct {
 	// of allow_network. Managed only.
 	Network       string   `json:"network,omitempty"`
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
-	// MaxMemoryMB applies on the container and vm tiers only; MaxProcs on
-	// every tier but none.
+	// MaxMemoryMB applies on every tier but none and the macOS process tier;
+	// MaxProcs on every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
 	MaxProcs    int `json:"max_procs"`
 	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
