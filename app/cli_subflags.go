@@ -57,6 +57,19 @@ func takesGlobal(sub, name string) bool {
 	return false
 }
 
+// ignoredBefore names the top-level flags set on the command line that the
+// subcommand does not read; written before it they used to be ignored. -C
+// before any subcommand stays allowed: it only says where abhed runs.
+func ignoredBefore(fs *flag.FlagSet, sub string) []string {
+	var out []string
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name != "C" && !takesGlobal(sub, fl.Name) && (sub != "serve" || fl.Name != "addr") {
+			out = append(out, "-"+fl.Name)
+		}
+	})
+	return out
+}
+
 // hoistGlobalFlags sets on fs the top-level flags written after the
 // subcommand in sub (sub[0] is its name) that the subcommand reads, and
 // returns the arguments left for it. A top-level flag it does not read, or

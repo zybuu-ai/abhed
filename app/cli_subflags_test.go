@@ -111,3 +111,18 @@ func TestDoctorTakesWorkspaceAfterTheSubcommand(t *testing.T) {
 		}
 	}
 }
+
+// A top-level flag written before a subcommand that does not read it stops
+// the command with exit code 2, as it does written after; one it reads is taken.
+func TestFlagsBeforeASubcommandItDoesNotRead(t *testing.T) {
+	ws := t.TempDir()
+	for _, args := range [][]string{{"-allow", "secret(X)", "acp"}, {"-mode", "plan", "index"}, {"-model", "x", "doctor"}} {
+		out, code := stderrOf(t, append([]string{"-C", ws}, args...))
+		if code != 2 || !strings.Contains(out, "does not apply to "+args[len(args)-1]) || !strings.Contains(out, args[0]) {
+			t.Errorf("%v: exit %d, %q", args, code, out)
+		}
+	}
+	if out, code := stderrOf(t, []string{"-C", ws, "providers"}); code == 2 {
+		t.Errorf("-C before providers, which ignores it as it always has: %q", out)
+	}
+}

@@ -19,8 +19,9 @@ All notable changes to Abhed are recorded here. The format follows
   object (also in different cases), or a number too large to read.
 - Of two configured MCP servers whose names overlap (`a` and `a__b`), only
   the shorter-named starts; rename one.
-- Flags after a subcommand are taken when the subcommand reads them and
-  refused with exit `2` when it does not, instead of being ignored.
+- Flags before or after a subcommand are taken when the subcommand reads
+  them and refused with exit `2` when it does not, instead of being ignored
+  (`-C` is accepted before any subcommand).
 - On macOS `abhed` runs itself again as it starts, with secrets kept out of
   the environment other processes can read; `ABHED_SHOW_ENV=1` turns it off.
 - `auth.session_hours` must be between 0 and 8760.
@@ -722,6 +723,10 @@ on. A server with it off starts on the older schema as before.
   load and named in the warning, escaped. Doctor's `git` line said git's
   files were held only in served and Studio sessions; it now says what
   `sandbox.protect_git` holds.
+- The command line's own flags written before a subcommand that does not
+  read them (`abhed -allow 'secret(X)' acp`) were silently ignored. They now
+  stop the command with exit `2` and a message naming them, as they do
+  written after it; `-C` is still accepted before any subcommand.
 
 ### Dependencies
 
