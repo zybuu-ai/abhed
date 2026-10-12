@@ -102,7 +102,12 @@ every install with the control plane, one replica or several: the key then
 lives in a Secret you back up and rotate, not only on the volume. The chart
 copies it in the same way and sets `control_plane.ssh_host_key` to it. It
 needs `config.control_plane.enabled`, and the chart refuses
-`config.control_plane.ssh_host_key` set by hand. Without it the server makes
+`config.control_plane.ssh_host_key` set by hand. With sign-in for more than
+one account, `abhed serve` turns the control plane on by itself for
+per-session sandboxes; set `config.control_plane.enabled: true` so the
+chart's checks see it. A `process` sandbox lives in the pod that made it,
+so keep a session on one pod (session affinity) or set
+`server.shared_sessions: true`. Without it the server makes
 a key under `~/.local/state/abhed/control-plane` on the volume, which lasts
 as long as the claim; with persistence off it changes on every restart, and
 clients that check host keys strictly are refused.
@@ -175,7 +180,10 @@ does not run commands unsandboxed: the default `sandbox.min_tier` is
   read and write `~/.abhed` (accounts, keys, trust decisions, the SQLite
   store), which every sandbox tier keeps out of its reach, and the control
   plane's state, its relay host key included. Use it only where nothing in
-  the pod must be kept from the agent;
+  the pod must be kept from the agent. With sign-in for more than one
+  account each session gets a sandbox of its own, and one with no isolation
+  is refused; set `server.shared_sessions: true` to keep every account in
+  the pod's one workspace;
 - the Kubernetes driver in the Team edition, which runs each sandbox as its
   own restricted pod.
 

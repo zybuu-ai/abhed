@@ -152,9 +152,10 @@ answers `202` with `"delivery": "steered"` and a `queue_id`,
 `DELETE /v1/sessions/{id}/queue/{qid}` withdraws one. The `user.message` that
 delivers a queued message carries the same id as `queue_id`, and a
 `client_id` sent with any message comes back on its `user.message` too.
-Posting with `"interrupt": true` is Send now. On a server with node routing,
-the queue routes and `/interrupt` answer `421` with `Abhed-Session-Node` for
-a session running on another node. An `/approve` there is recorded on the
+Posting with `"interrupt": true` is Send now. Under the Enterprise edition's
+high availability (`control_plane.ha.node_id` on each replica), the queue
+routes and `/interrupt` answer `421` with `Abhed-Session-Node` for a session
+running on another node; a single server never answers `421`. An `/approve` there is recorded on the
 stored approval when it names no request or names the one the stored row
 asks about; one naming another request also gets the `421`. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
@@ -450,9 +451,11 @@ the server's user. On the process tier it starts with a process limit of what
 that user runs plus `sandbox.max_procs` (512 by default), so a fork bomb
 there stops at that many more processes; the kernel counts all of the user's
 processes, so it can still crowd out the server's own for a while, and root
-is not bounded at all. On the none tier nothing bounds it. Memory is bounded
-only on the container and vm tiers; a pids cgroup per shell is the planned
-follow-up.
+is not bounded at all. On the none tier nothing bounds it. On Linux the
+process tier bounds each process's data at `sandbox.max_memory_mb` (4096 MB
+by default), and where Abhed runs in a delegated cgroup the shell's
+processes and memory are held in a cgroup of their own. The fence,
+container and vm tiers bound memory too. On macOS memory is not bounded.
 
 **Git's own files.** In a served session no command, the agent's or yours,
 in a line or in a shell, can write what git reads in a git folder as
@@ -619,7 +622,8 @@ A `cd` in a command that failed is not followed either. The agent's
 commands follow `cd` by the same rule, and its result carries the same note.
 A managed file (`/etc/abhed/config.json`) that itself sets `permissions.deny`
 or a non-empty `extensions` list gets that mode without asking, when deny rules for `bash` or
-for every tool (`*`), or an extension's hook, are then in force, because a managed rule is an organisation's statement that
+for every tool (`*`), or an extension's hook (an extension counts only when
+it is sent hook events, so not under `hooks.disabled`), are then in force, because a managed rule is an organisation's statement that
 it holds, and a hook may refuse any command. So does a session whose edition policy layer
 (a Team workspace's rules) has a deny or ask rule for `bash` or for every
 tool (`*`): the terminal says "your workspace's rules", and each line is

@@ -199,8 +199,9 @@ session starts, and pinned:
   refused, whether it is named there or a link resolves there. The status
   line then shows the reason, on every redraw, and nothing else.
 - The file it resolves to is what runs, and it is shown to the sandbox
-  read-only; on Linux, where the sandbox does not show your home directory,
-  that one file is bound in.
+  read-only. That one file is let into the sandbox, which does not show
+  your home directory on Linux, nor on macOS unless `sandbox.readable_home`
+  is set.
 - Before each run it must still be the same file, unchanged: the same inode,
   size, modification and change times. Replaced, edited, or swapped for a
   link, a folder or another file, it is not run, the allow goes with it, and
@@ -208,8 +209,8 @@ session starts, and pinned:
   now.
 
 What the script itself reads must be visible to the sandbox too: the
-workspace and the system directories are, while on Linux the rest of your
-home directory is not. Only
+workspace and the system directories are, while the rest of your home
+directory is not (on macOS, unless `sandbox.readable_home` is set). Only
 text and colour reach the terminal: a sequence that would move the cursor,
 clear the screen, set the title or write the clipboard is dropped. In a
 workspace's configuration it needs trust, like any other process.

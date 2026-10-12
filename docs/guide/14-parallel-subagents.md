@@ -315,9 +315,10 @@ rebuilt from the record). A result that finished
 before a restart, and a task a crashed process lost (ended `lost`), are
 delivered on the session's next run.
 
-Each server process holds the sessions it runs under a liveness identity (its
-`node_id` with a token of this process after a `#`, or an id of its own when
-no `node_id` is set) and refreshes it every 30
+Each server process holds the sessions it runs under a liveness identity (an
+id of its own, or, under the Enterprise edition's high availability, its
+`control_plane.ha.node_id` with a token of this process after a `#`) and
+refreshes it every 30
 seconds while a run, a background task or a workbench hold is live. Another
 process takes a session over only once that heartbeat is two minutes stale,
 so a live task on one server is never mistaken for a crashed one by another
@@ -335,7 +336,7 @@ even before its next heartbeat, and the refusal stops it there. What a tool
 was already doing when the session was lost (a command running, a file being
 written) is not something a record can undo. Another durable store an
 embedder supplies is not fenced this way, and the server warns of it at
-start. A node restarted with the same
+start. Under Enterprise HA, a node restarted with the same
 `node_id` takes back the sessions it held when it starts, before it serves
 anything, under its new token, so the process it replaced, if it still runs,
 writes nothing more into them. Two running nodes must still never share a

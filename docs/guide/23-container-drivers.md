@@ -10,8 +10,8 @@ API](22-sandboxes.md#the-docker-and-podman-drivers)), for `/v1/sandboxes`
 and for [per-session sandboxes](22-sandboxes.md#per-session-sandboxes).
 
 They are separate from the container **tier** that `sandbox.min_tier:
-container` selects today, which starts a fresh container for every command.
-That tier is unchanged.
+container` selects, which starts a fresh container for every command (see
+[Network policy](21-network-policy.md) for how it holds the allowlist).
 
 ```go
 d, err := container.NewPodman(cfg, container.Options{})   // or NewDocker

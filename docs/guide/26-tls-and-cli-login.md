@@ -63,8 +63,8 @@ plain HTTP. A key file other users can read is allowed, since a container
 secret is often mounted that way, and named in a startup warning, as is a
 certificate within 14 days of expiry.
 
-**Keys are state.** The TLS keys, like the accounts file and the secrets
-store, are refused to the agent's tools and sandbox, and serve refuses to
+**Keys are state.** The TLS keys and the client CA file, like the accounts
+file and the secrets store, are refused to the agent's tools and sandbox, and serve refuses to
 start with one inside the workspace, an added directory, a temporary folder
 or a cache, where a command could read or replace it. Keep them under
 `/etc/abhed`, `~/.abhed`, a mounted secret, or anywhere commands cannot write.
@@ -208,7 +208,10 @@ abhed profile rm staging
 the server URL, the account, the token and its expiry, and the paths of any
 CA or client certificate. The file is written mode 600; it is refused if
 other users can read it or if it is a link, and refused inside the workspace
-(other than its `.abhed`), where the agent's commands could read it.
+(other than its `.abhed`), where the agent's commands could read it. The
+CA, client certificate and key a profile names (`-ca`, `-cert`, `-key`) are
+state too: the agent's commands and file tools cannot read them. Keep them
+outside the workspace.
 
 **A sign-out is never quietly lost.** `abhed logout` stops using the token
 at once. If the server cannot be reached, or answers that it could not

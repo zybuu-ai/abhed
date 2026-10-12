@@ -1,6 +1,6 @@
 # Snapshots, forwarding and exposed services
 
-The `process`, `docker` and `podman` drivers can snapshot a sandbox and put
+The `process`, `docker`, `podman` and `microvm` drivers can snapshot a sandbox and put
 it back, forward a port inside a sandbox to the host, and the server can
 publish a sandbox's service on an authenticated path. These are driver
 capabilities in the Go packages `driver/snapshot`, `driver/forward` and

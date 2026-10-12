@@ -280,7 +280,7 @@ status as JSON on stdin (`model`, `provider`, `mode`, `session_title`, `context_
 `context_percent`, `tokens_in`, `tokens_out`, `background_tasks`,
 `sandbox_tier`, `git_branch`, `cwd` and more) and runs at most once a
 second, under the process sandbox with the network off whatever the session
-allows, and is stopped after 300 ms; only its first 4 KB are read. Where
+allows, and is stopped after one second; only its first 4 KB are read. Where
 that sandbox is missing, or its script is where the agent could change it,
 it is not run, and the footer says why (see [the command
 line](18-cli.md)). Its colours

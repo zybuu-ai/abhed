@@ -111,14 +111,16 @@ The summary's tokens and model time include the calls made outside the
 conversation, such as next-prompt suggestions, as the session's own totals
 do. They are not turns, so the Turns table leaves them out.
 
-The policy step is one of `hook`, `deny`, `destructive`, `screen`, `ask`, `mode`,
-`allow` or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that
+The policy step is one of `args`, `hook`, `deny`, `destructive`, `screen`,
+`ask`, `mode`, `allow`, `default` or `monitor` — the stage of the [evaluation order](04-permissions.md#the-order) that
 decided. Counting them shows which part of a policy is doing the work: a
 session where everything lands on `default` has rules that never match.
 A refusal no rule made has its own step: `interrupted` (the run stopped
 while the ask waited), `unanswered` (no one answered: the wait timed out, input ended, the
 client could not ask, or the approver failed) or
-`withheld` (the ask's record could not be redacted, so no one was asked).
+`withheld` (the ask's record could not be redacted, so no one was asked) or
+`owner` (the session's owner lost access). `handover` asks again about a
+call a stopped process may already have run.
 A call a policy layer's rule decided also names the rule and the layer.
 
 ## Findings

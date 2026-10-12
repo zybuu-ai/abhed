@@ -8,7 +8,7 @@ every change to one is recorded with who asked for it. A sandbox may name
 another driver the configuration registers: `docker` or `podman`, when
 `control_plane.docker` or `control_plane.podman` is enabled
 ([below](#the-docker-and-podman-drivers)), and `microvm`, when the managed
-`sandbox.microvm_socket` is set ([The microVM driver](24-microvm.md)). A
+`sandbox.microvm_socket` is set (experimental; [The microVM driver](24-microvm.md)). A
 configured driver that cannot be reached is named when `abhed serve` starts,
 and sandboxes asking for it fail with `unavailable` rather than running
 under another.
@@ -34,7 +34,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 |---|---|---|
 | `enabled` | `false` | Serve `/v1/sandboxes` and run the reconciler. |
 | `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace, outside any `.abhed` and any `.git` directory (as written and with links followed), and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. A sandbox's commands can neither read nor write the other folders under the root (on macOS the `process` driver's profile denies them; on Linux they are never mounted in), so a root inside a `sandbox.read_only_paths` entry or a skills folder, which would show them, is refused. |
-| `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
+| `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root` or `per_session`, so a server with several accounts refuses it unless `server.shared_sessions` is set. |
 | `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace; no command can read or write it ([the state folder](#the-state-folder-snapshots-and-the-host-key)). |
 | `ssh.idle_timeout_seconds` | 3600 | An SSH connection with no traffic either way for this long is closed. |
 | `ssh.max_session_seconds` | 43200 | Longest an SSH connection stays open. Its commands are bounded by this, not by `exec_timeout_seconds`. |
@@ -52,7 +52,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `reconcile_seconds` | 10 | How often every sandbox is checked against its driver. |
 | `sandbox_cpus` | unset | CPUs each sandbox may use, such as `0.5` or `2`. Unset leaves it to the driver. |
 | `sandbox_memory_mb` | unset | Memory each sandbox may use, in MiB. Unset leaves it to the driver. |
-| `per_session` | `false` | Give each session of `abhed serve` a sandbox of its own; see [per-session sandboxes](#per-session-sandboxes). |
+| `per_session` | `false`; on by itself for a server with several accounts | Give each session of `abhed serve` a sandbox of its own; see [per-session sandboxes](#per-session-sandboxes). |
 | `sessions` | | How those sandboxes are made; see below. |
 | `docker`, `podman` | off | Register the container drivers; see [below](#the-docker-and-podman-drivers). |
 
@@ -174,8 +174,11 @@ A server with one person (sign-in off, or a single local account) runs every
 session in one sandbox and the server's workspace. With `per_session` on,
 each session gets a control-plane sandbox of its own instead, made from a
 template, and works in that sandbox's folder. A server with more than one
-account turns `per_session` (and `enabled`) on by itself unless
-`server.shared_sessions` is set; see
+account, or one that could gain one while it runs (single sign-on, a trusted
+proxy, open sign-up, or local accounts with none yet), turns `per_session`
+(and `enabled`) on by itself unless `server.shared_sessions` is set; a
+server with a single local account keeps one workspace, but refuses a
+session for an account added while it runs. See
 [what accounts share](../ops/enabling-auth.md#what-accounts-share):
 
 ```json
@@ -282,7 +285,9 @@ replica that made it, so `abhed serve` refuses `per_session` with
 cluster driver). This holds when `per_session` was turned on by itself for
 a server with several accounts too: such a server under HA with the
 `process` driver does not start until it names one of those drivers or sets
-`server.shared_sessions`.
+`server.shared_sessions`. `control_plane.ha` comes from your own file or the
+managed one, never a workspace's; admission interceptors
+(`control_plane.interceptors`) are set only in the managed file.
 
 **Egress.** Under the network allowlist, a session's command on a driver
 that takes its egress from the control plane (`microvm`) gets a credential
