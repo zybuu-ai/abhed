@@ -62,12 +62,12 @@ func shellEnv(t Tier) []string {
 	}
 }
 
-// hostEnv is the server's environment without its own settings, which hold
-// database URLs and keys a person at the terminal has no use for.
+// hostEnv is the server's environment without its own settings (database
+// URLs, keys) and without what a host command drops, ZDOTDIR and ENV among it.
 func hostEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "ABHED_") {
+		if !strings.HasPrefix(kv, "ABHED_") && !hostDropped(kv) {
 			out = append(out, kv)
 		}
 	}

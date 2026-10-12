@@ -415,3 +415,23 @@ func TestNoneCommandLeavesOutZDOTDIR(t *testing.T) {
 		}
 	}
 }
+
+// The none tier's terminal leaves out what a host command does: ZDOTDIR and
+// ENV, so a shell typed there reads the start-up files the policy reads.
+func TestNoneTerminalLeavesOutStartupVariables(t *testing.T) {
+	t.Setenv("ZDOTDIR", "/elsewhere")
+	t.Setenv("ENV", "/elsewhere/env")
+	t.Setenv("BASH_ENV", "/elsewhere/bash_env")
+	for _, kv := range hostEnv() {
+		for _, p := range []string{"ZDOTDIR=", "ENV=", "BASH_ENV="} {
+			if strings.HasPrefix(kv, p) {
+				t.Errorf("the terminal kept %s", kv)
+			}
+		}
+	}
+	for _, kv := range HostCommandEnv() {
+		if strings.HasPrefix(kv, "ENV=") {
+			t.Errorf("a host command kept %s", kv)
+		}
+	}
+}

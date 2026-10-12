@@ -1273,9 +1273,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
-- A command on the host (the none tier, and the CLI's bash with no sandbox)
-  no longer inherits `ZDOTDIR`, so zsh reads its start-up files from
-  `HOME`, where the rules' check reads them.
+- A command on the host (the none tier, its terminal, and the CLI's bash
+  with no sandbox) no longer inherits `ZDOTDIR` or `ENV`, so a shell reads
+  its start-up files from `HOME`, where the rules' check reads them.
 - An interactive terminal's shell (the workbench's, Studio's, `:attach`
   and SSH) is judged and recorded as `bash --noprofile --norc -i`, as it
   runs, rather than `bash -i`; deny rules `bash(bash -i*)` and
