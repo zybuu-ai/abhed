@@ -1368,6 +1368,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A session opened again on a server, or taken up from another, counted as
+  begun when it was opened: the session list showed that as its creation
+  time, and a local account removed and made again under the same name was
+  taken as the owner of an earlier account's session opened since. A live
+  session now keeps the time it began. Affects 0.1.0 to 1.2.7.
 - A session recovered from a process that stopped mid-turn was ended with
   the calls that turn had open left without an outcome. Each now gets one
   before the end: an approved call, which may have run, is answered

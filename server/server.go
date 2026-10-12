@@ -439,7 +439,7 @@ type liveSession struct {
 	Tenant  string
 	Loop    *agent.Loop
 	Cancel  context.CancelFunc
-	Created time.Time
+	Created time.Time // when the session began, on whichever node
 	Prompt  string
 	State   string // running | waiting_approval | background | idle | done
 	// title is the name a person last gave the session; guarded by mu.
@@ -2250,6 +2250,10 @@ func (s *Server) liveFromRecord(ctx context.Context, id string, rec store.Sessio
 	live, loop, err := s.buildLive(id, spec, mode, adapter, registry, skillReg, vault, recorder)
 	if err != nil {
 		return nil, err
+	}
+	// When the session began, not when it was taken up: owners are judged by it.
+	if live.Created = rec.StartedAt; live.Created.IsZero() {
+		live.Created = events[0].CreatedAt
 	}
 	// A change of the layer since the record last named it is written by the
 	// next turn, as a change of model is.
@@ -5024,8 +5028,8 @@ func (s *Server) ReleaseSessions(tenant, owner string) int {
 }
 
 // ReleaseSessionsBefore is ReleaseSessions for the sessions this process
-// started or took up before before: an account made again at before owns
-// none of them, and keeps those it started or had taken up since.
+// holds that began before before, wherever they began: an account made again
+// at before owns none of them, and keeps those begun since.
 func (s *Server) ReleaseSessionsBefore(tenant, owner string, before time.Time) int {
 	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) || before.IsZero() {
 		return 0
