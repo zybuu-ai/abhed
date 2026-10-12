@@ -107,6 +107,13 @@ func Open(cfg Config) (*Witness, error) {
 	if cfg.File == "" && cfg.URL == "" {
 		return nil, errors.New("witness: neither a file nor a URL is set")
 	}
+	if cfg.URL != "" {
+		// Parse errors quote the URL, which may carry a credential.
+		u, err := url.Parse(cfg.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, errors.New("witness: the URL is not an http or https URL with a host")
+		}
+	}
 	if cfg.Host == "" {
 		cfg.Host, _ = os.Hostname()
 	}
@@ -181,7 +188,7 @@ func (w *Witness) send(s Statement) {
 func (w *Witness) post(body []byte) error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("witness: %s: the request could not be made", shown(w.cfg.URL))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if w.cfg.Token != "" {
@@ -210,7 +217,7 @@ func shown(raw string) string {
 	if err != nil {
 		return "(unparsable URL)"
 	}
-	u.RawQuery, u.User, u.Fragment, u.RawFragment, u.ForceQuery = "", nil, "", "", false
+	u.RawQuery, u.User, u.Fragment, u.RawFragment, u.ForceQuery, u.Opaque = "", nil, "", "", false, ""
 	return u.String()
 }
 

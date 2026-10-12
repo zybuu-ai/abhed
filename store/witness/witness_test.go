@@ -212,3 +212,30 @@ func TestWitnessErrorHidesURLCredentials(t *testing.T) {
 		}
 	}
 }
+
+// A URL that cannot be sent to is refused at Open, naming it without the
+// credential it carries; so is a request that cannot be made.
+func TestWitnessBadURLHidesCredentials(t *testing.T) {
+	for _, u := range []string{
+		"https://alice:hunter2@host/%zz?token=sekrit",
+		"https://alice:hunter2@exa mple.com/heads?token=sekrit",
+		"ftp://alice:hunter2@host/heads?token=sekrit",
+		"alice:hunter2@host/heads",
+		"https:///heads?token=sekrit",
+	} {
+		_, err := Open(Config{URL: u, KeyFile: filepath.Join(t.TempDir(), "witness.key")})
+		if err == nil {
+			t.Errorf("opened %s", u)
+			continue
+		}
+		for _, secret := range []string{"hunter2", "sekrit"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("the error shows %q: %v", secret, err)
+			}
+		}
+	}
+	w := &Witness{cfg: Config{URL: "https://alice:hunter2@host/\x7f?token=sekrit"}}
+	if err := w.post(nil); err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "sekrit") {
+		t.Errorf("post: %v", err)
+	}
+}
