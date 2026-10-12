@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -240,8 +241,11 @@ func TestTwoServersOnePostgresCrashedTurnIsContinued(t *testing.T) {
 	aLive.beatStop = nil
 	aLive.mu.Unlock()
 	stop()
-	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
 
+	if err := b.s.TakeOver(context.Background(), id); !errors.Is(err, ErrSessionBusy) {
+		t.Fatalf("B took over a session whose holder is alive: %v", err)
+	}
+	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
 	if n := b.s.RecoverOrphans(context.Background()); n < 1 {
 		t.Fatalf("B's sweep took %d sessions over", n)
 	}

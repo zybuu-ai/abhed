@@ -1350,7 +1350,8 @@ on. A server with it off starts on the older schema as before.
 - `server.Options.ContinueTurns`, `Server.TakeOver`, `Server.HandOverRunning`
   and `server.TurnHandOver` (implemented by `store.Postgres` as `HandOver`
   and `ClaimHandedOver`, with the `store.HandedOver` holder) move running
-  turns between replicas; `agent.InFlight`, `Loop.ContinueTurn`,
+  turns between replicas, `ErrNothingToTakeOver`, `ErrSessionBusy`,
+  `ErrNoSession` and `ErrDraining` saying why TakeOver took nothing; `agent.InFlight`, `Loop.ContinueTurn`,
   `Loop.NoteUnknownOutcomes`, `agent.ReconcileChildren`, the
   `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are the
   loop's side of it. `auth.Identity.Scopes`, `auth.Middleware.IdentifyToken`

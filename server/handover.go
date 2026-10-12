@@ -22,6 +22,14 @@ type TurnHandOver interface {
 // ErrNothingToTakeOver is TakeOver of a session with nothing left open.
 var ErrNothingToTakeOver = errors.New("the session has no run left open to take over")
 
+// The other reasons TakeOver takes nothing: a live process holds the session
+// (this one included), there is no such session, or this process is draining.
+var (
+	ErrSessionBusy = errBusySession
+	ErrNoSession   = errNoSession
+	ErrDraining    = errDraining
+)
+
 // HandOverRunning stops every turn running here so that another process can
 // take it over (TakeOver): the run stops without an end, a question it was
 // waiting on is left open to be asked again there, background children end
