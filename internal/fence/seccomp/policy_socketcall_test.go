@@ -44,12 +44,14 @@ func TestProxyOnlyAllowsStreamsAlone(t *testing.T) {
 		}
 		nr := arches[arch].nr["socket"]
 		for _, c := range []struct {
-			family, typ uint32
-			allow       bool
-		}{{2, 1, true}, {10, 1 | 0x80000, true}, {2, 2, false}, {10, 2, false}, {2, 3, false}, {1, 1, false}, {16, 3, false}, {2, 5, false}} {
-			got := run(t, prog, call{arch: arches[arch].audit, nr: nr, args: [6]uint64{uint64(c.family), uint64(c.typ)}}) == retAllow
+			family, typ, proto uint32
+			allow              bool
+		}{{2, 1, 0, true}, {10, 1 | 0x80000, 0, true}, {2, 1, 6, true}, {10, 1, 6, true}, {2, 2, 0, false}, {10, 2, 0, false},
+			{2, 3, 0, false}, {1, 1, 0, false}, {16, 3, 0, false}, {2, 5, 0, false},
+			{2, 1, 262, false}, {10, 1, 262, false}, {2, 1, 132, false}, {10, 1 | 0x800, 132, false}, {2, 1, 17, false}} {
+			got := run(t, prog, call{arch: arches[arch].audit, nr: nr, args: [6]uint64{uint64(c.family), uint64(c.typ), uint64(c.proto)}}) == retAllow
 			if got != c.allow {
-				t.Errorf("%s socket(%d, %#x): allowed %v", arch, c.family, c.typ, got)
+				t.Errorf("%s socket(%d, %#x, %d): allowed %v", arch, c.family, c.typ, c.proto, got)
 			}
 		}
 	}

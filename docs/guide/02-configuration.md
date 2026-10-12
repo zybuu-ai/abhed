@@ -579,7 +579,8 @@ without running anything.
   the filter cannot read their family, unix sockets with them (abstract ones
   scoped by Landlock, named ones not). A workspace file cannot set it.
   Under `sandbox.network: "allowlist"` a command may make inet and inet6
-  stream sockets only (no UDP, no unix sockets), and Landlock lets TCP
+  TCP stream sockets only (no UDP, unix, MPTCP or SCTP sockets, the last two
+  being streams Landlock's TCP rules do not hold), and Landlock lets TCP
   connect only to the session's egress proxy's port. In `mount_namespace`
   mode each command also gets a network namespace of its own holding only its
   loopback, where the launcher relays that port to the proxy's socket on the

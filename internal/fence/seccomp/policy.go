@@ -71,6 +71,7 @@ const (
 	afInet6         = 10
 	afNetlink       = 16
 	netlinkRoute    = 0
+	ipprotoTCP      = 6
 	sysSocket       = 1 // socketcall's call number for socket
 	prSetSeccomp    = 22
 	seccompGetOpMin = 2 // SECCOMP_GET_ACTION_AVAIL; lower ops install a filter or strict mode
@@ -125,7 +126,7 @@ func (p Policy) rules(info archInfo) []rule {
 	switch {
 	case p.ProxyOnly:
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: streamInet,
-			note: "socket other than an inet or inet6 stream, unix and UDP included; socketpair allowed"})
+			note: "socket other than an inet or inet6 TCP stream, unix, UDP, MPTCP and SCTP included; socketpair allowed"})
 	case p.AllowNetwork:
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: family,
 			note: "socket families other than inet, inet6 and route netlink, unix included; socketpair allowed"})
@@ -212,7 +213,12 @@ func build(arch string, rules []rule) (Program, error) {
 			a.mark(fmt.Sprintf("%d.type", i))
 			// The type's low nibble is 1 for a stream and has another bit set for every other.
 			a.ld(info.argLow(1))
-			a.jump(opJset, 0xe, deny, allow)
+			a.jump(opJset, 0xe, deny, fmt.Sprintf("%d.proto", i))
+			// MPTCP and SCTP streams pass Landlock's TCP port rules, so only TCP is allowed.
+			a.mark(fmt.Sprintf("%d.proto", i))
+			a.ld(info.argLow(2))
+			a.jump(opJeq, 0, allow, "")
+			a.jump(opJeq, ipprotoTCP, allow, deny)
 		case family:
 			a.ld(info.argLow(0))
 			a.jump(opJeq, afInet, allow, "")

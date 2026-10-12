@@ -38,6 +38,7 @@ const (
 	stageOrdinaryOn = "ordinary-on"  // ordinary work, under Command(true)
 	stageOrdinaryNo = "ordinary-off" // ordinary work, under Command(false)
 	stageSocketsOn  = "sockets-on"   // the socket checks, under Command(true)
+	stageSocketsPx  = "sockets-px"   // the socket checks, under Command(false) with ProxyOnly
 )
 
 func TestMain(m *testing.M) {
@@ -74,6 +75,14 @@ func stageMain(stage, dir string) int {
 		out = append(deniedChecks(dir), outcome{"a second Install", result(Install(guarded(false)))})
 	case stageSocketsOn:
 		if err := Install(guarded(true)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		out = socketChecks()
+	case stageSocketsPx:
+		p := guarded(false)
+		p.ProxyOnly = true
+		if err := Install(p); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
@@ -615,6 +624,28 @@ func TestNetworkOnSockets(t *testing.T) {
 		t.Logf("%-32s %s", name, got[name])
 		if got[name] != w {
 			t.Errorf("%s with the network on: got %q, want %q", name, got[name], w)
+		}
+	}
+}
+
+// Under ProxyOnly only an inet or inet6 TCP stream is made: MPTCP and SCTP
+// streams, which Landlock's TCP port rules do not hold, are refused.
+func TestProxyOnlySockets(t *testing.T) {
+	requireFence(t)
+	want := map[string]string{
+		"socket(AF_INET stream)": "ok", "socket(AF_INET datagram)": "EPERM", "socket(NETLINK_ROUTE)": "EPERM",
+		"socket(AF_INET MPTCP)": "EPERM", "socket(AF_INET SCTP)": "EPERM",
+		"socket(AF_UNIX stream)": "EPERM", "socket(AF_UNIX datagram)": "EPERM",
+		"socket(AF_PACKET)": "EPERM", "socket(AF_VSOCK)": "EPERM", "socketpair(AF_UNIX)": "ok",
+	}
+	if arches[runtime.GOARCH].socketcall {
+		want["socketcall(SOCKET, AF_INET)"], want["socketcall(SOCKET, AF_UNIX)"], want["socketcall(SOCKETPAIR)"] = "EPERM", "EPERM", "ok"
+	}
+	got := runStage(t, stageSocketsPx)
+	for name, w := range want {
+		t.Logf("%-32s %s", name, got[name])
+		if got[name] != w {
+			t.Errorf("%s under ProxyOnly: got %q, want %q", name, got[name], w)
 		}
 	}
 }

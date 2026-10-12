@@ -668,7 +668,8 @@ All notable changes to Abhed are recorded here. The format follows
 - The fence holds `sandbox.network: "allowlist"`: in `mount_namespace` mode
   each command gets a network namespace with only its loopback, where the
   launcher relays the egress proxy's port to the proxy, and may make inet
-  stream sockets alone. In `landlock_only` mode, where Landlock can confine
+  TCP stream sockets alone (no MPTCP or SCTP, which Landlock's TCP rules do
+  not hold). In `landlock_only` mode, where Landlock can confine
   TCP only to the proxy's port on any address, the managed
   `fence.egress_port_only` accepts that; otherwise the fence still refuses
   the allowlist there.
