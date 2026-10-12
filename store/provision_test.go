@@ -91,6 +91,14 @@ func TestRuntimeRoleCannotAlterTheRecord(t *testing.T) {
 		t.Fatalf("after the attempts the runtime role can alter the record: %q (err %v)", how, err)
 	}
 
+	// A live session's key is not deleted, so its record stays readable.
+	if _, err := p.pool.Exec(ctx, `DELETE FROM session_keys WHERE session_id = $1`, id); err == nil {
+		t.Error("the runtime role deleted a live session's key")
+	}
+	if _, err := p.pool.Exec(ctx, `TRUNCATE session_keys`); err == nil {
+		t.Error("the runtime role truncated the session keys")
+	}
+
 	events, err := p.Events(id)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
@@ -101,6 +109,21 @@ func TestRuntimeRoleCannotAlterTheRecord(t *testing.T) {
 	for _, e := range events {
 		if !strings.Contains(string(e.Payload), "deploy to prod") {
 			t.Fatalf("event #%d was rewritten: %s", e.Seq, e.Payload)
+		}
+	}
+
+	// A deletion is final: not undone, and its mark not rewritten.
+	if err := p.DeleteSession(id); err != nil {
+		t.Fatalf("delete as the runtime role: %v", err)
+	}
+	for what, sql := range map[string]string{
+		"undo a deletion":         `UPDATE sessions SET deleted_at = NULL WHERE id = $1`,
+		"rewrite who deleted it":  `UPDATE sessions SET deleted_by = 'someone' WHERE id = $1`,
+		"rewrite when it was":     `UPDATE sessions SET deleted_at = now() - interval '1 day' WHERE id = $1`,
+		"undo and clear the mark": `UPDATE sessions SET deleted_at = NULL, deleted_by = NULL WHERE id = $1`,
+	} {
+		if _, err := p.pool.Exec(ctx, sql, id); err == nil {
+			t.Errorf("the runtime role was able to %s", what)
 		}
 	}
 }

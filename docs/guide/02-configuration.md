@@ -977,7 +977,10 @@ exactly what the server uses: `INSERT` and `SELECT` on `events`, and nothing
 that changes or removes one. On `sessions` it may update only the columns a
 session's life changes, never its id, tenant, parent or start; its owner
 (`user_id`) only to the unclaimed form when the account is removed, which a
-trigger enforces. Every owner change is written to `owner_changes`, and every
+trigger enforces. A session's key in `session_keys` can be deleted only
+once the session is marked deleted, and that mark is never cleared or
+rewritten, so the runtime role cannot make a live session's record
+unreadable. Every owner change is written to `owner_changes`, and every
 change to an account's groups or tenant to `account_changes`, by triggers
 that run as the tables' owner: the runtime role can read those tables but
 neither write nor skip a row. Keep the owner's credentials off the host that
