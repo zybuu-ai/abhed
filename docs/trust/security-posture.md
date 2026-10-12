@@ -99,36 +99,36 @@ Arguments → Hooks → Deny rules → Ask rules → Permission mode → Allow r
 call even in `bypass` mode — the most permissive mode Abhed has
 (`internal/policy/policy.go`, `ModeBypass` comment: "dangerous; refusable by
 org policy") — whether the agent or a person makes it. One scope limit: what a
-person runs inside the workbench's interactive shell is bounded by the sandbox,
-and there deny rules are a best-effort screen on each line as typed (see "A
-person's terminal is sandboxed" below). The workbench Explorer's New folder,
-rename and delete are judged as actions of their own (`mkdir`, `rename`,
-`delete`), not as command text, so `bash(...)` rules do not apply to them;
-`write(...)` rules on their paths and rules naming the action do (a
+person runs inside the workbench's interactive shell is bounded by the
+sandbox, and there deny rules are a best-effort screen on each line as typed
+(see "A person's terminal is sandboxed" below). The workbench Explorer's New
+folder, rename and delete are judged as actions of their own (`mkdir`,
+`rename`, `delete`), not as command text, so `bash(...)` rules do not apply to
+them; `write(...)` rules on their paths and rules naming the action do (a
 `rename(...)` rule is matched against both names, and a `delete(...)` rule
-against the old one, since a rename removes it; for a folder each entry
-inside is judged too, a rename at its old and new path, and a folder of more
-than 5,000 entries is refused). Hooks and extensions see
-those action names, not `bash`. Rules are
-scoped per-command, not per-tool: allowing `bash(npm test)` never allows
-`bash(rm -rf /)`. A built-in tool's name in a rule is matched in any case
-(`Bash(curl *)` is `bash(curl *)`); MCP, knowledge-base and extension tool
-names are matched exactly, and an extension may not take a built-in name in
-any case, so folding never moves a rule onto another tool. A managed deny or
-ask rule that names no tool here fails `abhed doctor`; a managed deny rule
-whose tool name is evidently a mistake (another tool's name for a built-in,
-or `MCP__` in another case, when no managed extension may provide tools; a
+against the old one, since a rename removes it; for a folder each entry inside
+is judged too, a rename at its old and new path, and a folder of more than
+5,000 entries is refused). Hooks and extensions see those action names, not
+`bash`. Rules are scoped per-command, not per-tool: allowing `bash(npm test)`
+never allows `bash(rm -rf /)`. A built-in tool's name in a rule is matched in
+any case (`Bash(curl *)` is `bash(curl *)`); MCP, knowledge-base and extension
+tool names are matched exactly, and an extension may not take a built-in name
+in any case, so folding never moves a rule onto another tool. A managed deny
+or ask rule that names no tool here fails `abhed doctor`; a managed deny rule
+whose tool name is evidently a mistake (another tool's name for a built-in, or
+`MCP__` in another case, when no managed extension may provide tools; a
 built-in in look-alike letters; or a managed MCP server or knowledge base in
-another case) refuses startup rather than run without it. A name merely close to a built-in, such as `git` or `sql`, fails
-the doctor but does not refuse startup. A name that
-may be meant ahead, such as an MCP server or extension tool not set up on this
-machine, does not. A deployment's deny list should block reads of SSH keys,
-cloud credentials and `.env` files, and no allow rule should pre-approve an interpreter or file-reading command that could be
-used to exfiltrate one of those files under the cover of an approved rule.
-The built-in ask rules only ask before the read tool opens `.env`, `.env.*`,
-`*.pem`, `*.key` and SSH keys in the workspace (a headless run refuses
-them); a command can still print such a file, and a `permissions.ask` list
-of your own replaces these rules.
+another case) refuses startup rather than run without it. A name merely close
+to a built-in, such as `git` or `sql`, fails the doctor but does not refuse
+startup. A name that may be meant ahead, such as an MCP server or extension
+tool not set up on this machine, does not. A deployment's deny list should
+block reads of SSH keys, cloud credentials and `.env` files, and no allow rule
+should pre-approve an interpreter or file-reading command that could be used
+to exfiltrate one of those files under the cover of an approved rule. The
+built-in ask rules only ask before the read tool opens `.env`, `.env.*`,
+`*.pem`, `*.key` and SSH keys in the workspace (a headless run refuses them);
+a command can still print such a file, and a `permissions.ask` list of your
+own replaces these rules.
 
 **The managed configuration binds every entry point.** `/etc/abhed/config.json`
 is read last, and `config.Load` records which keys it set
@@ -164,33 +164,32 @@ a `config.Config` built by hand carries no managed keys.
 
 **The agent cannot reach its own configuration.** `.abhed/` in the workspace
 and in the home directory holds the policy, the users file, the keys and the
-workspace-trust decisions (`~/.abhed/trust.json`). One
-check, `tools.StateSet` (`internal/tools/state.go`), is shared by the agent's
-file tools, glob, grep, the code index and the server's download, viewer,
-search and upload endpoints. It compares path components with `.abhed`
-without case, judges both the path as given and the path with every link
-followed, and asks the filesystem, by identity (`os.SameFile`), whether the
-path or a folder above it is a state directory or a state file; the users,
-config and secrets files are always known, and other files and folders there
-up to 4,096. Files are opened under the workspace held open as an `os.Root`
-(`internal/tools/confined.go`), so a link swapped in after the check leads
-neither out of the workspace nor into the state, and what was opened is
-judged again. A folder an upload needs is made one step at a time the same
-way, so a link into the state is refused before anything is made there. The
-process sandbox denies commands reading and writing
-`.abhed/` (`internal/sandbox/process.go`), with `~/.abhed/skills` the one
-readable part. That denial is by path, not by file: a hard link to a state
+workspace-trust decisions (`~/.abhed/trust.json`). One check, `tools.StateSet`
+(`internal/tools/state.go`), is shared by the agent's file tools, glob, grep,
+the code index and the server's download, viewer, search and upload endpoints.
+It compares path components with `.abhed` without case, judges both the path
+as given and the path with every link followed, and asks the filesystem, by
+identity (`os.SameFile`), whether the path or a folder above it is a state
+directory or a state file; the users, config and secrets files are always
+known, and other files and folders there up to 4,096. Files are opened under
+the workspace held open as an `os.Root` (`internal/tools/confined.go`), so a
+link swapped in after the check leads neither out of the workspace nor into
+the state, and what was opened is judged again. A folder an upload needs is
+made one step at a time the same way, so a link into the state is refused
+before anything is made there. The process sandbox denies commands reading and
+writing `.abhed/` (`internal/sandbox/process.go`), with `~/.abhed/skills` the
+one readable part. That denial is by path, not by file: a hard link to a state
 file elsewhere in the workspace is a path the sandbox does not guard. The
 agent cannot make one on macOS, and one that already exists stops Abhed: every
 entry point that builds the sandbox refuses to start, and `abhed doctor`
 fails, when a state file (the users, config and secrets files and the other
 files the state check knows, in the workspace and the home directory, and the
 users, config and secrets files the user could rewrite in every folder above
-the workspace, other than a world-writable sticky one) has more than one name, and `config.Load` refuses
-a configuration file with more than one name (`internal/nlink`,
-`internal/sandboxconfig`). On Windows these named-file checks read the link
-count from the file itself; the walk over the state folders, and files Abhed
-has already opened, are not counted there.
+the workspace, other than a world-writable sticky one) has more than one name,
+and `config.Load` refuses a configuration file with more than one name
+(`internal/nlink`, `internal/sandboxconfig`). On Windows these named-file
+checks read the link count from the file itself; the walk over the state
+folders, and files Abhed has already opened, are not counted there.
 
 A users file set with `auth.users_file`, or a secrets file set with
 `ABHED_SECRETS_FILE`, is refused by the same check. Abhed refuses to start
@@ -369,64 +368,64 @@ inside it. So, for the terminal:
 
 What the shell can reach is the tier's, as for the agent's commands, but a
 person now has it interactively. On the macOS process tier, Seatbelt denies
-writes outside the workspace and reads of `.abhed` and of the credential
-paths in home listed in `HomeSecrets` (`internal/sandbox/process.go`): keys
-and cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
-`~/.config/gcloud`, `~/.azure`, …), git host and registry tokens
-(`~/.netrc`, `~/.git-credentials`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`,
-…), database and model tokens, shell history, the keychains and browser
-profiles. Each is named both as given and with its links resolved, so a
-home reached through a link is covered. Beyond that list, home is unreadable
-by default: a command reads in home only the workspace, `read_only_paths`,
-the toolchains (`~/go`, `~/.cargo`, `~/.rustup`, `~/.npm`, `~/.nvm`,
-`~/.pyenv`, `~/.local/bin`, `~/.local/share/uv` and the like, the folders
-`GOPATH`, `GOROOT`, `CARGO_HOME`, `JAVA_HOME` and similar variables name, each
-`PATH` folder under home with the install a program linked there comes from,
-never a whole folder at the top of home), the caches (`~/.cache`,
-`~/Library/Caches`) and the files git, vim and shells read (`~/.gitconfig`,
-`~/.config/git`, `~/.vimrc`, `~/.zshrc`, …). The credential list above still
-applies inside those. What remains: a secret kept inside one of those
-folders, such as a token in `~/.cache`, is readable, since the rules are
-paths, not contents; the container or vm tier keeps home out altogether, as
-Linux's bubblewrap does. `sandbox.readable_home: true` returns to reading all
-of home but the credential list. Commands write caches of the session's own,
-removed when it ends, not your real `~/.cache`, `~/Library/Caches`,
-`~/.npm`, `~/.cargo/registry` or `~/go/pkg/mod`, which they can only read
-(Go modules come through `GOPROXY`); `sandbox.shared_caches: true` lets them
-write the shared ones again. Signals stay inside the sandbox: the profile
-allows a command or shell to signal only processes in its own Seatbelt
-sandbox (`(allow signal (target same-sandbox))`), so it cannot stop Abhed
-(`kill $PPID`), the server, or another command's processes, as bubblewrap's
-PID namespace keeps them apart on Linux (`TestSeatbeltSignalsStayInside`).
-One consequence: a command cannot stop a server an earlier command left
-running; Abhed's own stop for a background shell, sent from outside, does.
-The profile starts from `(allow default)`. The Mach services it denies are
-Launch Services and Apple events (which open applications and URLs), the
-pasteboard (`pbpaste` and `pbcopy` fail), the window server's session port
-and screen capture, on every network setting, and the network and system
-configuration services with the network off or under the allowlist. Other
-`mach-lookup` services stay reachable, and some act outside the sandbox for
-a command (`trustd` fetches a certificate's URLs, for one; TLS needs it). A
-deny-by-default Mach profile would break the system services every program
-uses, so what remains is that list's gap: a per-session service not named
-above can still be asked to act. The container and vm tiers have no Mach
-services at all. The environment is an allowlist
-(`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
-`ABHED_` settings. On macOS that does not keep them from a command: the
-kernel returns any same-user process's environment (`kern.procargs2`) unless
-it is a restricted program, as Apple's are, and Seatbelt cannot refuse it, so a
-command reads a concurrent command's environment and that of an MCP server or
-extension Abhed started, which get only `PATH`, `HOME`, the locale and
-temporary-folder variables and what their configuration lists
-(`TestSeatbeltProcArgsExposure`). Abhed's own is hidden: it re-executes itself
-with a short list of variables in its exec environment and reads the rest
-from a pipe (`app.HideEnvironment`, `TestHideEnvironmentKeepsItFromProcArgs`).
-Signing Abhed restricted (`codesign -o restrict`) would also hide its
-environment, since the kernel omits a restricted process's, but not its
-arguments, its children's, or an unsigned build's, and it changes how the
-binary loads; releases are not signed that way. On the `none` tier the shell has the server's environment
-without its `ABHED_` settings, which leaves anything else the operator
-exported, and nothing contains it.
+writes outside the workspace and reads of `.abhed` and of the credential paths
+in home listed in `HomeSecrets` (`internal/sandbox/process.go`): keys and
+cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
+`~/.config/gcloud`, `~/.azure`, …), git host and registry tokens (`~/.netrc`,
+`~/.git-credentials`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, …), database
+and model tokens, shell history, the keychains and browser profiles. Each is
+named both as given and with its links resolved, so a home reached through a
+link is covered. Beyond that list, home is unreadable by default: a command
+reads in home only the workspace, `read_only_paths`, the toolchains (`~/go`,
+`~/.cargo`, `~/.rustup`, `~/.npm`, `~/.nvm`, `~/.pyenv`, `~/.local/bin`,
+`~/.local/share/uv` and the like, the folders `GOPATH`, `GOROOT`,
+`CARGO_HOME`, `JAVA_HOME` and similar variables name, each `PATH` folder under
+home with the install a program linked there comes from, never a whole folder
+at the top of home), the caches (`~/.cache`, `~/Library/Caches`) and the files
+git, vim and shells read (`~/.gitconfig`, `~/.config/git`, `~/.vimrc`,
+`~/.zshrc`, …). The credential list above still applies inside those. What
+remains: a secret kept inside one of those folders, such as a token in
+`~/.cache`, is readable, since the rules are paths, not contents; the
+container or vm tier keeps home out altogether, as Linux's bubblewrap does.
+`sandbox.readable_home: true` returns to reading all of home but the
+credential list. Commands write caches of the session's own, removed when it
+ends, not your real `~/.cache`, `~/Library/Caches`, `~/.npm`,
+`~/.cargo/registry` or `~/go/pkg/mod`, which they can only read (Go modules
+come through `GOPROXY`); `sandbox.shared_caches: true` lets them write the
+shared ones again. Signals stay inside the sandbox: the profile allows a
+command or shell to signal only processes in its own Seatbelt sandbox (`(allow
+signal (target same-sandbox))`), so it cannot stop Abhed (`kill $PPID`), the
+server, or another command's processes, as bubblewrap's PID namespace keeps
+them apart on Linux (`TestSeatbeltSignalsStayInside`). One consequence: a
+command cannot stop a server an earlier command left running; Abhed's own stop
+for a background shell, sent from outside, does. The profile starts from
+`(allow default)`. The Mach services it denies are Launch Services and Apple
+events (which open applications and URLs), the pasteboard (`pbpaste` and
+`pbcopy` fail), the window server's session port and screen capture, on every
+network setting, and the network and system configuration services with the
+network off or under the allowlist. Other `mach-lookup` services stay
+reachable, and some act outside the sandbox for a command (`trustd` fetches a
+certificate's URLs, for one; TLS needs it). A deny-by-default Mach profile
+would break the system services every program uses, so what remains is that
+list's gap: a per-session service not named above can still be asked to act.
+The container and vm tiers have no Mach services at all. The environment is an
+allowlist (`internal/sandbox/process.go`, `env`): no provider keys, no vault
+secrets, no `ABHED_` settings. On macOS that does not keep them from a
+command: the kernel returns any same-user process's environment
+(`kern.procargs2`) unless it is a restricted program, as Apple's are, and
+Seatbelt cannot refuse it, so a command reads a concurrent command's
+environment and that of an MCP server or extension Abhed started, which get
+only `PATH`, `HOME`, the locale and temporary-folder variables and what their
+configuration lists (`TestSeatbeltProcArgsExposure`). Abhed's own is hidden:
+it re-executes itself with a short list of variables in its exec environment
+and reads the rest from a pipe (`app.HideEnvironment`,
+`TestHideEnvironmentKeepsItFromProcArgs`). Signing Abhed restricted (`codesign
+-o restrict`) would also hide its environment, since the kernel omits a
+restricted process's, but not its arguments, its children's, or an unsigned
+build's, and it changes how the binary loads; releases are not signed that
+way. On the `none` tier the shell has the server's environment without its
+`ABHED_` settings, which leaves anything else the operator exported, and
+nothing contains it.
 
 `sandbox.terminal: "lines"` returns the terminal to one policy-checked `bash`
 call per line with no shell state, and a managed file that itself sets
@@ -524,17 +523,18 @@ cannot unshare a network namespace — per `docs/architecture/03-security.md`
 §7), and a containerised server with no
 bind mount has no route to the host filesystem.
 
-With the network off, a command cannot see the host's network either. On
-Linux the network namespace has only loopback. On the macOS process tier,
-Seatbelt also denies the routing sysctls that list interfaces and addresses,
-routing sockets, and the system configuration and network services, so
-`ifconfig`, `netstat -rn`, `route -n get`, `scutil --nwi` and `ipconfig` fail
-instead of showing the LAN address, the gateway or a VPN tunnel (`TestProcessSandboxHidesTheHostsNetwork`). What remains visible
-on macOS: the hardware ports and their MAC addresses, which come from the I/O
-registry (`networksetup -listallhardwareports`, `ioreg`), and the host name.
-Programs that enumerate interfaces get an error rather than a loopback-only
-list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
-pytest are unaffected.
+With the network off, a command cannot see the host's network either. On Linux
+the network namespace has only loopback. On the macOS process tier, Seatbelt
+also denies the routing sysctls that list interfaces and addresses, routing
+sockets, and the system configuration and network services, so `ifconfig`,
+`netstat -rn`, `route -n get`, `scutil --nwi` and `ipconfig` fail instead of
+showing the LAN address, the gateway or a VPN tunnel
+(`TestProcessSandboxHidesTheHostsNetwork`). What remains visible on macOS: the
+hardware ports and their MAC addresses, which come from the I/O registry
+(`networksetup -listallhardwareports`, `ioreg`), and the host name. Programs
+that enumerate interfaces get an error rather than a loopback-only list, as
+Node's `os.networkInterfaces()` does; Python, git, `go build` and pytest are
+unaffected.
 
 **Under `sandbox.network: "allowlist"`**, set in the managed configuration,
 each session gets a proxy on loopback and the `egress` rules decide what
@@ -559,38 +559,37 @@ resolver reached over a unix socket left visible looks names up. HTTPS is
 judged by host and port unless the managed `egress.inspect_tls` is on.
 Details: `docs/guide/21-network-policy.md`.
 
-**`web_search` and `web_fetch`, when enabled**, are the two narrow,
-structured exceptions: a Go tool in the Abhed process makes the request, not
-the sandboxed shell. `web_search` sends a query to the configured provider,
-and asks before each search in every mode short of bypass unless an allow
-rule names `web_search`.
-`web_fetch` sends only GETs with no body, to the one URL policy judged on a
-public host (a redirect is followed only to that same URL or its https
-upgrade, at most five times), and nothing else: no other method, no
-connection the model holds. A port other than
-the scheme's default asks unless an allow rule names it, even for a host on
-`web_fetch.allowed_hosts`, except in bypass mode (unless a managed policy
-disables it) and `abhed eval`, which approve every ask. Both are off by default (`web_search.enabled`
-and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
+**`web_search` and `web_fetch`, when enabled**, are the two narrow, structured
+exceptions: a Go tool in the Abhed process makes the request, not the
+sandboxed shell. `web_search` sends a query to the configured provider, and
+asks before each search in every mode short of bypass unless an allow rule
+names `web_search`. `web_fetch` sends only GETs with no body, to the one URL
+policy judged on a public host (a redirect is followed only to that same URL
+or its https upgrade, at most five times), and nothing else: no other method,
+no connection the model holds. A port other than the scheme's default asks
+unless an allow rule names it, even for a host on `web_fetch.allowed_hosts`,
+except in bypass mode (unless a managed policy disables it) and `abhed eval`,
+which approve every ask. Both are off by default (`web_search.enabled` and
+`web_fetch.enabled` are false in `config/config.go`'s defaults), each is
 enabled on its own, and neither enables shell networking. Both sections are
 managed only: only the managed configuration turns them on or names the
 provider, endpoint, key or hosts. The user's file, `-settings`, a workspace
-trusted or not and the SDK may only turn them off or narrow them (no
-`ABHED_*` variable sets either), and each attempt that did not take effect is recorded as a
-`config.refused` event naming who made it (`config/websection.go`). `web_fetch`
-fetches only the URL policy has judged: it refuses schemes other than
-http and https, and any loopback, private, link-local, metadata or reserved
-address, checked on the address it connects to, on every redirect hop
-(`internal/webfetch/guard.go`). It follows a redirect only to the same URL
-or its https upgrade, and hands any other back to the model as a new call.
-It ignores proxy settings from the environment, refuses a URL that holds a
-stored secret as written, percent-encoded or in another case (not one
-encoded otherwise or split across the URL), and
-can be held to an operator's host list (`web_fetch.allowed_hosts`). A URL is
-a channel out: whatever the model puts in it reaches the site. Without a
-host list every call asks, in plan mode too, unless an operator's allow rule
-names it (`Engine.AskReadOnly` in `internal/policy/policy.go`); bypass mode
-(unless a managed policy disables it) and `abhed eval` do not ask, and a run with no one to ask refuses it.
+trusted or not and the SDK may only turn them off or narrow them (no `ABHED_*`
+variable sets either), and each attempt that did not take effect is recorded
+as a `config.refused` event naming who made it (`config/websection.go`).
+`web_fetch` fetches only the URL policy has judged: it refuses schemes other
+than http and https, and any loopback, private, link-local, metadata or
+reserved address, checked on the address it connects to, on every redirect hop
+(`internal/webfetch/guard.go`). It follows a redirect only to the same URL or
+its https upgrade, and hands any other back to the model as a new call. It
+ignores proxy settings from the environment, refuses a URL that holds a stored
+secret as written, percent-encoded or in another case (not one encoded
+otherwise or split across the URL), and can be held to an operator's host list
+(`web_fetch.allowed_hosts`). A URL is a channel out: whatever the model puts
+in it reaches the site. Without a host list every call asks, in plan mode too,
+unless an operator's allow rule names it (`Engine.AskReadOnly` in
+`internal/policy/policy.go`); bypass mode (unless a managed policy disables
+it) and `abhed eval` do not ask, and a run with no one to ask refuses it.
 
 **The model endpoint the operator configured.** Prompts and context go to
 whatever model endpoint is set in `model.providers`. Abhed is model-agnostic
@@ -734,13 +733,13 @@ Stated plainly rather than buried:
   `docs/ops/red-team-scope.md` says what to commission.
 - **No automatic failover in this edition.** The Enterprise edition's high
   availability moves running turns between replicas; without it, several
-  servers can share one Postgres database, and a finished session can be continued on any of them (see
-  `docs/guide/11-sessions.md`). Nothing moves work off a server that stops:
-  its running turns end with it and are recorded as interrupted, and the
-  session can be continued from there. Its background subagents end with it
-  too: the server that next takes the session over (by a message, or its
-  sweep once the stopped server's claim is stale) records them as `lost`,
-  and their work is not resumed on its own.
+  servers can share one Postgres database, and a finished session can be
+  continued on any of them (see `docs/guide/11-sessions.md`). Nothing moves
+  work off a server that stops: its running turns end with it and are recorded
+  as interrupted, and the session can be continued from there. Its background
+  subagents end with it too: the server that next takes the session over (by a
+  message, or its sweep once the stopped server's claim is stale) records them
+  as `lost`, and their work is not resumed on its own.
 - **Agent-command detection can be escaped on the `none` tier.** Whether a
   process is the agent's is decided by `ABHED_SANDBOX` and by an `abhed`
   ancestor in the process tree. A command that unsets the variable and
