@@ -77,7 +77,7 @@ func (g *gateRig) signIn(t *testing.T, user string) *http.Cookie {
 
 // signInThenDrop signs user in as a member of abhed-users and then takes the
 // group away, as an administrator would while the session is live.
-func (g *gateRig) signInThenDrop(t *testing.T, user string) *http.Cookie {
+func (g *gateRig) signInThenDrop(t *testing.T, user string) *http.Cookie { //nolint:unparam // a fixture; the name documents whom the tests drop
 	t.Helper()
 	ctx := context.Background()
 	if err := g.local.SetGroups(ctx, user, "abhed-users", true); err != nil {

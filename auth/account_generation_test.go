@@ -10,7 +10,8 @@ import (
 )
 
 // signInAs posts a sign-in, sending prior when set, and returns the cookie issued.
-func signInAs(t *testing.T, l *LocalAuth, name, pw string, prior *http.Cookie) *http.Cookie {
+func signInAs(t *testing.T, l *LocalAuth, name string, prior *http.Cookie) *http.Cookie {
+	const pw = "correct-horse-1"
 	t.Helper()
 	r := httptest.NewRequest("POST", "/v1/signin", strings.NewReader(`{"username":"`+name+`","password":"`+pw+`"}`))
 	if prior != nil {
@@ -42,7 +43,7 @@ func TestRecreatedAccountDoesNotInheritTheCookie(t *testing.T) {
 	store := NewMemoryUserStore()
 	l := NewLocalAuth(store, time.Hour, false)
 	mustCreate(t, l, "bob", "correct-horse-1")
-	old := signInAs(t, l, "bob", "correct-horse-1", nil)
+	old := signInAs(t, l, "bob", nil)
 	u, _ := store.Get(ctx, "bob")
 	// Same password, so only the creation time tells the two accounts apart.
 	time.Sleep(2 * time.Millisecond)
@@ -64,8 +65,8 @@ func TestSignInEndsTheSessionTheBrowserHeld(t *testing.T) {
 	l := newTestAuth(t)
 	mustCreate(t, l, "ada", "correct-horse-1")
 	mustCreate(t, l, "bob", "correct-horse-1")
-	a := signInAs(t, l, "ada", "correct-horse-1", nil)
-	b := signInAs(t, l, "bob", "correct-horse-1", a)
+	a := signInAs(t, l, "ada", nil)
+	b := signInAs(t, l, "bob", a)
 	if resolves(l, a) {
 		t.Fatal("ada's cookie still works after bob signed in from the same browser")
 	}
@@ -78,8 +79,8 @@ func TestSignInEndsTheSessionTheBrowserHeld(t *testing.T) {
 // refused, so it cannot pose as another account's address.
 func TestEmailRefusesInvisibleCharacters(t *testing.T) {
 	for _, e := range []string{
-		"b‍ob@example.com", "bob​@example.com", "bo­b@example.com",
-		"bob️@example.com", "bob@exam⁠ple.com", "bㅤob@example.com",
+		"b\u200dob@example.com", "bob\u200b@example.com", "bo\u00adb@example.com",
+		"bob\ufe0f@example.com", "bob@exam\u2060ple.com", "b\u3164ob@example.com",
 	} {
 		if ValidEmail(e) == nil {
 			t.Errorf("%q was accepted", e)
@@ -91,7 +92,7 @@ func TestEmailRefusesInvisibleCharacters(t *testing.T) {
 		}
 	}
 	l := newTestAuth(t)
-	if err := l.CreateUser(context.Background(), User{Username: "bob2", Email: "b‍ob@example.com"}, "correct-horse-1"); err == nil {
+	if err := l.CreateUser(context.Background(), User{Username: "bob2", Email: "b\u200dob@example.com"}, "correct-horse-1"); err == nil {
 		t.Fatal("an account was made with a zero-width character in its email")
 	}
 }
@@ -100,7 +101,7 @@ func TestEmailRefusesInvisibleCharacters(t *testing.T) {
 func TestEndedReasonNamesTheCause(t *testing.T) {
 	l := newTestAuth(t)
 	mustCreate(t, l, "ada", "correct-horse-1")
-	a := signInAs(t, l, "ada", "correct-horse-1", nil)
+	a := signInAs(t, l, "ada", nil)
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(a)
 	if why := l.EndedReason(r); why != "" {
@@ -111,7 +112,7 @@ func TestEndedReasonNamesTheCause(t *testing.T) {
 	if why := l.EndedReason(r); why != WhySignedOut {
 		t.Fatalf("after sign-out the reason is %q", why)
 	}
-	b := signInAs(t, l, "ada", "correct-horse-1", nil)
+	b := signInAs(t, l, "ada", nil)
 	l.RevokeUser("ada")
 	rb := httptest.NewRequest("GET", "/", nil)
 	rb.AddCookie(b)
