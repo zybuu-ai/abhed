@@ -756,9 +756,9 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 func (h *Held) ClaimResume(ctx context.Context, sessionID string) (bool, error) {
 	tag, err := h.pool.Exec(ctx, `
 		UPDATE sessions SET ended_at = NULL, terminal_reason = NULL, node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL
+		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL AND node_id IS DISTINCT FROM $4
 		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
-		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String())
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String(), HandedOver)
 	if err != nil {
 		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
 	}
@@ -1013,13 +1013,14 @@ var ErrHeldElsewhere = errors.New("the session is held by another process")
 //
 // It never takes a session from another live holder: the row must hold no
 // one, this node, or a holder whose claim is older than HolderStale (a
-// process that went away). Otherwise it answers ErrHeldElsewhere.
+// process that went away). Otherwise it answers ErrHeldElsewhere. A row
+// handed over is taken only through ClaimHandedOver.
 func (p *Postgres) ClaimNode(ctx context.Context, sessionID, nodeID string) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND deleted_at IS NULL
+		WHERE id = $1 AND deleted_at IS NULL AND node_id IS DISTINCT FROM $4
 		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
-		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String())
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String(), HandedOver)
 	if err != nil {
 		return fmt.Errorf("claim node for %s: %w", sessionID, err)
 	}
