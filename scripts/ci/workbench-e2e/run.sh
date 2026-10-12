@@ -34,32 +34,47 @@ rm -rf "$WORK/harness" && mkdir -p "$WORK/harness"
 cp "$HERE/package.json" "$HERE/package-lock.json" "$HERE"/*.mjs "$WORK/harness/"
 (cd "$WORK/harness" && npm ci --no-audit --no-fund --silent && npx --no-install playwright install ${WITH_DEPS:+--with-deps} chromium >/dev/null)
 
-home="$WORK/home" ws="$WORK/ws"
-rm -rf "$home" "$ws"
-mkdir -p "$home/.abhed" "$ws"
-cat > "$home/.abhed/config.json" <<EOF
+node "$WORK/harness/fake-model.mjs" "$MODEL_PORT" > "$WORK/model.log" 2>&1 &
+pids+=($!)
+
+# Each scenario gets a fresh HOME, workspace and server: per-session is the
+# default, where a session's commands run in a sandbox of its own; shared sets
+# server.shared_sessions, where they run in the one workspace.
+status=0
+for scenario in per-session shared; do
+  echo "--- scenario: $scenario"
+  home="$WORK/$scenario/home" ws="$WORK/$scenario/ws"
+  rm -rf "${WORK:?}/$scenario"
+  mkdir -p "$home/.abhed" "$ws"
+  shared=false
+  if [ "$scenario" = shared ]; then shared=true; fi
+  cat > "$home/.abhed/config.json" <<EOF
 {"model":{"default":"fake","providers":{"fake":{"type":"openai-compatible","base_url":"http://127.0.0.1:${MODEL_PORT}/v1","model":"workbench-e2e","context_window":32768}}},
  "auth":{"mode":"local","allow_signup":true,"users_file":"$home/.abhed/users.json"},
+ "server":{"shared_sessions":$shared},
  "sandbox":{"min_tier":"none"}}
 EOF
 
-node "$WORK/harness/fake-model.mjs" "$MODEL_PORT" > "$WORK/model.log" 2>&1 &
-pids+=($!)
-env -i PATH="$PATH" HOME="$home" TMPDIR="${TMPDIR:-/tmp}" LANG=C.UTF-8 \
-  "$WORK/abhed" -C "$ws" serve -addr "127.0.0.1:${SERVE_PORT}" > "$WORK/serve.log" 2>&1 &
-pids+=($!)
+  env -i PATH="$PATH" HOME="$home" TMPDIR="${TMPDIR:-/tmp}" LANG=C.UTF-8 \
+    "$WORK/abhed" -C "$ws" serve -addr "127.0.0.1:${SERVE_PORT}" > "$WORK/$scenario/serve.log" 2>&1 &
+  serve=$!
+  pids+=("$serve")
 
-for _ in $(seq 1 100); do
-  curl -fsS "http://127.0.0.1:${SERVE_PORT}/v1/health" >/dev/null 2>&1 && break
-  sleep 0.2
+  for _ in $(seq 1 100); do
+    curl -fsS "http://127.0.0.1:${SERVE_PORT}/v1/health" >/dev/null 2>&1 && break
+    sleep 0.2
+  done
+  if ! curl -fsS "http://127.0.0.1:${SERVE_PORT}/v1/health" >/dev/null; then
+    echo "abhed serve did not come up:"; cat "$WORK/$scenario/serve.log"; exit 1
+  fi
+
+  rc=0
+  (cd "$WORK/harness" && node checks.mjs "http://127.0.0.1:${SERVE_PORT}" "$ws" "$scenario") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "--- serve log ($scenario)"; tail -n 50 "$WORK/$scenario/serve.log"
+    status=1
+  fi
+  kill "$serve" 2>/dev/null || true
+  wait "$serve" 2>/dev/null || true
 done
-if ! curl -fsS "http://127.0.0.1:${SERVE_PORT}/v1/health" >/dev/null; then
-  echo "abhed serve did not come up:"; cat "$WORK/serve.log"; exit 1
-fi
-
-status=0
-(cd "$WORK/harness" && node checks.mjs "http://127.0.0.1:${SERVE_PORT}" "$ws") || status=$?
-if [ "$status" -ne 0 ]; then
-  echo "--- serve log"; tail -n 50 "$WORK/serve.log"
-fi
 exit "$status"

@@ -559,7 +559,9 @@ jobs:
   # The workbench in a real browser: a built abhed serve with a scripted
   # model, checked by headless Chromium through a pinned Playwright. The
   # header keeps Sign out on screen at 320, 900 and 1440 px, the side-panel
-  # toggle keeps the grid whole, and a first turn's call is asked and runs.
+  # toggle keeps the grid whole, and a first turn's call is asked and runs:
+  # in the session's own sandbox by default, and in the workspace with
+  # server.shared_sessions.
   workbench-browser:
     name: Workbench in a browser
     runs-on: ubuntu-latest
@@ -572,7 +574,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Header, grid and first-turn approval
+      - name: Header, grid and first-turn approval, per-session and shared
         env:
           WITH_DEPS: "1"
         run: scripts/ci/workbench-e2e/run.sh "$RUNNER_TEMP/wbe2e"

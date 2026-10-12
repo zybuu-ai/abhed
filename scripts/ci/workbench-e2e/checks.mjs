@@ -1,15 +1,20 @@
 // Headless Chromium checks of the workbench against a running abhed serve.
 //
-//   node checks.mjs BASE_URL WORKSPACE
+//   node checks.mjs BASE_URL WORKSPACE [per-session|shared]
 //
+// The third argument says where the server runs a session's commands: in a
+// sandbox of the session's own (the default) or in the shared workspace.
 // Each check prints PASS or FAIL with what it saw; the exit code is the
 // number of failures. The server must have local accounts with sign-up open.
 import fs from 'node:fs';
 import path from 'node:path';
 import {chromium} from 'playwright';
 
-const [base, workspace] = process.argv.slice(2);
-if (!base || !workspace) { console.error('usage: node checks.mjs BASE_URL WORKSPACE'); process.exit(2); }
+const [base, workspace, sessions = 'per-session'] = process.argv.slice(2);
+if (!base || !workspace || !['per-session', 'shared'].includes(sessions)) {
+  console.error('usage: node checks.mjs BASE_URL WORKSPACE [per-session|shared]');
+  process.exit(2);
+}
 
 let failures = 0;
 const result = (name, ok, detail) => {
@@ -91,16 +96,41 @@ result('F3 grid with the side panel back at 1440px', ok, JSON.stringify(back));
 // the person in the workbench, and allowing it runs it.
 const made = path.join(workspace, 'approved.txt');
 fs.rmSync(made, {force: true});
+// The folder the call runs in, from the session's sandbox.bound record, which
+// its first command or terminal writes; absent when sessions share the workspace.
+const ranIn = async () => {
+  // Asked from the page, which holds the sign-in cookie.
+  const found = await page.evaluate(async () => {
+    const list = await (await fetch('/v1/sessions')).json();
+    for (const s of list || []) {
+      const events = await (await fetch('/v1/sessions/' + s.id + '/replay')).json();
+      if (!JSON.stringify(events).includes('touch approved.txt')) continue;
+      const bound = (events || []).find(e => e.type === 'sandbox.bound');
+      return bound ? bound.payload.workspace : '';
+    }
+    return '';
+  });
+  return {bound: !!found, dir: found || workspace};
+};
 await page.locator('#q').fill('make the file');
 await page.locator('#send').click();
 try {
   const ask = page.locator('.ask').filter({hasText: 'touch approved.txt'}).first();
   await ask.waitFor({state: 'visible', timeout: 20000});
-  result('first-turn approval is asked', !fs.existsSync(made), fs.existsSync(made) ? 'the command ran before it was allowed' : '');
+  const early = fs.existsSync(made) || fs.existsSync(path.join((await ranIn()).dir, 'approved.txt'));
+  result('first-turn approval is asked', !early, early ? 'the command ran before it was allowed' : '');
   await ask.locator('button.yes').click();
-  await waitUntil('approved.txt', () => fs.existsSync(made));
+  let where;
+  await waitUntil('approved.txt', async () => {
+    where = await ranIn();
+    return fs.existsSync(path.join(where.dir, 'approved.txt'));
+  });
   await page.locator('#tx').getByText('done', {exact: true}).first().waitFor({timeout: 15000});
-  result('first-turn approval, once allowed, runs the call and the turn ends', true);
+  result('first-turn approval, once allowed, runs the call and the turn ends', true, 'in ' + where.dir);
+  const own = sessions === 'per-session';
+  result(`the call ran in ${own ? "the session's own sandbox" : 'the shared workspace'}`,
+    where.bound === own && (own ? where.dir !== workspace && !fs.existsSync(made) : where.dir === workspace),
+    'sandbox.bound=' + where.bound + ', folder ' + where.dir);
 } catch (e) {
   result('first-turn approval', false, e.message);
 }
