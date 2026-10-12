@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // watchdogArg makes this binary a VM's watchdog: `abhed watchdogArg PARENT
@@ -62,16 +63,14 @@ func startWatchdog(parent, vmID string) (stop func(), err error) {
 	}
 	_ = r.Close()
 	go func() { _ = cmd.Wait() }()
-	done := false
+	var once sync.Once
 	return func() {
-		if done {
-			return
-		}
-		done = true
-		_, werr := w.Write([]byte{'q'})
-		_ = w.Close()
-		if werr != nil && !errors.Is(werr, os.ErrClosed) {
-			_ = cmd.Process.Kill()
-		}
+		once.Do(func() {
+			_, werr := w.Write([]byte{'q'})
+			_ = w.Close()
+			if werr != nil && !errors.Is(werr, os.ErrClosed) {
+				_ = cmd.Process.Kill()
+			}
+		})
 	}, nil
 }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -35,4 +36,19 @@ func TestWatchdogKillsTheCgroupWhenTheDriverDies(t *testing.T) {
 	if code := runWatchdog("abhed-microvm", "../../x", strings.NewReader("")); code != 2 {
 		t.Fatalf("a vm id with a path in it: exit %d", code)
 	}
+}
+
+// Stop may be called from several goroutines at once (a VM's end and the
+// driver's close); it tells the watchdog once.
+func TestWatchdogStopIsSafeConcurrently(t *testing.T) {
+	stop, err := startWatchdog("abhed-microvm-test", "vm-stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(stop)
+	}
+	wg.Wait()
+	stop()
 }
