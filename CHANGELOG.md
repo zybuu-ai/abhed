@@ -20,8 +20,8 @@ All notable changes to Abhed are recorded here. The format follows
   workspace, `read_only_paths`, toolchains, caches and the files git, editors
   and shells read, and write caches of the session's own; add what a command
   needs to `read_only_paths`, or set `sandbox.readable_home` or
-  `sandbox.shared_caches` to return to the old rules. The clipboard is no
-  longer reachable from a command.
+  `sandbox.shared_caches` to return to the old rules. The clipboard and
+  screen capture are no longer reachable from a command.
 - On Linux, process-tier commands have each process's data bounded by
   `sandbox.max_memory_mb` (4096 by default).
 - An `abhed serve` that accounts sign in to refuses the fence below Linux
@@ -70,10 +70,15 @@ All notable changes to Abhed are recorded here. The format follows
   set `"host_files": true` on one that needs it.
 - On Postgres, run `abhed migrate` (or apply `store/schema.sql`) as the
   schema owner before starting 1.2.8 servers against an existing database.
-  It adds the `approvals.request_id` column, which this release writes and
-  checks (a server whose database lacks it refuses to start and names the
-  column), and the `sessions_parent_same_tenant` key, which keeps a
-  session's parent in its own tenant.
+  It applies schema versions 7 (the control plane's `sandboxes`,
+  `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`), 8 (a
+  hash chain over events and the sandbox audit), 9 (`owner_changes`, and the
+  runtime role limited to the session columns a session's life changes) and
+  10 (`session_keys`, for erasure by key), with the `approvals.request_id`
+  column, the `sessions_parent_same_tenant` key, which keeps a session's
+  parent in its own tenant, and the accounts' `account_changes` table. A
+  1.2.8 server whose database lacks them refuses to start and names the
+  missing column.
 - `abhed serve` with more than one account, or able to gain one while it
   runs (single sign-on, a trusted proxy, open sign-up, or local accounts
   with none yet), now gives each session a sandbox of its own: it turns on
@@ -95,6 +100,43 @@ All notable changes to Abhed are recorded here. The format follows
 - The read tool asks before opening `.env`, `*.pem`, `*.key` and SSH key
   files in the workspace; a headless run with no one to answer refuses
   them. A `permissions.ask` list of your own replaces these rules.
+- `ssh` calls are judged as `host/command`: an allow rule on the command
+  alone, such as `ssh(uptime)`, no longer matches; write
+  `ssh(build1/uptime)` or `ssh(*/uptime)`.
+- Deny and ask rules for `bash` now read the shell scripts a command runs,
+  match flags moved or split, match a program named by a path, and match
+  path rules without regard to case on macOS, Windows and disks that fold
+  case. A command they let through before may now be asked or refused;
+  under a deny rule a script that does not exist, that the same line
+  writes, or that is named from `~` is refused.
+- Commands the agent runs get `protocol.ext.allow=never` and
+  `core.fsmonitor=false` as git configuration.
+- `git commit --amend`, `git checkout FILE`, `unlink` and `rmdir -p` confirm
+  in every mode, bypass included.
+- Policy hooks, an extension's `tool_call` among them, have 30 seconds to
+  decide; a call still undecided then is refused.
+- A nested `abhed` inside an agent's command refuses any mode looser than
+  the configured one.
+- `abhed -p -json-schema @file` refuses a JSON object with no schema keyword.
+- Under a managed `model.default`, the console's picker, a custom command's
+  `model`, `sdk.Agent.SetModel` and `sdk.New` with `Options.Provider` keep to
+  that model; the SDK calls return a `*config.ManagedError`.
+- `GET /v1/whoami` answers for a bearer token with its principal, and `401`
+  for one that does not verify, instead of `"authenticated": false`.
+- An ask that ended with no answer is recorded at step `interrupted`,
+  `unanswered` or `withheld`, not `ask`, and one refused because input ended
+  is the system's, not the person's (`by: user`); update queries on
+  `action.denied`.
+- `abhed acp` answers a session open in another process with `-32004`, not
+  `-32000`.
+- Where people sign in, `/v1/capabilities` gives an extension's `status` to
+  administrators only.
+- The terminal CLI's `/sessions` on a shared Postgres store lists only your
+  own sessions.
+- Uploads go into a folder with a random name, not `uploads/<session id>`.
+- Under `auth.require_group`, a local sign-in by a non-member is refused at
+  the form with `403`.
+- The statusline command may run for one second, not 300 ms.
 
 ### Security
 
@@ -197,9 +239,9 @@ All notable changes to Abhed are recorded here. The format follows
 - Under the fence on Linux older than 6.12, one account's commands on an
   `abhed serve` that accounts sign in to could signal another account's
   commands, which run as the same user. Such a server now refuses the fence
-  below Landlock ABI 6, which scopes signals; command lines in `/proc` stay
-  readable across sessions, as there is no PID namespace. Affects 1.2.6 to
-  1.2.7 on Linux.
+  below Landlock ABI 6, which scopes signals; in `landlock_only` mode, which
+  has no PID namespace, command lines in `/proc` stay readable across
+  sessions. Affects 1.2.7 on Linux.
 - The fence's `mount_namespace` mode did not find a view of the workspace
   through another filesystem (a bindfs or other FUSE mount, an overlay
   layered on it, an NFS export of it mounted back), so a command could read
@@ -255,12 +297,13 @@ All notable changes to Abhed are recorded here. The format follows
   to 1.2.7.
 - The terminal CLI, `abhed -p` and `abhed rpc` let a command write what git
   reads in a git folder (`.git/config`, hooks, `info/attributes`,
-  `commondir`), which Studio and `abhed serve` already prevented, so a command could set
-  `core.fsmonitor` and a later git command you approved with "always allow",
-  or your own git, ran it. Those surfaces now hold git's files too, on every
-  tier but none; `sandbox.protect_git: false` turns it off. An "always allow"
-  for a git command is also asked again once the repository's config, hooks,
-  attributes or your global git configuration change. Affects 0.1.0 to 1.2.7.
+  `commondir`), which Studio and `abhed serve` already prevented, so a command
+  could set `core.fsmonitor` and a later git command you approved with "always
+  allow", or your own git, ran it. Those surfaces now hold git's files too, on
+  every tier but none; `sandbox.protect_git: false` turns it off. An "always
+  allow" for a git command is also asked again once the repository's config,
+  hooks, attributes or your global git configuration change. Affects 0.1.0 to
+  1.2.7.
 - A shell's `-c` text was taken to be the word right after `-c`, so in
   `sh -c -- '…'`, `sh -c -x '…'` or `sh -xc -- '…'` the checks read `--` or
   `-x` and never the text that runs. A program it named by an expansion
@@ -336,7 +379,7 @@ All notable changes to Abhed are recorded here. The format follows
   `wget<Tab>http://x` was judged as the one word `wgethttp://x` and passed a
   `bash(wget *)` deny rule. A Tab now becomes a space, as bash reads it;
   other control characters are still dropped.
-  Affects the workbench's terminal from 1.1.0 and Studio's from 1.2.3, to
+  Affects the workbench's terminal from 1.0.0 and Studio's from 1.2.3, to
   1.2.7.
 - A managed `/etc/abhed/config.json` with a key repeated in one object (also
   when written in different cases, such as `permissions` and `PERMISSIONS`,
@@ -351,9 +394,9 @@ All notable changes to Abhed are recorded here. The format follows
   refuse. Abhed now runs itself again as it starts, under the same process
   id, with only a short list of non-secret variables (`PATH`, `HOME`,
   `LANG` and the like) in the environment the kernel shows, and takes the
-  rest back through a pipe. MCP servers and extensions Abhed starts still
-  inherit its environment, and a concurrent command's `secrets` and egress
-  token, and every process's arguments, stay readable: keep a provider key
+  rest back through a pipe. What an MCP server or extension was given in its
+  `env`, a concurrent command's `secrets` and egress token, and every
+  process's arguments stay readable: keep a provider key
   in `api_key` in `~/.abhed/config.json`, and use the container or vm tier
   where commands must not see one another's secrets. `ABHED_SHOW_ENV=1`
   turns the restart off. Go programs embedding Abhed call
@@ -374,7 +417,7 @@ All notable changes to Abhed are recorded here. The format follows
   Run `abhed migrate` to apply it. Affects 1.0.0 to 1.2.7.
 - Deleting a session in Postgres left its whole transcript readable in the
   database. Its payloads are now sealed with a per-session key that delete
-  removes (see Added). Affects 1.0.0 to 1.2.7; sessions recorded by those
+  removes (see Added). Affects 0.1.0 to 1.2.7; sessions recorded by those
   versions keep their plaintext.
 - Redaction matched only a stored value exactly as written, so a value
   that a command printed base64-encoded (a Basic auth header from
@@ -391,7 +434,8 @@ All notable changes to Abhed are recorded here. The format follows
   (`?api_key=…`, `user:key@host`) or a stored value in a provider's error
   body reached the terminal, the API and the server log. The URL is now
   reported without its query and user information, and the error is
-  redacted. Affects 1.0.0 to 1.2.7.
+  redacted. Affects 0.1.0 to 1.2.7 (a stored value in an error body from
+  1.0.0, when the secrets store came).
 - `abhed resolve` pushed whatever the run wrote, so a stored secret the
   agent put in a file, a file name or a commit message went to the forge
   and into the pull request's description. A change that holds a stored
@@ -407,11 +451,12 @@ All notable changes to Abhed are recorded here. The format follows
 - Once the managed file turned `web_search` on, a search ran without
   asking as a read-only tool, so a query could carry what the agent read to
   the search service. A search now asks in every mode short of bypass
-  unless an allow rule names `web_search`. Affects 1.2.2 to 1.2.7.
+  unless an allow rule names `web_search`. Affects 0.1.0 to 1.2.7.
 - The `mcp.added` admin audit kept an MCP server URL's path, which can
   carry a key (`/s/<key>/mcp`); it now keeps the scheme and host only. A
   command whose path holds a space was recorded cut at the first space; it
-  is now recorded as its program's base name. Affects 0.1.0 to 1.2.7.
+  is now recorded as its program's base name. Affects 0.1.0 to 1.2.7 (the
+  `mcp.added` audit from 1.1.0).
 - `web_fetch` dropped only format characters before judging whether a path
   segment reads as `.` or `..`, so a variation selector (U+FE0F), the
   grapheme joiner (U+034F) or a Hangul filler (U+3164) beside `..` passed.
@@ -431,7 +476,7 @@ All notable changes to Abhed are recorded here. The format follows
   and by printing it transformed read, every secret an allow rule named.
   Each account now has its own store under `~/.abhed/secrets.d`, managed
   through `GET /v1/secrets` and `PUT` and `DELETE /v1/secrets/{name}`; the
-  operator's store serves scheduled runs only. Affects 0.1.0 to 1.2.7.
+  operator's store serves scheduled runs only. Affects 1.0.0 to 1.2.7.
 - Under `sandbox.network: "allowlist"` a command could hand its proxy token
   to a concurrent call, through the workspace or (on macOS) by reading its
   environment, and that call's traffic was then recorded under the first
@@ -465,18 +510,18 @@ All notable changes to Abhed are recorded here. The format follows
   on working. Both now end: the local session first, then the provider's
   own sign-out. A signed-out reload on a server with local accounts beside
   single sign-on now lands on the front door rather than at the identity
-  provider. Affects 1.0.0 to 1.2.7.
+  provider. Affects 0.1.0 to 1.2.7.
 - `POST /v1/sessions` answered a failure it had no case for with the raw
   error, which could name store internals; it now logs the error and
   answers a fixed message. A new session started while the operator's
   secrets store could not be loaded ran with every payload in its record
   withheld; it is now refused with `503` and `Retry-After`. A resumed or
   running session still withholds until the store loads again. Affects
-  1.2.2 to 1.2.7.
+  0.1.0 to 1.2.7 (the withheld record from 1.2.2).
 - An uploaded file went into `uploads/<session id>` in the shared
   workspace, so any account on the server could list that folder and learn
   other people's session ids. Each upload now goes into a folder of its
-  own with a random name. Affects 1.0.0 to 1.2.7.
+  own with a random name. Affects 0.2.0 to 1.2.7.
 - Account and invite emails accepted zero-width, format and other
   invisible characters and non-ASCII spaces, so `bob@example.com` with a
   zero-width joiner inside could be made beside `bob@example.com`, and
@@ -484,7 +529,8 @@ All notable changes to Abhed are recorded here. The format follows
   are now refused. Under `auth.require_group`, a local sign-in by a
   non-member answered `200 ok` and was only turned away on the next page;
   it is now refused at the form with `403` and the reason. Group names
-  match case-sensitively, as documented now. Affects 1.0.0 to 1.2.7.
+  match case-sensitively, as documented now. Affects 0.1.0 to 1.2.7 (the
+  `require_group` answer from 1.2.0).
 - `/v1/capabilities` told every signed-in user whether each extension was
   running, which showed when a veto was down. Where people sign in, an
   extension's `status` is now given to administrators only. Affects 1.2.2
@@ -506,7 +552,7 @@ All notable changes to Abhed are recorded here. The format follows
   took `-mode accept-edits` or `-mode auto`, so a command could start a
   session that approved edits or ran by rule where the configuration said to
   ask. A nested run now refuses any mode looser than the configured one.
-  Affects 1.2.4 to 1.2.7.
+  Affects 0.1.0 to 1.2.7 (bypass too before 1.2.4).
 - `abhed acp` refused a `file:` attachment on another host
   (`file://server/share/x`) but not the same share written with an empty
   host (`file:////server/share/x`, or with backslashes), which Windows reads
@@ -523,18 +569,19 @@ All notable changes to Abhed are recorded here. The format follows
   `model` switched to another; and the SDK's `SetModel` and
   `Options.Provider` named any endpoint. Every surface now asks one check,
   and a managed `model.default` pins the model on all of them. Affects
-  1.1.0 to 1.2.7.
+  0.1.0 to 1.2.7 (a custom command's `model` from 1.2.3).
 - A managed `permissions.ask` list replaced the user's and a trusted
   workspace's ask rules, so a managed file that added one question dropped
   the person's own. It now joins them, as a managed deny list does. And when
   a managed file set aside the files' allow rules, every built-in allow rule
   came back, even one the files' shorter list had removed; only the built-in
-  rules that list still held now stay. Affects 1.1.0 to 1.2.7.
+  rules that list still held now stay. Affects 0.1.0 to 1.2.7 (the built-in
+  allow rules from 1.2.3).
 - When `/etc/abhed` itself was a link to nothing, the run was treated as
   unmanaged, so removing the link's target turned the organisation's rules
   off. It is now an error, as a dangling link at the file's own path is. A
   managed file removed while it was read is said to be removed, not called
-  a link to nothing. Affects 1.1.0 to 1.2.7.
+  a link to nothing. Affects 0.1.0 to 1.2.7.
 - The terminal CLI's `/sessions` on a shared Postgres store listed every
   owner's sessions in every tenant, with their titles and the owners'
   emails. It now lists only your own. `/resume` of a subagent's session
@@ -550,7 +597,7 @@ All notable changes to Abhed are recorded here. The format follows
   with its escape sequences intact, so it could move the cursor, erase lines
   and draw a fake prompt or status line over what was really there (display
   only; the record was not affected). Only colour now passes; any other
-  escape or control character is shown as a symbol. Affects 1.2.7.
+  escape or control character is shown as a symbol. Affects 1.2.3 to 1.2.7.
 - In a workbench shell on the container tier, printing the alternate-screen
   sequence (`printf '\e[?1049h'`) made the server take every later line as
   typed into a full-screen program, so a line a deny rule names ran and the
@@ -559,7 +606,37 @@ All notable changes to Abhed are recorded here. The format follows
   the terminal, and screens and records the line unless it does. The fence
   tier's shell, which runs on the server's own terminal, is now asked as the
   process tier's is, instead of being treated as a container's.
-  Affects 1.2.3 to 1.2.7.
+  Affects 1.1.0 to 1.2.7 (the fence tier's shell from 1.2.7).
+- A managed `permissions.deny` list now adds to the deny rules already in
+  force instead of replacing them: the built-in rules and those from
+  `~/.abhed/config.json`, `-settings` and a trusted workspace's file stay,
+  each shown with its own layer, and none is recorded as overridden. A managed
+  file could otherwise remove a deny rule the person had set. Affects 0.1.0 to
+  1.2.7.
+- `ssh` calls are judged by host as well as command: rules and "always allow"
+  read them as `host/command`, so an answer for one host never covers another,
+  and deny and ask rules also read the command alone as before. An allow rule
+  written on the command alone, such as `ssh(uptime)`, no longer matches;
+  write `ssh(build1/uptime)` or `ssh(*/uptime)`. A tool can name its own
+  subject the same way with `tools.Subjector`. Before, an "always allow" for a
+  command on one host covered every host. Affects 0.1.0 to 1.2.7.
+- On macOS, `abhed` built with cgo (as the release binaries are) writes the
+  administrative system log through `os_log` itself, subsystem
+  `com.zybuu.abhed`, category `admin`, so the unified log records `abhed` as
+  the sender; it went through `/usr/bin/logger`, whose entries any local user
+  could imitate by tag. Find them with `log show --predicate 'subsystem ==
+  "com.zybuu.abhed"'`. A build without cgo still uses `/usr/bin/logger` and
+  warns once that its entries are not attributable. Affects 1.2.6 to 1.2.7 on
+  macOS.
+- The server's request log left out requests refused before they were
+  identified, such as a `401` for no sign-in or a sign-in `429` from the
+  throttle, so a password-guessing run left no trace there. Every request
+  now has its `request` line; one refused that early carries
+  `identified=false`. Affects 0.1.0 to 1.2.7.
+- A line typed into a workbench shell that was longer than the terminal was
+  wide was recorded without its text, as though it had not been echoed: the
+  shell's soft wrap at the right margin was read as part of the line. Affects
+  1.0.0 to 1.2.7.
 
 ### Added
 
@@ -683,30 +760,28 @@ All notable changes to Abhed are recorded here. The format follows
   control-plane hook receives (`config.ControlPlaneConfig.Kubernetes`).
 - **`abhed sandbox`**: a server's sandboxes from the command line, as the
   profile `abhed login` saved (`-profile`, the current one, or `-server URL`):
-  `create` (from a template, with labels, settings, a minimum tier, a
-  driver, `-wait`), `list` (label selectors, state, pages), `get`, `update`
-  (sent with `If-Match`), `exec` (exits with the command's status; `-i`
-  sends stdin), `connect` (an interactive shell in raw mode that follows
-  the terminal's size; Ctrl-] leaves), `ssh` and `ssh-config` (OpenSSH
-  through the relay, with the server's host key kept in
-  `sandbox_known_hosts` beside the profiles file and checked strictly),
-  `cp` (in and out as tar; what comes out is checked entry by entry and
-  written through an `os.Root`, never outside the target folder, into
-  `.abhed`, or over an existing file), `forward` (loopback by default; a
-  wider `-address` is warned about), `expose`, `logs`, `stop`, `start`,
-  `delete` (asks first unless `-y`), `snapshot`, `restore` and `template
-  list | get | create | rm`. Output is a table or `-o json`; exit status 0,
-  1 failed, 2 usage, 3 not signed in or not allowed, 4 not found, 5
-  conflict, 6 waiting on an approval (the approval is named; send the
-  command again with `-approval ID` once it is granted), and the remote
-  status for `exec`, `connect` and `ssh`. Every
-  mutating call carries an `Idempotency-Key`, the same one when it is sent
-  again after a lost answer, so the server acts once; a token near its
-  expiry, or refused with `401`, is renewed with the profile's refresh
-  token and saved. Tokens are never printed, text from the server is
-  printed with control characters escaped, and every command is refused
-  inside an agent's command. See
-  [Sandboxes over the API](docs/guide/22-sandboxes.md#from-the-command-line-abhed-sandbox).
+  `create` (from a template, with labels, settings, a minimum tier, a driver,
+  `-wait`), `list` (label selectors, state, pages), `get`, `update` (sent with
+  `If-Match`), `exec` (exits with the command's status; `-i` sends stdin),
+  `connect` (an interactive shell in raw mode that follows the terminal's
+  size; Ctrl-] leaves), `ssh` and `ssh-config` (OpenSSH through the relay,
+  with the server's host key kept in `sandbox_known_hosts` beside the profiles
+  file and checked strictly), `cp` (in and out as tar; what comes out is
+  checked entry by entry and written through an `os.Root`, never outside the
+  target folder, into `.abhed`, or over an existing file), `forward` (loopback
+  by default; a wider `-address` is warned about), `expose`, `logs`, `stop`,
+  `start`, `delete` (asks first unless `-y`), `snapshot`, `restore` and
+  `template list | get | create | rm`. Output is a table or `-o json`; exit
+  status 0, 1 failed, 2 usage, 3 not signed in or not allowed, 4 not found, 5
+  conflict, 6 waiting on an approval (the approval is named; send the command
+  again with `-approval ID` once it is granted), and the remote status for
+  `exec`, `connect` and `ssh`. Every mutating call carries an
+  `Idempotency-Key`, the same one when it is sent again after a lost answer,
+  so the server acts once; a token near its expiry, or refused with `401`, is
+  renewed with the profile's refresh token and saved. Tokens are never
+  printed, text from the server is printed with control characters escaped,
+  and every command is refused inside an agent's command. See [Sandboxes over
+  the API](docs/guide/22-sandboxes.md#from-the-command-line-abhed-sandbox).
 - **Sandbox templates**: named defaults (a driver, labels and settings) a
   sandbox is created from, at `/v1/sandbox-templates`, kept per tenant in
   the same store as sandboxes. A create from one gets its driver (another is
@@ -716,29 +791,29 @@ All notable changes to Abhed are recorded here. The format follows
 - `GET /v1/sandboxes/{id}:events` reads a sandbox's record back, oldest
   first, in pages, to whoever may see the sandbox.
 - Sandboxes over the API take streams, as WebSockets: `:attach` opens the
-  sandbox's interactive shell (each line judged by the deny rules at its
-  Enter and recorded, as in the workbench's terminal, and a line the rules
-  cannot read refused as on `:exec`; refused where only a line-by-line
-  terminal holds every rule), `GET :exec` runs a command with
-  stdin, and `:forward` carries a byte stream to a port on the sandbox's
-  loopback, recorded with its bytes and closed when the sandbox stops. An
-  SSH server with no port of its own is reached only through the
-  authenticated `:ssh` relay; `abhed sandbox connect --stdio ID` is its
-  `ProxyCommand`. Its sessions are attaches, execs and forwards, judged and
-  recorded as those are; SFTP is not served (use `:cp`). Each upgrade checks
-  the sign-in, the page's origin and the caller's sight of the sandbox
-  before the connection is taken over, and an open stream ends when the
-  sign-in does. The WebSocket implementation is Abhed's own, in the public
-  package `wsconn`, with no new dependency. `control_plane.ssh_host_key`
-  names a host key file replicas share (`0600`, not a link, outside every
-  workspace, and a protected state file; the Helm chart copies one in
-  from a Secret, at `0400`, with `controlPlane.sshHostKey`); `abhed serve -check` and
-  `abhed doctor` report the key in use. SSH connections have their own
-  limits, `control_plane.ssh.idle_timeout_seconds` (an hour) and
-  `max_session_seconds` (twelve hours), settable per sandbox with managed
-  values as ceilings; a command run over SSH is bounded by them rather than
-  by `exec_timeout_seconds`, so an editor's server keeps running, and its
-  output is still capped per channel.
+  sandbox's interactive shell (each line judged by the deny rules at its Enter
+  and recorded, as in the workbench's terminal, and a line the rules cannot
+  read refused as on `:exec`; refused where only a line-by-line terminal holds
+  every rule), `GET :exec` runs a command with stdin, and `:forward` carries a
+  byte stream to a port on the sandbox's loopback, recorded with its bytes and
+  closed when the sandbox stops. An SSH server with no port of its own is
+  reached only through the authenticated `:ssh` relay; `abhed sandbox connect
+  --stdio ID` is its `ProxyCommand`. Its sessions are attaches, execs and
+  forwards, judged and recorded as those are; SFTP is not served (use `:cp`).
+  Each upgrade checks the sign-in, the page's origin and the caller's sight of
+  the sandbox before the connection is taken over, and an open stream ends
+  when the sign-in does. The WebSocket implementation is Abhed's own, in the
+  public package `wsconn`, with no new dependency.
+  `control_plane.ssh_host_key` names a host key file replicas share (`0600`,
+  not a link, outside every workspace, and a protected state file; the Helm
+  chart copies one in from a Secret, at `0400`, with
+  `controlPlane.sshHostKey`); `abhed serve -check` and `abhed doctor` report
+  the key in use. SSH connections have their own limits,
+  `control_plane.ssh.idle_timeout_seconds` (an hour) and `max_session_seconds`
+  (twelve hours), settable per sandbox with managed values as ceilings; a
+  command run over SSH is bounded by them rather than by
+  `exec_timeout_seconds`, so an editor's server keeps running, and its output
+  is still capped per channel.
 - Policy layers from an edition: `server.Options.SessionPolicy` lets an
   edition add deny, ask and allow rules to every session of a person, as a
   layer of its own (the Team edition's workspace policy uses it). Deny and
@@ -757,27 +832,26 @@ All notable changes to Abhed are recorded here. The format follows
   changes): create, list with label selectors, get, patch, delete, `:start`,
   `:stop` and `:exec` with its output streamed as NDJSON. `Idempotency-Key`
   replays a request instead of repeating it, and `If-Match` refuses a change
-  made against a stale version. Every change is recorded with who asked, in
-  an append-only `sandbox_audit` table. Every `:exec` is judged by the
-  server's deny rules and extension hooks, as the workbench's terminal is: a
-  refused command is `403 forbidden`, recorded with its redacted reason, and never runs. While any
-  deny or ask rule for `bash` or any hook is in force, a command the rules
-  cannot read (its program named by an expansion, as in `c=curl; $c`, its
-  words built by one, a git alias set on its command line, or a git
-  subcommand that is not git's own and not named in
-  `permissions.git_extensions`) is refused the same way, as no one is there
-  to confirm it. `:snapshot`,
-  `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
-  forwards where it has them (snapshots in `control_plane.snapshot_dir`;
-  exposing off unless `control_plane.expose` is on) and answer `501` where
-  it does not. Each sandbox works in a folder of its own, outside the server's
-  workspace and `~/.abhed`, unless `control_plane.shared_workspace` asks for
-  the server's workspace; on the `process` driver its commands can neither
-  read nor write the other sandboxes' folders beside it (on macOS the
-  Seatbelt profile denies them, also under a temp or cache folder), and a
-  root inside `sandbox.read_only_paths` or a skills folder, which would show
-  them, is refused. See [Sandboxes over the
-  API](docs/guide/22-sandboxes.md).
+  made against a stale version. Every change is recorded with who asked, in an
+  append-only `sandbox_audit` table. Every `:exec` is judged by the server's
+  deny rules and extension hooks, as the workbench's terminal is: a refused
+  command is `403 forbidden`, recorded with its redacted reason, and never
+  runs. While any deny or ask rule for `bash` or any hook is in force, a
+  command the rules cannot read (its program named by an expansion, as in
+  `c=curl; $c`, its words built by one, a git alias set on its command line,
+  or a git subcommand that is not git's own and not named in
+  `permissions.git_extensions`) is refused the same way, as no one is there to
+  confirm it. `:snapshot`, `:restore`, `:cp` and `:expose` reach the driver's
+  snapshots, copies and forwards where it has them (snapshots in
+  `control_plane.snapshot_dir`; exposing off unless `control_plane.expose` is
+  on) and answer `501` where it does not. Each sandbox works in a folder of
+  its own, outside the server's workspace and `~/.abhed`, unless
+  `control_plane.shared_workspace` asks for the server's workspace; on the
+  `process` driver its commands can neither read nor write the other
+  sandboxes' folders beside it (on macOS the Seatbelt profile denies them,
+  also under a temp or cache folder), and a root inside
+  `sandbox.read_only_paths` or a skills folder, which would show them, is
+  refused. See [Sandboxes over the API](docs/guide/22-sandboxes.md).
 - Sandboxes survive a restart without Postgres: the control plane keeps
   them, their idempotency records and their audit record in an SQLite file,
   `~/.abhed/controlplane/sandboxes.db` or `control_plane.sqlite_path`
@@ -797,24 +871,24 @@ All notable changes to Abhed are recorded here. The format follows
   its database, secrets store or control plane cannot serve. `/v1/health` is
   unchanged.
 - Rate limits per caller on the sandbox routes.
-- Experimental `driver/microvm`: a `microvm` driver that runs each sandbox
-  in its own virtual machine with its own kernel, reporting the new tier
-  `microvm`. On Linux it uses Firecracker under its jailer on KVM (a chroot,
-  a uid and gid per VM, cgroup v2 limits, Firecracker's seccomp filters),
-  never a network device, and a vsock channel to `abhed-guest`, a static
-  agent that runs as the guest's init and runs commands as an unprivileged
-  user with exit codes, output and terminals. `abhed-microvm` serves it,
-  as root, to the unprivileged server over the out-of-process driver
-  protocol. It refuses to run, and says why, without KVM, root, cgroup v2,
-  Firecracker 1.5 or the jailer. This is not the `vm` tier, which is gVisor
-  and is unchanged. See [The microVM driver](docs/guide/24-microvm.md). It implements copy in
-  and out and port forwarding through the guest agent, and snapshots with
-  `snapshot_dir`; on Linux a watchdog per VM kills its cgroup if the driver
-  is killed, so no VM outlives it. Under the egress allowlist the guest has
-  a resolver on `127.0.0.1:53`: lookups go over vsock to the driver, which
-  passes them to the proxy's resolver with a DNS credential of the
-  sandbox's own (`driver.Egress.DNSSocket` and `DNSCredential`), judged and
-  recorded under the same egress rules.
+- Experimental `driver/microvm`: a `microvm` driver that runs each sandbox in
+  its own virtual machine with its own kernel, reporting the new tier
+  `microvm`. On Linux it uses Firecracker under its jailer on KVM (a chroot, a
+  uid and gid per VM, cgroup v2 limits, Firecracker's seccomp filters), never
+  a network device, and a vsock channel to `abhed-guest`, a static agent that
+  runs as the guest's init and runs commands as an unprivileged user with exit
+  codes, output and terminals. `abhed-microvm` serves it, as root, to the
+  unprivileged server over the out-of-process driver protocol. It refuses to
+  run, and says why, without KVM, root, cgroup v2, Firecracker 1.5 or the
+  jailer. This is not the `vm` tier, which is gVisor and is unchanged. See
+  [The microVM driver](docs/guide/24-microvm.md). It implements copy in and
+  out and port forwarding through the guest agent, and snapshots with
+  `snapshot_dir`; on Linux a watchdog per VM kills its cgroup if the driver is
+  killed, so no VM outlives it. Under the egress allowlist the guest has a
+  resolver on `127.0.0.1:53`: lookups go over vsock to the driver, which
+  passes them to the proxy's resolver with a DNS credential of the sandbox's
+  own (`driver.Egress.DNSSocket` and `DNSCredential`), judged and recorded
+  under the same egress rules.
   - The workspace is copied into the VM, and what commands change there is
     copied back after each command and before a stop: never through a link
     or onto another filesystem, never outside the workspace, never into
@@ -895,15 +969,16 @@ All notable changes to Abhed are recorded here. The format follows
   where a key is unset. `Config.OIDCBoundClaims` and `Config.ResolvedHA`
   give an edition the result, and the relay's client key is state the agent
   cannot reach. A managed-only map's entries are set aside with it.
-- Running turns can move between replicas on one Postgres, for an edition
-  that sets `server.Options.ContinueTurns`: a drain hands the turns still
-  running over (`Server.HandOverRunning`), and another replica takes each
-  over (`Server.TakeOver`, also run by its orphan sweep and by a message to
-  the session) at once, or once a dead replica's claim is stale. It records
+- Running turns can move between replicas on one Postgres, for an edition that
+  sets `server.Options.ContinueTurns`: a drain hands the turns still running
+  over (`Server.HandOverRunning`), and another replica takes each over
+  (`Server.TakeOver`, also run by its orphan sweep and by a message to the
+  session) at once, or once a dead replica's claim is stale. It records
   `turn.continued`, asks again as a new call each call that never ran, never
   runs again a call that may have started (answered `outcome_unknown`, and
   asked of a person before the same call runs again), and goes on with the
-  turn. See [Sessions](docs/guide/11-sessions.md#a-running-turn-between-replicas).
+  turn. See
+  [Sessions](docs/guide/11-sessions.md#a-running-turn-between-replicas).
 - `abhed egress-proxy -listen ADDR -config FILE` serves the egress allowlist
   on its own, for a sandbox whose only way out is to it (a Kubernetes egress
   pod): every connection on its port is one call's, each decision is a JSON
@@ -935,26 +1010,26 @@ All notable changes to Abhed are recorded here. The format follows
   the server records it.
 - Linux on Z (s390x): a `linux-s390x` release binary and a `linux/s390x`
   container image, meant for Red Hat Enterprise Linux, SUSE Linux Enterprise
-  Server and Ubuntu on Linux on Z, and so far tested under emulation, not on
-  a real s390x machine. The fence tier accepts s390x with its own system-call table:
-  the filter compares arguments by their low word, which s390x stores second;
-  reads clone's flags from its second argument, where s390x passes them;
-  refuses the old `umount` as well as `umount2`; and ends a 31-bit program at
-  its first call. glibc and Go make sockets through `socketcall()` on s390x,
-  whose family the filter cannot read, so it refuses every socket made that
-  way: with `allow_network` on, most programs still get no network under the
-  fence there. The `vm` tier is not available, since gVisor has no s390x
-  build. CI cross-builds and vets for s390x and runs the unit tests under
-  emulation; the fence's kernel-level tests have not yet run on an s390x
+  Server and Ubuntu on Linux on Z, and so far tested under emulation, not on a
+  real s390x machine. The fence tier accepts s390x with its own system-call
+  table: the filter compares arguments by their low word, which s390x stores
+  second; reads clone's flags from its second argument, where s390x passes
+  them; refuses the old `umount` as well as `umount2`; and ends a 31-bit
+  program at its first call. glibc and Go make sockets through `socketcall()`
+  on s390x, whose family the filter cannot read, so it refuses every socket
+  made that way: with `allow_network` on, most programs still get no network
+  under the fence there. The `vm` tier is not available, since gVisor has no
+  s390x build. CI cross-builds and vets for s390x and runs the unit tests
+  under emulation; the fence's kernel-level tests have not yet run on an s390x
   kernel. See [Linux on Z](docs/guide/01-getting-started.md#linux-on-z-s390x).
 - Sandbox sizes: `control_plane.sandbox_cpus` and
   `control_plane.sandbox_memory_mb`, or `resources.cpus` and
-  `resources.memory_mb` on one sandbox, are passed to its driver. On Linux
-  the `process` driver holds a sized sandbox in a cgroup of its own under a
+  `resources.memory_mb` on one sandbox, are passed to its driver. On Linux the
+  `process` driver holds a sized sandbox in a cgroup of its own under a
   delegated subtree, on the `process` tier; on macOS or without a delegated
   subtree it refuses the create up front (`400`, with the reason), and on
-  another tier the sandbox goes to `Error`, rather than run unbounded. A driver can refuse a size at
-  create time through `driver.ConfigChecker`.
+  another tier the sandbox goes to `Error`, rather than run unbounded. A
+  driver can refuse a size at create time through `driver.ConfigChecker`.
 - **A Helm chart for Kubernetes and OpenShift**, in `deploy/helm/abhed`
   ([Running on Kubernetes](docs/guide/27-kubernetes.md)). It runs `abhed serve`
   as one replica by default, held to the restricted Pod Security level
@@ -1005,10 +1080,6 @@ All notable changes to Abhed are recorded here. The format follows
   every sandbox; `abhed serve -check` and `abhed doctor` show each driver's
   line, and an unreachable per-session driver stops `abhed serve`.
 
-**Upgrading with Postgres.** The control plane's tables (`sandboxes`,
-`sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
-schema version 7; run `abhed migrate` before turning `control_plane.enabled`
-on. A server with it off starts on the older schema as before.
 - The record's heads can be sent to a witness the machine's owner does not
   control (managed `record.witness`: an append-only `file` on WORM or remote
   storage, and/or a `url` sent each signed head). `abhed record verify`
@@ -1078,12 +1149,6 @@ on. A server with it off starts on the older schema as before.
   without asking the hooks, so renaming a large folder under a slow hook no
   longer holds the workbench for every file in it. A manual action judges
   each repeated subject once.
-- `ssh` calls are judged by host as well as command: rules and "always allow"
-  read them as `host/command`, so an answer for one host never covers
-  another, and deny and ask rules also read the command alone as before. An
-  allow rule written on the command alone, such as `ssh(uptime)`, no longer
-  matches; write `ssh(build1/uptime)` or `ssh(*/uptime)`. A tool can name its
-  own subject the same way with `tools.Subjector`.
 - The one-click scope is offered for `wc -c`, `head -c`, `du -sch`,
   `grep -e` and the other listed tools without subcommands, which take `-c`
   and `-e` as counts or patterns; `git`, `npm`, `pip` and `docker` still get
@@ -1132,10 +1197,6 @@ on. A server with it off starts on the older schema as before.
 - The fence's launcher in `mount_namespace` mode empties its capability
   bounding set and locks the securebits before running a command, so the
   command could not gain a capability even past no_new_privs.
-- `abhed doctor`, `abhed serve -check` and Studio's health show the process
-  sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
-  fresh `/proc` (under some container runtimes' seccomp profiles), instead of
-  a plain `process`.
 - `auth.session_hours` must be from 0 (the default of 12) to 8760. A
   negative value, which made every sign-in expire at once, is now refused
   when the configuration loads, and `abhed doctor` shows the sign-in length
@@ -1154,11 +1215,6 @@ on. A server with it off starts on the older schema as before.
   got through on Linux 6.15. Nothing changes for commands: with the network
   off the fence's seccomp layer refuses every `socket()`, MPTCP and SCTP
   included, and its tests now check both.
-- A managed `permissions.deny` list now adds to the deny rules already in
-  force instead of replacing them: the built-in rules and those from
-  `~/.abhed/config.json`, `-settings` and a trusted workspace's file stay,
-  each shown with its own layer, and none is recorded as overridden. A
-  managed file could otherwise remove a deny rule the person had set.
 - HawkEYE reads the egress allowlist's `egress.decision` events. A session
   whose commands the allowlist refused used to report them as ran, with 0
   denied. The report now has a `network` summary (allowed, refused, and in
@@ -1186,13 +1242,6 @@ on. A server with it off starts on the older schema as before.
 - The administrative system log is written on Windows, to the Application
   event log under the source `abhed-admin`; it was written only to
   `admin.jsonl` there.
-- On macOS, `abhed` built with cgo (as the release binaries are) writes
-  the administrative system log through `os_log` itself, subsystem
-  `com.zybuu.abhed`, category `admin`, so the unified log records `abhed`
-  as the sender; it went through `/usr/bin/logger`, whose entries any
-  local user could imitate by tag. Find them with `log show --predicate
-  'subsystem == "com.zybuu.abhed"'`. A build without cgo still uses
-  `/usr/bin/logger` and warns once that its entries are not attributable.
 - The built-in ask rules ask before the read tool opens `.env`, `.env.*`,
   `*.pem`, `*.key` or an SSH key (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`) in
   the workspace. It is a question, not credential protection: a command can
@@ -1254,10 +1303,11 @@ on. A server with it off starts on the older schema as before.
   it runs, never one inside the workspace.
 - A JSON-with-comments file such as `tsconfig.json` accepted `{,}` and
   `[1,,]` as valid; a trailing comma is now allowed only after a value.
-- A glob into a skipped folder below the top (`services/x/node_modules/**`)
-  or behind a wildcard (`**/node_modules/**`) gave a bare no-match; it now
-  says the folder is skipped and how to search it. With `path` already that
-  folder, the advice no longer names the folder twice.
+- The `glob` tool answered a pattern into a folder it skips, at the top
+  (`vendor/**/*.go`, `node_modules/**`), below it
+  (`services/x/node_modules/**`) or behind a wildcard (`**/node_modules/**`),
+  with a bare "no files matched", so the agent took the folder for empty. It
+  now says the folder is skipped and gives the `path` that searches it.
 - `glob` matched case exactly on a disk that ignores case, so `core/Vault/**`
   found nothing where the folder is `vault`; it now matches as the disk opens
   names. The `glob` filter of `grep` does the same.
@@ -1393,15 +1443,10 @@ on. A server with it off starts on the older schema as before.
   to that request: its process ended once the request was answered, and a
   later restart reused the ended context. The request now only bounds the
   connection; the server lives as long as the gateway, as configured servers
-  do. Affects 0.1.0 to 1.2.7 (the stdio server ended with the request since
-  0.1.0; the restart reusing the ended context since 1.2.4).
+  do.
 - `abhed rpc` answered a `steer` without text in `prompt`, such as one sent
   with `text`, as `steered` and delivered nothing. It is now answered with an
   error naming `prompt`, and the guide says a steer carries its text there.
-- The `glob` tool answered a pattern that starts in a folder it skips, such
-  as `vendor/**/*.go` or `node_modules/**`, with a bare "no files matched",
-  so the agent took the folder for empty. It now says the folder is skipped
-  unless `path` names it, and gives that path.
 - A config key for a feature this edition lacks was reported as "a
   Enterprise feature"; it now reads "an Enterprise feature".
 - `abhed resolve -allow` split every comma, so a rule such as
@@ -1538,11 +1583,6 @@ on. A server with it off starts on the older schema as before.
   claiming as the drain started has its hold released by that drain
   instead of left behind; and a release the store refuses is tried again
   rather than only logged.
-- The server's request log left out requests refused before they were
-  identified, such as a `401` for no sign-in or a sign-in `429` from the
-  throttle, so a password-guessing run left no trace there. Every request
-  now has its `request` line; one refused that early carries
-  `identified=false`.
 - A local sign-in ignored `?return=` and always landed on the workbench,
   so opening `/admin` or `/account` signed out ended on `/ide` after
   signing in; it now goes back to a same-origin return path. For a single
@@ -1575,9 +1615,6 @@ on. A server with it off starts on the older schema as before.
   made without a word, though the record carried the warning the agent's
   edit gets. The save now answers with that warning (`note` on
   `PUT /v1/sessions/{id}/file`) and the editor shows it.
-- A line typed into a workbench shell that was longer than the terminal was
-  wide was recorded without its text, as though it had not been echoed:
-  the shell's soft wrap at the right margin was read as part of the line.
 - The web IDE drew a narrow no-break space (U+202F) or any other space but a
   plain one in a model's reply as `⟨U+202F⟩`. Replies, reasoning and
   messages now draw such spaces as spaces; format, bidi and zero-width
@@ -1628,17 +1665,17 @@ on. A server with it off starts on the older schema as before.
 ### Go API
 
 - `server.Options.ContinueTurns`, `Server.TakeOver`, `Server.HandOverRunning`
-  and `server.TurnHandOver` (implemented by `store.Postgres` as `HandOver`
-  and `ClaimHandedOver`, with the `store.HandedOver` holder) move running
-  turns between replicas, `ErrNothingToTakeOver`, `ErrSessionBusy`,
-  `ErrNoSession` and `ErrDraining` saying why TakeOver took nothing; `agent.InFlight`, `Loop.ContinueTurn`,
-  `Loop.NoteUnknownOutcomes`, `agent.ReconcileChildren`, the
-  `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are the
-  loop's side of it. `auth.Identity.Scopes`, `auth.Middleware.IdentifyToken`
-  and `auth.IsForbidden` let a public handler answer for a bearer token.
-  `config.Config.OIDCBoundClaims`, `ValidateBoundClaims` and
-  `RelayKeyCommandArgv` read the new edition keys with their environment
-  fallback.
+  and `server.TurnHandOver` (implemented by `store.Postgres` as `HandOver` and
+  `ClaimHandedOver`, with the `store.HandedOver` holder) move running turns
+  between replicas, `ErrNothingToTakeOver`, `ErrSessionBusy`, `ErrNoSession`
+  and `ErrDraining` saying why TakeOver took nothing; `agent.InFlight`,
+  `Loop.ContinueTurn`, `Loop.NoteUnknownOutcomes`, `agent.ReconcileChildren`,
+  the `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are
+  the loop's side of it. `auth.Identity.Scopes`,
+  `auth.Middleware.IdentifyToken` and `auth.IsForbidden` let a public handler
+  answer for a bearer token. `config.Config.OIDCBoundClaims`,
+  `ValidateBoundClaims` and `RelayKeyCommandArgv` read the new edition keys
+  with their environment fallback.
 - `policy`: `Engine.EvaluateContext`, `ContextHook`, `Engine.ContextHooks`,
   `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's hooks by
   a deadline; `Engine.Cwd` lets deny and ask rules read the scripts a
@@ -1836,6 +1873,42 @@ on. A server with it off starts on the older schema as before.
 - `sdk.Visible`, `sdk.VisibleLine` and `sdk.ArgsHidden` mark the characters
   in a call's arguments that would not print as themselves; the SDK guide
   says showing `Approve`'s arguments safely is the embedder's duty.
+- `app.HideEnvironment()`: on macOS it runs the program again with secrets
+  kept out of the environment `kern.procargs2` shows; a program embedding
+  Abhed calls it first in `main`. `app.ControlPlaneHook` is the type
+  `app.WithControlPlane` takes.
+- `server.Options.SessionPolicy`, `server.PolicyLayer` (`Decide`,
+  `Validate`, `SHA256`), `server.LayerVerdict`, `server.SessionPolicyRequest`
+  and `server.ErrPolicyLayer`: an edition's per-person policy layer.
+  `server.Options.SoleOwner` names the one account a shared-workspace server
+  serves; `server.Options.ClientCertRevoked`, `server.Options.ControlPlane`,
+  and `server.ApprovalAnswer` and `server.ErrAnswerRefused` for an
+  `ApprovalGate`.
+- New `config` fields: `MCPServerConfig.HostFiles`;
+  `SandboxConfig.ReadableHome`, `SharedCaches`, `GitProtect` with
+  `GitProtected()`, `MaxCPUPercent`, `ScopeSignals`, `MicroVMSocket` and
+  `LanguageServers`; `ServerConfig.SharedSessions`;
+  `FenceConfig.EgressPortOnly` and `Socketcall`; `config.MaxSessionHours`.
+  `Config.RuleFindings` and `config.RuleFinding`, `config.CheckManagedJSON`
+  and `Config.MCPServerOverlaps` are the doctor's rule findings and the checks
+  on the managed file; `config.ProfilesPath`, `ProfileFiles` and `ProfilesEnv`
+  name the profiles' state.
+- `auth.NewCLILogin`, `auth.OpenCLITokens` and `auth.NewClientCertAuth`
+  build the types listed above.
+- `store/witness` (`Open`, `Config`, `Statement`, `Witness`) sends the
+  record's heads to a witness, and is experimental until 2.0 as
+  `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
+  and `ChainHashAt`, `store.ChainReport` and `store/local.Store.HashAt` read
+  the hash chain; `store/local.Store.DeleteSession` prunes a session with a
+  tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
+  `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.
+- `hawkeye`: `Report.Network` with `NetworkStats` and `NetworkRefusal`,
+  `Report.PolicyLayers` and `PolicyLayer`, `Call.Layer`, `Rule` and
+  `NetworkDenied`, `Totals.CacheReported`, `Turn.Estimated` and
+  `Options.Idle`.
+- `sdk.Options.Warn` now also receives the configuration's warnings.
+- No exported identifier of a public package was removed or renamed since
+  1.2.7.
 
 ## [1.2.7] - 2026-10-07
 
