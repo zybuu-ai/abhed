@@ -3888,8 +3888,12 @@ func (s *Server) fence(live *liveSession) {
 	if cancelCause != nil {
 		cancelCause(agent.StopCause{Reason: agent.TermLeaseLost})
 	}
-	// Not waited for: the lease is gone, so a terminal's end is refused anyway.
-	live.closeTerminals(closedWithSession)
+	// Ended before the sandbox lets the session go; their ends are refused, the lease being gone.
+	wctx, cancel := context.WithTimeout(context.Background(), turnEndWait)
+	if !waitClosed(live.closeTerminals(closedWithSession), wctx.Done()) {
+		s.log.Warn("terminals did not end before the session was fenced", "session", live.ID)
+	}
+	cancel()
 	live.Loop.Background.Close(agent.TermLeaseLost)
 	s.releaseBash(live)
 	s.sessionEnded(live.ID)

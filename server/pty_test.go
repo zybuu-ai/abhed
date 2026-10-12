@@ -212,6 +212,23 @@ func TestDeleteRecordsTheTerminalsEndFirst(t *testing.T) {
 	}
 }
 
+// A session fenced after losing its lease has its terminals ended by the
+// time the fence returns, before the sandbox lets the session go.
+func TestFenceEndsTheTerminalsFirst(t *testing.T) {
+	wb := manualBench(t, nil)
+	start := wb.startPTY("sleep 30")
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	live.mu.Lock()
+	run := live.ptys[start.ID]
+	live.mu.Unlock()
+	wb.s.fence(live)
+	select {
+	case <-run.done:
+	default:
+		t.Fatal("the terminal was still running when the fence returned")
+	}
+}
+
 // Accepting moves the baseline the changes view diffs against, and is in the
 // record; the file itself is untouched.
 func TestAcceptMovesTheBaseline(t *testing.T) {
