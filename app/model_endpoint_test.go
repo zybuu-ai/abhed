@@ -40,3 +40,16 @@ func TestPathDenyIsWarned(t *testing.T) {
 		t.Fatalf("warned with no path deny: %q", w)
 	}
 }
+
+// doctor's egress line says when HTTPS is inspected.
+func TestEgressLabelNamesInspection(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sandbox.Network = config.NetworkAllowlist
+	if strings.Contains(egressLabel(cfg), "inspected") {
+		t.Fatal("inspection named while off")
+	}
+	cfg.Egress.InspectTLS = true
+	if !strings.Contains(egressLabel(cfg), "HTTPS inspected") {
+		t.Fatalf("label: %s", egressLabel(cfg))
+	}
+}
