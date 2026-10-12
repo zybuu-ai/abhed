@@ -107,6 +107,11 @@ type shellFacts struct {
 	homeFiles map[string]bool
 	// ttyFiles are those a shell reading its input reads when that is a terminal.
 	ttyFiles map[string]bool
+	// envFiles and envHidden are what ENV names, read by an interactive shell
+	// only; interactive reports one started, ttyShell one reading its input.
+	envFiles              []string
+	envHidden             string
+	interactive, ttyShell bool
 }
 
 // Script is a file a command runs as shell text, as named on its line.

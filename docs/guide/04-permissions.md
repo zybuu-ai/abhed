@@ -455,7 +455,8 @@ A line that sets `PATH` to folders it names (`PATH=sub:$PATH tool`,
 read as a script from each of those folders, an empty entry and `$PWD` being
 the start folder; one the line may write first there is refused. A file a
 shell runs as it starts is read as a script the line runs: `BASH_ENV=f`,
-`ENV=f` (also through `env` or `export`), `--rcfile f` and `--init-file f`.
+`ENV=f` for an interactive shell (`sh -i`; a plain `sh -c` reads no `ENV`),
+all also through `env` or `export`, `--rcfile f` and `--init-file f`.
 So is each start-up file a shell the line starts reads from a folder the
 line sets `ZDOTDIR` or `HOME` to, by how it starts: zsh reads
 `$ZDOTDIR/.zshenv` (`$HOME` when `ZDOTDIR` is not set) on every start,

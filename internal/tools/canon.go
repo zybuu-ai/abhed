@@ -777,6 +777,7 @@ func (c Canonical) Incomplete() bool { return c.shell.incomplete }
 // after: a line the parser cannot read on its own (for x in *; do, done, an
 // open quote) is left to the text checks rather than refused for that.
 func (c Canonical) AsTerminalLine() Canonical {
+	c.shell.interactive = c.shell.interactive || c.shell.ttyShell
 	if len(c.shell.ttyFiles) > 0 {
 		// A shell typed at a terminal reads it, so it starts interactive.
 		files := maps.Clone(c.shell.homeFiles)

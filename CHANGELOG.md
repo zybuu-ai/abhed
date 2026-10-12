@@ -204,7 +204,8 @@ All notable changes to Abhed are recorded here. The format follows
   (`PATH=sub . s.sh`), or that is named from `~` is refused under a deny
   rule and asked about otherwise. A bare program is read from each folder a
   `PATH` the line sets names (`PATH=sub:$PATH tool`), and a shell's start-up
-  file is read as a script it runs (`BASH_ENV=f`, `ENV=f`, `--rcfile f`,
+  file is read as a script it runs (`BASH_ENV=f`, `ENV=f` for an
+  interactive shell, `--rcfile f`,
   `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
   `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` a shell the line
   starts reads, by its options, from a `ZDOTDIR` or `HOME` folder the line

@@ -272,6 +272,13 @@ func TestRulesReadTheStartupFilesAFolderTheLineSetsHolds(t *testing.T) {
 		"HOME=sub go version":                         {"", ""},
 		"HOME=$(mktemp -d) go version":                {"", ""},
 		"ZDOTDIR=sub true":                            {"", ""},
+		"ENV=sub/.zshenv sh -c true":                  {"", "sh"},
+		"ENV=sub/.zshenv bash -c true":                {"", "bash"},
+		"ENV=sub/.zshenv dash -c true":                {"", "dash"},
+		"ENV=$f sh -c true":                           {"", ""},
+		"ENV=sub/.zshenv sh -i -c true":               {"deny", "sh"},
+		"ENV=sub/.zshenv dash -i -c true":             {"deny", "dash"},
+		"ENV=$f sh -i -c true":                        {"deny", ""},
 	}
 	for command, r := range rows {
 		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))

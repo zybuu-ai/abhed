@@ -59,8 +59,10 @@ func (f *shellFacts) setsByName(v string) {
 	switch n {
 	case "PATH":
 		f.pathSet, f.pathUnknown = true, true
-	case "BASH_ENV", "ENV":
+	case "BASH_ENV":
 		f.startupHidden = "a shell start-up file set by a command (" + n + ")"
+	case "ENV":
+		f.envHidden = "a shell start-up file set by a command (ENV)"
 	case "HOME", "ZDOTDIR":
 		f.startupDir(n, "", false)
 	}
@@ -92,6 +94,13 @@ func (f *shellFacts) envAssign(w *syntax.Word) {
 // script it runs; one named by an expansion is a script no rule can read.
 func (f *shellFacts) startupFile(name, value string, lit bool) {
 	switch {
+	case name == "ENV" && !lit:
+		// Only an interactive shell reads ENV: kept for startups to weigh.
+		f.envHidden = "a shell start-up file named by an expansion (ENV)"
+	case name == "ENV":
+		if value != "" && value != "/dev/null" {
+			f.envFiles = append(f.envFiles, value)
+		}
 	case !lit:
 		f.startupHidden = "a shell start-up file named by an expansion (" + name + ")"
 	case value != "" && value != "/dev/null":
@@ -145,7 +154,16 @@ func (f *shellFacts) startups() (files []Script, why string) {
 			}
 		}
 	}
-	return files, f.startupDirHidden
+	why = f.startupDirHidden
+	if f.interactive {
+		for _, e := range f.envFiles {
+			files = append(files, Script{Path: e})
+		}
+		if why == "" {
+			why = f.envHidden
+		}
+	}
+	return files, why
 }
 
 // pathEntries records the folders a PATH value names; an empty entry or
@@ -278,6 +296,8 @@ scan:
 			break scan
 		}
 	}
+	f.interactive = f.interactive || interactive
+	f.ttyShell = f.ttyShell || !command && !operand
 	// With no command and no script it reads its input: a terminal's, typed at one.
 	if !command && !operand && rc {
 		if f.ttyFiles == nil {
