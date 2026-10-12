@@ -516,3 +516,18 @@ func TestWitnessCatchesARechainedRecordThatWasPruned(t *testing.T) {
 		t.Fatalf("a re-chained record passed once pruned: %d %s", code, out)
 	}
 }
+
+// A witness file not written yet holds no heads, so a prune goes ahead; one
+// that is there and cannot be read still stops it.
+func TestWitnessFileNotYetWrittenHoldsNoHeads(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	missing := &witnessFile{path: filepath.Join(dir, "heads.jsonl")}
+	if hs, err := missing.heads("default", "s-1"); err != nil || len(hs) != 0 {
+		t.Fatalf("a witness file not yet written: %v %v", hs, err)
+	}
+	unreadable := &witnessFile{path: dir}
+	if _, err := unreadable.heads("default", "s-1"); err == nil {
+		t.Fatal("a witness file that cannot be read gave no error")
+	}
+}

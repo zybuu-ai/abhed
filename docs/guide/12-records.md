@@ -298,7 +298,8 @@ tombstone holds the witnessed hash at that line and says the record was there
 and verified when it was pruned. The tombstone keeps the hash at its head
 and, when `record.witness.file` is set, at every line the witness file held
 for the session then: a prune reads that file first, checks the record
-against each head in it, and is refused when the file cannot be read. A
+against each head in it, and is refused when the file cannot be read (a
+file not written yet, before any head was sent, holds none). A
 record that no longer matched the witness is pruned as unverified, so a
 record re-chained and then pruned still fails. A witnessed line the prune
 kept no hash for fails too: with only `record.witness.url`, or a head the

@@ -3,7 +3,9 @@ package app
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -150,11 +152,17 @@ func (w *witnessFile) heads(tenant, session string) ([]local.WitnessedHead, erro
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	f, err := os.Open(w.path) // #nosec G304 -- the managed witness file
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil // no head sent yet: nothing to check against
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = fmt.Errorf("%s is not a file", w.path)
+	}
 	if err != nil {
 		return nil, err
 	}
