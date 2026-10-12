@@ -172,6 +172,11 @@ The command reads the session's status as one JSON object on stdin:
  "record":"local","git_branch":"main","cwd":"~/src/app"}
 ```
 
+While the sandbox is still being chosen at start, `sandbox_tier` is the
+least it will be and `"sandbox_checking": true` is added; if the answer is
+`none`, one line on stderr says so, since the banner said "none or stronger
+(checking)".
+
 `record` is the store the session writes to: `local` for the local record,
 `unverified` for Postgres, which this process has not verified, and `memory`
 when nothing outlives the process.

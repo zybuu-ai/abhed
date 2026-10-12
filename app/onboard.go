@@ -179,6 +179,23 @@ func (l *lazySandbox) Label() string {
 	return string(l.floor) + " or stronger (checking)"
 }
 
+// noteIfNone writes one line to w once the choice is made, when the banner
+// said the tier was still being checked and the answer is none: the label
+// promised "or stronger", and nothing stronger was found.
+func (l *lazySandbox) noteIfNone(w io.Writer) {
+	if l == nil || l.Resolved() || l.floor != sandbox.TierNone {
+		return
+	}
+	go func() {
+		if sb, err := l.wait(); err == nil && sb.Tier() == sandbox.TierNone {
+			fmt.Fprintln(w, "abhed: sandbox: none — no stronger tier is available, so commands run unconfined as you; `abhed doctor` says why")
+		}
+	}()
+}
+
+// checking reports whether the tier is still being chosen.
+func (l *lazySandbox) checking() bool { return l != nil && !l.Resolved() }
+
 // tierNow is the tier as far as it is known, without waiting: the answer
 // when it is in, else the floor. Without a sandbox the network is open.
 func (l *lazySandbox) tierNow(network bool) (string, bool) {

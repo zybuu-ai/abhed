@@ -762,6 +762,10 @@ on. A server with it off starts on the older schema as before.
 - `abhed admin web-search`, refused inside an agent's command, said "the
   attempt could not be logged" although the system log had it; it now says
   the attempt is in the system log.
+- When the banner said the sandbox was "none or stronger (checking)" and the
+  check found nothing stronger, nothing said so; one stderr line now does.
+  The status line's JSON carries `sandbox_checking` while the tier is still
+  being chosen, and `/bug`'s report says it.
 
 ### Dependencies
 

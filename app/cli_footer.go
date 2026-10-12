@@ -85,6 +85,7 @@ func (f *footer) refresh(st *cliState, pol *policy.Engine) {
 		m.Model = st.adapter.Profile().Name
 	}
 	m.SandboxTier, m.Network = st.sandbox.tierNow(m.Network)
+	m.SandboxChecking = st.sandbox.checking()
 	var bg *agent.Background
 	if st.loop != nil {
 		bg = st.loop.Background

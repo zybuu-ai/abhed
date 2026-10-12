@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
 		sandboxLabel, storageLabel(appCfg)))
 	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
+	start.sandbox.noteIfNone(os.Stderr)
 	// The endpoint check started with the session. A server that is down is
 	// named now; one still being dialled is left to the first task.
 	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {

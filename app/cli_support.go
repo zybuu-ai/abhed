@@ -128,7 +128,11 @@ func bugReport(st *cliState, what string) (title, body string) {
 	fmt.Fprintf(&b, "- terminal: %s\n", orDefault(os.Getenv("TERM"), "unknown"))
 	fmt.Fprintf(&b, "- provider type: %s\n", orDefault(st.provider.Type, "unknown"))
 	m := st.statusModel("")
-	fmt.Fprintf(&b, "- sandbox: %s; record: %s\n", orDefault(m.SandboxTier, "unknown"), m.Record)
+	tier := orDefault(m.SandboxTier, "unknown")
+	if m.SandboxChecking {
+		tier += " or stronger (still checking)"
+	}
+	fmt.Fprintf(&b, "- sandbox: %s; record: %s\n", tier, m.Record)
 	text := b.String()
 	vault := openVault().Redactor()
 	keys := []string{st.provider.APIKey}

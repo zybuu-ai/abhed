@@ -120,6 +120,7 @@ func (c *cliState) statusModel(mode string) ui.StatusModel {
 		m.Model = c.adapter.Profile().Name
 	}
 	m.SandboxTier, m.Network = c.sandbox.tierNow(m.Network)
+	m.SandboxChecking = c.sandbox.checking()
 	m.BackgroundTasks = c.liveTasks()
 	if c.store != nil && c.sessionID != "" {
 		if events, err := c.store.Events(c.sessionID); err == nil {
