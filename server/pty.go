@@ -25,6 +25,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/visible"
 )
 
 // The workbench terminal runs in one of two ways. By default each tab is one
@@ -678,8 +679,13 @@ func (p *ptyRun) note(text string) {
 }
 
 // say shows a line from the server on the terminal, outside the record.
-func (p *ptyRun) say(text string) {
-	msg := []byte("\r\n\x1b[31m" + strings.ReplaceAll(text, "\n", "\r\n") + "\x1b[0m\r\n")
+func (p *ptyRun) say(text string) { p.tell("31", text) }
+
+// hint is say in yellow: a note, not a refusal.
+func (p *ptyRun) hint(text string) { p.tell("33", text) }
+
+func (p *ptyRun) tell(colour, text string) {
+	msg := []byte("\r\n\x1b[" + colour + "m" + strings.ReplaceAll(text, "\n", "\r\n") + "\x1b[0m\r\n")
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for ch := range p.subs {
@@ -873,6 +879,11 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 			run.gave()
 			if err := run.capture.Send(e, sendWrite(run, k.Data)); err != nil {
 				return err
+			}
+			// The terminal draws a bidi or zero-width character as nothing, so
+			// the line may not read as what runs: it is shown with them marked.
+			if shown := visible.Text(e.Line, false, false); shown != e.Line {
+				run.hint("abhed: this line holds characters that draw as nothing or reorder it; it runs as: " + shown)
 			}
 			continue
 		}

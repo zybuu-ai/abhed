@@ -528,6 +528,16 @@ What a shell changes about the checks, stated plainly:
   Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
   in canonical mode too, so from then on every line is recorded without its
   text; it is still screened.
+- **Characters that draw as nothing.** In a shell the terminal draws a
+  bidi control or a zero-width character as nothing, so `cd d`, U+202E,
+  `rlo` reads as `cd drlo`. When such a line is entered at the shell, the
+  server writes it back with the characters marked (`cd d⟨U+202E⟩rlo`) as it
+  runs; it is screened and recorded with the characters themselves. What remains: the
+  line reads wrongly on screen until Enter, a line typed into another
+  program is not written back, and a line typed faster than the terminal
+  echoes it is recorded without its text (above). The line-by-line terminal
+  marks each such character as it is typed; deny rules for `bash` in a
+  managed file force it.
 - **Which program has the keys.** On the process, fence and none tiers the
   server asks the terminal which process group is in the foreground: while it
   is not the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither

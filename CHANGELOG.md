@@ -575,6 +575,10 @@ on. A server with it off starts on the older schema as before.
   file is marked `by_command` in `GET /v1/sessions/{id}/changes`, and in a
   workspace of more than 20,000 files `partial` says the rest were not
   compared.
+- A line entered in a workbench shell that holds a bidi control or a
+  zero-width character, which the terminal draws as nothing, is now written
+  back on the terminal with those characters marked (`cd d⟨U+202E⟩rlo`) as it
+  runs.
 
 ### Fixed
 

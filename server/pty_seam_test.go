@@ -198,3 +198,29 @@ func TestEngineForegroundAsksThatContainer(t *testing.T) {
 		t.Fatal("a probe for an unnamed container")
 	}
 }
+
+// A shell line holding a character the terminal draws as nothing (RLO, a
+// zero-width space) is run as typed, and the terminal is told what it holds.
+func TestShellLineWithHiddenCharactersIsShownMarked(t *testing.T) {
+	live, run, _, _ := seamShell(t)
+	ch := make(chan []byte, 8)
+	run.subs = map[chan []byte]struct{}{ch: {}}
+	run.follow([]byte("\r\n(sandbox: container) ws $ "))
+	if err := (&Server{}).shellInput(live, run, []byte("cd d‮rlo\r")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-ch:
+		if !strings.Contains(string(msg), "cd d⟨U+202E⟩rlo") {
+			t.Fatalf("hint: %q", msg)
+		}
+	default:
+		t.Fatal("the line's hidden character was not shown")
+	}
+	if err := (&Server{}).shellInput(live, run, []byte("ls\r")); err != nil {
+		t.Fatal(err)
+	}
+	if len(ch) != 0 {
+		t.Fatalf("a plain line was annotated: %q", <-ch)
+	}
+}
