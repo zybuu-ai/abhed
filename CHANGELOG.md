@@ -505,8 +505,9 @@ All notable changes to Abhed are recorded here. The format follows
   reported such a server as pinned, so a changed program started all the
   same. The program a stdio server's command resolves to is now hashed
   before it starts and a mismatch refuses it; an OCI image named by the
-  digest in the arguments of `docker`, `podman` or `nerdctl` is accepted as
-  pinned by the engine. A URL server
+  digest as the image `docker`, `podman` or `nerdctl` runs (`run`'s first
+  operand, past its options and their values) is accepted as pinned by the
+  engine. A URL server
   with a `digest`, or a malformed digest, is refused. Affects 0.1.0 to
   1.2.7.
 - Once the managed file turned `web_search` on, a search ran without
