@@ -16,3 +16,6 @@ func killCgroup(string, string) error   { return nil }
 func removeCgroup(string, string) error { return nil }
 
 func vmmProcAttr() *syscall.SysProcAttr { return nil }
+
+// startWatchdog has nothing to watch here: the firecracker backend is Linux's.
+func startWatchdog(string, string) (func(), error) { return func() {}, nil }

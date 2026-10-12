@@ -42,19 +42,46 @@ Not isolated, or not yet:
   extra tools, setuid binaries or kernel modules gives commands more to work
   with inside the VM.
 - A command can power its own VM off. That ends its own sandbox, nothing else.
-- If the driver process is killed, its VMs keep running until it starts
-  again. On start, `abhed-microvm` takes its `state_dir`'s lock (a second
-  driver on the same `state_dir` refuses to start), then ends every VM a
-  killed run of it left and removes their chroots, cgroups and workspace
-  images. It recognises its own by a marker it writes beside each VM's
-  chroot naming its `state_dir`; a VM of another driver, a folder without
-  the marker, or a link, is left alone. Changes in a VM it ends this way
-  that were not yet copied back are lost. A macOS helper's VM ends as soon
-  as the driver that started it does.
-- Snapshots, copy in and out and port forwarding are not implemented; the
-  driver declares only `attach`.
+- If the driver process is killed, its VMs do not outlive it. On Linux
+  each VM has a watchdog, a small process of the driver's own binary in a
+  session of its own, that waits on a pipe only the driver holds; when the
+  driver ends without stopping the VM itself, the watchdog kills the VM's
+  cgroup. A macOS helper's VM ends as soon as the driver that started it
+  does. On start, `abhed-microvm` takes its `state_dir`'s lock (a second
+  driver on the same `state_dir` refuses to start), then removes what a
+  killed run of it left (chroots, cgroups, workspace images) and ends any
+  VM still there. It recognises its own by a marker it writes beside each
+  VM's chroot naming its `state_dir`; a VM of another driver, a folder
+  without the marker, or a link, is left alone. Changes in a VM ended this
+  way that were not yet copied back are lost.
 - No DNS inside the guest. Names are resolved by the egress proxy for
   requests sent through it; a program that resolves names itself fails.
+
+## Copies, forwards and snapshots
+
+The driver declares `attach`, `copy` and `forward`, and `snapshot` when
+`snapshot_dir` is set (a folder outside every workspace).
+
+- **Copy in** streams the archive to the guest agent, which checks every
+  entry as a copy is checked (no absolute names, no `..`, no links out, no
+  devices, nothing in `.abhed`), writes it into the folder under
+  `/workspace` it was given, owned by the commands' user, and never over an
+  existing file. The copy then comes back to the host workspace as a
+  command's changes do. A path may be relative to the workspace or absolute
+  in it (the host's path or `/workspace/…`).
+- **Copy out** first copies the guest's changes back, then packs the file or
+  folder from the host workspace under its own name.
+- **Forward** asks the guest agent to connect to the port on the guest's own
+  loopback and carries the bytes over vsock; the VM still has no network
+  device. A stream ends when it is closed or the sandbox stops, and each is
+  recorded (`sandbox.forward`) when the driver has a record.
+- **Snapshot** copies the guest's changes back and archives the host
+  workspace, without `.abhed`, by its SHA-256. **Restore** needs the
+  sandbox stopped, checks the digest, replaces the host workspace and builds
+  the workspace image again, so the next start boots with it.
+
+These need an `abhed-guest` from this release in the root filesystem; an
+older guest refuses them, and the call fails with that reason.
 
 ## Copying changes back
 

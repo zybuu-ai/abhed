@@ -116,8 +116,14 @@ func (c *conn) read() (frame, error) {
 		}
 		return frame{}, io.ErrUnexpectedEOF
 	}
+	return parseFrame(c.sc.Bytes())
+}
+
+// parseFrame reads one frame's line, refusing one without a type or with
+// more data than a frame may carry.
+func parseFrame(b []byte) (frame, error) {
 	var f frame
-	if err := json.Unmarshal(c.sc.Bytes(), &f); err != nil {
+	if err := json.Unmarshal(b, &f); err != nil {
 		return frame{}, fmt.Errorf("%w: malformed frame: %w", errProtocol, err)
 	}
 	if f.Type == "" {

@@ -55,6 +55,8 @@ type firecracker struct {
 	env    []string
 	// The VM's cgroup, through these so tests need no cgroup tree.
 	cgKill, cgRemove func(parent, vmID string) error
+	// watch starts what kills a VM's cgroup if the driver is killed.
+	watch func(parent, vmID string) (stop func(), err error)
 }
 
 func newFirecracker(o *Options) (*firecracker, error) {
@@ -96,7 +98,7 @@ func newFirecracker(o *Options) (*firecracker, error) {
 	}
 	o.Firecracker = &fc
 	return &firecracker{o: o, fc: fc, probe: func() error { return probeFirecracker(o, fc) }, chown: os.Chown, lchown: os.Lchown,
-		cgKill: killCgroup, cgRemove: removeCgroup}, nil
+		cgKill: killCgroup, cgRemove: removeCgroup, watch: startWatchdog}, nil
 }
 
 func (f *firecracker) name() string { return "firecracker" }
@@ -218,12 +220,20 @@ func (f *firecracker) boot(_ context.Context, b bootSpec) (machine, error) {
 		_ = cleanup()
 		return nil, err
 	}
+	// The watchdog starts first, so no VM runs a moment without one.
+	stopWatch, err := f.watch(f.fc.ParentCgroup, b.vmID)
+	if err != nil {
+		closeAll(lns)
+		_ = cleanup()
+		return nil, fmt.Errorf("starting the VM's watchdog: %w", err)
+	}
 	cmd := exec.Command(f.fc.Jailer, f.jailerArgs(b)...)
 	cmd.Env = append([]string{}, f.env...)
 	cmd.SysProcAttr = vmmProcAttr()
 	m, err := startMachine(cmd, filepath.Join(root, chVsock), lns,
-		func() error { return f.cgKill(f.fc.ParentCgroup, b.vmID) }, cleanup)
+		func() error { err := f.cgKill(f.fc.ParentCgroup, b.vmID); stopWatch(); return err }, cleanup)
 	if err != nil {
+		stopWatch()
 		_ = cleanup()
 		return nil, err
 	}

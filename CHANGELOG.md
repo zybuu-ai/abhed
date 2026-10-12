@@ -342,7 +342,10 @@ All notable changes to Abhed are recorded here. The format follows
   as root, to the unprivileged server over the out-of-process driver
   protocol. It refuses to run, and says why, without KVM, root, cgroup v2,
   Firecracker 1.5 or the jailer. This is not the `vm` tier, which is gVisor
-  and is unchanged. See [The microVM driver](docs/guide/24-microvm.md).
+  and is unchanged. See [The microVM driver](docs/guide/24-microvm.md). It implements copy in
+  and out and port forwarding through the guest agent, and snapshots with
+  `snapshot_dir`; on Linux a watchdog per VM kills its cgroup if the driver
+  is killed, so no VM outlives it.
   - The workspace is copied into the VM, and what commands change there is
     copied back after each command and before a stop: never through a link
     or onto another filesystem, never outside the workspace, never into

@@ -7,14 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/zybuu-ai/abhed/driver/archive"
 )
 
 // Server runs the host's requests inside the guest.
@@ -80,6 +85,18 @@ func (s *Server) ServeConn(rw io.ReadWriteCloser) {
 			return
 		}
 		_ = c.write(frame{Type: tOK})
+	case f.Type == tDial:
+		s.dial(c, rw, f.Port)
+	case f.Type == tUnpack:
+		if s.Workspace == nil {
+			_ = c.write(frame{Type: tError, Message: "this guest has no workspace"})
+			return
+		}
+		if err := s.unpack(c, f.Path); err != nil {
+			_ = c.write(frame{Type: tError, Message: err.Error()})
+			return
+		}
+		_ = c.write(frame{Type: tOK})
 	case f.Type == tShutdown:
 		if c.write(frame{Type: tOK}) == nil && s.PowerOff != nil {
 			s.PowerOff()
@@ -92,7 +109,7 @@ func (s *Server) ServeConn(rw io.ReadWriteCloser) {
 		}
 		_ = c.write(frame{Type: tExit, Code: &code})
 	default:
-		_ = c.write(frame{Type: tError, Message: "expected exec, ping or shutdown, got " + f.Type})
+		_ = c.write(frame{Type: tError, Message: "expected exec, dial, unpack, ping or shutdown, got " + f.Type})
 	}
 }
 
@@ -273,4 +290,95 @@ func (w frameWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// dial connects to port on the guest's own loopback and, once it has, joins
+// rw to that connection: how the host forwards a port with no network.
+func (s *Server) dial(c *conn, rw io.ReadWriteCloser, port uint16) {
+	if port == 0 {
+		_ = c.write(frame{Type: tError, Message: "no port to connect to"})
+		return
+	}
+	up, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))), 10*time.Second)
+	if err != nil {
+		_ = c.write(frame{Type: tError, Message: err.Error()})
+		return
+	}
+	if c.write(frame{Type: tOK}) != nil {
+		_ = up.Close()
+		return
+	}
+	Join(rw, up)
+}
+
+// unpack writes the tar archive the host streams into dir, a folder in the
+// workspace, owned by the commands' user; every entry is checked as a copy's is.
+func (s *Server) unpack(c *conn, dir string) error {
+	rel, err := workspaceRel(s.Workspace.root, dir)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(s.Workspace.root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	sub := root
+	if rel != "." {
+		if sub, err = root.OpenRoot(rel); err != nil {
+			return fmt.Errorf("%s is not a folder in the workspace", dir)
+		}
+		defer func() { _ = sub.Close() }()
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		for {
+			f, err := c.read()
+			switch {
+			case err != nil:
+				pw.CloseWithError(err)
+				return
+			case f.Type == tStdin:
+				if _, err := pw.Write(f.Data); err != nil {
+					return
+				}
+			case f.Type == tStdinEOF:
+				_ = pw.Close()
+				return
+			default:
+				pw.CloseWithError(fmt.Errorf("%w: unexpected %q frame in an archive", errProtocol, f.Type))
+				return
+			}
+		}
+	}()
+	var own *archive.Owner
+	if s.Credential != nil {
+		own = &archive.Owner{UID: int(s.Credential.Uid), GID: int(s.Credential.Gid)}
+	}
+	_, err = archive.Unpack(context.Background(), pr, sub, archive.Limits{}, own)
+	_ = pr.CloseWithError(errors.New("the archive was refused"))
+	return err
+}
+
+// workspaceRel is dir, absolute within root or relative to it, as a clean
+// relative path; one outside root or in Abhed's state is refused.
+func workspaceRel(root, dir string) (string, error) {
+	if dir == "" {
+		return ".", nil
+	}
+	if path.IsAbs(dir) {
+		r, err := filepath.Rel(root, path.Clean(dir))
+		if err != nil {
+			return "", fmt.Errorf("%s is outside the workspace", dir)
+		}
+		dir = r
+	}
+	dir = path.Clean(filepath.ToSlash(dir))
+	if dir == ".." || strings.HasPrefix(dir, "../") || path.IsAbs(dir) {
+		return "", fmt.Errorf("%s is outside the workspace", dir)
+	}
+	if archive.InState(dir) {
+		return "", fmt.Errorf("%s is Abhed's state", dir)
+	}
+	return dir, nil
 }
