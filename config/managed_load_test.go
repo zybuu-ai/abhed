@@ -108,3 +108,24 @@ func TestManagedZeroMaxTurnsBindsNothing(t *testing.T) {
 		t.Errorf("%v %d", err, got.Limits.MaxTurns)
 	}
 }
+
+// /etc/abhed itself a link to nothing is an error, not an unmanaged run; a
+// folder that is simply missing is unmanaged.
+func TestDanglingManagedFolderIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "abhed")
+	if err := os.Symlink(filepath.Join(dir, "gone"), folder); err != nil {
+		t.Skip(err)
+	}
+	old := managed.ConfigFile
+	t.Cleanup(func() { managed.ConfigFile = old })
+	t.Setenv("HOME", t.TempDir())
+	managed.ConfigFile = filepath.Join(folder, "config.json")
+	if _, err := Load(t.TempDir()); err == nil || !strings.Contains(err.Error(), "folder "+folder+" is a link to nothing") {
+		t.Errorf("Load: %v", err)
+	}
+	managed.ConfigFile = filepath.Join(dir, "missing", "config.json")
+	if cfg, err := Load(t.TempDir()); err != nil || cfg.Managed {
+		t.Errorf("a missing folder: managed %v, %v", cfg.Managed, err)
+	}
+}

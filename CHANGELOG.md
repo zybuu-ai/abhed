@@ -178,6 +178,11 @@ All notable changes to Abhed are recorded here. The format follows
   a managed file set aside the files' allow rules, every built-in allow rule
   came back, even one the files' shorter list had removed; only the built-in
   rules that list still held now stay. Affects 1.1.0 to 1.2.7.
+- When `/etc/abhed` itself was a link to nothing, the run was treated as
+  unmanaged, so removing the link's target turned the organisation's rules
+  off. It is now an error, as a dangling link at the file's own path is. A
+  managed file removed while it was read is said to be removed, not called
+  a link to nothing. Affects 1.1.0 to 1.2.7.
 
 ### Added
 

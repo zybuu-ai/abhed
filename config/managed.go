@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -40,13 +41,24 @@ func mergeManaged(cfg *Config) error {
 	path := managed.ConfigFile
 	// Only nothing at the path means unmanaged; a file that cannot be read,
 	// or a link to nothing, is an error.
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Nor is a folder that is a link to nothing: the file is gone, not absent.
+		dir := filepath.Dir(path)
+		if di, derr := os.Lstat(dir); derr == nil && di.Mode()&fs.ModeSymlink != 0 {
+			if _, serr := os.Stat(dir); errors.Is(serr, fs.ErrNotExist) {
+				return fmt.Errorf("managed configuration folder %s is a link to nothing", dir)
+			}
+		}
 		return nil
 	}
 	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return fmt.Errorf("managed configuration %s is a link to nothing", path)
+		if info != nil && info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("managed configuration %s is a link to nothing", path)
+		}
+		return fmt.Errorf("managed configuration %s was removed while it was read", path)
 	}
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)

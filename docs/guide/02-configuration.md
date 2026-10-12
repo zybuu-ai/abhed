@@ -1071,7 +1071,9 @@ managed file.
 
 A managed file that exists but cannot be read, including one in a directory
 that cannot be searched, or a link at the managed path that points nowhere,
-is an error: Abhed stops rather than run unmanaged.
+is an error: Abhed stops rather than run unmanaged. So is a managed folder
+(`/etc/abhed`) that is itself a link to nothing; a folder that does not
+exist at all means no managed file.
 
 The environment variables in step 4 never change a setting the managed file
 makes. Each one is ignored where the managed file sets its key, and Abhed
