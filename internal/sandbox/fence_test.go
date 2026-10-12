@@ -855,3 +855,23 @@ func TestTakeOutContentsIsBounded(t *testing.T) {
 		t.Fatalf("%d entries left, want 7", len(left))
 	}
 }
+
+// A fork refused at the session's pids.max is reported for the call under
+// both kernel behaviours, and the call's own refusals are not counted twice.
+func TestSessionRefusals(t *testing.T) {
+	for _, c := range []struct {
+		name                string
+		before, after, leaf uint64
+		want                uint64
+	}{
+		{"before 6.14: counted in the call's cgroup", 0, 0, 7, 0},
+		{"6.14: at the session's limit", 3, 10, 0, 7},
+		{"6.14: at the call's own limit, seen in both", 3, 10, 7, 0},
+		{"6.14: both", 0, 12, 5, 7},
+		{"nothing", 4, 4, 0, 0},
+	} {
+		if got := sessionRefusals(c.before, c.after, c.leaf); got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+		}
+	}
+}

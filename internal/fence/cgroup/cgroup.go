@@ -349,6 +349,16 @@ func (n node) Events() (Events, error) {
 	return ev, nil
 }
 
+// OwnPidsMax is the refused forks n's own pids.events counts: since Linux
+// 6.14 those in its whole subtree, before it only those of its own tasks.
+func (n node) OwnPidsMax() uint64 {
+	b, err := os.ReadFile(filepath.Join(n.dir, "pids.events"))
+	if err != nil {
+		return 0
+	}
+	return keyed(string(b))["max"]
+}
+
 // childPidsMax sums the refused forks the cgroups below n count.
 func (n node) childPidsMax() uint64 {
 	entries, err := os.ReadDir(n.dir)

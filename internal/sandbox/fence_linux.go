@@ -545,6 +545,9 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 			return
 		}
 	}
+	// Read before the command runs: a fork refused at the session's limit is
+	// counted only there since Linux 6.14, never in the call's own cgroup.
+	sessionBefore := f.host.sb.OwnPidsMax()
 	if _, err := sv.ours.Write([]byte{ackByte}); err != nil {
 		refuse()
 		return
@@ -553,11 +556,14 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 	// The limits are recorded before what the command left is ended: while
 	// it runs, it holds the output the caller waits on, so the event comes
 	// before the call's result.
-	if ev, err := leaf.Events(); err == nil && sv.rec != nil && (ev.OOM > 0 || ev.OOMKill > 0 || ev.OOMGroupKill > 0 || ev.PidsMax > 0) {
-		_ = sv.rec("fence.limit", map[string]any{
-			"call_id": l.CallID, "sandbox": f.id, "oom": ev.OOM, "oom_kill": ev.OOMKill, "oom_group_kill": ev.OOMGroupKill,
-			"pids_max": ev.PidsMax, "memory_max_mb": f.policy.MaxMemoryMB, "max_procs": f.policy.MaxProcs,
-		})
+	if ev, err := leaf.Events(); err == nil && sv.rec != nil {
+		session := sessionRefusals(sessionBefore, f.host.sb.OwnPidsMax(), ev.PidsMax)
+		if ev.OOM > 0 || ev.OOMKill > 0 || ev.OOMGroupKill > 0 || ev.PidsMax > 0 || session > 0 {
+			_ = sv.rec("fence.limit", map[string]any{
+				"call_id": l.CallID, "sandbox": f.id, "oom": ev.OOM, "oom_kill": ev.OOMKill, "oom_group_kill": ev.OOMGroupKill,
+				"pids_max": ev.PidsMax, "session_pids_max": session, "memory_max_mb": f.policy.MaxMemoryMB, "max_procs": f.policy.MaxProcs,
+			})
+		}
 	}
 	rctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -1071,3 +1071,17 @@ func (f *Fence) Qualification() map[string]any {
 	}
 	return out
 }
+
+// sessionRefusals are the forks refused at the session's own pids.max while
+// a call ran, beyond those its own cgroup counted: before and after are the
+// session cgroup's own pids.events count, leaf the call's. Before Linux 6.14
+// the session's own count never moves (a refusal is counted in the forking
+// task's cgroup); since, it counts its whole subtree, the call's refusals
+// included, so those are taken off. Another call's refusals in the same
+// time count here too.
+func sessionRefusals(before, after, leaf uint64) uint64 {
+	if after <= before || after-before <= leaf {
+		return 0
+	}
+	return after - before - leaf
+}

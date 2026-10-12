@@ -607,7 +607,10 @@ without running anything.
   at the start of the session (for `serve`, before the session's first
   command), `process.launched` each command's launch with its call id
   before it runs, `fence.limit` a command that ran into its memory or
-  process limit, and `fence.state_planted` a `.abhed` found in the workspace.
+  process limit (`pids_max` the forks refused in its own cgroup,
+  `session_pids_max` those refused at the session's limit while it ran,
+  which on Linux 6.14 and later are counted only there and may include
+  another command's), and `fence.state_planted` a `.abhed` found in the workspace.
   `process.launched` names its `source`: `call` for a tool call or a `!`
   command, `harness` for one Abhed runs itself within a session. When
   `fence.qualified` cannot be recorded, the command line closes the fence

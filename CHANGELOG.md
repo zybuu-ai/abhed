@@ -253,6 +253,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `fence.limit` names `session_pids_max`: forks refused at the session's
+  process limit while the command ran, which Linux 6.14 and later count
+  only at the session's cgroup.
 - The fence holds `sandbox.network: "allowlist"`: in `mount_namespace` mode
   each command gets a network namespace with only its loopback, where the
   launcher relays the egress proxy's port to the proxy, and may make inet

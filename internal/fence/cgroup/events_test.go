@@ -32,3 +32,16 @@ func TestEventsCountRefusedForksBelow(t *testing.T) {
 		t.Fatalf("hierarchical counting: %d", ev.PidsMax)
 	}
 }
+
+// OwnPidsMax reads the cgroup's own count alone.
+func TestOwnPidsMaxIgnoresChildren(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "leaf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "pids.events"), []byte("max 2\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "leaf", "pids.events"), []byte("max 9\n"), 0o644)
+	if got := (node{dir}).OwnPidsMax(); got != 2 {
+		t.Fatalf("own %d", got)
+	}
+}
