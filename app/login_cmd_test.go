@@ -352,3 +352,17 @@ func TestDoctorVerdictNamesUnusableTLS(t *testing.T) {
 		t.Fatalf("verdict %d: %q", code, b.String())
 	}
 }
+
+func TestDevicePromptNamesWhereToSignIn(t *testing.T) {
+	own := devicePrompt("https://abhed.example:8443", "https://abhed.example:8443/v1/cli/device", "BCDF-GHJK")
+	if !strings.Contains(own, "signed in to the server") || !strings.Contains(own, "BCDF-GHJK") {
+		t.Errorf("server's own page: %q", own)
+	}
+	idp := devicePrompt("https://abhed.example:8443", "https://login.idp.example/device", "BCDF-GHJK")
+	if strings.Contains(idp, "signed in to the server") || !strings.Contains(idp, "in a browser and sign in there") {
+		t.Errorf("identity provider's page: %q", idp)
+	}
+	if rel := devicePrompt("https://abhed.example", "/v1/cli/device", "X"); !strings.Contains(rel, "signed in to the server") {
+		t.Errorf("relative page: %q", rel)
+	}
+}

@@ -724,7 +724,9 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed logout`, sign-out everywhere, a password change or reset, or the
   account's removal. `abhed profile list | use | rm` keeps one profile per
   server in `~/.abhed/profiles.json` (mode 600). A Team edition provider adds
-  its own sign-in method through `auth.CLILoginAdvertiser`.
+  its own sign-in method through `auth.CLILoginAdvertiser`. When a method's
+  device page is on another host (an identity provider), the prompt says to
+  sign in there rather than to the server.
 - `GET /v1/cli` (public) says how a command line signs in; `GET
   /v1/cli/whoami` answers for a bearer token too.
 - Extension points for an edition's sign-in: `auth.Middleware.Authorize`
