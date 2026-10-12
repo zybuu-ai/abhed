@@ -36,7 +36,7 @@ configuration](#trusting-the-workspace-configuration).
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
 | `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
-| `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall` and the managed `egress_port_only` — [below](#the-fence-tier-preview-linux) |
+| `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall`, and the managed `egress_port_only` and `allow_root` — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
@@ -378,16 +378,24 @@ counts as the process tier.
 - cgroups v2, with a cgroup delegated to you. Abhed asks systemd whether the
   scope it runs in has `Delegate=yes`, and refuses when it does not; a
   cgroup you can merely write is not enough, since systemd still manages it.
-- An ordinary user, or root on Linux 6.12 or later (Landlock ABI 6). As
-  root, each command keeps uid 0 but drops every capability, empties its
-  capability bounding set and locks the securebits that would give them
-  back, so it cannot override file permissions, bind a low port or change
-  its uid; Landlock's signal scoping keeps it from signalling the host's
-  other root processes, which below ABI 6 it could, so the fence refuses
-  root there. Files root owns outside the workspace stay out of reach only
-  through Landlock's rules, as for any user. `fence.socketcall` does not
-  apply as root. Running Abhed as an ordinary user is still the
-  recommendation.
+- An ordinary user. Root only where the managed configuration sets
+  `"fence": { "allow_root": true }` (a user's or workspace's file cannot),
+  on Linux 6.12 or later (Landlock ABI 6). As root, each command keeps uid
+  0 but drops every capability, empties its capability bounding set and
+  locks the securebits that would give them back, so it cannot override
+  file permissions, bind a low port or change its uid; Landlock's signal
+  scoping keeps it from signalling the host's other root processes, which
+  below ABI 6 it could, so the fence refuses root there. Keeping uid 0, it
+  still reads every file root's own permission bits allow wherever Landlock
+  grants reading, which an ordinary user's command cannot. So under `/etc`
+  the fence grants root only what every user may read: `shadow`, `gshadow`,
+  `sudoers`, `sudoers.d`, the SSH host keys and anything not world-readable
+  (a folder: not world-searchable) are hidden, and listing `/etc` itself is
+  refused. What root can still read that a user could not: root-only files
+  under `/usr`, `/opt`, `/lib`, `/bin` and `/sbin`, under `/sys` (such as
+  ACPI tables in `/sys/firmware`), in the host's `/proc` in `landlock_only`
+  mode, and under any `read_only_paths`. `fence.socketcall` does not apply
+  as root. Running Abhed as an ordinary user is still the recommendation.
 - For `abhed serve` and Abhed Studio, a host that lets an ordinary user make
   a user namespace (see the modes below). Ubuntu 24.04 and later restrict
   this with AppArmor (`kernel.apparmor_restrict_unprivileged_userns`), and a

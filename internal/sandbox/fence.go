@@ -310,8 +310,13 @@ var fenceDevices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random"
 // so a protected path that appeared since refuses the next one.
 func (f *Fence) spec() landlock.Spec {
 	deny := f.denied()
+	system := fenceSystem
+	if os.Geteuid() == 0 {
+		// Root keeps its uid, so what only root may read under /etc is not granted.
+		system = append(slices.DeleteFunc(slices.Clone(fenceSystem), func(p string) bool { return p == "/etc" }), rootEtcGrants("/etc")...)
+	}
 	s := landlock.Spec{
-		Exec:    absAll(append(append([]string{}, fenceSystem...), f.policy.ReadOnlyPaths...)),
+		Exec:    absAll(append(append([]string{}, system...), f.policy.ReadOnlyPaths...)),
 		Read:    []string{"/proc", "/sys"},
 		Devices: fenceDevices,
 		Write:   absAll([]string{f.policy.Workspace}),

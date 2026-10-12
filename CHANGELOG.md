@@ -1207,10 +1207,14 @@ All notable changes to Abhed are recorded here. The format follows
   the network off or held to an allowlist, host git would reach the network
   outside both, so `git submodule update` there needs `--no-fetch` and is
   run with no transport: it checks out only what is already fetched.
-- The fence runs as root on Linux 6.12 or later (Landlock ABI 6), where it
-  refused root before: each command drops every capability, empties its
-  bounding set and locks the securebits, and Landlock keeps it from
-  signalling other root processes. Below ABI 6 root is still refused.
+- The fence runs as root on Linux 6.12 or later (Landlock ABI 6) where the
+  managed `fence.allow_root` is `true`, where it refused root before: each
+  command drops every capability, empties its bounding set and locks the
+  securebits, and Landlock keeps it from signalling other root processes.
+  Root keeps uid 0, so under `/etc` only what every user may read is granted
+  (no `shadow`, `gshadow`, `sudoers` or SSH host keys); root-only files
+  elsewhere that Landlock grants, such as under `/usr` or `/sys`, stay
+  readable. Below ABI 6, or without the key, root is still refused.
 - The fence's launcher in `mount_namespace` mode empties its capability
   bounding set and locks the securebits before running a command, so the
   command could not gain a capability even past no_new_privs.

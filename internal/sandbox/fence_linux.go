@@ -221,7 +221,8 @@ func FenceProbe(ctx context.Context, p Policy) probe.Report {
 
 func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	base, derr := cgroup.Discover()
-	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit && p.GitRequired}
+	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit && p.GitRequired,
+		AllowRoot: p.FenceAllowRoot}
 	if p.ScopeSignals {
 		// Below it, one account's commands could signal another's, which share the uid.
 		req.LandlockABI = signalScopeABI

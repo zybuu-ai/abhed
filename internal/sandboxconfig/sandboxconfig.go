@@ -108,6 +108,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.CPUPercent = cfg.Fence.CPUPercent
 	p.FenceSocketcall = cfg.Fence.Socketcall
 	p.FenceEgressPortOnly = cfg.Fence.EgressPortOnly
+	p.FenceAllowRoot = cfg.Fence.AllowRoot
 	p.SkillDirs = skillDirs(cfg)
 	return p, nil
 }

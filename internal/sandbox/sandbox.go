@@ -159,6 +159,9 @@ type Policy struct {
 	// FenceEgressPortOnly lets the fence hold the egress allowlist without a
 	// network namespace, by the proxy's port alone.
 	FenceEgressPortOnly bool
+	// FenceAllowRoot lets the fence run as root; files under /etc only root
+	// may read are then hidden from commands. Managed only.
+	FenceAllowRoot bool
 	// FenceSocketcall lets the fence's commands on s390x make sockets
 	// through socketcall(2) when AllowNetwork is set.
 	FenceSocketcall bool
