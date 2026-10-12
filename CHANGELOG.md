@@ -1353,7 +1353,9 @@ All notable changes to Abhed are recorded here. The format follows
   same browser tab could reattach to it. A closing page now tells the server,
   and its shells end a minute later unless a reload reattaches; opening the
   session in another tab or browser adopts your own shells no page is
-  watching (`GET /v1/sessions/{id}/pty`).
+  watching (`GET /v1/sessions/{id}/pty`). A shell or command on a terminal
+  is read, typed into and stopped only by the account that started it, even
+  once the session has passed to another.
 - The workbench's **Changes** and review now list files changed by shell
   commands, the person's or the agent's, not only edits made through the
   edit tools. Each session notes the workspace as it opens (size, time and

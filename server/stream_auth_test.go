@@ -297,7 +297,7 @@ func TestEventStreamEndsWhenTheSessionIsNoLongerTheirs(t *testing.T) {
 // startTestPTY registers a terminal run on s1 that the test writes to.
 func (g *streamRig) startTestPTY() *ptyRun {
 	// Output already written, so the stream answers as soon as it opens.
-	run := &ptyRun{id: "p1", subs: map[chan []byte]struct{}{}, done: make(chan struct{}),
+	run := &ptyRun{id: "p1", user: g.live.User, subs: map[chan []byte]struct{}{}, done: make(chan struct{}),
 		pumped: make(chan struct{}), record: []byte("ready")}
 	g.live.mu.Lock()
 	g.live.ptys["p1"] = run

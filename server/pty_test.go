@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -168,6 +169,28 @@ func TestTerminalCommandCanBeKilled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the command did not end after being killed")
+	}
+}
+
+// A command, like a shell, is only its starter's to read, type into or stop:
+// another account the session passes to does not reach it.
+func TestTerminalCommandIsOnlyItsStarters(t *testing.T) {
+	wb := manualBench(t, nil)
+	start := wb.startPTY("sleep 30")
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	live.mu.Lock()
+	run := live.ptys[start.ID]
+	live.mu.Unlock()
+	own := run.user
+	run.user = "mallory"
+	for _, c := range []struct{ method, path string }{{"GET", ""}, {"POST", "/input"}, {"DELETE", ""}, {"POST", "/resize"}} {
+		if rec := wb.send("acme", c.method, "pty/"+start.ID+c.path, map[string]int{"cols": 80, "rows": 24}); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s on another account's command: %d", c.method, c.path, rec.Code)
+		}
+	}
+	run.user = own
+	if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("kill by its starter: %d %s", rec.Code, rec.Body)
 	}
 }
 
