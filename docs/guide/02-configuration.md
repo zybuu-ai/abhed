@@ -95,7 +95,9 @@ built, not passed as an argument.
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. The headroom is a quarter of the window, or half of `compact_at`'s
-share of it when that is less, so a low value still waits for history. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+share of it when that is less, so a low value still waits for history. The
+first check after a compaction leaves the headroom out, so a small window
+is not summarized twice in a row. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost

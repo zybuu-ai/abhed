@@ -976,8 +976,8 @@ func (s *Store) create(rec store.SessionRecord, parent, kind string) error {
 
 // CreateSubagentSession starts a subagent's own session, named as its
 // parent's child so lists leave it out and resume checks whose it is.
-func (s *Store) CreateSubagentSession(_ context.Context, id, parentID, description string) error {
-	return s.create(store.SessionRecord{ID: id, User: "agent", Model: "subagent", Mode: "auto", Prompt: description}, parentID, kindSubagent)
+func (s *Store) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
+	return s.create(store.SessionRecord{ID: id, User: "agent", Model: "subagent", Mode: agent.SubagentMode(ctx, "auto"), Prompt: description}, parentID, kindSubagent)
 }
 
 // SubSessionOf reports whether childID is a subagent session parentID started.

@@ -382,7 +382,7 @@ const SubagentUser = auth.Subagent
 func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
 		ID: id, Tenant: p.tenant, User: SubagentUser,
-		Workspace: description, Model: "subagent", Mode: "auto",
+		Workspace: description, Model: "subagent", Mode: agent.SubagentMode(ctx, "auto"),
 		ParentID: parentID, StartedAt: time.Now().UTC(),
 	})
 }

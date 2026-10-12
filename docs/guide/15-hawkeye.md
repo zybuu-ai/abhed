@@ -101,8 +101,11 @@ count it, so HawkEYE's total can be lower than the session's.
 A turn stopped while the model was still replying counts the tokens its
 provider had reported by then: Anthropic reports the prompt when the reply
 starts, and some OpenAI-compatible servers report usage on every chunk. Most
-OpenAI-compatible servers report it only at the end of a reply, so a turn
-stopped part way there is recorded with no tokens; nothing is estimated.
+OpenAI-compatible servers report it only at the end of a reply. A turn
+stopped before its provider reported anything is estimated instead: the
+prompt as the adapter counts it, and about one token for every four
+characters of what the model had written. Its `model.call` says
+`estimated: true`, and the estimate is spent from the session's token budget.
 
 The summary's tokens and model time include the calls made outside the
 conversation, such as next-prompt suggestions, as the session's own totals
@@ -112,6 +115,10 @@ The policy step is one of `hook`, `deny`, `destructive`, `screen`, `ask`, `mode`
 `allow` or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that
 decided. Counting them shows which part of a policy is doing the work: a
 session where everything lands on `default` has rules that never match.
+A refusal no rule made has its own step: `interrupted` (the run stopped
+while the ask waited), `unanswered` (no one answered: the wait timed out, input ended, the
+client could not ask, or the approver failed) or
+`withheld` (the ask's record could not be redacted, so no one was asked).
 A call a policy layer's rule decided also names the rule and the layer.
 
 ## Findings

@@ -1850,7 +1850,7 @@ func (s *Server) subagentStoreIn(sessionID string, spec StartSpec, mode, workspa
 		}
 		return s.sessions.CreateSession(ctx, store.SessionRecord{
 			ID: id, Tenant: tenant, User: user, Workspace: workspace,
-			Model: "subagent", Mode: mode, ParentID: parentID,
+			Model: "subagent", Mode: agent.SubagentMode(ctx, mode), ParentID: parentID,
 			Prompt: description, StartedAt: time.Now().UTC(),
 		})
 	}}

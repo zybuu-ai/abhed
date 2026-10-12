@@ -97,3 +97,24 @@ func TestFragmentBufferSpan(t *testing.T) {
 		t.Fatalf("with no secrets a fragment changed: %q", got)
 	}
 }
+
+// A fragment with no secret in reach costs one redaction, not one per cut tried.
+func TestFragmentBufferPlainTextRedactsOnce(t *testing.T) {
+	b := bufferFor(t, map[string]string{"PEM": strings.Repeat("k", 3000), "B": "sk-0123456789abcdefghij"})
+	inner, calls := b.redact, 0
+	b.redact = func(p []byte) []byte { calls++; return inner(p) }
+	var out strings.Builder
+	reply := strings.Repeat("plain words with nothing to hide. ", 400)
+	pushes := 0
+	for i := 0; i < len(reply); i += 20 {
+		out.WriteString(b.push(reply[i:min(i+20, len(reply))]))
+		pushes++
+	}
+	out.WriteString(b.flush())
+	if out.String() != reply {
+		t.Fatal("the reply changed")
+	}
+	if calls > pushes+1 {
+		t.Fatalf("%d redactions for %d pushes", calls, pushes)
+	}
+}

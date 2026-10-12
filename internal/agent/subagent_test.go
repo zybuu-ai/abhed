@@ -932,12 +932,12 @@ func TestUnrecordedSubagentAskIsNeverPut(t *testing.T) {
 			for _, ev := range evs {
 				// A withheld payload hides the step; the actor still says who refused.
 				if ev.Type == EvActionDenied && ev.Actor == ActorSystem &&
-					(strings.Contains(string(ev.Payload), `"step":"ask"`) || strings.Contains(string(ev.Payload), "withheld")) {
+					(strings.Contains(string(ev.Payload), `"step":"unanswered"`) || strings.Contains(string(ev.Payload), "withheld")) {
 					denied = true
 				}
 			}
 			if !denied {
-				t.Fatal("the child's call was not denied by the system at step ask")
+				t.Fatal("the child's call was not refused by the system")
 			}
 		})
 	}

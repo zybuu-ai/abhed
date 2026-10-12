@@ -644,6 +644,35 @@ on. A server with it off starts on the older schema as before.
   could have their results paired with the wrong call in the record and in
   editor cards. Each such call now gets an id of its own (`call_` and a
   unique suffix) before anything is recorded.
+- An ask that ended with no one's answer was recorded as `action.denied`
+  at step `ask`, counted with the ask rule's own refusals. It now has its
+  own step: `interrupted` when the run stopped while it waited, `unanswered`
+  when the wait timed out, input ended, the client could not ask or the
+  approver failed, and `withheld` when its record could not be redacted.
+- An ask refused because input ended (`echo | abhed` with an ask) was
+  recorded as the person's refusal (`by: user`). It is now the system's,
+  with the reason `input ended`.
+- A key a built-in tool does not take, such as `file_path` for `read`, was
+  dropped without telling the model, which then read "path is required"
+  and could not see why. The result now ends `[ignored: file_path (not
+  arguments of read)]`. The `dropped_args` the record keeps were also
+  unbounded; each key is now clipped to 64 characters, and after 32 the
+  rest are counted as `+N more`.
+- A subagent's session row always said mode `auto`, whatever mode it ran
+  in. It now holds the mode the subagent ran in: the parent's, or its
+  role's narrower one.
+- A reply stopped before its provider reported usage was recorded as
+  `model.call` with 0 tokens in and out, and nothing was spent from the
+  token budget. The tokens are now estimated, marked `estimated: true`,
+  and spent.
+- With a small `context_window` (such as 12000) a session was summarized
+  twice in every turn: the check before a turn added room for that turn to
+  history a compaction had just made as small as it gets. The first check
+  after a compaction now leaves that room out.
+- Streaming a reply redacted each fragment three times over, and more while
+  a stored value sat near the end, which with a long value such as a key
+  file cost about 0.1 ms a fragment. A fragment with no stored value in
+  reach is now redacted once.
 
 ### Dependencies
 

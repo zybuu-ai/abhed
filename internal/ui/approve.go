@@ -119,6 +119,7 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	}
 	id, err := a.askNumbered(ctx, read, DialogSpec{Kind: DialogApproval, Title: tool, Choices: choices})
 	if err != nil || id == "" {
+		inputEnded(ctx, err, id)
 		return false, err
 	}
 	// Each answer names the ask it answered, so the line says what it approved.
@@ -137,6 +138,7 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 			id, err := a.askNumbered(ctx, read, DialogSpec{Kind: DialogConfirm, Title: "This cannot be undone",
 				Choices: []Choice{{ID: ChoiceNo, Label: "No, don't run it"}, {ID: ChoiceYes, Label: "Yes, run it", Destructive: true}}})
 			if id != ChoiceYes {
+				inputEnded(ctx, err, id)
 				answered("rejected")
 				return false, err
 			}
@@ -146,6 +148,14 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	}
 	answered("rejected")
 	return false, nil
+}
+
+// inputEnded records an ask that input ran out on as the system's refusal:
+// no one said no.
+func inputEnded(ctx context.Context, err error, id string) {
+	if err == nil && id == "" {
+		agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: "input ended"})
+	}
 }
 
 // askNumbered prints spec's numbered choices and reads until a number in

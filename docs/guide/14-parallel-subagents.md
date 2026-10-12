@@ -168,8 +168,9 @@ the call, the reason and the `request_id` an answer names), and a
 `subagent.action` for every call of the subagent's that was refused or put to
 an approver, with the same `request_id`. On a server with durable storage a
 subagent's session row belongs to the person whose session started it and
-names that session as its parent; it is not listed among their sessions, and
-nobody else can open it. Resuming a subagent's session id is refused, in the
+names that session as its parent, with the permission mode the subagent ran
+in (its role's narrower mode, when it has one); it is not listed among their
+sessions, and nobody else can open it. Resuming a subagent's session id is refused, in the
 CLI and the console; resume the session that started it. Deleting the session deletes its subagents the same
 way: in Postgres the rows are marked deleted and kept for the audit, as the
 session's own are. Calls the
@@ -249,7 +250,7 @@ user's work on the server at once (`StopOwnerBackground`): the live run,
 background shells and tasks, and terminals end as `owner_revoked` (a
 terminal's observation reads `exit 137 · on a terminal, owner_revoked`), and
 no wake runs for them afterwards. A call then waiting on an answer is refused
-as interrupted (`action.denied`, step `ask`, "interrupted before an
+as interrupted (`action.denied`, step `interrupted`, "interrupted before an
 answer"), not at step `owner`. The Community Edition does not call it:
 `abhed user remove` signs the account out, but a run already going for it
 goes on until it ends, or until a woken run or a background result finds
