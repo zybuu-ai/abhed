@@ -173,6 +173,11 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 		return fmt.Errorf("provision grants: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// A schema change elsewhere (a server applying schema.sql at start) alters
+	// the same catalog rows; it holds abhed.schema, always taken after abhed.provision.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('abhed.schema'))`); err != nil {
+		return fmt.Errorf("provision grants: wait for a schema change: %w", err)
+	}
 	for _, s := range stmts {
 		if _, err := tx.Exec(ctx, s); err != nil {
 			return fmt.Errorf("%s: %w", s, err)

@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -503,5 +505,65 @@ func TestConcurrentProvisionsSucceed(t *testing.T) {
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, "SELECT count(*) FROM sessions"); err != nil {
 		t.Fatalf("the runtime role lost its grants: %v", err)
+	}
+}
+
+// A provision's grants and a schema change made at the same time, as a
+// server applies schema.sql at start, both succeed.
+func TestProvisionAlongsideASchemaChange(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	errs := make(chan error, 256)
+	stop := make(chan struct{})
+	var changes sync.WaitGroup
+	for range 3 {
+		changes.Add(1)
+		go func() {
+			defer changes.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := applySchema(ctx, pool); err != nil {
+					errs <- fmt.Errorf("schema change: %w", err)
+				}
+			}
+		}()
+	}
+	for range 10 {
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+					errs <- fmt.Errorf("provision: %w", err)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	close(stop)
+	changes.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
