@@ -29,7 +29,7 @@ func fakeEngine(t *testing.T) (path, log string) {
 	script := fmt.Sprintf(`#!/bin/sh
 log=%q
 echo "$*" >> "$log"
-env | grep '@127\.0\.0\.1' | sed 's/^/engine env: /' >> "$log"
+env | grep 'https\{0,1\}://[^@ ]*@127\.0\.0\.1' | sed 's/^/engine env: /' >> "$log"
 case "$1" in
 exec)
   shift; envs=""; envfile=""
