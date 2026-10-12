@@ -287,8 +287,9 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
   removed. A job started with `&` that still holds the output when the command exits
   does not hold the call, whatever the exit status: the result says it is still running,
   and its later output is not shown.
-- **Interactive commands are rejected** with guidance (`git rebase -i`, `vim`, anything
-  needing a TTY) — they hang forever otherwise.
+- **Interactive commands are rejected** with guidance (`git rebase -i`, `vim`, `less`,
+  `ssh` without `-T`, anything needing a TTY) — they hang forever otherwise. Vim in silent
+  Ex mode (`vim -es`) runs a script and exits, so it is allowed.
 
 **Approval** — per-command scoped, not per-tool (P7). `bash(npm test)` allowlisted does not
 allowlist `bash(rm -rf /)`. Destructive patterns (`rm -rf`, `dd`, `mkfs`, `:(){ :|:& };:`,

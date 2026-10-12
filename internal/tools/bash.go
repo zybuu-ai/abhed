@@ -551,7 +551,7 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	} else {
 		cmd = exec.CommandContext(ctx, "bash", "-c", a.Command)
 		cmd.Dir = cwd
-		// No sandbox: the server's own environment, less BASH_ENV and CDPATH.
+		// No sandbox: the server's own environment, less the variables hostDropped names.
 		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
 	}
 	// A stopped turn ends what the command started, not only its shell.

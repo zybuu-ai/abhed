@@ -3582,8 +3582,8 @@ Also:
   showed could be taken as steering for the run, since the approver had not
   yet started waiting. It now waits from the moment that line shows; a line
   sent before the question was asked still steers.
-- In the workbench shell and Studio's interactive terminal, a command typed
-  at the prompt could be recorded without its text: the shell's echo could
+- In the workbench shell and Studio's interactive terminal, a command sent
+  as one whole line could be recorded without its text: the shell's echo could
   come back before Abhed began following the line, so the echo was missed.
   The line is now followed before the shell is handed it.
 - An event stream that opened while its session was recording could miss
