@@ -25,7 +25,7 @@ const relayReady = 30 * time.Second
 
 // egressPrefix names the container a command under the allowlist runs in;
 // ForwardEnv finds it to pass a command's variables.
-const egressPrefix = "abhed-egr-"
+var egressPrefix = "abhed-egr-"
 
 // relayPort is the port the relay listens on inside, the proxy's own, which
 // the call's proxy variables name; a test on the host moves it.

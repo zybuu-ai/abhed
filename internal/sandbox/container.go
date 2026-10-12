@@ -95,7 +95,8 @@ func (c *Container) Available() (bool, string) {
 				continue
 			}
 			// A binary on PATH is not a working daemon; check for real.
-			if _, err := engineProbe(path, "info", "--format", "{{.ServerVersion}}"); err != nil {
+			// Plain info: Podman's has no ServerVersion, so a format naming it failed there.
+			if _, err := engineProbe(path, "info"); err != nil {
 				c.reason = rt + " found but its daemon is not responding: " + err.Error()
 				continue
 			}

@@ -678,6 +678,9 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- The container and vm tiers never found Podman: the check asked `podman info`
+  for a `ServerVersion` it does not have, so a host with only Podman was told
+  its daemon was not responding. The check now asks for plain `info`.
 - Choosing the container or vm tier asked the engine (`docker info`,
   `podman info`) with no time limit, so an engine that never answered (a
   stopped VM, a dead socket) held a session's start. Each question now ends
