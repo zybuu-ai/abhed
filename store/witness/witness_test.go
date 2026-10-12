@@ -95,3 +95,49 @@ func TestWitnessRefusesALink(t *testing.T) {
 		t.Fatal("a link was taken as the witness file")
 	}
 }
+
+// A head that does not reach the URL or the file is reported as it fails,
+// not only at close.
+func TestWitnessReportsFailuresAsTheyHappen(t *testing.T) {
+	dir := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	got := make(chan error, 4)
+	file := filepath.Join(dir, "heads.jsonl")
+	w, err := Open(Config{File: file, URL: srv.URL, KeyFile: filepath.Join(dir, "witness.key"),
+		OnError: func(err error) { got <- err }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close(time.Second)
+	w.Postgres("t", "s1", 1, "h")
+	select {
+	case err := <-got:
+		if !strings.Contains(err.Error(), "503") {
+			t.Fatalf("reported %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the failed post was not reported before close")
+	}
+	// The file goes away (a share unmounted): reported at once, from the writer.
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(file, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w.Postgres("t", "s1", 2, "h2")
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case err := <-got:
+			if !strings.Contains(err.Error(), "503") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the failed append was not reported")
+		}
+	}
+}

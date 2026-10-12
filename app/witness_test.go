@@ -1,12 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -110,5 +114,26 @@ func TestRecordVerifyPostgresChainAndWitness(t *testing.T) {
 	out.Reset()
 	if code := verifyPostgres(cfg, []string{"-witness", heads, id}, &out, &errb); code == 0 || !strings.Contains(out.String(), "FAILED  "+id) {
 		t.Fatalf("a missing witnessed head passed: %s", out.String())
+	}
+}
+
+// Failures to reach the witness are logged as they happen, the first at
+// once and then at most one per interval, saying how many were not logged.
+func TestWitnessReporterLogsAtOnceThenThrottles(t *testing.T) {
+	var buf bytes.Buffer
+	report := witnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), 50*time.Millisecond)
+	report(errors.New("first"))
+	if !strings.Contains(buf.String(), "first") {
+		t.Fatalf("the first failure was not logged at once: %q", buf.String())
+	}
+	report(errors.New("second"))
+	report(errors.New("third"))
+	if strings.Contains(buf.String(), "second") || strings.Contains(buf.String(), "third") {
+		t.Fatalf("failures within the interval were logged: %q", buf.String())
+	}
+	time.Sleep(60 * time.Millisecond)
+	report(errors.New("fourth"))
+	if !strings.Contains(buf.String(), "fourth") || !strings.Contains(buf.String(), "failures_not_logged=2") {
+		t.Fatalf("after the interval: %q", buf.String())
 	}
 }

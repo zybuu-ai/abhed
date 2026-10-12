@@ -2,8 +2,10 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -35,7 +37,8 @@ func openWitness(cfg config.Config) (*witness.Witness, error) {
 		}
 		token = v
 	}
-	w, err := witness.Open(witness.Config{File: wc.File, URL: wc.URL, Token: token, KeyFile: filepath.Join(dir, "witness.key")})
+	w, err := witness.Open(witness.Config{File: wc.File, URL: wc.URL, Token: token, KeyFile: filepath.Join(dir, "witness.key"),
+		OnError: witnessReporter(slog.Default(), time.Minute)})
 	if err != nil {
 		return nil, fmt.Errorf("record.witness: %w", err)
 	}
@@ -52,5 +55,27 @@ func closeWitness(w *witness.Witness) {
 		default:
 			return
 		}
+	}
+}
+
+// witnessReporter logs a head that did not reach the witness as it fails, so
+// a long-running serve says so at once; after the first, at most one line per
+// every, counting the failures it did not log.
+func witnessReporter(log *slog.Logger, every time.Duration) func(error) {
+	var mu sync.Mutex
+	var last time.Time
+	quiet := 0
+	return func(err error) {
+		mu.Lock()
+		now := time.Now()
+		if !last.IsZero() && now.Sub(last) < every {
+			quiet++
+			mu.Unlock()
+			return
+		}
+		missed := quiet
+		last, quiet = now, 0
+		mu.Unlock()
+		log.Warn("a head of the record did not reach the witness", "error", err, "failures_not_logged", missed)
 	}
 }

@@ -47,6 +47,10 @@ type Config struct {
 	Host string
 	// Client is the HTTP client for URL; nil is one with a 10 second timeout.
 	Client *http.Client
+	// OnError, when set, is told each failure to deliver a head as it
+	// happens, from the writer's or a sender's goroutine; it must not block.
+	// Errors then reports nothing.
+	OnError func(error)
 }
 
 // Statement is one head as the witness keeps it.
@@ -123,11 +127,15 @@ func Open(cfg Config) (*Witness, error) {
 	return w, nil
 }
 
-// Errors reports failures to deliver a head, without blocking the writer;
-// at most the 16 most recent unread are kept.
+// Errors reports failures to deliver a head, without blocking the writer,
+// when Config.OnError is not set; at most the first 16 unread are kept.
 func (w *Witness) Errors() <-chan error { return w.errs }
 
 func (w *Witness) fail(err error) {
+	if w.cfg.OnError != nil {
+		w.cfg.OnError(err)
+		return
+	}
 	select {
 	case w.errs <- err:
 	default:
