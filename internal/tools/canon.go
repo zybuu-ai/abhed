@@ -847,6 +847,10 @@ func (c Canonical) StartupHidden() string {
 	return c.shell.startupHidden
 }
 
+// HomeStartups are the start-up files, by name, the shells the command
+// starts read from the HOME the command inherits.
+func (c Canonical) HomeStartups() []string { return c.shell.homeStartups() }
+
 // SetsStartupDir reports HOME or ZDOTDIR set, which moves where a shell
 // reads its start-up files from.
 func (c Canonical) SetsStartupDir() bool {

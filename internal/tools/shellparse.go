@@ -102,6 +102,9 @@ type shellFacts struct {
 	startupDirs      []startupDirSet
 	startupDirHidden string
 	shellRun         bool
+	// homeFiles are the start-up files the shells the line starts read from
+	// the HOME they inherit, by name.
+	homeFiles map[string]bool
 }
 
 // Script is a file a command runs as shell text, as named on its line.
@@ -628,6 +631,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		f.runner(args, depth)
 	case cShells[name]:
 		f.shellRun = true
+		f.shellStart(name, args)
 		f.shell(st, args, depth)
 	case ifsSetters[name]:
 		if name == "read" && !f.posix {

@@ -202,7 +202,10 @@ All notable changes to Abhed are recorded here. The format follows
   `--init-file f`, and the `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`,
   `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` in a `ZDOTDIR` or
   `HOME` folder the line sets for a shell it starts, as `ZDOTDIR=sub zsh -c
-  true` or `HOME=sub bash -l -c true`); one too long, unparsable, running built text, or itself
+  true` or `HOME=sub bash -l -c true`, and those a shell reads from the
+  `HOME` the sandbox gives it, which an earlier command may have written:
+  read on the process tier, none and the fence, and refused under a deny
+  rule where the host cannot read that `HOME`, as in a container); one too long, unparsable, running built text, or itself
   running a script after a `cd` is asked about. Binaries and other
   interpreters' scripts are not read, and an `:exec` reads no script.
   Affects every release to 1.2.7.

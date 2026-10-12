@@ -202,6 +202,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
 		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
+			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
 		Parts:   toolset.All,

@@ -467,10 +467,18 @@ is skipped, and one that cannot be read, or that sets `ZDOTDIR` or `HOME`
 again, is refused or asked about. A start-up file or folder named by an
 expansion (`BASH_ENV=$f`, `ZDOTDIR=$d`), or set by a command that sets a
 variable by name (`read BASH_ENV`, `read ZDOTDIR`), is refused or asked
-about as the scripts above are. The start-up files in the `HOME` the
-sandbox gives a command, which the line does not set, are not read; an
-earlier command may have written them, and the sandbox is the boundary
-there.
+about as the scripts above are. A shell started with the `HOME` the
+sandbox gives commands reads its start-up files there, which an earlier
+command may have written, so those are read too, by how the shell starts:
+zsh's `.zshenv` always (a `#!/bin/zsh` script included), and the login
+files with `-l`, `--login` or `-o login`, and `.zshrc`, `.bashrc`, `.kshrc`
+or `.mkshrc` with `-i`. A plain `bash -c` or `sh -c` reads none. That
+`HOME` is the host's own on the process tier and none, the fence's private
+home folder under the fence, and, in a container, a microVM, a driver's
+sandbox or a control-plane sandbox exec, a folder the host cannot read:
+there a shell that would read start-up files from it (`zsh -c`,
+`bash -l -c`) is refused under a deny rule and asked about under an ask
+rule.
 
 One the rules cannot read in full, because it is over 64 KiB, does not
 parse, runs text built when it runs (`eval "$x"`), or itself runs a script

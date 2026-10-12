@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -26,12 +27,49 @@ type scriptRead struct {
 // another folder, or may write before it runs, is not read but refused.
 func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 	var out scriptRead
-	cwd := e.Cwd()
+	cwd := ""
+	if e.Cwd != nil {
+		cwd = e.Cwd()
+	}
 	if cwd == "" {
+		// Nothing is read; a start-up file in the HOME the command gets still
+		// cannot be passed over.
+		if names := canon.HomeStartups(); len(names) > 0 {
+			out.refuse = "it starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
+		}
 		return out
 	}
 	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{})
 	return out
+}
+
+// home is the HOME the sandbox gives a command, and whether the host can read it.
+func (e *Engine) home() (string, bool) {
+	if e.Home != nil {
+		return e.Home()
+	}
+	h := os.Getenv("HOME")
+	return h, h != ""
+}
+
+// homeScripts are the start-up files the shells canon starts read from the
+// HOME the sandbox gives them; why says when that HOME cannot be read.
+func (e *Engine) homeScripts(canon tools.Canonical) (scripts []tools.Script, why string) {
+	names := canon.HomeStartups()
+	if len(names) == 0 {
+		return nil, ""
+	}
+	dir, visible := e.home()
+	if visible && dir == "" {
+		return nil, "" // a home not made yet, which starts empty
+	}
+	if !visible || !filepath.IsAbs(dir) {
+		return nil, "starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
+	}
+	for _, n := range names {
+		scripts = append(scripts, tools.Script{Path: filepath.Join(dir, n), Startup: true})
+	}
+	return scripts, ""
 }
 
 // lineWrites are the files the lines around a script write, and the PATH
@@ -64,6 +102,10 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		}
 	}
 	scripts, why := pathScripts(canon, writes)
+	if why == "" {
+		home, hwhy := e.homeScripts(canon)
+		scripts, why = append(scripts, home...), hwhy
+	}
 	if why != "" {
 		if depth == 0 {
 			out.refuse = "it " + why
@@ -71,7 +113,9 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		}
 		out.ask = "a script it runs " + why
 	}
-	for _, s := range scripts {
+	zshenv := false
+	for i := 0; i < len(scripts); i++ {
+		s := scripts[i]
 		if out.refuse != "" {
 			return moves
 		}
@@ -121,6 +165,18 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			return moves
 		case !shell:
 			continue
+		}
+		// A zsh script reads .zshenv from the HOME it inherits, as zsh -c does.
+		if s.Direct && !zshenv && tools.ScriptShell(text) == "zsh" && !canon.SetsStartupDir() {
+			zshenv = true
+			switch dir, visible := e.home(); {
+			case visible && dir == "":
+			case !visible || !filepath.IsAbs(dir):
+				out.refuse = "it runs the zsh script " + name + ", which reads .zshenv from a HOME the check cannot read"
+				return moves
+			default:
+				scripts = append(scripts, tools.Script{Path: filepath.Join(dir, ".zshenv"), Startup: true})
+			}
 		}
 		// What a script hides from the rules is put to a person, not refused:
 		// build scripts often run built text, and before this none was read.

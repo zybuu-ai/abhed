@@ -97,7 +97,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		// depends on the harness and the task and not on what those reach.
 		set := toolset.Build(ctx, cfg, toolset.Options{
 			Workspace: ws,
-			Bash: tools.Bash{Sandbox: sb.Command,
+			Bash: tools.Bash{Sandbox: sb.Command, Home: sandbox.HomeFunc(sb),
 				Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))},
 			Parts: toolset.Skills | toolset.WebSearch | toolset.WebFetch,
 			Vault: vault,
