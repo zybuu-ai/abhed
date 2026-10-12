@@ -113,10 +113,13 @@ means to get out:
 
 A stdio server's decisions go to the record of the session whose call to
 it is in flight, with that call's id, or with none in flight, the session
-that called it last. Its traffic before any call, or while calls from two
-sessions to the same server are in flight at once (possible under
-`abhed serve`, where servers are shared), cannot be put to one session; it
-is written to Abhed's log instead of a record.
+that called it last. Under `abhed serve`, where servers are shared, its
+traffic while calls from several sessions are in flight cannot be put to
+one of them, so it goes to each of their records, with no call id and
+`shared_sessions` saying how many; its traffic before any call (the latest
+64 decisions) goes to each session's record when that session first calls
+it, marked `before_call`. A session therefore sees what the shared server
+did while it was in use, including on another session's behalf.
 
 ## From the command line
 

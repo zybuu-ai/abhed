@@ -637,6 +637,9 @@ on. A server with it off starts on the older schema as before.
   nothing. `-disallowedTools` adds the name as written beside the lower-cased
   spelling it has always added, so an existing deny keeps matching and one for
   a capitalised name now does too. Built-in names are still folded.
+- A stdio MCP server's egress decisions made while several sessions call it
+  go to each of their records, and those made before any call to each
+  session's record at its first call; they were written to the log only.
 
 ### Fixed
 

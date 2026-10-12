@@ -410,9 +410,11 @@ trust.
 The server is given `HTTP_PROXY` and `HTTPS_PROXY` pointing at its proxy.
 Its decisions are recorded in the record of the session whose tool call to
 it is in flight, with that call's id, or with none in flight, of the
-session that called it last, with `mcp_server` naming it. Decisions made
-before any call, or while calls from two sessions are in flight at once,
-are logged instead. See [MCP](08-mcp.md).
+session that called it last, with `mcp_server` naming it. A decision made
+while calls from several sessions are in flight goes to each of their
+records, with no call id and `shared_sessions` counting them; one made
+before any call is kept (the latest 64) and written to each session's record
+when it first calls the server, marked `before_call`. See [MCP](08-mcp.md).
 
 ## What each tier enforces
 
