@@ -829,8 +829,13 @@ submodule URLs, extensions, user, `init`, `pull`, `fetch`, `gc`, `index` and
 `lfs` format) is taken out, the file as it was copied to
 `~/.abhed/quarantine`, a hooks folder holding anything but git's samples is
 moved there, the command is not run, its error says what was done, and the
-record gains `sandbox.git_planted`. This runs under bubblewrap, in a
-container and on macOS; under the fence in `mount_namespace` mode too. Until
+record gains `sandbox.git_planted`. A new `.git` file naming a git folder
+outside the workspace or under `.abhed` (in any case), or a new repository
+whose `config` is a link, is never changed by Abhed: every command is
+refused, naming it, until you remove it. A config is replaced rather than
+written through, so a hard link to it keeps its other contents. This runs
+under bubblewrap, in a container and on macOS; under the fence in
+`mount_namespace` mode too. Until
 the next command starts, git you run yourself there would read the setting,
 and a `.git/modules/<name>` made for a later `git submodule update --init` is
 not checked. A tool such as husky that sets `core.hooksPath` in a repository

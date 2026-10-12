@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -128,8 +129,38 @@ func gitFolderOf(entry string) string {
 	return ""
 }
 
+// gitFolderIn is the real path of the git folder g is or names when it is in
+// ws and not under any-case .abhed; inside reports whether it is, and dir is
+// "" when there is none yet.
+func gitFolderIn(ws, g string) (dir string, inside bool) {
+	named := gitFolderOf(g)
+	if named == "" {
+		return "", true
+	}
+	real, err := filepath.EvalSymlinks(named)
+	if err != nil {
+		// Nothing there yet, so nothing to clean; looked at again next time.
+		return "", true
+	}
+	root, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		return real, false
+	}
+	rel, err := filepath.Rel(root, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return real, false
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if strings.EqualFold(part, stateDir) {
+			return real, false
+		}
+	}
+	return real, true
+}
+
 // plantedGits strips what names a program git would run from git folders new
-// since the session's first look, and says why the command is refused.
+// since the session's first look, and says why the command is refused. A
+// pointer outside the workspace, or a linked config, is refused every time.
 func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits []string) error {
 	mem.mu.Lock()
 	if mem.based == nil {
@@ -140,8 +171,9 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 	var fresh []string
 	for _, g := range gits {
 		if !mem.seenGit[g] {
-			mem.seenGit[g] = true
-			if !first {
+			if first {
+				mem.seenGit[g] = true
+			} else {
 				fresh = append(fresh, g)
 			}
 		}
@@ -149,13 +181,26 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 	mem.mu.Unlock()
 	var entries []map[string]any
 	var parts []string
+	var clean []string
 	for _, g := range fresh {
-		dir := gitFolderOf(g)
+		dir, inside := gitFolderIn(ws, g)
+		if !inside {
+			// The host never writes where a pointer the command wrote sends it.
+			entries = append(entries, map[string]any{"path": g, "repository": g, "points_to": dir, "outcome": plantRemaining,
+				"settings": []string{"gitdir outside the workspace"}})
+			parts = append(parts, g+" names the git folder "+dir+", which is outside the workspace or under "+stateDir+
+				"; nothing there was changed; remove "+g+" or point it inside the workspace")
+			continue
+		}
 		if dir == "" {
 			continue
 		}
+		ok := true
 		for _, c := range []string{"config", "config.worktree"} {
 			if m := cleanGitConfig(filepath.Join(dir, c), g); m != nil {
+				if m["outcome"] == plantRemaining && m["error"] == nil {
+					ok = false
+				}
 				entries = append(entries, m)
 				parts = append(parts, m["summary"].(string))
 				delete(m, "summary")
@@ -177,7 +222,15 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 			}
 			entries = append(entries, m)
 		}
+		if ok {
+			clean = append(clean, g)
+		}
 	}
+	mem.mu.Lock()
+	for _, g := range clean {
+		mem.seenGit[g] = true
+	}
+	mem.mu.Unlock()
 	if len(entries) == 0 {
 		return nil
 	}
@@ -193,6 +246,15 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 // cleanGitConfig keeps p's config to what git init or clone write, quarantining
 // a copy first; nil when it held nothing else.
 func cleanGitConfig(p, g string) map[string]any {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		// Rewriting it would write wherever it points.
+		return map[string]any{"path": p, "repository": g, "settings": []string{"not a regular file"}, "outcome": plantRemaining,
+			"summary": p + " is not a regular file, so git could read settings from wherever it points; replace it with a plain file"}
+	}
 	b, err := readSmall(p)
 	if err != nil {
 		return nil
@@ -206,8 +268,8 @@ func cleanGitConfig(p, g string) map[string]any {
 	if qerr == nil {
 		m["moved_to"] = dest
 	}
-	// Written in place, as git's own config, so the repository keeps its remote and branches.
-	if err := os.WriteFile(p, kept, 0o644); err != nil { // #nosec G306 -- git's own mode for config
+	// Written at the same path, as git's own config, so the repository keeps its remote and branches.
+	if err := replaceFile(p, kept); err != nil {
 		m["outcome"], m["error"] = plantRemaining, err.Error()
 		m["summary"] = p + " names " + strings.Join(bad, ", ") + " and could not be rewritten; remove those settings before running git there"
 		return m
@@ -236,4 +298,25 @@ func keepCopy(p string, b []byte) (string, error) {
 	}
 	dest := filepath.Join(dir, filepath.Base(p))
 	return dest, os.WriteFile(dest, b, 0o600)
+}
+
+// replaceFile puts b at p by renaming a new file over it, so a hard link to p
+// is cut rather than written through.
+func replaceFile(p string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(p), ".config-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(tmp, 0o644)); err != nil { // #nosec G302 -- git's own mode for config
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }

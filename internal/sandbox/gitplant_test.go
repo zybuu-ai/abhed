@@ -68,3 +68,74 @@ func TestPlantedRepositoryIsTakenOut(t *testing.T) {
 		t.Fatalf("the command after was refused: %v", err)
 	}
 }
+
+// A .git file naming a folder outside the workspace, or under .abhed, is
+// refused on every command and nothing where it points is changed.
+func TestPlantedPointerOutsideIsNotFollowed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	outside := t.TempDir()
+	writeFiles(t, outside, map[string]string{"config": "Host x\n\tProxyCommand nc %h %p\n", "hooks/pre-commit": "#!/bin/sh\n"})
+	var mem gitMemory
+	var rec recorded
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("the first look refused: %v", err)
+	}
+	writeFiles(t, ws, map[string]string{
+		"out/.git":        "gitdir: " + outside + "\n",
+		".ABHED/x/config": "[core]\n\tfsmonitor = ./x\n",
+		"state/.git":      "gitdir: ../.ABHED/x\n",
+	})
+	for range 2 {
+		_, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false)
+		if err == nil || !strings.Contains(err.Error(), "out/.git") || !strings.Contains(err.Error(), "state/.git") {
+			t.Fatalf("a pointer outside the workspace was not refused: %v", err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(outside, "config")); !strings.Contains(string(b), "ProxyCommand") {
+		t.Errorf("a config outside the workspace was rewritten: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "hooks", "pre-commit")); err != nil {
+		t.Errorf("hooks outside the workspace were moved: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, ".ABHED", "x", "config")); !strings.Contains(string(b), "fsmonitor") {
+		t.Errorf("a config under .abhed was rewritten: %q", b)
+	}
+}
+
+// A planted config that is a link, or a hard link, is never written through.
+func TestPlantedConfigLinkIsNotWrittenThrough(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	other := filepath.Join(t.TempDir(), "keep")
+	if err := os.WriteFile(other, []byte("[core]\n\tfsmonitor = ./other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mem gitMemory
+	var rec recorded
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("the first look refused: %v", err)
+	}
+	writeFiles(t, ws, map[string]string{"l/.git/HEAD": "ref: refs/heads/main\n", "h/.git/HEAD": "ref: refs/heads/main\n",
+		"h/keep": "[core]\n\tfsmonitor = ./x\n"})
+	if err := os.Symlink(other, filepath.Join(ws, "l", ".git", "config")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(ws, "h", "keep"), filepath.Join(ws, "h", ".git", "config")); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("a linked config was not refused: %v", err)
+		}
+	}
+	if b, _ := os.ReadFile(other); !strings.Contains(string(b), "./other") {
+		t.Errorf("the link's target was rewritten: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "h", "keep")); !strings.Contains(string(b), "fsmonitor") {
+		t.Errorf("a hard link's other name was rewritten: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "h", ".git", "config")); strings.Contains(string(b), "fsmonitor") {
+		t.Errorf("the planted config kept %q", b)
+	}
+}
