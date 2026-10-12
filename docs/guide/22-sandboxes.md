@@ -521,7 +521,7 @@ force, a command line on `:exec` (`POST`, the WebSocket, or an SSH exec
 request such as `ssh host 'cmd'`) whose program is named by an expansion
 (`c=curl; $c …`, `sh -c 'c=curl; $c …'`, `$(echo curl) …`), whose words
 are split by a changed `IFS`, that runs text no rule can read, or whose
-parts are built by an expansion or a brace list holding one (`echo {$a,b}`),
+parts are built by an expansion or by braces past the brace budget,
 that sets a git alias on its command line (`git -c alias.x='!curl …' x`), or
 that runs a git subcommand which is not git's own (an alias or an extension
 such as `git lfs`, unless `permissions.git_extensions` names it) is refused

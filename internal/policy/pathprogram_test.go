@@ -95,8 +95,29 @@ func TestLiteralBraceListIsReadNotScreened(t *testing.T) {
 	if res := e.Evaluate("bash", true, args(map[string]string{"command": "{curl,x}"})); res.Decision != Deny {
 		t.Errorf("{curl,x} = %s at %s (%s), want deny", res.Decision, res.Step, res.Reason)
 	}
-	if res := e.Evaluate("bash", true, args(map[string]string{"command": "echo {$a,b}"})); res.Step != "screen" {
-		t.Errorf("echo {$a,b} = %s at %s (%s), want a screen", res.Decision, res.Step, res.Reason)
+	// Readable loops and sequences run unasked in bypass under a deny rule,
+	// and a deny rule sees the words each bash version makes of them.
+	by := New(ModeBypass)
+	if err := by.AddDeny("bash(curl *)", "bash(kill -9 *)", "bash(git reset --hard*)"); err != nil {
+		t.Fatal(err)
+	}
+	for command, want := range map[string]Decision{
+		"for i in {1..10}; do echo $i; done":   Allow,
+		"for i in {1..2000}; do echo $i; done": Allow,
+		"touch f{01..10}.txt":                  Allow,
+		"echo {1..10..2} {Z..a}":               Allow,
+		"kill -{09..09} 1":                     Deny,
+		"git reset --{h..h..1}ard":             Deny,
+		"bash -c 'kill -{9,} 1'":               Deny,
+		"echo {1..20000}":                      Ask,
+	} {
+		if res := by.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != want {
+			t.Errorf("bypass %q = %s at %s (%s), want %s", command, res.Decision, res.Step, res.Reason, want)
+		}
+	}
+	// A list that makes the program from an expansion hides it.
+	if res := e.Evaluate("bash", true, args(map[string]string{"command": "{$a,b} x"})); res.Decision != Ask || res.Step == "mode" {
+		t.Errorf("{$a,b} x = %s at %s (%s), want an ask before the mode", res.Decision, res.Step, res.Reason)
 	}
 }
 

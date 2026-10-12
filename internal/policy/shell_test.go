@@ -265,6 +265,11 @@ func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
 		{"many assignments", func(n int) string { return strings.Repeat("A=1 ", n) + "ls" }, 15000, false},
 		{"many options", func(n int) string { return "sudo " + strings.Repeat("-x ", n) + "ls" }, 20000, false},
 		{"a run of option values", func(n int) string { return strings.Repeat("nice -n 1 ", n) + "ls" }, 6000, false},
+		// Brace expansion shares one budget across the command; past it the
+		// words are hidden. Expanded into the text, the first took 11 s.
+		{"brace sequences", func(n int) string { return strings.Repeat("echo {1..1000}\n", n) }, 3600, true},
+		{"brace lists", func(n int) string { return strings.Repeat("x{a,b} ", n) }, 7800, false},
+		{"loops over sequences", func(n int) string { return strings.Repeat("for i in {1..1000}; do echo a{1..3}b; done\n", n) }, 1270, false},
 	} {
 		// Linear: the whole costs no more than about four times a quarter of it.
 		// The quadratic split took 40 s here.

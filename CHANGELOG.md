@@ -161,12 +161,10 @@ All notable changes to Abhed are recorded here. The format follows
   write. Affects 0.1.0 to 1.2.7.
 - A brace sequence such as `{c..c}url` or `c{u..u}rl` was not read as the
   words bash makes of it, so it ran `curl` past `bash(curl *)` in any mode
-  that runs commands unasked, and on `:exec`. A literal sequence of letters
-  or integers is now read as bash expands it, up to 1,024 words, and deny
-  and ask rules see the result; one with an increment, zero padding or
-  letters of both cases, or a longer one, is asked about, and refused on
-  `:exec`, while a deny or ask rule for `bash` has a pattern. Affects every
-  release to 1.2.7.
+  that runs commands unasked, and on `:exec`. A sequence is now read as bash
+  expands it, and deny and ask rules see the result; where bash 3.2 reads
+  it apart from later versions (an increment, zero padding), they see both.
+  Affects every release to 1.2.7.
 - A brace list or sequence in text that a shell's `-c`, `eval`, `trap`, a
   here-string or a heredoc runs was not expanded, so `bash -c '{curl,x}'` or
   `eval 'c{u..u}rl x'` ran `curl` past `bash(curl *)` in any mode that runs
@@ -1236,13 +1234,14 @@ All notable changes to Abhed are recorded here. The format follows
   none with such a flag. When no scope is offered for a simple command, the
   reason names the allow rule that would allow exactly that command, and
   `Result.Suggest` carries it.
-- A brace list in a word that is literal text throughout, such as
-  `mkdir -p src/{a,b}` or `cp f{,.bak}`, is read as the words it makes
-  (`src/a src/b`) instead of being asked about as words no rule can read
-  while a deny or ask rule for `bash` has a pattern, so `:exec` no longer
-  refuses it. Deny and ask rules see the words it makes. A list with an
-  expansion, a quote, a nested or second list, or in an assignment's value
-  is still asked about, and refused on `:exec`.
+- Braces, such as `mkdir -p src/{a,b}`, `cp f{,.bak}`, `touch f{01..10}.txt`
+  or `echo {a..c}{1..2}`, are read as the words they make instead of being
+  asked about as words no rule can read while a deny or ask rule for `bash`
+  has a pattern, so `:exec` no longer refuses them. Deny and ask rules see
+  the words they make. A `for` loop's list (`for i in {1..2000}`) is not
+  asked about at all. Only a command whose braces make more than 16,384
+  words in all is asked about, and refused on `:exec`; a 55 KB command of
+  them is judged in tens of milliseconds, where it took seconds.
 - `web_fetch` fetches a URL with an encoded slash (`%2F`), such as GitLab's
   `group%2Fproject` or a URL carried in the path, on a host that no deny or
   ask rule names a path on; it was refused on every host.

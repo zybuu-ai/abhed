@@ -518,20 +518,19 @@ where its commands can connect (`sandbox.network`), so a command git runs
 cannot reach out.
 
 Words the shell builds are read as it would build them: line continuations
-are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as
+are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and braces such as
 `{curl,x}` are read as the words they make, so `c${IFS}url` is matched as
-`curl`. A brace list in a word that is literal text throughout
-(`mkdir -p src/{a,b}`) is read exactly as bash expands it and is not asked
-about for that; one holding an expansion, a quote, a nested or second list
-is asked about while a deny or ask rule for `bash` has a pattern. So is a
-brace sequence: `{c..c}url` and `c{u..u}rl` are read as `curl`, and
-`{1..3}` and `{a..c}` as their words, up to 1,024 of them. A sequence that
-bash versions expand differently (an increment such as `{1..9..2}`, zero
-padding such as `{01..10}`, or letters of both cases such as `{Z..a}`), or a
-longer one, is asked about as a list that hides its words is. Braces are
-read so at any depth: in text given to `eval`, `trap`, a shell's `-c`, a
-here-string or a heredoc (`bash -c '{curl,x}'`, `eval 'c{u..u}rl x'`), in
-function bodies and in substitutions. A command that sets `IFS` to a separator other than blanks is also read
+`curl`. Braces are read as bash expands them, lists and sequences alike,
+nested or side by side (`mkdir -p a/{b,c}/d{1,2}`, `{c..c}url`,
+`echo {a..c}{1..2}`), and are not asked about for that. Where bash 3.2
+reads a sequence apart from later versions (an increment such as
+`{1..9..2}`, zero padding such as `{01..10}`), the rules see both readings.
+Braces are read so at any depth: in text given to `eval`, `trap`, a shell's
+`-c`, a here-string or a heredoc (`bash -c '{curl,x}'`,
+`eval 'c{u..u}rl x'`), in function bodies and in substitutions. A `for`
+loop's list (`for i in {1..2000}`) runs no command and is not asked about.
+A command whose braces make more than 16,384 words in all is asked about
+while a deny or ask rule for `bash` has a pattern. A command that sets `IFS` to a separator other than blanks is also read
 split on it, so `IFS=_; curl_x` is matched as `curl x`. Where such a command,
 or one that sets `IFS` in a way the text does not show (`IFS=$v`, `read IFS`,
 `${IFS:=_}`), then expands anything (`IFS=_; c=curl_x; $c`), the words that
