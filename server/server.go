@@ -294,6 +294,13 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// ContinueTurns, set by an edition that runs replicas on one Postgres,
+	// moves running turns between processes instead of ending them: a drain
+	// hands the turns still running after DrainTimeout over (HandOverRunning),
+	// and the orphan sweep, the start-up sweep and a message to such a session
+	// take them over and continue them here (TakeOver). Off, a turn whose
+	// process stops is ended, as before.
+	ContinueTurns bool
 	// SoleOwner, when set, is the one account a server that shares its
 	// workspace between sessions was started for: a session for anyone else
 	// is refused, since another account would share that workspace.
@@ -2170,6 +2177,36 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		}
 	}
 
+	live, err := s.liveFromRecord(ctx, id, rec, events, prompt, user, tenant, vault, red, durable, claim)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	// Re-checked under the lock: a drain that began while the record was
+	// being read must not leave a turn running on a node that is exiting.
+	if s.draining.Load() {
+		s.mu.Unlock()
+		if durable && claim {
+			s.endAsBefore(id, live) // the claim is given back, ended as it was
+		}
+		return nil, errDraining
+	}
+	if _, already := s.running[id]; already {
+		s.mu.Unlock()
+		return nil, errBusySession
+	}
+	s.running[id] = live
+	s.mu.Unlock()
+	s.log.Info("session resumed from record", "session", id, "user", user, "events", len(events))
+	return live, nil
+}
+
+// liveFromRecord rebuilds a session from its record and row to go on here,
+// not yet registered: idle, its conversation, model, budget and policy layer
+// as the record left them. claim says whether this process holds it now.
+func (s *Server) liveFromRecord(ctx context.Context, id string, rec store.SessionRecord, events []agent.Event,
+	prompt, user, tenant string, vault *secrets.Store, red agent.Redactor, durable, claim bool) (*liveSession, error) {
 	msgs, err := agent.Fork(events, 0)
 	if err != nil && messaged(events) {
 		return nil, fmt.Errorf("rebuild conversation: %w", err)
@@ -2214,6 +2251,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
 	}
 	loop.Budget.Carry(agent.CarriedSpend(events))
+	loop.NoteUnknownOutcomes(events)
 	live.Turns = rec.Turns
 	live.title = agent.TitleOf(events)
 	// Idle until the caller's prompt starts it: postMessage treats a running
@@ -2232,23 +2270,6 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		}
 	}
 
-	s.mu.Lock()
-	// Re-checked under the lock: a drain that began while the record was
-	// being read must not leave a turn running on a node that is exiting.
-	if s.draining.Load() {
-		s.mu.Unlock()
-		if durable && claim {
-			s.endAsBefore(id, live) // the claim is given back, ended as it was
-		}
-		return nil, errDraining
-	}
-	if _, already := s.running[id]; already {
-		s.mu.Unlock()
-		return nil, errBusySession
-	}
-	s.running[id] = live
-	s.mu.Unlock()
-	s.log.Info("session resumed from record", "session", id, "user", user, "events", len(events))
 	return live, nil
 }
 
@@ -3165,6 +3186,12 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
+		// A turn another process left running goes on here, and the message steers it.
+		if s.opts.ContinueTurns && s.TakeOver(r.Context(), id) == nil {
+			live, ok = s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+		}
+	}
+	if !ok {
 		resumed, err := s.resumeSession(r.Context(), id, req.Prompt, UserOf(r.Context()), TenantOf(r.Context()), true)
 		switch {
 		case errors.Is(err, errNoSession):
@@ -3457,6 +3484,12 @@ func (s *Server) RecoverOrphans(ctx context.Context) int {
 		if here || ctx.Err() != nil {
 			return
 		}
+		if s.opts.ContinueTurns {
+			if err := s.TakeOver(ctx, id); err == nil {
+				n++
+			}
+			return
+		}
 		events, err := s.store.Events(id)
 		if err != nil {
 			return
@@ -3536,7 +3569,14 @@ func (s *Server) RecoverOwnAtStart(ctx context.Context) int {
 			if err != nil || !agent.Orphaned(events) {
 				return
 			}
-			if mine, err := r.ReclaimOwn(ctx, id, s.holder); err == nil && mine && s.reconcile(id, events) {
+			mine, err := r.ReclaimOwn(ctx, id, s.holder)
+			switch {
+			case err != nil || !mine:
+			case s.opts.ContinueTurns:
+				if s.continueClaimed(ctx, id) == nil {
+					n++
+				}
+			case s.reconcile(id, events):
 				s.releaseNode(id)
 				n++
 			}
@@ -5147,13 +5187,22 @@ func (s *Server) drain() {
 			case <-deadline.C:
 				s.log.Warn("drain budget spent, ending turns still running",
 					"turns", s.runningCount())
-				s.cancelRunning()
+				s.stopRunning()
 				return
 			case <-poll.C:
 			}
 		}
 		s.log.Info("drained with no turns left running")
 		return
+	}
+	s.stopRunning()
+}
+
+// stopRunning ends the turns a drain did not wait out: handed over to
+// another process with ContinueTurns, else ended as a shutdown.
+func (s *Server) stopRunning() {
+	if s.opts.ContinueTurns {
+		s.HandOverRunning(context.Background())
 	}
 	s.cancelRunning()
 }

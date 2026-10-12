@@ -810,6 +810,40 @@ func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, st
 	return tag.RowsAffected() == 1, nil
 }
 
+// HandedOver is the holder a session carries once its holder handed its
+// running turn over: no process holds it, and none may write to it, until
+// one takes it with ClaimHandedOver.
+const HandedOver = "handover"
+
+// HandOver marks an open session whose turn holder stopped running so that
+// another process takes it over: holder must hold it, or have just released
+// it. It reports false when the session has ended or another holds it.
+func (p *Postgres) HandOver(ctx context.Context, sessionID, holder string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_id = $3, node_seen_at = NULL
+		WHERE id = $1 AND ended_at IS NULL AND deleted_at IS NULL
+		  AND (node_id = $2 OR node_id IS NULL)`, sessionID, holder, HandedOver)
+	if err != nil {
+		return false, fmt.Errorf("hand over session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ClaimHandedOver takes a session HandOver marked, writing holder as its
+// holder; of two processes claiming at once exactly one wins.
+func (p *Postgres) ClaimHandedOver(ctx context.Context, sessionID, holder string) (bool, error) {
+	if holder == "" || holder == HandedOver {
+		return false, errors.New("claim handed-over session: no holder")
+	}
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_id = $2, node_seen_at = now()
+		WHERE id = $1 AND node_id = $3 AND ended_at IS NULL AND deleted_at IS NULL`, sessionID, holder, HandedOver)
+	if err != nil {
+		return false, fmt.Errorf("claim handed-over session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // randomID is the unguessable half of an approval id. An id that appears in
 // a URL should not be derivable from the session it belongs to.
 func randomID() (string, error) {

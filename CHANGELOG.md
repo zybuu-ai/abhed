@@ -735,6 +735,15 @@ All notable changes to Abhed are recorded here. The format follows
   where a key is unset. `Config.OIDCBoundClaims` and `Config.ResolvedHA`
   give an edition the result, and the relay's client key is state the agent
   cannot reach. A managed-only map's entries are set aside with it.
+- Running turns can move between replicas on one Postgres, for an edition
+  that sets `server.Options.ContinueTurns`: a drain hands the turns still
+  running over (`Server.HandOverRunning`), and another replica takes each
+  over (`Server.TakeOver`, also run by its orphan sweep and by a message to
+  the session) at once, or once a dead replica's claim is stale. It records
+  `turn.continued`, asks again as a new call each call that never ran, never
+  runs again a call that may have started (answered `outcome_unknown`, and
+  asked of a person before the same call runs again), and goes on with the
+  turn. See [Sessions](docs/guide/11-sessions.md#a-running-turn-between-replicas).
 - `abhed egress-proxy -listen ADDR -config FILE` serves the egress allowlist
   on its own, for a sandbox whose only way out is to it (a Kubernetes egress
   pod): every connection on its port is one call's, each decision is a JSON
@@ -1338,6 +1347,17 @@ on. A server with it off starts on the older schema as before.
 
 ### Go API
 
+- `server.Options.ContinueTurns`, `Server.TakeOver`, `Server.HandOverRunning`
+  and `server.TurnHandOver` (implemented by `store.Postgres` as `HandOver`
+  and `ClaimHandedOver`, with the `store.HandedOver` holder) move running
+  turns between replicas; `agent.InFlight`, `Loop.ContinueTurn`,
+  `Loop.NoteUnknownOutcomes`, `agent.ReconcileChildren`, the
+  `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are the
+  loop's side of it. `auth.Identity.Scopes`, `auth.Middleware.IdentifyToken`
+  and `auth.IsForbidden` let a public handler answer for a bearer token.
+  `config.Config.OIDCBoundClaims`, `ValidateBoundClaims` and
+  `RelayKeyCommandArgv` read the new edition keys with their environment
+  fallback.
 - `policy`: `Engine.EvaluateContext`, `ContextHook`, `Engine.ContextHooks`,
   `Engine.HookTimeout` and `DefaultHookTimeout` bound a decision's hooks by
   a deadline; `Engine.Cwd` lets deny and ask rules read the scripts a

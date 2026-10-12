@@ -273,3 +273,39 @@ func TestOpenSessionsPages(t *testing.T) {
 		t.Fatal("an ended session was listed")
 	}
 }
+
+// A session handed over is held by no process and written by none until one
+// claims it; only its holder, or a process after its release, can mark it,
+// and of two claimers one wins.
+func TestHandOverAndClaim(t *testing.T) {
+	p := openStore(t, "t-handover")
+	ctx := context.Background()
+	id := testID(t, "sess-ho-")
+	newSession(t, p, id, "t-handover")
+	if err := p.ClaimNode(ctx, id, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := p.HandOver(ctx, id, "node-b"); err != nil || ok {
+		t.Fatalf("a process that does not hold the session handed it over: %v %v", ok, err)
+	}
+	if ok, err := p.HandOver(ctx, id, "node-a"); err != nil || !ok {
+		t.Fatalf("hand-over by the holder: %v %v", ok, err)
+	}
+	ev := agent.Event{ID: testID(t, "ev-"), SessionID: id, Seq: 1, Type: agent.EvUserMessage,
+		Payload: []byte(`{"text":"x"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: time.Now().UTC()}
+	if err := p.HeldBy("node-a", nil).Append(ev); !errors.Is(err, ErrNotHolder) {
+		t.Fatalf("the old holder wrote to a handed-over session: %v", err)
+	}
+	if node, err := p.NodeFor(ctx, id, HolderStale); err != nil || node != "" {
+		t.Fatalf("a handed-over session is routed to %q (%v)", node, err)
+	}
+	if ok, err := p.ClaimHandedOver(ctx, id, "node-b"); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if ok, _ := p.ClaimHandedOver(ctx, id, "node-c"); ok {
+		t.Fatal("a second process took the same hand-over")
+	}
+	if err := p.HeldBy("node-b", nil).Append(ev); err != nil {
+		t.Fatalf("the new holder's write: %v", err)
+	}
+}
