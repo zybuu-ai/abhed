@@ -1,0 +1,9 @@
+{
+  "name": "abhed-workbench-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Headless checks of the workbench (server/ide.html) against a built abhed serve",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

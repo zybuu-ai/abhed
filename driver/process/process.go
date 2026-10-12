@@ -100,10 +100,6 @@ func NewWithOptions(cfg config.Config, opts Options) *Driver {
 	}, opts)
 }
 
-func newDriver(build func(driver.Spec) (sandbox.Sandbox, error)) *Driver {
-	return newDriverWith(build, Options{})
-}
-
 func newDriverWith(build func(driver.Spec) (sandbox.Sandbox, error), opts Options) *Driver {
 	return &Driver{build: build, opts: opts, snaps: snapshot.Store{Dir: opts.SnapshotDir}, insts: map[string]*instance{}}
 }

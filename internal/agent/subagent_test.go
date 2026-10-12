@@ -997,3 +997,29 @@ func TestPersonsMessageToASubagentReachesTheParent(t *testing.T) {
 		t.Fatalf("recorded as %s", evs[0].Actor)
 	}
 }
+
+// spawnRefusingStore is a parent's store that refuses subagent.spawned.
+type spawnRefusingStore struct{ *MemStore }
+
+func (s spawnRefusingStore) Append(ev Event) error {
+	if ev.Type == EvSubagentSpawned {
+		return errors.New("disk full")
+	}
+	return s.MemStore.Append(ev)
+}
+
+// A subagent event the parent's record refuses ends the parent's run: it
+// does not go on with a record that is missing what its subagent did.
+func TestParentRecordRefusingASubagentEventEndsTheRun(t *testing.T) {
+	store := NewMemStore()
+	l, _, _ := taskTree(t, &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{taskCall("t1", "work")}},
+		{text: "child done"},
+		{text: "parent goes on"},
+		{text: "and on"},
+	}}, AutoApprove{Yes: true}, spawnRefusingStore{store}, NewMemStore(), false)
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermError {
+		t.Fatalf("the parent ran on to %s after its record refused a subagent event", reason)
+	}
+}

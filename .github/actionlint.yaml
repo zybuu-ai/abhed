@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # The Linux on Z runner the fence-s390x job waits for.
+  labels:
+    - s390x

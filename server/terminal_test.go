@@ -101,6 +101,34 @@ type step struct {
 	nowait bool // for keys that show nothing, such as at a password prompt
 }
 
+// waitTerminal waits until the shell's terminal, asked as the server asks
+// it, is in the state want names, rather than for a fixed time.
+func (wb *workbench) waitTerminal(id, what string, want func(*ptyRun, int, bool) bool) {
+	wb.t.Helper()
+	wb.s.mu.RLock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.RUnlock()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		live.mu.Lock()
+		run := live.ptys[id]
+		live.mu.Unlock()
+		if run == nil || !run.local {
+			wb.t.Skip("the terminal cannot be asked here")
+		}
+		if fg, canonical, ok := ttyNow(run.tty); ok && want(run, fg, canonical) {
+			return
+		}
+	}
+	wb.t.Fatalf("waited 10s for %s", what)
+}
+
+// ptyRunsAProgram: a program other than the shell has the terminal.
+func ptyRunsAProgram(run *ptyRun, fg int, _ bool) bool { return run.isProgram(fg) }
+
+// ptyCanonical: the terminal is out of the line editor's raw mode, as while
+// bash runs a command.
+func ptyCanonical(_ *ptyRun, _ int, canonical bool) bool { return canonical }
+
 // typeLines types each piece into a shell, waiting for its prompt between
 // lines, and returns the output and the exit once the shell ends.
 func (wb *workbench) typeLines(id string, pieces ...string) (string, string) {
@@ -443,7 +471,7 @@ func TestShellWithholdsTypeAheadDuringABuiltin(t *testing.T) {
 	wb := shellBench(t, nil)
 	start := wb.startShell()
 	steps := []step{{keys: `end=$((SECONDS+2)); while [ $SECONDS -lt $end ]; do :; done; read -s pw; echo "len=${#pw}"` + "\r", until: "len="},
-		{do: func(string) { time.Sleep(300 * time.Millisecond) }}}
+		{do: func(string) { wb.waitTerminal(start.ID, "bash to leave its line editor", ptyCanonical) }}}
 	for _, k := range "hunter27" {
 		steps = append(steps, step{keys: string(k), nowait: true})
 	}
@@ -573,7 +601,7 @@ func TestShellLeavesAProgramsInputAlone(t *testing.T) {
 	start := wb.startShell()
 	wb.drive(start.ID,
 		step{keys: "cat > note.txt\r", until: "note.txt"},
-		step{do: func(string) { time.Sleep(300 * time.Millisecond) }}, // for cat to take the foreground
+		step{do: func(string) { wb.waitTerminal(start.ID, "cat to take the foreground", ptyRunsAProgram) }},
 		step{keys: "kept shutdown words\r", until: "words"},
 		step{keys: "\x04", until: "(no sandbox)"},
 		step{keys: "echo back\r"},

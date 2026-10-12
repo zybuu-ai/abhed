@@ -10,12 +10,4 @@ func userProcesses() (int, bool) { return 0, false }
 
 var procSoftLimit = func() (uint64, bool) { return 0, false }
 
-type treeMember struct{}
-
-func stopMember(int, map[int]bool) (treeMember, bool) { return treeMember{}, false }
-
-func (treeMember) kill() {}
-
 func ancestorNames() []string { return nil }
-
-func marked(string) []int { return nil }

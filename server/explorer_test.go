@@ -571,6 +571,9 @@ func TestExplorerRenameReachesHooksAsDelete(t *testing.T) {
 		t.Fatal("no live session")
 	}
 	vault := string(filepath.Separator) + "vault" + string(filepath.Separator)
+	// The policy has no lock: the hook is added once the session's run, which
+	// reads its hooks, has ended.
+	eventsUntil(t, wb.s, wb.session, agent.EvSessionEnded)
 	live.Loop.Policy.Hooks = append(live.Loop.Policy.Hooks, func(tool string, args json.RawMessage) *policy.Result {
 		var a struct{ Path string }
 		_ = json.Unmarshal(args, &a)

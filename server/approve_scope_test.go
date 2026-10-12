@@ -221,3 +221,24 @@ func TestAnApprovalOverHTTPNamesTheSignedInApprover(t *testing.T) {
 		})
 	}
 }
+
+// On the durable path too, a row answered with another scope than the one
+// offered approves once: the session remembers nothing and grants nothing.
+func TestADurableAnswerWithAnotherScopeIsNotRemembered(t *testing.T) {
+	f := newFakeApprovals()
+	l := &liveSession{ID: "s-scope", allowed: map[string]bool{}, durable: f}
+	go func() {
+		for f.askedCount() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "bash(*)", "olga")
+	}()
+	ctx, answer := agent.ExpectAnswer(context.Background())
+	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)"}
+	if ok, err := l.Approve(ctx, "bash", []byte(`{}`), res); err != nil || !ok {
+		t.Fatalf("ok %v err %v", ok, err)
+	}
+	if len(l.allowed) != 0 || answer.Granted != "" {
+		t.Fatalf("allowed %v answer %+v", l.allowed, answer)
+	}
+}

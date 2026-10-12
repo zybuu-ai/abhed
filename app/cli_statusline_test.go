@@ -66,7 +66,10 @@ func TestRunStatusline(t *testing.T) {
 	if err != nil || got != `"mode":"plan"` {
 		t.Fatalf("%q %v", got, err)
 	}
-	if _, err := runStatusline(context.Background(), sb, ws, "sleep 2", m); err == nil || !strings.Contains(err.Error(), "300 ms") {
+	if statuslineTimeout < time.Second {
+		t.Fatalf("the statusline gets %v: less than a second, a loaded host cannot start the sandbox in time", statuslineTimeout)
+	}
+	if _, err := runStatusline(context.Background(), sb, ws, "sleep 2", m); err == nil || !strings.Contains(err.Error(), "1000 ms") {
 		t.Fatalf("slow command: %v", err)
 	}
 	if got, err := runStatusline(context.Background(), sb, ws, "", m); got != "" || err != nil {

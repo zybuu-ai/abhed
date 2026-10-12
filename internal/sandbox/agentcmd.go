@@ -5,9 +5,6 @@ import (
 	"path/filepath"
 )
 
-// maxAncestors bounds the walk up the process tree.
-const maxAncestors = 64
-
 // Replaced in tests.
 var (
 	lookupEnv      = os.LookupEnv

@@ -439,6 +439,12 @@ All notable changes to Abhed are recorded here. The format follows
   of a model provider whose `base_url` is on a loopback, private,
   link-local or metadata address, which the model client reaches though the
   allowlist refuses it to commands.
+- Signed releases. The checksum file is signed with Sigstore cosign,
+  keyless, under the release workflow's GitHub identity; the container
+  image is signed by digest; both carry SLSA build provenance, and each
+  binary has an SPDX SBOM. "Verify a download" in the getting-started guide
+  shows the commands. Releases up to 1.2.7 are not signed.
+  `scripts/build-release.sh -s` writes the SBOMs (it needs syft).
 - What a sandbox command can reach of the server: on every tier, nothing
   in the control plane's state folder but its own sandbox folder (not the
   `:ssh` relay's host key, other sandboxes' folders or snapshots, or a
@@ -896,6 +902,17 @@ on. A server with it off starts on the older schema as before.
   offers that were left out for their names (over 64 characters, or
   characters other than letters, digits, `_`, `.` and `-`), and the warning
   gives the name's length.
+- The macOS release binaries are built with cgo on a Mac, so they can use
+  the system's own facilities; they link only the system's libraries and
+  need macOS 12 or later. The Linux binaries stay static. To build them
+  yourself, `scripts/build-release.sh` builds darwin only on a Mac.
+- The statusline command may run for one second, not 300 ms. It still runs
+  in the background, one run at a time and at most once a second; on a
+  loaded Mac, starting the sandbox alone took longer than 300 ms, so the
+  status line stayed empty.
+- The interactive terminal starts git for the prompt's "Git:" line only
+  where a repository could be: outside one it starts none, which on macOS
+  took hundreds of milliseconds before the first prompt was drawn.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of

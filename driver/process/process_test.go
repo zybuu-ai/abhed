@@ -21,6 +21,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
+func newDriver(build func(driver.Spec) (sandbox.Sandbox, error)) *Driver {
+	return newDriverWith(build, Options{})
+}
+
 // fakeSandbox runs commands on the host with a marker in their environment.
 type fakeSandbox struct {
 	tier   sandbox.Tier

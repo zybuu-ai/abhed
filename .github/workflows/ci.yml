@@ -291,7 +291,8 @@ jobs:
         run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
       - name: Every gated fence test runs and passes in a delegated scope
         run: |
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
@@ -325,7 +326,8 @@ jobs:
         run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
       - name: Name resolution and package installs work under the fence
         run: |
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run-network "$FENCE_DIR"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
@@ -442,13 +444,50 @@ jobs:
           skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
           skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestIndexScales'
           skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
-          go test -count=1 -skip "$skip" $(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
+          mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
+          go test -count=1 -skip "$skip" "${pkgs[@]}"
       - name: The s390x table was checked on s390x
         run: |
           go test -count=1 -v -run 'TestNativeTableMatchesUnix|TestTablesMatchXSys' ./internal/fence/seccomp/ > table.log 2>&1 || { cat table.log; exit 1; }
           for t in TestNativeTableMatchesUnix TestTablesMatchXSys; do
             grep -q -- "--- PASS: $t" table.log || { echo "$t did not run and pass:"; cat table.log; exit 1; }
           done
+
+  # The fence's kernel tests on a real Linux on Z kernel, which qemu-user
+  # cannot give. Hosted runners have no s390x, so this runs only once a
+  # self-hosted runner labelled s390x is registered and the repository
+  # variable ABHED_S390X_RUNNER is "true"; until then it is skipped, and the
+  # docs say the fence on s390x is tested under emulation only.
+  fence-s390x:
+    name: Fence tier on a real s390x kernel
+    if: vars.ABHED_S390X_RUNNER == 'true'
+    runs-on: [self-hosted, linux, s390x]
+    timeout-minutes: 45
+    env:
+      FENCE_DIR: /var/tmp/abhed-fence-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: Build the test binaries
+        run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
+      - name: Allow user namespaces to those binaries, mount the alias, start the user manager
+        run: scripts/ci/fence-gated.sh prepare "$FENCE_DIR"
+      - name: The kernel offers what the fence needs
+        run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
+      - name: Every gated fence test runs and passes in a delegated scope
+        run: |
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fence-logs-s390x
+          path: |
+            ${{ env.FENCE_DIR }}/*.log
+            ${{ env.FENCE_DIR }}/*.json
 
   # Case-folding path tests skip on Linux; macOS folds case, so a skip here
   # means the check stopped running, and it fails the build.
@@ -462,39 +501,81 @@ jobs:
         with:
           go-version: "1.26.9"
 
+      # Each case-folding test runs alone by name, and `go test -json`
+      # decides: any skip or a named test missing fails, whatever its message.
       - name: Path rules hold on a disk that folds case
-        run: |
-          set -euo pipefail
-          go test -race -count=1 -timeout 30m -v ./internal/tools/... ./internal/policy/... ./internal/agent/... > case.log 2>&1 || { cat case.log; exit 1; }
-          go test -race -count=1 -timeout 30m -v ./server/... -run 'Explorer|DiskPath|Case' >> case.log 2>&1 || { cat case.log; exit 1; }
-          go test -race -count=1 -timeout 30m -v ./internal/forge/... -run 'WithoutCase' >> case.log 2>&1 || { cat case.log; exit 1; }
-          if grep -E "this disk keeps|needs a disk that folds|hard links unavailable|link count is not read|does not open|names are case-sensitive here|this disk is case-sensitive" case.log; then
-            echo "a case-folding test skipped on a disk that should fold case"; exit 1
-          fi
-          for t in TestDiskPathSpellsWhatTheDiskHolds TestDiskPathFollowsARenameToAnotherCase \
-                   TestDiskPathSeesARenameBehindAnOldTime TestDiskPathPrefersTheNameOverAHardLink \
-                   TestDiskPathFoldsAsTheDiskDoes TestIdentityScanPassesOverAHardLinkedFile TestPushComparesPathsWithoutCase \
-                   TestPathRulesHoldForEveryCaseTheDiskOpens TestRelativeRulesHoldUnderARootNamedInAnotherCase \
-                   TestAgentFileToolsMeetRulesInAnyCase TestManualRefusedRecordsOnlyADenial \
-                   TestExplorerRulesHoldForEveryCaseTheDiskOpens TestExplorerWriteRuleRefusalsAreRecorded; do
-            grep -q -- "--- PASS: $t " case.log || { echo "$t did not run and pass:"; grep -- "$t" case.log || true; exit 1; }
-          done
-          echo "$(grep -c -- "--- PASS" case.log) tests passed; every case-folding test ran"
+        run: scripts/ci/case-fold.sh "$RUNNER_TEMP/case"
 
       # The Seatbelt profile is only exercised on macOS: every process-sandbox
-      # boundary test must run here, none skipped.
+      # boundary test must run here, none skipped, with the probe that a
+      # command cannot reach LaunchServices to open a URL or an app.
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
             echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
           fi
           for t in TestProcessSandboxRefusesANewGitFile TestProcessSandboxProtectsNestedRepositories \
-                   TestProcessSandboxDeniesHomeSecretsThroughALink; do
+                   TestProcessSandboxDeniesHomeSecretsThroughALink \
+                   TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done
           echo "$(grep -c -- "--- PASS" seatbelt.log) boundary tests ran under Seatbelt"
+
+  # Windows folds case as macOS does, so the path-fold fix is tested here
+  # too, and the build and lint run natively (unused code behind a unix-only
+  # build tag shows only under GOOS=windows). The sandbox tiers do not run
+  # on Windows; only the path rules are claimed for it.
+  windows:
+    name: Windows build, lint and case-folding paths
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.9"
+      - name: go build and vet
+        run: go build ./... && go vet ./...
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
+      # NTFS keeps Unicode forms apart and its link count is not read, so
+      # those two tests may skip; these must run and pass.
+      - name: Path rules hold on a disk that folds case
+        run: |
+          set -euo pipefail
+          go test -count=1 -json -run '^TestDiskPath|^TestIdentityScan' ./internal/tools/ > case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          go test -count=1 -json -run '^(TestPathRulesHoldForEveryCaseTheDiskOpens|TestRelativeRulesHoldUnderARootNamedInAnotherCase)$' ./internal/policy/ >> case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          go test -count=1 -json -run '^TestPushComparesPathsWithoutCase$' ./internal/forge/ >> case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          jq -r 'select(.Action == "skip" and .Test != null) | "skipped: \(.Test)"' case.json
+          for t in TestDiskPathSpellsWhatTheDiskHolds TestDiskPathFollowsARenameToAnotherCase TestDiskPathFoldsAsTheDiskDoes \
+                   TestPathRulesHoldForEveryCaseTheDiskOpens TestRelativeRulesHoldUnderARootNamedInAnotherCase TestPushComparesPathsWithoutCase; do
+            jq -e --arg t "$t" 'select(.Test == $t and .Action == "pass")' case.json >/dev/null || { echo "$t did not run and pass"; exit 1; }
+          done
+
+  # The workbench in a real browser: a built abhed serve with a scripted
+  # model, checked by headless Chromium through a pinned Playwright. The
+  # header keeps Sign out on screen at 320, 900 and 1440 px, the side-panel
+  # toggle keeps the grid whole, and a first turn's call is asked and runs.
+  workbench-browser:
+    name: Workbench in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.9"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Header, grid and first-turn approval
+        env:
+          WITH_DEPS: "1"
+        run: scripts/ci/workbench-e2e/run.sh "$RUNNER_TEMP/wbe2e"
 
   # The container tier on a real engine: the hosted runner has Docker, so
   # the flags are checked by what they do, not only by what is passed.
@@ -513,6 +594,13 @@ jobs:
           set -euo pipefail
           ABHED_REQUIRE_CONTAINER=1 go test ./internal/sandbox/ -run 'TestContainerTierOnARealEngine$' -count=1 -v > engine.log 2>&1 || { cat engine.log; exit 1; }
           grep -q -- "--- PASS: TestContainerTierOnARealEngine " engine.log || { echo "the engine test did not run and pass:"; cat engine.log; exit 1; }
+      # Studio's interactive terminal on the container tier, where the engine
+      # holds the shell's terminal and lines are judged by Abhed's prompt alone.
+      - name: Studio's interactive terminal on the container tier
+        run: |
+          set -euo pipefail
+          ABHED_REQUIRE_CONTAINER=1 go test ./app/ -run '^TestStudioInteractiveTerminalInAContainer$' -count=1 -v > term.log 2>&1 || { cat term.log; exit 1; }
+          grep -q -- "--- PASS: TestStudioInteractiveTerminalInAContainer " term.log || { echo "the terminal test did not run and pass:"; cat term.log; exit 1; }
 
   # The docker and podman drivers, one long-lived container per sandbox, on
   # both engines; static, so the test binary can be bound in as the relay.

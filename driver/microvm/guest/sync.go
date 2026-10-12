@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"time"
 )
 
 // Sync carries the workspace's changes from the guest to the host. After
@@ -23,10 +22,6 @@ const (
 	tEOF    = "eof"
 	tAck    = "ack"
 )
-
-// slack is how far back a change is looked for before the last sync began:
-// an inode's change time comes from a clock up to one kernel tick behind.
-const slack = 50 * time.Millisecond
 
 // Change is one path the guest reports changed, for the host to apply.
 type Change struct {
