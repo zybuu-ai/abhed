@@ -124,6 +124,8 @@ Where a credential goes is the operator's choice, not the model's.
 verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.
+`k8s_apply` takes one object per call; a JSON list is refused with a message
+that says to apply each item in its own call.
 `ssh_connect` sends a password only to a host whose key is already in
 `known_hosts`.
 

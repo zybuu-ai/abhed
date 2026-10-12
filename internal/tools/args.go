@@ -59,7 +59,20 @@ func DecodeArgs(raw json.RawMessage) (map[string]any, error) {
 	case map[string]any:
 		return m, nil
 	}
-	return nil, fmt.Errorf("%w: the arguments must be a JSON object", ErrMalformedArgs)
+	return nil, fmt.Errorf("%w: the arguments must be a JSON object, not %s", ErrMalformedArgs, jsonKind(v))
+}
+
+// jsonKind names a decoded value's JSON type for a message.
+func jsonKind(v any) string {
+	switch v.(type) {
+	case []any:
+		return "a list"
+	case string:
+		return "a string"
+	case bool:
+		return "a boolean"
+	}
+	return "a number"
 }
 
 func strictValue(dec *json.Decoder, depth int) (any, error) {

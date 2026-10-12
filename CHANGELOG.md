@@ -548,6 +548,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- `k8s_apply` given a JSON list as its manifest answered that the
+  "arguments must be a JSON object"; it now says the manifest is a list and
+  to apply each item in its own call. A tool call whose arguments are not an
+  object names what they are.
 - `bash` added "the sandbox denied this operation" to a command that exited
   `0`, such as `git status` warning about `.abhed`; the note now comes only
   with a failure. Its notes follow the output after one blank line, not

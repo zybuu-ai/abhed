@@ -1,6 +1,9 @@
 package kubescope
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDecodeManifestRefusesAmbiguousKeys(t *testing.T) {
 	for _, m := range []string{
@@ -42,5 +45,20 @@ func TestDecodeManifestReadsOneEncoding(t *testing.T) {
 	again, err := DecodeManifest(string(mf.Canonical))
 	if err != nil || string(again.Canonical) != want {
 		t.Fatalf("the canonical form does not decode to itself: %v %s", err, again.Canonical)
+	}
+}
+
+// A list of objects is named as one, so the model applies each item instead
+// of reading a complaint about keys.
+func TestDecodeManifestNamesAList(t *testing.T) {
+	_, err := DecodeManifest(` [{"kind":"ConfigMap"},{"kind":"Secret"}]`)
+	if err == nil || !strings.Contains(err.Error(), "JSON list of 2 items") || !strings.Contains(err.Error(), "each item in its own call") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := DecodeManifest(`[{"kind":`); err == nil || !strings.Contains(err.Error(), "JSON list") {
+		t.Fatalf("a broken list: %v", err)
+	}
+	if _, err := DecodeManifest(`null`); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("null: %v", err)
 	}
 }
