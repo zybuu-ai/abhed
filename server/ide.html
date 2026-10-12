@@ -967,6 +967,115 @@ async function saveAll(){ for(const t of tabs.filter(x => x.dirty)) await save(t
 const openFile = (path, at) => openTab(newTab('file', path), at);
 const openDiff = path => openTab(newTab('diff', path));
 
+/* ---------------------------------------------------------------- language servers */
+// Go to definition, hover and diagnostics come from a language server the operator names in
+// sandbox.language_servers, run by the server in the session's sandbox as the person's
+// recorded call. A language with none answers 404 and is not asked again this session.
+// What a server says is untrusted: it is drawn through reveal, as plain markdown.
+const lspConns = new Map(), lspNone = new Set(), lspProviders = new Set();
+const lspURI = (c, path) => 'file://' + (c.root + path).split('/').map(encodeURIComponent).join('/');
+function lspRel(c, uri){
+  let p; try{ p = decodeURIComponent(String(uri).replace(/^file:\/\//, '')); }catch{ return null; }
+  return p.startsWith(c.root + '/') ? p.slice(c.root.length + 1) : null;
+}
+const lspRange = r => new M.Range(r.start.line + 1, r.start.character + 1, r.end.line + 1, r.end.character + 1);
+function lspFor(lang){
+  for(const [k, p] of lspConns) if(!k.startsWith(current + ' ')){ lspConns.delete(k); p.then(c => c && lspClose(c)); }
+  const key = current + ' ' + lang;
+  if(!current || lspNone.has(key)) return null;
+  if(!lspConns.has(key)) lspConns.set(key, lspOpen(current, lang).catch(e => {
+    lspConns.delete(key);
+    // Not configured, no sandbox to run it in, or refused: not asked again.
+    if(e && (e.status === 403 || e.status === 404 || e.status === 409)) lspNone.add(key);
+    return null; }));
+  return lspConns.get(key);
+}
+async function lspOpen(session, lang){
+  const r = await api('/v1/sessions/' + session + '/lsp', {method:'POST', body: JSON.stringify({language: lang})});
+  const base = '/v1/sessions/' + session + '/lsp/' + r.id;
+  const c = {session, lang, root: r.root, base, seq:0, pending:new Map(), docs:new Map(), es:null};
+  await new Promise((ok, fail) => {
+    const es = new EventSource(base); c.es = es;
+    es.addEventListener('ready', () => ok());
+    es.addEventListener('msg', e => lspIncoming(c, e.data));
+    es.addEventListener('exit', () => lspClose(c));
+    es.onerror = () => { if(es.readyState === EventSource.CLOSED){ lspClose(c); fail(new Error('the language server stream closed')); } };
+  });
+  c.send = m => fetch(base, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(Object.assign({jsonrpc:'2.0'}, m))}).catch(() => {});
+  c.request = (method, params) => new Promise((ok, fail) => {
+    const id = ++c.seq; c.pending.set(id, {ok, fail}); c.send({id, method, params});
+    setTimeout(() => { const q = c.pending.get(id); if(q){ c.pending.delete(id); q.fail(new Error('no answer')); } }, 15000); });
+  const uri = lspURI(c, '');
+  await c.request('initialize', {processId:null, rootUri:uri, workspaceFolders:[{uri, name:c.root.split('/').pop()}],
+    capabilities:{textDocument:{hover:{contentFormat:['markdown','plaintext']}, definition:{linkSupport:true}, publishDiagnostics:{}, synchronization:{}}, workspace:{configuration:true}}});
+  c.send({method:'initialized', params:{}});
+  lspRegister(lang);
+  return c;
+}
+function lspClose(c){
+  if(c.closed) return; c.closed = true;
+  if(c.es){ c.es.close(); c.es = null; }
+  for(const q of c.pending.values()) q.fail(new Error('closed')); c.pending.clear();
+  for(const m of c.docs.values()) if(!m.isDisposed()) M.editor.setModelMarkers(m, 'lsp', []);
+  fetch(c.base, {method:'DELETE', credentials:'same-origin'}).catch(() => {});
+}
+function lspIncoming(c, b64){
+  let m; try{ m = JSON.parse(new TextDecoder().decode(bytesOf(b64))); }catch{ return; }
+  if(m.id != null && !m.method){ const q = c.pending.get(m.id); if(q){ c.pending.delete(m.id); m.error ? q.fail(new Error(String(m.error.message || 'error'))) : q.ok(m.result); } return; }
+  // A server's own requests: settings it asks for are left at its defaults, the rest acknowledged.
+  if(m.id != null) c.send({id:m.id, result: m.method === 'workspace/configuration' ? ((m.params && m.params.items) || []).map(() => null) : null});
+  if(m.method === 'textDocument/publishDiagnostics' && m.params){
+    const rel = lspRel(c, m.params.uri), model = rel == null ? null : [...c.docs.values()].find(x => x.uri.path === '/' + rel);
+    if(!model || model.isDisposed()) return;
+    const sev = {1:M.MarkerSeverity.Error, 2:M.MarkerSeverity.Warning, 3:M.MarkerSeverity.Info, 4:M.MarkerSeverity.Hint};
+    M.editor.setModelMarkers(model, 'lsp', (m.params.diagnostics || []).slice(0, 500).map(d => ({
+      startLineNumber:d.range.start.line + 1, startColumn:d.range.start.character + 1, endLineNumber:d.range.end.line + 1, endColumn:d.range.end.character + 1,
+      message: reveal(String(d.message || ''), true), severity: sev[d.severity] || M.MarkerSeverity.Info, source: d.source ? reveal(String(d.source)) : 'language server'})));
+  }
+}
+function lspPos(c, model, pos){ return {textDocument:{uri:lspURI(c, model.uri.path)}, position:{line:pos.lineNumber - 1, character:pos.column - 1}}; }
+function lspRegister(lang){
+  if(lspProviders.has(lang)) return; lspProviders.add(lang);
+  M.languages.registerHoverProvider(lang, {async provideHover(model, pos){
+    const c = model.uri.scheme === 'file' ? await lspFor(lang) : null; if(!c) return null;
+    let r; try{ r = await c.request('textDocument/hover', lspPos(c, model, pos)); }catch{ return null; }
+    if(!r || !r.contents) return null;
+    const parts = (Array.isArray(r.contents) ? r.contents : [r.contents]).map(x => typeof x === 'string' ? x
+      : x.kind === 'plaintext' ? '```\n' + x.value + '\n```' : x.language ? '```' + x.language + '\n' + x.value + '\n```' : x.value);
+    return {contents: parts.filter(Boolean).map(v => ({value: reveal(String(v), true), isTrusted:false, supportHtml:false}))};
+  }});
+  M.languages.registerDefinitionProvider(lang, {async provideDefinition(model, pos){
+    const c = model.uri.scheme === 'file' ? await lspFor(lang) : null; if(!c) return null;
+    let r; try{ r = await c.request('textDocument/definition', lspPos(c, model, pos)); }catch{ return null; }
+    const out = [];
+    for(const l of (Array.isArray(r) ? r : r ? [r] : [])){
+      const uri = l.targetUri || l.uri, range = l.targetSelectionRange || l.targetRange || l.range, rel = range && lspRel(c, uri);
+      if(rel == null) continue; // outside the workspace: nothing the workbench can open
+      out.push({uri: '/' + rel === model.uri.path ? model.uri : M.Uri.from({scheme:'file', path:'/' + rel}), range: lspRange(range)});
+    }
+    return out;
+  }});
+}
+// A definition in another file opens it in a tab of its own, at the place.
+M.editor.registerEditorOpener({openCodeEditor(source, resource, at){
+  if(resource.scheme !== 'file') return false;
+  const p = at && (at.startLineNumber ? {line:at.startLineNumber, col:at.startColumn} : at.lineNumber ? {line:at.lineNumber, col:at.column} : null);
+  openFile(resource.path.slice(1), p || undefined); return true;
+}});
+const lspProvider = {attach(model){
+  const lang = model.getLanguageId(), p = lspFor(lang); if(!p) return null;
+  let c = null, gone = false, v = 1, timer = 0;
+  p.then(conn => { if(!conn || gone) return; c = conn; const uri = lspURI(c, model.uri.path); c.docs.set(uri, model);
+    c.send({method:'textDocument/didOpen', params:{textDocument:{uri, languageId:lang, version:v, text:model.getValue()}}}); });
+  const sub = model.onDidChangeContent(() => { clearTimeout(timer); timer = setTimeout(() => {
+    if(c && !c.closed) c.send({method:'textDocument/didChange', params:{textDocument:{uri:lspURI(c, model.uri.path), version:++v}, contentChanges:[{text:model.getValue()}]}}); }, 300); });
+  return {dispose(){ gone = true; sub.dispose(); clearTimeout(timer);
+    if(c && !c.closed){ const uri = lspURI(c, model.uri.path); c.docs.delete(uri); c.send({method:'textDocument/didClose', params:{textDocument:{uri}}}); }
+    if(!model.isDisposed()) M.editor.setModelMarkers(model, 'lsp', []); }};
+}};
+// Any language may have a server; the first file in one asks, once a session.
+M.languages.getLanguages().forEach(l => { if(l.id !== 'plaintext') E.registerLanguageServer(l.id, lspProvider); });
+
 /* ---------------------------------------------------------------- explorer + changes */
 // Every folder listed is remembered with where it is drawn, and every open one
 // is opened again when its parent is redrawn, so a refresh keeps the tree's shape.

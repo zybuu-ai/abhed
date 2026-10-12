@@ -1177,6 +1177,7 @@ func (p *ptyRun) stop(why string) {
 func (l *liveSession) closeTerminals(why string) []<-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.stopLSPs()
 	var done []<-chan struct{}
 	for _, r := range l.ptys {
 		select {

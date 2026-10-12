@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -1179,6 +1180,10 @@ type SandboxConfig struct {
 	// TerminalIdleMinutes ends a workbench shell nobody has watched for this
 	// long. Zero means 30.
 	TerminalIdleMinutes int `json:"terminal_idle_minutes,omitempty"`
+	// LanguageServers maps an editor language (go, python, typescript) to the
+	// command line of a language server the workbench editor runs for it, in
+	// the session's sandbox. None is run unless named here.
+	LanguageServers map[string][]string `json:"language_servers,omitempty"`
 	// WriteProtected are workspace paths commands may not write, set by the
 	// surface that runs the session, never by a file.
 	WriteProtected []string `json:"-"`
@@ -1687,8 +1692,19 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown sandbox.terminal %q (want shell or lines)", c.Sandbox.Terminal)
 	}
+	for lang, argv := range c.Sandbox.LanguageServers {
+		if !languageID.MatchString(lang) {
+			return fmt.Errorf("sandbox.language_servers: %q is not an editor language name", lang)
+		}
+		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+			return fmt.Errorf("sandbox.language_servers.%s: the command is empty", lang)
+		}
+	}
 	return nil
 }
+
+// languageID is an editor language name, as the workbench's editor knows it.
+var languageID = regexp.MustCompile(`^[a-z][a-z0-9_+-]{0,31}$`)
 
 // validLogoutURL accepts an absolute http(s) URL or a path with no host; a
 // "//" or backslash prefix would send the browser to another site.

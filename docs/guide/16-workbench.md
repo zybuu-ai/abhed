@@ -698,10 +698,6 @@ open.
   and **Changes** says so. A change undone before the list is read, or made
   and reverted by a command, is not listed, and the record holds only what
   the command was, not what it changed.
-- **No go to definition, hover or diagnostics from a language server.** The
-  browser's own language services cover JSON, CSS, HTML, JavaScript and
-  TypeScript; other languages are highlighted only. See below for where a
-  language server will attach.
 
 ## What it is built on
 
@@ -726,17 +722,28 @@ them as text.
 
 ## Language servers
 
-Go to definition, hover and diagnostics for other languages need a language
-server, which is not wired in yet. The seam is in `web/ide/editor.js`:
+JSON, CSS, HTML, JavaScript and TypeScript get completion and diagnostics from
+services that run in the browser. For other languages, go to definition
+(F12, or ⌘-click), hover and diagnostics come from a language server the
+operator names, per editor language, in `~/.abhed/config.json` or the managed
+file:
 
-```js
-AbhedEditor.registerLanguageServer("go", {
-  attach(model, editor) { /* connect; return {dispose()} */ },
-});
+```json
+{"sandbox": {"language_servers": {"go": ["gopls"], "python": ["pylsp"]}}}
 ```
 
-The workbench calls `attachLanguageServer` for every file it opens and
-disposes what it returns when the tab closes. Nothing is registered today, so
-it is a no-op. The server half, running the language server in the session's
-sandbox and carrying its messages over the session's own authenticated
-connection, comes with the first provider.
+None runs unless it is named there; a workspace's `.abhed/config.json` cannot
+name one. The first file opened in a language with a server starts it for the
+session (`POST /v1/sessions/{id}/lsp`), and that start is your `bash` call, as
+opening a shell is: the policy judges its command line (a deny rule naming it
+refuses it, and plan mode does too), it is recorded as yours, and its end and
+the start of its error output are recorded when it stops. It then runs in the
+session's sandbox exactly as a command does, with the same network, folders
+and limits; on the none tier, where there is no sandbox, no language server
+is started. One runs per language, four at most per session; one no page has
+listened to for two minutes is ended, as is every one when the session
+closes. Its messages travel over the session's own authenticated routes. What
+it says is untrusted: the editor shows hovers and diagnostics as plain
+markdown with hidden characters marked. A definition in another workspace
+file opens it in a tab; one outside the workspace is not offered. Settings a
+server asks the editor for are left at the server's defaults.

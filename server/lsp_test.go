@@ -1,0 +1,181 @@
+package server
+
+import (
+	"bufio"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/tools"
+)
+
+// fakeLSP answers initialize and hover, and publishes a diagnostic on didOpen.
+const fakeLSP = `import json, sys
+def send(m):
+    b = json.dumps(m).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(b) + b); sys.stdout.flush()
+while True:
+    n = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line: sys.exit(0)
+        line = line.strip()
+        if not line: break
+        k, v = line.split(b":", 1)
+        if k.lower() == b"content-length": n = int(v)
+    m = json.loads(sys.stdin.buffer.read(n))
+    if m.get("method") == "initialize": send({"jsonrpc":"2.0","id":m["id"],"result":{"capabilities":{"hoverProvider":True}}})
+    elif m.get("method") == "textDocument/hover": send({"jsonrpc":"2.0","id":m["id"],"result":{"contents":{"kind":"markdown","value":"hover\nline"}}})
+    elif m.get("method") == "textDocument/didOpen":
+        send({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":m["params"]["textDocument"]["uri"],"diagnostics":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"bad","severity":1}]}})
+`
+
+func lspBench(t *testing.T, tier string, edit func(*config.Config)) (*workbench, string) {
+	t.Helper()
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+	script := filepath.Join(t.TempDir(), "fake_lsp.py")
+	if err := os.WriteFile(script, []byte(fakeLSP), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wb := shellBenchOpts(t, func(c *config.Config) {
+		c.Sandbox.LanguageServers = map[string][]string{"go": {py, script}}
+		if edit != nil {
+			edit(c)
+		}
+	}, func(o *Options) {
+		// The host stands in for the sandbox; the label is what startLSP judges.
+		sb := sandbox.NewNone(sandbox.DefaultPolicy(o.Workspace))
+		bash := tools.Bash{Sandbox: sb.Command, Isolation: tools.Isolation{Tier: tier, Backend: "test"}}
+		o.Registry = tools.NewRegistry(tools.Read{}, tools.Write{}, bash)
+	})
+	return wb, py
+}
+
+func lspSend(t *testing.T, srvURL, path string, msg any) {
+	t.Helper()
+	b, _ := json.Marshal(msg)
+	req, _ := http.NewRequest("POST", srvURL+path, strings.NewReader(string(b)))
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != http.StatusNoContent {
+		t.Fatalf("send %v: %v %v", msg, err, res)
+	}
+	_ = res.Body.Close()
+}
+
+// A configured language server runs in the session's sandbox as the
+// person's recorded call, and its messages travel both ways.
+func TestLanguageServerRunsAndAnswers(t *testing.T) {
+	wb, py := lspBench(t, "process", nil)
+	rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"})
+	var start lspStartResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil || start.ID == "" || start.Root != wb.workspace {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	// The same language reuses it.
+	var again lspStartResponse
+	_ = json.Unmarshal(wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}).Body.Bytes(), &again)
+	if again.ID != start.ID {
+		t.Fatalf("a second server was started: %s and %s", start.ID, again.ID)
+	}
+
+	srv := httptest.NewServer(wb.h)
+	defer srv.Close()
+	base := "/v1/sessions/" + wb.session + "/lsp/" + start.ID
+	req, _ := http.NewRequest("GET", srv.URL+base, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	res, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed by the deferred call below, once the stream is done
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	events := make(chan string, 16)
+	go func() {
+		sc := bufio.NewScanner(res.Body)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		for sc.Scan() {
+			if d, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+				if raw, err := base64.StdEncoding.DecodeString(d); err == nil && len(raw) > 0 {
+					events <- string(raw)
+				}
+			}
+		}
+		close(events)
+	}()
+	next := func() string {
+		select {
+		case e := <-events:
+			return e
+		case <-time.After(10 * time.Second):
+			t.Fatal("no message from the language server")
+		}
+		return ""
+	}
+	time.Sleep(100 * time.Millisecond) // the stream is subscribed before the first message
+	lspSend(t, srv.URL, base, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{}})
+	if m := next(); !strings.Contains(m, `"hoverProvider": true`) {
+		t.Fatalf("initialize: %s", m)
+	}
+	lspSend(t, srv.URL, base, map[string]any{"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": map[string]any{"textDocument": map[string]any{"uri": "file://" + wb.workspace + "/a.go", "text": "x"}}})
+	if m := next(); !strings.Contains(m, "publishDiagnostics") || !strings.Contains(m, `"bad"`) {
+		t.Fatalf("diagnostics: %s", m)
+	}
+	lspSend(t, srv.URL, base, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": map[string]any{}})
+	if m := next(); !strings.Contains(m, `hover\nline`) {
+		t.Fatalf("hover: %s", m)
+	}
+	// Starting it was the person's call, recorded with its command line.
+	asked := false
+	for _, e := range wb.events() {
+		asked = asked || e.Type == agent.EvActionRequested && e.Actor == agent.ActorUser && strings.Contains(string(e.Payload), "language server for go") && strings.Contains(string(e.Payload), py)
+	}
+	if !asked {
+		t.Fatal("the language server's start is not in the record")
+	}
+	if rec := wb.send("acme", "DELETE", "lsp/"+start.ID, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("stop: %d", rec.Code)
+	}
+}
+
+// No sandbox, no configuration, or a deny rule: no language server.
+func TestLanguageServerRefusals(t *testing.T) {
+	wb, _ := lspBench(t, "none", nil)
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusConflict {
+		t.Errorf("on the none tier: %d %s", rec.Code, rec.Body)
+	}
+	wb, _ = lspBench(t, "process", nil)
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "python"}); rec.Code != http.StatusNotFound {
+		t.Errorf("an unconfigured language: %d %s", rec.Code, rec.Body)
+	}
+	wb, _ = lspBench(t, "process", func(c *config.Config) { c.Permissions.Mode = "plan" })
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusForbidden {
+		t.Errorf("in plan mode: %d %s", rec.Code, rec.Body)
+	}
+	wb, _ = lspBench(t, "process", func(c *config.Config) { c.Permissions.Deny = append(c.Permissions.Deny, "bash(*fake_lsp*)") })
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "Denied") {
+		t.Errorf("a denied command: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestLSPFraming(t *testing.T) {
+	br := bufio.NewReader(strings.NewReader("Content-Type: x\r\nContent-Length: 2\r\n\r\n{}Content-Length: 99999999999\r\n\r\n"))
+	if m, err := readLSPMessage(br); err != nil || string(m) != "{}" {
+		t.Fatalf("%q %v", m, err)
+	}
+	if _, err := readLSPMessage(br); err == nil {
+		t.Fatal("an oversized message was read")
+	}
+}

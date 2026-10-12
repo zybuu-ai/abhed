@@ -525,6 +525,13 @@ on. A server with it off starts on the older schema as before.
   set aside, for a signed-in caller or where nobody signs in; the front
   page shows it as a card, the console under its examples, and the
   workbench in its **Tools** panel.
+- Language servers in the workbench editor: `sandbox.language_servers` names,
+  per editor language, a server (`{"go": ["gopls"]}`) for go to definition,
+  hover and diagnostics. It is started on the first file in that language,
+  as the person's recorded `bash` call judged by the policy, and runs in the
+  session's sandbox; none runs on the none tier, and a workspace file cannot
+  name one. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
+  `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed
 

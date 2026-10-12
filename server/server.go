@@ -451,6 +451,8 @@ type liveSession struct {
 	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.
 	ptys map[string]*ptyRun
+	// lsps are the workbench editor's language servers.
+	lsps map[string]*lspRun
 	// unclaimed is a finished session opened from its record to view: its
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.
@@ -758,6 +760,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
+	mux.HandleFunc("POST /v1/sessions/{id}/lsp", s.startLSP)
+	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.streamLSP)
+	mux.HandleFunc("POST /v1/sessions/{id}/lsp/{lsp}", s.sendLSP)
+	mux.HandleFunc("DELETE /v1/sessions/{id}/lsp/{lsp}", s.stopLSP)
 	mux.HandleFunc("GET /v1/sessions/{id}/pty", s.listShells)
 	mux.HandleFunc("GET /v1/sessions/{id}/pty/{pty}", s.streamPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/detach", s.detachPTY)

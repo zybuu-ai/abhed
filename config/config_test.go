@@ -393,3 +393,22 @@ func TestValidateFenceSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestLanguageServersAreValidated(t *testing.T) {
+	for name, ls := range map[string]map[string][]string{
+		"empty command": {"go": {}},
+		"blank program": {"go": {" "}},
+		"odd language":  {"Go Lang": {"gopls"}},
+	} {
+		c := Default()
+		c.Sandbox.LanguageServers = ls
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	c := Default()
+	c.Sandbox.LanguageServers = map[string][]string{"go": {"gopls"}, "python": {"pylsp", "--check-parent-process"}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

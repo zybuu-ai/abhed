@@ -642,6 +642,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.terminal":              {onlyLines, "only lines"},
 	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
+	"sandbox.language_servers":      {nil, "a language server is a process"},
 	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
 	"fence":                         {nil, "tunes the fence tier's limits"},
 	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},
