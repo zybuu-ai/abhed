@@ -1005,12 +1005,12 @@ configuration says `default`), not only `bypass`. A nested run narrows with
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
 key it sets replaces what the user and project files said. A list it sets,
-such as `permissions.ask`, replaces the lower files' list; so does a map
-entry, such as one provider under `model.providers`. `permissions.deny` is
-the exception: the managed rules are added to the deny rules already in
-force (the built-in ones, `~/.abhed/config.json`, `-settings` and a trusted
-workspace's file), so a managed file can add a deny rule but never take one
-away. `/permissions` shows each rule with the layer it came from. Its
+such as `permissions.allow`, replaces the lower files' list; so does a map
+entry, such as one provider under `model.providers`. `permissions.deny` and
+`permissions.ask` are the exceptions: the managed rules are added to the
+deny and ask rules already in force (the built-in ones,
+`~/.abhed/config.json`, `-settings` and a trusted workspace's file), so a
+managed file can add a deny rule or a question but never take one away. `/permissions` shows each rule with the layer it came from. Its
 presence makes the policy engine managed: `bypass` mode is refused wherever
 it comes from.
 
@@ -1026,18 +1026,17 @@ organisation's rules must not depend on which reading wins.
 When the managed file sets any `permissions` setting but not
 `permissions.allow`, the allow rules `~/.abhed/config.json` and a trusted
 workspace's `.abhed/config.json` add are left out, and Abhed warns at startup
-naming each rule and its file; the built-in allow rules stay. Put rules the
+naming each rule and its file; the built-in allow rules the files' list
+still held stay. Put rules the
 organisation accepts in the managed `permissions.allow`. When the managed file
 sets `permissions.allow`, exactly its list applies. The same holds for
 `permissions.git_extensions`, the git extensions that run without the
 destructive step's question ([Permissions](04-permissions.md#the-order)).
 
 Two effects to plan for. A call that a dropped rule approved now asks, and in
-`-p`, `rpc` and other runs with no one to approve, it is refused. And once
-any file rule is dropped, every built-in allow rule comes back, even one the
-file had left out of a shorter list. To keep a built-in rule from applying
-under a managed file, add an ask or deny rule for it; a shorter allow list
-does not do it.
+`-p`, `rpc` and other runs with no one to approve, it is refused. And a
+built-in allow rule the files' list left out stays out: a shorter list
+removes it under a managed file as it does without one.
 
 What a caller sets over the files, the CLI's flags and the SDK's `Options`,
 may tighten what the managed file set and never loosen it:

@@ -43,7 +43,7 @@ func mergeManaged(cfg *Config) error {
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	below := slices.Clone(cfg.Permissions.Deny)
+	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("managed configuration %s is a link to nothing", path)
@@ -66,6 +66,11 @@ func mergeManaged(cfg *Config) error {
 		// Its deny rules join the others: a managed file may add a deny rule, never take one away.
 		cfg.Permissions.Deny = dedupe(append(slices.Clone(cfg.Permissions.Deny), below...))
 		delete(cfg.origins, "permissions.deny")
+	}
+	if cfg.ManagedSets("permissions.ask") {
+		// So do its ask rules: a managed ask list adds questions, never drops the user's.
+		cfg.Permissions.Ask = dedupe(append(slices.Clone(cfg.Permissions.Ask), belowAsk...))
+		delete(cfg.origins, "permissions.ask")
 	}
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
@@ -272,9 +277,12 @@ func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {
 			Reason: "the managed configuration sets the permissions, so only its own permissions.allow adds allow rules"})
 	}
 	if len(kept) < len(c.Permissions.Allow) {
-		// The files' list had replaced the built-in rules; put those back.
-		c.Permissions.Allow = dedupe(append(slices.Clone(Default().Permissions.Allow), kept...))
-		c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+		// Only the built-in rules the files' list still held stay: one it
+		// left out was removed on purpose, and is not brought back.
+		c.Permissions.Allow = dedupe(kept)
+		if slices.Equal(c.Permissions.Allow, Default().Permissions.Allow) {
+			c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+		}
 	}
 }
 

@@ -32,6 +32,10 @@ All notable changes to Abhed are recorded here. The format follows
   file that sets neither deny rules nor extensions.
 - `POST /v1/admin/mcp` answers `400` for a server whose name overlaps a
   configured one's.
+- A managed `permissions.ask` list now adds to the user's and the
+  workspace's ask rules instead of replacing them. Under a managed file that
+  sets aside the files' allow rules, a built-in allow rule your own list
+  left out is no longer brought back.
 
 ### Security
 
@@ -168,6 +172,12 @@ All notable changes to Abhed are recorded here. The format follows
   `Options.Provider` named any endpoint. Every surface now asks one check,
   and a managed `model.default` pins the model on all of them. Affects
   1.1.0 to 1.2.7.
+- A managed `permissions.ask` list replaced the user's and a trusted
+  workspace's ask rules, so a managed file that added one question dropped
+  the person's own. It now joins them, as a managed deny list does. And when
+  a managed file set aside the files' allow rules, every built-in allow rule
+  came back, even one the files' shorter list had removed; only the built-in
+  rules that list still held now stay. Affects 1.1.0 to 1.2.7.
 
 ### Added
 
