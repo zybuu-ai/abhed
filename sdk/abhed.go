@@ -266,6 +266,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 	if p := opts.Provider; p != nil {
+		// A managed model.default pins the model; an endpoint the caller
+		// names is not it.
+		if err := cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+			return nil, fmt.Errorf("abhed: Options.Provider: %w", err)
+		}
 		cfg.Model.Default = "embedded"
 		cfg.Model.Providers = map[string]config.ProviderConfig{"embedded": {
 			Type: p.Type, BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
@@ -649,8 +654,12 @@ var ErrForkDuringRun = errors.New("abhed: cannot fork while a run is in progress
 func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) }
 
 // SetModel swaps the provider mid-conversation, keeping the history. A switch
-// the record refuses is not made.
+// the record refuses is not made, nor one a managed model.default pins away
+// from: an endpoint named here is not the managed model.
 func (a *Agent) SetModel(p Provider) error {
+	if err := a.cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+		return fmt.Errorf("abhed: SetModel: %w", err)
+	}
 	cfg := config.ProviderConfig{
 		Type: p.Type, BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
 		ContextWindow: p.ContextWindow,

@@ -133,18 +133,12 @@ func AgentRoots(cfg config.Config) []string {
 func OfferedModels(cfg config.Config) []string {
 	var out []string
 	for name := range cfg.Model.Providers {
-		if cfg.Offered(name) && !pinnedAway(cfg, name) {
+		if cfg.ModelAllowed(name) == nil {
 			out = append(out, name)
 		}
 	}
 	sort.Strings(out)
 	return out
-}
-
-// pinnedAway reports a provider other than the one a managed model.default
-// pins every model choice to.
-func pinnedAway(cfg config.Config, name string) bool {
-	return cfg.ManagedSets("model.default") && name != cfg.Model.Default
 }
 
 // ModelResolver is a subagent factory's model choice over the configuration:
@@ -157,7 +151,7 @@ func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
 	offered := OfferedModels(cfg)
 	return func(name string) (model.Adapter, error) {
 		avail := strings.Join(offered, ", ")
-		if pinnedAway(cfg, name) {
+		if cfg.PinnedAway(name) != nil {
 			return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
 		}
 		if !slices.Contains(offered, name) {

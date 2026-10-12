@@ -1094,11 +1094,13 @@ user's and workspace's files. An administrator who means to pin the endpoint
 sets the provider in the managed file; one who sets only `model.default` leaves
 that provider's endpoint to the lower files and the environment.
 
-The model is not pinned by the managed file alone: `-model` and the console's
-picker choose among the providers any file defines, and the SDK's `Provider`
-names any endpoint.
-An editor over `abhed acp` and the SDK's `SwitchModelNamed` are the
-exception: a managed `model.default` pins them to that model.
+A managed `model.default` pins the model on every surface: `-model`,
+`/model`, a custom command's `model`, the console's picker and the sessions
+it starts, an editor over `abhed acp`, subagents, and the SDK's
+`SwitchModelNamed`, `SetModel` and `Options.Provider` all refuse another
+model. Fallbacks under a managed default are only those the managed
+`model.fallback` names. Without a managed `model.default`, any provider a
+file defines may be chosen, and the SDK's `Provider` names any endpoint.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say. With Postgres storage it

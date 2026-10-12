@@ -302,6 +302,45 @@ func (c Config) Offered(name string) bool {
 	return !builtIn
 }
 
+// ErrNoSuchModel is ModelAllowed's answer for a name that is not an offered,
+// configured provider.
+var ErrNoSuchModel = errors.New("no such provider is configured")
+
+// ModelAllowed says whether a session may start on, or switch to, the
+// configured provider name: nil, ErrNoSuchModel, or a ManagedError when a
+// managed model.default pins the model to another. The CLI, the console, ACP
+// and the SDK all ask it, so the pin holds on every surface.
+func (c Config) ModelAllowed(name string) error {
+	if _, ok := c.Model.Providers[name]; !ok || !c.Offered(name) {
+		return fmt.Errorf("%w: %q", ErrNoSuchModel, Printable(name))
+	}
+	return c.PinnedAway(name)
+}
+
+// PinnedAway is the refusal of a model other than the one a managed
+// model.default pins every choice to, or nil.
+func (c Config) PinnedAway(name string) error {
+	if c.ModelPinned() && name != c.Model.Default {
+		return refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
+	}
+	return nil
+}
+
+// EndpointPinnedAway is the refusal of a model named by its endpoint rather
+// than by a configured provider (desc says which) under a managed
+// model.default, or nil when nothing pins the model.
+func (c Config) EndpointPinnedAway(desc string) error {
+	if c.ModelPinned() {
+		return refuse("model.default", desc, "the managed configuration sets the model to "+c.Model.Default)
+	}
+	return nil
+}
+
+// ModelPinned reports whether a managed model.default pins the model. A model
+// that is not from the configuration, such as an endpoint an embedder names,
+// is refused then too.
+func (c Config) ModelPinned() bool { return c.ManagedSets("model.default") }
+
 // Sets reports whether a configuration file made the setting at path, a
 // dotted path such as "sandbox.max_memory_mb", whatever value it gave.
 func (c Config) Sets(path string) bool {

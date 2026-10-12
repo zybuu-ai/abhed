@@ -350,3 +350,20 @@ func TestQueuedModelSurvivesACommandsRestore(t *testing.T) {
 		t.Fatalf("not put back: on %q", st.appCfg.Model.Default)
 	}
 }
+
+// A custom command's model is refused when a managed model.default pins
+// another, as /model and -model are.
+func TestCustomCommandModelHonoursTheManagedPin(t *testing.T) {
+	st, _, _ := customRig(t)
+	st.appCfg.Model.Providers = map[string]config.ProviderConfig{
+		"a": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Model: "a"},
+		"b": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:1/v1", Model: "b"},
+	}
+	st.appCfg.Model.Default = "a"
+	st.appCfg.ManagedKeys = []string{"model.default"}
+	userCommand(t, "fast.md", "---\nmodel: b\n---\nGO")
+	typeLine(t, st, "/fast")
+	if turn := st.takeTurn(); turn != nil || st.appCfg.Model.Default != "a" {
+		t.Fatalf("ran on %q past the managed pin (turn %+v)", st.appCfg.Model.Default, turn)
+	}
+}

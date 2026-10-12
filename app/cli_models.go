@@ -15,7 +15,6 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
-	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -89,10 +88,10 @@ func slashModel(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 // switchModel moves the session to a configured provider, recorded first.
 func switchModel(ctx context.Context, e *cmdEnv, name string) error {
 	st := e.st
-	if st.appCfg.ManagedSets("model.default") {
+	if st.appCfg.ModelPinned() {
 		return fmt.Errorf("the managed configuration sets the model to %s; it is not switched", st.appCfg.Model.Default)
 	}
-	if !slices.Contains(toolset.OfferedModels(st.appCfg), name) {
+	if st.appCfg.ModelAllowed(name) != nil {
 		return fmt.Errorf("no provider %q in config; /model lists them", name)
 	}
 	// Resolve through ProviderNamed so the selected provider's api_key_env
@@ -277,9 +276,8 @@ func modelFlag(cfg config.Config, name string) (config.Config, error) {
 	if name == "" || name == cfg.Model.Default {
 		return cfg, nil
 	}
-	if cfg.ManagedSets("model.default") {
-		return cfg, &config.ManagedError{Key: "model.default", Value: name,
-			Reason: fmt.Sprintf("the managed configuration sets the model to %s", cfg.Model.Default), File: managed.ConfigFile}
+	if err := cfg.PinnedAway(name); err != nil {
+		return cfg, err
 	}
 	cfg.Model.Default = name
 	return cfg, nil

@@ -41,7 +41,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |
 | `Models`, `SwitchModelNamed` | list the configured models, and move the conversation to one by its configured name, recorded as `model.switched`. Only providers a trusted configuration file defines are listed, never a built-in nobody configured, and a managed `model.default` pins the model. An unknown name is `ErrUnknownModel`, a switch while a run is in progress is `ErrSwitchDuringRun`, and a provider whose `api_key_env` is unset is an error naming the variable |
-| `SetModel` | swap providers mid-conversation; the switch is recorded as `model.switched`, and one the record refuses is an error and is not made |
+| `SetModel` | swap providers mid-conversation; the switch is recorded as `model.switched`, and one the record refuses, or one away from a managed `model.default`, is an error and is not made |
 | `Providers` | the provider types this build supports |
 
 `OnEvent` gets every event, in the order the store records them, from a
@@ -219,7 +219,9 @@ SDK builds no sandbox and bash runs as the embedding process.
 Not bound by the managed file:
 
 - `Provider` and `SetModel`, which name any endpoint, as a user's own config
-  file may.
+  file may, unless the managed file sets `model.default`: then both are
+  refused with a `*config.ManagedError`, and `SwitchModelNamed` and `Models`
+  offer only that model.
 - The memory files (`ABHED.md`, the organisation's `/etc/abhed/ABHED.md`
   included). The built-in prompt carries them, as the CLI's does, only with
   `Options.ConfiguredTools`: an embedder running on repositories it does not

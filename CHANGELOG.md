@@ -161,6 +161,13 @@ All notable changes to Abhed are recorded here. The format follows
   schema must now have at least one schema keyword (`type`, `properties`,
   `$schema` and the like); the refusal and stderr name the file. Affects
   1.2.3 to 1.2.7.
+- A managed `model.default` was applied unevenly: `-model`, `/model` and
+  `abhed acp` kept to it, but the console's picker listed, and ran
+  sessions on, any provider the person's own file added; a custom command's
+  `model` switched to another; and the SDK's `SetModel` and
+  `Options.Provider` named any endpoint. Every surface now asks one check,
+  and a managed `model.default` pins the model on all of them. Affects
+  1.1.0 to 1.2.7.
 
 ### Added
 
@@ -854,6 +861,11 @@ on. A server with it off starts on the older schema as before.
 - `driver.Status.Caveat` names what the reported tier lacks on this host,
   such as `no /proc`, and the control plane adds it to the `IsolationVerified`
   condition; `drivertest.Fake.Caveat` reports one.
+- `config.Config.ModelAllowed`, `PinnedAway`, `EndpointPinnedAway` and
+  `ModelPinned`, and `config.ErrNoSuchModel`: the one check every surface
+  makes before a session runs on a model. `sdk.Agent.SetModel` and
+  `sdk.New` with `Options.Provider` return a `*config.ManagedError` under a
+  managed `model.default`.
 
 ## [1.2.7] - 2026-10-07
 

@@ -236,6 +236,19 @@ func TestManagedDefaultPinsTheModel(t *testing.T) {
 	if err := a.SwitchModelNamed("beta"); !errors.Is(err, ErrUnknownModel) {
 		t.Fatalf("switch away from the managed model: %v, want ErrUnknownModel", err)
 	}
+	// Nor by naming an endpoint, mid-session or at New.
+	var pinned *config.ManagedError
+	if err := a.SetModel(Provider{Type: "openai-compatible", BaseURL: b1.URL, Model: "m-b", ContextWindow: 8192}); !errors.As(err, &pinned) {
+		t.Fatalf("SetModel away from the managed model: %v", err)
+	}
+	if got := a.loop.Adapter.Profile().Name; got != "m-a" {
+		t.Fatalf("the agent moved to %s", got)
+	}
+	ws := t.TempDir()
+	if _, err := New(context.Background(), Options{Workspace: ws, ConfigDir: ws,
+		Provider: &Provider{Type: "openai-compatible", BaseURL: b1.URL, Model: "m-b", ContextWindow: 8192}}); !errors.As(err, &pinned) {
+		t.Fatalf("Options.Provider under a managed model: %v", err)
+	}
 }
 
 // SetModel and SwitchModelNamed from two goroutines never interleave: under

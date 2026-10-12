@@ -231,6 +231,9 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 // switchCommandModel moves the conversation to a configured provider, recorded as
 // /model records it.
 func switchCommandModel(st *cliState, name string) error {
+	if err := st.appCfg.ModelAllowed(name); err != nil {
+		return err
+	}
 	p, err := st.appCfg.ProviderNamed(name)
 	if err != nil {
 		return err
