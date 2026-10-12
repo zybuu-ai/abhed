@@ -226,7 +226,7 @@ func TestAnApprovalOverHTTPNamesTheSignedInApprover(t *testing.T) {
 // offered approves once: the session remembers nothing and grants nothing.
 func TestADurableAnswerWithAnotherScopeIsNotRemembered(t *testing.T) {
 	f := newFakeApprovals()
-	l := &liveSession{ID: "s-scope", allowed: map[string]bool{}, durable: f}
+	l := &liveSession{ID: "s-scope", allowed: map[string]string{}, durable: f}
 	go func() {
 		for f.askedCount() == 0 {
 			time.Sleep(time.Millisecond)

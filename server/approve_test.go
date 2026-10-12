@@ -567,7 +567,7 @@ func TestApproveElsewhereChecksTheBoundRequest(t *testing.T) {
 // The row a turn writes carries the request it asks about.
 func TestApprovalRowCarriesTheRequestID(t *testing.T) {
 	f := newFakeApprovals()
-	l := &liveSession{ID: "s-rid", allowed: map[string]bool{}, durable: f}
+	l := &liveSession{ID: "s-rid", allowed: map[string]string{}, durable: f}
 	go func() {
 		for f.askedCount() == 0 {
 			time.Sleep(time.Millisecond)
