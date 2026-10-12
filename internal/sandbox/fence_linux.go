@@ -604,6 +604,13 @@ func runLauncher(args []string) int {
 			return fail("%v", err)
 		}
 	}
+	// Root keeps its uid but gives up every capability, its bounding set
+	// and its way back to them, before anything else confines it.
+	if os.Geteuid() == 0 && s.Mounts == nil {
+		if err := mountns.Drop(); err != nil {
+			return fail("%v", err)
+		}
+	}
 	if err := holdsNothing(); err != nil {
 		return fail("%v", err)
 	}
@@ -647,7 +654,7 @@ func runLauncher(args []string) int {
 	pol := seccomp.Command(s.Network, abhed, abhedGroup)
 	// Only where Landlock scopes abstract unix sockets: a pathname one is
 	// still reachable through it, as the setting's documentation says.
-	pol.Socketcall = s.Network && s.Socketcall && abi >= 6
+	pol.Socketcall = s.Network && s.Socketcall && abi >= 6 && os.Geteuid() != 0
 	if err := seccomp.Install(pol); err != nil {
 		return fail("%v", err)
 	}
@@ -674,12 +681,16 @@ func runLauncher(args []string) int {
 	return 127
 }
 
-// holdsNothing refuses root and any capability this thread holds: the one
+// holdsNothing refuses any capability this thread holds, and for root also a
+// bounding set not empty or securebits not locked: the one
 // that executes the command, whose capabilities the command starts with.
 // Other threads may still hold the mounts' capability, which an exec drops.
 func holdsNothing() error {
-	if os.Getuid() == 0 || os.Geteuid() == 0 {
-		return errors.New("the fence refuses root in this release")
+	root := os.Getuid() == 0 || os.Geteuid() == 0
+	if root {
+		if v, err := unix.PrctlRetInt(unix.PR_GET_SECUREBITS, 0, 0, 0, 0); err != nil || v&0x3 != 0x3 {
+			return fmt.Errorf("running as root without the securebits that keep it from regaining capabilities (%#x, %v)", v, err)
+		}
 	}
 	f, err := os.Open("/proc/thread-self/status")
 	if err != nil {
@@ -689,7 +700,7 @@ func holdsNothing() error {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), ":")
-		if !ok || !slices.Contains([]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}, k) {
+		if !ok || !(slices.Contains([]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}, k) || root && k == "CapBnd") {
 			continue
 		}
 		if n, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64); err != nil || n != 0 {

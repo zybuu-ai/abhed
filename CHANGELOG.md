@@ -557,6 +557,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- The fence runs as root on Linux 6.12 or later (Landlock ABI 6), where it
+  refused root before: each command drops every capability, empties its
+  bounding set and locks the securebits, and Landlock keeps it from
+  signalling other root processes. Below ABI 6 root is still refused.
 - The fence's launcher in `mount_namespace` mode empties its capability
   bounding set and locks the securebits before running a command, so the
   command could not gain a capability even past no_new_privs.

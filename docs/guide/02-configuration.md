@@ -343,7 +343,16 @@ counts as the process tier.
 - cgroups v2, with a cgroup delegated to you. Abhed asks systemd whether the
   scope it runs in has `Delegate=yes`, and refuses when it does not; a
   cgroup you can merely write is not enough, since systemd still manages it.
-- An ordinary user. The fence refuses root in this release.
+- An ordinary user, or root on Linux 6.12 or later (Landlock ABI 6). As
+  root, each command keeps uid 0 but drops every capability, empties its
+  capability bounding set and locks the securebits that would give them
+  back, so it cannot override file permissions, bind a low port or change
+  its uid; Landlock's signal scoping keeps it from signalling the host's
+  other root processes, which below ABI 6 it could, so the fence refuses
+  root there. Files root owns outside the workspace stay out of reach only
+  through Landlock's rules, as for any user. `fence.socketcall` does not
+  apply as root. Running Abhed as an ordinary user is still the
+  recommendation.
 - For `abhed serve` and Abhed Studio, a host that lets an ordinary user make
   a user namespace (see the modes below). Ubuntu 24.04 and later restrict
   this with AppArmor (`kernel.apparmor_restrict_unprivileged_userns`), and a

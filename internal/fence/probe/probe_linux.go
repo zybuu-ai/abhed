@@ -39,11 +39,11 @@ func Run(ctx context.Context, req Requirements) Report {
 	if unix.Uname(&u) == nil {
 		r.Kernel, r.Machine = unix.ByteSliceToString(u.Release[:]), unix.ByteSliceToString(u.Machine[:])
 	}
-	r.Checks = append(r.Checks, platformCheck(r), notRootCheck())
-	r.Checks = append(r.Checks, childChecks(ctx)...)
-
 	abi, abiErr := landlockABI()
 	r.LandlockABI = abi
+	r.Checks = append(r.Checks, platformCheck(r), notRootCheck(abi))
+	r.Checks = append(r.Checks, childChecks(ctx)...)
+
 	c := abiCheck(CheckLandlockABI, abi, req.minABI(), "the fence")
 	if abiErr != nil {
 		c.Reason += ": " + abiErr.Error()
@@ -63,13 +63,29 @@ func platformCheck(r Report) Check {
 	return c
 }
 
-func notRootCheck() Check {
+// rootLandlockABI is the first Landlock ABI that scopes signals: below it a
+// command run as root could signal every other root process on the host.
+const rootLandlockABI = 6
+
+func notRootCheck(abi int) Check {
 	c := Check{ID: CheckNotRoot, Required: true}
 	ru, eu, su := unix.Getresuid()
 	rg, eg, sg := unix.Getresgid()
 	c.Value = fmt.Sprintf("uid %d/%d/%d gid %d/%d/%d", ru, eu, su, rg, eg, sg)
-	if ru == 0 || eu == 0 || su == 0 {
-		c.Status, c.Reason = Fail, "running as root; the fence refuses root in this release (run Abhed as an ordinary user)"
+	return rootVerdict(c, ru == 0 || eu == 0 || su == 0, abi)
+}
+
+// rootVerdict judges c for a process that is root or not, on Landlock ABI abi.
+func rootVerdict(c Check, root bool, abi int) Check {
+	if root {
+		if abi < rootLandlockABI {
+			c.Status, c.Reason = Fail, fmt.Sprintf("running as root, which the fence supports only with Landlock ABI %d (Linux 6.12), "+
+				"whose signal scoping keeps a command from signalling the host's other root processes; this host has ABI %d. "+
+				"Run Abhed as an ordinary user", rootLandlockABI, abi)
+			return c
+		}
+		c.Status, c.Reason = Pass, "running as root: each command drops every capability, empties its bounding set and locks the securebits, "+
+			"and Landlock scopes its signals"
 		return c
 	}
 	c.Status, c.Reason = Pass, "running as an ordinary user"

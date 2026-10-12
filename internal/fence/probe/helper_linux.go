@@ -94,6 +94,12 @@ func failed(format string, a ...any) helperOut {
 // helperNNP sets no_new_privs and becomes the would-be command, as the
 // launcher does, so the child stage sees what a command would hold.
 func helperNNP() helperOut {
+	// As root the launcher drops every capability first; so does this stand-in.
+	if os.Geteuid() == 0 {
+		if err := mountns.Drop(); err != nil {
+			return failed("dropping root's capabilities: %v", err)
+		}
+	}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return failed("setting no_new_privs: %v", err)
 	}
