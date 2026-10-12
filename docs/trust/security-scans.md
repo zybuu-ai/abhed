@@ -236,9 +236,9 @@ Recommended Fixes #1.**
 ### gosec
 
 **In CI.** The triaged findings below are the baseline in
-`deploy/ci/gosec-baseline.json`, keyed by rule and file. The workflow runs
-gosec at the version recorded here and fails only on a finding outside that
-baseline (`deploy/ci/gosec-gate.py`), so a new finding blocks a merge while
+`scripts/ci/gosec-baseline.json`, keyed by rule and file. The workflow runs
+gosec v2.29.0 on Linux and fails only on a finding outside that
+baseline (`scripts/ci/gosec-gate.py`), so a new finding blocks a merge while
 the known set does not keep the job permanently red. A fix that removes a
 finding, or a new one once it has been triaged here, is followed by
 `--update`, which rewrites the baseline from the current report.
@@ -508,6 +508,41 @@ for both — a TOCTOU race here requires local filesystem race access to a
 directory the operator (index.go) or the resolved session workspace
 (search.go) already controls; closing it with `os.Root` is a reasonable
 future hardening step but not urgent.
+
+#### Refreshed 12 October 2026 (1.2.8)
+
+The baseline had last been written at 1.2.4. Scanned again as CI scans
+(`GOOS=linux`, gosec v2.29.0, 531 files, no package that failed to load),
+72 triaged findings were no longer reported: errors now discarded
+explicitly (most of the G104s), git moved behind `internal/hostgit`, and
+reasoned `#nosec` notes. 32 findings, mostly in the microVM driver, had
+never been triaged. One was a real bug and is fixed; the rest are below.
+The baseline now holds 97 findings. The counts above are from the first
+scan and are kept as its record. gosec reads every file whatever its build tag,
+so the darwin-only files are scanned on Linux too.
+
+| Rule | file:line | Finding | Triage |
+|---|---|---|---|
+| G115 | cmd/abhed-microvm/main.go:54 (×2) | `-client-uid`/`-client-gid` converted to uint32 | **Fixed.** An id of 4294967296 or more wrapped, so `-client-uid 4294967296` named uid 0 for the image's user. Both ids must now be given and lie from 1 to 4294967294; the conversion stays, now bounded |
+| G115 | driver/archive/archive.go:308 | tar header mode int64 to FileMode | False positive: only `.Perm()`, the low nine bits, is kept |
+| G115 | driver/microvm/apply_unix.go:363, 424 | mode int64 to uint32 for chmod | False positive: masked to `0o777` in the same expression |
+| G115 | driver/microvm/apply_unix.go:65, 272 | `Stat_t.Dev` to uint64 | False positive: a device number compared with itself; it is int32 only on darwin, and never negative |
+| G115 | wsconn/wsconn.go:206 | frame length compared as uint64 | False positive: the comparison bounds it to the frame limit |
+| G115 | wsconn/wsconn.go:446 | message type to byte | False positive: only Text or Binary pass the check above it |
+| G204 | driver/drivertest/fake.go:353 | `/bin/sh` with arguments | Accepted: the conformance suite's fake driver, used only by tests |
+| G204 | driver/microvm/firecracker.go:221 | the configured jailer | Accepted: an operator-configured absolute path, checked at start; the arguments are built by the driver |
+| G204 | driver/microvm/guest/server.go:146, 149, 151 | the guest agent runs the shell or argv it is sent | Accepted: this is the guest agent's job; it runs inside the microVM, and what reaches it has passed the server's policy |
+| G204 | driver/microvm/helper.go:186, helper_darwin.go:80, 84, 92 | the VM helper and `codesign` | Accepted: the helper path is configured and its signature and folder checked before it runs; `codesign` is the system's, by absolute path |
+| G204 | driver/microvm/workspace_unix.go:44 | `mkfs.ext4` with a size and paths | Accepted: `mkfs_ext4` from the operator's settings, or `mkfs.ext4` from the driver's PATH; the paths are the driver's own build folder, and run as the asking user when the driver is root |
+| G301 | driver/microvm/microvm.go:343, 349; recover.go:55 | state folders made 0711 | Accepted: the image user must pass through them to its own folder; 0711 lets it list and read nothing |
+| G304 | cmd/abhed-microvm/main.go:90 | reads the `-config` file | Accepted: the operator's own settings file, decoded strictly |
+| G304 | config/managed.go:47 | reads the managed file | Accepted: the managed path fixed at build time, never from input |
+| G304 | driver/microvm/firecracker.go:288, 293 | copies a kernel or root filesystem image | Accepted: operator-configured absolute paths; the copy is opened `O_EXCL` |
+| G304 | driver/microvm/guest/tracker.go:151 | the guest reads a changed file to send it back | Accepted: inside the microVM, below the workspace it syncs |
+| G304 | driver/microvm/lock_unix.go:17 | the state folder's lock file | Accepted: `O_NOFOLLOW` in the driver's own folder |
+| G304 | driver/microvm/recover.go:41 | reads a marker it wrote | Accepted: a regular file the driver owns, at most 4 KiB, checked before reading |
+| G702 | app/hideenv_darwin.go:76 | `syscall.Exec` of this program | False positive: `os.Executable()`, the running program itself, with its own arguments |
+| G703 | auth/clitoken.go:289, 302 | reads the revoked-token list | False positive: the key file's path plus `.revoked`, fixed when the server starts |
 
 #### Single-instance rules
 

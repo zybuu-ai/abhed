@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -41,6 +42,10 @@ func run(args []string) error {
 	}
 	if *cfgPath == "" || *socket == "" {
 		return errors.New("-config and -socket are required")
+	}
+	// Out of range, an id would wrap: 4294967296 is uid 0.
+	if (*uid != -1 || *gid != -1) && (*uid <= 0 || *gid <= 0 || *uid >= math.MaxUint32 || *gid >= math.MaxUint32) {
+		return fmt.Errorf("-client-uid and -client-gid must both be given, each from 1 to %d", uint32(math.MaxUint32-1))
 	}
 	opts, err := loadOptions(*cfgPath)
 	if err != nil {
