@@ -264,23 +264,26 @@ const NetworkAllowlist = "allowlist"
 // managedOnly are the settings only the managed configuration may make. The
 // same key in the user's file or a trusted workspace's is set aside.
 var managedOnly = map[string]string{
-	"cli.mode_cycle":               "only the managed configuration narrows the Shift-Tab modes",
-	"record.dir":                   "only the managed configuration moves the record",
-	"record.retention_days":        "only the managed configuration sets how long the record is kept",
-	"record.witness":               "only the managed configuration says where the record's heads are witnessed",
-	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
-	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
-	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
-	"sandbox.network":              "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
-	"sandbox.microvm_socket":       "only the managed configuration names the microVM driver",
-	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
-	"egress.default":               "only the managed configuration sets which destinations commands reach",
-	"egress.mode":                  "only the managed configuration sets the egress mode",
-	"egress.record_paths":          "only the managed configuration sets what the egress record keeps",
-	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
-	"egress.inspect_tls":           "only the managed configuration has the egress proxy look inside HTTPS",
-	"control_plane.kubernetes":     "only the managed configuration configures the Kubernetes driver",
-	"control_plane.interceptors":   "only the managed configuration sets what admits sandbox calls",
+	"cli.mode_cycle":                     "only the managed configuration narrows the Shift-Tab modes",
+	"record.dir":                         "only the managed configuration moves the record",
+	"record.retention_days":              "only the managed configuration sets how long the record is kept",
+	"record.witness":                     "only the managed configuration says where the record's heads are witnessed",
+	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
+	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
+	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
+	"sandbox.network":                    "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
+	"sandbox.microvm_socket":             "only the managed configuration names the microVM driver",
+	"egress.rules":                       "only the managed configuration sets which destinations commands reach",
+	"egress.default":                     "only the managed configuration sets which destinations commands reach",
+	"egress.mode":                        "only the managed configuration sets the egress mode",
+	"egress.record_paths":                "only the managed configuration sets what the egress record keeps",
+	"egress.idle_seconds":                "only the managed configuration sets how long an idle egress connection lasts",
+	"egress.inspect_tls":                 "only the managed configuration has the egress proxy look inside HTTPS",
+	"control_plane.kubernetes":           "only the managed configuration configures the Kubernetes driver",
+	"control_plane.interceptors":         "only the managed configuration sets what admits sandbox calls",
+	"auth.bound_claims":                  "only the managed configuration sets which identity provider tokens are accepted",
+	"control_plane.ha.relay_peer":        "only the managed configuration names the replicas a relayed call is accepted from",
+	"control_plane.ha.relay_key_command": "only the managed configuration names a program serve runs for the relay key",
 }
 
 // containerManagedOnly are the container drivers' settings that reach more
@@ -305,10 +308,25 @@ func init() {
 }
 
 // ManagedOnly reports whether only the managed configuration may make the
-// setting at path.
+// setting at path, or the setting it is an entry of.
 func ManagedOnly(path string) bool {
-	_, ok := managedOnly[path]
+	_, _, ok := managedOnlyOf(path)
 	return ok
+}
+
+// managedOnlyOf is the managed-only setting path is, or is an entry of (a
+// map's entry is a setting of its own), and why.
+func managedOnlyOf(path string) (key, why string, ok bool) {
+	for p := path; ; {
+		if why, ok := managedOnly[p]; ok {
+			return p, why, true
+		}
+		i := strings.LastIndexByte(p, '.')
+		if i < 0 {
+			return "", "", false
+		}
+		p = p[:i]
+	}
 }
 
 // clearManagedOnly resets a managed-only setting to its default.
@@ -346,6 +364,12 @@ func clearManagedOnly(c *Config, key string) {
 		c.ControlPlane.Kubernetes = nil
 	case "control_plane.interceptors":
 		c.ControlPlane.Interceptors = nil
+	case "auth.bound_claims":
+		c.Auth.BoundClaims = nil
+	case "control_plane.ha.relay_peer":
+		c.ControlPlane.HA.RelayPeer = ""
+	case "control_plane.ha.relay_key_command":
+		c.ControlPlane.HA.RelayKeyCommand = nil
 	}
 	for engine, cc := range map[string]*ContainerDriverConfig{"docker": &c.ControlPlane.Docker, "podman": &c.ControlPlane.Podman} {
 		switch key {
@@ -386,8 +410,8 @@ func setAside(c *Config, file, layer string, data []byte) {
 			clearManagedOnly(c, k)
 			continue
 		}
-		if why, ok := managedOnly[k]; ok {
-			clearManagedOnly(c, k)
+		if key, why, ok := managedOnlyOf(k); ok {
+			clearManagedOnly(c, key)
 			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
 			continue
 		}
@@ -679,6 +703,10 @@ type AuthConfig struct {
 	// Workload is workload identity (SPIFFE) and token exchange, which the
 	// Enterprise edition serves. The Community Edition refuses enabled.
 	Workload WorkloadAuthConfig `json:"workload,omitempty"`
+	// BoundClaims holds the identity provider's bearer tokens to claim
+	// values: each claim named must match one of its values, exactly or, for
+	// one ending in *, by prefix. An edition's OIDC reads it; managed only.
+	BoundClaims map[string][]string `json:"bound_claims,omitempty"`
 	// GitHub restricts GitHub sign-in, which only the paid editions provide.
 	// The Community Edition validates these keys and otherwise ignores them.
 	GitHub GitHubAuthConfig `json:"github,omitempty"`
@@ -927,6 +955,17 @@ type HAConfig struct {
 	// LeaseSeconds is how long a replica's hold on a sandbox lasts without
 	// renewal; another replica takes it over after that.
 	LeaseSeconds int `json:"lease_seconds,omitempty"`
+	// RelayCertFile and RelayCertKeyFile are this replica's client certificate
+	// for relayed calls; RelayPeer is the identity the others' must carry
+	// (the certificate's own common name when unset). Managed only: RelayPeer.
+	RelayCertFile    string `json:"relay_cert_file,omitempty"`
+	RelayCertKeyFile string `json:"relay_cert_key_file,omitempty"`
+	RelayPeer        string `json:"relay_peer,omitempty"`
+	// RelayKeyVault ("entry#field" in Vault KV) and RelayKeyCommand (a
+	// program and its arguments that prints the key) are the relay key's
+	// other sources. Managed only: RelayKeyCommand, since it runs a program.
+	RelayKeyVault   string   `json:"relay_key_vault,omitempty"`
+	RelayKeyCommand []string `json:"relay_key_command,omitempty"`
 }
 
 // InterceptorConfig is one admission hook on the sandbox API. Enterprise only.
@@ -1739,6 +1778,12 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Auth.Workload.validate(); err != nil {
+		return err
+	}
+	if err := ValidateBoundClaims("auth.bound_claims", c.Auth.BoundClaims); err != nil {
+		return err
+	}
+	if err := c.ControlPlane.HA.validateRelay(); err != nil {
 		return err
 	}
 	if c.Auth.Mode == "oidc" && c.Auth.Issuer == "" && c.Auth.Provider == "" {

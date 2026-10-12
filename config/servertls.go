@@ -29,13 +29,16 @@ func (c Config) ResolvedTLS(workspace string) ServerTLSConfig {
 	return t
 }
 
-// ResolvedHA is control_plane.ha with its relay key and CA files made
-// absolute for workspace: the files serve protects as state, and the ones
-// an edition's replicas read.
+// ResolvedHA is control_plane.ha with the relay settings it leaves unset
+// taken from their ABHED_HA_RELAY_* variables, and its files made absolute
+// for workspace: the files serve protects as state, and the ones an
+// edition's replicas read.
 func (c Config) ResolvedHA(workspace string) HAConfig {
-	h := c.ControlPlane.HA
+	h := c.ControlPlane.HA.withRelayEnv()
 	h.RelayKeyFile = serverPath(workspace, h.RelayKeyFile)
 	h.RelayCAFile = serverPath(workspace, h.RelayCAFile)
+	h.RelayCertFile = serverPath(workspace, h.RelayCertFile)
+	h.RelayCertKeyFile = serverPath(workspace, h.RelayCertKeyFile)
 	return h
 }
 
@@ -83,7 +86,7 @@ func (c Config) ServerSecretFiles(workspace string) []string {
 		}
 	}
 	if ha := c.ResolvedHA(workspace); ha.Enabled {
-		for _, p := range []string{ha.RelayKeyFile, ha.RelayCAFile} {
+		for _, p := range []string{ha.RelayKeyFile, ha.RelayCAFile, ha.RelayCertKeyFile} {
 			if p != "" {
 				out = append(out, p)
 			}

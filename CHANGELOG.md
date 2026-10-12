@@ -727,6 +727,14 @@ All notable changes to Abhed are recorded here. The format follows
   its own sign-in method through `auth.CLILoginAdvertiser`. When a method's
   device page is on another host (an identity provider), the prompt says to
   sign in there rather than to the server.
+- Configuration keys for settings the paid editions read only from the
+  environment until now: `auth.bound_claims` (`ABHED_OIDC_BOUND_CLAIMS`) and
+  `control_plane.ha.relay_cert_file`, `relay_cert_key_file`, `relay_peer`,
+  `relay_key_vault` and `relay_key_command` (`ABHED_HA_RELAY_*`). The claims,
+  the peer and the key command are managed only; the variables still apply
+  where a key is unset. `Config.OIDCBoundClaims` and `Config.ResolvedHA`
+  give an edition the result, and the relay's client key is state the agent
+  cannot reach. A managed-only map's entries are set aside with it.
 - `abhed egress-proxy -listen ADDR -config FILE` serves the egress allowlist
   on its own, for a sandbox whose only way out is to it (a Kubernetes egress
   pod): every connection on its port is one call's, each decision is a JSON
