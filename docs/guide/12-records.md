@@ -309,7 +309,8 @@ whatever the server sent, and holds a lock per session so concurrent writers
 make one chain. The control plane's `sandbox_audit` is chained per tenant the
 same way. `abhed record verify [session ...]` with `storage.driver: postgres`
 walks each chain in the database (with no session named, the 100000 most
-recent, and it says so when there are more) and reports the first event that was
+recent, deleted and subagent sessions among them and marked so, and it says
+so when there are more) and reports the first event that was
 changed, removed or reordered; events written before 1.2.8 are counted as
 unchained, not as broken. The runtime role cannot change a row, but the
 tables' owner can, and can recompute the chain: with `record.witness` each

@@ -43,6 +43,34 @@ func (p *Postgres) VerifyChain(ctx context.Context, sessionID string) (ChainRepo
 	return r, nil
 }
 
+// ChainSession is a session whose events a chain covers.
+type ChainSession struct {
+	ID       string
+	Deleted  bool // erased by key; its rows and chain stay
+	Subagent bool // a subagent's own session, listed under its parent
+}
+
+// ChainSessions lists every session of the tenant whose events are chained,
+// newest first and at most limit: deleted and subagent sessions too, which
+// ListSessions leaves out.
+func (p *Postgres) ChainSessions(ctx context.Context, limit int) ([]ChainSession, error) {
+	rows, err := p.pool.Query(ctx, `SELECT id, deleted_at IS NOT NULL, parent_id IS NOT NULL
+		FROM sessions ORDER BY started_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list the sessions to verify: %w", err)
+	}
+	defer rows.Close()
+	var out []ChainSession
+	for rows.Next() {
+		var s ChainSession
+		if err := rows.Scan(&s.ID, &s.Deleted, &s.Subagent); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // ChainHashAt is the hash of a session's event at chain position pos, and
 // whether there is one, for checking a head a witness holds.
 func (p *Postgres) ChainHashAt(ctx context.Context, sessionID string, pos int64) (string, bool, error) {

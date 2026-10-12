@@ -1156,7 +1156,8 @@ All notable changes to Abhed are recorded here. The format follows
 - Postgres events are hash-chained per session by the database itself
   (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
   sends), as is the control plane's `sandbox_audit` per tenant. `abhed
-  record verify` with `storage.driver: postgres` walks each chain, and with a
+  record verify` with `storage.driver: postgres` walks each chain, deleted
+  and subagent sessions' too, and with a
   witness each session's head is sent at the end of every run.
 - Deleting a Postgres session now erases what it said: payloads and file
   pre-images are sealed with a per-session key, and delete removes the key,
@@ -2008,8 +2009,8 @@ All notable changes to Abhed are recorded here. The format follows
 - `store/witness` (`Open`, `Config`, `Statement`, `Witness`) sends the
   record's heads to a witness, and `Read`, `Check` (against the
   installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
-  `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
-  and `ChainHashAt`, `store.ChainReport`, `store/local.Store.HashAt` and
+  `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`,
+  `ChainHashAt` and `ChainSessions` (with `store.ChainSession`), `store.ChainReport`, `store/local.Store.HashAt` and
   `Pruned` (with `Tombstone`), and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
   tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
   `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.

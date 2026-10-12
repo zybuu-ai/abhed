@@ -296,4 +296,17 @@ func TestRecordVerifyPostgresWitnessAfterDelete(t *testing.T) {
 	if code := verifyPostgres(cfg, []string{"-witness", heads, "-witness-key", keyFile, id}, &out, &errb); code != 0 || strings.Contains(out.String(), "FAILED") {
 		t.Fatalf("a deleted session failed against the witness: %d %s %s", code, out.String(), errb.String())
 	}
+	// With no session named, deleted and subagent sessions are walked too, and said to be.
+	child := "sess-sub-" + newConversationID()
+	if err := pg.CreateSubagentSession(ctx, child, id, "helper"); err != nil {
+		t.Fatal(err)
+	}
+	cr := agent.NewRecorder(pg, child, "")
+	_, _ = cr.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+	out.Reset()
+	verifyPostgres(cfg, nil, &out, &errb)
+	if !strings.Contains(out.String(), "ok      "+id+": 2 chained event(s)") || !strings.Contains(out.String(), "(deleted, erased by key)") ||
+		!strings.Contains(out.String(), "ok      "+child+": 1 chained event(s)") || !strings.Contains(out.String(), "(a subagent's)") {
+		t.Fatalf("verify left out the deleted or the subagent session: %s %s", out.String(), errb.String())
+	}
 }
