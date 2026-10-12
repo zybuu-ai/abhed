@@ -29,10 +29,11 @@ type templateRequest struct {
 }
 
 func (s *Server) templateRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/sandbox-templates", s.createTemplate)
-	mux.HandleFunc("GET /v1/sandbox-templates", s.listTemplates)
-	mux.HandleFunc("GET /v1/sandbox-templates/{name}", s.getTemplate)
-	mux.HandleFunc("DELETE /v1/sandbox-templates/{name}", s.deleteTemplate)
+	h := s.sandboxAPI
+	mux.HandleFunc("POST /v1/sandbox-templates", h(s.createTemplate))
+	mux.HandleFunc("GET /v1/sandbox-templates", h(s.listTemplates))
+	mux.HandleFunc("GET /v1/sandbox-templates/{name}", h(s.getTemplate))
+	mux.HandleFunc("DELETE /v1/sandbox-templates/{name}", h(s.deleteTemplate))
 }
 
 func writeTemplate(w http.ResponseWriter, status int, t controlplane.Template) {

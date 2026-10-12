@@ -174,7 +174,10 @@ commands and terminals run in that sandbox (see
 [per-session sandboxes](../guide/22-sandboxes.md#per-session-sandboxes)).
 This turns on `control_plane.enabled` and `control_plane.per_session` for
 the run; `abhed serve` says so on its `sessions` line, and refuses to start
-when the session driver cannot be used. A server with exactly one local
+when the session driver cannot be used. The sandbox API it turns on with
+them (`/v1/sandboxes`, `/v1/sandbox-templates`) answers administrators only,
+so no account can make sandboxes of its own; set `control_plane.enabled`
+yourself to open it to every account. A server with exactly one local
 account and no sign-up keeps the shared workspace, and refuses a session
 for any other account added while it runs, until it is restarted. Sign-in
 off is one person and unchanged.

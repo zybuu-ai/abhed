@@ -165,14 +165,15 @@ func (s *Server) sandboxRoutes(mux *http.ServeMux) {
 	if s.opts.ControlPlane == nil {
 		return
 	}
-	mux.HandleFunc("POST /v1/sandboxes", s.createSandbox)
-	mux.HandleFunc("GET /v1/sandboxes", s.listSandboxes)
+	h := s.sandboxAPI
+	mux.HandleFunc("POST /v1/sandboxes", h(s.createSandbox))
+	mux.HandleFunc("GET /v1/sandboxes", h(s.listSandboxes))
 	// One segment may not mix a wildcard and a literal, so a verb arrives
 	// in the same wildcard as the id and is split off at its last ':'.
-	mux.HandleFunc("GET /v1/sandboxes/{target}", s.sandboxTarget)
-	mux.HandleFunc("POST /v1/sandboxes/{target}", s.sandboxTarget)
-	mux.HandleFunc("PATCH /v1/sandboxes/{target}", s.sandboxTarget)
-	mux.HandleFunc("DELETE /v1/sandboxes/{target}", s.sandboxTarget)
+	mux.HandleFunc("GET /v1/sandboxes/{target}", h(s.sandboxTarget))
+	mux.HandleFunc("POST /v1/sandboxes/{target}", h(s.sandboxTarget))
+	mux.HandleFunc("PATCH /v1/sandboxes/{target}", h(s.sandboxTarget))
+	mux.HandleFunc("DELETE /v1/sandboxes/{target}", h(s.sandboxTarget))
 	s.templateRoutes(mux)
 	// Exposed services, behind the same sign-in; each answers its owner only.
 	// Registered per method: a method-less pattern would clash with "GET /".
@@ -180,6 +181,22 @@ func (s *Server) sandboxRoutes(mux *http.ServeMux) {
 		for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
 			mux.Handle(m+" "+s.opts.Expose.Prefix(), s.opts.Expose.Guard(s.mayUseExposure))
 		}
+	}
+}
+
+// sandboxAPI refuses a caller who is not an administrator when the API was
+// not asked for, only the per-session sandboxes it serves (SandboxAPIAdminOnly).
+func (s *Server) sandboxAPI(h http.HandlerFunc) http.HandlerFunc {
+	if !s.opts.SandboxAPIAdminOnly {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.IsAdmin(r) {
+			writeCPError(w, http.StatusForbidden, "forbidden",
+				"the sandbox API is for administrators here: it was turned on to give each session a sandbox; set control_plane.enabled to open it to every account")
+			return
+		}
+		h(w, r)
 	}
 }
 

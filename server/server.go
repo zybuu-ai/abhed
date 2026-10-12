@@ -337,6 +337,10 @@ type Options struct {
 	// ControlPlane, when set, serves /v1/sandboxes from it and joins the
 	// readiness check. Nil leaves the routes unregistered.
 	ControlPlane *controlplane.Service
+	// SandboxAPIAdminOnly answers /v1/sandboxes and /v1/sandbox-templates
+	// for administrators only: the control plane was turned on to give each
+	// session a sandbox, not to let every account make its own.
+	SandboxAPIAdminOnly bool
 	// Expose serves the control plane's :expose and the exposed services'
 	// path; nil, or off, and :expose answers 501.
 	Expose *expose.Server

@@ -84,7 +84,9 @@ All notable changes to Abhed are recorded here. The format follows
   with none yet), now gives each session a sandbox of its own: it turns on
   `control_plane.enabled` and `control_plane.per_session` for the run, and
   refuses to start when the session driver cannot be used or
-  `control_plane.shared_workspace` is set. Set `"server":
+  `control_plane.shared_workspace` is set. Turned on this way, the sandbox
+  API (`/v1/sandboxes`, `/v1/sandbox-templates`) answers administrators
+  only; set `control_plane.enabled` to open it to every account. Set `"server":
   {"shared_sessions": true}` to keep every account in the server's one
   workspace as before. A server with a single local account is unchanged,
   but refuses a session for another account added while it runs.
