@@ -133,6 +133,15 @@ Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.De
 },
 ```
 
+The `tool`, `args` and `d.Reason` passed to `Approve`, and the arguments in
+events, are the model's, unescaped: a value can hold a right-to-left
+override, a terminal escape or a zero-width character that makes it read as
+something else. **Showing them to a person is the embedder's duty:** pass
+what you display through `abhed.Visible` (or `abhed.VisibleLine` for a
+one-line field), which marks every character that would not print as
+itself, and consider refusing a call outright when `abhed.ArgsHidden(args)`
+is true, as the CLI's prompt warns of one.
+
 Inside `Approve`, `abhed.CallIDOf(ctx)` is the call id its tool call events
 carry (empty for a call the model wrote as prose), and
 `abhed.RequestIDOf(ctx)` is the id of its `action.requested` event, unique in

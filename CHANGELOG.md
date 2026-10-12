@@ -947,6 +947,9 @@ on. A server with it off starts on the older schema as before.
 - `config.LoadOptions.Warn`, `config.Overrides.Warn` and
   `config.LoadManagedWith` route a load's warnings to the caller instead of
   stderr.
+- `sdk.Visible`, `sdk.VisibleLine` and `sdk.ArgsHidden` mark the characters
+  in a call's arguments that would not print as themselves; the SDK guide
+  says showing `Approve`'s arguments safely is the embedder's duty.
 
 ## [1.2.7] - 2026-10-07
 

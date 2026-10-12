@@ -217,6 +217,11 @@ The session has the CLI's tool set, subagents, MCP servers, skills and the
 other tools the configuration enables included. There is no approver, so a
 call that needs approval, a subagent's too, is refused.
 
+A tool call's arguments in the events are the model's, unescaped: a value
+can hold a right-to-left override, a terminal escape or a zero-width
+character. A caller that shows them to a person must mark such characters
+first; a Go caller can use `abhed.Visible` from the SDK.
+
 Commands run in the sandbox tier the workspace's configuration sets
 (`sandbox.min_tier`, `process` by default), as from the terminal: `start`
 answers `{"type":"error"}` when no backend meets that tier, rather than running
