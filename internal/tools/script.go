@@ -54,11 +54,11 @@ func ReadScript(p string, direct bool) (text string, shell bool, err error) {
 	if err != nil {
 		return "", false, err
 	}
-	b := append(head, rest...)
-	if len(b) > MaxScriptBytes {
+	head = append(head, rest...)
+	if len(head) > MaxScriptBytes {
 		return "", false, ErrScriptTooLong
 	}
-	return string(b), true, nil
+	return string(head), true, nil
 }
 
 // shebangProgram is the program a #! line names, past env and its options.
