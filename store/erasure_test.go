@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -81,5 +82,25 @@ func TestDeleteErasesWhatTheSessionSaid(t *testing.T) {
 	// The chain still covers the sealed rows.
 	if r, err := other.VerifyChain(ctx, id); err != nil || !r.OK() || r.Rows != 2 {
 		t.Fatalf("chain after erasure %+v, %v", r, err)
+	}
+	// No replica writes to it afterwards: a cold one has no key to seal with,
+	// and a warmed one still holds the old key.
+	late := "written after the erasure"
+	for name, q := range map[string]agent.Store{"cold": openStore(t, "default"),
+		"cold held": openStore(t, "default").HeldBy("node-x", nil), "warmed": other} {
+		if err := q.Append(ev(id, 3, agent.EvAgentMessage, agent.Trusted, map[string]string{"text": late})); !errors.Is(err, ErrSessionDeleted) {
+			t.Fatalf("%s store: append after delete = %v; want ErrSessionDeleted", name, err)
+		}
+	}
+	for name, q := range map[string]*Postgres{"cold": openStore(t, "default"), "warmed": other} {
+		if err := q.SaveCheckpoint(ctx, id, 3, "/w/f", []byte(late)); !errors.Is(err, ErrSessionDeleted) {
+			t.Fatalf("%s store: checkpoint after delete = %v; want ErrSessionDeleted", name, err)
+		}
+	}
+	var clear int
+	_ = p.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM events WHERE session_id = $1 AND seq > 2)
+		+ (SELECT count(*) FROM checkpoints WHERE session_id = $1 AND event_seq > 1)`, id).Scan(&clear)
+	if clear != 0 {
+		t.Fatalf("%d rows written to the deleted session", clear)
 	}
 }

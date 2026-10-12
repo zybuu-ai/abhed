@@ -291,7 +291,9 @@ pretending:
   when. Every replica reads a session's key from the database on each read
   rather than from memory, so once the delete commits no server that shares
   the database opens those payloads again; an audit export over the time
-  range shows the deleted session's events as `{"erased":true}`. What
+  range shows the deleted session's events as `{"erased":true}`. A write to a
+  deleted session, such as a run another server still holds, is refused
+  rather than stored. What
   erasure does not reach: sessions recorded before 1.2.8, whose
   payloads were never sealed; a database backup taken before the delete,
   which still holds the key until it expires; and, until `VACUUM` runs, the

@@ -426,7 +426,7 @@ func (p *Postgres) HeldBy(holder string, refused func(sessionID string)) *Held {
 // Otherwise it answers ErrNotHolder and takes no seq.
 func (h *Held) Append(ev agent.Event) error {
 	err := h.appendAs(ev, h.holder)
-	if errors.Is(err, ErrNotHolder) && h.refused != nil {
+	if (errors.Is(err, ErrNotHolder) || errors.Is(err, ErrSessionDeleted)) && h.refused != nil {
 		h.refused(leaseSession(ev))
 	}
 	return err
@@ -464,7 +464,8 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 		tag, err = p.pool.Exec(ctx, `
 			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
 			                    payload, actor, trust, created_at)
-			VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
+			SELECT $1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10
+			WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE id = $2 AND deleted_at IS NOT NULL)
 			ON CONFLICT (session_id, seq) DO NOTHING`,
 			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
 			stored, string(ev.Actor), string(ev.Trust), ev.CreatedAt)
@@ -490,6 +491,9 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
 	if tag.RowsAffected() == 0 {
+		if err := p.deletedErr(ctx, ev.SessionID); err != nil {
+			return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
+		}
 		if holder != "" {
 			var mine bool
 			if err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions s
@@ -728,6 +732,9 @@ func (p *Postgres) GetSession(ctx context.Context, id string) (SessionRecord, er
 }
 
 var ErrNotFound = errors.New("not found")
+
+// ErrSessionDeleted refuses a write to a deleted session.
+var ErrSessionDeleted = errors.New("the session was deleted")
 
 // ErrStepTaken is an append of a different event at a step already recorded.
 var ErrStepTaken = agent.ErrStepTaken
@@ -1157,10 +1164,14 @@ func (p *Postgres) SaveCheckpoint(ctx context.Context, sessionID string, seq int
 	if before, err = sealBlob(a, sessionID, seq, before); err != nil {
 		return err
 	}
-	_, err = p.pool.Exec(ctx, `
+	tag, err := p.pool.Exec(ctx, `
 		INSERT INTO checkpoints (id, session_id, tenant_id, event_seq, path, before)
-		VALUES ($1,$2,$3,$4,$5,$6)`,
+		SELECT $1,$2,$3,$4,$5,$6
+		WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE id = $2 AND deleted_at IS NOT NULL)`,
 		fmt.Sprintf("%s-%d", sessionID, seq), sessionID, p.tenant, seq, path, before)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = fmt.Errorf("session %s: %w", sessionID, ErrSessionDeleted)
+	}
 	return err
 }
 

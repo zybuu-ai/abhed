@@ -1160,7 +1160,8 @@ All notable changes to Abhed are recorded here. The format follows
 - Deleting a Postgres session now erases what it said: payloads and file
   pre-images are sealed with a per-session key, and delete removes the key,
   the session's label and title, and its approvals' arguments. The event
-  rows and their hashes stay. Sessions recorded before 1.2.8 are not sealed.
+  rows and their hashes stay, and a later write to the session, from any
+  server, is refused. Sessions recorded before 1.2.8 are not sealed.
 - `abhed doctor` names, under the egress allowlist, each deny rule
   narrowed by a path, which other spellings of the path step around, and
   advises allowing the paths needed instead.

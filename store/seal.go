@@ -31,9 +31,9 @@ var erasedPayload = json.RawMessage(`{"erased":true}`)
 var sealedBlob = []byte("abhed.sealed.v1:")
 
 // sealer returns the session's cipher for a write, making its key when the
-// session has none and is not deleted. Nil with no error means the session
-// has no key: written before keys, or erased. Reads never use this cache: see
-// readKeys.
+// session has none. A deleted session answers ErrSessionDeleted, so nothing is
+// written to it in the clear; nil with no error means no row, which the
+// insert's foreign key refuses. Reads never use this cache: see readKeys.
 func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, error) {
 	if a, ok := p.keys.load(sessionID); ok {
 		return a, nil
@@ -58,7 +58,7 @@ func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, e
 		}
 	}
 	if key == nil {
-		return nil, nil
+		return nil, p.deletedErr(ctx, sessionID)
 	}
 	a, err := newAEAD(sessionID, key)
 	if err != nil {
@@ -123,6 +123,21 @@ func newAEAD(sessionID string, key []byte) (cipher.AEAD, error) {
 		return nil, fmt.Errorf("the key of session %s: %w", sessionID, err)
 	}
 	return cipher.NewGCM(block)
+}
+
+// deletedErr is ErrSessionDeleted when the session is deleted, nil when it is
+// open or has no row.
+func (p *Postgres) deletedErr(ctx context.Context, sessionID string) error {
+	var deleted bool
+	err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND deleted_at IS NOT NULL)`,
+		sessionID).Scan(&deleted)
+	if err != nil {
+		return fmt.Errorf("read session %s: %w", sessionID, err)
+	}
+	if deleted {
+		return fmt.Errorf("session %s: %w", sessionID, ErrSessionDeleted)
+	}
+	return nil
 }
 
 func (p *Postgres) sessionKey(ctx context.Context, sessionID string) ([]byte, error) {
