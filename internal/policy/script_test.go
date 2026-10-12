@@ -84,9 +84,8 @@ func TestRulesReadTheScriptsACommandRuns(t *testing.T) {
 	}
 }
 
-// A script is read from the folder it will run in, and as the line leaves
-// it: one run after a cd, or after the line copies or writes over it, is
-// refused under a deny rule rather than judged on the file in the start folder.
+// A script run after a cd, a write over it or a PATH change is refused under
+// a deny rule rather than judged on the file in the start folder.
 func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing.T) {
 	ws := t.TempDir()
 	write := func(rel, text string) {

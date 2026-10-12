@@ -11,9 +11,8 @@ import (
 // nested text included; past it a word with braces hides what it makes.
 const braceBudget = 16 << 10
 
-// braces reads a command's words with their brace expansions made, as bash
-// does before any other expansion: the commands the words make are read as
-// commands of their own, at any depth.
+// braces reads the command c's words make once their braces are expanded,
+// as a command of its own.
 func (f *shellFacts) braces(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 	if f.inBraces || !hasBraceText(c.Args) {
 		return

@@ -146,9 +146,8 @@ func TestIFSCause(t *testing.T) {
 	}
 }
 
-// A word's braces are read as the words bash makes of them, at any depth,
-// as bash 3.2 and later versions each read them; only an expansion past the
-// budget hides its words.
+// Braces are read as the words each bash version makes of them, at any
+// depth; only an expansion past the budget hides its words.
 func TestBracesAreReadAsTheWordsTheyMake(t *testing.T) {
 	for command, want := range map[string][]string{
 		"mkdir -p src/{a,b}":             {"mkdir -p src/a src/b"},

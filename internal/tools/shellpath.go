@@ -18,9 +18,8 @@ const (
 	pathBuilt     = "\x00"
 )
 
-// setsVar reads an assignment to a variable that changes which file runs:
-// PATH, where a name without a folder is found, and BASH_ENV and ENV, the
-// file a shell reads as it starts.
+// setsVar reads an assignment that changes which file runs: PATH, or the
+// start-up file BASH_ENV or ENV names.
 func (f *shellFacts) setsVar(a *syntax.Assign) {
 	if a.Name == nil || a.Naked {
 		return
@@ -90,9 +89,8 @@ func (f *shellFacts) startupFile(name, value string, lit bool) {
 	}
 }
 
-// pathEntries records the folders a PATH value names: an empty entry or
-// $PWD is the current folder, $PATH what it held; any other expansion
-// leaves the folders unknown.
+// pathEntries records the folders a PATH value names; an empty entry or
+// $PWD is the current folder, and another expansion leaves them unknown.
 func (f *shellFacts) pathEntries(value string) {
 	for _, e := range strings.Split(value, ":") {
 		switch {

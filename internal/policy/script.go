@@ -34,9 +34,8 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 	return out
 }
 
-// lineWrites are the files the lines around a script write: a script they
-// replace is read as it will be, which the check cannot do. pathSet and
-// pathDirs are the PATH they set, which a script started from them inherits.
+// lineWrites are the files the lines around a script write, and the PATH
+// they set, which a script started from them inherits.
 type lineWrites struct {
 	files    []string
 	hidden   string
@@ -151,11 +150,8 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 	return moves
 }
 
-// pathScripts are the scripts canon runs, with each program named without a
-// folder that a PATH the line sets finds as a file in a folder it names, so
-// PATH=sub tool is read as sub/tool. why says what cannot be read: a script
-// sourced by a name such a PATH may find, or a program it may find in a
-// file the line writes first.
+// pathScripts are the scripts canon runs, with each bare program looked up in
+// the folders a PATH the line sets names; why says what cannot be read.
 func pathScripts(canon tools.Canonical, writes lineWrites) (scripts []tools.Script, why string) {
 	scripts = canon.Scripts()
 	if why := canon.StartupHidden(); why != "" {

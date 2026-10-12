@@ -19,9 +19,8 @@ func (f *shellFacts) wrote(name string) {
 	f.writes = append(f.writes, name)
 }
 
-// placeAndWrites notes what a command does to the folder later commands run
-// in, and the files it writes, so a script is not read from the wrong
-// folder or before the line replaces it.
+// placeAndWrites notes a change of folder and the files a command writes, so
+// a script is not read from the wrong folder or before the line replaces it.
 func (f *shellFacts) placeAndWrites(name string, args []*syntax.Word) {
 	switch name {
 	case "cd", "pushd", "popd":
@@ -217,9 +216,8 @@ func (f *shellFacts) namedOutput(name string, args []*syntax.Word, short, long, 
 // shortCluster reports a word of short options: -x or -xyz.
 func shortCluster(v string) bool { return len(v) > 1 && v[0] == '-' && v[1] != '-' }
 
-// clusterValue is the value of letter in the short cluster args[j]: the rest
-// of the word, or the next word when it ends the cluster. It returns "" for a
-// value built from an expansion or missing, and the index of the last word used.
+// clusterValue is letter's value in the cluster args[j], "" when built or
+// missing, and the index of the last word used.
 func clusterValue(args []*syntax.Word, j int, letter byte) (string, int) {
 	v, _ := literal(args[j])
 	if rest := v[strings.IndexByte(v, letter)+1:]; rest != "" {

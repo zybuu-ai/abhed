@@ -797,10 +797,8 @@ func (c Canonical) Unparsed() bool { return c.shell.unparsed }
 // a shell's script operand, source and . files, and programs named by a path.
 func (c Canonical) Scripts() []Script { return c.shell.scripts }
 
-// Writes are the literal files the command writes: its output redirections'
-// targets and what cp, mv, ln, install, rsync, tee, dd, sed -i, perl -i,
-// curl -o and wget -O write. A copy into a folder is also named as the file
-// it makes there.
+// Writes are the literal files the command writes, by redirection or a
+// copying command; a copy into a folder is named as the file it makes there.
 func (c Canonical) Writes() []string { return c.shell.writes }
 
 // WriteHidden says why a file the command writes is not known, as one named

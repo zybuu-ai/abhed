@@ -86,14 +86,12 @@ type shellFacts struct {
 	moves bool
 	// scriptsCut reports scripts past maxScripts that were not recorded.
 	scriptsCut bool
-	// braced reports a word read through its brace expansion, braceHidden
-	// one whose expansion could not be read, and braceWords the words made
-	// so far; inBraces is set while the words made are read.
+	// braced reports braces expanded and braceHidden ones that could not be;
+	// braceWords counts the words made, inBraces is set while they are read.
 	braced, braceHidden, inBraces bool
 	braceWords                    int
-	// pathSet reports PATH set, pathDirs the folders its literal values
-	// name, and pathUnknown one built from another expansion; bare are the
-	// programs named without a folder, and bareCut those past maxBare.
+	// pathSet reports PATH set, pathDirs the folders it names, pathUnknown
+	// one it builds; bare are programs named without a folder.
 	pathSet, pathUnknown, bareCut bool
 	pathDirs, bare                []string
 	// startupHidden says why a shell start-up file the command sets is not known.
