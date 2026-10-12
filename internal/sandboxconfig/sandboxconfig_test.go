@@ -241,7 +241,9 @@ func TestEnclosingStateThroughALinkedWorkspaceIsRefused(t *testing.T) {
 
 // Only the files a run loads count above the workspace, and nothing in a
 // folder anyone may write, such as /tmp: another user could otherwise stop
-// every workspace under it from starting.
+// every workspace under it from starting. The files here are this user's, so
+// this proves the sticky-folder skip; another user's file left uncounted
+// would need a second account, which a test run without root does not have.
 func TestAncestorStateCountsOnlyWhatARunLoads(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

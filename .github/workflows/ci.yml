@@ -471,16 +471,18 @@ jobs:
         run: scripts/ci/case-fold.sh "$RUNNER_TEMP/case"
 
       # The Seatbelt profile is only exercised on macOS: every process-sandbox
-      # boundary test must run here, none skipped.
+      # boundary test must run here, none skipped, with the probe that a
+      # command cannot reach LaunchServices to open a URL or an app.
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
             echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
           fi
           for t in TestProcessSandboxRefusesANewGitFile TestProcessSandboxProtectsNestedRepositories \
-                   TestProcessSandboxDeniesHomeSecretsThroughALink; do
+                   TestProcessSandboxDeniesHomeSecretsThroughALink \
+                   TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done
           echo "$(grep -c -- "--- PASS" seatbelt.log) boundary tests ran under Seatbelt"
