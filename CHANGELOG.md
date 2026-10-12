@@ -697,6 +697,10 @@ on. A server with it off starts on the older schema as before.
 
 ### Fixed
 
+- Before Linux 6.14 the kernel counts a fork refused at a session's
+  `pids.max` in the command's own cgroup, not the session's, so the fence
+  missed refused forks counted below the cgroup it read. Refused forks are
+  now counted across the subtree, under either kernel behaviour.
 - Stopping a container tier command or terminal on Podman waited ten seconds
   for the container's first process to ignore SIGTERM before killing it, so
   a cancel held the call that long; the container is now removed at once.

@@ -497,9 +497,16 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	leaf := sv.leaf
-	// In a PID namespace the launcher names the command by its pid there.
+	// In a PID namespace the launcher names the command by its pid there,
+	// and stays as init until the command has ended: its exit, the status the
+	// caller reads, comes before the leaf is removed, which would kill it.
+	initfd := -1
 	if sv.pidns {
 		rep.PID = hostPid(leaf.Path(), rep.PID)
+		if fd, err := unix.PidfdOpen(hostPid(leaf.Path(), 1), 0); err == nil {
+			initfd = fd
+			defer func() { _ = unix.Close(fd) }()
+		}
 	}
 	pidfd, err := unix.PidfdOpen(rep.PID, 0)
 	if err != nil || !slices.Contains(leafPids(leaf.Path()), rep.PID) {
@@ -510,6 +517,12 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	defer func() { _ = unix.Close(pidfd) }()
+	waitExit := func(fd int) {
+		waitExit(fd)
+		if initfd >= 0 {
+			waitExitFor(initfd, 5*time.Second)
+		}
+	}
 	// Refused, the launcher finds the channel closed and exits 126 on its own.
 	refuse := func() {
 		_ = sv.ours.Close()
@@ -591,6 +604,16 @@ func readReport(ctx context.Context, ch *os.File, abandoned <-chan struct{}) (fe
 			return rep, fmt.Errorf("the launcher's report cannot be read: %w", err)
 		}
 		return rep, nil
+	}
+}
+
+// waitExitFor is waitExit for at most d.
+func waitExitFor(pidfd int, d time.Duration) {
+	done := make(chan struct{})
+	go func() { waitExit(pidfd); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
 	}
 }
 
