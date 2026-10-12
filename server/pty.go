@@ -637,7 +637,7 @@ loop:
 	})
 }
 
-// ptyFor finds one of the caller's running commands. A terminal lives in this
+// ptyFor finds one of the caller's own running commands. A terminal lives in this
 // process, so a session that is not live here has none to find.
 func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *ptyRun, bool) {
 	id := r.PathValue("id")
@@ -649,7 +649,9 @@ func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *
 	live.mu.Lock()
 	run := live.ptys[r.PathValue("pty")]
 	live.mu.Unlock()
-	if run == nil {
+	// Started by someone else, such as the owner before the session changed
+	// hands: not this caller's to drive, as listShells does not offer it.
+	if run == nil || run.user != UserOf(r.Context()) {
 		WriteError(w, http.StatusNotFound, "that command is not running")
 		return nil, nil, false
 	}
