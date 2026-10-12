@@ -672,7 +672,7 @@ func TestForkToAMissingStepClaimsNothing(t *testing.T) {
 func TestCLIUserIsNeverAReservedOwner(t *testing.T) {
 	for user, want := range map[string]string{
 		"unclaimed:bob": "local", "Nobody:x": "local", "github:alice": "local", "local:eve": "local",
-		"agent": "local", "Anonymous": "local", "": "local", "yuvraj": "yuvraj",
+		"agent": "local", "Anonymous": "local", "": "local", "alice": "alice",
 	} {
 		t.Setenv("USER", user)
 		if got := cliUser(); got != want {
