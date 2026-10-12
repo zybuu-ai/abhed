@@ -22,9 +22,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
-// statuslineTimeout bounds one run of the statusline command: it runs on
-// every redraw of the status and must never hold the session.
-var statuslineTimeout = 300 * time.Millisecond
+// statuslineTimeout bounds one run of the statusline command. It runs in the
+// background, one at a time and at most once a second, so it never holds the
+// session; a loaded macOS host took over 300 ms just to start the sandbox.
+var statuslineTimeout = time.Second
 
 // statuslineMax bounds what is read of its output.
 const statuslineMax = 4 << 10

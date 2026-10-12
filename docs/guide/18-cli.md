@@ -179,7 +179,7 @@ On a terminal its first line replaces the footer's second row, run again at
 most once a second as the session changes; in a piped session it is printed
 after each task; `/status` shows it too. It runs under the
 process sandbox with the network off, whatever the session's tier or
-`sandbox.allow_network`, for at most 300 ms. Where the process sandbox is
+`sandbox.allow_network`, for at most one second. Where the process sandbox is
 not available it does not run at all: the status line is empty and one
 warning says why. When the command starts with a script named by path (`~/…` or
 absolute), such as the example above, that file is checked once, when the

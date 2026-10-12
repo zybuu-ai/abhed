@@ -507,6 +507,13 @@ on. A server with it off starts on the older schema as before.
 
 ### Changed
 
+- The statusline command may run for one second, not 300 ms. It still runs
+  in the background, one run at a time and at most once a second; on a
+  loaded Mac, starting the sandbox alone took longer than 300 ms, so the
+  status line stayed empty.
+- The interactive terminal starts git for the prompt's "Git:" line only
+  where a repository could be: outside one it starts none, which on macOS
+  took hundreds of milliseconds before the first prompt was drawn.
 - `abhed doctor`, `abhed serve -check` and Studio's health show the process
   sandbox as `process (no /proc)` on a host where bubblewrap cannot mount a
   fresh `/proc` (under some container runtimes' seccomp profiles), instead of
