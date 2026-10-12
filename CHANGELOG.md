@@ -1161,6 +1161,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- Studio's line-by-line terminal shows any escape sequence but colour as a
+  symbol, so a progress bar or spinner that redraws its line now prints
+  each frame on its own; run such a command in the interactive shell to
+  see it animate (see Security).
 - `GET /v1/whoami` honours a bearer token: it answers with the token's
   principal (`"credential": "token"`) instead of `"authenticated": false`,
   and `401` for a token that does not verify. A server with tokens and no
