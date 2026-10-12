@@ -14,14 +14,17 @@ repository: its `if:` has `github.event_name == 'push'` and
 GitHub-hosted label (`ubuntu-*`, `macos-*`, `windows-*`), given directly or
 as a matrix list, counts as hosted; a runner group or other expression does not.
 
-The workflow is read as YAML (PyYAML, as on GitHub's Ubuntu runners), and its
+The workflow is read as YAML (PyYAML, pinned in workflow-rules.requirements.txt), and its
 lines are also scanned, since the version comment is not part of the YAML.
 `--self-test` checks the rules on made-up input and exits.
 """
 import re
 import sys
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    sys.exit("workflow-rules.py needs PyYAML: pip install --require-hashes -r scripts/ci/workflow-rules.requirements.txt")
 
 USES = re.compile(r"""(?:^|[\s{,-])uses:\s*["']?([^\s"',}]+)["']?(.*)$""")
 PINNED = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
