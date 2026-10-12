@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/store"
@@ -53,20 +52,27 @@ func (s *Server) HandOverRunning(ctx context.Context) int {
 		live.mu.Unlock()
 	}
 	s.mu.Unlock()
-	// Children's ends are written before the session is marked, which fences it.
+	// Children's and terminals' ends are written before the session is
+	// marked, which fences it.
+	var closing []<-chan struct{}
 	for _, live := range lives {
 		if live.Loop.Background.Owed() > 0 {
 			live.Loop.Background.Close(agent.TermShutdown)
 		}
+		closing = append(closing, live.closeTerminals(closedWithSession)...)
 	}
-	deadline := time.NewTimer(turnEndWait)
-	defer deadline.Stop()
+	// One deadline for all: a timer's channel fires once, a context's stays closed.
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), turnEndWait)
+	defer cancel()
 	for _, ch := range ran {
 		select {
 		case <-ch:
-		case <-deadline.C:
+		case <-wctx.Done():
 			s.log.Warn("turns did not stop in time to be handed over")
 		}
+	}
+	if !waitClosed(closing, wctx.Done()) {
+		s.log.Warn("terminals did not record their end before the hand-over")
 	}
 	n := 0
 	for _, live := range lives {

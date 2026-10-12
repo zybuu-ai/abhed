@@ -1266,3 +1266,16 @@ func (l *liveSession) closeTerminals(why string) []<-chan struct{} {
 	}
 	return done
 }
+
+// waitClosed waits for every channel in done until stop fires, and reports
+// whether all closed.
+func waitClosed(done []<-chan struct{}, stop <-chan struct{}) bool {
+	for _, ch := range done {
+		select {
+		case <-ch:
+		case <-stop:
+			return false
+		}
+	}
+	return true
+}

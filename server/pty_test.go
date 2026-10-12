@@ -194,6 +194,24 @@ func TestTerminalCommandIsOnlyItsStarters(t *testing.T) {
 	}
 }
 
+// Deleting a session with a command running records the command's end
+// before the record goes, not into it after.
+func TestDeleteRecordsTheTerminalsEndFirst(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.startPTY("sleep 30")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/v1/sessions/"+wb.session, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	wb.h.ServeHTTP(rec, req)
+	if rec.Code/100 != 2 {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if evs, _ := wb.s.store.Events(wb.session); len(evs) != 0 {
+		t.Fatalf("%d event(s) written after the delete, the first a %s", len(evs), evs[0].Type)
+	}
+}
+
 // Accepting moves the baseline the changes view diffs against, and is in the
 // record; the file itself is untouched.
 func TestAcceptMovesTheBaseline(t *testing.T) {

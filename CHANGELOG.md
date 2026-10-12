@@ -1373,6 +1373,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Deleting a session with a workbench command or shell still running
+  wrote the terminal's end into the record after the delete: one event
+  left behind in the store. The delete now waits, up to five seconds, for
+  each terminal's end before the record goes. Affects 1.1.0 to 1.2.7.
 - A session opened again on a server, or taken up from another, counted as
   begun when it was opened: the session list showed that as its creation
   time, and a local account removed and made again under the same name was

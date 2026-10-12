@@ -3888,6 +3888,7 @@ func (s *Server) fence(live *liveSession) {
 	if cancelCause != nil {
 		cancelCause(agent.StopCause{Reason: agent.TermLeaseLost})
 	}
+	// Not waited for: the lease is gone, so a terminal's end is refused anyway.
 	live.closeTerminals(closedWithSession)
 	live.Loop.Background.Close(agent.TermLeaseLost)
 	s.releaseBash(live)
@@ -5278,16 +5279,10 @@ func (s *Server) closeIdle(by time.Time) {
 	for _, live := range idle {
 		closing = append(closing, live.closeTerminals(closedWithSession)...)
 	}
-	deadline := time.NewTimer(turnEndWait)
-	defer deadline.Stop()
-wait:
-	for _, done := range closing {
-		select {
-		case <-done:
-		case <-deadline.C:
-			s.log.Warn("terminals did not record their end before shutdown")
-			break wait
-		}
+	wctx, cancel := context.WithTimeout(context.Background(), turnEndWait)
+	defer cancel()
+	if !waitClosed(closing, wctx.Done()) {
+		s.log.Warn("terminals did not record their end before shutdown")
 	}
 	// In parallel under one deadline: one at a time, a stalled store cost each
 	// session its own wait.

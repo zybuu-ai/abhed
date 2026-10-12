@@ -292,7 +292,10 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		live.Cancel()
 		// Children first: none may append once its rows are gone.
 		live.Loop.Background.Close(agent.TermSessionDeleted)
-		live.closeTerminals(closedWithSession)
+		// Their ends are recorded before the rows go; a write after is refused.
+		wctx, cancel := context.WithTimeout(r.Context(), turnEndWait)
+		waitClosed(live.closeTerminals(closedWithSession), wctx.Done())
+		cancel()
 		// Hosts and logins the session made go with it, and its egress proxy.
 		if live.Loop != nil {
 			live.Loop.Session.CloseScoped()
