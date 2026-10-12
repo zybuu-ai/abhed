@@ -410,7 +410,7 @@ picks its mode from that; `fence.qualified` records it as `mode`, and each
 
 | Mode | When | What it adds | Surfaces |
 |---|---|---|---|
-| `mount_namespace` | the host allows unprivileged user namespaces | each command in a user, mount and PID namespace of its own (and a network namespace under the egress allowlist): git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered, a `/proc` showing only its own processes | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
+| `mount_namespace` | the host allows unprivileged user namespaces, and a `/proc` of the namespace's own | each command in a user, mount and PID namespace of its own (and a network namespace under the egress allowlist): git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered, a `/proc` showing only its own processes | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
 | `landlock_only` | it does not | nothing: Landlock and seccomp alone | the command line and the SDK; Studio and `serve` are refused, saying why |
 
 The fence never moves from one mode to the other on its own: a surface that
@@ -604,9 +604,10 @@ without running anything.
   passes on the signals sent to it (a stop, Ctrl-C), reaps what is orphaned
   and exits as the command does, which ends everything left in the
   namespace. The command sees, signals and traces only its own processes,
-  through a `/proc` of its own (where the kernel refuses a new `/proc`, as
-  under some container runtimes, the inherited one stays and other command
-  lines are visible, but not signalled). In `landlock_only` there is no PID
+  through a `/proc` of its own. Where the kernel refuses a new `/proc`, as
+  in a container that masks parts of it, the probe fails `userns_mounts`, so
+  the fence runs in `landlock_only` or is refused, and a launcher whose
+  mount is refused all the same does not run the command. In `landlock_only` there is no PID
   namespace: below Landlock ABI 6 (Linux older than 6.12) one session's
   commands can signal another session's and read their command lines in
   `/proc`, so an `abhed serve` that accounts sign in to (`auth.mode` other

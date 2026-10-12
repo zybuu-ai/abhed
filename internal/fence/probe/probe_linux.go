@@ -312,7 +312,7 @@ func mountsCheck(ctx context.Context, req Requirements) Check {
 	case err != nil:
 		c.Status, c.Reason = Fail, "an ordinary user cannot have a user and mount namespace of its own here: "+err.Error()
 	case !out.OK:
-		c.Status, c.Reason = Fail, "a user and mount namespace was made, but could not hold paths read-only: "+out.Reason
+		c.Status, c.Reason = Fail, "a user and mount namespace was made, but the fence's mounts in it failed: "+out.Reason
 	default:
 		c.Status, c.Reason, c.Value = Pass, out.Reason, "mount_namespace"
 	}

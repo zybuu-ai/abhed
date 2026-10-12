@@ -676,7 +676,8 @@ All notable changes to Abhed are recorded here. The format follows
 - In `mount_namespace` mode each fenced command runs in a PID namespace of
   its own with a `/proc` of its own, as the child of the launcher, which
   stays as init: it passes on signals, reaps orphans and ends the namespace
-  with the command.
+  with the command. Where a new `/proc` cannot be mounted (a container that
+  masks parts of it), `mount_namespace` does not qualify.
 - On the Linux process tier, where Abhed runs in a delegated cgroup, each
   command runs in a cgroup of its own bounded by `max_procs` and
   `max_memory_mb`, which ends whatever the command left. With

@@ -692,10 +692,12 @@ func runLauncher(args []string) int {
 		if err != nil {
 			return launchFail("entering the working folder again: %v", err)
 		}
-		// A namespace-own /proc shows only its processes; without one the
-		// namespace still keeps signals and ptrace inside.
+		// A namespace-own /proc shows only its processes; the host's would
+		// show every command line, so a refused mount refuses the command.
 		if s.PIDNS {
-			_ = mountns.MountProc()
+			if err := mountns.MountProc(); err != nil {
+				return launchFail("%v", err)
+			}
 		}
 		if s.Egress != nil {
 			if err := mountns.LoopbackUp(); err != nil {
