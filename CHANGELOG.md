@@ -665,6 +665,13 @@ on. A server with it off starts on the older schema as before.
   unless `path` names it, and gives that path.
 - A config key for a feature this edition lacks was reported as "a
   Enterprise feature"; it now reads "an Enterprise feature".
+- `abhed resolve -allow` split every comma, so a rule such as
+  `bash(x a,b)` became two broken rules; commas inside a rule's parentheses
+  now stay in it. Resolve committed with whatever identity git guessed from
+  the host when `user.name` or `user.email` was unset; it now refuses to
+  start and names the missing setting. A headless resolve that stopped at
+  the pull request's approval did not say where the change was; it now
+  names the local branch.
 
 ### Dependencies
 

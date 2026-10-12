@@ -243,6 +243,12 @@ GitLab and Gitea/Forgejo** are one command; a self-hosted instance is the
 ordinary case: the kind is inferred from the host, `-kind` names it, and
 `-ca file.pem` (or `ABHED_FORGE_CA`) trusts your certificate authority.
 
+`-allow` takes rules separated by commas; a comma inside a rule's
+parentheses (`bash(x a,b)`) stays part of that rule. The commit carries
+the `user.name` and `user.email` git's configuration gives for the
+checkout; resolve refuses to start when either is unset, rather than let
+git guess an identity from the host.
+
 The run is sandboxed in the worktree, and your checkout's `.abhed/` is
 Abhed's state for it as well: its commands can neither read nor write it.
 
@@ -293,7 +299,8 @@ Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule
 (`forge_pr(team/tool)`) or `-y` permits it, and otherwise you are asked at
 the terminal by number: `1` No (keep) or `2` Yes, push, with nothing
-chosen for Enter. No mode opens a pull request on its own. A run that changes
+chosen for Enter. Without a terminal, or when the request is refused, resolve
+says which local branch holds the change. No mode opens a pull request on its own. A run that changes
 nothing pushes nothing, removes its worktree and its branch, and exits 2; if
 it left ignored files, the worktree and branch are kept for them. The run is
 asked not to commit, but a commit it made on its branch, on top of where it
