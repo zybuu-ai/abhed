@@ -291,7 +291,11 @@ func TestWarnTakesTheConfigurationsWarnings(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
 	a, err := New(context.Background(), Options{Workspace: ws, ConfigDir: ws, AllowDefaultModel: true,
-		Warn: func(format string, args ...any) { mu.Lock(); got = append(got, fmt.Sprintf(format, args...)); mu.Unlock() }})
+		Warn: func(format string, args ...any) {
+			mu.Lock()
+			got = append(got, fmt.Sprintf(format, args...))
+			mu.Unlock()
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}

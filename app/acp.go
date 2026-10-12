@@ -949,15 +949,16 @@ func attachmentRefusal(s *acpSession, blocks []json.RawMessage) (string, error) 
 		}
 		args := argsJSON(map[string]string{"path": path})
 		var d policy.Result
-		if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
+		switch {
+		case u.Host != "" && !strings.EqualFold(u.Host, "localhost"):
 			// Read as a UNC path on Windows; the rules cannot judge another host's files.
 			args = argsJSON(map[string]string{"path": "//" + u.Host + u.Path})
 			d = policy.Result{Decision: policy.Deny, Reason: "the file is on another host", Step: "attachment"}
-		} else if uncPath(u.Path) {
+		case uncPath(u.Path):
 			// file:////server/share names the same UNC path with an empty host.
 			args = argsJSON(map[string]string{"path": u.Path})
 			d = policy.Result{Decision: policy.Deny, Reason: "the file is on another host", Step: "attachment"}
-		} else {
+		default:
 			d = loop.Policy.Evaluate("read", false, args)
 		}
 		if d.Decision != policy.Deny && tools.IsState(path, s.parts.Session.PolicyRoots()...) {

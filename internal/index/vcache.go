@@ -87,7 +87,7 @@ func (c *FileVectorCache) Save() error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }() // gone once renamed
 	if err := gob.NewEncoder(tmp).Encode(c.used); err != nil {
 		_ = tmp.Close()
 		return err

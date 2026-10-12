@@ -11,9 +11,9 @@ import (
 // What an embedder shows a person marks the characters that would not print
 // as themselves, so an approval prompt cannot be disguised.
 func TestVisibleMarksHiddenCharacters(t *testing.T) {
-	for _, s := range []string{"rm -rf ‮/ tsil", "echo \x1b[2Jok", "a​b"} {
+	for _, s := range []string{"rm -rf \u202e/ tsil", "echo \x1b[2Jok", "a\u200bb"} {
 		got := abhed.Visible(s)
-		if got == s || strings.ContainsAny(got, "‮\x1b​") {
+		if got == s || strings.ContainsAny(got, "\u202e\x1b\u200b") {
 			t.Errorf("%q shown as %q", s, got)
 		}
 	}
@@ -23,7 +23,7 @@ func TestVisibleMarksHiddenCharacters(t *testing.T) {
 	if abhed.Visible("go test ./...") != "go test ./..." {
 		t.Error("plain text changed")
 	}
-	if !abhed.ArgsHidden(json.RawMessage(`{"command":"ls","note":"‮"}`)) || abhed.ArgsHidden(json.RawMessage(`{"command":"ls"}`)) {
+	if !abhed.ArgsHidden(json.RawMessage(`{"command":"ls","note":"\u202e"}`)) || abhed.ArgsHidden(json.RawMessage(`{"command":"ls"}`)) {
 		t.Error("ArgsHidden")
 	}
 }
