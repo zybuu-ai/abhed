@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,7 +144,8 @@ func TestRecordVerifyPostgresChainAndWitness(t *testing.T) {
 // once and then at most one per interval, saying how many were not logged.
 func TestWitnessReporterLogsAtOnceThenThrottles(t *testing.T) {
 	var buf bytes.Buffer
-	report := witnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), 50*time.Millisecond)
+	rep := newWitnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), 50*time.Millisecond)
+	report := rep.report
 	report(errors.New("first"))
 	if !strings.Contains(buf.String(), "first") {
 		t.Fatalf("the first failure was not logged at once: %q", buf.String())
@@ -156,6 +159,26 @@ func TestWitnessReporterLogsAtOnceThenThrottles(t *testing.T) {
 	report(errors.New("fourth"))
 	if !strings.Contains(buf.String(), "fourth") || !strings.Contains(buf.String(), "failures_not_logged=2") {
 		t.Fatalf("after the interval: %q", buf.String())
+	}
+}
+
+// Failures the reporter held back are counted in the log when the witness
+// closes, not lost with the process.
+func TestWitnessCloseLogsHeldBackFailures(t *testing.T) {
+	var buf bytes.Buffer
+	rep := newWitnessReporter(slog.New(slog.NewTextHandler(&buf, nil)), time.Hour)
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	w, err := witness.Open(witness.Config{URL: dead.URL, KeyFile: filepath.Join(t.TempDir(), "witness.key"), OnError: rep.report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		w.Local("default", "s1", int64(i+1), 0, "h")
+	}
+	closeWitness(&openedWitness{Witness: w, rep: rep})
+	if !strings.Contains(buf.String(), "failures_not_logged=2") {
+		t.Fatalf("held-back failures were lost at close: %q", buf.String())
 	}
 }
 
@@ -255,6 +278,56 @@ func TestRecordVerifyPostgresSaysWhenCapped(t *testing.T) {
 	verifyPostgres(cfg, nil, &out, &errb)
 	if !strings.Contains(out.String(), "only the 1 most recent sessions were checked") {
 		t.Fatalf("a capped verify did not say so: %s %s", out.String(), errb.String())
+	}
+}
+
+// With no session named, verify walks deleted and subagent sessions too, and
+// says which they are.
+func TestRecordVerifyPostgresWalksDeletedAndSubagents(t *testing.T) {
+	dsn := os.Getenv("ABHED_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ABHED_TEST_DSN to run against Postgres")
+	}
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	cfg := config.Config{}
+	cfg.Storage.Driver, cfg.Storage.DSN, cfg.Storage.SingleRole = "postgres", dsn, true
+	pg, err := store.Open(ctx, storeConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	parent, child, gone := "sess-walk-"+newConversationID(), "sess-walk-"+newConversationID(), "sess-walk-"+newConversationID()
+	for _, id := range []string{parent, gone} {
+		if err := pg.CreateSession(ctx, store.SessionRecord{ID: id, Tenant: "default", User: "u", Workspace: "/w", Model: "m"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pg.CreateSubagentSession(ctx, child, parent, "a helper"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{parent, child, gone} {
+		r := agent.NewRecorder(pg, id, "")
+		_, _ = r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+	}
+	if err := pg.DeleteSession(gone); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb strings.Builder
+	if code := verifyPostgres(cfg, nil, &out, &errb); code != 0 {
+		t.Fatalf("verify: %d %s %s", code, out.String(), errb.String())
+	}
+	lines := map[string]string{}
+	for _, l := range strings.Split(out.String(), "\n") {
+		if id, _, ok := strings.Cut(strings.TrimPrefix(l, "ok      "), ":"); ok && strings.HasPrefix(l, "ok      ") {
+			lines[id] = l
+		}
+	}
+	for id, suffix := range map[string]string{parent: "", child: " (a subagent's)", gone: " (deleted, erased by key)"} {
+		l, ok := lines[id]
+		if !ok || !strings.HasSuffix(l, suffix) || suffix == "" && strings.HasSuffix(l, ")") {
+			t.Errorf("verify did not report %s as %q:\n%s", id, suffix, out.String())
+		}
 	}
 }
 

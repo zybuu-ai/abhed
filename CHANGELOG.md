@@ -153,6 +153,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A workbench shell or command could be read, typed into, resized or killed
+  by whichever account held its session, not only the one that started it,
+  so after a session changed hands (an account removed and made again under
+  the same name) the new holder could drive the old one's terminals. Each
+  now answers only the account that started it. Affects 1.0.0 to 1.2.7.
 - A call whose approval could not be written to the record (the database
   failing, or the session held by another process) still ran, so the record
   held no approval for what was done, and a process taking the session over
@@ -1216,7 +1221,10 @@ All notable changes to Abhed are recorded here. The format follows
   as the person's recorded `bash` call judged by the policy, and runs in the
   session's sandbox; none runs on the none tier, and a workspace file cannot
   name one, even a trusted one. Only the editor's own requests reach it;
-  `workspace/executeCommand` and other methods are refused. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
+  `workspace/executeCommand` and other methods are refused, `initialize`
+  carries only the workspace and the editor's capabilities (never
+  `initializationOptions`), and answers to the server's requests must be
+  `null`. Routes: `POST /v1/sessions/{id}/lsp`, and `GET`, `POST` and
   `DELETE` on `/v1/sessions/{id}/lsp/{lsp}`.
 
 ### Changed
@@ -1368,9 +1376,7 @@ All notable changes to Abhed are recorded here. The format follows
   same browser tab could reattach to it. A closing page now tells the server,
   and its shells end a minute later unless a reload reattaches; opening the
   session in another tab or browser adopts your own shells no page is
-  watching (`GET /v1/sessions/{id}/pty`). A shell or command on a terminal
-  is read, typed into and stopped only by the account that started it, even
-  once the session has passed to another.
+  watching (`GET /v1/sessions/{id}/pty`).
 - The workbench's **Changes** and review now list files changed by shell
   commands, the person's or the agent's, not only edits made through the
   edit tools. Each session notes the workspace as it opens (size, time and
@@ -1797,8 +1803,8 @@ All notable changes to Abhed are recorded here. The format follows
   the `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are
   the loop's side of it; `agent.OpenTurn.Others` holds a person's own calls
   and pipeline steps left open. `Server.ReleaseSessionsBefore` releases an
-  owner's sessions this process started or took up before a time, for an
-  account made again. `auth.Identity.Scopes`,
+  owner's sessions made before a time, wherever this process took them up,
+  for an account made again. `auth.Identity.Scopes`,
   `auth.Middleware.IdentifyToken` and `auth.IsForbidden` let a public handler
   answer for a bearer token. `config.Config.OIDCBoundClaims`,
   `ValidateBoundClaims` and `RelayKeyCommandArgv` read the new edition keys

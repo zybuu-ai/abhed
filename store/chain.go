@@ -55,7 +55,7 @@ type ChainSession struct {
 // ListSessions leaves out.
 func (p *Postgres) ChainSessions(ctx context.Context, limit int) ([]ChainSession, error) {
 	rows, err := p.pool.Query(ctx, `SELECT id, deleted_at IS NOT NULL, parent_id IS NOT NULL
-		FROM sessions ORDER BY started_at DESC LIMIT $1`, limit)
+		FROM sessions ORDER BY started_at DESC, id LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list the sessions to verify: %w", err)
 	}

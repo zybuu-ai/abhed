@@ -419,7 +419,8 @@ directory, so a `cd` there never moves the agent. Reloading the page
 reattaches to the shells it had open, with their recent output. Opening a
 session, in another tab or another browser, adopts your own shells on it that
 no page is watching (`GET /v1/sessions/{id}/pty` lists them), so a closed tab's
-shells are not lost. A page that closes tells the server
+shells are not lost. A shell or command answers only the account that started
+it, even after its session passes to another account. A page that closes tells the server
 (`POST /v1/sessions/{id}/pty/{pty}/detach`), and its shells end a minute later
 unless a page reattaches in that time, as a reload does. A shell nobody
 has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), which
@@ -563,15 +564,16 @@ What a shell changes about the checks, stated plainly:
   terminal, so the server watches for a program switching to the alternate
   screen, and once one has, asks at each Enter whether the terminal's
   foreground group is the shell's. Nothing in the container is run for this,
-  since commands can replace its programs: the engine names the shell's host
-  process (`inspect`), whose `/proc` stat is read on the engine's host (on
-  Linux directly, through `podman machine ssh` elsewhere, after checking the
-  process is still that container's), or docker's own `top -o
-  pid,pgid,tpgid` answers. Only when that says a program has the terminal is
-  a line left unscreened and unrecorded; when it cannot say (docker or a
-  remote engine it cannot read, an engine that does not answer in three
-  seconds), the line is screened and recorded, which inside an editor
-  can refuse a line of text that matches a deny rule. A `printf` of the
+  since commands can replace its programs. The engine gives the shell's
+  process id on its host (`inspect`), and that process's `/proc` stat is read
+  there, once it is confirmed to be still that container's: directly on
+  Linux, and through `podman machine ssh` for podman elsewhere. Docker on
+  macOS or Windows is asked through its own `top -o pid,pgid,tpgid` instead.
+  Only when the answer is that a program has the terminal is a line left
+  unscreened and unrecorded; with no answer (a remote engine whose host this
+  machine cannot read, or none within three seconds), the line is screened
+  and recorded, which inside an editor can refuse a line of text that
+  matches a deny rule. A `printf` of the
   switch alone no longer turns anything off. Programs that do not switch
   screens (`python`, `cat`) have their lines screened and recorded there as
   commands. A program that takes the foreground and hands the terminal back
@@ -769,10 +771,16 @@ only what the editor needs reaches it: `initialize`, `initialized`, opening,
 changing and closing a file, hover, definition, `shutdown`, `exit`,
 `$/cancelRequest` and answers to the server's own requests. Anything else,
 such as `workspace/executeCommand`, which can have a server run programs the
-policy never judged, is refused with 403. On a tier this version does not
+policy never judged, is refused with 403. The server's `initialize` is made by
+Abhed from the workspace and the editor's capabilities, whatever the page
+sent, so `initializationOptions` (where a server such as gopls takes its
+environment and build flags) never reach it, and an answer to the server's
+own requests must be `null` or a list of nulls; any other answer is refused
+with 403. On a tier this version does not
 know, as on none, no server starts. A server's header lines are bounded, and
 a page that falls 16 MiB behind its messages has its stream ended. What
 it says is untrusted: the editor shows hovers and diagnostics as plain
 markdown with hidden characters marked. A definition in another workspace
 file opens it in a tab; one outside the workspace is not offered. Settings a
-server asks the editor for are left at the server's defaults.
+server asks the editor for are left at the server's defaults; set a server's
+options in its own files or on its command line in `language_servers`.

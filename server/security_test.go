@@ -476,26 +476,33 @@ func TestReleaseSessionsUnclaimsLiveSessions(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// An account made again lets go of the runs from before it was made, and
-// keeps those started or taken up here since.
+// An account made again lets go of the sessions made before it, even one taken
+// up here since, and keeps those made since.
 func TestReleaseSessionsBeforeKeepsNewerRuns(t *testing.T) {
 	s := proxyServer(t)
 	made := time.Now()
 	s.mu.Lock()
 	s.running["old"] = &liveSession{ID: "old", Tenant: "default", User: "local:bob", Created: made.Add(-time.Minute)}
 	s.running["new"] = &liveSession{ID: "new", Tenant: "default", User: "local:bob", Created: made.Add(time.Second)}
+	// Taken up here after the re-make, but made by the earlier account: Created is when it began.
+	s.running["resumed"] = &liveSession{ID: "resumed", Tenant: "default", User: "local:bob", Created: made.Add(-time.Hour)}
+	// Made by the new account elsewhere, handed over here.
+	s.running["handed"] = &liveSession{ID: "handed", Tenant: "default", User: "local:bob", Created: made.Add(time.Millisecond)}
 	s.mu.Unlock()
 	t.Cleanup(func() {
 		s.mu.Lock()
-		delete(s.running, "old")
-		delete(s.running, "new")
+		for _, id := range []string{"old", "new", "resumed", "handed"} {
+			delete(s.running, id)
+		}
 		s.mu.Unlock()
 	})
-	if n := s.ReleaseSessionsBefore("default", "local:bob", made); n != 1 {
-		t.Fatalf("released %d, want 1", n)
+	if n := s.ReleaseSessionsBefore("default", "local:bob", made); n != 2 {
+		t.Fatalf("released %d, want 2", n)
 	}
-	if s.running["old"].User != "unclaimed:local:bob" || s.running["new"].User != "local:bob" {
-		t.Errorf("owners after release: old %q, new %q", s.running["old"].User, s.running["new"].User)
+	for id, want := range map[string]string{"old": "unclaimed:local:bob", "resumed": "unclaimed:local:bob", "new": "local:bob", "handed": "local:bob"} {
+		if got := s.running[id].User; got != want {
+			t.Errorf("%s owned by %q, want %q", id, got, want)
+		}
 	}
 	if n := s.ReleaseSessionsBefore("default", "local:bob", time.Time{}); n != 0 {
 		t.Errorf("a zero creation time released %d", n)

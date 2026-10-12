@@ -48,9 +48,8 @@ type Config struct {
 	Host string
 	// Client is the HTTP client for URL; nil is one with a 10 second timeout.
 	Client *http.Client
-	// OnError, when set, is told each failure to deliver a head as it
-	// happens, from the writer's or a sender's goroutine; it must not block.
-	// Errors then reports nothing.
+	// OnError, when set, is told each delivery failure as it happens, from any
+	// goroutine, and must not block; Errors then reports nothing.
 	OnError func(error)
 }
 
@@ -107,16 +106,18 @@ func Open(cfg Config) (*Witness, error) {
 	if cfg.File == "" && cfg.URL == "" {
 		return nil, errors.New("witness: neither a file nor a URL is set")
 	}
+	if cfg.URL != "" {
+		// Parse errors quote the URL, which may carry a credential.
+		u, err := url.Parse(cfg.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, errors.New("witness: the URL is not an http or https URL with a host")
+		}
+	}
 	if cfg.Host == "" {
 		cfg.Host, _ = os.Hostname()
 	}
 	if cfg.Client == nil {
 		cfg.Client = &http.Client{Timeout: 10 * time.Second}
-	}
-	if cfg.URL != "" {
-		if u, err := url.Parse(cfg.URL); err != nil || u.Host == "" || u.Scheme != "https" && u.Scheme != "http" {
-			return nil, errors.New("witness: the URL is not an http(s) address with a host")
-		}
 	}
 	key, err := loadKey(cfg.KeyFile)
 	if err != nil {
@@ -186,11 +187,7 @@ func (w *Witness) send(s Statement) {
 func (w *Witness) post(body []byte) error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
-		return fmt.Errorf("witness: a request to %s: %w", shown(w.cfg.URL), err)
+		return fmt.Errorf("witness: %s: the request could not be made", shown(w.cfg.URL))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if w.cfg.Token != "" {
@@ -219,7 +216,7 @@ func shown(raw string) string {
 	if err != nil {
 		return "(unparsable URL)"
 	}
-	u.RawQuery, u.User, u.Fragment, u.RawFragment, u.ForceQuery = "", nil, "", "", false
+	u.RawQuery, u.User, u.Fragment, u.RawFragment, u.ForceQuery, u.Opaque = "", nil, "", "", false, ""
 	return u.String()
 }
 
@@ -318,8 +315,7 @@ func Read(r io.Reader) ([]Statement, []error) {
 }
 
 // Problem is a head the witness holds that the record no longer does.
-// Removed marks one a recorded removal accounts for, such as a prune whose
-// tombstone keeps the session's head: reported, but not a failure.
+// Removed marks one a recorded removal (a prune's tombstone) accounts for.
 type Problem struct {
 	Statement Statement
 	Reason    string
@@ -352,13 +348,8 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 // true), or why a removal does not account for it ("" for the general reason).
 type Removed func(session string, line int64, hash string) (why string, removed bool, err error)
 
-// Check compares statements for one store and tenant with the record as it
-// is now: hashAt gives the hash at a line and whether the record holds it.
-// A head the record no longer holds means lines were cut, rewritten or rolled
-// back since the witness was given it, unless removed (which may be nil)
-// names the recorded removal that took it. Each statement must be signed with
-// key, the installation's: one that verifies under a key of its own proves
-// nothing about who sent it.
+// Check compares statements for one store and tenant with the record as it is now: hashAt gives the hash
+// at a line and whether the record holds it. Each must be held, or taken by removed (may be nil), and signed with key.
 func Check(stmts []Statement, key ed25519.PublicKey, store, tenant string, hashAt func(session string, line int64) (string, bool, error), removed Removed) ([]Problem, error) {
 	if len(key) != ed25519.PublicKeySize {
 		return nil, errors.New("witness: no installation key to check the statements against")

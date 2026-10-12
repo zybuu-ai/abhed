@@ -15,4 +15,6 @@ check('the root itself is not a file', lspRel(c, 'file:///w/repo/.') === null);
 check('a backslash segment is not offered', lspRel(c, 'file:///w/repo/src/..%5C..%5Cetc%5Cpasswd') === null);
 check('a NUL segment is not offered', lspRel(c, 'file:///w/repo/a.go%00.txt') === null);
 check('a control character is not offered', lspRel(c, 'file:///w/repo/a%0Ab.go') === null);
+check('a backslash segment at the root is not offered', lspRel(c, 'file:///w/repo/..%5C..%5Cetc/passwd') === null);
+check('a DEL character is not offered', lspRel(c, 'file:///w/repo/a%7Fb.go') === null);
 if(!ok) process.exit(1);

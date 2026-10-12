@@ -649,9 +649,14 @@ func TestViewingWritesNothing(t *testing.T) {
 	b := newBGServer(t, st)
 	before, _ := st.Events(id)
 	claims := st.claims
+	takenUp := time.Now()
 	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Taken up now, but made when its record says: an account made in between owns none of it.
+	if live.Created.IsZero() || !live.Created.Before(takenUp) {
+		t.Fatalf("began %v, taken up %v", live.Created, takenUp)
 	}
 	time.Sleep(2500 * time.Millisecond) // past the idle settle window
 	after, _ := st.Events(id)
