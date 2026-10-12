@@ -514,15 +514,20 @@ func (e *Entered) Echoed() bool {
 }
 
 // unwrap takes out readline's soft wraps: at the right margin it writes a
-// space and a carriage return to move to the next row, which is not text.
+// character and a carriage return to move to the next row, which is not text.
+// The character is a space, or the next row's first, which it then writes
+// again; that is what bash 5 shows when keys arrive faster than it redraws.
 func unwrap(echo []byte) []byte {
 	out := make([]byte, 0, len(echo))
-	for i := 0; i < len(echo); i++ {
-		if echo[i] == ' ' && i+1 < len(echo) && echo[i+1] == '\r' && (i+2 == len(echo) || echo[i+2] != '\n') {
-			i++
+	for i := 0; i < len(echo); {
+		_, n := utf8.DecodeRune(echo[i:])
+		if j := i + n; j < len(echo) && echo[j] == '\r' && (j+1 == len(echo) || echo[j+1] != '\n') &&
+			(echo[i] == ' ' || bytes.HasPrefix(echo[j+1:], echo[i:j])) {
+			i = j + 1
 			continue
 		}
-		out = append(out, echo[i])
+		out = append(out, echo[i:i+n]...)
+		i += n
 	}
 	return out
 }

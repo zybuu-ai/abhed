@@ -723,8 +723,9 @@ All notable changes to Abhed are recorded here. The format follows
   `identified=false`. Affects 0.1.0 to 1.2.7.
 - A line typed into a workbench shell that was longer than the terminal was
   wide was recorded without its text, as though it had not been echoed: the
-  shell's soft wrap at the right margin was read as part of the line. Affects
-  1.0.0 to 1.2.7.
+  shell's soft wrap at the right margin was read as part of the line. Both
+  ways readline wraps are followed: a space, or the next row's first
+  character written twice, as bash 5 on Linux does. Affects 1.0.0 to 1.2.7.
 - The workbench editor bundled DOMPurify 3.4.8, the copy the editor
   component ships, which has five published advisories (GHSA-cmwh-pvxp-8882,
   GHSA-vxr8-fq34-vvx9, GHSA-55q2-fjhq-7xh7, GHSA-c2j3-45gr-mqc4,

@@ -71,6 +71,10 @@ func TestCaptureWithholdsWhenUnsure(t *testing.T) {
 		// readline wraps at the right margin with a space and a carriage return.
 		"soft-wrapped":   {typed("echo aaaabbbbcccc\r", "$ echo aaaab \rbbbcccc", true, false), true},
 		"a real newline": {typed("echo aaaabbbbcccc\r", "$ echo aaaab \r\nbbbcccc", true, false), false},
+		// bash 5 writes the next row's first character before the carriage return, then again.
+		"wrapped, next character": {typed("echo aaaabbbbcccc\r", "$ echo aaaabb\rbbbcccc", true, false), true},
+		"wrapped, multibyte":      {&Entered{Line: "echo aaaaébbbcccc", echo: []byte("$ echo aaaaé\rébbbcccc"), Known: true}, true},
+		"carriage return, other":  {typed("echo aaaabbbbcccc\r", "$ echo aaaabx\rbbbcccc", true, false), false},
 	} {
 		if got := tc.e.Echoed(); got != tc.want {
 			t.Errorf("%s: echoed() = %v, want %v (%+v)", name, got, tc.want, tc.e)
