@@ -230,3 +230,59 @@ func TestRemovedAccountsWorkStopsOnTheOldCookie(t *testing.T) {
 		cancel()
 	}
 }
+
+// An account removed and made again keeps the work it began since: the sweep
+// stops only the earlier account's session, released or not, and stops
+// nothing more on later sweeps.
+func TestRemovedOwnerSweepSparesTheNewAccount(t *testing.T) {
+	for _, released := range []bool{false, true} {
+		ctx := context.Background()
+		users := auth.NewMemoryUserStore()
+		local := auth.NewLocalAuth(users, time.Hour, false)
+		if err := local.CreateUser(ctx, auth.User{Username: "bob"}, "correct-horse-1"); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Default()
+		cfg.Auth.Mode = "local"
+		cfg.Permissions.Allow = []string{"bash(sleep *)"}
+		st := agent.NewMemStore()
+		s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: &shellAdapter{calls: map[string]int{}},
+			Registry: tools.NewRegistry(tools.Read{}, tools.Bash{}), Store: st,
+			Auth: &auth.Middleware{Providers: []auth.Provider{local}}})
+		b := &bgServer{t: t, s: s, h: s.Handler(), store: st}
+		start := func() string {
+			id, err := s.StartSession(ctx, StartSpec{Prompt: "sh:bob", Tenant: "default", User: auth.LocalOwner("bob")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitUntil(t, "bob's shell", func() bool { return b.state(id) == "background" && b.live(id).Loop.Background.Live() == 1 })
+			return id
+		}
+		old := start()
+		time.Sleep(5 * time.Millisecond)
+		if _, err := auth.RemoveUser(ctx, users, "bob"); err != nil {
+			t.Fatal(err)
+		}
+		if err := auth.NewLocalAuth(users, time.Hour, false).CreateUser(ctx, auth.User{Username: "bob"}, "another-horse-2"); err != nil {
+			t.Fatal(err)
+		}
+		if released {
+			s.releaseStale(local, "bob")
+		}
+		time.Sleep(5 * time.Millisecond)
+		fresh := start()
+		t.Cleanup(func() { b.live(fresh).Loop.Background.CancelAll(agent.TermSessionClosed) })
+
+		if n := s.stopRemovedOwners(ctx); n != 1 {
+			t.Fatalf("released=%v: first sweep stopped %d; want 1", released, n)
+		}
+		waitUntil(t, "the old shell ended", func() bool { return countType(b.events(old), agent.EvShellEnded) == 1 })
+		if n := s.stopRemovedOwners(ctx); n != 0 {
+			t.Fatalf("released=%v: second sweep stopped %d", released, n)
+		}
+		if got := b.live(fresh).Loop.Background.Live(); got != 1 {
+			t.Fatalf("released=%v: the new account's shell stopped: %d live, events %v",
+				released, got, payloadsOf(b.events(fresh), agent.EvShellEnded))
+		}
+	}
+}

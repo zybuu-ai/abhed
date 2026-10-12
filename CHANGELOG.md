@@ -541,7 +541,8 @@ All notable changes to Abhed are recorded here. The format follows
   made again under the same name, and of a person whose administrator
   rights were taken away. The server now checks its local accounts every
   15 seconds, and at once when it sees one change, and stops that work as
-  `owner_revoked`; removing administrator rights stops the person's work
+  `owner_revoked`, session by session: an account made again keeps the
+  sessions it began. Removing administrator rights stops the person's work
   too. Affects 1.2.3 to 1.2.7.
 - A local account's browser session outlived the account: once the name
   was made again, the removed account's cookie worked for the new account,

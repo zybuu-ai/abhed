@@ -3668,6 +3668,11 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 		}
 	}
 	s.mu.RUnlock()
+	return s.stopRevoked(ctx, hit, user)
+}
+
+// stopRevoked is StopOwnerBackground for the sessions in hit, whose owner was user.
+func (s *Server) stopRevoked(ctx context.Context, hit []*liveSession, user string) int {
 	n := 0
 	ran := make([]chan struct{}, len(hit))
 	for i, live := range hit {
@@ -3766,9 +3771,8 @@ func (s *Server) stopRemovedOwners(ctx context.Context) int {
 	for _, u := range users {
 		made[auth.LocalOwner(u.Username)] = u.CreatedAt
 	}
-	type target struct{ tenant, user string }
-	var gone []target
-	seen := map[target]bool{}
+	// Judged per session: an account made again keeps the sessions it began.
+	gone := map[string][]*liveSession{}
 	s.mu.RLock()
 	for _, live := range s.running {
 		// releaseStale may have released it on a request's recheck already;
@@ -3782,15 +3786,12 @@ func (s *Server) stopRemovedOwners(ctx context.Context) int {
 		if ok && (at.IsZero() || live.Created.IsZero() || !at.After(live.Created)) {
 			continue
 		}
-		if t := (target{live.Tenant, owner}); !seen[t] {
-			seen[t] = true
-			gone = append(gone, t)
-		}
+		gone[owner] = append(gone[owner], live)
 	}
 	s.mu.RUnlock()
 	n := 0
-	for _, t := range gone {
-		n += s.StopOwnerBackground(ctx, t.tenant, t.user)
+	for owner, hit := range gone {
+		n += s.stopRevoked(ctx, hit, owner)
 	}
 	return n
 }
