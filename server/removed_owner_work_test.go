@@ -77,12 +77,13 @@ func TestRemovedAccountsWorkIsStopped(t *testing.T) {
 			t.Fatalf("recreate=%v: stopped %d while the store could not be read", recreate, n)
 		}
 		users.broken = false
-		if n := s.stopRemovedOwners(ctx); n != 1 {
-			t.Fatalf("recreate=%v: stopped %d, want bob's one shell", recreate, n)
-		}
+		s.stopRemovedOwners(ctx)
 		waitUntil(t, "bob's shell ended", func() bool { return countType(b.events(bob), agent.EvShellEnded) == 1 })
-		if e := payloadsOf(b.events(bob), agent.EvShellEnded)[0]; e["reason"] != string(agent.TermOwnerRevoked) {
-			t.Fatalf("bob's shell ended %v", e)
+		// A removed owner's idle check may get there first, as owner_inactive;
+		// one made again passes that check, so only the sweep stops it.
+		e := payloadsOf(b.events(bob), agent.EvShellEnded)[0]
+		if e["reason"] != string(agent.TermOwnerRevoked) && (recreate || e["reason"] != string(agent.TermOwnerInactive)) {
+			t.Fatalf("recreate=%v: bob's shell ended %v", recreate, e)
 		}
 		if got := b.live(carol).Loop.Background.Live(); got != 1 {
 			t.Fatalf("carol's shell stopped too: %d live", got)
