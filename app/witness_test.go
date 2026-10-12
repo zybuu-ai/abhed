@@ -172,7 +172,7 @@ func TestWitnessAcceptsAPrunedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ids []string
-	for range 3 {
+	for range 4 {
 		id := newConversationID()
 		if err := rec.CreateSession(context.Background(), store.SessionRecord{ID: id, Workspace: ws, User: cliUser()}); err != nil {
 			t.Fatal(err)
@@ -204,6 +204,26 @@ func TestWitnessAcceptsAPrunedSession(t *testing.T) {
 	code, out, _ = runRecord(t, ws, "verify", "-witness", heads)
 	if code == 0 || !strings.Contains(out, "FAILED  "+ids[2]) {
 		t.Fatalf("a removed session passed: %d %s", code, out)
+	}
+	// Nor does a prune afterwards launder it, or a record edited before its prune.
+	if code, out, errOut := runRecord(t, ws, "prune", "-yes", ids[2]); code != 0 {
+		t.Fatalf("prune of the removed session: %d %s %s", code, out, errOut)
+	}
+	b, err := os.ReadFile(rec.Path(ids[3]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rec.Path(ids[3]), []byte(strings.Replace(string(b), `"hi"`, `"ho"`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := runRecord(t, ws, "prune", "-yes", ids[3]); code != 0 {
+		t.Fatalf("prune of the edited session: %d %s %s", code, out, errOut)
+	}
+	code, out, _ = runRecord(t, ws, "verify", "-witness", heads)
+	if code == 0 || !strings.Contains(out, "FAILED  "+ids[2]+": the witness holds line 2, and the session's file was gone before it was pruned") ||
+		!strings.Contains(out, "FAILED  "+ids[3]+": the witness holds line 2, and the record did not verify when it was pruned") ||
+		!strings.Contains(out, "pruned  "+ids[0]) {
+		t.Fatalf("a prune after the damage passed: %d %s", code, out)
 	}
 }
 
@@ -275,5 +295,18 @@ func TestRecordVerifyPostgresWitnessAfterDelete(t *testing.T) {
 	var out, errb strings.Builder
 	if code := verifyPostgres(cfg, []string{"-witness", heads, "-witness-key", keyFile, id}, &out, &errb); code != 0 || strings.Contains(out.String(), "FAILED") {
 		t.Fatalf("a deleted session failed against the witness: %d %s %s", code, out.String(), errb.String())
+	}
+	// With no session named, deleted and subagent sessions are walked too, and said to be.
+	child := "sess-sub-" + newConversationID()
+	if err := pg.CreateSubagentSession(ctx, child, id, "helper"); err != nil {
+		t.Fatal(err)
+	}
+	cr := agent.NewRecorder(pg, child, "")
+	_, _ = cr.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "hi"})
+	out.Reset()
+	verifyPostgres(cfg, nil, &out, &errb)
+	if !strings.Contains(out.String(), "ok      "+id+": 2 chained event(s)") || !strings.Contains(out.String(), "(deleted, erased by key)") ||
+		!strings.Contains(out.String(), "ok      "+child+": 1 chained event(s)") || !strings.Contains(out.String(), "(a subagent's)") {
+		t.Fatalf("verify left out the deleted or the subagent session: %s %s", out.String(), errb.String())
 	}
 }

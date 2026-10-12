@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -168,6 +169,63 @@ func TestTerminalCommandCanBeKilled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the command did not end after being killed")
+	}
+}
+
+// A command, like a shell, is only its starter's to read, type into or stop:
+// another account the session passes to does not reach it.
+func TestTerminalCommandIsOnlyItsStarters(t *testing.T) {
+	wb := manualBench(t, nil)
+	start := wb.startPTY("sleep 30")
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	live.mu.Lock()
+	run := live.ptys[start.ID]
+	live.mu.Unlock()
+	own := run.user
+	run.user = "mallory"
+	for _, c := range []struct{ method, path string }{{"GET", ""}, {"POST", "/input"}, {"DELETE", ""}, {"POST", "/resize"}} {
+		if rec := wb.send("acme", c.method, "pty/"+start.ID+c.path, map[string]int{"cols": 80, "rows": 24}); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s on another account's command: %d", c.method, c.path, rec.Code)
+		}
+	}
+	run.user = own
+	if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("kill by its starter: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// Deleting a session with a command running records the command's end
+// before the record goes, not into it after.
+func TestDeleteRecordsTheTerminalsEndFirst(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.startPTY("sleep 30")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/v1/sessions/"+wb.session, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	wb.h.ServeHTTP(rec, req)
+	if rec.Code/100 != 2 {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if evs, _ := wb.s.store.Events(wb.session); len(evs) != 0 {
+		t.Fatalf("%d event(s) written after the delete, the first a %s", len(evs), evs[0].Type)
+	}
+}
+
+// A session fenced after losing its lease has its terminals ended by the
+// time the fence returns, before the sandbox lets the session go.
+func TestFenceEndsTheTerminalsFirst(t *testing.T) {
+	wb := manualBench(t, nil)
+	start := wb.startPTY("sleep 30")
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	live.mu.Lock()
+	run := live.ptys[start.ID]
+	live.mu.Unlock()
+	wb.s.fence(live)
+	select {
+	case <-run.done:
+	default:
+		t.Fatal("the terminal was still running when the fence returned")
 	}
 }
 

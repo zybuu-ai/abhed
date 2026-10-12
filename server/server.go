@@ -439,7 +439,7 @@ type liveSession struct {
 	Tenant  string
 	Loop    *agent.Loop
 	Cancel  context.CancelFunc
-	Created time.Time
+	Created time.Time // when the session began, on whichever node
 	Prompt  string
 	State   string // running | waiting_approval | background | idle | done
 	// title is the name a person last gave the session; guarded by mu.
@@ -2251,6 +2251,10 @@ func (s *Server) liveFromRecord(ctx context.Context, id string, rec store.Sessio
 	if err != nil {
 		return nil, err
 	}
+	// When the session began, not when it was taken up: owners are judged by it.
+	if live.Created = rec.StartedAt; live.Created.IsZero() {
+		live.Created = events[0].CreatedAt
+	}
 	// A change of the layer since the record last named it is written by the
 	// next turn, as a change of model is.
 	live.layerNote = layerChange(events, live.layer)
@@ -3668,6 +3672,11 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 		}
 	}
 	s.mu.RUnlock()
+	return s.stopRevoked(ctx, hit, user)
+}
+
+// stopRevoked is StopOwnerBackground for the sessions in hit, whose owner was user.
+func (s *Server) stopRevoked(ctx context.Context, hit []*liveSession, user string) int {
 	n := 0
 	ran := make([]chan struct{}, len(hit))
 	for i, live := range hit {
@@ -3766,9 +3775,8 @@ func (s *Server) stopRemovedOwners(ctx context.Context) int {
 	for _, u := range users {
 		made[auth.LocalOwner(u.Username)] = u.CreatedAt
 	}
-	type target struct{ tenant, user string }
-	var gone []target
-	seen := map[target]bool{}
+	// Judged per session: an account made again keeps the sessions it began.
+	gone := map[string][]*liveSession{}
 	s.mu.RLock()
 	for _, live := range s.running {
 		// releaseStale may have released it on a request's recheck already;
@@ -3782,15 +3790,12 @@ func (s *Server) stopRemovedOwners(ctx context.Context) int {
 		if ok && (at.IsZero() || live.Created.IsZero() || !at.After(live.Created)) {
 			continue
 		}
-		if t := (target{live.Tenant, owner}); !seen[t] {
-			seen[t] = true
-			gone = append(gone, t)
-		}
+		gone[owner] = append(gone[owner], live)
 	}
 	s.mu.RUnlock()
 	n := 0
-	for _, t := range gone {
-		n += s.StopOwnerBackground(ctx, t.tenant, t.user)
+	for owner, hit := range gone {
+		n += s.stopRevoked(ctx, hit, owner)
 	}
 	return n
 }
@@ -3883,7 +3888,12 @@ func (s *Server) fence(live *liveSession) {
 	if cancelCause != nil {
 		cancelCause(agent.StopCause{Reason: agent.TermLeaseLost})
 	}
-	live.closeTerminals(closedWithSession)
+	// Ended before the sandbox lets the session go; their ends are refused, the lease being gone.
+	wctx, cancel := context.WithTimeout(context.Background(), turnEndWait)
+	if !waitClosed(live.closeTerminals(closedWithSession), wctx.Done()) {
+		s.log.Warn("terminals did not end before the session was fenced", "session", live.ID)
+	}
+	cancel()
 	live.Loop.Background.Close(agent.TermLeaseLost)
 	s.releaseBash(live)
 	s.sessionEnded(live.ID)
@@ -5023,8 +5033,8 @@ func (s *Server) ReleaseSessions(tenant, owner string) int {
 }
 
 // ReleaseSessionsBefore is ReleaseSessions for the sessions this process
-// started or took up before before: an account made again at before owns
-// none of them, and keeps those it started or had taken up since.
+// holds that began before before, wherever they began: an account made again
+// at before owns none of them, and keeps those begun since.
 func (s *Server) ReleaseSessionsBefore(tenant, owner string, before time.Time) int {
 	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) || before.IsZero() {
 		return 0
@@ -5273,16 +5283,10 @@ func (s *Server) closeIdle(by time.Time) {
 	for _, live := range idle {
 		closing = append(closing, live.closeTerminals(closedWithSession)...)
 	}
-	deadline := time.NewTimer(turnEndWait)
-	defer deadline.Stop()
-wait:
-	for _, done := range closing {
-		select {
-		case <-done:
-		case <-deadline.C:
-			s.log.Warn("terminals did not record their end before shutdown")
-			break wait
-		}
+	wctx, cancel := context.WithTimeout(context.Background(), turnEndWait)
+	defer cancel()
+	if !waitClosed(closing, wctx.Done()) {
+		s.log.Warn("terminals did not record their end before shutdown")
 	}
 	// In parallel under one deadline: one at a time, a stalled store cost each
 	// session its own wait.

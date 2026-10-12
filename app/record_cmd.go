@@ -324,13 +324,22 @@ func (c recordCtx) checkWitness(path, keyGiven string) bool {
 }
 
 // prunedHead accounts for a witnessed head of a session that was pruned: the
-// tombstone must keep at least that many lines, and at that line the same hash.
-func (c recordCtx) prunedHead(session string, line int64, hash string) (string, error) {
-	h, pruned := c.rec.Pruned(session)
+// tombstone must keep at least that many lines, and at that line the same
+// hash, of a record that was there and verified when it was pruned.
+func (c recordCtx) prunedHead(session string, line int64, hash string) (string, bool, error) {
+	t, pruned := c.rec.Pruned(session)
+	h := t.Head
 	if !pruned || line > h.Lines || line == h.Lines && hash != h.Hash {
-		return "", nil
+		return "", false, nil
 	}
-	return fmt.Sprintf("pruned; the witness holds line %d, and the index's tombstone keeps its head at line %d (%s)", line, h.Lines, short(h.Hash)), nil
+	// A prune of a record already cut or gone cannot launder what was done to it.
+	switch {
+	case t.Missing:
+		return fmt.Sprintf("the witness holds line %d, and the session's file was gone before it was pruned", line), false, nil
+	case !t.Verified:
+		return fmt.Sprintf("the witness holds line %d, and the record did not verify when it was pruned: %s", line, t.Unverified), false, nil
+	}
+	return fmt.Sprintf("pruned; the witness holds line %d, and the index's tombstone keeps its head at line %d (%s)", line, h.Lines, short(h.Hash)), true, nil
 }
 
 // printWitnessProblems names each witnessed head the record no longer holds:
@@ -647,8 +656,9 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 	defer pg.Close()
 	ids := fs.Args()
 	capped := false
+	kind := map[string]string{}
 	if len(ids) == 0 {
-		rows, err := pg.ListSessions(ctx, pgVerifyLimit+1)
+		rows, err := pg.ChainSessions(ctx, pgVerifyLimit+1)
 		if err != nil {
 			fmt.Fprintf(stderr, "abhed: %v\n", err)
 			return 1
@@ -658,6 +668,12 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 		}
 		for _, r := range rows {
 			ids = append(ids, r.ID)
+			switch {
+			case r.Deleted:
+				kind[r.ID] = " (deleted, erased by key)"
+			case r.Subagent:
+				kind[r.ID] = " (a subagent's)"
+			}
 		}
 	}
 	bad := false
@@ -675,7 +691,7 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 			if r.Unchained > 0 {
 				note = fmt.Sprintf(" (%d event(s) from before the chain, not covered)", r.Unchained)
 			}
-			fmt.Fprintf(stdout, "ok      %s: %d chained event(s), head %s%s\n", id, r.Rows, short(r.Head), note)
+			fmt.Fprintf(stdout, "ok      %s: %d chained event(s), head %s%s%s\n", id, r.Rows, short(r.Head), note, kind[id])
 		}
 	}
 	if *witnessed != "" {

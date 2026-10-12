@@ -410,3 +410,32 @@ func TestTwoServersOnePostgresUnrecordedApprovalNeverRuns(t *testing.T) {
 		t.Fatalf("%d approvals on record; want the one B ran", n)
 	}
 }
+
+// A terminal open in a session handed over records its end before the
+// session is marked, which would refuse it after.
+func TestTwoServersOnePostgresHandOverRecordsTheTerminalsEnd(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	withBash := func(o *Options) {
+		o.Registry = tools.NewRegistry(tools.Read{}, tools.Write{}, blk, tools.Bash{})
+		o.Config.Permissions.Allow = []string{"bash(sleep *)"}
+	}
+	a := newHOServer(t, openSharedPG(t), blk, ws, withBash)
+	id := a.start("block")
+	<-blk.started
+	rec := a.do("POST", "/v1/sessions/"+id+"/pty", `{"command":"sleep 30","cols":80,"rows":24}`)
+	var pty ptyStartResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &pty); err != nil || rec.Code != http.StatusOK || pty.ID == "" {
+		t.Fatalf("terminal: %d %s", rec.Code, rec.Body)
+	}
+	a.s.drain()
+	if h := pgHolder(t, id); h != store.HandedOver {
+		t.Fatalf("holder after the hand-over = %q", h)
+	}
+	for _, o := range payloadsOf(a.events(id), agent.EvObservation) {
+		if o["call_id"] == pty.ID {
+			return
+		}
+	}
+	t.Fatalf("the terminal's end was not recorded before the hand-over: %v", payloadsOf(a.events(id), agent.EvObservation))
+}

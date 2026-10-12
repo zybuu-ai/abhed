@@ -113,6 +113,11 @@ func Open(cfg Config) (*Witness, error) {
 	if cfg.Client == nil {
 		cfg.Client = &http.Client{Timeout: 10 * time.Second}
 	}
+	if cfg.URL != "" {
+		if u, err := url.Parse(cfg.URL); err != nil || u.Host == "" || u.Scheme != "https" && u.Scheme != "http" {
+			return nil, errors.New("witness: the URL is not an http(s) address with a host")
+		}
+	}
 	key, err := loadKey(cfg.KeyFile)
 	if err != nil {
 		return nil, err
@@ -181,7 +186,11 @@ func (w *Witness) send(s Statement) {
 func (w *Witness) post(body []byte) error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return fmt.Errorf("witness: a request to %s: %w", shown(w.cfg.URL), err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if w.cfg.Token != "" {
@@ -339,10 +348,9 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
-// Removed says why a head the record no longer holds was removed on the
-// record (a prune's tombstone that covers that line and hash), or "" when
-// nothing recorded accounts for it.
-type Removed func(session string, line int64, hash string) (string, error)
+// Removed says why a head the record no longer holds was removed (removed
+// true), or why a removal does not account for it ("" for the general reason).
+type Removed func(session string, line int64, hash string) (why string, removed bool, err error)
 
 // Check compares statements for one store and tenant with the record as it
 // is now: hashAt gives the hash at a line and whether the record holds it.
@@ -372,14 +380,14 @@ func Check(stmts []Statement, key ed25519.PublicKey, store, tenant string, hashA
 		}
 		switch {
 		case !ok:
-			why := ""
+			why, gone := "", false
 			if removed != nil {
-				if why, err = removed(s.Session, s.Lines, s.Hash); err != nil {
+				if why, gone, err = removed(s.Session, s.Lines, s.Hash); err != nil {
 					return out, err
 				}
 			}
 			if why != "" {
-				out = append(out, Problem{s, why, true})
+				out = append(out, Problem{s, why, gone})
 				continue
 			}
 			out = append(out, Problem{s, fmt.Sprintf("the witness holds line %d of %s, sent %s, and the record no longer has it: lines were cut or an older copy was put back",

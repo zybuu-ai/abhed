@@ -66,7 +66,6 @@ type shellInfo struct {
 	capture *lineCapture
 	local   bool
 	idle    time.Duration
-	user    string
 }
 
 // ptyRun is one command, or one interactive shell, on a terminal.
@@ -100,7 +99,8 @@ type ptyRun struct {
 	// shellDetachGrace once the page watching it said it was closing.
 	idle     time.Duration
 	detached atomic.Bool
-	// user opened the shell; a page of theirs may adopt it when unwatched.
+	// user started it; only they may read or drive it, and a page of theirs
+	// may adopt an unwatched shell.
 	user string
 	// leader names a shell, so what it leaves in its session can be ended safely.
 	leader sandbox.Leader
@@ -263,7 +263,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
 	}
 	cmd.Env = withTerm(cmd.Env)
-	run, err := s.launch(live, sess, id, req.Command, cmd, cancel, req.Cols, req.Rows, nil)
+	run, err := s.launch(live, sess, id, req.Command, cmd, cancel, req.Cols, req.Rows, UserOf(r.Context()), nil)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -315,7 +315,7 @@ func withTerm(env []string) []string {
 
 // launch starts cmd on a new terminal and follows it to the end.
 func (s *Server) launch(live *liveSession, sess *tools.Session, id, command string, cmd *exec.Cmd,
-	cancel context.CancelFunc, cols, rows uint16, shell *shellInfo) (*ptyRun, error) {
+	cancel context.CancelFunc, cols, rows uint16, user string, shell *shellInfo) (*ptyRun, error) {
 	size := &pty.Winsize{Cols: cols, Rows: rows}
 	if size.Cols == 0 || size.Rows == 0 {
 		size = &pty.Winsize{Cols: 100, Rows: 30}
@@ -327,10 +327,10 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, 0))
 		return nil, errors.New(res.Content)
 	}
-	run := &ptyRun{id: id, command: command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(), idle: ptyIdle,
+	run := &ptyRun{id: id, command: command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(), idle: ptyIdle, user: user,
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	if shell != nil {
-		run.capture, run.local, run.idle, run.user = shell.capture, shell.local, shell.idle, shell.user
+		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
 		run.prompt = termline.NewPrompt()
 		if run.local {
 			tty := run.tty
@@ -448,12 +448,11 @@ func (s *Server) startShell(w http.ResponseWriter, r *http.Request, live *liveSe
 		capture: newLineCapture(id, func(in agent.TerminalInput) { s.unrecorded(nil, live, live.Loop.ManualTerminalInput(in)) }),
 		local:   resp.Isolation != nil && heldHere(resp.Isolation.Tier),
 		idle:    shellIdle,
-		user:    UserOf(r.Context()),
 	}
 	if cfg.Sandbox.TerminalIdleMinutes > 0 {
 		shell.idle = time.Duration(cfg.Sandbox.TerminalIdleMinutes) * time.Minute
 	}
-	run, err := s.launch(live, sess, id, "bash -i", cmd, cancel, req.Cols, req.Rows, shell)
+	run, err := s.launch(live, sess, id, "bash -i", cmd, cancel, req.Cols, req.Rows, UserOf(r.Context()), shell)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -653,7 +652,7 @@ func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *
 	live.mu.Unlock()
 	// A shell started by someone else, such as the owner before the session
 	// changed hands, is not this caller's to drive, as listShells does not offer it.
-	if run == nil || run.capture != nil && run.user != UserOf(r.Context()) {
+	if run == nil || run.user != UserOf(r.Context()) {
 		WriteError(w, http.StatusNotFound, "that command is not running")
 		return nil, nil, false
 	}
@@ -972,13 +971,8 @@ func (p *ptyRun) ask(e *enteredLine) {
 	e.Ahead = p.prompt != nil && !p.prompt.At()
 }
 
-// engineForeground asks, from outside the container, whether the terminal's
-// foreground process group is not the shell's. The shell is the container's
-// pid 1, and nothing is run from the container's image, whose programs the
-// agent can replace: the engine names the shell's host pid, and its /proc
-// stat is read on the engine's host (here on Linux, through the machine for
-// podman elsewhere), or docker's own ps answers. Any doubt is "cannot say",
-// and the line is screened.
+// engineForeground asks the engine, never the agent-writable image, whether the
+// shell (the container's pid 1) has a foreground job; any doubt screens the line.
 func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
 	name := ""
 	for i, a := range cmd.Args {
@@ -1266,4 +1260,17 @@ func (l *liveSession) closeTerminals(why string) []<-chan struct{} {
 		done = append(done, r.done)
 	}
 	return done
+}
+
+// waitClosed waits for every channel in done until stop fires, and reports
+// whether all closed.
+func waitClosed(done []<-chan struct{}, stop <-chan struct{}) bool {
+	for _, ch := range done {
+		select {
+		case <-ch:
+		case <-stop:
+			return false
+		}
+	}
+	return true
 }

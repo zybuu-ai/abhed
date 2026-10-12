@@ -88,14 +88,19 @@ func TestWitnessCatchesACutAndARewrite(t *testing.T) {
 	}
 	// A removal on the record accounts for a missing head; nothing else does.
 	delete(record, "s1")
-	removed := func(session string, line int64, hash string) (string, error) {
+	removed := func(session string, line int64, hash string) (string, bool, error) {
 		if session == "s1" && line <= 3 {
-			return "pruned", nil
+			return "pruned", true, nil
 		}
-		return "", nil
+		return "", false, nil
 	}
 	if p, _ := Check(stmts, key, "local", "default", at, removed); len(p) != 1 || !p[0].Removed || Failed(p) != 0 {
 		t.Fatalf("a pruned session's heads failed: %+v", p)
+	}
+	// A removal that does not account for the head fails, with its reason.
+	refused := func(string, int64, string) (string, bool, error) { return "gone before the prune", false, nil }
+	if p, _ := Check(stmts, key, "local", "default", at, refused); Failed(p) != 1 || p[0].Reason != "gone before the prune" {
+		t.Fatalf("a refused removal: %+v", p)
 	}
 	if p, _ := Check(stmts, key, "local", "default", at, nil); Failed(p) != 1 {
 		t.Fatalf("a missing session passed: %+v", p)
@@ -177,6 +182,17 @@ func TestWitnessReportsFailuresAsTheyHappen(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("the failed append was not reported")
+		}
+	}
+}
+
+// A URL that is not an http(s) address is refused at Open, without the
+// credential it carries.
+func TestWitnessRefusesABadURL(t *testing.T) {
+	for _, u := range []string{"https://user:s3cret@host:badport/x", "ftp://user:s3cret@host/x?token=s3cret", "user:s3cret@host"} {
+		_, err := Open(Config{URL: u, KeyFile: filepath.Join(t.TempDir(), "witness.key")})
+		if err == nil || strings.Contains(err.Error(), "s3cret") {
+			t.Fatalf("Open(%q) = %v; want a refusal without the credential", u, err)
 		}
 	}
 }

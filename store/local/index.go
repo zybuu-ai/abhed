@@ -401,6 +401,7 @@ func fold(ls []indexLine) []Entry {
 		case opPrune:
 			e.Pruned = true
 			e.Head = Head{Lines: l.HeadLines, Seq: l.HeadSeq, Hash: l.HeadHash}
+			e.Tombstone = Tombstone{Head: e.Head, Missing: l.Missing, Verified: l.Verified != nil && *l.Verified, Unverified: l.Unverified}
 		}
 	}
 	out := make([]Entry, 0, len(order))

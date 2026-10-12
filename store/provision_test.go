@@ -112,6 +112,17 @@ func TestRuntimeRoleCannotAlterTheRecord(t *testing.T) {
 		}
 	}
 
+	// A deletion names who made it; no key is kept for a session that does not exist.
+	for what, sql := range map[string]string{
+		"mark it deleted by no one":        `UPDATE sessions SET deleted_at = now(), deleted_by = '' WHERE id = $1`,
+		"name a deleter of a live session": `UPDATE sessions SET deleted_by = 'someone' WHERE id = $1`,
+		"keep a key for no session":        `INSERT INTO session_keys (session_id, tenant_id, key) VALUES ($1 || '-none', 't-sep', '\x00')`,
+	} {
+		if _, err := p.pool.Exec(ctx, sql, id); err == nil {
+			t.Errorf("the runtime role was able to %s", what)
+		}
+	}
+
 	// A deletion is final: not undone, and its mark not rewritten.
 	if err := p.DeleteSession(id); err != nil {
 		t.Fatalf("delete as the runtime role: %v", err)

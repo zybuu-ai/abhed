@@ -523,7 +523,14 @@ BEGIN
      AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
     RAISE EXCEPTION 'a session''s owner changes only when its account is removed (to unclaimed:%), or by a migration', OLD.user_id;
   END IF;
-  -- A deletion is final: its key is gone, and the mark says who and when.
+  -- A deletion names who made it, and is final: its key is gone, and the
+  -- mark says who and when.
+  IF OLD.deleted_at IS NULL
+     AND (NEW.deleted_at IS NULL AND NEW.deleted_by IS DISTINCT FROM OLD.deleted_by
+          OR NEW.deleted_at IS NOT NULL AND COALESCE(NEW.deleted_by, '') = '')
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+    RAISE EXCEPTION 'a session''s deletion says who made it, and is set only with the deletion';
+  END IF;
   IF OLD.deleted_at IS NOT NULL
      AND (NEW.deleted_at IS DISTINCT FROM OLD.deleted_at OR NEW.deleted_by IS DISTINCT FROM OLD.deleted_by)
      AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
@@ -571,6 +578,14 @@ CREATE TABLE IF NOT EXISTS session_keys (
   key        BYTEA       NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- A key belongs to a session; none is kept for one that does not exist.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'session_keys_session_fk') THEN
+    ALTER TABLE session_keys ADD CONSTRAINT session_keys_session_fk
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE RESTRICT;
+  END IF;
+END $$;
 ALTER TABLE session_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE session_keys FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS session_keys_tenant_isolation ON session_keys;

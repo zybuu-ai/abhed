@@ -30,10 +30,8 @@ var erasedPayload = json.RawMessage(`{"erased":true}`)
 // sealedBlob marks a sealed checkpoint pre-image.
 var sealedBlob = []byte("abhed.sealed.v1:")
 
-// sealer returns the session's cipher for a write, making its key when the
-// session has none and is not deleted. Nil with no error means the session
-// has no key: written before keys, or erased. Reads never use this cache: see
-// readKeys.
+// sealer is the session's write cipher, its key made if missing; a deleted
+// session is ErrSessionDeleted, and nil means no row (the insert refuses it).
 func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, error) {
 	if a, ok := p.keys.load(sessionID); ok {
 		return a, nil
@@ -58,7 +56,7 @@ func (p *Postgres) sealer(ctx context.Context, sessionID string) (cipher.AEAD, e
 		}
 	}
 	if key == nil {
-		return nil, nil
+		return nil, p.deletedErr(ctx, sessionID)
 	}
 	a, err := newAEAD(sessionID, key)
 	if err != nil {
@@ -125,6 +123,21 @@ func newAEAD(sessionID string, key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
+// deletedErr is ErrSessionDeleted when the session is deleted, nil when it is
+// open or has no row.
+func (p *Postgres) deletedErr(ctx context.Context, sessionID string) error {
+	var deleted bool
+	err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND deleted_at IS NOT NULL)`,
+		sessionID).Scan(&deleted)
+	if err != nil {
+		return fmt.Errorf("read session %s: %w", sessionID, err)
+	}
+	if deleted {
+		return fmt.Errorf("session %s: %w", sessionID, ErrSessionDeleted)
+	}
+	return nil
+}
+
 func (p *Postgres) sessionKey(ctx context.Context, sessionID string) ([]byte, error) {
 	return p.queryKey(ctx, `SELECT key FROM session_keys WHERE session_id = $1`, sessionID)
 }
@@ -141,9 +154,8 @@ func (p *Postgres) queryKey(ctx context.Context, q, sessionID string) ([]byte, e
 	return key, nil
 }
 
-// readKeys opens the payloads of one read. Each session's key is read from the
-// database once per read, never from the cache, so a session another process
-// erased opens as erased here too; a deleted session's key counts as gone.
+// readKeys opens one read's payloads with keys read fresh, never cached, so
+// another process's erasure (or a deleted session) opens as erased here too.
 type readKeys struct {
 	p   *Postgres
 	got map[string]cipher.AEAD

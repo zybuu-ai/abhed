@@ -541,7 +541,8 @@ All notable changes to Abhed are recorded here. The format follows
   made again under the same name, and of a person whose administrator
   rights were taken away. The server now checks its local accounts every
   15 seconds, and at once when it sees one change, and stops that work as
-  `owner_revoked`; removing administrator rights stops the person's work
+  `owner_revoked`, session by session: an account made again keeps the
+  sessions it began. Removing administrator rights stops the person's work
   too. Affects 1.2.3 to 1.2.7.
 - A local account's browser session outlived the account: once the name
   was made again, the removed account's cookie worked for the new account,
@@ -1150,16 +1151,19 @@ All notable changes to Abhed are recorded here. The format follows
   checks every head the witness holds is still in the record, which catches
   a record cut back, re-chained or restored from an older copy. A session
   pruned with a tombstone that covers the witnessed head is reported as
-  pruned, not failed.
+  pruned, not failed, unless its file was gone or did not verify when it
+  was pruned.
 - Postgres events are hash-chained per session by the database itself
   (`chain_pos`, `prev_hash`, `hash`, set by a trigger whatever the server
   sends), as is the control plane's `sandbox_audit` per tenant. `abhed
-  record verify` with `storage.driver: postgres` walks each chain, and with a
+  record verify` with `storage.driver: postgres` walks each chain, deleted
+  and subagent sessions' too, and with a
   witness each session's head is sent at the end of every run.
 - Deleting a Postgres session now erases what it said: payloads and file
   pre-images are sealed with a per-session key, and delete removes the key,
   the session's label and title, and its approvals' arguments. The event
-  rows and their hashes stay. Sessions recorded before 1.2.8 are not sealed.
+  rows and their hashes stay, and a later write to the session, from any
+  server, is refused. Sessions recorded before 1.2.8 are not sealed.
 - `abhed doctor` names, under the egress allowlist, each deny rule
   narrowed by a path, which other spellings of the path step around, and
   advises allowing the paths needed instead.
@@ -1350,7 +1354,9 @@ All notable changes to Abhed are recorded here. The format follows
   same browser tab could reattach to it. A closing page now tells the server,
   and its shells end a minute later unless a reload reattaches; opening the
   session in another tab or browser adopts your own shells no page is
-  watching (`GET /v1/sessions/{id}/pty`).
+  watching (`GET /v1/sessions/{id}/pty`). A shell or command on a terminal
+  is read, typed into and stopped only by the account that started it, even
+  once the session has passed to another.
 - The workbench's **Changes** and review now list files changed by shell
   commands, the person's or the agent's, not only edits made through the
   edit tools. Each session notes the workspace as it opens (size, time and
@@ -1367,6 +1373,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Deleting a session with a workbench command or shell still running
+  wrote the terminal's end into the record after the delete: one event
+  left behind in the store. The delete now waits, up to five seconds, for
+  each terminal's end before the record goes. Affects 1.1.0 to 1.2.7.
+- A session opened again on a server, or taken up from another, counted as
+  begun when it was opened: the session list showed that as its creation
+  time, and a local account removed and made again under the same name was
+  taken as the owner of an earlier account's session opened since. A live
+  session now keeps the time it began. Affects 0.1.0 to 1.2.7.
 - A session recovered from a process that stopped mid-turn was ended with
   the calls that turn had open left without an outcome. Each now gets one
   before the end: an approved call, which may have run, is answered
@@ -1998,9 +2013,9 @@ All notable changes to Abhed are recorded here. The format follows
 - `store/witness` (`Open`, `Config`, `Statement`, `Witness`) sends the
   record's heads to a witness, and `Read`, `Check` (against the
   installation's key, from `PublicKey` or `ParsePublicKey`) check them, and is experimental until 2.0 as
-  `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`
-  and `ChainHashAt`, `store.ChainReport`, `store/local.Store.HashAt` and
-  `Pruned`, and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
+  `store/sqlite` is. `store.Config.Anchor`, `store.Postgres.VerifyChain`,
+  `ChainHashAt` and `ChainSessions` (with `store.ChainSession`), `store.ChainReport`, `store/local.Store.HashAt` and
+  `Pruned` (with `Tombstone`), and `witness.Check` and `Failed` read the hash chain; `store/local.Store.DeleteSession` prunes a session with a
   tombstone; `store.Approval.RequestID`, `store.Postgres.Ping`,
   `store.OwnerMigration.Done` and `ProvisionConfig.OwnersDone` are new.
 - `hawkeye`: `Report.Network` with `NetworkStats` and `NetworkRefusal`,
