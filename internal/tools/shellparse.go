@@ -75,8 +75,17 @@ type shellFacts struct {
 	// and programs named by a path, which run as shell text when they are not
 	// a binary or another interpreter's script.
 	scripts []Script
-	// writes are the literal targets of output redirections.
+	// writes are the literal files output redirections and the copying
+	// commands (cp, mv, ln, tee, dd, sed -i…) write.
 	writes []string
+	// writeHidden says why a file the command writes is not known, as one
+	// named by an expansion; "" when each is literal.
+	writeHidden string
+	// moves reports a command that may change the folder later commands run
+	// in: cd, pushd, popd, env -C, sudo -D, find -execdir.
+	moves bool
+	// scriptsCut reports scripts past maxScripts that were not recorded.
+	scriptsCut bool
 }
 
 // Script is a file a command runs as shell text, as named on its line.
@@ -85,6 +94,9 @@ type Script struct {
 	// Direct marks a program named by a path, run as a script only when it
 	// has no #! line or a shell's.
 	Direct bool
+	// Sourced marks a file read by source or ., which runs in the shell
+	// itself, so a cd in it moves the commands after it.
+	Sourced bool
 }
 
 // maxReadings bounds the commands read from one simple command's words, so a
@@ -514,6 +526,7 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 // runs reads what the command name does with its arguments, when it runs
 // shell text or sets variables by name, and reports whether it was one.
 func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args []*syntax.Word, depth int) bool {
+	f.placeAndWrites(name, args)
 	switch {
 	case name == "alias":
 		// An alias's value is shell text run where its name is: read it so.
@@ -541,6 +554,9 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 				f.opaque = "a script read from its input"
 			} else if lit {
 				f.script(v, false)
+				if n := len(f.scripts); n > 0 && f.scripts[n-1].Path == v {
+					f.scripts[n-1].Sourced = true
+				}
 			}
 			if hasProcSubst(args[0]) {
 				f.opaque = "a script made when it runs"
@@ -1109,7 +1125,11 @@ const maxScripts = 16
 
 // script records a file the command runs as shell text.
 func (f *shellFacts) script(name string, direct bool) {
-	if name == "" || len(f.scripts) >= maxScripts {
+	if name == "" {
+		return
+	}
+	if len(f.scripts) >= maxScripts {
+		f.scriptsCut = true
 		return
 	}
 	f.scripts = append(f.scripts, Script{Path: name, Direct: direct})
@@ -1120,8 +1140,10 @@ func (f *shellFacts) redirectTargets(st *syntax.Stmt) {
 	for _, r := range st.Redirs {
 		switch r.Op {
 		case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
-			if v, lit := literal(r.Word); lit && len(f.writes) < maxScripts {
-				f.writes = append(f.writes, v)
+			if v, lit := literal(r.Word); lit {
+				f.wrote(v)
+			} else {
+				f.writeHidden = "a redirection to a file named by an expansion"
 			}
 		}
 	}

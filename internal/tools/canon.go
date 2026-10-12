@@ -873,8 +873,22 @@ func (c Canonical) Unparsed() bool { return c.shell.unparsed }
 // a shell's script operand, source and . files, and programs named by a path.
 func (c Canonical) Scripts() []Script { return c.shell.scripts }
 
-// Writes are the literal targets of the command's output redirections.
+// Writes are the literal files the command writes: its output redirections'
+// targets and what cp, mv, ln, install, rsync, tee, dd, sed -i, perl -i,
+// curl -o and wget -O write. A copy into a folder is also named as the file
+// it makes there.
 func (c Canonical) Writes() []string { return c.shell.writes }
+
+// WriteHidden says why a file the command writes is not known, as one named
+// by an expansion, or "" when every one is in Writes.
+func (c Canonical) WriteHidden() string { return c.shell.writeHidden }
+
+// MovesFolder reports a command that may change the folder the commands
+// after it run in: cd, pushd, popd, env -C, sudo -D, find -execdir.
+func (c Canonical) MovesFolder() bool { return c.shell.moves }
+
+// ScriptsCut reports a command naming more scripts than Scripts holds.
+func (c Canonical) ScriptsCut() bool { return c.shell.scriptsCut }
 
 // Commands are the simple commands a bash parser finds, from each word that
 // may be the program, quoting undone: inside functions, subshells and the

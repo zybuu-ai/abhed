@@ -426,11 +426,26 @@ folder the agent's command starts in: a shell's script (`bash ./s.sh`,
 `sh -e -- s.sh`), `source f` and `. f`, a program named by a path that is a
 shell script (`./tool` with a `#!/bin/sh` line, or no `#!` line at all), and
 the scripts those source, two levels deep. So `bash ./s.sh` is refused under
-`bash(curl *)` when `s.sh` holds `curl`. A script that does not exist, that
-the same line writes before it runs it (`echo … > s.sh; sh s.sh`), or that
-is named from `~`, is refused while a deny rule for `bash` has a pattern. One
-the rules cannot read in full, because it is over 64 KiB, does not parse, or
-runs text built when it runs (`eval "$x"`), is asked about, in every mode.
+`bash(curl *)` when `s.sh` holds `curl`. A script is refused while a deny
+rule for `bash` has a pattern, and asked about otherwise, when it:
+
+- does not exist, or is named from `~`
+- may be written by the same line before it runs: a redirection
+  (`echo … > s.sh; sh s.sh`), `cp`, `mv`, `ln`, `install`, `rsync`, `tee`,
+  `dd of=`, `sed -i`, `perl -i`, `curl -o` or `wget`, including a copy into
+  its folder (`cp sub/s.sh . && ./s.sh`) and any file those name by an
+  expansion or a pattern (`cp "$f" s.sh`, `cp sub/*.sh .`); names are
+  compared in any case, and a write to a folder on the script's path counts
+- is named by a relative path on a line that may change folder first: `cd`,
+  `pushd`, `popd`, `env -C`, `sudo -D`, `find -execdir`, or a script the
+  line sources that runs `cd` (`cd sub && ./s.sh`, `. ./setup.sh && ./s.sh`).
+  The check does not follow the folder; it refuses. A script named by an
+  absolute path is still read.
+- is one of more than 16 scripts the line runs
+
+One the rules cannot read in full, because it is over 64 KiB, does not
+parse, runs text built when it runs (`eval "$x"`), or itself runs a script
+by a relative path after a `cd`, is asked about, in every mode.
 A binary, or a script for another interpreter (`#!/usr/bin/env python3`),
 is not read. A script is read when the decision is made, so one changed
 between then and the run is not seen; the sandbox is the boundary there.
@@ -440,8 +455,10 @@ A deny pattern matches the words, so it is easy to step around.
 
 - a script another program reads (`python3 x.py`, `node x.js`, `make`), a
   shell script over 64 KiB, one the agent's own commands judge from a folder
-  the server cannot see (an `:exec` in a sandbox), or a program the line
-  builds before it runs it (`make && ./bin/app`)
+  the server cannot see (an `:exec` in a sandbox), a program the line
+  builds before it runs it (`make && ./bin/app`), or a script another
+  program on the line writes or unpacks (`tar x`, `unzip`, `git checkout`,
+  `patch`, `python3 -c`)
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,

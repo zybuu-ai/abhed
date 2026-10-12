@@ -150,11 +150,16 @@ All notable changes to Abhed are recorded here. The format follows
   `bash(curl *)` when the script held it. The agent's commands now have the
   shell scripts they run read from the folder they start in, two levels
   deep, and their commands checked against deny and ask rules. A script that
-  does not exist, that the same line writes before running it, or that is
-  named from `~` is refused under a deny rule; one too long, unparsable or
-  running built text is asked about. Binaries and other interpreters'
-  scripts are not read, and an `:exec` reads no script. Affects every
-  release to 1.2.7.
+  does not exist, that the same line writes before running it (a
+  redirection, `cp`, `mv`, `ln`, `install`, `rsync`, `tee`, `dd`, `sed -i`,
+  `perl -i`, `curl -o`, `wget`, or a file named by an expansion), that is
+  named by a relative path on a line that changes folder (`cd`, `pushd`,
+  `popd`, `env -C`, `sudo -D`, `find -execdir`, or a sourced script that
+  does), or that is named from `~` is refused under a deny rule and asked
+  about otherwise; one too long, unparsable, running built text, or itself
+  running a script after a `cd` is asked about. Binaries and other
+  interpreters' scripts are not read, and an `:exec` reads no script.
+  Affects every release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
   on a disk that ignores case (documented as a limit). Deny and ask path
