@@ -181,6 +181,9 @@ func TestTerminalCommandIsOnlyItsStarters(t *testing.T) {
 	live.mu.Lock()
 	run := live.ptys[start.ID]
 	live.mu.Unlock()
+	if run == nil || run.capture != nil {
+		t.Fatalf("no command run: %+v", run)
+	}
 	own := run.user
 	run.user = "mallory"
 	for _, c := range []struct{ method, path string }{{"GET", ""}, {"POST", "/input"}, {"DELETE", ""}, {"POST", "/resize"}} {
@@ -277,30 +280,5 @@ func TestLargeFileIsEditable(t *testing.T) {
 	}
 	if r := wb.send("acme", "PUT", "file", saveRequest{Path: "big.txt", Content: f.Content + "end\n", Base: f.Hash}); r.Code != http.StatusOK {
 		t.Fatalf("save of a 2 MB file: %d %s", r.Code, r.Body)
-	}
-}
-
-// A command, like a shell, answers only the account that started it: once
-// the session changes hands, the old owner's command is not the new one's.
-func TestTerminalCommandAnswersOnlyItsStarter(t *testing.T) {
-	wb := manualBench(t, nil)
-	start := wb.startPTY("sleep 30")
-	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
-	live.mu.Lock()
-	run := live.ptys[start.ID]
-	live.mu.Unlock()
-	if run == nil || run.capture != nil {
-		t.Fatalf("no command run: %+v", run)
-	}
-	own := run.user
-	run.user = "mallory"
-	for _, c := range []struct{ method, path string }{{"GET", ""}, {"POST", "/input"}, {"POST", "/resize"}, {"DELETE", ""}} {
-		if rec := wb.send("acme", c.method, "pty/"+start.ID+c.path, map[string]int{"cols": 80, "rows": 24}); rec.Code != http.StatusNotFound {
-			t.Fatalf("%s %s on another account's command: %d", c.method, c.path, rec.Code)
-		}
-	}
-	run.user = own
-	if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
-		t.Fatalf("kill: %d %s", rec.Code, rec.Body)
 	}
 }

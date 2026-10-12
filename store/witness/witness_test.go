@@ -186,17 +186,6 @@ func TestWitnessReportsFailuresAsTheyHappen(t *testing.T) {
 	}
 }
 
-// A URL that is not an http(s) address is refused at Open, without the
-// credential it carries.
-func TestWitnessRefusesABadURL(t *testing.T) {
-	for _, u := range []string{"https://user:s3cret@host:badport/x", "ftp://user:s3cret@host/x?token=s3cret", "user:s3cret@host"} {
-		_, err := Open(Config{URL: u, KeyFile: filepath.Join(t.TempDir(), "witness.key")})
-		if err == nil || strings.Contains(err.Error(), "s3cret") {
-			t.Fatalf("Open(%q) = %v; want a refusal without the credential", u, err)
-		}
-	}
-}
-
 // A delivery error names the witness without a credential its URL carries.
 func TestWitnessErrorHidesURLCredentials(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +227,8 @@ func TestWitnessBadURLHidesCredentials(t *testing.T) {
 		"ftp://alice:hunter2@host/heads?token=sekrit",
 		"alice:hunter2@host/heads",
 		"https:///heads?token=sekrit",
+		"https://alice:hunter2@host:badport/x",
+		"ftp://alice:hunter2@host/x?token=sekrit",
 	} {
 		_, err := Open(Config{URL: u, KeyFile: filepath.Join(t.TempDir(), "witness.key")})
 		if err == nil {
