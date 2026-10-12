@@ -125,7 +125,7 @@ func (t *sandboxTerminal) input(data []byte) error {
 			}
 			continue
 		}
-		why := denied(t.pol, e.Line, true)
+		why := lineRefused(t.pol, e.Line)
 		if why == nil {
 			t.prompt.Gave()
 			if err := t.capture.Send(e, write(k.Data)); err != nil {

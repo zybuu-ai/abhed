@@ -15,7 +15,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const cgroupRoot = "/sys/fs/cgroup"
+// cgroupRoot is where cgroup v2 is mounted; tests move it.
+var cgroupRoot = "/sys/fs/cgroup"
 
 // probeFirecracker reports the first thing missing for the jailer to run a
 // VM here. Each is required; none is worked around.
@@ -118,3 +119,6 @@ func removeCgroup(parent, vmID string) error {
 func vmmProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
 }
+
+// watchdogAttr starts the watchdog in a session of its own.
+func watchdogAttr() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }

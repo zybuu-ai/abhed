@@ -390,16 +390,10 @@ func (s *Server) sandboxPolicy(ctx context.Context, id string) (*policy.Engine, 
 	return pol, nil
 }
 
-// denied refuses a command line a deny rule or hook refuses. line judges it
-// as a line typed at a terminal, which a shell may finish later.
-func denied(pol *policy.Engine, command string, line bool) error {
+// denied refuses a command line a deny rule or hook refuses.
+func denied(pol *policy.Engine, command string) error {
 	args, _ := json.Marshal(map[string]string{"command": command})
-	var d policy.Result
-	if line {
-		d = pol.EvaluateLine("bash", true, args)
-	} else {
-		d = pol.Evaluate("bash", true, args)
-	}
+	d := pol.Evaluate("bash", true, args)
 	if d.Decision != policy.Deny {
 		return nil
 	}
@@ -415,21 +409,42 @@ func execRefused(pol *policy.Engine, command string) error {
 	if d.Decision == policy.Deny {
 		return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
 	}
-	if why := unreadable(d, command); why != "" && screensStdin(pol) {
+	if why := unreadable(d, tools.CanonicalCommand(command), pol.GitExtensions); why != "" && screensStdin(pol) {
 		return fmt.Errorf("%w: %s, and no one can confirm it on an exec", controlplane.ErrForbidden, why)
 	}
 	return nil
 }
 
+// lineRefused is execRefused for a line typed into an attached shell, read
+// as a terminal line: one the rules cannot read is refused there too.
+func lineRefused(pol *policy.Engine, line string) error {
+	args, _ := json.Marshal(map[string]string{"command": line})
+	d := pol.EvaluateLine("bash", true, args)
+	if d.Decision == policy.Deny {
+		return fmt.Errorf("%w: denied by policy: %s", controlplane.ErrForbidden, d.Reason)
+	}
+	if why := unreadable(d, tools.CanonicalCommand(line).AsTerminalLine(), pol.GitExtensions); why != "" && screensStdin(pol) {
+		return fmt.Errorf("%w: %s, which a typed line may not do while the rules are in force; name the program in the line", controlplane.ErrForbidden, why)
+	}
+	return nil
+}
+
 // unreadable is why a policy's question about a command line is that its
-// parts or its program cannot be read, "" when the question is another.
-func unreadable(d policy.Result, command string) string {
-	switch {
-	case d.Decision != policy.Ask:
-	case d.Step == "screen":
+// parts, its program or the git code it runs cannot be read, "" when the
+// question is another.
+func unreadable(d policy.Result, canon tools.Canonical, gitExtensions map[string]bool) string {
+	if d.Decision != policy.Ask {
+		return ""
+	}
+	switch d.Step {
+	case "screen":
 		return d.Reason
-	case d.Step == "destructive":
-		if why := tools.CanonicalCommand(command).Unreadable(); why != "" {
+	case "destructive":
+		why := canon.Unreadable()
+		if why == "" {
+			why = canon.GitUnchecked(gitExtensions)
+		}
+		if why != "" {
 			return "the command cannot be checked against the rules (" + why + ")"
 		}
 	}

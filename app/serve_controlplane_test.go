@@ -132,7 +132,8 @@ func TestSandboxWorkspaces(t *testing.T) {
 		t.Fatal("shared_workspace with a root was accepted")
 	}
 	for _, bad := range []string{"relative/root", ws, filepath.Join(ws, "sandboxes"), filepath.Dir(ws),
-		filepath.Join(t.TempDir(), ".abhed", "sandboxes"), filepath.Join(t.TempDir(), ".ABHED")} {
+		filepath.Join(t.TempDir(), ".abhed", "sandboxes"), filepath.Join(t.TempDir(), ".ABHED"),
+		filepath.Join(t.TempDir(), "repo", ".git", "sb"), filepath.Join(t.TempDir(), "repo", ".GIT"), gitLink(t)} {
 		if _, _, err := sandboxWorkspaces(config.ControlPlaneConfig{WorkspaceRoot: bad}, ws); err == nil {
 			t.Errorf("root %q was accepted", bad)
 		}
@@ -469,4 +470,18 @@ func TestServeSandboxCannotReadServeState(t *testing.T) {
 	if res.ExitCode == 0 || strings.Contains(out.String(), "alice") {
 		t.Fatalf("a sandbox read serve's accounts: %d %q", res.ExitCode, out.String())
 	}
+}
+
+// gitLink is a link to a folder inside a git directory.
+func gitLink(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "repo", ".git", "sb"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "sandboxes")
+	if err := os.Symlink(filepath.Join(dir, "repo", ".git", "sb"), link); err != nil {
+		t.Fatal(err)
+	}
+	return link
 }

@@ -42,7 +42,9 @@ func UserLabel(tenant, user string) string {
 // caller to start and own: a session's bash tool and terminal run their
 // commands this way. It is recorded, put to the guard and the interceptor
 // as an exec, and refused for a driver that cannot hand one out. Exec's
-// timeout and output bound are the caller's to apply.
+// timeout and output bound are the caller's to apply. The process counts
+// as running, and holds its guard slot, until ctx ends: the caller ends ctx
+// once the process has exited, and a guard that ends it kills the process.
 func (s *Service) Command(ctx context.Context, c Caller, id string, req driver.CommandRequest) (*exec.Cmd, Sandbox, error) {
 	if req.Shell != (req.Command == "") {
 		return nil, Sandbox{}, fmt.Errorf("%w: exactly one of a command and a shell", ErrInvalid)
@@ -61,9 +63,10 @@ func (s *Service) Command(ctx context.Context, c Caller, id string, req driver.C
 	if !d.Info().Has(driver.CapCommand) {
 		return nil, sb, driver.Errorf(driver.ErrUnsupported, "driver %s cannot run a session's commands", sb.Driver)
 	}
-	if s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver) {
-		// Its per-call credentials travel in Exec's request, which a handed-out process has none of.
-		return nil, sb, driver.Errorf(driver.ErrUnsupported, "driver %s takes its egress from the control plane, which a session's commands cannot carry", sb.Driver)
+	commander, ok := d.(driver.Commander)
+	egress := s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver)
+	if egress && !ok {
+		return nil, sb, driver.Errorf(driver.ErrUnsupported, "driver %s cannot pass a session's command its egress credential", sb.Driver)
 	}
 	line := req.Command
 	if req.Shell {
@@ -77,25 +80,60 @@ func (s *Service) Command(ctx context.Context, c Caller, id string, req driver.C
 	if err := s.record(ctx, requested(ev)); err != nil {
 		return nil, sb, err
 	}
-	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb, Exec: &ExecRequest{Command: line, Cwd: req.Cwd, Stdin: req.Shell}})
+	ctx, end := context.WithCancelCause(ctx)
+	release, err := s.guardAdmit(ctx, &Admission{Action: ActionExec, Caller: c, Sandbox: sb,
+		Exec: &ExecRequest{Command: line, Cwd: req.Cwd, Stdin: req.Shell}, Cancel: guardCancel(end)})
 	if err != nil {
+		end(nil)
 		s.outcome(ctx, ev, err)
 		return nil, sb, err
 	}
-	defer release()
 	old := sb.Clone()
 	adm := AdmissionRequest{Operation: OpExec, Caller: c, SandboxID: id, Old: &old, Object: sb, Command: ev.Detail["command"],
 		Stdin: req.Shell, Cwd: req.Cwd}
 	if _, err := s.admit(ctx, adm); err != nil {
+		release()
+		end(nil)
 		s.outcome(ctx, ev, err)
 		return nil, sb, err
 	}
 	cmd, err := driver.Command(ctx, d, id, req)
+	var endCall func()
+	if err == nil && egress {
+		// Its own credential, as an :exec gets, revoked when the command's context ends.
+		var env []string
+		if env, endCall, err = s.cfg.Egress.Call(id); err != nil {
+			err = fmt.Errorf("%w: an egress credential: %w", ErrUnavailable, err)
+		} else {
+			names := make([]string, 0, len(env))
+			for _, kv := range env {
+				k, _, _ := strings.Cut(kv, "=")
+				names = append(names, k)
+			}
+			cmd.Env = append(cmd.Env, env...)
+			commander.ForwardEnv(cmd, names)
+		}
+	}
 	s.outcome(ctx, ev, err)
 	s.committed(ctx, adm, sb, err)
 	if err != nil {
+		release()
+		end(nil)
 		return nil, sb, err
 	}
+	if endCall != nil {
+		context.AfterFunc(ctx, endCall)
+	}
+	context.AfterFunc(ctx, func() {
+		release()
+		if cause := context.Cause(ctx); errors.Is(cause, ErrEndedByGuard) {
+			ended := ev
+			ended.Action, ended.Outcome, ended.Code = "exec.ended", OutcomeFailed, ErrorCode(cause)
+			ended.Detail = maps.Clone(ev.Detail)
+			ended.Detail["reason"] = s.reason(cause.Error())
+			_ = s.record(context.WithoutCancel(ctx), ended)
+		}
+	})
 	return cmd, sb, nil
 }
 

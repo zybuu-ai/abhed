@@ -475,7 +475,9 @@ All notable changes to Abhed are recorded here. The format follows
   `delete` (asks first unless `-y`), `snapshot`, `restore` and `template
   list | get | create | rm`. Output is a table or `-o json`; exit status 0,
   1 failed, 2 usage, 3 not signed in or not allowed, 4 not found, 5
-  conflict, and the remote status for `exec`, `connect` and `ssh`. Every
+  conflict, 6 waiting on an approval (the approval is named; send the
+  command again with `-approval ID` once it is granted), and the remote
+  status for `exec`, `connect` and `ssh`. Every
   mutating call carries an `Idempotency-Key`, the same one when it is sent
   again after a lost answer, so the server acts once; a token near its
   expiry, or refused with `401`, is renewed with the profile's refresh
@@ -493,8 +495,9 @@ All notable changes to Abhed are recorded here. The format follows
   first, in pages, to whoever may see the sandbox.
 - Sandboxes over the API take streams, as WebSockets: `:attach` opens the
   sandbox's interactive shell (each line judged by the deny rules at its
-  Enter and recorded, as in the workbench's terminal; refused where only a
-  line-by-line terminal holds every rule), `GET :exec` runs a command with
+  Enter and recorded, as in the workbench's terminal, and a line the rules
+  cannot read refused as on `:exec`; refused where only a line-by-line
+  terminal holds every rule), `GET :exec` runs a command with
   stdin, and `:forward` carries a byte stream to a port on the sandbox's
   loopback, recorded with its bytes and closed when the sandbox stops. An
   SSH server with no port of its own is reached only through the
@@ -535,11 +538,13 @@ All notable changes to Abhed are recorded here. The format follows
   made against a stale version. Every change is recorded with who asked, in
   an append-only `sandbox_audit` table. Every `:exec` is judged by the
   server's deny rules and extension hooks, as the workbench's terminal is: a
-  refused command is `403 forbidden`, recorded, and never runs. While any
+  refused command is `403 forbidden`, recorded with its redacted reason, and never runs. While any
   deny or ask rule for `bash` or any hook is in force, a command the rules
-  cannot read (its program named by an expansion, as in `c=curl; $c`, or
-  its words built by one) is refused the same way, as no one is there to
-  confirm it. `:snapshot`,
+  cannot read (its program named by an expansion, as in `c=curl; $c`, its
+  words built by one, a git alias set on its command line, or a git
+  subcommand that is not git's own and not named in
+  `permissions.git_extensions`) is refused the same way, as no one is there
+  to confirm it. `:snapshot`,
   `:restore`, `:cp` and `:expose` reach the driver's snapshots, copies and
   forwards where it has them (snapshots in `control_plane.snapshot_dir`;
   exposing off unless `control_plane.expose` is on) and answer `501` where
@@ -580,7 +585,14 @@ All notable changes to Abhed are recorded here. The format follows
   as root, to the unprivileged server over the out-of-process driver
   protocol. It refuses to run, and says why, without KVM, root, cgroup v2,
   Firecracker 1.5 or the jailer. This is not the `vm` tier, which is gVisor
-  and is unchanged. See [The microVM driver](docs/guide/24-microvm.md).
+  and is unchanged. See [The microVM driver](docs/guide/24-microvm.md). It implements copy in
+  and out and port forwarding through the guest agent, and snapshots with
+  `snapshot_dir`; on Linux a watchdog per VM kills its cgroup if the driver
+  is killed, so no VM outlives it. Under the egress allowlist the guest has
+  a resolver on `127.0.0.1:53`: lookups go over vsock to the driver, which
+  passes them to the proxy's resolver with a DNS credential of the
+  sandbox's own (`driver.Egress.DNSSocket` and `DNSCredential`), judged and
+  recorded under the same egress rules.
   - The workspace is copied into the VM, and what commands change there is
     copied back after each command and before a stop: never through a link
     or onto another filesystem, never outside the workspace, never into
@@ -688,9 +700,12 @@ All notable changes to Abhed are recorded here. The format follows
   kernel. See [Linux on Z](docs/guide/01-getting-started.md#linux-on-z-s390x).
 - Sandbox sizes: `control_plane.sandbox_cpus` and
   `control_plane.sandbox_memory_mb`, or `resources.cpus` and
-  `resources.memory_mb` on one sandbox, are passed to its driver. The
-  `process` driver cannot hold a sandbox to a size and refuses one rather
-  than run it unbounded.
+  `resources.memory_mb` on one sandbox, are passed to its driver. On Linux
+  the `process` driver holds a sized sandbox in a cgroup of its own under a
+  delegated subtree, on the `process` tier; on macOS or without a delegated
+  subtree it refuses the create up front (`400`, with the reason), and on
+  another tier the sandbox goes to `Error`, rather than run unbounded. A driver can refuse a size at
+  create time through `driver.ConfigChecker`.
 - **A Helm chart for Kubernetes and OpenShift**, in `deploy/helm/abhed`
   ([Running on Kubernetes](docs/guide/27-kubernetes.md)). It runs `abhed serve`
   as one replica by default, held to the restricted Pod Security level
@@ -712,7 +727,9 @@ All notable changes to Abhed are recorded here. The format follows
   `control_plane.per_session` (off by default; off, sessions share one
   sandbox and the server's workspace exactly as before). Each session, or
   each user with `control_plane.sessions.scope: "user"`, gets a control-plane
-  sandbox from a template on the `process`, `docker` or `podman` driver, and
+  sandbox from a template on the `process`, `docker`, `podman` or `microvm`
+  driver (an out-of-process driver runs each command through a bridge to its
+  exec and attach, with its own egress credential under the allowlist), and
   works in that sandbox's folder: the file tools, workbench views, uploads
   and downloads are there, and the bash tool, background commands and the
   terminal run in the sandbox, each recorded as an `exec` by the session's
@@ -728,7 +745,9 @@ All notable changes to Abhed are recorded here. The format follows
   another tenant. Under an edition's `SandboxCaller` (a Team workspace),
   each session's sandbox and warm pool are made in its user's workspace,
   so the workspace's quotas and policy rules apply to them; its four-eyes
-  approvals do not hold the server's own work for the session. See
+  approvals do not hold the server's own work for the session. Under
+  `control_plane.ha` the `process` session driver is refused, since its
+  sandboxes live in one replica. See
   [Sandboxes over the API](docs/guide/22-sandboxes.md#per-session-sandboxes).
 - `control_plane.docker` and `control_plane.podman` register the container
   drivers in `abhed serve`. Their `binary`, `images`, `mounts`,
@@ -1216,9 +1235,16 @@ on. A server with it off starts on the older schema as before.
   SELinux relabelling of the workspace, opt-in CDI GPUs, attach on a
   terminal and tar copy with every entry checked. Under the network
   allowlist the egress proxy stays on the host and the container reaches it
-  through a relay on its own loopback, on a Linux host with a local engine;
-  elsewhere the sandbox is refused. The per-command container tier is
-  unchanged. See `docs/guide/23-container-drivers.md`.
+  through a relay on its own loopback: over a bound-in socket on a Linux
+  host with a local engine, and, where the engine is in a VM or on another
+  host, over a long-lived `exec`'s stdio, with a Linux build of Abhed named
+  in the managed `control_plane.<engine>.relay_binary` as the relay; without
+  it the sandbox is refused there. With git protection on, a repository
+  made inside a running container is protected by replacing the container,
+  once nothing else uses it, within the same generation (recorded as
+  `sandbox.restarted`); while it is in use, commands are refused with
+  `conflict`. The per-command container tier is unchanged. See
+  `docs/guide/23-container-drivers.md`.
 - Snapshots, forwarding and exposed services for the `process`, `docker`
   and `podman` drivers. A snapshot is the workspace, without `.abhed`, as a
   gzip tar named by its SHA-256 (plus a committed image on the container
@@ -1303,7 +1329,8 @@ on. A server with it off starts on the older schema as before.
   per-session sandbox's user. `controlplane.Admission.Origin` is
   `OriginSession` for the server's own work on a session's sandbox and warm
   pool (`WithOrigin`, `OriginOf`), so a guard need not hold it for
-  approval.
+  approval. `Service.Command` holds the guard's release until the context
+  it was given ends, and passes `Admission.Cancel`, which kills the process.
 - `driver.Status.Caveat` names what the reported tier lacks on this host,
   such as `no /proc`, and the control plane adds it to the `IsolationVerified`
   condition; `drivertest.Fake.Caveat` reports one.

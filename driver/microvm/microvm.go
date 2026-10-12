@@ -28,6 +28,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/driver/microvm/guest"
+	"github.com/zybuu-ai/abhed/driver/snapshot"
 )
 
 // Name is the driver's registered name.
@@ -67,6 +68,11 @@ type Options struct {
 	ImageUser *Credential `json:"image_user,omitempty"`
 	// BootTimeoutSeconds bounds how long the guest agent may take to answer.
 	BootTimeoutSeconds int `json:"boot_timeout_seconds,omitempty"`
+	// SnapshotDir holds workspace snapshots, outside every workspace; the
+	// driver declares snapshot only when it is set.
+	SnapshotDir string `json:"snapshot_dir,omitempty"`
+	// Record receives snapshot, restore and forward events, when set.
+	Record driver.Recorder `json:"-"`
 
 	// Exactly one backend is set.
 	Firecracker *Firecracker `json:"firecracker,omitempty"`
@@ -151,8 +157,9 @@ type machine interface {
 
 // Driver runs instances as microVMs.
 type Driver struct {
-	opts Options
-	be   backend
+	opts  Options
+	be    backend
+	snaps snapshot.Store
 	// image builds a workspace image; tests replace it, as mkfs.ext4 may
 	// not be there.
 	image func(ctx context.Context, mkfs, src, dir string, sizeMiB int, as *Credential) (string, error)
@@ -210,11 +217,16 @@ func newBackend(o *Options) (backend, error) {
 }
 
 func newDriver(opts Options, be backend) *Driver {
-	return &Driver{opts: opts, be: be, image: buildImage, insts: map[string]*instance{}, slots: map[int]string{}}
+	return &Driver{opts: opts, be: be, snaps: snapshot.Store{Dir: opts.SnapshotDir}, image: buildImage,
+		insts: map[string]*instance{}, slots: map[int]string{}}
 }
 
 func (d *Driver) Info() driver.Info {
-	return driver.Info{Name: Name, Version: "1", Capabilities: []driver.Capability{driver.CapAttach}}
+	caps := []driver.Capability{driver.CapAttach, driver.CapCopy, driver.CapForward}
+	if d.opts.SnapshotDir != "" {
+		caps = append(caps, driver.CapSnapshot)
+	}
+	return driver.Info{Name: Name, Version: "1", Capabilities: caps}
 }
 
 // knownTiers are the names Spec.MinTier may use. A microVM meets each of
@@ -288,6 +300,9 @@ func (d *Driver) Create(ctx context.Context, spec driver.Spec) (driver.Status, e
 	}
 	if eg := spec.Egress; eg != nil && (!filepath.IsAbs(eg.Socket) || eg.Port == 0) {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: egress needs an absolute socket path and a port")
+	}
+	if eg := spec.Egress; eg != nil && eg.DNSSocket != "" && (!filepath.IsAbs(eg.DNSSocket) || eg.DNSCredential == "") {
+		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: egress DNS needs an absolute socket path and a credential")
 	}
 	if err := d.be.check(); err != nil {
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "microvm: %v", err)
@@ -446,6 +461,9 @@ func (d *Driver) Start(ctx context.Context, id string) (driver.Status, error) {
 	eg := in.egress
 	if eg != nil {
 		b.guestPorts = []uint32{guest.EgressPort}
+		if eg.DNSSocket != "" {
+			b.guestPorts = append(b.guestPorts, guest.EgressDNSPort)
+		}
 	}
 	d.mu.Unlock()
 	if old != nil {
@@ -580,6 +598,10 @@ func (d *Driver) Delete(ctx context.Context, id string) error {
 	d.mu.Unlock()
 	if err := os.RemoveAll(filepath.Join(d.opts.StateDir, id)); err != nil {
 		return driver.Errorf(driver.ErrInternal, "microvm: removing state: %v", err)
+	}
+	if d.opts.SnapshotDir != "" {
+		// A sandbox's snapshots restore only into it, so they go with it.
+		return d.snaps.RemoveAll(id)
 	}
 	return nil
 }
@@ -768,6 +790,21 @@ func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) er
 	}
 	if err != nil {
 		return driver.Errorf(driver.ErrUnavailable, "microvm: starting the guest's egress: %v", err)
+	}
+	if eg.DNSSocket == "" {
+		return nil
+	}
+	dln := m.guestListener(guest.EgressDNSPort)
+	if dln == nil {
+		return driver.Errorf(driver.ErrInternal, "microvm: the VM was booted without its DNS port")
+	}
+	go d.serveDNS(dln, eg.DNSSocket, eg.DNSCredential)
+	if c, err = m.dial(ctx); err == nil {
+		err = guest.DNS(ctx, c)
+	}
+	if err != nil {
+		// Without a resolver names fail inside; the proxy still resolves what is sent through it.
+		slog.Warn("microvm: the guest's resolver did not start", "err", err)
 	}
 	return nil
 }

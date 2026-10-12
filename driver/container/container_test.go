@@ -13,12 +13,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/stdiorelay"
 )
 
 // fakeRunner records every argv and answers as a healthy engine would,
@@ -32,6 +34,8 @@ type fakeRunner struct {
 	respond func(args []string) (out []byte, err error, ok bool)
 	// script is what a streamed command runs on the host.
 	script string
+	// commandFor, when set and returning a command, runs in place of script.
+	commandFor func(ctx context.Context, args []string) *exec.Cmd
 }
 
 func (f *fakeRunner) record(args []string) {
@@ -100,6 +104,11 @@ func boolText(b bool) string {
 
 func (f *fakeRunner) command(ctx context.Context, args []string) *exec.Cmd {
 	f.record(args)
+	if f.commandFor != nil {
+		if cmd := f.commandFor(ctx, args); cmd != nil {
+			return cmd
+		}
+	}
 	script := f.script
 	if script == "" {
 		script = "exit 0"
@@ -692,42 +701,74 @@ func TestCancelKillsInsideTheContainer(t *testing.T) {
 	}
 }
 
-// With git protection, a repository made after the container started
-// refuses commands until a restart mounts it.
-func TestNewGitFolderRefusesCommandsUntilRestart(t *testing.T) {
+// With git protection, a repository made after the container started is
+// protected by replacing the idle container with one that mounts it; while
+// the container is in use, the command is refused instead.
+func TestNewGitFolderRestartsAnIdleContainer(t *testing.T) {
 	f := &fakeRunner{podman: true}
-	d, ws := testDriver(t, f, Options{}, func(p *sandbox.Policy) { p.ProtectGit = true })
-	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+	var mu sync.Mutex
+	var events []map[string]any
+	d, ws := testDriver(t, f, Options{Record: func(ev string, p map[string]any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if ev == EventRestarted {
+			events = append(events, p)
+		}
+		return nil
+	}}, func(p *sandbox.Policy) { p.ProtectGit = true })
+	ctx := context.Background()
+	if _, err := d.Create(ctx, spec(ws)); err != nil {
 		t.Fatal(err)
 	}
 	id := "sbx_0123456789abcdef"
-	if _, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true"}); err != nil {
+	if _, err := d.Exec(ctx, id, driver.ExecRequest{Command: "true"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(ws, "repo", ".git", "hooks"), 0o755); err != nil {
+	newRepo := func(name string) string {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(ws, name, ".git", "hooks"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for file, text := range map[string]string{"config": "[core]\n", "HEAD": "ref: refs/heads/main\n"} {
+			if err := os.WriteFile(filepath.Join(ws, name, ".git", file), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return filepath.Join(ws, name, ".git", "config") + ":ro"
+	}
+	// A handed-out command keeps the container in use until its context ends.
+	cctx, cancel := context.WithCancel(ctx)
+	if _, err := driver.Command(cctx, d, id, driver.CommandRequest{Command: "sleep 1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "repo", ".git", "config"), []byte("[core]\n"), 0o644); err != nil {
-		t.Fatal(err)
+	runs := len(f.find("run"))
+	mount := newRepo("repo")
+	_, err := d.Exec(ctx, id, driver.ExecRequest{Command: "true"})
+	if !errors.Is(err, driver.ErrConflict) || !strings.Contains(err.Error(), "in use") || len(f.find("run")) != runs {
+		t.Fatalf("a command while the container is in use: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(ws, "repo", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err = d.Exec(ctx, id, driver.ExecRequest{Command: "true"})
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	_, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true"})
-	if !errors.Is(err, driver.ErrConflict) || !strings.Contains(err.Error(), "restart") {
-		t.Fatalf("a command after a new repository: %v", err)
+	if err != nil {
+		t.Fatalf("a command once the container is idle: %v", err)
 	}
-	if _, err := d.Stop(context.Background(), id, 0); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Start(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(joined(f.runCall(t)), filepath.Join(ws, "repo", ".git", "config")+":ro") {
+	if len(f.find("run")) != runs+1 || !strings.Contains(joined(f.runCall(t)), mount) {
 		t.Errorf("the restart did not protect the new repository: %s", joined(f.runCall(t)))
 	}
-	if _, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true"}); err != nil {
-		t.Fatalf("after the restart: %v", err)
+	mu.Lock()
+	if len(events) != 1 || events[0]["outcome"] != "restarted" || events[0]["generation"] != int64(1) {
+		t.Errorf("restart record %v", events)
+	}
+	mu.Unlock()
+	if st, err := d.Status(ctx, id); err != nil || st.Phase != driver.PhaseRunning {
+		t.Fatalf("status after the restart: %+v %v", st, err)
 	}
 }
 
@@ -878,6 +919,78 @@ func TestEgressAllowlist(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("the egress folder outlived the sandbox: %v", err)
+	}
+}
+
+// Where the engine is in a VM, the operator's Linux build is bound in as the
+// relay and run over a long-lived exec; the sandbox is ready once it listens,
+// and the exec ends with the sandbox.
+func TestEgressAllowlistThroughAnExecWhereTheEngineIsInAVM(t *testing.T) {
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "example.com", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := hostOS
+	t.Cleanup(func() { hostOS = old })
+	hostOS = "darwin"
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var relays atomic.Int32
+	f := &fakeRunner{podman: true}
+	// This test binary is the relay: its init runs it for the relay's argument.
+	f.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
+		if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
+			return nil
+		}
+		relays.Add(1)
+		return exec.CommandContext(ctx, exe, stdiorelay.Arg, "127.0.0.1:0")
+	}
+	d, ws := testDriver(t, f, Options{RelayBinary: "/opt/abhed/abhed-linux-arm64"}, func(p *sandbox.Policy) { p.Egress = pol })
+	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+		t.Fatal(err)
+	}
+	in := d.insts["sbx_0123456789abcdef"]
+	got := joined(f.runCall(t))
+	for _, want := range []string{" --network none ", " -v /opt/abhed/abhed-linux-arm64:/run/abhed-egress/relay:ro ",
+		" --entrypoint /bin/sh "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %s", want, got)
+		}
+	}
+	var relayCall []string
+	for _, c := range f.find("exec") {
+		if slices.Contains(c, stdiorelay.Arg) {
+			relayCall = c
+		}
+	}
+	if want := " exec -i --user " + in.user + " " + in.name + " /run/abhed-egress/relay " + stdiorelay.Arg + " " + in.egress.listen + " "; joined(relayCall) != want {
+		t.Errorf("relay exec %q, want %q", joined(relayCall), want)
+	}
+	if relays.Load() != 1 {
+		t.Fatalf("the relay ran %d times", relays.Load())
+	}
+	done := in.egress.relayDone
+	if err := d.Delete(context.Background(), "sbx_0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relay's exec outlived the sandbox")
+	}
+	// A relay that never listens refuses the sandbox.
+	f2 := &fakeRunner{podman: true}
+	f2.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
+		if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
+			return nil
+		}
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "echo 'exec format error' >&2; exit 126")
+	}
+	d2, ws2 := testDriver(t, f2, Options{RelayBinary: "/opt/abhed/abhed-linux-arm64"}, func(p *sandbox.Policy) { p.Egress = pol })
+	if _, err := d2.Create(context.Background(), spec(ws2)); !errors.Is(err, driver.ErrUnavailable) || !strings.Contains(err.Error(), "exec format error") {
+		t.Fatalf("a relay that never listened: %v", err)
 	}
 }
 

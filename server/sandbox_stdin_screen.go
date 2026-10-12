@@ -255,7 +255,7 @@ func (q *stdinScreen) policy(stmt string) (why, unread string) {
 	case d.Decision == policy.Ask && (d.Step == "ask" || d.Step == "hook"):
 		return "it needs approval (" + d.Reason + "), which no one can give to a statement read from stdin", ""
 	}
-	return "", unreadable(d, stmt)
+	return "", unreadable(d, tools.CanonicalCommand(stmt), q.pol.GitExtensions)
 }
 
 // refuseNext refuses the statement held and not yet judged, which judge

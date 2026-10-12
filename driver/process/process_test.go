@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -396,17 +397,140 @@ func unwritableDir(t *testing.T) string {
 	return ""
 }
 
-// The process driver cannot hold one sandbox to a size, so a Spec that asks
-// for one is refused, never run without it.
+// A setting the process driver cannot apply is refused, never run without it.
 func TestConfigIsRefused(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, ws := fake(t, sandbox.TierProcess)
-	_, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, Config: map[string]string{"memory_mb": "512", "cpus": "1"}})
-	if !errors.Is(err, driver.ErrInvalid) || !strings.Contains(err.Error(), "cpus, memory_mb") {
-		t.Fatalf("a sized spec was not refused: %v", err)
+	d.opts.sizer = &fakeSizer{}
+	for _, cfg := range []map[string]string{{"image": "x", "memory_mb": "512"}, {"cpus": "-1"}, {"memory_mb": "8"}} {
+		if _, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, Config: cfg}); !errors.Is(err, driver.ErrInvalid) {
+			t.Fatalf("%v was not refused: %v", cfg, err)
+		}
+		if _, err := d.Status(ctx, "a"); !errors.Is(err, driver.ErrNotFound) {
+			t.Fatal("a refused create left an instance")
+		}
 	}
-	if _, err := d.Status(ctx, "a"); !errors.Is(err, driver.ErrNotFound) {
-		t.Fatal("a refused create left an instance")
+}
+
+// fakeSizer records what it holds instead of making cgroups.
+type fakeSizer struct {
+	mu      sync.Mutex
+	refuse  error
+	sizes   map[string]size
+	placed  int
+	held    int
+	removed []string
+}
+
+func (f *fakeSizer) Check() error { return f.refuse }
+
+func (f *fakeSizer) NewBox(id string, s size) (box, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sizes == nil {
+		f.sizes = map[string]size{}
+	}
+	f.sizes[id] = s
+	return &fakeBox{f: f, id: id}, nil
+}
+
+type fakeBox struct {
+	f  *fakeSizer
+	id string
+}
+
+func (b *fakeBox) Place(*exec.Cmd) (func(), error) {
+	b.f.mu.Lock()
+	b.f.placed++
+	b.f.held++
+	b.f.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { b.f.mu.Lock(); b.f.held--; b.f.mu.Unlock() }) }, nil
+}
+
+func (b *fakeBox) Remove(context.Context) error {
+	b.f.mu.Lock()
+	defer b.f.mu.Unlock()
+	b.f.removed = append(b.f.removed, b.id)
+	return nil
+}
+
+// A sized instance gets a box of its size, every command runs in it and is
+// released at its end, and the box goes with the instance.
+func TestSizedInstanceRunsInItsBox(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, ws := fake(t, sandbox.TierProcess)
+	sz := &fakeSizer{}
+	d.opts.sizer = sz
+	if err := d.CheckConfig(map[string]string{"cpus": "1.5", "memory_mb": "512"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, Config: map[string]string{"cpus": "1.5", "memory_mb": "512"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sz.sizes["a"]; got.cpuPercent != 150 || got.memoryBytes != 512<<20 {
+		t.Fatalf("box size %+v", got)
+	}
+	if _, err := d.Exec(ctx, "a", driver.ExecRequest{Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cmd, err := d.Command(cctx, "a", driver.CommandRequest{Command: "true"})
+	if err != nil || cmd.Run() != nil {
+		t.Fatalf("command: %v", err)
+	}
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sz.mu.Lock()
+		placed, held := sz.placed, sz.held
+		sz.mu.Unlock()
+		if placed == 2 && held == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("placed %d, still held %d", placed, held)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := d.Delete(ctx, "a"); err != nil || len(sz.removed) != 1 || sz.removed[0] != "a" {
+		t.Fatalf("delete: %v, removed %v", err, sz.removed)
+	}
+	// An instance with no size has no box.
+	if _, err := d.Create(ctx, driver.Spec{ID: "b", Workspace: ws}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(ctx, "b", driver.ExecRequest{Command: "true"}); err != nil || sz.placed != 2 {
+		t.Fatalf("an unsized exec: %v, placed %d", err, sz.placed)
+	}
+}
+
+// A size the host cannot hold, or a tier whose commands would leave the box,
+// refuses the instance.
+func TestSizeRefusedWhereItCannotHold(t *testing.T) {
+	ctx := context.Background()
+	cfg := map[string]string{"memory_mb": "256"}
+	d, _, _, ws := fake(t, sandbox.TierProcess)
+	d.opts.sizer = &fakeSizer{refuse: driver.Errorf(driver.ErrInvalid, "no cgroups here")}
+	if err := d.CheckConfig(cfg); !errors.Is(err, driver.ErrInvalid) {
+		t.Fatalf("check: %v", err)
+	}
+	if _, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, Config: cfg}); !errors.Is(err, driver.ErrInvalid) {
+		t.Fatalf("create on a host without cgroups: %v", err)
+	}
+	for _, tier := range []sandbox.Tier{sandbox.TierFence, sandbox.TierContainer, sandbox.TierNone} {
+		d, _, closed, ws := fake(t, tier)
+		sz := &fakeSizer{}
+		d.opts.sizer = sz
+		if _, err := d.Create(ctx, driver.Spec{ID: "a", Workspace: ws, Config: cfg}); !errors.Is(err, driver.ErrInvalid) || !strings.Contains(err.Error(), string(tier)) {
+			t.Fatalf("%s: %v", tier, err)
+		}
+		if closed.Load() != 1 || len(sz.sizes) != 0 {
+			t.Fatalf("%s: the refused sandbox was left open or boxed", tier)
+		}
+	}
+	if err := hostSizer.Check(); runtime.GOOS != "linux" && !errors.Is(err, driver.ErrInvalid) {
+		t.Fatalf("the host sizer on %s: %v", runtime.GOOS, err)
 	}
 }
 

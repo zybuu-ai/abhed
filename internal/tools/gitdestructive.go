@@ -407,11 +407,17 @@ var (
 	}
 )
 
+// The reasons gitDiscards gives for git code no rule can read.
+const (
+	gitAliasReason   = "a git alias set on the command line, which may run anything"
+	gitForeignSuffix = ", an alias or extension that cannot be checked"
+)
+
 func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (string, bool) {
 	i := 0
 	for i < len(words) && strings.HasPrefix(words[i], "-") {
 		if value, ok := gitGlobalValue(words, i); ok && configAliases(words[i], value) {
-			return "a git alias set on the command line, which may run anything", true
+			return gitAliasReason, true
 		}
 		if gitGlobalsWithValue[words[i]] {
 			i++
@@ -427,7 +433,7 @@ func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (strin
 		if gitExtensions[sub] {
 			return "", false
 		}
-		return "git " + sub + ", an alias or extension that cannot be checked", true
+		return "git " + sub + gitForeignSuffix, true
 	}
 	g := parseGitArgs(sub, words[i+1:])
 	// Every subcommand that takes diff or log options, stash list included, writes --output.

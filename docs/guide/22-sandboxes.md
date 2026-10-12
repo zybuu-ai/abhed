@@ -33,7 +33,7 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Serve `/v1/sandboxes` and run the reconciler. |
-| `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace and outside any `.abhed`, and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. A sandbox's commands can neither read nor write the other folders under the root (on macOS the `process` driver's profile denies them; on Linux they are never mounted in), so a root inside a `sandbox.read_only_paths` entry or a skills folder, which would show them, is refused. |
+| `workspace_root` | a folder in the control plane's state folder | Gives each sandbox a folder of its own, `<root>/<id>`, mode `0700`, removed when the sandbox is deleted. Must be absolute, outside the server's workspace, outside any `.abhed` and any `.git` directory (as written and with links followed), and not writable by others. Unset, the root is `~/Library/Application Support/Abhed/control-plane/sandboxes` on macOS and `$XDG_STATE_HOME/abhed/control-plane/sandboxes` (`~/.local/state/…` without it) elsewhere. A sandbox's commands can neither read nor write the other folders under the root (on macOS the `process` driver's profile denies them; on Linux they are never mounted in), so a root inside a `sandbox.read_only_paths` entry or a skills folder, which would show them, is refused. |
 | `shared_workspace` | `false` | Every sandbox works in the server's workspace instead, as sessions do, and sees what the others and the server's sessions write there. Set it only when that is what you want; it cannot be combined with `workspace_root`. |
 | `snapshot_dir` | a folder in the control plane's state folder | Where sandbox snapshots are kept: `snapshots` beside the default `sandboxes` folder. Must be absolute and outside every workspace; no command can read or write it ([the state folder](#the-state-folder-snapshots-and-the-host-key)). |
 | `ssh.idle_timeout_seconds` | 3600 | An SSH connection with no traffic either way for this long is closed. |
@@ -54,9 +54,18 @@ parts still to come, is [the control-plane contract](../architecture/control-pla
 | `sandbox_memory_mb` | unset | Memory each sandbox may use, in MiB. Unset leaves it to the driver. |
 
 A size is passed to the driver, which holds the sandbox to it or refuses
-it. The `process` driver cannot hold one sandbox to a size, so a sandbox
-with `sandbox_cpus` or `sandbox_memory_mb` in force goes to `Error` under it
-rather than run unbounded; use a driver that bounds each sandbox.
+it. On Linux the `process` driver gives each sized sandbox a cgroup of its
+own (`cpu.max`, `memory.max` with no swap, and the whole cgroup killed on
+an out-of-memory), with every command, shell and forward in a leaf of it.
+It needs a delegated cgroup v2 subtree, as the fence does (for example
+`systemd-run --user --scope -p Delegate=yes abhed serve`), and sizes only
+the `process` tier: the fence, container and vm tiers keep their commands
+in cgroups of their own, and the `none` tier could move itself out. On
+macOS, where there are no cgroups, or on a Linux host with no delegated
+subtree, a create with `sandbox_cpus` or `sandbox_memory_mb` in force is
+refused with `400` and the reason; on another tier the sandbox goes to
+`Error` with the reason when it is built. Neither runs unbounded; use the
+container or microvm driver there.
 
 The weakest isolation a sandbox may run under is your existing
 `sandbox.min_tier`.
@@ -182,7 +191,7 @@ account turns `per_session` (and `enabled`) on by itself unless
 |---|---|---|
 | `sessions.scope` | `session` | `session`: one sandbox per session. `user`: one per user, which all of that user's sessions share. |
 | `sessions.template` | `session` | The template each sandbox is made from. Letters, digits, `.`, `_` and `-`. |
-| `sessions.driver` | `process` | The driver each runs under: `process`, `docker` or `podman`. `microvm` cannot run a session's commands yet and is refused. |
+| `sessions.driver` | `process` | The driver each runs under: `process`, `docker`, `podman` or `microvm`. On `microvm` (an out-of-process driver) each command and terminal runs through a small bridge, this binary started again, that calls the driver's exec or attach with its own input and output; ending the bridge ends the command. |
 | `sessions.retention` | `stop` | What happens to the sandboxes when the server stops: `stop` them, `delete` them (and their folders), or `keep` them running. |
 | `sessions.warm_pool` | 0 | Ready sandboxes kept for new sessions to claim, at most 16. |
 | `sessions.ready_seconds` | 120 | How long a new or continued session waits for its sandbox before it is refused. |
@@ -199,8 +208,10 @@ What changes for a session:
   driver, with git protection, `.abhed` hidden, and the network as the
   driver builds it. Each command is in the control plane's record as an
   `exec` by the session's user (with `"via": "session"`), put to a guard
-  and interceptors as any `:exec` is. The bash tool's own timeout applies,
-  not `exec_timeout_seconds`.
+  and interceptors as any `:exec` is. A guard counts the command, or the
+  terminal, as running until it ends, as it counts an `:exec`, and can end
+  it; that end is recorded as `exec.ended`. The bash tool's own timeout
+  applies, not `exec_timeout_seconds`.
 - **The record links them.** The sandbox carries the reserved label
   `abhed.dev/session=<session id>` (or `abhed.dev/session-user=<digest>`
   per user), is owned by `system:sessions`, and its `create` or `claim`
@@ -265,11 +276,16 @@ sandbox is a fence of its own, with its own cgroup. Folders in
 so they are shared; so are MCP servers and extensions, which belong to the
 server.
 
-**Not yet.** Under several replicas (Enterprise HA) a `process` sandbox
-lives in the replica that made it, so per-session sandboxes need a driver
-every replica reaches. The microVM driver cannot hand a session's commands
-out yet. Workspace scopes from an edition's sandbox caller are not applied
-to a session's sandbox.
+**Under several replicas** (Enterprise HA) a `process` sandbox lives in the
+replica that made it, so `abhed serve` refuses `per_session` with
+`sessions.driver: process` there; use a driver every replica reaches
+(`docker` or `podman` on a shared engine, `microvm`, or an edition's
+cluster driver).
+
+**Egress.** Under the network allowlist, a session's command on a driver
+that takes its egress from the control plane (`microvm`) gets a credential
+of its own, as an `:exec` does, passed by name and revoked when the
+command ends.
 
 `abhed serve -check` checks all of this: a `per-session sandboxes` line
 fails when the session driver is not registered, cannot be reached or
@@ -299,6 +315,7 @@ gets, and every admission rule, is in [Container drivers](23-container-drivers.m
 | `gpus` | managed only | CDI device names a sandbox may ask for, such as `nvidia.com/gpu=all`. |
 | `cpus` | managed only | CPUs each sandbox may use, 2 when unset. |
 | `seccomp_profile` | managed only | A seccomp profile file in place of the engine's default; `unconfined` is refused. |
+| `relay_binary` | managed only | A Linux build of Abhed for the engine's architecture, at an absolute path the engine's host can see, run inside each container as the egress relay where the engine is in a VM or on another host. Without it the network allowlist is refused there. See [Container drivers](23-container-drivers.md#network). |
 | `name_prefix` | any configuration | What every container's name starts with, `abhed-sbx-` when unset: letters, digits, `_`, `.` and `-`, starting with a letter or digit, at most 64; anything else stops `abhed serve` at start. Two servers sharing one engine, such as a test run beside a real one, keep apart by it. Containers made under an earlier prefix are not found under a new one. |
 
 Each managed-only key widens what a sandbox can reach or loosens a bound, so
@@ -481,7 +498,8 @@ it ended. The command line itself goes through your secrets redaction first.
 A command a deny rule or an extension's hook refuses (your
 `permissions.deny`, as for the agent's `bash` and the workbench's
 terminal) is refused with `403` and code `forbidden`, and the refusal is
-recorded. Where an edition gives each person a policy layer of their own,
+recorded with its reason (through your secrets redaction, at most 512
+bytes). Where an edition gives each person a policy layer of their own,
 such as the rules of the Team workspace they belong to, its deny rules
 judge their commands here too, and the lines they type into `:attach` and
 an SSH shell; when the layer cannot be read the call is refused with `503`
@@ -494,23 +512,31 @@ force, a command line on `:exec` (`POST`, the WebSocket, or an SSH exec
 request such as `ssh host 'cmd'`) whose program is named by an expansion
 (`c=curl; $c …`, `sh -c 'c=curl; $c …'`, `$(echo curl) …`), whose words
 are split by a changed `IFS`, that runs text no rule can read, or whose
-parts are built by an expansion or a brace list holding one (`echo {$a,b}`) is refused
-with `403` and code `forbidden`, the reason in the message, whichever rule
-it would have met. Name the program in the command line instead. A command
+parts are built by an expansion or a brace list holding one (`echo {$a,b}`),
+that sets a git alias on its command line (`git -c alias.x='!curl …' x`), or
+that runs a git subcommand which is not git's own (an alias or an extension
+such as `git lfs`, unless `permissions.git_extensions` names it) is refused
+with `403` and code `forbidden`, the reason in the message, whichever rule it
+would have met. Name the program in the command line instead. A command
 the rules read runs, a destructive one such as `rm -rf build` included.
-This refusal is for exec only: the lines a person types into `:attach` or
-an interactive SSH shell are screened by the deny rules alone, as the
-workbench's terminal is, so a line there that names its program by an
-expansion is not refused for that.
+The default configuration has deny rules for `bash`, so this applies
+unless you remove them all.
+
+The lines a person types into `:attach` or an interactive SSH shell are
+refused the same way, at their Enter: a line whose program is named by an
+expansion, whose words are built by one, or that runs git code no rule can
+read never reaches the shell, and the terminal says why. A line the shell
+finishes later (`for f in *; do`, an open quote) is judged as a terminal
+line, not refused for being incomplete.
 
 A deny rule matches the words of a command, so on an exec it has the same
 limits as in a session ([Rules](04-permissions.md#rules)): `busybox curl`,
 an interpreter's own code
 (`python3 -c …`), `xargs`, and a command git runs from its configuration
-(`git -c alias.x='!curl …' x`, `core.sshCommand`) all run past
-`bash(curl *)`. A session asks about the git alias as destructive; an exec,
-where no one is asked, runs it. The sandbox, not a deny rule, is the
-boundary.
+(`core.sshCommand` in a repository's config) all run past `bash(curl *)`.
+A git alias set on the command line is refused, as above, but one in a
+repository's or the user's git config is not seen. The sandbox, not a deny
+rule, is the boundary.
 
 Two edges of how a shell's `-c` text is read, both on the safe side:
 `sh -c -- -- 'c=wget; $c …'` runs, because the shell's command text there is
@@ -564,12 +590,18 @@ messages are keys to the shell and its output back;
 It is followed the way the workbench follows its interactive terminal
 ([Working by hand](16-workbench.md#working-by-hand)) where the terminal
 cannot be asked: each line you enter is rebuilt from your keys, put to the
-deny rules at its Enter, and recorded (`attach.input`, without its text
-when the terminal did not show it as typed). A line the rules refuse never
+deny rules at its Enter (and refused, as on `:exec`, when the rules cannot
+read it), and recorded (`attach.input`, without its text when the terminal
+did not show it as typed). A line the rules refuse never
 reaches the shell: the terminal says why and the line is dropped, and the
 refusal is recorded (`attach.refused`, with the line and the reason through
 your secrets redaction, as a rule or hook may quote the line). This is best effort: the shell
-decides what a line means, so the sandbox is the boundary. When the
+decides what a line means, and an interactive shell can still run what no
+line shows (a full-screen program such as `vi` and its `:!`, history
+expansion, an alias or function defined earlier, a script it sources), so
+the sandbox is the boundary. Use `:exec` for automation, and
+`sandbox.terminal: "lines"` (or managed deny rules, which refuse `:attach`
+outright) where every command must be judged. When the
 server's terminal must judge every line (`sandbox.terminal` is
 `"lines"`), or the managed configuration sets deny rules or extensions
 that could refuse a command, `:attach` is refused with `403` and you run
@@ -667,7 +699,8 @@ stdin, since `BASH_ENV` runs a file even for a judged `bash -c`: setting one
 of those, an exported function (`BASH_FUNC_…`) or a name that is not an
 identifier is refused with `403` and code `forbidden`. For a shell fed
 stdin, `IFS` is refused too, and the shell is refused as uncheckable rather
-than judged statement by statement.
+than judged statement by statement; the message names the variable to leave
+out.
 
 `ENV` is on that list, so an exec that sets the common application variable
 `ENV=production` in its `env` is refused while such rules are in force; give
@@ -820,8 +853,10 @@ server whose store keeps no templates answers `501`.
 `abhed sandbox` drives all of this as the profile `abhed login` saved
 ([TLS and command-line sign-in](26-tls-and-cli-login.md)). Every command
 takes `-profile NAME` (default: the current profile) or `-server URL`
-(the profile signed in to that server), and `-o table` (the default) or
-`-o json`. There is no YAML output: Abhed has no YAML writer.
+(the profile signed in to that server), `-o table` (the default) or
+`-o json`, and `-approval ID`, which sends each of the command's requests
+with that approval (the `Abhed-Approval` header). There is no YAML output:
+Abhed has no YAML writer.
 
 ```bash
 abhed login https://abhed.internal
@@ -862,7 +897,10 @@ command's flags. Flags may come before or after the sandbox id; for
 could not be reached); `2` the command was called wrongly; `3` not signed
 in, or the sign-in may not do this (`401`, `403`, a deny rule included);
 `4` no such sandbox or template; `5` a conflict (`409`, `412`, `428`: the
-sandbox is in the wrong state, or changed). `exec`, `connect` and `ssh`
+sandbox is in the wrong state, or changed); `6` other people must approve
+it first (`approval_required`, from an edition with approvals): the command
+prints the approval to ask for, and once it is granted you run the same
+command again with `-approval ID`. `exec`, `connect` and `ssh`
 exit with the remote command's status once it ran, and `255` when it
 started but did not end with one; leaving `connect` with the escape key is
 `0`.

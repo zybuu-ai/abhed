@@ -28,6 +28,7 @@ const (
 	ExitAuth     = 3 // not signed in, or the sign-in may not do this (401, 403)
 	ExitNotFound = 4 // no such sandbox or template (404)
 	ExitConflict = 5 // the object is not in a state for this, or changed (409, 412, 428)
+	ExitApproval = 6 // other people must approve it first; run it again with -approval ID
 	ExitRemote   = 255
 )
 
@@ -74,6 +75,8 @@ type runner struct {
 	cl  *client
 	// profile flags, set by addCommon.
 	profile, server string
+	// approval names an approval granted for this command, sent with each request.
+	approval string
 }
 
 var commands []command
@@ -115,8 +118,9 @@ func Usage(w io.Writer) {
 	fmt.Fprintln(w, `usage: abhed sandbox COMMAND [flags] [args]
 
 Sandboxes on an Abhed server, as the profile abhed login saved. Every
-command takes -profile NAME or -server URL (default: the current profile)
-and -o table|json.`)
+command takes -profile NAME or -server URL (default: the current profile),
+-o table|json, and -approval ID to send a request again once the approval
+it was refused for has been granted.`)
 	fmt.Fprintln(w)
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	for _, c := range commands {
@@ -125,8 +129,9 @@ and -o table|json.`)
 	_ = tw.Flush()
 	fmt.Fprintln(w, `
 Exit status: 0 done, 1 the call failed, 2 usage, 3 not signed in or not
-allowed, 4 not found, 5 conflict (state or version). exec, connect and ssh
-exit with the remote command's status, and 255 when it did not run to one.
+allowed, 4 not found, 5 conflict (state or version), 6 waiting on an
+approval. exec, connect and ssh exit with the remote command's status, and
+255 when it did not run to one.
 
 Refused inside an agent's command. Run abhed sandbox COMMAND -h for flags.`)
 }
@@ -189,6 +194,12 @@ func (r *runner) exitFor(err error) int {
 		return ExitUsage
 	}
 	fmt.Fprintf(r.Err, "abhed: %s\n", clean(err.Error(), 0))
+	if id, ok := approvalOf(err); ok {
+		if id != "" {
+			fmt.Fprintf(r.Err, "abhed: ask for approval %s; once it is granted, run the same command again with -approval %s\n", clean(id, 0), clean(id, 0))
+		}
+		return ExitApproval
+	}
 	var ae *apiError
 	if errors.As(err, &ae) {
 		switch ae.status {
@@ -212,6 +223,7 @@ func (r *runner) flags(name, args string) *flag.FlagSet {
 	fs.StringVar(&r.profile, "profile", "", "the server's profile (default: the current one)")
 	fs.StringVar(&r.server, "server", "", "the server's URL; its token comes from the profile for it")
 	fs.StringVar(&r.out, "o", "table", "output: table or json")
+	fs.StringVar(&r.approval, "approval", "", "an approval granted for this request, to send it again")
 	fs.Usage = func() {
 		fmt.Fprintf(r.Err, "usage: abhed sandbox %s %s\n", name, args)
 		fs.PrintDefaults()
@@ -273,6 +285,7 @@ func (r *runner) connectClient() error {
 	if err != nil {
 		return err
 	}
+	cl.approval = strings.TrimSpace(r.approval)
 	r.cl = cl
 	return nil
 }

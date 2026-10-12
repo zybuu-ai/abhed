@@ -104,9 +104,12 @@ func Serve(ctx context.Context, conn net.Conn, cfg Config, h Handler) (Stats, er
 	// An end that comes during the handshake ends it now, not at its timeout.
 	stopHandshake := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, sc)
-	if !stopHandshake() && err == nil {
-		_ = sconn.Close()
-		err = ctx.Err()
+	if !stopHandshake() {
+		// The end cut the handshake short, so it, not the handshake, is why.
+		if err == nil {
+			_ = sconn.Close()
+		}
+		return st, ctx.Err()
 	}
 	if err != nil {
 		return st, fmt.Errorf("sshrelay: handshake: %w", err)

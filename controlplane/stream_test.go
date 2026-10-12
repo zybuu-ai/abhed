@@ -3,6 +3,7 @@ package controlplane_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -98,5 +99,33 @@ func TestExecScreen(t *testing.T) {
 	}
 	if _, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "ls"}, cp.ExecIO{Screen: screen}); err != nil || n.Load() != 1 {
 		t.Fatalf("allowed exec: %v %d", err, n.Load())
+	}
+}
+
+// A refusal's reason is recorded, redacted and bounded, so the record says
+// why a command did not run.
+func TestExecScreenRecordsTheReason(t *testing.T) {
+	r := newCapRigWith(t, nil, func(c *cp.Config) {
+		c.Redact = func(s string) string { return strings.ReplaceAll(s, "hunter2", "[secret]") }
+	})
+	sb := r.ready(t)
+	ctx := context.Background()
+	screen := func(cmd string) error {
+		return fmt.Errorf("%w: denied by policy: %s%s", cp.ErrForbidden, cmd, strings.Repeat("x", 2000))
+	}
+	if _, _, err := r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "echo hunter2"}, cp.ExecIO{Screen: screen}); !errors.Is(err, cp.ErrForbidden) {
+		t.Fatalf("screened exec: %v", err)
+	}
+	evs, _ := r.store.AuditFor(ctx, sb.ID)
+	why := evs[len(evs)-1].Detail["reason"]
+	if !strings.HasPrefix(why, "denied by policy: echo [secret]x") || len(why) > 512 {
+		t.Fatalf("reason %q", why)
+	}
+	// A bare refusal adds nothing to the code.
+	bare := func(string) error { return cp.ErrForbidden }
+	_, _, _ = r.svc.Exec(ctx, alice, sb.ID, "", cp.ExecRequest{Command: "ls"}, cp.ExecIO{Screen: bare})
+	evs, _ = r.store.AuditFor(ctx, sb.ID)
+	if why, ok := evs[len(evs)-1].Detail["reason"]; ok {
+		t.Fatalf("bare refusal reason %q", why)
 	}
 }

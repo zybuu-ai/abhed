@@ -128,10 +128,20 @@ decision goes to `Options.Record` as an `egress.decision` event with the
 sandbox's id. Names are resolved by the proxy, so tools must honour the
 proxy variables; there is no resolver inside.
 
-This needs the engine on the same Linux host, over a local socket. Where it
-runs in a VM (Docker Desktop, Podman on macOS and Windows) or elsewhere
-(`DOCKER_HOST=tcp://…`), a host socket cannot reach the container, so
-`Create` fails with `unavailable` rather than run without the allowlist.
+Where the engine runs in a VM (Docker Desktop, Podman on macOS and
+Windows) or elsewhere (`DOCKER_HOST=tcp://…`), a host socket cannot reach
+the container. There the relay is a Linux build of Abhed for the engine's
+architecture that you name in `control_plane.<engine>.relay_binary`
+(managed only), at an absolute path the engine's host can see (under your
+home folder for Podman's and Docker Desktop's VMs, which share it). It is
+bound in read-only, and the driver runs it with a long-lived `exec` as the
+sandbox's user: it listens on the container's loopback and carries each
+connection over that exec's input and output to the proxy on this host.
+The container still has no network. The sandbox is ready only once the
+relay listens; an exec that ends is started again while the sandbox runs,
+and connections made meanwhile fail rather than go anywhere else. Without
+`relay_binary`, `Create` fails with `unavailable` rather than run without
+the allowlist.
 
 ## Lifecycle
 
@@ -152,9 +162,16 @@ A cancelled command is ended inside the container too: its wrapper leaves
 its pid in `/tmp`, and the driver stops and kills it and every descendant.
 
 With git protection on, the git folders are mounted read-only when the
-container starts. A repository made after that cannot be mounted into a
-running container, so commands are refused with `conflict` until the
-sandbox is restarted; the restart protects it.
+container starts. A repository made after that (`git init` inside the
+sandbox) cannot be mounted into a running container, so the next command
+replaces the container with one that mounts it, within the same
+generation, and records `sandbox.restarted` with the folders it protects.
+That ends whatever was left running in the old container and empties
+`/tmp`, as a restart does, and closes its forwards. It happens only while
+nothing else uses the container: while a command, a shell, a forward or a
+session's command is running, the command is refused with `conflict`, and
+the first command once it is idle restarts it (or restart the sandbox
+yourself).
 
 A container this process did not create, such as one left by a crash, is
 reported by `Status` without a tier and removed by `Delete` when its labels

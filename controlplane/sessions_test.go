@@ -3,6 +3,7 @@ package controlplane_test
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -466,5 +467,89 @@ func TestPoolBacksOffWhileFillsFail(t *testing.T) {
 		if time.Now().After(end) {
 			t.Fatal("the pool did not fill once creates succeeded")
 		}
+	}
+}
+
+// A session command holds its guard slot until its context ends, which its
+// caller ends once the process has exited, and the guard can end it.
+func TestCommandHoldsItsGuardSlotUntilItEnds(t *testing.T) {
+	ctx := context.Background()
+	r := commandRig(t)
+	maker := cp.Caller{Principal: cp.SessionsPrincipal, Scope: sessionScope("s1")}
+	sb, err := r.svc.Create(ctx, maker, cp.CreateRequest{Template: "session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := cp.Caller{Principal: "alice", Admin: true, Scope: sessionScope("s1")}
+	if sb, err = r.svc.WaitReady(ctx, user, sb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if spec, _ := r.fake.Spec(sb.ID); os.MkdirAll(spec.Workspace, 0o700) != nil {
+		t.Fatal("the sandbox's folder could not be made")
+	}
+	var mu sync.Mutex
+	held := 0
+	var cancels []func(error)
+	guarded(t, r, func(a *cp.Admission) (func(), error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if a.Action != cp.ActionExec {
+			return nil, nil
+		}
+		if held >= 1 {
+			return nil, cp.ErrQuotaExceeded
+		}
+		held++
+		cancels = append(cancels, a.Cancel)
+		return func() { mu.Lock(); held--; mu.Unlock() }, nil
+	})
+	cctx, cancel := context.WithCancel(ctx)
+	cmd, _, err := r.svc.Command(cctx, user, sb.ID, driver.CommandRequest{Command: "exit 0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	// The process has ended, but its caller has not ended its context yet.
+	if _, _, err := r.svc.Command(ctx, user, sb.ID, driver.CommandRequest{Command: "true"}); !errors.Is(err, cp.ErrQuotaExceeded) {
+		t.Fatalf("a second command while the first holds the slot: %v", err)
+	}
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := held
+		mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the slot was not given back when the command's context ended")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The guard ends a running command: the process is killed and the end recorded.
+	cmd, _, err = r.svc.Command(ctx, user, sb.ID, driver.CommandRequest{Command: "sleep 30"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	end := cancels[len(cancels)-1]
+	mu.Unlock()
+	start := time.Now()
+	end(errors.New("over budget"))
+	if err := cmd.Wait(); err == nil || time.Since(start) > 10*time.Second {
+		t.Fatalf("the guard's end did not stop the command: %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for !strings.HasSuffix(outcomes(t, r, sb.ID), "exec.ended:failed:"+cp.ErrorCode(cp.ErrEndedByGuard)) {
+		if time.Now().After(deadline) {
+			t.Fatalf("record %s", outcomes(t, r, sb.ID))
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

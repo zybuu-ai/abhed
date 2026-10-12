@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // PolicyLayer is a set of permission rules an edition adds to a session's
@@ -118,7 +119,7 @@ func (l PolicyLayer) Decide(tool string, args json.RawMessage) LayerVerdict {
 	case res.Decision == policy.Ask && (res.Step == "ask" || res.Step == "screen"):
 		return LayerVerdict{Decision: string(policy.Ask), Rule: res.Rule, Reason: res.Reason}
 	}
-	if why := unreadable(res, policy.Subject(tool, args)); why != "" && (&appliedLayer{PolicyLayer: l}).screens(tool) {
+	if why := unreadable(res, tools.CanonicalCommand(policy.Subject(tool, args)), nil); why != "" && (&appliedLayer{PolicyLayer: l}).screens(tool) {
 		return LayerVerdict{Decision: string(policy.Ask), Reason: why}
 	}
 	return LayerVerdict{}

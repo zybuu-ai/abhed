@@ -176,6 +176,13 @@ func (s *Service) outcome(ctx context.Context, ev AuditEvent, err error) {
 			ev.Detail = map[string]string{}
 		}
 		ev.Detail["reason"] = s.reason(err.Error())
+	case errors.Is(err, ErrForbidden) && err.Error() != ErrForbidden.Error():
+		// A screen's reason may quote the command, so it is redacted too.
+		ev.Detail = maps.Clone(ev.Detail)
+		if ev.Detail == nil {
+			ev.Detail = map[string]string{}
+		}
+		ev.Detail["reason"] = s.reason(strings.TrimPrefix(err.Error(), ErrForbidden.Error()+": "))
 	}
 	_ = s.record(ctx, ev)
 }
@@ -291,6 +298,11 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 			release()
 		}
 	}
+	if err == nil {
+		if err = s.checkConfig(sb); err != nil {
+			release()
+		}
+	}
 	if err != nil {
 		s.outcome(ctx, ev, err)
 		return Sandbox{}, err
@@ -305,6 +317,23 @@ func (s *Service) Create(ctx context.Context, c Caller, req CreateRequest) (Sand
 	}
 	s.Kick(out.ID)
 	return out, nil
+}
+
+// checkConfig refuses a sandbox whose size its driver says it cannot apply
+// here, which would otherwise only fail once the reconciler builds it.
+func (s *Service) checkConfig(sb Sandbox) error {
+	d, err := s.cfg.Drivers.Get(sb.Driver)
+	if err != nil {
+		return fmt.Errorf("%w: driver %s is not registered", ErrUnavailable, sb.Driver)
+	}
+	cc, ok := d.(driver.ConfigChecker)
+	if !ok {
+		return nil
+	}
+	if err := cc.CheckConfig(resourceConfig(s.cfg.Settings.For(sb.Settings))); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	return nil
 }
 
 func requested(ev AuditEvent) AuditEvent {

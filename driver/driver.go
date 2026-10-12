@@ -77,6 +77,11 @@ type Spec struct {
 type Egress struct {
 	Socket string `json:"socket"`
 	Port   uint16 `json:"port"`
+	// DNSSocket, when set, is the proxy's resolver, which answers under the
+	// same egress rules; DNSCredential is the sandbox's own credential for
+	// it, held by the driver and never given to the sandbox.
+	DNSSocket     string `json:"dns_socket,omitempty"`
+	DNSCredential string `json:"dns_credential,omitempty"`
 }
 
 // Phase is an instance's runtime phase as the driver sees it.
@@ -214,6 +219,13 @@ type Commander interface {
 	// ForwardEnv makes the named variables, already in cmd.Env, reach a
 	// command this driver built, without their values in its arguments.
 	ForwardEnv(cmd *exec.Cmd, names []string)
+}
+
+// ConfigChecker is implemented by drivers that can tell, before an instance
+// is made, that they cannot apply a Spec's Config here, so a create is
+// refused at once rather than failing when the instance is built.
+type ConfigChecker interface {
+	CheckConfig(cfg map[string]string) error
 }
 
 // Lifetime is implemented by drivers that can say when an instance's

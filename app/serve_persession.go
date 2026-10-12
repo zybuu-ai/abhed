@@ -62,6 +62,12 @@ func checkPerSessionConfig(cfg config.Config) error {
 	if !driver.ValidName(perSessionDriver(cfg)) {
 		return fmt.Errorf("control_plane.sessions.driver %q is not a driver name", s.Driver)
 	}
+	// A process sandbox lives in the replica that made it; a session that
+	// moves to another replica would find it gone.
+	if cp.HA.Enabled && perSessionDriver(cfg) == builtin.Default {
+		return errors.New("control_plane.per_session with control_plane.ha needs a session driver every replica reaches " +
+			"(docker or podman on a shared engine, microvm, or an edition's cluster driver), not process")
+	}
 	return nil
 }
 
@@ -83,7 +89,7 @@ func checkPerSessionDriver(cfg config.Config, drivers *driver.Registry, entries 
 		}
 	}
 	if !d.Info().Has(driver.CapCommand) {
-		return fmt.Errorf("control_plane.sessions.driver %s cannot run a session's commands and terminals; use process, docker or podman", name)
+		return fmt.Errorf("control_plane.sessions.driver %s cannot run a session's commands and terminals; use process, docker, podman or microvm", name)
 	}
 	return nil
 }

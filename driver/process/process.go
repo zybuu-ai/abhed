@@ -10,10 +10,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"maps"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -46,6 +44,8 @@ type Options struct {
 	// resolved against it, and its .abhed is denied to every instance.
 	// Empty is each instance's own folder.
 	StateWorkspace string
+	// sizer holds sized instances to their size; nil is the host's.
+	sizer sizing
 }
 
 // Driver runs instances under the configured sandbox tier.
@@ -72,6 +72,9 @@ type instance struct {
 	done     chan struct{}
 	// restoring holds off a start while the workspace is replaced.
 	restoring bool
+	// box holds every command to the size the spec asked for; nil when it
+	// asked for none.
+	box box
 }
 
 // begun starts a new incarnation's run context, forwards and done signal.
@@ -165,12 +168,17 @@ func (d *Driver) Create(_ context.Context, spec driver.Spec) (driver.Status, err
 	if _, ok := tiers[spec.MinTier]; spec.MinTier != "" && !ok {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "unknown tier %q", spec.MinTier)
 	}
-	// Nothing here can hold one sandbox to a size or any other setting, so
-	// a Spec asking for one is refused rather than run without it.
-	if len(spec.Config) > 0 {
-		return driver.Status{}, driver.Errorf(driver.ErrInvalid,
-			"the process driver cannot apply %s; use a driver that bounds each sandbox",
-			strings.Join(slices.Sorted(maps.Keys(spec.Config)), ", "))
+	// A size is held by a cgroup per instance where there are cgroups; any
+	// other setting, or a size where none can be made, is refused rather
+	// than run without it.
+	sz, err := parseSize(spec.Config)
+	if err != nil {
+		return driver.Status{}, err
+	}
+	if !sz.zero() {
+		if err := d.sizer().Check(); err != nil {
+			return driver.Status{}, err
+		}
 	}
 	d.mu.Lock()
 	if _, ok := d.insts[spec.ID]; ok {
@@ -183,11 +191,20 @@ func (d *Driver) Create(_ context.Context, spec driver.Spec) (driver.Status, err
 	d.mu.Unlock()
 
 	sb, err := d.open(spec)
+	var bx box
+	if err == nil && !sz.zero() {
+		if bx, err = d.sizedBox(spec.ID, sb, sz); err != nil {
+			_ = sandbox.Close(sb)
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.insts[spec.ID] != in {
 		if err == nil {
 			_ = sandbox.Close(sb)
+			if bx != nil {
+				_ = bx.Remove(context.Background())
+			}
 		}
 		return driver.Status{}, driver.Errorf(driver.ErrConflict, "instance %s was deleted while it was created", spec.ID)
 	}
@@ -195,9 +212,23 @@ func (d *Driver) Create(_ context.Context, spec driver.Spec) (driver.Status, err
 		delete(d.insts, spec.ID)
 		return driver.Status{}, err
 	}
-	in.sb, in.stopped = sb, false
+	in.sb, in.stopped, in.box = sb, false, bx
 	in.begun()
 	return status(spec.ID, in), nil
+}
+
+// sizedBox makes the box holding instance id to sz, on a tier whose
+// commands stay where it puts them.
+func (d *Driver) sizedBox(id string, sb sandbox.Sandbox, sz size) (box, error) {
+	if !sizedTier(sb.Tier()) {
+		return nil, driver.Errorf(driver.ErrInvalid, "the process driver sizes only the process tier, and the sandbox here is %s; "+
+			"use the container or microvm driver for a sized sandbox", sb.Tier())
+	}
+	bx, err := d.sizer().NewBox(id, sz)
+	if err != nil {
+		return nil, driver.Errorf(driver.ErrUnavailable, "making the sandbox's cgroup: %v", err)
+	}
+	return bx, nil
 }
 
 func (d *Driver) get(id string) (*instance, error) {
@@ -247,6 +278,10 @@ func (d *Driver) Start(_ context.Context, id string) (driver.Status, error) {
 	if cur, ok := d.insts[id]; !ok || cur != in || !in.stopped || in.sb != nil || in.restoring {
 		_ = sandbox.Close(sb)
 		return driver.Status{}, driver.Errorf(driver.ErrConflict, "instance %s changed while starting", id)
+	}
+	if in.box != nil && !sizedTier(sb.Tier()) {
+		_ = sandbox.Close(sb)
+		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "the sandbox here is now %s, which the instance's size cannot hold", sb.Tier())
 	}
 	// Starting again is a new incarnation, as the control plane counts it.
 	in.spec.Generation++
@@ -305,7 +340,13 @@ func (d *Driver) Delete(ctx context.Context, id string) error {
 	if _, err := d.get(id); err != nil {
 		return err
 	}
+	in := d.insts[id]
 	delete(d.insts, id)
+	if in.box != nil {
+		if err := in.box.Remove(ctx); err != nil {
+			return driver.Errorf(driver.ErrInternal, "removing the sandbox's cgroup: %v", err)
+		}
+	}
 	if d.opts.SnapshotDir != "" {
 		// A sandbox's snapshots restore only into it, so they go with it.
 		return d.snaps.RemoveAll(id)
@@ -398,6 +439,12 @@ func (d *Driver) Exec(ctx context.Context, id string, req driver.ExecRequest) (d
 		sandbox.Release(cmd)
 		return driver.ExecResult{}, err
 	}
+	release, err := placeOn(in.box, cmd)
+	if err != nil {
+		sandbox.Release(cmd)
+		return driver.ExecResult{}, err
+	}
+	defer release()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = req.Stdin, req.Stdout, req.Stderr
 	return result(ctx, cmd, cmd.Run())
 }
@@ -451,7 +498,13 @@ func (d *Driver) Command(ctx context.Context, id string, req driver.CommandReque
 	} else {
 		cmd = in.sb.Command(cctx, dir, req.Command)
 	}
-	context.AfterFunc(cctx, done)
+	release, err := placeOn(in.box, cmd)
+	if err != nil {
+		sandbox.Release(cmd)
+		done()
+		return nil, err
+	}
+	context.AfterFunc(cctx, func() { release(); done() })
 	return cmd, nil
 }
 
@@ -482,11 +535,17 @@ func (d *Driver) Attach(ctx context.Context, id string, req driver.AttachRequest
 		cmd.Env = sandbox.HostCommandEnv()
 	}
 	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
-	size := &pty.Winsize{Rows: req.Size.Rows, Cols: req.Size.Cols}
-	if size.Rows == 0 || size.Cols == 0 {
-		size = &pty.Winsize{Rows: 30, Cols: 100}
+	release, err := placeOn(in.box, cmd)
+	if err != nil {
+		sandbox.Release(cmd)
+		return driver.ExecResult{}, err
 	}
-	tty, err := pty.StartWithSize(cmd, size)
+	defer release()
+	winSize := &pty.Winsize{Rows: req.Size.Rows, Cols: req.Size.Cols}
+	if winSize.Rows == 0 || winSize.Cols == 0 {
+		winSize = &pty.Winsize{Rows: 30, Cols: 100}
+	}
+	tty, err := pty.StartWithSize(cmd, winSize)
 	if err != nil {
 		sandbox.Release(cmd)
 		return driver.ExecResult{}, driver.Errorf(driver.ErrUnavailable, "the shell was not started: %v", err)
@@ -571,7 +630,7 @@ func (d *Driver) Forward(ctx context.Context, id string, port int) (io.ReadWrite
 		d.mu.Unlock()
 		return nil, driver.Errorf(driver.ErrConflict, "instance %s is stopped", id)
 	}
-	sb, gen, fw, runCtx := in.sb, in.spec.Generation, in.forwards, in.runCtx
+	sb, gen, fw, runCtx, bx := in.sb, in.spec.Generation, in.forwards, in.runCtx, in.box
 	in.running.Add(1)
 	d.mu.Unlock()
 
@@ -584,9 +643,17 @@ func (d *Driver) Forward(ctx context.Context, id string, port int) (io.ReadWrite
 		return nil, driver.Errorf(driver.ErrUnavailable, "the relay was not started: %v", cmd.Err)
 	}
 	sandbox.EndWithCommand(cmd)
+	release, err := placeOn(bx, cmd)
+	if err != nil {
+		cancel()
+		sandbox.Release(cmd)
+		in.running.Done()
+		return nil, err
+	}
 	base := map[string]any{"sandbox_id": id, "generation": gen, "port": port}
 	if err := d.record(driver.EventForward, with(base, "action", "open")); err != nil {
 		cancel()
+		release()
 		sandbox.Release(cmd)
 		in.running.Done()
 		return nil, driver.Errorf(driver.ErrUnavailable, "recording the forward: %v", err)
@@ -594,6 +661,7 @@ func (d *Driver) Forward(ctx context.Context, id string, port int) (io.ReadWrite
 	var st *forward.Stream
 	st, err = forward.Open(ctx, cmd, port, cancel, func(bin, bout int64) {
 		cancel()
+		release()
 		if st != nil {
 			fw.Remove(st)
 		}
@@ -601,6 +669,7 @@ func (d *Driver) Forward(ctx context.Context, id string, port int) (io.ReadWrite
 		_ = d.record(driver.EventForward, with(base, "action", "close", "bytes_in", bin, "bytes_out", bout))
 	})
 	if err != nil {
+		release()
 		sandbox.Release(cmd)
 		return nil, err
 	}
