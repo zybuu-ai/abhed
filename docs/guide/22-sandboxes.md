@@ -561,7 +561,8 @@ your secrets redaction, as a rule or hook may quote the line). This is best effo
 decides what a line means, so the sandbox is the boundary. When the
 server's terminal must judge every line (`sandbox.terminal` is
 `"lines"`), or the managed configuration sets deny rules or extensions
-that could refuse a command, `:attach` is refused with `403` and you run
+that could refuse a command (an extension counts only when it is sent hook
+events, so not under `hooks.disabled`), `:attach` is refused with `403` and you run
 each command with `:exec` instead. The shell's end is recorded with its
 exit status, its duration, the bytes each way and the last 8 KiB of its
 output, with withheld lines taken out and your secrets redaction applied.

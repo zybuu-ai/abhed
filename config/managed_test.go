@@ -289,6 +289,17 @@ func TestManagedScreensOnlyForManagedDenyOrExtensions(t *testing.T) {
 	if !withExt.ManagedScreens() {
 		t.Error("a managed extension did not screen")
 	}
+	// With hooks.disabled an extension is sent only its tools' calls, so it
+	// screens nothing either.
+	withExt.Hooks.Disabled = true
+	if withExt.ManagedScreens() {
+		t.Error("a managed extension screened with hooks disabled")
+	}
+	withExt.Extensions = []ExtensionConfig{{Name: "x", Events: []string{"invoke_tool"}}}
+	withExt.Hooks.Disabled = false
+	if withExt.ManagedScreens() {
+		t.Error("a tools-only managed extension screened")
+	}
 	unmanaged := Default()
 	unmanaged.ManagedKeys = []string{"permissions.deny"}
 	if unmanaged.ManagedScreens() {

@@ -710,6 +710,10 @@ on. A server with it off starts on the older schema as before.
   undone when the command's turn switched back; the model chosen during
   the turn now stands. `/bug`'s browser opener is waited for, so it no
   longer stays behind as a defunct process.
+- Under a managed file that configured extensions and set
+  `hooks.disabled`, the terminals were held to line-by-line mode and
+  `:attach` refused, though no extension was sent a hook event that could
+  refuse a line. Extensions now count only when their hooks can run.
 
 ### Dependencies
 

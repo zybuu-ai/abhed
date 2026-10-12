@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
@@ -247,7 +248,16 @@ func (c Config) ManagedScreens() bool {
 		// Nothing is known of what the file set, so assume it set the rules.
 		return true
 	}
-	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && len(c.Extensions) > 0)
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && c.extensionHooksRun())
+}
+
+// extensionHooksRun reports whether an extension is sent a hook event, not
+// only its tools' calls: with hooks.disabled none is, so none can screen.
+func (c Config) extensionHooksRun() bool {
+	return slices.ContainsFunc(c.ExtensionSpecs(), func(s extension.Config) bool {
+		// No events listed means every event, hooks included.
+		return len(s.Events) == 0 || len(toolEventsOnly(s.Events)) < len(s.Events)
+	})
 }
 
 // dropLockedAllow sets aside the allow rules the user's and the workspace's
