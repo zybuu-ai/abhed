@@ -54,7 +54,7 @@ func (e *fenceEgress) start(pol *egress.Policy) error {
 		e.dir, e.err = os.MkdirTemp("", "abhed-fence-egress-")
 		if e.err == nil && e.proxy.Inspecting() {
 			e.ca = filepath.Join(e.dir, "ca.pem")
-			if e.err = os.WriteFile(e.ca, e.proxy.CABundle(), 0o644); e.err == nil { // #nosec G306 -- public certificates, read by commands
+			if e.err = e.proxy.WriteCABundle(e.ca); e.err == nil {
 				e.proxy.SetCAPath(e.ca)
 			}
 		}

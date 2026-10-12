@@ -89,7 +89,12 @@ Three more settings, also managed only:
 
 With `"inspect_tls": true` each session's proxy makes a certificate
 authority of its own when it starts, whose key never leaves Abhed's process
-and is gone when the proxy stops. A `CONNECT` is opened when an allow rule
+and is gone when the proxy stops. Each CA signs for one day and is valid
+for two days and an hour; the bundle holds the one signing and the next, and
+the proxy moves to the next daily, rewriting the bundle in place (and
+placing it in a microVM guest again before its next command). A process that
+read the bundle once and keeps running more than a day after the next
+rotation fails HTTPS; restart it. A `CONNECT` is opened when an allow rule
 names its host and port, narrowed by method or path or not, and a deny rule
 not narrowed by them refuses it. If the client then speaks TLS, the proxy
 answers it with a certificate for the tunnel's host from that CA, and

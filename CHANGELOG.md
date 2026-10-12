@@ -1167,8 +1167,8 @@ All notable changes to Abhed are recorded here. The format follows
   narrowed by a path, which other spellings of the path step around, and
   advises allowing the paths needed instead.
 - `egress.inspect_tls`, off by default and set only in the managed
-  configuration: each session's proxy makes a CA of its own, terminates
-  commands' HTTPS with it, and decides every request inside by method and
+  configuration: each session's proxy makes a CA of its own (valid two days,
+  replaced daily, the bundle rewritten), terminates commands' HTTPS with it, and decides every request inside by method and
   path, recorded as kind `https`. Commands are pointed at a bundle with the
   session's CA, given to them on the process, fence, container and vm
   tiers and by the container and microVM drivers (a guest agent from an

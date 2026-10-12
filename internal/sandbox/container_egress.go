@@ -71,7 +71,7 @@ func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 		c.egDir, c.egErr = os.MkdirTemp("", "abhed-egr-")
 		if c.egErr == nil && c.egProxy.Inspecting() {
 			// Bound into each command's container, where its clients are pointed.
-			c.egErr = os.WriteFile(filepath.Join(c.egDir, "ca.pem"), c.egProxy.CABundle(), 0o644) // #nosec G306 -- public certificates, read inside the container
+			c.egErr = c.egProxy.WriteCABundle(filepath.Join(c.egDir, "ca.pem"))
 			c.egProxy.SetCAPath(caInside)
 		}
 		if c.egErr != nil {

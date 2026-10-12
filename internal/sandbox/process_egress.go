@@ -180,7 +180,7 @@ func (e *egressState) writeCA(p *egress.Proxy) error {
 		dir, e.caDir = d, d
 	}
 	path := filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(path, p.CABundle(), 0o644); err != nil { // #nosec G306 -- public certificates, read inside the sandbox
+	if err := p.WriteCABundle(path); err != nil {
 		return err
 	}
 	e.ca = path
