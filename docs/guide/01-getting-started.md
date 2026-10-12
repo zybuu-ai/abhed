@@ -14,6 +14,75 @@ to the model endpoint you configure, plus anything you enable explicitly (web
 search, web fetch, MCP servers, remote tools); copy the binary and a config into an
 enclave and it works there.
 
+Each release on GitHub also carries a ready binary per platform, as a bare
+file and as a `.tar.gz` archive, and the container image is
+`ghcr.io/zybuu-ai/abhed:<version>`.
+
+### Verify a download
+
+From 1.2.8 on, every release is signed. Releases up to 1.2.7 carry only
+`SHA256SUMS`, which proves a file matches the list but not who made the list.
+
+Signing is keyless ([Sigstore](https://www.sigstore.dev/)): the release
+workflow, running on the tag, gets a short-lived certificate for its GitHub
+identity and signs with it, and the signature is logged in Sigstore's public
+transparency log. There is no long-lived key. What you check is that the
+signer was this repository's release workflow running on that tag.
+
+Each release has, beside the binaries:
+
+| File | What it is |
+|---|---|
+| `SHA256SUMS` | The SHA-256 of every binary, archive and SBOM |
+| `SHA256SUMS.sigstore.json` | The signature over `SHA256SUMS`, with its certificate and log entry |
+| `<binary>.spdx.json` | An SPDX SBOM per bare binary, listing the Go modules linked into it |
+| `abhed-<version>.provenance.sigstore.json` | Signed SLSA build provenance for every file `SHA256SUMS` names |
+
+Check the signature, then the file, with
+[cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3.0
+or later:
+
+```bash
+V=v1.2.8
+cosign verify-blob SHA256SUMS \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/zybuu-ai/abhed/.github/workflows/release.yml@refs/tags/$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum -c SHA256SUMS --ignore-missing     # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Both must pass. `--ignore-missing` skips the files you did not download, so
+check that the line for your file says `OK`.
+
+Build provenance says which workflow, commit and runner built a file. With
+the GitHub CLI:
+
+```bash
+gh attestation verify "abhed-$V-linux-amd64" --repo zybuu-ai/abhed
+# Without reaching the GitHub API, from the copy published with the release:
+gh attestation verify "abhed-$V-linux-amd64" --repo zybuu-ai/abhed \
+  --bundle "abhed-$V.provenance.sigstore.json"
+```
+
+The container image is signed by digest, and its provenance and SBOM are
+attached to it:
+
+```bash
+cosign verify "ghcr.io/zybuu-ai/abhed:$V" \
+  --certificate-identity "https://github.com/zybuu-ai/abhed/.github/workflows/release.yml@refs/tags/$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify "oci://ghcr.io/zybuu-ai/abhed:$V" --repo zybuu-ai/abhed
+docker buildx imagetools inspect "ghcr.io/zybuu-ai/abhed:$V" --format '{{ json .SBOM }}'
+```
+
+Pull by the digest `cosign verify` printed, not by tag, so what you run is
+what was checked. The `latest` tag names the same digest as the newest
+release; verify it with that release's identity.
+
+What this does not prove: that the source at the tag is free of bugs or
+hostile code, or that GitHub's runners and Sigstore were not themselves
+compromised. A build from source (`go build` above) needs none of this.
+
 ### Linux on Z (s390x)
 
 Abhed is built for Linux on Z (s390x): Red Hat Enterprise Linux, SUSE Linux

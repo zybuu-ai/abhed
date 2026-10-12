@@ -2,10 +2,11 @@
 # Build the Community Edition release artefacts: one archive per platform
 # holding the binary, the licence, the README and the changelog, the
 # microVM driver's two binaries (abhed-microvm and abhed-guest) for Linux,
-# plus a checksum file. What the release workflow runs; runs the same on a
-# laptop.
+# with -s an SPDX SBOM beside each bare binary (needs syft), plus a checksum
+# file over all of them. What the release workflow runs; runs the same on a
+# laptop. Signing happens in the workflow, which has the OIDC identity.
 #
-#   scripts/build-release.sh [-v VERSION] [-o OUTDIR] [-p PLATFORMS] [-m MICROVM_PLATFORMS]
+#   scripts/build-release.sh [-v VERSION] [-o OUTDIR] [-p PLATFORMS] [-m MICROVM_PLATFORMS] [-s]
 set -euo pipefail
 VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 OUTDIR="dist"
@@ -14,17 +15,22 @@ PLATFORMS="linux/amd64 linux/arm64 linux/s390x darwin/arm64 darwin/amd64"
 # filesystem are not shipped: build-rootfs.sh's output is not reproducible
 # (mkfs.ext4 stamps a fresh UUID and times), so operators build their own.
 MICROVM_PLATFORMS="linux/amd64 linux/arm64 linux/s390x"
-while getopts "v:o:p:m:h" opt; do
+SBOM=0
+while getopts "v:o:p:m:sh" opt; do
   case $opt in
     v) VERSION="$OPTARG" ;;
     o) OUTDIR="$OPTARG" ;;
     p) PLATFORMS="$OPTARG" ;;
     m) MICROVM_PLATFORMS="$OPTARG" ;;
-    h) sed -n '2,9p' "$0"; exit 0 ;;
+    s) SBOM=1 ;;
+    h) sed -n '2,10p' "$0"; exit 0 ;;
     *) exit 2 ;;
   esac
 done
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "$SBOM" = 1 ] && ! command -v syft >/dev/null; then
+  echo "-s needs syft on PATH" >&2; exit 2
+fi
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$OUTDIR"
@@ -61,6 +67,19 @@ for platform in $MICROVM_PLATFORMS; do
   done
 done
 
-( cd "$OUTDIR" && (command -v sha256sum >/dev/null && sha256sum abhed-* || shasum -a 256 abhed-*) > SHA256SUMS )
+# Each SBOM is read from the binary's own build info, so it lists the modules
+# actually linked rather than everything go.mod names.
+if [ "$SBOM" = 1 ]; then
+  for f in "$OUTDIR"/abhed-*; do
+    case "$f" in *.tar.gz|*.spdx.json) continue ;; esac
+    syft scan "file:$f" -q -o "spdx-json=$f.spdx.json"
+  done
+  echo "  SBOMs written"
+fi
+
+(
+  cd "$OUTDIR"
+  if command -v sha256sum >/dev/null; then sha256sum abhed-*; else shasum -a 256 abhed-*; fi > SHA256SUMS
+)
 echo "  SHA256SUMS written"
-echo "Verify a download with: sha256sum -c SHA256SUMS --ignore-missing"
+echo "Verify a download with: sha256sum -c SHA256SUMS --ignore-missing (a release also checks SHA256SUMS.sigstore.json; see docs/guide/01-getting-started.md)"

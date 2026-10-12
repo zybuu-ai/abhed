@@ -140,6 +140,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Signed releases. The checksum file is signed with Sigstore cosign,
+  keyless, under the release workflow's GitHub identity; the container
+  image is signed by digest; both carry SLSA build provenance, and each
+  binary has an SPDX SBOM. "Verify a download" in the getting-started guide
+  shows the commands. Releases up to 1.2.7 are not signed.
+  `scripts/build-release.sh -s` writes the SBOMs (it needs syft).
 - What a sandbox command can reach of the server: on every tier, nothing
   in the control plane's state folder but its own sandbox folder (not the
   `:ssh` relay's host key, other sandboxes' folders or snapshots, or a

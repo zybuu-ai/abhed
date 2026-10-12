@@ -16,6 +16,14 @@ the next release: a 1.x release, unless the fix itself must break
 compatibility. If you are running an older release or commit, the first
 thing we will ask is whether the issue reproduces on the latest release.
 
+## Verifying a release
+
+From 1.2.8, releases are signed keylessly with Sigstore cosign by the
+release workflow, with SLSA build provenance and an SBOM per binary. See
+"Verify a download" in docs/guide/01-getting-started.md. A release whose
+signature does not verify against that workflow's identity did not come
+from us: please report it.
+
 ## Reporting a vulnerability
 
 Email **security@zybuu.com**.
