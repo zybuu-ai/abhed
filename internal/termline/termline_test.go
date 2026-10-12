@@ -267,6 +267,11 @@ func TestSendWithdrawsALineTheShellNeverGot(t *testing.T) {
 		if want := map[bool]int{true: 0, false: 1}[fail]; n != want {
 			t.Fatalf("write failed %v: %d lines recorded, want %d", fail, n, want)
 		}
+		// The line is pending before the write, so the echo that arrives
+		// during it is the line's own, and it is recorded with its text.
+		if !fail && (got[0].Line != "git status" || got[0].Withheld != "") {
+			t.Fatalf("a pasted line echoed as it was written was not recorded with its text: %+v", got[0])
+		}
 	}
 }
 
