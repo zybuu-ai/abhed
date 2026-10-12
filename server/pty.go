@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -970,10 +972,13 @@ func (p *ptyRun) ask(e *enteredLine) {
 	e.Ahead = p.prompt != nil && !p.prompt.At()
 }
 
-// engineForeground asks the engine that started a container's shell, named
-// by --name, whether the terminal's foreground process group is not the
-// shell's. The shell is the container's pid 1; its /proc stat holds both
-// its own group and the terminal's foreground group.
+// engineForeground asks, from outside the container, whether the terminal's
+// foreground process group is not the shell's. The shell is the container's
+// pid 1, and nothing is run from the container's image, whose programs the
+// agent can replace: the engine names the shell's host pid, and its /proc
+// stat is read on the engine's host (here on Linux, through the machine for
+// podman elsewhere), or docker's own ps answers. Any doubt is "cannot say",
+// and the line is screened.
 func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
 	name := ""
 	for i, a := range cmd.Args {
@@ -988,12 +993,82 @@ func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
 	return func() (bool, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), engineAskWait)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, engine, "exec", name, "cat", "/proc/1/stat").Output() // #nosec G204 -- the engine that started the shell, and its container
-		if err != nil {
+		return hostForeground(ctx, engine, name)
+	}
+}
+
+// engineHostProc reads files under the engine host's /proc. A variable so a
+// test can stand in for a Linux host.
+var engineHostProc = func(ctx context.Context, engine string, paths ...string) ([]byte, error) {
+	if runtime.GOOS == "linux" {
+		var out []byte
+		for _, p := range paths {
+			b, err := os.ReadFile(p) // #nosec G304 -- a /proc file of the engine's container
+			if err != nil {
+				return nil, err
+			}
+			out = append(append(out, b...), '\n')
+		}
+		return out, nil
+	}
+	if !strings.Contains(filepath.Base(engine), "podman") {
+		return nil, errors.New("not readable from here")
+	}
+	// The machine's own cat, never the container's.
+	return exec.CommandContext(ctx, engine, append([]string{"machine", "ssh", "cat"}, paths...)...).Output() // #nosec G204 -- the engine that started the shell
+}
+
+// hostForeground is engineForeground's answer for one container.
+func hostForeground(ctx context.Context, engine, name string) (program, ok bool) {
+	out, err := exec.CommandContext(ctx, engine, "inspect", "-f", "{{.State.Pid}} {{.Id}}", name).Output() // #nosec G204 -- the engine that started the shell, and its container
+	if err != nil {
+		return false, false
+	}
+	f := strings.Fields(string(out))
+	if len(f) != 2 || len(f[1]) < 12 {
+		return false, false
+	}
+	pid, err := strconv.Atoi(f[0])
+	if err != nil || pid <= 0 {
+		return false, false
+	}
+	id := f[1]
+	if runtime.GOOS != "linux" && !strings.Contains(filepath.Base(engine), "podman") {
+		return dockerTopForeground(ctx, engine, name, pid)
+	}
+	b, err := engineHostProc(ctx, engine, fmt.Sprintf("/proc/%d/cgroup", pid), fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false, false
+	}
+	cgroup, stat, found := strings.Cut(string(b), "\n"+strconv.Itoa(pid)+" (")
+	// The pid must still be this container's: another engine's host, or a
+	// pid reused since inspect, is not asked about.
+	if !found || !strings.Contains(cgroup, id) {
+		return false, false
+	}
+	return foregroundIsProgram(strconv.Itoa(pid) + " (" + strings.TrimSpace(stat))
+}
+
+// dockerTopForeground asks docker's top, which runs ps on the engine's host,
+// for the shell's own group and the terminal's foreground group.
+func dockerTopForeground(ctx context.Context, engine, name string, pid int) (program, ok bool) {
+	out, err := exec.CommandContext(ctx, engine, "top", name, "-o", "pid,pgid,tpgid").Output() // #nosec G204 -- the engine that started the shell, and its container
+	if err != nil {
+		return false, false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 || f[0] != strconv.Itoa(pid) {
+			continue
+		}
+		pgid, err1 := strconv.Atoi(f[1])
+		tpgid, err2 := strconv.Atoi(f[2])
+		if err1 != nil || err2 != nil || pgid <= 0 || tpgid <= 0 {
 			return false, false
 		}
-		return foregroundIsProgram(string(out))
+		return tpgid != pgid, true
 	}
+	return false, false
 }
 
 // engineAskWait bounds asking the engine at a line's Enter.

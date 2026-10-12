@@ -561,12 +561,16 @@ What a shell changes about the checks, stated plainly:
   is not the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
   screened nor recorded. On the container tier the engine's CLI holds the
   terminal, so the server watches for a program switching to the alternate
-  screen, and once one has, asks the engine at each Enter (`podman exec` or
-  `docker exec` of `cat /proc/1/stat` in the shell's container) whether the
-  terminal's foreground group is the shell's. Only when the engine says a
-  program has it is a line left unscreened and unrecorded; when the engine
-  cannot be asked (an image without `cat`, an engine that does not answer in
-  three seconds), the line is screened and recorded, which inside an editor
+  screen, and once one has, asks at each Enter whether the terminal's
+  foreground group is the shell's. Nothing in the container is run for this,
+  since commands can replace its programs: the engine names the shell's host
+  process (`inspect`), whose `/proc` stat is read on the engine's host (on
+  Linux directly, through `podman machine ssh` elsewhere, after checking the
+  process is still that container's), or docker's own `top -o
+  pid,pgid,tpgid` answers. Only when that says a program has the terminal is
+  a line left unscreened and unrecorded; when it cannot say (docker or a
+  remote engine it cannot read, an engine that does not answer in three
+  seconds), the line is screened and recorded, which inside an editor
   can refuse a line of text that matches a deny rule. A `printf` of the
   switch alone no longer turns anything off. Programs that do not switch
   screens (`python`, `cat`) have their lines screened and recorded there as
