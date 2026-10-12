@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- On macOS, a nested repository whose `.git` is a symbolic link had the git
+  folder it leads to left writable to commands where git protection applies,
+  so a command could plant a hook or an fsmonitor there. That folder is now
+  held read-only, as the workspace's own linked `.git` is. Affects 1.2.3 to
+  1.2.7 on macOS.
 - `abhed resolve` refused to push when your global git configuration lay
   where the run could write it, but not when a file it includes
   (`include.path`, `includeIf`) or the system configuration did, so a run

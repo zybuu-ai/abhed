@@ -167,3 +167,25 @@ func TestProcessSandboxHoldsWhereLinkedHooksLead(t *testing.T) {
 		t.Errorf("the link was changed: %q %v", to, err)
 	}
 }
+
+// A nested repository whose .git is a link has the folder it leads to held:
+// a command can plant neither a config line nor a hook there.
+func TestProcessSandboxHoldsWhereANestedGitLinkLeads(t *testing.T) {
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{"store/real/HEAD": "ref: refs/heads/main\n", "store/real/config": "[core]\n",
+		"store/real/hooks/.keep": "", "sub/f": ""})
+	if err := os.Symlink("../store/real", filepath.Join(ws, "sub", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	_, _ = runIn(t, s, ws, "echo '  fsmonitor = x' >> store/real/config; echo x > store/real/hooks/pre-commit")
+	if b, _ := os.ReadFile(filepath.Join(ws, "store", "real", "config")); string(b) != "[core]\n" {
+		t.Errorf("the linked git folder's config was written: %q", b)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, "store", "real", "hooks", "pre-commit")); err == nil {
+		t.Error("a hook was planted in the linked git folder")
+	}
+}

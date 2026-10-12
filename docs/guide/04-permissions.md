@@ -668,9 +668,10 @@ not yet checked out fail there; run them yourself. A `hooks` (or other of
 those files) that is a link is held where it leads as well, as is the
 workspace's own `.git`, or a `modules` or `worktrees` folder or a folder in
 either, that is a link; a linked `.git` is then read-only throughout, so git
-cannot commit there. A nested repository's `.git` that is a link is not
-followed: the folder it leads to stays writable, so replace such a link with
-the folder itself.
+cannot commit there. So is the folder a nested repository's `.git` link
+leads to, for nested repositories the walk below reaches (six folders down,
+at most 20,000 folders): git cannot commit there either, so replace such a
+link with the folder itself.
 
 On every tier, plain `git submodule update` on a submodule already checked
 out fails inside the sandbox too, as git rewrites `core.worktree` in the

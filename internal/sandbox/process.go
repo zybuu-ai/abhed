@@ -474,7 +474,9 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 			}
 			// Seatbelt matches the path a link resolves to, so what a linked
 			// pointer such as hooks names is held as well.
-			for _, l := range g.linked {
+			// A nested repository's .git that is a link, likewise: its git
+			// folder is read-only throughout, as the workspace's own is.
+			for _, l := range append(g.linked, linkedGits(ws)...) {
 				for _, t := range PathForms(RealPath(l)) {
 					fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", t)
 				}
