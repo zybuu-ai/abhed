@@ -37,6 +37,16 @@ output were made `0600` on 14 September.
 
 ## The first scan — 14 September 2026
 
+What changed since, so the rows below are not read as open: `internal/server`,
+`internal/auth`, `internal/config` and `internal/store` moved to `server/`,
+`auth/`, `config/` and `store/`, and rows give the old paths. The "To fix"
+rows for `Index.Update`, the OIDC key accessors, `cookie_secure` and the
+`0644` writes of undo snapshots, the config and `abhed init` were fixed the
+same day (see "Fixes applied" at the end). The
+toolchain is now Go 1.26.9 in `go.mod`, the image and CI, and the image's
+pypdf 6.19.0. The image's trivy result and the semgrep run are still from
+this first scan.
+
 **Since this scan,** the CLI's code moved out of `cmd/abhed/main.go`, which
 now only starts the `app` package. Rows citing `cmd/abhed/main.go` give
 where the code was on 2026-09-14, not where it is now. Of them, the eval
