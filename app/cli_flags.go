@@ -376,10 +376,15 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 				return 2
 			}
 		}
-		if len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
+		asJSON, timeout, err := doctorArgs(rest[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: doctor: %v\n", err)
+			return 2
+		}
+		if asJSON {
 			return a.doctorJSON(os.Stdout, workspace, set)
 		}
-		return a.doctor(workspace, set)
+		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
 	case "record":

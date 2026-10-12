@@ -30,8 +30,8 @@ var subOwnFlags = map[string][]string{
 // means nothing to them.
 var noWorkspace = map[string]bool{"providers": true, "secret": true, "pki": true, "admin": true}
 
-// noArgs are the subcommands that take no arguments; doctor and version take
-// only --json.
+// noArgs are the subcommands that take no arguments; doctor takes only
+// --json and -timeout, and version only --json.
 var noArgs = map[string]bool{"init": true, "providers": true, "acp": true, "rpc": true, "index": true,
 	"doctor": true, "version": true}
 
@@ -71,6 +71,11 @@ func hoistGlobalFlags(fs *flag.FlagSet, sub []string) ([]string, error) {
 	words := 1
 	for i := 1; i < len(sub); i++ {
 		arg := sub[i]
+		if name == "doctor" && (arg == "-timeout" || arg == "--timeout") && i+1 < len(sub) {
+			left = append(left, arg, sub[i+1])
+			i++
+			continue
+		}
 		flagName, value, hasValue, isFlag := splitFlag(arg)
 		g := fs.Lookup(flagName)
 		global := isFlag && g != nil && !own[flagName]
@@ -119,6 +124,12 @@ func checkArg(name, arg string) error {
 	if name == "doctor" || name == "version" {
 		if arg == "--json" || arg == "-json" {
 			return nil
+		}
+		if name == "doctor" {
+			if strings.HasPrefix(arg, "-timeout=") || strings.HasPrefix(arg, "--timeout=") {
+				return nil
+			}
+			return fmt.Errorf("doctor takes only --json and -timeout; got %s", config.Printable(arg))
 		}
 		return fmt.Errorf("%s takes only --json; got %s", name, config.Printable(arg))
 	}

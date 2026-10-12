@@ -259,7 +259,7 @@ func TestEntryPointsRefuseAnUnloadableSecretsStore(t *testing.T) {
 			// The doctor's own endpoint, which never says the value.
 			dws := credsWorkspace(t, `{"sandbox":{"min_tier":"none"},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"`+
 				doctorEndpoint(t).URL+`","model":"m","context_window":8192}}}}`)
-			out, code = stdoutOf(t, func() int { return newApp().doctor(dws, flagSettings{}) })
+			out, code = stdoutOf(t, func() int { return newApp().doctor(dws, flagSettings{}, doctorTimeout) })
 			if code == 0 || !strings.Contains(out, "secrets     UNAVAILABLE") || !strings.Contains(out, "Not ready") {
 				t.Fatalf("the doctor did not report the store (%d):\n%s", code, out)
 			}

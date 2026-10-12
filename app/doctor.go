@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,9 +29,38 @@ import (
 	"github.com/zybuu-ai/abhed/store"
 )
 
+// doctorTimeout bounds the endpoint checks unless -timeout says otherwise.
+const doctorTimeout = 60 * time.Second
+
+// doctorArgs reads doctor's own arguments: --json, and -timeout for the
+// endpoint checks.
+func doctorArgs(args []string) (asJSON bool, timeout time.Duration, err error) {
+	timeout = doctorTimeout
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		name, value, hasValue, _ := splitFlag(arg)
+		switch name {
+		case "json":
+			asJSON = true
+		case "timeout":
+			if !hasValue {
+				if i+1 >= len(args) {
+					return false, 0, errors.New("-timeout needs a value, such as 2m")
+				}
+				i++
+				value = args[i]
+			}
+			if timeout, err = time.ParseDuration(value); err != nil || timeout <= 0 {
+				return false, 0, fmt.Errorf("-timeout %s is not a positive duration, such as 2m", config.Printable(value))
+			}
+		}
+	}
+	return asJSON, timeout, nil
+}
+
 // doctor verifies the endpoint actually works before the user debugs it
 // through a failing agent run.
-func (a *App) doctor(workspace string, set flagSettings) int {
+func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) int {
 	cfg, err := a.loadConfigWith(workspace, set)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
@@ -48,7 +78,9 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 
 	fmt.Printf("%s %s\n\n", ui.NewStyle(os.Stdout).Accent(ui.Glyph),
 		ui.NewStyle(os.Stdout).Bold("abhed doctor"))
+	fmt.Printf("edition     %s\n", a.edition)
 	fmt.Printf("workspace   %s\n", workspace)
+	fmt.Printf("config      %s\n", configFilesLine(cfg))
 	fmt.Printf("provider    %s (%s)\n", cfg.Model.Default, provider.Type)
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
@@ -83,7 +115,7 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
 	fmt.Printf("egress      %s\n", egressLabel(cfg))
-	fmt.Println("git         held read-only from commands in `abhed serve`'s and Studio's sessions; not in the terminal's (docs/guide/04-permissions.md)")
+	fmt.Printf("git         %s\n", gitHeldLabel(cfg))
 	if printDrivers(os.Stdout, cfg) {
 		findings.driverDown = true
 	}
@@ -135,7 +167,7 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 	}
 	if reg, _ := toolset.LoadSkills(cfg, warnf); reg.Len() > 0 {
 		fmt.Printf("skills      %d loaded: %s\n", reg.Len(),
-			strings.Join(reg.Names(), ", "))
+			ui.VisibleLine(strings.Join(reg.Names(), ", ")))
 	}
 	if cfg.K8s.Enabled {
 		writes := "read-only"
@@ -241,7 +273,7 @@ func (a *App) doctor(workspace string, set flagSettings) int {
 		return 1
 	}
 	adapter := buildAdapter(provider)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	fmt.Print("checking endpoint... ")
@@ -599,4 +631,44 @@ func tierLabel(sb sandbox.Sandbox) string {
 		return string(sb.Tier()) + " (" + c + ")"
 	}
 	return string(sb.Tier())
+}
+
+// configFilesLine names the configuration files this run read, lowest layer
+// first, so a doctor run from a subfolder says which files it judged.
+func configFilesLine(cfg config.Config) string {
+	var files []string
+	if home, err := os.UserHomeDir(); err == nil {
+		if user := filepath.Join(home, ".abhed", "config.json"); fileExists(user) {
+			files = append(files, user)
+		}
+	}
+	if cfg.Workspace.File != "" && fileExists(cfg.Workspace.File) {
+		files = append(files, cfg.Workspace.File)
+	}
+	if cfg.Settings.Name != "" {
+		files = append(files, "-settings "+cfg.Settings.Name)
+	}
+	if cfg.Managed {
+		files = append(files, managed.ConfigFile+" (managed)")
+	}
+	if len(files) == 0 {
+		return "none; the built-in defaults"
+	}
+	return config.Printable(strings.Join(files, ", "))
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// gitHeldLabel says whether commands are kept from writing git's files.
+func gitHeldLabel(cfg config.Config) string {
+	switch on, required := cfg.Sandbox.GitProtected(); {
+	case !on:
+		return "not held: sandbox.protect_git is false (docs/guide/04-permissions.md)"
+	case required:
+		return "held read-only from commands; a tier that cannot hold them is refused"
+	}
+	return "held read-only from commands on every tier but none (sandbox.protect_git)"
 }

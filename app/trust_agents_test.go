@@ -72,7 +72,7 @@ func TestTrustShowsAgentDefinitions(t *testing.T) {
 	if st, _ := config.InspectWorkspace(ws); !st.AgentsTrusted || st.AgentsReason != "stored" {
 		t.Fatalf("after the grant: %+v", st)
 	}
-	doctor, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
+	doctor, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	if !strings.Contains(doctor, "agents      trusted — 1 definition(s)") {
 		t.Fatalf("doctor does not report the definitions:\n%s", doctor)
 	}
@@ -138,7 +138,7 @@ func TestDoctorWarnsManagedCase(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sec.MD"), []byte("---\ndescription: d\n---\nx\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}) })
+	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	if !strings.Contains(out, "sec.MD is not read") {
 		t.Fatalf("doctor does not name the managed file:\n%s", out)
 	}

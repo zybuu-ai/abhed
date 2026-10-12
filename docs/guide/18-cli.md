@@ -42,8 +42,8 @@ workspace (all but `providers`, `secret`, `pki` and `admin`),
 `-trust-workspace` by those that load its configuration, and `-settings` by
 `doctor`. Any other one there stops the command with exit code 2 and a
 message naming it, as does an argument to a subcommand that takes none
-(`init`, `acp`, `rpc`, `index`, `providers`; `doctor` and `version` take
-only `--json`). A subcommand's own flag keeps its meaning (`serve -addr`,
+(`init`, `acp`, `rpc`, `index`, `providers`; `doctor` takes only `--json`
+and `-timeout`, and `version` only `--json`). A subcommand's own flag keeps its meaning (`serve -addr`,
 `record list -n`, `resolve -mode`), and nothing after `--` or in a command
 passed on as given (`mcp add NAME COMMAND ARGS`, `sandbox exec ID COMMAND
 ARGS`) is read as one of these.

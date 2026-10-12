@@ -547,6 +547,8 @@ All notable changes to Abhed are recorded here. The format follows
 `sandbox_idempotency`, `sandbox_audit` and `sandbox_templates`) come with
 schema version 7; run `abhed migrate` before turning `control_plane.enabled`
 on. A server with it off starts on the older schema as before.
+- `abhed doctor` names the edition and the configuration files it read,
+  and takes `-timeout` for the endpoint checks (60 seconds by default).
 
 ### Changed
 
@@ -714,6 +716,12 @@ on. A server with it off starts on the older schema as before.
   `hooks.disabled`, the terminals were held to line-by-line mode and
   `:attach` refused, though no extension was sent a hook event that could
   refuse a line. Extensions now count only when their hooks can run.
+- `abhed doctor` printed skill names as written, so a skill folder named
+  with a right-to-left override could show as another name. A skill whose
+  name holds a character that does not print as itself is now refused at
+  load and named in the warning, escaped. Doctor's `git` line said git's
+  files were held only in served and Studio sessions; it now says what
+  `sandbox.protect_git` holds.
 
 ### Dependencies
 

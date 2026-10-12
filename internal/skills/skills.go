@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
 )
@@ -205,6 +206,12 @@ func discover(root string) ([]*Skill, []error) {
 		}
 		if s.Name == "" {
 			s.Name = e.Name()
+		}
+		// A name is shown in listings and prompts as written; one with a
+		// character that does not print as itself (U+202E) could disguise it.
+		if strings.IndexFunc(s.Name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+			problems = append(problems, fmt.Errorf("skills: %q: the name %q holds a character that does not print as itself", path, s.Name))
+			continue
 		}
 		s.Dir = dir
 		// A pipeline lives in its own file rather than the frontmatter. The

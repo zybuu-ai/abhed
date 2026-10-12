@@ -94,6 +94,10 @@ abhed doctor    # check the endpoint before you rely on it
 **and that the model can emit a structured tool call** — a model that describes a
 tool call in prose instead of emitting one cannot drive an agent at all, however
 well it writes, and finding that out during a real task wastes the run.
+It first names the edition, the workspace and the configuration files it
+read (yours, the workspace's, `-settings` and the managed file), so a run
+from a subfolder says which files it judged. The endpoint checks stop after
+60 seconds; `abhed doctor -timeout 3m` gives a slow local model longer.
 
 ```
 checking endpoint... ok
