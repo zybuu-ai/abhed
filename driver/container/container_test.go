@@ -1190,3 +1190,35 @@ func TestAttachForwardsEnvByName(t *testing.T) {
 		t.Fatalf("the shell's exec: %s", shell)
 	}
 }
+
+// On an SELinux engine the operator's relay_binary is bound as it is: a
+// relabel would change the label of the operator's own file.
+func TestRelayBinaryIsNeverRelabelled(t *testing.T) {
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "example.com", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := hostOS
+	t.Cleanup(func() { hostOS = old })
+	hostOS = "darwin"
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{podman: true, selinux: true}
+	f.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
+		if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
+			return nil
+		}
+		return exec.CommandContext(ctx, self, stdiorelay.Arg, "127.0.0.1:0")
+	}
+	d, ws := testDriver(t, f, Options{RelayBinary: "/opt/abhed/abhed-linux-arm64"}, func(p *sandbox.Policy) { p.Egress = pol })
+	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Delete(context.Background(), "sbx_0123456789abcdef") })
+	got := joined(f.runCall(t))
+	if !strings.Contains(got, " -v /opt/abhed/abhed-linux-arm64:/run/abhed-egress/relay:ro ") {
+		t.Fatalf("the relay binary's mount: %s", got)
+	}
+}
