@@ -430,23 +430,21 @@ func TestSeatbeltEgressProfile(t *testing.T) {
 	}
 }
 
-// proxyOf is the address the command's proxy variables name.
-func proxyOf(t *testing.T, cmd *exec.Cmd) string {
+// mustHaveProxy fails unless the command was built with proxy variables.
+func mustHaveProxy(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
 	if cmd.Err != nil {
 		t.Fatalf("command not built: %v", cmd.Err)
 	}
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "HTTP_PROXY="); ok {
-			u, err := url.Parse(v)
-			if err != nil {
+			if _, err := url.Parse(v); err != nil {
 				t.Fatal(err)
 			}
-			return u.Host
+			return
 		}
 	}
 	t.Fatalf("no proxy in the command's environment")
-	return ""
 }
 
 func listening(addr string) bool {
@@ -467,10 +465,10 @@ func TestEgressProxyClosesWhenQuiet(t *testing.T) {
 
 	ctx1, cancel1 := context.WithCancel(WithLaunch(context.Background(), l))
 	ctx2, cancel2 := context.WithCancel(WithLaunch(context.Background(), l))
-	_ = proxyOf(t, s.Command(ctx1, ws, "true"))
+	mustHaveProxy(t, s.Command(ctx1, ws, "true"))
 	first := s.sessionProxy("sess-Q")
 	addr := first.proxy.Addr().String()
-	_ = proxyOf(t, s.Command(ctx2, ws, "true"))
+	mustHaveProxy(t, s.Command(ctx2, ws, "true"))
 	if s.sessionProxy("sess-Q") != first {
 		t.Fatal("two commands of one session got proxies of their own")
 	}
@@ -497,7 +495,7 @@ func TestEgressProxyClosesWhenQuiet(t *testing.T) {
 	}
 	ctx3, cancel3 := context.WithCancel(WithLaunch(context.Background(), l))
 	defer cancel3()
-	_ = proxyOf(t, s.Command(ctx3, ws, "true"))
+	mustHaveProxy(t, s.Command(ctx3, ws, "true"))
 	if next := s.sessionProxy("sess-Q"); next == nil || !listening(next.proxy.Addr().String()) {
 		t.Fatal("the next command's proxy does not listen")
 	}
@@ -557,7 +555,7 @@ func TestEgressCloseStopsEveryProxy(t *testing.T) {
 	for _, id := range []string{"sess-1", "sess-2", "sess-3"} {
 		ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "c", Session: id, Record: (&eventLog{}).record}))
 		defer cancel()
-		_ = proxyOf(t, s.Command(ctx, ws, "true"))
+		mustHaveProxy(t, s.Command(ctx, ws, "true"))
 		ap := s.sessionProxy(id).proxy.Addr()
 		addrs = append(addrs, ap)
 		v6 = append(v6, listening(net.JoinHostPort("::1", fmt.Sprint(ap.Port()))))

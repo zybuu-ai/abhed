@@ -56,7 +56,7 @@ func TestInspectedTunnelIsJudgedByPath(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	var ok, denied bool
-	for time.Now().Before(deadline) && !(ok && denied) {
+	for time.Now().Before(deadline) && (!ok || !denied) {
 		rec.mu.Lock()
 		for _, e := range rec.evs {
 			ok = ok || e.Kind == "https" && e.Path == "/ok" && e.Decision == Allow && e.Method == "GET" && e.CallID == "call-i"
@@ -70,7 +70,8 @@ func TestInspectedTunnelIsJudgedByPath(t *testing.T) {
 	}
 	// A client that does not trust the session's CA fails its handshake.
 	plain := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(u)}}
-	if _, err := plain.Get(fmt.Sprintf("https://127.0.0.1:%d/ok", port)); err == nil {
+	if resp, err := plain.Get(fmt.Sprintf("https://127.0.0.1:%d/ok", port)); err == nil {
+		_ = resp.Body.Close()
 		t.Fatal("a client without the session's CA was served")
 	}
 
@@ -83,7 +84,8 @@ func TestInspectedTunnelIsJudgedByPath(t *testing.T) {
 	defer func() { _ = p2.Close() }()
 	u2, _ := url.Parse(callURL(t, p2, "call-j"))
 	c2 := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(u2), TLSClientConfig: &tls.Config{RootCAs: roots}}}
-	if _, err := c2.Get(fmt.Sprintf("https://127.0.0.1:%d/ok", port)); err == nil {
+	if resp, err := c2.Get(fmt.Sprintf("https://127.0.0.1:%d/ok", port)); err == nil {
+		_ = resp.Body.Close()
 		t.Fatal("a tunnel was allowed by a rule narrowed by path without inspection")
 	}
 	if p2.CA() != nil {

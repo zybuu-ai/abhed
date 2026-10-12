@@ -133,7 +133,8 @@ func (p *Proxy) CABundle() []byte {
 	var b []byte
 	for _, f := range systemBundles {
 		if data, err := os.ReadFile(f); err == nil && len(data) > 0 { // #nosec G304 -- a fixed system path
-			b = append(data, '\n')
+			b = append(b, data...)
+			b = append(b, '\n')
 			break
 		}
 	}

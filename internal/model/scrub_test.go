@@ -15,8 +15,9 @@ func TestConnectionErrorDropsTheKeyInTheURL(t *testing.T) {
 	build := func() (*http.Request, error) {
 		return http.NewRequest(http.MethodPost, "http://user:pw-SECRET1@127.0.0.1:1/v1/chat?api_key=SECRET2#frag", nil)
 	}
-	_, err := send(context.Background(), &http.Client{}, RetryPolicy{Attempts: 1}, build, nil, nil)
+	resp, err := send(context.Background(), &http.Client{}, RetryPolicy{Attempts: 1}, build, nil, nil)
 	if err == nil {
+		_ = resp.Body.Close()
 		t.Fatal("no error from a closed port")
 	}
 	if strings.Contains(err.Error(), "SECRET") {
@@ -26,9 +27,12 @@ func TestConnectionErrorDropsTheKeyInTheURL(t *testing.T) {
 	if !errors.As(err, &ue) || !strings.Contains(ue.URL, "127.0.0.1:1/v1/chat") {
 		t.Fatalf("the error lost the endpoint: %v", err)
 	}
-	_, err = send(context.Background(), &http.Client{}, RetryPolicy{Attempts: 1}, func() (*http.Request, error) {
+	resp, err = send(context.Background(), &http.Client{}, RetryPolicy{Attempts: 1}, func() (*http.Request, error) {
 		return http.NewRequest(http.MethodPost, "http://h\x7f/?api_key=SECRET3", nil)
 	}, nil, nil)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("an unparsable URL leaked its key: %v", err)
 	}
