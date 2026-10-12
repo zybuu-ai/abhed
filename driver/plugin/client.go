@@ -38,7 +38,15 @@ func Dial(ctx context.Context, name, socket string) (*Client, error) {
 	return cl, nil
 }
 
-func (cl *Client) Info() driver.Info { return cl.info }
+// Info is the driver's, with command added where it has exec and attach:
+// this client runs a session's commands through them.
+func (cl *Client) Info() driver.Info {
+	info := cl.info
+	if cl.commands() && !info.Has(driver.CapCommand) {
+		info.Capabilities = append(slices.Clone(info.Capabilities), driver.CapCommand)
+	}
+	return info
+}
 
 func (cl *Client) fail(kind error, format string, args ...any) error {
 	return driver.Errorf(kind, "driver %s: %s", cl.name, fmt.Sprintf(format, args...))

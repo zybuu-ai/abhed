@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	cp "github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
@@ -182,5 +183,55 @@ func TestMicroVMTierMeetsTheFloor(t *testing.T) {
 	p, _ := svc.Create(ctx, alice, cp.CreateRequest{Template: "default", Settings: map[string]string{cp.SetMinTier: "microvm"}})
 	if got := r.reconcile(t, p.ID); got.State != cp.StateError {
 		t.Fatalf("a process sandbox asking for microvm: %s", got.State)
+	}
+}
+
+// A session's command on a driver that takes its egress from the control
+// plane carries a credential of its own, forwarded by name and ended when
+// the command's context ends.
+func TestCommandCarriesItsEgressCredential(t *testing.T) {
+	eg := &fakeEgress{}
+	ctx := context.Background()
+	st, _ := cp.NewSettings(nil, nil)
+	vm := &specDriver{Fake: drivertest.New("vm", driver.CapCommand), specs: map[string]driver.Spec{}}
+	reg := driver.NewRegistry()
+	if err := reg.Register(vm); err != nil {
+		t.Fatal(err)
+	}
+	mem := cp.NewMemory()
+	ws := t.TempDir()
+	svc, err := cp.New(cp.Config{Store: mem, Audit: mem, Drivers: reg, Settings: st,
+		Workspace: func(string) (string, error) { return ws, nil }, Egress: eg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := svc.Create(ctx, alice, cp.CreateRequest{Template: "default", Driver: "vm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb, err = svc.WaitReady(ctx, alice, sb.ID); err != nil {
+		t.Fatal(err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cmd, _, err := svc.Command(cctx, alice, sb.ID, driver.CommandRequest{Command: "curl x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cmd.Env, "HTTP_PROXY=http://call:token@127.0.0.1:3128") || eg.calls != 1 {
+		t.Fatalf("env %v, calls %d", cmd.Env, eg.calls)
+	}
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		eg.mu.Lock()
+		ended := eg.ended
+		eg.mu.Unlock()
+		if ended == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the credential outlived the command")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

@@ -90,7 +90,8 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cl.Info(); got.Name != "fake" || len(got.Capabilities) != 4 {
+	// command is the client's own, through exec and attach.
+	if got := cl.Info(); got.Name != "fake" || len(got.Capabilities) != 5 || !got.Has(driver.CapCommand) {
 		t.Fatalf("info %+v", got)
 	}
 	st, err := cl.Create(ctx, driver.Spec{ID: "a", MinTier: "process"})
@@ -431,7 +432,8 @@ func TestServeRefusesDishonestDriver(t *testing.T) {
 }
 
 // A process handle cannot cross the socket, so a served driver that can
-// hand one out is offered without that capability, and still registers.
+// hand one out is offered without that capability; the client declares its
+// own, through its bridge to exec and attach, and still registers.
 func TestCommandIsNeverOffered(t *testing.T) {
 	ctx := context.Background()
 	fake := drivertest.New("fake", driver.CapAttach, driver.CapCommand)
@@ -439,8 +441,8 @@ func TestCommandIsNeverOffered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cl.Info(); got.Has(driver.CapCommand) || !got.Has(driver.CapAttach) {
-		t.Fatalf("info %+v", got)
+	if cl.info.Has(driver.CapCommand) || !cl.info.Has(driver.CapAttach) || !cl.Info().Has(driver.CapCommand) {
+		t.Fatalf("offered %+v, declared %+v", cl.info, cl.Info())
 	}
 	if err := driver.NewRegistry().Register(cl); err != nil {
 		t.Fatal(err)

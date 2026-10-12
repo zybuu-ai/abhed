@@ -63,9 +63,10 @@ func (s *Service) Command(ctx context.Context, c Caller, id string, req driver.C
 	if !d.Info().Has(driver.CapCommand) {
 		return nil, sb, driver.Errorf(driver.ErrUnsupported, "driver %s cannot run a session's commands", sb.Driver)
 	}
-	if s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver) {
-		// Its per-call credentials travel in Exec's request, which a handed-out process has none of.
-		return nil, sb, driver.Errorf(driver.ErrUnsupported, "driver %s takes its egress from the control plane, which a session's commands cannot carry", sb.Driver)
+	commander, ok := d.(driver.Commander)
+	egress := s.cfg.Egress != nil && s.cfg.Egress.For(sb.Driver)
+	if egress && !ok {
+		return nil, sb, driver.Errorf(driver.ErrUnsupported, "driver %s cannot pass a session's command its egress credential", sb.Driver)
 	}
 	line := req.Command
 	if req.Shell {
@@ -97,12 +98,31 @@ func (s *Service) Command(ctx context.Context, c Caller, id string, req driver.C
 		return nil, sb, err
 	}
 	cmd, err := driver.Command(ctx, d, id, req)
+	var endCall func()
+	if err == nil && egress {
+		// Its own credential, as an :exec gets, revoked when the command's context ends.
+		var env []string
+		if env, endCall, err = s.cfg.Egress.Call(id); err != nil {
+			err = fmt.Errorf("%w: an egress credential: %w", ErrUnavailable, err)
+		} else {
+			names := make([]string, 0, len(env))
+			for _, kv := range env {
+				k, _, _ := strings.Cut(kv, "=")
+				names = append(names, k)
+			}
+			cmd.Env = append(cmd.Env, env...)
+			commander.ForwardEnv(cmd, names)
+		}
+	}
 	s.outcome(ctx, ev, err)
 	s.committed(ctx, adm, sb, err)
 	if err != nil {
 		release()
 		end(nil)
 		return nil, sb, err
+	}
+	if endCall != nil {
+		context.AfterFunc(ctx, endCall)
 	}
 	context.AfterFunc(ctx, func() {
 		release()

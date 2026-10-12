@@ -188,7 +188,7 @@ sandbox's folder:
 |---|---|---|
 | `sessions.scope` | `session` | `session`: one sandbox per session. `user`: one per user, which all of that user's sessions share. |
 | `sessions.template` | `session` | The template each sandbox is made from. Letters, digits, `.`, `_` and `-`. |
-| `sessions.driver` | `process` | The driver each runs under: `process`, `docker` or `podman`. `microvm` cannot run a session's commands yet and is refused. |
+| `sessions.driver` | `process` | The driver each runs under: `process`, `docker`, `podman` or `microvm`. On `microvm` (an out-of-process driver) each command and terminal runs through a small bridge, this binary started again, that calls the driver's exec or attach with its own input and output; ending the bridge ends the command. |
 | `sessions.retention` | `stop` | What happens to the sandboxes when the server stops: `stop` them, `delete` them (and their folders), or `keep` them running. |
 | `sessions.warm_pool` | 0 | Ready sandboxes kept for new sessions to claim, at most 16. |
 | `sessions.ready_seconds` | 120 | How long a new or continued session waits for its sandbox before it is refused. |
@@ -273,11 +273,16 @@ sandbox is a fence of its own, with its own cgroup. Folders in
 so they are shared; so are MCP servers and extensions, which belong to the
 server.
 
-**Not yet.** Under several replicas (Enterprise HA) a `process` sandbox
-lives in the replica that made it, so per-session sandboxes need a driver
-every replica reaches. The microVM driver cannot hand a session's commands
-out yet. Workspace scopes from an edition's sandbox caller are not applied
-to a session's sandbox.
+**Under several replicas** (Enterprise HA) a `process` sandbox lives in the
+replica that made it, so `abhed serve` refuses `per_session` with
+`sessions.driver: process` there; use a driver every replica reaches
+(`docker` or `podman` on a shared engine, `microvm`, or an edition's
+cluster driver).
+
+**Egress.** Under the network allowlist, a session's command on a driver
+that takes its egress from the control plane (`microvm`) gets a credential
+of its own, as an `:exec` does, passed by name and revoked when the
+command ends.
 
 `abhed serve -check` checks all of this: a `per-session sandboxes` line
 fails when the session driver is not registered, cannot be reached or

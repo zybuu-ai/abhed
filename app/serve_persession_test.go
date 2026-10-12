@@ -33,6 +33,7 @@ func TestPerSessionConfigIsChecked(t *testing.T) {
 		"sessions.template":      func(c *config.ControlPlaneConfig) { c.Sessions.Template = "has space" },
 		"sessions.driver":        func(c *config.ControlPlaneConfig) { c.Sessions.Driver = "Bad Name" },
 		"sessions.ready_seconds": func(c *config.ControlPlaneConfig) { c.Sessions.ReadySeconds = -1 },
+		"control_plane.ha":       func(c *config.ControlPlaneConfig) { c.HA.Enabled = true },
 	} {
 		cfg := ok
 		edit(&cfg.ControlPlane)
@@ -40,6 +41,12 @@ func TestPerSessionConfigIsChecked(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), strings.TrimSpace(name)) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	// Under HA a driver every replica reaches is taken.
+	ha := ok
+	ha.ControlPlane.HA.Enabled, ha.ControlPlane.Sessions.Driver = true, "podman"
+	if err := checkPerSessionConfig(ha); err != nil {
+		t.Fatalf("HA with a shared driver: %v", err)
 	}
 	// Shared and per-session at once is refused where the folders are made, too.
 	cp := ok.ControlPlane

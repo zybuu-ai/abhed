@@ -480,7 +480,9 @@ All notable changes to Abhed are recorded here. The format follows
   `control_plane.per_session` (off by default; off, sessions share one
   sandbox and the server's workspace exactly as before). Each session, or
   each user with `control_plane.sessions.scope: "user"`, gets a control-plane
-  sandbox from a template on the `process`, `docker` or `podman` driver, and
+  sandbox from a template on the `process`, `docker`, `podman` or `microvm`
+  driver (an out-of-process driver runs each command through a bridge to its
+  exec and attach, with its own egress credential under the allowlist), and
   works in that sandbox's folder: the file tools, workbench views, uploads
   and downloads are there, and the bash tool, background commands and the
   terminal run in the sandbox, each recorded as an `exec` by the session's
@@ -496,7 +498,9 @@ All notable changes to Abhed are recorded here. The format follows
   another tenant. Under an edition's `SandboxCaller` (a Team workspace),
   each session's sandbox and warm pool are made in its user's workspace,
   so the workspace's quotas and policy rules apply to them; its four-eyes
-  approvals do not hold the server's own work for the session. See
+  approvals do not hold the server's own work for the session. Under
+  `control_plane.ha` the `process` session driver is refused, since its
+  sandboxes live in one replica. See
   [Sandboxes over the API](docs/guide/22-sandboxes.md#per-session-sandboxes).
 - `control_plane.docker` and `control_plane.podman` register the container
   drivers in `abhed serve`. Their `binary`, `images`, `mounts`,
