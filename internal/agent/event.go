@@ -241,6 +241,9 @@ type Observation struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// NotRun marks the answer to a call the turn ended before running.
 	NotRun bool `json:"not_run,omitempty"`
+	// OutcomeUnknown marks the answer to a call that may have run on a
+	// process that stopped before recording its result; see ContinueTurn.
+	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
 }
 
 type Message struct {
