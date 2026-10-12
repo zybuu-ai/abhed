@@ -110,18 +110,30 @@ func TestParallelSubagentAsksAreOfferedOneAtATime(t *testing.T) {
 	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"fan out"}`))
 
 	answers := map[string]bool{}
+	// An ask just answered stays open in the record until its outcome is
+	// written, so it is not taken for the next one.
+	answered := map[string]bool{}
+	pending := func() []agent.SubagentAsk {
+		var out []agent.SubagentAsk
+		for _, a := range openAsks(s, id) {
+			if !answered[a.RequestID] {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
 	for i := range names {
 		var open []agent.SubagentAsk
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
-			if open = openAsks(s, id); len(open) > 0 {
+			if open = pending(); len(open) > 0 {
 				break
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
 		// The siblings' calls are all waiting by now; give a second offer time to appear.
 		time.Sleep(150 * time.Millisecond)
-		if open = openAsks(s, id); len(open) != 1 {
+		if open = pending(); len(open) != 1 {
 			t.Fatalf("answer %d: %d asks offered at once, want 1: %+v", i+1, len(open), open)
 		}
 		ok := i != 1 // deny the second, so a lost answer shows
@@ -130,6 +142,7 @@ func TestParallelSubagentAsksAreOfferedOneAtATime(t *testing.T) {
 			t.Fatalf("answer %d to %s: %d %s", i+1, open[0].Subagent, w.Code, w.Body)
 		}
 		answers[open[0].Subagent] = ok
+		answered[open[0].RequestID] = true
 	}
 	evs := eventsUntil(t, s, id, agent.EvSessionEnded)
 	if len(answers) != len(names) {
