@@ -471,7 +471,7 @@ func egressLabel(cfg config.Config) string {
 		mode = "audit (denials recorded, not enforced)"
 	}
 	if pol.InspectTLS() {
-		mode += ", HTTPS inspected with a CA per session (a microvm sandbox is refused)"
+		mode += ", HTTPS inspected with a CA per session"
 	}
 	return fmt.Sprintf("allowlist — %d rules, default %s, mode %s; a proxy on loopback per session, "+
 		"each decision recorded as %s; direct sockets blocked on the process tier only", pol.Rules(), def, mode, sandbox.EvEgressDecision)

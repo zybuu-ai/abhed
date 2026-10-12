@@ -167,6 +167,7 @@ func agent() error {
 		Workspace:  tracker,
 		Network:    network,
 		DNS:        resolver,
+		CAFile:     guest.CAFile,
 	}
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {

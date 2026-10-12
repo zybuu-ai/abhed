@@ -152,9 +152,12 @@ Each command's per-call credential comes in its environment
 process tier, so the allowlist, the per-call credentials and the record of
 each decision are the proxy's, unchanged. A request without the call's
 credential is refused by the proxy. The VM's commands share one way in, so
-the token alone names the call. The guest cannot be given the session CA
-that `egress.inspect_tls` needs, so with it on a microVM sandbox is not
-created.
+the token alone names the call: one sandbox is one trust unit. With
+`egress.inspect_tls` the driver sends the session's CA bundle to the guest
+agent at boot, which writes it to `/run/abhed-ca.pem` (outside the
+workspace, owned by the agent, readable by commands), and each command's
+certificate variables point there. A guest built before this release
+refuses that call, and the sandbox is not created.
 
 With the network off, or `allow_network` without the allowlist, the driver
 listens on no port for the guest and the guest forwards nothing. The microVM

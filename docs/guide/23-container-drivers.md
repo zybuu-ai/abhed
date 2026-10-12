@@ -127,7 +127,7 @@ value is never in an argument, and revoked when the command ends. Each
 decision goes to `Options.Record` as an `egress.decision` event with the
 sandbox's id. Names are resolved by the proxy, so tools must honour the
 proxy variables; there is no resolver inside. The sandbox's commands share
-one container, so they share the relay: the token alone names a command's
+one container, so they share the relay (one sandbox is one trust unit): the token alone names a command's
 call, a command can read a concurrent one's token from its environment, and
 a client that sends no proxy credentials (a JVM) is answered 407. The
 session's container tier, with a container per command, gives each call a

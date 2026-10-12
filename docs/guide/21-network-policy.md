@@ -109,9 +109,11 @@ session's CA: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
 sandbox read-only on the process tier, readable through the fence's
 Landlock rules, and bound into each container on the container and vm tiers
 (`/run/abhed-ca.pem`) and by the `docker` and `podman` drivers
-(`/run/abhed-egress/ca.pem`). The microVM driver cannot give its guest the
-bundle, so with `inspect_tls` on a microVM sandbox is not created, with
-that reason, rather than run with every HTTPS request failing. curl, git, pip, Python `requests`, Node and Go on Linux
+(`/run/abhed-egress/ca.pem`). The microVM driver sends it to the guest
+agent when the VM boots, which keeps it at `/run/abhed-ca.pem` outside the
+workspace; a guest built before this release does not know that call, and
+the sandbox is then not created rather than run with every HTTPS request
+failing. curl, git, pip, Python `requests`, Node and Go on Linux
 read them. A client with a trust store of its own (a JVM's `cacerts`, Go on
 macOS, which asks the system), or one that pins its certificates, refuses
 the session's CA: its HTTPS then fails, and the failed handshake is recorded
@@ -205,9 +207,10 @@ record: it goes nowhere, or is recorded as the command's own call. That way
 in closes when the call ends.
 
 The `docker` and `podman` sandbox drivers and the microVM driver are the
-exception: their commands share one long-lived container or VM, with one
-network namespace and one user, so they share one way in and the token
-alone names the call. There a command can read a concurrent command's
+exception, by design: there one sandbox is one trust unit. Its commands
+share one long-lived container or VM, with one network namespace and one
+user, so they share one way in and the token alone names the call; nothing
+separates one command of the sandbox from another. There a command can read a concurrent command's
 token from its environment, and a client that sends no credentials (a JVM)
 is answered 407. The proxy remembers the last 1,024 ended
 tokens, so late traffic that still reaches it is recorded under the right

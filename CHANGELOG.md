@@ -486,8 +486,8 @@ All notable changes to Abhed are recorded here. The format follows
   The new fence and container tiers do the same: a socket only the call's
   relay joins, or on the fence in `landlock_only` mode a loopback port only
   the call's Landlock rules allow. The sandbox drivers, whose commands share
-  one container or VM, still name the call by its token alone. Affects
-  1.2.7.
+  one container or VM, still name the call by its token alone: there one
+  sandbox is one trust unit. Affects 1.2.7.
 - A stdio MCP server ran with your whole home folder readable and
   writable, so it could read `~/.ssh` or plant a LaunchAgent, a systemd
   user unit or a shell rc line. On the process tier its home is now hidden
@@ -1117,10 +1117,10 @@ All notable changes to Abhed are recorded here. The format follows
   commands' HTTPS with it, and decides every request inside by method and
   path, recorded as kind `https`. Commands are pointed at a bundle with the
   session's CA, given to them on the process, fence, container and vm
-  tiers and by the container drivers; a client that pins certificates or
-  keeps its own trust store fails rather than going uninspected. The
-  microVM driver cannot give its guest the CA, so a microVM sandbox is not
-  created while it is on.
+  tiers and by the container and microVM drivers (a guest agent from an
+  earlier release refuses the CA, and the sandbox is not created); a client
+  that pins certificates or keeps its own trust store fails rather than
+  going uninspected.
 - `server.tls.client_revoked_file`: client certificates that are refused
   although they verify, as PEM CRLs signed by the client CA or as hex
   serial numbers one to a line. It is reloaded like the CA; a revoked

@@ -304,6 +304,9 @@ func (d *Driver) Create(ctx context.Context, spec driver.Spec) (driver.Status, e
 	if eg := spec.Egress; eg != nil && eg.DNSSocket != "" && (!filepath.IsAbs(eg.DNSSocket) || eg.DNSCredential == "") {
 		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: egress DNS needs an absolute socket path and a credential")
 	}
+	if eg := spec.Egress; eg != nil && len(eg.CABundle) > guest.MaxCABundle {
+		return driver.Status{}, driver.Errorf(driver.ErrInvalid, "microvm: the egress CA bundle is over %d bytes", guest.MaxCABundle)
+	}
 	if err := d.be.check(); err != nil {
 		return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "microvm: %v", err)
 	}
@@ -790,6 +793,15 @@ func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) er
 	}
 	if err != nil {
 		return driver.Errorf(driver.ErrUnavailable, "microvm: starting the guest's egress: %v", err)
+	}
+	if len(eg.CABundle) > 0 {
+		// HTTPS is inspected: without the CA in place every request would fail.
+		if c, err = m.dial(ctx); err == nil {
+			err = guest.PlaceCA(ctx, c, eg.CABundle)
+		}
+		if err != nil {
+			return driver.Errorf(driver.ErrUnavailable, "microvm: the guest did not take the session's CA (a guest built before this release does not): %v", err)
+		}
 	}
 	if eg.DNSSocket == "" {
 		return nil
