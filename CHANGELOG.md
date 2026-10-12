@@ -32,21 +32,17 @@ All notable changes to Abhed are recorded here. The format follows
   file that sets neither deny rules nor extensions.
 - `POST /v1/admin/mcp` answers `400` for a server whose name overlaps a
   configured one's.
-
 - `web_search` asks for each search unless an allow rule names it; add
   `"allow": ["web_search"]` to the managed file to keep searches unasked.
 - An MCP server with a `digest` starts only when its program matches; a URL
   server with a `digest` is refused.
-
 - An extension no longer inherits Abhed's environment: list each variable
   it needs in its `env`, an empty value passing your own.
 - Under the egress allowlist, `ssh_connect`, the `k8s_*` tools, `rag` and
   `abhed resolve` need allow rules for their hosts.
-
 - On `abhed serve` with sign-in, each account reads only its own secrets
   store; the operator's store serves scheduled runs only. Have each person
   add their secrets with `PUT /v1/secrets/{name}`.
-
 - A stdio MCP server on the process tier no longer sees your home folder;
   set `"host_files": true` on one that needs it.
 
