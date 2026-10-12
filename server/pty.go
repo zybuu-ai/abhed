@@ -1172,13 +1172,13 @@ func (p *ptyRun) stop(why string) {
 }
 
 // closeTerminals ends every shell and command the session has on a terminal,
-// recording why. Each returned channel closes once that run's result is on the record.
+// and its language servers, recording why. Each returned channel closes once
+// that run's result is on the record.
 // A run that already ended and lingers for a late reader is not stopped or returned.
 func (l *liveSession) closeTerminals(why string) []<-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.stopLSPs()
-	var done []<-chan struct{}
+	done := l.stopLSPs()
 	for _, r := range l.ptys {
 		select {
 		case <-r.done:

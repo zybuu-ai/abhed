@@ -760,7 +760,7 @@ session's sandbox exactly as a command does, with the same network, folders
 and limits; on the none tier, where there is no sandbox, no language server
 is started. One runs per language, four at most per session; one no page has
 listened to for two minutes is ended, as is every one when the session
-closes. Its messages travel over the session's own authenticated routes, and
+closes, and each one's end is on the record before the session's end. Its messages travel over the session's own authenticated routes, and
 only what the editor needs reaches it: `initialize`, `initialized`, opening,
 changing and closing a file, hover, definition, `shutdown`, `exit`,
 `$/cancelRequest` and answers to the server's own requests. Anything else,

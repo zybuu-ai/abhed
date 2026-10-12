@@ -2,8 +2,10 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -269,4 +271,61 @@ func TestLSPMethodAllowlist(t *testing.T) {
 		t.Fatalf("executeCommand: %d", res.StatusCode)
 	}
 	wb.send("acme", "DELETE", "lsp/"+start.ID, nil)
+}
+
+// Closing the session records each language server's end before the
+// session's own: the start was authorized and recorded, so its result is too.
+func TestLanguageServerEndRecordedBeforeSessionEnd(t *testing.T) {
+	wb, _ := lspBench(t, "process", nil)
+	var start lspStartResponse
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	wb.s.closeIdle(time.Now().Add(10 * time.Second))
+	observed, ended := -1, -1
+	for i, e := range wb.events() {
+		switch {
+		case e.Type == agent.EvObservation && strings.Contains(string(e.Payload), start.ID):
+			observed = i
+		case e.Type == agent.EvSessionEnded && ended < 0:
+			ended = i
+		}
+	}
+	if observed < 0 || ended < 0 || observed > ended {
+		t.Fatalf("language server's end at %d, session's end at %d", observed, ended)
+	}
+}
+
+// A start whose pipes cannot be made is still answered on the record.
+func TestLanguageServerPipeFailureRecorded(t *testing.T) {
+	wb, _ := lspBench(t, "process", nil)
+	wb.s.mu.Lock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.Unlock()
+	bash, _ := live.Loop.Tools.Get("bash")
+	b := bash.(tools.Bash)
+	b.Sandbox = func(ctx context.Context, cwd, command string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "true")
+		cmd.Stdout = io.Discard // StdoutPipe refuses a command with Stdout set
+		return cmd
+	}
+	live.Loop.Tools = tools.NewRegistry(tools.Read{}, tools.Write{}, b)
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"}); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	asked, answered := "", false
+	for _, e := range wb.events() {
+		var p struct {
+			CallID  string `json:"call_id"`
+			IsError bool   `json:"is_error"`
+		}
+		_ = json.Unmarshal(e.Payload, &p)
+		if e.Type == agent.EvActionRequested && strings.Contains(string(e.Payload), "language server for go") {
+			asked = p.CallID
+		}
+		answered = answered || e.Type == agent.EvObservation && asked != "" && p.CallID == asked && p.IsError
+	}
+	if asked == "" || !answered {
+		t.Fatalf("asked %q, answered %v", asked, answered)
+	}
 }

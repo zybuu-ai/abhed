@@ -165,9 +165,10 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		live.lsps = map[string]*lspRun{}
 	}
 	running := 0
-	for _, l := range live.lsps {
+	for lid, l := range live.lsps {
 		select {
 		case <-l.done:
+			delete(live.lsps, lid)
 			continue
 		default:
 		}
@@ -178,6 +179,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		}
 		running++
 	}
+	gen := live.lspGen
 	live.mu.Unlock()
 	if running >= maxLSPs {
 		WriteError(w, http.StatusTooManyRequests, "four language servers are already running in this session")
@@ -195,6 +197,13 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusForbidden, refused.Content)
 		return
 	}
+	// From here the call is on the record, so every way out records its result.
+	start := time.Now()
+	fail := func(status int, why string) {
+		res := tools.Result{Content: why, IsError: true}
+		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, time.Since(start)))
+		WriteError(w, status, why)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
 	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, command)
@@ -204,22 +213,27 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	cmd.Stderr = &limitedWriter{w: &stderr, n: 16 << 10}
 	if err := errors.Join(err1, err2); err != nil {
 		cancel()
-		WriteError(w, http.StatusInternalServerError, "the language server could not be started")
-		return
-	}
-	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		cancel()
-		res := tools.Result{Content: "Failed to run command: " + err.Error(), IsError: true}
-		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, 0))
-		WriteError(w, http.StatusInternalServerError, res.Content)
+		fail(http.StatusInternalServerError, "the language server could not be started: "+err.Error())
 		return
 	}
 	run := &lspRun{id: id, language: req.Language, cancel: cancel, stdin: stdin,
 		subs: map[*lspSub]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
+	// Listed before it starts, so a session closing from here on waits for its end.
 	live.mu.Lock()
+	if live.lspGen != gen {
+		live.mu.Unlock()
+		cancel()
+		fail(http.StatusConflict, "the session's terminals closed before the language server started")
+		return
+	}
 	live.lsps[id] = run
 	live.mu.Unlock()
+	if err := cmd.Start(); err != nil {
+		cancel()
+		fail(http.StatusInternalServerError, "Failed to run command: "+err.Error())
+		close(run.done)
+		return
+	}
 
 	go run.read(stdout)
 	go func() {
@@ -243,13 +257,14 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cancel()
-		close(run.done)
 		code := 0
 		if err != nil {
 			code = -1
 		}
 		res := tools.Result{Content: fmt.Sprintf("exit %d · language server for %s ended\n%s", code, req.Language, stderr.String()), ExitCode: &code}
 		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, time.Since(start)))
+		// Only now: closing the session waits on done for this end to be recorded.
+		close(run.done)
 	}()
 	WriteJSON(w, http.StatusOK, lspStartResponse{ID: id, Root: sess.Root})
 }
@@ -451,11 +466,23 @@ func (s *Server) stopLSP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// stopLSPs ends a session's language servers, as its terminals end with it.
-func (l *liveSession) stopLSPs() {
-	for _, run := range l.lsps {
+// stopLSPs ends a session's language servers, as its terminals end with it,
+// and returns for each a channel that closes once its end is on the record.
+// Under l.mu; one starting meanwhile sees lspGen moved and does not start.
+func (l *liveSession) stopLSPs() []<-chan struct{} {
+	l.lspGen++
+	var done []<-chan struct{}
+	for id, run := range l.lsps {
+		select {
+		case <-run.done:
+			delete(l.lsps, id)
+			continue
+		default:
+		}
 		run.cancel()
+		done = append(done, run.done)
 	}
+	return done
 }
 
 // limitedWriter keeps the first n bytes written to it.
