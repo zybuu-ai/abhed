@@ -22,6 +22,7 @@ func fenceSessionBash(cfg config.Config, workspace string) func(string, *agent.R
 		sf := &sessionFence{build: func() (sandbox.Sandbox, error) { return buildSandbox(cfg, workspace) }, rec: rec}
 		fence := func() sandbox.Tier { return sandbox.TierFence }
 		shared.Sandbox, shared.Shell = hostgit.Broker(workspace, fence, sandboxconfig.NetworkOpen(cfg), sf.Command), sf.Shell
+		shared.Home = sf.CommandHome // the session's commands get its own fence's home
 		return shared, sf.Close
 	}
 }
