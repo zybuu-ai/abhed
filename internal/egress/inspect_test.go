@@ -315,3 +315,53 @@ func TestInspectedTunnelAnswersExpectContinue(t *testing.T) {
 		t.Fatalf("the upload: %d %q", resp.StatusCode, b)
 	}
 }
+
+// Under inspection a client that waits for the server to speak first (ssh,
+// SMTP) is not held: on a host-only rule its tunnel passes through, judged
+// by host and port; where path rules apply it is refused promptly.
+func TestInspectedTunnelServerFirst(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_, _ = io.WriteString(c, "SSH-2.0-server\r\n")
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", port)
+	for _, tc := range []struct {
+		name  string
+		paths []string
+	}{{"host only", nil}, {"path rules", []string{"/ok"}}} {
+		p, rec := inspecting(t, []Rule{{Host: "127.0.0.1", Ports: []int{port}, Paths: tc.paths, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}, nil)
+		conn, br := openTunnel(t, p, "call-sf", target)
+		start := time.Now()
+		_ = conn.SetReadDeadline(time.Now().Add(6 * time.Second))
+		line, err := br.ReadString('\n')
+		took := time.Since(start)
+		if tc.paths == nil {
+			if err != nil || line != "SSH-2.0-server\r\n" || took > 5*time.Second {
+				t.Fatalf("%s: banner %q %v after %s", tc.name, line, err, took)
+			}
+			_ = conn.Close()
+			continue
+		}
+		if err == nil || line != "" || took > 5*time.Second {
+			t.Fatalf("%s: %q %v after %s, want the tunnel closed promptly", tc.name, line, err, took)
+		}
+		if e := rec.wait(t, "127.0.0.1"); e.Decision != Deny || !strings.Contains(e.Reason, "sent nothing") {
+			t.Fatalf("%s: recorded %+v", tc.name, e)
+		}
+	}
+}

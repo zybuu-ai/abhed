@@ -100,7 +100,12 @@ command read but not `POST`, and data cannot leave through a path or method
 no rule allows. A request inside that names another host in its `Host`
 header, or a TLS name (SNI) other than the tunnel's host, is refused, and so
 is a protocol upgrade. A tunnel that does not carry TLS (ssh over
-`CONNECT`) is decided by host and port, as without inspection.
+`CONNECT`) is decided by host and port, as without inspection. So is one
+whose client sends nothing for 1.5 seconds, as a client of a protocol where
+the server speaks first does: with a rule for the whole host it passes
+through as a plain tunnel at once, and where only path or method rules
+allow the host it is refused at once with that reason, rather than held
+until the 30-second header timeout.
 
 Each command is pointed at a CA bundle holding the system's roots and the
 session's CA: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
