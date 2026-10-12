@@ -23,3 +23,6 @@ func SelfTest(string) (string, error) { return "", errLinux }
 
 // Aliases refuses off Linux.
 func Aliases(string) (found, unreachable []string, err error) { return nil, nil, errLinux }
+
+// Views finds nothing off Linux.
+func Views(string) ([]string, error) { return nil, nil }

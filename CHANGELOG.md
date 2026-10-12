@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The fence's `mount_namespace` mode did not find a view of the workspace
+  through another filesystem (a bindfs or other FUSE mount, an overlay
+  layered on it, an NFS export of it mounted back), so a command could read
+  Abhed's state or write git's files through one. Such a view, found by the
+  source or layers its mount names, now refuses the fence and, made later,
+  the next command. Affects 1.2.7 on Linux.
 - In the fence's `landlock_only` mode a `.abhed` a long command made in the
   workspace stayed there, readable by Abhed as its own state, until the
   command ended, and one left after Abhed was killed was taken for state by

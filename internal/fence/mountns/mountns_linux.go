@@ -147,6 +147,11 @@ func findAliases(root int) (_ []aliasTarget, unreachable []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	hostname, _ := os.Hostname()
+	if v := views(entries, int(stx.Mnt_id), wsPath, hostname); len(v) > 0 { // #nosec G115 -- as above
+		return nil, nil, fmt.Errorf("%w: %s shows the workspace's files through a filesystem of its own (FUSE, overlay or a network share), "+
+			"where Abhed's state and git's files are not covered; unmount it, or run Abhed on a workspace it does not show", errAlias, strings.Join(v, ", "))
+	}
 	if len(found) == 0 && len(deleted) == 0 {
 		return nil, nil, nil
 	}
@@ -574,4 +579,33 @@ func SelfTest(dir string) (string, error) {
 		return "", err
 	}
 	return "read-only bind, tmpfs and pin applied in a user namespace; capabilities dropped", nil
+}
+
+// Views are the FUSE, overlay and network mounts that name the workspace at
+// root, a folder in it or one holding it; looked for again before each
+// command, since one can be made while a session runs.
+func Views(root string) ([]string, error) {
+	fd, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	var stx unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH, unix.STATX_MNT_ID, &stx); err != nil {
+		return nil, err
+	}
+	wsPath, err := os.Readlink(fdPath(fd))
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := parseMountinfo(string(data))
+	if err != nil {
+		return nil, err
+	}
+	hostname, _ := os.Hostname()
+	return views(entries, int(stx.Mnt_id), wsPath, hostname), nil // #nosec G115 -- mount ids are small kernel counters
 }

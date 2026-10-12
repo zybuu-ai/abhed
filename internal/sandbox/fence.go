@@ -586,6 +586,14 @@ func (f *Fence) isSharedState(p string) bool {
 // protected path is held only once it exists when a command starts.
 func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 	ws := f.policy.Workspace
+	// A view made since the session qualified shows what the plan cannot cover.
+	if v, err := mountns.Views(ws); err != nil || len(v) > 0 {
+		if err == nil {
+			err = fmt.Errorf("%s shows the workspace's files through a filesystem of its own (FUSE, overlay or a network share), "+
+				"where Abhed's state and git's files are not covered; unmount it", strings.Join(v, ", "))
+		}
+		return nil, err
+	}
 	forms := PathForms(ws)
 	p := &mountns.Plan{Root: ws}
 	seen := map[string]bool{}

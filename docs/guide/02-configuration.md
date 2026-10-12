@@ -438,14 +438,17 @@ without running anything.
   has dropped every capability, and a mount made later would not take back
   what it had already opened. One the fence cannot check, such as a second mount
   whose path now leads somewhere else, refuses the fence when it qualifies,
-  or the command (exit 126) when it starts, saying which. Only mounts of the
-  same filesystem are found: a view of the workspace through another
-  filesystem that exists before the session, such as a FUSE mount (bindfs),
-  an overlay with the workspace as a lower folder, or an NFS export mounted
-  back, is not found or covered, and a command can read `.abhed` through it,
-  and write protected files where it lies under a writable folder. A command
-  cannot make such a mount itself: it holds no capability and cannot gain
-  one.
+  or the command (exit 126) when it starts, saying which. A view of the
+  workspace through another filesystem, which the covers cannot reach, is
+  refused the same way, when the fence qualifies and again before each
+  command: a FUSE mount (bindfs, sshfs to this host), an overlay with the
+  workspace, a folder in it or one holding it as a layer, or a network
+  share (NFS, CIFS, 9p, virtiofs) of this host's folder, each found by what
+  its mount names as its source or layers. A FUSE program that serves the
+  workspace's files without naming the folder in its mount, or a share
+  named by another host's address that is this one, is not found; `abhed
+  doctor` shows the refusal for those it finds. A command cannot make such
+  a mount itself: it holds no capability and cannot gain one.
 - **Abhed's state in the workspace, `mount_namespace`.** The workspace's
   `.abhed` is covered by an empty tmpfs in each command's namespace: what
   Abhed keeps there is out of sight, and whatever a command writes there is
