@@ -960,6 +960,10 @@ func attachmentRefusal(s *acpSession, blocks []json.RawMessage) (string, error) 
 			// Read as a UNC path on Windows; the rules cannot judge another host's files.
 			args = argsJSON(map[string]string{"path": "//" + u.Host + u.Path})
 			d = policy.Result{Decision: policy.Deny, Reason: "the file is on another host", Step: "attachment"}
+		} else if uncPath(u.Path) {
+			// file:////server/share names the same UNC path with an empty host.
+			args = argsJSON(map[string]string{"path": u.Path})
+			d = policy.Result{Decision: policy.Deny, Reason: "the file is on another host", Step: "attachment"}
 		} else {
 			d = loop.Policy.Evaluate("read", false, args)
 		}
@@ -974,6 +978,13 @@ func attachmentRefusal(s *acpSession, blocks []json.RawMessage) (string, error) 
 		}
 	}
 	return "", nil
+}
+
+// uncPath reports a URI path that names a network share: //server/share, or
+// a backslash form of it after the leading slash.
+func uncPath(p string) bool {
+	rest := strings.TrimPrefix(p, "/")
+	return strings.HasPrefix(p, "//") || strings.HasPrefix(rest, `\\`) || strings.HasPrefix(rest, `\/`) || strings.HasPrefix(rest, `/\`)
 }
 
 // lineFragment is the line range Studio puts on a selection's URI: #L3-L9.

@@ -151,6 +151,11 @@ All notable changes to Abhed are recorded here. The format follows
   session that approved edits or ran by rule where the configuration said to
   ask. A nested run now refuses any mode looser than the configured one.
   Affects 1.2.4 to 1.2.7.
+- `abhed acp` refused a `file:` attachment on another host
+  (`file://server/share/x`) but not the same share written with an empty
+  host (`file:////server/share/x`, or with backslashes), which Windows reads
+  as a network path the rules cannot judge. Both forms are now refused.
+  Affects 1.2.4 to 1.2.7.
 
 ### Added
 

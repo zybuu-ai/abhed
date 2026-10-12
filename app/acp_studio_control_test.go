@@ -491,7 +491,7 @@ func TestStudioFileAttachmentIsCheckedByPolicy(t *testing.T) {
 			map[string]any{"type": "resource", "resource": map[string]any{"uri": uri, "text": "hidden-words"}},
 		}}
 	}
-	for _, uri := range []string{"file://" + r.ws + "/secret/k.txt", "file://" + r.ws + "/.abhed/config.json", "file://" + r.ws + "/.ABHED/x", "file://fileserver/share/k.txt"} {
+	for _, uri := range []string{"file://" + r.ws + "/secret/k.txt", "file://" + r.ws + "/.abhed/config.json", "file://" + r.ws + "/.ABHED/x", "file://fileserver/share/k.txt", "file:////fileserver/share/k.txt", `file:///\\fileserver\share\k.txt`} {
 		if msg := r.cl.refused(errPolicy, "session/prompt", attach(uri)); !strings.Contains(msg, "may not be read") {
 			t.Errorf("%s: %s", uri, msg)
 		}
