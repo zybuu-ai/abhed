@@ -66,10 +66,9 @@ per session) runs sandboxes through drivers (`driver/`):
   long-lived container per sandbox with no capabilities,
   `no-new-privileges`, the engine's seccomp profile, a read-only root, a
   non-root user and no network; after start the driver checks from inside
-  what the kernel reports and removes a container that is weaker. Their
-  `binary`, `images`, `mounts`, `mount_roots`, `gpus`, `cpus`,
-  `seccomp_profile` and `relay_binary` are managed only. They share the
-  host's kernel.
+  what the kernel reports and removes a container that is weaker. Every
+  key of theirs but `enabled`, `image` and `name_prefix` is managed only.
+  They share the host's kernel.
 - `microvm` (experimental; `sandbox.microvm_socket`, managed only): a
   virtual machine per sandbox with its own kernel, Firecracker under its
   jailer on Linux and Virtualization.framework on macOS, with no network
@@ -543,7 +542,7 @@ with the call or session it came from, never bodies or credentials. Brokered
 this way: `bash` commands (on the process tier, where on Linux a command
 reaches the proxy only through a relay in its own network namespace and on
 macOS Seatbelt allows only the proxy's port; the fence in `mount_namespace`
-mode, or in `landlock_only` with the managed `fence.egress_port_only`; and
+mode, or otherwise with the managed `fence.egress_port_only`; and
 the container and vm tiers through a relay, refused where the engine is
 remote and no `relay_binary` is set), the model client, `web_fetch`,
 `web_search`, MCP servers over HTTP, `ssh_connect`, the `k8s_*` tools, `rag`

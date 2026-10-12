@@ -155,7 +155,7 @@ go build -o abhed-bench ./cmd/abhed-bench
 | Read-before-edit, exact-match, near-miss recovery | ✅ tested |
 | Ordered policy engine, deny absolute for every tool call, always-confirm destructive | ✅ tested |
 | OpenAI-compatible adapter, streaming, reasoning-token stripping | ✅ tested |
-| **Execution sandbox** (Seatbelt / bubblewrap / OCI / gVisor, Landlock fence preview) | ✅ escape-tested |
+| **Execution sandbox** (Seatbelt / bubblewrap / OCI / gVisor, and the fence preview) | ✅ escape-tested |
 | **Compaction** with PreCompact hook, tool-call integrity | ✅ tested |
 | **Subagents** with hierarchical budgets, profile-scoped tools | ✅ tested |
 | **MCP gateway** with tool-poisoning defense | ✅ tested |

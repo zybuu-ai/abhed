@@ -334,8 +334,8 @@ workspace file cannot name one. See [The workbench](16-workbench.md#language-ser
 `"network": "allowlist"`, set only in the managed configuration, sends
 commands' traffic through a per-session proxy that reaches only what the
 `egress` rules allow, and records each decision; it takes the place of
-`allow_network`. The process, container, vm and fence tiers enforce it; in
-`landlock_only` mode the fence refuses it unless the managed
+`allow_network`. The process, container, vm and fence tiers enforce it, the
+fence in `mount_namespace` mode and otherwise only when the managed
 `fence.egress_port_only` is `true` ([below](#the-fence-tier-preview-linux)).
 The `egress` section
 (`rules`, `default`, `mode`, `record_paths`, `idle_seconds`, `inspect_tls`) is managed only
@@ -1136,9 +1136,9 @@ warning and a record event. They are `record.dir`, `record.retention_days`,
 `studio.disable_host_terminal`, `sandbox.network` (which your own file may
 use only to narrow `allow_network`), `sandbox.microvm_socket`,
 `fence.egress_port_only`, every key under `egress`,
-`control_plane.kubernetes`, `control_plane.interceptors`, `binary`,
-`images`, `mounts`, `mount_roots`, `gpus`, `cpus`, `seccomp_profile` and
-`relay_binary` under `control_plane.docker` and `control_plane.podman`
+`control_plane.kubernetes`, `control_plane.interceptors`, every key under
+`control_plane.docker` and `control_plane.podman` but `enabled`, `image` and
+`name_prefix`
 ([Sandboxes over the API](22-sandboxes.md#the-docker-and-podman-drivers)),
 and the whole of `web_search` and `web_fetch`, which a lower layer may only
 turn off or narrow ([Web search](#web-search)), and, of the settings below
