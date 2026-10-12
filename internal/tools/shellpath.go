@@ -2,6 +2,7 @@ package tools
 
 import (
 	"path"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -345,3 +346,85 @@ func (f *shellFacts) homeStartups() []string {
 
 // HomeStartupNames are the start-up files a shell may read from $HOME.
 func HomeStartupNames() []string { return append([]string(nil), startupDirFiles["HOME"]...) }
+
+// ptyShell reads a program that starts an interactive shell of the person's
+// own choosing (script, tmux, screen, su, sudo -s) as starting every shell
+// that reads start-up files; one in another account's home (su -, sudo -i,
+// login) cannot be read, so it hides them.
+func (f *shellFacts) ptyShell(name string, args []*syntax.Word) {
+	switch name {
+	case "tmux", "screen", "script", "login", "su", "sudo":
+	default:
+		return
+	}
+	words := make([]string, 0, len(args))
+	for _, a := range args {
+		v, lit := literal(a)
+		if !lit {
+			v = "\x00"
+		}
+		words = append(words, v)
+	}
+	has := func(match func(string) bool) bool { return slices.ContainsFunc(words, match) }
+	short := func(o byte) func(string) bool {
+		return func(w string) bool { return len(w) > 1 && w[0] == '-' && w[1] != '-' && strings.IndexByte(w, o) > 0 }
+	}
+	switch name {
+	case "tmux", "screen":
+		f.anyShell(true)
+	case "script":
+		if has(short('c')) || has(func(w string) bool { return strings.HasPrefix(w, "--command") }) {
+			return
+		}
+		// Its shell, or the command it is given, runs on a terminal of its own.
+		f.anyShell(false)
+	case "login":
+		f.startupHidden = "login, whose shell reads another account's start-up files"
+	case "su":
+		switch {
+		case has(func(w string) bool { return w == "-" || w == "--login" }) || has(short('l')):
+			f.startupHidden = "su -, whose login shell reads another account's start-up files"
+		case !has(short('c')) && !has(func(w string) bool { return strings.HasPrefix(w, "--command") }):
+			f.anyShell(false)
+		}
+	case "sudo":
+		shell := false
+		for i := 0; i < len(words); i++ {
+			w := words[i]
+			switch {
+			case w == "-i" || w == "--login" || strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "i"):
+				f.startupHidden = "sudo -i, whose login shell reads another account's start-up files"
+				return
+			case w == "-s" || w == "--shell" || strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "s"):
+				shell = true
+			case slices.Contains([]string{"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"}, w):
+				i++
+			case strings.HasPrefix(w, "-"):
+			default:
+				return // a command: sudo -s runs it with -c
+			}
+		}
+		if shell {
+			f.anyShell(false)
+		}
+	}
+}
+
+// anyShell records an interactive shell, login too when login is set, of
+// any kind, reading every start-up file such shells read.
+func (f *shellFacts) anyShell(login bool) {
+	f.shellRun, f.interactive = true, true
+	if f.homeFiles == nil {
+		f.homeFiles = map[string]bool{}
+	}
+	for _, files := range homeStartFiles {
+		for _, n := range append(append([]string(nil), files[0]...), files[2]...) {
+			f.homeFiles[n] = true
+		}
+		if login {
+			for _, n := range files[1] {
+				f.homeFiles[n] = true
+			}
+		}
+	}
+}

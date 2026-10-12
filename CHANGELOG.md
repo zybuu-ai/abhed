@@ -216,7 +216,9 @@ All notable changes to Abhed are recorded here. The format follows
   `.bash_profile`, `.bash_login`, `.profile` and `.bashrc` a shell the line
   starts reads, by its options, from a `ZDOTDIR` or `HOME` folder the line
   sets, as `ZDOTDIR=sub zsh -c true` or `HOME=sub bash -l -c true` (a
-  shell typed into a terminal, as `bash`, counted as interactive), or that
+  shell typed into a terminal, as `bash`, or started by `script`, `tmux`,
+  `screen`, `su` or `sudo -s`, counted as interactive; `su -`, `sudo -i`
+  and `login` refused under a deny rule), or that
   an exec sets in its environment, and those a shell reads from the
   `HOME` the sandbox gives it, which an earlier command may have written:
   read on the process tier, none and the fence (those matching the
