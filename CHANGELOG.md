@@ -633,6 +633,13 @@ on. A server with it off starts on the older schema as before.
 - The administrative system log is written on Windows, to the Application
   event log under the source `abhed-admin`; it was written only to
   `admin.jsonl` there.
+- On macOS, `abhed` built with cgo (as the release binaries are) writes
+  the administrative system log through `os_log` itself, subsystem
+  `com.zybuu.abhed`, category `admin`, so the unified log records `abhed`
+  as the sender; it went through `/usr/bin/logger`, whose entries any
+  local user could imitate by tag. Find them with `log show --predicate
+  'subsystem == "com.zybuu.abhed"'`. A build without cgo still uses
+  `/usr/bin/logger` and warns once that its entries are not attributable.
 
 ### Fixed
 

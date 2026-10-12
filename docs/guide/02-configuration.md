@@ -647,7 +647,7 @@ entries with:
 
 | System | Where | Query |
 |---|---|---|
-| macOS | the unified log, through `/usr/bin/logger` | `log show --last 7d --predicate 'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` |
+| macOS | the unified log, written by `abhed` itself through `os_log`, subsystem `com.zybuu.abhed`, category `admin` | `log show --last 7d --predicate 'subsystem == "com.zybuu.abhed"'` |
 | Linux, journald | the journal, through its native socket, identifier `abhed-admin`, facility auth | `journalctl -t abhed-admin` (as root or a member of `adm` or `systemd-journal` to see every user's attempts); `journalctl -t abhed-admin -o verbose` shows the `_UID` journald attached itself |
 | Linux, no journald | syslog, tag `abhed-admin`, facility auth | `grep abhed-admin /var/log/auth.log` (Debian, Ubuntu) or `/var/log/secure` (RHEL, Fedora) |
 | Windows | the Application event log, source `abhed-admin`, event id 1 | `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='abhed-admin'}` |
@@ -662,11 +662,12 @@ message are what `abhed` wrote only when the log itself says who sent it:
   `_COMM=abhed` (a forged one usually `_COMM=logger`, though a user can
   name their own program `abhed`) and a `_UID` that
   matches the `uid=` in the message; for a change, `_UID=0`.
-- **macOS:** every entry is sent by `/usr/bin/logger`, so the process name
-  does not tell them apart. `log show --last 7d --style json --predicate
-  'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` gives each
-  entry's `userID`, the uid the system recorded for the sender; it must match
-  the `uid=` in the message, and is `0` for a change.
+- **macOS:** the system records the sender of each entry itself. `log show
+  --last 7d --style json --predicate 'subsystem == "com.zybuu.abhed"'` gives
+  each entry's `processImagePath`, which must be the `abhed` binary you
+  installed, and `userID`, which must match the `uid=` in the message and is
+  `0` for a change. Another program can use the same subsystem name, but not
+  the installed binary's path.
 - **syslog files** carry no sender the system vouches for; trust them only as
   far as `admin.jsonl` beside the managed file, which only root can write.
 - **Windows:** any program can write an event under the source name
@@ -675,10 +676,12 @@ message are what `abhed` wrote only when the log itself says who sent it:
   write. The source is not registered, so Event Viewer notes that the
   description is missing and shows the message as the event's data.
 
-On macOS the entry goes through `/usr/bin/logger` rather than straight from
-`abhed`, because the release binaries are built without the C bridge the
-unified log's own interface needs; the recorded `userID` is what tells a
-real entry from a forged one.
+A macOS `abhed` built without cgo (`CGO_ENABLED=0`, as `make build` does)
+cannot call `os_log`: it writes through `/usr/bin/logger` instead, with tag
+`abhed-admin`, and warns once that its entries are not attributable to
+`abhed`. Find those with `log show --predicate 'process == "logger" AND
+eventMessage CONTAINS "abhed-admin"'`, where only `userID` tells them apart.
+The release binaries for macOS are built with cgo.
 
 A system log that cannot be written is reported on stderr and does not change
 the command's result. The unified log keeps entries for days, not forever;
