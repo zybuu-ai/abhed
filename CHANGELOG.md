@@ -50,8 +50,14 @@ All notable changes to Abhed are recorded here. The format follows
 - On macOS `abhed` runs itself again as it starts, with secrets kept out of
   the environment other processes can read; `ABHED_SHOW_ENV=1` turns it off.
 - `auth.session_hours` must be between 0 and 8760.
-- An extension may no longer provide a tool named like a built-in tool, in
-  any case; such a tool is refused with a warning.
+- An interactive terminal's shell is now judged as `bash --noprofile --norc
+  -i`. A deny rule `bash(bash -i)` or `bash(bash *)` still refuses it;
+  `bash(bash -i*)` and `bash(bash)` no longer do, so rewrite such a rule as
+  `bash(bash -i)` to keep refusing terminals.
+- With only `record.witness.url` set, `abhed record verify` now fails a
+  pruned session whose witness holds a line before the session's last:
+  the prune could not check those lines. Set `record.witness.file` too if
+  sessions are pruned.
 - `-allowedTools` keeps an MCP or extension tool's name as written, so an
   allow flag with capital letters now matches that tool.
 - Studio's and the web IDE's terminals are interactive again under a managed
@@ -1252,8 +1258,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 - An interactive terminal's shell (the workbench's, Studio's, `:attach`
   and SSH) is judged and recorded as `bash --noprofile --norc -i`, as it
-  runs, rather than `bash -i`; a deny rule written on `bash -i` no longer
-  names it. An exec's `HOME` or `ZDOTDIR` is no longer refused by itself
+  runs, rather than `bash -i`; deny rules `bash(bash -i*)` and
+  `bash(bash)` no longer name it (see Upgrading). An exec's `HOME` or `ZDOTDIR` is no longer refused by itself
   under rules: it is judged with the command it is given (see Security).
 - Studio's line-by-line terminal shows any escape sequence but colour as a
   symbol, so a progress bar or spinner that redraws its line now prints
