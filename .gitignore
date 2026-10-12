@@ -43,3 +43,7 @@ abhed-session-*.html
 
 # A statusline test's home, removed when the test ends.
 app/.statusline-home-*
+
+# Leftovers from a patch or merge tool
+*.orig
+*.rej
