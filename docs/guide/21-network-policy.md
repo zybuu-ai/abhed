@@ -63,7 +63,7 @@ Deny rules win over allow rules. A request no rule matches gets `default`:
 `deny` unless set to `allow`. `mode: "audit"` lets a denied request through and
 records it as `would_deny`, so a rule set can be tried before it is enforced.
 
-Two more settings, also managed only:
+Three more settings, also managed only:
 
 - `record_paths`: `true` (the default) records each plain HTTP request's
   path; `false` records the host, port and method only. A path can hold a
@@ -73,6 +73,41 @@ Two more settings, also managed only:
   way for this long is closed. Left out, 300 (five minutes). It applies after
   the request head, which has its own 30-second limit, so a command cannot
   hold the proxy's connections open by sending nothing.
+- `inspect_tls`: `false` (the default) decides HTTPS by host and port only.
+  `true` has the proxy look inside it; see "Inspecting HTTPS" below.
+
+## Inspecting HTTPS
+
+With `"inspect_tls": true` each session's proxy makes a certificate
+authority of its own when it starts, whose key never leaves Abhed's process
+and is gone when the proxy stops. A `CONNECT` is opened when an allow rule
+names its host and port, narrowed by method or path or not, and a deny rule
+not narrowed by them refuses it. If the client then speaks TLS, the proxy
+answers it with a certificate for the tunnel's host from that CA, and
+decides each request inside by host, port, method and path exactly as it
+decides plain HTTP, recording each as kind `https` with its method and path.
+Allowed requests go on to the host over TLS, verified against the system's
+roots as any client would. So a rule such as
+`{"host": "api.github.com", "methods": ["GET"], "decision": "allow"}` lets a
+command read but not `POST`, and data cannot leave through a path or method
+no rule allows. A request inside that names another host in its `Host`
+header, or a TLS name (SNI) other than the tunnel's host, is refused, and so
+is a protocol upgrade. A tunnel that does not carry TLS (ssh over
+`CONNECT`) is decided by host and port, as without inspection.
+
+Each command is pointed at a CA bundle holding the system's roots and the
+session's CA: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+`GIT_SSL_CAINFO`, `PIP_CERT`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE` and
+`CARGO_HTTP_CAINFO`. curl, git, pip, Python `requests`, Node and Go on Linux
+read them. A client with a trust store of its own (a JVM's `cacerts`, Go on
+macOS, which asks the system), or one that pins its certificates, refuses
+the session's CA: its HTTPS then fails, and the failed handshake is recorded
+with rule `tls`. That is the one thing inspection cannot reach: a pinned
+client cannot be inspected, so keep host lists narrow and free of
+general-purpose hosts for such clients. Only HTTP/1.1 is spoken inside; a
+client that asks for HTTP/2 falls back to it. Inspection applies to
+commands; Abhed's own requests are judged in-process with their methods and
+paths already.
 
 ## Path rules
 
@@ -162,10 +197,12 @@ extension Abhed started, keys included. Abhed's own environment is hidden
 from it (it restarts itself with only a few variables in view); see
 [Configuration](02-configuration.md#sandbox).
 
-- **HTTPS** goes through `CONNECT` and is decided by host and port only: the
-  proxy does not see inside TLS. So a rule narrowed by `methods` or `paths`
-  cannot allow a tunnel, and a deny rule narrowed by them refuses the tunnel to
-  that host and port, since the proxy cannot check it.
+- **HTTPS** goes through `CONNECT` and, unless `inspect_tls` is on, is
+  decided by host and port only: the proxy does not see inside TLS. So a rule
+  narrowed by `methods` or `paths` cannot allow a tunnel, and a deny rule
+  narrowed by them refuses the tunnel to that host and port, since the proxy
+  cannot check it. With `inspect_tls` each request inside is decided; see
+  "Inspecting HTTPS".
 - **Plain HTTP** is decided by host, port, method and path. The proxy strips
   its own credentials and the hop-by-hop headers before forwarding, refuses
   upgrades, and closes after each response.
@@ -454,7 +491,8 @@ names the tier and says whether it holds it.
   model provider's key.
 - The filesystem of a stdio MCP server outside your home, and all of it for
   one set to `host_files`.
-- Inspecting HTTPS: no TLS termination, so HTTPS rules are host and port only.
+- HTTPS from a client that pins its certificates or keeps its own trust
+  store, under `inspect_tls`; and all HTTPS by method and path without it.
 - UDP and raw TCP other than through `CONNECT`, QUIC among them.
 - A resolver inside the macOS sandbox; see Names.
 - Asking a person to approve a destination; a request is allowed or denied.

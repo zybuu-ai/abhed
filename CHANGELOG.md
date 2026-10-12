@@ -591,6 +591,12 @@ on. A server with it off starts on the older schema as before.
 - `abhed doctor` names, under the egress allowlist, each deny rule
   narrowed by a path, which other spellings of the path step around, and
   advises allowing the paths needed instead.
+- `egress.inspect_tls`, off by default and set only in the managed
+  configuration: each session's proxy makes a CA of its own, terminates
+  commands' HTTPS with it, and decides every request inside by method and
+  path, recorded as kind `https`. Commands are pointed at a bundle with the
+  session's CA; a client that pins certificates or keeps its own trust
+  store fails rather than going uninspected.
 
 ### Changed
 

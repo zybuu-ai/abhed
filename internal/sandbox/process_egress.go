@@ -78,6 +78,8 @@ type egressState struct {
 	dir      string // the unix socket's folder, Linux only
 	exe      string // this binary, run as the relay, Linux only
 	dns      bool   // the session's resolver is served, Linux only
+	ca       string // the inspection CA bundle commands trust, when the policy inspects TLS
+	caDir    string // its own folder, where there is no socket folder (macOS)
 
 	mu     sync.Mutex
 	routes map[string]recordFn
@@ -171,6 +173,26 @@ func egressCallOf(ctx context.Context) *egress.Call {
 	return c
 }
 
+// writeCA writes the system's CA bundle with the proxy's inspection CA
+// after it where commands can read it, and points their clients at it.
+func (e *egressState) writeCA(p *egress.Proxy) error {
+	dir := e.dir
+	if dir == "" {
+		d, err := os.MkdirTemp("", "abhed-egress-ca-")
+		if err != nil {
+			return err
+		}
+		dir, e.caDir = d, d
+	}
+	path := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(path, p.CABundle(), 0o644); err != nil { // #nosec G306 -- public certificates, read inside the sandbox
+		return err
+	}
+	e.ca = path
+	p.SetCAPath(path)
+	return nil
+}
+
 // egressDone notes that a command of e's session ended, and closes the
 // proxy once the session has run none for egressQuiet.
 func (s *Process) egressDone(e *egressState) {
@@ -254,6 +276,16 @@ func (s *Process) startEgress(e *egressState) error {
 				e.dns = true
 			}
 		}
+		if p.Inspecting() {
+			if err := e.writeCA(p); err != nil {
+				_ = p.Close()
+				if e.dir != "" {
+					_ = os.RemoveAll(e.dir)
+				}
+				e.err = fmt.Errorf("the egress inspection CA: %w", err)
+				return
+			}
+		}
 		e.proxy = p
 	})
 	if e.err != nil {
@@ -316,6 +348,9 @@ func (e *egressState) close() error {
 	if e.dir != "" {
 		err = errors.Join(err, os.RemoveAll(e.dir))
 	}
+	if e.caDir != "" {
+		err = errors.Join(err, os.RemoveAll(e.caDir))
+	}
 	return err
 }
 
@@ -362,6 +397,9 @@ func (e *egressState) relayArgsFor(c *egress.Call, argv []string) (binds, wrappe
 		sock = c.Socket()
 	}
 	binds = []string{"--ro-bind", e.exe, relayBinary, "--ro-bind", sock, relaySocket}
+	if e.ca != "" {
+		binds = append(binds, "--ro-bind", e.ca, e.ca) // the inspection CA, where the command is told it is
+	}
 	listen := e.proxy.Addr().String()
 	wrapped = []string{relayBinary, egress.RelayArg, relaySocket, listen}
 	if e.dns {

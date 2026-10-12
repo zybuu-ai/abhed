@@ -289,7 +289,7 @@ stays open; unset means 30.
 commands' traffic through a per-session proxy that reaches only what the
 `egress` rules allow, and records each decision; it takes the place of
 `allow_network`. Only the process tier enforces it. The `egress` section
-(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
+(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`, `inspect_tls`) is managed only
 too. See [Network policy](21-network-policy.md).
 
 `"microvm_socket"`, set only in the managed configuration, is the socket of

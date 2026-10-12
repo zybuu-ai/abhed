@@ -258,6 +258,7 @@ var managedOnly = map[string]string{
 	"egress.mode":                  "only the managed configuration sets the egress mode",
 	"egress.record_paths":          "only the managed configuration sets what the egress record keeps",
 	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
+	"egress.inspect_tls":           "only the managed configuration has the egress proxy look inside HTTPS",
 	"control_plane.kubernetes":     "only the managed configuration configures the Kubernetes driver",
 	"control_plane.interceptors":   "only the managed configuration sets what admits sandbox calls",
 }
@@ -318,6 +319,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Egress.RecordPaths = nil
 	case "egress.idle_seconds":
 		c.Egress.IdleSeconds = 0
+	case "egress.inspect_tls":
+		c.Egress.InspectTLS = false
 	case "control_plane.kubernetes":
 		c.ControlPlane.Kubernetes = nil
 	case "control_plane.interceptors":

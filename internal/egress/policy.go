@@ -52,6 +52,12 @@ type Config struct {
 	// IdleSeconds ends a tunnel or a forwarded request after this long
 	// with no bytes either way; zero means DefaultIdle.
 	IdleSeconds int `json:"idle_seconds,omitempty"`
+	// InspectTLS, off by default, has the proxy terminate commands' HTTPS
+	// with a certificate from a CA made for each session's proxy, so every
+	// request inside is judged by method and path as plain HTTP is. Commands
+	// are pointed at the CA; a client that pins its certificates or keeps
+	// its own trust store refuses it.
+	InspectTLS bool `json:"inspect_tls,omitempty"`
 }
 
 // DefaultIdle is how long a connection through the proxy may sit with no
@@ -79,6 +85,7 @@ type Policy struct {
 	defaultAllow bool
 	audit        bool
 	hidePaths    bool
+	inspect      bool
 	idle         time.Duration
 }
 
@@ -100,6 +107,7 @@ func Compile(c Config) (*Policy, error) {
 		return nil, fmt.Errorf("egress.mode is %q; use enforce or audit", c.Mode)
 	}
 	p.hidePaths = c.RecordPaths != nil && !*c.RecordPaths
+	p.inspect = c.InspectTLS
 	switch {
 	case c.IdleSeconds < 0:
 		return nil, fmt.Errorf("egress.idle_seconds is %d; use a number of seconds, or leave it out for %s", c.IdleSeconds, DefaultIdle)
@@ -243,6 +251,47 @@ func (p *Policy) DefaultAllow() bool { return p.defaultAllow }
 
 // RecordPaths reports whether plain HTTP paths are recorded.
 func (p *Policy) RecordPaths() bool { return !p.hidePaths }
+
+// InspectTLS reports whether commands' HTTPS is terminated and judged
+// request by request.
+func (p *Policy) InspectTLS() bool { return p.inspect }
+
+// DecideHost is the decision on a tunnel the proxy will look inside: any
+// allow rule for its host and port lets it open, narrowed or not, since each
+// request inside is then decided on its own; a deny rule refuses it only when
+// it is not narrowed by method or path.
+func (p *Policy) DecideHost(r Request) Verdict {
+	var ips []netip.Prefix
+	allowed, denied := "", ""
+	for _, ru := range p.rules {
+		if !HostMatches(ru.host, ru.wildcard, r.Host) || !slices.Contains(ru.ports, r.Port) {
+			continue
+		}
+		narrowed := len(ru.methods) > 0 || len(ru.paths) > 0
+		switch {
+		case !ru.allow && !narrowed && denied == "":
+			denied = ru.name
+		case ru.allow:
+			if allowed == "" {
+				allowed = ru.name
+			}
+			ips = append(ips, ru.allowIPs...)
+		}
+	}
+	switch {
+	case denied != "":
+		v := p.deny(denied, "a deny rule matches")
+		if v.Decision == WouldDeny {
+			v.AllowIPs = ips
+		}
+		return v
+	case allowed != "":
+		return Verdict{Decision: Allow, Rule: allowed, Reason: "an allow rule names the host; each request inside is decided", AllowIPs: ips}
+	case p.defaultAllow:
+		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule matches and the default is allow"}
+	}
+	return p.deny("default", "no rule allows it")
+}
 
 // Idle is how long a connection may carry no bytes before it is closed.
 func (p *Policy) Idle() time.Duration {

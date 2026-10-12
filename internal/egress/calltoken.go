@@ -175,6 +175,7 @@ func (c *Call) Env() []string {
 		"HTTPS_PROXY=" + u, "https_proxy=" + u,
 		"NO_PROXY=" + noProxy, "no_proxy=" + noProxy,
 	}
+	env = append(env, c.p.caEnv()...)
 	c.mu.Lock()
 	bound := c.bound
 	c.mu.Unlock()

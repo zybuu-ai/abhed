@@ -9,22 +9,22 @@ import (
 // user's file cannot turn it on or name destinations, and the managed
 // file's values hold.
 func TestEgressIsManagedOnly(t *testing.T) {
-	for _, k := range []string{"sandbox.network", "egress.rules", "egress.default", "egress.mode", "egress.record_paths", "egress.idle_seconds"} {
+	for _, k := range []string{"sandbox.network", "egress.rules", "egress.default", "egress.mode", "egress.record_paths", "egress.idle_seconds", "egress.inspect_tls"} {
 		if !ManagedOnly(k) {
 			t.Errorf("%s is not managed only", k)
 		}
 	}
-	user := `{"sandbox":{"network":"allowlist"},"egress":{"default":"allow","mode":"audit","record_paths":false,"idle_seconds":99999,"rules":[{"host":"evil.example","decision":"allow"}]}}`
+	user := `{"sandbox":{"network":"allowlist"},"egress":{"default":"allow","mode":"audit","record_paths":false,"idle_seconds":99999,"inspect_tls":true,"rules":[{"host":"evil.example","decision":"allow"}]}}`
 	_, ws := trustHome(t, user, "")
 	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Sandbox.Network != "" || len(cfg.Egress.Rules) != 0 || cfg.Egress.Default != "" || cfg.Egress.Mode != "" ||
-		cfg.Egress.RecordPaths != nil || cfg.Egress.IdleSeconds != 0 {
+		cfg.Egress.RecordPaths != nil || cfg.Egress.IdleSeconds != 0 || cfg.Egress.InspectTLS {
 		t.Fatalf("the user's file set egress: %+v %+v", cfg.Sandbox, cfg.Egress)
 	}
-	if len(cfg.SetAside) < 6 {
+	if len(cfg.SetAside) < 7 {
 		t.Fatalf("set aside: %v", cfg.SetAside)
 	}
 
