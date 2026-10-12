@@ -1698,7 +1698,10 @@ All notable changes to Abhed are recorded here. The format follows
   and `ErrDraining` saying why TakeOver took nothing; `agent.InFlight`,
   `Loop.ContinueTurn`, `Loop.NoteUnknownOutcomes`, `agent.ReconcileChildren`,
   the `agent.ErrHandOver` cancel cause and `Observation.OutcomeUnknown` are
-  the loop's side of it. `auth.Identity.Scopes`,
+  the loop's side of it; `agent.OpenTurn.Others` holds a person's own calls
+  and pipeline steps left open. `Server.ReleaseSessionsBefore` releases an
+  owner's sessions this process started or took up before a time, for an
+  account made again. `auth.Identity.Scopes`,
   `auth.Middleware.IdentifyToken` and `auth.IsForbidden` let a public handler
   answer for a bearer token. `config.Config.OIDCBoundClaims`,
   `ValidateBoundClaims` and `RelayKeyCommandArgv` read the new edition keys

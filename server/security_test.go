@@ -476,6 +476,32 @@ func TestReleaseSessionsUnclaimsLiveSessions(t *testing.T) {
 	s.mu.Unlock()
 }
 
+// An account made again lets go of the runs from before it was made, and
+// keeps those started or taken up here since.
+func TestReleaseSessionsBeforeKeepsNewerRuns(t *testing.T) {
+	s := proxyServer(t)
+	made := time.Now()
+	s.mu.Lock()
+	s.running["old"] = &liveSession{ID: "old", Tenant: "default", User: "local:bob", Created: made.Add(-time.Minute)}
+	s.running["new"] = &liveSession{ID: "new", Tenant: "default", User: "local:bob", Created: made.Add(time.Second)}
+	s.mu.Unlock()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		delete(s.running, "old")
+		delete(s.running, "new")
+		s.mu.Unlock()
+	})
+	if n := s.ReleaseSessionsBefore("default", "local:bob", made); n != 1 {
+		t.Fatalf("released %d, want 1", n)
+	}
+	if s.running["old"].User != "unclaimed:local:bob" || s.running["new"].User != "local:bob" {
+		t.Errorf("owners after release: old %q, new %q", s.running["old"].User, s.running["new"].User)
+	}
+	if n := s.ReleaseSessionsBefore("default", "local:bob", time.Time{}); n != 0 {
+		t.Errorf("a zero creation time released %d", n)
+	}
+}
+
 // The list and the single-session fetch must agree. A list more permissive than
 // the fetch leaks; one that is stricter hides sessions the user can open.
 func TestListAndFetchAgreeOnOwnership(t *testing.T) {

@@ -5016,6 +5016,25 @@ func (s *Server) ReleaseSessions(tenant, owner string) int {
 	return n
 }
 
+// ReleaseSessionsBefore is ReleaseSessions for the sessions this process
+// started or took up before before: an account made again at before owns
+// none of them, and keeps those it started or had taken up since.
+func (s *Server) ReleaseSessionsBefore(tenant, owner string, before time.Time) int {
+	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) || before.IsZero() {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, live := range s.running {
+		if live.Tenant == tenant && live.User == owner && live.Created.Before(before) {
+			live.User = auth.UnclaimedOwner(owner)
+			n++
+		}
+	}
+	return n
+}
+
 // elsewhere reports the node holding a session that this process does not,
 // so a caller can be told where to go rather than told it does not exist.
 //
