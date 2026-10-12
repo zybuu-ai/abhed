@@ -253,7 +253,7 @@ scan:
 		case v == "--noprofile" && name == "bash":
 			profile = false
 		case v == "--rcfile" || v == "--init-file":
-			j++
+			j, rc = j+1, false // read instead of .bashrc, as a file the line names
 		case strings.HasPrefix(v, "--"):
 		case len(v) > 1 && (v[0] == '-' || v[0] == '+'):
 			for _, o := range v[1:] {

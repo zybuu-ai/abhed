@@ -107,6 +107,7 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return t.TempDir(), true }
 	if err := e.AddDeny("bash(curl *)"); err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +173,7 @@ func TestScriptsAreNotReadFromTheWrongFolderOrBeforeTheLineWritesThem(t *testing
 		"cp a.txt b.txt && sh s.sh":                 "",
 		"bash runner.sh":                            "",
 		"bash --rcfile /dev/null -i":                "",
+		"bash --norc -i":                            "",
 		"BASH_ENV=s.sh bash -c true":                "",
 		"PATH=/usr/bin:$PATH sh s.sh":               "",
 		"export PATH=$PATH:/opt/bin; go version":    "",
