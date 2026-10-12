@@ -430,6 +430,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "pki":
 		return pkiCmd(rest[1:], os.Stdout, os.Stderr)
+	case "egress-proxy":
+		return egressProxyCmd(rest[1:], os.Stdout, os.Stderr)
 	case "admin":
 		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
@@ -498,7 +500,7 @@ var permissionModes = map[string]string{
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
 	"sandbox": true, "secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true,
 }
 
 func isHelpArg(s string) bool {

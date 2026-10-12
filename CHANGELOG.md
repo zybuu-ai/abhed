@@ -727,6 +727,12 @@ All notable changes to Abhed are recorded here. The format follows
   its own sign-in method through `auth.CLILoginAdvertiser`. When a method's
   device page is on another host (an identity provider), the prompt says to
   sign in there rather than to the server.
+- `abhed egress-proxy -listen ADDR -config FILE` serves the egress allowlist
+  on its own, for a sandbox whose only way out is to it (a Kubernetes egress
+  pod): every connection on its port is one call's, each decision is a JSON
+  line on standard output, and a configuration it cannot honour
+  (`inspect_tls`, an unknown or repeated key) stops it. `-check` only reads
+  the file. See [Network policy](docs/guide/21-network-policy.md).
 - `GET /v1/cli` (public) says how a command line signs in; `GET
   /v1/cli/whoami` and `GET /v1/whoami` answer for a bearer token too, naming
   the principal and, for a narrowed token, its `scopes` (`auth.Identity.Scopes`,

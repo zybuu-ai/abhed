@@ -139,6 +139,11 @@ func (c *Call) ListenLoopback(v6 bool) error {
 	return c.own(lns[0], lns[0].Addr().(*net.TCPAddr).AddrPort())
 }
 
+// Serve serves ln, a listener the caller made, as the call's own: every
+// connection there is the call's, whatever credentials it sends. For a
+// stand-alone proxy that a network policy lets only one sandbox reach.
+func (c *Call) Serve(ln net.Listener) error { return c.own(ln, netip.AddrPort{}) }
+
 // own serves ln as the call's; a call already ended refuses it.
 func (c *Call) own(ln net.Listener, addr netip.AddrPort) error {
 	c.mu.Lock()

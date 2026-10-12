@@ -484,6 +484,39 @@ them. That is why only the process tier accepts the allowlist.
 allowlist with its rule count, default and mode), and the `sandbox` line
 names the tier and says whether it holds it.
 
+## A stand-alone proxy: `abhed egress-proxy`
+
+`abhed egress-proxy` runs the same allowlist proxy on its own, for a sandbox
+whose only route out is to it, such as a Kubernetes egress pod that a
+NetworkPolicy lets only one sandbox reach. Every connection on its port is
+counted as one call's, whatever proxy credentials the client sends, so the
+network policy in front of it is what decides who may use it.
+
+```bash
+abhed egress-proxy -listen :3128 -config /etc/abhed-egress/egress.json -call sbx-42
+abhed egress-proxy -config /etc/abhed-egress/egress.json -check
+```
+
+| Flag | Meaning |
+|---|---|
+| `-listen ADDR` | TCP address to serve on (required unless `-check`) |
+| `-config FILE` | JSON holding the egress section alone: `rules`, `default`, `mode`, `record_paths`, `idle_seconds`, as under [Configuration](#configuration) (required) |
+| `-call ID` | the call id every decision is recorded under (`sandbox`) |
+| `-check` | read and compile the file, print the rule count and default, and exit |
+
+The file is read strictly: an unknown or repeated key, a second JSON value or
+a rule that does not compile stops it with exit `1`, as does `inspect_tls`,
+since nothing here hands the sandbox the proxy's CA. Each decision is one JSON
+line on standard output, `{"time": …, "event": "egress.decision", "payload":
+{…}}`, the payload as [the record](#the-record) keeps it; its own messages go
+to standard error. `SIGTERM` or `SIGINT` closes the port, ends open
+connections, writes the pending denial summaries and exits `0`. Bad flags
+exit `2`.
+
+It does not resolve names for the sandbox (clients send names to it, as
+proxy clients do) and it keeps no record of its own: whoever runs it reads
+its standard output into the session's record.
+
 ## Not covered yet
 
 - Abhed's other own connections: the start-up check that the model endpoint
