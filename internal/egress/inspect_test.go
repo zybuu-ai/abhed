@@ -141,8 +141,12 @@ func openTunnel(t *testing.T, p *Proxy, call, target string) (net.Conn, *bufio.R
 	}
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT %s: %v %v", target, resp, err)
+	if err != nil {
+		t.Fatalf("CONNECT %s: %v", target, err)
+	}
+	_ = resp.Body.Close() // a 200 to CONNECT has no body; the tunnel follows
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT %s: %s", target, resp.Status)
 	}
 	return conn, br
 }
