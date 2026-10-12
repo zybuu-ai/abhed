@@ -572,7 +572,7 @@ func (f *Fence) plan(ctx context.Context) (*mountns.Plan, error) {
 		}
 	}
 	if f.policy.ProtectGit {
-		found, err := gitGuard(ctx, ws, string(TierFence), &f.git)
+		found, err := gitGuardFor(ctx, ws, string(TierFence), &f.git, f.policy.GitRequired)
 		if err != nil {
 			return nil, errors.New(strings.TrimPrefix(err.Error(), "sandbox: the command was not run: "))
 		}

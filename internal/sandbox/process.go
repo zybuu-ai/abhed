@@ -697,7 +697,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// pattern. A commondir no bind could have stopped is taken out first.
 		if s.policy.ProtectGit {
 			for _, ws := range s.workspaces() {
-				found, err := gitGuard(ctx, ws, s.backend, &s.git)
+				found, err := gitGuardFor(ctx, ws, s.backend, &s.git, s.policy.GitRequired)
 				if err != nil {
 					return &exec.Cmd{Err: err}
 				}

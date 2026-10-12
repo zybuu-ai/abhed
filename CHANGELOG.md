@@ -35,6 +35,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Under bubblewrap, a container or the fence, a repository past the
+  20,000-folder look for git folders was left unprotected in Studio and
+  `abhed serve` too, so a command could fill the workspace with folders and
+  plant a hook in a repository beyond them. Where git protection is required
+  (Studio, `abhed serve`, `sandbox.protect_git: true`) reaching the bound now
+  refuses the command. Affects 1.2.3 to 1.2.7.
 - On macOS, a nested repository whose `.git` is a symbolic link had the git
   folder it leads to left writable to commands where git protection applies,
   so a command could plant a hook or an fsmonitor there. That folder is now

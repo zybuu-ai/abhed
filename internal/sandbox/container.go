@@ -272,7 +272,7 @@ func mountArgs(ctx context.Context, p Policy, backend string, mem *gitMemory) ([
 	// The git folders found now, as on bubblewrap, after a planted
 	// commondir is taken out.
 	if p.ProtectGit {
-		found, err := gitGuard(ctx, p.Workspace, backend, mem)
+		found, err := gitGuardFor(ctx, p.Workspace, backend, mem, p.GitRequired)
 		if err != nil {
 			return nil, err
 		}

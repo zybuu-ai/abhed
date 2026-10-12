@@ -462,6 +462,15 @@ func TestGitWalkBoundIsRecorded(t *testing.T) {
 	if got := rec.of(EvGitWalkBounded); len(got) != 1 || got[0]["refused"] != false {
 		t.Fatalf("the bound was not recorded once: %v", rec.events)
 	}
+	// Where git protection is required (serve, Studio, protect_git: true),
+	// the bound refuses the command instead.
+	var req recorded
+	if _, err := gitGuardFor(req.ctx(), ws, "bwrap", &gitMemory{}, true); err == nil || !strings.Contains(err.Error(), "folders within") {
+		t.Fatalf("a required guard ran at the walk's bound: %v", err)
+	}
+	if got := req.of(EvGitWalkBounded); len(got) != 1 || got[0]["refused"] != true {
+		t.Fatalf("the refusal was not recorded: %v", req.events)
+	}
 	for i := range 2 * gitModulesEntries {
 		if err := os.MkdirAll(filepath.Join(ws, ".git", "modules", "-"+strconv.Itoa(i)), 0o750); err != nil {
 			t.Fatal(err)

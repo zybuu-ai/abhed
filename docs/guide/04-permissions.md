@@ -688,7 +688,10 @@ folders and looks at each folder's `.git` before what the folder holds.
 Repositories a session has found stay protected after a command fills the
 workspace with folders; one past that bound and not found before is not
 protected, and reaching the bound is recorded once a session as
-`sandbox.git_walk_bounded`. Modules holding more than 20,000 entries refuse
+`sandbox.git_walk_bounded`. Where git protection is required (Studio,
+`abhed serve`, or `"protect_git": true`), reaching the bound refuses the
+command instead, recorded with `refused: true`: remove folders that do not
+belong there, or run Abhed in a smaller folder. Modules holding more than 20,000 entries refuse
 the command, as no repository has them. A `hooks` (or other of those files)
 that is a link cannot be bound, and a command could point it elsewhere, so
 each command is refused until it is replaced with what it points to; so is a

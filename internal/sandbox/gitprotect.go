@@ -452,6 +452,12 @@ type gitMemory struct {
 // gitGuard returns the paths in ws to bind read-only before a command starts,
 // or why the command is not run; a planted commondir is taken out first.
 func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string, error) {
+	return gitGuardFor(ctx, ws, backend, mem, false)
+}
+
+// gitGuardFor is gitGuard; when required, a walk stopped by its bound
+// refuses the command rather than leave a repository past it unprotected.
+func gitGuardFor(ctx context.Context, ws, backend string, mem *gitMemory, required bool) ([]string, error) {
 	mem.mu.Lock()
 	known := mem.known[ws]
 	mem.mu.Unlock()
@@ -469,6 +475,13 @@ func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string
 			pay["call_id"], pay["sandbox"], pay["workspace"] = launch.CallID, backend, ws
 			_ = launch.Record(ev, pay)
 		}
+	}
+	if g.walkBounded && required {
+		why := fmt.Sprintf("sandbox: the command was not run: the workspace has more than %d folders within %d levels, "+
+			"so a repository past them could not be found and its configuration and hooks protected, which this surface requires; "+
+			"remove folders that do not belong there, or run Abhed in a smaller folder", gitWalkFolders, gitWalkDepth)
+		record(EvGitWalkBounded, map[string]any{"bound": gitWalkFolders, "refused": true, "reason": why})
+		return nil, errors.New(why)
 	}
 	if g.walkBounded && mem.noted.CompareAndSwap(false, true) {
 		record(EvGitWalkBounded, map[string]any{"bound": gitWalkFolders, "refused": false,
