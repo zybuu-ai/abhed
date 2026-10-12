@@ -8,6 +8,25 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.7
 
+- The terminal CLI, `abhed -p` and `abhed rpc` keep commands from writing
+  git's config, hooks and the like, as Studio and `abhed serve` do;
+  `sandbox.protect_git: false` turns it off. A git command you allowed with
+  "always allow" is asked about again once the repository's config or hooks
+  change.
+- On macOS, process-tier commands read in your home folder only the
+  workspace, `read_only_paths`, toolchains, caches and the files git, editors
+  and shells read, and write caches of the session's own; add what a command
+  needs to `read_only_paths`, or set `sandbox.readable_home` or
+  `sandbox.shared_caches` to return to the old rules. The clipboard is no
+  longer reachable from a command.
+- On Linux, process-tier commands have each process's data bounded by
+  `sandbox.max_memory_mb` (4096 by default).
+- An `abhed serve` that accounts sign in to refuses the fence below Linux
+  6.12, and the fence refuses a FUSE, overlay or network view of the
+  workspace.
+- A repository made during a session has settings `git init` or `git clone`
+  would not write taken out before the next command, which is refused; set
+  such settings (a `core.hooksPath` a tool adds, say) yourself.
 - A managed `permissions.deny` list now adds to the user's and the
   workspace's deny rules instead of replacing them.
 - Rule tool names match built-in tools in any case: an allow rule written
