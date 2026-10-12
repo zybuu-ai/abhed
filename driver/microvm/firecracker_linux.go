@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -90,11 +91,46 @@ func cgroupDir(parent, vmID string) string { return filepath.Join(cgroupRoot, pa
 
 // killCgroup kills every process in the VM's cgroup.
 func killCgroup(parent, vmID string) error {
-	err := os.WriteFile(filepath.Join(cgroupDir(parent, vmID), "cgroup.kill"), []byte("1"), 0)
-	if errors.Is(err, os.ErrNotExist) {
+	dir := cgroupDir(parent, vmID)
+	// Never created: a cgroup's files are the kernel's, and one that is
+	// missing means the cgroup is gone or the kernel predates cgroup.kill.
+	f, err := os.OpenFile(filepath.Join(dir, "cgroup.kill"), os.O_WRONLY, 0)
+	if err == nil {
+		_, err = f.Write([]byte("1"))
+		return errors.Join(err, f.Close())
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, serr := os.Stat(dir); errors.Is(serr, os.ErrNotExist) {
 		return nil
 	}
-	return err
+	return killProcs(dir)
+}
+
+// killProcs kills every process in the cgroup dir, for a kernel without
+// cgroup.kill (before 5.14), until none is left or a second passes.
+func killProcs(dir string) error {
+	for range 50 {
+		b, err := os.ReadFile(filepath.Join(dir, "cgroup.procs")) // #nosec G304 -- the VM's cgroup
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		pids := strings.Fields(string(b))
+		if len(pids) == 0 {
+			return nil
+		}
+		for _, p := range pids {
+			if pid, err := strconv.Atoi(p); err == nil && pid > 1 {
+				_ = unix.Kill(pid, unix.SIGKILL)
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("processes are still in %s", dir)
 }
 
 // removeCgroup removes the VM's cgroup, waiting a little for processes
