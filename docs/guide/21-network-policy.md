@@ -89,7 +89,13 @@ Three more settings, also managed only:
 
 With `"inspect_tls": true` each session's proxy makes a certificate
 authority of its own when it starts, whose key never leaves Abhed's process
-and is gone when the proxy stops. A `CONNECT` is opened when an allow rule
+and is gone when the proxy stops. Each CA signs for one day and is valid
+for two days and an hour; the bundle holds the one signing and the next, and
+the proxy moves to the next daily, putting a new bundle file in place of
+the old by a rename in its folder, so a reader sees one or the other whole (and
+placing it in a microVM guest again before its next command). A process that
+read the bundle once and keeps running more than a day after the next
+rotation fails HTTPS; restart it. A `CONNECT` is opened when an allow rule
 names its host and port, narrowed by method or path or not, and a deny rule
 not narrowed by them refuses it. If the client then speaks TLS, the proxy
 answers it with a certificate for the tunnel's host from that CA, and
@@ -112,11 +118,11 @@ until the 30-second header timeout.
 Each command is pointed at a CA bundle holding the system's roots and the
 session's CA: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
 `GIT_SSL_CAINFO`, `PIP_CERT`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE` and
-`CARGO_HTTP_CAINFO`. The bundle is a file on the host, bound into the
-sandbox read-only on the process tier, readable through the fence's
-Landlock rules, and bound into each container on the container and vm tiers
-(`/run/abhed-ca.pem`) and by the `docker` and `podman` drivers
-(`/run/abhed-egress/ca.pem`). The microVM driver sends it to the guest
+`CARGO_HTTP_CAINFO`. The bundle is a file on the host in a folder of its
+own, which is bound into the sandbox read-only on the process tier, readable
+through the fence's Landlock rules, and bound into each container on the
+container and vm tiers (`/run/abhed-ca/ca.pem`) and by the `docker` and
+`podman` drivers (`/run/abhed-egress/ca/ca.pem`). The microVM driver sends it to the guest
 agent when the VM boots, which keeps it at `/run/abhed-ca.pem` outside the
 workspace; a guest built before this release does not know that call, and
 the sandbox is then not created rather than run with every HTTPS request
@@ -507,7 +513,7 @@ allowlist, naming why, rather than opening the network in its place.
 | process, Linux (bubblewrap) | **Enforced.** The command has its own network namespace with loopback only. A small relay inside it, Abhed's own binary, listens where the proxy variables point and passes each connection to the proxy's unix socket, which is bound into the sandbox, and serves the session's resolver (see Names). Nothing else leaves: a client that ignores the proxy variables has no route out. |
 | process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. So are the LaunchServices and Apple event services (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, the `coreservices` and `lsd` part matched in any case; the whole family is denied, which also cuts Handoff's clipboard and the shared file lists), on every network setting: `open` still runs but exits non-zero without handing the URL to a browser, and `osascript` cannot send Apple events to another app. Other system services are not: `trustd` fetches the issuer (AIA) and revocation (OCSP) URLs of a certificate a command asks it to verify, itself, outside the proxy and unrecorded, so a crafted certificate reaches any host and path. Commands cannot resolve names themselves (see Names); the proxy resolves them. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. A command can read a concurrent command's token and the environment of an MCP server Abhed started; Abhed's own environment is hidden (see [Per-call credentials](#per-call-credentials)). |
 | fence (Linux preview) | **Enforced in `mount_namespace` mode.** Each command has a network namespace holding only its loopback, where the launcher relays the proxy's port to its call's own socket on the host; seccomp allows inet TCP stream sockets alone (not MPTCP or SCTP, which Landlock's TCP rules do not hold) and Landlock TCP connect to that port alone. In `landlock_only` mode there is no network namespace and Landlock filters ports, not addresses, so a command could reach its call's proxy port number on any host: refused there unless the managed `fence.egress_port_only` accepts it. |
-| container, vm | **Enforced, through a relay.** Each command runs in a container of its own with no network (`--network none`). A relay inside it, a Linux build of Abhed bound in read-only, listens on the container's loopback at the proxy's port and carries each connection over a long-lived `engine exec`'s stdio to the call's own socket on the session's proxy on the host, at most 128 at once; the relay runs as a user of its own (uid 65534, or 65533 if commands run as 65534), so a command cannot write to its output or signal it, and the relay binary must be readable and executable by that user; the command then runs by a second `exec` with the call's proxy variables, passed to the engine by name so the token is never in an argument, and the container is removed when the call ends. On a Linux host with a local engine the relay is this binary; where the engine is in a VM (Docker Desktop, a Podman machine) or on another host (`DOCKER_HOST`, `CONTAINER_HOST`) it is the build the managed `control_plane.podman.relay_binary` or `control_plane.docker.relay_binary` names, and without one the tier is refused, never given the network. The workbench terminal on these tiers gets no network under the allowlist. Each command starts a container and two `exec`s, so commands start slower than without the allowlist. |
+| container, vm | **Enforced, through a relay.** Each command runs in a container of its own with no network (`--network none`). A relay inside it, a Linux build of Abhed bound in read-only, listens on the container's loopback at the proxy's port and carries each connection over a long-lived `engine exec`'s stdio to the call's own socket on the session's proxy on the host, at most 128 at once; the relay runs as a user of its own (uid 65534, or 65533 if commands run as 65534), so a command cannot write to its output or signal it, and the relay binary must be readable and executable by that user; the command then runs by a second `exec` with the call's proxy variables, passed to the engine in an `--env-file` only your user can read, removed when the call ends, so the token is neither in an argument nor in the engine CLI's own environment, and the container is removed when the call ends. On a Linux host with a local engine the relay is this binary; where the engine is in a VM (Docker Desktop, a Podman machine) or on another host (`DOCKER_HOST`, `CONTAINER_HOST`) it is the build the managed `control_plane.podman.relay_binary` or `control_plane.docker.relay_binary` names, and without one the tier is refused, never given the network. The workbench terminal on these tiers gets no network under the allowlist. Each command starts a container and two `exec`s, so commands start slower than without the allowlist. |
 | none | **Refused.** Nothing stops a command on the host from ignoring the proxy variables. |
 
 Without a sandbox that blocks direct sockets, proxy variables are only

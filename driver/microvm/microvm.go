@@ -13,6 +13,7 @@
 package microvm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -178,6 +179,8 @@ type instance struct {
 	memMiB int
 	image  string
 	egress *driver.Egress
+	// placedCA is the CA bundle the running guest holds.
+	placedCA []byte
 	// ws is the host workspace with its links resolved, where changes in
 	// the VM are copied back; syncMu runs one copy at a time.
 	ws     string
@@ -474,10 +477,11 @@ func (d *Driver) Start(ctx context.Context, id string) (driver.Status, error) {
 	}
 
 	m, err := d.be.boot(ctx, b)
+	var placed []byte
 	if err == nil {
 		err = d.waitReady(ctx, m)
 		if err == nil && eg != nil {
-			err = d.openEgress(ctx, m, *eg)
+			placed, err = d.openEgress(ctx, m, *eg)
 		}
 		if err != nil {
 			_ = m.kill()
@@ -495,7 +499,7 @@ func (d *Driver) Start(ctx context.Context, id string) (driver.Status, error) {
 		_ = m.kill()
 		return driver.Status{}, driver.Errorf(driver.ErrConflict, "instance %s changed while starting", id)
 	}
-	in.m, in.stopped = m, false
+	in.m, in.stopped, in.placedCA = m, false, placed
 	in.runCtx, in.stopRun = context.WithCancel(context.Background())
 	return d.status(id, in), nil
 }
@@ -696,6 +700,9 @@ func (d *Driver) run(ctx context.Context, id string, req guest.ExecRequest, s gu
 		return driver.ExecResult{}, err
 	}
 	defer done()
+	if err := d.refreshCA(cctx, in, m); err != nil {
+		return driver.ExecResult{}, err
+	}
 	c, err := m.dial(cctx)
 	if err != nil {
 		return driver.ExecResult{}, driver.Errorf(driver.ErrUnavailable, "microvm: reaching the guest: %v", err)
@@ -781,10 +788,10 @@ const maxEgressConns = 128
 
 // openEgress joins the guest's connections to the egress port to the
 // session's proxy, then has the guest forward its loopback port to them.
-func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) error {
+func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) ([]byte, error) {
 	ln := m.guestListener(guest.EgressPort)
 	if ln == nil {
-		return driver.Errorf(driver.ErrInternal, "microvm: the VM was booted without its egress port")
+		return nil, driver.Errorf(driver.ErrInternal, "microvm: the VM was booted without its egress port")
 	}
 	go d.serveEgress(ln, eg.Socket)
 	c, err := m.dial(ctx)
@@ -792,23 +799,24 @@ func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) er
 		err = guest.Network(ctx, c, eg.Port)
 	}
 	if err != nil {
-		return driver.Errorf(driver.ErrUnavailable, "microvm: starting the guest's egress: %v", err)
+		return nil, driver.Errorf(driver.ErrUnavailable, "microvm: starting the guest's egress: %v", err)
 	}
-	if len(eg.CABundle) > 0 {
+	bundle := eg.CA()
+	if len(bundle) > 0 {
 		// HTTPS is inspected: without the CA in place every request would fail.
 		if c, err = m.dial(ctx); err == nil {
-			err = guest.PlaceCA(ctx, c, eg.CABundle)
+			err = guest.PlaceCA(ctx, c, bundle)
 		}
 		if err != nil {
-			return driver.Errorf(driver.ErrUnavailable, "microvm: the guest did not take the session's CA (a guest built before this release does not): %v", err)
+			return nil, driver.Errorf(driver.ErrUnavailable, "microvm: the guest did not take the session's CA (a guest built before this release does not): %v", err)
 		}
 	}
 	if eg.DNSSocket == "" {
-		return nil
+		return bundle, nil
 	}
 	dln := m.guestListener(guest.EgressDNSPort)
 	if dln == nil {
-		return driver.Errorf(driver.ErrInternal, "microvm: the VM was booted without its DNS port")
+		return nil, driver.Errorf(driver.ErrInternal, "microvm: the VM was booted without its DNS port")
 	}
 	go d.serveDNS(dln, eg.DNSSocket, eg.DNSCredential)
 	if c, err = m.dial(ctx); err == nil {
@@ -818,6 +826,34 @@ func (d *Driver) openEgress(ctx context.Context, m machine, eg driver.Egress) er
 		// Without a resolver names fail inside; the proxy still resolves what is sent through it.
 		slog.Warn("microvm: the guest's resolver did not start", "err", err)
 	}
+	return bundle, nil
+}
+
+// refreshCA places the session's CA bundle in the guest again when it has
+// rotated since it was placed.
+func (d *Driver) refreshCA(ctx context.Context, in *instance, m machine) error {
+	if in.egress == nil || in.egress.CABundleNow == nil {
+		return nil
+	}
+	bundle := in.egress.CA()
+	d.mu.Lock()
+	same := bytes.Equal(bundle, in.placedCA)
+	d.mu.Unlock()
+	if same || len(bundle) == 0 {
+		return nil
+	}
+	c, err := m.dial(ctx)
+	if err == nil {
+		err = guest.PlaceCA(ctx, c, bundle)
+	}
+	if err != nil {
+		return driver.Errorf(driver.ErrUnavailable, "microvm: the guest did not take the session's renewed CA: %v", err)
+	}
+	d.mu.Lock()
+	if in.m == m {
+		in.placedCA = bundle
+	}
+	d.mu.Unlock()
 	return nil
 }
 

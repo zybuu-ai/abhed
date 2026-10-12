@@ -102,7 +102,11 @@ func startEgress(id string, pol *egress.Policy, record func(string, map[string]a
 	}
 	if err == nil && p.Inspecting() {
 		// Where the container sees it: in the folder bound in, or bound on its own.
-		err = os.WriteFile(filepath.Join(dir, "ca.pem"), p.CABundle(), 0o644) // #nosec G306 -- public certificates, read inside the container
+		// A folder of its own, bound whole, so a rotated bundle renamed in is seen.
+		ca := filepath.Join(dir, "ca")
+		if err = os.Mkdir(ca, 0o755); err == nil { // #nosec G301 -- public certificates, read inside the container
+			_, err = p.WriteCABundle(ca)
+		}
 		p.SetCAPath(egressCA)
 	}
 	if err == nil {

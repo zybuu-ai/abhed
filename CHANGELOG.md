@@ -308,10 +308,13 @@ All notable changes to Abhed are recorded here. The format follows
   during the session now has every setting `git init` or `git clone` would
   not write taken out (the file copied to `~/.abhed/quarantine`) and its
   hooks moved there, and that command is refused and recorded as
-  `sandbox.git_planted`. A `.git` file naming a folder outside the workspace
-  or under `.abhed`, or a linked config, is left untouched and refuses every
-  command until removed; so does one that could not be cleaned. Affects
-  1.2.3 to 1.2.7.
+  `sandbox.git_planted`. Only a `.git` folder made during the session is
+  changed: a `.git` file naming a folder outside the workspace or under
+  `.abhed`, a `.git` file naming a git folder (the workspace's own, say) that
+  names a program, a git folder there from the start moved elsewhere, a
+  repository past a bounded first look, or a linked config, is left untouched
+  and refuses every command until removed; so does one that could not be
+  cleaned. Affects 1.2.3 to 1.2.7.
 - Under bubblewrap, a container or the fence, a repository past the
   20,000-folder look for git folders was left unprotected in Studio and
   `abhed serve` too, so a command could fill the workspace with folders and
@@ -743,7 +746,9 @@ All notable changes to Abhed are recorded here. The format follows
   apart from the command's, so it also works where the engine runs in
   a VM, given a Linux build of Abhed in the managed
   `control_plane.<engine>.relay_binary`. Without one there, the tier is
-  refused as before.
+  refused as before. The call's proxy settings reach the engine in an
+  `--env-file` only your user reads, removed after, never in an argument or
+  the engine CLI's own environment; so do the container driver's.
 - `fence.socketcall` lets the fence's commands on s390x make sockets through
   `socketcall()`, as glibc and Go do there, when `allow_network` is on and
   the host has Landlock ABI 6 or later. The filter cannot read the socket's
@@ -1176,8 +1181,8 @@ All notable changes to Abhed are recorded here. The format follows
   narrowed by a path, which other spellings of the path step around, and
   advises allowing the paths needed instead.
 - `egress.inspect_tls`, off by default and set only in the managed
-  configuration: each session's proxy makes a CA of its own, terminates
-  commands' HTTPS with it, and decides every request inside by method and
+  configuration: each session's proxy makes a CA of its own (valid two days,
+  replaced daily, the bundle rewritten), terminates commands' HTTPS with it, and decides every request inside by method and
   path, recorded as kind `https`. Commands are pointed at a bundle with the
   session's CA, given to them on the process, fence, container and vm
   tiers and by the container and microVM drivers (a guest agent from an

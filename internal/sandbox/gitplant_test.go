@@ -175,3 +175,117 @@ func TestPlantedRepositoryUncleanedStaysRefused(t *testing.T) {
 		t.Fatalf("a cleaned repository still refuses: %v", err)
 	}
 }
+
+// A new .git file naming a git folder already there never has it changed: it
+// is refused while that names a program, and let through when it names none.
+func TestPlantedPointerToAKnownFolderChangesNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	own := "[core]\n\tbare = false\n\teditor = vim\n[credential]\n\thelper = osxkeychain\n[alias]\n\tst = status\n"
+	writeFiles(t, ws, map[string]string{
+		".git/HEAD": "ref: refs/heads/main\n", ".git/config": own, ".git/hooks/pre-commit": "#!/bin/sh\n",
+		".git/modules/z/HEAD": "ref: refs/heads/main\n", ".git/modules/z/config": "[core]\n\tworktree = ../../../z\n",
+	})
+	var mem gitMemory
+	var rec recorded
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("the first look refused: %v", err)
+	}
+	writeFiles(t, ws, map[string]string{"x/.git": "gitdir: ../.git\n"})
+	for range 2 {
+		if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "x/.git") ||
+			!strings.Contains(err.Error(), "core.editor") {
+			t.Fatalf("a pointer to the workspace's git folder was not refused: %v", err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, ".git", "config")); string(b) != own {
+		t.Errorf("the workspace's own config was changed: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git", "hooks", "pre-commit")); err != nil {
+		t.Errorf("the workspace's own hook was moved: %v", err)
+	}
+	if err := os.Remove(filepath.Join(ws, "x", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, ws, map[string]string{"z/.git": "gitdir: ../.git/modules/z\n"})
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("a submodule's pointer naming nothing was refused: %v", err)
+	}
+}
+
+// A git folder there at the first look and moved to a new .git is not changed.
+func TestMovedKnownGitFolderIsNotChanged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := workspace(t)
+	sub := "[core]\n\tworktree = ../../../z\n[alias]\n\tst = status\n"
+	writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/config": "[core]\n",
+		".git/modules/z/HEAD": "ref: refs/heads/main\n", ".git/modules/z/config": sub})
+	var mem gitMemory
+	var rec recorded
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("the first look refused: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, "n"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(ws, ".git", "modules", "z"), filepath.Join(ws, "n", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "first look") {
+		t.Fatalf("a moved git folder was not refused: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "n", ".git", "config")); string(b) != sub {
+		t.Errorf("a git folder there from the start was changed: %q", b)
+	}
+}
+
+// When the first look stopped at its bound, a repository found later may be
+// the person's, so it is refused and left as it is.
+func TestRepositoryPastABoundedFirstLookIsNotChanged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old := gitWalkFolders
+	gitWalkFolders = 3
+	t.Cleanup(func() { gitWalkFolders = old })
+	ws := workspace(t)
+	for _, d := range []string{"a", "b", "c", "d"} {
+		if err := os.MkdirAll(filepath.Join(ws, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mine := "[core]\n\tfsmonitor = ./mine\n"
+	writeFiles(t, ws, map[string]string{"z/.git/HEAD": "ref: refs/heads/main\n", "z/.git/config": mine})
+	var mem gitMemory
+	var rec recorded
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err != nil {
+		t.Fatalf("the first look refused: %v", err)
+	}
+	for _, d := range []string{"a", "b", "c", "d"} {
+		if err := os.Remove(filepath.Join(ws, d)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := gitGuardFor(rec.ctx(), ws, "bwrap", &mem, false); err == nil || !strings.Contains(err.Error(), "bound") {
+		t.Fatalf("a repository past the bound was not refused: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "z", ".git", "config")); string(b) != mine {
+		t.Errorf("a repository past the bound was changed: %q", b)
+	}
+}
+
+// A .git folder reached through a link is not opened for writing.
+func TestNewGitFolderThroughALinkIsNotOpened(t *testing.T) {
+	ws := workspace(t)
+	writeFiles(t, ws, map[string]string{".git/HEAD": "ref: refs/heads/main\n"})
+	if err := os.Symlink(ws, filepath.Join(ws, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := openNewGitFolder(ws, filepath.Join(ws, "x", ".git"), nil); err == nil {
+		_ = r.Close()
+		t.Fatal("a folder reached through a link was opened")
+	}
+	r, err := openNewGitFolder(ws, filepath.Join(ws, ".git"), nil)
+	if err != nil {
+		t.Fatalf("a real folder was not opened: %v", err)
+	}
+	_ = r.Close()
+}

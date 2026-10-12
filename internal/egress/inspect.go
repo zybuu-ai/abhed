@@ -12,33 +12,74 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// inspector terminates commands' HTTPS with leaf certificates from a CA made
-// for this proxy alone, whose key never leaves the process.
+// inspector terminates commands' HTTPS with leaf certificates from CAs made
+// for this proxy alone, whose keys never leave the process.
 type inspector struct {
-	ca    *x509.Certificate
-	key   *ecdsa.PrivateKey
-	pem   []byte
 	roots *x509.CertPool // upstream verification; nil is the system's
+	now   func() time.Time
 
-	mu     sync.Mutex
-	leaves map[string]*tls.Certificate
+	mu sync.Mutex
+	// signer issues leaves; next is in the bundle already, so a client that
+	// read it before a rotation still trusts the one after.
+	signer, next *sessionCA
+	rotateAt     time.Time
+	pem          []byte
+	leaves       map[string]*tls.Certificate
+	// files hold the bundle for commands and are rewritten on each rotation.
+	files []string
+	timer *time.Timer
+}
+
+type sessionCA struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
 }
 
 // maxLeaves bounds the leaf certificates a proxy keeps.
 const maxLeaves = 1024
 
+// caSlice is how long one CA issues leaves; each is valid for two slices
+// and an hour, so none outlives a proxy by more than that.
+const caSlice = 24 * time.Hour
+
 func newInspector(roots *x509.CertPool) (*inspector, error) {
+	in := &inspector{roots: roots, now: time.Now, leaves: map[string]*tls.Certificate{}}
+	if err := in.restart(in.now()); err != nil {
+		return nil, err
+	}
+	return in, nil
+}
+
+// restart makes a new signer and next from t.
+func (in *inspector) restart(t time.Time) error {
+	signer, err := newSessionCA(t)
+	if err != nil {
+		return err
+	}
+	next, err := newSessionCA(t)
+	if err != nil {
+		return err
+	}
+	in.signer, in.next, in.rotateAt = signer, next, t.Add(caSlice)
+	in.pem = append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: signer.cert.Raw}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: next.cert.Raw})...)
+	return nil
+}
+
+func newSessionCA(t time.Time) (*sessionCA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -47,12 +88,11 @@ func newInspector(roots *x509.CertPool) (*inspector, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "Abhed egress inspection (one session)", Organization: []string{"Abhed"}},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.Add(7 * 24 * time.Hour),
+		NotBefore:             t.Add(-time.Hour),
+		NotAfter:              t.Add(2*caSlice + time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -66,14 +106,98 @@ func newInspector(roots *x509.CertPool) (*inspector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &inspector{ca: ca, key: key, roots: roots, leaves: map[string]*tls.Certificate{},
-		pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}, nil
+	return &sessionCA{cert: ca, key: key}, nil
 }
 
-// leaf is a certificate for host signed by the proxy's CA.
+// rotate moves to the next CA once the signer's slice is over, rewriting the
+// bundle's files; in.mu is held.
+func (in *inspector) rotate() error {
+	t := in.now()
+	if t.Before(in.rotateAt) {
+		return nil
+	}
+	var err error
+	if t.Before(in.rotateAt.Add(caSlice)) {
+		var next *sessionCA
+		if next, err = newSessionCA(t); err == nil {
+			in.signer, in.next, in.rotateAt = in.next, next, in.rotateAt.Add(caSlice)
+			in.pem = append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: in.signer.cert.Raw}),
+				pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: next.cert.Raw})...)
+		}
+	} else {
+		// Asleep past the next slice too: what any client holds has expired.
+		err = in.restart(t)
+	}
+	if err != nil {
+		return err
+	}
+	in.leaves = map[string]*tls.Certificate{}
+	bundle := withSystem(in.pem)
+	for _, f := range in.files {
+		err = errors.Join(err, replaceWhole(f, bundle))
+	}
+	return err
+}
+
+// replaceWhole puts b at p by renaming a synced file over it in p's folder,
+// so a reader sees the old bundle or the new, never part of one.
+func replaceWhole(p string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(p), ".ca-*")
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(b)
+	err = errors.Join(werr, f.Chmod(0o644), f.Sync(), f.Close()) // #nosec G302 -- public certificates, read by commands
+	if err == nil {
+		// The old file keeps a name, so a reader holding a cached name for it (a
+		// VM's shared folder) still finds the old bundle until it looks again.
+		prev := filepath.Join(filepath.Dir(p), ".ca-prev.pem")
+		_ = os.Remove(prev)
+		_ = os.Link(p, prev)
+		err = os.Rename(f.Name(), p)
+	}
+	if err != nil {
+		_ = os.Remove(f.Name())
+	}
+	return err
+}
+
+// tick rotates on schedule, so the files are current before a client reads them.
+func (in *inspector) tick() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.timer == nil {
+		return
+	}
+	if err := in.rotate(); err != nil {
+		slog.Warn("egress: rotating the inspection CA", "err", err)
+	}
+	in.timer.Reset(max(in.rotateAt.Sub(in.now()), time.Minute))
+}
+
+func (in *inspector) start() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.timer = time.AfterFunc(in.rotateAt.Sub(in.now()), in.tick)
+}
+
+func (in *inspector) stop() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.timer != nil {
+		in.timer.Stop()
+		in.timer = nil
+	}
+}
+
+// leaf is a certificate for host signed by the proxy's current CA.
 func (in *inspector) leaf(host string) (*tls.Certificate, error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
+	// Also here: a timer can fire late after the machine sleeps.
+	if err := in.rotate(); err != nil {
+		slog.Warn("egress: rotating the inspection CA", "err", err)
+	}
 	if c := in.leaves[host]; c != nil {
 		return c, nil
 	}
@@ -85,12 +209,12 @@ func (in *inspector) leaf(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
+	ca := in.signer
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     in.ca.NotAfter,
+		NotBefore:    in.now().Add(-time.Hour),
+		NotAfter:     ca.cert.NotAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -99,11 +223,11 @@ func (in *inspector) leaf(host string) (*tls.Certificate, error) {
 	} else {
 		tmpl.DNSNames = []string{host}
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, in.ca, &key.PublicKey, in.key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
 	if err != nil {
 		return nil, err
 	}
-	c := &tls.Certificate{Certificate: [][]byte{der, in.ca.Raw}, PrivateKey: key}
+	c := &tls.Certificate{Certificate: [][]byte{der, ca.cert.Raw}, PrivateKey: key}
 	if len(in.leaves) >= maxLeaves {
 		in.leaves = map[string]*tls.Certificate{}
 	}
@@ -119,6 +243,8 @@ func (p *Proxy) CA() []byte {
 	if p.ins == nil {
 		return nil
 	}
+	p.ins.mu.Lock()
+	defer p.ins.mu.Unlock()
 	return append([]byte(nil), p.ins.pem...)
 }
 
@@ -126,9 +252,11 @@ func (p *Proxy) CA() []byte {
 var systemBundles = []string{"/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
 	"/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"}
 
-// CABundle is the system's CA bundle with the proxy's CA after it, for a
-// command's clients to trust in place of the system's alone.
-func (p *Proxy) CABundle() []byte {
+// CABundle is the system's CA bundle with the proxy's CAs after it, which
+// rotate daily; WriteCABundle keeps a file of it current.
+func (p *Proxy) CABundle() []byte { return withSystem(p.CA()) }
+
+func withSystem(ca []byte) []byte {
 	var b []byte
 	for _, f := range systemBundles {
 		if data, err := os.ReadFile(f); err == nil && len(data) > 0 { // #nosec G304 -- a fixed system path
@@ -137,7 +265,24 @@ func (p *Proxy) CABundle() []byte {
 			break
 		}
 	}
-	return append(b, p.CA()...)
+	return append(b, ca...)
+}
+
+// WriteCABundle writes the CA bundle as ca.pem in dir, a folder of its own
+// that commands are given whole, and replaces it there whenever the CAs
+// rotate, until the proxy closes; it returns the file's path.
+func (p *Proxy) WriteCABundle(dir string) (string, error) {
+	if p.ins == nil {
+		return "", errors.New("the proxy does not inspect HTTPS")
+	}
+	p.ins.mu.Lock()
+	defer p.ins.mu.Unlock()
+	path := filepath.Join(dir, "ca.pem")
+	if err := replaceWhole(path, withSystem(p.ins.pem)); err != nil {
+		return "", err
+	}
+	p.ins.files = append(p.ins.files, path)
+	return path, nil
 }
 
 // SetCAPath names where commands find CABundle, as they see the path; their

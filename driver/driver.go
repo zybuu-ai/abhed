@@ -82,10 +82,22 @@ type Egress struct {
 	// it, held by the driver and never given to the sandbox.
 	DNSSocket     string `json:"dns_socket,omitempty"`
 	DNSCredential string `json:"dns_credential,omitempty"`
-	// CABundle, set under egress.inspect_tls, is the proxy's inspection CA
-	// with the system roots, which the driver places where the commands'
-	// certificate variables point; a driver that cannot refuses the sandbox.
+	// CABundle, under egress.inspect_tls, is the system roots and the proxy's
+	// CAs, placed where commands' certificate variables point, or refused.
 	CABundle []byte `json:"ca_bundle,omitempty"`
+	// CABundleNow, when set, is the bundle now; the CAs rotate daily, and a
+	// driver that placed a copy places it again.
+	CABundleNow func() []byte `json:"-"`
+}
+
+// CA is the bundle to place now.
+func (e Egress) CA() []byte {
+	if e.CABundleNow != nil {
+		if b := e.CABundleNow(); len(b) > 0 {
+			return b
+		}
+	}
+	return e.CABundle
 }
 
 // Phase is an instance's runtime phase as the driver sees it.

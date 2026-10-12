@@ -108,8 +108,12 @@ func (e *sandboxEgress) Open(id string) (driver.Egress, error) {
 }
 
 func (p *sandboxProxy) egress() driver.Egress {
-	return driver.Egress{Socket: filepath.Join(p.dir, "proxy.sock"), Port: p.proxy.Addr().Port(),
+	eg := driver.Egress{Socket: filepath.Join(p.dir, "proxy.sock"), Port: p.proxy.Addr().Port(),
 		DNSSocket: filepath.Join(p.dir, "dns.sock"), DNSCredential: egress.Credential(p.dns.URL()), CABundle: p.ca}
+	if p.ca != nil {
+		eg.CABundleNow = p.proxy.CABundle
+	}
+	return eg
 }
 
 func (e *sandboxEgress) Call(id string) ([]string, func(), error) {

@@ -17,9 +17,8 @@ var (
 	etcWalkEntries = 20000
 )
 
-// rootEtcGrants are the paths under etc a command run as root may read: what
-// any user may read, less rootHiddenEtc. A folder holding nothing hidden is
-// granted whole, one holding some entry by entry; links are judged at their targets.
+// rootEtcGrants are what a root command may read under etc: what any user may,
+// less rootHiddenEtc, by folder where nothing in it is hidden; links by target.
 func rootEtcGrants(etc string) []string {
 	seen := 0
 	var walk func(dir, rel string, depth int) ([]string, bool)

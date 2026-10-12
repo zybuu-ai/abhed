@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,9 +131,8 @@ func gitFolderOf(entry string) string {
 	return ""
 }
 
-// gitFolderIn is the real path of the git folder g is or names when it is in
-// ws and not under any-case .abhed; inside reports whether it is, and dir is
-// "" when there is none yet.
+// gitFolderIn is the real path of the git folder g is or names, "" if none
+// yet; inside is whether it is in ws and not under any-case .abhed.
 func gitFolderIn(ws, g string) (dir string, inside bool) {
 	named := gitFolderOf(g)
 	if named == "" {
@@ -158,19 +159,23 @@ func gitFolderIn(ws, g string) (dir string, inside bool) {
 	return real, true
 }
 
-// plantedGits strips what names a program git would run from git folders new
-// since the session's first look, and says why the command is refused. A
-// repository counts as seen only once it is clean, so a failed rewrite refuses
-// every command until it is fixed.
-func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits []string) error {
+// plantedGits strips what names a program from .git folders new since the
+// first look and refuses the command; one is seen only once clean.
+func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, scan *gitScan) error {
 	mem.mu.Lock()
 	if mem.based == nil {
-		mem.based, mem.seenGit = map[string]bool{}, map[string]bool{}
+		mem.based, mem.seenGit, mem.partial, mem.knownDirs = map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string][]os.FileInfo{}
 	}
 	first := !mem.based[ws]
 	mem.based[ws] = true
+	if first {
+		// A repository past a bounded first look may be the person's own.
+		mem.partial[ws] = scan.walkBounded
+		mem.knownDirs[ws] = folderIDs(scan)
+	}
+	partial, known := mem.partial[ws], mem.knownDirs[ws]
 	var fresh []string
-	for _, g := range gits {
+	for _, g := range scan.gits {
 		if !mem.seenGit[g] {
 			if first {
 				mem.seenGit[g] = true
@@ -196,32 +201,43 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 		if dir == "" {
 			continue
 		}
+		var root *os.Root
+		why := "a .git file names it"
+		if info, err := os.Lstat(g); err == nil && info.IsDir() {
+			if partial {
+				why = "the session's first look stopped at its bound, so it may have been there before"
+			} else if root, err = openNewGitFolder(ws, g, known); err != nil {
+				why = err.Error()
+			}
+		}
+		if root == nil {
+			// Only a .git folder made during the session is changed; any
+			// other is the person's, or reached on the command's word.
+			if bad := gitFolderNames(dir); len(bad) > 0 {
+				entries = append(entries, map[string]any{"path": g, "repository": g, "points_to": dir, "outcome": plantRemaining, "settings": bad})
+				parts = append(parts, g+" reaches the git folder "+dir+", which names "+strings.Join(bad, ", ")+"; Abhed changes nothing there ("+
+					why+"); remove "+g+" or those settings")
+			} else {
+				clean = append(clean, g)
+			}
+			continue
+		}
 		ok := true
 		for _, c := range []string{"config", "config.worktree"} {
-			if m := cleanGitConfig(filepath.Join(dir, c), g); m != nil {
+			if m := cleanGitConfig(root, c, filepath.Join(g, c), g); m != nil {
 				ok = ok && m["outcome"] != plantRemaining
 				entries = append(entries, m)
 				parts = append(parts, m["summary"].(string))
 				delete(m, "summary")
 			}
 		}
-		h := filepath.Join(dir, "hooks")
-		if hook := hookIn(h); hook != "" {
-			m := map[string]any{"path": h, "repository": g, "settings": []string{"hook " + filepath.Base(hook)}}
-			if dest, err := quarantine(h, "hooks", "git-"); err == nil {
-				m["outcome"], m["moved_to"] = plantMoved, dest
-				parts = append(parts, h+" was moved to "+dest)
-				makeEmpty(h, true)
-			} else if rerr := os.RemoveAll(h); rerr == nil {
-				m["outcome"] = plantRemoved
-				parts = append(parts, h+" was removed")
-			} else {
-				ok = false
-				m["outcome"] = plantRemaining
-				parts = append(parts, h+" is still there and could not be taken out; remove it before running git there")
-			}
+		if m := takeOutHooks(root, g); m != nil {
+			ok = ok && m["outcome"] != plantRemaining
+			parts = append(parts, m["summary"].(string))
+			delete(m, "summary")
 			entries = append(entries, m)
 		}
+		_ = root.Close()
 		if ok {
 			clean = append(clean, g)
 		}
@@ -243,10 +259,94 @@ func plantedGits(ctx context.Context, ws, backend string, mem *gitMemory, gits [
 		"repository holding it, could run; %s", strings.Join(parts, "; "))
 }
 
-// cleanGitConfig keeps p's config to what git init or clone write, quarantining
-// a copy first; nil when it held nothing else.
-func cleanGitConfig(p, g string) map[string]any {
-	info, err := os.Lstat(p)
+// folderIDs are the git folders a scan found, a repository's, its submodules'
+// and linked worktrees', by identity, so one moved later is still known.
+func folderIDs(scan *gitScan) []os.FileInfo {
+	var out []os.FileInfo
+	for p := range scan.seen {
+		if info, err := os.Lstat(p); err == nil && info.IsDir() {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
+// gitFolderNames lists what in the git folder dir names a program git would
+// run, changing nothing.
+func gitFolderNames(dir string) []string {
+	var bad []string
+	for _, c := range []string{"config", "config.worktree"} {
+		p := filepath.Join(dir, c)
+		info, err := os.Lstat(p)
+		if err != nil {
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			bad = append(bad, c+" not a regular file")
+			continue
+		}
+		if b, err := readSmall(p); err == nil {
+			_, more := filterGitConfig(b)
+			bad = append(bad, more...)
+		}
+	}
+	if hook := hookIn(filepath.Join(dir, "hooks")); hook != "" {
+		bad = append(bad, "hook "+filepath.Base(hook))
+	}
+	return bad
+}
+
+// openNewGitFolder opens the .git folder g, reached from ws through real
+// folders only, unless it is a git folder there at the first look.
+func openNewGitFolder(ws, g string, known []os.FileInfo) (*os.Root, error) {
+	rel, err := filepath.Rel(ws, g)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, errors.New("it is not under the workspace")
+	}
+	cur, err := os.OpenRoot(ws)
+	if err != nil {
+		return nil, err
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		info, err := cur.Lstat(part)
+		if err == nil && !info.IsDir() {
+			err = errors.New("a folder on its path is a link")
+		}
+		var next *os.Root
+		if err == nil {
+			next, err = cur.OpenRoot(part)
+		}
+		_ = cur.Close()
+		if err != nil {
+			return nil, err
+		}
+		// A folder swapped for a link after the look opens something else.
+		if st, serr := next.Stat("."); serr != nil || !os.SameFile(info, st) {
+			_ = next.Close()
+			return nil, errors.New("a folder on its path changed while it was looked at")
+		}
+		cur = next
+	}
+	st, err := cur.Stat(".")
+	if err == nil {
+		for _, k := range known {
+			if os.SameFile(k, st) {
+				err = errors.New("it is a git folder there at the session's first look")
+				break
+			}
+		}
+	}
+	if err != nil {
+		_ = cur.Close()
+		return nil, err
+	}
+	return cur, nil
+}
+
+// cleanGitConfig keeps config name in root, shown as p, to what git init or
+// clone write, quarantining a copy first; nil when it held nothing else.
+func cleanGitConfig(root *os.Root, name, p, g string) map[string]any {
+	info, err := root.Lstat(name)
 	if err != nil {
 		return nil
 	}
@@ -255,7 +355,7 @@ func cleanGitConfig(p, g string) map[string]any {
 		return map[string]any{"path": p, "repository": g, "settings": []string{"not a regular file"}, "outcome": plantRemaining,
 			"summary": p + " is not a regular file, so git could read settings from wherever it points; replace it with a plain file"}
 	}
-	b, err := readSmall(p)
+	b, err := readSmallIn(root, name)
 	if err != nil {
 		return nil
 	}
@@ -269,7 +369,7 @@ func cleanGitConfig(p, g string) map[string]any {
 		m["moved_to"] = dest
 	}
 	// Written at the same path, as git's own config, so the repository keeps its remote and branches.
-	if err := replaceFile(p, kept); err != nil {
+	if err := replaceFile(root, name, kept); err != nil {
 		m["outcome"], m["error"] = plantRemaining, err.Error()
 		m["summary"] = p + " names " + strings.Join(bad, ", ") + " and could not be rewritten; remove those settings before running git there"
 		return m
@@ -279,6 +379,56 @@ func cleanGitConfig(p, g string) map[string]any {
 	if qerr == nil {
 		m["summary"] = m["summary"].(string) + " (the whole file is in " + dest + ")"
 	}
+	return m
+}
+
+func readSmallIn(root *os.Root, name string) ([]byte, error) {
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, 1<<20))
+}
+
+// takeOutHooks moves the hooks folder of the git folder root, the .git folder
+// g, to the quarantine when it holds anything but git's samples; nil when not.
+func takeOutHooks(root *os.Root, g string) map[string]any {
+	h := filepath.Join(g, "hooks")
+	entries, err := fs.ReadDir(root.FS(), "hooks")
+	if err != nil {
+		return nil
+	}
+	hook := ""
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".sample") {
+			hook = e.Name()
+			break
+		}
+	}
+	if hook == "" {
+		return nil
+	}
+	m := map[string]any{"path": h, "repository": g, "settings": []string{"hook " + hook}}
+	// Set aside under a name of its own within the opened folder first, so
+	// the move out by path can only take that.
+	aside := ".hooks-" + rand.Text()
+	if err := root.Rename("hooks", aside); err != nil {
+		if rerr := root.RemoveAll("hooks"); rerr != nil {
+			m["outcome"], m["error"] = plantRemaining, errors.Join(err, rerr).Error()
+			m["summary"] = h + " is still there and could not be taken out; remove it before running git there"
+			return m
+		}
+		m["outcome"], m["summary"] = plantRemoved, h+" was removed"
+		return m
+	}
+	_ = root.Mkdir("hooks", 0o755) // #nosec G301 -- git's own mode for hooks
+	if dest, err := quarantine(filepath.Join(g, aside), "hooks", "git-"); err == nil {
+		m["outcome"], m["moved_to"], m["summary"] = plantMoved, dest, h+" was moved to "+dest
+		return m
+	}
+	_ = root.RemoveAll(aside)
+	m["outcome"], m["summary"] = plantRemoved, h+" was removed"
 	return m
 }
 
@@ -300,22 +450,22 @@ func keepCopy(p string, b []byte) (string, error) {
 	return dest, os.WriteFile(dest, b, 0o600)
 }
 
-// replaceFile puts b at p by renaming a new file over it, so a hard link to p
-// is cut rather than written through.
-func replaceFile(p string, b []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(p), ".config-")
+// replaceFile puts b at name in root by renaming a new file over it, so a
+// hard link to it is cut rather than written through.
+func replaceFile(root *os.Root, name string, b []byte) error {
+	tmp := ".config-" + rand.Text()
+	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644) // #nosec G302 -- git's own mode for config
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
 	_, werr := f.Write(b)
 	cerr := f.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp, 0o644)); err != nil { // #nosec G302 -- git's own mode for config
-		_ = os.Remove(tmp)
+	if err := errors.Join(werr, cerr, root.Chmod(tmp, 0o644)); err != nil { // #nosec G302 -- git's own mode for config
+		_ = root.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, p); err != nil {
-		_ = os.Remove(tmp)
+	if err := root.Rename(tmp, name); err != nil {
+		_ = root.Remove(tmp)
 		return err
 	}
 	return nil

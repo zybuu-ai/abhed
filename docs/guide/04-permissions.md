@@ -881,11 +881,17 @@ submodule URLs, extensions, user, `init`, `pull`, `fetch`, `gc`, `index` and
 `lfs` format) is taken out, the file as it was copied to
 `~/.abhed/quarantine`, a hooks folder holding anything but git's samples is
 moved there, the command is not run, its error says what was done, and the
-record gains `sandbox.git_planted`. A new `.git` file naming a git folder
-outside the workspace or under `.abhed` (in any case), or a new repository
-whose `config` is a link, is never changed by Abhed: every command is
-refused, naming it, until you remove it; so is one Abhed could not clean
-(a read-only git folder, say), until it can be. A config is replaced rather than
+record gains `sandbox.git_planted`. Abhed changes only a `.git` folder made
+during the session. A new `.git` file naming a git folder outside the
+workspace or under `.abhed` (in any case), a new `.git` file naming any git
+folder (the workspace's own, a submodule's) whose config or hooks name a
+program, a git folder there at the first look moved to a new place, a
+repository found only after a first look that stopped at its folder bound,
+and a new repository whose `config` is a link are never changed by Abhed:
+every command is refused, naming it, until you remove it or those settings;
+so is one Abhed could not clean (a read-only git folder, say), until it can
+be. A `.git` file naming a git folder that names no program, as `git
+submodule add` and `git worktree add` write, is let through. A config is replaced rather than
 written through, so a hard link to it keeps its other contents. This runs
 under bubblewrap, in a container and on macOS; under the fence in
 `mount_namespace` mode too. Until

@@ -450,6 +450,10 @@ type gitMemory struct {
 	// found since; one found later was made during the session.
 	based   map[string]bool
 	seenGit map[string]bool
+	// partial are workspaces whose first look stopped at its bound, and
+	// knownDirs the git folders that look found.
+	partial   map[string]bool
+	knownDirs map[string][]os.FileInfo
 }
 
 // gitGuardFor returns the paths in ws to bind read-only, or why the command is
@@ -495,7 +499,7 @@ func gitGuardFor(ctx context.Context, ws, backend string, mem *gitMemory, requir
 		record(EvGitPlanted, map[string]any{"entries": entries, "reason": err.Error()})
 		return nil, err
 	}
-	if err := plantedGits(ctx, ws, backend, mem, g.gits); err != nil {
+	if err := plantedGits(ctx, ws, backend, mem, g); err != nil {
 		return nil, err
 	}
 	if len(g.linked) > 0 {

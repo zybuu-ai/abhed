@@ -13,14 +13,13 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// fenceEgress is a fenced session's egress proxy. Each call reaches it by a
-// way in of its own: a loopback port for landlock_only, a unix socket joined
-// by the relay in its network namespace otherwise.
+// fenceEgress is a fenced session's egress proxy, reached by each call its own
+// way: a loopback port in landlock_only, else a socket for its relay.
 type fenceEgress struct {
 	once  sync.Once
 	proxy *egress.Proxy
 	dir   string
-	ca    string // the inspection CA bundle commands read, when the policy inspects TLS
+	caDir string // the inspection CA bundle's folder, when the policy inspects TLS
 	err   error
 	eg    *egressState
 }
@@ -39,7 +38,7 @@ type fenceCall struct {
 	// landlock_only, the relay's in mount mode.
 	port  uint16
 	relay *fenceEgressSpec // mount mode only
-	ca    string           // a file the command may read, or ""
+	caDir string           // the CA bundle's folder, which the command may read, or ""
 }
 
 // start starts the session's proxy once.
@@ -53,9 +52,13 @@ func (e *fenceEgress) start(pol *egress.Policy) error {
 		// Outside every write grant: a command cannot put another socket in its place.
 		e.dir, e.err = os.MkdirTemp("", "abhed-fence-egress-")
 		if e.err == nil && e.proxy.Inspecting() {
-			e.ca = filepath.Join(e.dir, "ca.pem")
-			if e.err = os.WriteFile(e.ca, e.proxy.CABundle(), 0o644); e.err == nil { // #nosec G306 -- public certificates, read by commands
-				e.proxy.SetCAPath(e.ca)
+			// A folder of its own, granted whole, so a rotated bundle renamed in is readable.
+			e.caDir = filepath.Join(e.dir, "ca")
+			if e.err = os.Mkdir(e.caDir, 0o700); e.err == nil {
+				var path string
+				if path, e.err = e.proxy.WriteCABundle(e.caDir); e.err == nil {
+					e.proxy.SetCAPath(path)
+				}
 			}
 		}
 		if e.err != nil {
@@ -69,8 +72,7 @@ func (e *fenceEgress) start(pol *egress.Policy) error {
 }
 
 // call is a credential for the launch's call, revoked when ctx ends, with a
-// way in no other call has: in mount mode a socket for its relay alone, else
-// a loopback port only its Landlock domain may connect to.
+// way in of its own: its relay's socket, or a port only its Landlock domain reaches.
 func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy, mounts bool) (fenceCall, error) {
 	if err := e.start(pol); err != nil {
 		return fenceCall{}, fmt.Errorf("the egress proxy: %w", err)
@@ -91,7 +93,7 @@ func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy, mounts bool)
 	}
 	e.eg.remember(l)
 	context.AfterFunc(ctx, c.End)
-	fc := fenceCall{env: c.Env(), port: c.Port(), ca: e.ca}
+	fc := fenceCall{env: c.Env(), port: c.Port(), caDir: e.caDir}
 	if mounts {
 		fc.port = e.proxy.Addr().Port()
 		fc.relay = &fenceEgressSpec{Sock: c.Socket(), Listen: e.proxy.Addr().String()}

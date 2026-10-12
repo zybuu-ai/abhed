@@ -20,8 +20,12 @@ import (
 // relayInside is where the relay binary is bound in a container.
 const relayInside = "/run/abhed-relay"
 
-// caInside is where a container's commands find the inspection CA bundle.
-const caInside = "/run/abhed-ca.pem"
+// caDirInside holds the inspection CA bundle in a container, bound whole so a
+// rotated bundle renamed in is seen; caInside is the bundle.
+const (
+	caDirInside = "/run/abhed-ca"
+	caInside    = caDirInside + "/ca.pem"
+)
 
 // relayReady bounds how long a command waits for its container's relay.
 const relayReady = 30 * time.Second
@@ -71,7 +75,10 @@ func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 		c.egDir, c.egErr = os.MkdirTemp("", "abhed-egr-")
 		if c.egErr == nil && c.egProxy.Inspecting() {
 			// Bound into each command's container, where its clients are pointed.
-			c.egErr = os.WriteFile(filepath.Join(c.egDir, "ca.pem"), c.egProxy.CABundle(), 0o644) // #nosec G306 -- public certificates, read inside the container
+			ca := filepath.Join(c.egDir, "ca")
+			if c.egErr = os.Mkdir(ca, 0o755); c.egErr == nil { // #nosec G301 -- public certificates, read inside the container
+				_, c.egErr = c.egProxy.WriteCABundle(ca)
+			}
 			c.egProxy.SetCAPath(caInside)
 		}
 		if c.egErr != nil {
@@ -118,7 +125,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	run := append([]string{"run", "--rm", "-d"}, args[3:]...)
 	run = append(run, "-v", relay+":"+relayInside+":ro")
 	if proxy.Inspecting() {
-		run = append(run, "-v", filepath.Join(c.egDir, "ca.pem")+":"+caInside+":ro")
+		run = append(run, "-v", filepath.Join(c.egDir, "ca")+":"+caDirInside+":ro")
 	}
 	run = append(run, "--name", name, Image,
 		"/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done")
@@ -155,21 +162,24 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 		stop()
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: its egress relay did not start in time")}
 	}
-	context.AfterFunc(ctx, stop)
+	// In a private file, not an argument any process can list nor the CLI's
+	// own environment, whose proxy settings its client would follow.
+	envFile, removeEnv, err := EnvFile(call.Env())
+	if err != nil {
+		stop()
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its proxy settings: %w", err)}
+	}
+	stopAll := func() {
+		stop()
+		removeEnv()
+	}
+	context.AfterFunc(ctx, stopAll)
 	execArgs := []string{"exec", "-i", "-w", cwd}
 	if uid, gid := os.Getuid(), os.Getgid(); uid > 0 {
 		execArgs = append(execArgs, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
-	// By name only, the values in the engine CLI's environment: an argument
-	// would show the call's token to any process that lists command lines.
-	callEnv := call.Env()
-	for _, kv := range callEnv {
-		k, _, _ := strings.Cut(kv, "=")
-		execArgs = append(execArgs, "-e", k)
-	}
-	execArgs = append(execArgs, "-e", "ABHED_SANDBOX="+string(c.Tier()), name, "/bin/sh", "-c", command)
+	execArgs = append(execArgs, "--env-file", envFile, "-e", "ABHED_SANDBOX="+string(c.Tier()), name, "/bin/sh", "-c", command)
 	cmd := c.engineCmd(ctx, execArgs...)
-	cmd.Env = append(cmd.Env, callEnv...)
 	cmd.Cancel = func() error {
 		stop()
 		return cmd.Process.Kill()

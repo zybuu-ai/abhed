@@ -214,3 +214,28 @@ func TestStopEndsASnapshotsCopy(t *testing.T) {
 		t.Fatal("the snapshot's copy outlived the stop")
 	}
 }
+
+// A snapshot of a VM that failed, whose changes were never copied back, is
+// refused rather than taken from the host's older copy; a stopped one is taken.
+func TestSnapshotOfAFailedVMIsRefused(t *testing.T) {
+	ws, _ := sandboxPair(t)
+	be := &fakeBackend{}
+	o := testOptions(t)
+	o.SnapshotDir = filepath.Join(shortTemp(t), "snaps")
+	d := newDriver(o, be)
+	d.image = copyImage
+	ctx := context.Background()
+	if _, err := d.Create(ctx, driver.Spec{ID: id, Workspace: ws}); err != nil {
+		t.Fatal(err)
+	}
+	be.last().exit()
+	if _, err := d.Snapshot(ctx, id, "s"); !errors.Is(err, driver.ErrUnavailable) {
+		t.Fatalf("a snapshot of a failed VM: %v", err)
+	}
+	if _, err := d.Stop(ctx, id, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Snapshot(ctx, id, "s"); err != nil {
+		t.Fatalf("a snapshot of a stopped VM: %v", err)
+	}
+}

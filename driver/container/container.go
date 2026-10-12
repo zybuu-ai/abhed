@@ -754,23 +754,25 @@ func (d *Driver) prepare(ctx context.Context, in *instance, tty bool, dir, line 
 	if err != nil {
 		return nil, err
 	}
-	values := append([]string{}, env...)
 	end := func() {}
+	envFile := ""
 	if in.egress != nil {
 		callEnv, stop, err := in.egress.call(sandbox.LaunchOf(ctx).CallID)
 		if err != nil {
 			return nil, driver.Errorf(driver.ErrUnavailable, "%v", err)
 		}
-		end = stop
-		for _, kv := range callEnv {
-			k, _, _ := strings.Cut(kv, "=")
-			names = append(names, k)
+		// In a private file, not the CLI's own environment, whose proxy
+		// settings its client to the engine would follow.
+		f, remove, err := sandbox.EnvFile(callEnv)
+		if err != nil {
+			stop()
+			return nil, driver.Errorf(driver.ErrUnavailable, "the command's proxy settings: %v", err)
 		}
-		values = append(values, callEnv...)
+		envFile, end = f, func() { stop(); remove() }
 	}
 	pf := pidFile(nonce())
-	cmd := d.r.command(ctx, d.execArgs(in, tty, dir, pf, line, names, fixed))
-	cmd.Env = append(cmd.Env, values...)
+	cmd := d.r.command(ctx, d.execArgs(in, tty, dir, pf, line, names, fixed, envFile))
+	cmd.Env = append(cmd.Env, env...)
 	return &prepared{cmd: cmd, pidFile: pf, end: end}, nil
 }
 

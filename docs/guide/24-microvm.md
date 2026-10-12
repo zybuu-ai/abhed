@@ -74,7 +74,9 @@ The driver declares `attach`, `copy` and `forward`, and `snapshot` when
   device. A stream ends when it is closed or the sandbox stops, and each is
   recorded (`sandbox.forward`) when the driver has a record.
 - **Snapshot** copies the guest's changes back and archives the host
-  workspace, without `.abhed`, by its SHA-256. **Restore** needs the
+  workspace, without `.abhed`, by its SHA-256; of a stopped sandbox it
+  archives the host workspace as it is, and of one whose VM failed it is
+  refused (`unavailable`), as those changes could not be copied back. **Restore** needs the
   sandbox stopped, checks the digest, replaces the host workspace and builds
   the workspace image again, so the next start boots with it.
 
@@ -156,8 +158,9 @@ the token alone names the call: one sandbox is one trust unit. With
 `egress.inspect_tls` the driver sends the session's CA bundle to the guest
 agent at boot, which writes it to `/run/abhed-ca.pem` (outside the
 workspace, owned by the agent, readable by commands), and each command's
-certificate variables point there. A guest built before this release
-refuses that call, and the sandbox is not created.
+certificate variables point there; when the session's CA has rotated (once
+a day) it is sent again before the next command. A guest built before this
+release refuses that call, and the sandbox is not created.
 
 With the network off, or `allow_network` without the allowlist, the driver
 listens on no port for the guest and the guest forwards nothing. The microVM

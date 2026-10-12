@@ -250,3 +250,31 @@ func TestEgressPlacesTheInspectionCA(t *testing.T) {
 		t.Fatalf("a guest without the call: %v", err)
 	}
 }
+
+// A rotated CA bundle is placed in the guest again before the next command.
+func TestEgressPlacesARotatedCA(t *testing.T) {
+	port := origin(t)
+	_, sock, _ := session(t, port)
+	var mu sync.Mutex
+	bundle := []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+	now := func() []byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return bundle
+	}
+	d, be := newFake(t)
+	eg := &driver.Egress{Socket: sock, Port: freePort(t), CABundle: now(), CABundleNow: now}
+	if _, err := d.Create(context.Background(), driver.Spec{ID: id, Egress: eg}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Delete(context.Background(), id) }()
+	mu.Lock()
+	bundle = []byte("-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n")
+	mu.Unlock()
+	if _, err := d.Exec(context.Background(), id, driver.ExecRequest{Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(be.last().srv.CAFile); err != nil || !bytes.Equal(got, now()) {
+		t.Fatalf("the guest's CA file after a rotation: %q %v", got, err)
+	}
+}

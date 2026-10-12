@@ -76,7 +76,7 @@ func (d *Driver) Forward(ctx context.Context, id string, port int) (io.ReadWrite
 	}
 	fctx, cancel := context.WithCancel(context.Background())
 	pf := pidFile(nonce())
-	cmd := d.r.command(fctx, d.execArgs(in, false, in.pol.Workspace, pf, forward.RelayLine(port), nil, nil))
+	cmd := d.r.command(fctx, d.execArgs(in, false, in.pol.Workspace, pf, forward.RelayLine(port), nil, nil, ""))
 	cmd.Cancel = func() error { d.kill(in, pf); return cmd.Process.Kill() }
 	cmd.WaitDelay = 2 * time.Second
 	var st *forward.Stream

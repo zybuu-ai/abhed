@@ -154,6 +154,7 @@ func Start(opts Options) (*Proxy, error) {
 			}
 			return nil, err
 		}
+		p.ins.start()
 	}
 	p.addr = lns[0].Addr().(*net.TCPAddr).AddrPort()
 	for _, ln := range lns {
@@ -301,6 +302,9 @@ func (p *Proxy) Close() error {
 		p.mu.Unlock()
 		p.wg.Wait()
 		p.limit.stop()
+		if p.ins != nil {
+			p.ins.stop()
+		}
 	})
 	return nil
 }
