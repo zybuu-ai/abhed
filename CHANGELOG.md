@@ -614,6 +614,9 @@ on. A server with it off starts on the older schema as before.
   signed out, signed out everywhere, the account removed, the password
   changed, ended by an administrator, replaced by a new sign-in in the
   same browser, or expired.
+- The administrative system log is written on Windows, to the Application
+  event log under the source `abhed-admin`; it was written only to
+  `admin.jsonl` there.
 
 ### Fixed
 
