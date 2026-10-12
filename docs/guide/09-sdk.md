@@ -197,7 +197,10 @@ agent (`config.TrustGranted` or `config.TrustRefused`), and
 `Agent.WorkspaceTrust()` reports what was decided and what was ignored. If
 the untrusted file names its own model and `Options.Provider` is nil, `New`
 returns `abhed.ErrUntrustedModel` rather than run on a different model; set
-`Options.AllowDefaultModel` to run on the configured default instead.
+`Options.AllowDefaultModel` to run on the configured default instead, which
+`New` then warns of, naming the model in use, through `Options.Warn` or on
+stderr. `abhed acp`, `abhed rpc` and `abhed resolve` run that way, so an
+editor's session in an untrusted workspace says which model it runs on.
 
 | Option | Without a managed file | Under a managed file |
 |---|---|---|

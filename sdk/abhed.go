@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -262,7 +263,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
-	if keys := untrustedModelKeys(cfg.Workspace); len(keys) > 0 && opts.Provider == nil &&
+	keys := untrustedModelKeys(cfg.Workspace)
+	if len(keys) > 0 && opts.Provider == nil && opts.AllowDefaultModel {
+		// Not silently: the person expects the workspace's model.
+		msg := fmt.Sprintf("the workspace configuration %s sets %s, which waits for trust; this session runs on %s instead",
+			config.Printable(cfg.Workspace.File), strings.Join(keys, ", "), config.Printable(cfg.Model.Default))
+		if cfgWarn != nil {
+			cfgWarn(msg)
+		} else {
+			fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", msg)
+		}
+	}
+	if len(keys) > 0 && opts.Provider == nil &&
 		opts.WorkspaceTrust == config.TrustAsStored && !opts.AllowDefaultModel {
 		return nil, fmt.Errorf("abhed: %w (%s in %s): trust it with `abhed trust grant`, or set Options.WorkspaceTrust, "+
 			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))

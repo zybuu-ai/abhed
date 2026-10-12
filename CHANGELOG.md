@@ -734,6 +734,13 @@ on. A server with it off starts on the older schema as before.
   read them (`abhed -allow 'secret(X)' acp`) were silently ignored. They now
   stop the command with exit `2` and a message naming them, as they do
   written after it; `-C` is still accepted before any subcommand.
+- A session in an untrusted workspace whose file names its own model (an
+  editor over `abhed acp`, `abhed rpc`, an SDK agent with
+  `AllowDefaultModel`) ran on the configured default without a word; it now
+  warns, naming the model in use. `abhed serve`, `migrate` and `user`
+  refused an untrusted workspace that set only `auth.require_group` saying
+  it would start with no sign-in or no durable record; the refusal now says
+  what each ignored setting would lose.
 
 ### Dependencies
 

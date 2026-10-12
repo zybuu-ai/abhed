@@ -659,3 +659,17 @@ func TestUntrustedWarningIsSaidOnce(t *testing.T) {
 		t.Fatalf("warned %d times:\n%s", n, out.String())
 	}
 }
+
+// A refusal names what running without each ignored deployment setting
+// would lose: a require_group alone is not a sign-in or record matter.
+func TestDeploymentErrorNamesTheReasonPerKey(t *testing.T) {
+	w := WorkspaceTrust{File: "/ws/.abhed/config.json", Ignored: []IgnoredKey{{Key: "auth.require_group"}}}
+	err := w.DeploymentError("serve")
+	if err == nil || !strings.Contains(err.Error(), "without the group a person must be in") || strings.Contains(err.Error(), "durable record") {
+		t.Fatalf("%v", err)
+	}
+	w.Ignored = append(w.Ignored, IgnoredKey{Key: "storage.dsn"})
+	if err := w.DeploymentError("serve"); err == nil || !strings.Contains(err.Error(), "durable record") {
+		t.Fatalf("%v", err)
+	}
+}

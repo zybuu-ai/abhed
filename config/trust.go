@@ -125,11 +125,33 @@ func (w WorkspaceTrust) DeploymentError(command string) error {
 	if len(keys) == 0 {
 		return nil
 	}
+	var why []string
+	for _, k := range keys {
+		if r := deploymentReason(k); !slices.Contains(why, r) {
+			why = append(why, r)
+		}
+	}
 	return fmt.Errorf("the workspace configuration %s sets %s, but it is not trusted. "+
-		"%s refuses to run without them: it would start with no sign-in or no durable record. "+
+		"%s refuses to run without them: it would start %s. "+
 		"Review it with `abhed trust`, then trust it with `abhed trust grant` or run `abhed -trust-workspace %s`; "+
 		"or move these settings to ~/.abhed/config.json or the managed /etc/abhed/config.json",
-		Printable(w.File), strings.Join(keys, ", "), command, command)
+		Printable(w.File), strings.Join(keys, ", "), command, strings.Join(why, ", "), command)
+}
+
+// deploymentReason says what running without one ignored deployment setting
+// would lose.
+func deploymentReason(key string) string {
+	switch {
+	case key == "auth.require_group" || strings.HasPrefix(key, "auth.require_group"):
+		return "without the group a person must be in to sign in"
+	case key == "auth" || strings.HasPrefix(key, "auth."):
+		return "with sign-in other than the file sets"
+	case key == "storage" || strings.HasPrefix(key, "storage."):
+		return "without the durable record the file names"
+	case key == "control_plane" || strings.HasPrefix(key, "control_plane."):
+		return "with the sandbox API's settings other than the file sets"
+	}
+	return "with server settings other than the file sets"
 }
 
 // NeedsDecision reports whether the person should be asked: an untrusted file
