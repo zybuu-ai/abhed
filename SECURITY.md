@@ -24,6 +24,13 @@ release workflow, with SLSA build provenance and an SBOM per binary. See
 signature does not verify against that workflow's identity did not come
 from us: please report it.
 
+## Advisories
+
+Security advisories are published through GitHub Security Advisories on
+this repository, each naming the affected and fixed versions, with a CVE
+identifier where one is assigned. The **Security** section of each release
+in `CHANGELOG.md` lists every security fix and the releases it affects.
+
 ## Reporting a vulnerability
 
 Email **security@zybuu.com**.
@@ -81,10 +88,12 @@ We ask that you:
 
 In scope:
 
-- **The harness** — everything under `cmd/`, `internal/`, and `sdk/`: the
-  agent loop, the policy engine (`internal/policy`), the sandbox
-  (`internal/sandbox`), the MCP gateway, the auth layer (`auth`),
-  the Postgres store (`store`), and the server (`server`).
+- **The harness** — every Go package in this repository: the agent loop,
+  the policy engine (`internal/policy`), the sandbox (`internal/sandbox`),
+  the control plane and drivers (`controlplane`, `driver`, with the
+  `abhed-microvm` and `abhed-guest` binaries), the MCP gateway, the auth
+  layer (`auth`), the stores (`store`), the server (`server`) and the SDK
+  (`sdk`), plus the container image and the Helm chart.
 - **The console** — the web UI served by `abhed serve`.
 - **The hosted console and site** — the hosted console at `abhed.zybuu.com`
   and the `zybuu.com` site, which Zybuu operates. Their deployment scripts

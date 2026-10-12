@@ -13,6 +13,10 @@ From `store/schema.sql`, on the Postgres storage driver:
 | `events` | Every event in a session, append-only: tool calls, **tool output**, model responses, approvals and refusals — tagged `trusted` or `untrusted` per event |
 | `checkpoints` | The content of a file immediately before the agent changed it, keyed to the event that changed it — this is what `/undo` reads |
 | `models` | The registry of configured model endpoints and their capability profile |
+| `approvals` | Questions asked of a person and their answers, with the call's arguments (the arguments are cleared when the session is deleted) |
+| `sandboxes`, `sandbox_idempotency`, `sandbox_audit`, `sandbox_templates` | Control-plane sandboxes, replayable requests, and the sandboxes' hash-chained audit record |
+| `owner_changes`, `account_changes` | Trigger-written history of every session owner change and every change to an account's groups or tenant |
+| `session_keys` | Each session's sealing key; deleting the session deletes it |
 
 A model's reasoning, where the endpoint reports it, is in `events` twice: in
 parts as it streamed (`agent.reasoning.delta`) and whole (`agent.reasoning`),
@@ -23,8 +27,16 @@ either in this same Postgres database or, without `storage.driver: postgres`
 configured, in `<workspace>/.abhed/users.json` mode `0600` — or wherever `auth.users_file` (`ABHED_USERS_FILE`) points, which a deployment sets to its state directory so accounts never sit in a workspace
 (`docs/ops/enabling-auth.md`, "Where accounts live").
 
-**Uploads** are files the agent reads or writes inside the session workspace.
-They are not a separate store; they are ordinary files in that workspace, and
+**Secrets** are kept in the operator's store, `~/.abhed/secrets.json`. On
+`abhed serve` with sign-in each account has a store of its own under
+`~/.abhed/secrets.d` (or `ABHED_ACCOUNT_SECRETS_DIR`), and the operator's
+serves scheduled runs only. No value is written to the record; a value that
+reaches an event is redacted first.
+
+**Uploads** are files the agent reads or writes inside the session workspace,
+each upload in a folder of its own with a random name. On a server with more
+than one account each session works in a sandbox folder of its own, unless
+`server.shared_sessions` is set. They are not a separate store; they are ordinary files in that workspace, and
 their content that passes through the agent loop is captured in `events` as
 tool output like anything else the agent reads. When the server runs in a
 container, put the workspace on a named volume rather than a host path, so
@@ -101,9 +113,11 @@ reclaims them.
   first — which is a deliberate, high-friction operation, not a supported
   workflow).
 - **Accounts**: `abhed user remove <username>` deletes the account
-  immediately. It does not delete that user's session history: removing the
-  account ends their access; the audit log of what they did stays, which is
-  the point of keeping it.
+  immediately and stops what a running server runs for it. It does not
+  delete that user's session history: removing the account ends their
+  access; the audit log of what they did stays, which is the point of
+  keeping it. On Postgres their sessions move to an unclaimed owner, so a
+  new account of the same name does not inherit them.
 
 ## Self-hosted deployments
 
