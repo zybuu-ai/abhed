@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -144,5 +145,53 @@ func fenceEgressCheck(t *testing.T, portOnly bool) {
 		if e["call_id"] == "call-x" {
 			t.Fatalf("a borrowed token moved y's traffic to x: %v", e)
 		}
+	}
+}
+
+// With inspect_tls a fenced command's curl trusts the session CA it is
+// given, in both modes, and a path-narrowed rule is held inside HTTPS.
+func TestFenceEgressInspectsHTTPS(t *testing.T) {
+	t.Run("mount_namespace", func(t *testing.T) { fenceInspectCheck(t, false) })
+	t.Run("landlock_only", func(t *testing.T) { fenceInspectCheck(t, true) })
+}
+
+func fenceInspectCheck(t *testing.T, portOnly bool) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is not installed")
+	}
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "inside "+r.URL.Path)
+	}))
+	defer upstream.Close()
+	port := netip.MustParseAddrPort(strings.TrimPrefix(upstream.URL, "https://")).Port()
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	old := egressStart
+	egressStart = func(o egress.Options) (*egress.Proxy, error) { o.UpstreamRoots = roots; return old(o) }
+	t.Cleanup(func() { egressStart = old })
+	oldResolve := egressResolve
+	egressResolve = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if host == "example.com" { // a name the test server's certificate holds
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+		}
+		return nil, fmt.Errorf("no such host %s", host)
+	}
+	t.Cleanup(func() { egressResolve = oldResolve })
+	pol, err := egress.Compile(egress.Config{InspectTLS: true, Rules: []egress.Rule{{Host: "example.com", Ports: []int{int(port)},
+		Paths: []string{"/ok"}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, p := fenced(t, func(p *Policy) {
+		p.Egress = pol
+		p.fenceNoMounts, p.FenceEgressPortOnly = portOnly, portOnly
+	})
+	if (f.Mode() == FenceModeMounts) == portOnly {
+		t.Skipf("the fence is in mode %s", f.Mode())
+	}
+	out, _ := fenceRun(t, f, p.Workspace, fmt.Sprintf(`curl -sS -m 20 https://example.com:%d/ok; echo; `+
+		`curl -sS -m 20 -o /dev/null -w 'code=%%{http_code}' https://example.com:%d/exfil`, port, port), nil, "call-tls")
+	if !strings.Contains(out, "inside /ok") || !strings.Contains(out, "code=403") || strings.Contains(out, "inside /exfil") {
+		t.Fatalf("output:\n%s", out)
 	}
 }

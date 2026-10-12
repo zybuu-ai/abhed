@@ -20,6 +20,9 @@ import (
 // relayInside is where the relay binary is bound in a container.
 const relayInside = "/run/abhed-relay"
 
+// caInside is where a container's commands find the inspection CA bundle.
+const caInside = "/run/abhed-ca.pem"
+
 // relayReady bounds how long a command waits for its container's relay.
 const relayReady = 30 * time.Second
 
@@ -61,12 +64,21 @@ func (c *Container) containerRelay() (string, string) {
 func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 	c.egOnce.Do(func() {
 		c.eg = &egressState{session: "container"}
-		c.egProxy, c.egErr = egress.Start(egress.Options{Policy: c.policy.Egress, Record: c.eg.route})
+		c.egProxy, c.egErr = egressStart(egress.Options{Policy: c.policy.Egress, Record: c.eg.route})
 		if c.egErr != nil {
 			return
 		}
-		if c.egDir, c.egErr = os.MkdirTemp("", "abhed-egr-"); c.egErr != nil {
+		c.egDir, c.egErr = os.MkdirTemp("", "abhed-egr-")
+		if c.egErr == nil && c.egProxy.Inspecting() {
+			// Bound into each command's container, where its clients are pointed.
+			c.egErr = os.WriteFile(filepath.Join(c.egDir, "ca.pem"), c.egProxy.CABundle(), 0o644) // #nosec G306 -- public certificates, read inside the container
+			c.egProxy.SetCAPath(caInside)
+		}
+		if c.egErr != nil {
 			_ = c.egProxy.Close()
+			if c.egDir != "" {
+				_ = os.RemoveAll(c.egDir)
+			}
 		}
 	})
 	return c.egProxy, c.eg, c.egErr
@@ -104,7 +116,11 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	name := containerName(egressPrefix)
 	// Detached, with the relay bound read-only; it idles until removed.
 	run := append([]string{"run", "--rm", "-d"}, args[3:]...)
-	run = append(run, "-v", relay+":"+relayInside+":ro", "--name", name, Image,
+	run = append(run, "-v", relay+":"+relayInside+":ro")
+	if proxy.Inspecting() {
+		run = append(run, "-v", filepath.Join(c.egDir, "ca.pem")+":"+caInside+":ro")
+	}
+	run = append(run, "--name", name, Image,
 		"/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done")
 	end := func() {
 		call.End()

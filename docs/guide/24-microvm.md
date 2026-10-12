@@ -152,7 +152,9 @@ Each command's per-call credential comes in its environment
 process tier, so the allowlist, the per-call credentials and the record of
 each decision are the proxy's, unchanged. A request without the call's
 credential is refused by the proxy. The VM's commands share one way in, so
-the token alone names the call.
+the token alone names the call. The guest cannot be given the session CA
+that `egress.inspect_tls` needs, so with it on a microVM sandbox is not
+created.
 
 With the network off, or `allow_network` without the allowlist, the driver
 listens on no port for the guest and the guest forwards nothing. The microVM

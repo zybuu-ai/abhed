@@ -13,6 +13,8 @@ const (
 	egressDir    = "/run/abhed-egress"
 	egressRelay  = egressDir + "/relay"
 	egressSocket = egressDir + "/proxy.sock"
+	// egressCA is the inspection CA bundle, under egress.inspect_tls.
+	egressCA = egressDir + "/ca.pem"
 )
 
 // keepAlive is the container's own process: it waits, and ends on a stop.
@@ -120,6 +122,13 @@ func (d *Driver) runArgs(in *instance) []string {
 			opt += ",z"
 		}
 		args = append(args, "-v", d.opts.RelayBinary+":"+egressRelay+":"+opt)
+		if in.egress.proxy.Inspecting() {
+			ca := "ro"
+			if eng.selinux {
+				ca += ",Z"
+			}
+			args = append(args, "-v", filepath.Join(in.egress.dir, "ca.pem")+":"+egressCA+":"+ca)
+		}
 	case in.egress != nil:
 		opt := "ro"
 		if eng.selinux {

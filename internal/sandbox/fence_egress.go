@@ -20,6 +20,7 @@ type fenceEgress struct {
 	once  sync.Once
 	proxy *egress.Proxy
 	dir   string
+	ca    string // the inspection CA bundle commands read, when the policy inspects TLS
 	err   error
 	eg    *egressState
 }
@@ -38,19 +39,30 @@ type fenceCall struct {
 	// landlock_only, the relay's in mount mode.
 	port  uint16
 	relay *fenceEgressSpec // mount mode only
+	ca    string           // a file the command may read, or ""
 }
 
 // start starts the session's proxy once.
 func (e *fenceEgress) start(pol *egress.Policy) error {
 	e.once.Do(func() {
 		e.eg = &egressState{session: "fence"}
-		e.proxy, e.err = egress.Start(egress.Options{Policy: pol, Record: e.eg.route, Resolve: egressResolve, IPv6Loopback: true})
+		e.proxy, e.err = egressStart(egress.Options{Policy: pol, Record: e.eg.route, Resolve: egressResolve, IPv6Loopback: true})
 		if e.err != nil {
 			return
 		}
 		// Outside every write grant: a command cannot put another socket in its place.
-		if e.dir, e.err = os.MkdirTemp("", "abhed-fence-egress-"); e.err != nil {
+		e.dir, e.err = os.MkdirTemp("", "abhed-fence-egress-")
+		if e.err == nil && e.proxy.Inspecting() {
+			e.ca = filepath.Join(e.dir, "ca.pem")
+			if e.err = os.WriteFile(e.ca, e.proxy.CABundle(), 0o644); e.err == nil { // #nosec G306 -- public certificates, read by commands
+				e.proxy.SetCAPath(e.ca)
+			}
+		}
+		if e.err != nil {
 			_ = e.proxy.Close()
+			if e.dir != "" {
+				_ = os.RemoveAll(e.dir)
+			}
 		}
 	})
 	return e.err
@@ -79,7 +91,7 @@ func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy, mounts bool)
 	}
 	e.eg.remember(l)
 	context.AfterFunc(ctx, c.End)
-	fc := fenceCall{env: c.Env(), port: c.Port()}
+	fc := fenceCall{env: c.Env(), port: c.Port(), ca: e.ca}
 	if mounts {
 		fc.port = e.proxy.Addr().Port()
 		fc.relay = &fenceEgressSpec{Sock: c.Socket(), Listen: e.proxy.Addr().String()}

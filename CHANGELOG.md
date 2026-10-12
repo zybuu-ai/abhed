@@ -1115,8 +1115,11 @@ All notable changes to Abhed are recorded here. The format follows
   configuration: each session's proxy makes a CA of its own, terminates
   commands' HTTPS with it, and decides every request inside by method and
   path, recorded as kind `https`. Commands are pointed at a bundle with the
-  session's CA; a client that pins certificates or keeps its own trust
-  store fails rather than going uninspected.
+  session's CA, given to them on the process, fence, container and vm
+  tiers and by the container drivers; a client that pins certificates or
+  keeps its own trust store fails rather than going uninspected. The
+  microVM driver cannot give its guest the CA, so a microVM sandbox is not
+  created while it is on.
 - `server.tls.client_revoked_file`: client certificates that are refused
   although they verify, as PEM CRLs signed by the client CA or as hex
   serial numbers one to a line. It is reloaded like the CA; a revoked

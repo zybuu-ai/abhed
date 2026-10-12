@@ -155,3 +155,18 @@ func lookupRcode(t *testing.T, sock, cred, name string) int {
 	}
 	return int(a[3] & 0x0f)
 }
+
+// Under inspect_tls a microVM sandbox is refused: the guest cannot be given
+// the session's CA, so none of its HTTPS would pass.
+func TestSandboxEgressRefusesInspectionForTheMicroVM(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sandbox.Network = config.NetworkAllowlist
+	cfg.Egress.InspectTLS = true
+	eg, err := newSandboxEgress(cfg, nil)
+	if err != nil || eg == nil {
+		t.Fatal(err)
+	}
+	if _, err := eg.Open("sbx_0123456789abcdef"); err == nil || !strings.Contains(err.Error(), "inspect_tls") {
+		t.Fatalf("a microVM sandbox under inspect_tls: %v", err)
+	}
+}

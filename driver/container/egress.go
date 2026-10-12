@@ -100,6 +100,11 @@ func startEgress(id string, pol *egress.Policy, record func(string, map[string]a
 	if err == nil && !stdio {
 		err = placeRelay(exe, filepath.Join(dir, "relay"), selinux)
 	}
+	if err == nil && p.Inspecting() {
+		// Where the container sees it: in the folder bound in, or bound on its own.
+		err = os.WriteFile(filepath.Join(dir, "ca.pem"), p.CABundle(), 0o644) // #nosec G306 -- public certificates, read inside the container
+		p.SetCAPath(egressCA)
+	}
 	if err == nil {
 		err = p.ListenUnix(filepath.Join(dir, "proxy.sock"))
 	}

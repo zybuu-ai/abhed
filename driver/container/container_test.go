@@ -1104,3 +1104,65 @@ func TestMountRootsStayClearOfReservedFolders(t *testing.T) {
 		t.Fatalf("a root clear of both: %v", err)
 	}
 }
+
+// With inspect_tls each command is pointed at the session CA bundle where
+// the container sees it: in the egress folder bound in on Linux, or bound
+// on its own beside the relay where the engine is in a VM.
+func TestEgressInspectionCAIsInTheContainer(t *testing.T) {
+	pol, err := egress.Compile(egress.Config{InspectTLS: true, Rules: []egress.Rule{{Host: "example.com", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(t.TempDir(), "abhed")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldExe, oldOS := relayExecutable, hostOS
+	t.Cleanup(func() { relayExecutable, hostOS = oldExe, oldOS })
+	relayExecutable = func() (string, error) { return exe, nil }
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vm := range []bool{false, true} {
+		hostOS = "linux"
+		opts := Options{}
+		f := &fakeRunner{podman: true, script: `echo "ca=$SSL_CERT_FILE"`}
+		if vm {
+			hostOS, opts.RelayBinary = "darwin", "/opt/abhed/abhed-linux-arm64"
+			f.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
+				if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
+					return nil
+				}
+				return exec.CommandContext(ctx, self, stdiorelay.Arg, "127.0.0.1:0")
+			}
+		}
+		d, ws := testDriver(t, f, opts, func(p *sandbox.Policy) { p.Egress = pol })
+		if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+			t.Fatal(err)
+		}
+		in := d.insts["sbx_0123456789abcdef"]
+		host := filepath.Join(in.egress.dir, "ca.pem")
+		if b, err := os.ReadFile(host); err != nil || !strings.Contains(string(b), string(in.egress.proxy.CA())) {
+			t.Fatalf("vm=%v: the bundle does not hold the session CA: %v", vm, err)
+		}
+		got := joined(f.runCall(t))
+		want := " -v " + in.egress.dir + ":/run/abhed-egress:ro "
+		if vm {
+			want = " -v " + host + ":" + egressCA + ":ro "
+		}
+		if !strings.Contains(got, want) {
+			t.Errorf("vm=%v: missing %q in %s", vm, want, got)
+		}
+		var out bytes.Buffer
+		if _, err := d.Exec(context.Background(), "sbx_0123456789abcdef", driver.ExecRequest{Command: "true", Stdout: &out}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "ca="+egressCA) {
+			t.Errorf("vm=%v: the command was not pointed at the bundle: %q", vm, out.String())
+		}
+		if err := d.Delete(context.Background(), "sbx_0123456789abcdef"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

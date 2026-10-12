@@ -113,3 +113,44 @@ func TestContainerAllowlistNeedsARelay(t *testing.T) {
 		t.Fatalf("available %v: %s", ok, why)
 	}
 }
+
+// With inspect_tls each command's container has the session CA bundle bound
+// in read-only, and its clients are pointed at it there.
+func TestContainerCommandGetsTheInspectionCA(t *testing.T) {
+	engine, log := fakeEngine(t)
+	pol, err := egress.Compile(egress.Config{InspectTLS: true, Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	c := &Container{runtime: engine, available: true, policy: Policy{Workspace: ws, Egress: pol, RelayBinary: "/opt/abhed-linux"}}
+	c.once.Do(func() {})
+	old, oldPort := containerHostOS, relayPort
+	containerHostOS = "darwin"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	relayPort = func(uint16) uint16 { return uint16(port) } // #nosec G115 -- a port
+	t.Cleanup(func() { containerHostOS, relayPort = old, oldPort; _ = c.Close() })
+	ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "call-ca"}))
+	defer cancel()
+	out, err := c.Command(ctx, ws, `echo "ca=$SSL_CERT_FILE node=$NODE_EXTRA_CA_CERTS"`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if want := "ca=" + caInside + " node=" + caInside; !strings.Contains(string(out), want) {
+		t.Fatalf("the command was not pointed at the bundle: %s", out)
+	}
+	host := filepath.Join(c.egDir, "ca.pem")
+	b, _ := os.ReadFile(log)
+	if !strings.Contains(string(b), "-v "+host+":"+caInside+":ro") {
+		t.Fatalf("the bundle was not bound into the container:\n%s", b)
+	}
+	bundle, err := os.ReadFile(host)
+	if err != nil || !strings.Contains(string(bundle), string(c.egProxy.CA())) {
+		t.Fatalf("the bundle does not hold the session CA: %v", err)
+	}
+}

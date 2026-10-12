@@ -55,11 +55,19 @@ func newSandboxEgress(cfg config.Config, record driver.Recorder) (controlplane.E
 
 func (e *sandboxEgress) For(name string) bool { return name == microvm.Name }
 
+// errInspectMicroVM refuses a microVM sandbox under egress.inspect_tls.
+var errInspectMicroVM = errors.New("egress.inspect_tls is on, and the microvm driver cannot give its commands the session's CA, " +
+	"so the sandbox is not created rather than have every HTTPS request in it fail")
+
 func (e *sandboxEgress) Open(id string) (driver.Egress, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if p, ok := e.proxies[id]; ok {
 		return p.egress(), nil
+	}
+	if e.policy.InspectTLS() {
+		// The guest has no way to the session CA, so its every HTTPS would fail.
+		return driver.Egress{}, errInspectMicroVM
 	}
 	route := func(ev egress.Event) {
 		payload := ev.Payload()

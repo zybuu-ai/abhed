@@ -105,7 +105,13 @@ is a protocol upgrade. A tunnel that does not carry TLS (ssh over
 Each command is pointed at a CA bundle holding the system's roots and the
 session's CA: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
 `GIT_SSL_CAINFO`, `PIP_CERT`, `NODE_EXTRA_CA_CERTS`, `AWS_CA_BUNDLE` and
-`CARGO_HTTP_CAINFO`. curl, git, pip, Python `requests`, Node and Go on Linux
+`CARGO_HTTP_CAINFO`. The bundle is a file on the host, bound into the
+sandbox read-only on the process tier, readable through the fence's
+Landlock rules, and bound into each container on the container and vm tiers
+(`/run/abhed-ca.pem`) and by the `docker` and `podman` drivers
+(`/run/abhed-egress/ca.pem`). The microVM driver cannot give its guest the
+bundle, so with `inspect_tls` on a microVM sandbox is not created, with
+that reason, rather than run with every HTTPS request failing. curl, git, pip, Python `requests`, Node and Go on Linux
 read them. A client with a trust store of its own (a JVM's `cacerts`, Go on
 macOS, which asks the system), or one that pins its certificates, refuses
 the session's CA: its HTTPS then fails, and the failed handshake is recorded

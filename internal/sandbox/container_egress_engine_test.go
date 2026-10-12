@@ -44,3 +44,34 @@ func TestContainerAllowlistOnARealEngine(t *testing.T) {
 		t.Fatalf("output %s", out)
 	}
 }
+
+// On a real engine, with inspect_tls, a command reads the session CA bundle
+// where its clients are pointed; needs ABHED_TEST_RELAY_BINARY (Linux).
+func TestContainerInspectionCAOnARealEngine(t *testing.T) {
+	relay := os.Getenv("ABHED_TEST_RELAY_BINARY")
+	if relay == "" {
+		t.Skip("set ABHED_TEST_RELAY_BINARY to a Linux build of Abhed to run the allowlist on a real engine")
+	}
+	old := egressPrefix
+	egressPrefix = "abhed128-egr-"
+	t.Cleanup(func() { egressPrefix = old })
+	pol, err := egress.Compile(egress.Config{InspectTLS: true, Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	c := NewContainer(Policy{Workspace: ws, Egress: pol, RelayBinary: relay, MinTier: TierContainer})
+	if ok, why := c.Available(); !ok {
+		t.Skipf("no container engine: %s", why)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx, cancel := context.WithTimeout(WithLaunch(context.Background(), Launch{CallID: "call-ca"}), 3*time.Minute)
+	defer cancel()
+	out, err := c.Command(ctx, ws, `cat "$SSL_CERT_FILE"`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if ca := strings.TrimSpace(string(c.egProxy.CA())); !strings.Contains(string(out), ca) {
+		t.Fatalf("the command did not read the session CA: %.300s", out)
+	}
+}
