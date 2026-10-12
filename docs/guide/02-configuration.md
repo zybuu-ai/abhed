@@ -49,7 +49,7 @@ configuration](#trusting-the-workspace-configuration).
 | `custom_providers` | providers added without a rebuild |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
-| `retrieval`, `rag` | the local index, and external corpora |
+| `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |

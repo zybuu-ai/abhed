@@ -2,9 +2,12 @@ package toolset
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -327,15 +330,38 @@ func OpenIndex(ctx context.Context, cfg config.Config, workspace string) (*index
 	ix := index.New(workspace)
 	opts := index.DefaultBuildOptions()
 
+	var cache *index.FileVectorCache
 	if cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != "" {
 		provider, _ := cfg.Provider()
 		ix = ix.WithEmbedder(index.NewOpenAIEmbedder(
 			cfg.Retrieval.EmbedBaseURL, provider.APIKey,
 			cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims))
 		opts.Embed = true
+		if path := VectorCachePath(cfg, workspace); path != "" {
+			cache = index.OpenFileVectorCache(path)
+			ix = ix.WithVectorCache(cache)
+		}
 	}
 	if err := ix.Build(ctx, opts); err != nil {
 		return nil, err
 	}
+	if cache != nil {
+		// Kept for the next start; a cache that cannot be written only costs
+		// that start the embedding again.
+		_ = cache.Save()
+	}
 	return ix, nil
+}
+
+// VectorCachePath is where the workspace's embeddings are kept between
+// builds: under ~/.abhed, which sandboxed commands cannot write, one file per
+// workspace and embedding model. "" when there is no home directory.
+func VectorCachePath(cfg config.Config, workspace string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", tools.RealPath(workspace),
+		cfg.Retrieval.EmbedBaseURL, cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims)))
+	return filepath.Join(home, ".abhed", "index", "vectors-"+hex.EncodeToString(sum[:8])+".gob")
 }

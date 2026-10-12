@@ -10,8 +10,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
-// buildIndexCmd implements `abhed index`, so a large repo can be indexed once
-// rather than on every session start.
+// buildIndexCmd implements `abhed index`: it builds the index and keeps its
+// embeddings, so a session start embeds only the chunks that changed.
 func buildIndexCmd(workspace string, trust config.TrustChoice) int {
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
@@ -30,7 +30,9 @@ func buildIndexCmd(workspace string, trust config.TrustChoice) int {
 	fmt.Printf("  %d chunks · %d terms · %d vectors · %s\n",
 		docs, terms, vectors, time.Since(start).Round(time.Millisecond))
 	if vectors == 0 {
-		fmt.Printf("  (symbol + BM25 tiers only; set retrieval.embed to add the vector tier)\n")
+		fmt.Printf("  (symbol + BM25 tiers only, rebuilt by each session in moments; set retrieval.embed to add the vector tier)\n")
+	} else if path := toolset.VectorCachePath(cfg, workspace); path != "" {
+		fmt.Printf("  embeddings kept in %s for the next session\n", config.Printable(path))
 	}
 	return 0
 }

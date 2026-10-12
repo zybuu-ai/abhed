@@ -611,6 +611,12 @@ on. A server with it off starts on the older schema as before.
   nil they still go to stderr.
 - After `/model` moves to a model whose next turn fails, the CLI names the
   `/model` command that goes back to the model you were on.
+- `abhed index` said a repository "can be indexed once rather than on every
+  session start", but nothing was kept. With `retrieval.embed`, the
+  embeddings are now kept in `~/.abhed/index`, one file per workspace and
+  embedding model, so `abhed index` builds them ahead and a session start
+  embeds only the chunks that changed. The symbol and BM25 tiers are still
+  rebuilt by each session.
 
 ### Fixed
 
