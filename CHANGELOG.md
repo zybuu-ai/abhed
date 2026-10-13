@@ -169,12 +169,14 @@ All notable changes to Abhed are recorded here. The format follows
   …`, `unbuffer` and `dtach` passed `bash(curl *)`, and so did keys typed
   into a session (`tmux send-keys … 'curl …' Enter`). The command given to
   `script`, `unbuffer` or `dtach` is now judged (`script`'s exactly as
-  typed); under a rule for `bash`, tmux and screen are allowed only to
-  list, show, attach to or end sessions (tmux's `list-*`, `show-*`,
-  `has-session`, `kill-*`, `attach-session`, `detach-client` and
-  `capture-pane`, and `screen -ls`, `-wipe`, `-r`, `-x`), and anything
-  else is refused under a deny rule and asked about otherwise. Affects 0.1.0
-  to 1.2.7.
+  typed); under a rule for `bash`, tmux and screen are allowed only to list
+  or show what a running server holds (tmux's `list-sessions`,
+  `list-windows`, `list-panes`, `list-clients`, `list-buffers`, `show-*`,
+  `has-session`, `detach-client` and `capture-pane`, and `screen -ls`,
+  `-wipe`, `-r`, `-x`), tmux's `kill-*` are asked about, and anything else,
+  `attach-session`, `list-keys` and `list-commands` included as they start
+  a server that reads its configuration, is refused under a deny rule and
+  asked about otherwise. Affects 0.1.0 to 1.2.7.
 - A workbench shell or command could be read, typed into, resized or killed
   by whichever account held its session, not only the one that started it:
   when a session's owner changed in the store under a running server (as

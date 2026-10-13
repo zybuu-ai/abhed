@@ -255,3 +255,7 @@ func plainShellStart(file *syntax.File) bool {
 func (c Canonical) BaselineApplies() bool {
 	return c.shell.plainShell && !c.shell.innerShell && !c.SetsEnv() && !c.shell.unparsed
 }
+
+// AskUnderRules says why the line is put to a person under a deny or ask
+// rule for bash, though it hides nothing; "" for most lines.
+func (c Canonical) AskUnderRules() string { return c.shell.askUnderRules }

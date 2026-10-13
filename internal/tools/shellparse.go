@@ -122,6 +122,8 @@ type shellFacts struct {
 	// setsEnv reports the line changing the environment a shell gets.
 	scriptHidden string
 	setsEnv      bool
+	// askUnderRules says why the line is asked about under a rule for bash.
+	askUnderRules string
 	// varsDead reports a line past what the variable model follows, after
 	// which no value is known; sawOther a statement other than a plain one.
 	varsDead, sawOther bool

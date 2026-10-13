@@ -168,6 +168,9 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		noBaseline: outer.noBaseline,
 	}
 	moves = canon.MovesFolder()
+	if why := canon.AskUnderRules(); why != "" && out.ask == "" {
+		out.ask = why
+	}
 	// A file sourced or run by a name the check cannot resolve is not read.
 	// In a trusted file the name is the person's own, and only what resolves is read.
 	if why := canon.ScriptHidden(); why != "" && !trusted {
