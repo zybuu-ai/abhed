@@ -1502,6 +1502,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The workbench's **Tools** panel said the mode was "managed by your
+  organisation" under any managed configuration, such as one that only
+  turns on web search. It now says so only when the managed file sets
+  `permissions.mode`; `GET /v1/capabilities` has `permissions.managed_keys`
+  and `permissions.mode_managed`. Affects 1.0.0 to 1.2.7.
 - In the workbench's review, rejecting the only change of a file the session
   added left the file on disk, empty. It is now removed, as *Reject all*
   does. Affects 1.1.0 to 1.2.7.

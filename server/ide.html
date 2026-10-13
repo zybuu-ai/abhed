@@ -1448,7 +1448,7 @@ function drawCaps(){
   t.appendChild(el('div', 'group', 'Permissions'));
   const r = el('div', 'rules');
   const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
-  line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
+  line('mode', c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : ''));
   line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');
   const w = wsConfigLine(wsConf); if(w){ line('config', visible(w.text)); r.lastChild.title = visible(w.title); if(w.warn) r.lastChild.className = 'warn'; }
   t.appendChild(r);

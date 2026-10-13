@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -790,5 +791,34 @@ const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '', vis
 func TestIDERejectingAnAddedFilesOnlyChangeRemovesIt(t *testing.T) {
 	if out, err := runConsoleCases(t, "ide-review", ideReviewHarness, "ide_review_cases.mjs"); err != nil {
 		t.Fatalf("rejecting a change:\n%s", out)
+	}
+}
+
+// The Tools panel says the mode is the organisation's only when the managed
+// file sets it: one that only turns on web search leaves the mode alone.
+func TestCapabilitiesSayWhichSettingsAreManaged(t *testing.T) {
+	for name, tc := range map[string]struct {
+		keys []string
+		want bool
+	}{
+		"web search only": {[]string{"web_search.enabled"}, false},
+		"the mode":        {[]string{"permissions.deny", "permissions.mode"}, true},
+		"unknown":         {nil, true},
+	} {
+		cfg := config.Default()
+		cfg.Managed, cfg.ManagedKeys = true, tc.keys
+		s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/capabilities", nil))
+		var c capabilities
+		if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Permissions.ModeManaged != tc.want || !slices.Equal(c.Permissions.ManagedKeys, tc.keys) {
+			t.Errorf("%s: mode_managed %v, managed_keys %v", name, c.Permissions.ModeManaged, c.Permissions.ManagedKeys)
+		}
+	}
+	if !strings.Contains(ideHTML, "c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : '')") {
+		t.Error("the Tools panel does not take the mode's own managed flag")
 	}
 }
