@@ -62,7 +62,8 @@ func Command(ctx context.Context, path string, args ...string) *exec.Cmd {
 // Env is the host's environment for the engine at path, with CONTAINER_HOST
 // set to a podman machine's API socket when neither CONTAINER_HOST nor
 // CONTAINER_CONNECTION names an engine, the socket exists, and the default
-// connection is that machine's root one.
+// connection is that machine's, as root where the machine is rootful and
+// as its user where it is not.
 func Env(path string) []string {
 	env := os.Environ()
 	if sock := machineSocket(path); sock != "" {
@@ -103,7 +104,8 @@ func machineSocket(path string) string {
 }
 
 // askSocket asks the CLI, from its local configuration alone, for the API
-// socket of the machine whose root connection is the default; "" for any other.
+// socket of the machine whose connection is the default, when the socket's
+// rootfulness matches the connection's; "" for any other.
 func askSocket(path string) string {
 	out, err := ask(path, "system", "connection", "list", "--format", "json")
 	if err != nil {
@@ -123,17 +125,21 @@ func askSocket(path string) string {
 			continue
 		}
 		u, err := url.Parse(c.URI)
-		name, root := strings.CutSuffix(c.Name, "-root")
-		if !c.IsMachine || !root || err != nil || u.Scheme != "ssh" || u.User.Username() != "root" {
+		if !c.IsMachine || err != nil || u.Scheme != "ssh" {
 			return ""
 		}
-		// The machine must be rootful, so its socket is root's as the connection is.
+		name, root := strings.CutSuffix(c.Name, "-root")
+		if root != (u.User.Username() == "root") {
+			return ""
+		}
+		// The socket is root's on a rootful machine and the user's otherwise:
+		// never swap one for the other.
 		out, err := ask(path, "machine", "inspect", "--format", "{{.Rootful}} {{.ConnectionInfo.PodmanSocket.Path}}", name)
 		if err != nil {
 			return ""
 		}
 		rootful, sock, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
-		if rootful != "true" || !filepath.IsAbs(sock) {
+		if (rootful == "true") != root || (rootful != "true" && rootful != "false") || !filepath.IsAbs(sock) {
 			return ""
 		}
 		return sock

@@ -28,7 +28,7 @@ func rootSSHSessions(t *testing.T, podman string) int {
 
 // Choosing a tier and running a command on a podman machine leaves no root
 // ssh session behind in its VM, as Podman 5.2's CLI over ssh does. Opt in
-// with ABHED_TEST_SSHD_LEAK=1 on a Mac with a running rootful machine;
+// with ABHED_TEST_SSHD_LEAK=1 on a Mac with a running machine;
 // ABHED_TEST_SSHD_IMAGE names an image already pulled.
 func TestPodmanMachineLeavesNoSSHSessions(t *testing.T) {
 	if os.Getenv("ABHED_TEST_SSHD_LEAK") != "1" {

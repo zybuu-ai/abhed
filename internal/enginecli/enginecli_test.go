@@ -123,7 +123,13 @@ func TestEngineEnvPrefersMachineSocket(t *testing.T) {
 			t.Errorf("CONTAINER_HOST = %q for a socket that does not exist", got)
 		}
 	})
-	t.Run("rootless default connection", func(t *testing.T) {
+	t.Run("rootless machine and default connection", func(t *testing.T) {
+		clean(t)
+		if got := hostOf(Env(fakePodman(t, rootlessDefault, "false", sock))); got != "unix://"+sock {
+			t.Errorf("a rootless machine's own connection: CONTAINER_HOST = %q, want its socket", got)
+		}
+	})
+	t.Run("rootfulness differs", func(t *testing.T) {
 		clean(t)
 		if got := hostOf(Env(fakePodman(t, rootlessDefault, "true", sock))); got != "" {
 			t.Errorf("a rootless default was swapped for the rootful socket: %q", got)
@@ -131,6 +137,11 @@ func TestEngineEnvPrefersMachineSocket(t *testing.T) {
 		clean(t)
 		if got := hostOf(Env(fakePodman(t, rootDefault, "false", sock))); got != "" {
 			t.Errorf("a root connection was given a rootless machine's socket: %q", got)
+		}
+		clean(t)
+		odd := `[{"Name":"m","URI":"ssh://root@127.0.0.1:1/run/podman/podman.sock","IsMachine":true,"Default":true}]`
+		if got := hostOf(Env(fakePodman(t, odd, "false", sock))); got != "" {
+			t.Errorf("a root URI on the rootless connection's name was given a socket: %q", got)
 		}
 	})
 	t.Run("not a Mac or Windows", func(t *testing.T) {

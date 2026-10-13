@@ -216,10 +216,11 @@ all of these hold:
 
 - neither `CONTAINER_HOST` nor `CONTAINER_CONNECTION` is set (`DOCKER_HOST`
   is not read by `podman`, so it does not count);
-- the default connection (`podman system connection list`) is a machine's
-  root connection, and that machine is rootful, so the socket reaches the
-  same engine as the same user; a rootless default is never swapped for a
-  rootful socket;
+- the default connection (`podman system connection list`) is a machine's,
+  and the socket's rootfulness matches it: the root connection of a rootful
+  machine, or the rootless connection of a rootless one, so the socket
+  reaches the same engine as the same user. A rootless default is never
+  swapped for a rootful socket, nor the other way round;
 - the socket exists.
 
 Otherwise the CLI is run as it would be from your shell. Both questions are
@@ -236,7 +237,7 @@ The tests start containers of their own, named with a test prefix, and remove
 them. CI runs them
 on Docker and Podman on Linux, where the allowlist path runs too.
 
-On a Mac with a running rootful machine, this checks that choosing a tier
+On a Mac with a running machine, this checks that choosing a tier
 and running a command leave no root ssh session in the VM (name an image
 you have already pulled):
 

@@ -1487,8 +1487,9 @@ All notable changes to Abhed are recorded here. The format follows
 - On macOS and Windows, each call Abhed made to `podman` went over ssh to
   the machine, and Podman 5.2 and earlier leave a root ssh session behind in
   the VM at each; a long session ran the VM out of memory. Abhed now uses the
-  machine's API socket when the default connection is that rootful machine's
-  root connection and neither `CONTAINER_HOST` nor `CONTAINER_CONNECTION` is
+  machine's API socket when the default connection is that machine's and
+  matches the socket's rootfulness (root on a rootful machine, the user on a
+  rootless one), and neither `CONTAINER_HOST` nor `CONTAINER_CONNECTION` is
   set ([Container
   drivers](docs/guide/23-container-drivers.md#podman-machine-on-macos-and-windows)).
   Upgrading Podman is still recommended.
