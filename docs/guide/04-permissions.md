@@ -477,6 +477,9 @@ login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
 A plain `bash -c` or `sh -c` reads none. A shell typed into a terminal with
 no command and no script (`bash`, `exec bash`, `zsh`) reads the terminal,
 so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
+That holds wherever a person types the line: the workbench shell, the
+line-by-line terminal, a session's own sandbox, Studio's terminal and
+`:attach`; a refused line never reaches the shell and the record says denied.
 So is the shell `script`, `unbuffer`, `dtach`, `su`, `sudo -s` or `doas -s`
 starts on a terminal of its own, taken as any shell, interactive; `su -`,
 `sudo -i`, `login`, `expect` and `ssh` with no command (and none of `-V`,

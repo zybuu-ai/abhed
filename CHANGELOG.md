@@ -266,7 +266,10 @@ All notable changes to Abhed are recorded here. The format follows
   server cannot read, refuses instead, while rules or hooks are in force, a
   line that runs a script, sources a file, gives a shell a start-up file or
   folder, or finds a program on a `PATH` it sets; plain commands and programs
-  in the image's own `bin` folders run. Affects every release to 1.2.7.
+  in the image's own `bin` folders run. A shell typed at the workbench
+  shell, the line-by-line terminal or Studio's terminal is judged with the
+  start-up files it reads, once: the refusal is what runs and what the record
+  holds. Affects every release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
   on a disk that ignores case (documented as a limit). Deny and ask path

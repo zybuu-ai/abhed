@@ -779,14 +779,31 @@ func (e *Engine) pathRules(tool string) bool {
 // Evaluate applies the ordered decision flow. A prompt shows the command as
 // written; its reason notes continuations the checks joined.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
-	return e.evaluateAs(context.Background(), tool, mutates, args, false)
+	return e.evaluateAs(context.Background(), tool, mutates, args, asCommand)
 }
+
+// EvaluateTyped judges a whole command typed at a terminal that runs with
+// that terminal as its input: a shell it starts reads its start-up files, so
+// they are read under the rules. Every other step is Evaluate's.
+func (e *Engine) EvaluateTyped(tool string, mutates bool, args json.RawMessage) Result {
+	return e.evaluateAs(context.Background(), tool, mutates, args, asTyped)
+}
+
+// readAs is how a bash subject is read: as a command, as a whole command
+// typed at a terminal, or as one line of an interactive shell's input.
+type readAs int
+
+const (
+	asCommand readAs = iota
+	asTyped
+	asLine
+)
 
 // EvaluateContext is Evaluate with the context its hooks are given: a
 // deadline on ctx bounds them, and once it has passed, a decision that needs
 // a hook refuses at once.
 func (e *Engine) EvaluateContext(ctx context.Context, tool string, mutates bool, args json.RawMessage) Result {
-	return e.evaluateAs(ctx, tool, mutates, args, false)
+	return e.evaluateAs(ctx, tool, mutates, args, asCommand)
 }
 
 // EvaluateLine judges one line typed at an interactive terminal. The shell
@@ -795,11 +812,11 @@ func (e *Engine) EvaluateContext(ctx context.Context, tool string, mutates bool,
 // judged by the text checks alone, not refused for that; every other step
 // is Evaluate's.
 func (e *Engine) EvaluateLine(tool string, mutates bool, args json.RawMessage) Result {
-	return e.evaluateAs(context.Background(), tool, mutates, args, true)
+	return e.evaluateAs(context.Background(), tool, mutates, args, asLine)
 }
 
-func (e *Engine) evaluateAs(ctx context.Context, tool string, mutates bool, args json.RawMessage, line bool) Result {
-	res := e.evaluate(ctx, tool, mutates, args, line)
+func (e *Engine) evaluateAs(ctx context.Context, tool string, mutates bool, args json.RawMessage, as readAs) Result {
+	res := e.evaluate(ctx, tool, mutates, args, as)
 	if res.Decision == Ask && tool == "bash" {
 		// Only a backslash before a newline can be joined; the rest is not parsed again.
 		if _, subject, err := subjectOf(args); err == nil && strings.Contains(subject, "\\\n") && tools.CanonicalCommand(subject).Joined {
@@ -809,7 +826,7 @@ func (e *Engine) evaluateAs(ctx context.Context, tool string, mutates bool, args
 	return res
 }
 
-func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args json.RawMessage, line bool) Result {
+func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args json.RawMessage, as readAs) Result {
 	key, subject, err := subjectOf(args)
 	// A subject that is not text is read as its JSON, unless a deny or ask
 	// rule with a pattern is there to read it, which it could not.
@@ -827,7 +844,10 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		// Every step sees the command as written and as the shell splits it,
 		// continuations joined; an allow rule sees no more than the joined form.
 		canon = tools.CanonicalCommand(subject)
-		if line {
+		switch as {
+		case asTyped:
+			canon = canon.AtTerminal()
+		case asLine:
 			canon = canon.AsTerminalLine()
 		}
 		subjects, complete = commandSegments(subject)

