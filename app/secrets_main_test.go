@@ -23,8 +23,11 @@ func TestMain(m *testing.M) {
 	// No test writes the real system log; one that checks it captures it.
 	sysLogWrite = func(string) error { return nil }
 	// No test reaches the host's container engine; one that needs an engine
-	// puts a stand-in of its own on PATH.
-	keepOffRealEngine()
+	// puts a stand-in of its own on PATH. ABHED_REQUIRE_CONTAINER asks for the
+	// real one, as CI's container job does.
+	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
+		keepOffRealEngine()
+	}
 	if os.Getenv("ABHED_TRUST_MAIN_ARGS") != "" || os.Getenv("ABHED_CONV_KEEP_HOME") != "" || os.Getenv("ABHED_SESS_WS") != "" {
 		code := m.Run()
 		if realEngineRan() {
