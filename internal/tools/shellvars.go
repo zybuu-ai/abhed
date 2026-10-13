@@ -25,7 +25,7 @@ func (f *shellFacts) stmtVars(st *syntax.Stmt) {
 		for _, a := range c.Assigns {
 			plain = plain && plainAssign(a)
 			if a.Name != nil && (a.Name.Value == "BASH_ENV" || a.Name.Value == "ENV") {
-				f.varsDead = true // a start-up file may set anything
+				f.varsDead, f.pinsDead = true, true // a start-up file may set anything
 			}
 		}
 		if len(c.Args) > 0 {
@@ -193,6 +193,9 @@ func (f *shellFacts) resolveWord(w *syntax.Word) (string, bool) {
 // environment the text is read in.
 func (f *shellFacts) lookup(name string) (string, bool) {
 	if f.varsDead {
+		if v, ok := f.inherited[name]; ok && f.pinned[name] && !f.pinsDead {
+			return v, true
+		}
 		return "", false
 	}
 	if v, ok := f.vars[name]; ok {

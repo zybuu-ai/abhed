@@ -526,8 +526,12 @@ sha256 still match is not judged, so a package manager's line in your
 `.zprofile` does not make `zsh -lc` ask; any other file, a same-size edit,
 a link or a folder in its place is. Trusting a file trusts its own text
 only: what it sources and the scripts and programs it runs are still read
-and judged, with the environment the line gives them, and a file it names
-by a path built from a variable it does not set is not read. The
+and judged, with the environment the line gives them and the HOME and
+`ZDOTDIR` commands get (`source "$HOME/.bashrc"` reads that `.bashrc`, and
+judges it if it changed). A file it names by a path the check still cannot
+resolve (a variable it sets in a way the check does not follow, a `HOME` it
+sets itself, or anything after it sources another file) is refused under a
+deny rule and asked about otherwise, as on any line. The
 baseline applies only to a line that is the shell started alone: one
 simple command whose first word is the shell, with no assignment or
 redirection and no other statement, and nothing in the text it runs that

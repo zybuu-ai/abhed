@@ -126,7 +126,10 @@ type shellFacts struct {
 	askUnderRules string
 	// varsDead reports a line past what the variable model follows, after
 	// which no value is known; sawOther a statement other than a plain one.
-	varsDead, sawOther bool
+	// pinned are the inherited HOME and ZDOTDIR the text never names, which
+	// stay known until something that may change anything runs (pinsDead).
+	varsDead, sawOther, pinsDead bool
+	pinned                       map[string]bool
 	// plainShell reports a line that is one simple command starting a shell,
 	// with nothing before it and no assignment of its own; innerShell a shell
 	// started inside the text another runs.
@@ -177,8 +180,39 @@ func parseShell(command string) shellFacts { return parseShellEnv(command, nil) 
 func parseShellEnv(command string, env map[string]string) shellFacts {
 	var f shellFacts
 	f.withEnv(env)
+	f.pinned = map[string]bool{}
+	for _, name := range []string{"HOME", "ZDOTDIR"} {
+		if _, ok := env[name]; ok && !namesBare(command, name) {
+			f.pinned[name] = true
+		}
+	}
 	f.read(command, 0)
 	return f
+}
+
+// namesBare reports name written in text other than as an expansion ($NAME,
+// ${NAME}): an assignment, export, read or unset may change it there.
+func namesBare(text, name string) bool {
+	for i := 0; ; {
+		j := strings.Index(text[i:], name)
+		if j < 0 {
+			return false
+		}
+		j += i
+		before := byte(' ')
+		if j > 0 {
+			before = text[j-1]
+		}
+		after := byte(' ')
+		if end := j + len(name); end < len(text) {
+			after = text[end]
+		}
+		word := !isNameByte(after) && (j == 0 || !isNameByte(before))
+		if word && before != '$' && before != '{' {
+			return true
+		}
+		i = j + len(name)
+	}
 }
 
 func (f *shellFacts) read(command string, depth int) {
@@ -273,7 +307,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 		switch n := n.(type) {
 		case *syntax.FuncDecl:
 			f.posix = f.posix || n.Name != nil && n.Name.Value == "read"
-			f.varsDead = true // a call to it may set anything
+			f.varsDead, f.pinsDead = true, true // a call to it may set anything
 		case *syntax.CallExpr:
 			for _, a := range n.Args {
 				if v, _ := literal(a); strings.HasPrefix(v, "read=") {
@@ -612,7 +646,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 	f.ptyShell(name, args, depth)
 	switch {
 	case name == "alias":
-		f.setsEnv, f.varsDead = true, true
+		f.setsEnv, f.varsDead, f.pinsDead = true, true, true
 		// An alias's value is shell text run where its name is: read it so.
 		for _, a := range args {
 			v, lit := literal(a)
@@ -633,7 +667,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		}
 	case name == "source" || name == ".":
 		// A sourced file may change anything: nothing after it is followed.
-		defer func() { f.setsEnv, f.varsDead = true, true }()
+		defer func() { f.setsEnv, f.varsDead, f.pinsDead = true, true, true }()
 		if len(args) > 0 {
 			v, lit := literal(args[0])
 			if !lit && !hasProcSubst(args[0]) {
@@ -655,7 +689,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 			}
 		}
 	case name == "eval":
-		f.setsEnv, f.varsDead = true, true
+		f.setsEnv, f.varsDead, f.pinsDead = true, true, true
 		f.shellText(args, depth)
 	case name == "trap":
 		// trap's first argument is shell text run later; -p and -l list.

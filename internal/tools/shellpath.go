@@ -105,7 +105,7 @@ func (f *shellFacts) envAssign(w *syntax.Word) {
 // startupFile records the file a shell started later reads first, read as a
 // script it runs; one named by an expansion is a script no rule can read.
 func (f *shellFacts) startupFile(name, value string, lit bool) {
-	f.setsEnv, f.varsDead = true, true
+	f.setsEnv, f.varsDead, f.pinsDead = true, true, true
 	switch {
 	case name == "ENV" && !lit:
 		// Only an interactive shell reads ENV: kept for startups to weigh.

@@ -171,12 +171,15 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 	if why := canon.AskUnderRules(); why != "" && out.ask == "" {
 		out.ask = why
 	}
-	// A file sourced or run by a name the check cannot resolve is not read.
-	// In a trusted file the name is the person's own, and only what resolves is read.
-	if why := canon.ScriptHidden(); why != "" && !trusted {
-		if depth == 0 {
+	// A file sourced or run by a name the check cannot resolve is not read
+	// but refused, in a trusted file too: what it reaches may have changed.
+	if why := canon.ScriptHidden(); why != "" {
+		switch {
+		case trusted:
+			out.refuse = "a trusted start-up file: " + why
+		case depth == 0:
 			out.refuse = why
-		} else {
+		default:
 			out.refuse = "a script it runs: " + why
 		}
 		return moves
