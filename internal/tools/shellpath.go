@@ -395,16 +395,16 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 		// Its shell, or the command after the log file, runs on a terminal of
 		// its own; -c's text is run by a shell given -c.
 		if !f.scriptCommand(args, depth) {
-			f.anyShell(false)
+			f.anyShell()
 		}
 	case "unbuffer", "dtach":
-		f.anyShell(false)
+		f.anyShell()
 		f.commandWords(args, depth)
 	case "expect":
 		f.startupHidden = "expect, whose programs and their start-up files the check cannot read"
 	case "doas":
 		if has(short('s')) {
-			f.anyShell(false)
+			f.anyShell()
 		}
 	case "ssh":
 		if sshShell(words) {
@@ -417,7 +417,7 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 		case has(func(w string) bool { return w == "-" || w == "--login" }) || has(short('l')):
 			f.startupHidden = "su -, whose login shell reads another account's start-up files"
 		case !has(short('c')) && !has(func(w string) bool { return strings.HasPrefix(w, "--command") }):
-			f.anyShell(false)
+			f.anyShell()
 		}
 	case "sudo":
 		shell := false
@@ -437,14 +437,14 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 			}
 		}
 		if shell {
-			f.anyShell(false)
+			f.anyShell()
 		}
 	}
 }
 
-// anyShell records an interactive shell, login too when login is set, of
-// any kind, reading every start-up file such shells read.
-func (f *shellFacts) anyShell(login bool) {
+// anyShell records an interactive shell of any kind, reading every start-up
+// file such shells read.
+func (f *shellFacts) anyShell() {
 	f.shellRun, f.interactive = true, true
 	if f.homeFiles == nil {
 		f.homeFiles = map[string]bool{}
@@ -452,11 +452,6 @@ func (f *shellFacts) anyShell(login bool) {
 	for _, files := range homeStartFiles {
 		for _, n := range append(append([]string(nil), files[0]...), files[2]...) {
 			f.homeFiles[n] = true
-		}
-		if login {
-			for _, n := range files[1] {
-				f.homeFiles[n] = true
-			}
 		}
 	}
 }

@@ -310,12 +310,13 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		// What a script starts is not the line's own shell: no baseline in it.
 		nested := writes
 		nested.noBaseline = true
-		if depth+1 < maxScriptDepth {
+		switch {
+		case depth+1 < maxScriptDepth:
 			inner = e.readScriptsIn(out, sc, cwd, depth+1, nested, false)
-		} else if sc.ScriptHidden() != "" || sc.ScriptsCut() || sc.StartupHidden() != "" || len(sc.HomeStartups()) > 0 {
+		case sc.ScriptHidden() != "" || sc.ScriptsCut() || sc.StartupHidden() != "" || len(sc.HomeStartups()) > 0:
 			// What is not even named is refused, as a hidden script one level up is.
 			out.refuse = "the script " + name + " runs scripts nested too deep to check against the rules, some not named"
-		} else if len(sc.Scripts()) > 0 {
+		case len(sc.Scripts()) > 0:
 			out.ask = "the script " + name + " runs scripts nested too deep to check against the rules"
 		}
 		// A sourced script runs in this shell: a cd in it moves what follows.
