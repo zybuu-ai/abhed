@@ -384,26 +384,13 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 	}
 	switch name {
 	case "tmux", "byobu":
-		f.anyShell(true)
-		for i, w := range words {
-			if tmuxKeys[w] {
-				f.scriptHidden = "tmux " + w + " types keys or text into a shell, which no rule can read"
-				break
-			}
-			if tmuxRuns[w] {
-				f.commandWords(args[i+1:], depth)
-				break
-			}
+		if why := tmuxRefusal(words); why != "" {
+			f.scriptHidden = why
 		}
 	case "screen":
-		f.anyShell(true)
-		for i, w := range words {
-			if (w == "-X" || strings.HasPrefix(w, "-") && strings.HasSuffix(w, "X")) && i+1 < len(words) && screenKeys[words[i+1]] {
-				f.scriptHidden = "screen -X " + words[i+1] + " types keys or text into a shell, which no rule can read"
-				return
-			}
+		if why := screenRefusal(words); why != "" {
+			f.scriptHidden = why
 		}
-		f.commandWords(args, depth)
 	case "script":
 		// Its shell, or the command after the log file, runs on a terminal of
 		// its own; -c's text is run by a shell given -c.
@@ -482,18 +469,117 @@ func (f *shellFacts) startEnv() map[string]string {
 	return f.commandEnv(nil)
 }
 
-// tmuxRuns are the tmux commands that run a command given whole.
-var tmuxRuns = map[string]bool{"new-session": true, "new": true, "new-window": true, "neww": true,
-	"split-window": true, "splitw": true, "respawn-pane": true, "respawnp": true, "respawn-window": true,
-	"respawnw": true, "run-shell": true, "run": true, "display-popup": true, "popup": true, "if-shell": true, "if": true}
+// tmuxCommands are tmux's commands by full name, each with its alias; tmux
+// takes any unique prefix of a full name too.
+var tmuxCommands = map[string]string{"attach-session": "attach", "bind-key": "bind", "break-pane": "breakp",
+	"capture-pane": "capturep", "choose-buffer": "", "choose-client": "", "choose-tree": "", "clear-history": "clearhist",
+	"clear-prompt-history": "clearphist", "clock-mode": "", "command-prompt": "", "confirm-before": "confirm",
+	"copy-mode": "", "customize-mode": "", "delete-buffer": "deleteb", "detach-client": "detach", "display-menu": "menu",
+	"display-message": "display", "display-popup": "popup", "display-panes": "displayp", "find-window": "findw",
+	"has-session": "has", "if-shell": "if", "join-pane": "joinp", "kill-pane": "killp", "kill-server": "",
+	"kill-session": "", "kill-window": "killw", "last-pane": "lastp", "last-window": "last", "link-window": "linkw",
+	"list-buffers": "lsb", "list-clients": "lsc", "list-commands": "lscm", "list-keys": "lsk", "list-panes": "lsp",
+	"list-sessions": "ls", "list-windows": "lsw", "load-buffer": "loadb", "lock-client": "lockc", "lock-server": "lock",
+	"lock-session": "locks", "move-pane": "movep", "move-window": "movew", "new-session": "new", "new-window": "neww",
+	"next-layout": "nextl", "next-window": "next", "paste-buffer": "pasteb", "pipe-pane": "pipep",
+	"previous-layout": "prevl", "previous-window": "prev", "refresh-client": "refresh", "rename-session": "rename",
+	"rename-window": "renamew", "resize-pane": "resizep", "resize-window": "resizew", "respawn-pane": "respawnp",
+	"respawn-window": "respawnw", "rotate-window": "rotatew", "run-shell": "run", "save-buffer": "saveb",
+	"select-layout": "selectl", "select-pane": "selectp", "select-window": "selectw", "send-keys": "send",
+	"send-prefix": "", "server-access": "", "set-buffer": "setb", "set-environment": "setenv", "set-hook": "",
+	"set-option": "set", "set-window-option": "setw", "show-buffer": "showb", "show-environment": "showenv",
+	"show-hooks": "", "show-messages": "showmsgs", "show-options": "show", "show-prompt-history": "showphist",
+	"show-window-options": "showw", "source-file": "source", "split-window": "splitw", "start-server": "start",
+	"suspend-client": "suspendc", "swap-pane": "swapp", "swap-window": "swapw", "switch-client": "switchc",
+	"unbind-key": "unbind", "unlink-window": "unlinkw", "wait-for": "wait"}
 
-// tmuxKeys and screenKeys put keys or text into a shell, which cannot be read
-// as a command: split across calls, as hex, or from a buffer.
-var (
-	tmuxKeys = map[string]bool{"send-keys": true, "send": true, "set-buffer": true, "setb": true, "paste-buffer": true,
-		"pasteb": true, "load-buffer": true, "loadb": true, "pipe-pane": true, "pipep": true}
-	screenKeys = map[string]bool{"stuff": true, "paste": true, "readbuf": true, "exec": true, "eval": true, "register": true}
-)
+// tmuxReadOnly are the tmux commands that only list, show, attach or end
+// sessions: under a rule for bash, the only ones allowed.
+var tmuxReadOnly = map[string]bool{"list-sessions": true, "list-windows": true, "list-panes": true,
+	"list-clients": true, "list-commands": true, "list-keys": true, "list-buffers": true, "has-session": true,
+	"kill-session": true, "kill-server": true, "kill-window": true, "kill-pane": true, "attach-session": true,
+	"detach-client": true, "show-options": true, "show-window-options": true, "show-environment": true,
+	"show-messages": true, "show-hooks": true, "show-buffer": true, "capture-pane": true}
+
+// tmuxResolve is the full name tmux runs for name: an alias, a full name,
+// or a unique prefix of one; "" when none or more than one match.
+func tmuxResolve(name string) string {
+	for full, alias := range tmuxCommands {
+		if name == full || name == alias && alias != "" {
+			return full
+		}
+	}
+	match := ""
+	for full := range tmuxCommands {
+		if strings.HasPrefix(full, name) {
+			if match != "" {
+				return ""
+			}
+			match = full
+		}
+	}
+	return match
+}
+
+// tmuxRefusal says why a tmux line is not one of its read-only commands:
+// it could start a shell, run a command, type keys or read a configuration.
+func tmuxRefusal(words []string) string {
+	i := 0
+	for ; i < len(words) && strings.HasPrefix(words[i], "-") && words[i] != "--"; i++ {
+		w := words[i]
+		for k := 1; k < len(w); k++ {
+			switch {
+			case w[k] == 'V':
+				return "" // prints its version, runs nothing
+			case strings.IndexByte("fLSc", w[k]) >= 0:
+				return "tmux " + w + " names a configuration, socket or command the check cannot read"
+			case w[k] == 'T':
+				if k == len(w)-1 {
+					i++
+				}
+				k = len(w)
+			}
+		}
+	}
+	if i < len(words) && words[i] == "--" {
+		i++
+	}
+	if i >= len(words) {
+		return "tmux with no command starts a session, whose shell and configuration the check cannot read"
+	}
+	for _, w := range words[i:] {
+		if w == "\x00" || strings.HasSuffix(w, ";") {
+			return "tmux is given a command built when it runs, or more than one"
+		}
+	}
+	full := tmuxResolve(words[i])
+	if !tmuxReadOnly[full] {
+		return "tmux " + words[i] + " is not one of its read-only commands; what it runs, types or reads cannot be checked"
+	}
+	return ""
+}
+
+// screenRefusal says why a screen line is not a listing, a wipe or a
+// reattach, the only forms allowed under a rule for bash.
+func screenRefusal(words []string) string {
+	mode, operands := "", 0
+	for i := 0; i < len(words); i++ {
+		switch w := words[i]; {
+		case w == "-ls" || w == "-list" || w == "-wipe" || w == "-r" || w == "-x" || w == "-v" || w == "-version":
+			mode = w
+		case w == "-S" || w == "-p":
+			i++
+		case w == "\x00" || strings.HasPrefix(w, "-"):
+			return "screen " + w + " runs, types or reads what the check cannot see"
+		default:
+			operands++
+		}
+	}
+	if mode == "" || operands > 1 {
+		return "screen starting a session or given a command runs what the check cannot see"
+	}
+	return ""
+}
 
 // maxCommandStarts bounds where a command given to a terminal program is
 // taken to start.
