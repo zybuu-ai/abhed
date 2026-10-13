@@ -263,6 +263,7 @@ globalThis.fetch = async url => {
 class EventSource { constructor(url){ this.url = url; this.readyState = 0; __streams.push(this); }
   close(){ this.readyState = 2; } addEventListener(){} }
 EventSource.CLOSED = 2;
+const StreamSource = EventSource;
 `
 	if out, err := runConsoleCases(t, "ide-conn", harness, "ide_conn_cases.mjs"); err != nil {
 		t.Fatalf("the connection indicator failed:\n%s", out)
@@ -820,5 +821,29 @@ func TestCapabilitiesSayWhichSettingsAreManaged(t *testing.T) {
 	}
 	if !strings.Contains(ideHTML, "c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : '')") {
 		t.Error("the Tools panel does not take the mode's own managed flag")
+	}
+}
+
+// Every server-to-page stream rides one shared stream, and behaves on it as
+// an EventSource would: reconnecting from its last id, closing on a refusal.
+func TestIDEStreamsShareOneConnection(t *testing.T) {
+	harness := `globalThis.__es = []; globalThis.__fetches = []; globalThis.__status = 202;
+class EventSource { constructor(url){ this.url = url; this.readyState = 0; this.on = {}; __es.push(this); }
+  addEventListener(type, f){ this.on[type] = f; } close(){ this.readyState = 2; }
+  emit(type, data){ this.readyState = 1; this.on[type]({data: JSON.stringify(data)}); } }
+EventSource.CLOSED = 2;
+globalThis.fetch = async (url, opts) => { __fetches.push({url, method: opts.method, body: opts.body ? JSON.parse(opts.body) : null}); return {ok: __status < 400, status: __status}; };
+const setTimeout = (f, ms) => globalThis.setTimeout(f, Math.min(ms, 5)), clearTimeout = id => globalThis.clearTimeout(id);
+`
+	if out, err := runConsoleCases(t, "ide-streams", harness, "ide_streams_cases.mjs"); err != nil {
+		t.Fatalf("the shared stream:\n%s", out)
+	}
+	for _, want := range []string{"new StreamSource(base)", "new StreamSource('/v1/sessions/' + id + '/events'", "new StreamSource(ptyURL(t, '/' + id))"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("a stream does not ride the shared one: %s", want)
+		}
+	}
+	if strings.Count(ideHTML, "new EventSource(") != 1 {
+		t.Error("the page opens an EventSource of its own besides the shared stream")
 	}
 }

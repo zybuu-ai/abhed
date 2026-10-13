@@ -14,6 +14,7 @@
 #   extract.py ide.html ide-lsp       a language server's file URI as a workspace path
 #   extract.py ide.html ide-files     downloads, a session's title and delete, notifications
 #   extract.py ide.html ide-review    rejecting a change in the review
+#   extract.py ide.html ide-streams   the shared stream and StreamSource
 #   extract.py console.go model       the model picker (ide-model: the workbench's)
 #   extract.py console.go switch      the chat list, the address and the switcher (ide-switch: the workbench's)
 #   extract.py console.go hidden      hasHidden (ide-hidden: the workbench's)
@@ -73,6 +74,8 @@ sets = {
     'ide-files': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const fmtSize = ','async function download(path, report){','async function loadDownloads(){',
           'const sessionLabel = ','function editTitle(span, s){','async function setTitle(s, title, span){','async function deleteSession(s){','const resumeCommand = ','async function copyResume(id, btn){','function exportSession(id, format){',
           'const NOTE_TEXT = ','const notifyOn = ','function notify(kind){','function drawNotify(){','async function toggleNotify(){'],
+    # From ide.html: the shared stream every server-to-page stream rides.
+    'ide-streams': ['const mux = ','function muxStream(){','class StreamSource {'],
     # From ide.html: rejecting a change in the review.
     'ide-review': ['const linesOf = ','function spliceLines(lines, s, e, put){','function rejectHunk(t, c){','function replaceAll(t, text){','async function rejectAll(t){'],
     # hasHidden alone, from either page: ide-hidden takes ide.html's.
@@ -120,7 +123,7 @@ for fn in sets[which]:
     if fn == 'function reveal(s, lines){' and fn not in src:
         fn = 'function reveal(s, lines, prose){'
     if fn not in src: continue
-    name = re.match(r'(?:async function|function|const|let) (\w+)', fn).group(1)
+    name = re.match(r'(?:async function|function|const|let|class) (\w+)', fn).group(1)
     if name in seen: continue
     seen.add(name); out.append(grab(fn))
 if which in ('render', 'ask'):

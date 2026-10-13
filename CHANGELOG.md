@@ -1506,6 +1506,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A workbench tab with several shells and language servers stopped
+  answering: each held a connection, and a browser opens six to a server
+  over HTTP/1.1, so `/v1/health`, approvals and saves waited behind them.
+  The tab's streams now share one connection, `GET /v1/streams`, each asked
+  for by its own route and checked as that route is
+  ([Workbench](docs/guide/16-workbench.md#what-it-is-built-on)). Affects
+  1.0.0 to 1.2.7.
 - The workbench's **Tools** panel said the mode was "managed by your
   organisation" under any managed configuration, such as one that only
   turns on web search. It now says so only when the managed file sets
