@@ -531,7 +531,11 @@ and judged, with the environment the line gives them and the HOME and
 judges it if it changed). A file it names by a path the check still cannot
 resolve (a variable it sets in a way the check does not follow, a `HOME` it
 sets itself, or anything after it sources another file) is refused under a
-deny rule and asked about otherwise, as on any line. The
+deny rule and asked about otherwise, as on any line. The one exception is a
+trusted program installed outside your home, the workspace and the
+temporary folder, such as Homebrew's `/opt/homebrew/bin/brew`: what it
+reaches by a name the check cannot resolve is taken as part of that
+install, which commands cannot write on any tier but none. The
 baseline applies only to a line that is the shell started alone: one
 simple command whose first word is the shell, with no assignment or
 redirection and no other statement, and nothing in the text it runs that

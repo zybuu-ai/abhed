@@ -977,3 +977,70 @@ func TestTrustedProfileSourcingBashrcHasItRead(t *testing.T) {
 		}
 	}
 }
+
+// brewShape is the shape of Homebrew's bin/brew: it finds its own folder
+// from $0 and pwd -P, then runs a library script by a variable it builds.
+const brewShape = `#!/bin/bash -pu
+set -u
+quiet_cd() {
+  CDPATH='' cd -- "$@" &>/dev/null || return
+}
+BREW_FILE_DIRECTORY="$(quiet_cd "${0%/*}/" && pwd -P)"
+HOMEBREW_BREW_FILE="${BREW_FILE_DIRECTORY%/}/${0##*/}"
+HOMEBREW_PREFIX="${HOMEBREW_BREW_FILE%/*/*}"
+if [[ -z "${HOMEBREW_PREFIX}" || "${HOMEBREW_PREFIX}" = "${HOMEBREW_BREW_FILE}" ]]
+then
+  HOMEBREW_PREFIX="/"
+fi
+HOMEBREW_REPOSITORY="${HOMEBREW_PREFIX}"
+HOMEBREW_LIBRARY="${HOMEBREW_REPOSITORY}/Library"
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+FILTERED_ENV=()
+for VAR in HOME SHELL PATH TERM "${!HOMEBREW_@}"
+do
+  [[ -z "${!VAR:-}" ]] && continue
+  FILTERED_ENV+=("${VAR}=${!VAR}")
+done
+exec /usr/bin/env -i "${FILTERED_ENV[@]}" /bin/bash -p "${HOMEBREW_LIBRARY}/Homebrew/brew.sh" "$@"
+`
+
+// A trusted brew installed outside the home, the workspace and the temporary
+// folder runs a library script the check cannot name; that is the person's
+// install, which commands cannot write, so zsh -lc runs. The same brew in the
+// home, where commands may write, is refused.
+func TestTrustedBrewOutsideTheHomeRuns(t *testing.T) {
+	install, ws, home := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir()) // the install is outside the temporary folder
+	judge := func(brew string) Result {
+		if err := os.MkdirAll(filepath.Dir(brew), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(brew, []byte(brewShape), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prof := filepath.Join(home, ".zprofile")
+		if err := os.WriteFile(prof, []byte("eval \"$("+brew+" shellenv)\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e := New(ModeBypass)
+		e.Roots = func() []string { return []string{ws} }
+		e.Cwd = func() string { return ws }
+		e.Home = func() (string, bool) { return home, true }
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		base := map[string]StartupFile{}
+		for _, p := range []string{prof, brew} {
+			size, sum, _ := StartupFileMark(p)
+			base[p] = StartupFile{Size: size, SHA256: sum}
+		}
+		e.StartupBaseline = base
+		return e.Evaluate("bash", true, args(map[string]string{"command": "zsh -lc 'echo hi'"}))
+	}
+	if res := judge(filepath.Join(install, "homebrew", "bin", "brew")); res.Decision != Allow {
+		t.Errorf("a trusted brew outside the home: %s (%s)", res.Decision, res.Reason)
+	}
+	if res := judge(filepath.Join(home, ".homebrew", "bin", "brew")); res.Decision != Deny {
+		t.Errorf("a trusted brew inside the home: %s (%s)", res.Decision, res.Reason)
+	}
+}

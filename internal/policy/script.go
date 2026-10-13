@@ -150,8 +150,9 @@ type lineWrites struct {
 	pathSet  bool
 	pathDirs []string
 	// noBaseline turns the person's baseline off, for a line that sets the
-	// environment its shells get.
-	noBaseline bool
+	// environment its shells get; trustedFile is the trusted file being read.
+	noBaseline  bool
+	trustedFile string
 }
 
 // maxTrustedReads bounds the trusted files one command reads through.
@@ -173,7 +174,9 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 	}
 	// A file sourced or run by a name the check cannot resolve is not read
 	// but refused, in a trusted file too: what it reaches may have changed.
-	if why := canon.ScriptHidden(); why != "" {
+	// A trusted program installed outside the home and the workspace, as
+	// Homebrew's brew is, reaches files there that commands cannot write.
+	if why := canon.ScriptHidden(); why != "" && (!trusted || !e.outsideWritable(outer.trustedFile)) {
 		switch {
 		case trusted:
 			out.refuse = "a trusted start-up file: " + why
@@ -290,7 +293,9 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 				out.ask = "the trusted start-up files source more files than the check reads"
 				continue
 			}
-			moves = e.readScriptsIn(out, sc, cwd, depth, writes, true) && s.Sourced || moves
+			tw := writes
+			tw.trustedFile = p
+			moves = e.readScriptsIn(out, sc, cwd, depth, tw, true) && s.Sourced || moves
 			continue
 		}
 		// What a script hides from the rules is put to a person, not refused:
@@ -383,4 +388,37 @@ func writesScript(written, script string) bool {
 		}
 	}
 	return false
+}
+
+// outsideWritable reports a file outside the HOME commands get, the folder
+// they start in and the workspace roots: one their commands cannot write on
+// any tier but none.
+func (e *Engine) outsideWritable(p string) bool {
+	if p == "" || !filepath.IsAbs(p) {
+		return false
+	}
+	var dirs []string
+	if h, visible := e.home(); !visible || h == "" {
+		return false
+	} else {
+		dirs = append(dirs, h)
+	}
+	if e.Cwd != nil {
+		dirs = append(dirs, e.Cwd())
+	}
+	if e.Roots != nil {
+		dirs = append(dirs, e.Roots()...)
+	}
+	dirs = append(dirs, os.TempDir())
+	for _, d := range dirs {
+		for _, dir := range []string{d, tools.RealPath(d)} {
+			if rel, err := filepath.Rel(dir, p); dir != "" && err == nil && filepath.IsLocal(rel) {
+				return false
+			}
+			if rel, err := filepath.Rel(dir, tools.RealPath(p)); dir != "" && err == nil && filepath.IsLocal(rel) {
+				return false
+			}
+		}
+	}
+	return true
 }

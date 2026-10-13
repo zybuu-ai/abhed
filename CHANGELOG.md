@@ -790,7 +790,9 @@ All notable changes to Abhed are recorded here. The format follows
   record notes those it trusted (`policy.startup_trusted`). What a trusted
   file sources or runs is still read, with the HOME commands get
   (`source "$HOME/.bashrc"` reads that `.bashrc`); a name it cannot
-  resolve is refused under a deny rule.
+  resolve is refused under a deny rule, except in a trusted program
+  installed outside the home, the workspace and the temporary folder (as
+  Homebrew's `brew` is).
 - `ABHED_ANTHROPIC_OAUTH_TOKEN` supplies an Anthropic subscription token;
   it is read before the variable the setup-token flow writes, which still
   works.
