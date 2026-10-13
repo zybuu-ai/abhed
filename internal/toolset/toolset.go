@@ -10,6 +10,7 @@ package toolset
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -320,20 +321,64 @@ func (s *Set) EndSession(id string) {
 
 // ConfineMCP has gw start stdio servers confined by sb where it can (the
 // process tier): their files always, their network under sandbox.network
-// allowlist, where a server sb cannot confine is refused.
+// allowlist, where a server sb cannot confine is refused. A sandbox still
+// being chosen is waited for when a server starts.
 func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
 	allowlist := cfg.Sandbox.Network == config.NetworkAllowlist
 	gw.MustConfine = allowlist
-	if p, ok := sb.(*sandbox.Process); ok {
-		gw.Confine = p.ServerCommand
-		if allowlist {
-			gw.ConfineNet = p.ServerNetCommand
-		}
+	p, ok := sb.(sandbox.Pending)
+	if !ok {
+		gw.Confine, gw.ConfineNet = serverLaunchers(sb, allowlist)
 		return
 	}
-	if l, ok := sb.(sandbox.ServerLauncher); ok && allowlist {
-		gw.Confine, gw.ConfineNet = l.ServerCommand, l.ServerCommand
+	gw.Confine = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+		chosen, err := p.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("no sandbox: %w", err)
+		}
+		launch, _ := serverLaunchers(chosen, allowlist)
+		return launchOrPlain(ctx, launch, allowlist, name, argv, env, record)
 	}
+	if allowlist {
+		gw.ConfineNet = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+			chosen, err := p.Resolve()
+			if err != nil {
+				return nil, fmt.Errorf("no sandbox: %w", err)
+			}
+			_, launch := serverLaunchers(chosen, allowlist)
+			return launchOrPlain(ctx, launch, allowlist, name, argv, env, record)
+		}
+	}
+}
+
+// serverLaunchers are sb's launchers for a stdio server, its files and
+// network confined and its network alone; nil where sb cannot confine it.
+func serverLaunchers(sb sandbox.Sandbox, allowlist bool) (confine, confineNet mcp.Launcher) {
+	if p, ok := sb.(*sandbox.Process); ok {
+		confine = p.ServerCommand
+		if allowlist {
+			confineNet = p.ServerNetCommand
+		}
+		return confine, confineNet
+	}
+	if l, ok := sb.(sandbox.ServerLauncher); ok && allowlist {
+		return l.ServerCommand, l.ServerCommand
+	}
+	return nil, nil
+}
+
+// launchOrPlain runs launch, or, with none, the server as the gateway would
+// unconfined; never under the allowlist.
+func launchOrPlain(ctx context.Context, launch mcp.Launcher, allowlist bool, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+	if launch != nil {
+		return launch(ctx, name, argv, env, record)
+	}
+	if allowlist {
+		return nil, mcp.ErrUnconfined
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- the configured server, as the gateway starts one
+	cmd.Env = append([]string{}, env...)
+	return cmd, nil
 }
 
 // OwnEgress is the guard of Abhed's own requests under sandbox.network

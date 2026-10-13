@@ -20,6 +20,12 @@ type ServerLauncher interface {
 	ServerCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error)
 }
 
+// Pending is a sandbox whose backend is chosen after it is handed out;
+// Resolve waits for the choice.
+type Pending interface {
+	Resolve() (Sandbox, error)
+}
+
 // ServerKey keys server name's proxy apart from the sessions' and is its call
 // id; no colon, which would end the user name in Basic credentials.
 func ServerKey(name string) string { return "mcp/" + name }

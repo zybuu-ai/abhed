@@ -90,19 +90,8 @@ func fenceOf(sb sandbox.Sandbox) *sandbox.Fence {
 	return f
 }
 
-// ServerCommand confines a stdio MCP server's network once the backend is
-// chosen; one that cannot gives the reason.
-func (l *lazySandbox) ServerCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
-	sb, err := l.wait()
-	if err != nil {
-		return nil, fmt.Errorf("no sandbox: %w", err)
-	}
-	sl, ok := sb.(sandbox.ServerLauncher)
-	if !ok {
-		return nil, fmt.Errorf("the %s tier cannot confine a server's network", sb.Tier())
-	}
-	return sl.ServerCommand(ctx, name, argv, env, record)
-}
+// Resolve waits for the choice.
+func (l *lazySandbox) Resolve() (sandbox.Sandbox, error) { return l.wait() }
 
 // Close releases what the chosen backend holds, once it is chosen.
 func (l *lazySandbox) Close() error {

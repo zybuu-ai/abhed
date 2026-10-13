@@ -64,7 +64,7 @@ func TestStdioServerConfinedUnderTheAllowlist(t *testing.T) {
 	g := NewGateway()
 	g.MustConfine = true
 	errs := g.Connect(ctx, []ServerConfig{{Name: "s", Command: "true", Enabled: true}})
-	if len(errs) != 1 || !errors.Is(errs[0], errUnconfined) {
+	if len(errs) != 1 || !errors.Is(errs[0], ErrUnconfined) {
 		t.Fatalf("an unconfinable server: %v", errs)
 	}
 	var argv []string

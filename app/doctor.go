@@ -256,17 +256,18 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
-		// Under the allowlist the servers are reached as a session reaches them.
+		// The servers are started as a session starts them: their files
+		// confined, and under the allowlist their network too.
 		if own := toolset.OwnEgress(cfg); own != nil {
 			defer own.Close()
 			defer egress.Install(own)()
 			gw.Egress = own
-			if sb, err := buildSandbox(cfg, workspace); err == nil {
-				defer func() { _ = sandbox.Close(sb) }()
-				toolset.ConfineMCP(gw, cfg, sb)
-			} else {
-				toolset.ConfineMCP(gw, cfg, nil)
-			}
+		}
+		if sb, err := buildSandbox(cfg, workspace); err == nil {
+			defer func() { _ = sandbox.Close(sb) }()
+			toolset.ConfineMCP(gw, cfg, sb)
+		} else {
+			toolset.ConfineMCP(gw, cfg, nil)
 		}
 		gw.Connect(context.Background(), toolset.MCPConfigs(cfg))
 		status := gw.Status()
