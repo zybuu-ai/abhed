@@ -159,13 +159,14 @@ func TestWitnessReportsFailuresAsTheyHappen(t *testing.T) {
 	w.Postgres("t", "s1", 1, "h")
 	select {
 	case err := <-got:
-		if !strings.Contains(err.Error(), "503") {
+		if !strings.Contains(err.Error(), "503 Service Unavailable") {
 			t.Fatalf("reported %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the failed post was not reported before close")
 	}
 	// The file goes away (a share unmounted): reported at once, from the writer.
+	// Told from the post's error by its status text, as the temp path may hold "503".
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestWitnessReportsFailuresAsTheyHappen(t *testing.T) {
 	for {
 		select {
 		case err := <-got:
-			if !strings.Contains(err.Error(), "503") {
+			if !strings.Contains(err.Error(), "503 Service Unavailable") {
 				return
 			}
 		case <-deadline:
