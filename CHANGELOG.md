@@ -164,6 +164,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A command given to a terminal program ran without the deny check:
+  `tmux new -d 'curl …'`, `tmux send-keys … 'curl …' Enter`, `screen -dm
+  curl …`, `script -q /dev/null curl …`, `unbuffer` and `dtach` passed
+  `bash(curl *)`. Their command is now judged as `bash -c` text is.
+  Affects 0.1.0 to 1.2.7.
 - A workbench shell or command could be read, typed into, resized or killed
   by whichever account held its session, not only the one that started it:
   when a session's owner changed in the store under a running server (as

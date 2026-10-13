@@ -474,11 +474,15 @@ login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
 A plain `bash -c` or `sh -c` reads none. A shell typed into a terminal with
 no command and no script (`bash`, `exec bash`, `zsh`) reads the terminal,
 so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
-So is the shell `script`, `tmux`, `screen`, `su` or `sudo -s` starts on a
-terminal of its own, taken as any shell, interactive (`tmux` and `screen`
-as login shells too); `su -`, `sudo -i` and `login` start a shell in
-another account's home, which the check cannot read, and are refused under
-a deny rule.
+So is the shell `script`, `tmux`, `byobu`, `screen`, `unbuffer`, `dtach`,
+`su`, `sudo -s` or `doas -s` starts on a terminal of its own, taken as any
+shell, interactive (`tmux`, `byobu` and `screen` as login shells too); `su
+-`, `sudo -i`, `login`, `expect` and `ssh` with no command start a shell
+whose start-up files the check cannot read, and are refused under a deny
+rule. The command such a program is given (`tmux new -d 'cmd'`, `tmux
+send-keys … 'cmd' Enter`, `screen -dm cmd`, `script -q /dev/null cmd`,
+`unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c` text is, from
+each word that may start it.
 A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused

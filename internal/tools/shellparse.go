@@ -596,7 +596,7 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 // shell text or sets variables by name, and reports whether it was one.
 func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args []*syntax.Word, depth int) bool {
 	f.placeAndWrites(name, args)
-	f.ptyShell(name, args)
+	f.ptyShell(name, args, depth)
 	switch {
 	case name == "alias":
 		// An alias's value is shell text run where its name is: read it so.

