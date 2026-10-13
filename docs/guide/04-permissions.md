@@ -480,7 +480,8 @@ so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
 So is the shell `script`, `tmux`, `byobu`, `screen`, `unbuffer`, `dtach`,
 `su`, `sudo -s` or `doas -s` starts on a terminal of its own, taken as any
 shell, interactive (`tmux`, `byobu` and `screen` as login shells too); `su
--`, `sudo -i`, `login`, `expect` and `ssh` with no command start a shell
+-`, `sudo -i`, `login`, `expect` and `ssh` with no command (and none of `-V`, `-G`, `-Q`, `-O`,
+`-N`, `-T`) start a shell
 whose start-up files the check cannot read, and are refused under a deny
 rule. The command such a program is given whole (`tmux new -d 'cmd'`,
 `screen -dm cmd`, `unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c`
@@ -557,6 +558,8 @@ A deny pattern matches the words, so it is easy to step around.
   of a shell another program starts (`make`, a `#!/usr/bin/env -S zsh`
   line the check does not read as zsh's), or of one a line starts with
   options built when it runs
+- a command run through `ssh localhost 'cmd'` (or any host that reaches
+  this machine), which sshd runs outside the sandbox and the check
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,

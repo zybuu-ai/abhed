@@ -420,7 +420,7 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 			f.anyShell(false)
 		}
 	case "ssh":
-		if sshCommand(words) == -1 {
+		if sshShell(words) {
 			f.startupHidden = "ssh with no command, whose login shell reads start-up files the check cannot read"
 		}
 	case "login":
@@ -524,24 +524,36 @@ func (f *shellFacts) commandWords(args []*syntax.Word, depth int) {
 	}
 }
 
-// sshCommand is the index of the first word of the command ssh runs, or -1
-// for none: ssh then starts a login shell.
-func sshCommand(words []string) int {
+// sshValued are ssh's option letters that take a value.
+const sshValued = "BbcDEeFIiJLlmOoPpQRSWw"
+
+// sshShell reports an ssh that starts a login shell: one with no command and
+// none of the options that start none (-V, -G, -Q, -O, -N, -T).
+func sshShell(words []string) bool {
 	host := false
 	for i := 0; i < len(words); i++ {
 		w := words[i]
 		switch {
 		case w == "--":
-		case strings.HasPrefix(w, "-") && len(w) == 2 && strings.IndexByte("BbcDEeFIiJLlmOoPpQRSWw", w[1]) >= 0:
-			i++
-		case strings.HasPrefix(w, "-"):
+		case len(w) > 1 && w[0] == '-':
+			for k := 1; k < len(w); k++ {
+				if strings.IndexByte("VGQONT", w[k]) >= 0 {
+					return false
+				}
+				if strings.IndexByte(sshValued, w[k]) >= 0 {
+					if k == len(w)-1 {
+						i++ // its value is the next word
+					}
+					break
+				}
+			}
 		case !host:
 			host = true
 		default:
-			return i
+			return false // a command
 		}
 	}
-	return -1
+	return host
 }
 
 // scriptValued are script's options that take the next word as a value.
