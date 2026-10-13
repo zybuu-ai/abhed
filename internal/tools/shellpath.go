@@ -526,7 +526,7 @@ func sshCommand(words []string) int {
 		w := words[i]
 		switch {
 		case w == "--":
-		case strings.HasPrefix(w, "-") && len(w) == 2 && strings.Contains("BbcDEeFIiJLlmOoPpQRSWw", w[1:]):
+		case strings.HasPrefix(w, "-") && len(w) == 2 && strings.IndexByte("BbcDEeFIiJLlmOoPpQRSWw", w[1]) >= 0:
 			i++
 		case strings.HasPrefix(w, "-"):
 		case !host:
