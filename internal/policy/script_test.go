@@ -614,6 +614,23 @@ func TestScriptsNamedByAVariableAreReadOrRefused(t *testing.T) {
 			t.Errorf("%q: real bash did not source c/x.sh", c)
 		}
 	}
+	// At the last depth read, a script the check cannot even name is refused.
+	write(filepath.Join(ws, "t.sh"), "export X=ok; source ./export.sh; bash s.sh\n")
+	write(filepath.Join(ws, "t7.sh"), "source \"$(cat xdir)/x.sh\"\n")
+	write(filepath.Join(ws, "t8.sh"), "bash t7.sh\n")
+	write(filepath.Join(ws, "xdir"), "c\n")
+	for _, c := range []string{"bash t.sh", "bash t8.sh"} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+		_ = os.Remove(ran)
+		cmd := exec.Command("bash", "-c", c)
+		cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+		_ = cmd.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("%q: real bash did not source c/x.sh", c)
+		}
+	}
 	a := newEngine("bash(curl *)", false)
 	if res := a.Evaluate("bash", true, args(map[string]string{"command": "bash s.sh"})); res.Decision != Ask {
 		t.Errorf("ask rule only: %s (%s)", res.Decision, res.Reason)

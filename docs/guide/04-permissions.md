@@ -540,7 +540,9 @@ rule.
 
 One the rules cannot read in full, because it is over 64 KiB, does not
 parse, runs text built when it runs (`eval "$x"`), or itself runs a script
-by a relative path after a `cd`, is asked about, in every mode.
+by a relative path after a `cd`, is asked about, in every mode. Scripts are read two levels deep; a script at the last level that runs
+a further script is asked about, and one that names a script or start-up
+file the check cannot resolve is refused under a deny rule.
 A binary, or a script for another interpreter (`#!/usr/bin/env python3`),
 is not read. A script is read when the decision is made, so one changed
 between then and the run is not seen; the sandbox is the boundary there.
