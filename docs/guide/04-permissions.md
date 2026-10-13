@@ -508,10 +508,14 @@ sha256 still match is not judged, so a package manager's line in your
 a link or a folder in its place is. Trusting a file trusts its own text
 only: what it sources and the scripts and programs it runs are still read
 and judged, with the environment the line gives them, and a file it names
-by a path built from a variable it does not set is not read. On a line
-that sets the environment its shell gets (an assignment, `env`, `export`,
-`PATH`, `HOME`, `ZDOTDIR`, or a `cd` first) the baseline does not apply at
-all, since such a line can steer what a trusted file runs. Each session's record notes the files
+by a path built from a variable it does not set is not read. The
+baseline applies only to a line that is the shell started alone: one
+simple command whose first word is the shell, with no assignment or
+redirection and no other statement, and nothing in the text it runs that
+sets a variable, sources a file or changes folder. On any other line (a
+`read PATH`, a `source`, a `cd`, `env`, `BASH_ENV`, a statement before
+the shell) every start-up file is judged in full, since such a line can
+steer what a trusted file runs. Each session's record notes the files
 it trusted this way (`policy.startup_trusted`, path and sha256), again
 whenever that set changes, before the command that relies on it, and
 `abhed doctor` lists them and any changed since. That

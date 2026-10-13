@@ -60,6 +60,7 @@ func (f *shellFacts) setsByName(v string) {
 	n, _, _ := strings.Cut(v, "=")
 	n, _, _ = strings.Cut(strings.TrimSuffix(n, "+"), "[")
 	f.forgetVar(n)
+	f.setsEnv = true
 	switch n {
 	case "PATH":
 		f.pathSet, f.pathUnknown = true, true
@@ -105,6 +106,7 @@ func (f *shellFacts) envAssign(w *syntax.Word) {
 // startupFile records the file a shell started later reads first, read as a
 // script it runs; one named by an expansion is a script no rule can read.
 func (f *shellFacts) startupFile(name, value string, lit bool) {
+	f.setsEnv = true
 	switch {
 	case name == "ENV" && !lit:
 		// Only an interactive shell reads ENV: kept for startups to weigh.

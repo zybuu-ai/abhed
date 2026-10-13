@@ -120,8 +120,9 @@ func trustStartupFilesCmd(args []string, out io.Writer) int {
 	} else {
 		fmt.Fprintf(out, "\nThese are the files a shell the agent starts on the process tier or none reads first, and those they source or run.\n"+
 			"Trusted, each one's own text is not judged against the rules while it stays exactly as shown; a change makes it\n"+
-			"judged again. What a file sources or runs that is not listed here is still judged, and on a line that sets the\n"+
-			"shell's environment (an assignment, env, export or cd) nothing is trusted.\n")
+			"judged again. What a file sources or runs that is not listed here is still judged, and files it reaches by a\n"+
+			"name Abhed cannot resolve (a pattern, a variable) are neither shown nor read. Only a line that starts the shell\n"+
+			"alone uses this; on any other line every file is judged.\n")
 		if !*yes {
 			fmt.Fprintf(out, "Trust these %d file(s) as your own? [y/N] ", len(keep))
 			answer, err := readAnswer(trustIn)

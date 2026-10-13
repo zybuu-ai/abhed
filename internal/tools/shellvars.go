@@ -2,6 +2,7 @@ package tools
 
 import (
 	"maps"
+	"path"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -199,4 +200,27 @@ func CanonicalCommandEnv(command string, env map[string]string) Canonical {
 		c.shell = parseShellEnv(command, env)
 	}
 	return c
+}
+
+// plainShellStart reports a file that is a single simple command whose
+// program is a shell named literally, with no assignment or redirection.
+func plainShellStart(file *syntax.File) bool {
+	if len(file.Stmts) != 1 {
+		return false
+	}
+	st := file.Stmts[0]
+	c, ok := st.Cmd.(*syntax.CallExpr)
+	if !ok || len(c.Assigns) > 0 || len(st.Redirs) > 0 || st.Background || st.Negated || len(c.Args) == 0 {
+		return false
+	}
+	name, lit := literal(c.Args[0])
+	_, shell := homeStartFiles[path.Base(name)]
+	return lit && shell
+}
+
+// BaselineApplies reports a line the person's start-up baseline may be
+// applied to: one simple command starting a shell, which changes nothing
+// the shell's start-up files could read, here or in the text it runs.
+func (c Canonical) BaselineApplies() bool {
+	return c.shell.plainShell && !c.SetsEnv() && !c.shell.unparsed
 }

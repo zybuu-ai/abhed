@@ -122,6 +122,9 @@ type shellFacts struct {
 	// setsEnv reports the line changing the environment a shell gets.
 	scriptHidden string
 	setsEnv      bool
+	// plainShell reports a line that is one simple command starting a shell,
+	// with nothing before it and no assignment of its own.
+	plainShell bool
 	// shellEnv is the environment of the last shell the line starts.
 	shellEnv map[string]string
 }
@@ -237,6 +240,9 @@ var posixMode = regexp.MustCompile(`set\s+(?:-[a-zA-Z]*\s+)*[-+]o\s+posix|--posi
 
 // walk reads a parsed command, file, whose text is command.
 func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
+	if depth == 0 {
+		f.plainShell = plainShellStart(file)
+	}
 	src, gits := f.src, f.gits
 	defer func() { f.src, f.gits = src, gits }()
 	f.src, f.gits = command, nil
@@ -599,6 +605,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 	f.ptyShell(name, args, depth)
 	switch {
 	case name == "alias":
+		f.setsEnv = true
 		// An alias's value is shell text run where its name is: read it so.
 		for _, a := range args {
 			v, lit := literal(a)
@@ -618,6 +625,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 			}
 		}
 	case name == "source" || name == ".":
+		f.setsEnv = true // a sourced file may change anything
 		if len(args) > 0 {
 			v, lit := literal(args[0])
 			if !lit && !hasProcSubst(args[0]) {
@@ -639,6 +647,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 			}
 		}
 	case name == "eval":
+		f.setsEnv = true
 		f.shellText(args, depth)
 	case name == "trap":
 		// trap's first argument is shell text run later; -p and -l list.
