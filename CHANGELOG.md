@@ -1434,7 +1434,8 @@ All notable changes to Abhed are recorded here. The format follows
   embeddings are now kept in `~/.abhed/index`, one file per workspace and
   embedding model, so `abhed index` builds them ahead and a session start
   embeds only the chunks that changed. The symbol and BM25 tiers are still
-  rebuilt by each session.
+  rebuilt by each session, and `abhed index` and its help say so; without
+  `retrieval.embed` it says it keeps nothing.
 - `abhed acp` refuses a session another Abhed process has open with code
   `-32004`, not the generic `-32000`, so an editor can offer the fork
   without matching the message's words. Every tool call now has an id of

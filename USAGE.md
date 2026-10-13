@@ -520,10 +520,12 @@ gaming. Exit code is non-zero on failure so CI can gate on it.
 ```
 
 ```bash
-abhed index      # build the index
+abhed index      # embed the workspace ahead of a session
 ```
 
-Symbol and BM25 tiers need no embedding model. For natural-language search over
+Symbol and BM25 tiers need no embedding model, and each session rebuilds them
+in moments; only embeddings are kept, in `~/.abhed/index`, so `abhed index`
+keeps nothing without `retrieval.embed`. For natural-language search over
 docs, add the vector tier:
 
 ```json
