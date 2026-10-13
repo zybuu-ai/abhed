@@ -99,3 +99,41 @@ func TestTrustStartupFilesShowsWholeFilesAndWhatTheySource(t *testing.T) {
 		t.Fatalf("the hash is not of the bytes shown: %+v", f)
 	}
 }
+
+// A program a start-up file runs that no shell reads, a binary such as
+// /bin/bash or another interpreter's script, is not a start-up file: the
+// check never reads it, so it is neither listed nor trusted. A shell script
+// it runs is.
+func TestStartupFilesLeaveOutPrograms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"tool":     "\x7fELF\x02\x01\x01\x00\x00\x00",
+		"tool.py":  "#!/usr/bin/env python3\nprint(1)\n",
+		"setup.sh": "#!/bin/sh\nexport B=2\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rc := "~/bin/tool\n~/bin/tool.py\n~/bin/setup.sh\n"
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(rc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := homeStartupFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range files {
+		got = append(got, f.path)
+	}
+	want := []string{filepath.Join(home, ".zshrc"), filepath.Join(bin, "setup.sh")}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("start-up files:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

@@ -35,7 +35,7 @@ type startupFile struct {
 const maxStartupClosure = 64
 
 // homeStartupFiles are the start-up files present in the person's HOME, and
-// the files they source or run by a path the check can resolve.
+// the shell files they source or run by a path the check can resolve.
 func homeStartupFiles() ([]startupFile, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -71,9 +71,15 @@ func homeStartupFiles() ([]startupFile, error) {
 			if p == "~" || strings.HasPrefix(p, "~/") {
 				p = home + p[1:]
 			}
-			if filepath.IsAbs(p) && fileThere(p) {
-				add(filepath.Clean(p), out[i].path)
+			if !filepath.IsAbs(p) || !fileThere(p) {
+				continue
 			}
+			// A binary or another interpreter's script is a program the check
+			// never reads as shell text, so it is not a start-up file.
+			if _, shell, err := tools.ReadScript(p, s.Direct); s.Direct && err == nil && !shell {
+				continue
+			}
+			add(filepath.Clean(p), out[i].path)
 		}
 	}
 	return out, nil

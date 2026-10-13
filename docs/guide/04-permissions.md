@@ -513,7 +513,8 @@ command may have written, so those are read too, by the same rules (a
 `#!/bin/zsh` script reads `.zshenv`). Every one is judged by what it
 holds, whoever wrote it and whenever, unless you have trusted it: `abhed
 trust startup-files` shows each start-up file in your home folder, and
-each file they source or run by a path it can resolve, whole, with its
+each shell file they source or run by a path it can resolve (not a
+program such as `/bin/bash` or `/usr/bin/env`, which no shell reads), whole, with its
 size and the sha256 of exactly what is shown, and, when you confirm (`-y`
 in a script),
 records them in `~/.abhed/startup-files.json`, which the agent's commands
