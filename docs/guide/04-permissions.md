@@ -488,16 +488,19 @@ text is, from each word that may start it; `script`'s (`script -q
 names reads its start-up files. `tmux`, `byobu` and `screen` can start
 shells, run commands, type keys, paste buffers and read configuration in
 more ways than the check can follow, so under a rule for `bash` only what
-lists, shows, attaches to or ends sessions is allowed: tmux's
-`list-sessions`, `list-windows`, `list-panes`, `list-clients`,
-`list-commands`, `list-keys`, `list-buffers`, `has-session`,
-`kill-session`, `kill-server`, `kill-window`, `kill-pane`,
-`attach-session`, `detach-client`, `show-options`, `show-window-options`,
-`show-environment`, `show-messages`, `show-hooks`, `show-buffer` and
-`capture-pane` (by full name, alias or unique prefix, as tmux reads them)
-with no `-f`, `-L`, `-S` or `-c`, and `screen -ls`, `-list`, `-wipe`, `-r`
-and `-x`. Anything else is refused under a deny rule and asked about under
-an ask rule.
+lists or shows what a running server holds, and starts no server, is
+allowed: tmux's `list-sessions`, `list-windows`, `list-panes`,
+`list-clients`, `list-buffers`, `has-session`, `detach-client`,
+`show-options`, `show-window-options`, `show-environment`,
+`show-messages`, `show-hooks`, `show-buffer` and `capture-pane` (by full
+name, alias or unique prefix, as tmux reads them) with no `-f`, `-L`, `-S`
+or `-c`, and `screen -ls`, `-list`, `-wipe`, `-r` and `-x`. `attach-session`,
+`list-keys` and `list-commands` start a server, which reads a tmux
+configuration (`~/.tmux.conf`, or one under `$XDG_CONFIG_HOME`) the check
+never sees, so they are refused like anything else: under a deny rule, and
+asked about under an ask rule. `kill-session`, `kill-server`,
+`kill-window` and `kill-pane` are asked about, as they may end your own
+sessions.
 A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused

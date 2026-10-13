@@ -384,8 +384,11 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 	}
 	switch name {
 	case "tmux", "byobu":
-		if why := tmuxRefusal(words); why != "" {
+		switch full, why := tmuxRefusal(words); {
+		case why != "":
 			f.scriptHidden = why
+		case tmuxEnds[full]:
+			f.askUnderRules = "tmux " + full + " ends sessions, windows or panes, which may be your own"
 		}
 	case "screen":
 		if why := screenRefusal(words); why != "" {
@@ -488,13 +491,17 @@ var tmuxCommands = map[string]string{"attach-session": "attach", "bind-key": "bi
 	"suspend-client": "suspendc", "swap-pane": "swapp", "swap-window": "swapw", "switch-client": "switchc",
 	"unbind-key": "unbind", "unlink-window": "unlinkw", "wait-for": "wait"}
 
-// tmuxReadOnly are the tmux commands that only list, show, attach or end
-// sessions: under a rule for bash, the only ones allowed.
+// tmuxReadOnly are the tmux commands that only list or show what a running
+// server holds and start none: under a rule for bash, the only ones allowed.
+// attach-session, list-keys and list-commands start one, which reads its
+// configuration; kill-* are asked about, as they end the person's sessions.
 var tmuxReadOnly = map[string]bool{"list-sessions": true, "list-windows": true, "list-panes": true,
-	"list-clients": true, "list-commands": true, "list-keys": true, "list-buffers": true, "has-session": true,
-	"kill-session": true, "kill-server": true, "kill-window": true, "kill-pane": true, "attach-session": true,
-	"detach-client": true, "show-options": true, "show-window-options": true, "show-environment": true,
-	"show-messages": true, "show-hooks": true, "show-buffer": true, "capture-pane": true}
+	"list-clients": true, "list-buffers": true, "has-session": true, "detach-client": true, "show-options": true,
+	"show-window-options": true, "show-environment": true, "show-messages": true, "show-hooks": true,
+	"show-buffer": true, "capture-pane": true}
+
+// tmuxEnds are the tmux commands that end sessions, windows or panes.
+var tmuxEnds = map[string]bool{"kill-session": true, "kill-server": true, "kill-window": true, "kill-pane": true}
 
 // tmuxResolve is the full name tmux runs for name: an alias, a full name,
 // or a unique prefix of one; "" when none or more than one match.
@@ -516,18 +523,19 @@ func tmuxResolve(name string) string {
 	return match
 }
 
-// tmuxRefusal says why a tmux line is not one of its read-only commands:
-// it could start a shell, run a command, type keys or read a configuration.
-func tmuxRefusal(words []string) string {
+// tmuxRefusal is the command a tmux line runs, and why it is not one of the
+// allowed ones: it could start a shell, run a command, type keys or read a
+// configuration.
+func tmuxRefusal(words []string) (full, why string) {
 	i := 0
 	for ; i < len(words) && strings.HasPrefix(words[i], "-") && words[i] != "--"; i++ {
 		w := words[i]
 		for k := 1; k < len(w); k++ {
 			switch {
 			case w[k] == 'V':
-				return "" // prints its version, runs nothing
+				return "", "" // prints its version, runs nothing
 			case strings.IndexByte("fLSc", w[k]) >= 0:
-				return "tmux " + w + " names a configuration, socket or command the check cannot read"
+				return "", "tmux " + w + " names a configuration, socket or command the check cannot read"
 			case w[k] == 'T':
 				if k == len(w)-1 {
 					i++
@@ -540,18 +548,21 @@ func tmuxRefusal(words []string) string {
 		i++
 	}
 	if i >= len(words) {
-		return "tmux with no command starts a session, whose shell and configuration the check cannot read"
+		return "", "tmux with no command starts a session, whose shell and configuration the check cannot read"
 	}
 	for _, w := range words[i:] {
 		if w == "\x00" || strings.HasSuffix(w, ";") {
-			return "tmux is given a command built when it runs, or more than one"
+			return "", "tmux is given a command built when it runs, or more than one"
 		}
 	}
-	full := tmuxResolve(words[i])
-	if !tmuxReadOnly[full] {
-		return "tmux " + words[i] + " is not one of its read-only commands; what it runs, types or reads cannot be checked"
+	full = tmuxResolve(words[i])
+	if tmuxEnds[full] {
+		return full, ""
 	}
-	return ""
+	if !tmuxReadOnly[full] {
+		return "", "tmux " + words[i] + " is not one of its read-only commands; what it runs, types or reads cannot be checked"
+	}
+	return full, ""
 }
 
 // screenRefusal says why a screen line is not a listing, a wipe or a

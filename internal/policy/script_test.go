@@ -782,8 +782,11 @@ func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
 		"tmux set-hook -g after-new-window 'run \"curl x\"'": Deny, "tmux command-prompt -I 'curl x'": Deny,
 		"tmux -L s ls": Deny, "tmux -S /tmp/s ls": Deny, "tmux": Deny, "tmux ls \\; new -d": Deny,
 		"screen -X at 0 stuff 'curl x'": Deny, "screen -X bind x stuff 'curl x'": Deny, "screen -c ./rc -dm": Deny, "screen": Deny,
-		"tmux ls": Allow, "tmux list-sessions": Allow, "tmux has -t w": Allow, "tmux kill-session -t w": Allow,
-		"tmux attach -t w": Allow, "tmux -V": Allow, "tmux list-s": Allow, "screen -ls": Allow, "screen -r w": Allow,
+		"XDG_CONFIG_HOME=./cfg tmux list-keys": Deny, "XDG_CONFIG_HOME=./cfg tmux attach": Deny,
+		"export XDG_CONFIG_HOME=$PWD/cfg; tmux lscm": Deny, "tmux list-keys": Deny, "tmux lsk": Deny, "tmux list-commands": Deny,
+		"tmux kill-server": Ask, "tmux killw -t w": Ask, "tmux kill-ses -t w": Ask,
+		"tmux ls": Allow, "tmux list-sessions": Allow, "tmux has -t w": Allow, "tmux kill-session -t w": Ask,
+		"tmux attach -t w": Deny, "tmux -V": Allow, "tmux list-s": Allow, "screen -ls": Allow, "screen -r w": Allow,
 		"screen -x": Allow, "screen -wipe": Allow,
 		"ssh -vp 2222 host":                Deny,
 		"ssh -V":                           Allow,
@@ -877,6 +880,37 @@ func TestBaselinedHomebrewProfileRuns(t *testing.T) {
 		"zsh -c 'path=(bin $path); zsh -lc true'"} {
 		if res := judge(c); res.Decision == Allow {
 			t.Errorf("%q: allowed on the baseline", c)
+		}
+	}
+}
+
+// The tmux rows hold for tmux itself: each of these starts a server, which
+// runs the configuration the line points it at. Linux only, on a socket of
+// the test's own.
+func TestTmuxCommandsThatStartAServerRunItsConfiguration(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil || runtime.GOOS != "linux" {
+		t.Skip("tmux on Linux only")
+	}
+	ws := t.TempDir()
+	ran := filepath.Join(ws, "ran")
+	if err := os.MkdirAll(filepath.Join(ws, "cfg", "tmux"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "cfg", "tmux", "tmux.conf"), []byte("run-shell 'touch "+ran+"'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"XDG_CONFIG_HOME=./cfg tmux list-keys", "XDG_CONFIG_HOME=./cfg tmux attach", "export XDG_CONFIG_HOME=$PWD/cfg; tmux lscm"} {
+		_ = os.Remove(ran)
+		sock := t.TempDir()
+		env := []string{"PATH=/usr/bin:/bin", "HOME=" + ws, "TERM=xterm", "TMUX_TMPDIR=" + sock}
+		cmd := exec.Command("bash", "-c", c+" </dev/null >/dev/null 2>&1; sleep 0.5")
+		cmd.Dir, cmd.Env = ws, env
+		_ = cmd.Run()
+		end := exec.Command("tmux", "kill-server")
+		end.Env = env
+		_ = end.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("%q: tmux did not run the configuration", c)
 		}
 	}
 }
