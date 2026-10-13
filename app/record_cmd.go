@@ -585,11 +585,25 @@ func (c recordCtx) prune(args []string) int {
 }
 
 func printPruned(w io.Writer, pruned []local.Pruned) {
+	bad := 0
 	for _, p := range pruned {
-		fmt.Fprintf(w, "pruned %s: tombstone keeps head seq %d %s\n", p.ID, p.Head.Seq, short(p.Head.Hash))
+		switch {
+		case p.Missing:
+			bad++
+			fmt.Fprintf(w, "pruned %s, whose file was already gone: tombstone keeps head seq %d %s\n", p.ID, p.Head.Seq, short(p.Head.Hash))
+		case !p.Verified:
+			bad++
+			fmt.Fprintf(w, "pruned %s, which did not verify (%s): tombstone keeps head seq %d %s and records that\n", p.ID, p.Unverified, p.Head.Seq, short(p.Head.Hash))
+		default:
+			fmt.Fprintf(w, "pruned %s: tombstone keeps head seq %d %s\n", p.ID, p.Head.Seq, short(p.Head.Hash))
+		}
 	}
-	if len(pruned) == 0 {
+	switch {
+	case len(pruned) == 0:
 		fmt.Fprintln(w, "nothing to prune")
+	case bad > 0:
+		// The tamper evidence went with the file; the tombstone is what is left of it.
+		fmt.Fprintf(w, "%d pruned, %d of them did not verify\n", len(pruned), bad)
 	}
 }
 

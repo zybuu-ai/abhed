@@ -1462,6 +1462,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed record prune` printed the same line for a session that did not
+  verify, or whose file was already gone, as for one that verified; only
+  the tombstone said otherwise. It now names each such session, with why,
+  and ends with how many of those it pruned; a managed retention prune says
+  so on the terminal too.
 - `abhed doctor` counted a configured MCP server that did not connect
   without saying why. It now prints the reason under the `mcp` line: a
   program that does not match its `digest`, a URL server with a `digest`, a

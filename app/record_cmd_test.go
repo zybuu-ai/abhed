@@ -287,3 +287,28 @@ func TestConfirmNumbered(t *testing.T) {
 		}
 	}
 }
+
+// A record that does not verify is still pruned, and prune says so of it
+// and in its summary rather than print the line a verified one gets.
+func TestRecordPruneSaysASessionDidNotVerify(t *testing.T) {
+	ws := t.TempDir()
+	ids := recordHome(t, ws, "old work", "keep this")
+	rec, err := openRecord(config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := rec.Path(ids[0])
+	_ = rec.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.Replace(data, []byte("old work"), []byte("new work"), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := runRecord(t, ws, "prune", ids[0], "-yes")
+	if code != 0 || !strings.Contains(out, "pruned "+ids[0]+", which did not verify") ||
+		!strings.Contains(out, "1 pruned, 1 of them did not verify") {
+		t.Fatalf("prune of an unverified session: %d\n%s", code, out)
+	}
+}

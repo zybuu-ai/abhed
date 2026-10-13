@@ -790,7 +790,11 @@ func openRecord(cfg config.Config) (*local.Store, error) {
 		pruned, _, err := rec.PruneOlder(cutoff, "managed", fmt.Sprintf("record.retention_days is %d", days))
 		// Each has a tombstone in the index; the person is told as well.
 		for _, p := range pruned {
-			fmt.Fprintf(os.Stderr, "abhed: pruned session %s under record.retention_days (%d days); a tombstone keeps its head\n", p.ID, days)
+			unverified := ""
+			if !p.Verified {
+				unverified = ", which did not verify"
+			}
+			fmt.Fprintf(os.Stderr, "abhed: pruned session %s%s under record.retention_days (%d days); a tombstone keeps its head\n", p.ID, unverified, days)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: the record's retention could not be applied: %v\n", err)
