@@ -1496,6 +1496,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The terminal's markdown showed underscores inside a word as emphasis, so
+  `__init__.py` read as a bold `init.py`. Underscores inside a word, or
+  followed by `.`, `-` or `/` and more of a name, are now literal. Affects
+  every release to 1.2.7.
 - On macOS and Windows, each call Abhed made to `podman` went over ssh to
   the machine, and Podman 5.2 and earlier leave a root ssh session behind in
   the VM at each; a long session ran the VM out of memory. Abhed now uses the
