@@ -61,7 +61,7 @@ func TestContainerServerArgs(t *testing.T) {
 		own := filepath.Join(home, ".abhed", "mcp", "srv", "home")
 		for _, want := range []string{"-v " + own + ":" + own, "-v " + filepath.Join(home, "tools", "srv") + ":" + filepath.Join(home, "tools", "srv") + ":ro",
 			"-v /opt/shared:/opt/shared:ro", "-v " + ws + ":" + ws, "--tmpfs " + filepath.Join(ws, ".abhed"), "--cap-drop ALL", "--read-only",
-			"--name " + serverPrefix, Image + " " + tool + " a"} {
+			"--name " + serverPrefix, SandboxImage() + " " + tool + " a"} {
 			if !strings.Contains(args, want) {
 				t.Errorf("gvisor %v: no %q in %s", gvisor, want, args)
 			}

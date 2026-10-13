@@ -489,7 +489,7 @@ func TestImages(t *testing.T) {
 		want  string
 		ok    bool
 	}{
-		{Options{}, "", sandbox.Image, true},
+		{Options{}, "", sandbox.SandboxImage(), true},
 		{Options{Image: "registry.local/base:1"}, "", "registry.local/base:1", true},
 		{Options{Images: []string{"registry.local/py:3"}}, "registry.local/py:3", "registry.local/py:3", true},
 		{Options{}, "attacker/image:latest", "", false},

@@ -129,7 +129,7 @@ func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, 
 	if proxy.Inspecting() {
 		run = append(run, "-v", filepath.Join(c.egDir, "ca")+":"+caDirInside+":ro")
 	}
-	run = append(run, "--name", name, Image,
+	run = append(run, "--name", name, SandboxImage(),
 		"/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done")
 	end := func() {
 		call.End()

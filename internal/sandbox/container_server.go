@@ -111,7 +111,7 @@ func (c *Container) serverRun(ctx context.Context, p Policy, extra, env, argv []
 	}
 	context.AfterFunc(ctx, removeEnv)
 	name := containerName(serverPrefix)
-	args = append(append(args, extra...), "--env-file", envFile, "--name", name, Image)
+	args = append(append(args, extra...), "--env-file", envFile, "--name", name, SandboxImage())
 	cmd := c.engineCmd(ctx, append(args, argv...)...)
 	cmd.Cancel = c.remove(cmd, name)
 	return cmd, func() {
@@ -136,13 +136,13 @@ func (c *Container) programInImage(ctx context.Context, p Policy, extra []string
 	if err != nil {
 		return err
 	}
-	args = append(append(args, extra...), "--name", containerName(serverPrefix+"look-"), Image,
+	args = append(append(args, extra...), "--name", containerName(serverPrefix+"look-"), SandboxImage(),
 		"/bin/sh", "-c", lookProgram, "sh", program)
 	cmd := c.engineCmd(ctx, args...)
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == lookMissing {
-			return missing("is not in the sandbox image " + Image)
+			return missing("is not in the sandbox image " + SandboxImage())
 		}
 	}
 	return nil
