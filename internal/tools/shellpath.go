@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -57,6 +58,7 @@ func (f *shellFacts) setsVar(a *syntax.Assign) {
 func (f *shellFacts) setsByName(v string) {
 	n, _, _ := strings.Cut(v, "=")
 	n, _, _ = strings.Cut(strings.TrimSuffix(n, "+"), "[")
+	f.forgetVar(n)
 	switch n {
 	case "PATH":
 		f.pathSet, f.pathUnknown = true, true
@@ -76,6 +78,14 @@ func (f *shellFacts) envAssign(w *syntax.Word) {
 		v = wordText(w)
 	}
 	name, value, _ := strings.Cut(v, "=")
+	f.setsEnv = true
+	if f.callEnv != nil {
+		if lit {
+			f.callEnv[name] = value
+		} else {
+			delete(f.callEnv, name)
+		}
+	}
 	switch name {
 	case "PATH":
 		f.pathSet = true
@@ -150,14 +160,14 @@ func (f *shellFacts) startups() (files []Script, why string) {
 		for _, name := range startupDirFiles[d.name] {
 			// What the shells started read; a script run may be zsh's.
 			if f.homeFiles[name] || name == ".zshenv" && len(f.scripts) > 0 {
-				files = append(files, Script{Path: path.Join(d.dir, name), Startup: true})
+				files = append(files, Script{Path: path.Join(d.dir, name), Startup: true, Env: f.startEnv()})
 			}
 		}
 	}
 	why = f.startupDirHidden
 	if f.interactive {
 		for _, e := range f.envFiles {
-			files = append(files, Script{Path: e})
+			files = append(files, Script{Path: e, Env: f.startEnv()})
 		}
 		if why == "" {
 			why = f.envHidden
@@ -249,6 +259,7 @@ func (f *shellFacts) shellStart(name string, args []*syntax.Word) {
 	if !ok {
 		return
 	}
+	f.shellEnv = maps.Clone(f.callEnv)
 	login, interactive, command, rc, profile, operand := false, false, false, true, true, false
 scan:
 	for j := 0; j < len(args); j++ {
@@ -427,4 +438,12 @@ func (f *shellFacts) anyShell(login bool) {
 			}
 		}
 	}
+}
+
+// startEnv is the environment the line's shells start with.
+func (f *shellFacts) startEnv() map[string]string {
+	if f.shellEnv != nil {
+		return f.shellEnv
+	}
+	return f.commandEnv(nil)
 }

@@ -203,6 +203,8 @@ All notable changes to Abhed are recorded here. The format follows
   that the same line writes before running it (a redirection, `cp`, `mv`,
   `ln`, `install`, `rsync`, `tee`, `dd`, `sed -i`, `perl -i`, `curl -o`,
   `wget`, a file named by an expansion, or a folder's contents copied over it,
+  or a script sourced or run by a path built from a variable the line does
+  not give a literal value, as `source $X/x.sh`,
   as `cp -r sub/. .` or `rsync -a sub/ .` do), that is named by a relative
   path on a line that changes folder (`cd`, `pushd`, `popd`, `env -C`, `sudo
   -D`, `find -execdir`, or a sourced script that does), that is sourced by a

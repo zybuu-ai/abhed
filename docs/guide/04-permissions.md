@@ -445,6 +445,11 @@ rule for `bash` has a pattern, and asked about otherwise, when it:
   The check does not follow the folder; it refuses. A script named by an
   absolute path is still read.
 - is one of more than 16 scripts the line runs
+- is named by a path built from a variable whose value the check cannot
+  read (`source $X/x.sh`, `bash "$S"`), in the line or in a script it runs:
+  a value the line sets literally, by assignment, `export` or `env`, is
+  used (`X=./c bash s.sh` reads `c/x.sh`), and so is the HOME commands get;
+  one the line does not set, or does not export to the script, is not
 - is sourced by a name without a folder (`. s.sh`, `source s.sh`) on a line
   that sets `PATH` in any way (`PATH=sub . s.sh`,
   `export PATH=sub:$PATH; source s.sh`, `read PATH`), as bash then looks
@@ -492,7 +497,13 @@ reach; run it in your own terminal, as it is refused inside an agent's
 command, and again after you change one. A file whose path, size and
 sha256 still match is not judged, so a package manager's line in your
 `.zprofile` does not make `zsh -lc` ask; any other file, a same-size edit,
-a link or a folder in its place is. Each session's record notes the files
+a link or a folder in its place is. Trusting a file trusts its own text
+only: what it sources and the scripts and programs it runs are still read
+and judged, with the environment the line gives them, and a file it names
+by a path built from a variable it does not set is not read. On a line
+that sets the environment its shell gets (an assignment, `env`, `export`,
+`PATH`, `HOME`, `ZDOTDIR`, or a `cd` first) the baseline does not apply at
+all, since such a line can steer what a trusted file runs. Each session's record notes the files
 it trusted this way (`policy.startup_trusted`, path and sha256), and
 `abhed doctor` lists them and any changed since. That
 `HOME` is the host's own on the process tier and none, the fence's private
