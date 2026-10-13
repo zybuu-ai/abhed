@@ -180,6 +180,6 @@ func printDoctorStartupFiles(out io.Writer) {
 		}
 	}
 	if judged > 0 {
-		fmt.Fprintln(out, "            under deny or ask rules, a shell reading a file Abhed cannot follow (such as one a package manager wrote) asks; if they are your own, run `abhed trust startup-files`")
+		fmt.Fprintln(out, "            a shell reading a file Abhed cannot follow (such as one a package manager wrote) is refused under a deny rule and asked about under an ask rule; if they are your own, run `abhed trust startup-files`")
 	}
 }

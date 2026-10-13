@@ -494,8 +494,10 @@ trust startup-files` shows each start-up file in your home folder, and
 each file they source or run by a path it can resolve, whole, with its
 size and the sha256 of exactly what is shown, and, when you confirm (`-y`
 in a script),
-records them in `~/.abhed/startup-files.json`, which the agent cannot
-reach; run it in your own terminal, as it is refused inside an agent's
+records them in `~/.abhed/startup-files.json`, which the agent's commands
+cannot reach on the process, fence and container tiers; on the none tier
+nothing keeps a command from writing it, or the start-up files themselves,
+so there the baseline protects nothing. Run it in your own terminal, as it is refused inside an agent's
 command, and again after you change one. A file whose path, size and
 sha256 still match is not judged, so a package manager's line in your
 `.zprofile` does not make `zsh -lc` ask; any other file, a same-size edit,

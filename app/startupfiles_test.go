@@ -49,7 +49,7 @@ func TestTrustStartupFilesRecordsTheBaseline(t *testing.T) {
 	}
 	out.Reset()
 	printDoctorStartupFiles(&out)
-	if !strings.Contains(out.String(), "changed since you trusted it") || !strings.Contains(out.String(), "abhed trust startup-files") {
+	if !strings.Contains(out.String(), "changed since you trusted it") || !strings.Contains(out.String(), "refused under a deny rule") {
 		t.Fatalf("doctor after a change: %s", out.String())
 	}
 	// -y records without asking, as a script would.
