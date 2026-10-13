@@ -446,10 +446,13 @@ rule for `bash` has a pattern, and asked about otherwise, when it:
   absolute path is still read.
 - is one of more than 16 scripts the line runs
 - is named by a path built from a variable whose value the check cannot
-  read (`source $X/x.sh`, `bash "$S"`), in the line or in a script it runs:
-  a value the line sets literally, by assignment, `export` or `env`, is
-  used (`X=./c bash s.sh` reads `c/x.sh`), and so is the HOME commands get;
-  one the line does not set, or does not export to the script, is not
+  read (`source $X/x.sh`, `bash "$S"`), in the line or in a script it runs.
+  Only plain forms are followed: `X=value cmd`, or a leading run of
+  `X=value` and `export X=value` statements (`X=./c bash s.sh` reads
+  `c/x.sh`), and the HOME commands get. After anything else (another
+  statement, `source`, `.`, `eval`, `alias`, a function, `BASH_ENV`,
+  `ENV`, `read`, `declare`, a quoted or braced name) no value is known, and
+  so is one the line does not set or export to the script
 - is sourced by a name without a folder (`. s.sh`, `source s.sh`) on a line
   that sets `PATH` in any way (`PATH=sub . s.sh`,
   `export PATH=sub:$PATH; source s.sh`, `read PATH`), as bash then looks

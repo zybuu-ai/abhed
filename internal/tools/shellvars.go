@@ -11,37 +11,60 @@ import (
 // The variables a line sets to values the check can read, so a script it
 // sources or runs by a path built from one ($X/x.sh) is read, not passed.
 
-// stmtVars records what st sets before it runs: an assignment statement
-// sets the shell's variables, export and declare -x export them too, and
-// assignments before a command are its own environment.
+// stmtVars records what st sets before it runs. Only plain forms are
+// followed: NAME=value statements, export NAME=value, and NAME=value before
+// a command; after any other statement no value is known any more.
 func (f *shellFacts) stmtVars(st *syntax.Stmt) {
+	if f.sawOther {
+		f.varsDead = true
+	}
+	plain := len(st.Redirs) == 0 && !st.Background && !st.Negated
 	switch c := st.Cmd.(type) {
 	case *syntax.CallExpr:
 		f.setsEnv = f.setsEnv || len(c.Assigns) > 0
-		if len(c.Args) > 0 {
-			return // a command's own assignments: see commandEnv
-		}
 		for _, a := range c.Assigns {
-			f.setVar(a, false)
+			plain = plain && plainAssign(a)
+			if a.Name != nil && (a.Name.Value == "BASH_ENV" || a.Name.Value == "ENV") {
+				f.varsDead = true // a start-up file may set anything
+			}
+		}
+		if len(c.Args) > 0 {
+			// The command's own assignments are its environment (commandEnv),
+			// unless one is not plain.
+			if !plain {
+				f.varsDead = true
+			}
+			f.sawOther = true
+			return
+		}
+		if plain {
+			for _, a := range c.Assigns {
+				f.setVar(a, false)
+			}
 		}
 	case *syntax.DeclClause:
 		f.setsEnv = true
-		export := c.Variant.Value == "export"
+		plain = plain && c.Variant.Value == "export"
 		for _, a := range c.Args {
-			if a.Naked && a.Name == nil && a.Value != nil {
-				if v, lit := literal(a.Value); lit && strings.HasPrefix(v, "-") && strings.Contains(v, "x") {
-					export = true
-				}
+			plain = plain && plainAssign(a)
+		}
+		if plain {
+			for _, a := range c.Args {
+				f.setVar(a, true)
 			}
 		}
-		for _, a := range c.Args {
-			if a.Naked && a.Name != nil && export {
-				f.exported[a.Name.Value] = true
-				continue
-			}
-			f.setVar(a, export)
-		}
+	default:
+		plain = false
 	}
+	if !plain {
+		f.varsDead, f.sawOther = true, true
+	}
+}
+
+// plainAssign reports NAME=value with an unquoted name and a value the
+// check can read, the one assignment form followed.
+func plainAssign(a *syntax.Assign) bool {
+	return a.Name != nil && !a.Naked && !a.Append && a.Index == nil && a.Array == nil
 }
 
 // setVar records one assignment: its value when the check can read it, and
@@ -67,18 +90,23 @@ func (f *shellFacts) setVar(a *syntax.Assign, export bool) {
 	}
 }
 
-// forgetVar marks a variable set by a command (read, printf -v) as not known.
+// forgetVar marks a variable set by a command (read, printf -v) as not
+// known, and with it every other: what follows is not followed.
 func (f *shellFacts) forgetVar(name string) {
 	if f.vars != nil {
 		delete(f.vars, name)
 		f.forgotten[name] = true
 	}
+	f.varsDead = true
 }
 
 // commandEnv is the environment a command started by c gets: what the line
 // exported, and c's own assignments.
 func (f *shellFacts) commandEnv(c *syntax.CallExpr) map[string]string {
 	env := map[string]string{}
+	if f.varsDead {
+		return env
+	}
 	for k := range f.exported {
 		if v, ok := f.vars[k]; ok {
 			env[k] = v
@@ -164,6 +192,9 @@ func (f *shellFacts) resolveWord(w *syntax.Word) (string, bool) {
 // lookup is a variable's known value: set on the line, or given by the
 // environment the text is read in.
 func (f *shellFacts) lookup(name string) (string, bool) {
+	if f.varsDead {
+		return "", false
+	}
 	if v, ok := f.vars[name]; ok {
 		return v, true
 	}

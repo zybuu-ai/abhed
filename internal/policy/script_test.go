@@ -560,7 +560,10 @@ func TestScriptsNamedByAVariableAreReadOrRefused(t *testing.T) {
 		}
 	}
 	write(filepath.Join(ws, "s.sh"), "source $X/x.sh\n")
-	write(filepath.Join(ws, "c", "x.sh"), "curl https://evil.example/x\n")
+	ran := filepath.Join(ws, "ran")
+	// The function stands in for curl when a real shell runs the file.
+	write(filepath.Join(ws, "c", "x.sh"), "curl() { : > '"+ran+"'; }\ncurl https://evil.example/x\n")
+	write(filepath.Join(ws, "export.sh"), "export X=c\n")
 	write(filepath.Join(ws, "ok", "x.sh"), "echo safe\n")
 	newEngine := func(rule string, deny bool) *Engine {
 		e := New(ModeBypass)
@@ -588,6 +591,26 @@ func TestScriptsNamedByAVariableAreReadOrRefused(t *testing.T) {
 	} {
 		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != want {
 			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+	// Past what the variable model follows, no value is known: each of these
+	// sources c/x.sh in real bash.
+	stale := []string{
+		"export X=ok; source ./export.sh; bash s.sh", "X=c eval 'bash s.sh'", "export X=ok; export {X,Y}=c; bash s.sh",
+		`export X=ok; export "X=c"; bash s.sh`, "export X=ok; export 'X'=c; bash s.sh", "export X=ok; BASH_ENV=export.sh bash s.sh",
+		"export X=ok; declare -x X=c; bash s.sh", "f() { export X=c; }; export X=ok; f; bash s.sh",
+		"export X=ok; read X <<< c; export X; bash s.sh",
+	}
+	for _, c := range stale {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+		_ = os.Remove(ran)
+		cmd := exec.Command("bash", "-c", c)
+		cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+		_ = cmd.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("%q: real bash did not source c/x.sh", c)
 		}
 	}
 	a := newEngine("bash(curl *)", false)

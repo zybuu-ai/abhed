@@ -122,6 +122,9 @@ type shellFacts struct {
 	// setsEnv reports the line changing the environment a shell gets.
 	scriptHidden string
 	setsEnv      bool
+	// varsDead reports a line past what the variable model follows, after
+	// which no value is known; sawOther a statement other than a plain one.
+	varsDead, sawOther bool
 	// plainShell reports a line that is one simple command starting a shell,
 	// with nothing before it and no assignment of its own.
 	plainShell bool
@@ -267,6 +270,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 		switch n := n.(type) {
 		case *syntax.FuncDecl:
 			f.posix = f.posix || n.Name != nil && n.Name.Value == "read"
+			f.varsDead = true // a call to it may set anything
 		case *syntax.CallExpr:
 			for _, a := range n.Args {
 				if v, _ := literal(a); strings.HasPrefix(v, "read=") {
@@ -605,7 +609,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 	f.ptyShell(name, args, depth)
 	switch {
 	case name == "alias":
-		f.setsEnv = true
+		f.setsEnv, f.varsDead = true, true
 		// An alias's value is shell text run where its name is: read it so.
 		for _, a := range args {
 			v, lit := literal(a)
@@ -625,7 +629,8 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 			}
 		}
 	case name == "source" || name == ".":
-		f.setsEnv = true // a sourced file may change anything
+		// A sourced file may change anything: nothing after it is followed.
+		defer func() { f.setsEnv, f.varsDead = true, true }()
 		if len(args) > 0 {
 			v, lit := literal(args[0])
 			if !lit && !hasProcSubst(args[0]) {
@@ -647,7 +652,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 			}
 		}
 	case name == "eval":
-		f.setsEnv = true
+		f.setsEnv, f.varsDead = true, true
 		f.shellText(args, depth)
 	case name == "trap":
 		// trap's first argument is shell text run later; -p and -l list.
@@ -1233,7 +1238,11 @@ func (f *shellFacts) script(name string, direct bool) {
 		f.scriptsCut = true
 		return
 	}
-	f.scripts = append(f.scripts, Script{Path: name, Direct: direct, Env: maps.Clone(f.callEnv)})
+	env := maps.Clone(f.callEnv)
+	if f.varsDead {
+		env = nil
+	}
+	f.scripts = append(f.scripts, Script{Path: name, Direct: direct, Env: env})
 }
 
 // redirectTargets records the literal files st's output redirections write.
