@@ -165,9 +165,13 @@ All notable changes to Abhed are recorded here. The format follows
 ### Security
 
 - A command given to a terminal program ran without the deny check:
-  `tmux new -d 'curl …'`, `tmux send-keys … 'curl …' Enter`, `screen -dm
-  curl …`, `script -q /dev/null curl …`, `unbuffer` and `dtach` passed
-  `bash(curl *)`. Their command is now judged as `bash -c` text is.
+  `tmux new -d 'curl …'`, `screen -dm curl …`, `script -q /dev/null curl
+  …`, `unbuffer` and `dtach` passed `bash(curl *)`, and so did keys typed
+  into a session (`tmux send-keys … 'curl …' Enter`). A command given
+  whole is now judged as `bash -c` text is (`script`'s exactly as typed);
+  `tmux send-keys`, `send`, `set-buffer`, `paste-buffer`, `load-buffer` and
+  `pipe-pane`, and `screen -X stuff`, `paste`, `readbuf`, `exec`, `eval` and
+  `register`, are refused under a deny rule and asked about otherwise.
   Affects 0.1.0 to 1.2.7.
 - A workbench shell or command could be read, typed into, resized or killed
   by whichever account held its session, not only the one that started it:

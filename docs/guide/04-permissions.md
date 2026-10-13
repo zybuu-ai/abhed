@@ -482,9 +482,14 @@ So is the shell `script`, `tmux`, `byobu`, `screen`, `unbuffer`, `dtach`,
 shell, interactive (`tmux`, `byobu` and `screen` as login shells too); `su
 -`, `sudo -i`, `login`, `expect` and `ssh` with no command start a shell
 whose start-up files the check cannot read, and are refused under a deny
-rule. The command such a program is given (`tmux new -d 'cmd'`, `tmux
-send-keys … 'cmd' Enter`, `screen -dm cmd`, `unbuffer cmd`, `dtach -c s
-cmd`) is judged as `bash -c` text is, from each word that may start it;
+rule. The command such a program is given whole (`tmux new -d 'cmd'`,
+`screen -dm cmd`, `unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c`
+text is, from each word that may start it. Keys or text typed into a
+session cannot be read as a command (they can be split across calls, sent
+as hex, or pasted from a buffer), so `tmux send-keys`, `send`,
+`set-buffer`, `paste-buffer`, `load-buffer` and `pipe-pane`, and `screen -X
+stuff`, `paste`, `readbuf`, `exec`, `eval` and `register`, are refused
+under a deny rule and asked about under an ask rule;
 `script`'s (`script -q /dev/null cmd`, `script -c cmd`) is read exactly as
 if typed, so a shell it names reads its start-up files.
 A script the line runs may be
