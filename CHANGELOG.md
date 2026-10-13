@@ -83,8 +83,10 @@ All notable changes to Abhed are recorded here. The format follows
 - A stdio MCP server on the process, fence, container or VM tier no longer
   sees your home folder; set `"host_files": true` on one that needs it. On
   the container and VM tiers it runs in a container from the sandbox image,
-  so its program must run there: set `ABHED_SANDBOX_IMAGE` to an image with
-  its runtime (node, python), or `host_files` to keep it on the host. Under
+  so its program must run there: one the image lacks (`npx`, `uvx`,
+  `docker`) or a macOS binary is refused at start, naming the program, and
+  `abhed doctor` says so. Set `ABHED_SANDBOX_IMAGE` to an image with its
+  runtime (node, python), or `host_files` to keep it on the host. Under
   the allowlist a stdio server on the fence, container or VM tier now
   starts, its network confined, where it was refused.
 - On Postgres, run `abhed migrate` (or apply `store/schema.sql`) as the

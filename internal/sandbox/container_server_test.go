@@ -16,8 +16,14 @@ import (
 // probes, so the arguments a server gets can be checked without one.
 func scriptedEngine(t *testing.T, p Policy, gvisor bool) *Container {
 	t.Helper()
+	return scriptedEngineWith(t, p, gvisor, "echo runsc\n")
+}
+
+// scriptedEngineWith is scriptedEngine whose engine runs script.
+func scriptedEngineWith(t *testing.T, p Policy, gvisor bool, script string) *Container {
+	t.Helper()
 	engine := filepath.Join(t.TempDir(), "docker")
-	if err := os.WriteFile(engine, []byte("#!/bin/sh\necho runsc\n"), 0o755); err != nil {
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	c := NewContainer(p)
@@ -78,6 +84,34 @@ func TestContainerServerArgs(t *testing.T) {
 	}
 }
 
+// A server whose program the image lacks, or a macOS binary, is refused at
+// start, naming the program and both ways out.
+func TestContainerServerProgramNotInImage(t *testing.T) {
+	t.Setenv("HOME", workspace(t))
+	ws := workspace(t)
+	macho := filepath.Join(ws, "macbin")
+	if err := os.WriteFile(macho, []byte{0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		program, script, why string
+	}{
+		{"npx", `case "$*" in *"command -v"*) exit 3;; esac` + "\necho runsc\n", "is not in the sandbox image"},
+		{macho, "echo runsc\n", "is a macOS program"},
+	} {
+		eng := scriptedEngineWith(t, DefaultPolicy(ws), false, c.script)
+		_, err := eng.ServerCommand(context.Background(), "s", []string{c.program}, nil, nil)
+		if err == nil {
+			t.Fatalf("%s was started", c.program)
+		}
+		for _, want := range []string{c.program, c.why, "ABHED_SANDBOX_IMAGE", `"host_files": true`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: no %q in %v", c.program, want, err)
+			}
+		}
+	}
+}
+
 // A server on a real engine reads none of the home or Abhed's state, uses
 // its own home and the workspace, and plants nothing.
 func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
@@ -120,4 +154,7 @@ func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
 		t.Fatalf("the server did not run: %v\n%s", err, out)
 	}
 	probe.check(t, "files", string(out))
+	if _, err := c.ServerCommand(ctx, "npx", []string{"npx", "-y", "some-server"}, os.Environ(), nil); err == nil || !strings.Contains(err.Error(), "is not in the sandbox image") {
+		t.Fatalf("a program the image lacks was not refused at start: %v", err)
+	}
 }

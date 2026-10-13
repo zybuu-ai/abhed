@@ -2,10 +2,13 @@ package sandbox
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -34,6 +37,9 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	extra := []string{"-v", files.home + ":" + files.home}
 	if files.prefix != "" {
 		extra = append(extra, "-v", files.prefix+":"+files.prefix+":ro")
+	}
+	if err := c.programInImage(ctx, p, extra, argv[0]); err != nil {
+		return nil, err
 	}
 	env = containerServerEnv(env, files.home)
 	key := ServerKey(name)
@@ -67,6 +73,67 @@ func (c *Container) serverRun(ctx context.Context, p Policy, extra, env, argv []
 	cmd := c.engineCmd(ctx, append(args, argv...)...)
 	cmd.Cancel = c.remove(cmd, name)
 	return cmd
+}
+
+// programInImage refuses a server whose program the sandbox image cannot run:
+// a macOS binary, or one the image does not have (npx, uvx, docker), looked
+// up in a container with the server's mounts. An engine that fails the look
+// is left to fail the start itself.
+func (c *Container) programInImage(ctx context.Context, p Policy, extra []string, program string) error {
+	missing := func(why string) error {
+		return fmt.Errorf("sandbox: the server's program %s %s, so it is not started; set ABHED_SANDBOX_IMAGE to an image that has it, "+
+			"or \"host_files\": true on the server to run it on the host", program, why)
+	}
+	if hostOnlyBinary(program) {
+		return missing("is a macOS program, which the " + string(c.Tier()) + " tier's Linux image cannot run")
+	}
+	args, err := c.runArgsWith(ctx, p.Workspace, p, false)
+	if err != nil {
+		return err
+	}
+	args = append(append(args, extra...), "--name", containerName(serverPrefix+"look-"), Image,
+		"/bin/sh", "-c", lookProgram, "sh", program)
+	cmd := c.engineCmd(ctx, args...)
+	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == lookMissing {
+			return missing("is not in the sandbox image " + Image)
+		}
+	}
+	return nil
+}
+
+// lookProgram exits lookMissing when the image has no program $1; the
+// engine's own failures are 125 to 127.
+const (
+	lookProgram = `if command -v "$1" >/dev/null 2>&1; then exit 0; fi; exit 3`
+	lookMissing = 3
+)
+
+// hostOnlyBinary reports a program, as found on this host, that is a Mach-O
+// binary: no Linux container runs it.
+func hostOnlyBinary(program string) bool {
+	path := program
+	if !filepath.IsAbs(path) {
+		var err error
+		if path, err = exec.LookPath(program); err != nil {
+			return false
+		}
+	}
+	f, err := os.Open(path) // #nosec G304 -- the configured server's program, read for its first bytes
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(f, head); err != nil {
+		return false
+	}
+	switch binary.BigEndian.Uint32(head) {
+	case 0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe:
+		return true
+	}
+	return false
 }
 
 // containerServerEnv is a server's environment inside a container: HOME its

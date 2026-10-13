@@ -110,3 +110,28 @@ func TestDoctorSaysWhyAServerIsNotConnected(t *testing.T) {
 		}
 	}
 }
+
+// On the container tier doctor says, as a session does, that a server's
+// program is not in the sandbox image, and how to run it.
+func TestDoctorSaysAServerProgramIsNotInTheImage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no container engine script on Windows")
+	}
+	// An engine that answers its probes and finds no program in the image.
+	bin := t.TempDir()
+	engine := "#!/bin/sh\ncase \"$*\" in *\"command -v\"*) exit 3;; esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(engine), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := &bgModelServer{}
+	ws := bgWorkspace(t, m.start(t), `,"mcp":{"servers":[{"name":"js","command":"npx","args":["-y","x"],"enabled":true}]}`)
+	cmd := mainHelper([]string{"-C", ws, "doctor"}, "PATH="+bin)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	_ = cmd.Run()
+	for _, want := range []string{`not connected: mcp server "js"`, "npx is not in the sandbox image", "ABHED_SANDBOX_IMAGE", `"host_files": true`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("doctor does not say %q:\n%s", want, out.String())
+		}
+	}
+}
