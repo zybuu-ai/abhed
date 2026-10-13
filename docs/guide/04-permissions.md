@@ -524,7 +524,10 @@ simple command whose first word is the shell, with no assignment or
 redirection and no other statement, and nothing in the text it runs that
 sets a variable, sources a file or changes folder. Only that shell's own
 start-up files are trusted: a shell started inside its `-c` text, a
-script, a sourced file or a trusted file is judged with no baseline. On any other line (a
+script, a sourced file or a trusted file is judged with no baseline. A
+`PATH` a trusted file sets itself (as `eval "$(brew shellenv)"` does) is
+followed as far as the check can look programs up, and is not a reason to
+refuse. On any other line (a
 `read PATH`, a `source`, a `cd`, `env`, `BASH_ENV`, a statement before
 the shell) every start-up file is judged in full, since such a line can
 steer what a trusted file runs. Each session's record notes the files
