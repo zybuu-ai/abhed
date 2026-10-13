@@ -432,6 +432,9 @@ type StdioTransport struct {
 	mu     sync.Mutex
 	// cancel ends a confined server's own context, revoking its egress credential.
 	cancel context.CancelFunc
+	// cleanup removes what the server runs in, such as its container, which
+	// killing the engine's client would leave running.
+	cleanup func()
 }
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
@@ -488,6 +491,10 @@ func (t *StdioTransport) Receive(_ context.Context) ([]byte, error) {
 
 func (t *StdioTransport) Close() error {
 	_ = t.stdin.Close()
+	// Before the kill: the container goes first, so nothing outlives the close.
+	if t.cleanup != nil {
+		t.cleanup()
+	}
 	if t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
 	}

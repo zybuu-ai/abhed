@@ -94,7 +94,7 @@ func (o Options) image() string {
 	if o.Image != "" {
 		return o.Image
 	}
-	return sandbox.Image
+	return sandbox.SandboxImage()
 }
 
 func (o Options) cpus() float64 {

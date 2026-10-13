@@ -99,14 +99,14 @@ func TestServerCommandWithoutTheAllowlist(t *testing.T) {
 	if ok, why := s.Available(); !ok {
 		t.Skipf("process sandbox unavailable: %s", why)
 	}
-	cmd, err := s.ServerCommand(context.Background(), "x", []string{"/bin/true"}, nil, nil)
+	cmd, err := s.ServerCommand(context.Background(), "x", []string{"/bin/sh"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if args := strings.Join(cmd.Args, " "); strings.Contains(args, "deny network") || strings.Contains(args, "unshare-net") {
 		t.Fatalf("the network was confined with no allowlist: %s", args)
 	}
-	if _, err := s.ServerNetCommand(context.Background(), "x", []string{"/bin/true"}, nil, nil); err == nil {
+	if _, err := s.ServerNetCommand(context.Background(), "x", []string{"/bin/sh"}, nil, nil); err == nil {
 		t.Fatal("a network-only confinement was given with no egress policy")
 	}
 }

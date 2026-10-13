@@ -327,6 +327,7 @@ func (s *Set) EndSession(id string) {
 func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
 	allowlist := cfg.Sandbox.Network == config.NetworkAllowlist
 	gw.MustConfine = allowlist
+	gw.Cleanup = sandbox.ServerCleanup
 	p, ok := sb.(sandbox.Pending)
 	if !ok {
 		gw.Confine, gw.ConfineNet = serverLaunchers(sb, allowlist)

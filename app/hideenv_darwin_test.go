@@ -16,6 +16,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 const hideCanary = "ABHED_TEST_HIDE_CANARY=harmless-canary-value"
@@ -27,6 +29,10 @@ func TestHideEnvHelper(t *testing.T) {
 		return
 	}
 	HideEnvironment()
+	if os.Getenv("ABHED_TEST_HIDE_ROLE") == "image" {
+		os.Stdout.WriteString("image " + sandbox.SandboxImage() + "\n")
+		return
+	}
 	os.Stdout.WriteString("ready " + os.Getenv("ABHED_TEST_HIDE_CANARY") + " " + strconv.Itoa(len(os.Getenv(hiddenEnvFD))) +
 		" " + strconv.Itoa(runtime.GOMAXPROCS(0)) + "\n")
 	time.Sleep(20 * time.Second)
@@ -60,6 +66,20 @@ func TestHideEnvironmentKeepsItFromProcArgs(t *testing.T) {
 	}
 	if !bytes.Contains(args, []byte("PATH=/usr/bin:/bin")) || !strings.Contains(string(args), hiddenEnvFD+"=") {
 		t.Fatalf("the re-executed process is not the one read:\n%q", args)
+	}
+}
+
+// A variable the re-executed Abhed gets back over the pipe is in force:
+// ABHED_SANDBOX_IMAGE names the container tier's image, as on other systems.
+func TestHiddenSandboxImageIsInForce(t *testing.T) {
+	c := exec.Command(os.Args[0], "-test.run=^TestHideEnvHelper$") // #nosec G204 -- the test binary
+	c.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "ABHED_TEST_HIDE_ROLE=image", "ABHED_SANDBOX_IMAGE=registry.test/tools:1"}
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("helper: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "image registry.test/tools:1\n") {
+		t.Fatalf("ABHED_SANDBOX_IMAGE was not in force after the re-exec:\n%s", out)
 	}
 }
 

@@ -17,9 +17,21 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// Image is the default execution image. Air-gapped installs pin it by digest: a
-// tag is mutable.
-var Image = envOr("ABHED_SANDBOX_IMAGE", "docker.io/library/debian:bookworm-slim")
+// DefaultImage is the execution image when nothing names another.
+const DefaultImage = "docker.io/library/debian:bookworm-slim"
+
+// Image, when set, is the execution image in place of ABHED_SANDBOX_IMAGE.
+var Image string
+
+// SandboxImage is the execution image: Image, else $ABHED_SANDBOX_IMAGE, read
+// when used, since on macOS the variable arrives after package init, else
+// DefaultImage. Air-gapped installs pin it by digest: a tag is mutable.
+func SandboxImage() string {
+	if Image != "" {
+		return Image
+	}
+	return envOr("ABHED_SANDBOX_IMAGE", DefaultImage)
+}
 
 // Container runs commands in an OCI container. The kernel is shared, so an
 // exploit crosses it: untrusted work needs TierVM.
@@ -130,9 +142,9 @@ func (c *Container) Describe() string {
 		engine = engine[i+1:]
 	}
 	if c.isGVisor() {
-		return fmt.Sprintf("gVisor (runsc) via %s · syscall interception · %s · image %s", engine, net, Image)
+		return fmt.Sprintf("gVisor (runsc) via %s · syscall interception · %s · image %s", engine, net, SandboxImage())
 	}
-	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, Image)
+	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, SandboxImage())
 }
 
 // engine is the runtime's program name: podman for Podman under any name, which
@@ -322,7 +334,8 @@ func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if c.policy.Egress != nil {
-		return c.egressRun(ctx, cwd, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
+		cmd, _ := c.egressRun(ctx, cwd, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
+		return cmd
 	}
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
@@ -331,7 +344,7 @@ func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd 
 		return &exec.Cmd{Err: err}
 	}
 	name := containerName("abhed-cmd-")
-	args = append(args, "--name", name, Image, "/bin/sh", "-c", command)
+	args = append(args, "--name", name, SandboxImage(), "/bin/sh", "-c", command)
 	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the command runs inside the container
 	// The engine's CLI needs the host's PATH, HOME and DOCKER_HOST; only the
 	// -e flags above reach the container.
@@ -349,13 +362,17 @@ func containerName(prefix string) string {
 
 // remove is a cancel that removes the named container, then kills the CLI.
 func (c *Container) remove(cmd *exec.Cmd, name string) func() error {
-	runtime, rm := c.runtime, c.rmArgs(name)
 	return func() error {
-		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
-		defer cancel()
-		_ = exec.CommandContext(rmCtx, runtime, rm...).Run() // #nosec G204 -- the configured engine and a name this process made
+		c.removeNow(name)
 		return cmd.Process.Kill()
 	}
+}
+
+// removeNow removes the named container, waiting up to engineWait.
+func (c *Container) removeNow(name string) {
+	rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
+	defer cancel()
+	_ = exec.CommandContext(rmCtx, c.runtime, c.rmArgs(name)...).Run() // #nosec G204 -- the configured engine and a name this process made
 }
 
 // containerShell prefers bash where the image has it.
@@ -386,7 +403,7 @@ func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	for _, kv := range shellEnv(c.Tier()) {
 		args = append(args, "-e", kv)
 	}
-	args = append(args, "-e", "HOME=/tmp", Image, "/bin/sh", "-c", containerShell)
+	args = append(args, "-e", "HOME=/tmp", SandboxImage(), "/bin/sh", "-c", containerShell)
 	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the shell is fixed
 	cmd.Env = os.Environ()
 	cmd.Cancel = c.remove(cmd, name)
@@ -436,7 +453,7 @@ func ForwardEnv(cmd *exec.Cmd, names []string) {
 	at := -1
 	for i, a := range cmd.Args {
 		// An exec names its container in the image's place.
-		if a == Image || strings.HasPrefix(a, egressPrefix) {
+		if a == SandboxImage() || strings.HasPrefix(a, egressPrefix) {
 			at = i
 			break
 		}

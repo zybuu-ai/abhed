@@ -56,6 +56,9 @@ func (s *Process) serverCommand(ctx context.Context, name string, argv, env []st
 	if len(argv) == 0 {
 		return nil, errors.New("sandbox: no command")
 	}
+	if err := serverProgramMissing(argv[0], env); err != nil {
+		return nil, err
+	}
 	var files serverFiles
 	if confineFiles {
 		var err error

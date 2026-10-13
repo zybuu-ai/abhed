@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -58,5 +61,32 @@ func TestCloseStopsAnInFlightConnect(t *testing.T) {
 	g.mu.RUnlock()
 	if n != 0 || len(g.Tools()) != 0 {
 		t.Fatalf("a connection finished after Close was kept: %d clients", n)
+	}
+}
+
+// A launched server's cleanup runs when it closes, while its process still
+// runs: a container's removal must not wait on a client already killed.
+func TestStdioCloseRunsTheCleanupBeforeTheKill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no sleep on Windows")
+	}
+	g := NewGateway()
+	var aliveAtCleanup, called bool
+	g.Confine = func(ctx context.Context, _ string, _, _ []string, _ func(string, map[string]any) error) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "exec sleep 30"), nil
+	}
+	g.Cleanup = func(cmd *exec.Cmd) func() {
+		return func() {
+			called = true
+			aliveAtCleanup = cmd.Process != nil && cmd.Process.Signal(syscall.Signal(0)) == nil
+		}
+	}
+	tr, err := g.startStdio(context.Background(), ServerConfig{Name: "s", Command: "/bin/true", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tr.Close()
+	if !called || !aliveAtCleanup {
+		t.Fatalf("cleanup called %v, with the process alive %v", called, aliveAtCleanup)
 	}
 }

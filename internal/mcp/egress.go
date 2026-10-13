@@ -47,12 +47,19 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 		cancel()
 		return nil, fmt.Errorf("confining the server in the sandbox: %w", err)
 	}
+	var cleanup func()
+	if g.Cleanup != nil {
+		cleanup = g.Cleanup(cmd)
+	}
 	t, err := startStdio(cmd, cfg.Command)
 	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		cancel()
 		return nil, err
 	}
-	t.cancel = cancel
+	t.cancel, t.cleanup = cancel, cleanup
 	return t, nil
 }
 

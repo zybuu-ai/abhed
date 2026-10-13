@@ -52,6 +52,12 @@ on the VM tier), its stdio carried by the engine: the commands' mounts
 (the workspace, its `.abhed` covered, `read_only_paths` outside your home),
 its own home mounted as its `HOME` and its install folder read-only, nothing
 else of your home, and its environment in a file only your user can read.
+The container is removed when the server closes, the session ends or Abhed
+exits, Ctrl-C included. Each is labelled `abhed.mcp.owner` with the Abhed
+process that started it (host, process id, start time); one left by an Abhed
+that was killed outright is removed the next time a server starts on these
+tiers, and by `abhed doctor`, which say so. A container without that label
+is never touched.
 So its program must run in that image: a `docker`-style server, or one
 installed for macOS, does not. Before the server starts, Abhed looks for its
 program in the image (with the server's mounts) and refuses a server whose

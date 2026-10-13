@@ -317,7 +317,7 @@ file cannot escalate past it.
   "permissions": {
     "mode": "default",
     "deny": ["bash(rm -rf /*)", "write(/etc/**)"],
-    "allow": ["bash(git status*)", "bash(go test*)"]
+    "allow": ["bash(git status)", "bash(go test *)"]
   },
   "sandbox": { "min_tier": "process", "allow_network": false },
   "storage": { "driver": "memory" },

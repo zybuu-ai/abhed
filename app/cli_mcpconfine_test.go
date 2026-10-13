@@ -135,3 +135,26 @@ func TestDoctorSaysAServerProgramIsNotInTheImage(t *testing.T) {
 		}
 	}
 }
+
+// doctor says a stdio server's program is not found, not that a pipe broke.
+func TestDoctorSaysAServerProgramIsNotFound(t *testing.T) {
+	m := &bgModelServer{}
+	ws := bgWorkspace(t, m.start(t), `,"mcp":{"servers":[`+
+		`{"name":"gone","command":"/nonexistent/abhed-mcp-server","enabled":true},`+
+		`{"name":"bare","command":"abhed-no-such-mcp-server","enabled":true}]}`)
+	cmd := mainHelper([]string{"-C", ws, "doctor"})
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	_ = cmd.Run()
+	for _, want := range []string{
+		`mcp server "gone"`, `/nonexistent/abhed-mcp-server is not found`,
+		`mcp server "bare"`, `abhed-no-such-mcp-server is not found`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("doctor does not say %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "broken pipe") {
+		t.Errorf("doctor blames a pipe:\n%s", out.String())
+	}
+}

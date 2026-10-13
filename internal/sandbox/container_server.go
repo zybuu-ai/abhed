@@ -9,11 +9,50 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 )
 
 // serverPrefix names a server's container.
 var serverPrefix = "abhed-mcp-"
+
+// liveServers are the removals of the server containers this process runs,
+// by their command, so a close or an exit removes each before it goes.
+var liveServers sync.Map // *exec.Cmd -> func()
+
+// ServerCleanup is what removes the container cmd, a server's command, runs
+// in: synchronous and safe to call more than once; nil for any other command.
+// Killing the engine's client alone leaves the container running.
+func ServerCleanup(cmd *exec.Cmd) func() {
+	if f, ok := liveServers.Load(cmd); ok {
+		return f.(func())
+	}
+	return nil
+}
+
+// EndServers removes every server container this process still runs, at
+// once; for an exit that skips the closes.
+func EndServers() {
+	var wg sync.WaitGroup
+	liveServers.Range(func(_, f any) bool {
+		wg.Add(1)
+		go func() { defer wg.Done(); f.(func())() }()
+		return true
+	})
+	wg.Wait()
+}
+
+// trackServer keeps stop as cmd's cleanup until it has run once.
+func trackServer(cmd *exec.Cmd, stop func()) {
+	var once sync.Once
+	liveServers.Store(cmd, func() {
+		once.Do(func() {
+			stop()
+			liveServers.Delete(cmd)
+		})
+	})
+}
 
 // ServerCommand runs a stdio MCP server in a container of its own, its stdio
 // relayed by the engine: the session's mounts with read_only_paths in the home
@@ -34,7 +73,9 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	}
 	p := c.policy
 	p.ReadOnlyPaths = files.outsideHome(p.ReadOnlyPaths)
-	extra := []string{"-v", files.home + ":" + files.home}
+	// Before this server's start: what a killed Abhed left goes first.
+	sweptNote(c.SweepServers(ctx))
+	extra := append(serverOwnerArgs(), "-v", files.home+":"+files.home)
 	if files.prefix != "" {
 		extra = append(extra, "-v", files.prefix+":"+files.prefix+":ro")
 	}
@@ -45,34 +86,40 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	key := ServerKey(name)
 	ctx = WithLaunch(ctx, Launch{CallID: key, Session: key, Record: record})
 	var cmd *exec.Cmd
+	var stop func()
 	if c.policy.Egress != nil {
-		cmd = c.egressRun(ctx, c.policy.Workspace, p, extra, env, argv)
+		cmd, stop = c.egressRun(ctx, c.policy.Workspace, p, extra, env, argv)
 	} else {
-		cmd = c.serverRun(ctx, p, extra, env, argv)
+		cmd, stop = c.serverRun(ctx, p, extra, env, argv)
 	}
 	if cmd.Err != nil {
 		return nil, fmt.Errorf("sandbox: the server was not started: %w", cmd.Err)
 	}
+	trackServer(cmd, stop)
 	return cmd, nil
 }
 
-// serverRun is a server's container outside the allowlist, its network open.
-func (c *Container) serverRun(ctx context.Context, p Policy, extra, env, argv []string) *exec.Cmd {
+// serverRun is a server's container outside the allowlist, its network open,
+// and what removes it.
+func (c *Container) serverRun(ctx context.Context, p Policy, extra, env, argv []string) (*exec.Cmd, func()) {
 	args, err := c.runArgsWith(ctx, p.Workspace, p, true)
 	if err != nil {
-		return &exec.Cmd{Err: err}
+		return &exec.Cmd{Err: err}, nil
 	}
 	// In a private file: a value may be a token, which an argument would show.
 	envFile, removeEnv, err := EnvFile(env)
 	if err != nil {
-		return &exec.Cmd{Err: fmt.Errorf("its environment: %w", err)}
+		return &exec.Cmd{Err: fmt.Errorf("its environment: %w", err)}, nil
 	}
 	context.AfterFunc(ctx, removeEnv)
 	name := containerName(serverPrefix)
-	args = append(append(args, extra...), "--env-file", envFile, "--name", name, Image)
+	args = append(append(args, extra...), "--env-file", envFile, "--name", name, SandboxImage())
 	cmd := c.engineCmd(ctx, append(args, argv...)...)
 	cmd.Cancel = c.remove(cmd, name)
-	return cmd
+	return cmd, func() {
+		c.removeNow(name)
+		removeEnv()
+	}
 }
 
 // programInImage refuses a server whose program the sandbox image cannot run:
@@ -84,20 +131,20 @@ func (c *Container) programInImage(ctx context.Context, p Policy, extra []string
 		return fmt.Errorf("sandbox: the server's program %s %s, so it is not started; set ABHED_SANDBOX_IMAGE to an image that has it, "+
 			"or \"host_files\": true on the server to run it on the host", program, why)
 	}
-	if hostOnlyBinary(program) {
+	if hostOnlyBinary(program, p.Workspace, mountedFrom(extra, p)) {
 		return missing("is a macOS program, which the " + string(c.Tier()) + " tier's Linux image cannot run")
 	}
 	args, err := c.runArgsWith(ctx, p.Workspace, p, false)
 	if err != nil {
 		return err
 	}
-	args = append(append(args, extra...), "--name", containerName(serverPrefix+"look-"), Image,
+	args = append(append(args, extra...), "--name", containerName(serverPrefix+"look-"), SandboxImage(),
 		"/bin/sh", "-c", lookProgram, "sh", program)
 	cmd := c.engineCmd(ctx, args...)
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == lookMissing {
-			return missing("is not in the sandbox image " + Image)
+			return missing("is not in the sandbox image " + SandboxImage())
 		}
 	}
 	return nil
@@ -110,15 +157,32 @@ const (
 	lookMissing = 3
 )
 
-// hostOnlyBinary reports a program, as found on this host, that is a Mach-O
-// binary: no Linux container runs it.
-func hostOnlyBinary(program string) bool {
+// mountedFrom are the host folders the server's container shows at their own
+// paths: the workspace, read_only_paths, and those extra mounts.
+func mountedFrom(extra []string, p Policy) []string {
+	out := append([]string{p.Workspace}, p.ReadOnlyPaths...)
+	for i := 0; i+1 < len(extra); i++ {
+		if extra[i] == "-v" {
+			host, _, _ := strings.Cut(extra[i+1], ":")
+			out = append(out, host)
+		}
+	}
+	return formsOf(out)
+}
+
+// hostOnlyBinary reports a program the container would run from a host
+// folder it mounts (a path, never a bare name, which the image's PATH finds)
+// that is a Mach-O binary: no Linux container runs it.
+func hostOnlyBinary(program, workspace string, mounted []string) bool {
+	if !strings.ContainsRune(program, '/') {
+		return false
+	}
 	path := program
 	if !filepath.IsAbs(path) {
-		var err error
-		if path, err = exec.LookPath(program); err != nil {
-			return false
-		}
+		path = filepath.Join(workspace, path) // the container's working folder
+	}
+	if !slices.ContainsFunc(PathForms(path), func(q string) bool { return insideAny(q, mounted) }) {
+		return false // the image's own file at that path, which the look below checks
 	}
 	f, err := os.Open(path) // #nosec G304 -- the configured server's program, read for its first bytes
 	if err != nil {

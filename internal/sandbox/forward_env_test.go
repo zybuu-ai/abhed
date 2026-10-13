@@ -13,7 +13,7 @@ func TestForwardEnvPassesNamesIntoTheContainer(t *testing.T) {
 	cmd := c.Command(t.Context(), "", "echo $TOKEN")
 	cmd.Env = append(cmd.Env, "TOKEN=s3cret")
 	ForwardEnv(cmd, []string{"TOKEN"})
-	at := slices.Index(cmd.Args, Image)
+	at := slices.Index(cmd.Args, SandboxImage())
 	if at < 2 || cmd.Args[at-2] != "-e" || cmd.Args[at-1] != "TOKEN" {
 		t.Fatalf("TOKEN not forwarded before the image: %v", cmd.Args)
 	}

@@ -1453,8 +1453,9 @@ func Default() Config {
 				"write(/etc/**)",
 			},
 			Allow: []string{
-				"bash(git status*)", "bash(git diff*)", "bash(git log*)",
-				"bash(ls*)", "bash(pwd)", "bash(cat *)",
+				// Each a whole command with any arguments: "ls*" was lsof too.
+				"bash(git status)", "bash(git status *)", "bash(git diff)", "bash(git diff *)",
+				"bash(git log)", "bash(git log *)", "bash(ls)", "bash(ls *)", "bash(pwd)", "bash(cat *)",
 			},
 			// A command that trusts a workspace for a nested run is the
 			// person's decision, not the agent's. So is a memory file, which

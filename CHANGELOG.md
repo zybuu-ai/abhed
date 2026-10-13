@@ -171,6 +171,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The built-in allow rules `bash(ls*)`, `bash(git diff*)`, `bash(git
+  status*)` and `bash(git log*)` matched any command starting with those
+  letters, so `lsof`, `lsblk` and `git difftool` (which runs a program of
+  its choosing) ran without a question. They are now `bash(ls)` and
+  `bash(ls *)`, and the same for each git command; `abhed eval`'s own
+  `bash(ls*)` too. A configuration that copied the old rules keeps them
+  until edited. Affects 0.1.0 to 1.2.7.
 - A command given to a terminal program ran without the deny check:
   `tmux new -d 'curl …'`, `screen -dm curl …`, `script -q /dev/null curl
   …`, `unbuffer` and `dtach` passed `bash(curl *)`, and so did keys typed
