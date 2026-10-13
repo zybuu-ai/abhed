@@ -114,8 +114,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		for _, w := range limitWarnings(cfg, sb.Tier()) {
 			fmt.Printf("            ⚠ %s\n", w)
 		}
-		// MCP servers' containers a killed Abhed left, removed as a session would.
-		if c, ok := sb.(*sandbox.Container); ok {
+		// MCP servers' containers a killed Abhed left, removed as a session
+		// would; only when one is set to run in a container.
+		if c, ok := sb.(*sandbox.Container); ok && confinedStdioServers(cfg) {
 			if gone := c.SweepServers(context.Background()); len(gone) > 0 {
 				fmt.Printf("            removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(gone), strings.Join(gone, ", "))
 			}
@@ -762,4 +763,15 @@ func gitHeldLabel(cfg config.Config) string {
 		return "held read-only from commands; a tier that cannot hold them is refused"
 	}
 	return "held read-only from commands on every tier but none (sandbox.protect_git)"
+}
+
+// confinedStdioServers reports whether an enabled stdio MCP server runs in
+// the sandbox, not with the host's files.
+func confinedStdioServers(cfg config.Config) bool {
+	for _, s := range cfg.MCP.Servers {
+		if s.Enabled && s.Command != "" && !s.HostFiles {
+			return true
+		}
+	}
+	return false
 }
