@@ -624,8 +624,8 @@ func underscoreCloses(text string, end int) bool {
 	return true
 }
 
-// underscoreCloser is where the first m after from that may close emphasis
-// starts, or -1.
+// underscoreCloser is where the m after from that closes emphasis starts:
+// the nearest one ending a word, or -1 when that one runs on into a name.
 func underscoreCloser(text string, from int, m string) int {
 	for k := from; k < len(text); {
 		j := strings.Index(text[k:], m)
@@ -637,8 +637,13 @@ func underscoreCloser(text string, from int, m string) int {
 			k = at + len(m)
 			continue
 		}
-		if text[at-1] != ' ' && underscoreCloses(text, at+len(m)) {
-			return at
+		if text[at-1] != ' ' {
+			// The nearest closer ends inside its own word (__init__.py): the
+			// opener is literal, not paired with one further on.
+			if underscoreCloses(text, at+len(m)) {
+				return at
+			}
+			return -1
 		}
 		k = at + len(m)
 	}
