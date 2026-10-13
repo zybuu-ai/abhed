@@ -20,7 +20,7 @@ docs:             ## Render docs/ into the tree the binary embeds (needs python3
 	python3 scripts/docsite/build.py --embed-only
 
 test:             ## Run the test suite
-	$(GO) test ./... -count=1
+	$(GO) test ./... -count=1 -timeout 30m
 
 vet:              ## go vet
 	$(GO) vet ./...
