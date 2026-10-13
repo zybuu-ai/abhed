@@ -190,7 +190,8 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 	}
 	scripts, why := pathScripts(canon, writes)
 	if why == "" {
-		home, hwhy := e.homeScripts(canon, writes.noBaseline)
+		// Only the shell the line itself starts may have its files trusted.
+		home, hwhy := e.homeScripts(canon, writes.noBaseline || depth > 0 || trusted)
 		scripts, why = append(scripts, home...), hwhy
 	}
 	if why != "" {
@@ -278,7 +279,7 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		sc := tools.CanonicalCommandEnv(text, e.scriptEnv(s.Env))
 		// A file the baseline holds as it is: its text is the person's own;
 		// what it sources and runs is still read.
-		if s.Trusted || !writes.noBaseline && e.trustedStartup(p) {
+		if s.Trusted || trusted && !writes.noBaseline && e.trustedStartup(p) {
 			if out.trustedReads++; out.trustedReads > maxTrustedReads {
 				out.ask = "the trusted start-up files source more files than the check reads"
 				continue
@@ -306,8 +307,11 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		}
 		out.subjects = append(append(out.subjects, segments...), sc.Commands()...)
 		inner := sc.MovesFolder()
+		// What a script starts is not the line's own shell: no baseline in it.
+		nested := writes
+		nested.noBaseline = true
 		if depth+1 < maxScriptDepth {
-			inner = e.readScriptsIn(out, sc, cwd, depth+1, writes, false)
+			inner = e.readScriptsIn(out, sc, cwd, depth+1, nested, false)
 		} else if len(sc.Scripts()) > 0 {
 			out.ask = "the script " + name + " runs scripts nested too deep to check against the rules"
 		}

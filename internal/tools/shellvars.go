@@ -253,5 +253,5 @@ func plainShellStart(file *syntax.File) bool {
 // applied to: one simple command starting a shell, which changes nothing
 // the shell's start-up files could read, here or in the text it runs.
 func (c Canonical) BaselineApplies() bool {
-	return c.shell.plainShell && !c.SetsEnv() && !c.shell.unparsed
+	return c.shell.plainShell && !c.shell.innerShell && !c.SetsEnv() && !c.shell.unparsed
 }
