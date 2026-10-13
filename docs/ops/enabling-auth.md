@@ -174,7 +174,10 @@ commands and terminals run in that sandbox (see
 [per-session sandboxes](../guide/22-sandboxes.md#per-session-sandboxes)).
 This turns on `control_plane.enabled` and `control_plane.per_session` for
 the run; `abhed serve` says so on its `sessions` line, and refuses to start
-when the session driver cannot be used. The sandbox API it turns on with
+when the session driver cannot be used. Sessions' sandboxes share no temp
+space either: on the process driver each has a temp folder of its own, and
+the host's `/tmp`, `/var/tmp` and the server account's `TMPDIR` are out of
+its commands' reach. The sandbox API it turns on with
 them (`/v1/sandboxes`, `/v1/sandbox-templates`) answers administrators only,
 so no account can make sandboxes of its own; set `control_plane.enabled`
 yourself to open it to every account. A server with exactly one local
@@ -193,7 +196,8 @@ every account on one server:
   That cannot be closed while they share: give each session a sandbox, or
   run one server per group of people who may see each other's files.
 - runs its tools and terminals as the **same operating-system user**, the one
-  the server runs as.
+  the server runs as, and on the process tier shares that user's temp
+  folders (`/tmp`, `/var/tmp`, `TMPDIR`) with every other account.
 - under the fence tier on Linux older than 6.12 (Landlock ABI below 6), has
   its **commands unseparated from other accounts' commands**: one session's
   commands can signal another's and read their command lines in `/proc`.

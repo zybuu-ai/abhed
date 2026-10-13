@@ -1228,9 +1228,13 @@ All notable changes to Abhed are recorded here. The format follows
   works in that sandbox's folder: the file tools, workbench views, uploads
   and downloads are there, and the bash tool, background commands and the
   terminal run in the sandbox, each recorded as an `exec` by the session's
-  user. The session's record gets `sandbox.bound`; the sandbox carries the
-  session's label. Continuing a session restarts its sandbox with its folder;
-  deleting the session deletes it; `control_plane.sessions.retention` says
+  user. On the `process` driver each sandbox has a temp folder of its own
+  (`TMPDIR` on macOS, with `/tmp`, `/var/tmp`, the server's `TMPDIR` and
+  other sandboxes' temp folders out of reach; `/tmp` under bubblewrap), so
+  accounts share no temp space. The session's record gets `sandbox.bound`;
+  the sandbox carries the session's label. Continuing a session restarts its
+  sandbox with its folder; deleting the session deletes it;
+  `control_plane.sessions.retention` says
   whether the server's stop stops, deletes or keeps them; a start removes the
   sandboxes of sessions that are gone. An optional warm pool
   (`control_plane.sessions.warm_pool`, at most 16) keeps Ready sandboxes that

@@ -365,6 +365,15 @@ func (e *egressState) port() uint16 {
 	return e.proxy.Addr().Port()
 }
 
+// caFolder is the folder holding the inspection CA bundle commands are
+// pointed at, "" when there is none.
+func (e *egressState) caFolder() string {
+	if e == nil {
+		return ""
+	}
+	return e.caDir
+}
+
 // portFor is the loopback port the call reaches the proxy on: its own when
 // it has one, else the session's.
 func (e *egressState) portFor(c *egress.Call) uint16 {
@@ -492,7 +501,7 @@ func (s *Process) Close() error {
 	for _, e := range all {
 		err = errors.Join(err, e.close())
 	}
-	return errors.Join(err, s.removeCaches(), s.removeCgroups())
+	return errors.Join(err, s.removeCaches(), s.removeTemp(), s.removeCgroups())
 }
 
 // egressAvailable says why the process tier cannot enforce the allowlist
