@@ -235,3 +235,12 @@ ABHED_REQUIRE_CONTAINER_DRIVER=podman go test ./driver/container/ -run OnARealEn
 The tests start containers of their own, named with a test prefix, and remove
 them. CI runs them
 on Docker and Podman on Linux, where the allowlist path runs too.
+
+On a Mac with a running rootful machine, this checks that choosing a tier
+and running a command leave no root ssh session in the VM (name an image
+you have already pulled):
+
+```sh
+ABHED_TEST_SSHD_LEAK=1 ABHED_TEST_SSHD_IMAGE=docker.io/library/debian:trixie-slim \
+  go test ./internal/sandbox/ -run TestPodmanMachineLeavesNoSSHSessions -v
+```
