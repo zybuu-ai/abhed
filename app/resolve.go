@@ -96,7 +96,8 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	remote := fs.String("remote", "", "ignored: the branch is pushed to the issue's repository")
 	ca := fs.String("ca", os.Getenv("ABHED_FORGE_CA"), "PEM file with the certificate authority of a self-hosted forge")
 	mode := fs.String("mode", "auto", "permission mode for the run; a mode the managed configuration pins replaces the default")
-	allow := fs.String("allow", "", "comma-separated allow rules for the run, e.g. 'bash(go test*)'")
+	var allow multiFlag
+	fs.Var(&allow, "allow", "comma-separated allow rules for the run, e.g. 'bash(go test*)'; repeatable")
 	yes := fs.Bool("y", false, "open the pull request without asking (an allow rule forge_pr(*) does the same)")
 	trustWS := fs.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
 	fs.Usage = func() {
@@ -197,7 +198,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 
 	runner, err := newResolveRunner(ctx, abhed.Options{
 		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode, WorkspaceTrust: trust, AllowDefaultModel: true,
-		Allow: splitTop(*allow), Sandbox: true,
+		Allow: splitEach(allow), Sandbox: true,
 		OnEvent: func(ev abhed.Event) { resolveEvent(ev) },
 	})
 	if err != nil {

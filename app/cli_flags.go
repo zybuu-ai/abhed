@@ -119,10 +119,10 @@ type cliFlags struct {
 	inputFormat     string
 	partial         bool
 	verbose         bool
-	allow           string
-	deny            string
-	allowedTools    string
-	disallowedTools string
+	allow           multiFlag
+	deny            multiFlag
+	allowedTools    multiFlag
+	disallowedTools multiFlag
 	appendSystem    string
 	appendFile      string
 	systemPrompt    string
@@ -165,12 +165,12 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.BoolVar(&f.noStdin, "no-stdin", false, "with -p, do not read stdin, as with < /dev/null; for a loop that reads a list on stdin")
 	fs.BoolVar(&f.partial, "include-partial-messages", false, "with stream-json, include the streamed text fragments")
 	fs.BoolVar(&f.verbose, "verbose", false, "show reasoning in full, and each model call's tokens on stderr")
-	fs.StringVar(&f.allow, "allow", "", "comma-separated allow rules, e.g. 'bash(go test*)'")
-	fs.StringVar(&f.deny, "deny", "", "comma-separated deny rules")
-	fs.StringVar(&f.allowedTools, "allowedTools", "", "allow rules with tool names in any case, e.g. 'Read,Bash(npm test:*)'")
-	fs.StringVar(&f.allowedTools, "allowed-tools", "", "same as -allowedTools")
-	fs.StringVar(&f.disallowedTools, "disallowedTools", "", "deny rules with tool names in any case")
-	fs.StringVar(&f.disallowedTools, "disallowed-tools", "", "same as -disallowedTools")
+	fs.Var(&f.allow, "allow", "comma-separated allow rules, e.g. 'bash(go test*)'; repeatable")
+	fs.Var(&f.deny, "deny", "comma-separated deny rules; repeatable")
+	fs.Var(&f.allowedTools, "allowedTools", "allow rules with tool names in any case, e.g. 'Read,Bash(npm test:*)'; repeatable")
+	fs.Var(&f.allowedTools, "allowed-tools", "same as -allowedTools")
+	fs.Var(&f.disallowedTools, "disallowedTools", "deny rules with tool names in any case; repeatable")
+	fs.Var(&f.disallowedTools, "disallowed-tools", "same as -disallowedTools")
 	fs.StringVar(&f.appendSystem, "append-system-prompt", "", "add these instructions to the system prompt (recorded by sha256)")
 	fs.StringVar(&f.appendFile, "append-system-prompt-file", "", "add the instructions in this file to the system prompt")
 	fs.StringVar(&f.systemPrompt, "system-prompt", "", "replace the system prompt; refused under a managed configuration (recorded by sha256)")
@@ -549,20 +549,30 @@ func validMode(m string) bool {
 
 // applyFlags lays the command line over the configuration. The managed
 // configuration binds the flags exactly as it binds the SDK's Options.
-func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny, addDirs string) (config.Config, error) {
+func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny []string, addDirs string) (config.Config, error) {
 	return cfg.Apply(config.Overrides{
 		Mode: mode, MaxTurns: maxTurns,
-		Allow: splitTop(allow), Deny: splitTop(deny), AdditionalDirs: splitRules(addDirs),
+		Allow: allow, Deny: deny, AdditionalDirs: splitRules(addDirs),
 	})
 }
 
 // toolRules turns a familiar tool list ("Read,Edit,Bash(npm test:*)") into
 // Abhed rules ("read", "edit", "bash(npm test*)"). It splits at commas
 // outside parentheses; a rule already in Abhed's form comes out unchanged.
-func toolRules(list string) []string {
+func toolRules(lists ...string) []string {
 	var out []string
-	for _, r := range splitTop(list) {
+	for _, r := range splitEach(lists) {
 		out = append(out, toolRule(r))
+	}
+	return out
+}
+
+// splitEach splits each value of a repeated rule flag on its own, so an
+// unbalanced parenthesis in one never joins it to the next.
+func splitEach(lists []string) []string {
+	var out []string
+	for _, l := range lists {
+		out = append(out, splitTop(l)...)
 	}
 	return out
 }
@@ -620,16 +630,16 @@ func toolRule(s string) string {
 }
 
 // joinRules adds rules in the familiar form to rules in Abhed's.
-func joinRules(abhed, familiar string) string {
-	return strings.Join(append(splitTop(abhed), toolRules(familiar)...), ",")
+func joinRules(abhed, familiar []string) []string {
+	return append(splitEach(abhed), toolRules(familiar...)...)
 }
 
 // joinDenyRules is joinRules for deny rules. Up to 1.2.7 the flag lowered
 // every tool name, so a deny for an MCP or extension tool also keeps that
 // spelling: a deny only ever gains a match. Allow rules stay exact.
-func joinDenyRules(abhed, familiar string) string {
-	rules := splitTop(abhed)
-	for _, r := range toolRules(familiar) {
+func joinDenyRules(abhed, familiar []string) []string {
+	rules := splitEach(abhed)
+	for _, r := range toolRules(familiar...) {
 		rules = append(rules, r)
 		name, rest, found := strings.Cut(r, "(")
 		if lower := strings.ToLower(name); lower != name {
@@ -639,7 +649,7 @@ func joinDenyRules(abhed, familiar string) string {
 			rules = append(rules, lower)
 		}
 	}
-	return strings.Join(rules, ",")
+	return rules
 }
 
 // budgetFlag applies -max-budget-tokens. Under a managed budget it may only

@@ -122,6 +122,13 @@ a managed configuration refuses them the same way, and deny rules win.
 | `-disallowedTools` / `-disallowed-tools` | `-deny` |
 | `-dangerously-skip-permissions` | `-mode bypass`, after typing `yes` on a terminal |
 
+`-allow`, `-deny`, `-allowedTools` and `-disallowedTools` (in either
+spelling) may be repeated: each adds its rules to the earlier ones, as one
+comma-separated list would, and each value is split on its own, so a
+parenthesis left open in one never joins it to the next. A managed
+configuration that sets the permissions refuses any allow flag, repeated or
+not.
+
 Built-in tool names are matched without regard to case; an MCP or extension
 tool's name is allowed only as written, and denied both as written and in
 lower case. A trailing `:*` in a
@@ -251,7 +258,8 @@ ordinary case: the kind is inferred from the host, `-kind` names it, and
 `-ca file.pem` (or `ABHED_FORGE_CA`) trusts your certificate authority.
 
 `-allow` takes rules separated by commas; a comma inside a rule's
-parentheses (`bash(x a,b)`) stays part of that rule. The commit carries
+parentheses (`bash(x a,b)`) stays part of that rule. It may be repeated,
+each adding its rules. The commit carries
 the `user.name` and `user.email` git's configuration gives for the
 checkout; resolve refuses to start when either is unset, rather than let
 git guess an identity from the host.

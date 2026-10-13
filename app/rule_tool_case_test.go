@@ -92,7 +92,7 @@ func TestToolRuleKeepsMCPNames(t *testing.T) {
 // -allowedTools stays exact.
 func TestDisallowedToolsKeepsTheLoweredSpelling(t *testing.T) {
 	cfg, err := applyFlags(config.Default(), "", 0,
-		joinRules("", "mcp__GitHub__list"), joinDenyRules("", "mcp__GitHub__create_issue(*),Bash(curl:*)"), "")
+		joinRules(nil, []string{"mcp__GitHub__list"}), joinDenyRules(nil, []string{"mcp__GitHub__create_issue(*),Bash(curl:*)"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
