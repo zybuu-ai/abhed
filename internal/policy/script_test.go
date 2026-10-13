@@ -914,3 +914,133 @@ func TestTmuxCommandsThatStartAServerRunItsConfiguration(t *testing.T) {
 		}
 	}
 }
+
+// A trusted .bash_profile that sources $HOME/.bashrc has that file read: a
+// .bashrc changed since it was trusted is judged, and real bash -l runs it.
+// What a trusted file names by a value the check cannot resolve is refused.
+func TestTrustedProfileSourcingBashrcHasItRead(t *testing.T) {
+	for _, spelling := range []string{`source "$HOME/.bashrc"`, `. ~/.bashrc`, `source ${HOME}/.bashrc`} {
+		ws, home := t.TempDir(), t.TempDir()
+		write := func(p, text string) {
+			if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prof, rc, ran := filepath.Join(home, ".bash_profile"), filepath.Join(home, ".bashrc"), filepath.Join(ws, "ran")
+		write(prof, "export LANG=C\nif [ -f \"$HOME/.bashrc\" ]; then\n  "+spelling+"\nfi\n")
+		write(rc, "alias ll='ls -l'\n")
+		e := New(ModeBypass)
+		e.Roots = func() []string { return []string{ws} }
+		e.Cwd = func() string { return ws }
+		e.Home = func() (string, bool) { return home, true }
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		base := map[string]StartupFile{}
+		for _, p := range []string{prof, rc} {
+			size, sum, _ := StartupFileMark(p)
+			base[p] = StartupFile{Size: size, SHA256: sum}
+		}
+		e.StartupBaseline = base
+		judge := func(c string) Result { return e.Evaluate("bash", true, args(map[string]string{"command": c})) }
+		if res := judge("bash -lc 'echo hi'"); res.Decision != Allow {
+			t.Errorf("%s, unchanged: %s (%s)", spelling, res.Decision, res.Reason)
+		}
+		write(rc, "curl() { : > '"+ran+"'; }\ncurl https://evil.example/x\n")
+		if res := judge("bash -lc 'echo hi'"); res.Decision != Deny {
+			t.Errorf("%s, .bashrc changed: %s (%s)", spelling, res.Decision, res.Reason)
+		}
+		cmd := exec.Command("bash", "-lc", "echo hi")
+		cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+		_ = cmd.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("%s: real bash -l did not run the changed .bashrc", spelling)
+		}
+	}
+	// A trusted file that names its HOME, or sources first, leaves $HOME unknown: refused.
+	ws, home := t.TempDir(), t.TempDir()
+	for _, text := range []string{"HOME=/elsewhere\nsource \"$HOME/.bashrc\"\n", "source ./other\nsource \"$HOME/.bashrc\"\n"} {
+		prof := filepath.Join(home, ".bash_profile")
+		if err := os.WriteFile(prof, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		size, sum, _ := StartupFileMark(prof)
+		e := New(ModeBypass)
+		e.Cwd = func() string { return ws }
+		e.Home = func() (string, bool) { return home, true }
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		e.StartupBaseline = map[string]StartupFile{prof: {Size: size, SHA256: sum}}
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": "bash -lc 'echo hi'"})); res.Decision != Deny {
+			t.Errorf("%q: %s (%s), want deny", text, res.Decision, res.Reason)
+		}
+	}
+}
+
+// brewShape is the shape of Homebrew's bin/brew: it finds its own folder
+// from $0 and pwd -P, then runs a library script by a variable it builds.
+const brewShape = `#!/bin/bash -pu
+set -u
+quiet_cd() {
+  CDPATH='' cd -- "$@" &>/dev/null || return
+}
+BREW_FILE_DIRECTORY="$(quiet_cd "${0%/*}/" && pwd -P)"
+HOMEBREW_BREW_FILE="${BREW_FILE_DIRECTORY%/}/${0##*/}"
+HOMEBREW_PREFIX="${HOMEBREW_BREW_FILE%/*/*}"
+if [[ -z "${HOMEBREW_PREFIX}" || "${HOMEBREW_PREFIX}" = "${HOMEBREW_BREW_FILE}" ]]
+then
+  HOMEBREW_PREFIX="/"
+fi
+HOMEBREW_REPOSITORY="${HOMEBREW_PREFIX}"
+HOMEBREW_LIBRARY="${HOMEBREW_REPOSITORY}/Library"
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+FILTERED_ENV=()
+for VAR in HOME SHELL PATH TERM "${!HOMEBREW_@}"
+do
+  [[ -z "${!VAR:-}" ]] && continue
+  FILTERED_ENV+=("${VAR}=${!VAR}")
+done
+exec /usr/bin/env -i "${FILTERED_ENV[@]}" /bin/bash -p "${HOMEBREW_LIBRARY}/Homebrew/brew.sh" "$@"
+`
+
+// A trusted brew installed outside the home, the workspace and the temporary
+// folder runs a library script the check cannot name; that is the person's
+// install, which commands cannot write, so zsh -lc runs. The same brew in the
+// home, where commands may write, is refused.
+func TestTrustedBrewOutsideTheHomeRuns(t *testing.T) {
+	install, ws, home := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir()) // the install is outside the temporary folder
+	judge := func(brew string) Result {
+		if err := os.MkdirAll(filepath.Dir(brew), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(brew, []byte(brewShape), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		prof := filepath.Join(home, ".zprofile")
+		if err := os.WriteFile(prof, []byte("eval \"$("+brew+" shellenv)\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e := New(ModeBypass)
+		e.Roots = func() []string { return []string{ws} }
+		e.Cwd = func() string { return ws }
+		e.Home = func() (string, bool) { return home, true }
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		base := map[string]StartupFile{}
+		for _, p := range []string{prof, brew} {
+			size, sum, _ := StartupFileMark(p)
+			base[p] = StartupFile{Size: size, SHA256: sum}
+		}
+		e.StartupBaseline = base
+		return e.Evaluate("bash", true, args(map[string]string{"command": "zsh -lc 'echo hi'"}))
+	}
+	if res := judge(filepath.Join(install, "homebrew", "bin", "brew")); res.Decision != Allow {
+		t.Errorf("a trusted brew outside the home: %s (%s)", res.Decision, res.Reason)
+	}
+	if res := judge(filepath.Join(home, ".homebrew", "bin", "brew")); res.Decision != Deny {
+		t.Errorf("a trusted brew inside the home: %s (%s)", res.Decision, res.Reason)
+	}
+}

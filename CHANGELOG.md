@@ -787,7 +787,12 @@ All notable changes to Abhed are recorded here. The format follows
   size and sha256 a shell the agent starts is not judged on it. Kept in
   `~/.abhed/startup-files.json`; refused inside an agent's command;
   `abhed doctor` lists the files and any changed since, and each session's
-  record notes those it trusted (`policy.startup_trusted`).
+  record notes those it trusted (`policy.startup_trusted`). What a trusted
+  file sources or runs is still read, with the HOME commands get
+  (`source "$HOME/.bashrc"` reads that `.bashrc`); a name it cannot
+  resolve is refused under a deny rule, except in a trusted program
+  installed outside the home, the workspace and the temporary folder (as
+  Homebrew's `brew` is).
 - `ABHED_ANTHROPIC_OAUTH_TOKEN` supplies an Anthropic subscription token;
   it is read before the variable the setup-token flow writes, which still
   works.
@@ -1493,6 +1498,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The terminal's markdown showed underscores inside a word as emphasis, so
+  `__init__.py` read as a bold `init.py`. Underscores inside a word, or
+  followed by `.`, `-` or `/` and more of a name, are now literal. Affects
+  every release to 1.2.7.
 - On macOS and Windows, each call Abhed made to `podman` went over ssh to
   the machine, and Podman 5.2 and earlier leave a root ssh session behind in
   the VM at each; a long session ran the VM out of memory. Abhed now uses the
