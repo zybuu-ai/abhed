@@ -26,13 +26,6 @@ var (
 	probes   = map[string]*probed{}
 )
 
-// resetEngineProbes forgets every engine's answer. For tests.
-func resetEngineProbes() {
-	probesMu.Lock()
-	defer probesMu.Unlock()
-	probes = map[string]*probed{}
-}
-
 // probeEngine is the engine at path's plain `info` and whether it is Podman,
 // asked once per process: each call to a podman machine's CLI can cost the
 // VM. A failure is asked again after engineRetry.
