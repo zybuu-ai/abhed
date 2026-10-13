@@ -88,3 +88,25 @@ func TestCLIStdioServerFilesConfined(t *testing.T) {
 		})
 	}
 }
+
+// doctor says why a configured server is not connected: a digest that does
+// not match, a URL server with a digest.
+func TestDoctorSaysWhyAServerIsNotConnected(t *testing.T) {
+	m := &bgModelServer{}
+	digest := "sha256:" + strings.Repeat("0", 64)
+	ws := bgWorkspace(t, m.start(t), `,"mcp":{"servers":[`+
+		`{"name":"pinned","command":"/bin/sh","args":["-c","exit 0"],"digest":"`+digest+`","enabled":true},`+
+		`{"name":"remote","url":"https://mcp.invalid/x","digest":"`+digest+`","enabled":true}]}`)
+	cmd := mainHelper([]string{"-C", ws, "doctor"})
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	_ = cmd.Run()
+	for _, want := range []string{
+		`mcp server "pinned": the server's program does not match its digest`,
+		`mcp server "remote": digest pins a program Abhed starts`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("doctor does not say %q:\n%s", want, out.String())
+		}
+	}
+}

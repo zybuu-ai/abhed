@@ -188,6 +188,9 @@ providers refuse tool names over 64, so a longer one is left out: a warning
 names it and gives its length, `/mcp` and Studio list it under its server,
 and `abhed doctor` and the server's MCP status count the tools left out for
 their names beside each server.
+`abhed doctor` also says why each configured server that did not connect
+was not: a program that does not match its `digest`, a URL server given a
+`digest`, a server that would not start.
 
 ## Namespacing and policy
 

@@ -1460,6 +1460,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed doctor` counted a configured MCP server that did not connect
+  without saying why. It now prints the reason under the `mcp` line: a
+  program that does not match its `digest`, a URL server with a `digest`, a
+  server that would not start.
 - Deleting a session with a workbench command or shell still running
   wrote the terminal's end into the record after the delete: one event
   left behind in the store. The delete now waits, up to five seconds, for

@@ -269,13 +269,17 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		} else {
 			toolset.ConfineMCP(gw, cfg, nil)
 		}
-		gw.Connect(context.Background(), toolset.MCPConfigs(cfg))
+		errs := gw.Connect(context.Background(), toolset.MCPConfigs(cfg))
 		status := gw.Status()
 		gw.Close()
 		if len(status) > 0 {
 			fmt.Printf("mcp         %s\n", strings.Join(status, ", "))
 		} else {
 			fmt.Printf("mcp         %d configured, none connected\n", len(servers))
+		}
+		// Why each that did not connect, as a session would warn of it.
+		for _, err := range errs {
+			fmt.Printf("            not connected: %v\n", err)
 		}
 	}
 	fmt.Println()
