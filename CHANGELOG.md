@@ -1306,6 +1306,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- Choosing the container or VM tier asks the engine for its `info` once per
+  process, not three times at each session; an engine that did not answer
+  is asked again after 30 seconds. Whether gVisor is registered is read
+  from that `info`: Docker's runtimes, or Podman's default OCI runtime.
 - A command on the host (the none tier, its terminal, and the CLI's bash
   with no sandbox) no longer inherits `ZDOTDIR` or `ENV`, so a shell reads
   its start-up files from `HOME`, where the rules' check reads them.

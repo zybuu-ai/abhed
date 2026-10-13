@@ -37,7 +37,8 @@ func scriptedEngineWith(t *testing.T, p Policy, gvisor bool, script string) *Con
 		c = NewGVisor(p)
 	}
 	c.once.Do(func() {})
-	c.runtime, c.available = engine, true
+	// The probe's info, naming gVisor as Docker's does.
+	c.runtime, c.available, c.info = engine, true, []byte(" Runtimes: runc runsc\n")
 	return c
 }
 
