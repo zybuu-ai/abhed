@@ -70,8 +70,10 @@ func TestRealSandboxesKeepTempApart(t *testing.T) {
 	if strings.Contains(bob.String(), "alice-secret") || strings.Contains(bob.String(), "note\r\n") {
 		t.Fatalf("bob's shell read alice's temp:\n%s", bob.String())
 	}
+	// Under bubblewrap each sandbox's own folder is bound at /tmp, so the paths
+	// match there; that bob cannot read alice's note above is what keeps them apart.
 	m := regexp.MustCompile(`bobtmp=(/\S+)`).FindStringSubmatch(bob.String())
-	if !strings.Contains(bob.String(), "bob-own") || m == nil || m[1] == aliceTmp {
+	if !strings.Contains(bob.String(), "bob-own") || m == nil || m[1] == aliceTmp && aliceTmp != "/tmp" {
 		t.Fatalf("bob's own temp:\n%s", bob.String())
 	}
 }
