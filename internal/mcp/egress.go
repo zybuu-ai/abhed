@@ -16,8 +16,9 @@ import (
 // to an egress proxy whose decisions go to record.
 type Launcher func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error)
 
-// ErrUnconfined is a stdio server the allowlist needs confined, with no sandbox to do it.
-var ErrUnconfined = errors.New("sandbox.network is allowlist and no sandbox here can confine a stdio server's network, so it is not started")
+// ErrUnconfined is a stdio server that must be confined, with no sandbox here
+// to do it; the error wrapping it says why.
+var ErrUnconfined = errors.New("this stdio server cannot be confined here, so it is not started")
 
 // startStdio starts a stdio server, confined when the gateway can confine it.
 func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTransport, error) {
@@ -34,7 +35,7 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 	}
 	if launch == nil {
 		if g.MustConfine {
-			return nil, ErrUnconfined
+			return nil, fmt.Errorf("%w: sandbox.network is allowlist and no sandbox here can confine its network", ErrUnconfined)
 		}
 		return NewStdioTransport(life, command, cfg.Args, env)
 	}

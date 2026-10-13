@@ -880,3 +880,46 @@ func TestFenceDescribesSocketcallOff(t *testing.T) {
 		t.Error("socketcallOff judged wrongly")
 	}
 }
+
+// A fenced server's Landlock grants its own home and install folder and the
+// workspace; the rest of ~/.abhed stays denied, the home and the skills
+// ungranted, and the spec valid.
+func TestFenceServerSpec(t *testing.T) {
+	p := fencePolicy(t)
+	home, _ := os.UserHomeDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	p.ReadOnlyPaths = []string{filepath.Join(home, "notes"), "/opt/shared"}
+	for _, d := range []string{"skills", "mcp/other", "records"} {
+		if err := os.MkdirAll(filepath.Join(home, ".abhed", d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := filepath.Join(home, "tools", "srv", "bin", "srv")
+	files, err := serverFilesIn("srv", tool, nil, PathForms(p.Workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewFence(p).serverSpec(files)
+	if err := s.Validate(); err != nil {
+		t.Fatalf("the server's spec does not hold: %v", err)
+	}
+	own := filepath.Join(home, ".abhed", "mcp", "srv", "home")
+	if !slices.Contains(s.Write, own) || !slices.Contains(s.Exec, filepath.Join(home, "tools", "srv")) || !slices.Contains(s.Exec, "/opt/shared") {
+		t.Fatalf("not granted its home, install folder and read_only_paths: %+v", s)
+	}
+	for _, g := range append(append(s.Exec, s.Read...), s.Write...) {
+		if g == home || g == filepath.Join(home, "notes") || strings.HasPrefix(g, filepath.Join(home, ".abhed", "skills")) {
+			t.Errorf("granted %s", g)
+		}
+	}
+	for _, d := range []string{"skills", "records", "mcp/other"} {
+		if !slices.Contains(s.Deny, filepath.Join(home, ".abhed", d)) {
+			t.Errorf("%s not denied: %v", d, s.Deny)
+		}
+	}
+	if slices.Contains(s.Deny, filepath.Join(home, ".abhed")) {
+		t.Error("~/.abhed denied whole, over the server's own home")
+	}
+}

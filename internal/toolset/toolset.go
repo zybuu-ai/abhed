@@ -319,10 +319,11 @@ func (s *Set) EndSession(id string) {
 	}
 }
 
-// ConfineMCP has gw start stdio servers confined by sb where it can (the
-// process tier): their files always, their network under sandbox.network
-// allowlist, where a server sb cannot confine is refused. A sandbox still
-// being chosen is waited for when a server starts.
+// ConfineMCP has gw start stdio servers confined by sb: their files always,
+// their network under sandbox.network allowlist. On the none tier they run
+// unconfined, but under the allowlist, where they are refused, as on a tier
+// that cannot confine them. A sandbox still being chosen is waited for when a
+// server starts.
 func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
 	allowlist := cfg.Sandbox.Network == config.NetworkAllowlist
 	gw.MustConfine = allowlist
@@ -352,19 +353,24 @@ func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
 }
 
 // serverLaunchers are sb's launchers for a stdio server, its files and
-// network confined and its network alone; nil where sb cannot confine it.
+// network confined and its network alone; both nil on the none tier. A tier
+// that cannot confine a server's files refuses it, unless set to host_files.
 func serverLaunchers(sb sandbox.Sandbox, allowlist bool) (confine, confineNet mcp.Launcher) {
-	if p, ok := sb.(*sandbox.Process); ok {
-		confine = p.ServerCommand
-		if allowlist {
-			confineNet = p.ServerNetCommand
+	if sb == nil || sb.Tier() == sandbox.TierNone {
+		return nil, nil
+	}
+	if l, ok := sb.(sandbox.ServerLauncher); ok {
+		confine = l.ServerCommand
+	} else {
+		why := fmt.Errorf("%w: the %s tier cannot confine a stdio server's files; set \"host_files\": true on it to run it unconfined", mcp.ErrUnconfined, sb.Tier())
+		confine = func(context.Context, string, []string, []string, func(string, map[string]any) error) (*exec.Cmd, error) {
+			return nil, why
 		}
-		return confine, confineNet
 	}
-	if l, ok := sb.(sandbox.ServerLauncher); ok && allowlist {
-		return l.ServerCommand, l.ServerCommand
+	if n, ok := sb.(sandbox.ServerNetLauncher); ok && allowlist {
+		confineNet = n.ServerNetCommand
 	}
-	return nil, nil
+	return confine, confineNet
 }
 
 // launchOrPlain runs launch, or, with none, the server as the gateway would
@@ -374,7 +380,7 @@ func launchOrPlain(ctx context.Context, launch mcp.Launcher, allowlist bool, nam
 		return launch(ctx, name, argv, env, record)
 	}
 	if allowlist {
-		return nil, mcp.ErrUnconfined
+		return nil, fmt.Errorf("%w: sandbox.network is allowlist and no sandbox here can confine its network", mcp.ErrUnconfined)
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- the configured server, as the gateway starts one
 	cmd.Env = append([]string{}, env...)

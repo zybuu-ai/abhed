@@ -3,6 +3,7 @@ package toolset
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -46,5 +47,34 @@ func TestConfineMCPSeesThroughAPendingSandbox(t *testing.T) {
 		if _, err := launch(context.Background(), "s", []string{"/bin/echo"}, nil, nil); !errors.Is(err, mcp.ErrUnconfined) {
 			t.Fatalf("an unconfinable server was not refused under the allowlist: %v", err)
 		}
+	}
+}
+
+// otherTier is a sandbox of a tier that has no way to confine a server.
+type otherTier struct{ sandbox.Sandbox }
+
+func (otherTier) Tier() sandbox.Tier { return sandbox.TierContainer }
+
+// The fence, container and VM tiers start a server through their own
+// launcher, whatever sandbox.network is; a tier with none refuses it, and a
+// server set to host_files runs as the host's outside the allowlist.
+func TestConfineMCPOnEveryTier(t *testing.T) {
+	p := sandbox.DefaultPolicy(t.TempDir())
+	for _, sb := range []sandbox.Sandbox{sandbox.NewFence(p), sandbox.NewContainer(p), sandbox.NewGVisor(p)} {
+		if _, ok := sb.(sandbox.ServerLauncher); !ok {
+			t.Errorf("the %s tier has no server launcher", sb.Tier())
+		}
+		confine, _ := serverLaunchers(sb, false)
+		if confine == nil {
+			t.Errorf("the %s tier starts a server unconfined", sb.Tier())
+		}
+	}
+	gw := mcp.NewGateway()
+	ConfineMCP(gw, config.Config{}, otherTier{})
+	if gw.Confine == nil || gw.ConfineNet != nil {
+		t.Fatal("a tier that cannot confine left a server unconfined, or host_files confined")
+	}
+	if _, err := gw.Confine(context.Background(), "s", []string{"/bin/echo"}, nil, nil); !errors.Is(err, mcp.ErrUnconfined) || !strings.Contains(err.Error(), "host_files") {
+		t.Fatalf("not refused with the way out: %v", err)
 	}
 }

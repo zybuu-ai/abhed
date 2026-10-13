@@ -176,7 +176,9 @@ func TestStudioMCPRestartKeepsAStdioServerRunning(t *testing.T) {
 	}
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	cfg, _ := json.Marshal(map[string]any{"servers": []any{map[string]any{"name": "stdio", "command": exe,
-		"args": []string{"-test.run=^TestStdioMCPHelper$"}, "env": []string{"ABHED_MCP_STDIO_PID=" + pidFile}, "enabled": true}}})
+		"args": []string{"-test.run=^TestStdioMCPHelper$"}, "env": []string{"ABHED_MCP_STDIO_PID=" + pidFile}, "enabled": true,
+		// This test binary runs on the host, not in a container tier's image.
+		"host_files": true}}})
 	r := newStudioRig(t, `,"mcp":`+string(cfg))
 	id := r.open()
 	var res map[string]any
