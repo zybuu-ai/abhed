@@ -425,6 +425,9 @@ func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []stri
 	if ok, why := f.Available(); !ok {
 		return nil, errors.New(why)
 	}
+	if err := serverProgramMissing(argv[0], env); err != nil {
+		return nil, err
+	}
 	files, err := serverFilesIn(name, argv[0], env, PathForms(f.policy.Workspace))
 	if err != nil {
 		return nil, err

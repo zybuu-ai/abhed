@@ -61,6 +61,21 @@ func serverFilesIn(name, program string, env, workspaces []string) (serverFiles,
 	return f, nil
 }
 
+// serverProgramMissing says a host server's program is not there to run: a
+// sandbox would start, and the server's first write would only meet a closed pipe.
+func serverProgramMissing(program string, env []string) error {
+	if strings.ContainsRune(program, '/') {
+		if fi, err := os.Stat(program); err == nil && !fi.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("sandbox: the server's program %s is not found", program)
+	}
+	if resolveIn(program, env) != "" {
+		return nil
+	}
+	return fmt.Errorf("sandbox: the server's program %s is not found on its PATH", program)
+}
+
 // resolveIn finds program on the PATH env names, links followed; "" when it
 // cannot be found.
 func resolveIn(program string, env []string) string {
