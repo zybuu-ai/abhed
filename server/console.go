@@ -2601,7 +2601,7 @@ async function whoami(){
 function drawWsConfig(wc){
   const n = $('wsconfig'), w = wsConfigLine(wc); if(!n) return;
   n.hidden = !w; if(!w) return;
-  n.textContent = visible(w.text); n.title = visible(w.title); n.classList.toggle('warn', w.warn);
+  n.textContent = visible(w.text); n.title = visible(w.title, true); n.classList.toggle('warn', w.warn);
 }
 async function capabilities(){
   try{

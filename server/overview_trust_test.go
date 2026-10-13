@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -104,5 +105,36 @@ if(!ok) process.exit(1);
 `
 	if out, err := runNodeScript(t, node, script); err != nil {
 		t.Fatalf("wsConfigLine:\n%s", out)
+	}
+}
+
+// The config line's tooltip lists each set-aside setting on its own line: the
+// title keeps its newlines and still marks other control characters.
+func TestWorkspaceConfigTitleKeepsLines(t *testing.T) {
+	node := pageTestNode(t)
+	fnOf := func(page, head string) string {
+		i := strings.Index(page, head)
+		if i < 0 {
+			t.Fatalf("missing %q", head)
+		}
+		return page[i : i+strings.Index(page[i:], "\n}")+2]
+	}
+	title := regexp.MustCompile(`\.title = (visible\(w\.title[^;]*\));`)
+	for name, page := range map[string]string{"console": consoleHTML, "ide": idePage} {
+		m := title.FindStringSubmatch(page)
+		if m == nil {
+			t.Fatalf("%s: no tooltip for the config line", name)
+		}
+		script := fnOf(page, "function visible(s, lines){") + "\n" + fnOf(page, "function reveal(s, lines") + "\n" + fnOf(page, "function wsConfigLine(wc){") + `
+const w = wsConfigLine({trusted:false, reason:'not trusted yet', ignored:[{key:'model', reason:'a provider\u001b[2J receives the code'}, {key:'mcp'}]});
+const got = ` + m[1] + `;
+let ok = true; const check = (l, p) => { console.log((p ? 'PASS' : 'FAIL') + '  ' + l + '  ' + JSON.stringify(got)); ok = ok && p; };
+check('one line per setting', got.split('\n').length === 3 && !got.includes('U+000A'));
+check('other control characters still marked', got.includes('⟨U+001B⟩'));
+if(!ok) process.exit(1);
+`
+		if out, err := runNodeScript(t, node, script); err != nil {
+			t.Errorf("%s tooltip:\n%s", name, out)
+		}
 	}
 }
