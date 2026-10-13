@@ -1506,6 +1506,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- On Linux the process tier's start-up probe ran `grep` from Abhed's own
+  `PATH`, so Abhed started with a `PATH` lacking it (a service unit, a
+  wrapper) found bubblewrap unusable and, with `sandbox.min_tier` none,
+  ran commands with no sandbox. The probe now runs the system's tools.
+  Affects 1.2.7.
 - A workbench tab with several shells and language servers stopped
   answering: each held a connection, and a browser opens six to a server
   over HTTP/1.1, so `/v1/health`, approvals and saves waited behind them.

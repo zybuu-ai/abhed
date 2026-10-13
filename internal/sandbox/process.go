@@ -78,6 +78,10 @@ var rootWritableProc = []string{
 // host mount made there after start cannot propagate in writable.
 var rootEmptyProc = []string{"/proc/sys/fs/binfmt_misc", "/proc/fs", "/proc/acpi", "/proc/irq", "/proc/bus", "/proc/driver"}
 
+// probePath runs a probe's tools from the system's folders: a PATH without
+// grep made the process tier unavailable, and a session fall to none.
+const probePath = "PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; "
+
 // capProbeCaps prints the five capability sets and NoNewPrivs, for any uid.
 const capProbeCaps = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; echo PROBE_DONE`
 
@@ -209,7 +213,8 @@ func (s *Process) bwrapDropsCaps() string {
 			args = append(args, "--proc", "/proc", "--dev", "/dev")
 			args = append(args, rootProcCovers()...)
 		}
-		args = append(args, "/bin/sh", "-c", probe)
+		// The system's grep and find, whatever PATH Abhed was started with.
+		args = append(args, "/bin/sh", "-c", probePath+probe)
 		out, err := bwrapRun(ctx, args...)
 		if err != nil {
 			s.capsErr = "bubblewrap (bwrap) cannot confine a command here: " + firstLine(out, err)
