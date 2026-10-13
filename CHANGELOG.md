@@ -1229,8 +1229,9 @@ All notable changes to Abhed are recorded here. The format follows
   and downloads are there, and the bash tool, background commands and the
   terminal run in the sandbox, each recorded as an `exec` by the session's
   user. On the `process` driver each sandbox has a temp folder of its own
-  (`TMPDIR` on macOS, with `/tmp`, `/var/tmp`, the server's `TMPDIR` and
-  other sandboxes' temp folders out of reach; `/tmp` under bubblewrap), so
+  (`TMPDIR` on macOS, holding `xcrun`'s cache too, with `/tmp`, `/var/tmp`,
+  the server's `TMPDIR` and other sandboxes' temp folders out of reach;
+  `/tmp` under bubblewrap), so
   accounts share no temp space. The session's record gets `sandbox.bound`;
   the sandbox carries the session's label. Continuing a session restarts its
   sandbox with its folder; deleting the session deletes it;

@@ -636,7 +636,12 @@ func (s *Process) commandEnv(ctx context.Context) (context.Context, []string, *e
 		if s.backend == "bwrap" {
 			tmp = "/tmp"
 		}
-		env = append(slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "TMPDIR=") }), "TMPDIR="+tmp)
+		env = append(slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "TMPDIR=") || strings.HasPrefix(kv, "xcrun_db=") }), "TMPDIR="+tmp)
+		if s.backend == "sandbox-exec" {
+			// xcrun (behind /usr/bin/git, python3) caches in the account's temp
+			// folder, ignoring TMPDIR; xcrun_db moves it into this sandbox's own.
+			env = append(env, "xcrun_db="+filepath.Join(tmp, "xcrun_db"))
+		}
 	}
 	if s.policy.Egress == nil {
 		return ctx, env, nil, nil

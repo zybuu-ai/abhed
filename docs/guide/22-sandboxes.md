@@ -220,7 +220,8 @@ What changes for a session:
   commands and terminals get a temp folder of their own, removed with the
   sandbox: on macOS it is `TMPDIR`, and `/tmp`, `/var/tmp`, the server
   account's `TMPDIR` and other sandboxes' temp folders are unreadable and
-  unwritable; on Linux bubblewrap binds it as `/tmp`, kept between the
+  unwritable (`xcrun`, behind Apple's `/usr/bin/git` and `python3`, keeps
+  its cache there too, through `xcrun_db`); on Linux bubblewrap binds it as `/tmp`, kept between the
   sandbox's commands. Container and microVM drivers give each sandbox its
   own `/tmp` already.
 - **The record links them.** The sandbox carries the reserved label
