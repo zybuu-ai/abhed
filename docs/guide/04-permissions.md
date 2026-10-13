@@ -1197,6 +1197,10 @@ curl         https://abhed.example/v1/secrets            # {"names":["GITHUB_TOK
 curl -X DELETE https://abhed.example/v1/secrets/GITHUB_TOKEN
 ```
 
+A session that names a secret its account has not stored is refused with
+that: add it with `PUT /v1/secrets/{name}`, not `abhed secret set`, which
+writes the operator's store.
+
 A value is 8 characters to 64 KiB. Allow rules still decide which names a
 session may use. Before 1.2.8 every account on such a server shared the
 operator's one store.

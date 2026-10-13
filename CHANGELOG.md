@@ -576,7 +576,9 @@ All notable changes to Abhed are recorded here. The format follows
   and by printing it transformed read, every secret an allow rule named.
   Each account now has its own store under `~/.abhed/secrets.d`, managed
   through `GET /v1/secrets` and `PUT` and `DELETE /v1/secrets/{name}`; the
-  operator's store serves scheduled runs only. Affects 1.0.0 to 1.2.7.
+  operator's store serves scheduled runs only, and a session missing a
+  secret says to add it with `PUT /v1/secrets/{name}`. Affects 1.0.0 to
+  1.2.7.
 - Under `sandbox.network: "allowlist"` a command could hand its proxy token
   to a concurrent call, through the workspace or (on macOS) by reading its
   environment, and that call's traffic was then recorded under the first

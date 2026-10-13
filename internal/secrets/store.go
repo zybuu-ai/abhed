@@ -46,6 +46,9 @@ type Store struct {
 	// src, when set, holds the values in place of the file at path.
 	src  Source
 	name string
+	// addHint says how a missing secret is added, %s the name; "" names
+	// `abhed secret set`.
+	addHint string
 }
 
 // pathLocks holds each path's lock weakly: the entry goes once no Store on
@@ -126,6 +129,13 @@ func Default() *Store {
 		path = ".abhed-secrets-unavailable"
 	}
 	return Open(path)
+}
+
+// AddedWith has a missing secret's error say hint, with %s the name, in place
+// of `abhed secret set`: an account's store is added to over the API.
+func (s *Store) AddedWith(hint string) *Store {
+	s.addHint = hint
+	return s
 }
 
 // Path reports where the store lives.
@@ -321,6 +331,9 @@ func (s *Store) Env(names []string) ([]string, error) {
 	for _, n := range names {
 		v, found := m[n]
 		if !found {
+			if s.addHint != "" {
+				return nil, fmt.Errorf("no secret named %s is stored; %s", n, fmt.Sprintf(s.addHint, n))
+			}
 			return nil, fmt.Errorf("no secret named %s is stored; the operator adds one with `abhed secret set %s`", n, n)
 		}
 		out = append(out, n+"="+v)

@@ -84,15 +84,21 @@ func localBorn(mw *auth.Middleware) func(context.Context, string) (time.Time, er
 func (a *accountSecrets) For(tenant, user string) (*secrets.Store, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	path, _, err := a.path(ctx, tenant, user)
+	path, operator, err := a.path(ctx, tenant, user)
 	if errors.Is(err, errNoAccount) {
 		return secrets.OpenSource("no account's secrets", noSecrets{}), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return secrets.Open(path), nil
+	if operator {
+		return secrets.Open(path), nil
+	}
+	return secrets.Open(path).AddedWith(accountAddHint), nil
 }
+
+// accountAddHint is how an account adds a secret its session lacks.
+const accountAddHint = "add it to your account's own store with `PUT /v1/secrets/%s`"
 
 // noSecrets is the store of a caller with no account: empty, and not written.
 type noSecrets struct{}
