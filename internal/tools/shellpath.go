@@ -3,7 +3,6 @@ package tools
 import (
 	"maps"
 	"path"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -60,6 +59,7 @@ func (f *shellFacts) setsByName(v string) {
 	n, _, _ := strings.Cut(v, "=")
 	n, _, _ = strings.Cut(strings.TrimSuffix(n, "+"), "[")
 	f.forgetVar(n)
+	f.setsEnv = true
 	switch n {
 	case "PATH":
 		f.pathSet, f.pathUnknown = true, true
@@ -105,6 +105,7 @@ func (f *shellFacts) envAssign(w *syntax.Word) {
 // startupFile records the file a shell started later reads first, read as a
 // script it runs; one named by an expansion is a script no rule can read.
 func (f *shellFacts) startupFile(name, value string, lit bool) {
+	f.setsEnv, f.varsDead = true, true
 	switch {
 	case name == "ENV" && !lit:
 		// Only an interactive shell reads ENV: kept for startups to weigh.
@@ -385,29 +386,33 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 	case "tmux", "byobu":
 		f.anyShell(true)
 		for i, w := range words {
+			if tmuxKeys[w] {
+				f.scriptHidden = "tmux " + w + " types keys or text into a shell, which no rule can read"
+				break
+			}
 			if tmuxRuns[w] {
-				f.commandWords(args[i+1:], w == "send-keys" || w == "send", depth)
+				f.commandWords(args[i+1:], depth)
 				break
 			}
 		}
 	case "screen":
 		f.anyShell(true)
-		f.commandWords(args, false, depth)
-	case "script":
-		if has(short('c')) || has(func(w string) bool { return strings.HasPrefix(w, "--command") }) {
-			return
-		}
-		// Its shell, or the command it is given, runs on a terminal of its own.
-		f.anyShell(false)
 		for i, w := range words {
-			if !strings.HasPrefix(w, "-") { // the log file; a command may follow
-				f.commandWords(args[i+1:], false, depth)
-				break
+			if (w == "-X" || strings.HasPrefix(w, "-") && strings.HasSuffix(w, "X")) && i+1 < len(words) && screenKeys[words[i+1]] {
+				f.scriptHidden = "screen -X " + words[i+1] + " types keys or text into a shell, which no rule can read"
+				return
 			}
+		}
+		f.commandWords(args, depth)
+	case "script":
+		// Its shell, or the command after the log file, runs on a terminal of
+		// its own; -c's text is run by a shell given -c.
+		if !f.scriptCommand(args, depth) {
+			f.anyShell(false)
 		}
 	case "unbuffer", "dtach":
 		f.anyShell(false)
-		f.commandWords(args, false, depth)
+		f.commandWords(args, depth)
 	case "expect":
 		f.startupHidden = "expect, whose programs and their start-up files the check cannot read"
 	case "doas":
@@ -415,7 +420,7 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 			f.anyShell(false)
 		}
 	case "ssh":
-		if sshCommand(words) == -1 {
+		if sshShell(words) {
 			f.startupHidden = "ssh with no command, whose login shell reads start-up files the check cannot read"
 		}
 	case "login":
@@ -477,11 +482,18 @@ func (f *shellFacts) startEnv() map[string]string {
 	return f.commandEnv(nil)
 }
 
-// tmuxRuns are the tmux commands that run a command or type keys into a shell.
+// tmuxRuns are the tmux commands that run a command given whole.
 var tmuxRuns = map[string]bool{"new-session": true, "new": true, "new-window": true, "neww": true,
 	"split-window": true, "splitw": true, "respawn-pane": true, "respawnp": true, "respawn-window": true,
-	"respawnw": true, "run-shell": true, "run": true, "send-keys": true, "send": true, "display-popup": true,
-	"popup": true, "if-shell": true, "if": true, "pipe-pane": true, "pipep": true}
+	"respawnw": true, "run-shell": true, "run": true, "display-popup": true, "popup": true, "if-shell": true, "if": true}
+
+// tmuxKeys and screenKeys put keys or text into a shell, which cannot be read
+// as a command: split across calls, as hex, or from a buffer.
+var (
+	tmuxKeys = map[string]bool{"send-keys": true, "send": true, "set-buffer": true, "setb": true, "paste-buffer": true,
+		"pasteb": true, "load-buffer": true, "loadb": true, "pipe-pane": true, "pipep": true}
+	screenKeys = map[string]bool{"stuff": true, "paste": true, "readbuf": true, "exec": true, "eval": true, "register": true}
+)
 
 // maxCommandStarts bounds where a command given to a terminal program is
 // taken to start.
@@ -489,17 +501,14 @@ const maxCommandStarts = 8
 
 // commandWords reads the command a terminal program runs, as bash -c text,
 // from each word that may start it, so the rules see it whatever options
-// come first; keys drops tmux's key names.
-func (f *shellFacts) commandWords(args []*syntax.Word, keys bool, depth int) {
+// come first.
+func (f *shellFacts) commandWords(args []*syntax.Word, depth int) {
 	var words []string
 	for _, a := range args {
 		v, lit := literal(a)
 		if !lit {
 			f.expands, f.ifsUnknown = true, true
 			return
-		}
-		if keys && (tmuxKey.MatchString(v) || v == "Enter" || v == "KPEnter" || v == "Escape" || v == "Space") {
-			continue
 		}
 		words = append(words, v)
 	}
@@ -515,25 +524,77 @@ func (f *shellFacts) commandWords(args []*syntax.Word, keys bool, depth int) {
 	}
 }
 
-// tmuxKey is a key name such as C-m or M-x.
-var tmuxKey = regexp.MustCompile(`^[CMS]-.$`)
+// sshValued are ssh's option letters that take a value.
+const sshValued = "BbcDEeFIiJLlmOoPpQRSWw"
 
-// sshCommand is the index of the first word of the command ssh runs, or -1
-// for none: ssh then starts a login shell.
-func sshCommand(words []string) int {
+// sshShell reports an ssh that starts a login shell: one with no command and
+// none of the options that start none (-V, -G, -Q, -O, -N, -T).
+func sshShell(words []string) bool {
 	host := false
 	for i := 0; i < len(words); i++ {
 		w := words[i]
 		switch {
 		case w == "--":
-		case strings.HasPrefix(w, "-") && len(w) == 2 && strings.IndexByte("BbcDEeFIiJLlmOoPpQRSWw", w[1]) >= 0:
-			i++
-		case strings.HasPrefix(w, "-"):
+		case len(w) > 1 && w[0] == '-':
+			for k := 1; k < len(w); k++ {
+				if strings.IndexByte("VGQONT", w[k]) >= 0 {
+					return false
+				}
+				if strings.IndexByte(sshValued, w[k]) >= 0 {
+					if k == len(w)-1 {
+						i++ // its value is the next word
+					}
+					break
+				}
+			}
 		case !host:
 			host = true
 		default:
-			return i
+			return false // a command
 		}
 	}
-	return -1
+	return host
+}
+
+// scriptValued are script's options that take the next word as a value.
+const scriptValued = "FtTBIOo"
+
+// scriptCommand reads the command script runs, as if typed: -c's text, or
+// the words after the log file, each quoted as given. It reports -c.
+func (f *shellFacts) scriptCommand(args []*syntax.Word, depth int) bool {
+	for i := 0; i < len(args); i++ {
+		v, lit := literal(args[i])
+		switch {
+		case !lit:
+			f.expands, f.ifsUnknown = true, true
+			return false
+		case v == "--command" || len(v) > 1 && v[0] == '-' && v[1] != '-' && strings.HasSuffix(v, "c"):
+			if i+1 < len(args) {
+				f.shellText(args[i+1:i+2], depth)
+			}
+			return true
+		case strings.HasPrefix(v, "--command="):
+			f.read(strings.TrimPrefix(v, "--command="), depth+1)
+			return true
+		case len(v) > 1 && v[0] == '-' && v[1] != '-' && strings.ContainsAny(v[len(v)-1:], scriptValued):
+			i++
+		case strings.HasPrefix(v, "-"):
+		default:
+			// The log file; what follows is the command, argument by argument.
+			var quoted []string
+			for _, a := range args[i+1:] {
+				w, lit := literal(a)
+				if !lit {
+					f.expands, f.ifsUnknown = true, true
+					return false
+				}
+				quoted = append(quoted, "'"+strings.ReplaceAll(w, "'", `'\''`)+"'")
+			}
+			if len(quoted) > 0 {
+				f.read(strings.Join(quoted, " "), depth+1)
+			}
+			return false
+		}
+	}
+	return false
 }

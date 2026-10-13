@@ -72,7 +72,7 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 		return out
 	}
 	// A line that sets the shell's environment can steer a trusted file.
-	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{noBaseline: canon.SetsEnv()}, false)
+	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{noBaseline: !canon.BaselineApplies()}, false)
 	return out
 }
 

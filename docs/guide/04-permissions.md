@@ -446,10 +446,13 @@ rule for `bash` has a pattern, and asked about otherwise, when it:
   absolute path is still read.
 - is one of more than 16 scripts the line runs
 - is named by a path built from a variable whose value the check cannot
-  read (`source $X/x.sh`, `bash "$S"`), in the line or in a script it runs:
-  a value the line sets literally, by assignment, `export` or `env`, is
-  used (`X=./c bash s.sh` reads `c/x.sh`), and so is the HOME commands get;
-  one the line does not set, or does not export to the script, is not
+  read (`source $X/x.sh`, `bash "$S"`), in the line or in a script it runs.
+  Only plain forms are followed: `X=value cmd`, or a leading run of
+  `X=value` and `export X=value` statements (`X=./c bash s.sh` reads
+  `c/x.sh`), and the HOME commands get. After anything else (another
+  statement, `source`, `.`, `eval`, `alias`, a function, `BASH_ENV`,
+  `ENV`, `read`, `declare`, a quoted or braced name) no value is known, and
+  so is one the line does not set or export to the script
 - is sourced by a name without a folder (`. s.sh`, `source s.sh`) on a line
   that sets `PATH` in any way (`PATH=sub . s.sh`,
   `export PATH=sub:$PATH; source s.sh`, `read PATH`), as bash then looks
@@ -477,12 +480,19 @@ so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
 So is the shell `script`, `tmux`, `byobu`, `screen`, `unbuffer`, `dtach`,
 `su`, `sudo -s` or `doas -s` starts on a terminal of its own, taken as any
 shell, interactive (`tmux`, `byobu` and `screen` as login shells too); `su
--`, `sudo -i`, `login`, `expect` and `ssh` with no command start a shell
+-`, `sudo -i`, `login`, `expect` and `ssh` with no command (and none of `-V`, `-G`, `-Q`, `-O`,
+`-N`, `-T`) start a shell
 whose start-up files the check cannot read, and are refused under a deny
-rule. The command such a program is given (`tmux new -d 'cmd'`, `tmux
-send-keys … 'cmd' Enter`, `screen -dm cmd`, `script -q /dev/null cmd`,
-`unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c` text is, from
-each word that may start it.
+rule. The command such a program is given whole (`tmux new -d 'cmd'`,
+`screen -dm cmd`, `unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c`
+text is, from each word that may start it. Keys or text typed into a
+session cannot be read as a command (they can be split across calls, sent
+as hex, or pasted from a buffer), so `tmux send-keys`, `send`,
+`set-buffer`, `paste-buffer`, `load-buffer` and `pipe-pane`, and `screen -X
+stuff`, `paste`, `readbuf`, `exec`, `eval` and `register`, are refused
+under a deny rule and asked about under an ask rule;
+`script`'s (`script -q /dev/null cmd`, `script -c cmd`) is read exactly as
+if typed, so a shell it names reads its start-up files.
 A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
@@ -508,10 +518,14 @@ sha256 still match is not judged, so a package manager's line in your
 a link or a folder in its place is. Trusting a file trusts its own text
 only: what it sources and the scripts and programs it runs are still read
 and judged, with the environment the line gives them, and a file it names
-by a path built from a variable it does not set is not read. On a line
-that sets the environment its shell gets (an assignment, `env`, `export`,
-`PATH`, `HOME`, `ZDOTDIR`, or a `cd` first) the baseline does not apply at
-all, since such a line can steer what a trusted file runs. Each session's record notes the files
+by a path built from a variable it does not set is not read. The
+baseline applies only to a line that is the shell started alone: one
+simple command whose first word is the shell, with no assignment or
+redirection and no other statement, and nothing in the text it runs that
+sets a variable, sources a file or changes folder. On any other line (a
+`read PATH`, a `source`, a `cd`, `env`, `BASH_ENV`, a statement before
+the shell) every start-up file is judged in full, since such a line can
+steer what a trusted file runs. Each session's record notes the files
 it trusted this way (`policy.startup_trusted`, path and sha256), again
 whenever that set changes, before the command that relies on it, and
 `abhed doctor` lists them and any changed since. That
@@ -544,6 +558,8 @@ A deny pattern matches the words, so it is easy to step around.
   of a shell another program starts (`make`, a `#!/usr/bin/env -S zsh`
   line the check does not read as zsh's), or of one a line starts with
   options built when it runs
+- a command run through `ssh localhost 'cmd'` (or any host that reaches
+  this machine), which sshd runs outside the sandbox and the check
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,
