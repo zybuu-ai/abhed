@@ -186,6 +186,10 @@ type capPermissions struct {
 	Ask     []string `json:"ask"`
 	Allow   []string `json:"allow"`
 	Managed bool     `json:"managed"`
+	// ManagedKeys are the settings the managed file makes, as dotted paths;
+	// ModeManaged is whether permissions.mode is one of them.
+	ManagedKeys []string `json:"managed_keys,omitempty"`
+	ModeManaged bool     `json:"mode_managed"`
 }
 
 type capTool struct {
@@ -238,6 +242,11 @@ func (s *Server) getCapabilities(w http.ResponseWriter, r *http.Request) {
 			Deny: nonNil(cfg.Permissions.Deny), Ask: nonNil(cfg.Permissions.Ask), Allow: nonNil(cfg.Permissions.Allow),
 		},
 		Tools: []capTool{}, Skills: []skillView{}, MCP: []mcpView{}, Extensions: []capExtension{},
+	}
+	if cfg.Managed {
+		// A managed config that says nothing of what it set is taken to set the mode.
+		c.Permissions.ManagedKeys = cfg.ManagedKeys
+		c.Permissions.ModeManaged = cfg.ManagedKeys == nil || cfg.ManagedSets("permissions.mode")
 	}
 	if reg != nil {
 		for _, t := range reg.All() {

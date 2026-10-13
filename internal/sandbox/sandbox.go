@@ -144,6 +144,10 @@ type Policy struct {
 	// SharedCaches lets the macOS process tier write the real toolchain
 	// caches; otherwise each sandbox's commands get caches of their own.
 	SharedCaches bool
+	// PrivateTemp gives the process tier's commands a temp folder of this
+	// sandbox's own as TMPDIR (on Linux, as /tmp) and keeps them out of the
+	// shared temp areas, for sandboxes of several accounts on one host.
+	PrivateTemp bool
 	// MemoryRequired refuses a Linux process tier command whose memory no
 	// cgroup can hold, for max_memory_mb set in a configuration file.
 	MemoryRequired bool

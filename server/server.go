@@ -378,6 +378,8 @@ type Options struct {
 // Server holds live sessions and serves the API.
 type Server struct {
 	opts Options
+	// muxes are the pages' shared streams; see streams.go.
+	muxes streamMuxes
 	// searching counts the workspace searches running per session, under searchMu.
 	searchMu  sync.Mutex
 	searching map[string]int
@@ -837,10 +839,15 @@ func (s *Server) leaseRefused(id string) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// top is the finished handler, which a shared stream runs each of its channels through.
+	var top http.Handler
 
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/events", s.streamEvents)
+	mux.HandleFunc("GET /v1/streams", s.openStreamMux)
+	mux.Handle("POST /v1/streams/{mux}/{ch}", s.openStreamChannel(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { top.ServeHTTP(w, r) })))
+	mux.HandleFunc("DELETE /v1/streams/{mux}/{ch}", s.closeStreamChannel)
 	mux.HandleFunc("GET /v1/sessions/{id}/replay", s.replaySession)
 	mux.HandleFunc("GET /v1/sessions/{id}/hawkeye", s.hawkeyeSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/tree", s.treeSession)
@@ -1008,7 +1015,8 @@ func (s *Server) Handler() http.Handler {
 	// still a response a browser will act on.
 	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins, s.log)(limited)
 	headed := securityHeaders(s.bodyLimit(guarded), s.opts.Config.Server.HSTS)
-	return s.logRefused(s.refuseRevokedCert(canonicalHost(s.opts.Config.Server.CanonicalHost, headed)))
+	top = s.logRefused(s.refuseRevokedCert(canonicalHost(s.opts.Config.Server.CanonicalHost, headed)))
+	return top
 }
 
 // refuseRevokedCert answers 401 to a request whose connection was verified
@@ -4650,8 +4658,18 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	if mw := s.authMiddleware(); (o.Authenticated || len(mw.Providers) == 0 && mw.Verifier == nil && !mw.TrustHeaders) &&
 		cfg.Workspace.File != "" {
 		t := &overviewTrust{Trusted: cfg.Workspace.Trusted, Reason: cfg.Workspace.Reason, Applied: cfg.Workspace.Applied}
+		seen := map[string]bool{}
 		for _, k := range cfg.Workspace.Ignored {
+			seen[k.Key] = true
 			t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+		}
+		// Trust does not reach every setting: what the file made that was set
+		// aside anyway, such as a language server, is listed with why.
+		for _, k := range cfg.SetAside {
+			if k.Layer == config.LayerWorkspace && !seen[k.Key] {
+				seen[k.Key] = true
+				t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+			}
 		}
 		o.WorkspaceConfig = t
 	}

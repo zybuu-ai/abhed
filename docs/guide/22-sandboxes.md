@@ -216,6 +216,13 @@ What changes for a session:
   terminal, as running until it ends, as it counts an `:exec`, and can end
   it; that end is recorded as `exec.ended`. The bash tool's own timeout
   applies, not `exec_timeout_seconds`.
+- **Its temp space is its own.** On the process driver each sandbox's
+  commands and terminals get a temp folder of their own, removed with the
+  sandbox: on macOS it is `TMPDIR`, and `/tmp`, `/var/tmp`, the server
+  account's `TMPDIR` and other sandboxes' temp folders are unreadable and
+  unwritable; on Linux bubblewrap binds it as `/tmp`, kept between the
+  sandbox's commands. Container and microVM drivers give each sandbox its
+  own `/tmp` already.
 - **The record links them.** The sandbox carries the reserved label
   `abhed.dev/session=<session id>` (or `abhed.dev/session-user=<digest>`
   per user), is owned by `system:sessions`, and its `create` or `claim`

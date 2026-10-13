@@ -166,7 +166,8 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 		return nil, nil, "", fmt.Errorf("unknown tool %q", "bash")
 	}
 	_ = l.noteTrustedStartup()
-	decision := l.Policy.Evaluate("bash", tool.Mutates(), args)
+	// Each line runs with the terminal as its input, so a shell it starts is judged with its start-up files.
+	decision := l.Policy.EvaluateTyped("bash", tool.Mutates(), args)
 	needs := decision.Decision == policy.Ask && decision.Step == "destructive"
 	switch {
 	case needs && answer == Unanswered:
@@ -231,10 +232,13 @@ func (l *Loop) ManualScreen(id, line string) (*tools.Result, error) {
 	}
 	args, _ := json.Marshal(map[string]string{"command": line, "description": "entered in the interactive terminal"})
 	_ = l.noteTrustedStartup()
-	if l.Policy.EvaluateLine("bash", tool.Mutates(), args).Decision != policy.Deny {
+	// The line's own judgement is the one recorded: judged again as a whole
+	// command, a shell it starts would not be read with its start-up files.
+	decision := l.Policy.EvaluateLine("bash", tool.Mutates(), args)
+	if decision.Decision != policy.Deny {
 		return nil, nil
 	}
-	_, refused, err := l.ManualAuthorize("bash", id, args)
+	refused, err := l.manualDecide("bash", id, args, decision, Unanswered)
 	if err != nil || refused == nil {
 		return refused, err
 	}

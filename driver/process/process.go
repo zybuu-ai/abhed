@@ -96,6 +96,8 @@ func NewWithOptions(cfg config.Config, opts Options) *Driver {
 			return nil, err
 		}
 		p.Hidden = append(p.Hidden, opts.Hide...)
+		// Instances may be different accounts': none shares another's temp.
+		p.PrivateTemp = true
 		return sandbox.Select(p)
 	}, opts)
 }

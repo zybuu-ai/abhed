@@ -1334,7 +1334,8 @@ server open.
 - **`abhed serve`** says on its front page, under the console's examples,
   in the workbench's **Tools** panel, and in `GET /v1/overview` as
   `workspace_config`, whether the file is trusted, why, and the names of the
-  settings it set aside (not their values): to a signed-in person, or to
+  settings it set aside (not their values), each with why: a trusted file's
+  too, such as a language server it names. To a signed-in person, or to
   anyone where nobody signs in.
 
 The prompt and `abhed trust` list a managed-only setting the file makes, such

@@ -52,6 +52,12 @@ type Process struct {
 	cachesOnce sync.Once
 	caches     string
 
+	// tmp is this sandbox's own temp folder under PrivateTemp, made at its
+	// first command; tmpErr says why it could not be.
+	tmpOnce sync.Once
+	tmp     string
+	tmpErr  error
+
 	// cg is the delegated cgroup bubblewrap's commands run in, on Linux.
 	cgOnce sync.Once
 	cg     *processCgroups
@@ -365,7 +371,7 @@ func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
 
 // seatbeltProfileFor is the profile for a command whose session's egress
 // proxy holds port; 0 is none.
-func (s *Process) seatbeltProfileFor(port uint16) string {
+func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
 	// Home holds credentials no list names, so little is readable there; first,
@@ -440,6 +446,10 @@ func (s *Process) seatbeltProfileFor(port uint16) string {
 				fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", ws)
 			}
 		}
+	}
+
+	if s.policy.PrivateTemp {
+		s.privateTempRules(&b, readable)
 	}
 
 	// The harness's own state is out of reach for commands, as it is for the
@@ -613,6 +623,16 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 // cannot start refuses the command, never opening the network.
 func (s *Process) commandEnv(ctx context.Context) (context.Context, []string, *egressState, error) {
 	env := s.env()
+	if s.policy.PrivateTemp {
+		tmp, err := s.privateTemp()
+		if err != nil {
+			return ctx, nil, nil, fmt.Errorf("sandbox: the command was not run: its own temp folder: %w", err)
+		}
+		if s.backend == "bwrap" {
+			tmp = "/tmp"
+		}
+		env = append(slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "TMPDIR=") }), "TMPDIR="+tmp)
+	}
 	if s.policy.Egress == nil {
 		return ctx, env, nil, nil
 	}
@@ -653,7 +673,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 				}
 			}
 		}
-		profile := s.seatbeltProfileFor(eg.portFor(egressCallOf(ctx)))
+		profile := s.seatbeltProfileFor(eg.portFor(egressCallOf(ctx)), eg.caFolder())
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
 		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
@@ -680,6 +700,15 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		default:
 			args = append(args, "--dev-bind", "/dev", "/dev")
 		}
+		// Under PrivateTemp, /tmp is the sandbox's own folder, kept between its commands.
+		tmpArgs := []string{"--tmpfs", "/tmp"}
+		if s.policy.PrivateTemp {
+			own, err := s.privateTemp()
+			if err != nil {
+				return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its own temp folder: %w", err)}
+			}
+			tmpArgs = []string{"--bind", own, "/tmp"}
+		}
 		args = append(args,
 			// Read-only system, writable workspace.
 			"--ro-bind", "/usr", "/usr",
@@ -690,9 +719,11 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 			"--ro-bind-try", "/etc/ssl", "/etc/ssl",
 			// Debian links vi, awk, editor and others through /etc/alternatives.
 			"--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
-			// /tmp first: a workspace under it is bound on top afterwards, or
-			// the tmpfs would hide it and every command would fail to start.
-			"--tmpfs", "/tmp",
+		)
+		// /tmp first: a workspace under it is bound on top afterwards, or
+		// the tmpfs would hide it and every command would fail to start.
+		args = append(args, tmpArgs...)
+		args = append(args,
 			"--bind", s.policy.Workspace, s.policy.Workspace,
 			// An empty, throwaway directory over Abhed's own state: nothing in
 			// it can be read, and anything written there is gone at exit.
@@ -913,6 +944,12 @@ func (s *Process) ownCaches() map[string]string {
 		if parent == "" {
 			parent = os.TempDir()
 		}
+		// Inside the sandbox's own temp folder, the one temp area it reaches.
+		if s.policy.PrivateTemp {
+			if t, err := s.privateTemp(); err == nil {
+				parent = t
+			}
+		}
 		if d, err := os.MkdirTemp(parent, "abhed-caches-"); err == nil {
 			s.caches = d
 		}
@@ -970,6 +1007,95 @@ func goModCache() string {
 		return filepath.Join(home, "go", "pkg", "mod")
 	}
 	return ""
+}
+
+// privateTemp is the sandbox's own temp folder, made once: beside the other
+// temp folders on the host, readable by this account alone.
+func (s *Process) privateTemp() (string, error) {
+	s.tmpOnce.Do(func() {
+		parent := os.TempDir()
+		if t := userTemp(); t != "" && s.backend != "bwrap" {
+			parent = t
+		}
+		d, err := os.MkdirTemp(parent, "abhed-tmp-")
+		if err != nil {
+			s.tmpErr = err
+			return
+		}
+		if real, err := filepath.EvalSymlinks(d); err == nil {
+			d = real
+		}
+		s.tmp = d
+	})
+	return s.tmp, s.tmpErr
+}
+
+// sharedTempAreas are the temp folders every account's commands could
+// otherwise reach: the system's and this account's TMPDIR.
+func sharedTempAreas() []string {
+	areas := append([]string{"/tmp", "/var/tmp", os.TempDir()}, tempAreas...)
+	if t := userTemp(); t != "" {
+		areas = append(areas, t)
+	}
+	var out []string
+	for _, a := range formsOf(areas) {
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// privateTempRules keep the commands out of the shared temp areas but for
+// the sandbox's own folder there, its workspace and what it is given to read.
+func (s *Process) privateTempRules(b *strings.Builder, readable []string) {
+	own, err := s.privateTemp()
+	if err != nil {
+		return // commandEnv has refused the command
+	}
+	areas := sharedTempAreas()
+	b.WriteString("\n;; Temp: a folder of this sandbox's own; the shared temp areas are out of reach.\n")
+	for _, a := range areas {
+		fmt.Fprintf(b, "(deny file-read* (subpath %q))\n", a)
+		fmt.Fprintf(b, "(deny file-write* (subpath %q))\n", a)
+	}
+	// The folders on the way to what it keeps can be stepped through, not listed.
+	kept := append(append(PathForms(own), s.workspaces()...), readable...)
+	var steps []string
+	for _, p := range kept {
+		for d := filepath.Dir(p); d != filepath.Dir(d); d = filepath.Dir(d) {
+			if insideAny(d, areas) && !slices.Contains(steps, d) {
+				steps = append(steps, d)
+			}
+		}
+	}
+	for _, d := range steps {
+		fmt.Fprintf(b, "(allow file-read-metadata (literal %q))\n", d)
+	}
+	for _, p := range append(PathForms(own), s.workspaces()...) {
+		fmt.Fprintf(b, "(allow file-read* (subpath %q))\n", p)
+		fmt.Fprintf(b, "(allow file-write* (subpath %q))\n", p)
+	}
+	for _, p := range append(formsOf(s.policy.ReadOnlyPaths), readable...) {
+		if p != "" {
+			fmt.Fprintf(b, "(allow file-read* (subpath %q))\n", p)
+		}
+	}
+}
+
+// removeTemp removes the sandbox's own temp folder.
+func (s *Process) removeTemp() error {
+	s.tmpOnce.Do(func() {})
+	if s.tmp == "" {
+		return nil
+	}
+	_ = filepath.WalkDir(s.tmp, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700) // #nosec G302 -- a folder of the sandbox's own being removed
+		}
+		return nil
+	})
+	return os.RemoveAll(s.tmp)
 }
 
 // removeCaches removes the sandbox's own caches.

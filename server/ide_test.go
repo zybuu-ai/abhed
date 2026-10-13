@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -262,6 +263,7 @@ globalThis.fetch = async url => {
 class EventSource { constructor(url){ this.url = url; this.readyState = 0; __streams.push(this); }
   close(){ this.readyState = 2; } addEventListener(){} }
 EventSource.CLOSED = 2;
+const StreamSource = EventSource;
 `
 	if out, err := runConsoleCases(t, "ide-conn", harness, "ide_conn_cases.mjs"); err != nil {
 		t.Fatalf("the connection indicator failed:\n%s", out)
@@ -773,5 +775,75 @@ func TestIDEExtensionStatusAndKillFocus(t *testing.T) {
 	}
 	if !strings.Contains(ideHTML, "{method:'DELETE', credentials:'same-origin'}).catch(() => {}); if(t) t.term.focus(); });") {
 		t.Error("Kill leaves focus on itself")
+	}
+}
+
+// ideReviewHarness is what rejecting a change in the review calls out to.
+const ideReviewHarness = `let current = 's1';
+globalThis.__posted = []; globalThis.__saved = []; globalThis.__closed = [];
+const api = async (url, opts) => { __posted.push({url, body: JSON.parse(opts.body)}); return {}; };
+const save = async t => { __saved.push(t.path); };
+const closeTab = id => { __closed.push(id); }, changesSoon = () => {}, refreshDir = () => {}, crumbs = () => {};
+const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '', visible = s => s;
+`
+
+// Rejecting the only change of a file the session added removes it, as
+// Reject all does, rather than leaving the file on disk empty.
+func TestIDERejectingAnAddedFilesOnlyChangeRemovesIt(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-review", ideReviewHarness, "ide_review_cases.mjs"); err != nil {
+		t.Fatalf("rejecting a change:\n%s", out)
+	}
+}
+
+// The Tools panel says the mode is the organisation's only when the managed
+// file sets it: one that only turns on web search leaves the mode alone.
+func TestCapabilitiesSayWhichSettingsAreManaged(t *testing.T) {
+	for name, tc := range map[string]struct {
+		keys []string
+		want bool
+	}{
+		"web search only": {[]string{"web_search.enabled"}, false},
+		"the mode":        {[]string{"permissions.deny", "permissions.mode"}, true},
+		"unknown":         {nil, true},
+	} {
+		cfg := config.Default()
+		cfg.Managed, cfg.ManagedKeys = true, tc.keys
+		s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/capabilities", nil))
+		var c capabilities
+		if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Permissions.ModeManaged != tc.want || !slices.Equal(c.Permissions.ManagedKeys, tc.keys) {
+			t.Errorf("%s: mode_managed %v, managed_keys %v", name, c.Permissions.ModeManaged, c.Permissions.ManagedKeys)
+		}
+	}
+	if !strings.Contains(ideHTML, "c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : '')") {
+		t.Error("the Tools panel does not take the mode's own managed flag")
+	}
+}
+
+// Every server-to-page stream rides one shared stream, and behaves on it as
+// an EventSource would: reconnecting from its last id, closing on a refusal.
+func TestIDEStreamsShareOneConnection(t *testing.T) {
+	harness := `globalThis.__es = []; globalThis.__fetches = []; globalThis.__status = 202;
+class EventSource { constructor(url){ this.url = url; this.readyState = 0; this.on = {}; __es.push(this); }
+  addEventListener(type, f){ this.on[type] = f; } close(){ this.readyState = 2; }
+  emit(type, data){ this.readyState = 1; this.on[type]({data: JSON.stringify(data)}); } }
+EventSource.CLOSED = 2;
+globalThis.fetch = async (url, opts) => { __fetches.push({url, method: opts.method, body: opts.body ? JSON.parse(opts.body) : null}); return {ok: __status < 400, status: __status}; };
+const setTimeout = (f, ms) => globalThis.setTimeout(f, Math.min(ms, 5)), clearTimeout = id => globalThis.clearTimeout(id);
+`
+	if out, err := runConsoleCases(t, "ide-streams", harness, "ide_streams_cases.mjs"); err != nil {
+		t.Fatalf("the shared stream:\n%s", out)
+	}
+	for _, want := range []string{"new StreamSource(base)", "new StreamSource('/v1/sessions/' + id + '/events'", "new StreamSource(ptyURL(t, '/' + id))"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("a stream does not ride the shared one: %s", want)
+		}
+	}
+	if strings.Count(ideHTML, "new EventSource(") != 1 {
+		t.Error("the page opens an EventSource of its own besides the shared stream")
 	}
 }

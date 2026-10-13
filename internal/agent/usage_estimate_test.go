@@ -53,6 +53,20 @@ func TestStoppedReplyEstimatesItsTokens(t *testing.T) {
 	if got := l.Budget.tokens.Load(); got != int64(mc.TokensIn+mc.TokensOut) {
 		t.Fatalf("budget spent %d, want %d", got, mc.TokensIn+mc.TokensOut)
 	}
+	// The session's totals, and so its session.ended, count them as HawkEYE's turns do.
+	var ended struct {
+		Reason    string `json:"reason"`
+		TokensIn  int    `json:"tokens_in"`
+		TokensOut int    `json:"tokens_out"`
+	}
+	for _, ev := range evs {
+		if ev.Type == EvSessionEnded {
+			_ = json.Unmarshal(ev.Payload, &ended)
+		}
+	}
+	if u := l.Usage(); u.InputTokens != mc.TokensIn || u.OutputTokens != mc.TokensOut || ended.TokensIn != mc.TokensIn || ended.TokensOut != mc.TokensOut {
+		t.Fatalf("totals %+v, session.ended %+v, want the call's %d in, %d out", u, ended, mc.TokensIn, mc.TokensOut)
+	}
 }
 
 // After a compaction the next check leaves out the room for a turn, so a small

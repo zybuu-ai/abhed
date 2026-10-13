@@ -933,6 +933,8 @@ async function acceptHunk(t, c){
 function rejectHunk(t, c){
   const text = spliceLines(t.model.getLinesContent(), c.modifiedStartLineNumber, c.modifiedEndLineNumber,
     linesOf(t.orig, c.originalStartLineNumber, c.originalEndLineNumber)).join(t.model.getEOL());
+  // An added file with its last change rejected is not left empty: it is removed, as Reject all does.
+  if(!t.existed && text === t.orig.getValue()) return rejectAll(t);
   replaceAll(t, text); save(t);
 }
 // replaceAll is an edit, not a reload: it can be undone and it marks the tab unsaved.
@@ -1003,7 +1005,7 @@ async function lspOpen(session, lang){
   const base = '/v1/sessions/' + session + '/lsp/' + r.id;
   const c = {session, lang, root: r.root, base, seq:0, pending:new Map(), docs:new Map(), es:null};
   await new Promise((ok, fail) => {
-    const es = new EventSource(base); c.es = es;
+    const es = new StreamSource(base); c.es = es;
     es.addEventListener('ready', () => ok());
     es.addEventListener('msg', e => lspIncoming(c, e.data));
     es.addEventListener('exit', () => lspClose(c));
@@ -1446,7 +1448,7 @@ function drawCaps(){
   t.appendChild(el('div', 'group', 'Permissions'));
   const r = el('div', 'rules');
   const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
-  line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
+  line('mode', c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : ''));
   line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');
   const w = wsConfigLine(wsConf); if(w){ line('config', visible(w.text)); r.lastChild.title = visible(w.title); if(w.warn) r.lastChild.className = 'warn'; }
   t.appendChild(r);
@@ -1878,11 +1880,71 @@ async function createWorkbench(note){
 }
 $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
 
+// A browser opens six connections to one server over HTTP/1.1, and the page held a
+// stream for its events, one per shell and one per language server: a few shells
+// starved every other request. Each stream now rides one shared stream, asked for
+// by its own route, which the server checks as it always has. A StreamSource
+// behaves as an EventSource does: a refusal closes it, a drop is asked for again.
+const mux = {es:null, id:'', chans:new Map(), n:0};
+function muxStream(){
+  if(mux.es) return;
+  const es = new EventSource('/v1/streams'); mux.es = es;
+  es.addEventListener('mux', e => { let m; try{ m = JSON.parse(e.data); }catch{ return; }
+    mux.id = m.id; for(const c of new Set(mux.chans.values())) c._ask(); });
+  es.addEventListener('c', e => { let f; try{ f = JSON.parse(e.data); }catch{ return; } const c = mux.chans.get(f.ch); if(c) c._frame(f); });
+  es.onerror = () => { mux.id = '';
+    const closed = es.readyState === EventSource.CLOSED; if(closed) mux.es = null;
+    for(const c of new Set(mux.chans.values())) c._dropped(closed); };
+}
+class StreamSource {
+  constructor(url){ this.url = url; this.readyState = 0; this.onopen = this.onmessage = this.onerror = null;
+    this._on = {}; this._last = ''; this._retry = 1000; this._ch = ''; this._timer = 0;
+    this._key(); muxStream(); if(mux.id) this._ask(); }
+  // Each ask is a channel of its own, so frames of one the server ended are not this one's.
+  _key(){ if(this._ch) mux.chans.delete(this._ch); this._ch = 'c' + (++mux.n); mux.chans.set(this._ch, this); }
+  addEventListener(type, fn){ (this._on[type] = this._on[type] || []).push(fn); }
+  removeEventListener(type, fn){ const l = this._on[type] || [], i = l.indexOf(fn); if(i >= 0) l.splice(i, 1); }
+  _fire(type, ev){ ev.type = type; const h = this['on' + type]; if(typeof h === 'function') h.call(this, ev); for(const fn of (this._on[type] || []).slice()) fn.call(this, ev); }
+  async _ask(){
+    if(this.readyState === 2 || !mux.id) return;
+    clearTimeout(this._timer); this._key(); const id = mux.id, ch = this._ch;
+    let r; try{ r = await fetch('/v1/streams/' + id + '/' + ch, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({path:this.url, last_event_id:this._last})}); }catch{ if(this._ch === ch) this._dropped(false); return; }
+    if(r.ok || this._ch !== ch) return;
+    // A shared stream the server no longer has is opened again; this is asked for on it.
+    if(r.status === 404 && mux.id === id){ mux.id = ''; if(mux.es){ mux.es.close(); mux.es = null; } muxStream(); return; }
+    this._fail();
+  }
+  _frame(f){
+    if(this.readyState === 2) return;
+    switch(f.t){
+      case 'open': this.readyState = 1; this._fire('open', {}); break;
+      case 'ev': if(f.has_id) this._last = f.id; this._fire(f.event || 'message', {data:f.data || '', lastEventId:this._last}); break;
+      case 'retry': this._retry = f.retry; break;
+      case 'end': this._dropped(false); break;
+      case 'fail': this._fail(); break;
+    }
+  }
+  _fail(){ if(this.readyState === 2) return; this.readyState = 2; clearTimeout(this._timer); mux.chans.delete(this._ch); this._fire('error', {}); }
+  _dropped(closed){
+    if(this.readyState === 2) return;
+    if(closed){ this._fail(); return; }
+    this.readyState = 0; this._fire('error', {});
+    if(this.readyState === 2) return;
+    clearTimeout(this._timer); this._timer = setTimeout(() => this._ask(), this._retry);
+  }
+  close(){
+    if(this.readyState === 2) return;
+    this.readyState = 2; clearTimeout(this._timer); mux.chans.delete(this._ch);
+    if(mux.id) fetch('/v1/streams/' + mux.id + '/' + this._ch, {method:'DELETE', credentials:'same-origin', keepalive:true}).catch(() => {});
+  }
+}
+
 // A reconnect asks only for what came after the last event drawn, so a
 // dropped connection costs the gap rather than a replay of the whole session.
 function connect(id){
   if(es) es.close();
-  es = new EventSource('/v1/sessions/' + id + '/events' + (lastSeq ? '?after=' + lastSeq : ''));
+  es = new StreamSource('/v1/sessions/' + id + '/events' + (lastSeq ? '?after=' + lastSeq : ''));
   let opened = false;
   es.onopen = () => { opened = true; startTries.delete(id + ' events'); setConn(true); };
   es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
@@ -2681,7 +2743,7 @@ async function startTerm(t, opts){
 // reattach: the shell was opened before a reload; if it has gone, a new one starts.
 function attach(t, id, reattach){
   t.run = id; drawTermTabs(); if(t === activeTerm) fitActive();
-  const es = new EventSource(ptyURL(t, '/' + id)); t.es = es; let opened = 0;
+  const es = new StreamSource(ptyURL(t, '/' + id)); t.es = es; let opened = 0;
   // A reconnect is sent the recent output again, so the screen starts over.
   es.onopen = () => { if(opened++ && t.mode === 'shell') t.term.reset(); };
   es.addEventListener('out', e => { t.term.write(bytesOf(e.data)); if(t.watch) treeSoon(); });

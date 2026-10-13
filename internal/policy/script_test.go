@@ -418,6 +418,35 @@ func TestTerminalLineShellReadsItsInteractiveFiles(t *testing.T) {
 	}
 }
 
+// A whole command typed at a terminal runs with it as its input, so a shell
+// it starts is judged with its start-up files; an open construct stays as
+// Evaluate judges it, since the command is not completed by a later line.
+func TestTypedCommandShellReadsItsInteractiveFiles(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	e.Evaluate("bash", true, args(map[string]string{"command": "true"}))
+	for _, n := range []string{".bashrc", ".zshrc"} {
+		if err := os.WriteFile(filepath.Join(home, n), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for c, want := range map[string]Decision{"bash": Deny, "exec zsh": Deny, "bash -c true": Allow, "bash --norc": Allow} {
+		if res := e.EvaluateTyped("bash", true, args(map[string]string{"command": c})); res.Decision != want {
+			t.Errorf("typed %q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+	open := args(map[string]string{"command": "for f in *; do"})
+	if typed, whole := e.EvaluateTyped("bash", true, open), e.Evaluate("bash", true, open); typed.Decision != whole.Decision {
+		t.Errorf("an open loop typed whole = %s, want Evaluate's %s", typed.Decision, whole.Decision)
+	}
+}
+
 // With no baseline every start-up file is judged by what it holds, whoever
 // wrote it and whenever: a file the write tool or an earlier session put in
 // the HOME is not taken as the person's own.

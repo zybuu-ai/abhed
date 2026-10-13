@@ -266,7 +266,10 @@ All notable changes to Abhed are recorded here. The format follows
   server cannot read, refuses instead, while rules or hooks are in force, a
   line that runs a script, sources a file, gives a shell a start-up file or
   folder, or finds a program on a `PATH` it sets; plain commands and programs
-  in the image's own `bin` folders run. Affects every release to 1.2.7.
+  in the image's own `bin` folders run. A shell typed at the workbench
+  shell, the line-by-line terminal or Studio's terminal is judged with the
+  start-up files it reads, once: the refusal is what runs and what the record
+  holds. Affects every release to 1.2.7.
 - A deny or ask path rule written in another case than the disk holds the
   name, such as `write(**/VAULT/**)` for a folder `vault`, protected nothing
   on a disk that ignores case (documented as a limit). Deny and ask path
@@ -1225,9 +1228,13 @@ All notable changes to Abhed are recorded here. The format follows
   works in that sandbox's folder: the file tools, workbench views, uploads
   and downloads are there, and the bash tool, background commands and the
   terminal run in the sandbox, each recorded as an `exec` by the session's
-  user. The session's record gets `sandbox.bound`; the sandbox carries the
-  session's label. Continuing a session restarts its sandbox with its folder;
-  deleting the session deletes it; `control_plane.sessions.retention` says
+  user. On the `process` driver each sandbox has a temp folder of its own
+  (`TMPDIR` on macOS, with `/tmp`, `/var/tmp`, the server's `TMPDIR` and
+  other sandboxes' temp folders out of reach; `/tmp` under bubblewrap), so
+  accounts share no temp space. The session's record gets `sandbox.bound`;
+  the sandbox carries the session's label. Continuing a session restarts its
+  sandbox with its folder; deleting the session deletes it;
+  `control_plane.sessions.retention` says
   whether the server's stop stops, deletes or keeps them; a start removes the
   sandboxes of sessions that are gone. An optional warm pool
   (`control_plane.sessions.warm_pool`, at most 16) keeps Ready sandboxes that
@@ -1301,7 +1308,8 @@ All notable changes to Abhed are recorded here. The format follows
   workbench shell those rules only screen the lines as typed.
 - `GET /v1/overview` has `workspace_config`: whether the workspace's
   `.abhed/config.json` is trusted, why, and the names of the settings it
-  set aside, for a signed-in caller or where nobody signs in; the front
+  set aside with why, a trusted file's included (a language server it
+  names), for a signed-in caller or where nobody signs in; the front
   page shows it as a card, the console under its examples, and the
   workbench in its **Tools** panel.
 - Language servers in the workbench editor: `sandbox.language_servers` names,
@@ -1498,6 +1506,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A workbench tab with several shells and language servers stopped
+  answering: each held a connection, and a browser opens six to a server
+  over HTTP/1.1, so `/v1/health`, approvals and saves waited behind them.
+  The tab's streams now share one connection, `GET /v1/streams`, each asked
+  for by its own route and checked as that route is
+  ([Workbench](docs/guide/16-workbench.md#what-it-is-built-on)). Affects
+  1.0.0 to 1.2.7.
+- The workbench's **Tools** panel said the mode was "managed by your
+  organisation" under any managed configuration, such as one that only
+  turns on web search. It now says so only when the managed file sets
+  `permissions.mode`; `GET /v1/capabilities` has `permissions.managed_keys`
+  and `permissions.mode_managed`. Affects 1.0.0 to 1.2.7.
+- In the workbench's review, rejecting the only change of a file the session
+  added left the file on disk, empty. It is now removed, as *Reject all*
+  does. Affects 1.1.0 to 1.2.7.
 - The terminal's markdown showed underscores inside a word as emphasis, so
   `__init__.py` read as a bold `init.py`. Underscores inside a word, or
   followed by `.`, `-` or `/` and more of a name, are now literal. Affects
@@ -1783,8 +1806,10 @@ All notable changes to Abhed are recorded here. The format follows
   role's narrower one.
 - A reply stopped before its provider reported usage was recorded as
   `model.call` with 0 tokens in and out, and nothing was spent from the
-  token budget. The tokens are now estimated, marked `estimated: true`,
-  and spent.
+  token budget, and the session's totals left it out. The tokens are now
+  estimated, marked `estimated: true`, spent, and counted in the session's
+  totals (`session.ended`, the workbench's and HawkEYE's), so a turn ended
+  by *Send now* or Esc adds what it used.
 - With a small `context_window` (such as 12000) a session was summarized
   twice in every turn: the check before a turn added room for that turn to
   history a compaction had just made as small as it gets. The first check

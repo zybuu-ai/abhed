@@ -330,8 +330,8 @@ recorded as your write. *Accept* keeps the change and moves the file's
 baseline, so it stops showing as a change and `/undo` returns to it; the
 acceptance is recorded as `change.accepted`. The baseline only moves to text on
 disk, so accepting in a tab with unsaved edits saves them first. Rejecting
-everything in a file the session created deletes the file, as the Explorer
-does.
+everything in a file the session created, with *Reject all* or by rejecting
+its last change, deletes the file, as the Explorer does.
 
 **Comments on the changes.** A click in the diff's gutter, beside a line of
 the changed file, or *Comment on this line* from its right-click menu, opens a
@@ -740,9 +740,25 @@ is opened.
 Tools, rules, extensions, MCP servers and skills
 come from `GET /v1/capabilities`, which any signed-in user may read. An
 extension's name and events are listed; its command line and environment are
-not, because those are the operator's and may hold credentials. File content,
+not, because those are the operator's and may hold credentials. Under a
+managed configuration, `permissions.managed_keys` names the settings the
+managed file makes, and the panel marks the mode "managed by your
+organisation" only when one of them is `permissions.mode`. File content,
 tool output and session titles are untrusted, and the page only ever inserts
 them as text.
+
+A tab holds one connection for everything the server sends it. A browser
+opens at most six connections to a server over HTTP/1.1, and a stream for the
+session's events, one per shell and one per language server used to take
+them all, so a page with several shells stopped answering. The page now opens
+`GET /v1/streams` once and asks for each stream on it with `POST
+/v1/streams/{stream}/{channel}` and the stream's own route (`events`,
+`pty/{pty}` or `lsp/{lsp}`); `DELETE` ends one. Each is run as its own request
+with that request's sign-in and origin, so it is authorised, refused and
+checked again while open exactly as the route is on its own, and only its
+events travel on the shared connection. A shared stream answers only the
+account that opened it; one account holds at most 16, each with at most 64
+streams.
 
 ## Language servers
 
