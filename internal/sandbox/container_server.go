@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -128,7 +129,7 @@ func (c *Container) programInImage(ctx context.Context, p Policy, extra []string
 		return fmt.Errorf("sandbox: the server's program %s %s, so it is not started; set ABHED_SANDBOX_IMAGE to an image that has it, "+
 			"or \"host_files\": true on the server to run it on the host", program, why)
 	}
-	if hostOnlyBinary(program) {
+	if hostOnlyBinary(program, p.Workspace, mountedFrom(extra, p)) {
 		return missing("is a macOS program, which the " + string(c.Tier()) + " tier's Linux image cannot run")
 	}
 	args, err := c.runArgsWith(ctx, p.Workspace, p, false)
@@ -154,15 +155,32 @@ const (
 	lookMissing = 3
 )
 
-// hostOnlyBinary reports a program, as found on this host, that is a Mach-O
-// binary: no Linux container runs it.
-func hostOnlyBinary(program string) bool {
+// mountedFrom are the host folders the server's container shows at their own
+// paths: the workspace, read_only_paths, and those extra mounts.
+func mountedFrom(extra []string, p Policy) []string {
+	out := append([]string{p.Workspace}, p.ReadOnlyPaths...)
+	for i := 0; i+1 < len(extra); i++ {
+		if extra[i] == "-v" {
+			host, _, _ := strings.Cut(extra[i+1], ":")
+			out = append(out, host)
+		}
+	}
+	return formsOf(out)
+}
+
+// hostOnlyBinary reports a program the container would run from a host
+// folder it mounts (a path, never a bare name, which the image's PATH finds)
+// that is a Mach-O binary: no Linux container runs it.
+func hostOnlyBinary(program, workspace string, mounted []string) bool {
+	if !strings.ContainsRune(program, '/') {
+		return false
+	}
 	path := program
 	if !filepath.IsAbs(path) {
-		var err error
-		if path, err = exec.LookPath(program); err != nil {
-			return false
-		}
+		path = filepath.Join(workspace, path) // the container's working folder
+	}
+	if !slices.ContainsFunc(PathForms(path), func(q string) bool { return insideAny(q, mounted) }) {
+		return false // the image's own file at that path, which the look below checks
 	}
 	f, err := os.Open(path) // #nosec G304 -- the configured server's program, read for its first bytes
 	if err != nil {

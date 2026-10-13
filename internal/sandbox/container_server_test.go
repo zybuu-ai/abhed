@@ -211,6 +211,28 @@ func TestContainerServerRemovedOnCloseOnARealEngine(t *testing.T) {
 	}
 }
 
+// A bare name is the image's to find, and a path outside the container's
+// mounts is the image's file: neither is judged by what this host has there,
+// such as a macOS python3 on PATH.
+func TestContainerServerLeavesBareNamesToTheImage(t *testing.T) {
+	t.Setenv("HOME", workspace(t))
+	ws := workspace(t)
+	bin := t.TempDir()
+	macho := []byte{0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0}
+	for _, n := range []string{"python3", "node"} {
+		if err := os.WriteFile(filepath.Join(bin, n), macho, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	eng := scriptedEngineWith(t, DefaultPolicy(ws), false, "exit 0\n")
+	for _, program := range []string{"python3", "node", filepath.Join(bin, "python3")} {
+		if _, err := eng.ServerCommand(context.Background(), "s", []string{program}, nil, nil); err != nil {
+			t.Errorf("%s was refused by what this host has: %v", program, err)
+		}
+	}
+}
+
 // A server on a real engine reads none of the home or Abhed's state, uses
 // its own home and the workspace, and plants nothing.
 func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
