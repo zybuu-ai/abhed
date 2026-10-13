@@ -277,6 +277,9 @@ func TestServeStateHiddenFromTheInstance(t *testing.T) {
 	}
 	ctx := context.Background()
 	base := localDir(t)
+	// The engine an earlier test found is remembered for the process; keep a
+	// user-installed one off PATH so it is not run with a HOME it cannot read.
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 	t.Setenv("HOME", filepath.Join(base, "home"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(base, "home", ".local", "state"))
 	t.Setenv("ABHED_SECRETS_FILE", "")
