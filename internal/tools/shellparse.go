@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"maps"
 	"path"
 	"regexp"
 	"sort"
@@ -111,6 +112,18 @@ type shellFacts struct {
 	envFiles              []string
 	envHidden             string
 	interactive, ttyShell bool
+	// vars are the variables the line sets to known values, exported those it
+	// exports, inherited the environment it is read in, forgotten those whose
+	// value is no longer known; callEnv is the running command's environment.
+	vars, inherited     map[string]string
+	exported, forgotten map[string]bool
+	callEnv             map[string]string
+	// scriptHidden says why a script the line sources or runs is not known;
+	// setsEnv reports the line changing the environment a shell gets.
+	scriptHidden string
+	setsEnv      bool
+	// shellEnv is the environment of the last shell the line starts.
+	shellEnv map[string]string
 }
 
 // Script is a file a command runs as shell text, as named on its line.
@@ -122,6 +135,11 @@ type Script struct {
 	// Sourced marks a file read by source or ., which runs in the shell
 	// itself, so a cd in it moves the commands after it.
 	Sourced bool
+	// Env is the environment the script runs in, as far as the line shows it.
+	Env map[string]string
+	// Trusted marks a file the person's baseline holds as it is: its own text
+	// is not judged, what it sources and runs still is.
+	Trusted bool
 	// Startup marks a start-up file in a HOME or ZDOTDIR folder the line
 	// sets, which a shell reads only when it is there.
 	Startup bool
@@ -144,8 +162,12 @@ const maxCommandBytes = 4 * maxShellBytes
 const maxShellDepth = 8
 
 // parseShell reads command with a bash parser.
-func parseShell(command string) shellFacts {
+func parseShell(command string) shellFacts { return parseShellEnv(command, nil) }
+
+// parseShellEnv reads command run in the environment env.
+func parseShellEnv(command string, env map[string]string) shellFacts {
 	var f shellFacts
+	f.withEnv(env)
 	f.read(command, 0)
 	return f
 }
@@ -262,6 +284,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 					f.feed(in)
 				}
 			}
+			f.stmtVars(n)
 			if c, ok := n.Cmd.(*syntax.CallExpr); ok {
 				if inputRedirect(n) && bareExec(c.Args) {
 					f.execIn = true // exec < f: every later command reads f
@@ -502,6 +525,7 @@ func (f *shellFacts) name(w *syntax.Word) {
 // call reads one simple command: the words that may be its program, the
 // variables it sets by name, and the shell text it runs.
 func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
+	f.callEnv = f.commandEnv(c)
 	words := make([]string, len(c.Args))
 	lits := make([]bool, len(c.Args))
 	for i, w := range c.Args {
@@ -572,7 +596,7 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 // shell text or sets variables by name, and reports whether it was one.
 func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args []*syntax.Word, depth int) bool {
 	f.placeAndWrites(name, args)
-	f.ptyShell(name, args)
+	f.ptyShell(name, args, depth)
 	switch {
 	case name == "alias":
 		// An alias's value is shell text run where its name is: read it so.
@@ -596,6 +620,12 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 	case name == "source" || name == ".":
 		if len(args) > 0 {
 			v, lit := literal(args[0])
+			if !lit && !hasProcSubst(args[0]) {
+				v, lit = f.resolveWord(args[0])
+				if !lit {
+					f.scriptHidden = "it sources a script named by an expansion (" + wordText(args[0]) + ")"
+				}
+			}
 			if stdinFile(v) {
 				f.opaque = "a script read from its input"
 			} else if lit {
@@ -671,6 +701,10 @@ scan:
 		case !lit:
 			if hasProcSubst(args[j]) {
 				f.opaque = "a shell running a script made when it runs"
+			} else if w, ok := f.resolveWord(args[j]); ok {
+				f.script(w, false)
+			} else {
+				f.scriptHidden = "a shell runs a script named by an expansion (" + wordText(args[j]) + ")"
 			}
 			script = true
 			break scan
@@ -1190,7 +1224,7 @@ func (f *shellFacts) script(name string, direct bool) {
 		f.scriptsCut = true
 		return
 	}
-	f.scripts = append(f.scripts, Script{Path: name, Direct: direct})
+	f.scripts = append(f.scripts, Script{Path: name, Direct: direct, Env: maps.Clone(f.callEnv)})
 }
 
 // redirectTargets records the literal files st's output redirections write.

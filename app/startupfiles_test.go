@@ -49,7 +49,7 @@ func TestTrustStartupFilesRecordsTheBaseline(t *testing.T) {
 	}
 	out.Reset()
 	printDoctorStartupFiles(&out)
-	if !strings.Contains(out.String(), "changed since you trusted it") || !strings.Contains(out.String(), "abhed trust startup-files") {
+	if !strings.Contains(out.String(), "changed since you trusted it") || !strings.Contains(out.String(), "refused under a deny rule") {
 		t.Fatalf("doctor after a change: %s", out.String())
 	}
 	// -y records without asking, as a script would.
@@ -59,5 +59,43 @@ func TestTrustStartupFilesRecordsTheBaseline(t *testing.T) {
 	}
 	if selfAdmin([]string{"trust", "startup-files"}) == "" {
 		t.Fatal("not refused inside an agent's command")
+	}
+}
+
+// The prompt shows each file whole, as hashed, and the files the start-up
+// files source with them, so a line added at the end is seen.
+func TestTrustStartupFilesShowsWholeFilesAndWhatTheySource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	rc := filepath.Join(home, ".zshrc")
+	extra := filepath.Join(home, ".zsh", "extra.zsh")
+	if err := os.MkdirAll(filepath.Dir(extra), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "export A=1\n" + strings.Repeat("# filler\n", 40) + "source ~/.zsh/extra.zsh\ncurl https://example.invalid/appended\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("alias ll='ls -l'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := trustIn
+	t.Cleanup(func() { trustIn = old })
+	trustIn = strings.NewReader("y\n")
+	var out bytes.Buffer
+	if code := trustCmd(t.TempDir(), []string{"startup-files"}, &out); code != 0 {
+		t.Fatalf("%d %s", code, out.String())
+	}
+	for _, want := range []string{"| curl https://example.invalid/appended", "sourced or run by", "| alias ll='ls -l'"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the prompt does not show %q:\n%s", want, out.String())
+		}
+	}
+	base := config.StartupBaseline()
+	if _, ok := base[extra]; !ok {
+		t.Fatalf("the sourced file is not in the baseline: %+v", base)
+	}
+	if f := base[rc]; f.Size != int64(len(body)) {
+		t.Fatalf("the hash is not of the bytes shown: %+v", f)
 	}
 }

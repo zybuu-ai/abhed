@@ -445,6 +445,11 @@ rule for `bash` has a pattern, and asked about otherwise, when it:
   The check does not follow the folder; it refuses. A script named by an
   absolute path is still read.
 - is one of more than 16 scripts the line runs
+- is named by a path built from a variable whose value the check cannot
+  read (`source $X/x.sh`, `bash "$S"`), in the line or in a script it runs:
+  a value the line sets literally, by assignment, `export` or `env`, is
+  used (`X=./c bash s.sh` reads `c/x.sh`), and so is the HOME commands get;
+  one the line does not set, or does not export to the script, is not
 - is sourced by a name without a folder (`. s.sh`, `source s.sh`) on a line
   that sets `PATH` in any way (`PATH=sub . s.sh`,
   `export PATH=sub:$PATH; source s.sh`, `read PATH`), as bash then looks
@@ -469,11 +474,15 @@ login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
 A plain `bash -c` or `sh -c` reads none. A shell typed into a terminal with
 no command and no script (`bash`, `exec bash`, `zsh`) reads the terminal,
 so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
-So is the shell `script`, `tmux`, `screen`, `su` or `sudo -s` starts on a
-terminal of its own, taken as any shell, interactive (`tmux` and `screen`
-as login shells too); `su -`, `sudo -i` and `login` start a shell in
-another account's home, which the check cannot read, and are refused under
-a deny rule.
+So is the shell `script`, `tmux`, `byobu`, `screen`, `unbuffer`, `dtach`,
+`su`, `sudo -s` or `doas -s` starts on a terminal of its own, taken as any
+shell, interactive (`tmux`, `byobu` and `screen` as login shells too); `su
+-`, `sudo -i`, `login`, `expect` and `ssh` with no command start a shell
+whose start-up files the check cannot read, and are refused under a deny
+rule. The command such a program is given (`tmux new -d 'cmd'`, `tmux
+send-keys … 'cmd' Enter`, `screen -dm cmd`, `script -q /dev/null cmd`,
+`unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c` text is, from
+each word that may start it.
 A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
@@ -485,15 +494,26 @@ sandbox gives commands reads its start-up files there, which an earlier
 command may have written, so those are read too, by the same rules (a
 `#!/bin/zsh` script reads `.zshenv`). Every one is judged by what it
 holds, whoever wrote it and whenever, unless you have trusted it: `abhed
-trust startup-files` shows each start-up file in your home folder (path,
-size, sha256, first lines) and, when you confirm (`-y` in a script),
-records them in `~/.abhed/startup-files.json`, which the agent cannot
-reach; run it in your own terminal, as it is refused inside an agent's
+trust startup-files` shows each start-up file in your home folder, and
+each file they source or run by a path it can resolve, whole, with its
+size and the sha256 of exactly what is shown, and, when you confirm (`-y`
+in a script),
+records them in `~/.abhed/startup-files.json`, which the agent's commands
+cannot reach on the process, fence and container tiers; on the none tier
+nothing keeps a command from writing it, or the start-up files themselves,
+so there the baseline protects nothing. Run it in your own terminal, as it is refused inside an agent's
 command, and again after you change one. A file whose path, size and
 sha256 still match is not judged, so a package manager's line in your
 `.zprofile` does not make `zsh -lc` ask; any other file, a same-size edit,
-a link or a folder in its place is. Each session's record notes the files
-it trusted this way (`policy.startup_trusted`, path and sha256), and
+a link or a folder in its place is. Trusting a file trusts its own text
+only: what it sources and the scripts and programs it runs are still read
+and judged, with the environment the line gives them, and a file it names
+by a path built from a variable it does not set is not read. On a line
+that sets the environment its shell gets (an assignment, `env`, `export`,
+`PATH`, `HOME`, `ZDOTDIR`, or a `cd` first) the baseline does not apply at
+all, since such a line can steer what a trusted file runs. Each session's record notes the files
+it trusted this way (`policy.startup_trusted`, path and sha256), again
+whenever that set changes, before the command that relies on it, and
 `abhed doctor` lists them and any changed since. That
 `HOME` is the host's own on the process tier and none, the fence's private
 home folder under the fence, and, in a container, a microVM, a driver's
