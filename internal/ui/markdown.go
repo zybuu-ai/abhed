@@ -301,7 +301,7 @@ func parseInline(text string, lenient bool) []seg {
 						break
 					}
 				} else {
-					opens = len(rest) > 2 && rest[2] != ' ' && !(i > 0 && isWordByte(text[i-1])) && underscoreCloser(text, i+2, m) >= 0
+					opens = len(rest) > 2 && rest[2] != ' ' && (i == 0 || !isWordByte(text[i-1])) && underscoreCloser(text, i+2, m) >= 0
 				}
 			}
 			if cur.bold || opens {
