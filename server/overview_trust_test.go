@@ -47,6 +47,30 @@ func TestOverviewShowsWorkspaceTrust(t *testing.T) {
 	}
 }
 
+// A trusted workspace's file can still make settings that are set aside, as
+// a language server: the overview lists them with why, never their values.
+func TestOverviewListsWhatATrustedWorkspaceSetAside(t *testing.T) {
+	cfg := config.Default()
+	cfg.Workspace = config.WorkspaceTrust{File: "/w/.abhed/config.json", Trusted: true, Reason: "stored"}
+	cfg.SetAside = []config.SetAsideKey{
+		{File: "/w/.abhed/config.json", Layer: config.LayerWorkspace, Key: "sandbox.language_servers.go",
+			Value: `["/bin/sh","-c","echo pwned"]`, Reason: "a workspace never names a language server"},
+		{File: "/home/u/.abhed/config.json", Layer: config.LayerUser, Key: "sandbox.mounts", Reason: "managed only"},
+	}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/overview", nil))
+	if strings.Contains(rec.Body.String(), "pwned") {
+		t.Fatalf("a set-aside setting's value was shown: %s", rec.Body)
+	}
+	var o overviewResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &o)
+	if o.WorkspaceConfig == nil || !o.WorkspaceConfig.Trusted || len(o.WorkspaceConfig.Ignored) != 1 ||
+		o.WorkspaceConfig.Ignored[0].Key != "sandbox.language_servers.go" || o.WorkspaceConfig.Ignored[0].Reason != "a workspace never names a language server" {
+		t.Fatalf("the overview has %+v", o.WorkspaceConfig)
+	}
+}
+
 // The console and the workbench show the workspace config's trust, as the
 // front page does: one shared helper, filled into both pages.
 func TestConsoleAndIDEShowWorkspaceConfig(t *testing.T) {

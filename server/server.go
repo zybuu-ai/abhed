@@ -4650,8 +4650,18 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	if mw := s.authMiddleware(); (o.Authenticated || len(mw.Providers) == 0 && mw.Verifier == nil && !mw.TrustHeaders) &&
 		cfg.Workspace.File != "" {
 		t := &overviewTrust{Trusted: cfg.Workspace.Trusted, Reason: cfg.Workspace.Reason, Applied: cfg.Workspace.Applied}
+		seen := map[string]bool{}
 		for _, k := range cfg.Workspace.Ignored {
+			seen[k.Key] = true
 			t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+		}
+		// Trust does not reach every setting: what the file made that was set
+		// aside anyway, such as a language server, is listed with why.
+		for _, k := range cfg.SetAside {
+			if k.Layer == config.LayerWorkspace && !seen[k.Key] {
+				seen[k.Key] = true
+				t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+			}
 		}
 		o.WorkspaceConfig = t
 	}
