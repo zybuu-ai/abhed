@@ -112,6 +112,9 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 	if !found {
 		return nil, nil, fmt.Errorf("unknown tool %q", call)
 	}
+	if call == "bash" {
+		_ = l.noteTrustedStartup()
+	}
 	decision := l.Policy.Evaluate(call, tools.MutatesCall(tool, args), args)
 	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
@@ -162,6 +165,7 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 	if !found {
 		return nil, nil, "", fmt.Errorf("unknown tool %q", "bash")
 	}
+	_ = l.noteTrustedStartup()
 	decision := l.Policy.Evaluate("bash", tool.Mutates(), args)
 	needs := decision.Decision == policy.Ask && decision.Step == "destructive"
 	switch {
@@ -226,6 +230,7 @@ func (l *Loop) ManualScreen(id, line string) (*tools.Result, error) {
 		return nil, fmt.Errorf("unknown tool %q", "bash")
 	}
 	args, _ := json.Marshal(map[string]string{"command": line, "description": "entered in the interactive terminal"})
+	_ = l.noteTrustedStartup()
 	if l.Policy.EvaluateLine("bash", tool.Mutates(), args).Decision != policy.Deny {
 		return nil, nil
 	}

@@ -512,7 +512,8 @@ by a path built from a variable it does not set is not read. On a line
 that sets the environment its shell gets (an assignment, `env`, `export`,
 `PATH`, `HOME`, `ZDOTDIR`, or a `cd` first) the baseline does not apply at
 all, since such a line can steer what a trusted file runs. Each session's record notes the files
-it trusted this way (`policy.startup_trusted`, path and sha256), and
+it trusted this way (`policy.startup_trusted`, path and sha256), again
+whenever that set changes, before the command that relies on it, and
 `abhed doctor` lists them and any changed since. That
 `HOME` is the host's own on the process tier and none, the fence's private
 home folder under the fence, and, in a container, a microVM, a driver's

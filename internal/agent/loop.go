@@ -257,8 +257,10 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
-	// startupNoted reports the trusted start-up files recorded for this loop.
-	startupNoted bool
+	// startupNoted is the trusted start-up files last recorded for this
+	// loop, by path and hash, guarded by startupMu.
+	startupMu    sync.Mutex
+	startupNoted string
 	Adapter      model.Adapter
 	// Provider is the configured name Adapter came from, when the surface
 	// knows it. A subagent that runs on its parent's model records it.
@@ -1319,6 +1321,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		return l.refuseUnresolvable(ctx, call, unresolvable)
 	}
 
+	if call.Name == "bash" {
+		_ = l.noteTrustedStartup() // best effort: the decision itself is recorded
+	}
 	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
@@ -2398,16 +2403,25 @@ func timedOut(err error) bool {
 	return errors.As(err, &te)
 }
 
-// noteTrustedStartup records, once per loop, the start-up files the baseline
-// leaves unjudged, so the record says whose word they ran on.
+// noteTrustedStartup records the start-up files the baseline leaves
+// unjudged whenever that set changes, so the record says whose word they ran on.
 func (l *Loop) noteTrustedStartup() error {
-	if l.startupNoted || l.Policy == nil || len(l.Policy.StartupBaseline) == 0 {
+	if l.Policy == nil || len(l.Policy.StartupBaseline) == 0 {
 		return nil
 	}
-	l.startupNoted = true
 	files := l.Policy.TrustedStartupFiles()
-	if len(files) == 0 {
+	var key strings.Builder
+	for _, f := range files {
+		key.WriteString(f.Path + "\x00" + f.SHA256 + "\n")
+	}
+	l.startupMu.Lock()
+	defer l.startupMu.Unlock()
+	if key.String() == l.startupNoted {
 		return nil
+	}
+	l.startupNoted = key.String()
+	if files == nil {
+		files = []policy.TrustedStartupFile{}
 	}
 	_, err := l.Recorder.Record(EvStartupTrusted, ActorSystem, Trusted, map[string]any{"files": files})
 	return err
