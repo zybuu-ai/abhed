@@ -23,6 +23,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/enginecli"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/termline"
@@ -1009,12 +1010,12 @@ var engineHostProc = func(ctx context.Context, engine string, paths ...string) (
 		return nil, errors.New("not readable from here")
 	}
 	// The machine's own cat, never the container's.
-	return exec.CommandContext(ctx, engine, append([]string{"machine", "ssh", "cat"}, paths...)...).Output() // #nosec G204 -- the engine that started the shell
+	return enginecli.Command(ctx, engine, append([]string{"machine", "ssh", "cat"}, paths...)...).Output()
 }
 
 // hostForeground is engineForeground's answer for one container.
 func hostForeground(ctx context.Context, engine, name string) (program, ok bool) {
-	out, err := exec.CommandContext(ctx, engine, "inspect", "-f", "{{.State.Pid}} {{.Id}}", name).Output() // #nosec G204 -- the engine that started the shell, and its container
+	out, err := enginecli.Command(ctx, engine, "inspect", "-f", "{{.State.Pid}} {{.Id}}", name).Output()
 	if err != nil {
 		return false, false
 	}
@@ -1046,7 +1047,7 @@ func hostForeground(ctx context.Context, engine, name string) (program, ok bool)
 // dockerTopForeground asks docker's top, which runs ps on the engine's host,
 // for the shell's own group and the terminal's foreground group.
 func dockerTopForeground(ctx context.Context, engine, name string, pid int) (program, ok bool) {
-	out, err := exec.CommandContext(ctx, engine, "top", name, "-o", "pid,pgid,tpgid").Output() // #nosec G204 -- the engine that started the shell, and its container
+	out, err := enginecli.Command(ctx, engine, "top", name, "-o", "pid,pgid,tpgid").Output()
 	if err != nil {
 		return false, false
 	}

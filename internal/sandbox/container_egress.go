@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/enginecli"
 	"github.com/zybuu-ai/abhed/internal/stdiorelay"
 )
 
@@ -135,7 +136,7 @@ func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, 
 		call.End()
 		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
 		defer cancel()
-		_ = exec.CommandContext(rmCtx, c.runtime, c.rmArgs(name)...).Run() // #nosec G204 -- the configured engine and a name this process made
+		_ = enginecli.Command(rmCtx, c.runtime, c.rmArgs(name)...).Run()
 	}
 	startCtx, cancel := context.WithTimeout(ctx, relayReady)
 	defer cancel()
@@ -192,9 +193,7 @@ func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, 
 // engineCmd is the engine's CLI with args, given the host's environment,
 // which it needs to find the engine; only -e flags reach the container.
 func (c *Container) engineCmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine
-	cmd.Env = os.Environ()
-	return cmd
+	return enginecli.Command(ctx, c.runtime, args...)
 }
 
 // closeEgress stops the sandbox's proxy and removes its calls' sockets.

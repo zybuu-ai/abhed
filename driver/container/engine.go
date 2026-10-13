@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/enginecli"
 )
 
 // runner calls the engine's CLI. Tests replace it to check the exact argv.
@@ -62,11 +64,8 @@ func nameInUse(err error) bool {
 type cli struct{ path string }
 
 func (c cli) command(ctx context.Context, args []string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, c.path, args...) // #nosec G204 -- the configured engine; what runs inside is confined by it
-	// The CLI needs the host's PATH, HOME and DOCKER_HOST or CONTAINER_HOST;
-	// only -e names reach the container.
-	cmd.Env = os.Environ()
-	return cmd
+	// The CLI gets the host's environment; only -e names reach the container.
+	return enginecli.Command(ctx, c.path, args...)
 }
 
 func (c cli) output(ctx context.Context, args []string, stdin io.Reader) ([]byte, error) {

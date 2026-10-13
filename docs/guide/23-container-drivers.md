@@ -203,6 +203,29 @@ Forwarding a port is always declared; snapshots only with
 `Options.SnapshotDir`. Both are in
 [Snapshots and forwarding](25-snapshots-and-forwarding.md).
 
+## Podman machine on macOS and Windows
+
+On a Mac or Windows, the `podman` CLI reaches its machine over ssh unless
+told of the machine's API socket. Podman 5.2 and earlier leave a root ssh
+session behind in the machine's VM at each such call, and Abhed calls the
+engine at every command, so the VM's memory runs out over a long session.
+
+Abhed therefore runs `podman` against the machine's API socket
+(`CONTAINER_HOST=unix://…`, the path `podman machine inspect` gives) when
+all of these hold:
+
+- neither `CONTAINER_HOST` nor `CONTAINER_CONNECTION` is set (`DOCKER_HOST`
+  is not read by `podman`, so it does not count);
+- the default connection (`podman system connection list`) is a machine's
+  root connection, and that machine is rootful, so the socket reaches the
+  same engine as the same user; a rootless default is never swapped for a
+  rootful socket;
+- the socket exists.
+
+Otherwise the CLI is run as it would be from your shell. Both questions are
+asked of the local configuration once per process, never over ssh. Upgrading
+Podman removes the leak for every other tool too, and is recommended.
+
 ## Testing on a real engine
 
 ```sh
