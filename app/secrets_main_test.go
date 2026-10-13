@@ -22,8 +22,15 @@ func TestMain(m *testing.M) {
 	inAgentCommand = func() string { return "" }
 	// No test writes the real system log; one that checks it captures it.
 	sysLogWrite = func(string) error { return nil }
+	// No test reaches the host's container engine; one that needs an engine
+	// puts a stand-in of its own on PATH.
+	keepOffRealEngine()
 	if os.Getenv("ABHED_TRUST_MAIN_ARGS") != "" || os.Getenv("ABHED_CONV_KEEP_HOME") != "" || os.Getenv("ABHED_SESS_WS") != "" {
-		os.Exit(m.Run())
+		code := m.Run()
+		if realEngineRan() {
+			code = 1
+		}
+		os.Exit(code)
 	}
 	dir, err := os.MkdirTemp("", "abhed-home-*")
 	if err != nil {
@@ -33,6 +40,9 @@ func TestMain(m *testing.M) {
 	_ = os.Unsetenv("ABHED_SECRETS_FILE")
 	code := m.Run()
 	_ = os.RemoveAll(dir)
+	if realEngineRan() {
+		code = 1
+	}
 	// No test leaves a record or an export in the package's own folder.
 	if left, _ := filepath.Glob("*.jsonl"); len(left) > 0 && code == 0 {
 		fmt.Fprintf(os.Stderr, "a test left record files in the package: %v\n", left)

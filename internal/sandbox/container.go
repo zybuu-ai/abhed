@@ -61,6 +61,10 @@ type Container struct {
 	egDir string
 }
 
+// LookEngine finds a container engine's CLI by name. Tests replace it to keep
+// off the host's engine.
+var LookEngine = exec.LookPath
+
 func NewContainer(p Policy) *Container {
 	return &Container{policy: p}
 }
@@ -97,7 +101,7 @@ func (c *Container) Available() (bool, string) {
 	}
 	c.once.Do(func() {
 		for _, rt := range []string{"docker", "podman", "nerdctl"} {
-			path, err := exec.LookPath(rt)
+			path, err := LookEngine(rt)
 			if err != nil {
 				continue
 			}
