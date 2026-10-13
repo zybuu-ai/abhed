@@ -490,8 +490,10 @@ sandbox gives commands reads its start-up files there, which an earlier
 command may have written, so those are read too, by the same rules (a
 `#!/bin/zsh` script reads `.zshenv`). Every one is judged by what it
 holds, whoever wrote it and whenever, unless you have trusted it: `abhed
-trust startup-files` shows each start-up file in your home folder (path,
-size, sha256, first lines) and, when you confirm (`-y` in a script),
+trust startup-files` shows each start-up file in your home folder, and
+each file they source or run by a path it can resolve, whole, with its
+size and the sha256 of exactly what is shown, and, when you confirm (`-y`
+in a script),
 records them in `~/.abhed/startup-files.json`, which the agent cannot
 reach; run it in your own terminal, as it is refused inside an agent's
 command, and again after you change one. A file whose path, size and

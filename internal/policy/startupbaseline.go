@@ -55,23 +55,33 @@ func (e *Engine) TrustedStartupFiles() []TrustedStartupFile {
 // StartupFileMark is a regular file's size and sha256; false for a link, a
 // folder, anything else, or one too long to read as a script.
 func StartupFileMark(p string) (int64, string, bool) {
+	data, ok := ReadStartupFile(p)
+	if !ok {
+		return 0, "", false
+	}
+	sum := sha256.Sum256(data)
+	return int64(len(data)), hex.EncodeToString(sum[:]), true
+}
+
+// ReadStartupFile is a regular file's bytes, read once, so what is shown is
+// what is hashed; false for a link, a folder, or one too long to judge.
+func ReadStartupFile(p string) ([]byte, bool) {
 	before, err := os.Lstat(p)
 	if err != nil || !before.Mode().IsRegular() || before.Size() > tools.MaxScriptBytes {
-		return 0, "", false
+		return nil, false
 	}
 	f, err := os.Open(p) // #nosec G304 -- a start-up file in the commands' HOME
 	if err != nil {
-		return 0, "", false
+		return nil, false
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !os.SameFile(before, info) {
-		return 0, "", false
+		return nil, false
 	}
-	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(f, tools.MaxScriptBytes+1))
-	if err != nil || n > tools.MaxScriptBytes {
-		return 0, "", false
+	data, err := io.ReadAll(io.LimitReader(f, tools.MaxScriptBytes+1))
+	if err != nil || len(data) > tools.MaxScriptBytes {
+		return nil, false
 	}
-	return n, hex.EncodeToString(h.Sum(nil)), true
+	return data, true
 }
