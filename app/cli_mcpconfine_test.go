@@ -34,11 +34,6 @@ func TestCLIStdioServerFilesConfined(t *testing.T) {
 			}
 		}
 	}
-	srvDir := t.TempDir()
-	srv := filepath.Join(srvDir, "srv")
-	if err := os.WriteFile(srv, []byte("#!/bin/sh\n{ echo \"HOME=$HOME\"; cat \"$1\" 2>/dev/null; } > \"$HOME/result\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	for _, c := range []struct {
 		name string
 		args func(ws string) []string
@@ -50,8 +45,17 @@ func TestCLIStdioServerFilesConfined(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m := &bgModelServer{}
 			url := m.start(t)
-			ws := bgWorkspace(t, url, `,"mcp":{"servers":[{"name":"probe","command":"`+srv+`","args":["PROBE_PATH"],"enabled":true}]}`)
+			ws := bgWorkspace(t, url, `,"mcp":{"servers":[{"name":"probe","command":"SRV_PATH","args":["PROBE_PATH"],"enabled":true}]}`)
 			home := os.Getenv("HOME")
+			// Installed in the home, as a server is: outside the temporary
+			// folder, which bubblewrap hides from a confined server.
+			srv := filepath.Join(home, "tools", "srv", "bin", "srv")
+			if err := os.MkdirAll(filepath.Dir(srv), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(srv, []byte("#!/bin/sh\n{ echo \"HOME=$HOME\"; cat \"$1\" 2>/dev/null; } > \"$HOME/result\"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			secret := filepath.Join(home, "probe.txt")
 			if err := os.WriteFile(secret, []byte("SECRET-IN-HOME"), 0o600); err != nil {
 				t.Fatal(err)
@@ -61,7 +65,7 @@ func TestCLIStdioServerFilesConfined(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(cfgPath, bytes.ReplaceAll(raw, []byte("PROBE_PATH"), []byte(secret)), 0o600); err != nil {
+			if err := os.WriteFile(cfgPath, bytes.ReplaceAll(bytes.ReplaceAll(raw, []byte("PROBE_PATH"), []byte(secret)), []byte("SRV_PATH"), []byte(srv)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cmd := mainHelper(c.args(ws), "PATH="+bin)
@@ -69,6 +73,9 @@ func TestCLIStdioServerFilesConfined(t *testing.T) {
 			var out bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &out
 			_ = cmd.Run()
+			if strings.Contains(out.String(), "runs unconfined") {
+				t.Fatalf("the session fell to the none tier here, so the server ran as the host's:\n%s", out.String())
+			}
 			real := home
 			if r, err := filepath.EvalSymlinks(home); err == nil {
 				real = r
@@ -86,6 +93,41 @@ func TestCLIStdioServerFilesConfined(t *testing.T) {
 				t.Fatalf("the server's HOME is not its own %s:\n%s", own, got)
 			}
 		})
+	}
+}
+
+// Where the tier falls to none, the CLI, -p and doctor say that a stdio
+// server runs with the home readable and writable, and why.
+func TestCLIWarnsWhenAStdioServerRunsUnconfined(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script server")
+	}
+	// A PATH with no sandbox at all: neither sandbox-exec, bubblewrap nor an engine.
+	bin := t.TempDir()
+	for _, tool := range []string{"sh", "cat", "env", "git"} {
+		if p, err := exec.LookPath(tool); err == nil {
+			if err := os.Symlink(p, filepath.Join(bin, tool)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	srv := filepath.Join(t.TempDir(), "srv")
+	if err := os.WriteFile(srv, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{nil, {"-p", "hi"}, {"doctor"}} {
+		m := &bgModelServer{}
+		ws := bgWorkspace(t, m.start(t), `,"mcp":{"servers":[{"name":"probe","command":"`+srv+`","enabled":true}]}`)
+		cmd := mainHelper(append([]string{"-C", ws}, args...), "PATH="+bin)
+		cmd.Stdin = strings.NewReader("")
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		_ = cmd.Run()
+		for _, want := range []string{`mcp server "probe" runs unconfined`, "the sandbox tier is none: ", "not", `"host_files": true`} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("%v: no %q:\n%s", args, want, out.String())
+			}
+		}
 	}
 }
 

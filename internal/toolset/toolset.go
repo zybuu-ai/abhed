@@ -157,7 +157,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	if o.Parts&MCP != 0 {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
-		ConfineMCP(s.Gateway, cfg, o.Sandbox)
+		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {
 			warn("%v", err)
@@ -323,14 +323,21 @@ func (s *Set) EndSession(id string) {
 // their network under sandbox.network allowlist. On the none tier they run
 // unconfined, but under the allowlist, where they are refused, as on a tier
 // that cannot confine them. A sandbox still being chosen is waited for when a
-// server starts.
-func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
+// server starts. warn, when set, is told of each server that runs unconfined
+// on the none tier, with why.
+func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox, warn func(string, ...any)) {
 	allowlist := cfg.Sandbox.Network == config.NetworkAllowlist
 	gw.MustConfine = allowlist
 	gw.Cleanup = sandbox.ServerCleanup
 	p, ok := sb.(sandbox.Pending)
 	if !ok {
 		gw.Confine, gw.ConfineNet = serverLaunchers(sb, allowlist)
+		if gw.Confine == nil && !allowlist {
+			gw.Confine = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+				warnUnconfined(warn, name, sb)
+				return launchOrPlain(ctx, nil, false, name, argv, env, record)
+			}
+		}
 		return
 	}
 	gw.Confine = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
@@ -339,6 +346,9 @@ func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
 			return nil, fmt.Errorf("no sandbox: %w", err)
 		}
 		launch, _ := serverLaunchers(chosen, allowlist)
+		if launch == nil && !allowlist {
+			warnUnconfined(warn, name, chosen)
+		}
 		return launchOrPlain(ctx, launch, allowlist, name, argv, env, record)
 	}
 	if allowlist {
@@ -351,6 +361,20 @@ func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
 			return launchOrPlain(ctx, launch, allowlist, name, argv, env, record)
 		}
 	}
+}
+
+// warnUnconfined says a stdio server runs with the person's home readable and
+// writable, because sb, the none tier or no sandbox, confines nothing, and why.
+func warnUnconfined(warn func(string, ...any), name string, sb sandbox.Sandbox) {
+	if warn == nil {
+		return
+	}
+	why := "no sandbox is in use"
+	if sb != nil {
+		why = "the sandbox tier is none: " + sandbox.NoneReason(sb)
+	}
+	warn("mcp server %q runs unconfined, with your home folder readable and writable, because %s; "+
+		"make the process tier available, or set \"host_files\": true on it to run it so knowingly", name, why)
 }
 
 // serverLaunchers are sb's launchers for a stdio server, its files and

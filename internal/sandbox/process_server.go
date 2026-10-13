@@ -65,6 +65,11 @@ func (s *Process) serverCommand(ctx context.Context, name string, argv, env []st
 		if files, err = s.serverFilesFor(name, argv[0], env); err != nil {
 			return nil, err
 		}
+		if s.backend == "bwrap" {
+			if err := serverInHiddenTemp(argv[0], env, files); err != nil {
+				return nil, err
+			}
+		}
 		if s.policy.Egress == nil {
 			return s.serverFilesOnly(ctx, files, argv, env)
 		}
@@ -210,6 +215,27 @@ func serverRunHides() []string {
 		}
 	}
 	return args
+}
+
+// serverInHiddenTemp refuses a program in the temporary folder, which
+// bubblewrap hides from a confined server, unless the workspace or its own
+// folders show it again: it would start, find nothing, and close its pipe.
+func serverInHiddenTemp(program string, env []string, f serverFiles) error {
+	path := resolveIn(program, env)
+	if path == "" {
+		return nil
+	}
+	shown := append(append([]string{f.home}, f.workspaces...), f.prefix)
+	for _, tmp := range []string{"/tmp", os.TempDir()} {
+		if r, err := filepath.EvalSymlinks(tmp); err == nil {
+			tmp = r
+		}
+		if insideAny(path, []string{tmp}) && !insideAny(path, slices.DeleteFunc(shown, func(s string) bool { return s == "" })) {
+			return fmt.Errorf("sandbox: the server's program %s is in the temporary folder %s, which a confined server does not see; "+
+				"install it elsewhere, or set \"host_files\": true on the server", program, tmp)
+		}
+	}
+	return nil
 }
 
 // serverRootRefusal refuses a stdio server under bubblewrap when Abhed runs

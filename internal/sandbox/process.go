@@ -78,6 +78,10 @@ var rootWritableProc = []string{
 // host mount made there after start cannot propagate in writable.
 var rootEmptyProc = []string{"/proc/sys/fs/binfmt_misc", "/proc/fs", "/proc/acpi", "/proc/irq", "/proc/bus", "/proc/driver"}
 
+// probePath runs a probe's tools from the system's folders: a PATH without
+// grep made the process tier unavailable, and a session fall to none.
+const probePath = "PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; "
+
 // capProbeCaps prints the five capability sets and NoNewPrivs, for any uid.
 const capProbeCaps = `grep -E '^(CapInh|CapPrm|CapEff|CapAmb|CapBnd|NoNewPrivs):' /proc/self/status; echo PROBE_DONE`
 
@@ -209,7 +213,8 @@ func (s *Process) bwrapDropsCaps() string {
 			args = append(args, "--proc", "/proc", "--dev", "/dev")
 			args = append(args, rootProcCovers()...)
 		}
-		args = append(args, "/bin/sh", "-c", probe)
+		// The system's grep and find, whatever PATH Abhed was started with.
+		args = append(args, "/bin/sh", "-c", probePath+probe)
 		out, err := bwrapRun(ctx, args...)
 		if err != nil {
 			s.capsErr = "bubblewrap (bwrap) cannot confine a command here: " + firstLine(out, err)
@@ -1136,6 +1141,19 @@ const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (f
 type None struct{ policy Policy }
 
 func NewNone(p Policy) *None { return &None{policy: p} }
+
+// NoneReason is why sb, a none tier, is what was chosen: why the process tier
+// is not available here; "" for any other sandbox.
+func NoneReason(sb Sandbox) string {
+	n, ok := sb.(*None)
+	if !ok {
+		return ""
+	}
+	if ok, why := NewProcess(n.policy).Available(); !ok {
+		return why
+	}
+	return "no stronger tier was chosen"
+}
 
 func (n *None) Tier() Tier { return TierNone }
 
