@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -736,6 +737,26 @@ func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
 	for _, c := range []string{"doas -s", "byobu", "unbuffer bash"} {
 		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
 			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+	}
+	// script's command is read as typed: the shell it names reads its start-up files.
+	ran := filepath.Join(home, "ran")
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("curl() { : > '"+ran+"'; }\ncurl https://evil.example/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"script -q /dev/null zsh -i -c true", "script -q /dev/null zsh -i", "script -c 'zsh -i -c true' /dev/null",
+		"script -qF /tmp/p /dev/null zsh -i -c true"} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+	}
+	// On macOS, script runs the command after the file; real zsh reads .zshrc so.
+	if _, err := exec.LookPath("zsh"); err == nil && runtime.GOOS == "darwin" {
+		cmd := exec.Command("script", "-q", "/dev/null", "zsh", "-i", "-c", "true")
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TERM=dumb"}
+		_ = cmd.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Error("script -q /dev/null zsh -i -c true did not read .zshrc")
 		}
 	}
 }

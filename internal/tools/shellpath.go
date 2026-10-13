@@ -396,16 +396,10 @@ func (f *shellFacts) ptyShell(name string, args []*syntax.Word, depth int) {
 		f.anyShell(true)
 		f.commandWords(args, false, depth)
 	case "script":
-		if has(short('c')) || has(func(w string) bool { return strings.HasPrefix(w, "--command") }) {
-			return
-		}
-		// Its shell, or the command it is given, runs on a terminal of its own.
-		f.anyShell(false)
-		for i, w := range words {
-			if !strings.HasPrefix(w, "-") { // the log file; a command may follow
-				f.commandWords(args[i+1:], false, depth)
-				break
-			}
+		// Its shell, or the command after the log file, runs on a terminal of
+		// its own; -c's text is run by a shell given -c.
+		if !f.scriptCommand(args, depth) {
+			f.anyShell(false)
 		}
 	case "unbuffer", "dtach":
 		f.anyShell(false)
@@ -538,4 +532,47 @@ func sshCommand(words []string) int {
 		}
 	}
 	return -1
+}
+
+// scriptValued are script's options that take the next word as a value.
+const scriptValued = "FtTBIOo"
+
+// scriptCommand reads the command script runs, as if typed: -c's text, or
+// the words after the log file, each quoted as given. It reports -c.
+func (f *shellFacts) scriptCommand(args []*syntax.Word, depth int) bool {
+	for i := 0; i < len(args); i++ {
+		v, lit := literal(args[i])
+		switch {
+		case !lit:
+			f.expands, f.ifsUnknown = true, true
+			return false
+		case v == "--command" || len(v) > 1 && v[0] == '-' && v[1] != '-' && strings.HasSuffix(v, "c"):
+			if i+1 < len(args) {
+				f.shellText(args[i+1:i+2], depth)
+			}
+			return true
+		case strings.HasPrefix(v, "--command="):
+			f.read(strings.TrimPrefix(v, "--command="), depth+1)
+			return true
+		case len(v) > 1 && v[0] == '-' && v[1] != '-' && strings.ContainsAny(v[len(v)-1:], scriptValued):
+			i++
+		case strings.HasPrefix(v, "-"):
+		default:
+			// The log file; what follows is the command, argument by argument.
+			var quoted []string
+			for _, a := range args[i+1:] {
+				w, lit := literal(a)
+				if !lit {
+					f.expands, f.ifsUnknown = true, true
+					return false
+				}
+				quoted = append(quoted, "'"+strings.ReplaceAll(w, "'", `'\''`)+"'")
+			}
+			if len(quoted) > 0 {
+				f.read(strings.Join(quoted, " "), depth+1)
+			}
+			return false
+		}
+	}
+	return false
 }

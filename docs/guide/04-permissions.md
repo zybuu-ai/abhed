@@ -483,9 +483,10 @@ shell, interactive (`tmux`, `byobu` and `screen` as login shells too); `su
 -`, `sudo -i`, `login`, `expect` and `ssh` with no command start a shell
 whose start-up files the check cannot read, and are refused under a deny
 rule. The command such a program is given (`tmux new -d 'cmd'`, `tmux
-send-keys … 'cmd' Enter`, `screen -dm cmd`, `script -q /dev/null cmd`,
-`unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c` text is, from
-each word that may start it.
+send-keys … 'cmd' Enter`, `screen -dm cmd`, `unbuffer cmd`, `dtach -c s
+cmd`) is judged as `bash -c` text is, from each word that may start it;
+`script`'s (`script -q /dev/null cmd`, `script -c cmd`) is read exactly as
+if typed, so a shell it names reads its start-up files.
 A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
