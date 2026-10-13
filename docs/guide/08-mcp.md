@@ -56,7 +56,8 @@ The container is removed when the server closes, the session ends or Abhed
 exits, Ctrl-C included. Each is labelled `abhed.mcp.owner` with the Abhed
 process that started it (host, process id, start time); one left by an Abhed
 that was killed outright is removed the next time a server starts on these
-tiers, and by `abhed doctor`, which say so. A container without that label
+tiers, and by `abhed doctor` when a stdio server is set to run in one
+(enabled, not `host_files`), which say so. A container without that label
 is never touched.
 So its program must run in that image: a `docker`-style server, or one
 installed for macOS, does not. Before the server starts, Abhed looks for its

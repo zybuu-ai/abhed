@@ -1306,6 +1306,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- Choosing the container or VM tier asks the engine for its `info` once per
+  process, not three times at each session; an engine that did not answer
+  is asked again after 30 seconds. Whether gVisor is registered is read
+  from that `info`: Docker's runtimes, or Podman's default OCI runtime.
 - A command on the host (the none tier, its terminal, and the CLI's bash
   with no sandbox) no longer inherits `ZDOTDIR` or `ENV`, so a shell reads
   its start-up files from `HOME`, where the rules' check reads them.
@@ -1480,6 +1484,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- On macOS and Windows, each call Abhed made to `podman` went over ssh to
+  the machine, and Podman 5.2 and earlier leave a root ssh session behind in
+  the VM at each; a long session ran the VM out of memory. Abhed now uses the
+  machine's API socket when the default connection is that machine's and
+  matches the socket's rootfulness (root on a rootful machine, the user on a
+  rootless one), and neither `CONTAINER_HOST` nor `CONTAINER_CONNECTION` is
+  set ([Container
+  drivers](docs/guide/23-container-drivers.md#podman-machine-on-macos-and-windows)).
+  Upgrading Podman is still recommended.
 - `abhed record prune` printed the same line for a session that did not
   verify, or whose file was already gone, as for one that verified; only
   the tombstone said otherwise. It now names each such session, with why,

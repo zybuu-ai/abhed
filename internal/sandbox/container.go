@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/enginecli"
 )
 
 // DefaultImage is the execution image when nothing names another.
@@ -46,6 +47,8 @@ type Container struct {
 	// podman is set when the runtime is Podman by what it says it is, as the
 	// podman-docker wrapper named docker is; see engine.
 	podman bool
+	// info is the engine's plain `info`, asked once per process.
+	info []byte
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
 
@@ -57,6 +60,10 @@ type Container struct {
 	// egDir holds each call's own socket, on the host alone.
 	egDir string
 }
+
+// LookEngine finds a container engine's CLI by name. Tests replace it to keep
+// off the host's engine.
+var LookEngine = exec.LookPath
 
 func NewContainer(p Policy) *Container {
 	return &Container{policy: p}
@@ -94,18 +101,18 @@ func (c *Container) Available() (bool, string) {
 	}
 	c.once.Do(func() {
 		for _, rt := range []string{"docker", "podman", "nerdctl"} {
-			path, err := exec.LookPath(rt)
+			path, err := LookEngine(rt)
 			if err != nil {
 				continue
 			}
 			// A binary on PATH is not a working daemon; check for real.
-			// Plain info: Podman's has no ServerVersion, so a format naming it failed there.
-			if _, err := engineProbe(path, "info"); err != nil {
+			info, podman, err := probeEngine(path)
+			if err != nil {
 				c.reason = rt + " found but its daemon is not responding: " + err.Error()
 				continue
 			}
-			c.runtime = path
-			c.podman = saysPodman(path)
+			c.runtime, c.info = path, info
+			c.podman = podman
 			c.available = true
 			c.reason = ""
 			return
@@ -128,8 +135,7 @@ func (c *Container) runscInstalled() bool {
 	if _, err := exec.LookPath("runsc"); err == nil {
 		return true
 	}
-	out, err := engineProbe(c.runtime, "info", "--format", "{{json .Runtimes}}")
-	return err == nil && strings.Contains(string(out), "runsc")
+	return infoHasRunsc(c.info)
 }
 
 func (c *Container) Describe() string {
@@ -172,7 +178,7 @@ var engineProbeWait = 5 * time.Second
 func engineProbe(path string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), engineProbeWait)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- the container runtime found on PATH, fixed arguments
+	cmd := enginecli.Command(ctx, path, args...)
 	ownGroup(cmd)
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
@@ -345,10 +351,9 @@ func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd 
 	}
 	name := containerName("abhed-cmd-")
 	args = append(args, "--name", name, SandboxImage(), "/bin/sh", "-c", command)
-	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the command runs inside the container
-	// The engine's CLI needs the host's PATH, HOME and DOCKER_HOST; only the
-	// -e flags above reach the container.
-	cmd.Env = os.Environ()
+	// The engine's CLI gets the host's environment; only the -e flags above
+	// reach the container.
+	cmd := enginecli.Command(ctx, c.runtime, args...)
 	cmd.Cancel = c.remove(cmd, name)
 	return cmd
 }
@@ -372,7 +377,7 @@ func (c *Container) remove(cmd *exec.Cmd, name string) func() error {
 func (c *Container) removeNow(name string) {
 	rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
 	defer cancel()
-	_ = exec.CommandContext(rmCtx, c.runtime, c.rmArgs(name)...).Run() // #nosec G204 -- the configured engine and a name this process made
+	_ = enginecli.Command(rmCtx, c.runtime, c.rmArgs(name)...).Run()
 }
 
 // containerShell prefers bash where the image has it.
@@ -404,8 +409,7 @@ func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
 		args = append(args, "-e", kv)
 	}
 	args = append(args, "-e", "HOME=/tmp", SandboxImage(), "/bin/sh", "-c", containerShell)
-	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the shell is fixed
-	cmd.Env = os.Environ()
+	cmd := enginecli.Command(ctx, c.runtime, args...)
 	cmd.Cancel = c.remove(cmd, name)
 	cmd.WaitDelay = hangUpDelay
 	return cmd
@@ -419,12 +423,12 @@ func (c *Container) SweepShells() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), engineWait)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, c.runtime, "ps", "-aq", "--filter", "label="+c.shellLabel()).Output() // #nosec G204 -- the configured engine
+	out, err := enginecli.Command(ctx, c.runtime, "ps", "-aq", "--filter", "label="+c.shellLabel()).Output()
 	if err != nil {
 		return
 	}
 	if ids := strings.Fields(string(out)); len(ids) > 0 {
-		_ = exec.CommandContext(ctx, c.runtime, c.rmArgs(ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
+		_ = enginecli.Command(ctx, c.runtime, c.rmArgs(ids...)...).Run()
 	}
 }
 

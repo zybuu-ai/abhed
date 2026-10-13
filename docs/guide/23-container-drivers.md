@@ -203,6 +203,30 @@ Forwarding a port is always declared; snapshots only with
 `Options.SnapshotDir`. Both are in
 [Snapshots and forwarding](25-snapshots-and-forwarding.md).
 
+## Podman machine on macOS and Windows
+
+On a Mac or Windows, the `podman` CLI reaches its machine over ssh unless
+told of the machine's API socket. Podman 5.2 and earlier leave a root ssh
+session behind in the machine's VM at each such call, and Abhed calls the
+engine at every command, so the VM's memory runs out over a long session.
+
+Abhed therefore runs `podman` against the machine's API socket
+(`CONTAINER_HOST=unix://…`, the path `podman machine inspect` gives) when
+all of these hold:
+
+- neither `CONTAINER_HOST` nor `CONTAINER_CONNECTION` is set (`DOCKER_HOST`
+  is not read by `podman`, so it does not count);
+- the default connection (`podman system connection list`) is a machine's,
+  and the socket's rootfulness matches it: the root connection of a rootful
+  machine, or the rootless connection of a rootless one, so the socket
+  reaches the same engine as the same user. A rootless default is never
+  swapped for a rootful socket, nor the other way round;
+- the socket exists.
+
+Otherwise the CLI is run as it would be from your shell. Both questions are
+asked of the local configuration once per process, never over ssh. Upgrading
+Podman removes the leak for every other tool too, and is recommended.
+
 ## Testing on a real engine
 
 ```sh
@@ -212,3 +236,12 @@ ABHED_REQUIRE_CONTAINER_DRIVER=podman go test ./driver/container/ -run OnARealEn
 The tests start containers of their own, named with a test prefix, and remove
 them. CI runs them
 on Docker and Podman on Linux, where the allowlist path runs too.
+
+On a Mac with a running machine, this checks that choosing a tier
+and running a command leave no root ssh session in the VM (name an image
+you have already pulled):
+
+```sh
+ABHED_TEST_SSHD_LEAK=1 ABHED_TEST_SSHD_IMAGE=docker.io/library/debian:trixie-slim \
+  go test ./internal/sandbox/ -run TestPodmanMachineLeavesNoSSHSessions -v
+```
