@@ -538,7 +538,7 @@ func TestProgramsThatStartAShellReadItsStartupFiles(t *testing.T) {
 		"script -q /dev/null": Deny, "script": Deny, "script -q /dev/null sh": Deny, "tmux": Deny, "tmux new-session": Deny,
 		"screen": Deny, "su": Deny, "sudo -s": Deny, "su -": Deny, "su -l bob": Deny, "sudo -i": Deny, "login": Deny,
 		"ENV=f script -q /dev/null sh": Deny,
-		"su -c true bob": Allow, "sudo ls": Allow, "sudo -u bob ls": Allow, "sudo -s ls": Allow, "script -c ls log": Allow,
+		"su -c true bob":               Allow, "sudo ls": Allow, "sudo -u bob ls": Allow, "sudo -s ls": Allow, "script -c ls log": Allow,
 	} {
 		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != want {
 			t.Errorf("%q = %s (%s), want %s", c, res.Decision, res.Reason, want)
