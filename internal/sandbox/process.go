@@ -1142,6 +1142,19 @@ type None struct{ policy Policy }
 
 func NewNone(p Policy) *None { return &None{policy: p} }
 
+// NoneReason is why sb, a none tier, is what was chosen: why the process tier
+// is not available here; "" for any other sandbox.
+func NoneReason(sb Sandbox) string {
+	n, ok := sb.(*None)
+	if !ok {
+		return ""
+	}
+	if ok, why := NewProcess(n.policy).Available(); !ok {
+		return why
+	}
+	return "no stronger tier was chosen"
+}
+
 func (n *None) Tier() Tier { return TierNone }
 
 // Available refuses the allowlist: on the host nothing stops a command

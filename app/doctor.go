@@ -270,11 +270,13 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			defer egress.Install(own)()
 			gw.Egress = own
 		}
+		var unconfined []string
+		note := func(format string, a ...any) { unconfined = append(unconfined, fmt.Sprintf(format, a...)) }
 		if sb, err := buildSandbox(cfg, workspace); err == nil {
 			defer func() { _ = sandbox.Close(sb) }()
-			toolset.ConfineMCP(gw, cfg, sb)
+			toolset.ConfineMCP(gw, cfg, sb, note)
 		} else {
-			toolset.ConfineMCP(gw, cfg, nil)
+			toolset.ConfineMCP(gw, cfg, nil, note)
 		}
 		errs := gw.Connect(context.Background(), toolset.MCPConfigs(cfg))
 		status := gw.Status()
@@ -287,6 +289,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		// Why each that did not connect, as a session would warn of it.
 		for _, err := range errs {
 			fmt.Printf("            not connected: %v\n", err)
+		}
+		for _, w := range unconfined {
+			fmt.Printf("            ⚠ %s\n", w)
 		}
 	}
 	fmt.Println()
