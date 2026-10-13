@@ -477,22 +477,27 @@ login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
 A plain `bash -c` or `sh -c` reads none. A shell typed into a terminal with
 no command and no script (`bash`, `exec bash`, `zsh`) reads the terminal,
 so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
-So is the shell `script`, `tmux`, `byobu`, `screen`, `unbuffer`, `dtach`,
-`su`, `sudo -s` or `doas -s` starts on a terminal of its own, taken as any
-shell, interactive (`tmux`, `byobu` and `screen` as login shells too); `su
--`, `sudo -i`, `login`, `expect` and `ssh` with no command (and none of `-V`, `-G`, `-Q`, `-O`,
-`-N`, `-T`) start a shell
-whose start-up files the check cannot read, and are refused under a deny
-rule. The command such a program is given whole (`tmux new -d 'cmd'`,
-`screen -dm cmd`, `unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c`
-text is, from each word that may start it. Keys or text typed into a
-session cannot be read as a command (they can be split across calls, sent
-as hex, or pasted from a buffer), so `tmux send-keys`, `send`,
-`set-buffer`, `paste-buffer`, `load-buffer` and `pipe-pane`, and `screen -X
-stuff`, `paste`, `readbuf`, `exec`, `eval` and `register`, are refused
-under a deny rule and asked about under an ask rule;
-`script`'s (`script -q /dev/null cmd`, `script -c cmd`) is read exactly as
-if typed, so a shell it names reads its start-up files.
+So is the shell `script`, `unbuffer`, `dtach`, `su`, `sudo -s` or `doas -s`
+starts on a terminal of its own, taken as any shell, interactive; `su -`,
+`sudo -i`, `login`, `expect` and `ssh` with no command (and none of `-V`,
+`-G`, `-Q`, `-O`, `-N`, `-T`) start a shell whose start-up files the check
+cannot read, and are refused under a deny rule. The command `unbuffer` or
+`dtach` is given (`unbuffer cmd`, `dtach -c s cmd`) is judged as `bash -c`
+text is, from each word that may start it; `script`'s (`script -q
+/dev/null cmd`, `script -c cmd`) is read exactly as if typed, so a shell it
+names reads its start-up files. `tmux`, `byobu` and `screen` can start
+shells, run commands, type keys, paste buffers and read configuration in
+more ways than the check can follow, so under a rule for `bash` only what
+lists, shows, attaches to or ends sessions is allowed: tmux's
+`list-sessions`, `list-windows`, `list-panes`, `list-clients`,
+`list-commands`, `list-keys`, `list-buffers`, `has-session`,
+`kill-session`, `kill-server`, `kill-window`, `kill-pane`,
+`attach-session`, `detach-client`, `show-options`, `show-window-options`,
+`show-environment`, `show-messages`, `show-hooks`, `show-buffer` and
+`capture-pane` (by full name, alias or unique prefix, as tmux reads them)
+with no `-f`, `-L`, `-S` or `-c`, and `screen -ls`, `-list`, `-wipe`, `-r`
+and `-x`. Anything else is refused under a deny rule and asked about under
+an ask rule.
 A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
@@ -522,7 +527,12 @@ by a path built from a variable it does not set is not read. The
 baseline applies only to a line that is the shell started alone: one
 simple command whose first word is the shell, with no assignment or
 redirection and no other statement, and nothing in the text it runs that
-sets a variable, sources a file or changes folder. On any other line (a
+sets a variable, sources a file or changes folder. Only that shell's own
+start-up files are trusted: a shell started inside its `-c` text, a
+script, a sourced file or a trusted file is judged with no baseline. A
+`PATH` a trusted file sets itself (as `eval "$(brew shellenv)"` does) is
+followed as far as the check can look programs up, and is not a reason to
+refuse. On any other line (a
 `read PATH`, a `source`, a `cd`, `env`, `BASH_ENV`, a statement before
 the shell) every start-up file is judged in full, since such a line can
 steer what a trusted file runs. Each session's record notes the files
@@ -538,7 +548,9 @@ rule.
 
 One the rules cannot read in full, because it is over 64 KiB, does not
 parse, runs text built when it runs (`eval "$x"`), or itself runs a script
-by a relative path after a `cd`, is asked about, in every mode.
+by a relative path after a `cd`, is asked about, in every mode. Scripts are read two levels deep; a script at the last level that runs
+a further script is asked about, and one that names a script or start-up
+file the check cannot resolve is refused under a deny rule.
 A binary, or a script for another interpreter (`#!/usr/bin/env python3`),
 is not read. A script is read when the decision is made, so one changed
 between then and the run is not seen; the sandbox is the boundary there.
@@ -559,7 +571,9 @@ A deny pattern matches the words, so it is easy to step around.
   line the check does not read as zsh's), or of one a line starts with
   options built when it runs
 - a command run through `ssh localhost 'cmd'` (or any host that reaches
-  this machine), which sshd runs outside the sandbox and the check
+  this machine), which sshd runs outside the sandbox and the check; `ssh
+  -T host` and `ssh -N host` are not refused, and on such a host still
+  start its login shell
 - a command given to `su` on its input, or to another program that runs a
   command it is not told to on its line, such as one git runs from its
   configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,
