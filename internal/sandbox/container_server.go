@@ -73,7 +73,9 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	}
 	p := c.policy
 	p.ReadOnlyPaths = files.outsideHome(p.ReadOnlyPaths)
-	extra := []string{"-v", files.home + ":" + files.home}
+	// Before this server's start: what a killed Abhed left goes first.
+	sweptNote(c.SweepServers(ctx))
+	extra := append(serverOwnerArgs(), "-v", files.home+":"+files.home)
 	if files.prefix != "" {
 		extra = append(extra, "-v", files.prefix+":"+files.prefix+":ro")
 	}

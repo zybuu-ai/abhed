@@ -3,12 +3,17 @@
 package sandbox
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -233,6 +238,71 @@ func TestContainerServerLeavesBareNamesToTheImage(t *testing.T) {
 	}
 }
 
+// containerNameOf is the --name a server's command gives its container.
+func containerNameOf(cmd *exec.Cmd) string {
+	if i := slices.Index(cmd.Args, "--name"); i >= 0 && i+1 < len(cmd.Args) {
+		return cmd.Args[i+1]
+	}
+	return ""
+}
+
+// containerExists reports whether the engine still has the named container.
+func containerExists(c *Container, name string) bool {
+	return exec.Command(c.runtime, "container", "inspect", name).Run() == nil // #nosec G204 -- the test's engine
+}
+
+// A server's container left by an Abhed killed with SIGKILL, which no close or
+// exit reached, is removed by the next sweep; one whose owner still runs, and
+// one without the owner label, are not touched.
+func TestContainerServerSweepAfterKillOnARealEngine(t *testing.T) {
+	c, _ := realEngineForServers(t)
+	if os.Getenv("ABHED_SERVER_KILL_HELPER") == "1" {
+		cmd := startStubbornServer(t, c)
+		fmt.Printf("started %s\n", containerNameOf(cmd))
+		time.Sleep(2 * time.Minute)
+		return
+	}
+	helper := exec.Command(os.Args[0], "-test.run=^TestContainerServerSweepAfterKillOnARealEngine$")
+	helper.Env = append(os.Environ(), "ABHED_SERVER_KILL_HELPER=1")
+	out, err := helper.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(out).ReadString('\n')
+	name := strings.TrimSpace(strings.TrimPrefix(line, "started "))
+	if err != nil || name == "" {
+		_ = helper.Process.Kill()
+		t.Fatalf("the helper started no server: %q %v", line, err)
+	}
+	_ = helper.Process.Signal(syscall.SIGKILL)
+	_ = helper.Wait()
+	if !containerExists(c, name) {
+		t.Fatal("the killed helper's container is already gone; the test proves nothing")
+	}
+	other := serverPrefix + "nolabel"
+	if err := exec.Command(c.runtime, "run", "-d", "--name", other, SandboxImage(), "sleep", "300").Run(); err != nil { // #nosec G204 -- the test's engine
+		t.Fatal(err)
+	}
+	defer func() { _ = exec.Command(c.runtime, c.rmArgs(other)...).Run() }() // #nosec G204 -- the test's engine
+
+	// The next server's start sweeps first, once in the process.
+	sweepServersOnce = sync.Once{}
+	live := startStubbornServer(t, c)
+	defer func() { ServerCleanup(live)(); _ = live.Process.Kill(); _ = live.Wait() }()
+	if containerExists(c, name) {
+		t.Fatalf("the next server's start left the killed owner's %s", name)
+	}
+	if removed := c.sweepServers(context.Background()); len(removed) != 0 {
+		t.Fatalf("a second sweep removed %v", removed)
+	}
+	if !containerExists(c, containerNameOf(live)) || !containerExists(c, other) {
+		t.Fatal("a container whose owner runs, or one without the label, was removed")
+	}
+}
+
 // A server on a real engine reads none of the home or Abhed's state, uses
 // its own home and the workspace, and plants nothing.
 func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
@@ -251,5 +321,29 @@ func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
 	probe.check(t, "files", string(out))
 	if _, err := c.ServerCommand(ctx, "npx", []string{"npx", "-y", "some-server"}, os.Environ(), nil); err == nil || !strings.Contains(err.Error(), "is not in the sandbox image") {
 		t.Fatalf("a program the image lacks was not refused at start: %v", err)
+	}
+}
+
+// An owner label is gone only for a process on this host that has ended.
+func TestServerOwnerGone(t *testing.T) {
+	me := ownerOf(os.Getpid())
+	if me == "" {
+		t.Skip("no process start times here")
+	}
+	ended := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := ended.Run(); err != nil {
+		t.Fatal(err)
+	}
+	dead := hostID() + ":" + strconv.Itoa(ended.Process.Pid) + ":1"
+	for label, want := range map[string]bool{
+		me: false, dead: true, "otherhost:1:1": false, "garbage": false,
+		hostID() + ":" + strconv.Itoa(os.Getpid()) + ":1": true, // the pid, taken by a later process
+	} {
+		if got := ownerGone(label); got != want {
+			t.Errorf("ownerGone(%q) = %v, want %v", label, got, want)
+		}
+	}
+	if args := serverOwnerArgs(); len(args) != 2 || args[1] != serverOwnerLabel+"="+me {
+		t.Errorf("owner args %v", args)
 	}
 }

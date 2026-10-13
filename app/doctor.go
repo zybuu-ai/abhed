@@ -114,6 +114,12 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		for _, w := range limitWarnings(cfg, sb.Tier()) {
 			fmt.Printf("            ⚠ %s\n", w)
 		}
+		// MCP servers' containers a killed Abhed left, removed as a session would.
+		if c, ok := sb.(*sandbox.Container); ok {
+			if gone := c.SweepServers(context.Background()); len(gone) > 0 {
+				fmt.Printf("            removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(gone), strings.Join(gone, ", "))
+			}
+		}
 	} else {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
