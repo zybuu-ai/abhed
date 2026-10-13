@@ -1795,8 +1795,10 @@ All notable changes to Abhed are recorded here. The format follows
   role's narrower one.
 - A reply stopped before its provider reported usage was recorded as
   `model.call` with 0 tokens in and out, and nothing was spent from the
-  token budget. The tokens are now estimated, marked `estimated: true`,
-  and spent.
+  token budget, and the session's totals left it out. The tokens are now
+  estimated, marked `estimated: true`, spent, and counted in the session's
+  totals (`session.ended`, the workbench's and HawkEYE's), so a turn ended
+  by *Send now* or Esc adds what it used.
 - With a small `context_window` (such as 12000) a session was summarized
   twice in every turn: the check before a turn added room for that turn to
   history a compaction had just made as small as it gets. The first check

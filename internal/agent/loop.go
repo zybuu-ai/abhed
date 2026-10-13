@@ -1106,6 +1106,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		if mc.TokensIn > 0 || mc.TokensOut > 0 {
 			mc.Estimated = true
 			l.Budget.Spend(mc.TokensIn + mc.TokensOut)
+			// The session's totals count them too, as the record's call does.
+			l.usage.InputTokens += mc.TokensIn
+			l.usage.OutputTokens += mc.TokensOut
+			l.usage.ColdPrefillTokens += mc.TokensIn
 		}
 	}
 	// A stream cut by our own cancel is an interrupt, recorded as such at
