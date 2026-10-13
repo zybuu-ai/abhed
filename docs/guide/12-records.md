@@ -373,7 +373,9 @@ Pruning removes a session and the subagent sessions it started. Before
 anything is removed, a tombstone goes into the index for each, with its id,
 its head as stored (or as the index last recorded it, if the head is gone),
 the time, who pruned it and why, whether its file was already missing, and
-whether it verified. A damaged record can be pruned; its tombstone says so.
+whether it verified. A damaged record can be pruned; its tombstone says so,
+and so does prune: it names each session that did not verify, with why, or
+whose file was already gone, and ends with how many of those it pruned.
 Checkpoint blobs that no remaining session names go with it.
 
 - A session open in any Abhed process, this one included, is not pruned.

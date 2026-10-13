@@ -218,7 +218,7 @@ var subcommands = []subcommand{
 	{name: "resolve", about: "work on a forge issue in its own branch and open a pull request", trust: true},
 	{name: "acp", about: "speak the Agent Client Protocol on stdio, for editors", trust: true},
 	{name: "rpc", about: "take line-delimited JSON requests on stdin, answer on stdout", trust: true},
-	{name: "index", about: "build the search index and keep its embeddings, so a session embeds only what changed", trust: true},
+	{name: "index", about: "embed the workspace ahead of a session and keep the embeddings; each session rebuilds the rest", trust: true},
 	{name: "eval", about: "run the evaluation corpus against the configured model", trust: true},
 	{name: "version", about: "print the version and exit"},
 }

@@ -151,6 +151,9 @@ func TestAccountsGetTheirOwnStoreByDefault(t *testing.T) {
 	if !strings.Contains(bob, "no secret named TEAM_TOKEN") {
 		t.Errorf("bob's command was not refused for want of his own secret:\n%s", bob)
 	}
+	if !strings.Contains(bob, "PUT /v1/secrets/TEAM_TOKEN") || strings.Contains(bob, "abhed secret set") {
+		t.Errorf("bob was not pointed at his own store:\n%s", bob)
+	}
 	list := func(who string) string {
 		req := httptest.NewRequest("GET", "/v1/secrets", nil)
 		req.Header.Set("X-Abhed-User", who)

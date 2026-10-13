@@ -173,6 +173,11 @@ func engineProbe(path string, args ...string) ([]byte, error) {
 // runArgs is the confinement a command and a shell both run under, up to the
 // image; an error is why the command is not run.
 func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
+	return c.runArgsWith(ctx, cwd, c.policy, c.policy.AllowNetwork && c.policy.Egress == nil)
+}
+
+// runArgsWith is runArgs for policy p, with the network open or none.
+func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOpen bool) ([]string, error) {
 	args := []string{"run", "--rm", "-i"}
 	args = append(args, c.extra...)
 
@@ -195,7 +200,7 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 
 	// Fork bombs and disk-fill are host DoS. --pids-limit is preferred: under
 	// rootful Docker nproc counts the uid's every host process.
-	if c.policy.MaxProcs <= 0 {
+	if p.MaxProcs <= 0 {
 		args = append(args, "--ulimit", "nproc=256:256")
 	}
 	args = append(args,
@@ -218,20 +223,20 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 	}
 
 	// Under the allowlist the relay is the only way out, whatever AllowNetwork says.
-	if !c.policy.AllowNetwork || c.policy.Egress != nil {
+	if !netOpen {
 		args = append(args, "--network", "none")
 	}
-	if c.policy.MaxMemoryMB > 0 {
+	if p.MaxMemoryMB > 0 {
 		// Swap set to the same: by default the engine allows as much swap
 		// again, so the bound was twice what it said.
-		m := strconv.Itoa(c.policy.MaxMemoryMB) + "m"
+		m := strconv.Itoa(p.MaxMemoryMB) + "m"
 		args = append(args, "--memory", m, "--memory-swap", m)
 	}
-	if c.policy.MaxProcs > 0 {
-		args = append(args, "--pids-limit", strconv.Itoa(c.policy.MaxProcs))
+	if p.MaxProcs > 0 {
+		args = append(args, "--pids-limit", strconv.Itoa(p.MaxProcs))
 	}
 
-	mounts, err := mountArgs(ctx, c.policy, string(c.Tier()), &c.git)
+	mounts, err := mountArgs(ctx, p, string(c.Tier()), &c.git)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +244,7 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 
 	workdir := cwd
 	if workdir == "" {
-		workdir = c.policy.Workspace
+		workdir = p.Workspace
 	}
 	args = append(args, "-w", workdir)
 
@@ -317,7 +322,7 @@ func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if c.policy.Egress != nil {
-		return c.egressCommand(ctx, cwd, command)
+		return c.egressRun(ctx, cwd, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
 	}
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.

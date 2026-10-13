@@ -91,9 +91,10 @@ func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 	return c.egProxy, c.eg, c.egErr
 }
 
-// egressCommand runs command in a networkless container whose only way out is a
-// relay to the egress proxy over an exec's stdio.
-func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exec.Cmd {
+// egressRun runs argv in a networkless container whose only way out is a
+// relay to the egress proxy over an exec's stdio. The container takes p's
+// mounts and extra run arguments; argv gets env besides the proxy's.
+func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, env, argv []string) *exec.Cmd {
 	relay, why := c.containerRelay()
 	if relay == "" {
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: " + why)}
@@ -115,7 +116,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the call's own proxy listener: %w", err)}
 	}
 	routes.remember(l)
-	args, err := c.runArgs(ctx, cwd)
+	args, err := c.runArgsWith(ctx, cwd, p, false)
 	if err != nil {
 		call.End()
 		return &exec.Cmd{Err: err}
@@ -123,7 +124,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	name := containerName(egressPrefix)
 	// Detached, with the relay bound read-only; it idles until removed.
 	run := append([]string{"run", "--rm", "-d"}, args[3:]...)
-	run = append(run, "-v", relay+":"+relayInside+":ro")
+	run = append(append(run, extra...), "-v", relay+":"+relayInside+":ro")
 	if proxy.Inspecting() {
 		run = append(run, "-v", filepath.Join(c.egDir, "ca")+":"+caDirInside+":ro")
 	}
@@ -164,7 +165,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	}
 	// In a private file, not an argument any process can list nor the CLI's
 	// own environment, whose proxy settings its client would follow.
-	envFile, removeEnv, err := EnvFile(call.Env())
+	envFile, removeEnv, err := EnvFile(append(call.Env(), env...))
 	if err != nil {
 		stop()
 		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its proxy settings: %w", err)}
@@ -178,7 +179,7 @@ func (c *Container) egressCommand(ctx context.Context, cwd, command string) *exe
 	if uid, gid := os.Getuid(), os.Getgid(); uid > 0 {
 		execArgs = append(execArgs, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
-	execArgs = append(execArgs, "--env-file", envFile, "-e", "ABHED_SANDBOX="+string(c.Tier()), name, "/bin/sh", "-c", command)
+	execArgs = append(append(execArgs, "--env-file", envFile, "-e", "ABHED_SANDBOX="+string(c.Tier()), name), argv...)
 	cmd := c.engineCmd(ctx, execArgs...)
 	cmd.Cancel = func() error {
 		stop()

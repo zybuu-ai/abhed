@@ -248,7 +248,7 @@ func TestPruneOfAnUnverifiedSession(t *testing.T) {
 	s2 := openTest(t, dir)
 	cutLines(t, s2.Path("s-1"), 1, "")
 	p, err := s2.Prune("s-1", "user", "by hand")
-	if err != nil || len(p) != 1 || p[0].Verified || p[0].Missing || p[0].Head.Lines != 3 {
+	if err != nil || len(p) != 1 || p[0].Verified || p[0].Unverified == "" || p[0].Missing || p[0].Head.Lines != 3 {
 		t.Fatalf("prune: %+v %v", p, err)
 	}
 }

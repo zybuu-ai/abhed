@@ -352,6 +352,12 @@ func (f *Fence) qualifySession(base *cgroup.Base) (bool, string) {
 // wrap runs argv through the launcher in a cgroup leaf of its own. A command
 // that cannot be fenced does not start.
 func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...string) *exec.Cmd {
+	return f.launch(ctx, cwd, env, nil, argv...)
+}
+
+// launch runs argv fenced; files, when set, is a stdio server's confinement,
+// which it runs under in place of a command's.
+func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *serverFiles, argv ...string) *exec.Cmd {
 	if ok, why := f.Available(); !ok {
 		return refusedCmd("%s", why)
 	}
@@ -370,6 +376,12 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 		return refusedCmd("%s", *why)
 	}
 	spec := f.spec()
+	network := f.policy.AllowNetwork
+	if files != nil {
+		spec = f.serverSpec(*files)
+		// As on the process tier, a server's network is open but under the allowlist.
+		network = network || f.policy.Egress == nil
+	}
 	if err := spec.Validate(); err != nil {
 		return refusedCmd("%v", err)
 	}
@@ -410,7 +422,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 			return refusedCmd("%v", err)
 		}
 	}
-	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: f.policy.AllowNetwork, Socketcall: f.policy.AllowNetwork && f.policy.FenceSocketcall, Leaf: leaf.Path(),
+	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: network, Socketcall: network && f.policy.FenceSocketcall, Leaf: leaf.Path(),
 		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan,
 		ProxyOnly: f.policy.Egress != nil, Egress: relay, PIDNS: plan != nil})
 	if err != nil {

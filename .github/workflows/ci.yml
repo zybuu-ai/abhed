@@ -611,8 +611,10 @@ jobs:
       - name: The container tier's boundaries hold on Docker
         run: |
           set -euo pipefail
-          ABHED_REQUIRE_CONTAINER=1 go test ./internal/sandbox/ -run 'TestContainerTierOnARealEngine$' -count=1 -v > engine.log 2>&1 || { cat engine.log; exit 1; }
-          grep -q -- "--- PASS: TestContainerTierOnARealEngine " engine.log || { echo "the engine test did not run and pass:"; cat engine.log; exit 1; }
+          ABHED_REQUIRE_CONTAINER=1 go test ./internal/sandbox/ -run 'TestContainerTierOnARealEngine$|TestContainerServerFilesAreConfinedOnARealEngine$' -count=1 -v > engine.log 2>&1 || { cat engine.log; exit 1; }
+          for t in TestContainerTierOnARealEngine TestContainerServerFilesAreConfinedOnARealEngine; do
+            grep -q -- "--- PASS: $t " engine.log || { echo "$t did not run and pass:"; cat engine.log; exit 1; }
+          done
       # Studio's interactive terminal on the container tier, where the engine
       # holds the shell's terminal and lines are judged by Abhed's prompt alone.
       - name: Studio's interactive terminal on the container tier

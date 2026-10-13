@@ -33,7 +33,11 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 	return false, f.report.Summary
 }
 
-func (f *Fence) wrap(context.Context, string, []string, ...string) *exec.Cmd {
+func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...string) *exec.Cmd {
+	return f.launch(ctx, cwd, env, nil, argv...)
+}
+
+func (f *Fence) launch(context.Context, string, []string, *serverFiles, ...string) *exec.Cmd {
 	_, why := f.Available()
 	return refusedCmd("%s", why)
 }

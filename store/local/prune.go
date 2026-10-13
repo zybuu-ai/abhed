@@ -21,6 +21,8 @@ type Pruned struct {
 	// record verified as it was pruned.
 	Missing  bool
 	Verified bool
+	// Unverified is why it did not verify, as its tombstone keeps it.
+	Unverified string
 }
 
 // Prune removes session id and the subagent sessions it started. For each,
@@ -132,6 +134,7 @@ func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 				p.Verified, tomb.Verified, tomb.Unverified = false, boolPtr(false), why
 			}
 		}
+		p.Unverified = tomb.Unverified
 		if err := s.index.append(tomb); err != nil {
 			return out, err
 		}

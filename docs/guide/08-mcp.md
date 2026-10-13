@@ -22,9 +22,10 @@ of the file.
 
 ## Where a server runs
 
-A stdio server is a process Abhed starts on your machine, as you, outside
-the commands' sandbox. On the process tier (macOS Seatbelt, Linux
-bubblewrap) its **files are confined**, whatever the network setting: your
+A stdio server is a process Abhed starts as you, outside the commands' own
+sandbox but confined by the same tier. On the process (macOS Seatbelt, Linux
+bubblewrap), fence, container and VM tiers its **files are confined**,
+whatever the network setting: your
 home folder is hidden from it, but for a home of its own,
 `~/.abhed/mcp/<server>/home`, which is its `HOME`, which it may write and
 which keeps its caches (`npx`, `uv`) between runs, and the folder it was
@@ -39,10 +40,32 @@ under the allowlist its network is still confined. Under bubblewrap the
 server is refused where a private `/proc` cannot be mounted (set
 `host_files`), and when Abhed runs as root, since bubblewrap keeps root's
 capabilities over the host: run Abhed as an ordinary user, or set
-`host_files` to run the server unconfined (refused under the allowlist). On the none tier and on
-Windows a stdio server's files are not confined. Its network is open,
-whatever `allow_network` says, except under `sandbox.network:
-"allowlist"`; see below. A URL server runs wherever it is hosted.
+`host_files` to run the server unconfined (refused under the allowlist).
+
+On the fence tier the server runs under a fence of its own: Landlock grants
+it the system folders, `read_only_paths` outside your home, the workspace,
+its own home and its install folder, and nothing else; its launch is
+recorded as a command's is, with `mcp/<server>` as its call id, and its
+temporary folder is `~/.abhed/mcp/<server>/home/tmp`. On the container and
+VM tiers it runs in a container of its own from the sandbox image (gVisor
+on the VM tier), its stdio carried by the engine: the commands' mounts
+(the workspace, its `.abhed` covered, `read_only_paths` outside your home),
+its own home mounted as its `HOME` and its install folder read-only, nothing
+else of your home, and its environment in a file only your user can read.
+So its program must run in that image: a `docker`-style server, or one
+installed for macOS, does not. Before the server starts, Abhed looks for its
+program in the image (with the server's mounts) and refuses a server whose
+program is not there, or is a macOS binary, naming the program; the session's
+warning, `/mcp` and `abhed doctor` give that reason. Set `ABHED_SANDBOX_IMAGE`
+to an image with its runtime, or `host_files` to run it on the host. A tier that cannot
+confine a server refuses it with that reason, and `host_files` is the way
+out.
+
+The terminal CLI, `abhed -p`, `abhed doctor`, `abhed rpc` and `abhed serve`
+all start a server this way. On the none tier and on Windows a stdio
+server's files are not confined. Its network is open, whatever
+`allow_network` says, except under `sandbox.network: "allowlist"`; see
+below. A URL server runs wherever it is hosted.
 
 `digest` pins a stdio server's program, as `"sha256:<64 hex digits>"`: just
 before the server starts, the file its `command` resolves to (on the
@@ -82,7 +105,9 @@ With `sandbox.network: "allowlist"` (see
   `kind: "mcp"`, in the record of the session whose tool call made it. A
   server no rule allows does not connect.
 - **Stdio servers** start with their direct network sockets confined, on
-  the process tier only. On macOS a Seatbelt profile allows no network use
+  the process, fence, container and VM tiers. On the fence the server's own
+  fence lets TCP reach only its proxy; on the container and VM tiers its
+  container has no network but a relay to its proxy, as a command's has. On macOS a Seatbelt profile allows no network use
   but the server's own egress proxy and denies it LaunchServices. On Linux
   the server runs in its own network and process namespaces (bubblewrap)
   behind a relay to that proxy, with the session bus, `/run/user`, the
@@ -92,9 +117,10 @@ With `sandbox.network: "allowlist"` (see
   with a credential of its own, and on Linux the session resolver for
   names. Under bubblewrap a stdio server is not started when Abhed runs as
   root.
-  On Windows, and on any surface with no process-tier sandbox to confine
-  it, a stdio server is not started under the allowlist; the warning at
-  start-up and `/mcp` give the reason.
+  A server set to `host_files` is confined this way on the process tier
+  only, and refused under the allowlist elsewhere. On Windows, and on any
+  surface with no sandbox to confine it, a stdio server is not started
+  under the allowlist; the warning at start-up and `/mcp` give the reason.
 
 **This confines a server's direct network use, not a hostile server.** Add
 only servers you trust, as before. What remains open to a server that
@@ -186,6 +212,9 @@ providers refuse tool names over 64, so a longer one is left out: a warning
 names it and gives its length, `/mcp` and Studio list it under its server,
 and `abhed doctor` and the server's MCP status count the tools left out for
 their names beside each server.
+`abhed doctor` also says why each configured server that did not connect
+was not: a program that does not match its `digest`, a URL server given a
+`digest`, a server that would not start.
 
 ## Namespacing and policy
 

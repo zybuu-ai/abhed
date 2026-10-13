@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -22,8 +23,28 @@ type serverFiles struct {
 
 var serverNameChars = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
+// serverDirName is a server's folder name under ~/.abhed/mcp.
+func serverDirName(name string) string { return serverNameChars.ReplaceAllString(name, "_") }
+
+// outsideHome are the paths of ps not in the person's home, which a confined
+// server never sees.
+func (f serverFiles) outsideHome(ps []string) []string {
+	var out []string
+	for _, p := range ps {
+		if !slices.ContainsFunc(PathForms(p), func(q string) bool { return insideAny(q, PathForms(f.realHome)) }) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // serverFilesFor works out a server's confinement and makes its home.
 func (s *Process) serverFilesFor(name, program string, env []string) (serverFiles, error) {
+	return serverFilesIn(name, program, env, s.workspaces())
+}
+
+// serverFilesIn is a server's confinement with workspaces writable, its home made.
+func serverFilesIn(name, program string, env, workspaces []string) (serverFiles, error) {
 	real, err := os.UserHomeDir()
 	if err != nil {
 		return serverFiles{}, fmt.Errorf("sandbox: no home folder to hide from the server: %w", err)
@@ -31,8 +52,8 @@ func (s *Process) serverFilesFor(name, program string, env []string) (serverFile
 	if r, err := filepath.EvalSymlinks(real); err == nil {
 		real = r
 	}
-	f := serverFiles{realHome: real, workspaces: s.workspaces()}
-	f.home = filepath.Join(real, stateDir, "mcp", serverNameChars.ReplaceAllString(name, "_"), "home")
+	f := serverFiles{realHome: real, workspaces: workspaces}
+	f.home = filepath.Join(real, stateDir, "mcp", serverDirName(name), "home")
 	if err := os.MkdirAll(f.home, 0o700); err != nil {
 		return serverFiles{}, fmt.Errorf("sandbox: the server's own home: %w", err)
 	}

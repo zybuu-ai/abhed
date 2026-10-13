@@ -330,11 +330,7 @@ var fenceDevices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random"
 // so a protected path that appeared since refuses the next one.
 func (f *Fence) spec() landlock.Spec {
 	deny := f.denied()
-	system := fenceSystem
-	if os.Geteuid() == 0 {
-		// Root keeps its uid, so what only root may read under /etc is not granted.
-		system = append(slices.DeleteFunc(slices.Clone(fenceSystem), func(p string) bool { return p == "/etc" }), rootEtcGrants("/etc")...)
-	}
+	system := fenceSystemFor()
 	s := landlock.Spec{
 		Exec:    absAll(append(append([]string{}, system...), f.policy.ReadOnlyPaths...)),
 		Read:    []string{"/proc", "/sys"},
@@ -359,6 +355,92 @@ func (f *Fence) spec() landlock.Spec {
 		s.Write = append(s.Write, f.tmp)
 	}
 	return s
+}
+
+// fenceSystemFor is fenceSystem as this user may be granted it.
+func fenceSystemFor() []string {
+	if os.Geteuid() == 0 {
+		// Root keeps its uid, so what only root may read under /etc is not granted.
+		return append(slices.DeleteFunc(slices.Clone(fenceSystem), func(p string) bool { return p == "/etc" }), rootEtcGrants("/etc")...)
+	}
+	return fenceSystem
+}
+
+// serverSpec is what a stdio server may reach: the system, the workspace,
+// read_only_paths outside the home, its own home and its install folder; none
+// of the rest of the home, the skills or the commands' temp.
+func (f *Fence) serverSpec(files serverFiles) landlock.Spec {
+	run := append(slices.Clone(fenceSystemFor()), files.outsideHome(f.policy.ReadOnlyPaths)...)
+	if files.prefix != "" {
+		run = append(run, files.prefix)
+	}
+	s := landlock.Spec{
+		Exec:    absAll(run),
+		Read:    []string{"/proc", "/sys"},
+		Devices: fenceDevices,
+		Write:   absAll([]string{f.policy.Workspace, files.home}),
+		Deny:    serverDenied(f.denied(), files.home),
+		DenyTCP: f.policy.Egress != nil, // only the proxy's port is then reached
+	}
+	if real, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && !strings.HasPrefix(real, "/etc/") {
+		s.Read = append(s.Read, real)
+	}
+	return s
+}
+
+// serverDenied is deny with ~/.abhed, in any form, replaced by everything in
+// it but the way to home (mcp/<name>/home), the server's own, which it writes.
+func serverDenied(deny []string, home string) []string {
+	server := filepath.Dir(home)
+	mcp := filepath.Dir(server)
+	state := RealPath(filepath.Dir(mcp))
+	path := []string{filepath.Base(mcp), filepath.Base(server), filepath.Base(home)}
+	var out []string
+	for _, d := range deny {
+		if RealPath(d) != state {
+			out = append(out, d)
+			continue
+		}
+		dir := d
+		for _, part := range path {
+			entries, _ := os.ReadDir(dir)
+			for _, e := range entries {
+				if e.Name() != part {
+					out = append(out, filepath.Join(dir, e.Name()))
+				}
+			}
+			dir = filepath.Join(dir, part)
+		}
+	}
+	return out
+}
+
+// ServerCommand runs a stdio MCP server under a fence of its own: its files
+// confined as on the process tier, its network open but under the allowlist,
+// where it reaches only a proxy of its own whose decisions go to record.
+func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+	if len(argv) == 0 {
+		return nil, errors.New("sandbox: no command")
+	}
+	if ok, why := f.Available(); !ok {
+		return nil, errors.New(why)
+	}
+	files, err := serverFilesIn(name, argv[0], env, PathForms(f.policy.Workspace))
+	if err != nil {
+		return nil, err
+	}
+	tmp := filepath.Join(files.home, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return nil, fmt.Errorf("sandbox: the server's own temp: %w", err)
+	}
+	env = append(serverHomeEnv(serverEnv(env), files.home), "TMPDIR="+tmp)
+	key := ServerKey(name)
+	ctx = WithLaunch(ctx, Launch{CallID: key, Session: key, Record: record})
+	cmd := f.launch(ctx, f.policy.Workspace, env, &files, argv...)
+	if cmd.Err != nil {
+		return nil, cmd.Err
+	}
+	return cmd, nil
 }
 
 // skillDirs are ~/.abhed/skills, as written and resolved, where it is a folder.

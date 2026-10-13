@@ -80,8 +80,15 @@ All notable changes to Abhed are recorded here. The format follows
 - On `abhed serve` with sign-in, each account reads only its own secrets
   store; the operator's store serves scheduled runs only. Have each person
   add their secrets with `PUT /v1/secrets/{name}`.
-- A stdio MCP server on the process tier no longer sees your home folder;
-  set `"host_files": true` on one that needs it.
+- A stdio MCP server on the process, fence, container or VM tier no longer
+  sees your home folder; set `"host_files": true` on one that needs it. On
+  the container and VM tiers it runs in a container from the sandbox image,
+  so its program must run there: one the image lacks (`npx`, `uvx`,
+  `docker`) or a macOS binary is refused at start, naming the program, and
+  `abhed doctor` says so. Set `ABHED_SANDBOX_IMAGE` to an image with its
+  runtime (node, python), or `host_files` to keep it on the host. Under
+  the allowlist a stdio server on the fence, container or VM tier now
+  starts, its network confined, where it was refused.
 - On Postgres, run `abhed migrate` (or apply `store/schema.sql`) as the
   schema owner before starting 1.2.8 servers against an existing database.
   It applies schema versions 7 (the control plane's `sandboxes`,
@@ -576,7 +583,9 @@ All notable changes to Abhed are recorded here. The format follows
   and by printing it transformed read, every secret an allow rule named.
   Each account now has its own store under `~/.abhed/secrets.d`, managed
   through `GET /v1/secrets` and `PUT` and `DELETE /v1/secrets/{name}`; the
-  operator's store serves scheduled runs only. Affects 1.0.0 to 1.2.7.
+  operator's store serves scheduled runs only, and a session missing a
+  secret says to add it with `PUT /v1/secrets/{name}`. Affects 1.0.0 to
+  1.2.7.
 - Under `sandbox.network: "allowlist"` a command could hand its proxy token
   to a concurrent call, through the workspace or (on macOS) by reading its
   environment, and that call's traffic was then recorded under the first
@@ -590,11 +599,14 @@ All notable changes to Abhed are recorded here. The format follows
   sandbox is one trust unit. Affects 1.2.7.
 - A stdio MCP server ran with your whole home folder readable and
   writable, so it could read `~/.ssh` or plant a LaunchAgent, a systemd
-  user unit or a shell rc line. On the process tier its home is now hidden
-  but for a home of its own under `~/.abhed/mcp` and its install folder,
-  read-only; `"host_files": true` on a server keeps the old behaviour.
-  Under bubblewrap with Abhed run as root, which keeps root's capabilities,
-  a server without `host_files` is refused rather than run unconfined.
+  user unit or a shell rc line. On the process, fence, container and VM
+  tiers its home is now hidden, whatever `sandbox.network` is, but for a
+  home of its own under `~/.abhed/mcp` and its install folder, read-only:
+  on the fence under a fence of its own, on the container and VM tiers in
+  a container of its own from the sandbox image. `"host_files": true` on a
+  server keeps the old behaviour. Under bubblewrap with Abhed run as root,
+  which keeps root's capabilities, a server without `host_files` is refused
+  rather than run unconfined, as on a tier that cannot confine it.
   Affects 0.1.0 to 1.2.7.
 - `abhed user remove` did not stop what a running `abhed serve` ran for
   the removed account: its live run, background shells and tasks, and
@@ -1432,7 +1444,8 @@ All notable changes to Abhed are recorded here. The format follows
   embeddings are now kept in `~/.abhed/index`, one file per workspace and
   embedding model, so `abhed index` builds them ahead and a session start
   embeds only the chunks that changed. The symbol and BM25 tiers are still
-  rebuilt by each session.
+  rebuilt by each session, and `abhed index` and its help say so; without
+  `retrieval.embed` it says it keeps nothing.
 - `abhed acp` refuses a session another Abhed process has open with code
   `-32004`, not the generic `-32000`, so an editor can offer the fork
   without matching the message's words. Every tool call now has an id of
@@ -1460,6 +1473,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed record prune` printed the same line for a session that did not
+  verify, or whose file was already gone, as for one that verified; only
+  the tombstone said otherwise. It now names each such session, with why,
+  and ends with how many of those it pruned; a managed retention prune says
+  so on the terminal too.
+- `abhed doctor` counted a configured MCP server that did not connect
+  without saying why. It now prints the reason under the `mcp` line: a
+  program that does not match its `digest`, a URL server with a `digest`, a
+  server that would not start.
 - Deleting a session with a workbench command or shell still running
   wrote the terminal's end into the record after the delete: one event
   left behind in the store. The delete now waits, up to five seconds, for
