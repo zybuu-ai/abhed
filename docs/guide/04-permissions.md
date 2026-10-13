@@ -469,6 +469,11 @@ login shell, and ksh and mksh `.kshrc` or `.mkshrc` as an interactive one.
 A plain `bash -c` or `sh -c` reads none. A shell typed into a terminal with
 no command and no script (`bash`, `exec bash`, `zsh`) reads the terminal,
 so it is interactive and its `.bashrc`, `.zshrc` or `.kshrc` is read too.
+So is the shell `script`, `tmux`, `screen`, `su` or `sudo -s` starts on a
+terminal of its own, taken as any shell, interactive (`tmux` and `screen`
+as login shells too); `su -`, `sudo -i` and `login` start a shell in
+another account's home, which the check cannot read, and are refused under
+a deny rule.
 A script the line runs may be
 zsh's, so `.zshenv` is read for it. One that is not there is skipped, and
 one that cannot be read, or that sets `ZDOTDIR` or `HOME` again, is refused
@@ -478,11 +483,18 @@ variable by name (`read BASH_ENV`, `read ZDOTDIR`), is refused or asked
 about as the scripts above are. A shell started with the `HOME` the
 sandbox gives commands reads its start-up files there, which an earlier
 command may have written, so those are read too, by the same rules (a
-`#!/bin/zsh` script reads `.zshenv`). The files there when the session's
-first command is judged are your own, recorded by size, time and hash, and
-are not judged while they stay that way, so a package manager's line in
-your `.zprofile` does not make `zsh -lc` ask; one made or changed after
-that is read and judged. That
+`#!/bin/zsh` script reads `.zshenv`). Every one is judged by what it
+holds, whoever wrote it and whenever, unless you have trusted it: `abhed
+trust startup-files` shows each start-up file in your home folder (path,
+size, sha256, first lines) and, when you confirm (`-y` in a script),
+records them in `~/.abhed/startup-files.json`, which the agent cannot
+reach; run it in your own terminal, as it is refused inside an agent's
+command, and again after you change one. A file whose path, size and
+sha256 still match is not judged, so a package manager's line in your
+`.zprofile` does not make `zsh -lc` ask; any other file, a same-size edit,
+a link or a folder in its place is. Each session's record notes the files
+it trusted this way (`policy.startup_trusted`, path and sha256), and
+`abhed doctor` lists them and any changed since. That
 `HOME` is the host's own on the process tier and none, the fence's private
 home folder under the fence, and, in a container, a microVM, a driver's
 sandbox or a control-plane sandbox exec, a folder the host cannot read:

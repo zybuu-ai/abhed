@@ -257,7 +257,9 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
-	Adapter model.Adapter
+	// startupNoted reports the trusted start-up files recorded for this loop.
+	startupNoted bool
+	Adapter      model.Adapter
 	// Provider is the configured name Adapter came from, when the surface
 	// knows it. A subagent that runs on its parent's model records it.
 	Provider  string
@@ -652,6 +654,9 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	}
 	if l.promptRefused(ctx, m.Text) != "" {
 		return TermPromptRefused, nil
+	}
+	if err := l.noteTrustedStartup(); err != nil {
+		return TermError, err
 	}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: m.Text, ClientID: m.ClientID}); err != nil {
 		return TermError, err
@@ -2391,4 +2396,19 @@ func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCa
 func timedOut(err error) bool {
 	var te *model.TimeoutError
 	return errors.As(err, &te)
+}
+
+// noteTrustedStartup records, once per loop, the start-up files the baseline
+// leaves unjudged, so the record says whose word they ran on.
+func (l *Loop) noteTrustedStartup() error {
+	if l.startupNoted || l.Policy == nil || len(l.Policy.StartupBaseline) == 0 {
+		return nil
+	}
+	l.startupNoted = true
+	files := l.Policy.TrustedStartupFiles()
+	if len(files) == 0 {
+		return nil
+	}
+	_, err := l.Recorder.Record(EvStartupTrusted, ActorSystem, Trusted, map[string]any{"files": files})
+	return err
 }

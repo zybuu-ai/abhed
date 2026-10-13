@@ -94,6 +94,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("settings    %s\n", config.Printable(cfg.Settings.Name))
 	}
 	printDoctorTrust(os.Stdout, cfg.Workspace)
+	printDoctorStartupFiles(os.Stdout)
 	// A managed definition named with another case is silently not read.
 	for _, w := range agentdefs.ManagedCaseWarnings(managed.AgentsDir) {
 		fmt.Printf("agents      ⚠ %s\n", w)

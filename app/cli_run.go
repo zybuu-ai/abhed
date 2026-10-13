@@ -163,6 +163,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
 	pol.Cwd = sess.WorkDir
+	pol.StartupBaseline = config.StartupBaseline()
 	pol.Session = &policy.Overlay{}
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))

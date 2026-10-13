@@ -1329,7 +1329,8 @@ server open.
   `-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
-  list` lists every decision.
+  list` lists every decision. `abhed trust startup-files` is the same for
+  your shell's start-up files (see the permissions guide).
 - **`abhed serve`** says on its front page, under the console's examples,
   in the workbench's **Tools** panel, and in `GET /v1/overview` as
   `workspace_config`, whether the file is trusted, why, and the names of the

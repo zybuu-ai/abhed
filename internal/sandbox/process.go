@@ -1046,7 +1046,7 @@ func HostCommandEnv() []string {
 }
 
 func hostDropped(kv string) bool {
-	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ABHED_TRUST_WORKSPACE="} {
+	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ZDOTDIR=", "ENV=", "ABHED_TRUST_WORKSPACE="} {
 		if strings.HasPrefix(kv, p) {
 			return true
 		}

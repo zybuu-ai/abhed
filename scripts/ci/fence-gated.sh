@@ -6,13 +6,15 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 mod=github.com/zybuu-ai/abhed
 
-# suites PKGS prints name|package|-run pattern. Fence packages run whole, so
-# a new one is covered.
+# suites PKGS prints name|package|file|-run pattern, file naming the one test
+# file gated, or empty for all. Fence packages run whole, so a new one is covered.
 suites() {
 	local pkg
-	for pkg in $1; do echo "fence-${pkg##*/}|$pkg|."; done
-	echo "sandbox|$mod/internal/sandbox|Fence|Mounts|Launch|Select"
-	echo "clitest|$mod/internal/clitest|Fence"
+	for pkg in $1; do echo "fence-${pkg##*/}|$pkg||."; done
+	echo "sandbox|$mod/internal/sandbox||Fence|Mounts|Launch|Select"
+	echo "clitest|$mod/internal/clitest||Fence"
+	# Serve on the fence: only this file's tests are gated here.
+	echo "app|$mod/app|serve_fence_linux_test.go|^(TestServeRunsEachSessionUnderItsOwnFence|TestServedFenceSessionHomeIsItsFencesOnceMade)\$"
 }
 
 build() {
@@ -28,11 +30,13 @@ build() {
 	[ -n "$fence" ] || { echo "go list found no fence package"; return 1; }
 	all=$(suites "$fence")
 	: > "$dir/suites"
-	while IFS='|' read -r -u 3 name pkg pattern; do
+	while IFS='|' read -r -u 3 name pkg only pattern; do
 		tests=$(go list -f '{{range .TestGoFiles}}{{$.Dir}}/{{.}} {{end}}{{range .XTestGoFiles}}{{$.Dir}}/{{.}} {{end}}' "$pkg")
 		[ -n "$tests" ] || { echo "$pkg has no tests for this platform; nothing to run"; continue; }
 		# The package's own code too: a gate helper may live outside the tests.
 		files="$(go list -f '{{range .GoFiles}}{{$.Dir}}/{{.}} {{end}}' "$pkg") $tests"
+		# A suite that names one file gates only that file's tests.
+		[ -z "$only" ] || files="$(go list -f '{{.Dir}}' "$pkg")/$only"
 		go test -c -o "$dir/$name.test" "$pkg"
 		[ -x "$dir/$name.test" ] || { echo "$pkg has tests but built no binary"; return 1; }
 		# Gated by what the tests check, not by name: run must list every one.
@@ -122,6 +126,11 @@ passed_all() {
 		fi
 		if grep -q -- "--- SKIP: $t " "$log"; then
 			[[ $off_linux == *" $t "* ]] && continue
+			# Serve on the fence asks more of Landlock than this runner's kernel has: said, not passed.
+			if [ "$name" = app ] && grep -A2 -- "=== RUN   $t\$" "$log" | grep -q "serve on the fence needs Landlock ABI"; then
+				echo "SKIPPED on this kernel: $t: $(grep -A2 -- "=== RUN   $t\$" "$log" | grep -o "serve on the fence needs.*")"
+				continue
+			fi
 			# Proven by a run of its own, under the condition it needs.
 			grep -qx -- "$name $t" "$dir/elsewhere" 2>/dev/null && continue
 			item=$(sed -n "/=== RUN   $t\$/,/--- SKIP: $t /s/^ *[^ ]*\.go:[0-9]*: clitest: pending (\([a-z]*\)):.*/\1/p" "$log" | head -1)

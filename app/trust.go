@@ -305,11 +305,15 @@ func refusedNote(k config.IgnoredKey) string {
 	return "  (refused: " + k.Reason + ")"
 }
 
-// trustCmd is `abhed trust [show|grant [-sha256 H]|revoke|list] [dir]`.
+// trustCmd is `abhed trust [show|grant [-sha256 H]|revoke|list] [dir]` and
+// `abhed trust startup-files [-y]`.
 func trustCmd(workspace string, args []string, out io.Writer) int {
 	verb := "show"
 	if len(args) > 0 {
 		verb, args = args[0], args[1:]
+	}
+	if verb == "startup-files" {
+		return trustStartupFilesCmd(args, out)
 	}
 	// -sha256 pins a grant to the content that was reviewed.
 	var want, wantAgents string
@@ -425,7 +429,7 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(os.Stderr, "abhed: trust: unknown action %q; use show, grant, revoke or list\n", verb)
+	fmt.Fprintf(os.Stderr, "abhed: trust: unknown action %q; use show, grant, revoke, list or startup-files\n", verb)
 	return 2
 }
 

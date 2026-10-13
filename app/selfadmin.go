@@ -31,8 +31,8 @@ func selfAdmin(rest []string) string {
 	case "init":
 		return "abhed init"
 	case "trust":
-		if verb == "grant" {
-			return "abhed trust grant"
+		if verb == "grant" || verb == "startup-files" {
+			return "abhed trust " + verb
 		}
 	case "record":
 		if verb == "prune" {
