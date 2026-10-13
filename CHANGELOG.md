@@ -171,6 +171,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A repeated `-deny` or `-disallowedTools` kept only its last value,
+  dropping the earlier deny rules without a word, so the run had fewer deny
+  rules than asked for; `-allow`, `-allowedTools` and `abhed resolve -allow`
+  did the same. Each now adds its rules, as one comma-separated list would,
+  and each value is split on its own; a managed configuration binds them as
+  before ([Automation](docs/guide/10-automation.md#familiar-flag-spellings)).
+  `-add-dir` and `abhed mcp add -allow-tools` add on a repeat too.
+  Affects 0.1.0 to 1.2.7 (`-allowedTools` and `-disallowedTools` from 1.2.3,
+  `abhed resolve` from 1.0.0, `-allow-tools` from 1.2.4).
 - The built-in allow rules `bash(ls*)`, `bash(git diff*)`, `bash(git
   status*)` and `bash(git log*)` matched any command starting with those
   letters, so `lsof`, `lsblk` and `git difftool` (which runs a program of
@@ -1484,14 +1493,6 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
-- A repeated `-allow`, `-deny`, `-allowedTools` or `-disallowedTools` (and
-  `abhed resolve -allow`) kept only its last value, dropping the earlier
-  rules without a word; a dropped `-deny` left the run with fewer deny rules
-  than asked for. Each now adds its rules, as one comma-separated list
-  would, and each value is split on its own; a managed configuration binds
-  them as before ([Automation](docs/guide/10-automation.md#familiar-flag-spellings)).
-  Affects 0.1.0 to 1.2.7 (`-allowedTools` and `-disallowedTools` from 1.2.3,
-  `abhed resolve` from 1.0.0).
 - On macOS and Windows, each call Abhed made to `podman` went over ssh to
   the machine, and Podman 5.2 and earlier leave a root ssh session behind in
   the VM at each; a long session ran the VM out of memory. Abhed now uses the

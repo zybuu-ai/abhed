@@ -85,7 +85,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return 2
 	}
 	modeFlagGiven = f.mode != ""
-	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinDenyRules(f.deny, f.disallowedTools), f.addDirs); err != nil {
+	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinDenyRules(f.deny, f.disallowedTools), splitLists(f.addDirs)); err != nil {
 		fail(err)
 	}
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
@@ -395,6 +395,15 @@ func resolveWorkspace(dir string) (string, error) {
 		abs = resolved
 	}
 	return abs, nil
+}
+
+// splitLists splits each value of a repeated comma-separated flag on its own.
+func splitLists(values []string) []string {
+	var out []string
+	for _, v := range values {
+		out = append(out, splitRules(v)...)
+	}
+	return out
 }
 
 func splitRules(s string) []string {

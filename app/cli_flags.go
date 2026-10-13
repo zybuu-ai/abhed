@@ -112,7 +112,7 @@ type cliFlags struct {
 	modelID         string
 	fallbackModel   string
 	workdir         string
-	addDirs         string
+	addDirs         multiFlag
 	maxTurns        int
 	maxBudget       int
 	format          string
@@ -157,7 +157,7 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.StringVar(&f.modelID, "model", "", "provider name from config")
 	fs.StringVar(&f.fallbackModel, "fallback-model", "", "comma-separated configured providers to move to, in order, when the model is unreachable or refuses access")
 	fs.StringVar(&f.workdir, "C", "", "workspace directory (default: current)")
-	fs.StringVar(&f.addDirs, "add-dir", "", "comma-separated extra directories the agent may read and write")
+	fs.Var(&f.addDirs, "add-dir", "comma-separated extra directories the agent may read and write; repeatable")
 	fs.IntVar(&f.maxTurns, "max-turns", 0, "override the turn limit")
 	fs.IntVar(&f.maxBudget, "max-budget-tokens", 0, "end the run once it has used this many tokens (exit 3)")
 	fs.StringVar(&f.format, "output-format", "text", "text|json|stream-json: json and stream-json write one event per line, then a result line")
@@ -549,10 +549,10 @@ func validMode(m string) bool {
 
 // applyFlags lays the command line over the configuration. The managed
 // configuration binds the flags exactly as it binds the SDK's Options.
-func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny []string, addDirs string) (config.Config, error) {
+func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny, addDirs []string) (config.Config, error) {
 	return cfg.Apply(config.Overrides{
 		Mode: mode, MaxTurns: maxTurns,
-		Allow: allow, Deny: deny, AdditionalDirs: splitRules(addDirs),
+		Allow: allow, Deny: deny, AdditionalDirs: addDirs,
 	})
 }
 

@@ -34,7 +34,7 @@ func loadFlags(t *testing.T, mode string, turns int, allow, deny, dirs string) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	return applyFlags(cfg, mode, turns, splitTop(allow), splitTop(deny), dirs)
+	return applyFlags(cfg, mode, turns, splitTop(allow), splitTop(deny), splitRules(dirs))
 }
 
 // The command line's flags meet the managed configuration as the SDK's Options do.
@@ -72,18 +72,22 @@ func TestManagedConfigBindsTheFlags(t *testing.T) {
 // Repeating a rule flag gains nothing over the managed configuration: an
 // allow is still refused, and each deny is added.
 func TestRepeatedRuleFlagsUnderManagedConfig(t *testing.T) {
-	managedConfig(t, `{"permissions": {"mode": "default", "allow": ["bash(go test*)"], "deny": ["bash(curl*)"]}}`)
+	managedConfig(t, `{"permissions": {"mode": "default", "allow": ["bash(go test*)"], "deny": ["bash(curl*)"]}, "additional_dirs": []}`)
 	cfg, err := config.Load(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := parse(t, "-allow", "bash(go test*)", "-allowedTools", "Read", "-allow", "bash(*)")
 	var me *config.ManagedError
-	if _, err := applyFlags(cfg, "", 0, joinRules(f.allow, f.allowedTools), nil, ""); !errors.As(err, &me) || me.Key != "permissions.allow" {
+	if _, err := applyFlags(cfg, "", 0, joinRules(f.allow, f.allowedTools), nil, nil); !errors.As(err, &me) || me.Key != "permissions.allow" {
 		t.Fatalf("want permissions.allow refused, got %v", err)
 	}
+	f = parse(t, "-add-dir", "/a", "-add-dir", "/b")
+	if _, err := applyFlags(cfg, "", 0, nil, nil, splitLists(f.addDirs)); !errors.As(err, &me) || me.Key != "additional_dirs" {
+		t.Fatalf("want additional_dirs refused, got %v", err)
+	}
 	f = parse(t, "-deny", "bash(wget*)", "-disallowedTools", "Bash(nc:*)", "-deny", "bash(scp*)")
-	got, err := applyFlags(cfg, "", 0, nil, joinDenyRules(f.deny, f.disallowedTools), "")
+	got, err := applyFlags(cfg, "", 0, nil, joinDenyRules(f.deny, f.disallowedTools), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

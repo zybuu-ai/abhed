@@ -24,8 +24,8 @@ more often a mistyped command than a task.
 | `-model NAME` | a configured provider for this run |
 | `-fallback-model A,B` | configured providers to move to when the model is unavailable |
 | `-mode MODE` | `default`, `accept-edits`, `plan`, `auto` or `bypass` |
-| `-allow RULES`, `-deny RULES` | rules for this run, e.g. `bash(go test*)` |
-| `-add-dir DIRS` | more directories the agent may read and write |
+| `-allow RULES`, `-deny RULES` | rules for this run, e.g. `bash(go test*)`; repeatable |
+| `-add-dir DIRS` | more directories the agent may read and write; repeatable |
 | `-max-turns N`, `-max-budget-tokens N` | limits for this run; a managed limit may only be lowered |
 | `-append-system-prompt TEXT` | instructions added to the system prompt |
 | `-system-prompt TEXT` | the system prompt replaced; refused under a managed configuration |

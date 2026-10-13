@@ -177,11 +177,12 @@ abhed mcp remove docs
 ```
 
 `add` shows the server, every value escaped and `-env` values hidden, and
-asks; only a yes typed at a terminal adds it, enabled, since it lets the
-agent start a process or reach an endpoint. Without a terminal it is
-refused: edit the file instead. `add` and `remove` are also refused inside
-an agent's command, where `ABHED_SANDBOX` is set or an `abhed` process is
-above the command. Neither check is the boundary: a terminal can be faked,
+asks (`-env`, `-header-env` and `-allow-tools` may be repeated, each
+adding to the earlier ones); only a yes typed at a terminal adds it,
+enabled, since it lets the agent start a process or reach an endpoint.
+Without a terminal it is refused: edit the file instead. `add` and `remove`
+are also refused inside an agent's command, where `ABHED_SANDBOX` is set or
+an `abhed` process is above the command. Neither check is the boundary: a terminal can be faked,
 and a detached daemon has no `abhed` above it. What keeps the agent from
 adding a server is the sandbox, which denies it `~/.abhed`; with the
 sandbox off (`none`) nothing does. `remove` narrows, so it does not ask. Each
