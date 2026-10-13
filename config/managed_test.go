@@ -361,12 +361,16 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 
 	t.Run("a file repeating a default", func(t *testing.T) {
 		withManaged(t, `{"permissions":{"mode":"default"}}`)
-		_, ws := trustHome(t, `{"permissions":{"allow":["bash(ls*)"," bash(pwd) ","bash(rm*)"]}}`, "")
+		_, ws := trustHome(t, `{"permissions":{"allow":["bash(ls *)"," bash(pwd) ","bash(rm*)"]}}`, "")
 		cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.Join(cfg.Permissions.Allow, "|"); strings.ReplaceAll(got, " ", "") != "bash(ls*)|bash(pwd)" {
+		var got []string
+		for _, r := range cfg.Permissions.Allow {
+			got = append(got, strings.TrimSpace(r))
+		}
+		if strings.Join(got, "|") != "bash(ls *)|bash(pwd)" {
 			t.Fatalf("allow %v; want the built-in rules the file kept, once each", cfg.Permissions.Allow)
 		}
 	})

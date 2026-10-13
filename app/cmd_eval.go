@@ -30,7 +30,7 @@ func evalAllowed(cfg config.Config) error {
 }
 
 // evalAllow lets corpora that compile and test code do so unattended.
-var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(cat *)", "bash(ls*)"}
+var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(cat *)", "bash(ls)", "bash(ls *)"}
 
 // evalCmd runs the evaluation corpus against the configured model.
 //
