@@ -933,6 +933,8 @@ async function acceptHunk(t, c){
 function rejectHunk(t, c){
   const text = spliceLines(t.model.getLinesContent(), c.modifiedStartLineNumber, c.modifiedEndLineNumber,
     linesOf(t.orig, c.originalStartLineNumber, c.originalEndLineNumber)).join(t.model.getEOL());
+  // An added file with its last change rejected is not left empty: it is removed, as Reject all does.
+  if(!t.existed && text === t.orig.getValue()) return rejectAll(t);
   replaceAll(t, text); save(t);
 }
 // replaceAll is an edit, not a reload: it can be undone and it marks the tab unsaved.

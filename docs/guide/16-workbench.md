@@ -330,8 +330,8 @@ recorded as your write. *Accept* keeps the change and moves the file's
 baseline, so it stops showing as a change and `/undo` returns to it; the
 acceptance is recorded as `change.accepted`. The baseline only moves to text on
 disk, so accepting in a tab with unsaved edits saves them first. Rejecting
-everything in a file the session created deletes the file, as the Explorer
-does.
+everything in a file the session created, with *Reject all* or by rejecting
+its last change, deletes the file, as the Explorer does.
 
 **Comments on the changes.** A click in the diff's gutter, beside a line of
 the changed file, or *Comment on this line* from its right-click menu, opens a

@@ -13,6 +13,7 @@
 #   extract.py ide.html ide-call      an opened call and the plan
 #   extract.py ide.html ide-lsp       a language server's file URI as a workspace path
 #   extract.py ide.html ide-files     downloads, a session's title and delete, notifications
+#   extract.py ide.html ide-review    rejecting a change in the review
 #   extract.py console.go model       the model picker (ide-model: the workbench's)
 #   extract.py console.go switch      the chat list, the address and the switcher (ide-switch: the workbench's)
 #   extract.py console.go hidden      hasHidden (ide-hidden: the workbench's)
@@ -72,6 +73,8 @@ sets = {
     'ide-files': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const fmtSize = ','async function download(path, report){','async function loadDownloads(){',
           'const sessionLabel = ','function editTitle(span, s){','async function setTitle(s, title, span){','async function deleteSession(s){','const resumeCommand = ','async function copyResume(id, btn){','function exportSession(id, format){',
           'const NOTE_TEXT = ','const notifyOn = ','function notify(kind){','function drawNotify(){','async function toggleNotify(){'],
+    # From ide.html: rejecting a change in the review.
+    'ide-review': ['const linesOf = ','function spliceLines(lines, s, e, put){','function rejectHunk(t, c){','function replaceAll(t, text){','async function rejectAll(t){'],
     # hasHidden alone, from either page: ide-hidden takes ide.html's.
     'hidden': ['function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){'],
     'ide-hidden': ['function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){'],

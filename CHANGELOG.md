@@ -1501,6 +1501,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- In the workbench's review, rejecting the only change of a file the session
+  added left the file on disk, empty. It is now removed, as *Reject all*
+  does. Affects 1.1.0 to 1.2.7.
 - The terminal's markdown showed underscores inside a word as emphasis, so
   `__init__.py` read as a bold `init.py`. Underscores inside a word, or
   followed by `.`, `-` or `/` and more of a name, are now literal. Affects

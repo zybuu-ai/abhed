@@ -775,3 +775,20 @@ func TestIDEExtensionStatusAndKillFocus(t *testing.T) {
 		t.Error("Kill leaves focus on itself")
 	}
 }
+
+// ideReviewHarness is what rejecting a change in the review calls out to.
+const ideReviewHarness = `let current = 's1';
+globalThis.__posted = []; globalThis.__saved = []; globalThis.__closed = [];
+const api = async (url, opts) => { __posted.push({url, body: JSON.parse(opts.body)}); return {}; };
+const save = async t => { __saved.push(t.path); };
+const closeTab = id => { __closed.push(id); }, changesSoon = () => {}, refreshDir = () => {}, crumbs = () => {};
+const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '', visible = s => s;
+`
+
+// Rejecting the only change of a file the session added removes it, as
+// Reject all does, rather than leaving the file on disk empty.
+func TestIDERejectingAnAddedFilesOnlyChangeRemovesIt(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-review", ideReviewHarness, "ide_review_cases.mjs"); err != nil {
+		t.Fatalf("rejecting a change:\n%s", out)
+	}
+}
