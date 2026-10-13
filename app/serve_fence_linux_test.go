@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/fence/landlock"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/server"
@@ -24,6 +25,7 @@ func TestServeRunsEachSessionUnderItsOwnFence(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 in a delegated cgroup to fence real commands")
 	}
+	skipBelowServeABI(t)
 	t.Setenv("HOME", t.TempDir())
 	ws := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
@@ -156,5 +158,18 @@ func TestServedFenceSessionHomeIsItsFencesOnceMade(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("the fence's home: %v", err)
+	}
+}
+
+// serveLandlockABI is what serve with accounts needs of the fence: Landlock
+// ABI 6, which keeps one account's commands from signalling another's.
+const serveLandlockABI = 6
+
+// skipBelowServeABI skips, saying why, on a kernel whose Landlock is older
+// than serve on the fence needs; the fence job reports the skip by name.
+func skipBelowServeABI(t *testing.T) {
+	t.Helper()
+	if abi, err := landlock.Detect(); err != nil || int(abi) < serveLandlockABI {
+		t.Skipf("serve on the fence needs Landlock ABI %d (Linux 6.12 or later); this kernel has %d (%v)", serveLandlockABI, int(abi), err)
 	}
 }
