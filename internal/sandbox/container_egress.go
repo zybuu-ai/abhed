@@ -93,33 +93,34 @@ func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 
 // egressRun runs argv in a networkless container whose only way out is a
 // relay to the egress proxy over an exec's stdio. The container takes p's
-// mounts and extra run arguments; argv gets env besides the proxy's.
-func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, env, argv []string) *exec.Cmd {
+// mounts and extra run arguments; argv gets env besides the proxy's. The func
+// returned removes the container and ends the call, at once.
+func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, env, argv []string) (*exec.Cmd, func()) {
 	relay, why := c.containerRelay()
 	if relay == "" {
-		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: " + why)}
+		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: " + why)}, nil
 	}
 	proxy, routes, err := c.containerProxy()
 	if err != nil {
-		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the egress proxy: %w", err)}
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the egress proxy: %w", err)}, nil
 	}
 	l := LaunchOf(ctx)
 	call, err := proxy.Issue(l.CallID)
 	if err != nil {
-		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: an egress credential: %w", err)}
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: an egress credential: %w", err)}, nil
 	}
 	// The relay of this command's container alone reaches the call's own
 	// socket, so what arrives there is the call's, whatever it carries.
 	sock := filepath.Join(c.egDir, "c"+strconv.FormatUint(callSeq.Add(1), 36)+".sock")
 	if err := call.ListenUnix(sock); err != nil {
 		call.End()
-		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the call's own proxy listener: %w", err)}
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the call's own proxy listener: %w", err)}, nil
 	}
 	routes.remember(l)
 	args, err := c.runArgsWith(ctx, cwd, p, false)
 	if err != nil {
 		call.End()
-		return &exec.Cmd{Err: err}
+		return &exec.Cmd{Err: err}, nil
 	}
 	name := containerName(egressPrefix)
 	// Detached, with the relay bound read-only; it idles until removed.
@@ -140,7 +141,7 @@ func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, 
 	defer cancel()
 	if out, err := c.engineCmd(startCtx, run...).CombinedOutput(); err != nil {
 		end()
-		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: starting its container: %w: %s", err, strings.TrimSpace(string(out)))}
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: starting its container: %w: %s", err, strings.TrimSpace(string(out)))}, nil
 	}
 	listen := "127.0.0.1:" + strconv.Itoa(int(relayPort(proxy.Addr().Port())))
 	relayCtx, stopRelay := context.WithCancel(context.WithoutCancel(ctx))
@@ -158,17 +159,17 @@ func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, 
 	case <-ready:
 	case err := <-done:
 		stop()
-		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its egress relay ended: %w", err)}
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its egress relay ended: %w", err)}, nil
 	case <-startCtx.Done():
 		stop()
-		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: its egress relay did not start in time")}
+		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: its egress relay did not start in time")}, nil
 	}
 	// In a private file, not an argument any process can list nor the CLI's
 	// own environment, whose proxy settings its client would follow.
 	envFile, removeEnv, err := EnvFile(append(call.Env(), env...))
 	if err != nil {
 		stop()
-		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its proxy settings: %w", err)}
+		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its proxy settings: %w", err)}, nil
 	}
 	stopAll := func() {
 		stop()
@@ -185,7 +186,7 @@ func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, 
 		stop()
 		return cmd.Process.Kill()
 	}
-	return cmd
+	return cmd, stopAll
 }
 
 // engineCmd is the engine's CLI with args, given the host's environment,

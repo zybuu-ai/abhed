@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"sort"
@@ -91,6 +92,10 @@ type Gateway struct {
 	Confine     Launcher
 	ConfineNet  Launcher
 	MustConfine bool
+	// Cleanup, when set, is what a launched command needs run when its server
+	// closes, before its process is killed: a container's removal; nil when
+	// it needs none.
+	Cleanup func(*exec.Cmd) func()
 	// Egress is the tool set's egress guard for HTTP servers, egress.Unguarded
 	// outside the allowlist; nil uses the request's.
 	Egress *egress.Guard

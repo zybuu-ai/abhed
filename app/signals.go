@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
-	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // stopWait bounds how long a stopped command waits for its work to end
@@ -121,7 +120,7 @@ func (s *stopper) watch(then onStop) {
 	case <-s.sigs:
 	case <-time.After(stopWait):
 	}
-	tools.EndBackgroundShells(shellEndWait)
+	endAtExit()
 	os.Exit(code)
 }
 

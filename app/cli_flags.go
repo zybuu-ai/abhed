@@ -25,7 +25,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
-	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // usage prints the synopsis, the subcommands and then the flags.
@@ -234,7 +233,7 @@ func (f *cliFlags) task() string {
 // the exit code. It is what every edition's main calls.
 func Main(args []string, opts ...Option) int {
 	// No background shell outlives the process that started it.
-	defer tools.EndBackgroundShells(shellEndWait)
+	defer endAtExit()
 	a := newApp(opts...)
 	var f cliFlags
 	fs := newFlagSet(&f)

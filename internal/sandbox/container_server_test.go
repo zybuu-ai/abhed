@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -112,9 +113,10 @@ func TestContainerServerProgramNotInImage(t *testing.T) {
 	}
 }
 
-// A server on a real engine reads none of the home or Abhed's state, uses
-// its own home and the workspace, and plants nothing.
-func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
+// realEngineForServers is the container tier on this machine's engine, with
+// a home and workspace of the test's own, or skips.
+func realEngineForServers(t *testing.T) (*Container, string) {
+	t.Helper()
 	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
 		t.Skip("set ABHED_REQUIRE_CONTAINER=1 to run a server on a real engine")
 	}
@@ -138,11 +140,82 @@ func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
 	}
 	t.Setenv("HOME", workspace(t))
 	ws := workspace(t)
-	probe := newServerProbe(t, ws, true)
 	c := NewContainer(DefaultPolicy(ws))
 	if ok, why := c.Available(); !ok {
 		t.Fatalf("no container engine: %s", why)
 	}
+	return c, ws
+}
+
+// serverContainers lists the containers named with the server prefix.
+func serverContainers(t *testing.T, c *Container) string {
+	t.Helper()
+	out, err := exec.Command(c.runtime, "ps", "-a", "--filter", "name=^"+serverPrefix, "--format", "{{.Names}}").Output() // #nosec G204 -- the test's engine
+	if err != nil {
+		t.Fatalf("listing containers: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// startStubbornServer starts a server that ignores its stdin closing and
+// the engine client's end, and waits for its container.
+func startStubbornServer(t *testing.T, c *Container) *exec.Cmd {
+	t.Helper()
+	cmd, err := c.ServerCommand(context.Background(), "stubborn", []string{"/bin/sh", "-c", "trap '' TERM HUP INT; while :; do sleep 1; done"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cmd.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(60 * time.Second); serverContainers(t, c) == ""; time.Sleep(200 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the server's container never appeared")
+		}
+	}
+	return cmd
+}
+
+// A server's container is gone once its cleanup returns, before its engine
+// client is killed; and once an exit has ended the servers.
+func TestContainerServerRemovedOnCloseOnARealEngine(t *testing.T) {
+	c, _ := realEngineForServers(t)
+	if os.Getenv("ABHED_SERVER_EXIT_HELPER") == "1" {
+		startStubbornServer(t, c)
+		EndServers()
+		os.Exit(0)
+	}
+	cmd := startStubbornServer(t, c)
+	cleanup := ServerCleanup(cmd)
+	if cleanup == nil {
+		t.Fatal("no cleanup for a server's container")
+	}
+	cleanup()
+	if left := serverContainers(t, c); left != "" {
+		t.Fatalf("the container outlived its cleanup: %s", left)
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	// A process that exits through EndServers leaves none behind.
+	helper := exec.Command(os.Args[0], "-test.run=^TestContainerServerRemovedOnCloseOnARealEngine$")
+	helper.Env = append(os.Environ(), "ABHED_SERVER_EXIT_HELPER=1")
+	if out, err := helper.CombinedOutput(); err != nil {
+		t.Fatalf("helper: %v\n%s", err, out)
+	}
+	if left := serverContainers(t, c); left != "" {
+		t.Fatalf("a container outlived the process that started it: %s", left)
+	}
+}
+
+// A server on a real engine reads none of the home or Abhed's state, uses
+// its own home and the workspace, and plants nothing.
+func TestContainerServerFilesAreConfinedOnARealEngine(t *testing.T) {
+	c, ws := realEngineForServers(t)
+	probe := newServerProbe(t, ws, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	cmd, err := c.ServerCommand(ctx, "files", probe.argv, os.Environ(), nil)

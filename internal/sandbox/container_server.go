@@ -10,10 +10,48 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // serverPrefix names a server's container.
 var serverPrefix = "abhed-mcp-"
+
+// liveServers are the removals of the server containers this process runs,
+// by their command, so a close or an exit removes each before it goes.
+var liveServers sync.Map // *exec.Cmd -> func()
+
+// ServerCleanup is what removes the container cmd, a server's command, runs
+// in: synchronous and safe to call more than once; nil for any other command.
+// Killing the engine's client alone leaves the container running.
+func ServerCleanup(cmd *exec.Cmd) func() {
+	if f, ok := liveServers.Load(cmd); ok {
+		return f.(func())
+	}
+	return nil
+}
+
+// EndServers removes every server container this process still runs, at
+// once; for an exit that skips the closes.
+func EndServers() {
+	var wg sync.WaitGroup
+	liveServers.Range(func(_, f any) bool {
+		wg.Add(1)
+		go func() { defer wg.Done(); f.(func())() }()
+		return true
+	})
+	wg.Wait()
+}
+
+// trackServer keeps stop as cmd's cleanup until it has run once.
+func trackServer(cmd *exec.Cmd, stop func()) {
+	var once sync.Once
+	liveServers.Store(cmd, func() {
+		once.Do(func() {
+			stop()
+			liveServers.Delete(cmd)
+		})
+	})
+}
 
 // ServerCommand runs a stdio MCP server in a container of its own, its stdio
 // relayed by the engine: the session's mounts with read_only_paths in the home
@@ -45,34 +83,40 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	key := ServerKey(name)
 	ctx = WithLaunch(ctx, Launch{CallID: key, Session: key, Record: record})
 	var cmd *exec.Cmd
+	var stop func()
 	if c.policy.Egress != nil {
-		cmd = c.egressRun(ctx, c.policy.Workspace, p, extra, env, argv)
+		cmd, stop = c.egressRun(ctx, c.policy.Workspace, p, extra, env, argv)
 	} else {
-		cmd = c.serverRun(ctx, p, extra, env, argv)
+		cmd, stop = c.serverRun(ctx, p, extra, env, argv)
 	}
 	if cmd.Err != nil {
 		return nil, fmt.Errorf("sandbox: the server was not started: %w", cmd.Err)
 	}
+	trackServer(cmd, stop)
 	return cmd, nil
 }
 
-// serverRun is a server's container outside the allowlist, its network open.
-func (c *Container) serverRun(ctx context.Context, p Policy, extra, env, argv []string) *exec.Cmd {
+// serverRun is a server's container outside the allowlist, its network open,
+// and what removes it.
+func (c *Container) serverRun(ctx context.Context, p Policy, extra, env, argv []string) (*exec.Cmd, func()) {
 	args, err := c.runArgsWith(ctx, p.Workspace, p, true)
 	if err != nil {
-		return &exec.Cmd{Err: err}
+		return &exec.Cmd{Err: err}, nil
 	}
 	// In a private file: a value may be a token, which an argument would show.
 	envFile, removeEnv, err := EnvFile(env)
 	if err != nil {
-		return &exec.Cmd{Err: fmt.Errorf("its environment: %w", err)}
+		return &exec.Cmd{Err: fmt.Errorf("its environment: %w", err)}, nil
 	}
 	context.AfterFunc(ctx, removeEnv)
 	name := containerName(serverPrefix)
 	args = append(append(args, extra...), "--env-file", envFile, "--name", name, Image)
 	cmd := c.engineCmd(ctx, append(args, argv...)...)
 	cmd.Cancel = c.remove(cmd, name)
-	return cmd
+	return cmd, func() {
+		c.removeNow(name)
+		removeEnv()
+	}
 }
 
 // programInImage refuses a server whose program the sandbox image cannot run:

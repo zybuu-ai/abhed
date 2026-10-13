@@ -447,8 +447,15 @@ func must(err error) {
 
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
-	tools.EndBackgroundShells(shellEndWait)
+	endAtExit()
 	os.Exit(1)
+}
+
+// endAtExit ends what an exit would leave behind: background shells, and
+// MCP servers' containers, which their closes did not reach.
+func endAtExit() {
+	tools.EndBackgroundShells(shellEndWait)
+	sandbox.EndServers()
 }
 
 // shellEndWait bounds how long an exit waits for background shells to end.

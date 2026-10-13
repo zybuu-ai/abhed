@@ -322,7 +322,8 @@ func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if c.policy.Egress != nil {
-		return c.egressRun(ctx, cwd, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
+		cmd, _ := c.egressRun(ctx, cwd, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
+		return cmd
 	}
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
@@ -349,13 +350,17 @@ func containerName(prefix string) string {
 
 // remove is a cancel that removes the named container, then kills the CLI.
 func (c *Container) remove(cmd *exec.Cmd, name string) func() error {
-	runtime, rm := c.runtime, c.rmArgs(name)
 	return func() error {
-		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
-		defer cancel()
-		_ = exec.CommandContext(rmCtx, runtime, rm...).Run() // #nosec G204 -- the configured engine and a name this process made
+		c.removeNow(name)
 		return cmd.Process.Kill()
 	}
+}
+
+// removeNow removes the named container, waiting up to engineWait.
+func (c *Container) removeNow(name string) {
+	rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
+	defer cancel()
+	_ = exec.CommandContext(rmCtx, c.runtime, c.rmArgs(name)...).Run() // #nosec G204 -- the configured engine and a name this process made
 }
 
 // containerShell prefers bash where the image has it.
