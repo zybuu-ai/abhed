@@ -258,7 +258,10 @@ var argvRunners = map[string]bool{
 // before it, and the pathspec after it. Option values are left out.
 type gitArgs struct {
 	flags, operands, paths []string
-	shortValues            string
+	// late are option-like words after a -- that a subcommand reading its
+	// options with parse-options may take as a value and read on past.
+	late        []string
+	shortValues string
 }
 
 func parseGitArgs(sub string, words []string) gitArgs {
@@ -270,6 +273,9 @@ func parseGitArgs(sub string, words []string) gitArgs {
 		switch {
 		case dashdash:
 			g.paths = append(g.paths, w)
+			if strings.HasPrefix(w, "-") && !gitEndsOptions[sub] {
+				g.late = append(g.late, w)
+			}
 		case w == "--":
 			dashdash = true
 		case strings.HasPrefix(w, "--"):
@@ -436,8 +442,21 @@ func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (strin
 		return "git " + sub + gitForeignSuffix, true
 	}
 	g := parseGitArgs(sub, words[i+1:])
+	// Options git may read past a --, unless the words are message text.
+	all := gitArgs{flags: append(append([]string(nil), g.flags...), g.late...), shortValues: g.shortValues}
+	if gitTakesText(sub, words[i+1:]) {
+		all = gitArgs{}
+	}
+	for _, opt := range gitRunsCommand {
+		if all.risky(strings.TrimPrefix(opt, "--"), "") {
+			return "git " + opt + ", which runs the command it is given", true
+		}
+	}
+	if letter, ok := gitRunsCommandShort[sub]; ok && all.risky("", letter) {
+		return "git " + sub + " -" + letter + ", which runs the command it is given", true
+	}
 	// Every subcommand that takes diff or log options, stash list included, writes --output.
-	if g.risky("output", "") {
+	if all.risky("output", "") {
 		return "write over a file (git --output)", true
 	}
 	switch sub {

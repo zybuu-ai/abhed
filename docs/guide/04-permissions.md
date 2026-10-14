@@ -334,19 +334,52 @@ A rule for an interpreter allows whatever it can run: `bash(vim -es*)` allows
 any command, since a vim script runs shell commands with `:!`.
 
 An allow rule with a wildcard, such as the built-in `bash(git diff *)` and
-`bash(git log *)`, does not approve a git option that writes a file or runs
-a program; the command asks, with no "always allow" offered, and the reason
-names the option. They are `--output` and `--output-directory`
-(`format-patch -o`), `--ext-diff`, `--textconv`, `--open-files-in-pager`
-(`grep -O`), `--upload-pack` (`clone` and `ls-remote -u`), `--receive-pack`,
-`--exec` (`rebase -x`), and, before the subcommand, `-c`, `--config-env`,
-`--exec-path`, `-p` and `--paginate` (which run the configured pager), and
-`-C`, `--git-dir` and `--work-tree` (which point git at a repository whose
-configuration can name a program to run). Each counts joined with `=` or followed by its value, shortened
-as git may accept it (`--ext`, `--outp`), and after paths, up to `--`.
-`--output` and `--upload-pack` already asked in every mode. A rule naming the
+`bash(git log *)`, does not approve these git commands; each asks, with no
+"always allow" offered, and the reason names what it runs or writes:
+
+- the options `--output`, `--output-directory` (`format-patch -o`),
+  `--ext-diff`, `--textconv`, `--open-files-in-pager` (`grep -O`),
+  `--upload-pack` (`clone` and `ls-remote -u`), `--receive-pack` and
+  `--exec` (`rebase -x`), joined with `=` or followed by their value, and
+  shortened to any prefix (`--ext`, `--op`, `--u`; for `--textconv`, one
+  longer than `--text`, which is its own option)
+- `git clone -c`, `--config` and `--template`, and `git init --template`,
+  which set configuration or install hooks, and `git cat-file --filters`,
+  which runs the configured filter programs
+- before the subcommand, `-c`, `--config-env`, `--exec-path`, `-p` and
+  `--paginate` (which run the configured pager), and `-C`, `--git-dir` and
+  `--work-tree` (which point git at a repository whose configuration can
+  name a program to run)
+- a merge strategy that is not built into git (`ort`, `recursive`,
+  `resolve`, `octopus`, `ours`, `subtree`), given with `-s` or
+  `--strategy` to `merge`, `pull`, `rebase`, `cherry-pick` or `revert`,
+  which runs `git-merge-<name>` from `PATH`
+- the subcommands `difftool`, `mergetool`, `filter-branch`, `send-email`
+  and `instaweb`, `bisect run`, `submodule foreach`, and `git config` other
+  than reading with `--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`,
+  `--list`, `-l`, `get` or `list`
+
+For `log`, `show` and `whatchanged` the options are read up to `--`, since
+git reads what follows as paths; for every other subcommand, `diff`
+included, every word is read, because `--` can be an option's value there
+(`git grep -e -- -O prog`, `git diff --no-index -O -- --output=f a b`,
+`git format-patch --subject-prefix -- --output=f -1`). `commit`, `tag`,
+`merge`, `notes` and `stash` other than `stash show` and `stash list` take
+message text and none of these options, so their words are not read as
+options: `git commit -m "fix --exec handling"` is a message. A strategy is
+still read on `merge`, so `git merge -m "use -s x"` asks.
+`--output`, `--upload-pack`, `--receive-pack` and `--exec`, by any prefix,
+and `clone -u`, `ls-remote -u` and `rebase -x`, are also destructive: they
+ask in every mode, `bypass` included, and a deny rule sees the command they
+are given, whatever the allow rules say. For the rest, a rule naming the
 whole command exactly, such as `bash(git log -p --ext-diff)`, and `bash` or
-`bash(*)`, still approve it.
+`bash(*)`, still approve it. This is a list,
+not a proof that git runs nothing: under any rule that allows git, even the
+built-in `bash(git diff *)`, git still runs the programs the repository's
+own configuration names, with no option at all (an external diff or
+textconv driver on plain `git diff`, a pager, `core.fsmonitor`, an alias;
+see the paragraph on git's own hooks and config below), so the sandbox
+remains the boundary.
 
 A one-click "always allow" is offered only for a short list of well-understood
 tools and subcommands; anything else can be approved once or allowed with a
@@ -638,8 +671,9 @@ and literal text another command runs is read as the commands it is:
 `bash <<< 'curl x'`, `su --command`, `flock`, `env -S 'curl x'`,
 `watch 'curl x'`, a command under `find -exec`, `chrt`, `taskset`, `chroot`,
 `unshare` or `timeout inf`, and the value of git's `--exec`,
-`--upload-pack` and `--receive-pack` and the command of an `ext::` URL on
-git's line, which also confirm as destructive.
+`--upload-pack` and `--receive-pack` (by any prefix, such as `--u=`),
+`clone -u`, `ls-remote -u` and `rebase -x`, and the command of an `ext::`
+URL on git's line, which also confirm as destructive.
 Such text built from an expansion is refused while a deny rule for `bash`
 has a pattern. So is any git argument built from an expansion once the line
 enables the ext protocol (`protocol.ext.allow` or `protocol.allow` in `-c`,

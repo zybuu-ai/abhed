@@ -24,6 +24,7 @@ func TestDefaultAllowNamesWholeCommands(t *testing.T) {
 		"git diff --output=x": policy.Ask, "git diff --output x": policy.Ask, "git diff --outp=x": policy.Ask, "git diff a.go --output=x": policy.Ask,
 		"git log --output=x": policy.Ask, "git diff --ext-diff": policy.Ask, "git diff --ext": policy.Ask, "git diff a.go --ext-diff": policy.Ask,
 		"git log -p --ext-diff": policy.Ask, "git log -p --textconv": policy.Ask, "git diff --textc": policy.Ask,
+		"git diff --no-index -O -- --output=/x a b": policy.Ask, "git diff --no-index -O -- --outp=/x a b": policy.Ask, "git diff -- a.go": policy.Allow,
 		"git diff --no-ext-diff --no-textconv": policy.Allow, "git diff --text": policy.Allow, "git log -O order.txt": policy.Allow,
 	} {
 		args, _ := json.Marshal(map[string]string{"command": command})
