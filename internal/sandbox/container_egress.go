@@ -183,7 +183,14 @@ func (c *Container) egressRun(ctx context.Context, cwd, prefix string, p Policy,
 		delete(c.egCalls, key)
 		c.egCallsMu.Unlock()
 	})
+	// Registered under the lock Close takes: a call set up as the sandbox
+	// closes is torn down here rather than left standing.
 	c.egCallsMu.Lock()
+	if c.egClosed {
+		c.egCallsMu.Unlock()
+		stopAll()
+		return &exec.Cmd{Err: errEgressClosed}, nil
+	}
 	if c.egCalls == nil {
 		c.egCalls = map[*int]func(){}
 	}
@@ -197,7 +204,7 @@ func (c *Container) egressRun(ctx context.Context, cwd, prefix string, p Policy,
 	execArgs = append(append(execArgs, "--env-file", envFile, "-e", "ABHED_SANDBOX="+string(c.Tier()), name), argv...)
 	cmd := c.engineCmd(ctx, execArgs...)
 	cmd.Cancel = func() error {
-		stop()
+		stopAll()
 		return cmd.Process.Kill()
 	}
 	return cmd, stopAll
@@ -214,14 +221,20 @@ func (c *Container) engineCmd(ctx context.Context, args ...string) *exec.Cmd {
 func (c *Container) closeEgress() error {
 	c.egOnce.Do(func() { c.egErr = errEgressClosed })
 	c.egCallsMu.Lock()
+	c.egClosed = true
 	ends := make([]func(), 0, len(c.egCalls))
 	for _, f := range c.egCalls {
 		ends = append(ends, f)
 	}
 	c.egCallsMu.Unlock()
+	// Together, each bounded by the engine's own wait, so Close takes about
+	// as long as one removal however many calls stand.
+	var wg sync.WaitGroup
 	for _, f := range ends {
-		f()
+		wg.Add(1)
+		go func() { defer wg.Done(); f() }()
 	}
+	wg.Wait()
 	var err error
 	if c.egProxy != nil {
 		err = c.egProxy.Close()

@@ -232,3 +232,52 @@ func TestContainerCloseRemovesEveryCallsContainer(t *testing.T) {
 		t.Fatalf("Close returned with the call's container still standing:\n%s", b)
 	}
 }
+
+// Close tears the calls' containers down together, so it takes about one
+// removal however many stand, and still waits for every one.
+func TestContainerCloseTearsCallsDownTogether(t *testing.T) {
+	inner, log := fakeEngine(t)
+	engine := filepath.Join(t.TempDir(), "slow-engine")
+	slow := "#!/bin/sh\nif [ \"$1\" = rm ]; then sleep 1; fi\nexec " + inner + " \"$@\"\n"
+	if err := os.WriteFile(engine, []byte(slow), 0o755); err != nil { // #nosec G306 -- a test script that must run
+		t.Fatal(err)
+	}
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	c := &Container{runtime: engine, available: true, policy: Policy{Workspace: ws, Egress: pol, RelayBinary: "/opt/abhed-linux"}}
+	c.once.Do(func() {})
+	old, oldPort := containerHostOS, relayPort
+	containerHostOS = "darwin"
+	// The fake engine runs each call's relay on this host: a free port each.
+	relayPort = func(uint16) uint16 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		return uint16(ln.Addr().(*net.TCPAddr).Port) // #nosec G115 -- a port
+	}
+	t.Cleanup(func() { containerHostOS, relayPort = old, oldPort })
+	ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "call-close"}))
+	defer cancel()
+	for range 3 {
+		if out, err := c.Command(ctx, ws, "echo ran").CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	start := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	b, _ := os.ReadFile(log)
+	if n := strings.Count(string(b), "rm -f"); n < 3 {
+		t.Fatalf("Close returned with %d of 3 containers removed:\n%s", n, b)
+	}
+	if took > 2500*time.Millisecond {
+		t.Fatalf("Close took %v for three one-second removals: one after another", took)
+	}
+}

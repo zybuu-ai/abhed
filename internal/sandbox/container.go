@@ -63,6 +63,7 @@ type Container struct {
 	// Close ends them all, and waits for their removal.
 	egCallsMu sync.Mutex
 	egCalls   map[*int]func()
+	egClosed  bool
 }
 
 // LookEngine finds a container engine's CLI by name. Tests replace it to keep
