@@ -1516,6 +1516,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A server stopped while a workbench or console tab was open waited the
+  full ten seconds it gives open HTTP requests, since the tab's streams
+  never end by themselves. Its streams (session events, terminals,
+  language servers and the shared stream) now end when the HTTP shutdown
+  begins, after the drain, so turns still finish in view. Affects every
+  release to 1.2.7.
 - In the workbench, *Edit and resend* on a session's first message, after
   commands you ran yourself, was refused with "nothing to fork from", and
   the page stayed in edit mode, so each send was refused again. The

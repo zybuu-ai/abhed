@@ -411,6 +411,10 @@ type Server struct {
 	cpExec      *limiter
 	// cpStreams counts the attach, exec, forward and SSH streams open, per caller.
 	cpStreams streamSlots
+	// streamsEnd ends the page streams when the HTTP shutdown begins: they
+	// never end by themselves, and the shutdown would wait its budget out.
+	streamsEnd    context.Context
+	endStreamsNow context.CancelFunc
 
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
@@ -778,6 +782,7 @@ func New(opts Options) *Server {
 			cfg:      opts.Config,
 		},
 	}
+	s.streamsEnd, s.endStreamsNow = context.WithCancel(context.Background())
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
@@ -844,8 +849,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
-	mux.HandleFunc("GET /v1/sessions/{id}/events", s.streamEvents)
-	mux.HandleFunc("GET /v1/streams", s.openStreamMux)
+	mux.HandleFunc("GET /v1/sessions/{id}/events", s.untilShutdown(s.streamEvents))
+	mux.HandleFunc("GET /v1/streams", s.untilShutdown(s.openStreamMux))
 	mux.Handle("POST /v1/streams/{mux}/{ch}", s.openStreamChannel(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { top.ServeHTTP(w, r) })))
 	mux.HandleFunc("DELETE /v1/streams/{mux}/{ch}", s.closeStreamChannel)
 	mux.HandleFunc("GET /v1/sessions/{id}/replay", s.replaySession)
@@ -863,11 +868,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/lsp", s.startLSP)
-	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.streamLSP)
+	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.untilShutdown(s.streamLSP))
 	mux.HandleFunc("POST /v1/sessions/{id}/lsp/{lsp}", s.sendLSP)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/lsp/{lsp}", s.stopLSP)
 	mux.HandleFunc("GET /v1/sessions/{id}/pty", s.listShells)
-	mux.HandleFunc("GET /v1/sessions/{id}/pty/{pty}", s.streamPTY)
+	mux.HandleFunc("GET /v1/sessions/{id}/pty/{pty}", s.untilShutdown(s.streamPTY))
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/detach", s.detachPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/input", s.writePTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/resize", s.resizePTY)
@@ -5201,6 +5206,7 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 	srv.Addr = ln.Addr().String()
 	go s.sweepOrphans(ctx, nodeStale)
 	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
+	srv.RegisterOnShutdown(s.endStreams)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -5227,6 +5233,28 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 		<-stopped
 	}
 	return err
+}
+
+// untilShutdown runs a stream's handler with a context that also ends when
+// the HTTP shutdown begins, after the drain, so turns finish in view.
+func (s *Server) untilShutdown(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.streamsEnd == nil {
+			h(w, r)
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		stop := context.AfterFunc(s.streamsEnd, cancel)
+		defer func() { stop(); cancel() }()
+		h(w, r.WithContext(ctx))
+	}
+}
+
+// endStreams ends every page stream open and any opened after it.
+func (s *Server) endStreams() {
+	if s.endStreamsNow != nil {
+		s.endStreamsNow()
+	}
 }
 
 // drain stops this node taking new turns and gives the running ones until
