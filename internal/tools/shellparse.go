@@ -4,6 +4,7 @@ import (
 	"maps"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1103,8 +1104,24 @@ func gitSubcommand(args []*syntax.Word) int {
 // an option. An expansion after a literal --name= is that option's value,
 // and a quoted pattern (git tag -l 'v*') is git's, not the shell's.
 func (f *shellFacts) gitCall(args []*syntax.Word, depth int) {
-	// --exec, --upload-pack and --receive-pack run their value as a command.
-	for j, a := range args {
+	// --exec, --upload-pack and --receive-pack run their value as a command,
+	// read in every word but message text.
+	runs := args
+	if i := gitSubcommand(args); i < len(args) {
+		sub, lit := literal(args[i])
+		rest := make([]string, 0, len(args)-i-1)
+		for _, a := range args[i+1:] {
+			rest = append(rest, wordText(a))
+		}
+		if lit && gitTakesText(sub, rest) {
+			runs = nil
+		}
+		// log, show and whatchanged find -- first: what follows is paths.
+		if k := slices.Index(rest, "--"); lit && gitEndsOptions[sub] && k >= 0 {
+			runs = args[:i+1+k]
+		}
+	}
+	for j, a := range runs {
 		v, lit := literal(a)
 		t := v
 		if !lit {

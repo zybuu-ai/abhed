@@ -344,20 +344,25 @@ An allow rule with a wildcard, such as the built-in `bash(git diff *)` and
   shortened to any prefix (`--ext`, `--op`, `--u`; for `--textconv`, one
   longer than `--text`, which is its own option)
 - `git clone -c`, `--config` and `--template`, and `git init --template`,
-  which set configuration or install hooks
+  which set configuration or install hooks, and `git cat-file --filters`,
+  which runs the configured filter programs
 - before the subcommand, `-c`, `--config-env`, `--exec-path`, `-p` and
   `--paginate` (which run the configured pager), and `-C`, `--git-dir` and
   `--work-tree` (which point git at a repository whose configuration can
   name a program to run)
-- the subcommands `difftool`, `mergetool`, `filter-branch` and
-  `send-email`, `bisect run`, `submodule foreach`, and `git config` other
+- the subcommands `difftool`, `mergetool`, `filter-branch`, `send-email`
+  and `instaweb`, `bisect run`, `submodule foreach`, and `git config` other
   than reading with `--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`,
   `--list`, `-l`, `get` or `list`
 
 For `log`, `show` and `whatchanged` the options are read up to `--`, since
 git reads what follows as paths; for every other subcommand, `diff`
 included, every word is read, because `--` can be an option's value there
-(`git grep -e -- -O prog`, `git diff --no-index -O -- --output=f a b`).
+(`git grep -e -- -O prog`, `git diff --no-index -O -- --output=f a b`,
+`git format-patch --subject-prefix -- --output=f -1`). `commit`, `tag`,
+`merge`, `notes` and `stash` other than `stash show` and `stash list` take
+message text and none of these options, so their words are not read as
+options: `git commit -m "fix --exec handling"` is a message.
 `--output`, `--upload-pack`, `--receive-pack` and `--exec`, by any prefix,
 and `clone -u`, `ls-remote -u` and `rebase -x`, are also destructive: they
 ask in every mode, `bypass` included, and a deny rule sees the command they

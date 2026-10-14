@@ -26,7 +26,7 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		"git grep -e -- -O/path/prog", "git grep --op=prog hello",
 		"git clone -c core.sshCommand=prog a b", "git clone --template=/dir a b", "git init --template=/dir", "git format-patch --subject-prefix -- -o /dir -1 HEAD",
 		"git difftool -x evil", "git filter-branch --tree-filter evil", "git send-email --to-cmd=evil x.patch",
-		"git bisect run evil", "git submodule foreach evil", "git config core.pager evil",
+		"git bisect run evil", "git instaweb --httpd=evil", "git cat-file --filters HEAD:a", "git submodule foreach evil", "git config core.pager evil",
 		"git --git-dir=/x/.git log", "git --git-dir /x/.git log", "git --work-tree=/x diff", "git --work-tree /x status", "git grep -O x", "git grep --open-files-in-pager=vim x", "git grep --open x",
 		"git format-patch -o /tmp HEAD~1", "git format-patch --output-directory /tmp HEAD~1",
 	} {
@@ -45,10 +45,27 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		"git ls-remote --u=prog file://repo", "git ls-remote -u prog file://repo", "git clone -qu prog a b", "git push --rec=x origin",
 		"git push --receive x origin", "git rebase --ex 'prog rebase' HEAD~1", "git rebase -x prog main", "git rebase --onto -- --ex prog main",
 		"git rebase --onto -- -x prog main", "git diff --o=x", "git log --outp x", "git diff --no-index -O -- --output=/x a b",
+		"git format-patch --subject-prefix -- --output=/x -1", "git range-diff -O -- --output=/x HEAD~1...HEAD",
 	} {
 		args, _ := json.Marshal(map[string]string{"command": c})
 		if r := bypass.Evaluate("bash", true, args); r.Decision != Ask || r.Step != "destructive" {
 			t.Errorf("bypass %s: %s %s (%s)", c, r.Decision, r.Step, r.Reason)
+		}
+	}
+	// A message mentioning an option is text, allowed in bypass and by bash(git *).
+	wild := New(ModeDefault)
+	if err := wild.AddAllow("bash(git *)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{
+		`git commit -m "fix --exec handling"`, `git commit -m "docs: mention --u"`, `git tag -a v1 -m "drop --upload-pack"`,
+		`git commit -am "add --output flag"`, `git stash push -m "try --ext-diff"`, `git merge -m "--exec" topic`,
+	} {
+		args, _ := json.Marshal(map[string]string{"command": c})
+		for _, eng := range []*Engine{bypass, wild} {
+			if r := eng.Evaluate("bash", true, args); r.Decision != Allow {
+				t.Errorf("%s %s: %s (%s)", eng.Mode, c, r.Decision, r.Reason)
+			}
 		}
 	}
 	// A deny rule sees the command an abbreviated option runs.

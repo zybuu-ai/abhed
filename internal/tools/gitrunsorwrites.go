@@ -37,8 +37,30 @@ var gitRunsOrWritesShort = map[string]struct{ letters, why string }{
 // gitRunsOrWritesSubLong are long options that run a program or set
 // configuration for one subcommand only, any prefix counting.
 var gitRunsOrWritesSubLong = map[string][]string{
-	"clone": {"config", "template"},
-	"init":  {"template"},
+	"clone":    {"config", "template"},
+	"init":     {"template"},
+	"cat-file": {"filters"},
+}
+
+// gitTextSubs take a message as text and have none of the options these
+// checks look for, so a word in the message (-m "fix --exec") is not one.
+var gitTextSubs = set("commit", "tag", "merge", "notes")
+
+// gitTakesText reports a subcommand whose words may be message text the
+// shell split: one of gitTextSubs, or stash other than show and list.
+func gitTakesText(sub string, rest []string) bool {
+	if gitTextSubs[sub] {
+		return true
+	}
+	if sub != "stash" {
+		return false
+	}
+	for _, w := range rest {
+		if !strings.HasPrefix(w, "-") {
+			return w != "show" && w != "list"
+		}
+	}
+	return true
 }
 
 // gitRunsPrograms are subcommands whose purpose is to run a program or a
@@ -48,6 +70,7 @@ var gitRunsPrograms = map[string]string{
 	"mergetool":     "runs a merge tool program",
 	"filter-branch": "runs the filter commands it is given",
 	"send-email":    "sends mail through the programs and servers it is given or configured with",
+	"instaweb":      "runs a web server and a browser program",
 }
 
 // gitRunsOperand are subcommands that run a command when an operand names the action.
@@ -133,6 +156,9 @@ func gitOptionRunsOrWrites(words []string) string {
 	if sub == "config" && !gitConfigReadOnly(rest) {
 		return "git config can set configuration, which can name a program to run"
 	}
+	if gitTakesText(sub, rest) {
+		return ""
+	}
 	short := gitRunsOrWritesShort[sub]
 	for _, w := range rest {
 		if w == "--" && gitEndsOptions[sub] {
@@ -142,7 +168,7 @@ func gitOptionRunsOrWrites(words []string) string {
 			name, _, _ = strings.Cut(name, "=")
 			for _, l := range gitRunsOrWritesSubLong[sub] {
 				if gitLongPrefix("--"+name, "--"+l) {
-					return "git " + sub + " --" + l + " sets configuration or hooks, which can name a program to run"
+					return "git " + sub + " --" + l + " runs or sets up programs git's configuration names"
 				}
 			}
 			for _, o := range gitRunsOrWritesLong {

@@ -201,31 +201,36 @@ All notable changes to Abhed are recorded here. The format follows
 
 - The built-in allow rules `bash(git diff *)` and `bash(git log *)`
   approved `--ext-diff` and `--textconv`, which run the programs git's
-  configuration names, and `git diff --no-index -O -- --output=<file> a b`,
-  which writes over the file (`--` there is `-O`'s value, so git reads on).
-  An allow rule of your own with a wildcard over git (`bash(git *)`,
+  configuration names, and `git diff --no-index -O -- --output=<file> a
+  b`, which writes over the file (`--` there is `-O`'s value, so git reads
+  on). An allow rule of your own with a wildcard over git (`bash(git *)`,
   `bash(git grep *)`) also approved options and subcommands that run a
   program or write a file. No allow rule with a wildcard approves these
   now, and no "always allow" is offered for them: `--output-directory`
   (`format-patch -o`), `--open-files-in-pager` (`grep -O`),
-  `--upload-pack`, `--receive-pack`, `--exec` (`rebase -x`), `clone -u`, `ls-remote -u`,
-  `clone -c`, `--config` and `--template`, `init --template`; before the
-  subcommand, `-c`, `--config-env`, `--exec-path`, `-p`/`--paginate`,
-  `-C`, `--git-dir` and `--work-tree`; and `difftool`, `mergetool`,
-  `filter-branch`, `send-email`, `bisect run`, `submodule foreach` and
-  `git config` other than reading. Any prefix of a long option counts
-  (`--op`, `--ex`, `--u`), and only `log`, `show` and `whatchanged` stop
-  reading options at `--`. A rule naming the whole command exactly still
+  `--upload-pack`, `--receive-pack`, `--exec` (`rebase -x`), `clone -u`,
+  `ls-remote -u`, `clone -c`, `--config` and `--template`, `init
+  --template`; before the subcommand, `-c`, `--config-env`, `--exec-path`,
+  `-p`/`--paginate`, `-C`, `--git-dir` and `--work-tree`; `cat-file
+  --filters`; and `difftool`, `mergetool`, `filter-branch`, `send-email`,
+  `instaweb`, `bisect run`, `submodule foreach` and `git config` other
+  than reading. Any prefix of a long option counts (`--op`, `--ex`,
+  `--u`), and only `log`, `show` and `whatchanged` stop reading options at
+  `--`; message text of `commit`, `tag`, `merge`, `notes` and `stash` is
+  not read as options. A rule naming the whole command exactly still
   approves the rest ([Permissions](docs/guide/04-permissions.md#rules)).
   `--output`, `--upload-pack`, `--receive-pack` and `--exec`, by any
   prefix, and `clone -u`, `ls-remote -u` and `rebase -x`, now ask in every
-  mode, `bypass` included, as destructive, and a deny rule sees the command
-  they are given, which no allow rule changes; before, `--output` did by
-  any prefix, the other three only in full, and the short forms not at
-  all. Under any
-  rule that allows git, git still runs the programs the repository's own
-  configuration names, so the sandbox remains the boundary. Affects 0.1.0
-  to 1.2.7.
+  mode, `bypass` included, as destructive, and a deny rule sees the
+  command they are given, which no allow rule changes, past a `--` too
+  except on `log`, `show` and `whatchanged`; before, `--output` did by any
+  prefix but stopped at `--` (`git format-patch --subject-prefix --
+  --output=<file> -1` wrote over the file in any mode), the other three
+  only in full, and the short forms not at all. A message that mentions
+  `--output` (`git commit -m "add --output flag"`) no longer asks. Under
+  any rule that allows git, git still runs the programs the repository's
+  own configuration names, so the sandbox remains the boundary. Affects
+  0.1.0 to 1.2.7.
 - A stored secret's value typed into a session's first prompt (or a
   workbench session's first message) was kept as typed in the session's
   `prompt`: in memory, in Postgres's `sessions.prompt`, in `GET

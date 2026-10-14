@@ -30,6 +30,8 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 		// Subcommands that run a program.
 		"git difftool -x evil", "git difftool --extcmd=evil", "git difftool HEAD", "git mergetool",
 		"git filter-branch --tree-filter evil", "git filter-branch HEAD", "git send-email --to-cmd=evil x.patch", "git send-email --smtp-server=/tmp/x x.patch",
+		"git instaweb", "git instaweb --httpd=evil", "git cat-file --filters HEAD:a", "git cat-file --filt HEAD:a",
+		"git format-patch --subject-prefix -- --output=/x -1", "git range-diff -O -- --output=/x HEAD~1...HEAD",
 		"git bisect run evil", "git submodule foreach evil", "git submodule --quiet foreach evil",
 		"git config core.pager evil", "git config --add x.y z", "git config -e", "git config --edit", "git config --get x --unset y",
 		"git config set core.pager evil", "git config --unset core.pager", "git config --global alias.x '!sh'",
@@ -48,7 +50,7 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 		"git diff", "git diff --stat HEAD~1", "git diff --no-ext-diff --no-textconv", "git diff --text", "git diff -c",
 		"git log -O order.txt -p", "git log --exit-code", "git log --output-indicator-new=+", "git log -- --ext-diff",
 		"git diff -- a.go", "git diff HEAD -- a.go b.go", "git status -uall", "git log -p", "git diff --work-tree-x", "git blame --contents f.go f.go",
-		"git grep -n x", "git log -p --grep -- --ext-diff", "git show HEAD -- -O", "git diff --text", "git init", "git clone a b", "git log --grep -- --ext-diff",
+		"git grep -n x", "git log -p --grep -- --ext-diff", "git show HEAD -- -O", `git commit -m "fix --exec handling"`, `git tag -a v1 -m "drop --upload-pack"`, "git cat-file -p HEAD", "git diff --text", "git init", "git clone a b", "git log --grep -- --ext-diff",
 		"git bisect start", "git bisect good", "git submodule status", "git config --get core.pager", "git config -l",
 		"git config --list --show-origin", "git config get core.pager", "git config list", "git config --get-regexp alias",
 		"git log --format=%H --exclude=x", "git diff --color-moved", "echo --ext-diff",
