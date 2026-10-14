@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 // gateAdapter holds its first model call open until the gate opens or the
@@ -321,5 +322,79 @@ func TestServerWithholdsATypedSecretFromTheModel(t *testing.T) {
 	}
 	if strings.Join(named, " ") != "API_TOKEN DB_PASS" {
 		t.Fatalf("the user.messages name %q", named)
+	}
+}
+
+// promptRows is a store that keeps the session rows it is given.
+type promptRows struct {
+	EventStore
+	mu   sync.Mutex
+	rows []store.SessionRecord
+}
+
+func (p *promptRows) CreateSession(_ context.Context, r store.SessionRecord) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rows = append(p.rows, r)
+	return nil
+}
+
+func (p *promptRows) ListSessions(context.Context, int) ([]store.SessionRecord, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]store.SessionRecord(nil), p.rows...), nil
+}
+
+// A stored secret typed into a session's prompt is withheld from its row,
+// the session list and its title too, not only from the model and the
+// record: a session's first prompt, and a workbench session's first message.
+func TestSessionPromptWithholdsATypedSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"API_TOKEN":"tok-9f8e7d-row"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(secrets.EnvFile, path)
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	ad := newGateAdapter()
+	close(ad.gate)
+	st := &promptRows{EventStore: agent.NewMemStore()}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Store: st, Registry: tools.NewRegistry(tools.Read{})})
+	h := s.Handler()
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("X-Abhed-Tenant", "acme")
+		req.Header.Set("X-Abhed-User", "alice")
+		req.Header.Set("Content-Type", "application/json")
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := do("POST", "/v1/sessions", `{"prompt":"deploy with tok-9f8e7d-row"}`); rec.Code != http.StatusCreated && rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	rec := do("POST", "/v1/sessions", `{"workbench":true}`)
+	var c createResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &c)
+	if c.SessionID == "" {
+		t.Fatalf("workbench: %d %s", rec.Code, rec.Body)
+	}
+	if r := do("POST", "/v1/sessions/"+c.SessionID+"/messages", `{"prompt":"then tok-9f8e7d-row"}`); r.Code != http.StatusAccepted {
+		t.Fatalf("first message: %d %s", r.Code, r.Body)
+	}
+	list := do("GET", "/v1/sessions", "").Body.String()
+	st.mu.Lock()
+	var rows []string
+	for _, r := range st.rows {
+		rows = append(rows, r.Prompt)
+	}
+	st.mu.Unlock()
+	all := list + "\n" + strings.Join(rows, "\n")
+	if strings.Contains(all, "tok-9f8e7d-row") {
+		t.Fatalf("a stored value was kept in a prompt:\n%s", all)
+	}
+	if !strings.Contains(list, "deploy with [secret:API_TOKEN]") || !strings.Contains(list, "then [secret:API_TOKEN]") ||
+		!strings.Contains(strings.Join(rows, "\n"), "deploy with [secret:API_TOKEN]") {
+		t.Fatalf("the prompts are not shown withheld:\n%s", all)
 	}
 }

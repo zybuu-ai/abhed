@@ -1641,18 +1641,22 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	if err := s.refuseUnreadableSecrets(); err != nil {
 		return "", err
 	}
-	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, true); err != nil {
+	vault, red, err := s.sessionSecrets(spec)
+	if err != nil {
+		return "", err
+	}
+	// The row, the list and the title keep the prompt as the record does: a
+	// stored secret typed into it is withheld. The run gets it whole, and
+	// withholds it itself, naming what it withheld.
+	shown := spec
+	shown.Prompt = agent.WithheldText(red, spec.Prompt)
+	if err := s.persistSession(ctx, sessionID, shown, mode, adapter, true); err != nil {
 		return "", err
 	}
 
-	vault, red, err := s.sessionSecrets(spec)
-	if err != nil {
-		s.forgetUnstarted(sessionID)
-		return "", err
-	}
 	rec := agent.NewRecorder(s.store, sessionID, "")
 	rec.Redact = red
-	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, vault, rec)
+	live, loop, err := s.buildLive(sessionID, shown, mode, adapter, registry, skillReg, vault, rec)
 	if err != nil {
 		s.forgetUnstarted(sessionID)
 		return "", err
@@ -2261,7 +2265,7 @@ func (s *Server) liveFromRecord(ctx context.Context, id string, rec store.Sessio
 
 	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant, admin: s.isAdminCtx(ctx)}
 	if spec.Prompt == "" {
-		spec.Prompt = prompt
+		spec.Prompt = agent.WithheldText(red, prompt) // shown, as the record keeps it
 	}
 	adapter, provider, lost := s.recordedProvider(id, events, rec.Model)
 	spec.Provider = provider
@@ -3394,7 +3398,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	live.Turns++
 	if live.Prompt == "" {
-		live.Prompt = req.Prompt // a workbench session is named by its first message
+		live.Prompt = live.Loop.Withheld(req.Prompt) // a workbench session is named by its first message
 	}
 	s.startRunLocked(live, "follow-up", func(ctx context.Context) (agent.TerminalReason, error) {
 		return live.Loop.RunMessage(ctx, msg)

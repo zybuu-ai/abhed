@@ -560,6 +560,22 @@ func (l *Loop) withholdSecrets(text string) (string, string) {
 	return out, strings.Join(names, ",")
 }
 
+// WithheldText is text with each stored secret's value red holds replaced
+// by [secret:NAME], as a person's message is before it is kept anywhere.
+func WithheldText(red Redactor, text string) string {
+	if red == nil {
+		return text
+	}
+	return redactedText(red.Redact, text)
+}
+
+// Withheld is text as this loop keeps a person's message: its stored
+// secrets withheld.
+func (l *Loop) Withheld(text string) string {
+	out, _ := l.withholdSecrets(text)
+	return out
+}
+
 func (l *Loop) setPrompt(text string) {
 	l.steerMu.Lock()
 	l.prompt = text
