@@ -2,6 +2,7 @@ package tools
 
 import (
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -32,6 +33,26 @@ var gitRunsOrWritesShort = map[string]struct{ letters, why string }{
 	"ls-remote":    {"u", "runs the program it names"},
 	"rebase":       {"x", "runs the command it names"},
 }
+
+// gitRunsPrograms are subcommands whose purpose is to run a program or a
+// command: their own, the configured tool, or one named on the line.
+var gitRunsPrograms = map[string]string{
+	"difftool":      "runs a diff tool program",
+	"mergetool":     "runs a merge tool program",
+	"filter-branch": "runs the filter commands it is given",
+	"send-email":    "sends mail through the programs and servers it is given or configured with",
+}
+
+// gitRunsOperand are subcommands that run a command when an operand names the action.
+var gitRunsOperand = map[string]string{"bisect": "run", "submodule": "foreach"}
+
+// gitEndsOptions are the subcommands that find -- before reading options, so
+// a -- given as an option's value still ends them; parse-options subcommands
+// such as grep read on (git grep -e -- -O prog).
+var gitEndsOptions = set("diff", "log", "show", "whatchanged")
+
+// gitConfigReads are git config's forms that only read.
+var gitConfigReads = set("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l")
 
 // GitRunsOrWrites says why the command runs git with an option that writes a
 // file or runs a program, such as --output, --ext-diff, or -c, -p or -C
@@ -95,10 +116,19 @@ func gitOptionRunsOrWrites(words []string) string {
 	if i >= len(words) {
 		return ""
 	}
-	sub := words[i]
+	sub, rest := words[i], words[i+1:]
+	if why, ok := gitRunsPrograms[sub]; ok {
+		return "git " + sub + " " + why
+	}
+	if op, ok := gitRunsOperand[sub]; ok && slices.Contains(rest, op) {
+		return "git " + sub + " " + op + " runs the command it is given"
+	}
+	if sub == "config" && !gitConfigReadOnly(rest) {
+		return "git config can set configuration, which can name a program to run"
+	}
 	short := gitRunsOrWritesShort[sub]
-	for _, w := range words[i+1:] {
-		if w == "--" {
+	for _, w := range rest {
+		if w == "--" && gitEndsOptions[sub] {
 			break
 		}
 		if name, ok := strings.CutPrefix(w, "--"); ok {
@@ -116,4 +146,21 @@ func gitOptionRunsOrWrites(words []string) string {
 		}
 	}
 	return ""
+}
+
+// gitConfigReadOnly reports a git config call that only reads: get or list,
+// in either syntax, with no option that edits.
+func gitConfigReadOnly(words []string) bool {
+	read := len(words) > 0 && (words[0] == "get" || words[0] == "list")
+	for _, w := range words {
+		name, _, _ := strings.Cut(w, "=")
+		switch {
+		case gitConfigReads[name]:
+			read = true
+		case name == "-e" || name == "--edit" || name == "--add" || strings.HasPrefix(name, "--unset") ||
+			strings.HasPrefix(name, "--replace") || strings.HasPrefix(name, "--rename") || strings.HasPrefix(name, "--remove"):
+			return false
+		}
+	}
+	return read
 }

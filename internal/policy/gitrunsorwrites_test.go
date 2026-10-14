@@ -23,6 +23,9 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		"git diff --ext-diff", "git diff --ext", "git diff a.go --ext-diff", "git log -p --ext-diff",
 		"git show --textconv", "git log -p --textc", "git -c diff.external=x diff", "git --config-env=diff.external=X diff",
 		"git --exec-path=/tmp diff", "git -C sub diff", "git -p log", "git --paginate diff",
+		"git grep -e -- -O/path/prog", "git format-patch --subject-prefix -- -o /dir -1 HEAD",
+		"git difftool -x evil", "git filter-branch --tree-filter evil", "git send-email --to-cmd=evil x.patch",
+		"git bisect run evil", "git submodule foreach evil", "git config core.pager evil",
 		"git --git-dir=/x/.git log", "git --git-dir /x/.git log", "git --work-tree=/x diff", "git --work-tree /x status", "git grep -O x", "git grep --open-files-in-pager=vim x", "git grep --open x",
 		"git format-patch -o /tmp HEAD~1", "git format-patch --output-directory /tmp HEAD~1",
 	} {
@@ -37,7 +40,8 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 			t.Errorf("%s: %s offer %q (%s)", c, r.Decision, r.Offer(), r.Reason)
 		}
 	}
-	for _, c := range []string{"git diff --ext-diff HEAD", "git diff --stat", "git log -O order.txt", "git grep -n x", "git diff -- --ext-diff"} {
+	for _, c := range []string{"git diff --ext-diff HEAD", "git diff --stat", "git log -O order.txt", "git grep -n x", "git diff -- --ext-diff",
+		"git log -p --grep -- --ext-diff", "git config --get core.pager", "git bisect good", "git submodule status"} {
 		if r := ev(c); r.Decision != Allow {
 			t.Errorf("%s: %s (%s)", c, r.Decision, r.Reason)
 		}

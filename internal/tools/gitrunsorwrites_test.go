@@ -16,6 +16,16 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 		"git --exec-path=/tmp log", "git --exec-path /tmp log", "git -C sub -c x=y log",
 		"git -C sub log", "git -C sub diff", "git -p log", "git --paginate diff", "git --no-pager -p log",
 		"git --git-dir=/x/.git log", "git --git-dir /x/.git log", "git --work-tree=/x diff", "git --work-tree /x diff",
+		// A -- taken as an option's value does not end a parse-options subcommand.
+		"git grep -e -- -O/path/prog", "git grep -e -- --open-files-in-pager=prog x", "git grep x -- -O",
+		"git format-patch --subject-prefix -- -o /dir -1 HEAD", "git format-patch -- -o /dir", "git format-patch --subject-prefix -- --output-directory=/dir -1",
+		"git rebase --onto -- -x make main",
+		// Subcommands that run a program.
+		"git difftool -x evil", "git difftool --extcmd=evil", "git difftool HEAD", "git mergetool",
+		"git filter-branch --tree-filter evil", "git filter-branch HEAD", "git send-email --to-cmd=evil x.patch", "git send-email --smtp-server=/tmp/x x.patch",
+		"git bisect run evil", "git submodule foreach evil", "git submodule --quiet foreach evil",
+		"git config core.pager evil", "git config --add x.y z", "git config -e", "git config --edit", "git config --get x --unset y",
+		"git config set core.pager evil", "git config --unset core.pager", "git config --global alias.x '!sh'",
 		"git format-patch -o /tmp HEAD~1", "git format-patch -ko/tmp HEAD~1",
 		"git format-patch --output-directory=/tmp HEAD~1", "git format-patch --output-dir /tmp HEAD~1",
 		"git grep -O x", "git grep -Ovim x", "git grep -nO x", "git grep --open-files-in-pager=vim x", "git grep --open x",
@@ -31,7 +41,10 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 		"git diff", "git diff --stat HEAD~1", "git diff --no-ext-diff --no-textconv", "git diff --text", "git diff -c",
 		"git log -O order.txt -p", "git log --exit-code", "git log --output-indicator-new=+", "git log -- --ext-diff",
 		"git diff HEAD -- a --output=x", "git status -uall", "git log -p", "git diff --work-tree-x", "git blame --contents f.go f.go",
-		"git grep -n x", "git log --format=%H --exclude=x", "git diff --color-moved", "echo --ext-diff",
+		"git grep -n x", "git log -p --grep -- --ext-diff", "git diff --stat -- --output=x", "git show HEAD -- -O",
+		"git bisect start", "git bisect good", "git submodule status", "git config --get core.pager", "git config -l",
+		"git config --list --show-origin", "git config get core.pager", "git config list", "git config --get-regexp alias",
+		"git log --format=%H --exclude=x", "git diff --color-moved", "echo --ext-diff",
 	} {
 		if why := CanonicalCommand(c).GitRunsOrWrites(); why != "" {
 			t.Errorf("%s: named (%s)", c, why)

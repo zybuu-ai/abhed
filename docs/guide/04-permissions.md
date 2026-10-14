@@ -334,19 +334,33 @@ A rule for an interpreter allows whatever it can run: `bash(vim -es*)` allows
 any command, since a vim script runs shell commands with `:!`.
 
 An allow rule with a wildcard, such as the built-in `bash(git diff *)` and
-`bash(git log *)`, does not approve a git option that writes a file or runs
-a program; the command asks, with no "always allow" offered, and the reason
-names the option. They are `--output` and `--output-directory`
-(`format-patch -o`), `--ext-diff`, `--textconv`, `--open-files-in-pager`
-(`grep -O`), `--upload-pack` (`clone` and `ls-remote -u`), `--receive-pack`,
-`--exec` (`rebase -x`), and, before the subcommand, `-c`, `--config-env`,
-`--exec-path`, `-p` and `--paginate` (which run the configured pager), and
-`-C`, `--git-dir` and `--work-tree` (which point git at a repository whose
-configuration can name a program to run). Each counts joined with `=` or followed by its value, shortened
-as git may accept it (`--ext`, `--outp`), and after paths, up to `--`.
-`--output` and `--upload-pack` already asked in every mode. A rule naming the
-whole command exactly, such as `bash(git log -p --ext-diff)`, and `bash` or
-`bash(*)`, still approve it.
+`bash(git log *)`, does not approve these git commands; each asks, with no
+"always allow" offered, and the reason names what it runs or writes:
+
+- the options `--output`, `--output-directory` (`format-patch -o`),
+  `--ext-diff`, `--textconv`, `--open-files-in-pager` (`grep -O`),
+  `--upload-pack` (`clone` and `ls-remote -u`), `--receive-pack` and
+  `--exec` (`rebase -x`), joined with `=` or followed by their value, and
+  shortened as git may accept them (`--ext`, `--outp`)
+- before the subcommand, `-c`, `--config-env`, `--exec-path`, `-p` and
+  `--paginate` (which run the configured pager), and `-C`, `--git-dir` and
+  `--work-tree` (which point git at a repository whose configuration can
+  name a program to run)
+- the subcommands `difftool`, `mergetool`, `filter-branch` and
+  `send-email`, `bisect run`, `submodule foreach`, and `git config` other
+  than reading with `--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`,
+  `--list`, `-l`, `get` or `list`
+
+For `diff`, `log`, `show` and `whatchanged` the options are read up to `--`,
+since git reads what follows as paths; for every other subcommand, every
+word is read, because `--` can be an option's value there (`git grep -e --
+-O prog`). `--output` and `--upload-pack` already asked in every mode. A
+rule naming the whole command exactly, such as `bash(git log -p
+--ext-diff)`, and `bash` or `bash(*)`, still approve it. This is a list,
+not a proof that git runs nothing: under a rule over all of git, such as
+`bash(git *)`, git still runs the programs the repository's own
+configuration names (a diff driver, a pager, `core.fsmonitor`, an alias),
+so the sandbox remains the boundary.
 
 A one-click "always allow" is offered only for a short list of well-understood
 tools and subcommands; anything else can be approved once or allowed with a

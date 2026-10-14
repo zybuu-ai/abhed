@@ -172,10 +172,10 @@ All notable changes to Abhed are recorded here. The format follows
   status*)` and `bash(git log*)` are narrowed to `ls` and those git commands
   themselves, so `lsof`, `lsblk` and `git difftool` now ask.
 - An allow rule with a wildcard over git, built-in or your own, no longer
-  approves an option that runs a program or writes a file (`--ext-diff`,
-  `--textconv`, `grep -O`, `-c`, `-C` or `-p` before the subcommand and the
-  like); such a command asks. A rule naming the whole command exactly still
-  approves it.
+  approves the git options and subcommands listed under Security that run
+  a program or write a file (such as `--ext-diff`, `grep -O`, `-C` before
+  the subcommand, `difftool` and `git config` writes); such a command asks.
+  A rule naming the whole command exactly still approves it.
 - Under any rule for `bash`, tmux and screen are limited to listing and
   showing what a server holds: `tmux new`, `attach-session` and
   `send-keys`, and `screen -dm`, are refused under a deny rule and asked
@@ -202,16 +202,21 @@ All notable changes to Abhed are recorded here. The format follows
 - The built-in allow rules `bash(git diff *)` and `bash(git log *)`
   approved `--ext-diff` and `--textconv`, which run the programs git's
   configuration names, and an allow rule of your own with a wildcard over
-  git (`bash(git *)`, `bash(git grep *)`) also approved options that run a
-  program or write a file: `--open-files-in-pager` (`grep -O`),
-  `--output-directory` (`format-patch -o`), `--receive-pack`, `--exec`
-  (`rebase -x`), `clone -u`, and, before the subcommand, `-c`,
-  `--config-env`, `--exec-path`, `-p`/`--paginate`, `-C`, `--git-dir` or
-  `--work-tree`. No allow rule with a wildcard approves these now,
-  in any spelling git accepts, and no "always allow" is offered for them; a
-  rule naming the whole command exactly still does
+  git (`bash(git *)`, `bash(git grep *)`) also approved options and
+  subcommands that run a program or write a file. No allow rule with a
+  wildcard approves these now, and no "always allow" is offered for them:
+  `--output-directory` (`format-patch -o`), `--open-files-in-pager` (`grep
+  -O`), `--receive-pack`, `--exec` (`rebase -x`), `clone -u`; before the
+  subcommand, `-c`, `--config-env`, `--exec-path`, `-p`/`--paginate`,
+  `-C`, `--git-dir` and `--work-tree`; and `difftool`, `mergetool`,
+  `filter-branch`, `send-email`, `bisect run`, `submodule foreach` and
+  `git config` other than reading. Shortened options count, and only
+  `diff`, `log`, `show` and `whatchanged` stop reading options at `--`. A
+  rule naming the whole command exactly still approves it
   ([Permissions](docs/guide/04-permissions.md#rules)). `--output` and
-  `--upload-pack` already asked. Affects 0.1.0 to 1.2.7.
+  `--upload-pack` already asked. Under a rule over all of git, git still
+  runs the programs the repository's own configuration names, so the
+  sandbox remains the boundary. Affects 0.1.0 to 1.2.7.
 - A stored secret's value typed into a session's first prompt (or a
   workbench session's first message) was kept as typed in the session's
   `prompt`: in memory, in Postgres's `sessions.prompt`, in `GET
