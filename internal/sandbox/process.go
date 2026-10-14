@@ -401,22 +401,6 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 	b.WriteString(";; No LaunchServices or Apple events.\n" + denyLaunchServices + "\n")
 	b.WriteString(";; Nor the person's clipboard or screen.\n" + denySessionServices + "\n")
 
-	// Other sandboxes' folders beside this one's: before the workspace's own
-	// rules, so its .abhed stays denied after the read allowed here.
-	if hidden := formsOf(s.policy.Hidden); len(hidden) > 0 {
-		b.WriteString(";; Other sandboxes' folders.\n")
-		for _, h := range hidden {
-			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
-			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
-		}
-		for _, ws := range s.workspaces() {
-			if insideAny(ws, hidden) {
-				fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", ws)
-			}
-		}
-		b.WriteString("\n")
-	}
-
 	b.WriteString(";; Writes are confined to the workspace and standard temp dirs.\n")
 	b.WriteString("(deny file-write*)\n")
 	for _, ws := range s.workspaces() {
@@ -441,20 +425,26 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 		}
 	}
 
-	// Again after the temp and cache allows, which may hold the siblings' folder.
-	if hidden := formsOf(s.policy.Hidden); len(hidden) > 0 {
-		for _, h := range hidden {
-			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", h)
-		}
-		for _, ws := range s.workspaces() {
-			if insideAny(ws, hidden) {
-				fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", ws)
-			}
-		}
-	}
-
 	if s.policy.PrivateTemp {
 		s.privateTempRules(&b, readable)
+	}
+
+	// Other sandboxes' folders: after the temp, cache and read-only allows,
+	// which may hold them, and before the state denies, which win in turn.
+	hidden := formsOf(s.policy.Hidden)
+	if len(hidden) > 0 {
+		b.WriteString("\n;; Other sandboxes' folders.\n")
+		for _, h := range hidden {
+			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
+			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", h)
+			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
+		}
+		for _, p := range s.ownFolders() {
+			if insideAny(p, hidden) {
+				fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
+				fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", p)
+			}
+		}
 	}
 
 	// The harness's own state is out of reach for commands, as it is for the
@@ -537,6 +527,9 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 	if files := s.readableFiles(); len(files) > 0 {
 		b.WriteString("\n;; Files named to be readable, such as a statusline script.\n")
 		for _, f := range files {
+			if insideAny(f, hidden) && !insideAny(f, s.ownFolders()) {
+				continue // other sandboxes' folders stay out of reach
+			}
 			fmt.Fprintf(&b, "(allow file-read* (literal %q))\n", f)
 		}
 	}
@@ -1038,6 +1031,18 @@ func (s *Process) privateTemp() (string, error) {
 		s.tmp = d
 	})
 	return s.tmp, s.tmpErr
+}
+
+// ownFolders are this sandbox's workspace and, under PrivateTemp, its own
+// temp folder.
+func (s *Process) ownFolders() []string {
+	out := s.workspaces()
+	if s.policy.PrivateTemp {
+		if own, err := s.privateTemp(); err == nil {
+			out = append(out, PathForms(own)...)
+		}
+	}
+	return out
 }
 
 // sharedTempAreas are the temp folders every account's commands could
