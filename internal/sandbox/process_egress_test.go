@@ -476,13 +476,19 @@ func TestEgressProxyClosesWhenQuiet(t *testing.T) {
 	if s.sessionProxy("sess-Q") != nil {
 		t.Fatal("a quiet session kept its proxy")
 	}
+	// The entry goes before the proxy and its folder, so a new command never gets them.
+	folderLeft := func() bool {
+		_, err := os.Stat(first.dir)
+		return first.dir != "" && !os.IsNotExist(err)
+	}
+	for (listening(addr) || folderLeft()) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 	if listening(addr) {
 		t.Fatal("the quiet session's proxy still listens")
 	}
-	if first.dir != "" {
-		if _, err := os.Stat(first.dir); !os.IsNotExist(err) {
-			t.Fatalf("socket folder left: %v", err)
-		}
+	if folderLeft() {
+		t.Fatalf("socket folder left: %s", first.dir)
 	}
 	ctx3, cancel3 := context.WithCancel(WithLaunch(context.Background(), l))
 	defer cancel3()
