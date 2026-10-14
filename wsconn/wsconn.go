@@ -150,8 +150,10 @@ func perr(code int, format string, args ...any) error {
 }
 
 // readFrame reads one frame from r. masked is whether frames in this
-// direction must be masked (client to server) or must not be.
-func readFrame(r io.Reader, masked bool, maxFrame int64) (frame, error) {
+// direction must be masked (client to server) or must not be. room is what
+// the message may still take (-1 for no bound): a longer data frame is
+// refused before anything is allocated for it.
+func readFrame(r io.Reader, masked bool, maxFrame, room int64) (frame, error) {
 	var h [2]byte
 	if _, err := io.ReadFull(r, h[:]); err != nil {
 		return frame{}, err
@@ -206,15 +208,26 @@ func readFrame(r io.Reader, masked bool, maxFrame int64) (frame, error) {
 	if n > uint64(maxFrame) {
 		return frame{}, perr(CloseTooBig, "a frame is larger than %d bytes", maxFrame)
 	}
+	if f.op < opClose && room >= 0 && n > uint64(room) {
+		return frame{}, perr(CloseTooBig, "a message is larger than the limit")
+	}
 	var mask [4]byte
 	if masked {
 		if _, err := io.ReadFull(r, mask[:]); err != nil {
 			return frame{}, unexpected(err)
 		}
 	}
-	f.payload = make([]byte, n)
-	if _, err := io.ReadFull(r, f.payload); err != nil {
-		return frame{}, unexpected(err)
+	// Grown as the bytes arrive, so a frame that only declares a large
+	// length, and trickles, holds no more memory than it has sent.
+	for uint64(len(f.payload)) < n {
+		chunk := int(min(n-uint64(len(f.payload)), frameChunk))
+		f.payload = append(f.payload, make([]byte, chunk)...)
+		if _, err := io.ReadFull(r, f.payload[len(f.payload)-chunk:]); err != nil {
+			return frame{}, unexpected(err)
+		}
+	}
+	if f.payload == nil {
+		f.payload = []byte{}
 	}
 	if masked {
 		for i := range f.payload {
@@ -223,6 +236,9 @@ func readFrame(r io.Reader, masked bool, maxFrame int64) (frame, error) {
 	}
 	return f, nil
 }
+
+// frameChunk is how much of a frame's payload is read, and allocated, at once.
+const frameChunk = 64 << 10
 
 // unexpected turns an EOF inside a frame into io.ErrUnexpectedEOF.
 func unexpected(err error) error {
@@ -365,7 +381,7 @@ func (c *Conn) ReadMessage() (MessageType, []byte, error) {
 	var msg []byte
 	started := false
 	for {
-		f, err := readFrame(liveReader{c}, !c.client, c.limits.MaxFrame)
+		f, err := readFrame(liveReader{c}, !c.client, c.limits.MaxFrame, c.limits.MaxMessage-int64(len(msg)))
 		if err != nil {
 			return 0, nil, c.fail(err)
 		}
@@ -548,7 +564,7 @@ func (c *Conn) CloseWith(code int, reason string) error {
 			defer c.rmu.Unlock()
 			_ = c.conn.SetReadDeadline(time.Now().Add(closeWait))
 			for {
-				f, err := readFrame(c.r, !c.client, c.limits.MaxFrame)
+				f, err := readFrame(c.r, !c.client, c.limits.MaxFrame, -1)
 				if err != nil {
 					break
 				}
