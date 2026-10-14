@@ -680,13 +680,22 @@ var withheldPayload = []byte(`{"withheld":"` + Withheld + `"}`)
 // redactor returns the recorder's redactor, or nil when none is set, a typed
 // nil included.
 func (r *Recorder) redactor() Redactor {
-	if r == nil || r.Redact == nil {
+	if r == nil {
 		return nil
 	}
-	if v := reflect.ValueOf(r.Redact); v.Kind() == reflect.Pointer && v.IsNil() {
+	return usableRedactor(r.Redact)
+}
+
+// usableRedactor is red, or nil when it is nil or holds a nil pointer, which
+// would panic on its first call.
+func usableRedactor(red Redactor) Redactor {
+	if red == nil {
 		return nil
 	}
-	return r.Redact
+	if v := reflect.ValueOf(red); v.Kind() == reflect.Pointer && v.IsNil() {
+		return nil
+	}
+	return red
 }
 
 func NewRecorder(store Store, sessionID, parentID string) *Recorder {

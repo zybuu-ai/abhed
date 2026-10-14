@@ -106,3 +106,12 @@ func TestUntouchedMessageNamesNothing(t *testing.T) {
 		t.Fatalf("sent %q", got[len(got)-1].Content)
 	}
 }
+
+// A nil *secrets.Redactor passed as a Redactor is no redactor, as the
+// recorder treats it, rather than a panic when a session starts.
+func TestWithheldTextTakesATypedNilRedactor(t *testing.T) {
+	var red *secrets.Redactor
+	if got := WithheldText(red, "hello"); got != "hello" {
+		t.Fatalf("WithheldText = %q, want the text unchanged", got)
+	}
+}
