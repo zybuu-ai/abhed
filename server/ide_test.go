@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -543,6 +545,7 @@ const nodes = {}; const $ = id => nodes[id] || (nodes[id] = new El('div'));
 const EVT_MAX = 500; let evtN = 0, current = 's1';
 const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:{turns:1, tokens_in:1}, offloads:[],
   policy:{allowed:1, denied:0, by_step:{'default\u2066':1}}, findings:[{severity:'warn', title:'t\u200b', detail:';fs- mr\u202e', seq:3}]});
+let caps = null, wsConf = null; const wsConfigLine = () => null;
 `
 	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's panels failed:\n%s", out)
@@ -845,5 +848,27 @@ const setTimeout = (f, ms) => globalThis.setTimeout(f, Math.min(ms, 5)), clearTi
 	}
 	if strings.Count(ideHTML, "new EventSource(") != 1 {
 		t.Error("the page opens an EventSource of its own besides the shared stream")
+	}
+}
+
+// An MCP server running unconfined on the none tier is marked so in the
+// capabilities the workbench's Extensions panel draws, with the reason.
+func TestCapabilitiesMarkUnconfinedMCP(t *testing.T) {
+	gw := mcp.NewGateway()
+	t.Cleanup(gw.Close)
+	if errs := gw.Connect(context.Background(), []mcp.ServerConfig{{Name: "probe", URL: fakeMCP(t, "look"), Enabled: true}}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	gw.MarkUnconfined("probe", "the sandbox tier is none: chosen in the configuration")
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Gateway: gw})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/capabilities", nil))
+	var c capabilities
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if len(c.MCP) != 1 || c.MCP[0].Unconfined != "the sandbox tier is none: chosen in the configuration" {
+		t.Fatalf("mcp: %+v", c.MCP)
 	}
 }

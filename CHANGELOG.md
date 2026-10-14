@@ -794,6 +794,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The workbench's Extensions panel marks an MCP server that runs with no
+  sandbox, on the none tier, *unconfined*, with the reason the start-up
+  warning gives; `GET /v1/capabilities` and `GET /v1/admin/settings` carry it
+  as the server's `unconfined` field
+  ([MCP](docs/guide/08-mcp.md)).
 - `abhed trust startup-files` records the shell start-up files in your home
   folder, once you have seen them, as your own: while each keeps its path,
   size and sha256 a shell the agent starts is not judged on it. Kept in
@@ -1516,6 +1521,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A server stopped while a workbench or console tab was open waited the
+  full ten seconds it gives open HTTP requests, since the tab's streams
+  never end by themselves. Its streams (session events, terminals,
+  language servers and the shared stream) now end when the HTTP shutdown
+  begins, after the drain, so turns still finish in view. Affects every
+  release to 1.2.7.
+- In the workbench, *Edit and resend* on a session's first message, after
+  commands you ran yourself, was refused with "nothing to fork from", and
+  the page stayed in edit mode, so each send was refused again. The
+  conversation now goes on from an empty history, the commands staying in
+  the record, and a fork the server refuses ends the edit. `/rewind` in the
+  terminal gets the same fix. Affects 1.2.4 to 1.2.7.
 - On Linux the process tier's start-up probe ran `grep` from Abhed's own
   `PATH`, so Abhed started with a `PATH` lacking it (a service unit, a
   wrapper) found bubblewrap unusable and, with `sandbox.min_tier` none,
@@ -1768,7 +1785,8 @@ All notable changes to Abhed are recorded here. The format follows
   name holds a character that does not print as itself is now refused at
   load and named in the warning, escaped. Doctor's `git` line said git's
   files were held only in served and Studio sessions; it now says what
-  `sandbox.protect_git` holds.
+  `sandbox.protect_git` holds on the tier in force, and on none that they
+  are not held.
 - The command line's own flags written before a subcommand that does not
   read them (`abhed -allow 'secret(X)' acp`) were silently ignored. They now
   stop the command with exit `2` and a message naming them, as they do
@@ -1789,7 +1807,7 @@ All notable changes to Abhed are recorded here. The format follows
   the accounts with `abhed user import` first.
 - `abhed serve -addr 127.0.0.1:0` printed `:0` in its banner; it now names
   the port the system gave it. The banner also says whether git's files
-  are held read-only from commands.
+  are held read-only from commands on its tier.
 - `abhed admin web-search`, refused inside an agent's command, said "the
   attempt could not be logged" although the system log had it; it now says
   the attempt is in the system log.

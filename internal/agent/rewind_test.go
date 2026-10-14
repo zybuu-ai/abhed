@@ -304,3 +304,44 @@ func TestBranchCopyLeavesTheName(t *testing.T) {
 		}
 	}
 }
+
+// The person's own completed calls before the first prompt are not part of the
+// model's conversation: rewinding to before that prompt is an empty history
+// that keeps those calls, not a refusal.
+func TestForkBeforeTheFirstPromptAfterTheUsersOwnCalls(t *testing.T) {
+	store := NewMemStore()
+	sess, _ := tools.NewSession(tempDir(t))
+	l := NewLoop(nil, nil, nil, nil, sess, NewRecorder(store, "s", ""), DefaultConfig())
+	mine := ev(2, EvActionRequested, ActionRequested{CallID: "u1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`)})
+	mine.Actor = ActorUser
+	for _, e := range []Event{
+		ev(1, EvSessionStarted, map[string]string{}),
+		mine,
+		ev(3, EvObservation, Observation{CallID: "u1", Tool: "bash", Content: "a.go"}),
+		ev(4, EvUserMessage, Message{Text: "one"}),
+		ev(5, EvAgentMessage, Message{Text: "ok"}),
+	} {
+		e.SessionID = "s"
+		_ = store.Append(e)
+	}
+	l.Recorder.Advance(5)
+	events, _ := store.Events("s")
+	if n, err := l.ForkBefore(events, 4); err != nil || n != 0 {
+		t.Fatalf("ForkBefore = %d, %v", n, err)
+	}
+	events, _ = store.Events("s")
+	last := events[len(events)-1]
+	var f Forked
+	if last.Type != EvForked || json.Unmarshal(last.Payload, &f) != nil || f.ThroughSeq != 3 {
+		t.Fatalf("recorded %s %s", last.Type, last.Payload)
+	}
+	if live := Live(events); len(live) != 3 || live[2].Seq != 3 {
+		t.Fatalf("the person's own calls are not kept: %v", live)
+	}
+	if len(l.messages) != 0 {
+		t.Fatal("the conversation was kept")
+	}
+	if pts := RewindPoints(events); len(pts) != 0 {
+		t.Fatalf("points: %+v", pts)
+	}
+}

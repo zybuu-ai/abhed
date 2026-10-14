@@ -396,7 +396,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
-	fmt.Printf("  git       %s\n", gitHeldLabel(cfg))
+	fmt.Printf("  git       %s\n", gitHeldLabel(cfg, sb.Tier()))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("  managed   %s\n", line)
 	}

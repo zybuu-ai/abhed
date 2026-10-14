@@ -75,7 +75,9 @@ The terminal CLI, `abhed -p`, `abhed doctor`, `abhed rpc` and `abhed serve`
 all start a server this way. On the none tier and on Windows a stdio
 server's files are not confined: each such server is named at start-up and by
 `abhed doctor`, with why the process tier is not available, until it is, or
-until the server is set `"host_files": true`. Under bubblewrap the temporary
+until the server is set `"host_files": true`. Under `abhed serve` the
+workbench's Extensions panel marks it *unconfined* with the same reason, as
+`GET /v1/capabilities` does in the server's `unconfined` field. Under bubblewrap the temporary
 folder is hidden from a confined server, so one whose program is installed
 there is refused with that reason. Its network is open, whatever
 `allow_network` says, except under `sandbox.network: "allowlist"`; see

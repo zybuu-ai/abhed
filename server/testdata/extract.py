@@ -103,7 +103,7 @@ sets = {
     'ide-modes': ['function limitModes(m){', 'function modeForNewSession(){'],
     # From ide.html: the Events and HawkEYE panels, which draw record text.
     'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function reveal(s, lines){','function tail(p){','function subjectOf(tool, args){',
-          'function logEvent(ev, p){','async function loadHawkeye(){'],
+          'function logEvent(ev, p){','async function loadHawkeye(){','function drawCaps(){'],
     'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function bubble(cls, who, text){','const byWhom = ','function answered(p, c, how){','function render(ev){','function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','function offerNext(t){','let lastUser = ','function offerEdit(){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function visible(s, lines){','function reveal(s, lines){','function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],

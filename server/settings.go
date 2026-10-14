@@ -118,6 +118,22 @@ type skillView struct {
 type mcpView struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// Unconfined is why a stdio server runs with no sandbox, if it does.
+	Unconfined string `json:"unconfined,omitempty"`
+}
+
+// mcpViews are gw's connected servers, each marked if it runs unconfined.
+func mcpViews(gw *mcp.Gateway) []mcpView {
+	out := []mcpView{}
+	if gw == nil {
+		return out
+	}
+	loose := gw.Unconfined()
+	for _, line := range gw.Status() {
+		name, _, _ := strings.Cut(line, " (") // names hold no spaces
+		out = append(out, mcpView{Name: line, Status: "connected", Unconfined: loose[name]})
+	}
+	return out
 }
 
 type retrievalView struct {
@@ -156,16 +172,9 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	s.state.mu.RLock()
 	gw := s.state.gateway
 	s.state.mu.RUnlock()
-	if gw != nil {
-		for _, line := range gw.Status() {
-			v.MCP = append(v.MCP, mcpView{Name: line, Status: "connected"})
-		}
-	}
+	v.MCP = mcpViews(gw)
 	if v.Skills == nil {
 		v.Skills = []skillView{}
-	}
-	if v.MCP == nil {
-		v.MCP = []mcpView{}
 	}
 	WriteJSON(w, http.StatusOK, v)
 }

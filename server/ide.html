@@ -130,7 +130,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .card .t b{font:600 12px var(--mono);overflow-wrap:anywhere}
 .card p{margin:4px 0 0;color:var(--ink-2);font-size:12px;overflow-wrap:anywhere}
 .pill{font:10px/1 var(--mono);padding:3px 6px;border-radius:10px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap;flex:none}
-.pill.mut{color:var(--warn);border-color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
+.pill.mut{color:var(--warn);border-color:var(--warn)}.card p.warn{color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
 .pill.on{color:var(--ok);border-color:var(--ok)}
 .rules{margin:0 12px 6px;font:12px var(--mono);color:var(--ink-2);overflow-wrap:anywhere}
 .rules div{padding:2px 0}.rules div.warn{color:var(--warn)}.rules .k{display:inline-block;width:44px;color:var(--muted)}
@@ -1475,7 +1475,11 @@ function drawCaps(){
     card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (visible(e.events.join(', ')) || 'all events'))); return card;
   }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
   sect('MCP servers', c.mcp, m => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status))); card.appendChild(top); return card;
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status)));
+    // Started with no sandbox on the none tier: said here as the server's log says it.
+    if(m.unconfined){ top.appendChild(el('span', 'pill mut', 'unconfined')); card.appendChild(top);
+      card.appendChild(el('p', 'warn', 'Runs with your home folder readable and writable, because ' + visible(m.unconfined) + '. Make the process tier available, or set "host_files": true on it to run it so knowingly.')); return card; }
+    card.appendChild(top); return card;
   }, 'No MCP servers connected. Add one under', 'mcp.servers');
   sect('Skills', c.skills, s => {
     const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(s.name)));
@@ -3117,12 +3121,16 @@ async function send(){
   if(busy){ const stick = nearBottom(); if(qbox.parentNode !== tx()) tx().appendChild(qbox); qbox.appendChild(b); follow(stick); }
   else{ add(b); waiting('Thinking'); }
   drawQueued(b);
-  let forked = false;
+  let forked = false, refused = false;
   try{
     const files = await flushUploads(id); b.files = files;
     b.prompt = withFiles(withNotes(await withMentions(typed), notes), files);
     if(id){
-      if(fork){ await api('/v1/sessions/' + id + '/fork', {method:'POST', body: JSON.stringify({before_seq: fork.seq})}); forked = true; }
+      if(fork){
+        try{ await api('/v1/sessions/' + id + '/fork', {method:'POST', body: JSON.stringify({before_seq: fork.seq})}); }
+        catch(e){ refused = e.status >= 400 && e.status < 500; throw e; }
+        forked = true;
+      }
       // A workbench session is named by its first message.
       const s = sessionList.find(x => x.id === id);
       if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = sessionLabel(s); }
@@ -3148,11 +3156,14 @@ async function send(){
   }catch(e){
     if(current !== id) return;
     // Forked and not sent: the text goes back in the box and the note says the
-    // conversation now ends before the edited message. Not forked: the next send forks.
-    if(fork && !forked) editing = fork;
+    // conversation now ends before the edited message. Not forked: the next send
+    // forks, unless the server refused the fork, which leaves edit mode.
+    if(fork && !forked && !refused) editing = fork;
+    if(refused) $('hint').textContent = live ? 'Enter queues it · Esc twice stops the run' : 'Enter sends · Shift+Enter for a new line';
     // Comments not delivered go back above the box, ahead of any written since.
     if(notes.length && !b.delivered){ reviewNotes = [...notes, ...reviewNotes]; drawNotes(); }
-    failed(b, visible(e.message), forked ? 'Not sent, though the conversation was taken back to before the message you edited; send it again' : undefined);
+    failed(b, visible(e.message), forked ? 'Not sent, though the conversation was taken back to before the message you edited; send it again'
+      : refused ? 'Not sent, and the conversation was not taken back; sending again adds it after the last message' : undefined);
     if(!busy) waiting(false);
   }
 }

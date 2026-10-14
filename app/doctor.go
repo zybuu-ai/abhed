@@ -100,7 +100,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("agents      ⚠ %s\n", w)
 	}
 	findings := configFindings(os.Stdout, cfg)
+	var tier sandbox.Tier // the git line's: unknown when no sandbox could be built
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
+		tier = sb.Tier()
 		defer func() {
 			if err := sandbox.Close(sb); err != nil {
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -131,7 +133,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	if w := pathDenyWarning(cfg); w != "" {
 		fmt.Printf("            ⚠ %s\n", w)
 	}
-	fmt.Printf("git         %s\n", gitHeldLabel(cfg))
+	fmt.Printf("git         %s\n", gitHeldLabel(cfg, tier))
 	// The sessions line as serve would run them: a sandbox each with several accounts.
 	served := cfg
 	if c, iso, err := serveSessionIsolation(cfg, workspace); err == nil && iso.auto {
@@ -759,13 +761,16 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// gitHeldLabel says whether commands are kept from writing git's files.
-func gitHeldLabel(cfg config.Config) string {
+// gitHeldLabel says whether commands are kept from writing git's files on
+// tier, the one in force, or "" when it is not known.
+func gitHeldLabel(cfg config.Config, tier sandbox.Tier) string {
 	switch on, required := cfg.Sandbox.GitProtected(); {
 	case !on:
 		return "not held: sandbox.protect_git is false (docs/guide/04-permissions.md)"
 	case required:
 		return "held read-only from commands; a tier that cannot hold them is refused"
+	case tier == sandbox.TierNone:
+		return "not held: the sandbox tier is none, so commands can write git's config and hooks; make a stronger tier available (sandbox.protect_git)"
 	}
 	return "held read-only from commands on every tier but none (sandbox.protect_git)"
 }

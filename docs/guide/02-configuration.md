@@ -1043,7 +1043,10 @@ drain, idle sessions are ended and their claims given back all together,
 within 15 seconds; a release the store refuses is tried again within ten
 seconds, and one that never lands lapses when its claim goes stale. It then
 waits up to five seconds for turns to record their end, and up to ten more
-for open HTTP requests. The worst case is `drain_seconds` + 15 seconds, or
+for open HTTP requests; the streams a page holds open (session events,
+terminals, language servers and the workbench's shared stream) are ended
+then rather than waited for, so an open workbench tab does not hold the
+server up. The worst case is `drain_seconds` + 15 seconds, or
 25 seconds when `drain_seconds` is under 10, so give the process at least
 that much grace: with Kubernetes' default `terminationGracePeriodSeconds` of
 30, keep `drain_seconds` at 15 or less.

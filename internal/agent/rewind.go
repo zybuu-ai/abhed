@@ -105,7 +105,8 @@ func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
 		}
 	}
 	if said {
-		return l.ForkTo(events, through)
+		// Only the person's own calls before it leave nothing the model saw: an empty history.
+		return l.forkTo(events, through, true)
 	}
 	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()

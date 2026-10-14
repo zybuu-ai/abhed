@@ -9,6 +9,8 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 func seqOfMessage(t *testing.T, events []agent.Event, text string) int64 {
@@ -108,5 +110,50 @@ func TestForkRefusals(t *testing.T) {
 		if ev.Type == agent.EvForked {
 			t.Fatal("a refused fork was recorded")
 		}
+	}
+}
+
+// Edit-and-resend of a workbench session's first message after the person's
+// own commands: the fork is an empty history, not "nothing to fork from".
+func TestForkBeforeTheFirstMessageAfterOwnCommands(t *testing.T) {
+	a := newModelServer(t, "from a")
+	cfg := config.Default()
+	cfg.Suggest.Enabled = false
+	cfg.Auth.Mode = "proxy"
+	cfg.Model.Default = "a"
+	cfg.Model.Providers = map[string]config.ProviderConfig{
+		"a": {Type: "openai-compatible", BaseURL: a.url, Model: "model-a", ContextWindow: 8192},
+	}
+	def, err := cfg.Model.Providers["a"].Adapter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: def,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Bash{}), Store: st})
+
+	id := sessionOf(t, callAs(t, s, "ana", "", "POST", "/v1/sessions", `{"workbench":true}`))
+	if w := callAs(t, s, "ana", "", "POST", "/v1/sessions/"+id+"/exec", `{"command":"echo hi"}`); w.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", w.Code, w.Body.String())
+	}
+	if w := callAs(t, s, "ana", "", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"first, with a typo"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("message: %d %s", w.Code, w.Body.String())
+	}
+	events := turnsEnded(t, st, id, 1)
+	first := seqOfMessage(t, events, "first, with a typo")
+
+	w := callAs(t, s, "ana", "", "POST", "/v1/sessions/"+id+"/fork", fmt.Sprintf(`{"before_seq":%d}`, first))
+	if w.Code != http.StatusOK {
+		t.Fatalf("fork: %d %s", w.Code, w.Body.String())
+	}
+	if w := callAs(t, s, "ana", "", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"first, corrected"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("message after the fork: %d %s", w.Code, w.Body.String())
+	}
+	turnsEnded(t, st, id, 2)
+	a.mu.Lock()
+	last := a.users[len(a.users)-1]
+	a.mu.Unlock()
+	if joined := strings.Join(last, " | "); !strings.Contains(joined, "first, corrected") || strings.Contains(joined, "typo") {
+		t.Fatalf("after the fork the model was sent: %s", joined)
 	}
 }

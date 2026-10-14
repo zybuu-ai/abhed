@@ -334,7 +334,7 @@ func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox, warn fun
 		gw.Confine, gw.ConfineNet = serverLaunchers(sb, allowlist)
 		if gw.Confine == nil && !allowlist {
 			gw.Confine = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
-				warnUnconfined(warn, name, sb)
+				warnUnconfined(gw, warn, name, sb)
 				return launchOrPlain(ctx, nil, false, name, argv, env, record)
 			}
 		}
@@ -347,7 +347,7 @@ func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox, warn fun
 		}
 		launch, _ := serverLaunchers(chosen, allowlist)
 		if launch == nil && !allowlist {
-			warnUnconfined(warn, name, chosen)
+			warnUnconfined(gw, warn, name, chosen)
 		}
 		return launchOrPlain(ctx, launch, allowlist, name, argv, env, record)
 	}
@@ -364,14 +364,16 @@ func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox, warn fun
 }
 
 // warnUnconfined says a stdio server runs with the person's home readable and
-// writable, because sb, the none tier or no sandbox, confines nothing, and why.
-func warnUnconfined(warn func(string, ...any), name string, sb sandbox.Sandbox) {
-	if warn == nil {
-		return
-	}
+// writable, because sb, the none tier or no sandbox, confines nothing, and why;
+// gw keeps the mark for the panels that list its servers.
+func warnUnconfined(gw *mcp.Gateway, warn func(string, ...any), name string, sb sandbox.Sandbox) {
 	why := "no sandbox is in use"
 	if sb != nil {
 		why = "the sandbox tier is none: " + sandbox.NoneReason(sb)
+	}
+	gw.MarkUnconfined(name, why)
+	if warn == nil {
+		return
 	}
 	warn("mcp server %q runs unconfined, with your home folder readable and writable, because %s; "+
 		"make the process tier available, or set \"host_files\": true on it to run it so knowingly", name, why)
