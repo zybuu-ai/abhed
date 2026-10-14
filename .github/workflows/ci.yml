@@ -454,13 +454,15 @@ jobs:
       # Every package but app, whose terminal tests need a sandbox backend
       # and take too long emulated. Skipped, each for a gap in the emulator
       # or this runner, not in s390x, and each run natively in the test job:
-      # qemu-user 8.2 drops stat's nanoseconds (the change-time tests) and has
+      # qemu-user 8.2 drops stat's nanoseconds (the change-time tests, and the
+      # microVM guest's sync, which finds changes by change time) and has
       # no openat2 (TestBarred); timing budgets do not hold emulated; and
       # bubblewrap is not installed here (the sandboxed-session tests).
       - name: Unit tests under emulation
         run: |
           skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
-          skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestIndexScales'
+          skip+='|TestSyncSendsOnlyChanges|TestExecCopiesChangesBack'
+          skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestBudgetStartupWithSlowPodman|TestBudgetStartupWithBrokenBwrap|TestIndexScales'
           skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
           mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
           go test -count=1 -skip "$skip" "${pkgs[@]}"
