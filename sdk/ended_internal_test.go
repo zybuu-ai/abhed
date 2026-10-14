@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,5 +65,34 @@ func TestSDKPromptHookRefusesAPrompt(t *testing.T) {
 	var ended *EndedError
 	if !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused || ended.Detail != "that topic is off limits" {
 		t.Fatalf("Run: %v", err)
+	}
+}
+
+// A refused prompt with nothing queued before it returns no answer: not the
+// previous prompt's, which a caller would take for this one's.
+func TestRefusedPromptReturnsNoEarlierAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	a, err := New(context.Background(), Options{
+		Workspace: t.TempDir(),
+		Provider:  &Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m"},
+		Extensions: []ExtensionConfig{{Name: "gatekeeper", Command: "bash",
+			Args:   []string{filepath.Join("..", "internal", "extension", "testdata", "gatekeeper.sh")},
+			Events: []extension.Event{extension.EvUserPromptSubmit}, Timeout: 5 * time.Second}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	if got, err := a.Run(context.Background(), "hello"); err != nil || got != "ok" {
+		t.Fatalf("first prompt: %q %v", got, err)
+	}
+	got, err := a.Run(context.Background(), "the forbidden thing")
+	var ended *EndedError
+	if got != "" || !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused {
+		t.Fatalf("refused prompt: %q %v", got, err)
 	}
 }

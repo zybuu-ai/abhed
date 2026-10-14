@@ -1708,7 +1708,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := loop.RunMessage(runCtx, agent.Message{Text: spec.Prompt, ClientID: spec.ClientID})
-		for live.settle(runCtx, reason, err) {
+		for endRefused(live, reason, err); live.settle(runCtx, reason, err); endRefused(live, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
 		waitSuggestion(live)
@@ -3408,6 +3408,16 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
 }
 
+// endRefused records the end of a run a hook refused before it began, when
+// nothing waits to run on, before the session is settled: the workbench and
+// other clients leave their live state on a run's end, which such a run
+// otherwise never records.
+func endRefused(live *liveSession, reason agent.TerminalReason, err error) {
+	if err == nil && reason == agent.TermPromptRefused && len(live.Loop.Queued()) == 0 {
+		live.Loop.EndRefused()
+	}
+}
+
 // startRunLocked starts a run on its own goroutine: a person's message or a
 // wake. The caller holds live.mu, has checked no run is live and the server
 // is not draining, and has the session claimed; this releases live.mu. One
@@ -3426,7 +3436,7 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := start(ctx)
-		for live.settle(ctx, reason, err) {
+		for endRefused(live, reason, err); live.settle(ctx, reason, err); endRefused(live, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
 		waitSuggestion(live)

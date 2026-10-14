@@ -48,10 +48,21 @@ for scenario in per-session shared; do
   mkdir -p "$home/.abhed" "$ws"
   shared=false
   if [ "$scenario" = shared ]; then shared=true; fi
+  # A user_prompt_submit hook that refuses messages saying "forbidden".
+  cat > "$WORK/$scenario/gate.sh" <<'GATE'
+#!/bin/bash
+while IFS= read -r line; do
+  case "$line" in
+    *'"event":"user_prompt_submit"'*forbidden*) echo '{"block":true,"reason":"that topic is off limits"}' ;;
+    *) echo '{}' ;;
+  esac
+done
+GATE
   cat > "$home/.abhed/config.json" <<EOF
 {"model":{"default":"fake","providers":{"fake":{"type":"openai-compatible","base_url":"http://127.0.0.1:${MODEL_PORT}/v1","model":"workbench-e2e","context_window":32768}}},
  "auth":{"mode":"local","allow_signup":true,"users_file":"$home/.abhed/users.json"},
  "server":{"shared_sessions":$shared},
+ "extensions":[{"name":"gate","command":"bash","args":["$WORK/$scenario/gate.sh"],"events":["user_prompt_submit"]}],
  "sandbox":{"min_tier":"none"}}
 EOF
 

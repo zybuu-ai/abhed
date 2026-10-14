@@ -230,6 +230,11 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			cur.running = true
 			mu.Unlock()
 			answer, err := a.Run(ctx, req.Prompt)
+			// The prompt's own refusal is kept, whatever the steers run after it end as.
+			var refused error
+			if rpcRefused(err) {
+				refused = err
+			}
 			// A steer that came as the run was ending is run now, since it was
 			// answered steered; steers after this point are answered queued.
 			for {
@@ -243,6 +248,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 					break
 				}
 				answer, err = a.RunQueued(ctx)
+			}
+			if refused != nil && (err == nil || rpcRefused(err)) {
+				err = refused
 			}
 			// The run's events, its end included, go out before its reply, and
 			// both before an exit on a stop signal is let through.
@@ -421,4 +429,10 @@ func rpcRunsOn(err error, queued int) bool {
 	}
 	var ended *abhed.EndedError
 	return errors.As(err, &ended) && ended.Reason.RunsOnForQueued()
+}
+
+// rpcRefused reports whether err is a prompt a hook refused.
+func rpcRefused(err error) bool {
+	var ended *abhed.EndedError
+	return errors.As(err, &ended) && ended.Reason == agent.TermPromptRefused
 }

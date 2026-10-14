@@ -206,4 +206,25 @@ func TestServerPromptHookRefusesAMessage(t *testing.T) {
 	if d := payloadOf[agent.DroppedMessage](t, evs, agent.EvMessageDropped); d.Reason != "that topic is off limits" {
 		t.Fatalf("recorded as dropped: %+v", d)
 	}
+	// The run's end is recorded, so a page watching leaves its live state.
+	if e := payloadOf[agent.SessionEnded](t, evs, agent.EvSessionEnded); e.Reason != agent.TermPromptRefused {
+		t.Fatalf("the refused run ended as %+v", e)
+	}
+	// A follow-up refused ends visibly too.
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"more forbidden talk"}`); w.Code >= 300 {
+		t.Fatalf("follow-up %d %s", w.Code, w.Body)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for ends := 0; ends < 2; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the refused follow-up recorded no end: %v", typesOf(evs))
+		}
+		evs, _ = s.store.Events(id)
+		ends = 0
+		for _, ev := range evs {
+			if ev.Type == agent.EvSessionEnded {
+				ends++
+			}
+		}
+	}
 }

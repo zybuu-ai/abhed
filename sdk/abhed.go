@@ -542,7 +542,11 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 		return "", err
 	}
 	if why := a.loop.RefusedPrompt(); why != "" {
-		return a.lastMessage(), &EndedError{Reason: agent.TermPromptRefused, Detail: why}
+		answer := ""
+		if reason != agent.TermPromptRefused {
+			answer = a.lastMessage() // the answer to messages queued before it
+		}
+		return answer, &EndedError{Reason: agent.TermPromptRefused, Detail: why}
 	}
 	if reason != agent.TermCompleted {
 		return a.lastMessage(), &EndedError{Reason: reason}
@@ -647,6 +651,9 @@ func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 	reason, err := a.loop.RunQueued(ctx)
 	if err != nil {
 		return "", err
+	}
+	if reason == agent.TermPromptRefused {
+		return "", &EndedError{Reason: reason} // nothing was answered
 	}
 	if reason != agent.TermCompleted {
 		return a.lastMessage(), &EndedError{Reason: reason}

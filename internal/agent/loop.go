@@ -736,6 +736,14 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	return l.run(ctx)
 }
 
+// EndRefused records the end of a run a hook refused before it began, for a
+// surface whose clients see a run end only when its end is recorded.
+func (l *Loop) EndRefused() {
+	l.runMu.Lock()
+	defer l.unlockRun()
+	l.finish(TermPromptRefused)
+}
+
 // RefusedPrompt is why a hook refused the last RunMessage's own message, or
 // "" when it was sent. A run that answered earlier queued messages instead
 // still completes; this says the caller's own message was not among them.

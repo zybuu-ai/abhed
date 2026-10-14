@@ -460,3 +460,34 @@ func TestHeadlessPromptHookRefusesThePrompt(t *testing.T) {
 		t.Fatalf("%d model requests; output:\n%s", n, out)
 	}
 }
+
+// A steer that arrives while the hook is judging the prompt is answered, and
+// the prompt's own refusal is not lost: the reply is the refusal error,
+// carrying the steer's answer.
+func TestRPCKeepsTheRefusalWhenASteerArrivesDuringIt(t *testing.T) {
+	m := &globModel{text: true}
+	slowGate := `#!/bin/bash
+while IFS= read -r line; do
+  case "$line" in
+    *'"event":"user_prompt_submit"'*forbidden*) sleep 1; echo '{"block":true,"reason":"that topic is off limits"}' ;;
+    *) echo '{}' ;;
+  esac
+done
+`
+	ws := rpcWorkspace(t, m.serve(t).URL, `, "extensions":[{"name":"gate","command":"bash","args":[`+
+		jsonQuote(writeScript(t, slowGate))+`],"events":["user_prompt_submit"]}]`)
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"the forbidden thing"}`)
+	time.Sleep(300 * time.Millisecond) // the hook is judging the prompt
+	s.send(`{"id":"3","method":"steer","prompt":"a fair question"}`)
+	out := s.waitFor(t, `"id":"2"`)
+	if !strings.Contains(out, `"type":"steered"`) {
+		t.Skipf("the steer did not arrive while the prompt ran, so this checks nothing:\n%s", out)
+	}
+	last := out[strings.LastIndex(out, `{"id":"2"`):]
+	if !strings.Contains(last, `"type":"error"`) || !strings.Contains(last, "prompt_refused") || !strings.Contains(last, `"answer":"done"`) {
+		t.Fatalf("the prompt's reply: %s", last)
+	}
+}

@@ -135,5 +135,28 @@ try {
   result('first-turn approval', false, e.message);
 }
 
+// A message a user_prompt_submit hook refuses, as a follow-up and as a new
+// session's first: the page says why and leaves its live state, with no
+// Stop or Thinking left behind.
+const settled = async what => {
+  const name = `a refused ${what} is said, and the page leaves its live state`;
+  try {
+    await page.locator('#tx').getByText('that topic is off limits').last().waitFor({timeout: 15000});
+    await waitUntil('the run to end on the page', async () =>
+      await page.locator('#stop').isHidden() && await page.locator('#tx .wait').count() === 0, 10000);
+    result(name, true);
+  } catch (e) {
+    result(name, false, e.message + '; stop hidden=' + await page.locator('#stop').isHidden() +
+      ', waiting=' + await page.locator('#tx .wait').count());
+  }
+};
+await page.locator('#q').fill('the forbidden thing, as a follow-up');
+await page.locator('#send').click();
+await settled('follow-up');
+await page.evaluate(() => document.getElementById('new').click()); // the button sits in a panel that may be closed
+await page.locator('#q').fill('the forbidden thing, first');
+await page.locator('#send').click();
+await settled("session's first message");
+
 await browser.close();
 process.exit(failures);
