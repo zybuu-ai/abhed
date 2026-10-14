@@ -294,10 +294,9 @@ func TestClientIDIsEchoed(t *testing.T) {
 	}
 }
 
-// A refused prompt's run records its end when nothing waits to run on, and
-// also when its context was cancelled with messages queued, since it does
-// not go on for them then.
-func TestEndRefusedRecordsTheEnd(t *testing.T) {
+// A refused prompt's run records its end, decided with whether it goes on:
+// when nothing waits, and when its context was cancelled with messages queued.
+func TestSettleRecordsARefusedRunsEnd(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, c := range []struct {
@@ -315,10 +314,10 @@ func TestEndRefusedRecordsTheEnd(t *testing.T) {
 			if c.queued {
 				l.Loop.Queue("late")
 			}
-			endRefused(c.ctx, l, agent.TermPromptRefused, nil)
+			again := l.settle(c.ctx, agent.TermPromptRefused, nil)
 			evs, _ := store.Events("s")
-			if end, ok := agent.LastEnd(evs); ok != c.ends || ok && end.Reason != agent.TermPromptRefused {
-				t.Fatalf("end recorded %v (%s), want %v", ok, end.Reason, c.ends)
+			if end, ok := agent.LastEnd(evs); again == c.ends || ok != c.ends || ok && end.Reason != agent.TermPromptRefused {
+				t.Fatalf("goes on %v, end recorded %v (%s); want an end %v", again, ok, end.Reason, c.ends)
 			}
 		})
 	}
