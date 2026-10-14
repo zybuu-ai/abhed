@@ -208,7 +208,7 @@ All notable changes to Abhed are recorded here. The format follows
   program or write a file. No allow rule with a wildcard approves these
   now, and no "always allow" is offered for them: `--output-directory`
   (`format-patch -o`), `--open-files-in-pager` (`grep -O`),
-  `--upload-pack`, `--receive-pack`, `--exec` (`rebase -x`), `clone -u`,
+  `--upload-pack`, `--receive-pack`, `--exec` (`rebase -x`), `clone -u`, `ls-remote -u`,
   `clone -c`, `--config` and `--template`, `init --template`; before the
   subcommand, `-c`, `--config-env`, `--exec-path`, `-p`/`--paginate`,
   `-C`, `--git-dir` and `--work-tree`; and `difftool`, `mergetool`,
@@ -216,8 +216,13 @@ All notable changes to Abhed are recorded here. The format follows
   `git config` other than reading. Any prefix of a long option counts
   (`--op`, `--ex`, `--u`), and only `log`, `show` and `whatchanged` stop
   reading options at `--`. A rule naming the whole command exactly still
-  approves it ([Permissions](docs/guide/04-permissions.md#rules)).
-  `--output` and `--upload-pack` written in full already asked. Under any
+  approves the rest ([Permissions](docs/guide/04-permissions.md#rules)).
+  `--output`, `--upload-pack`, `--receive-pack` and `--exec`, by any
+  prefix, and `clone -u`, `ls-remote -u` and `rebase -x`, now ask in every
+  mode, `bypass` included, as destructive, and a deny rule sees the command
+  they are given, which no allow rule changes; before, `--output` did by
+  any prefix, the other three only in full, and the short forms not at
+  all. Under any
   rule that allows git, git still runs the programs the repository's own
   configuration names, so the sandbox remains the boundary. Affects 0.1.0
   to 1.2.7.

@@ -438,6 +438,14 @@ func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (strin
 		return "git " + sub + gitForeignSuffix, true
 	}
 	g := parseGitArgs(sub, words[i+1:])
+	for _, opt := range gitRunsCommand {
+		if g.risky(strings.TrimPrefix(opt, "--"), "") {
+			return "git " + opt + ", which runs the command it is given", true
+		}
+	}
+	if letter, ok := gitRunsCommandShort[sub]; ok && g.risky("", letter) {
+		return "git " + sub + " -" + letter + ", which runs the command it is given", true
+	}
 	// Every subcommand that takes diff or log options, stash list included, writes --output.
 	if g.risky("output", "") {
 		return "write over a file (git --output)", true

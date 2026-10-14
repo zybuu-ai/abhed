@@ -358,9 +358,12 @@ For `log`, `show` and `whatchanged` the options are read up to `--`, since
 git reads what follows as paths; for every other subcommand, `diff`
 included, every word is read, because `--` can be an option's value there
 (`git grep -e -- -O prog`, `git diff --no-index -O -- --output=f a b`).
-`--output` and `--upload-pack` written in full already asked in every mode.
-A rule naming the whole command exactly, such as `bash(git log -p
---ext-diff)`, and `bash` or `bash(*)`, still approve it. This is a list,
+`--output`, `--upload-pack`, `--receive-pack` and `--exec`, by any prefix,
+and `clone -u`, `ls-remote -u` and `rebase -x`, are also destructive: they
+ask in every mode, `bypass` included, and a deny rule sees the command they
+are given, whatever the allow rules say. For the rest, a rule naming the
+whole command exactly, such as `bash(git log -p --ext-diff)`, and `bash` or
+`bash(*)`, still approve it. This is a list,
 not a proof that git runs nothing: under any rule that allows git, even the
 built-in `bash(git diff *)`, git still runs the programs the repository's
 own configuration names, with no option at all (an external diff or
@@ -658,8 +661,9 @@ and literal text another command runs is read as the commands it is:
 `bash <<< 'curl x'`, `su --command`, `flock`, `env -S 'curl x'`,
 `watch 'curl x'`, a command under `find -exec`, `chrt`, `taskset`, `chroot`,
 `unshare` or `timeout inf`, and the value of git's `--exec`,
-`--upload-pack` and `--receive-pack` and the command of an `ext::` URL on
-git's line, which also confirm as destructive.
+`--upload-pack` and `--receive-pack` (by any prefix, such as `--u=`),
+`clone -u`, `ls-remote -u` and `rebase -x`, and the command of an `ext::`
+URL on git's line, which also confirm as destructive.
 Such text built from an expansion is refused while a deny rule for `bash`
 has a pattern. So is any git argument built from an expansion once the line
 enables the ext protocol (`protocol.ext.allow` or `protocol.allow` in `-c`,

@@ -141,12 +141,12 @@ func gitOptionRunsOrWrites(words []string) string {
 		if name, ok := strings.CutPrefix(w, "--"); ok {
 			name, _, _ = strings.Cut(name, "=")
 			for _, l := range gitRunsOrWritesSubLong[sub] {
-				if name != "" && strings.HasPrefix(l, name) {
+				if gitLongPrefix("--"+name, "--"+l) {
 					return "git " + sub + " --" + l + " sets configuration or hooks, which can name a program to run"
 				}
 			}
 			for _, o := range gitRunsOrWritesLong {
-				if len(name) >= min(o.min, len(o.name)) && strings.HasPrefix(o.name, name) {
+				if len(name) >= o.min && gitLongPrefix("--"+name, "--"+o.name) {
 					return "git " + sub + " --" + o.name + " " + o.why
 				}
 			}
@@ -175,4 +175,13 @@ func gitConfigReadOnly(words []string) bool {
 		}
 	}
 	return read
+}
+
+// gitLongPrefix reports a word naming the long option opt (both with their
+// leading --) in full or by any prefix, as git accepts; the value is cut off.
+// Both the destructive check and GitRunsOrWrites read options this way.
+func gitLongPrefix(word, opt string) bool {
+	name, _, _ := strings.Cut(word, "=")
+	n, ok := strings.CutPrefix(name, "--")
+	return ok && abbreviates(n, strings.TrimPrefix(opt, "--"))
 }

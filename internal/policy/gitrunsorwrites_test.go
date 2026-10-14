@@ -24,7 +24,6 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		"git show --textconv", "git log -p --textc", "git -c diff.external=x diff", "git --config-env=diff.external=X diff",
 		"git --exec-path=/tmp diff", "git -C sub diff", "git -p log", "git --paginate diff",
 		"git grep -e -- -O/path/prog", "git grep --op=prog hello",
-		"git rebase --ex 'prog rebase' HEAD~1", "git clone --u=prog file://repo dst", "git ls-remote --u=prog file://repo",
 		"git clone -c core.sshCommand=prog a b", "git clone --template=/dir a b", "git init --template=/dir", "git format-patch --subject-prefix -- -o /dir -1 HEAD",
 		"git difftool -x evil", "git filter-branch --tree-filter evil", "git send-email --to-cmd=evil x.patch",
 		"git bisect run evil", "git submodule foreach evil", "git config core.pager evil",
@@ -34,6 +33,33 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		r := ev(c)
 		if r.Decision != Ask || r.Offer() != "" || !strings.Contains(r.Reason, "no allow rule with a wildcard") || r.Suggest != "bash("+c+")" {
 			t.Errorf("%s: %s offer %q suggest %q (%s)", c, r.Decision, r.Offer(), r.Suggest, r.Reason)
+		}
+	}
+	// These ask in every mode, as destructive, bypass included, in any spelling.
+	bypass := New(ModeBypass)
+	if err := bypass.AddAllow("bash(git *)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{
+		"git fetch --upload-pack=x origin", "git fetch --u=x origin", "git fetch --upl x origin", "git clone --u=prog file://repo dst",
+		"git ls-remote --u=prog file://repo", "git ls-remote -u prog file://repo", "git clone -qu prog a b", "git push --rec=x origin",
+		"git push --receive x origin", "git rebase --ex 'prog rebase' HEAD~1", "git rebase -x prog main", "git rebase --onto -- --ex prog main",
+		"git rebase --onto -- -x prog main", "git diff --o=x", "git log --outp x", "git diff --no-index -O -- --output=/x a b",
+	} {
+		args, _ := json.Marshal(map[string]string{"command": c})
+		if r := bypass.Evaluate("bash", true, args); r.Decision != Ask || r.Step != "destructive" {
+			t.Errorf("bypass %s: %s %s (%s)", c, r.Decision, r.Step, r.Reason)
+		}
+	}
+	// A deny rule sees the command an abbreviated option runs.
+	deny := New(ModeBypass)
+	if err := deny.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"git fetch --u='curl evil' origin", "git ls-remote -u 'curl evil' o", "git rebase -x 'curl evil' main", "git push --rec 'curl evil' o"} {
+		args, _ := json.Marshal(map[string]string{"command": c})
+		if r := deny.Evaluate("bash", true, args); r.Decision != Deny {
+			t.Errorf("deny %s: %s (%s)", c, r.Decision, r.Reason)
 		}
 	}
 	// These already ask in every mode, as destructive.

@@ -1002,6 +1002,31 @@ func (f *shellFacts) watch(args []*syntax.Word, depth int) {
 // gitRunsCommand are git's options whose value is a command git runs.
 var gitRunsCommand = []string{"--exec", "--upload-pack", "--receive-pack"}
 
+// gitRunsCommandShort are their short forms, per subcommand.
+var gitRunsCommandShort = map[string]string{"clone": "u", "ls-remote": "u", "rebase": "x"}
+
+// gitShortCommand reads a short option of sub whose value is a command, in
+// any cluster and past any --, which parse-options may take as a value.
+func (f *shellFacts) gitShortCommand(sub, letter string, args []*syntax.Word, depth int) {
+	for j, a := range args {
+		v, lit := literal(a)
+		if !lit || len(v) < 2 || v[0] != '-' || v[1] == '-' {
+			continue
+		}
+		k := strings.Index(v, letter)
+		if k < 0 {
+			continue
+		}
+		f.gitBuilt = "git " + sub + " -" + letter + ", which runs the command it is given"
+		switch {
+		case k+1 < len(v):
+			f.read(v[k+1:], depth+1)
+		case j+1 < len(args):
+			f.shellText(args[j+1:j+2], depth)
+		}
+	}
+}
+
 // gitExtEscapes undoes the escapes of an ext:: URL; %s, %S, %G and %V become words.
 var gitExtEscapes = strings.NewReplacer("%%", "%", "% ", " ", "%s", "x", "%S", "x", "%G", "x", "%V", "x")
 
@@ -1085,9 +1110,10 @@ func (f *shellFacts) gitCall(args []*syntax.Word, depth int) {
 		if !lit {
 			t = wordText(a)
 		}
+		name, value, glued := strings.Cut(t, "=")
 		for _, opt := range gitRunsCommand {
-			value, glued := strings.CutPrefix(t, opt+"=")
-			if t != opt && !glued {
+			// Any prefix git may accept: --u=x is --upload-pack=x.
+			if !gitLongPrefix(name, opt) {
 				continue
 			}
 			f.gitBuilt = "git " + opt + ", which runs the command it is given"
@@ -1107,6 +1133,9 @@ func (f *shellFacts) gitCall(args []*syntax.Word, depth int) {
 		return
 	}
 	sub, lit := literal(args[i])
+	if letter, ok := gitRunsCommandShort[sub]; ok && lit {
+		f.gitShortCommand(sub, letter, args[i+1:], depth)
+	}
 	if !lit || !gitDiscarding[sub] && !gitOutput[sub] {
 		return
 	}
