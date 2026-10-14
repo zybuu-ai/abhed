@@ -290,3 +290,44 @@ func TestRefusedPromptStillAnswersWhatWasQueuedBeforeIt(t *testing.T) {
 		t.Fatalf("recorded as sent: %q", sent)
 	}
 }
+
+// steerOnCall steers the loop as the first model call starts, as a person
+// typing during a turn would.
+type steerOnCall struct {
+	*scriptedAdapter
+	steer func()
+}
+
+func (s *steerOnCall) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	if s.steer != nil {
+		s.steer()
+		s.steer = nil
+	}
+	return s.scriptedAdapter.Complete(ctx, req)
+}
+
+// Messages queued during the final turn that a hook refuses, every one, are
+// dropped, and the model is not called again on the conversation as it was.
+func TestRefusedSteersDuringATurnCallNoModel(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "first"}, {text: "never"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	sa := l.Adapter.(*scriptedAdapter)
+	l.Adapter = &steerOnCall{scriptedAdapter: sa, steer: func() { l.Steer("forbidden one"); l.Steer("forbidden two") }}
+	reason, err := l.Run(context.Background(), "hello")
+	if err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(sa.gotRequests); n != 1 {
+		t.Fatalf("the model was called %d times, want once", n)
+	}
+	evs, _ := store.Events("sess1")
+	dropped := 0
+	for _, e := range evs {
+		if e.Type == EvMessageDropped {
+			dropped++
+		}
+	}
+	if dropped != 2 {
+		t.Fatalf("%d messages recorded as dropped, want 2", dropped)
+	}
+}

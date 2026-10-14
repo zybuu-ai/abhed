@@ -737,6 +737,24 @@ func (l *Loop) startMessage() {
 	}
 }
 
+// moreForTheModel reports whether a completed run has something new for the
+// model: a background result, or a queued message the hooks let through,
+// which it delivers now. Messages the hooks refuse, every one, leave nothing,
+// and the model is not called again on the conversation as it was.
+func (l *Loop) moreForTheModel() (bool, error) {
+	if l.Background.Pending() > 0 {
+		return true, nil
+	}
+	if len(l.Queued()) == 0 {
+		return false, nil
+	}
+	n, err := l.deliverQueuedCount()
+	if err != nil {
+		return false, err
+	}
+	return n > 0 || l.hasWork(), nil
+}
+
 // RunQueued continues the conversation with only the queued messages, for a
 // message that arrived after the last run had already decided to end.
 func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
@@ -748,14 +766,12 @@ func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
 	}
 	// Queued messages a hook refuses all are dropped, and with nothing else
 	// waiting the model is not called on the conversation as it was.
-	if l.Background.Pending() == 0 {
-		n, err := l.deliverQueuedCount()
-		if err != nil {
-			return TermError, err
-		}
-		if n == 0 && !l.hasWork() {
-			return TermPromptRefused, nil
-		}
+	more, err := l.moreForTheModel()
+	if err != nil {
+		return TermError, err
+	}
+	if !more {
+		return TermPromptRefused, nil
 	}
 	l.startMessage()
 	return l.run(ctx)
@@ -792,6 +808,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		b.deferred = nil
 		b.mu.Unlock()
 	}
+turns:
 	for {
 		if ctx.Err() != nil {
 			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
@@ -858,11 +875,28 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 			// is answered now rather than left waiting for a prompt that may
 			// never come.
 			if reason == TermCompleted && l.hasWork() {
-				continue
+				more, err := l.moreForTheModel()
+				if err != nil {
+					l.finish(TermError)
+					return TermError, err
+				}
+				if more {
+					continue
+				}
 			}
 			// Joined children are waited for: the run ends with them.
 			if reason == TermCompleted && l.Background.joinedLive() > 0 {
-				if l.waitBackground(ctx) || ctx.Err() != nil {
+				for l.waitBackground(ctx) {
+					more, err := l.moreForTheModel()
+					if err != nil {
+						l.finish(TermError)
+						return TermError, err
+					}
+					if more {
+						continue turns
+					}
+				}
+				if ctx.Err() != nil {
 					continue
 				}
 			}
