@@ -490,6 +490,12 @@ func TestClientCertificateRevocation(t *testing.T) {
 // A resumed session skips chain verification, so it must still meet the
 // revocation list and the client CA in force when it resumes.
 func TestResumedSessionsAreCheckedAgain(t *testing.T) {
+	for name, v := range map[string]uint16{"TLS 1.2": tls.VersionTLS12, "TLS 1.3": tls.VersionTLS13} {
+		t.Run(name, func(t *testing.T) { resumedSessionsAreCheckedAgain(t, v) })
+	}
+}
+
+func resumedSessionsAreCheckedAgain(t *testing.T, version uint16) {
 	f := newPKI(t)
 	srv := f.server(t, "s", pki.ECDSA, "s.test")
 	ca := filepath.Join(f.dir, pki.CACert)
@@ -505,7 +511,7 @@ func TestResumedSessionsAreCheckedAgain(t *testing.T) {
 	alice := f.client(t, "alice")
 	aliceLeaf, _ := x509.ParseCertificate(alice.Certificate[0])
 	cfg := &tls.Config{RootCAs: f.pool, ServerName: "s.test", Certificates: []tls.Certificate{alice},
-		ClientSessionCache: tls.NewLRUClientSessionCache(4)}
+		ClientSessionCache: tls.NewLRUClientSessionCache(4), MaxVersion: version}
 	for i := 0; i < 2; i++ {
 		if _, err := dial(addr, cfg); err != nil {
 			t.Fatalf("alice, connection %d: %v", i, err)
@@ -529,8 +535,12 @@ func TestResumedSessionsAreCheckedAgain(t *testing.T) {
 	if _, err := l.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := dial(addr, cfg); err != nil || !st.DidResume {
+	// A refused TLS 1.2 resumption drops the client's session, so one is made again.
+	if _, err := dial(addr, cfg); err != nil {
 		t.Fatalf("alice after the revocation was lifted: %v", err)
+	}
+	if st, err := dial(addr, cfg); err != nil || !st.DidResume {
+		t.Fatalf("alice's session did not resume after the revocation was lifted: %v", err)
 	}
 	nb, _ := os.ReadFile(filepath.Join(newPKI(t).dir, pki.CACert))
 	if err := os.WriteFile(ca, nb, 0o644); err != nil {

@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -216,7 +217,7 @@ func (st *state) verifyClient(cs tls.ConnectionState) error {
 			return err
 		}
 	}
-	for _, chain := range append(chains, cs.PeerCertificates) {
+	for _, chain := range slices.Concat(chains, [][]*x509.Certificate{cs.PeerCertificates}) {
 		for _, cert := range chain {
 			if st.isRevoked(cert) {
 				return ErrRevoked
