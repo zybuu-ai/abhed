@@ -211,7 +211,9 @@ All notable changes to Abhed are recorded here. The format follows
   the terminal asks them; a refused message is recorded as
   `message.dropped` with the reason, which the workbench shows, the
   server records the refused run's end so the page leaves its running
-  state, and the SDK's `Run` returns it as an `*EndedError`'s `Detail`. Affects 1.2.3 to
+  state, and the SDK's `Run` returns it as an `*EndedError`'s `Detail`,
+  with an empty answer unless messages queued before it were answered
+  (`RunQueued` with every queued message refused answers nothing too). Affects 1.2.3 to
   1.2.7.
 - The built-in allow rules `bash(git diff *)` and `bash(git log *)`
   approved `--ext-diff` and `--textconv`, which run the programs git's

@@ -491,3 +491,32 @@ done
 		t.Fatalf("the prompt's reply: %s", last)
 	}
 }
+
+// A prompt's refusal is said first whatever the steers run after it end as.
+func TestRPCKeepsTheRefusalFirst(t *testing.T) {
+	refused := &abhed.EndedError{Reason: agent.TermPromptRefused, Detail: "off limits"}
+	turns := &abhed.EndedError{Reason: agent.TermMaxTurns}
+	for _, c := range []struct {
+		name         string
+		refused, err error
+		want         []string
+	}{
+		{"not refused", nil, turns, []string{"max_turns"}},
+		{"steers completed", refused, nil, []string{"prompt_refused: off limits"}},
+		{"steers refused too", refused, &abhed.EndedError{Reason: agent.TermPromptRefused}, []string{"prompt_refused: off limits"}},
+		{"steers out of turns", refused, turns, []string{"prompt_refused: off limits", "max_turns"}},
+	} {
+		got := keepRefusal(c.refused, c.err)
+		for _, w := range c.want {
+			if got == nil || !strings.Contains(got.Error(), w) {
+				t.Errorf("%s: %v lacks %q", c.name, got, w)
+			}
+		}
+		if c.refused != nil {
+			var ended *abhed.EndedError
+			if !errors.As(got, &ended) || ended.Reason != agent.TermPromptRefused || !strings.HasPrefix(got.Error(), refused.Error()) {
+				t.Errorf("%s: the refusal is not first: %v", c.name, got)
+			}
+		}
+	}
+}

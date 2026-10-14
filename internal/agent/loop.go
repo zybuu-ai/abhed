@@ -741,7 +741,9 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 func (l *Loop) EndRefused() {
 	l.runMu.Lock()
 	defer l.unlockRun()
-	l.finish(TermPromptRefused)
+	// Only the end is recorded: no turn ran, so no turn_end hook fires, and
+	// the background tasks' last end stays the last run's.
+	l.record(EvSessionEnded, ActorSystem, l.endPayload(TermPromptRefused))
 }
 
 // RefusedPrompt is why a hook refused the last RunMessage's own message, or
@@ -1883,9 +1885,18 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// Children the end takes with it are stopped before it is recorded, so
 	// the end says how many live on.
 	l.Background.onRunEnd(reason)
+	end := l.endPayload(reason)
+	l.record(EvSessionEnded, ActorSystem, end)
+	l.Background.noteEnd(end)
+	l.observe(context.Background(), HookTurnEnd, "", string(reason))
+	return reason
+}
+
+// endPayload is the session.ended a run ending for reason records.
+func (l *Loop) endPayload(reason TerminalReason) SessionEnded {
 	l.usage.Turns = l.turns
 	ctxTokens, window := l.contextSize()
-	end := SessionEnded{
+	return SessionEnded{
 		Reason:        reason,
 		Turns:         l.turns,
 		TokensIn:      l.usage.InputTokens,
@@ -1898,10 +1909,6 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 		Suggesting:    l.endSuggesting,
 		Detail:        l.endDetail,
 	}
-	l.record(EvSessionEnded, ActorSystem, end)
-	l.Background.noteEnd(end)
-	l.observe(context.Background(), HookTurnEnd, "", string(reason))
-	return reason
 }
 
 // promptRefused asks the hooks about a person's message, and why they

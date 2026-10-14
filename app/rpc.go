@@ -230,7 +230,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			cur.running = true
 			mu.Unlock()
 			answer, err := a.Run(ctx, req.Prompt)
-			// The prompt's own refusal is kept, whatever the steers run after it end as.
+			// The prompt's own refusal is kept, and said first whatever the
+			// steers run after it end as.
 			var refused error
 			if rpcRefused(err) {
 				refused = err
@@ -249,9 +250,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				}
 				answer, err = a.RunQueued(ctx)
 			}
-			if refused != nil && (err == nil || rpcRefused(err)) {
-				err = refused
-			}
+			err = keepRefusal(refused, err)
 			// The run's events, its end included, go out before its reply, and
 			// both before an exit on a stop signal is let through.
 			flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
@@ -429,6 +428,18 @@ func rpcRunsOn(err error, queued int) bool {
 	}
 	var ended *abhed.EndedError
 	return errors.As(err, &ended) && ended.Reason.RunsOnForQueued()
+}
+
+// keepRefusal is the prompt's reply error: its own refusal, when it was
+// refused, then the error the steers run after it ended with, if another.
+func keepRefusal(refused, later error) error {
+	switch {
+	case refused == nil:
+		return later
+	case later == nil || rpcRefused(later):
+		return refused
+	}
+	return errors.Join(refused, later)
 }
 
 // rpcRefused reports whether err is a prompt a hook refused.

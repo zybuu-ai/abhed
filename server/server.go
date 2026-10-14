@@ -1708,7 +1708,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := loop.RunMessage(runCtx, agent.Message{Text: spec.Prompt, ClientID: spec.ClientID})
-		for endRefused(live, reason, err); live.settle(runCtx, reason, err); endRefused(live, reason, err) {
+		for endRefused(runCtx, live, reason, err); live.settle(runCtx, reason, err); endRefused(runCtx, live, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
 		waitSuggestion(live)
@@ -3412,8 +3412,9 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 // nothing waits to run on, before the session is settled: the workbench and
 // other clients leave their live state on a run's end, which such a run
 // otherwise never records.
-func endRefused(live *liveSession, reason agent.TerminalReason, err error) {
-	if err == nil && reason == agent.TermPromptRefused && len(live.Loop.Queued()) == 0 {
+func endRefused(ctx context.Context, live *liveSession, reason agent.TerminalReason, err error) {
+	// A cancelled run does not go on for what is queued, so its end is recorded too.
+	if err == nil && reason == agent.TermPromptRefused && (len(live.Loop.Queued()) == 0 || ctx.Err() != nil) {
 		live.Loop.EndRefused()
 	}
 }
@@ -3436,7 +3437,7 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := start(ctx)
-		for endRefused(live, reason, err); live.settle(ctx, reason, err); endRefused(live, reason, err) {
+		for endRefused(ctx, live, reason, err); live.settle(ctx, reason, err); endRefused(ctx, live, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
 		waitSuggestion(live)

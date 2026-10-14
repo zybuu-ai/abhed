@@ -357,3 +357,39 @@ func TestRefusedPromptIsRecordedAndSaid(t *testing.T) {
 		t.Fatalf("the next prompt: %v, still refused %q", err, l.RefusedPrompt())
 	}
 }
+
+// A refused prompt's recorded end is only that: no turn_end hook fires, and
+// the background tasks keep the last run's end.
+func TestEndRefusedRecordsTheEndOnly(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "fine"}}, policy.ModeDefault, true)
+	NewBackground(l, BackgroundPolicy{Wake: WakeNotify})
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	hooks := &fakeHooks{refusePrompt: "forbidden"}
+	l.Hooks = hooks
+	if _, err := l.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	hooks.mu.Lock()
+	hooks.seen = nil
+	hooks.mu.Unlock()
+	if reason, _ := l.Run(context.Background(), "the forbidden thing"); reason != TermPromptRefused {
+		t.Fatalf("ended %s", reason)
+	}
+	l.EndRefused()
+	hooks.mu.Lock()
+	seen := slices.Clone(hooks.seen)
+	hooks.mu.Unlock()
+	if slices.ContainsFunc(seen, func(s string) bool { return strings.HasPrefix(s, "turn_end") }) {
+		t.Fatalf("a turn_end hook fired for a refused prompt: %v", seen)
+	}
+	l.Background.mu.Lock()
+	last := l.Background.lastReason
+	l.Background.mu.Unlock()
+	if last != TermCompleted {
+		t.Fatalf("the background tasks' last end became %s", last)
+	}
+	evs, _ := store.Events("sess1")
+	if end, _ := LastEnd(evs); end.Reason != TermPromptRefused {
+		t.Fatalf("the recorded end: %s", end.Reason)
+	}
+}

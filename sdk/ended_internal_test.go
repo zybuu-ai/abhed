@@ -95,4 +95,10 @@ func TestRefusedPromptReturnsNoEarlierAnswer(t *testing.T) {
 	if got != "" || !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused {
 		t.Fatalf("refused prompt: %q %v", got, err)
 	}
+	// RunQueued with every queued message refused answers nothing either.
+	a.Steer("more forbidden talk")
+	got, err = a.RunQueued(context.Background())
+	if got != "" || !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused {
+		t.Fatalf("RunQueued, every message refused: %q %v", got, err)
+	}
 }
