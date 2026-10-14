@@ -26,7 +26,7 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		"git grep -e -- -O/path/prog", "git grep --op=prog hello",
 		"git clone -c core.sshCommand=prog a b", "git clone --template=/dir a b", "git init --template=/dir", "git format-patch --subject-prefix -- -o /dir -1 HEAD",
 		"git difftool -x evil", "git filter-branch --tree-filter evil", "git send-email --to-cmd=evil x.patch",
-		"git bisect run evil", "git instaweb --httpd=evil", "git cat-file --filters HEAD:a", "git submodule foreach evil", "git config core.pager evil",
+		"git bisect run evil", "git merge -s evil topic", "git pull --strate=evil origin", "git instaweb --httpd=evil", "git cat-file --filters HEAD:a", "git submodule foreach evil", "git config core.pager evil",
 		"git --git-dir=/x/.git log", "git --git-dir /x/.git log", "git --work-tree=/x diff", "git --work-tree /x status", "git grep -O x", "git grep --open-files-in-pager=vim x", "git grep --open x",
 		"git format-patch -o /tmp HEAD~1", "git format-patch --output-directory /tmp HEAD~1",
 	} {
@@ -86,7 +86,7 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		}
 	}
 	for _, c := range []string{"git diff --ext-diff HEAD", "git diff --stat", "git log -O order.txt", "git grep -n x", "git diff -- a.go",
-		"git log -p --grep -- --ext-diff", "git config --get core.pager", "git bisect good", "git submodule status"} {
+		"git log -p --grep -- --ext-diff", "git merge -s ort topic", "git merge -X theirs topic", "git config --get core.pager", "git bisect good", "git submodule status"} {
 		if r := ev(c); r.Decision != Allow {
 			t.Errorf("%s: %s (%s)", c, r.Decision, r.Reason)
 		}

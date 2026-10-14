@@ -212,12 +212,15 @@ All notable changes to Abhed are recorded here. The format follows
   `ls-remote -u`, `clone -c`, `--config` and `--template`, `init
   --template`; before the subcommand, `-c`, `--config-env`, `--exec-path`,
   `-p`/`--paginate`, `-C`, `--git-dir` and `--work-tree`; `cat-file
-  --filters`; and `difftool`, `mergetool`, `filter-branch`, `send-email`,
-  `instaweb`, `bisect run`, `submodule foreach` and `git config` other
-  than reading. Any prefix of a long option counts (`--op`, `--ex`,
-  `--u`), and only `log`, `show` and `whatchanged` stop reading options at
-  `--`; message text of `commit`, `tag`, `merge`, `notes` and `stash` is
-  not read as options. A rule naming the whole command exactly still
+  --filters`; a merge strategy that is not built into git (`-s` or
+  `--strategy` on `merge`, `pull`, `rebase`, `cherry-pick` or `revert`,
+  which runs `git-merge-<name>` from `PATH`); and `difftool`, `mergetool`,
+  `filter-branch`, `send-email`, `instaweb`, `bisect run`, `submodule
+  foreach` and `git config` other than reading. Any prefix of a long
+  option counts (`--op`, `--ex`, `--u`), and only `log`, `show` and
+  `whatchanged` stop reading options at `--`; message text of `commit`,
+  `tag`, `merge`, `notes` and `stash` is not read as options, except a
+  strategy on `merge`. A rule naming the whole command exactly still
   approves the rest ([Permissions](docs/guide/04-permissions.md#rules)).
   `--output`, `--upload-pack`, `--receive-pack` and `--exec`, by any
   prefix, and `clone -u`, `ls-remote -u` and `rebase -x`, now ask in every

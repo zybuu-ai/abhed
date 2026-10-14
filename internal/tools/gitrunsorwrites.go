@@ -156,6 +156,10 @@ func gitOptionRunsOrWrites(words []string) string {
 	if sub == "config" && !gitConfigReadOnly(rest) {
 		return "git config can set configuration, which can name a program to run"
 	}
+	// Checked before the message exemption: merge takes -s, unlike --output.
+	if name := gitStrategy(sub, rest); name != "" {
+		return "git " + sub + " -s " + name + " runs git-merge-" + name + ", a program found on PATH"
+	}
 	if gitTakesText(sub, rest) {
 		return ""
 	}
@@ -210,4 +214,52 @@ func gitLongPrefix(word, opt string) bool {
 	name, _, _ := strings.Cut(word, "=")
 	n, ok := strings.CutPrefix(name, "--")
 	return ok && abbreviates(n, strings.TrimPrefix(opt, "--"))
+}
+
+// gitStrategyShort are, per subcommand that takes -s, its short options that
+// take a value, so a cluster such as -ms is -m with the value s.
+var gitStrategyShort = map[string]string{
+	"merge": "mFsX", "pull": "sXo", "rebase": "sXxC", "cherry-pick": "msX", "revert": "msX",
+}
+
+// gitBuiltinStrategies are the merge strategies built into git.
+var gitBuiltinStrategies = set("ort", "recursive", "resolve", "octopus", "ours", "subtree")
+
+// gitStrategy is a merge strategy named with -s or --strategy, by any
+// prefix, that is not built into git, or "". Every word is read: these
+// subcommands read options past a -- given as a value.
+func gitStrategy(sub string, words []string) string {
+	letters, ok := gitStrategyShort[sub]
+	if !ok {
+		return ""
+	}
+	for i, w := range words {
+		value, found := "", false
+		if name, v, glued := strings.Cut(w, "="); gitLongPrefix(name, "--strategy") {
+			value, found = v, true
+			if !glued && i+1 < len(words) {
+				value = words[i+1]
+			}
+		} else if len(w) > 1 && w[0] == '-' && w[1] != '-' {
+			for k := 1; k < len(w); k++ {
+				if !strings.ContainsRune(letters, rune(w[k])) {
+					continue
+				}
+				if w[k] == 's' {
+					value, found = w[k+1:], true
+					if value == "" && i+1 < len(words) {
+						value = words[i+1]
+					}
+				}
+				break
+			}
+		}
+		if found && !gitBuiltinStrategies[value] {
+			if value == "" {
+				value = "?"
+			}
+			return value
+		}
+	}
+	return ""
 }

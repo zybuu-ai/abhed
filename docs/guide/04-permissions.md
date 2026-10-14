@@ -350,6 +350,10 @@ An allow rule with a wildcard, such as the built-in `bash(git diff *)` and
   `--paginate` (which run the configured pager), and `-C`, `--git-dir` and
   `--work-tree` (which point git at a repository whose configuration can
   name a program to run)
+- a merge strategy that is not built into git (`ort`, `recursive`,
+  `resolve`, `octopus`, `ours`, `subtree`), given with `-s` or
+  `--strategy` to `merge`, `pull`, `rebase`, `cherry-pick` or `revert`,
+  which runs `git-merge-<name>` from `PATH`
 - the subcommands `difftool`, `mergetool`, `filter-branch`, `send-email`
   and `instaweb`, `bisect run`, `submodule foreach`, and `git config` other
   than reading with `--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`,
@@ -362,7 +366,8 @@ included, every word is read, because `--` can be an option's value there
 `git format-patch --subject-prefix -- --output=f -1`). `commit`, `tag`,
 `merge`, `notes` and `stash` other than `stash show` and `stash list` take
 message text and none of these options, so their words are not read as
-options: `git commit -m "fix --exec handling"` is a message.
+options: `git commit -m "fix --exec handling"` is a message. A strategy is
+still read on `merge`, so `git merge -m "use -s x"` asks.
 `--output`, `--upload-pack`, `--receive-pack` and `--exec`, by any prefix,
 and `clone -u`, `ls-remote -u` and `rebase -x`, are also destructive: they
 ask in every mode, `bypass` included, and a deny rule sees the command they
