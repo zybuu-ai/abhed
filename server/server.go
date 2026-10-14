@@ -3957,6 +3957,8 @@ func (s *Server) releaseBashes() {
 
 // releaseClaims lets go, at once, of every session this process still holds.
 // A handed-over session is no longer this process's, and is left as it is.
+// A run still going (cancelRunning gave up waiting) keeps its claim, so no
+// other replica writes beside it; the run's own end releases it.
 func (s *Server) releaseClaims() {
 	s.mu.RLock()
 	all := make([]*liveSession, 0, len(s.running))
@@ -3967,7 +3969,21 @@ func (s *Server) releaseClaims() {
 	var wg sync.WaitGroup
 	for _, live := range all {
 		wg.Add(1)
-		go func() { defer wg.Done(); s.releaseNodeNow(live) }()
+		go func() {
+			defer wg.Done()
+			live.mu.Lock()
+			stop := live.beatStop
+			if live.ran != nil {
+				stop = nil
+			} else {
+				live.beatStop = nil
+			}
+			live.mu.Unlock()
+			if stop != nil {
+				stop()
+				s.releaseNode(live.ID)
+			}
+		}()
 	}
 	wg.Wait()
 }

@@ -201,3 +201,32 @@ func TestShutdownReleasesEveryClaim(t *testing.T) {
 		t.Fatalf("the stopped process still holds the session: %q", n)
 	}
 }
+
+// A run that did not end before shutdown keeps its claim, so no other
+// replica takes the session while it may still write; once it ends, the
+// release lets the session go.
+func TestReleaseClaimsKeepsALiveRunsClaim(t *testing.T) {
+	cfg := config.Default()
+	st := &heldRouter{EventStore: agent.NewMemStore(), node: map[string]string{}}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Store: st, NodeID: "node-a",
+		Registry: tools.NewRegistry(tools.Read{})})
+	live := &liveSession{ID: "s-stuck", ran: make(chan struct{})}
+	s.mu.Lock()
+	s.running[live.ID] = live
+	s.mu.Unlock()
+	if err := s.holdNode(live); err != nil {
+		t.Fatal(err)
+	}
+	s.releaseClaims()
+	if n, _ := st.NodeFor(context.Background(), live.ID, 0); n == "" {
+		t.Fatal("a run still going lost its claim at shutdown")
+	}
+	live.mu.Lock()
+	close(live.ran)
+	live.ran = nil
+	live.mu.Unlock()
+	s.releaseClaims()
+	if n, _ := st.NodeFor(context.Background(), live.ID, 0); n != "" {
+		t.Fatalf("an ended run's claim is still held: %q", n)
+	}
+}
