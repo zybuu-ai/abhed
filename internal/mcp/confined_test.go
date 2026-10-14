@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +67,8 @@ func TestConfinedServerCredentialEndsWithTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := sandbox.DefaultPolicy(t.TempDir())
+	ws := t.TempDir()
+	p := sandbox.DefaultPolicy(ws)
 	p.Egress = pol
 	sb := sandbox.NewProcess(p)
 	if ok, why := sb.Available(); !ok {
@@ -76,8 +78,18 @@ func TestConfinedServerCredentialEndsWithTheServer(t *testing.T) {
 	if os.Getuid() == 0 || os.Geteuid() == 0 {
 		t.Skip("stdio servers are refused as root under bubblewrap")
 	}
-	exe, err := os.Executable()
+	self, err := os.Executable()
 	if err != nil {
+		t.Fatal(err)
+	}
+	// A confined server does not see the temp folder go test builds in, but
+	// does see the workspace, so the server runs from a copy there.
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(ws, "fake-mcp-server")
+	if err := os.WriteFile(exe, b, 0o755); err != nil { // #nosec G306 -- the test's server program
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
