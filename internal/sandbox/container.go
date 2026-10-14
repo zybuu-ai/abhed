@@ -59,6 +59,10 @@ type Container struct {
 	egErr   error
 	// egDir holds each call's own socket, on the host alone.
 	egDir string
+	// egCalls ends each call's container still standing, keyed by call:
+	// Close ends them all, and waits for their removal.
+	egCallsMu sync.Mutex
+	egCalls   map[*int]func()
 }
 
 // LookEngine finds a container engine's CLI by name. Tests replace it to keep

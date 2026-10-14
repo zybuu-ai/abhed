@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -172,10 +173,22 @@ func (c *Container) egressRun(ctx context.Context, cwd, prefix string, p Policy,
 		stop()
 		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its proxy settings: %w", err)}, nil
 	}
-	stopAll := func() {
+	// Once, and waited for by any second caller: the call's end, its
+	// command's cancel, and Close may all ask.
+	key := new(int)
+	stopAll := sync.OnceFunc(func() {
 		stop()
 		removeEnv()
+		c.egCallsMu.Lock()
+		delete(c.egCalls, key)
+		c.egCallsMu.Unlock()
+	})
+	c.egCallsMu.Lock()
+	if c.egCalls == nil {
+		c.egCalls = map[*int]func(){}
 	}
+	c.egCalls[key] = stopAll
+	c.egCallsMu.Unlock()
 	context.AfterFunc(ctx, stopAll)
 	execArgs := []string{"exec", "-i", "-w", cwd}
 	if uid, gid := os.Getuid(), os.Getgid(); uid > 0 {
@@ -196,9 +209,19 @@ func (c *Container) engineCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return enginecli.Command(ctx, c.runtime, args...)
 }
 
-// closeEgress stops the sandbox's proxy and removes its calls' sockets.
+// closeEgress ends every call's container still standing, waiting for its
+// removal, then stops the sandbox's proxy and removes its calls' sockets.
 func (c *Container) closeEgress() error {
 	c.egOnce.Do(func() { c.egErr = errEgressClosed })
+	c.egCallsMu.Lock()
+	ends := make([]func(), 0, len(c.egCalls))
+	for _, f := range c.egCalls {
+		ends = append(ends, f)
+	}
+	c.egCallsMu.Unlock()
+	for _, f := range ends {
+		f()
+	}
 	var err error
 	if c.egProxy != nil {
 		err = c.egProxy.Close()

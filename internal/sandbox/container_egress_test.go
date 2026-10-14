@@ -196,3 +196,39 @@ func TestContainerAllowlistHasNoNetworkWhateverAllowNetworkSays(t *testing.T) {
 		t.Fatalf("no --network none: %v", args)
 	}
 }
+
+// Closing the sandbox ends every call's container still standing and waits
+// for its removal: none is left for a call whose context has not ended, and
+// nothing writes to what the sandbox used after Close returns.
+func TestContainerCloseRemovesEveryCallsContainer(t *testing.T) {
+	engine, log := fakeEngine(t)
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	c := &Container{runtime: engine, available: true, policy: Policy{Workspace: ws, Egress: pol, RelayBinary: "/opt/abhed-linux"}}
+	c.once.Do(func() {})
+	old, oldPort := containerHostOS, relayPort
+	containerHostOS = "darwin"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	relayPort = func(uint16) uint16 { return uint16(port) } // #nosec G115 -- a port
+	t.Cleanup(func() { containerHostOS, relayPort = old, oldPort })
+	ctx, cancel := context.WithCancel(WithLaunch(context.Background(), Launch{CallID: "call-close"}))
+	defer cancel() // ended only after Close
+	if out, err := c.Command(ctx, ws, "echo ran").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	if !strings.Contains(string(b), "rm -f") {
+		t.Fatalf("Close returned with the call's container still standing:\n%s", b)
+	}
+}
