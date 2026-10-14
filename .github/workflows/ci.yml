@@ -581,7 +581,8 @@ jobs:
           fi
           for t in TestProcessSandboxRefusesANewGitFile TestProcessSandboxProtectsNestedRepositories \
                    TestProcessSandboxDeniesHomeSecretsThroughALink \
-                   TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices; do
+                   TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices \
+                   TestSandboxAllowsToolchainTempDir; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done
           echo "$(grep -c -- "--- PASS" seatbelt.log) boundary tests ran under Seatbelt"

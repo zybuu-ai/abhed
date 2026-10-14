@@ -1121,25 +1121,13 @@ func (s *Process) removeCaches() error {
 }
 
 // makeRemovable makes the folders under dir, which sandboxed commands wrote,
-// writable for RemoveAll.
+// owner-accessible for RemoveAll, never following a link: one put in dir's
+// place or inside it is left alone, and RemoveAll removes the link itself.
 func makeRemovable(dir string) {
-	r, err := os.OpenRoot(dir)
-	if err != nil {
-		return
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(dir)); err == nil {
+		dir = filepath.Join(parent, filepath.Base(dir))
 	}
-	defer func() { _ = r.Close() }()
-	_ = fs.WalkDir(r.FS(), ".", func(p string, d fs.DirEntry, err error) error {
-		if err == nil && d.IsDir() {
-			chmodFolder(r, p)
-		}
-		return nil
-	})
-}
-
-// chmodFolder makes p in r writable through r, so a folder swapped for a link
-// after the walk listed it cannot turn the chmod on a folder outside.
-func chmodFolder(r *os.Root, p string) {
-	_ = r.Chmod(p, 0o700) // #nosec G302 -- a folder of the sandbox's own being removed
+	restoreOwnerAccess(dir)
 }
 
 // vimInitEnv is VIMINIT with history off: the sandbox refuses that write in
