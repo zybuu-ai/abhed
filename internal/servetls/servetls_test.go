@@ -486,3 +486,60 @@ func TestClientCertificateRevocation(t *testing.T) {
 		t.Fatal("a line that is not a serial was accepted")
 	}
 }
+
+// A resumed session skips chain verification, so it must still meet the
+// revocation list and the client CA in force when it resumes.
+func TestResumedSessionsAreCheckedAgain(t *testing.T) {
+	f := newPKI(t)
+	srv := f.server(t, "s", pki.ECDSA, "s.test")
+	ca := filepath.Join(f.dir, pki.CACert)
+	revoked := filepath.Join(t.TempDir(), "revoked")
+	if err := os.WriteFile(revoked, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := New(Spec{Certs: []Pair{srv}, ClientCAFile: ca, ClientRevokedFile: revoked, ClientAuth: RequireClientCert, Logger: quiet()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := serve(t, l)
+	alice := f.client(t, "alice")
+	aliceLeaf, _ := x509.ParseCertificate(alice.Certificate[0])
+	cfg := &tls.Config{RootCAs: f.pool, ServerName: "s.test", Certificates: []tls.Certificate{alice},
+		ClientSessionCache: tls.NewLRUClientSessionCache(4)}
+	for i := 0; i < 2; i++ {
+		if _, err := dial(addr, cfg); err != nil {
+			t.Fatalf("alice, connection %d: %v", i, err)
+		}
+	}
+	if st, err := dial(addr, cfg); err != nil || !st.DidResume {
+		t.Fatalf("the session did not resume, so this test checks nothing: %v", err)
+	}
+
+	if err := os.WriteFile(revoked, []byte(aliceLeaf.SerialNumber.Text(16)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dial(addr, cfg); err == nil {
+		t.Fatal("a revoked certificate's session resumed")
+	}
+
+	_ = os.WriteFile(revoked, []byte("\n"), 0o600)
+	if _, err := l.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := dial(addr, cfg); err != nil || !st.DidResume {
+		t.Fatalf("alice after the revocation was lifted: %v", err)
+	}
+	nb, _ := os.ReadFile(filepath.Join(newPKI(t).dir, pki.CACert))
+	if err := os.WriteFile(ca, nb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dial(addr, cfg); err == nil {
+		t.Fatal("a session from the replaced client CA resumed")
+	}
+}

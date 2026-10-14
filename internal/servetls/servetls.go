@@ -175,15 +175,10 @@ func (l *Listener) Config() *tls.Config {
 		st := l.cur.Load()
 		c.ClientCAs = st.pool
 		c.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) { return pick(st, hello), nil }
-		c.VerifyPeerCertificate = func(_ [][]byte, chains [][]*x509.Certificate) error {
-			for _, chain := range chains {
-				for _, cert := range chain {
-					if st.isRevoked(cert) {
-						return ErrRevoked
-					}
-				}
-			}
-			return nil
+		// VerifyConnection, not VerifyPeerCertificate: only it runs on a resumed
+		// session, whose certificate was checked against the CAs and list of then.
+		c.VerifyConnection = func(cs tls.ConnectionState) error {
+			return st.verifyClient(cs)
 		}
 		return c, nil
 	}
@@ -197,6 +192,38 @@ var ErrRevoked = errors.New("the client certificate has been revoked")
 // connection made before the file changed.
 func (l *Listener) Revoked(cert *x509.Certificate) bool {
 	return cert != nil && l.cur.Load().isRevoked(cert)
+}
+
+// verifyClient refuses a revoked client certificate and, on a resumed session,
+// one the client CAs in use now do not sign.
+func (st *state) verifyClient(cs tls.ConnectionState) error {
+	if len(cs.PeerCertificates) == 0 {
+		return nil
+	}
+	chains := cs.VerifiedChains
+	if cs.DidResume {
+		if st.pool == nil {
+			return errors.New("no client CA to verify a resumed session's certificate")
+		}
+		inter := x509.NewCertPool()
+		for _, c := range cs.PeerCertificates[1:] {
+			inter.AddCert(c)
+		}
+		var err error
+		chains, err = cs.PeerCertificates[0].Verify(x509.VerifyOptions{Roots: st.pool, Intermediates: inter,
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+		if err != nil {
+			return err
+		}
+	}
+	for _, chain := range append(chains, cs.PeerCertificates) {
+		for _, cert := range chain {
+			if st.isRevoked(cert) {
+				return ErrRevoked
+			}
+		}
+	}
+	return nil
 }
 
 func (st *state) isRevoked(c *x509.Certificate) bool {

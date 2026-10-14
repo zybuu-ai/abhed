@@ -150,7 +150,9 @@ comment), not both: a serial written beside a CRL is refused as the file's
 error rather than ignored. A listed serial is
 refused whichever CA in `client_ca_file` issued it. The file is reloaded like
 the CA: a revoked certificate is refused on the next handshake, and a request
-on a connection made with it before the change gets `401`. A file that is
+on a connection made with it before the change gets `401`. A resumed TLS
+session is held to the CA file and the list in force when it resumes, not
+when it began. A file that is
 missing or unreadable, a line that is not a serial, or a CRL no certificate
 in the CA file signed stops `abhed serve` at startup; on a reload it is
 reported and the revocations already in force stay. A CRL past its next
