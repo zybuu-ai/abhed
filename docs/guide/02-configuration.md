@@ -203,6 +203,9 @@ workspace and a few shared folders, not only the workspace:
 - **Linux:** the workspace, and a private `/tmp` that is gone when the command ends. The host's
   `/tmp` and `/var/tmp` are out of every sandboxed command's reach, so state
   kept there (a `HOME`, `auth.users_file`) is not refused as writable.
+  Under bubblewrap commands read and run the system's `/usr`, `/bin` and
+  `/lib`; a toolchain installed elsewhere (under `/opt` or your home) is
+  found once its folder is listed in `sandbox.read_only_paths`.
 - **macOS:** the workspace, `/private/tmp`, `/private/var/tmp` and your
   `TMPDIR`. The toolchain caches commands write are folders of the
   sandbox's own, in `TMPDIR` and removed when the session ends:

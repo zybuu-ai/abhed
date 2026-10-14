@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -43,7 +44,16 @@ func TestSandboxAllowsGoBuild(t *testing.T) {
 	_ = os.WriteFile(dir+"/go.mod", []byte("module probe\n\ngo 1.24\n"), 0o644)
 	_ = os.WriteFile(dir+"/main.go", []byte("package main\n\nfunc main() {}\n"), 0o644)
 
-	s := processSandbox(t, dir, false)
+	p := DefaultPolicy(dir)
+	// On Linux the process tier shows /usr, /bin and /lib; a Go installed
+	// elsewhere (a CI runner's /opt) is named as read_only_paths would.
+	if runtime.GOOS == "linux" {
+		if root, err := exec.Command("go", "env", "GOROOT").Output(); err == nil && !insideAny(strings.TrimSpace(string(root)), []string{"/usr", "/bin", "/lib"}) {
+			p.ReadOnlyPaths = append(p.ReadOnlyPaths, strings.TrimSpace(string(root)))
+		}
+	}
+	s := NewProcess(p)
+	available(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
