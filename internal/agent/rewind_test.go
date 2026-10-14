@@ -29,8 +29,8 @@ func TestForkBeforeTheFirstPromptIsAForkAtZero(t *testing.T) {
 	}
 	l.Recorder.Advance(3)
 	events, _ := store.Events("s")
-	if n, err := l.ForkBefore(events, 2); err != nil || n != 0 {
-		t.Fatalf("ForkBefore = %d, %v", n, err)
+	if n, at, err := l.ForkBefore(events, 2); err != nil || n != 0 || ForkedAt(at) != "forked before the first message" {
+		t.Fatalf("ForkBefore = %d at %d, %v", n, at, err)
 	}
 	events, _ = store.Events("s")
 	last := events[len(events)-1]
@@ -66,8 +66,8 @@ func TestForkBeforeALaterPrompt(t *testing.T) {
 	}
 	l.Recorder.Advance(5)
 	events, _ := store.Events("s")
-	if n, err := l.ForkBefore(events, 4); err != nil || n != 2 {
-		t.Fatalf("ForkBefore = %d, %v", n, err)
+	if n, at, err := l.ForkBefore(events, 4); err != nil || n != 2 || at != 3 {
+		t.Fatalf("ForkBefore = %d at %d, %v", n, at, err)
 	}
 	events, _ = store.Events("s")
 	msgs, _ := Fork(events, 0)
@@ -326,7 +326,7 @@ func TestForkBeforeTheFirstPromptAfterTheUsersOwnCalls(t *testing.T) {
 	}
 	l.Recorder.Advance(5)
 	events, _ := store.Events("s")
-	if n, err := l.ForkBefore(events, 4); err != nil || n != 0 {
+	if n, _, err := l.ForkBefore(events, 4); err != nil || n != 0 {
 		t.Fatalf("ForkBefore = %d, %v", n, err)
 	}
 	events, _ = store.Events("s")

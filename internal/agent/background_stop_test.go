@@ -247,7 +247,7 @@ func TestForkRefusedWhileTasksRun(t *testing.T) {
 	if _, err := r.l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.l.ForkTo(r.events(t), 0)
+	_, _, err := r.l.ForkTo(r.events(t), 0)
 	if err == nil || !strings.Contains(err.Error(), "background tasks are still running: one (") {
 		t.Fatalf("fork with a task running: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestForkRefusedWhileTasksRun(t *testing.T) {
 	}
 	r.m.release("one")
 	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
-	if _, err := r.l.ForkTo(r.events(t), 0); err != nil {
+	if _, _, err := r.l.ForkTo(r.events(t), 0); err != nil {
 		t.Fatalf("fork once the tasks ended: %v", err)
 	}
 }

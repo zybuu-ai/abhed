@@ -1589,6 +1589,9 @@ All notable changes to Abhed are recorded here. The format follows
   where the file's change time is too coarse to show the chmod, the
   session kept redacting with the values it had and never withheld. The
   file's mode is now part of what is compared. Affects 1.2.2 to 1.2.7.
+- `/fork 0` in the terminal said it forked at step 0 while it kept the
+  whole conversation. It now names the last step it kept. Affects every
+  release to 1.2.7.
 - A server stopped while a workbench or console tab was open waited the
   full ten seconds it gives open HTTP requests, since the tab's streams
   never end by themselves. Its streams (session events, terminals,

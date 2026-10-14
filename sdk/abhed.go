@@ -658,7 +658,7 @@ func (a *Agent) Fork(throughSeq int64) error {
 	if a.running > 0 {
 		return ErrForkDuringRun
 	}
-	_, err := a.loop.ForkTo(a.Events(), throughSeq)
+	_, _, err := a.loop.ForkTo(a.Events(), throughSeq)
 	return err
 }
 

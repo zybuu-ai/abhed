@@ -40,7 +40,7 @@ func TestForkKeepsLoginsMadeBeforeItsStep(t *testing.T) {
 	sess.Scoped(loginsKey{}, func() any { return logins })
 	l := NewLoop(nil, nil, nil, nil, sess, NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
 	l.Recorder.Advance(4)
-	if _, err := l.ForkTo(events, 2); err != nil {
+	if _, _, err := l.ForkTo(events, 2); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := logins.at["before"]; !ok {

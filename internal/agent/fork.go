@@ -249,35 +249,36 @@ func (l *Loop) refuseForkWhileTasksRun() error {
 }
 
 // ForkTo rebuilds the conversation up to step seq, records that what came after
-// was abandoned, and returns how many messages were kept.
-func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
+// was abandoned, and returns how many messages were kept and the step recorded:
+// seq 0 is the last live step, so a caller reports that, not the 0 it passed.
+func (l *Loop) ForkTo(events []Event, seq int64) (int, int64, error) {
 	return l.forkTo(events, seq, false)
 }
 
 // forkTo is ForkTo; with empty, a step before any message is an empty history.
-func (l *Loop) forkTo(events []Event, seq int64, empty bool) (int, error) {
+func (l *Loop) forkTo(events []Event, seq int64, empty bool) (int, int64, error) {
 	live := Live(events)
 	if seq <= 0 && len(live) > 0 {
 		seq = live[len(live)-1].Seq // 0 keeps the whole conversation
 	}
 	msgs, err := forkPoint(live, seq)
 	if err != nil && (!empty || !errors.Is(err, errNothingToFork)) {
-		return 0, err
+		return 0, 0, err
 	}
 	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	if err := l.refuseForkWhileTasksRun(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: seq}); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	// A login made after the fork point would outlive the turns that made it,
 	// so it goes; one made before the point stays, as the conversation does.
 	l.Session.ForgetScopedAfter(forkTime(live, seq))
 	l.messages = msgs
-	return len(msgs), nil
+	return len(msgs), seq, nil
 }
 
 // forkTime is when the step a fork goes on from was recorded.
