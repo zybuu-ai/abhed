@@ -1115,19 +1115,14 @@ func (s *Process) removeCaches() error {
 	if s.caches == "" {
 		return nil
 	}
+	// Inside the sandbox's own temp folder they go with it, whatever a command did to that folder.
+	s.tmpOnce.Do(func() {})
+	if s.tmp != "" && insideAny(s.caches, []string{s.tmp}) {
+		return nil
+	}
 	// Go makes its module cache read-only; RemoveAll needs it writable.
 	makeRemovable(s.caches)
 	return os.RemoveAll(s.caches)
-}
-
-// makeRemovable makes the folders under dir, which sandboxed commands wrote,
-// owner-accessible for RemoveAll, never following a link: one put in dir's
-// place or inside it is left alone, and RemoveAll removes the link itself.
-func makeRemovable(dir string) {
-	if parent, err := filepath.EvalSymlinks(filepath.Dir(dir)); err == nil {
-		dir = filepath.Join(parent, filepath.Base(dir))
-	}
-	restoreOwnerAccess(dir)
 }
 
 // vimInitEnv is VIMINIT with history off: the sandbox refuses that write in

@@ -3,8 +3,10 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +86,71 @@ func TestRemovalMakesItsOwnTreeRemovable(t *testing.T) {
 	}
 	if m := mode(t, sub); m != 0o500 {
 		t.Fatalf("a folder inside what the link named became %v", m)
+	}
+}
+
+// A read-only tree deeper than any bound the walk could hold is still removed.
+func TestRemovalHasNoDepthLimit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "abhed-tmp-x")
+	deep := filepath.Join(dir, strings.Repeat("d"+string(filepath.Separator), 300))
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for p := deep; p != filepath.Dir(dir); p = filepath.Dir(p) {
+		_ = os.Chmod(p, 0o500)
+	}
+	makeRemovable(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("a tree 300 folders deep was not made removable: %v", err)
+	}
+}
+
+// Removal needs only the folders: no file's mode is changed, so a file
+// hard-linked to one outside keeps the outside file's mode.
+func TestRemovalChangesNoFile(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(outside, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "abhed-tmp-x")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	own := filepath.Join(dir, "own")
+	if err := os.WriteFile(own, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, filepath.Join(dir, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(dir, 0o500)
+	makeRemovable(dir)
+	if m := mode(t, own); m != 0o400 {
+		t.Fatalf("a file of the tree became %v", m)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if m := mode(t, outside); m != 0o400 {
+		t.Fatalf("the file hard-linked from outside became %v", m)
+	}
+}
+
+// Caches inside the private temp folder go with it, without an error, even
+// when a command made that folder unreadable.
+func TestCachesGoWithAnUnreadableTempFolder(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	s := &Process{policy: Policy{PrivateTemp: true}}
+	if s.ownCaches() == nil || s.tmp == "" || !insideAny(s.caches, []string{s.tmp}) {
+		t.Skipf("the caches are not inside the private temp folder here: %q in %q", s.caches, s.tmp)
+	}
+	if err := os.Chmod(s.tmp, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(s.removeCaches(), s.removeTemp()); err != nil {
+		t.Fatalf("removing: %v", err)
+	}
+	if _, err := os.Lstat(s.tmp); !os.IsNotExist(err) {
+		t.Fatalf("the temp folder is still there: %v", err)
 	}
 }
