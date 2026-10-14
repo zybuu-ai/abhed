@@ -340,6 +340,7 @@ func TestTurnRunsOnForAQueuedSteer(t *testing.T) {
 	}{
 		{"completed", ctx, turnOutcome{reason: agent.TermCompleted}, 1, true},
 		{"wake limit", ctx, turnOutcome{reason: agent.TermWakeLimit}, 1, true},
+		{"message refused by a hook", ctx, turnOutcome{reason: agent.TermPromptRefused}, 1, true},
 		{"nothing queued", ctx, turnOutcome{reason: agent.TermCompleted}, 0, false},
 		{"interrupted", ctx, turnOutcome{reason: agent.TermUserInterrupt}, 1, false},
 		{"max turns", ctx, turnOutcome{reason: agent.TermMaxTurns}, 1, false},

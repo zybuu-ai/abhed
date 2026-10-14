@@ -242,3 +242,23 @@ func TestWorktreeSubagentHooksUseItsRoots(t *testing.T) {
 		t.Fatal("a permission request the hook's rule matches in the worktree was put to the person")
 	}
 }
+
+// A run going on for queued messages a hook refuses, all of them, records
+// them dropped and ends refused: the model is not called again on the
+// conversation as it was.
+func TestRunQueuedWithEveryMessageRefusedCallsNoModel(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "never"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	l.Steer("the forbidden thing again")
+	reason, err := l.RunQueued(context.Background())
+	if err != nil || reason != TermPromptRefused {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(l.Adapter.(*scriptedAdapter).gotRequests); n != 0 {
+		t.Fatalf("the model was called %d times with nothing new to answer", n)
+	}
+	evs, _ := store.Events("sess1")
+	if !hasEvent(evs, EvMessageDropped) || hasEvent(evs, EvUserMessage) {
+		t.Fatal("the refused message was not recorded as dropped, or was recorded as sent")
+	}
+}

@@ -513,6 +513,13 @@ func (l *Loop) takeSteering() []QueuedMessage {
 
 // deliverQueued records and applies every waiting message, oldest first.
 func (l *Loop) deliverQueued() error {
+	_, err := l.deliverQueuedCount()
+	return err
+}
+
+// deliverQueuedCount is deliverQueued, and says how many it delivered.
+func (l *Loop) deliverQueuedCount() (int, error) {
+	n := 0
 	for _, q := range l.takeSteering() {
 		if why := l.promptRefused(context.Background(), q.Text); why != "" {
 			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
@@ -525,15 +532,16 @@ func (l *Loop) deliverQueued() error {
 		// make a replay diverge from what happened.
 		text, withheld := l.withholdSecrets(q.Text)
 		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld}); err != nil {
-			return err
+			return n, err
 		}
+		n++
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
 		l.setPrompt(text)
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
 		l.wakeCap = 0
 	}
-	return nil
+	return n, nil
 }
 
 // secretLabel is a stored secret's placeholder, as the redactor writes it.
@@ -730,6 +738,17 @@ func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
 	defer l.unlockRun()
 	if !l.hasWork() {
 		return TermCompleted, nil
+	}
+	// Queued messages a hook refuses all are dropped, and with nothing else
+	// waiting the model is not called on the conversation as it was.
+	if l.Background.Pending() == 0 {
+		n, err := l.deliverQueuedCount()
+		if err != nil {
+			return TermError, err
+		}
+		if n == 0 && !l.hasWork() {
+			return TermPromptRefused, nil
+		}
 	}
 	l.startMessage()
 	return l.run(ctx)

@@ -3451,9 +3451,9 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 	if errors.Is(err, agent.ErrNothingToWake) {
 		reason, err = l.Reason, nil
 	}
-	// A wake run stopped at its cap leaves a message queued after it last
-	// looked as a completed run does: it runs now.
-	if err == nil && ctx.Err() == nil && (reason == agent.TermCompleted || reason == agent.TermWakeLimit) && len(l.Loop.Queued()) > 0 {
+	// A wake run stopped at its cap, or a run whose message a hook refused,
+	// leaves a message queued after it last looked as a completed run does: it runs now.
+	if err == nil && ctx.Err() == nil && reason.RunsOnForQueued() && len(l.Loop.Queued()) > 0 {
 		return true
 	}
 	l.State = "done"

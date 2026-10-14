@@ -1589,6 +1589,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A message typed while a `user_prompt_submit` hook was turning away the
+  one before it waited, unsent, until the next message, in the terminal
+  and on the server. The run now goes on for it, judged by the hook in
+  turn; and when a hook refuses every waiting message, the model is no
+  longer called again on the conversation as it was. Affects 1.2.3 to 1.2.7.
 - The fence gave a planted `.abhed` back to its owner only 128 folders
   deep, so a tree locked deeper was left in the workspace, reported as
   still present, and refused the next fence. It now reaches any depth, and

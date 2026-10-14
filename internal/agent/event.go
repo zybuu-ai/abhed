@@ -156,6 +156,13 @@ const (
 	TermWakeLimit TerminalReason = "wake_limit"
 )
 
+// RunsOnForQueued reports whether a run that ended this way goes on for a
+// message queued after it last looked: it completed, a wake reached its cap,
+// or a hook refused its own message, which leaves the next one to be judged.
+func (r TerminalReason) RunsOnForQueued() bool {
+	return r == TermCompleted || r == TermWakeLimit || r == TermPromptRefused
+}
+
 // ExitCode maps a terminal reason to a process exit code for headless runs.
 func (r TerminalReason) ExitCode() int {
 	switch r {

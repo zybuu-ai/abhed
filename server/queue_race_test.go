@@ -163,6 +163,7 @@ func TestSettle(t *testing.T) {
 		again  bool
 	}{
 		{"queued and completed", live, agent.TermCompleted, nil, true, true},
+		{"queued after a refused message", live, agent.TermPromptRefused, nil, true, true},
 		{"queued but cancelled", cancelled, agent.TermUserInterrupt, nil, true, false},
 		// Completed just as it was stopped: the stop wins, and the queue waits.
 		{"queued, completed, but cancelled", cancelled, agent.TermCompleted, nil, true, false},
