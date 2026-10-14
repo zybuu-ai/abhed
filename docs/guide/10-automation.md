@@ -62,7 +62,10 @@ without `-include-partial-messages` adds
 `"omitted":["agent.delta","agent.reasoning.delta"]`, the event types it left
 out, so `abhed hawkeye` can tell the gaps they leave from missing events. Policy
 decisions are events like any other, so a script sees each refusal and its
-reason.
+reason. A message that held a stored secret's value is recorded with
+`[secret:NAME]` in its place, and its `user.message` event carries
+`secrets_withheld`, the names comma-separated; the same note the terminal
+prints goes to stderr, so stdout stays events alone.
 
 `-verbose` shows reasoning in full and writes each model call's token counts
 to stderr.
