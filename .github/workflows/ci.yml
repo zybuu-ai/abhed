@@ -44,6 +44,23 @@ jobs:
       - name: Install bubblewrap and vim
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap vim
 
+      # Ubuntu 24.04 grants user namespaces only to profiled programs, and
+      # bubblewrap needs one; this profiles bwrap alone, as the fence job does
+      # its binaries, rather than lift the sysctl for every process. Without
+      # it the process tier is unavailable and the sessions the tests start
+      # are refused below their minimum tier.
+      - name: Let bubblewrap make its namespaces
+        run: |
+          set -euo pipefail
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+              "profile abhed-ci-bwrap $(command -v bwrap) flags=(unconfined) {" '  userns,' '}' |
+              sudo tee /etc/apparmor.d/abhed-ci-bwrap > /dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/abhed-ci-bwrap
+          fi
+          bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc true || {
+            echo "ENVIRONMENT: an ordinary user still cannot start bubblewrap here"; exit 1; }
+
       # The public build links web fonts; the copy it embeds must not.
       - name: A public docs build keeps the binary's copy offline
         run: |
@@ -145,7 +162,7 @@ jobs:
       # skip only as pending on an item listed here, each still being built:
       # "editor", a fix to the line editor (a data race when typing while
       # output arrives). Delete an item once it lands, and its tests must
-      # then pass. "netns" is this runner, which
+      # then pass. "netns" is a runner that
       # cannot unshare a network namespace for the statusline; the sandbox
       # job below runs those tests and lets none skip. "fence" is the fence
       # tier's end-to-end tests, which need a delegated cgroup v2 user scope
@@ -161,11 +178,11 @@ jobs:
           python3 scripts/ci/clitest-skips.py < clitest.json
 
       # A skipped boundary test reads exactly like a passing one, and the trust
-      # docs cite these by name. One reason is expected here: the hosted runner
-      # cannot unshare a network namespace, so bubblewrap cannot start. The
-      # boundaries themselves are verified in the privileged job below. A skip
-      # for any other reason means a boundary stopped being checked, so the
-      # build fails rather than let the count drift.
+      # docs cite these by name. Bubblewrap starts here (see above), but a
+      # skip for want of its namespaces stays accounted for; the boundaries
+      # are also verified in the privileged job below. A skip for any other
+      # reason means a boundary stopped being checked, so the build fails
+      # rather than let the count drift.
       # The fence tier's kernel tests need a delegated cgroup v2 user scope
       # this runner lacks; the fence job below runs them, and none may skip there.
       - name: Sandbox boundary tests actually ran
