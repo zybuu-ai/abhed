@@ -44,6 +44,8 @@ type footer struct {
 	again   bool
 	sb      sandbox.Sandbox
 	command string
+	// gen counts refusals: a run started before one does not draw its line.
+	gen int
 }
 
 // startFooter fills the footer and connects it to the dock.
@@ -195,10 +197,16 @@ func (f *footer) runStatusLine() {
 	f.mu.Lock()
 	if sb == nil {
 		f.sb, f.again = nil, false
-		if notice != "" {
-			f.line = notice // a notice said once stays in the footer
+		if notice == "" {
+			f.mu.Unlock()
+			return
 		}
+		// A notice said once stays in the footer, drawn now, and a run
+		// still in flight from before does not put the old line back.
+		f.line = notice
+		f.gen++
 		f.mu.Unlock()
+		f.editor.SetStatusFunc(f.model)
 		return
 	}
 	f.sb, f.command = sb, command
@@ -218,7 +226,7 @@ func (f *footer) runStatusLine() {
 // start runs the judged statusline command once, in the background.
 func (f *footer) start() {
 	f.mu.Lock()
-	sb, command := f.sb, f.command
+	sb, command, gen := f.sb, f.command, f.gen
 	f.running, f.lastRun, f.again = true, time.Now(), false
 	f.mu.Unlock()
 	m := f.model()
@@ -230,7 +238,7 @@ func (f *footer) start() {
 		}
 		f.mu.Lock()
 		f.running = false
-		if err == nil || line != "" {
+		if (err == nil || line != "") && gen == f.gen {
 			f.line = line
 		}
 		again := f.again
