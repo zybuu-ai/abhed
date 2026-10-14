@@ -145,7 +145,7 @@ ssh_host_ed25519_key
 {{- end }}
 {{- if gt (int .Values.replicaCount) 1 }}
 {{- if not .Values.postgres.enabled }}
-{{- fail "replicaCount above 1 needs postgres.enabled: replicas share sessions, the record and sandboxes through Postgres." }}
+{{- fail "replicaCount above 1 needs postgres.enabled: replicas share sessions and the record through Postgres." }}
 {{- end }}
 {{- if and .Values.persistence.enabled (not (has "ReadWriteMany" .Values.persistence.accessModes)) }}
 {{- fail "replicaCount above 1 cannot share a ReadWriteOnce volume: set persistence.accessModes to [ReadWriteMany] or persistence.enabled false." }}
