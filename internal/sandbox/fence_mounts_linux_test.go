@@ -396,7 +396,7 @@ func TestFenceWithoutUserNamespaces(t *testing.T) {
 		t.Skip("set ABHED_FENCE_NO_USERNS=1 where an ordinary user cannot make a user namespace")
 	}
 	for name, set := range map[string]func(*Policy){
-		"protect git":     func(p *Policy) { p.ProtectGit = true },
+		"protect git":     func(p *Policy) { p.ProtectGit, p.GitRequired = true, true },
 		"write protected": func(p *Policy) { p.WriteProtected = []string{filepath.Join(p.Workspace, ".vscode")} },
 	} {
 		p := fencePolicy(t)
