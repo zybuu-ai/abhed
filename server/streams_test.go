@@ -175,3 +175,40 @@ func TestSharedStreamChannelsAreAuthorisedEach(t *testing.T) {
 	}
 	ca.until("alice's events", func(f muxFrame) bool { return f.Ch == "e" && f.Type == "open" })
 }
+
+// An open channel's id is not reused: a second ask is refused, so neither the
+// cap nor a later close loses track of it; once it has ended, the id is free.
+func TestSharedStreamRefusesAnOpenChannelID(t *testing.T) {
+	wb := shellBench(t, nil)
+	h := http.Header{"X-Abhed-Tenant": {"acme"}}
+	c := openMux(t, wb.h, h)
+	path := "/v1/sessions/" + wb.session + "/events"
+	if code := c.ask("ev", path, h); code != http.StatusAccepted {
+		t.Fatalf("events channel: %d", code)
+	}
+	c.until("the channel's open", func(f muxFrame) bool { return f.Ch == "ev" && f.Type == "open" })
+	if code := c.ask("ev", path, h); code != http.StatusConflict {
+		t.Fatalf("an open channel's id was taken again: %d", code)
+	}
+	req, _ := http.NewRequest("DELETE", c.srv.URL+"/v1/streams/"+c.id+"/ev", nil)
+	req.Header = h.Clone()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("close: %d", resp.StatusCode)
+	}
+	c.until("the channel's end", func(f muxFrame) bool { return f.Ch == "ev" && f.Type == "end" })
+	code := 0
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if code = c.ask("ev", path, h); code != http.StatusConflict {
+			break
+		}
+	}
+	if code != http.StatusAccepted {
+		t.Fatalf("the ended channel's id is not free: %d", code)
+	}
+	c.until("the new channel's open", func(f muxFrame) bool { return f.Ch == "ev" && f.Type == "open" })
+}

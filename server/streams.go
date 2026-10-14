@@ -242,15 +242,20 @@ func (s *Server) openStreamChannel(top http.Handler) http.HandlerFunc {
 			cancel()
 			WriteError(w, http.StatusNotFound, "stream not found")
 			return
+		case m.chans[ch] != nil:
+			// Replacing it would leave the old channel's end to remove the new
+			// one's entry: untracked, past the cap, and with an end frame for it.
+			m.mu.Unlock()
+			stop()
+			cancel()
+			WriteError(w, http.StatusConflict, "channel "+ch+" is open; close it, wait for its end, or use a new id")
+			return
 		case len(m.chans) >= maxStreamChannels:
 			m.mu.Unlock()
 			stop()
 			cancel()
 			WriteError(w, http.StatusTooManyRequests, fmt.Sprintf("this page has %d streams open; close a terminal", maxStreamChannels))
 			return
-		}
-		if prev := m.chans[ch]; prev != nil {
-			prev()
 		}
 		var once sync.Once
 		end := func() { once.Do(func() { stop(); cancel() }) }
