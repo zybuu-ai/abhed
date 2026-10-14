@@ -768,13 +768,14 @@ func fileExists(path string) bool {
 // gitHeldLabel says whether commands are kept from writing git's files on
 // tier, the one in force, or "" when it is not known.
 func gitHeldLabel(cfg config.Config, tier sandbox.Tier) string {
+	// The tier in force first: none holds nothing, whatever is asked of it.
 	switch on, required := cfg.Sandbox.GitProtected(); {
 	case !on:
 		return "not held: sandbox.protect_git is false (docs/guide/04-permissions.md)"
-	case required:
-		return "held read-only from commands; a tier that cannot hold them is refused"
 	case tier == sandbox.TierNone:
 		return "not held: the sandbox tier is none, so commands can write git's config and hooks; make a stronger tier available (sandbox.protect_git)"
+	case required:
+		return "held read-only from commands; a tier that cannot hold them is refused"
 	}
 	return "held read-only from commands on every tier but none (sandbox.protect_git)"
 }

@@ -886,7 +886,8 @@ its modes. The none tier holds nothing, and on it the `git` line of
 `abhed rpc`, `"sandbox": {"protect_git": false}` turns this off, and `true`
 also refuses the fence in `landlock_only` mode, which cannot hold these files
 (unset, that fence runs and says so); Studio and `abhed serve` always hold
-them.
+them where the tier can. With `protect_git` set `true`, `abhed serve` does not
+start on the none tier, which cannot hold them.
 
 An "always allow" for a git command (`bash(git status *)`) is remembered
 with a fingerprint of what git reads in the workspace's repositories and
