@@ -86,6 +86,14 @@ func PinReadable(path string) (ReadableFile, error) {
 	return ReadableFile{Path: real, Info: info}, nil
 }
 
+// Release lets go of the open file a pin holds, for a pin no longer used;
+// the pin then guards against a reused inode no more.
+func (f ReadableFile) Release() {
+	if f.held != nil {
+		_ = f.held.Close()
+	}
+}
+
 // Same reports whether the file at Path is still the one pinned: a swap of it,
 // or of a folder above it, for another file or a folder is not, nor is the same
 // file changed since.

@@ -106,9 +106,11 @@ func statuslineScript(command, workspace string, state, granted []string) (sandb
 	writable := append(append([]string{workspace}, granted...), sandbox.WritableAreas()...)
 	for _, p := range []string{path, pin.Path} {
 		if under(p, stateDirs) {
+			pin.Release()
 			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is in Abhed's own state, which a statusline script may not be", config.Printable(first))
 		}
 		if under(p, writable) {
+			pin.Release()
 			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is where the agent can change it (the workspace, a folder granted to its tools, a temp or cache area); put the script elsewhere, such as ~/bin", config.Printable(first))
 		}
 	}
@@ -279,16 +281,24 @@ func (c *cliState) statuslineReady() (sandbox.Sandbox, string, string) {
 	// Judged again when the session's folders change, as /add-dir does, so
 	// a script in a folder granted since is refused from then on.
 	if roots := c.grantedDirs(); !c.statuslineJudged || !slices.Equal(roots, c.statuslineRoots) {
-		first := c.statuslinePin
+		again, first := c.statuslineJudged, c.statuslinePin
 		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace, roots)
 		c.statuslineJudged, c.statuslineRoots = true, roots
-		// Judged again, the script is still the one the session pinned first:
-		// a file put at its path since is not taken up.
-		if first.Info != nil && c.statuslineErr == nil && (c.statuslinePin.Path != first.Path || !first.Same()) {
+		// Judged again, the script is still the one the session pinned first,
+		// or none if it pinned none: a file put at its path since is not taken up.
+		changed := c.statuslineErr == nil && (first.Info != nil && (c.statuslinePin.Path != first.Path || !first.Same()) ||
+			again && first.Info == nil && c.statuslinePin.Info != nil)
+		if changed {
+			path := first.Path
+			if path == "" {
+				path = c.statuslinePin.Path
+			}
 			c.statuslineSB, c.statuslineErr = nil, fmt.Errorf("not run: %s has changed since the session started; start a new session to use it as it is now",
-				config.Printable(first.Path))
+				config.Printable(path))
 		}
-		if first.Info != nil {
+		if again {
+			// Only the first pin is kept, and the new one's file let go now.
+			c.statuslinePin.Release()
 			c.statuslinePin = first
 		}
 	}
