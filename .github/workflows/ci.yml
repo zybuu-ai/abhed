@@ -620,6 +620,13 @@ jobs:
             jq -e --arg t "$t" 'select(.Test == $t and .Action == "pass")' case.json >/dev/null || { echo "$t did not run and pass"; exit 1; }
           done
 
+      # Holding a pinned statusline script open would lock it on Windows.
+      - name: A pinned file stays free to rename and remove
+        run: |
+          set -euo pipefail
+          go test -count=1 -v -run '^TestPinDoesNotLockTheFile$' ./internal/sandbox/ > pin.log 2>&1 || { cat pin.log; exit 1; }
+          grep -q -- "--- PASS: TestPinDoesNotLockTheFile " pin.log || { echo "TestPinDoesNotLockTheFile did not run and pass"; cat pin.log; exit 1; }
+
   # The workbench in a real browser: a built abhed serve with a scripted
   # model, checked by headless Chromium through a pinned Playwright. The
   # header keeps Sign out on screen at 320, 900 and 1440 px, the side-panel

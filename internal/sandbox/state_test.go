@@ -377,3 +377,21 @@ func TestPinnedFileInodeIsNotHandedOutAgain(t *testing.T) {
 	}
 	runtime.KeepAlive(f)
 }
+
+// Pinning a file leaves it free to be renamed and removed, as Windows would
+// not for a file held open; the pin then no longer matches.
+func TestPinDoesNotLockTheFile(t *testing.T) {
+	dir := workspace(t)
+	path := filepath.Join(dir, "status.sh")
+	f := pinned(t, path, "#!/bin/sh\n")
+	moved := filepath.Join(dir, "moved.sh")
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatalf("a pinned file cannot be renamed: %v", err)
+	}
+	if err := os.Remove(moved); err != nil {
+		t.Fatalf("a pinned file cannot be removed: %v", err)
+	}
+	if f.Same() {
+		t.Fatal("a removed file still matches its pin")
+	}
+}
