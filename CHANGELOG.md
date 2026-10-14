@@ -2004,6 +2004,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `go.mod` now says `go 1.26.9` (1.2.7 said 1.26.8), so a module that
+  imports Abhed needs Go 1.26.9 or later.
 - `agent.Message.SecretsWithheld` (and so `abhed.Message`'s) names the
   stored secrets a person's message held, which the model got as
   `[secret:NAME]`; `ui.WithheldNote` is the line each surface shows for it.
