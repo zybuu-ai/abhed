@@ -16,7 +16,10 @@ import (
 // client's pings; once it reads, it gets every byte, in order, none dropped.
 func TestSandboxExecStdinDoesNotBlockPings(t *testing.T) {
 	quiet := streamQuiet
-	streamQuiet = 200 * time.Millisecond
+	// Short, so the stream would end in the waits below were a full queue
+	// taken for a quiet client; long enough for an emulated client to mask
+	// and send a 1 MiB message between reads.
+	streamQuiet = 500 * time.Millisecond
 	t.Cleanup(func() { streamQuiet = quiet })
 	r := newWSRig(t, nil, nil, func(o *Options) { o.Config.Permissions.Deny, o.Config.Permissions.Ask = nil, nil })
 	sb := r.ready(t, "alice")

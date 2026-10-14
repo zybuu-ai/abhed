@@ -380,3 +380,29 @@ func TestWriteTimeoutAborts(t *testing.T) {
 		t.Fatal("a read on an aborted connection")
 	}
 }
+
+// A large frame that arrives slowly keeps the peer counted as sending: its
+// LastRead moves as its bytes arrive, not only once the frame is whole.
+func TestLastReadMovesWhileAFrameArrives(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := newConn(a, nil, false, Limits{}, "")
+	payload := bytes.Repeat([]byte("x"), 64<<10)
+	key := [4]byte{1, 2, 3, 4}
+	frame := appendFrame(nil, true, opBinary, payload, &key)
+	go func() {
+		for off := 0; off < len(frame); off += 8 << 10 {
+			_, _ = b.Write(frame[off:min(off+8<<10, len(frame))])
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	done := make(chan struct{})
+	go func() { defer close(done); _, _, _ = c.ReadMessage() }()
+	time.Sleep(100 * time.Millisecond)
+	first := c.LastRead()
+	time.Sleep(200 * time.Millisecond)
+	if !c.LastRead().After(first) {
+		t.Fatal("LastRead stood still while the frame's bytes kept arriving")
+	}
+	<-done
+}

@@ -328,8 +328,21 @@ func newConn(c net.Conn, r *bufio.Reader, client bool, l Limits, proto string) *
 	return ws
 }
 
-// LastRead is when a frame last arrived, of any kind.
+// LastRead is when the peer last sent anything: a frame of any kind, or
+// part of one still arriving.
 func (c *Conn) LastRead() time.Time { return time.Unix(0, c.lastRead.Load()) }
+
+// liveReader reads the connection, noting each arrival: a large frame sent
+// slowly is a peer still sending, not one that has gone quiet.
+type liveReader struct{ c *Conn }
+
+func (l liveReader) Read(p []byte) (int, error) {
+	n, err := l.c.r.Read(p)
+	if n > 0 {
+		l.c.lastRead.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
 
 // LocalAddr and RemoteAddr are the underlying connection's.
 func (c *Conn) LocalAddr() net.Addr  { return c.conn.LocalAddr() }
@@ -352,7 +365,7 @@ func (c *Conn) ReadMessage() (MessageType, []byte, error) {
 	var msg []byte
 	started := false
 	for {
-		f, err := readFrame(c.r, !c.client, c.limits.MaxFrame)
+		f, err := readFrame(liveReader{c}, !c.client, c.limits.MaxFrame)
 		if err != nil {
 			return 0, nil, c.fail(err)
 		}
