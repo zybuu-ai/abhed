@@ -314,7 +314,10 @@ gosec v2.29.0 on Linux and fails only on a finding outside that
 baseline (`scripts/ci/gosec-gate.py`), so a new finding blocks a merge while
 the known set does not keep the job permanently red. A fix that removes a
 finding, or a new one once it has been triaged here, is followed by
-`--update`, which rewrites the baseline from the current report.
+`--update`, which rewrites the baseline from the current report. gosec
+scans only the files built for the platform it runs on, so the update is
+given a Linux and a macOS report together (`gosec-gate.py linux.json
+darwin.json --update`), and keeps the larger count of each.
 
 
 **Command:** `env -u GOROOT go run github.com/securego/gosec/v2/cmd/gosec@latest ./...` (also captured as JSON via `-fmt=json -out=gosec.json`)
@@ -616,6 +619,38 @@ so the darwin-only files are scanned on Linux too.
 | G304 | driver/microvm/recover.go:41 | reads a marker it wrote | Accepted: a regular file the driver owns, at most 4 KiB, checked before reading |
 | G702 | app/hideenv_darwin.go:76 | `syscall.Exec` of this program | False positive: `os.Executable()`, the running program itself, with its own arguments |
 | G703 | auth/clitoken.go:289, 302 | reads the revoked-token list | False positive: the key file's path plus `.revoked`, fixed when the server starts |
+
+#### Refreshed 14 October 2026 (1.2.8 release candidate)
+
+Scanned as CI scans (Linux, gosec v2.29.0, no package that failed to
+load), 16 findings were outside the baseline. Two were real and are fixed;
+the rest are below. Five triaged findings are no longer reported on Linux
+or macOS: the two G204 in `internal/sandbox/container.go` because the
+engine is no longer run from that file, and G120 `server/upload.go`, G705
+`server/export.go` and G705 `server/server.go` with their code unchanged
+but no longer flagged; the last three stay in the baseline, triaged above,
+so a refactor that brings them back does not read as new. The findings in
+darwin-only files (`driver/microvm/helper_darwin.go`, `app/hideenv_darwin.go`,
+two G115 in `driver/microvm/apply_unix.go`) are reported on macOS and no
+longer on Linux (the 12 October note that gosec reads every file whatever
+its build tag no longer holds); they stay in the baseline too, which is now
+written from the Linux and macOS scans together.
+
+| Rule | file:line | Finding | Triage |
+|---|---|---|---|
+| G123 | internal/servetls/servetls.go:173, 178 | client certificates checked in `VerifyPeerCertificate` while TLS session resumption stays on | **Fixed.** Go does not call `VerifyPeerCertificate` on a resumed session, so a client whose certificate was revoked, or whose CA was taken out of `client_ca_file`, could resume a session made before the reload. The check is now `VerifyConnection`, which runs on every handshake, and a resumed session's certificate is verified again against the client CA in force. `TestResumedSessionsAreCheckedAgain` resumes a session, then revokes the certificate and replaces the CA |
+| G122 | internal/sandbox/process.go:1109, 1126 | `os.Chmod` on each folder of a walk over the sandbox's temp folder and caches | **Fixed.** Commands write those folders, so one swapped for a link between the walk listing it and the chmod would have made a folder outside writable to its owner. The walk and the chmod now go through the folder held open as an `os.Root`, which does not follow a link out (`TestRemovalChmodsOnlyInsideItsFolder`) |
+| G204 | internal/tools/syntax.go:150 | runs a version manager's `which` to resolve a `python3` shim | Accepted: the manager (`pyenv`, `asdf`, `mise`) is found on the harness's own `PATH`, resolved through its links and refused inside the workspace or an extra root; it runs from the temp directory with a bounded wait, and what it names is refused if it lies in the roots or is another shim. The same reasoning as the interpreter itself, above |
+| G301 | cmd/abhed-guest/main_linux.go:93 | `/dev/pts` made 0755 in the guest | Accepted: the mount point of the guest's pseudo-terminals, made at boot inside the microVM; the image's user must reach its terminal through it, as on any Linux system |
+| G304 | driver/microvm/firecracker_linux.go:97, 116 | writes `cgroup.kill` and `cgroup.freeze` | False positive: the VM's cgroup under `/sys/fs/cgroup`; the watchdog refuses a parent that is not a plain cgroup name and a VM id with `/` or `.` before either is joined |
+| G304 | internal/mcp/digest.go:152 | reads the MCP server's program to check its pinned digest | Accepted: the program the operator's `command` names, found on the server's `PATH` with links followed; reading it is the check |
+| G703 | internal/mcp/digest.go:135 | `os.Stat` on each `PATH` entry joined with the command | Accepted: the same lookup, through absolute `PATH` entries only, of the operator's configured command |
+| G304 | internal/secrets/open_unix.go:29 | opens the secrets store's lock file | False positive: the store's own path plus `.lock`, opened `O_NOFOLLOW` and 0600, in a folder created 0700 |
+| G304 | server/search.go:195 | reads a folder's `.git` file to tell a linked worktree | False positive: a folder inside the workspace the search is walking; the file is read only when `Lstat` shows a regular file of at most 4 KiB, and checked again once open |
+| G702 | internal/sandbox/fence_linux.go:797 | `os.StartProcess` of `/proc/self/exe` | False positive: the fence's init starts this program again as the command's launcher, inside the namespaces it already made; the arguments are the fenced command, which is what the fence exists to run |
+| G703 | internal/policy/scope.go:128 | `os.Stat` on each `PATH` entry joined with a program name | False positive: deciding whether a scoped program resolves outside the workspace; a relative `PATH` entry ends the check as inside, and nothing is opened |
+| G703 | internal/sandbox/paths.go:23 | `os.Lstat` while resolving a path's links | False positive: `RealPath` resolves the paths rules are put to, so that a link cannot dodge them; it reads link targets and opens nothing |
+| G703 | internal/sandbox/process_mcpfiles.go:100 | `os.Stat` on each `PATH` entry joined with an MCP server's program | Accepted: finding the operator's configured program, through absolute `PATH` entries only, so its install folder can be shown to the server's sandbox; a folder that holds Abhed's state is refused |
 
 #### Single-instance rules
 
