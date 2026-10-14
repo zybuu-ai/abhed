@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -25,6 +28,8 @@ type gateAdapter struct {
 	calls   int
 	gate    chan struct{}
 	entered chan struct{}
+	// sent is every message content the model was sent.
+	sent []string
 }
 
 func newGateAdapter() *gateAdapter {
@@ -36,8 +41,11 @@ func (a *gateAdapter) Profile() model.Profile {
 	return model.Profile{Name: "gate", ContextWindow: 32000}
 }
 func (a *gateAdapter) CountTokens(model.Request) (int, error) { return 10, nil }
-func (a *gateAdapter) Complete(ctx context.Context, _ model.Request) (<-chan model.Chunk, error) {
+func (a *gateAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	a.mu.Lock()
+	for _, m := range req.Messages {
+		a.sent = append(a.sent, m.Content)
+	}
 	a.calls++
 	first := a.calls == 1
 	a.mu.Unlock()
@@ -270,5 +278,48 @@ func TestEventsResumeAfterQuery(t *testing.T) {
 	}
 	if ids := stream(base, ""); len(ids) != len(all) {
 		t.Fatalf("a fresh stream sent %d of %d events", len(ids), len(all))
+	}
+}
+
+// A stored secret's value in the first prompt or a queued message reaches the
+// model as [secret:NAME], and each user.message names what was withheld.
+func TestServerWithholdsATypedSecretFromTheModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"API_TOKEN":"tok-9f8e7d-srv","DB_PASS":"hunter2-hunter2-srv"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(secrets.EnvFile, path)
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	ad := newGateAdapter()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Registry: tools.NewRegistry(tools.Read{})})
+	q := &queueRig{t: t, s: s, h: s.Handler(), adapter: ad, ended: make(chan string, 1)}
+	id, err := s.StartSession(context.Background(), StartSpec{
+		Prompt: "start with tok-9f8e7d-srv", Tenant: "acme", User: "alice",
+		OnEnd: func(reason string, _ error) { q.ended <- reason },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.id = id
+	<-ad.entered
+	q.send("then hunter2-hunter2-srv")
+	close(ad.gate)
+	q.waitEnded()
+	ad.mu.Lock()
+	sent := strings.Join(ad.sent, "\n")
+	ad.mu.Unlock()
+	if strings.Contains(sent, "tok-9f8e7d-srv") || strings.Contains(sent, "hunter2-hunter2-srv") {
+		t.Fatalf("the model was sent a stored value:\n%s", sent)
+	}
+	if !strings.Contains(sent, "start with [secret:API_TOKEN]") || !strings.Contains(sent, "then [secret:DB_PASS]") {
+		t.Fatalf("the model was not sent the placeholders:\n%s", sent)
+	}
+	var named []string
+	for _, m := range q.userMessages() {
+		named = append(named, m.SecretsWithheld)
+	}
+	if strings.Join(named, " ") != "API_TOKEN DB_PASS" {
+		t.Fatalf("the user.messages name %q", named)
 	}
 }

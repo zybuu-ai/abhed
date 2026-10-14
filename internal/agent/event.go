@@ -259,6 +259,10 @@ type Message struct {
 	ClientID string `json:"client_id,omitempty"`
 	// Steered marks a message sent while a run was working, to redirect it.
 	Steered bool `json:"steered,omitempty"`
+	// SecretsWithheld names, comma-separated, the stored secrets whose values
+	// the message held: the model got [secret:NAME] in their place. A string
+	// keeps Message comparable.
+	SecretsWithheld string `json:"secrets_withheld,omitempty"`
 }
 
 // DroppedMessage is a queued message the model never saw. It is not a

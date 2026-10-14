@@ -684,6 +684,17 @@ a Mac, ⌘L also goes to the agent's composer. Even line by line, a rule checks
 the line, not what a script the line runs does. The banner says which mode a
 tab is in, and why.
 
+**A program you start takes your lines unjudged, in both modes.** An
+interactive program started at a terminal, such as `sh`, `bash`, `python3` or
+`node`, reads the lines you then type into it itself, and they are not put to
+the per-line screen: in a shell terminal the server leaves keys alone while
+another program has the terminal, and in a line-by-line terminal the program
+owns the terminal once the line that started it was judged. So `sh` and then
+`curl …` runs the `curl` even where `bash(curl *)` is denied. Only the line
+that starts the program is judged; the sandbox still bounds what it does. To
+keep such a program out, deny the line that starts it (for example
+`bash(sh)` or `bash(python3*)`).
+
 **Sessions.** The terminal and the editor work in a session, because that is
 what holds the workspace, the policy and the sandbox. You do not need to ask
 the agent anything to get one: when there is no session, the page opens a

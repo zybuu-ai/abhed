@@ -1252,6 +1252,19 @@ that occur close together hold the text back until the last one is complete.
 Text that cannot be redacted is never written as it was: it becomes
 `[redacted: output withheld]`.
 
+**Your own messages.** A stored value you type or paste into a message is
+withheld from the model as from the record: the model gets `[secret:NAME]`
+in its place, in the forms above, whichever way the message arrives (the
+terminal, `-p` and its stdin, the console and the workbench, a message sent
+while a run works, ACP, `abhed rpc`, the SDK). You are told once per
+message: the terminal prints a line on stderr naming the secrets, the console
+and the workbench show a note under the message, an ACP editor gets the same
+line at the start of the turn (with `secretsWithheld` in its `_meta`), and the
+`user.message` event carries `secrets_withheld`, the names comma-separated,
+for rpc and SDK callers. To let a command use a value, name the secret
+(`secrets` on `bash`, see above); the model never needs to see it.
+Extension hooks that see a submitted prompt get it as typed.
+
 **File paths.** A `write` or `edit` whose path holds a stored secret is
 refused, in every mode, whether the agent or a person at the workbench makes
 it: the editor's save, and the explorer's New file, New folder and the new

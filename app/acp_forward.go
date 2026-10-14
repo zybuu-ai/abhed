@@ -41,12 +41,17 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 	text := textBlock
 	switch ev.Type {
 	case agent.EvUserMessage:
-		if !replay {
+		var p agent.Message
+		if json.Unmarshal(ev.Payload, &p) != nil {
 			break
 		}
-		var p agent.Message
-		if json.Unmarshal(ev.Payload, &p) == nil && p.Text != "" {
+		if replay && p.Text != "" {
 			update(map[string]any{"sessionUpdate": "user_message_chunk", "content": text(p.Text)})
+		}
+		// The sender is told, once, as the turn starts; a replay shows the placeholders.
+		if note := ui.WithheldNote(p.SecretsWithheld); note != "" && !replay {
+			update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(strings.ToUpper(note[:1]) + note[1:] + ".\n\n"),
+				"_meta": map[string]any{acpMetaKey: map[string]any{"secretsWithheld": strings.Split(p.SecretsWithheld, ",")}}})
 		}
 	case agent.EvAgentMessage:
 		if !replay {

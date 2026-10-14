@@ -1450,7 +1450,7 @@ function drawCaps(){
   const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
   line('mode', c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : ''));
   line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');
-  const w = wsConfigLine(wsConf); if(w){ line('config', visible(w.text)); r.lastChild.title = visible(w.title); if(w.warn) r.lastChild.className = 'warn'; }
+  const w = wsConfigLine(wsConf); if(w){ line('config', visible(w.text)); r.lastChild.title = visible(w.title, true); if(w.warn) r.lastChild.className = 'warn'; }
   t.appendChild(r);
   t.appendChild(el('div', 'empty', 'A deny rule holds for every tool call, the agent\'s and yours, in every mode, including auto. In your interactive terminal it only screens each line as typed. Rules are set in the server configuration.'));
   const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
@@ -2308,6 +2308,8 @@ function render(ev){
   case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
   case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p), node = b || bubble('user', 'you', reveal(p.text || '', true, true)); add(node);
     node.seq = ev.seq; if(!b) node.said = p.text || ''; lastUser = node;
+    if(p.secrets_withheld){ const n = String(p.secrets_withheld).split(',');
+      add(el('div', 'sys', 'Your message held the value of the stored secret' + (n.length > 1 ? 's ' : ' ') + visible(n.join(', ')) + '; it was not sent to the model, which got [secret:NAME] in its place.')); }
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
     // This page's own message means its run has started, whichever of the
