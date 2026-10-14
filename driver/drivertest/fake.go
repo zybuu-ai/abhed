@@ -254,6 +254,21 @@ func (f *Fake) Attach(ctx context.Context, id string, req driver.AttachRequest) 
 			f.Resizes = append(f.Resizes, ws)
 			f.mu.Unlock()
 		case <-done:
+			// select picks at random, so take resizes already sent before returning.
+			for req.Resize != nil {
+				select {
+				case ws, ok := <-req.Resize:
+					if !ok {
+						req.Resize = nil
+						continue
+					}
+					f.mu.Lock()
+					f.Resizes = append(f.Resizes, ws)
+					f.mu.Unlock()
+				default:
+					req.Resize = nil
+				}
+			}
 			return driver.ExecResult{}, nil
 		}
 	}

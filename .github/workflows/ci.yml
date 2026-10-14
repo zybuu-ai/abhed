@@ -133,11 +133,14 @@ jobs:
           python scripts/ci/workflow-rules.py --self-test
           python scripts/ci/workflow-rules.py .github/workflows/*.yml
 
-      # A release's notes open with the changelog's Upgrading list.
+      # A release's notes open with the changelog's Upgrading list; on a
+      # release commit Unreleased is empty, so the newest dated section counts.
       - name: Release notes come from the changelog
         run: |
           python3 scripts/release-notes.py --self-test
-          python3 scripts/release-notes.py v0.0.0-ci | grep -q '^### Upgrading'
+          latest=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ')
+          python3 scripts/release-notes.py v0.0.0-ci | grep -q '^### Upgrading' ||
+            python3 scripts/release-notes.py "v$latest" | grep -q '^### Upgrading'
 
       # A ratchet, not a target: a PR may not lower coverage below what the
       # tree already achieves. Raising the floor is a deliberate commit.
