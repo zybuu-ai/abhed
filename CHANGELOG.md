@@ -171,6 +171,10 @@ All notable changes to Abhed are recorded here. The format follows
 - The built-in allow rules `bash(ls*)` and `bash(git diff*)`, `bash(git
   status*)` and `bash(git log*)` are narrowed to `ls` and those git commands
   themselves, so `lsof`, `lsblk` and `git difftool` now ask.
+- An allow rule with a wildcard over git, built-in or your own, no longer
+  approves an option that runs a program or writes a file (`--ext-diff`,
+  `--textconv`, `grep -O`, `-c` before the subcommand and the like); such a
+  command asks. A rule naming the whole command exactly still approves it.
 - Under any rule for `bash`, tmux and screen are limited to listing and
   showing what a server holds: `tmux new`, `attach-session` and
   `send-keys`, and `screen -dm`, are refused under a deny rule and asked
@@ -194,6 +198,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The built-in allow rules `bash(git diff *)` and `bash(git log *)`
+  approved `--ext-diff` and `--textconv`, which run the programs git's
+  configuration names, and an allow rule of your own with a wildcard over
+  git (`bash(git *)`, `bash(git grep *)`) also approved options that run a
+  program or write a file: `--open-files-in-pager` (`grep -O`),
+  `--output-directory` (`format-patch -o`), `--receive-pack`, `--exec`
+  (`rebase -x`), `clone -u`, and `-c`, `--config-env` or `--exec-path`
+  before the subcommand. No allow rule with a wildcard approves these now,
+  in any spelling git accepts, and no "always allow" is offered for them; a
+  rule naming the whole command exactly still does
+  ([Permissions](docs/guide/04-permissions.md#rules)). `--output` and
+  `--upload-pack` already asked. Affects 0.1.0 to 1.2.7.
 - A stored secret's value typed into a session's first prompt (or a
   workbench session's first message) was kept as typed in the session's
   `prompt`: in memory, in Postgres's `sessions.prompt`, in `GET
