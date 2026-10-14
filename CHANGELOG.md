@@ -1125,7 +1125,8 @@ All notable changes to Abhed are recorded here. The format follows
     guest kernel and Alpine base and builds the root filesystem. A test
     boots real VMs on a Mac (`ABHED_TEST_VZ=1`); a CI job builds, signs and
     tests the helper without booting, as hosted macOS runners cannot run a
-    VM.
+    VM. `abhed-vmhelper` is not in the release: build and sign it yourself
+    with those scripts.
 - `abhed serve` can terminate TLS itself: `server.tls.cert_file` and
   `key_file`, TLS 1.2 or later (`min_version: "1.3"` to refuse 1.2) with
   forward-secret AEAD suites only, HTTP/2. `additional_certificates` serves a
