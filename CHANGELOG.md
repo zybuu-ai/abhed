@@ -1589,6 +1589,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The fence gave a planted `.abhed` back to its owner only 128 folders
+  deep, so a tree locked deeper was left in the workspace, reported as
+  still present, and refused the next fence. It now reaches any depth, and
+  a file in it is changed through a descriptor opened without following a
+  link and checked to have one link, not by name after a separate check.
+  Affects 1.2.6 and 1.2.7.
 - A statusline script swapped for another file could pass for the pinned
   one, and be run and let into the sandbox, when the new file got the old
   one's inode number with the same size, mode and times, which a kernel's

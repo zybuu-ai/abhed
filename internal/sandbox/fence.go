@@ -972,6 +972,10 @@ func (f *Fence) takeOutContents(p string) ([]map[string]any, bool) {
 	return out, true
 }
 
+// removeTakenOut removes a planted entry the fence could not quarantine; a
+// variable, so a test can make one that cannot be removed.
+var removeTakenOut = os.RemoveAll
+
 // takeOutBound is how many entries one check takes out of the covered .abhed;
 // a variable, so a test can lower it.
 var takeOutBound = 4096
@@ -989,7 +993,7 @@ func (f *Fence) takeOutTo(p, dir string, removeStuck bool) map[string]any {
 	inert := filepath.Join(dir, plantedPrefix+f.id+"-"+hex.EncodeToString(raw[:]))
 	if err := os.Rename(p, inert); err != nil {
 		restoreOwnerAccess(p)
-		if rerr := os.RemoveAll(p); rerr == nil {
+		if rerr := removeTakenOut(p); rerr == nil {
 			m["outcome"], m["reason"] = plantRemoved, err.Error()
 		} else {
 			m["outcome"], m["error"] = plantRemaining, errors.Join(err, rerr).Error()
@@ -1006,7 +1010,7 @@ func (f *Fence) takeOutTo(p, dir string, removeStuck bool) map[string]any {
 	case !removeStuck:
 		m["outcome"], m["reason"] = plantRenamed, err.Error()
 	default:
-		if rerr := os.RemoveAll(inert); rerr != nil {
+		if rerr := removeTakenOut(inert); rerr != nil {
 			// Left in the covered .abhed: the user must remove it.
 			m["outcome"], m["error"] = plantRemaining, errors.Join(err, rerr).Error()
 			return m

@@ -198,6 +198,18 @@ func chmodNoFollow(parent int, name string, mode uint32) error {
 	return unix.Chmod("/proc/self/fd/"+strconv.Itoa(fd), mode)
 }
 
+// openFileNoFollow holds the file name in parent by path only, which needs no
+// permission on it, never through a link.
+func openFileNoFollow(parent int, name string) (int, error) {
+	return unix.Openat(parent, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+}
+
+// chmodHeld changes the mode of the file fd holds; an O_PATH descriptor has
+// no fchmod, so it goes through /proc, which names that file and no other.
+func chmodHeld(fd int, mode uint32) error {
+	return unix.Chmod("/proc/self/fd/"+strconv.Itoa(fd), mode)
+}
+
 // statMode is st's mode.
 func statMode(st *unix.Stat_t) uint32 { return st.Mode }
 
