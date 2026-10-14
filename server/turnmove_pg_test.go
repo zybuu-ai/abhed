@@ -75,23 +75,59 @@ func (b *blocker) Run(ctx context.Context, _ *tools.Session, _ json.RawMessage) 
 }
 
 type hoServer struct {
-	t *testing.T
-	s *Server
-	h http.Handler
+	t     *testing.T
+	s     *Server
+	h     http.Handler
+	mover *testMover
 }
 
-// newHOServer is one replica; replicas share the workspace, as on one volume.
+// testMover moves turns with no protocol of its own: a suspended row is left
+// held by its old holder, and another process claims it as an orphan.
+type testMover struct {
+	pg     *store.Postgres
+	parked atomic.Int32
+}
+
+func (m *testMover) park(context.Context, string, string) (bool, error) {
+	m.parked.Add(1)
+	return true, nil
+}
+
+func (m *testMover) claim(ctx context.Context, id, holder string) (bool, error) {
+	return m.pg.ClaimOrphan(ctx, id, holder, nodeStale)
+}
+
+func (m *testMover) HandOver(ctx context.Context, s *Server) int {
+	return s.SuspendRunning(ctx, m.park)
+}
+
+func (m *testMover) TakeOver(ctx context.Context, s *Server, id string, held bool) error {
+	if held {
+		return s.ContinueOpenTurn(ctx, id, nil)
+	}
+	return s.ContinueOpenTurn(ctx, id, m.claim)
+}
+
+// newHOServer is one process with a TurnMover; processes share the
+// workspace, as on one volume.
 func newHOServer(t *testing.T, st EventStore, blk *blocker, ws string, with ...func(*Options)) *hoServer {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
-	opts := Options{Workspace: ws, Config: cfg, Adapter: hoAdapter{path: filepath.Join(ws, "x.txt")}, Store: st, ContinueTurns: true,
+	m := &testMover{}
+	m.pg, _ = st.(*store.Postgres)
+	opts := Options{Workspace: ws, Config: cfg, Adapter: hoAdapter{path: filepath.Join(ws, "x.txt")}, Store: st, TurnMover: m,
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, blk)}
 	for _, f := range with {
 		f(&opts)
 	}
 	s := New(opts)
-	return &hoServer{t: t, s: s, h: s.Handler()}
+	return &hoServer{t: t, s: s, h: s.Handler(), mover: m}
+}
+
+// staleClaim ages a row's claim past nodeStale, as a holder that stopped beating.
+func staleClaim(t *testing.T, id string) {
+	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
 }
 
 func tempWorkspace(t *testing.T) string {
@@ -174,11 +210,11 @@ func oneOutcomeEach(t *testing.T, evs []agent.Event) {
 	}
 }
 
-// A replica that drains hands the turn waiting on a question over; another
-// replica takes it when a message for it arrives, asks the question again,
-// runs the call once it is approved, and goes on with the turn, the message
-// steering it. The first replica writes nothing more.
-func TestTwoServersOnePostgresDrainHandsTheTurnOver(t *testing.T) {
+// A drain with a TurnMover suspends the turn waiting on a question, keeping
+// its claim and writing no end; another process continues it when a message
+// for it arrives, asks the question again, runs the call once it is
+// approved, and goes on with the turn, the message steering it.
+func TestTurnMoverSuspendsAndContinuesAQuestion(t *testing.T) {
 	blk := newBlocker()
 	ws := tempWorkspace(t)
 	a := newHOServer(t, openSharedPG(t), blk, ws)
@@ -188,20 +224,24 @@ func TestTwoServersOnePostgresDrainHandsTheTurnOver(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err == nil {
 		t.Fatal("the write ran before it was approved")
 	}
-	a.s.drain() // no drain budget: what runs is handed over at once
+	a.s.drain() // no drain budget: what runs is suspended at once
 	if a.live(id) != nil {
-		t.Fatal("A kept the session it handed over")
+		t.Fatal("A kept the session it suspended")
 	}
-	if h := pgHolder(t, id); h != store.HandedOver {
-		t.Fatalf("holder after the hand-over = %q", h)
+	if a.mover.parked.Load() != 1 {
+		t.Fatalf("parked %d sessions", a.mover.parked.Load())
+	}
+	if h := pgHolder(t, id); h != a.s.holder {
+		t.Fatalf("holder after the suspend = %q", h)
 	}
 	if _, ended := agent.LastEnd(b.events(id)); ended {
-		t.Fatal("the handed-over run recorded an end")
+		t.Fatal("the suspended run recorded an end")
 	}
+	staleClaim(t, id)
 
 	if rec := b.do("POST", "/v1/sessions/"+id+"/messages", `{"prompt":"also this"}`); rec.Code != http.StatusAccepted ||
 		!strings.Contains(rec.Body.String(), "steered") {
-		t.Fatalf("message to the handed-over session = %d %s", rec.Code, rec.Body)
+		t.Fatalf("message to the suspended session = %d %s", rec.Code, rec.Body)
 	}
 	waitUntil(t, "B to ask again", func() bool { return b.state(id) == "waiting_approval" })
 	if rec := b.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusNoContent {
@@ -224,15 +264,15 @@ func TestTwoServersOnePostgresDrainHandsTheTurnOver(t *testing.T) {
 		steered = steered || m["text"] == "also this"
 	}
 	if !steered {
-		t.Fatal("the message sent during the hand-over never reached the turn")
+		t.Fatal("the message sent to the suspended session never reached the turn")
 	}
 }
 
-// A replica that dies while a call runs: once its claim is stale, another
-// replica's sweep takes the turn over, answers the call as outcome unknown
-// without running it again, and the turn goes on. The dead replica's late
-// result is refused.
-func TestTwoServersOnePostgresCrashedTurnIsContinued(t *testing.T) {
+// A process that dies while a call runs: once its claim is stale, another
+// process's sweep continues the turn through its TurnMover, answers the call
+// as outcome unknown without running it again, and the turn goes on. The
+// dead process's late result is refused.
+func TestTurnMoverContinuesACrashedTurn(t *testing.T) {
 	blk := newBlocker()
 	ws := tempWorkspace(t)
 	a := newHOServer(t, openSharedPG(t), blk, ws)
@@ -247,10 +287,10 @@ func TestTwoServersOnePostgresCrashedTurnIsContinued(t *testing.T) {
 	aLive.mu.Unlock()
 	stop()
 
-	if err := b.s.TakeOver(context.Background(), id); !errors.Is(err, ErrSessionBusy) {
-		t.Fatalf("B took over a session whose holder is alive: %v", err)
+	if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); !errors.Is(err, ErrSessionBusy) {
+		t.Fatalf("B continued a session whose holder is alive: %v", err)
 	}
-	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
+	staleClaim(t, id)
 	if n := b.s.RecoverOrphans(context.Background()); n < 1 {
 		t.Fatalf("B's sweep took %d sessions over", n)
 	}
@@ -290,14 +330,14 @@ func TestTwoServersOnePostgresCrashedTurnIsContinued(t *testing.T) {
 	}
 }
 
-// A take-over that fails after its claim ends the session as recovered, and
-// first gives each open call its outcome: the question left open is refused,
-// and the call that may have run is answered as outcome unknown.
-func TestTwoServersOnePostgresFailedTakeOverSettlesOpenCalls(t *testing.T) {
+// A continuation that fails after its claim ends the session as recovered,
+// and first gives each open call its outcome: the question left open is
+// refused, and the call that may have run is answered as outcome unknown.
+func TestFailedContinuationSettlesOpenCalls(t *testing.T) {
 	broken := func(o *Options) {
 		o.SecretsFor = func(string, string) (*secrets.Store, error) { return nil, errors.New("vault down") }
 	}
-	t.Run("handed over", func(t *testing.T) {
+	t.Run("suspended", func(t *testing.T) {
 		blk := newBlocker()
 		ws := tempWorkspace(t)
 		a := newHOServer(t, openSharedPG(t), blk, ws)
@@ -305,8 +345,9 @@ func TestTwoServersOnePostgresFailedTakeOverSettlesOpenCalls(t *testing.T) {
 		id := a.start("write")
 		waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
 		a.s.drain()
-		if err := b.s.TakeOver(context.Background(), id); err == nil {
-			t.Fatal("B took over without its secrets")
+		staleClaim(t, id)
+		if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); err == nil {
+			t.Fatal("B continued without its secrets")
 		}
 		evs := b.events(id)
 		end, ok := agent.LastEnd(evs)
@@ -335,9 +376,9 @@ func TestTwoServersOnePostgresFailedTakeOverSettlesOpenCalls(t *testing.T) {
 		aLive.beatStop = nil
 		aLive.mu.Unlock()
 		stop()
-		pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
-		if err := b.s.TakeOver(context.Background(), id); err == nil {
-			t.Fatal("B took over without its secrets")
+		staleClaim(t, id)
+		if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); err == nil {
+			t.Fatal("B continued without its secrets")
 		}
 		close(blk.release)
 		waitUntil(t, "A to be fenced", func() bool { return aLive.fenced.Load() })
@@ -353,10 +394,10 @@ func TestTwoServersOnePostgresFailedTakeOverSettlesOpenCalls(t *testing.T) {
 	})
 }
 
-// A replica fenced while its call waits for approval: the approval given to
-// it cannot be recorded, so it never runs the call. The replica that takes
-// the session over sees no approval, asks again, and runs the call once.
-func TestTwoServersOnePostgresUnrecordedApprovalNeverRuns(t *testing.T) {
+// A process fenced while its call waits for approval: the approval given to
+// it cannot be recorded, so it never runs the call. The process that
+// continues the session sees no approval, asks again, and runs the call once.
+func TestUnrecordedApprovalNeverRunsWhenContinued(t *testing.T) {
 	blk := newBlocker()
 	ws := tempWorkspace(t)
 	a := newHOServer(t, openSharedPG(t), blk, ws)
@@ -386,13 +427,13 @@ func TestTwoServersOnePostgresUnrecordedApprovalNeverRuns(t *testing.T) {
 		}
 	}
 
-	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
-	if err := b.s.TakeOver(context.Background(), id); err != nil {
-		t.Fatalf("take over: %v", err)
+	staleClaim(t, id)
+	if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); err != nil {
+		t.Fatalf("continue: %v", err)
 	}
 	waitUntil(t, "B to ask again", func() bool { return b.state(id) == "waiting_approval" })
 	if rec := b.do("GET", "/v1/sessions/"+id+"/replay", ""); rec.Code != http.StatusOK {
-		t.Fatalf("B cannot replay the session it took over: %d %s", rec.Code, rec.Body)
+		t.Fatalf("B cannot replay the session it continued: %d %s", rec.Code, rec.Body)
 	}
 	if rec := b.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("approve on B = %d %s", rec.Code, rec.Body)
@@ -411,9 +452,9 @@ func TestTwoServersOnePostgresUnrecordedApprovalNeverRuns(t *testing.T) {
 	}
 }
 
-// A terminal open in a session handed over records its end before the
-// session is marked, which would refuse it after.
-func TestTwoServersOnePostgresHandOverRecordsTheTerminalsEnd(t *testing.T) {
+// A terminal open in a session being suspended records its end before the
+// row is parked, which would refuse it after.
+func TestSuspendRecordsTheTerminalsEnd(t *testing.T) {
 	blk := newBlocker()
 	ws := tempWorkspace(t)
 	withBash := func(o *Options) {
@@ -429,13 +470,37 @@ func TestTwoServersOnePostgresHandOverRecordsTheTerminalsEnd(t *testing.T) {
 		t.Fatalf("terminal: %d %s", rec.Code, rec.Body)
 	}
 	a.s.drain()
-	if h := pgHolder(t, id); h != store.HandedOver {
-		t.Fatalf("holder after the hand-over = %q", h)
+	if a.mover.parked.Load() != 1 || a.live(id) != nil {
+		t.Fatalf("not suspended: parked %d", a.mover.parked.Load())
 	}
 	for _, o := range payloadsOf(a.events(id), agent.EvObservation) {
 		if o["call_id"] == pty.ID {
 			return
 		}
 	}
-	t.Fatalf("the terminal's end was not recorded before the hand-over: %v", payloadsOf(a.events(id), agent.EvObservation))
+	t.Fatalf("the terminal's end was not recorded before the suspend: %v", payloadsOf(a.events(id), agent.EvObservation))
+}
+
+// Without a TurnMover a drain ends the running turn as a shutdown and gives
+// its claim up, as 1.2.7 did; nothing continues it on its own.
+func TestDrainWithoutTurnMoverEndsTheTurn(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	none := func(o *Options) { o.TurnMover = nil }
+	a := newHOServer(t, openSharedPG(t), blk, ws, none)
+	b := newHOServer(t, openSharedPG(t), blk, ws, none)
+	id := a.start("write")
+	waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+	a.s.drain()
+	end, ok := agent.LastEnd(a.events(id))
+	if !ok || end.Reason != agent.TermShutdown {
+		t.Fatalf("the drained turn ended %v %+v", ok, end)
+	}
+	staleClaim(t, id)
+	b.s.RecoverOrphans(context.Background())
+	evs := b.events(id)
+	if countType(evs, agent.EvTurnContinued) != 0 || b.live(id) != nil {
+		t.Fatal("a server with no TurnMover continued the turn")
+	}
+	oneOutcomeEach(t, evs)
 }

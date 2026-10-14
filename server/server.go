@@ -297,13 +297,12 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
-	// ContinueTurns, set by an edition that runs replicas on one Postgres,
-	// moves running turns between processes instead of ending them: a drain
-	// hands the turns still running after DrainTimeout over (HandOverRunning),
-	// and the orphan sweep, the start-up sweep and a message to such a session
-	// take them over and continue them here (TakeOver). Off, a turn whose
-	// process stops is ended, as before.
-	ContinueTurns bool
+	// TurnMover, set by an edition, moves running turns between processes
+	// instead of ending them: a drain offers it the turns still running after
+	// DrainTimeout, and the orphan sweep, the start-up sweep and a message to
+	// a session another process left running offer it that session. Nil, a
+	// turn whose process stops is ended, as before.
+	TurnMover TurnMover
 	// SoleOwner, when set, is the one account a server that shares its
 	// workspace between sessions was started for: a session for anyone else
 	// is refused, since another account would share that workspace.
@@ -3231,7 +3230,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// A turn another process left running goes on here, and the message steers it.
-		if s.opts.ContinueTurns && s.TakeOver(r.Context(), id) == nil {
+		if m := s.opts.TurnMover; m != nil && m.TakeOver(r.Context(), s, id, false) == nil {
 			live, ok = s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 		}
 	}
@@ -3528,8 +3527,8 @@ func (s *Server) RecoverOrphans(ctx context.Context) int {
 		if here || ctx.Err() != nil {
 			return
 		}
-		if s.opts.ContinueTurns {
-			if err := s.TakeOver(ctx, id); err == nil {
+		if m := s.opts.TurnMover; m != nil {
+			if err := m.TakeOver(ctx, s, id, false); err == nil {
 				n++
 			}
 			return
@@ -3616,8 +3615,8 @@ func (s *Server) RecoverOwnAtStart(ctx context.Context) int {
 			mine, err := r.ReclaimOwn(ctx, id, s.holder)
 			switch {
 			case err != nil || !mine:
-			case s.opts.ContinueTurns:
-				if s.continueClaimed(ctx, id) == nil {
+			case s.opts.TurnMover != nil:
+				if s.opts.TurnMover.TakeOver(ctx, s, id, true) == nil {
 					n++
 				}
 			case s.reconcile(id, events):
@@ -3973,7 +3972,7 @@ func (s *Server) releaseNodeIfQuiet(live *liveSession) {
 	live.holdMu.Unlock()
 	live.mu.Lock()
 	stop := live.beatStop
-	// A run handed over keeps its claim until HandOverRunning marks the row,
+	// A suspended run keeps its claim until SuspendRunning parks the row,
 	// so no writer slips in between the release and the mark.
 	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0 &&
 		live.Reason != agent.TermHandedOver
@@ -5305,11 +5304,11 @@ func (s *Server) drain() {
 	s.stopRunning()
 }
 
-// stopRunning ends the turns a drain did not wait out: handed over to
-// another process with ContinueTurns, else ended as a shutdown.
+// stopRunning ends the turns a drain did not wait out, as a shutdown, after
+// an edition's TurnMover has moved those it can.
 func (s *Server) stopRunning() {
-	if s.opts.ContinueTurns {
-		s.HandOverRunning(context.Background())
+	if m := s.opts.TurnMover; m != nil {
+		m.HandOver(context.Background(), s)
 	}
 	s.cancelRunning()
 }
