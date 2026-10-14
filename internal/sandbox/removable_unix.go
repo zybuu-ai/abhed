@@ -5,6 +5,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"slices"
 
 	"golang.org/x/sys/unix"
 )
@@ -48,6 +49,9 @@ func ownerAccessWalk(p string, files bool) {
 				_ = unix.Close(cur.fd)
 				cur.fd = -1
 				stack = append(stack, child)
+				if ownerAccessHook != nil {
+					ownerAccessHook("entered", name)
+				}
 			}
 			continue
 		}
@@ -71,6 +75,10 @@ func ownerAccessWalk(p string, files bool) {
 		up.fd = pfd
 	}
 }
+
+// ownerAccessHook, when a test sets it, is called as the walk enters a folder
+// and before it opens a file, so a test can swap what is there.
+var ownerAccessHook func(at, name string)
 
 // ownerAccessLevel is a folder of the walk: its descriptor while it is the
 // deepest, its identity, and the names in it still to visit.
@@ -121,6 +129,7 @@ func enterOwnerAccess(parent int, name string, files bool) (ownerAccessLevel, bo
 		names, _ = f.Readdirnames(-1)
 		_ = f.Close()
 	}
+	slices.Sort(names) // a walk in the same order each time
 	return ownerAccessLevel{fd: fd, st: st, names: names}, true
 }
 
@@ -129,6 +138,9 @@ func enterOwnerAccess(parent int, name string, files bool) (ownerAccessLevel, bo
 // there, so a file swapped in after the parent was listed is the one judged.
 // A file with more than one link may share its inode with one outside.
 func restoreFileAccess(parent int, name string) {
+	if ownerAccessHook != nil {
+		ownerAccessHook("file", name)
+	}
 	fd, err := openFileNoFollow(parent, name)
 	if err != nil {
 		return

@@ -154,3 +154,58 @@ func TestCachesGoWithAnUnreadableTempFolder(t *testing.T) {
 		t.Fatalf("the temp folder is still there: %v", err)
 	}
 }
+
+// A folder moved out from under the walk ends it: climbing back by ".."
+// would land outside, where a name the walk had still to visit would be
+// changed instead.
+func TestOwnerAccessWalkEndsWhenAFolderIsMovedOut(t *testing.T) {
+	dir, outside := filepath.Join(t.TempDir(), "tree"), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "b", "c"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "z"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(outside, "z"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(outside, "z"), 0o700) })
+	ownerAccessHook = func(at, name string) {
+		if at == "entered" && name == "c" {
+			_ = os.Rename(filepath.Join(dir, "b"), filepath.Join(outside, "b"))
+		}
+	}
+	t.Cleanup(func() { ownerAccessHook = nil })
+	makeRemovable(dir)
+	if m := mode(t, filepath.Join(outside, "z")); m != 0o500 {
+		t.Fatalf("a folder outside, named as one the walk had still to visit, became %v", m)
+	}
+}
+
+// A file swapped for a link just before it is opened is not changed through
+// the link: the file the link names keeps its mode.
+func TestRestoreFileAccessOpensNoLink(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "planted")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(dir, "f")
+	if err := os.WriteFile(f, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(outside, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ownerAccessHook = func(at, name string) {
+		if at == "file" && name == "f" {
+			_ = os.Remove(f)
+			_ = os.Symlink(outside, f)
+		}
+	}
+	t.Cleanup(func() { ownerAccessHook = nil })
+	restoreOwnerAccess(dir)
+	if m := mode(t, outside); m != 0o400 {
+		t.Fatalf("the file a link swapped in named became %v", m)
+	}
+}
