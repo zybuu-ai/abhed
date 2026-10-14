@@ -563,6 +563,7 @@ func (l *Loop) withholdSecrets(text string) (string, string) {
 // WithheldText is text with each stored secret's value red holds replaced
 // by [secret:NAME], as a person's message is before it is kept anywhere.
 func WithheldText(red Redactor, text string) string {
+	red = usableRedactor(red)
 	if red == nil {
 		return text
 	}
