@@ -295,9 +295,10 @@ pretending:
   deleted session, such as a run another server still holds, is refused
   rather than stored. What
   erasure does not reach: sessions recorded before 1.2.8, whose
-  payloads were never sealed; a database backup taken before the delete,
-  which still holds the key until it expires; and, until `VACUUM` runs, the
-  deleted key's bytes in the table's free space.
+  payloads were never sealed; a database backup or WAL archive taken before
+  the delete, which still holds the key until it expires; a streaming
+  replica, until it replays the delete; and, until `VACUUM` runs and the
+  replicas replay it, the deleted key's bytes in the table's free space.
 - **The local record** (`~/.abhed/records`) deletes as `abhed record prune`
   does: the session's file, its subagents' and the pre-images no other session
   names are removed, and a tombstone in the index keeps its id and head. Lines
