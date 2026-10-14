@@ -1589,6 +1589,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A statusline script replaced during a session was taken up when the
+  session's folders changed (`/add-dir`, a skill's folder): judging the
+  script again pinned whatever file was at its path then. The session now
+  keeps the script it pinned first, and one changed since is not run; the
+  status line says to start a new session. Affects 1.2.3 to 1.2.7.
 - A message typed while a `user_prompt_submit` hook was turning away the
   one before it waited, unsent, until the next message, in the terminal
   and on the server. The run now goes on for it, judged by the hook in
@@ -1603,8 +1608,9 @@ All notable changes to Abhed are recorded here. The format follows
 - A statusline script swapped for another file could pass for the pinned
   one, and be run and let into the sandbox, when the new file got the old
   one's inode number with the same size, mode and times, which a kernel's
-  coarse timestamps allow when it is done quickly. The pinned file is now
-  held open, so its inode is not freed and its number not given out again.
+  coarse timestamps allow when it is done quickly. On Linux and macOS the
+  pinned file is now held open, so its inode is not freed and its number
+  not given out again.
   Affects 1.2.3 to 1.2.7.
 - A secrets store made readable by others during a session (`chmod 644`)
   should make the session withhold every payload until it is fixed, but

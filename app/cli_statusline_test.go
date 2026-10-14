@@ -358,3 +358,44 @@ func TestStatuslineRejudgedWhenFoldersChange(t *testing.T) {
 		t.Fatalf("not refused once granted: %q", got)
 	}
 }
+
+// Judged again when the session's folders change, the script is still the
+// one the session pinned first: one put at its path since is not run.
+func TestStatuslineKeepsTheFirstPinWhenRejudged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := homeOutsideTemp(t)
+	ws := t.TempDir()
+	script := filepath.Join(home, "bin4", "s.sh")
+	writeStatusScript(t, script, "#!/bin/sh\necho first\n")
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.Statusline.Command = script
+	if _, _, _, err := statuslineSandbox(cfg, ws, nil); errors.Is(err, errNoProcessSandbox) {
+		t.Skipf("no process sandbox here: %v", err)
+	}
+	old := statuslineTimeout
+	statuslineTimeout = 10 * time.Second
+	t.Cleanup(func() { statuslineTimeout = old })
+	st := &cliState{appCfg: cfg, workspace: ws, sess: sess}
+	if got := st.statusLine(context.Background(), "default"); got != "first" {
+		t.Skipf("the process sandbox cannot run the script here: %q", got)
+	}
+	if err := os.Remove(script); err != nil {
+		t.Fatal(err)
+	}
+	writeStatusScript(t, script, "#!/bin/sh\necho replaced\n")
+	if err := sess.AddRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if got := st.statusLine(context.Background(), "default"); strings.Contains(got, "replaced") || !strings.Contains(got, "start a new session") {
+			t.Fatalf("a script replaced before the folders changed: %q", got)
+		}
+	}
+}

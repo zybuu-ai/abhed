@@ -279,8 +279,18 @@ func (c *cliState) statuslineReady() (sandbox.Sandbox, string, string) {
 	// Judged again when the session's folders change, as /add-dir does, so
 	// a script in a folder granted since is refused from then on.
 	if roots := c.grantedDirs(); !c.statuslineJudged || !slices.Equal(roots, c.statuslineRoots) {
+		first := c.statuslinePin
 		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace, roots)
 		c.statuslineJudged, c.statuslineRoots = true, roots
+		// Judged again, the script is still the one the session pinned first:
+		// a file put at its path since is not taken up.
+		if first.Info != nil && c.statuslineErr == nil && (c.statuslinePin.Path != first.Path || !first.Same()) {
+			c.statuslineSB, c.statuslineErr = nil, fmt.Errorf("not run: %s has changed since the session started; start a new session to use it as it is now",
+				config.Printable(first.Path))
+		}
+		if first.Info != nil {
+			c.statuslinePin = first
+		}
 	}
 	// A missing sandbox is said once, as it holds for the whole session;
 	// a refused script every time, until it is moved.
