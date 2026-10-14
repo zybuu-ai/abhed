@@ -6,9 +6,9 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
-// A run that stopped to be handed over does not give its claim up as it
-// ends: the row stays held until HandOverRunning marks it handed over.
-func TestHandedOverRunKeepsItsClaim(t *testing.T) {
+// A run suspended for a TurnMover does not give its claim up as it ends:
+// the row stays held until SuspendRunning parks it.
+func TestSuspendedRunKeepsItsClaim(t *testing.T) {
 	h := newHOServer(t, agent.NewMemStore(), newBlocker(), tempWorkspace(t))
 	id := h.start("hello")
 	waitUntil(t, "the turn to end", func() bool {
@@ -25,7 +25,7 @@ func TestHandedOverRunKeepsItsClaim(t *testing.T) {
 	kept := live.beatStop != nil
 	live.mu.Unlock()
 	if released || !kept {
-		t.Fatal("a handed-over run released its claim before the row was marked")
+		t.Fatal("a suspended run released its claim before the row was parked")
 	}
 	live.mu.Lock()
 	live.Reason = agent.TermCompleted

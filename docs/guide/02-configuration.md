@@ -1050,10 +1050,10 @@ server up. The worst case is `drain_seconds` + 15 seconds, or
 25 seconds when `drain_seconds` is under 10, so give the process at least
 that much grace: with Kubernetes' default `terminationGracePeriodSeconds` of
 30, keep `drain_seconds` at 15 or less.
-Without `drain_seconds`, running turns are ended at once. Under an edition
-that moves turns between replicas, the turns still running then are handed
-over to another replica instead of ended
-([A running turn, between replicas](11-sessions.md#a-running-turn-between-replicas)). SIGINT and a
+Without `drain_seconds`, running turns are ended at once
+([Sessions](11-sessions.md#continuing-a-finished-chat-on-any-node) says what is
+recorded). Moving them to another replica instead is part of the Enterprise
+edition's high availability. SIGINT and a
 hang-up (SIGHUP) stop the server the same way; a hang-up is not a reload.
 Signals that arrive while it drains are ignored, so a second SIGTERM does
 not cut the drain short; SIGKILL, as an orchestrator sends at the end of its

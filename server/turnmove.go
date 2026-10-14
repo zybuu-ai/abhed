@@ -9,35 +9,44 @@ import (
 	"github.com/zybuu-ai/abhed/store"
 )
 
-// TurnHandOver is implemented by stores that let a process hand a session's
-// running turn to another: HandOver leaves the open session held by no
-// process and written by none, and ClaimHandedOver takes it, one claimer
-// winning.
-type TurnHandOver interface {
-	HandOver(ctx context.Context, sessionID, holder string) (bool, error)
-	ClaimHandedOver(ctx context.Context, sessionID, holder string) (bool, error)
+// TurnMover is set by an edition that moves running turns between processes
+// on one store. Without one, a turn whose process stops is ended, recorded
+// as interrupted, and a person continues the session from there.
+type TurnMover interface {
+	// HandOver is called as a drain ends, before the turns still running are
+	// ended as a shutdown; it reports how many it moved (see SuspendRunning).
+	HandOver(ctx context.Context, s *Server) int
+	// TakeOver is called for an open session whose run another process left
+	// going, by the orphan sweep and by a message to it; and at start-up, with
+	// held true, for one this node held before it restarted and has taken
+	// back (see ContinueOpenTurn).
+	TakeOver(ctx context.Context, s *Server, id string, held bool) error
 }
 
-// ErrNothingToTakeOver is TakeOver of a session with nothing left open.
-var ErrNothingToTakeOver = errors.New("the session has no run left open to take over")
+// RowClaim changes the holder of a session's row for holder, reporting
+// whether it did: an edition's own mark or claim, under its own protocol.
+type RowClaim func(ctx context.Context, sessionID, holder string) (bool, error)
 
-// The other reasons TakeOver takes nothing: a live process holds the session
-// (this one included), there is no such session, or this process is draining.
+// ErrNoOpenTurn is ContinueOpenTurn of a session with no run left open.
+var ErrNoOpenTurn = errors.New("the session has no run left open")
+
+// The other reasons ContinueOpenTurn continues nothing: a live process holds
+// the session (this one included), there is no such session, or this
+// process is draining.
 var (
 	ErrSessionBusy = errBusySession
 	ErrNoSession   = errNoSession
 	ErrDraining    = errDraining
 )
 
-// HandOverRunning stops every turn running here so that another process can
-// take it over (TakeOver): the run stops without an end, a question it was
-// waiting on is left open to be asked again there, background children end
-// as a shutdown since they cannot move, and the session is marked handed over
-// and leaves this process. It reports how many it handed over. A store that
-// cannot hand over leaves the turns running, for the caller to end.
-func (s *Server) HandOverRunning(ctx context.Context) int {
-	h, ok := s.sessions.(TurnHandOver)
-	if !ok {
+// SuspendRunning stops every turn running here without ending it, for a
+// TurnMover: the run stops where it is, a question it was waiting on is left
+// open, background children end as a shutdown since they cannot move, and
+// park marks each row for another process before the session leaves this
+// one. It reports how many it parked; a turn it could not stop is left for
+// the caller to end.
+func (s *Server) SuspendRunning(ctx context.Context, park RowClaim) int {
+	if park == nil {
 		return 0
 	}
 	s.mu.Lock()
@@ -68,11 +77,11 @@ func (s *Server) HandOverRunning(ctx context.Context) int {
 		select {
 		case <-ch:
 		case <-wctx.Done():
-			s.log.Warn("turns did not stop in time to be handed over")
+			s.log.Warn("turns did not stop in time to be suspended")
 		}
 	}
 	if !waitClosed(closing, wctx.Done()) {
-		s.log.Warn("terminals did not record their end before the hand-over")
+		s.log.Warn("terminals did not record their end before the turn was suspended")
 	}
 	n := 0
 	for _, live := range lives {
@@ -90,10 +99,10 @@ func (s *Server) HandOverRunning(ctx context.Context) int {
 			stop() // the claim is kept, not released: the mark below replaces it
 		}
 		mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), turnEndWait)
-		marked, err := h.HandOver(mctx, live.ID, s.holder)
+		marked, err := park(mctx, live.ID, s.holder)
 		cancel()
 		if err != nil || !marked {
-			s.log.Error("could not hand a session over; another process recovers it once its claim is stale",
+			s.log.Error("could not park a suspended session; another process recovers it once its claim is stale",
 				"session", live.ID, "error", err)
 		}
 		live.fenced.Store(true)
@@ -110,20 +119,20 @@ func (s *Server) HandOverRunning(ctx context.Context) int {
 		}
 	}
 	if n > 0 {
-		s.log.Info("handed running turns over", "sessions", n)
+		s.log.Info("suspended running turns", "sessions", n)
 	}
 	return n
 }
 
-// TakeOver continues here a session whose run another process left going:
-// one it handed over, or one whose holder's heartbeat has gone stale. Lost
-// background children are recorded as such; a call that never ran is asked
-// again, through policy and approval; a call that may have run is answered as
-// outcome unknown, not run again, and asks a person before it runs again;
-// then the turn goes on, on the session owner's behalf while they may act. A
-// session whose run had ended is reconciled instead and left ended. It is
-// the edition's hook for moving sessions between replicas.
-func (s *Server) TakeOver(ctx context.Context, id string) error {
+// ContinueOpenTurn continues here, for a TurnMover, a session whose run
+// another process left going, once claim takes its row for this process (nil
+// when it holds the row already). Lost background children are recorded as
+// such; a call that never ran is asked again, through policy and approval; a
+// call that may have run is answered as outcome unknown, not run again, and
+// asks a person before it runs again; then the turn goes on, on the session
+// owner's behalf while they may act. A session whose run had ended is
+// reconciled instead and left ended.
+func (s *Server) ContinueOpenTurn(ctx context.Context, id string, claim RowClaim) error {
 	if s.draining.Load() {
 		return errDraining
 	}
@@ -135,7 +144,7 @@ func (s *Server) TakeOver(ctx context.Context, id string) error {
 	}
 	g, ok := s.sessions.(sessionGetter)
 	if !ok {
-		return errors.New("the store cannot hand sessions between processes")
+		return errors.New("the store cannot continue sessions between processes")
 	}
 	rec, err := g.GetSession(ctx, id)
 	switch {
@@ -146,34 +155,29 @@ func (s *Server) TakeOver(ctx context.Context, id string) error {
 	case rec.ParentID != "":
 		return errNoSession // a subagent goes on only through its parent
 	case rec.EndedAt != nil:
-		return ErrNothingToTakeOver
+		return ErrNoOpenTurn
 	}
 	events, err := s.store.Events(id)
 	if err != nil {
 		return err
 	}
 	if !agent.Orphaned(events) {
-		return ErrNothingToTakeOver
+		return ErrNoOpenTurn
 	}
-	claimed := false
-	if h, ok := s.sessions.(TurnHandOver); ok {
-		if claimed, err = h.ClaimHandedOver(ctx, id, s.holder); err != nil {
+	if claim != nil {
+		claimed, err := claim(ctx, id, s.holder)
+		if err != nil {
 			return err
 		}
-	}
-	if oc, ok := s.sessions.(OrphanClaimer); ok && !claimed {
-		if claimed, err = oc.ClaimOrphan(ctx, id, s.holder, nodeStale); err != nil {
-			return err
+		if !claimed {
+			return errBusySession
 		}
-	}
-	if !claimed {
-		return errBusySession
 	}
 	return s.continueClaimed(ctx, id)
 }
 
 // continueClaimed continues a session this process has just claimed from a
-// process that stopped; see TakeOver.
+// process that stopped; see ContinueOpenTurn.
 func (s *Server) continueClaimed(ctx context.Context, id string) error {
 	g, _ := s.sessions.(sessionGetter)
 	var rec store.SessionRecord
@@ -262,10 +266,10 @@ func (s *Server) continueClaimed(ctx context.Context, id string) error {
 		s.releaseNodeNow(live)
 		return fail(errDraining)
 	}
-	s.startRunLocked(live, "taken-over turn", func(ctx context.Context) (agent.TerminalReason, error) {
+	s.startRunLocked(live, "continued turn", func(ctx context.Context) (agent.TerminalReason, error) {
 		return live.Loop.ContinueTurn(ctx, events, open)
 	})
-	s.log.Info("took over a running turn", "session", id, "through_seq", open.ThroughSeq, "open_calls", len(open.Calls))
+	s.log.Info("continued an open turn", "session", id, "through_seq", open.ThroughSeq, "open_calls", len(open.Calls))
 	return nil
 }
 

@@ -184,53 +184,19 @@ after its last write, once no terminal is open and no result is owed, by recordi
 opened with again, so that work appears in the record after an end. A
 session running elsewhere is not opened at all.
 
-A running turn on a node that dies is, by default, not migrated. It
-ends, is recorded as interrupted, and the session can be continued from
-there.
+A running turn on a node that stops, whether it dies or drains past
+`drain_seconds`, is not moved to another node in this edition. It ends, is
+recorded as interrupted, and the session can be continued from there.
+Before the end, each call the turn left open gets its one outcome: one that
+was approved, and so may have run, is answered "outcome unknown", and any
+other is denied with step `handover`. A call answered "outcome unknown" is
+asked of a person before the same call (tool and arguments) runs again in
+that session, in every mode.
 
-### A running turn, between replicas
-
-An edition that runs replicas on one Postgres can move running turns too
-(`server.Options.ContinueTurns`, with `Server.TakeOver` and
-`Server.HandOverRunning` as its hooks). Then:
-
-- A replica that drains hands the turns still running after `drain_seconds`
-  over instead of ending them. A run stops where it is without an end; a
-  question it was waiting on is left without an answer; a message queued for
-  it is recorded as `message.dropped`; background tasks end as a shutdown,
-  since they cannot move; and the session is marked handed over, which no
-  process holds and none may write to.
-- Another replica takes the turn over: at once for a handed-over session,
-  and once the holder's claim is stale (two minutes) for one whose replica
-  died. Its orphan sweep does it, as does a message for the session, which
-  then steers the turn; one claimer wins.
-- The taker records `turn.continued` and goes on from the last recorded
-  step. A call that never ran is asked again as a new call, through policy
-  and approval as any call is, so a pending question is offered again. A
-  call that was approved and may have started is never run again: it is
-  answered "outcome unknown", and the same call later in the session is
-  asked of a person first, in every mode. Then the model goes on with the
-  turn, on the owner's behalf while the owner may still act.
-- A call runs only once its approval is on record. A replica whose write is
-  refused (it no longer holds the session, or the database fails) does not
-  run the call, so the replica that goes on finds no approval and asks
-  again; nothing runs twice for want of a record.
-- Every request keeps exactly one outcome, and the record stays
-  append-only: the old request is denied with step `handover` before its new
-  call is asked. A person's own call and a pipeline's step left open are not
-  asked again: an approved one is answered "outcome unknown" (and asks a
-  person before it runs again), any other is denied with step `handover`.
-- A take-over that fails after it claimed the session, and the recovery of a
-  turn by a replica that does not continue turns, end the session as
-  recovered. Before the end, each open call gets its outcome there too: one
-  that was approved is answered "outcome unknown", and any other is denied
-  with step `handover`.
-
-Not covered: a background task, or a foreground subagent, running on the
-replica that stopped is recorded as lost or ended and does not go on; an
-answer given on the old replica's approval row while no replica held the
-session is not carried over, so the question is asked again; and a tool's
-own side effects in a call that was cut short are whatever the tool left.
+Moving a running turn to another replica, on a drain or once a replica
+dies, is part of the Enterprise edition's high availability. An edition
+does it through `server.Options.TurnMover`; with none set, as here, nothing
+continues a stopped turn on its own.
 
 ## Reading the workspace and what changed
 
