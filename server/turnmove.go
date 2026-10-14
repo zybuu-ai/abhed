@@ -176,6 +176,18 @@ func (s *Server) ContinueOpenTurn(ctx context.Context, id string, claim RowClaim
 	return s.continueClaimed(ctx, id)
 }
 
+// ReleaseClaim lets go of this process's claim on session id, unless a run
+// of it is live here: for a TurnMover whose continue of a session it took
+// back at start-up ended early, so the row is not left held until stale.
+func (s *Server) ReleaseClaim(id string) {
+	s.mu.RLock()
+	_, here := s.running[id]
+	s.mu.RUnlock()
+	if !here {
+		s.releaseNode(id)
+	}
+}
+
 // continueClaimed continues a session this process has just claimed from a
 // process that stopped; see ContinueOpenTurn.
 func (s *Server) continueClaimed(ctx context.Context, id string) error {

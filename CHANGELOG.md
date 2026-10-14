@@ -2005,7 +2005,7 @@ All notable changes to Abhed are recorded here. The format follows
   `StartupFileMark`, `TrustedStartupFile`), `server.Options.StartupBaseline`
   and `agent.EvStartupTrusted` apply and record it.
 - `server.TurnMover` (`Options.TurnMover`), with `Server.SuspendRunning`,
-  `Server.ContinueOpenTurn`, `server.RowClaim`, `ErrNoOpenTurn`,
+  `Server.ContinueOpenTurn`, `Server.ReleaseClaim`, `server.RowClaim`, `ErrNoOpenTurn`,
   `ErrSessionBusy`, `ErrNoSession` and `ErrDraining`, and the
   `store.Parked` holder that `ClaimNode` and `ClaimResume` never take, are
   the hooks an edition moves running turns with; `agent.InFlight`,
