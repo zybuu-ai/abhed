@@ -2371,7 +2371,7 @@ function render(ev){
   case 'context.offloaded': if(p.withheld){ add(el('div', 'sys', 'old results offloaded to the record · ' + visible(p.withheld))); break; }
     add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
-  case 'conversation.forked': add(el('div', 'sys', p.withheld ? 'forked · ' + visible(p.withheld) : 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
+  case 'conversation.forked': add(el('div', 'sys', p.withheld ? 'forked · ' + visible(p.withheld) : (p.through_seq > 0 ? 'forked at step ' + p.through_seq : 'forked before the first message') + ' · the steps after it, above, were abandoned'));
     if(lastUser && lastUser.seq > p.through_seq){ lastUser = null; offerEdit(); } break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   // Task names, results and reasons are the model's or a command's text: shown, never obeyed (bidi, zero-width).

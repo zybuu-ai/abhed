@@ -99,7 +99,7 @@ func ExportHTML(sessionID string, events []Event) string {
 		case EvForked:
 			var f Forked
 			if json.Unmarshal(ev.Payload, &f) == nil {
-				fmt.Fprintf(&b, `<div class="note">forked at step %d · the steps after it, above, were abandoned</div>`, f.ThroughSeq)
+				fmt.Fprintf(&b, `<div class="note">%s · the steps after it, above, were abandoned</div>`, ForkedAt(f.ThroughSeq))
 			}
 
 		case EvSessionEnded:

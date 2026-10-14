@@ -311,7 +311,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 		var f agent.Forked
 		if json.Unmarshal(ev.Payload, &f) == nil {
 			r.endReply(d, "")
-			d.commitItem(&rawBlock{text: s.Dim(fmt.Sprintf("── forked at step %d; the steps after it, above, were abandoned ──", f.ThroughSeq))})
+			d.commitItem(&rawBlock{text: s.Dim(fmt.Sprintf("── %s; the steps after it, above, were abandoned ──", agent.ForkedAt(f.ThroughSeq)))})
 		}
 
 	case agent.EvSubagentNotice:
@@ -604,7 +604,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 	case agent.EvForked:
 		var f agent.Forked
 		if json.Unmarshal(ev.Payload, &f) == nil && !r.quiet {
-			fmt.Fprintf(r.w, "\n%s\n", s.Dim(fmt.Sprintf("── forked at step %d; the steps after it, above, were abandoned ──", f.ThroughSeq)))
+			fmt.Fprintf(r.w, "\n%s\n", s.Dim(fmt.Sprintf("── %s; the steps after it, above, were abandoned ──", agent.ForkedAt(f.ThroughSeq))))
 		}
 
 	case agent.EvSubagentNotice:

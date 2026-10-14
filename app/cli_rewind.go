@@ -364,7 +364,7 @@ func slashFork(ctx context.Context, fields []string, r *ui.Renderer,
 		return false
 	}
 	fmt.Printf("  %s\n", s.Dim(fmt.Sprintf(
-		"forked at step %d — %d messages kept; the next thing you type continues from there", seq, kept)))
+		"%s — %d messages kept; the next thing you type continues from there", agent.ForkedAt(seq), kept)))
 	return false
 }
 
