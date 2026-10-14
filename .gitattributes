@@ -1,0 +1,3 @@
+# Check out LF everywhere, Windows included: gofmt, embedded files and
+# fixtures expect it, and a CRLF checkout fails lint on every Go file.
+* text=auto eol=lf
