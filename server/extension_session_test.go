@@ -228,3 +228,31 @@ func TestServerPromptHookRefusesAMessage(t *testing.T) {
 		}
 	}
 }
+
+// A message stopped while the prompt hook decides is never sent: it is
+// recorded as dropped, not as the person's message, and the run ends.
+func TestServerPromptStoppedWhileScreenedIsNotSent(t *testing.T) {
+	h := extension.NewHost(nil)
+	if errs := h.Load(context.Background(), []extension.Config{{Name: "stallgate.sh", Command: "bash",
+		Args:   []string{filepath.Join("..", "internal", "extension", "testdata", "stallgate.sh")},
+		Events: []extension.Event{extension.EvUserPromptSubmit}, Timeout: 10 * time.Second}}); len(errs) > 0 {
+		t.Fatalf("load: %v", errs)
+	}
+	t.Cleanup(h.Close)
+	s, _ := scriptedServer(t, [2]string{}, [2]string{}, nil, func(o *Options) { o.Extensions = h })
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"an unscreened plan"}`))
+	time.Sleep(300 * time.Millisecond) // the hook is deciding
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/interrupt", ""); w.Code >= 300 {
+		t.Fatalf("interrupt %d %s", w.Code, w.Body)
+	}
+	waitState(t, s, id, "done")
+	evs, _ := s.store.Events(id)
+	for _, ev := range evs {
+		if ev.Type == agent.EvUserMessage || ev.Type == agent.EvModelCall {
+			t.Fatalf("an unscreened message was recorded as sent or answered: %v", typesOf(evs))
+		}
+	}
+	if d := payloadOf[agent.DroppedMessage](t, evs, agent.EvMessageDropped); !strings.Contains(d.Reason, "before it was screened") {
+		t.Fatalf("recorded as dropped: %+v", d)
+	}
+}

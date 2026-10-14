@@ -202,6 +202,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A message stopped (Stop, Esc) while a `user_prompt_submit` hook was
+  still deciding on it went unscreened: it was recorded as sent and
+  reached the model with the next message. It is now recorded as
+  `message.dropped` ("stopped before it was screened") and never sent.
+  The hook's answer still owed is read before the next message is put to
+  it, which could otherwise have taken that answer as its own. Affects
+  1.2.3 to 1.2.7.
 - The `user_prompt_submit`, `permission_request`, `turn_end`,
   `subagent_end` and `notification` hooks were asked only in the
   interactive terminal. Under `-p`, `abhed rpc`, `abhed acp`, `abhed serve`

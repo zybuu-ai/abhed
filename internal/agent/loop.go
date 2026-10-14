@@ -711,7 +711,15 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return TermError, err
 	}
 	l.setRefused("")
-	if why := l.promptRefused(ctx, m.Text); why != "" {
+	why := l.promptRefused(ctx, m.Text)
+	if why == "" && l.Hooks != nil && ctx.Err() != nil {
+		// Stopped while the hooks decided: not screened, so never sent, and
+		// recorded as dropped rather than kept for the next prompt.
+		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(),
+			Reason: "stopped before it was screened"})
+		return l.finishStopped(ctx, terminalForCancel(ctx)), nil
+	}
+	if why != "" {
 		// Said in the session, where its surface shows it, as a steer refused is.
 		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(), Reason: why})
 		l.setRefused(why)
