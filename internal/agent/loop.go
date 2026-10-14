@@ -782,17 +782,20 @@ func (l *Loop) startMessage() {
 // which it delivers now. Messages the hooks refuse, every one, leave nothing,
 // and the model is not called again on the conversation as it was.
 func (l *Loop) moreForTheModel() (bool, error) {
-	if l.Background.Pending() > 0 {
-		return true, nil
+	// Again until something gets through or nothing waits: a message that
+	// arrives while the hooks judge another is judged in turn, not passed.
+	for {
+		if l.Background.Pending() > 0 {
+			return true, nil
+		}
+		if len(l.Queued()) == 0 {
+			return false, nil
+		}
+		n, err := l.deliverQueuedCount()
+		if err != nil || n > 0 {
+			return err == nil, err
+		}
 	}
-	if len(l.Queued()) == 0 {
-		return false, nil
-	}
-	n, err := l.deliverQueuedCount()
-	if err != nil {
-		return false, err
-	}
-	return n > 0 || l.hasWork(), nil
 }
 
 // RunQueued continues the conversation with only the queued messages, for a

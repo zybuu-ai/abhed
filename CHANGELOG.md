@@ -1629,7 +1629,8 @@ All notable changes to Abhed are recorded here. The format follows
   turning away the one before it waited, unsent, until the next message.
   The run now goes on for it, judged by the hook in turn, on every surface
   that asks the hook (see Security). When a hook refuses every waiting
-  message, ones queued during a run's last turn included, the model is no
+  message, ones queued during a run's last turn or while the hook decided
+  included, the model is no
   longer called again on the conversation as it was (the SDK's `RunQueued`
   returns an `*EndedError` with `Reason` `prompt_refused`, where it returned
   a plain error); and messages queued before a prompt a hook refuses are

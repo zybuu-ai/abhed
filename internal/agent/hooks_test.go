@@ -445,3 +445,32 @@ func TestPromptStoppedWhileScreenedIsNotSent(t *testing.T) {
 		}
 	}
 }
+
+// arrivingHooks queues another message while it judges one, as a person
+// typing while the hook decides, and refuses both.
+type arrivingHooks struct {
+	fakeHooks
+	l *Loop
+}
+
+func (a *arrivingHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
+	if text == "forbidden one" {
+		a.l.Steer("forbidden two")
+	}
+	return a.fakeHooks.PromptSubmitted(ctx, sessionID, text)
+}
+
+// A message that arrives while the hook judges another, both refused, does
+// not get the model called again on the conversation as it was.
+func TestRefusedSteerArrivingWhileJudgedCallsNoModel(t *testing.T) {
+	l, _, _ := harness(t, []scriptedTurn{{text: "first"}, {text: "never"}}, policy.ModeDefault, true)
+	l.Hooks = &arrivingHooks{fakeHooks: fakeHooks{refusePrompt: "forbidden"}, l: l}
+	sa := l.Adapter.(*scriptedAdapter)
+	l.Adapter = &steerOnCall{scriptedAdapter: sa, steer: func() { l.Steer("forbidden one") }}
+	if reason, err := l.Run(context.Background(), "hello"); err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(sa.gotRequests); n != 1 {
+		t.Fatalf("the model was called %d times, want once", n)
+	}
+}
