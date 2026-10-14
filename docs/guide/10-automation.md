@@ -219,7 +219,9 @@ and will read it before its answer, `queued` when it will lead that
 session's next prompt instead. A `steered` steer is read even when a
 `user_prompt_submit` hook refuses the prompt itself: the prompt is answered
 with an error `abhed: ended as prompt_refused: <reason>` whose `answer` is
-the answer to the steer, or, if the hook refuses that too, the error alone. A queued steer the session never reads, because
+the answer to the steer, or, if the hook refuses that too, the error alone.
+When the steer's own run ends otherwise (at the turn limit, say), its error
+follows the refusal on a second line of the same `error`. A queued steer the session never reads, because
 `quit`, the end of input or a new `start` came first, is named in an
 `{"type":"error"}` line rather than dropped silently. Every other request, a
 second `prompt` included, waits for the running prompt and is answered in the

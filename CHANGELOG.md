@@ -211,17 +211,17 @@ All notable changes to Abhed are recorded here. The format follows
   1.2.3 to 1.2.7.
 - The `user_prompt_submit`, `permission_request`, `turn_end`,
   `subagent_end` and `notification` hooks were asked only in the
-  interactive terminal. Under `-p`, `abhed rpc`, `abhed acp`, `abhed serve`
-  and the SDK, a message a `user_prompt_submit` hook would refuse reached
-  the model, and a `permission_request` hook never saw the calls put to the
-  person. They are now asked on every surface that loads extensions, as
-  the terminal asks them; a refused message is recorded as
-  `message.dropped` with the reason, which the workbench shows, the
+  interactive terminal. Under `-p`, `abhed rpc`, `abhed acp`,
+  `abhed serve` and the SDK, a message a `user_prompt_submit` hook would refuse
+  reached the model, and a `permission_request` hook never saw the calls
+  put to the person. They are now asked on every surface that loads
+  extensions, as the terminal asks them; a refused message is recorded
+  as `message.dropped` with the reason, which the workbench shows, the
   server records the refused run's end so the page leaves its running
   state, and the SDK's `Run` returns it as an `*EndedError`'s `Detail`,
   with an empty answer unless messages queued before it were answered
-  (`RunQueued` with every queued message refused answers nothing too). Affects 1.2.3 to
-  1.2.7.
+  (`RunQueued` with every queued message refused answers nothing too).
+  Affects 1.2.3 to 1.2.7.
 - The built-in allow rules `bash(git diff *)` and `bash(git log *)`
   approved `--ext-diff` and `--textconv`, which run the programs git's
   configuration names, and `git diff --no-index -O -- --output=<file> a
@@ -1627,15 +1627,17 @@ All notable changes to Abhed are recorded here. The format follows
   to 1.2.7.
 - A message typed in the terminal while a `user_prompt_submit` hook was
   turning away the one before it waited, unsent, until the next message.
-  The run now goes on for it, judged by the hook in turn, on every surface
-  that asks the hook (see Security). When a hook refuses every waiting
-  message, ones queued during a run's last turn or while the hook decided
-  included, the model is no
-  longer called again on the conversation as it was (the SDK's `RunQueued`
-  returns an `*EndedError` with `Reason` `prompt_refused`, where it returned
-  a plain error); and messages queued before a prompt a hook refuses are
-  answered in that run, where they were recorded as sent and left
-  unanswered until a later message. Affects 1.2.3 to 1.2.7.
+  The run now goes on for it, judged by the hook in turn, on every
+  surface that asks the hook (see Security). When a hook refuses every
+  waiting message, ones queued during a run's last turn or while the
+  hook decided included, the model is no longer called again on the
+  conversation as it was (the SDK's `RunQueued` returns an `*EndedError`
+  with `Reason` `prompt_refused`, where it returned a plain error); and
+  messages queued before a prompt a hook refuses are answered in that
+  run, where they were recorded as sent and left unanswered until a
+  later message. Over `abhed rpc`, the prompt's reply keeps its refusal,
+  with a steer's own other error on a second line. Affects 1.2.3 to
+  1.2.7.
 - The fence gave a planted `.abhed` back to its owner only 128 folders
   deep, so a tree locked deeper was left in the workspace, reported as
   still present, and refused the next fence. It now reaches any depth, and
