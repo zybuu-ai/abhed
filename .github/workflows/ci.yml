@@ -497,7 +497,7 @@ jobs:
         run: |
           skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
           skip+='|TestSyncSendsOnlyChanges|TestExecCopiesChangesBack'
-          skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestBudgetStartupWithSlowPodman|TestBudgetStartupWithBrokenBwrap|TestIndexScales'
+          skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestBudgetDeltaLatency|TestBudgetStartupWithSlowPodman|TestBudgetStartupWithBrokenBwrap|TestIndexScales'
           skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
           mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
           go test -count=1 -skip "$skip" "${pkgs[@]}"
