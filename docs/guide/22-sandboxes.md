@@ -813,7 +813,10 @@ refused, as above, its
 output held to `exec.output_bytes` on its channel, and run without a
 terminal even when one was asked for), and a `direct-tcpip` channel to
 `127.0.0.1`, `::1` or `localhost` is a `:forward`. The connection itself
-is recorded as `ssh`, with its sessions, forwards and refusals.
+is recorded as `ssh`, with its sessions, forwards and refusals. A
+session's exit status and end of output are sent once its last output has
+been written, so a client that stays connected but stops reading holds them
+until it reads or the connection's limits below close it.
 
 An SSH connection has limits of its own, so a server an editor starts
 over SSH keeps running: it closes after `ssh.idle_timeout_seconds` with

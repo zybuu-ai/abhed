@@ -208,7 +208,10 @@ All notable changes to Abhed are recorded here. The format follows
   and the SDK, a message a `user_prompt_submit` hook would refuse reached
   the model, and a `permission_request` hook never saw the calls put to the
   person. They are now asked on every surface that loads extensions, as
-  the terminal asks them. Affects 1.2.3 to 1.2.7.
+  the terminal asks them; a refused message is recorded as
+  `message.dropped` with the reason, which the workbench shows, and the
+  SDK's `Run` returns it as an `*EndedError`'s `Detail`. Affects 1.2.3 to
+  1.2.7.
 - The built-in allow rules `bash(git diff *)` and `bash(git log *)`
   approved `--ext-diff` and `--textconv`, which run the programs git's
   configuration names, and `git diff --no-index -O -- --output=<file> a
@@ -2098,6 +2101,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `abhed.EndedError.Detail` says more where there is more to say, such as
+  why a hook refused the prompt; `agent.Loop.RefusedPrompt` says why the
+  last message was refused, or "".
 - `abhed.Agent.RunQueued` ends with an `*abhed.EndedError`, as `Run`
   does, where it returned a plain error; `agent.TerminalReason.RunsOnForQueued`
   says whether a run that ended so goes on for a message queued as it ended.

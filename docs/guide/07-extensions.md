@@ -43,7 +43,7 @@ exactly one reply.
 | `list_tools` | once at startup | declare `tools` this extension provides |
 | `invoke_tool` | the model called one | return its `result` |
 | `session_start`, `session_end` | run boundaries | nothing; setup and teardown |
-| `user_prompt_submit` | before a message you send is recorded and sent | `block` it; you are told why and the model never sees it. A steering message typed during a run that is blocked is recorded as dropped |
+| `user_prompt_submit` | before a message you send is recorded and sent | `block` it; the model never sees it, and it is recorded as `message.dropped` with the reason. You are told why: in the terminal and the workbench, on stderr for `-p`, `abhed rpc` and `abhed acp` (rpc's and acp's answers say `prompt_refused` too), and in the SDK as an `*EndedError` whose `Reason` is `prompt_refused` and `Detail` the reason. A steering message typed during a run that is blocked is recorded as dropped the same way |
 | `permission_request` | before a call is put to you, a subagent's included | `block` it. Nothing in the reply approves the call; `allow` is ignored |
 | `turn_end` | the agent has finished answering, with the reason it stopped | nothing; it only observes |
 | `subagent_end` | a subagent the agent waited on has returned | nothing; it only observes |

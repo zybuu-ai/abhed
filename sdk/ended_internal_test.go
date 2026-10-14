@@ -60,7 +60,7 @@ func TestSDKPromptHookRefusesAPrompt(t *testing.T) {
 	t.Cleanup(a.Close)
 	_, err = a.Run(context.Background(), "the forbidden thing")
 	var ended *EndedError
-	if !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused {
+	if !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused || ended.Detail != "that topic is off limits" {
 		t.Fatalf("Run: %v", err)
 	}
 }

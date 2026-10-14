@@ -490,7 +490,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
-	toolset.Hook(loop, set.Extensions, func(s string) {
+	toolset.Hook(loop, set.Extensions, func(s string, _ bool) {
 		if opts.Warn != nil {
 			opts.Warn("%s", s)
 		}
@@ -531,12 +531,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	return a, nil
 }
 
-// Run sends a prompt and returns the agent's final message.
+// Run sends a prompt and returns the agent's final message. A prompt a
+// user_prompt_submit hook refuses ends with an *EndedError whose Reason is
+// prompt_refused and whose Detail says why; when messages queued before it
+// were answered instead, the returned message is that answer.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 	defer a.startRun()()
 	reason, err := a.loop.Run(ctx, prompt)
 	if err != nil {
 		return "", err
+	}
+	if why := a.loop.RefusedPrompt(); why != "" {
+		return a.lastMessage(), &EndedError{Reason: agent.TermPromptRefused, Detail: why}
 	}
 	if reason != agent.TermCompleted {
 		return a.lastMessage(), &EndedError{Reason: reason}
@@ -546,9 +552,19 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 
 // EndedError is a run that ended for another reason than completing its
 // work, such as the turn limit; Reason is the terminal reason recorded.
-type EndedError struct{ Reason TerminalReason }
+type EndedError struct {
+	Reason TerminalReason
+	// Detail says more where there is more to say, such as why a hook
+	// refused the prompt.
+	Detail string
+}
 
-func (e *EndedError) Error() string { return fmt.Sprintf("abhed: ended as %s", e.Reason) }
+func (e *EndedError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("abhed: ended as %s: %s", e.Reason, e.Detail)
+	}
+	return fmt.Sprintf("abhed: ended as %s", e.Reason)
+}
 
 // RunJSON runs a prompt whose answer must be a JSON value matching schema,
 // and decodes it into out.

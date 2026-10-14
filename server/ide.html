@@ -2407,6 +2407,8 @@ function render(ev){
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
     if(b && !b.delivered){ const kept = !$('q').value || $('q').value === b.text;
       failed(b, (p.reason || 'the run ended first') + (kept ? '; its text is back in the message box' : ''), 'Not delivered'); }
+    // A message this page did not send, such as a session's first, is said too.
+    else if(!b && p.reason) add(el('div', 'sys', 'Not sent: ' + visible(p.reason)));
     break; }
   // The run's own asks end with it; a background subagent's ask outlives the
   // run while background work is owed, settled by its outcome or the closing end.

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -10,45 +9,13 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/extension"
-	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
 func init() {
 	registerSlash(slashCmd{Name: "/hooks", Help: "list the hooks by layer, with their events and status",
 		Group: "mode", Order: 40, ReadOnly: true, Run: slashHooks})
-}
-
-// cliHooks are the extension hooks at the loop's own points: a message
-// submitted, a call about to be asked, a run ending. A refusal is shown to
-// the person; nothing a hook says approves anything.
-type cliHooks struct {
-	host *extension.Host
-	st   *cliState
-}
-
-var _ agent.Hooks = cliHooks{}
-
-func (h cliHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
-	why := h.host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
-	if why != "" {
-		h.st.say(ui.Block{Kind: ui.BlockError, Text: "your message was not sent: " + why})
-	} else if down := h.host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
-		// A prompt hook fails open; the person is told it did not look.
-		h.st.say(ui.Block{Kind: ui.BlockNotice, Text: "not screened: the user_prompt_submit hook " +
-			strings.Join(down, ", ") + " is not running"})
-	}
-	return why
-}
-
-func (h cliHooks) PermissionRequested(ctx context.Context, pol *policy.Engine, sessionID, tool string, args json.RawMessage, reason string) string {
-	return h.host.Veto(ctx, extension.EvPermissionRequest, extension.Request{
-		SessionID: sessionID, Tool: tool, Args: args, Content: reason, Policy: pol,
-	})
-}
-
-func (h cliHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
-	h.host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
 }
 
 // attachHooks gives a conversation's loop the session's hooks, and has each
@@ -58,7 +25,14 @@ func (c *cliState) attachHooks(loop *agent.Loop) {
 	if c.hooks == nil || c.hooks.Len() == 0 {
 		return
 	}
-	loop.Hooks = cliHooks{host: c.hooks, st: c}
+	// A refusal is said as an error, a message gone unscreened as a notice.
+	loop.Hooks = toolset.HostHooks{Host: c.hooks, Note: func(text string, refused bool) {
+		kind := ui.BlockNotice
+		if refused {
+			kind = ui.BlockError
+		}
+		c.say(ui.Block{Kind: kind, Text: text})
+	}}
 	recordFired(c.hooks, c.hookRecorder.Load)
 }
 

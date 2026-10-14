@@ -331,3 +331,29 @@ func TestRefusedSteersDuringATurnCallNoModel(t *testing.T) {
 		t.Fatalf("%d messages recorded as dropped, want 2", dropped)
 	}
 }
+
+// A prompt a hook refuses is recorded as dropped, with why and the client's
+// id, where its surface shows it; RefusedPrompt says so until the next prompt.
+func TestRefusedPromptIsRecordedAndSaid(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "fine"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	if _, err := l.RunMessage(context.Background(), Message{Text: "the forbidden thing", ClientID: "c-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if why := l.RefusedPrompt(); why != "prompt refused by hook" {
+		t.Fatalf("RefusedPrompt = %q", why)
+	}
+	evs, _ := store.Events("sess1")
+	var d DroppedMessage
+	for _, e := range evs {
+		if e.Type == EvMessageDropped {
+			_ = json.Unmarshal(e.Payload, &d)
+		}
+	}
+	if d.ClientID != "c-1" || d.Reason != "prompt refused by hook" {
+		t.Fatalf("recorded as dropped: %+v", d)
+	}
+	if _, err := l.Run(context.Background(), "hello"); err != nil || l.RefusedPrompt() != "" {
+		t.Fatalf("the next prompt: %v, still refused %q", err, l.RefusedPrompt())
+	}
+}

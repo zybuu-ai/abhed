@@ -259,6 +259,9 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
+	// refused is why a hook refused the last RunMessage's own message, or "".
+	refusedMu sync.Mutex
+	refused   string
 	// startupNoted is the trusted start-up files last recorded for this
 	// loop, by path and hash, guarded by startupMu.
 	startupMu    sync.Mutex
@@ -707,7 +710,11 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if err != nil {
 		return TermError, err
 	}
-	if l.promptRefused(ctx, m.Text) != "" {
+	l.setRefused("")
+	if why := l.promptRefused(ctx, m.Text); why != "" {
+		// Said in the session, where its surface shows it, as a steer refused is.
+		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(), Reason: why})
+		l.setRefused(why)
 		// Those delivered are answered now, as RunQueued would, not left
 		// recorded and unanswered until a later message.
 		if delivered == 0 {
@@ -727,6 +734,21 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
+}
+
+// RefusedPrompt is why a hook refused the last RunMessage's own message, or
+// "" when it was sent. A run that answered earlier queued messages instead
+// still completes; this says the caller's own message was not among them.
+func (l *Loop) RefusedPrompt() string {
+	l.refusedMu.Lock()
+	defer l.refusedMu.Unlock()
+	return l.refused
+}
+
+func (l *Loop) setRefused(why string) {
+	l.refusedMu.Lock()
+	l.refused = why
+	l.refusedMu.Unlock()
 }
 
 // startMessage gives a new message its own allowance of turns, when the loop

@@ -2024,7 +2024,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
-	toolset.Hook(loop, s.opts.Extensions, func(msg string) { slog.Warn("extension hook", "session", sessionID, "note", msg) })
+	toolset.Hook(loop, s.opts.Extensions, func(msg string, _ bool) { s.log.Warn("extension hook", "session", sessionID, "note", msg) })
 	loop.Budget = budget
 	loop.Provider = live.provider
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.

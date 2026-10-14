@@ -202,4 +202,8 @@ func TestServerPromptHookRefusesAMessage(t *testing.T) {
 			t.Fatalf("a refused message was recorded or answered: %v", typesOf(evs))
 		}
 	}
+	// The person is told why in the session, where the workbench shows it.
+	if d := payloadOf[agent.DroppedMessage](t, evs, agent.EvMessageDropped); d.Reason != "that topic is off limits" {
+		t.Fatalf("recorded as dropped: %+v", d)
+	}
 }

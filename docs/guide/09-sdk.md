@@ -33,7 +33,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | Method | |
 |---|---|
 | `New` | build from options, a config directory, or both |
-| `Run`, `Continue` | send a prompt; `Continue` keeps the conversation |
+| `Run`, `Continue` | send a prompt; `Continue` keeps the conversation. A prompt a `user_prompt_submit` hook refuses returns an `*EndedError` with `Reason` `prompt_refused` and `Detail` the hook's reason; when steering messages queued before it were delivered, they are answered in that run and the returned message is that answer, with the same error saying your own prompt was not sent |
 | `Steer` | redirect a run in progress, from another goroutine |
 | `Queued`, `RunQueued` | count the steering messages not yet delivered, and run on for them; when a `user_prompt_submit` hook refuses every one, `RunQueued` drops them, calls no model, and returns an `*EndedError` with `Reason` `prompt_refused` |
 | `Fork` | rebuild the conversation up to a sequence number (0 for all of it), and record a `conversation.forked` event so later rebuilds leave out what came after; a step an earlier fork abandoned, or past the end, is refused, and so is a fork while a run is in progress (`ErrForkDuringRun`) |

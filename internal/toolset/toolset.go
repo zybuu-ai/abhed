@@ -481,31 +481,30 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 	})
 }
 
-// HostHooks are the extensions' hooks at the loop's own points (a message
-// submitted, a call about to be asked, a run ending) for a surface without
-// the terminal's own. Note, when set, hears what the person should be told:
-// a message refused, or one that went unscreened. Nothing a hook says
-// approves anything.
+// HostHooks are the extensions' hooks at the loop's own points: a message
+// submitted, a call about to be asked, a run ending. Note, when set, hears
+// what the person should be told: a message refused (refused true), or one
+// that went unscreened. Nothing a hook says approves anything.
 type HostHooks struct {
 	Host *extension.Host
-	Note func(string)
+	Note func(text string, refused bool)
 }
 
 var _ agent.Hooks = HostHooks{}
 
-func (h HostHooks) note(s string) {
+func (h HostHooks) note(s string, refused bool) {
 	if h.Note != nil {
-		h.Note(s)
+		h.Note(s, refused)
 	}
 }
 
 func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
 	why := h.Host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
 	if why != "" {
-		h.note("your message was not sent: " + why)
+		h.note("your message was not sent: "+why, true)
 	} else if down := h.Host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
 		// A prompt hook fails open; the person is told it did not look.
-		h.note("not screened: the user_prompt_submit hook " + strings.Join(down, ", ") + " is not running")
+		h.note("not screened: the user_prompt_submit hook "+strings.Join(down, ", ")+" is not running", false)
 	}
 	return why
 }
@@ -521,7 +520,7 @@ func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail s
 }
 
 // Hook gives loop the extensions' hooks at its own points, when any are loaded.
-func Hook(loop *agent.Loop, h *extension.Host, note func(string)) {
+func Hook(loop *agent.Loop, h *extension.Host, note func(text string, refused bool)) {
 	if loop == nil || h == nil || h.Len() == 0 {
 		return
 	}
