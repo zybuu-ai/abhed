@@ -123,8 +123,11 @@ jobs:
             echo
             echo "Verify a download: https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/guide/01-getting-started.md#verify-a-download"
           } > "$RUNNER_TEMP/notes.md"
+          pre=()
+          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "Abhed $GITHUB_REF_NAME" \
+            "${pre[@]}" \
             --generate-notes \
             --notes-file "$RUNNER_TEMP/notes.md"
 
@@ -158,9 +161,10 @@ jobs:
           push: true
           sbom: true
           provenance: mode=max
+          # A pre-release (a tag with a hyphen, v1.3.0-rc.1) never moves :latest.
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ !contains(github.ref_name, '-') && format('ghcr.io/{0}:latest', github.repository) || '' }}
       # Signed by digest, never by tag: a tag can be moved after signing.
       - name: Sign the image
         env:
