@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -344,4 +345,35 @@ func TestBwrapBindsMissingGitHooksReadOnly(t *testing.T) {
 			t.Errorf("missing %s not bound read-only:\n%s", f, args)
 		}
 	}
+}
+
+// While a file is pinned its inode is not freed, so no file made after it
+// is removed can take its number and, with timestamps as coarse as some
+// kernels keep, pass for it.
+func TestPinnedFileInodeIsNotHandedOutAgain(t *testing.T) {
+	dir := workspace(t)
+	path := filepath.Join(dir, "status.sh")
+	f := pinned(t, path, "#!/bin/sh\n")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 200 {
+		p := filepath.Join(dir, fmt.Sprintf("n%d", i))
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- a script the test names
+			t.Fatal(err)
+		}
+		if fi, err := os.Lstat(p); err == nil && os.SameFile(fi, f.Info) {
+			// Put where the pin is, with its times: only the inode's being held tells them apart.
+			_ = os.Chtimes(p, f.Info.ModTime(), f.Info.ModTime())
+			_ = os.Rename(p, path)
+			t.Fatalf("the pinned file's inode number was given to a new file (Same = %v)", f.Same())
+		}
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- a script the test names
+		t.Fatal(err)
+	}
+	if f.Same() {
+		t.Fatal("a new file at the pinned path passes for the pinned one")
+	}
+	runtime.KeepAlive(f)
 }

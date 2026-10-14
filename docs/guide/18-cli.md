@@ -206,7 +206,9 @@ session starts, and pinned:
   size, modification and change times. Replaced, edited, or swapped for a
   link, a folder or another file, it is not run, the allow goes with it, and
   the status line says so; start a new session to use the script as it is
-  now.
+  now. Abhed keeps the file open while it is pinned, so its inode cannot be
+  given to a file put in its place (a script with no read permission is
+  pinned by those checks alone).
 
 What the script itself reads must be visible to the sandbox too: the
 workspace and the system directories are, while the rest of your home

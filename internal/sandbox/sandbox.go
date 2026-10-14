@@ -54,6 +54,9 @@ func (t Tier) Strength() int {
 type ReadableFile struct {
 	Path string
 	Info os.FileInfo
+	// held keeps the pinned file open, so its inode cannot be freed and its
+	// number given to a file swapped in; nil where it could not be opened.
+	held *os.File
 }
 
 // PinReadable resolves path and pins the regular file it names.
@@ -69,6 +72,17 @@ func PinReadable(path string) (ReadableFile, error) {
 	if !info.Mode().IsRegular() {
 		return ReadableFile{}, fmt.Errorf("%s is not a regular file", real)
 	}
+	// Held open while pinned: a file swapped in later cannot reuse the inode
+	// number, which with timestamps too coarse to differ would pass for it.
+	// A file that cannot be opened (execute-only) is pinned by its stat alone.
+	if f, err := openPinned(real); err == nil {
+		held, err := f.Stat()
+		if err != nil || !held.Mode().IsRegular() || !os.SameFile(info, held) {
+			_ = f.Close()
+			return ReadableFile{}, fmt.Errorf("%s changed while it was pinned", real)
+		}
+		return ReadableFile{Path: real, Info: held, held: f}, nil
+	}
 	return ReadableFile{Path: real, Info: info}, nil
 }
 
@@ -83,8 +97,9 @@ func (f ReadableFile) Same() bool {
 	if err != nil || !cur.Mode().IsRegular() || !os.SameFile(cur, f.Info) {
 		return false
 	}
-	// An inode number can be handed out again once freed, as ext4 does, so
-	// the size and both change times must match as well.
+	// An inode number can be handed out again once freed, as ext4 does; the
+	// held descriptor keeps it from being freed, and the size and both change
+	// times must match as well, for a change in place.
 	if cur.Size() != f.Info.Size() || !cur.ModTime().Equal(f.Info.ModTime()) || cur.Mode() != f.Info.Mode() {
 		return false
 	}
