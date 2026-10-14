@@ -347,7 +347,7 @@ jobs:
           XDG_RUNTIME_DIR=/run/user/$(id -u)
           export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: fence-logs-${{ matrix.runner }}
@@ -382,7 +382,7 @@ jobs:
           XDG_RUNTIME_DIR=/run/user/$(id -u)
           export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run-network "$FENCE_DIR"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: fence-network-logs
@@ -451,7 +451,7 @@ jobs:
           for t in TestFirecrackerOnKVM TestFirecrackerOnKVM/egress TestFirecrackerOnKVM/recover; do
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/mvm/kvm.log" || { echo "::error::$t did not run and pass"; exit 1; }
           done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: microvm-kvm-log
@@ -544,7 +544,7 @@ jobs:
           XDG_RUNTIME_DIR=/run/user/$(id -u)
           export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: fence-logs-s390x
@@ -799,7 +799,7 @@ jobs:
         if: always()
         run: cat scans/report.md >> "$GITHUB_STEP_SUMMARY" || true
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: security-scans
@@ -843,7 +843,7 @@ jobs:
             echo "::error::the ad-hoc signed helper does not hold its entitlement"; exit 1
           fi
           echo "::notice::the boot test is not run on hosted macOS runners (no nested virtualization); run it on a Mac with ABHED_TEST_VZ=1"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: macos-vmhelper-log
