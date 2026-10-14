@@ -101,5 +101,15 @@ func TestConfineMCPWarnsOnTheNoneTier(t *testing.T) {
 		if sb != nil && !strings.Contains(got[0], "the sandbox tier is none: ") {
 			t.Fatalf("no reason given: %q", got)
 		}
+		// The gateway keeps the mark for the panels that list its servers.
+		if why := gw.Unconfined()["srv"]; why == "" || !strings.Contains(got[0], why) {
+			t.Fatalf("not marked unconfined with the reason: %q", why)
+		}
+	}
+	// Marked even with no one to warn.
+	gw := mcp.NewGateway()
+	ConfineMCP(gw, config.Config{}, none, nil)
+	if _, err := gw.Confine(context.Background(), "quiet", []string{"/bin/echo"}, nil, nil); err != nil || gw.Unconfined()["quiet"] == "" {
+		t.Fatalf("unmarked: %v %v", err, gw.Unconfined())
 	}
 }

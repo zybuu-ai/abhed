@@ -130,7 +130,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .card .t b{font:600 12px var(--mono);overflow-wrap:anywhere}
 .card p{margin:4px 0 0;color:var(--ink-2);font-size:12px;overflow-wrap:anywhere}
 .pill{font:10px/1 var(--mono);padding:3px 6px;border-radius:10px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap;flex:none}
-.pill.mut{color:var(--warn);border-color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
+.pill.mut{color:var(--warn);border-color:var(--warn)}.card p.warn{color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
 .pill.on{color:var(--ok);border-color:var(--ok)}
 .rules{margin:0 12px 6px;font:12px var(--mono);color:var(--ink-2);overflow-wrap:anywhere}
 .rules div{padding:2px 0}.rules div.warn{color:var(--warn)}.rules .k{display:inline-block;width:44px;color:var(--muted)}
@@ -1475,7 +1475,11 @@ function drawCaps(){
     card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (visible(e.events.join(', ')) || 'all events'))); return card;
   }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
   sect('MCP servers', c.mcp, m => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status))); card.appendChild(top); return card;
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status)));
+    // Started with no sandbox on the none tier: said here as the server's log says it.
+    if(m.unconfined){ top.appendChild(el('span', 'pill mut', 'unconfined')); card.appendChild(top);
+      card.appendChild(el('p', 'warn', 'Runs with your home folder readable and writable, because ' + visible(m.unconfined) + '. Make the process tier available, or set "host_files": true on it to run it so knowingly.')); return card; }
+    card.appendChild(top); return card;
   }, 'No MCP servers connected. Add one under', 'mcp.servers');
   sect('Skills', c.skills, s => {
     const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(s.name)));

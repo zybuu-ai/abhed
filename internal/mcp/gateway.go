@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -75,6 +76,8 @@ type Gateway struct {
 	refused map[string]refusal
 	// pending are servers being connected, whose names are already taken.
 	pending map[string]bool
+	// unconfined are the stdio servers started with no sandbox, with why.
+	unconfined map[string]string
 	// closed is set by Close; a connection finishing after it is closed, not kept.
 	closed bool
 	// life is the first Connect's context without its cancellation: a server
@@ -262,6 +265,26 @@ type ServerStatus struct {
 	// NameRefused is set for a server not started because its name overlaps
 	// another's; Err says which. A restart would not start it.
 	NameRefused bool
+	// Unconfined is why a stdio server was started with no sandbox, if it was.
+	Unconfined string
+}
+
+// MarkUnconfined notes that the stdio server name was started with no
+// sandbox, and why, for the panels that list the servers.
+func (g *Gateway) MarkUnconfined(name, why string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.unconfined == nil {
+		g.unconfined = map[string]string{}
+	}
+	g.unconfined[name] = why
+}
+
+// Unconfined are the servers started with no sandbox, by name, with why.
+func (g *Gateway) Unconfined() map[string]string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return maps.Clone(g.unconfined)
 }
 
 // Servers reports every enabled server, connected or not, by name.
@@ -270,7 +293,7 @@ func (g *Gateway) Servers() []ServerStatus {
 	defer g.mu.RUnlock()
 	var out []ServerStatus
 	for name, cfg := range g.configs {
-		st := ServerStatus{Name: name, Transport: "stdio", Err: g.failed[name]}
+		st := ServerStatus{Name: name, Transport: "stdio", Err: g.failed[name], Unconfined: g.unconfined[name]}
 		if cfg.URL != "" {
 			st.Transport = "http"
 		}

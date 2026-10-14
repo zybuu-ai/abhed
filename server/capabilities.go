@@ -276,11 +276,7 @@ func (s *Server) getCapabilities(w http.ResponseWriter, r *http.Request) {
 	s.state.mu.RLock()
 	gw := s.state.gateway
 	s.state.mu.RUnlock()
-	if gw != nil {
-		for _, line := range gw.Status() {
-			c.MCP = append(c.MCP, mcpView{Name: line, Status: "connected"})
-		}
-	}
+	c.MCP = mcpViews(gw)
 	// Names and events only. An extension's command line and environment are
 	// the operator's business and may carry credentials.
 	// Whether each is running only to an administrator, or where nobody signs

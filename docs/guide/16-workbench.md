@@ -758,7 +758,9 @@ extension's name and events are listed; its command line and environment are
 not, because those are the operator's and may hold credentials. Under a
 managed configuration, `permissions.managed_keys` names the settings the
 managed file makes, and the panel marks the mode "managed by your
-organisation" only when one of them is `permissions.mode`. File content,
+organisation" only when one of them is `permissions.mode`. An MCP server
+started with no sandbox, on the none tier, carries `unconfined` with why,
+and the Extensions panel marks it so. File content,
 tool output and session titles are untrusted, and the page only ever inserts
 them as text.
 

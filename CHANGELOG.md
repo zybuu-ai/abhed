@@ -794,6 +794,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The workbench's Extensions panel marks an MCP server that runs with no
+  sandbox, on the none tier, *unconfined*, with the reason the start-up
+  warning gives; `GET /v1/capabilities` and `GET /v1/admin/settings` carry it
+  as the server's `unconfined` field
+  ([MCP](docs/guide/08-mcp.md)).
 - `abhed trust startup-files` records the shell start-up files in your home
   folder, once you have seen them, as your own: while each keeps its path,
   size and sha256 a shell the agent starts is not judged on it. Kept in
