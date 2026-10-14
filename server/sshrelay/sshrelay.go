@@ -246,6 +246,36 @@ func winSize(cols, rows uint32) driver.WinSize {
 	return driver.WinSize{Rows: clamp(rows), Cols: clamp(cols)}
 }
 
+// endable guards a session's output: writes run as before, end waits for
+// those in flight, and a write after it is dropped, so the channel's end of
+// output never races a writer the handler left behind.
+type endable struct {
+	mu    sync.RWMutex
+	ended bool
+}
+
+type endableWriter struct {
+	e *endable
+	w io.Writer
+}
+
+func (e *endable) writer(w io.Writer) io.Writer { return endableWriter{e, w} }
+
+func (w endableWriter) Write(p []byte) (int, error) {
+	w.e.mu.RLock()
+	defer w.e.mu.RUnlock()
+	if w.e.ended {
+		return 0, io.ErrClosedPipe
+	}
+	return w.w.Write(p)
+}
+
+func (e *endable) end() {
+	e.mu.Lock()
+	e.ended = true
+	e.mu.Unlock()
+}
+
 // serveSession answers one session channel's requests and runs the one
 // shell or command it asks for.
 func serveSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, h Handler, log *slog.Logger) {
@@ -266,13 +296,17 @@ func serveSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request,
 	}
 	run := func(exec func(Session) (int, error)) {
 		defer close(done)
-		code, err := exec(Session{Stdin: ch, Stdout: ch, Stderr: ch.Stderr(), PTY: pty, Resize: resize})
+		out := &endable{}
+		code, err := exec(Session{Stdin: ch, Stdout: out.writer(ch), Stderr: out.writer(ch.Stderr()), PTY: pty, Resize: resize})
 		if err != nil {
-			fmt.Fprintf(ch.Stderr(), "abhed: %v\r\n", err)
+			_, _ = fmt.Fprintf(out.writer(ch.Stderr()), "abhed: %v\r\n", err)
 			if code == 0 {
 				code = 255
 			}
 		}
+		// Output a writer the handler left running is let finish, and any
+		// after it dropped, before the end of output is sent.
+		out.end()
 		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(code)})) // #nosec G115 -- exit codes are small and non-negative
 		_ = ch.CloseWrite()
 		_ = ch.Close()

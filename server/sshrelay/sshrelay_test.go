@@ -97,7 +97,7 @@ func tcpPair(t *testing.T) (net.Conn, net.Conn) {
 	return a, b
 }
 
-func dial(t *testing.T, h Handler) (*ssh.Client, ssh.PublicKey, chan Stats) {
+func dial(t *testing.T, h Handler) (*ssh.Client, chan Stats) {
 	t.Helper()
 	key, err := LoadOrCreateHostKey(filepath.Join(t.TempDir(), "k"))
 	if err != nil {
@@ -116,12 +116,12 @@ func dial(t *testing.T, h Handler) (*ssh.Client, ssh.PublicKey, chan Stats) {
 	}
 	c := ssh.NewClient(cc, chans, reqs)
 	t.Cleanup(func() { _ = c.Close() })
-	return c, key.PublicKey(), stats
+	return c, stats
 }
 
 func TestExecShellAndRefusals(t *testing.T) {
 	h := &fakeHandler{}
-	c, _, stats := dial(t, h)
+	c, stats := dial(t, h)
 
 	s, err := c.NewSession()
 	if err != nil {
@@ -299,5 +299,46 @@ func TestEndDuringHandshake(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not end with its context")
+	}
+}
+
+// leaver's command returns while a writer it started still writes, as a
+// terminal's output pump can outlive its shell.
+type leaver struct {
+	fakeHandler
+	wrote chan struct{}
+}
+
+func (l *leaver) Exec(_ context.Context, _ string, s Session) (int, error) {
+	go func() {
+		defer close(l.wrote)
+		for end := time.Now().Add(200 * time.Millisecond); time.Now().Before(end); {
+			if _, err := s.Stdout.Write([]byte("x")); err != nil {
+				return
+			}
+			_, _ = s.Stderr.Write([]byte("y"))
+		}
+	}()
+	return 0, nil
+}
+
+// The end of output is sent only once no write is in flight, and a write
+// after it is dropped: under -race, a writer the handler left running once
+// raced the channel's CloseWrite.
+func TestOutputAfterTheCommandEndsDoesNotRaceItsEnd(t *testing.T) {
+	h := &leaver{wrote: make(chan struct{})}
+	c, _ := dial(t, h)
+	s, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Stdout, s.Stderr = io.Discard, io.Discard
+	if err := s.Run("go"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.wrote:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the writer never stopped")
 	}
 }
