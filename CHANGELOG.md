@@ -1981,8 +1981,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Dependencies
 
-- `modernc.org/sqlite` v1.60.1, a pure-Go SQLite (no cgo, so the binaries
-  stay static on every platform, Linux on s390x included), for the
+- `modernc.org/sqlite` v1.60.1, a pure-Go SQLite (no cgo, so every Linux
+  binary stays static, s390x included), for the
   control plane's single-host store. It brings `modernc.org/libc`,
   `modernc.org/mathutil`, `modernc.org/memory`, `github.com/dustin/go-humanize`,
   `github.com/google/uuid`, `github.com/mattn/go-isatty`,
