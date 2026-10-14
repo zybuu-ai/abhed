@@ -1516,6 +1516,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- In the workbench, *Edit and resend* on a session's first message, after
+  commands you ran yourself, was refused with "nothing to fork from", and
+  the page stayed in edit mode, so each send was refused again. The
+  conversation now goes on from an empty history, the commands staying in
+  the record, and a fork the server refuses ends the edit. `/rewind` in the
+  terminal gets the same fix. Affects 1.2.4 to 1.2.7.
 - On Linux the process tier's start-up probe ran `grep` from Abhed's own
   `PATH`, so Abhed started with a `PATH` lacking it (a service unit, a
   wrapper) found bubblewrap unusable and, with `sandbox.min_tier` none,

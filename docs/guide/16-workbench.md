@@ -167,7 +167,11 @@ it and send, and the conversation goes on from just before it, as `/fork`
 does in the terminal. The fork is recorded as `conversation.forked`, the
 abandoned steps stay in the record and above it in the chat, and files the
 agent changed are not put back. Esc in the box cancels the edit. It is refused
-while a run, a queued message or a background task is still going.
+while a run, a queued message or a background task is still going; a refused
+edit leaves the text in the box and ends the edit, so sending it again adds
+it after the last message. Your first message can be edited too, even after
+commands you ran yourself: the conversation goes on from an empty history,
+and those commands stay in the record.
 `POST /v1/sessions/{id}/fork` with `{"before_seq": <the message's step>}` is the
 same for any client.
 

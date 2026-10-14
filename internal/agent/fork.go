@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -144,10 +145,12 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 	msgs = truncateAt(msgs, cutCalls)
 	msgs = answerAll(msgs, denied)
 	if len(msgs) == 0 {
-		return nil, fmt.Errorf("nothing to fork from: no messages at or before seq %d", throughSeq)
+		return nil, fmt.Errorf("%w: no messages at or before seq %d", errNothingToFork, throughSeq)
 	}
 	return msgs, nil
 }
+
+var errNothingToFork = errors.New("nothing to fork from")
 
 // answerAll gives every call without a result one saying so, and puts each
 // turn's results in call order, which providers matching by position need.
@@ -239,12 +242,17 @@ func (l *Loop) refuseForkWhileTasksRun() error {
 // ForkTo rebuilds the conversation up to step seq, records that what came after
 // was abandoned, and returns how many messages were kept.
 func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
+	return l.forkTo(events, seq, false)
+}
+
+// forkTo is ForkTo; with empty, a step before any message is an empty history.
+func (l *Loop) forkTo(events []Event, seq int64, empty bool) (int, error) {
 	live := Live(events)
 	if seq <= 0 && len(live) > 0 {
 		seq = live[len(live)-1].Seq // 0 keeps the whole conversation
 	}
 	msgs, err := forkPoint(live, seq)
-	if err != nil {
+	if err != nil && (!empty || !errors.Is(err, errNothingToFork)) {
 		return 0, err
 	}
 	l.StopSuggestion() // it was made for the conversation being cut
