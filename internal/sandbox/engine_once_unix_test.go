@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +26,16 @@ func countingEngine(t *testing.T) (log string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	// A host's docker in /usr/bin is tried before podman; only the stub is found.
+	stub := filepath.Join(dir, "podman")
+	look := LookEngine
+	LookEngine = func(name string) (string, error) {
+		if name == "podman" {
+			return stub, nil
+		}
+		return "", exec.ErrNotFound
+	}
+	t.Cleanup(func() { LookEngine = look })
 	return log
 }
 
