@@ -727,3 +727,25 @@ func TestPendingNoticeCutOnARuneBoundary(t *testing.T) {
 		t.Fatalf("owed: %d, valid %v", len(pend), len(pend) == 1 && utf8.ValidString(pend[0].Content))
 	}
 }
+
+// A child counts once from the moment it is live: its reserved slot is given
+// back in the same step, so a spawn then is not refused for a slot that is
+// free. It once counted twice until the spawning call returned.
+func TestBackgroundSlotCountsOnceWhenLive(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "a")
+	r.l.Background.policy.MaxLive = 2
+	var refused error
+	testHookSpawnLive = func() {
+		if refused = r.l.Background.reserve(); refused == nil {
+			r.l.Background.unreserve()
+		}
+	}
+	t.Cleanup(func() { testHookSpawnLive = nil })
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if refused != nil {
+		t.Fatalf("with one child live of two, a second slot was refused: %v", refused)
+	}
+	r.m.release("a")
+}

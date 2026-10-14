@@ -1600,6 +1600,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A background task being started counted twice for a moment (live, and
+  still reserved), so another started beside it could be refused with a
+  slot free, the refusal reading "3 of 2 running". The limit itself was
+  never exceeded. Affects 1.2.3 to 1.2.7.
 - In the terminal, a key pressed as Abhed started, after the input box was
   drawn but before the session had set its keys, went to the box's default:
   Shift-Tab did not cycle the mode, and on a slow machine the window was

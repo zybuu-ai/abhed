@@ -739,6 +739,10 @@ func (b *Background) Close(reason TerminalReason) {
 // is counted and recorded, before the child is registered.
 var testHookSpawnCounted func()
 
+// testHookSpawnLive, when set by a test, runs once a background child is
+// registered as live.
+var testHookSpawnLive func()
+
 // testHookChildEnded, when set by a test, runs as a child has ended.
 var testHookChildEnded func(*Background)
 
@@ -1137,9 +1141,11 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		held = true
 		return nil
 	})
-	if held {
-		defer mgr.unreserve()
-	}
+	defer func() {
+		if held {
+			mgr.unreserve()
+		}
+	}()
 	if err != nil {
 		return "", err
 	}
@@ -1160,6 +1166,12 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		mgr.order = append(mgr.order, id)
 	}
 	mgr.tasks[id] = t
+	// Live now, so its slot is no longer only reserved: given back in the same
+	// hold, or for a moment it counted twice and refused a spawn that fit.
+	if held {
+		mgr.reserved--
+		held = false
+	}
 	// A stop since the spawn was counted still takes it: its spawn is
 	// recorded, so it starts only to end at once with the stop's reason.
 	stoppedBy := TerminalReason("")
@@ -1167,6 +1179,9 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		stoppedBy = mgr.stopReason
 	}
 	mgr.mu.Unlock()
+	if testHookSpawnLive != nil {
+		testHookSpawnLive()
+	}
 	if stoppedBy != "" {
 		cancel(StopCause{stoppedBy})
 	}
