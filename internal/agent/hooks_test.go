@@ -262,3 +262,31 @@ func TestRunQueuedWithEveryMessageRefusedCallsNoModel(t *testing.T) {
 		t.Fatal("the refused message was not recorded as dropped, or was recorded as sent")
 	}
 }
+
+// Messages queued before a prompt a hook refuses are delivered, and answered
+// in the same run, as RunQueued would; they are not left recorded and
+// unanswered until a later message.
+func TestRefusedPromptStillAnswersWhatWasQueuedBeforeIt(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "answered"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	l.Steer("an earlier question")
+	reason, err := l.Run(context.Background(), "the forbidden thing")
+	if err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(l.Adapter.(*scriptedAdapter).gotRequests); n != 1 {
+		t.Fatalf("the model was called %d times, want once for the earlier message", n)
+	}
+	evs, _ := store.Events("sess1")
+	var sent []string
+	for _, e := range evs {
+		if e.Type == EvUserMessage {
+			var m Message
+			_ = json.Unmarshal(e.Payload, &m)
+			sent = append(sent, m.Text)
+		}
+	}
+	if len(sent) != 1 || sent[0] != "an earlier question" {
+		t.Fatalf("recorded as sent: %q", sent)
+	}
+}

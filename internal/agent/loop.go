@@ -703,11 +703,18 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	defer l.unlockRun()
 	// Messages left queued by a run that ended first keep their place ahead
 	// of the new prompt.
-	if err := l.deliverQueued(); err != nil {
+	delivered, err := l.deliverQueuedCount()
+	if err != nil {
 		return TermError, err
 	}
 	if l.promptRefused(ctx, m.Text) != "" {
-		return TermPromptRefused, nil
+		// Those delivered are answered now, as RunQueued would, not left
+		// recorded and unanswered until a later message.
+		if delivered == 0 {
+			return TermPromptRefused, nil
+		}
+		l.startMessage()
+		return l.run(ctx)
 	}
 	if err := l.noteTrustedStartup(); err != nil {
 		return TermError, err

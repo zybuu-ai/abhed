@@ -1591,14 +1591,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 - A statusline script replaced during a session was taken up when the
   session's folders changed (`/add-dir`, a skill's folder): judging the
-  script again pinned whatever file was at its path then. The session now
-  keeps the script it pinned first, and one changed since is not run; the
-  status line says to start a new session. Affects 1.2.3 to 1.2.7.
+  script again pinned whatever file was at its path then, including one
+  made there after a session that started without it. The session now
+  keeps the script it pinned first, or none, and one changed or made since
+  is not run; the status line says to start a new session. Affects 1.2.3
+  to 1.2.7.
 - A message typed while a `user_prompt_submit` hook was turning away the
-  one before it waited, unsent, until the next message, in the terminal
-  and on the server. The run now goes on for it, judged by the hook in
-  turn; and when a hook refuses every waiting message, the model is no
-  longer called again on the conversation as it was. Affects 1.2.3 to 1.2.7.
+  one before it waited, unsent, until the next message, in the terminal,
+  on the server and over `abhed rpc`. The run now goes on for it, judged by
+  the hook in turn; and when a hook refuses every waiting message, the
+  model is no longer called again on the conversation as it was (the SDK's
+  `RunQueued` returns an `*EndedError` with `Reason` `prompt_refused`, where
+  it returned a plain error). Messages queued before a prompt a hook
+  refuses are now answered in that run, where they were recorded as sent
+  and left unanswered until a later message. Affects 1.2.3 to 1.2.7.
 - The fence gave a planted `.abhed` back to its owner only 128 folders
   deep, so a tree locked deeper was left in the workspace, reported as
   still present, and refused the next fence. It now reaches any depth, and
@@ -2079,6 +2085,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `abhed.Agent.RunQueued` ends with an `*abhed.EndedError`, as `Run`
+  does, where it returned a plain error; `agent.TerminalReason.RunsOnForQueued`
+  says whether a run that ended so goes on for a message queued as it ended.
+- `sandbox.ReadableFile.Release` lets go of the file a pin holds open.
 - `go.mod` now says `go 1.26.9` (1.2.7 said 1.26.8), so a module that
   imports Abhed needs Go 1.26.9 or later.
 - `agent.Message.SecretsWithheld` (and so `abhed.Message`'s) names the

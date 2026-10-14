@@ -618,7 +618,9 @@ func (a *Agent) Queued() int { return len(a.loop.Queued()) }
 
 // RunQueued continues the conversation with only the queued steering
 // messages, for one that arrived as the last run ended. With none it does
-// nothing and returns the last message.
+// nothing and returns the last message. When a user_prompt_submit hook
+// refuses every queued message, they are dropped, no model is called, and it
+// returns an *EndedError with Reason prompt_refused.
 func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 	defer a.startRun()()
 	reason, err := a.loop.RunQueued(ctx)
@@ -626,7 +628,7 @@ func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+		return a.lastMessage(), &EndedError{Reason: reason}
 	}
 	return a.lastMessage(), nil
 }

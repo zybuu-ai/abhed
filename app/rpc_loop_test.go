@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
@@ -396,6 +398,28 @@ func TestRPCWithholdsATypedSecret(t *testing.T) {
 	for _, want := range []string{`"secrets_withheld":"API_TOKEN"`, `"secrets_withheld":"DB_PASS"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no event with %s:\n%s", want, out)
+		}
+	}
+}
+
+// A prompt's run goes on for a steer queued as it ended when it ended
+// cleanly or a hook refused its own message, as the terminal's does.
+func TestRPCRunsOnForAQueuedSteer(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		err    error
+		queued int
+		want   bool
+	}{
+		{"completed", nil, 1, true},
+		{"nothing queued", nil, 0, false},
+		{"message refused by a hook", &abhed.EndedError{Reason: agent.TermPromptRefused}, 1, true},
+		{"out of turns", &abhed.EndedError{Reason: agent.TermMaxTurns}, 1, false},
+		{"interrupted", &abhed.EndedError{Reason: agent.TermUserInterrupt}, 1, false},
+		{"failed", errors.New("model down"), 1, false},
+	} {
+		if got := rpcRunsOn(c.err, c.queued); got != c.want {
+			t.Errorf("%s: runs on %v, want %v", c.name, got, c.want)
 		}
 	}
 }

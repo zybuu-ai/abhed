@@ -234,7 +234,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			// answered steered; steers after this point are answered queued.
 			for {
 				mu.Lock()
-				more := err == nil && a.Queued() > 0
+				more := rpcRunsOn(err, a.Queued())
 				if !more {
 					cur.running = false
 				}
@@ -407,4 +407,18 @@ type rpcResponse struct {
 	Tasks []abhed.TaskInfo `json:"tasks,omitempty"`
 	// WorkspaceTrust, on ready, says whether the workspace file applied whole.
 	WorkspaceTrust *config.WorkspaceTrust `json:"workspace_trust,omitempty"`
+}
+
+// rpcRunsOn reports whether a prompt's run goes on for messages queued as it
+// ended: it ended cleanly, or a hook refused its own message, as the terminal
+// and the server go on.
+func rpcRunsOn(err error, queued int) bool {
+	if queued == 0 {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	var ended *abhed.EndedError
+	return errors.As(err, &ended) && ended.Reason.RunsOnForQueued()
 }

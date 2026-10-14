@@ -216,7 +216,10 @@ per run. A `steer` carries its text in `prompt`, as a prompt does; one without
 it is answered with an error. A `steer` goes to the session of the last
 `start` sent, even one not yet answered. It is answered at once: `steered` when a prompt is running
 and will read it before its answer, `queued` when it will lead that
-session's next prompt instead. A queued steer the session never reads, because
+session's next prompt instead. A `steered` steer is read even when a
+`user_prompt_submit` hook refuses the prompt itself: the prompt's answer is
+then the answer to the steer, or, if the hook refuses that too, an error
+`abhed: ended as prompt_refused`. A queued steer the session never reads, because
 `quit`, the end of input or a new `start` came first, is named in an
 `{"type":"error"}` line rather than dropped silently. Every other request, a
 second `prompt` included, waits for the running prompt and is answered in the

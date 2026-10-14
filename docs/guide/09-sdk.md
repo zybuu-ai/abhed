@@ -35,6 +35,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `New` | build from options, a config directory, or both |
 | `Run`, `Continue` | send a prompt; `Continue` keeps the conversation |
 | `Steer` | redirect a run in progress, from another goroutine |
+| `Queued`, `RunQueued` | count the steering messages not yet delivered, and run on for them; when a `user_prompt_submit` hook refuses every one, `RunQueued` drops them, calls no model, and returns an `*EndedError` with `Reason` `prompt_refused` |
 | `Fork` | rebuild the conversation up to a sequence number (0 for all of it), and record a `conversation.forked` event so later rebuilds leave out what came after; a step an earlier fork abandoned, or past the end, is refused, and so is a fork while a run is in progress (`ErrForkDuringRun`) |
 | `Events` | everything recorded; the stream is the session. `abhed.Live(events)` drops the steps a fork abandoned (`EvForked`, payload `abhed.Forked`) |
 | `Flush` | wait until `OnEvent` has returned for every event recorded so far |
