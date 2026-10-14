@@ -97,7 +97,7 @@ func call(id, name string, args map[string]string) string {
 	return string(c)
 }
 
-// The review's probe: an embedder's record inside the workspace is refused
+// An embedder's record inside the workspace is refused
 // at New, rather than left where the agent's tools reach it.
 func TestSDKRecordInTheWorkspaceIsRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

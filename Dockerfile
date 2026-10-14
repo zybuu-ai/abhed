@@ -17,10 +17,11 @@
 # ---------------------------------------------------------------- build stage
 # Pinned to a patch release on purpose: go.mod names the same one, so the
 # stdlib CVEs govulncheck reports against an older toolchain cannot come back
-# on a day the floating tag happens to resolve differently.
+# on a day the floating tag happens to resolve differently. Both base images
+# are pinned by digest; Dependabot moves the digests.
 # It runs on the builder's own platform and cross-compiles, so a multi-arch
 # build does not compile Go under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
 
 WORKDIR /src
 
@@ -56,7 +57,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
 # without them would be smaller and useless.
 # trixie rather than bookworm: the same packages, and the scan drops from 16
 # critical CVEs in the base image to none (docs/trust/security-scans.md).
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # ca-certificates is required to verify TLS to the model endpoint. git and the
 # rest are what an agent working in a repository actually reaches for.

@@ -168,6 +168,29 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed migrate` checks state paths as `abhed serve` does, and exits `1`
   on an `auth.users_file` or other state path that `serve` would refuse
   (in the workspace or a temp folder), where 1.2.7 migrated.
+- The built-in allow rules `bash(ls*)` and `bash(git diff*)`, `bash(git
+  status*)` and `bash(git log*)` are narrowed to `ls` and those git commands
+  themselves, so `lsof`, `lsblk` and `git difftool` now ask.
+- Under any rule for `bash`, tmux and screen are limited to listing and
+  showing what a server holds: `tmux new`, `attach-session` and
+  `send-keys`, and `screen -dm`, are refused under a deny rule and asked
+  about otherwise.
+- A repeated `-allow`, `-deny`, `-allowedTools`, `-disallowedTools`,
+  `-add-dir` or `abhed mcp add -allow-tools` now adds to the earlier values
+  instead of keeping only the last, so a script that repeated `-allow` now
+  allows every value it gave.
+- A stored secret's value typed or pasted into a message reaches the model
+  as `[secret:NAME]`, not as typed.
+
+### Known limits
+
+- The `microvm` driver is experimental. Releases carry no guest kernel or
+  root filesystem, and no `abhed-vmhelper` for macOS; build them with the
+  scripts named under Added.
+- Linux on Z (`s390x`) has been tested under emulation only, not on IBM Z
+  or LinuxONE hardware.
+- The public Go packages for the sandbox control plane are experimental
+  until 2.0 and may change in a minor release.
 
 ### Security
 
@@ -1112,7 +1135,8 @@ All notable changes to Abhed are recorded here. The format follows
     guest kernel and Alpine base and builds the root filesystem. A test
     boots real VMs on a Mac (`ABHED_TEST_VZ=1`); a CI job builds, signs and
     tests the helper without booting, as hosted macOS runners cannot run a
-    VM.
+    VM. `abhed-vmhelper` is not in the release: build and sign it yourself
+    with those scripts.
 - `abhed serve` can terminate TLS itself: `server.tls.cert_file` and
   `key_file`, TLS 1.2 or later (`min_version: "1.3"` to refuse 1.2) with
   forward-secret AEAD suites only, HTTP/2. `additional_certificates` serves a
@@ -1968,8 +1992,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Dependencies
 
-- `modernc.org/sqlite` v1.60.1, a pure-Go SQLite (no cgo, so the binaries
-  stay static on every platform, Linux on s390x included), for the
+- `modernc.org/sqlite` v1.60.1, a pure-Go SQLite (no cgo, so every Linux
+  binary stays static, s390x included), for the
   control plane's single-host store. It brings `modernc.org/libc`,
   `modernc.org/mathutil`, `modernc.org/memory`, `github.com/dustin/go-humanize`,
   `github.com/google/uuid`, `github.com/mattn/go-isatty`,
@@ -1980,6 +2004,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `go.mod` now says `go 1.26.9` (1.2.7 said 1.26.8), so a module that
+  imports Abhed needs Go 1.26.9 or later.
 - `agent.Message.SecretsWithheld` (and so `abhed.Message`'s) names the
   stored secrets a person's message held, which the model got as
   `[secret:NAME]`; `ui.WithheldNote` is the line each surface shows for it.
@@ -3985,8 +4011,8 @@ Also:
   showed could be taken as steering for the run, since the approver had not
   yet started waiting. It now waits from the moment that line shows; a line
   sent before the question was asked still steers.
-- In the workbench shell and Studio's interactive terminal, a command sent
-  as one whole line could be recorded without its text: the shell's echo could
+- In the workbench shell and Studio's interactive terminal, a command typed
+  at the prompt could be recorded without its text: the shell's echo could
   come back before Abhed began following the line, so the echo was missed.
   The line is now followed before the shell is handed it.
 - An event stream that opened while its session was recording could miss

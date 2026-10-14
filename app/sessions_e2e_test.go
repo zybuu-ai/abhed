@@ -472,7 +472,7 @@ func TestSecretsNeverReachTheRecord(t *testing.T) {
 	verified(t, g.record(), g.sessions()[0].ID)
 }
 
-// The review's probe: the agent plants a link in the workspace to the
+// The agent plants a link in the workspace to the
 // record, and the person exports to that name. The export is refused and
 // the record is untouched; so is one over a hard link, or into the record.
 // An export outside the workspace asks first.

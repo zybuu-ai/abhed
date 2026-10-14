@@ -40,7 +40,7 @@ func TestPromptNamesOnlyTheWebToolsRegistered(t *testing.T) {
 
 // With MCP tools behind tool_search, the connected-services line comes before
 // the web lines, and the web, no-web and current-fact lines defer to it, so a
-// live-data question reaches a listed tool (R6: weather_now). Without it, the
+// live-data question reaches a listed tool (weather_now). Without it, the
 // prompt does not mention it.
 func TestPromptPutsToolSearchBeforeTheWeb(t *testing.T) {
 	ws := t.TempDir()

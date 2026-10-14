@@ -116,6 +116,12 @@ jobs:
           python scripts/ci/workflow-rules.py --self-test
           python scripts/ci/workflow-rules.py .github/workflows/*.yml
 
+      # A release's notes open with the changelog's Upgrading list.
+      - name: Release notes come from the changelog
+        run: |
+          python3 scripts/release-notes.py --self-test
+          python3 scripts/release-notes.py v0.0.0-ci | grep -q '^### Upgrading'
+
       # A ratchet, not a target: a PR may not lower coverage below what the
       # tree already achieves. Raising the floor is a deliberate commit.
       - name: Coverage floor

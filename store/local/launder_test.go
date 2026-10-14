@@ -186,7 +186,7 @@ func TestExportOfTamperedDoesNotVerify(t *testing.T) {
 	}
 }
 
-// The review's probe: a head saying zero lines, with lines cut, passed with
+// A head saying zero lines, with lines cut, passed with
 // a note. A head that is not exactly as written is no head, and fails.
 func TestInvalidHeadsFail(t *testing.T) {
 	for name, head := range map[string]string{
@@ -212,7 +212,7 @@ func TestInvalidHeadsFail(t *testing.T) {
 	}
 }
 
-// The review's probe: a session file deleted, then pruned. The prune does
+// A session file deleted, then pruned. The prune does
 // not make an empty file to prune; its tombstone says the file was missing
 // and keeps the head the index recorded, not a clean zero.
 func TestPruneOfAMissingSessionSaysSo(t *testing.T) {
@@ -253,7 +253,7 @@ func TestPruneOfAnUnverifiedSession(t *testing.T) {
 	}
 }
 
-// The review's probes A and B: a listed session's file deleted, with or
+// A listed session's file deleted, with or
 // without its head. Opening it for writing refuses and makes no file, so
 // verify keeps reporting it missing.
 func TestDeletedSessionFileIsNotRecreated(t *testing.T) {
@@ -287,7 +287,7 @@ func TestDeletedSessionFileIsNotRecreated(t *testing.T) {
 	}
 }
 
-// The review's probe C: a record that fails only through the index (cut
+// A record that fails only through the index (cut
 // behind a head rewritten to match) is exported marked unverified; the
 // copy fails on the mark, and with the mark stripped it still fails.
 func TestUnverifiedMarkIsRequired(t *testing.T) {
@@ -351,7 +351,7 @@ func TestSentinelHeadCoversTheFirstWrite(t *testing.T) {
 	}
 }
 
-// The review's probe R3-A: a live session cut to one line with its head
+// A live session cut to one line with its head
 // deleted fails, is refused for writing, and stays failing.
 func TestCutToOneLineWithoutAHeadFails(t *testing.T) {
 	dir := t.TempDir()
@@ -368,7 +368,7 @@ func TestCutToOneLineWithoutAHeadFails(t *testing.T) {
 	mustFail(t, s2, "after a refused open")
 }
 
-// The review's probe R3-B: the index cut to one line and its head deleted.
+// The index cut to one line and its head deleted.
 // The index fails, the next session is refused, and the sessions it no
 // longer lists are reported by VerifyAll.
 func TestIndexCutToOneLineWithoutAHeadFails(t *testing.T) {
@@ -399,7 +399,7 @@ func TestIndexCutToOneLineWithoutAHeadFails(t *testing.T) {
 	}
 }
 
-// The review's probe E: a line the head counts, cut to a fragment. Verify
+// A line the head counts, cut to a fragment. Verify
 // and open give the same reason, and verify does not promise a repair.
 func TestCountedLineCutShort(t *testing.T) {
 	dir := t.TempDir()
@@ -422,7 +422,7 @@ func TestCountedLineCutShort(t *testing.T) {
 	}
 }
 
-// The review's round-4 probes: the creation head written over a real one.
+// The creation head written over a real one.
 // With more than one line left, that is damage, never a first-write crash,
 // for a session and for the index.
 func TestSentinelOverARealHeadFails(t *testing.T) {

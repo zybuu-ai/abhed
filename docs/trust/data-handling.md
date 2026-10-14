@@ -94,9 +94,10 @@ and a delete removes that key, the session's label and title, and its
 approvals' arguments. The event rows stay, append-only by trigger, but hold
 ciphertext no one can open; what remains is that each step happened, its
 type, actor, time and hash. Not erased: sessions recorded before 1.2.8, whose
-payloads were never sealed; database backups taken before the delete, which
-hold the key until they expire; and the deleted key's bytes until `VACUUM`
-reclaims them.
+payloads were never sealed; database backups and WAL archives taken before
+the delete, which hold the key until they expire; streaming replicas, until
+they replay the delete; and the deleted key's bytes until `VACUUM` reclaims
+them and the replicas replay it.
 
 ## What the operator can export or delete
 

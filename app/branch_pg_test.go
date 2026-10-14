@@ -57,7 +57,7 @@ func TestBranchCopyOnPostgres(t *testing.T) {
 	}
 }
 
-// The review's probe: a file resumed with -r on Postgres. Its payloads pass
+// A file resumed with -r on Postgres. Its payloads pass
 // the vault's redactor before they are stored, since Postgres does not
 // redact on append, and its events come in untrusted.
 func TestBranchFromAFileIsRedactedOnPostgres(t *testing.T) {
