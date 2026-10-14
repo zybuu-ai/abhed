@@ -31,15 +31,24 @@ type events struct {
 
 func (e *events) add(ev egress.Event) { e.mu.Lock(); e.evs = append(e.evs, ev); e.mu.Unlock() }
 
+// find waits up to five seconds for host's event: the proxy records a
+// request once its bytes are counted, which can be after the client has read
+// the response.
 func (e *events) find(host string) (egress.Event, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, ev := range e.evs {
-		if ev.Host == host {
-			return ev, true
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		e.mu.Lock()
+		for _, ev := range e.evs {
+			if ev.Host == host {
+				e.mu.Unlock()
+				return ev, true
+			}
 		}
+		e.mu.Unlock()
+		if time.Now().After(deadline) {
+			return egress.Event{}, false
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	return egress.Event{}, false
 }
 
 // session is the egress proxy the control plane runs for a session: the
