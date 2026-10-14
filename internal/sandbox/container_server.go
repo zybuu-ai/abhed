@@ -88,7 +88,7 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	var cmd *exec.Cmd
 	var stop func()
 	if c.policy.Egress != nil {
-		cmd, stop = c.egressRun(ctx, c.policy.Workspace, p, extra, env, argv)
+		cmd, stop = c.egressRun(ctx, c.policy.Workspace, serverPrefix, p, extra, env, argv)
 	} else {
 		cmd, stop = c.serverRun(ctx, p, extra, env, argv)
 	}

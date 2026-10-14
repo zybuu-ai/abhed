@@ -76,7 +76,9 @@ func (c *Container) sweepServers(ctx context.Context) []string {
 	}
 	var removed []string
 	for _, name := range strings.Fields(string(out)) {
-		if !strings.HasPrefix(name, serverPrefix) {
+		// The label decides; the prefix only keeps the sweep to Abhed's own
+		// names (a build before this one named a server's egress container so).
+		if !strings.HasPrefix(name, serverPrefix) && !strings.HasPrefix(name, egressPrefix) {
 			continue
 		}
 		label, err := c.engineCmd(ctx, "inspect", "--format", `{{index .Config.Labels "`+serverOwnerLabel+`"}}`, name).Output()

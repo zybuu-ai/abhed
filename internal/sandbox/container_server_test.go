@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // scriptedEngine is a container tier whose engine is a script that answers its
@@ -146,10 +148,19 @@ func realEngineForServers(t *testing.T) (*Container, string) {
 	}
 	t.Setenv("HOME", workspace(t))
 	ws := workspace(t)
-	c := NewContainer(DefaultPolicy(ws))
+	p := DefaultPolicy(ws)
+	if os.Getenv("ABHED_TEST_SERVER_ALLOWLIST") == "1" {
+		relay := os.Getenv("ABHED_TEST_RELAY_BINARY")
+		if relay == "" {
+			t.Skip("set ABHED_TEST_RELAY_BINARY to a Linux build of Abhed to run a server under the allowlist")
+		}
+		p.Egress, p.RelayBinary = egressPolicy(t, egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}}), relay
+	}
+	c := NewContainer(p)
 	if ok, why := c.Available(); !ok {
 		t.Fatalf("no container engine: %s", why)
 	}
+	t.Cleanup(func() { _ = c.Close() })
 	return c, ws
 }
 
@@ -157,6 +168,16 @@ func realEngineForServers(t *testing.T) (*Container, string) {
 func serverContainers(t *testing.T, c *Container) string {
 	t.Helper()
 	out, err := exec.Command(c.runtime, "ps", "-a", "--filter", "name=^"+serverPrefix, "--format", "{{.Names}}").Output() // #nosec G204 -- the test's engine
+	if err != nil {
+		t.Fatalf("listing containers: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ownedContainers lists the server containers that carry an owner label.
+func ownedContainers(t *testing.T, c *Container) string {
+	t.Helper()
+	out, err := exec.Command(c.runtime, "ps", "-a", "--filter", "name=^"+serverPrefix, "--filter", "label="+serverOwnerLabel, "--format", "{{.Names}}").Output() // #nosec G204 -- the test's engine
 	if err != nil {
 		t.Fatalf("listing containers: %v", err)
 	}
@@ -177,7 +198,7 @@ func startStubbornServer(t *testing.T, c *Container) *exec.Cmd {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(60 * time.Second); serverContainers(t, c) == ""; time.Sleep(200 * time.Millisecond) {
+	for deadline := time.Now().Add(60 * time.Second); ownedContainers(t, c) == ""; time.Sleep(200 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the server's container never appeared")
 		}
@@ -239,14 +260,6 @@ func TestContainerServerLeavesBareNamesToTheImage(t *testing.T) {
 	}
 }
 
-// containerNameOf is the --name a server's command gives its container.
-func containerNameOf(cmd *exec.Cmd) string {
-	if i := slices.Index(cmd.Args, "--name"); i >= 0 && i+1 < len(cmd.Args) {
-		return cmd.Args[i+1]
-	}
-	return ""
-}
-
 // containerExists reports whether the engine still has the named container.
 func containerExists(c *Container, name string) bool {
 	return exec.Command(c.runtime, "container", "inspect", name).Run() == nil // #nosec G204 -- the test's engine
@@ -256,13 +269,25 @@ func containerExists(c *Container, name string) bool {
 // exit reached, is removed by the next sweep; one whose owner still runs, and
 // one without the owner label, are not touched.
 func TestContainerServerSweepAfterKillOnARealEngine(t *testing.T) {
-	c, _ := realEngineForServers(t)
 	if os.Getenv("ABHED_SERVER_KILL_HELPER") == "1" {
-		cmd := startStubbornServer(t, c)
-		fmt.Printf("started %s\n", containerNameOf(cmd))
+		c, _ := realEngineForServers(t)
+		startStubbornServer(t, c)
+		fmt.Printf("started %s\n", ownedContainers(t, c))
 		time.Sleep(2 * time.Minute)
 		return
 	}
+	// Outside the allowlist the server runs in its own container; under it,
+	// in a detached one behind the relay, which outlives the engine client.
+	for _, allowlist := range []string{"", "1"} {
+		t.Run("allowlist="+allowlist, func(t *testing.T) {
+			t.Setenv("ABHED_TEST_SERVER_ALLOWLIST", allowlist)
+			sweepAfterKill(t)
+		})
+	}
+}
+
+func sweepAfterKill(t *testing.T) {
+	c, _ := realEngineForServers(t)
 	helper := exec.Command(os.Args[0], "-test.run=^TestContainerServerSweepAfterKillOnARealEngine$")
 	helper.Env = append(os.Environ(), "ABHED_SERVER_KILL_HELPER=1")
 	out, err := helper.StdoutPipe()
@@ -299,7 +324,7 @@ func TestContainerServerSweepAfterKillOnARealEngine(t *testing.T) {
 	if removed := c.sweepServers(context.Background()); len(removed) != 0 {
 		t.Fatalf("a second sweep removed %v", removed)
 	}
-	if !containerExists(c, containerNameOf(live)) || !containerExists(c, other) {
+	if ownedContainers(t, c) == "" || !containerExists(c, other) {
 		t.Fatal("a container whose owner runs, or one without the label, was removed")
 	}
 }

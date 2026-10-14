@@ -58,8 +58,8 @@ is when the session ends; under `abhed serve` the server and its container
 belong to the server process, shared by its sessions, and are removed when
 `abhed serve` exits, not when a session ends. Each is labelled
 `abhed.mcp.owner` with the Abhed process that started it (host, process id,
-start time); one left by an Abhed that was killed outright (`kill -9`) is
-removed the next time a server starts on these tiers, and by `abhed doctor`
+start time); one left by an Abhed that was killed outright (`kill -9`),
+under the allowlist too, is removed the next time a server starts on these tiers, and by `abhed doctor`
 when a stdio server is set to run in one (enabled, not `host_files`), which
 say so. A container without that label is never touched.
 So its program must run in that image: a `docker`-style server, or one
