@@ -182,3 +182,24 @@ func TestExtensionStatusIsForAdministrators(t *testing.T) {
 		t.Fatalf("an administrator sees %+v", e)
 	}
 }
+
+// A user_prompt_submit hook on the server refuses a session's message: it is
+// never recorded as sent, nor sent to the model.
+func TestServerPromptHookRefusesAMessage(t *testing.T) {
+	h := extension.NewHost(nil)
+	if errs := h.Load(context.Background(), []extension.Config{{Name: "gatekeeper.sh", Command: "bash",
+		Args:   []string{filepath.Join("..", "internal", "extension", "testdata", "gatekeeper.sh")},
+		Events: []extension.Event{extension.EvUserPromptSubmit}, Timeout: 5 * time.Second}}); len(errs) > 0 {
+		t.Fatalf("load: %v", errs)
+	}
+	t.Cleanup(h.Close)
+	s, _ := scriptedServer(t, [2]string{}, [2]string{}, nil, func(o *Options) { o.Extensions = h })
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"the forbidden thing"}`))
+	waitState(t, s, id, "done")
+	evs, _ := s.store.Events(id)
+	for _, ev := range evs {
+		if ev.Type == agent.EvUserMessage || ev.Type == agent.EvModelCall {
+			t.Fatalf("a refused message was recorded or answered: %v", typesOf(evs))
+		}
+	}
+}

@@ -476,6 +476,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, extHost, sessionID)
+	toolset.Hook(loop, extHost, func(s string) { fmt.Fprintf(os.Stderr, "abhed: %s\n", s) })
 	if extHost != nil && extHost.Len() > 0 {
 		recordFired(extHost, func() *agent.Recorder { return rec })
 	}

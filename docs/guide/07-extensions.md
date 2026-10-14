@@ -43,11 +43,11 @@ exactly one reply.
 | `list_tools` | once at startup | declare `tools` this extension provides |
 | `invoke_tool` | the model called one | return its `result` |
 | `session_start`, `session_end` | run boundaries | nothing; setup and teardown |
-| `user_prompt_submit` | before a message you send is recorded and sent (interactive CLI) | `block` it; you are told why and the model never sees it. A steering message typed during a run that is blocked is recorded as dropped |
-| `permission_request` | before a call is put to you, a subagent's included (interactive CLI) | `block` it. Nothing in the reply approves the call; `allow` is ignored |
-| `turn_end` | the agent has finished answering, with the reason it stopped (interactive CLI) | nothing; it only observes |
-| `subagent_end` | a subagent the agent waited on has returned (interactive CLI) | nothing; it only observes |
-| `notification` | the agent needs you, as when a call waits for approval (interactive CLI) | nothing; it only observes |
+| `user_prompt_submit` | before a message you send is recorded and sent | `block` it; you are told why and the model never sees it. A steering message typed during a run that is blocked is recorded as dropped |
+| `permission_request` | before a call is put to you, a subagent's included | `block` it. Nothing in the reply approves the call; `allow` is ignored |
+| `turn_end` | the agent has finished answering, with the reason it stopped | nothing; it only observes |
+| `subagent_end` | a subagent the agent waited on has returned | nothing; it only observes |
+| `notification` | the agent needs you, as when a call waits for approval | nothing; it only observes |
 
 Declaring no `events` subscribes to the events up to `session_end` above; the
 five after it are sent only to an extension that names them. An empty reply
@@ -154,8 +154,12 @@ past its timeout, or replies with something unparseable is marked dead. On a
 `tool_call` or `permission_request`, the call it failed on is refused, and
 while it is not running every call it would have screened is asked, since the
 veto it stood for is gone. For the other events it is skipped: a
-`user_prompt_submit` hook that has stopped fails open, and the CLI says each
-message went unscreened. The session goes on either way.
+`user_prompt_submit` hook that has stopped fails open, and each message is
+said to have gone unscreened: in the terminal, on stderr for `-p`, `abhed rpc`
+and `abhed acp` (and to an SDK caller's `Warn`), and in `abhed serve`'s log.
+These hooks run on every surface that loads extensions: the terminal, `-p`,
+`abhed rpc`, `abhed acp`, `abhed serve` and the SDK; before 1.2.8 only the
+terminal asked them. The session goes on either way.
 
 **One decision's policy hooks have a deadline.** A `tool_call` hook must
 decide within 30 seconds of the decision, or by the deadline of the request

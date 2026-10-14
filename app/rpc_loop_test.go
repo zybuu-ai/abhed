@@ -423,3 +423,40 @@ func TestRPCRunsOnForAQueuedSteer(t *testing.T) {
 		}
 	}
 }
+
+// A user_prompt_submit hook refuses an rpc prompt: the model is never sent
+// it, and the answer says the run ended refused.
+func TestRPCPromptHookRefusesAPrompt(t *testing.T) {
+	m := &globModel{text: true}
+	ws := rpcWorkspace(t, m.serve(t).URL, `, "extensions":[{"name":"gate","command":"bash","args":[`+
+		jsonQuote(writeScript(t, gatekeeper))+`],"events":["user_prompt_submit"]}]`)
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"the forbidden thing"}`)
+	if out := s.waitFor(t, `"id":"2"`); !strings.Contains(out, "ended as prompt_refused") {
+		t.Fatalf("the refused prompt's answer:\n%s", out)
+	}
+	if n := len(m.requests()); n != 0 {
+		t.Fatalf("the model was sent %d requests; the refused prompt must not be one", n)
+	}
+}
+
+// A -p run's prompt a user_prompt_submit hook refuses is never sent, and the
+// person is told why.
+func TestHeadlessPromptHookRefusesThePrompt(t *testing.T) {
+	g := newSessRig(t)
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + g.url +
+		`","model":"m","context_window":8192}}},"extensions":[{"name":"gate","command":"bash","args":[` +
+		jsonQuote(writeScript(t, gatekeeper)) + `],"events":["user_prompt_submit"]}]}`
+	if err := os.WriteFile(filepath.Join(g.ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := g.cmd("-p", "the forbidden thing").CombinedOutput()
+	g.mu.Lock()
+	n := len(g.bodies)
+	g.mu.Unlock()
+	if n != 0 || !strings.Contains(string(out), "your message was not sent: that topic is off limits") {
+		t.Fatalf("%d model requests; output:\n%s", n, out)
+	}
+}

@@ -9,6 +9,7 @@ package toolset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"slices"
@@ -478,6 +479,53 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 	pol.ContextHooks = append(pol.ContextHooks, func(e *policy.Engine) policy.ContextHook {
 		return h.ContextPolicyHookFor(sessionID, e)
 	})
+}
+
+// HostHooks are the extensions' hooks at the loop's own points (a message
+// submitted, a call about to be asked, a run ending) for a surface without
+// the terminal's own. Note, when set, hears what the person should be told:
+// a message refused, or one that went unscreened. Nothing a hook says
+// approves anything.
+type HostHooks struct {
+	Host *extension.Host
+	Note func(string)
+}
+
+var _ agent.Hooks = HostHooks{}
+
+func (h HostHooks) note(s string) {
+	if h.Note != nil {
+		h.Note(s)
+	}
+}
+
+func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
+	why := h.Host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
+	if why != "" {
+		h.note("your message was not sent: " + why)
+	} else if down := h.Host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
+		// A prompt hook fails open; the person is told it did not look.
+		h.note("not screened: the user_prompt_submit hook " + strings.Join(down, ", ") + " is not running")
+	}
+	return why
+}
+
+func (h HostHooks) PermissionRequested(ctx context.Context, pol *policy.Engine, sessionID, tool string, args json.RawMessage, reason string) string {
+	return h.Host.Veto(ctx, extension.EvPermissionRequest, extension.Request{
+		SessionID: sessionID, Tool: tool, Args: args, Content: reason, Policy: pol,
+	})
+}
+
+func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
+	h.Host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
+}
+
+// Hook gives loop the extensions' hooks at its own points, when any are loaded.
+func Hook(loop *agent.Loop, h *extension.Host, note func(string)) {
+	if loop == nil || h == nil || h.Len() == 0 {
+		return
+	}
+	loop.Hooks = HostHooks{Host: h, Note: note}
 }
 
 // Summarize lets an extension supply or refuse a compaction summary: the

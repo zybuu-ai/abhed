@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -38,5 +41,26 @@ func TestRunQueuedRefusedEndsAsPromptRefused(t *testing.T) {
 	var ended *EndedError
 	if !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused {
 		t.Fatalf("RunQueued: %v", err)
+	}
+}
+
+// A user_prompt_submit hook among the extensions refuses an embedded run's
+// prompt: it ends as prompt_refused and the model is never called.
+func TestSDKPromptHookRefusesAPrompt(t *testing.T) {
+	a, err := New(context.Background(), Options{
+		Workspace: t.TempDir(),
+		Provider:  &Provider{Type: "ollama", BaseURL: "http://127.0.0.1:1", Model: "m"}, // never reached
+		Extensions: []ExtensionConfig{{Name: "gatekeeper", Command: "bash",
+			Args:   []string{filepath.Join("..", "internal", "extension", "testdata", "gatekeeper.sh")},
+			Events: []extension.Event{extension.EvUserPromptSubmit}, Timeout: 5 * time.Second}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	_, err = a.Run(context.Background(), "the forbidden thing")
+	var ended *EndedError
+	if !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused {
+		t.Fatalf("Run: %v", err)
 	}
 }

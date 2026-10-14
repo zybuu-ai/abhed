@@ -490,6 +490,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
+	toolset.Hook(loop, set.Extensions, func(s string) {
+		if opts.Warn != nil {
+			opts.Warn("%s", s)
+		}
+	})
 	loop.Budget = budget
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
