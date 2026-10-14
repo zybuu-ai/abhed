@@ -191,6 +191,8 @@ jobs:
       # The real-engine relay tests run in the container-tier job, the fence's
       # spec as root in the sandbox job, and the TMPDIR test on macOS.
       - name: Sandbox boundary tests actually ran
+        env:
+          CGO_ENABLED: "0" # the test binary is the egress relay; see the sandbox job
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
@@ -245,7 +247,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install bubblewrap and vim
         run: apt-get update && apt-get install -y --no-install-recommends bubblewrap vim
+      # Without cgo, as the release is built: the test binary is the egress
+      # relay, and a cgo build cannot drop its capabilities, so the
+      # in-sandbox resolver would be off and its test would skip.
       - name: Every process-sandbox boundary runs under bubblewrap
+        env:
+          CGO_ENABLED: "0"
         run: |
           set -euo pipefail
           # As root here, the fence's spec for root, which the fence job cannot run.
@@ -254,6 +261,7 @@ jobs:
             echo "a boundary test skipped under a privileged runner:"; grep -B3 -- "--- SKIP" sandbox.log; exit 1
           fi
           grep -q -- "--- PASS: TestFenceSpecAsRootHidesShadow " sandbox.log || { echo "TestFenceSpecAsRootHidesShadow did not run and pass as root"; exit 1; }
+          grep -q -- "--- PASS: TestEgressResolverInTheSandbox " sandbox.log || { echo "TestEgressResolverInTheSandbox did not run and pass as root"; exit 1; }
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
       # The statusline's pinned script, end to end under bubblewrap: it runs,
       # and swapped for a link into ~/.abhed it neither runs nor reads.

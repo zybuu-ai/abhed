@@ -1406,6 +1406,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- On Linux, an `abhed` built with cgo (a plain `go build` where a C
+  compiler is installed) cannot run the process tier's in-sandbox resolver
+  under the egress allowlist; its warning now says so and to build with
+  `CGO_ENABLED=0`, where it said "operation not supported". The release
+  binaries and `make build` are built without cgo.
 - Choosing the container or VM tier asks the engine for its `info` once per
   process, not three times at each session; an engine that did not answer
   is asked again after 30 seconds. Whether gVisor is registered is read

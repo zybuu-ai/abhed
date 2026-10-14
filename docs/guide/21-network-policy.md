@@ -350,7 +350,10 @@ that a command started this way runs as its user with no capability. Where
 that fails (bwrap installed setuid, no private `/proc`, nested user
 namespaces refused, or a build with cgo, where capabilities cannot be
 dropped on every thread), Abhed logs a warning once and commands resolve
-nothing, as before; the proxy still resolves the names it carries.
+nothing, as before; the proxy still resolves the names it carries. The
+Linux release binaries and `make build` are built without cgo; a plain
+`go build` on a machine with a C compiler is not, and its warning says to
+build with `CGO_ENABLED=0`.
 
 On **macOS** Seatbelt cannot redirect DNS, so there is no in-sandbox
 resolver and no `dns` record. The profile already refuses both ways a

@@ -10,6 +10,11 @@ go build -o ~/.local/bin/abhed ./cmd/abhed
 abhed -version
 ```
 
+On Linux, build with `CGO_ENABLED=0` in front, as the release and `make
+build` do: the binary is then static, and a cgo build cannot run the
+sandbox's own name resolver under an egress allowlist
+([network policy](21-network-policy.md)).
+
 It runs without internet access. Once built, the only outbound connection is
 to the model endpoint you configure, plus anything you enable explicitly (web
 search, web fetch, MCP servers, remote tools); copy the binary and a config into an
