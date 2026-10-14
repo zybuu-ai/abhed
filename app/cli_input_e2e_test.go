@@ -25,7 +25,7 @@ func e2eWorkspace(t *testing.T) string {
 	return ws
 }
 
-// S5: a mention through a link out of the workspace is refused, and nothing
+// A mention through a link out of the workspace is refused, and nothing
 // of the file reaches the model or the record.
 func TestE2EMentionSymlinkRefused(t *testing.T) {
 	ws, outside := e2eWorkspace(t), t.TempDir()

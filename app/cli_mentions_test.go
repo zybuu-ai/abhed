@@ -130,7 +130,7 @@ func TestMentionAttachesThroughTheReadTool(t *testing.T) {
 	}
 }
 
-// S5: a link in the workspace that leads out of it attaches nothing, and
+// A link in the workspace that leads out of it attaches nothing, and
 // the message is not sent.
 func TestMentionSymlinkEscapeRefused(t *testing.T) {
 	loop, store, ws := mentionRig(t)

@@ -41,7 +41,7 @@ page.on('pageerror', e => result('no script error on the page', false, e.message
 
 const box = sel => page.locator(sel).first().boundingBox();
 
-// F15: at every width the header keeps Sign out on screen, inside its row,
+// At every width the header keeps Sign out on screen, inside its row,
 // and the page never scrolls sideways.
 for (const width of [320, 900, 1440]) {
   await page.setViewportSize({width, height: 800});
@@ -49,7 +49,7 @@ for (const width of [320, 900, 1440]) {
   try {
     await page.locator('#signout').waitFor({state: 'visible', timeout: 15000});
   } catch {
-    result(`F15 header at ${width}px`, false, 'Sign out never showed');
+    result(`header at ${width}px`, false, 'Sign out never showed');
     continue;
   }
   const out = await box('#signout'), title = await box('#title'), right = await box('#title .right');
@@ -61,11 +61,11 @@ for (const width of [320, 900, 1440]) {
   const sideways = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   const ok = out && out.width > 0 && out.x >= 0 && out.x + out.width <= width + 0.5 &&
     out.y >= title.y && out.y + out.height <= title.y + title.height + 0.5 && !clipped && !sideways;
-  result(`F15 header at ${width}px`, ok,
+  result(`header at ${width}px`, ok,
     `sign out at x=${out && Math.round(out.x)} w=${out && Math.round(out.width)}, row right=${right && Math.round(right.x + right.width)}, clipped=${clipped}, sideways scroll=${sideways}`);
 }
 
-// F3: at 1440px the side-panel toggle collapses the side panel and the grid
+// At 1440px the side-panel toggle collapses the side panel and the grid
 // stays whole: the editor fills from the activity bar to the agent, which
 // keeps the right edge; toggled back, the side panel returns.
 await page.setViewportSize({width: 1440, height: 900});
@@ -85,12 +85,12 @@ let ok = collapsed.noside && !collapsed.side && collapsed.center && collapsed.ag
   near(collapsed.agent.x + collapsed.agent.width, 1440) &&
   collapsed.center.x + collapsed.center.width <= collapsed.agent.x + 0.5 &&
   collapsed.center.width > before.center.width;
-result('F3 grid with the side panel collapsed at 1440px', ok, JSON.stringify(collapsed));
+result('grid with the side panel collapsed at 1440px', ok, JSON.stringify(collapsed));
 await page.keyboard.press('ControlOrMeta+b');
 const back = await layout();
 ok = !back.noside && back.side && back.side.width > 0 && near(back.center.x, before.center.x) &&
   near(back.agent.x, before.agent.x);
-result('F3 grid with the side panel back at 1440px', ok, JSON.stringify(back));
+result('grid with the side panel back at 1440px', ok, JSON.stringify(back));
 
 // First-turn approval: the first call of a new session's first turn is put to
 // the person in the workbench, and allowing it runs it.

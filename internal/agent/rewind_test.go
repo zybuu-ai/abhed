@@ -203,7 +203,7 @@ func TestRestoreStaysInTheSession(t *testing.T) {
 	}
 }
 
-// The review's probe: a branch renumbers events, and a restore's checkpoint
+// A branch renumbers events, and a restore's checkpoint
 // must follow, or the branch's undo log offers pre-images already put back.
 // The branch rebuilds the source's undo log and conversation exactly.
 func TestBranchCopyKeepsTheUndoLog(t *testing.T) {
