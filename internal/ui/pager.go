@@ -44,6 +44,7 @@ func (d *dock) openPager() {
 	}
 	p := &pager{rows: rows}
 	p.top = max(0, len(rows)-d.pageRows())
+	d.openKeys() // a question or pager shown before the session is ready still takes keys
 	d.pager = p
 	d.scr.raw("\x1b[?1049h\x1b[?25l")
 	d.drawPager()

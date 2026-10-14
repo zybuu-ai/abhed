@@ -437,6 +437,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		firstCh <- start.first
 	}
 	prompted := false
+	// Keys typed while the session started are acted on now that its
+	// hotkeys are set: Shift-Tab pressed early cycles the mode.
+	editor.Ready()
 	for {
 		// A turn a command asked for runs before the next line (input track).
 		if t := sessionState.takeTurn(); t != nil {

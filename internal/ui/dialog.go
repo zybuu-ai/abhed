@@ -119,6 +119,7 @@ func (d *dock) ask(ctx context.Context, spec DialogSpec) (string, error) {
 		d.mu.Unlock()
 		return spec.Choices[st.cancelIndex()].ID, io.EOF
 	}
+	d.openKeys() // a question or pager shown before the session is ready still takes keys
 	d.dlg = st
 	d.next = "" // no offered prompt beside a question
 	d.scr.raw("\x1b[?25l")
@@ -305,6 +306,7 @@ func (d *dock) openDialogPager(st *dialogState) {
 		rows = append(rows, blockView(b).lines(d.contentWidth(), d.st, true)...)
 	}
 	p := &pager{rows: rows}
+	d.openKeys() // a question or pager shown before the session is ready still takes keys
 	d.pager = p
 	d.scr.raw("\x1b[?1049h")
 	d.drawPager()

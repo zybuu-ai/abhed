@@ -30,6 +30,7 @@ func TestPanicHelper(t *testing.T) {
 	if os.Getenv("ABHED_UI_PANIC_HELPER") == "key" {
 		// The panic happens on the dock's own key reader, in a hotkey.
 		l.Hotkey("ctrl+t", func() { panic("boom from a goroutine") })
+		l.Ready()
 	} else {
 		go func() {
 			defer RestoreOnPanic()

@@ -1596,6 +1596,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- In the terminal, a key pressed as Abhed started, after the input box was
+  drawn but before the session had set its keys, went to the box's default:
+  Shift-Tab did not cycle the mode, and on a slow machine the window was
+  long enough to notice. Keys typed then now wait, in order, and act once
+  the session is ready. Affects 1.2.3 to 1.2.7.
 - A statusline script replaced during a session was taken up when the
   session's folders changed (`/add-dir`, a skill's folder): judging the
   script again pinned whatever file was at its path then, including one
