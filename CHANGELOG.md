@@ -182,6 +182,16 @@ All notable changes to Abhed are recorded here. The format follows
 - A stored secret's value typed or pasted into a message reaches the model
   as `[secret:NAME]`, not as typed.
 
+### Known limits
+
+- The `microvm` driver is experimental. Releases carry no guest kernel or
+  root filesystem, and no `abhed-vmhelper` for macOS; build them with the
+  scripts named under Added.
+- Linux on Z (`s390x`) has been tested under emulation only, not on IBM Z
+  or LinuxONE hardware.
+- The public Go packages for the sandbox control plane are experimental
+  until 2.0 and may change in a minor release.
+
 ### Security
 
 - A stored secret's value typed or pasted into a message was redacted in the

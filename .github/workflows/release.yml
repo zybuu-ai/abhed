@@ -108,14 +108,22 @@ jobs:
         env:
           BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
         run: cp "$BUNDLE" "dist/abhed-${GITHUB_REF_NAME}.provenance.sigstore.json"
+      # The notes open with the changelog's Upgrading list and Known limits;
+      # the generated list of pull requests follows them.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          {
+            python3 scripts/release-notes.py "$GITHUB_REF_NAME"
+            echo
+            echo "Verify a download: https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/guide/01-getting-started.md#verify-a-download"
+          } > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "Abhed $GITHUB_REF_NAME" \
             --generate-notes \
-            --notes "Verify a download: https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/guide/01-getting-started.md#verify-a-download"
+            --notes-file "$RUNNER_TEMP/notes.md"
 
   image:
     name: Container image (linux/amd64, linux/arm64, linux/s390x), signed
