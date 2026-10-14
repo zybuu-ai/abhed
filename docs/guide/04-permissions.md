@@ -341,7 +341,10 @@ An allow rule with a wildcard, such as the built-in `bash(git diff *)` and
   `--ext-diff`, `--textconv`, `--open-files-in-pager` (`grep -O`),
   `--upload-pack` (`clone` and `ls-remote -u`), `--receive-pack` and
   `--exec` (`rebase -x`), joined with `=` or followed by their value, and
-  shortened as git may accept them (`--ext`, `--outp`)
+  shortened to any prefix (`--ext`, `--op`, `--u`; for `--textconv`, one
+  longer than `--text`, which is its own option)
+- `git clone -c`, `--config` and `--template`, and `git init --template`,
+  which set configuration or install hooks
 - before the subcommand, `-c`, `--config-env`, `--exec-path`, `-p` and
   `--paginate` (which run the configured pager), and `-C`, `--git-dir` and
   `--work-tree` (which point git at a repository whose configuration can
@@ -351,16 +354,19 @@ An allow rule with a wildcard, such as the built-in `bash(git diff *)` and
   than reading with `--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`,
   `--list`, `-l`, `get` or `list`
 
-For `diff`, `log`, `show` and `whatchanged` the options are read up to `--`,
-since git reads what follows as paths; for every other subcommand, every
-word is read, because `--` can be an option's value there (`git grep -e --
--O prog`). `--output` and `--upload-pack` already asked in every mode. A
-rule naming the whole command exactly, such as `bash(git log -p
+For `log`, `show` and `whatchanged` the options are read up to `--`, since
+git reads what follows as paths; for every other subcommand, `diff`
+included, every word is read, because `--` can be an option's value there
+(`git grep -e -- -O prog`, `git diff --no-index -O -- --output=f a b`).
+`--output` and `--upload-pack` written in full already asked in every mode.
+A rule naming the whole command exactly, such as `bash(git log -p
 --ext-diff)`, and `bash` or `bash(*)`, still approve it. This is a list,
-not a proof that git runs nothing: under a rule over all of git, such as
-`bash(git *)`, git still runs the programs the repository's own
-configuration names (a diff driver, a pager, `core.fsmonitor`, an alias),
-so the sandbox remains the boundary.
+not a proof that git runs nothing: under any rule that allows git, even the
+built-in `bash(git diff *)`, git still runs the programs the repository's
+own configuration names, with no option at all (an external diff or
+textconv driver on plain `git diff`, a pager, `core.fsmonitor`, an alias;
+see the paragraph on git's own hooks and config below), so the sandbox
+remains the boundary.
 
 A one-click "always allow" is offered only for a short list of well-understood
 tools and subcommands; anything else can be approved once or allowed with a

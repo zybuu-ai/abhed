@@ -7,31 +7,38 @@ import (
 )
 
 // gitRunsOrWritesLong are git options, after the subcommand, that write a file
-// or run a program, with the shortest prefix of each read as it: a git that
-// accepts abbreviations runs --ext as --ext-diff.
+// or run a program, with the shortest prefix of each read as it: git accepts
+// a unique prefix, --op for --open-files-in-pager, so any prefix counts.
 var gitRunsOrWritesLong = []struct {
 	name string
 	min  int
 	why  string
 }{
-	{"output", 3, "writes its output to the file it names"},
-	{"output-directory", 3, "writes patch files into the folder it names"},
-	{"ext-diff", 3, "runs the external diff program git's configuration names"},
+	{"output", 1, "writes its output to the file it names"},
+	{"output-directory", 1, "writes patch files into the folder it names"},
+	{"ext-diff", 1, "runs the external diff program git's configuration names"},
 	// --text is its own option, so only a longer prefix is --textconv.
 	{"textconv", 5, "runs the text conversion programs git's configuration names"},
-	{"open-files-in-pager", 3, "runs a pager program on the matching files"},
-	{"upload-pack", 3, "runs the program it names"},
-	{"receive-pack", 3, "runs the program it names"},
-	{"exec", 3, "runs the command it names"},
+	{"open-files-in-pager", 1, "runs a pager program on the matching files"},
+	{"upload-pack", 1, "runs the program it names"},
+	{"receive-pack", 1, "runs the program it names"},
+	{"exec", 1, "runs the command it names"},
 }
 
 // gitRunsOrWritesShort are the short forms of those options, per subcommand.
 var gitRunsOrWritesShort = map[string]struct{ letters, why string }{
 	"grep":         {"O", "runs a pager program on the matching files"},
 	"format-patch": {"o", "writes patch files into the folder it names"},
-	"clone":        {"u", "runs the program it names"},
+	"clone":        {"uc", "runs the program it names, or sets configuration that can name one"},
 	"ls-remote":    {"u", "runs the program it names"},
 	"rebase":       {"x", "runs the command it names"},
+}
+
+// gitRunsOrWritesSubLong are long options that run a program or set
+// configuration for one subcommand only, any prefix counting.
+var gitRunsOrWritesSubLong = map[string][]string{
+	"clone": {"config", "template"},
+	"init":  {"template"},
 }
 
 // gitRunsPrograms are subcommands whose purpose is to run a program or a
@@ -48,8 +55,8 @@ var gitRunsOperand = map[string]string{"bisect": "run", "submodule": "foreach"}
 
 // gitEndsOptions are the subcommands that find -- before reading options, so
 // a -- given as an option's value still ends them; parse-options subcommands
-// such as grep read on (git grep -e -- -O prog).
-var gitEndsOptions = set("diff", "log", "show", "whatchanged")
+// such as grep read on (git grep -e -- -O prog), and so does diff --no-index.
+var gitEndsOptions = set("log", "show", "whatchanged")
 
 // gitConfigReads are git config's forms that only read.
 var gitConfigReads = set("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l")
@@ -133,6 +140,11 @@ func gitOptionRunsOrWrites(words []string) string {
 		}
 		if name, ok := strings.CutPrefix(w, "--"); ok {
 			name, _, _ = strings.Cut(name, "=")
+			for _, l := range gitRunsOrWritesSubLong[sub] {
+				if name != "" && strings.HasPrefix(l, name) {
+					return "git " + sub + " --" + l + " sets configuration or hooks, which can name a program to run"
+				}
+			}
 			for _, o := range gitRunsOrWritesLong {
 				if len(name) >= min(o.min, len(o.name)) && strings.HasPrefix(o.name, name) {
 					return "git " + sub + " --" + o.name + " " + o.why

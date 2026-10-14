@@ -23,7 +23,9 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		"git diff --ext-diff", "git diff --ext", "git diff a.go --ext-diff", "git log -p --ext-diff",
 		"git show --textconv", "git log -p --textc", "git -c diff.external=x diff", "git --config-env=diff.external=X diff",
 		"git --exec-path=/tmp diff", "git -C sub diff", "git -p log", "git --paginate diff",
-		"git grep -e -- -O/path/prog", "git format-patch --subject-prefix -- -o /dir -1 HEAD",
+		"git grep -e -- -O/path/prog", "git grep --op=prog hello",
+		"git rebase --ex 'prog rebase' HEAD~1", "git clone --u=prog file://repo dst", "git ls-remote --u=prog file://repo",
+		"git clone -c core.sshCommand=prog a b", "git clone --template=/dir a b", "git init --template=/dir", "git format-patch --subject-prefix -- -o /dir -1 HEAD",
 		"git difftool -x evil", "git filter-branch --tree-filter evil", "git send-email --to-cmd=evil x.patch",
 		"git bisect run evil", "git submodule foreach evil", "git config core.pager evil",
 		"git --git-dir=/x/.git log", "git --git-dir /x/.git log", "git --work-tree=/x diff", "git --work-tree /x status", "git grep -O x", "git grep --open-files-in-pager=vim x", "git grep --open x",
@@ -35,12 +37,12 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 		}
 	}
 	// These already ask in every mode, as destructive.
-	for _, c := range []string{"git diff --output=x", "git log --outp x", "git fetch --upload-pack=x origin"} {
+	for _, c := range []string{"git diff --output=x", "git log --outp x", "git fetch --upload-pack=x origin", "git diff --no-index -O -- --output=/x a b"} {
 		if r := ev(c); r.Decision != Ask || r.Offer() != "" {
 			t.Errorf("%s: %s offer %q (%s)", c, r.Decision, r.Offer(), r.Reason)
 		}
 	}
-	for _, c := range []string{"git diff --ext-diff HEAD", "git diff --stat", "git log -O order.txt", "git grep -n x", "git diff -- --ext-diff",
+	for _, c := range []string{"git diff --ext-diff HEAD", "git diff --stat", "git log -O order.txt", "git grep -n x", "git diff -- a.go",
 		"git log -p --grep -- --ext-diff", "git config --get core.pager", "git bisect good", "git submodule status"} {
 		if r := ev(c); r.Decision != Allow {
 			t.Errorf("%s: %s (%s)", c, r.Decision, r.Reason)

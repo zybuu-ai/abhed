@@ -195,7 +195,11 @@ func TestGitDiscardsAreDestructive(t *testing.T) {
 		"git archive -ox.zip HEAD":      true,
 		"git -C . archive -o f HEAD":    true,
 		"git archive --format=zip HEAD": false,
-		"GIT reset --hard":              FoldsCommandNames(),
+		// diff --no-index reads a -- given as -O's value and goes on to --output.
+		"git diff --no-index -O -- --output=/x a b": true,
+		"git diff --no-index -O -- --outp /x a b":   true,
+		"git log -O -- --output=/x":                 false,
+		"GIT reset --hard":                          FoldsCommandNames(),
 		// Arguments made when it runs: the check cannot tell what they discard.
 		"git reset \"$1\"":                               true,
 		"set -- --hard; git reset \"$1\"":                true,

@@ -20,6 +20,13 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 		"git grep -e -- -O/path/prog", "git grep -e -- --open-files-in-pager=prog x", "git grep x -- -O",
 		"git format-patch --subject-prefix -- -o /dir -1 HEAD", "git format-patch -- -o /dir", "git format-patch --subject-prefix -- --output-directory=/dir -1",
 		"git rebase --onto -- -x make main",
+		// diff --no-index reads -- as an option's value too.
+		"git diff --no-index -O -- --output=/x a b", "git diff --no-index -O -- --outp=/x a b", "git diff -- --ext-diff",
+		// Any prefix git accepts.
+		"git grep --op=prog hello", "git rebase --ex 'prog rebase' HEAD~1", "git clone --u=prog file://repo dst", "git ls-remote --u=prog file://repo",
+		// Configuration and hooks set on the clone or init line.
+		"git clone -c core.sshCommand=prog ssh://x/y", "git clone -qc x=y a b", "git clone --config core.sshCommand=prog a b",
+		"git clone --config=x=y a b", "git clone --template=/dir a b", "git clone --temp /dir a b", "git init --template=/dir", "git init --templ /dir x",
 		// Subcommands that run a program.
 		"git difftool -x evil", "git difftool --extcmd=evil", "git difftool HEAD", "git mergetool",
 		"git filter-branch --tree-filter evil", "git filter-branch HEAD", "git send-email --to-cmd=evil x.patch", "git send-email --smtp-server=/tmp/x x.patch",
@@ -40,8 +47,8 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 	for _, c := range []string{
 		"git diff", "git diff --stat HEAD~1", "git diff --no-ext-diff --no-textconv", "git diff --text", "git diff -c",
 		"git log -O order.txt -p", "git log --exit-code", "git log --output-indicator-new=+", "git log -- --ext-diff",
-		"git diff HEAD -- a --output=x", "git status -uall", "git log -p", "git diff --work-tree-x", "git blame --contents f.go f.go",
-		"git grep -n x", "git log -p --grep -- --ext-diff", "git diff --stat -- --output=x", "git show HEAD -- -O",
+		"git diff -- a.go", "git diff HEAD -- a.go b.go", "git status -uall", "git log -p", "git diff --work-tree-x", "git blame --contents f.go f.go",
+		"git grep -n x", "git log -p --grep -- --ext-diff", "git show HEAD -- -O", "git diff --text", "git init", "git clone a b", "git log --grep -- --ext-diff",
 		"git bisect start", "git bisect good", "git submodule status", "git config --get core.pager", "git config -l",
 		"git config --list --show-origin", "git config get core.pager", "git config list", "git config --get-regexp alias",
 		"git log --format=%H --exclude=x", "git diff --color-moved", "echo --ext-diff",

@@ -270,6 +270,8 @@ func parseGitArgs(sub string, words []string) gitArgs {
 		switch {
 		case dashdash:
 			g.paths = append(g.paths, w)
+		case w == "--" && sub == "diff":
+			// diff --no-index reads -- as an option's value and goes on reading options.
 		case w == "--":
 			dashdash = true
 		case strings.HasPrefix(w, "--"):
