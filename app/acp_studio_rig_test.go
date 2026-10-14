@@ -209,6 +209,8 @@ type scriptModel struct {
 	n      int
 	// suggestion answers the next-prompt call; "" answers NONE.
 	suggestion string
+	// bodies are the requests the model was sent.
+	bodies []string
 }
 
 func newScriptModel(t *testing.T, frames ...string) *scriptModel {
@@ -217,6 +219,7 @@ func newScriptModel(t *testing.T, frames ...string) *scriptModel {
 	m.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		m.mu.Lock()
+		m.bodies = append(m.bodies, string(body))
 		frame := `{"choices":[{"delta":{"content":"done"}}]}`
 		if bytes.Contains(body, []byte("predict the next message")) {
 			// The next-prompt call takes no frame of the script.

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -346,5 +347,55 @@ func TestRPCRefusesRequestsBeyondTheCap(t *testing.T) {
 	}
 	if out := s.waitFor(t, `"id":"u256"`); !strings.Contains(out, "requests are already waiting") {
 		t.Fatalf("the request past the cap was not refused:\n%s", out)
+	}
+}
+
+// A stored secret's value in a prompt or a steer reaches the model as
+// [secret:NAME]; the user.message event names it for the caller to say so.
+func TestRPCWithholdsATypedSecret(t *testing.T) {
+	steered, inFirst := make(chan struct{}), make(chan struct{})
+	m := &globModel{}
+	m.hold = func(n int) {
+		if n == 1 {
+			close(inFirst)
+			select {
+			case <-steered:
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}
+	ws := rpcWorkspace(t, m.serve(t).URL, `, "limits": {"max_turns": 2}`)
+	// After rpcWorkspace, which gives the test a home of its own.
+	t.Setenv(secrets.EnvFile, "")
+	for name, value := range map[string]string{"API_TOKEN": "tok-9f8e7d-rpc", "DB_PASS": "hunter2-hunter2-rpc"} {
+		if err := secrets.Default().Set(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"use tok-9f8e7d-rpc"}`)
+	<-inFirst
+	s.send(`{"id":"3","method":"steer","prompt":"and hunter2-hunter2-rpc"}`)
+	out := s.waitFor(t, `"type":"steered"`)
+	close(steered)
+	out += s.waitFor(t, `"id":"2"`)
+	reqs := m.requests()
+	if len(reqs) < 2 {
+		t.Fatalf("%d model requests", len(reqs))
+	}
+	for _, r := range reqs {
+		if strings.Contains(r, "tok-9f8e7d-rpc") || strings.Contains(r, "hunter2-hunter2-rpc") {
+			t.Fatalf("the model was sent a stored value: %s", r)
+		}
+	}
+	if !strings.Contains(reqs[1], "use [secret:API_TOKEN]") || !strings.Contains(reqs[1], "and [secret:DB_PASS]") {
+		t.Fatalf("the model was not sent the placeholders: %s", reqs[1])
+	}
+	for _, want := range []string{`"secrets_withheld":"API_TOKEN"`, `"secrets_withheld":"DB_PASS"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no event with %s:\n%s", want, out)
+		}
 	}
 }

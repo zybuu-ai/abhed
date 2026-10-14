@@ -1416,6 +1416,8 @@ function render(ev){
       const b = node('said user');
       b.append(node('who','you'), document.createTextNode(reveal(p.text || '', true)));
       tx.appendChild(b);
+      if(p.secrets_withheld){ const n = String(p.secrets_withheld).split(',');
+        tx.appendChild(node('note', 'Your message held the value of the stored secret' + (n.length > 1 ? 's ' : ' ') + visible(n.join(', ')) + '; it was not sent to the model, which got [secret:NAME] in its place.')); }
       newTurn();
       stats.turns++;
       break;

@@ -125,4 +125,13 @@ const mineOk = mine.length === 1 && !raw(mineText) && mineText.includes('fix⟨U
 console.log((mineOk ? 'PASS' : 'FAIL') + '  the person\'s message shows hidden characters and keeps its layout');
 if(!mineOk) console.log('        ' + JSON.stringify(mineText));
 ok = mineOk && ok;
+// A message whose stored secret was withheld from the model says so, once.
+tx.childNodes.length = 0; turnEl = null; streamEl = null; streamBody = null;
+render({seq:181, type:'user.message', payload:{text:'use [secret:API_TOKEN]', secrets_withheld:'API_TOKEN'}});
+render({seq:182, type:'user.message', payload:{text:'plain'}});
+const wnotes = tx.querySelectorAll('.note'), wtext = wnotes.length ? wnotes[0].textContent : '';
+const wOk = wnotes.length === 1 && wtext.includes('stored secret API_TOKEN;') && wtext.includes('not sent to the model');
+console.log((wOk ? 'PASS' : 'FAIL') + '  a withheld secret is named under the message');
+if(!wOk) console.log('        ' + JSON.stringify(wtext));
+ok = wOk && ok;
 process.exit(ok?0:1);

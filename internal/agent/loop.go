@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -521,16 +523,41 @@ func (l *Loop) deliverQueued() error {
 		// A steer that cannot be recorded is not applied: the record is the
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
-		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: q.Text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered}); err != nil {
+		text, withheld := l.withholdSecrets(q.Text)
+		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld}); err != nil {
 			return err
 		}
-		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
-		l.setPrompt(q.Text)
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+		l.setPrompt(text)
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
 		l.wakeCap = 0
 	}
 	return nil
+}
+
+// secretLabel is a stored secret's placeholder, as the redactor writes it.
+var secretLabel = regexp.MustCompile(`\[secret:([A-Z][A-Z0-9_]*)\]`)
+
+// withholdSecrets is a person's message as the model may see it, each stored
+// secret's value replaced by [secret:NAME] as in the record, and the names of
+// those replaced, comma-separated. A store that cannot be read withholds it all.
+func (l *Loop) withholdSecrets(text string) (string, string) {
+	red := l.Recorder.redactor()
+	if red == nil {
+		return text, ""
+	}
+	out := redactedText(red.Redact, text)
+	if out == text {
+		return text, ""
+	}
+	var names []string
+	for _, m := range secretLabel.FindAllStringSubmatch(out, -1) {
+		if !slices.Contains(names, m[1]) && strings.Count(out, m[0]) > strings.Count(text, m[0]) {
+			names = append(names, m[1])
+		}
+	}
+	return out, strings.Join(names, ",")
 }
 
 func (l *Loop) setPrompt(text string) {
@@ -660,11 +687,12 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if err := l.noteTrustedStartup(); err != nil {
 		return TermError, err
 	}
-	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: m.Text, ClientID: m.ClientID}); err != nil {
+	text, withheld := l.withholdSecrets(m.Text)
+	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld}); err != nil {
 		return TermError, err
 	}
-	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
-	l.setPrompt(m.Text)
+	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
 }

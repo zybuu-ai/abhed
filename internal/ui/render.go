@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -23,6 +24,8 @@ type Renderer struct {
 	w     io.Writer
 	s     Style
 	quiet bool
+	// errw takes notes that are not the reply, such as a withheld secret.
+	errw io.Writer
 
 	// dock, when attached, is where everything is drawn.
 	dock *dock
@@ -90,7 +93,7 @@ func (u Usage) ContextPct() int {
 }
 
 func NewRenderer(w io.Writer, quiet bool) *Renderer {
-	return &Renderer{w: w, s: NewStyle(w), quiet: quiet}
+	return &Renderer{w: w, s: NewStyle(w), quiet: quiet, errw: os.Stderr}
 }
 
 // Attach draws through the dock of l, when l has one: replies stream into
@@ -267,14 +270,21 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 
 	case agent.EvUserMessage:
 		var m agent.Message
-		if json.Unmarshal(ev.Payload, &m) != nil || m.QueueID == "" {
-			return // the prompt itself was drawn where it was typed
+		if json.Unmarshal(ev.Payload, &m) != nil {
+			return
 		}
-		// A message typed during the turn, now taken by the agent: it leaves
-		// the queue and joins the transcript where it applies.
-		r.endReply(d, "")
-		d.dequeue(m.Text)
-		d.commitItem(&promptBlock{text: sanitize(m.Text, false), prompt: d.promptText()})
+		// A message typed during the turn, now taken by the agent, leaves the
+		// queue and joins the transcript where it applies; the first prompt
+		// was drawn where it was typed.
+		if m.QueueID != "" {
+			r.endReply(d, "")
+			d.dequeue(m.Text)
+			d.commitItem(&promptBlock{text: sanitize(m.Text, false), prompt: d.promptText()})
+		}
+		if note := WithheldNote(m.SecretsWithheld); note != "" {
+			r.endReply(d, "")
+			d.commitItem(&rawBlock{text: r.s.Yellow("! ") + r.s.Dim(note)})
+		}
 
 	case agent.EvActionRequested:
 		var a agent.ActionRequested
@@ -491,6 +501,14 @@ func (b *streamBlock) lines(width int, _ Style, _ bool) []string {
 func (r *Renderer) lineEvent(ev agent.Event) {
 	s := r.s
 	switch ev.Type {
+	case agent.EvUserMessage:
+		var m agent.Message
+		if json.Unmarshal(ev.Payload, &m) == nil && r.errw != nil {
+			if note := WithheldNote(m.SecretsWithheld); note != "" {
+				fmt.Fprintf(r.errw, "abhed: %s\n", note)
+			}
+		}
+
 	case agent.EvAgentDelta:
 		if r.quiet {
 			return
@@ -693,4 +711,21 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n]) + "..."
+}
+
+// WithheldNote tells the sender which stored secrets their message held, by
+// name, and that the model got placeholders; "" when it held none.
+func WithheldNote(names string) string {
+	if names == "" {
+		return ""
+	}
+	list := strings.Split(names, ",")
+	for i, n := range list {
+		list[i] = VisibleLine(n)
+	}
+	what := "the stored secret " + list[0]
+	if len(list) > 1 {
+		what = "the stored secrets " + strings.Join(list, ", ")
+	}
+	return "your message held the value of " + what + "; it was not sent to the model, which got [secret:NAME] in its place"
 }

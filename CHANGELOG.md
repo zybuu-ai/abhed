@@ -171,6 +171,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A stored secret's value typed or pasted into a message was redacted in the
+  record but sent to the model as typed. It is now replaced by
+  `[secret:NAME]` before the model sees it, for a first message, a message
+  sent while a run works and one queued, from the terminal, `-p`, the console,
+  the workbench, ACP, `abhed rpc` and the SDK; the sender is told once per
+  message (stderr, a note under the message, the ACP turn) and the
+  `user.message` event names the secrets in `secrets_withheld`
+  ([Permissions](docs/guide/04-permissions.md#secrets)). Affects 1.0.0 to
+  1.2.7.
 - A repeated `-deny` or `-disallowedTools` kept only its last value,
   dropping the earlier deny rules without a word, so the run had fewer deny
   rules than asked for; `-allow`, `-allowedTools` and `abhed resolve -allow`
@@ -1953,6 +1962,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `agent.Message.SecretsWithheld` (and so `abhed.Message`'s) names the
+  stored secrets a person's message held, which the model got as
+  `[secret:NAME]`; `ui.WithheldNote` is the line each surface shows for it.
 - `config.TrustedStartupFiles`, `TrustStartupFiles`, `StartupBaseline`
   and `StartupFilesPath` keep the start-up file baseline;
   `policy.Engine.StartupBaseline` (with `policy.StartupFile`,
