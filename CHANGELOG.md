@@ -6,6 +6,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+
+## [1.2.8] - 2026-10-14
+
 ### Upgrading from 1.2.7
 
 - Under deny or ask rules, a shell the agent starts on the process tier or
