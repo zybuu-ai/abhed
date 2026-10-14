@@ -936,7 +936,10 @@ its modes. The none tier holds nothing, and on it the `git` line of
 also refuses the fence in `landlock_only` mode, which cannot hold these files
 (unset, that fence runs and says so); Studio and `abhed serve` always hold
 them where the tier can. With `protect_git` set `true`, `abhed serve` does not
-start on the none tier, which cannot hold them.
+start on the none tier, which cannot hold them. Because `config` is out of
+reach, `git push -u` or `git branch --set-upstream-to` inside a session
+cannot save the upstream, although git prints that it did; set the upstream
+in your own terminal.
 
 An "always allow" for a git command (`bash(git status *)`) is remembered
 with a fingerprint of what git reads in the workspace's repositories and

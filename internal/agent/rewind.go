@@ -88,8 +88,8 @@ func RewindPoints(events []Event) []RewindPoint {
 // a fork through the last step before it, recorded as conversation.forked.
 // Before the first prompt that is a fork at 0, an empty conversation in the
 // same session; the loop is never dropped. It returns how many messages
-// were kept.
-func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
+// were kept and the step the fork was recorded at.
+func (l *Loop) ForkBefore(events []Event, seq int64) (int, int64, error) {
 	var through int64
 	said := false
 	for _, ev := range Live(events) {
@@ -112,14 +112,14 @@ func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	if err := l.refuseForkWhileTasksRun(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: 0}); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	l.Session.ResetScoped()
 	l.messages = nil
-	return 0, nil
+	return 0, 0, nil
 }
 
 // RestoreFile is how a rewind puts one file back: path to data with mode

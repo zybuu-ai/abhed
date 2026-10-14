@@ -1584,6 +1584,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `/fork 0` in the terminal said it forked at step 0 while it kept the
+  whole conversation. It now names the last step it kept. Affects every
+  release to 1.2.7.
 - A server stopped while a workbench or console tab was open waited the
   full ten seconds it gives open HTTP requests, since the tab's streams
   never end by themselves. Its streams (session events, terminals,
