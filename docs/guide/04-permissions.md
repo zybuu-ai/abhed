@@ -333,6 +333,21 @@ allow every command. An allow rule whose own pattern holds that syntax, such as
 A rule for an interpreter allows whatever it can run: `bash(vim -es*)` allows
 any command, since a vim script runs shell commands with `:!`.
 
+An allow rule with a wildcard, such as the built-in `bash(git diff *)` and
+`bash(git log *)`, does not approve a git option that writes a file or runs
+a program; the command asks, with no "always allow" offered, and the reason
+names the option. They are `--output` and `--output-directory`
+(`format-patch -o`), `--ext-diff`, `--textconv`, `--open-files-in-pager`
+(`grep -O`), `--upload-pack` (`clone` and `ls-remote -u`), `--receive-pack`,
+`--exec` (`rebase -x`), and, before the subcommand, `-c`, `--config-env`,
+`--exec-path`, `-p` and `--paginate` (which run the configured pager), and
+`-C`, `--git-dir` and `--work-tree` (which point git at a repository whose
+configuration can name a program to run). Each counts joined with `=` or followed by its value, shortened
+as git may accept it (`--ext`, `--outp`), and after paths, up to `--`.
+`--output` and `--upload-pack` already asked in every mode. A rule naming the
+whole command exactly, such as `bash(git log -p --ext-diff)`, and `bash` or
+`bash(*)`, still approve it.
+
 A one-click "always allow" is offered only for a short list of well-understood
 tools and subcommands; anything else can be approved once or allowed with a
 rule you write. The list:

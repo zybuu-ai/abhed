@@ -1079,8 +1079,16 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		}
 	}
 
-	// 5. Allow rules.
+	// 5. Allow rules. A git option that writes a file or runs a program is
+	// approved only by a rule naming the command exactly, or allowing every one.
+	gitRuns := ""
+	if tool == "bash" {
+		gitRuns = canon.GitRunsOrWrites()
+	}
 	for _, r := range allowRules {
+		if gitRuns != "" && !r.matchesEverything() && strings.ContainsAny(r.glob, "*?") {
+			continue
+		}
 		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
 			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw, Layer: r.layer}
 		}
@@ -1093,7 +1101,11 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	if !mutates {
 		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
 	}
-	return e.defaultAsk(tool, subject, askReason(tool, e.Mode))
+	why := askReason(tool, e.Mode)
+	if gitRuns != "" {
+		why += " (" + gitRuns + ", so no allow rule with a wildcard approves it)"
+	}
+	return e.defaultAsk(tool, subject, why)
 }
 
 // defaultAsk is the default step's question, with the scope it offers, or,
@@ -1202,6 +1214,10 @@ func (e *Engine) suggestScope(tool, subject string) string {
 			return tool
 		}
 		fields[0] = tools.CommandName(fields[0])
+		// A scope is a wildcard rule, which would not approve the call it was offered for.
+		if tools.CanonicalCommand(subject).GitRunsOrWrites() != "" {
+			return ""
+		}
 		prefix := bashScope(fields)
 		if prefix == "" || !e.resolvesOutsideRoots(fields[0]) {
 			return ""
