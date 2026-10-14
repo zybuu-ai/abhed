@@ -34,8 +34,8 @@ var gitRunsOrWritesShort = map[string]struct{ letters, why string }{
 }
 
 // GitRunsOrWrites says why the command runs git with an option that writes a
-// file or runs a program, such as --output, --ext-diff or -c before the
-// subcommand; "" when none. A read-only allow rule such as bash(git diff *)
+// file or runs a program, such as --output, --ext-diff, or -c, -p or -C
+// before the subcommand; "" when none. A read-only allow rule such as bash(git diff *)
 // does not approve these. Rough on purpose: a false match only asks.
 func (c Canonical) GitRunsOrWrites() string {
 	forms := append([]string{c.command, c.Text}, c.shell.commands...)
@@ -82,6 +82,11 @@ func gitOptionRunsOrWrites(words []string) string {
 			return "git " + w + " sets configuration, which can name a program to run"
 		case strings.HasPrefix(w, "--exec-path"):
 			return "git " + w + " sets where git finds its commands"
+		case w == "-p", w == "--paginate":
+			return "git " + w + " runs the pager program git's configuration names"
+		// Another repository's config can name a program for the subcommand to run.
+		case w == "-C", strings.HasPrefix(w, "--git-dir"), strings.HasPrefix(w, "--work-tree"):
+			return "git " + w + " runs git on a repository whose configuration can name a program to run"
 		}
 		if gitGlobalsWithValue[w] {
 			i++

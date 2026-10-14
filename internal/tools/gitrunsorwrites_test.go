@@ -14,6 +14,8 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 		"git -c diff.external=x diff", "git -cdiff.external=x diff", "git -c core.pager=x log",
 		"git --config-env=diff.external=X diff", "git --config-env diff.external=X diff",
 		"git --exec-path=/tmp log", "git --exec-path /tmp log", "git -C sub -c x=y log",
+		"git -C sub log", "git -C sub diff", "git -p log", "git --paginate diff", "git --no-pager -p log",
+		"git --git-dir=/x/.git log", "git --git-dir /x/.git log", "git --work-tree=/x diff", "git --work-tree /x diff",
 		"git format-patch -o /tmp HEAD~1", "git format-patch -ko/tmp HEAD~1",
 		"git format-patch --output-directory=/tmp HEAD~1", "git format-patch --output-dir /tmp HEAD~1",
 		"git grep -O x", "git grep -Ovim x", "git grep -nO x", "git grep --open-files-in-pager=vim x", "git grep --open x",
@@ -28,7 +30,7 @@ func TestGitRunsOrWritesNamesEveryForm(t *testing.T) {
 	for _, c := range []string{
 		"git diff", "git diff --stat HEAD~1", "git diff --no-ext-diff --no-textconv", "git diff --text", "git diff -c",
 		"git log -O order.txt -p", "git log --exit-code", "git log --output-indicator-new=+", "git log -- --ext-diff",
-		"git diff HEAD -- a --output=x", "git status -uall", "git -C sub log", "git blame --contents f.go f.go",
+		"git diff HEAD -- a --output=x", "git status -uall", "git log -p", "git diff --work-tree-x", "git blame --contents f.go f.go",
 		"git grep -n x", "git log --format=%H --exclude=x", "git diff --color-moved", "echo --ext-diff",
 	} {
 		if why := CanonicalCommand(c).GitRunsOrWrites(); why != "" {

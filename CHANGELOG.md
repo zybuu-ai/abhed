@@ -173,8 +173,9 @@ All notable changes to Abhed are recorded here. The format follows
   themselves, so `lsof`, `lsblk` and `git difftool` now ask.
 - An allow rule with a wildcard over git, built-in or your own, no longer
   approves an option that runs a program or writes a file (`--ext-diff`,
-  `--textconv`, `grep -O`, `-c` before the subcommand and the like); such a
-  command asks. A rule naming the whole command exactly still approves it.
+  `--textconv`, `grep -O`, `-c`, `-C` or `-p` before the subcommand and the
+  like); such a command asks. A rule naming the whole command exactly still
+  approves it.
 - Under any rule for `bash`, tmux and screen are limited to listing and
   showing what a server holds: `tmux new`, `attach-session` and
   `send-keys`, and `screen -dm`, are refused under a deny rule and asked
@@ -204,8 +205,9 @@ All notable changes to Abhed are recorded here. The format follows
   git (`bash(git *)`, `bash(git grep *)`) also approved options that run a
   program or write a file: `--open-files-in-pager` (`grep -O`),
   `--output-directory` (`format-patch -o`), `--receive-pack`, `--exec`
-  (`rebase -x`), `clone -u`, and `-c`, `--config-env` or `--exec-path`
-  before the subcommand. No allow rule with a wildcard approves these now,
+  (`rebase -x`), `clone -u`, and, before the subcommand, `-c`,
+  `--config-env`, `--exec-path`, `-p`/`--paginate`, `-C`, `--git-dir` or
+  `--work-tree`. No allow rule with a wildcard approves these now,
   in any spelling git accepts, and no "always allow" is offered for them; a
   rule naming the whole command exactly still does
   ([Permissions](docs/guide/04-permissions.md#rules)). `--output` and

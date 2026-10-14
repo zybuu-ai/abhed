@@ -22,7 +22,8 @@ func TestWildcardAllowSkipsGitOptionsThatRunOrWrite(t *testing.T) {
 	for _, c := range []string{
 		"git diff --ext-diff", "git diff --ext", "git diff a.go --ext-diff", "git log -p --ext-diff",
 		"git show --textconv", "git log -p --textc", "git -c diff.external=x diff", "git --config-env=diff.external=X diff",
-		"git --exec-path=/tmp diff", "git grep -O x", "git grep --open-files-in-pager=vim x", "git grep --open x",
+		"git --exec-path=/tmp diff", "git -C sub diff", "git -p log", "git --paginate diff",
+		"git --git-dir=/x/.git log", "git --git-dir /x/.git log", "git --work-tree=/x diff", "git --work-tree /x status", "git grep -O x", "git grep --open-files-in-pager=vim x", "git grep --open x",
 		"git format-patch -o /tmp HEAD~1", "git format-patch --output-directory /tmp HEAD~1",
 	} {
 		r := ev(c)
