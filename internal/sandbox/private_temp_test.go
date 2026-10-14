@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -60,5 +62,41 @@ func TestPrivateTempIsTheBubblewrapTmp(t *testing.T) {
 	}
 	if !slices.Contains(env, "TMPDIR=/tmp") {
 		t.Fatalf("env %v", env)
+	}
+}
+
+// Removal makes read-only folders writable, but never one outside its own:
+// a folder swapped for a link after the walk listed it is not followed out.
+func TestRemovalChmodsOnlyInsideItsFolder(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	if err := os.Chmod(outside, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(outside, 0o700) })
+	if err := os.Symlink(outside, filepath.Join(dir, "swapped")); err != nil {
+		t.Fatal(err)
+	}
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chmodFolder(r, "swapped")
+	_ = r.Close()
+	if fi, err := os.Stat(outside); err != nil || fi.Mode().Perm() != 0o500 {
+		t.Fatalf("a folder outside was changed through a link: %v %v", fi.Mode(), err)
+	}
+
+	mod := filepath.Join(dir, "mod", "x")
+	if err := os.MkdirAll(mod, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mod, "f"), nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(mod, 0o500)
+	_ = os.Chmod(filepath.Dir(mod), 0o500)
+	makeRemovable(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("a read-only tree was not made removable: %v", err)
 	}
 }

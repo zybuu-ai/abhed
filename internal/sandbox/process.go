@@ -1104,12 +1104,7 @@ func (s *Process) removeTemp() error {
 	if s.tmp == "" {
 		return nil
 	}
-	_ = filepath.WalkDir(s.tmp, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && d.IsDir() {
-			_ = os.Chmod(p, 0o700) // #nosec G302 -- a folder of the sandbox's own being removed
-		}
-		return nil
-	})
+	makeRemovable(s.tmp)
 	return os.RemoveAll(s.tmp)
 }
 
@@ -1121,13 +1116,30 @@ func (s *Process) removeCaches() error {
 		return nil
 	}
 	// Go makes its module cache read-only; RemoveAll needs it writable.
-	_ = filepath.WalkDir(s.caches, func(p string, d fs.DirEntry, err error) error {
+	makeRemovable(s.caches)
+	return os.RemoveAll(s.caches)
+}
+
+// makeRemovable makes the folders under dir, which sandboxed commands wrote,
+// writable for RemoveAll.
+func makeRemovable(dir string) {
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		return
+	}
+	defer func() { _ = r.Close() }()
+	_ = fs.WalkDir(r.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
-			_ = os.Chmod(p, 0o700) // #nosec G302 -- a folder of the sandbox's own being removed
+			chmodFolder(r, p)
 		}
 		return nil
 	})
-	return os.RemoveAll(s.caches)
+}
+
+// chmodFolder makes p in r writable through r, so a folder swapped for a link
+// after the walk listed it cannot turn the chmod on a folder outside.
+func chmodFolder(r *os.Root, p string) {
+	_ = r.Chmod(p, 0o700) // #nosec G302 -- a folder of the sandbox's own being removed
 }
 
 // vimInitEnv is VIMINIT with history off: the sandbox refuses that write in
