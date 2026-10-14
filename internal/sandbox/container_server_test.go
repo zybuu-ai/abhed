@@ -321,8 +321,8 @@ func sweepAfterKill(t *testing.T) {
 	if containerExists(c, name) {
 		t.Fatalf("the next server's start left the killed owner's %s", name)
 	}
-	if removed := c.sweepServers(context.Background()); len(removed) != 0 {
-		t.Fatalf("a second sweep removed %v", removed)
+	if sw := c.sweepServers(context.Background()); len(sw.Removed) != 0 {
+		t.Fatalf("a second sweep removed %v", sw.Removed)
 	}
 	if ownedContainers(t, c) == "" || !containerExists(c, other) {
 		t.Fatal("a container whose owner runs, or one without the label, was removed")
@@ -365,11 +365,26 @@ func TestServerOwnerGone(t *testing.T) {
 		me: false, dead: true, "otherhost:1:1": false, "garbage": false,
 		hostID() + ":" + strconv.Itoa(os.Getpid()) + ":1": true, // the pid, taken by a later process
 	} {
-		if got := ownerGone(label); got != want {
-			t.Errorf("ownerGone(%q) = %v, want %v", label, got, want)
+		if got := ownerOfLabel(label) == ownerEnded; got != want {
+			t.Errorf("owner of %q ended %v, want %v", label, got, want)
 		}
 	}
 	if args := serverOwnerArgs(); len(args) != 2 || args[1] != serverOwnerLabel+"="+me {
 		t.Errorf("owner args %v", args)
+	}
+}
+
+// An owner whose process cannot be read is not gone: a container is removed
+// only on proof that its Abhed ended, never on another user's hidden process.
+func TestServerOwnerUnreadableIsNotGone(t *testing.T) {
+	label := hostID() + ":4242:1"
+	oldE, oldS := ownerExists, ownerStart
+	t.Cleanup(func() { ownerExists, ownerStart = oldE, oldS })
+	ownerStart = func(int) (uint64, bool) { return 0, false }
+	for e, want := range map[existence]ownerState{existsYes: ownerUnchecked, existsUnknown: ownerUnchecked, existsNo: ownerEnded} {
+		ownerExists = func(int) existence { return e }
+		if got := ownerOfLabel(label); got != want {
+			t.Errorf("exists %v, start unreadable: %v, want %v", e, got, want)
+		}
 	}
 }

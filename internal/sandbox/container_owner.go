@@ -35,19 +35,57 @@ func ownerOf(pid int) string {
 	return hostID() + ":" + strconv.Itoa(pid) + ":" + strconv.FormatUint(start, 10)
 }
 
-// ownerGone reports a label naming a process on this host that has ended: its
-// pid is free or taken by a later process. Another host's, or one that does
-// not parse, is not gone.
-func ownerGone(label string) bool {
+// existence is what the kernel says of a pid.
+type existence int
+
+const (
+	existsUnknown existence = iota
+	existsYes
+	existsNo
+)
+
+// ownerExists and ownerStart read an owner's process; tests replace them.
+var (
+	ownerExists = processExists
+	ownerStart  = startTime
+)
+
+// What a sweep can say of an owner label.
+type ownerState int
+
+const (
+	ownerLives     ownerState = iota // the process runs, as labelled
+	ownerEnded                       // its pid is free or taken by a later process
+	ownerUnchecked                   // its process cannot be read here (another user's under hidepid)
+	ownerElsewhere                   // another host's, or a label that does not parse
+)
+
+// ownerOfLabel says whether a label names a process on this host that has
+// ended. Only a proof counts: a process that cannot be read is not ended.
+func ownerOfLabel(label string) ownerState {
 	parts := strings.Split(label, ":")
 	if len(parts) != 3 || parts[0] != hostID() {
-		return false
+		return ownerElsewhere
 	}
 	pid, err := strconv.Atoi(parts[1])
-	if err != nil || pid <= 0 {
-		return false
+	want, perr := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil || perr != nil || pid <= 0 {
+		return ownerElsewhere
 	}
-	return ownerOf(pid) != label
+	switch ownerExists(pid) {
+	case existsNo:
+		return ownerEnded
+	case existsUnknown:
+		return ownerUnchecked
+	}
+	start, ok := ownerStart(pid)
+	switch {
+	case !ok:
+		return ownerUnchecked
+	case start != want:
+		return ownerEnded
+	}
+	return ownerLives
 }
 
 // serverOwnerArgs label a server's container as this process's.
@@ -60,41 +98,51 @@ func serverOwnerArgs() []string {
 
 var sweepServersOnce sync.Once
 
+// ServerSweep is what a sweep did: the containers it removed, and those it
+// kept because their owner could not be checked here.
+type ServerSweep struct{ Removed, Unchecked []string }
+
 // SweepServers removes, once per process, the server containers an Abhed
-// process on this host left when it was killed, and returns their names.
-// A container without the owner label is never touched.
-func (c *Container) SweepServers(ctx context.Context) []string {
-	var removed []string
-	sweepServersOnce.Do(func() { removed = c.sweepServers(ctx) })
-	return removed
+// process on this host left when it was killed. A container without the owner
+// label, or whose owner cannot be read, is never touched.
+func (c *Container) SweepServers(ctx context.Context) ServerSweep {
+	var sw ServerSweep
+	sweepServersOnce.Do(func() { sw = c.sweepServers(ctx) })
+	return sw
 }
 
-func (c *Container) sweepServers(ctx context.Context) []string {
+func (c *Container) sweepServers(ctx context.Context) ServerSweep {
+	var sw ServerSweep
 	out, err := c.engineCmd(ctx, "ps", "-a", "--filter", "label="+serverOwnerLabel, "--format", "{{.Names}}").Output()
 	if err != nil {
-		return nil
+		return sw
 	}
-	var removed []string
 	for _, name := range strings.Fields(string(out)) {
 		// The label decides; the prefix only keeps the sweep to Abhed's own
 		// names (a build before this one named a server's egress container so).
 		if !strings.HasPrefix(name, serverPrefix) && !strings.HasPrefix(name, egressPrefix) {
 			continue
 		}
-		label, err := c.engineCmd(ctx, "inspect", "--format", `{{index .Config.Labels "`+serverOwnerLabel+`"}}`, name).Output()
-		if err != nil || !ownerGone(strings.TrimSpace(string(label))) {
+		raw, err := c.engineCmd(ctx, "inspect", "--format", `{{index .Config.Labels "`+serverOwnerLabel+`"}}`, name).Output()
+		if err != nil {
 			continue
 		}
-		c.removeNow(name)
-		slog.Warn("removed an MCP server's container left by an Abhed process that ended", "container", name, "owner", strings.TrimSpace(string(label)))
-		removed = append(removed, name)
+		label := strings.TrimSpace(string(raw))
+		switch ownerOfLabel(label) {
+		case ownerEnded:
+			c.removeNow(name)
+			slog.Warn("removed an MCP server's container left by an Abhed process that ended", "container", name, "owner", label)
+			sw.Removed = append(sw.Removed, name)
+		case ownerUnchecked:
+			sw.Unchecked = append(sw.Unchecked, name)
+		}
 	}
-	return removed
+	return sw
 }
 
 // sweptNote tells the person of containers SweepServers removed.
-func sweptNote(names []string) {
-	if len(names) > 0 {
-		fmt.Fprintf(os.Stderr, "abhed: removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(names), strings.Join(names, ", "))
+func sweptNote(sw ServerSweep) {
+	if len(sw.Removed) > 0 {
+		fmt.Fprintf(os.Stderr, "abhed: removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(sw.Removed), strings.Join(sw.Removed, ", "))
 	}
 }

@@ -119,8 +119,12 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		// MCP servers' containers a killed Abhed left, removed as a session
 		// would; only when one is set to run in a container.
 		if c, ok := sb.(*sandbox.Container); ok && confinedStdioServers(cfg) {
-			if gone := c.SweepServers(context.Background()); len(gone) > 0 {
-				fmt.Printf("            removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(gone), strings.Join(gone, ", "))
+			sw := c.SweepServers(context.Background())
+			if len(sw.Removed) > 0 {
+				fmt.Printf("            removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(sw.Removed), strings.Join(sw.Removed, ", "))
+			}
+			if len(sw.Unchecked) > 0 {
+				fmt.Printf("            kept %d MCP server container(s) whose Abhed process cannot be checked from here (another user's?): %s; remove them yourself if they are left over\n", len(sw.Unchecked), strings.Join(sw.Unchecked, ", "))
 			}
 		}
 	} else {

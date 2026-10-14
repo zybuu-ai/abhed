@@ -61,7 +61,9 @@ belong to the server process, shared by its sessions, and are removed when
 start time); one left by an Abhed that was killed outright (`kill -9`),
 under the allowlist too, is removed the next time a server starts on these tiers, and by `abhed doctor`
 when a stdio server is set to run in one (enabled, not `host_files`), which
-say so. A container without that label is never touched.
+say so. A container without that label is never touched, nor one whose
+process cannot be checked from here (another user's, under `hidepid`): it is
+kept, and `abhed doctor` names it.
 So its program must run in that image: a `docker`-style server, or one
 installed for macOS, does not. Before the server starts, Abhed looks for its
 program in the image (with the server's mounts) and refuses a server whose
