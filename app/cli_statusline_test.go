@@ -301,7 +301,8 @@ func TestStatuslineScriptRefusedInStateAndWritableAreas(t *testing.T) {
 	if err := os.Chmod(tmp.Name(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := statuslineScript(tmp.Name(), ws, nil, nil); err == nil {
+	// On Linux no sandboxed command writes the host's temp, so only elsewhere is it refused.
+	if _, _, err := statuslineScript(tmp.Name(), ws, nil, nil); err == nil && runtime.GOOS != "linux" {
 		t.Errorf("a temp script %s was taken", tmp.Name())
 	}
 	// A link from a fine place into the state resolves there, and is refused.
