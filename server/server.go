@@ -3951,6 +3951,23 @@ func (s *Server) releaseBashes() {
 	}
 }
 
+// releaseClaims lets go, at once, of every session this process still holds.
+// A handed-over session is no longer this process's, and is left as it is.
+func (s *Server) releaseClaims() {
+	s.mu.RLock()
+	all := make([]*liveSession, 0, len(s.running))
+	for _, live := range s.running {
+		all = append(all, live)
+	}
+	s.mu.RUnlock()
+	var wg sync.WaitGroup
+	for _, live := range all {
+		wg.Add(1)
+		go func() { defer wg.Done(); s.releaseNodeNow(live) }()
+	}
+	wg.Wait()
+}
+
 // releaseNodeNow ends the hold whatever is live, for a session going away
 // (deleted, or the process draining).
 func (s *Server) releaseNodeNow(live *liveSession) {
@@ -5218,6 +5235,9 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 			s.log.Warn("shutdown did not complete cleanly", "err", err)
 		}
 		s.releaseBashes()
+		// Nothing more runs here: a claim a tab's work took while the drain
+		// ran would otherwise hold the session from every replica until stale.
+		s.releaseClaims()
 	}()
 	s.log.Info("abhed server listening", "addr", srv.Addr, "workspace", s.opts.Workspace, "tls", s.opts.TLS != nil)
 	if s.opts.TLS != nil {
