@@ -168,6 +168,19 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed migrate` checks state paths as `abhed serve` does, and exits `1`
   on an `auth.users_file` or other state path that `serve` would refuse
   (in the workspace or a temp folder), where 1.2.7 migrated.
+- The built-in allow rules `bash(ls*)` and `bash(git diff*)`, `bash(git
+  status*)` and `bash(git log*)` are narrowed to `ls` and those git commands
+  themselves, so `lsof`, `lsblk` and `git difftool` now ask.
+- Under any rule for `bash`, tmux and screen are limited to listing and
+  showing what a server holds: `tmux new`, `attach-session` and
+  `send-keys`, and `screen -dm`, are refused under a deny rule and asked
+  about otherwise.
+- A repeated `-allow`, `-deny`, `-allowedTools`, `-disallowedTools`,
+  `-add-dir` or `abhed mcp add -allow-tools` now adds to the earlier values
+  instead of keeping only the last, so a script that repeated `-allow` now
+  allows every value it gave.
+- A stored secret's value typed or pasted into a message reaches the model
+  as `[secret:NAME]`, not as typed.
 
 ### Security
 
