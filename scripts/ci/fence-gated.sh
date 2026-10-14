@@ -11,7 +11,7 @@ mod=github.com/zybuu-ai/abhed
 suites() {
 	local pkg
 	for pkg in $1; do echo "fence-${pkg##*/}|$pkg||."; done
-	echo "sandbox|$mod/internal/sandbox||Fence|Mounts|Launch|Select"
+	echo "sandbox|$mod/internal/sandbox||Fence|Mounts|Launch|Select|BoundedLeaf"
 	echo "clitest|$mod/internal/clitest||Fence"
 	# Serve on the fence: only this file's tests are gated here.
 	echo "app|$mod/app|serve_fence_linux_test.go|^(TestServeRunsEachSessionUnderItsOwnFence|TestServedFenceSessionHomeIsItsFencesOnceMade)\$"
@@ -52,17 +52,24 @@ build() {
 	go build -o "$dir/test2json" cmd/test2json
 }
 
-# prepare lets DIR's binaries make user namespaces and starts the user's
-# systemd manager. It uses sudo and changes no sysctl.
+# prepare lets DIR's binaries and bubblewrap make user namespaces and starts
+# the user's systemd manager. It uses sudo and changes no sysctl.
 prepare() {
-	local dir=$1 bus
+	local dir=$1 bus bwrap
 	# Ubuntu 24.04 grants user namespaces only to profiled binaries; this
-	# profiles DIR alone, where the sysctl would lift it for every process.
+	# profiles DIR and bubblewrap alone, where the sysctl would lift it for every process.
 	if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
 		printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
 			"profile abhed-fence-ci $dir/** flags=(unconfined) {" '  userns,' '}' |
 			sudo tee /etc/apparmor.d/abhed-fence-ci > /dev/null
 		sudo apparmor_parser -r /etc/apparmor.d/abhed-fence-ci
+		# The process tier's cgroup test runs bubblewrap, which needs one too.
+		if bwrap=$(command -v bwrap); then
+			printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+				"profile abhed-fence-ci-bwrap $bwrap flags=(unconfined) {" '  userns,' '}' |
+				sudo tee /etc/apparmor.d/abhed-fence-ci-bwrap > /dev/null
+			sudo apparmor_parser -r /etc/apparmor.d/abhed-fence-ci-bwrap
+		fi
 	fi
 	# A second mount of a folder, for the test that the fence covers aliases.
 	install -d -m 0755 "$dir/alias-src" "$dir/alias-mirror"
@@ -108,6 +115,9 @@ check() {
 
 # Tests for other platforms, which skip on Linux by design.
 off_linux=" TestDiscoverElsewhere TestRestrictRefusesOffLinux "
+# Tests that need root, which the fence refuses; the privileged sandbox job
+# in ci.yml runs each as root and lets none skip.
+as_root=" TestFenceSpecAsRootHidesShadow "
 
 # passed_all NAME DIR GATED fails unless every listed test passed, or skipped
 # off-Linux, pending on an item in FENCE_PENDING, or proven by a run of its own
@@ -126,6 +136,7 @@ passed_all() {
 		fi
 		if grep -q -- "--- SKIP: $t " "$log"; then
 			[[ $off_linux == *" $t "* ]] && continue
+			if [[ $as_root == *" $t "* ]] && grep -A2 -- "=== RUN   $t\$" "$log" | grep -q "needs root"; then continue; fi
 			# Serve on the fence asks more of Landlock than this runner's kernel has: said, not passed.
 			if [ "$name" = app ] && grep -A2 -- "=== RUN   $t\$" "$log" | grep -q "serve on the fence needs Landlock ABI"; then
 				echo "SKIPPED on this kernel: $t: $(grep -A2 -- "=== RUN   $t\$" "$log" | grep -o "serve on the fence needs.*")"
