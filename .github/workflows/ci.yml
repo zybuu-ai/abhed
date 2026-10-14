@@ -185,12 +185,14 @@ jobs:
       # rather than let the count drift.
       # The fence tier's kernel tests need a delegated cgroup v2 user scope
       # this runner lacks; the fence job below runs them, and none may skip there.
+      # The real-engine relay tests run in the container-tier job, the fence's
+      # spec as root in the sandbox job, and the TMPDIR test on macOS.
       - name: Sandbox boundary tests actually ran
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
-          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup|set ABHED_TEST_RELAY_BINARY to a Linux build|fence_etc_test.go:[0-9]+: needs root|tmpdir_test.go:[0-9]+: TMPDIR handling is macOS-specific" sandbox.log || true)
           if [ "$skipped" -ne "$expected" ]; then
             echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
             grep -B3 -- "--- SKIP" sandbox.log
@@ -243,10 +245,12 @@ jobs:
       - name: Every process-sandbox boundary runs under bubblewrap
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile' -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
+          # As root here, the fence's spec for root, which the fence job cannot run.
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|^TestFenceSpecAsRootHidesShadow$' -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           if grep -q -- "--- SKIP" sandbox.log; then
             echo "a boundary test skipped under a privileged runner:"; grep -B3 -- "--- SKIP" sandbox.log; exit 1
           fi
+          grep -q -- "--- PASS: TestFenceSpecAsRootHidesShadow " sandbox.log || { echo "TestFenceSpecAsRootHidesShadow did not run and pass as root"; exit 1; }
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
       # The statusline's pinned script, end to end under bubblewrap: it runs,
       # and swapped for a link into ~/.abhed it neither runs nor reads.
@@ -318,6 +322,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
+      # The process tier's per-command cgroup is tested here, in a delegated scope.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
       - name: Build the test binaries
         run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
       - name: Allow user namespaces to those binaries, mount the alias, start the user manager
@@ -512,6 +519,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
+      # The process tier's per-command cgroup is tested here, in a delegated scope.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
       - name: Build the test binaries
         run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
       - name: Allow user namespaces to those binaries, mount the alias, start the user manager
@@ -554,7 +564,7 @@ jobs:
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
             echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
           fi
@@ -647,6 +657,16 @@ jobs:
           set -euo pipefail
           ABHED_REQUIRE_CONTAINER=1 go test ./app/ -run '^TestStudioInteractiveTerminalInAContainer$' -count=1 -v > term.log 2>&1 || { cat term.log; exit 1; }
           grep -q -- "--- PASS: TestStudioInteractiveTerminalInAContainer " term.log || { echo "the terminal test did not run and pass:"; cat term.log; exit 1; }
+      # The egress allowlist on a real engine, with a static build as the relay.
+      - name: The container tier's allowlist holds on Docker
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/abhed-relay" ./cmd/abhed
+          ABHED_TEST_RELAY_BINARY=$RUNNER_TEMP/abhed-relay go test ./internal/sandbox/ -count=1 -v \
+            -run '^(TestContainerAllowlistOnARealEngine|TestContainerInspectionCAOnARealEngine|TestContainerRelayIsOutOfTheCommandsReach)$' > relay.log 2>&1 || { cat relay.log; exit 1; }
+          for t in TestContainerAllowlistOnARealEngine TestContainerInspectionCAOnARealEngine TestContainerRelayIsOutOfTheCommandsReach; do
+            grep -q -- "--- PASS: $t " relay.log || { echo "$t did not run and pass:"; cat relay.log; exit 1; }
+          done
 
   # The docker and podman drivers, one long-lived container per sandbox, on
   # both engines; static, so the test binary can be bound in as the relay.
