@@ -1785,7 +1785,8 @@ All notable changes to Abhed are recorded here. The format follows
   name holds a character that does not print as itself is now refused at
   load and named in the warning, escaped. Doctor's `git` line said git's
   files were held only in served and Studio sessions; it now says what
-  `sandbox.protect_git` holds.
+  `sandbox.protect_git` holds on the tier in force, and on none that they
+  are not held.
 - The command line's own flags written before a subcommand that does not
   read them (`abhed -allow 'secret(X)' acp`) were silently ignored. They now
   stop the command with exit `2` and a message naming them, as they do
@@ -1806,7 +1807,7 @@ All notable changes to Abhed are recorded here. The format follows
   the accounts with `abhed user import` first.
 - `abhed serve -addr 127.0.0.1:0` printed `:0` in its banner; it now names
   the port the system gave it. The banner also says whether git's files
-  are held read-only from commands.
+  are held read-only from commands on its tier.
 - `abhed admin web-search`, refused inside an agent's command, said "the
   attempt could not be logged" although the system log had it; it now says
   the attempt is in the system log.

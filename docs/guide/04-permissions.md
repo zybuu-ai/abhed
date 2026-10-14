@@ -881,7 +881,8 @@ or follows elsewhere: `config`, `config.worktree`, `hooks`, `commondir`, `gitdir
 linked worktrees' (`.git/worktrees/*`) and its submodules'
 (`.git/modules/**`). In a served session that covers the agent's commands,
 its background shells, `!` commands and the workbench terminal, in both of
-its modes. The none tier holds nothing. For the terminal CLI, `abhed -p` and
+its modes. The none tier holds nothing, and on it the `git` line of
+`abhed doctor` and of `abhed serve`'s banner says so. For the terminal CLI, `abhed -p` and
 `abhed rpc`, `"sandbox": {"protect_git": false}` turns this off, and `true`
 also refuses the fence in `landlock_only` mode, which cannot hold these files
 (unset, that fence runs and says so); Studio and `abhed serve` always hold
