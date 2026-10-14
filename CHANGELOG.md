@@ -1584,6 +1584,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A secrets store made readable by others during a session (`chmod 644`)
+  should make the session withhold every payload until it is fixed, but
+  where the file's change time is too coarse to show the chmod, the
+  session kept redacting with the values it had and never withheld. The
+  file's mode is now part of what is compared. Affects 1.2.2 to 1.2.7.
 - A server stopped while a workbench or console tab was open waited the
   full ten seconds it gives open HTTP requests, since the tab's streams
   never end by themselves. Its streams (session events, terminals,

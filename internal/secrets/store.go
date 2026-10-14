@@ -443,6 +443,8 @@ type freshStamp struct {
 	size    int64
 	inode   uint64
 	ctime   int64
+	// mode catches a chmod where the change time is too coarse to show it.
+	mode os.FileMode
 	// digest stands for a source's values, which have no file to stat.
 	digest [32]byte
 }
@@ -467,7 +469,7 @@ func (f *Fresh) stat() freshStamp {
 		return freshStamp{}
 	}
 	inode, ctime := fileIdentity(fi)
-	return freshStamp{ok: true, mod: fi.ModTime().UnixNano(), size: fi.Size(), inode: inode, ctime: ctime}
+	return freshStamp{ok: true, mod: fi.ModTime().UnixNano(), size: fi.Size(), inode: inode, ctime: ctime, mode: fi.Mode()}
 }
 
 // Current is the redactor for the values stored now.
