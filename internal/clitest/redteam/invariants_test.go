@@ -244,7 +244,7 @@ func TestInvariantRewindIsAFork(t *testing.T) {
 	h.Key(clitest.Enter)
 	answer(h, "Rewind to before which prompt?", "1")
 	answer(h, `Rewind to before "first"?`, "1") // the conversation only
-	h.WaitText("forked at step 0")
+	h.WaitText("forked before the first message")
 	// Read once the session has ended, when its head names the last line.
 	h.Exit(0)
 	r := h.Record()
