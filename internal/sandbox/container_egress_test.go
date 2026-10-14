@@ -281,3 +281,48 @@ func TestContainerCloseTearsCallsDownTogether(t *testing.T) {
 		t.Fatalf("Close took %v for three one-second removals: one after another", took)
 	}
 }
+
+// A call still starting its container when the sandbox closes is stopped
+// and its container removed before Close returns.
+func TestContainerCloseWaitsForACallStillStarting(t *testing.T) {
+	inner, log := fakeEngine(t)
+	engine := filepath.Join(t.TempDir(), "slow-run-engine")
+	slow := "#!/bin/sh\nif [ \"$1\" = run ]; then echo \"$*\" >> " + log + "; sleep 2; fi\nexec " + inner + " \"$@\"\n"
+	if err := os.WriteFile(engine, []byte(slow), 0o755); err != nil { // #nosec G306 -- a test script that must run
+		t.Fatal(err)
+	}
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	c := &Container{runtime: engine, available: true, policy: Policy{Workspace: ws, Egress: pol, RelayBinary: "/opt/abhed-linux"}}
+	c.once.Do(func() {})
+	old := containerHostOS
+	containerHostOS = "darwin"
+	t.Cleanup(func() { containerHostOS = old })
+	set := make(chan struct{})
+	go func() {
+		defer close(set)
+		_, _ = c.Command(WithLaunch(context.Background(), Launch{CallID: "call-starting"}), ws, "echo ran").CombinedOutput()
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "run --rm -d") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the container was never started")
+		}
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-set:
+	default:
+		t.Fatal("Close returned while a call was still starting its container")
+	}
+	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "rm -f") {
+		t.Fatalf("the starting call's container was not removed:\n%s", b)
+	}
+}

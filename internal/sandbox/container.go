@@ -64,6 +64,10 @@ type Container struct {
 	egCallsMu sync.Mutex
 	egCalls   map[*int]func()
 	egClosed  bool
+	// egSetups counts calls still starting their container, which Close
+	// stops through egSetupStop and waits for.
+	egSetups    sync.WaitGroup
+	egSetupStop map[*int]context.CancelFunc
 }
 
 // LookEngine finds a container engine's CLI by name. Tests replace it to keep

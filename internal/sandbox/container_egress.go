@@ -106,6 +106,27 @@ func (c *Container) egressRun(ctx context.Context, cwd, prefix string, p Policy,
 	if err != nil {
 		return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: the egress proxy: %w", err)}, nil
 	}
+	// Counted from here until set up or given up, so Close stops it and waits.
+	key := new(int)
+	setupCtx, stopSetup := context.WithCancel(ctx)
+	defer stopSetup()
+	c.egCallsMu.Lock()
+	if c.egClosed {
+		c.egCallsMu.Unlock()
+		return &exec.Cmd{Err: errEgressClosed}, nil
+	}
+	if c.egSetupStop == nil {
+		c.egSetupStop = map[*int]context.CancelFunc{}
+	}
+	c.egSetupStop[key] = stopSetup
+	c.egSetups.Add(1)
+	c.egCallsMu.Unlock()
+	defer func() {
+		c.egCallsMu.Lock()
+		delete(c.egSetupStop, key)
+		c.egCallsMu.Unlock()
+		c.egSetups.Done()
+	}()
 	l := LaunchOf(ctx)
 	call, err := proxy.Issue(l.CallID)
 	if err != nil {
@@ -139,7 +160,7 @@ func (c *Container) egressRun(ctx context.Context, cwd, prefix string, p Policy,
 		defer cancel()
 		_ = enginecli.Command(rmCtx, c.runtime, c.rmArgs(name)...).Run()
 	}
-	startCtx, cancel := context.WithTimeout(ctx, relayReady)
+	startCtx, cancel := context.WithTimeout(setupCtx, relayReady)
 	defer cancel()
 	if out, err := c.engineCmd(startCtx, run...).CombinedOutput(); err != nil {
 		end()
@@ -175,7 +196,6 @@ func (c *Container) egressRun(ctx context.Context, cwd, prefix string, p Policy,
 	}
 	// Once, and waited for by any second caller: the call's end, its
 	// command's cancel, and Close may all ask.
-	key := new(int)
 	stopAll := sync.OnceFunc(func() {
 		stop()
 		removeEnv()
@@ -226,7 +246,13 @@ func (c *Container) closeEgress() error {
 	for _, f := range c.egCalls {
 		ends = append(ends, f)
 	}
+	for _, stop := range c.egSetupStop {
+		stop()
+	}
 	c.egCallsMu.Unlock()
+	// Calls still starting give up and remove what they started, each bounded
+	// by the engine's own wait; then the standing ones go.
+	c.egSetups.Wait()
 	// Together, each bounded by the engine's own wait, so Close takes about
 	// as long as one removal however many calls stand.
 	var wg sync.WaitGroup
