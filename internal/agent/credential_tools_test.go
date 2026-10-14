@@ -401,7 +401,7 @@ func TestForkResetsScopedState(t *testing.T) {
 	type key struct{}
 	sess.Scoped(key{}, func() any { return closeCounter{&n} })
 	evs, _ := store.Events("s1")
-	if _, err := l.ForkTo(evs, 0); err != nil {
+	if _, _, err := l.ForkTo(evs, 0); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 || sess.Scoped(key{}, nil) != nil {

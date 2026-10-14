@@ -9,7 +9,9 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -18,7 +20,9 @@ import (
 func fenceSessionBash(cfg config.Config, workspace string) func(string, *agent.Recorder, tools.Bash) (tools.Bash, func() error) {
 	return func(_ string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error) {
 		sf := &sessionFence{build: func() (sandbox.Sandbox, error) { return buildSandbox(cfg, workspace) }, rec: rec}
-		shared.Sandbox, shared.Shell = sf.Command, sf.Shell
+		fence := func() sandbox.Tier { return sandbox.TierFence }
+		shared.Sandbox, shared.Shell = hostgit.Broker(workspace, fence, sandboxconfig.NetworkOpen(cfg), sf.Command), sf.Shell
+		shared.Home = sf.CommandHome // the session's commands get its own fence's home
 		return shared, sf.Close
 	}
 }
@@ -71,6 +75,18 @@ func (s *sessionFence) get() (*sandbox.Fence, error) {
 	f.SetRecord(agent.SandboxRecord(s.rec))
 	s.fence = f
 	return f, nil
+}
+
+// CommandHome is the fence's home folder; before the fence is made there is
+// none yet, and its home starts empty.
+func (s *sessionFence) CommandHome() (string, bool) {
+	s.mu.Lock()
+	f := s.fence
+	s.mu.Unlock()
+	if f == nil {
+		return "", true
+	}
+	return f.CommandHome()
 }
 
 // Command runs command under the session's fence, or not at all.

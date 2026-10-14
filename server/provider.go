@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -39,8 +40,9 @@ func (s *Server) providers() []providerInfo {
 	cfg := s.opts.Config
 	out := make([]providerInfo, 0, len(cfg.Model.Providers))
 	for name, p := range cfg.Model.Providers {
-		// A built-in the configuration never named is not offered.
-		if !cfg.Offered(name) {
+		// A built-in the configuration never named is not offered, nor one
+		// a managed model.default pins away from.
+		if cfg.ModelAllowed(name) != nil {
 			continue
 		}
 		out = append(out, providerInfo{
@@ -67,7 +69,11 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 // server-side.
 func (s *Server) resolveProvider(name string) (model.Adapter, error) {
 	// Only a listed provider runs a session; a built-in nobody configured is not one.
-	if !s.opts.Config.Offered(name) {
+	if err := s.opts.Config.ModelAllowed(name); err != nil {
+		var pinned *config.ManagedError
+		if errors.As(err, &pinned) {
+			return nil, providerError(pinned.Reason)
+		}
 		return nil, errUnknownProvider
 	}
 	p, err := s.opts.Config.ProviderNamed(name)

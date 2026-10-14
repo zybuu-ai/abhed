@@ -393,3 +393,41 @@ func TestValidateFenceSettings(t *testing.T) {
 		}
 	}
 }
+
+// Git protection is on unless turned off, required only when asked for or
+// when a surface sets it, and a surface's requirement beats the setting.
+func TestGitProtected(t *testing.T) {
+	yes, no := true, false
+	for _, c := range []struct {
+		s            SandboxConfig
+		on, required bool
+	}{
+		{SandboxConfig{}, true, false},
+		{SandboxConfig{GitProtect: &yes}, true, true},
+		{SandboxConfig{GitProtect: &no}, false, false},
+		{SandboxConfig{GitProtect: &no, ProtectGit: true}, true, true},
+	} {
+		if on, req := c.s.GitProtected(); on != c.on || req != c.required {
+			t.Errorf("%+v: on %v required %v", c.s, on, req)
+		}
+	}
+}
+
+func TestLanguageServersAreValidated(t *testing.T) {
+	for name, ls := range map[string]map[string][]string{
+		"empty command": {"go": {}},
+		"blank program": {"go": {" "}},
+		"odd language":  {"Go Lang": {"gopls"}},
+	} {
+		c := Default()
+		c.Sandbox.LanguageServers = ls
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	c := Default()
+	c.Sandbox.LanguageServers = map[string][]string{"go": {"gopls"}, "python": {"pylsp", "--check-parent-process"}}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -101,6 +101,34 @@ type step struct {
 	nowait bool // for keys that show nothing, such as at a password prompt
 }
 
+// waitTerminal waits until the shell's terminal, asked as the server asks
+// it, is in the state want names, rather than for a fixed time.
+func (wb *workbench) waitTerminal(id, what string, want func(*ptyRun, int, bool) bool) {
+	wb.t.Helper()
+	wb.s.mu.RLock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.RUnlock()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		live.mu.Lock()
+		run := live.ptys[id]
+		live.mu.Unlock()
+		if run == nil || !run.local {
+			wb.t.Skip("the terminal cannot be asked here")
+		}
+		if fg, canonical, ok := ttyNow(run.tty); ok && want(run, fg, canonical) {
+			return
+		}
+	}
+	wb.t.Fatalf("waited 10s for %s", what)
+}
+
+// ptyRunsAProgram: a program other than the shell has the terminal.
+func ptyRunsAProgram(run *ptyRun, fg int, _ bool) bool { return run.isProgram(fg) }
+
+// ptyCanonical: the terminal is out of the line editor's raw mode, as while
+// bash runs a command.
+func ptyCanonical(_ *ptyRun, _ int, canonical bool) bool { return canonical }
+
 // typeLines types each piece into a shell, waiting for its prompt between
 // lines, and returns the output and the exit once the shell ends.
 func (wb *workbench) typeLines(id string, pieces ...string) (string, string) {
@@ -443,7 +471,7 @@ func TestShellWithholdsTypeAheadDuringABuiltin(t *testing.T) {
 	wb := shellBench(t, nil)
 	start := wb.startShell()
 	steps := []step{{keys: `end=$((SECONDS+2)); while [ $SECONDS -lt $end ]; do :; done; read -s pw; echo "len=${#pw}"` + "\r", until: "len="},
-		{do: func(string) { time.Sleep(300 * time.Millisecond) }}}
+		{do: func(string) { wb.waitTerminal(start.ID, "bash to leave its line editor", ptyCanonical) }}}
 	for _, k := range "hunter27" {
 		steps = append(steps, step{keys: string(k), nowait: true})
 	}
@@ -573,7 +601,7 @@ func TestShellLeavesAProgramsInputAlone(t *testing.T) {
 	start := wb.startShell()
 	wb.drive(start.ID,
 		step{keys: "cat > note.txt\r", until: "note.txt"},
-		step{do: func(string) { time.Sleep(300 * time.Millisecond) }}, // for cat to take the foreground
+		step{do: func(string) { wb.waitTerminal(start.ID, "cat to take the foreground", ptyRunsAProgram) }},
 		step{keys: "kept shutdown words\r", until: "words"},
 		step{keys: "\x04", until: "(no sandbox)"},
 		step{keys: "echo back\r"},
@@ -728,8 +756,10 @@ func TestShellDoesNotWaitOnTheExplorer(t *testing.T) {
 func TestShellFallsBackToLines(t *testing.T) {
 	for name, wb := range map[string]*workbench{
 		"operator chose lines": shellBench(t, func(c *config.Config) { c.Sandbox.Terminal = "lines" }),
-		"managed bash rules":   shellBench(t, func(c *config.Config) { c.Managed = true }),
-		"no shell in sandbox":  manualBench(t, nil),
+		"managed bash rules": shellBench(t, func(c *config.Config) {
+			c.Managed, c.ManagedKeys = true, []string{"permissions.deny"}
+		}),
+		"no shell in sandbox": manualBench(t, nil),
 	} {
 		rec := wb.send("acme", "POST", "pty", ptyStartRequest{Interactive: true})
 		var got ptyStartResponse
@@ -738,6 +768,19 @@ func TestShellFallsBackToLines(t *testing.T) {
 			t.Errorf("%s: %d %+v", name, rec.Code, got)
 		}
 	}
+}
+
+// A managed file that sets no deny rules, only web search, leaves the shell
+// interactive: the deny rules in force are not the organisation's.
+func TestShellStaysInteractiveUnderUnrelatedManagedSettings(t *testing.T) {
+	wb := shellBench(t, func(c *config.Config) {
+		c.Managed, c.ManagedKeys = true, []string{"web_search.enabled"}
+	})
+	start := wb.startShell()
+	if start.Lines != "" || !start.Interactive {
+		t.Fatalf("fell back to lines: %+v", start)
+	}
+	_, _ = wb.typeLines(start.ID, enter("exit")...)
 }
 
 // Plan mode is read-only for a person too: no shell.
@@ -1018,5 +1061,120 @@ func TestShellWithholdsAPasswordTypedAheadKeyByKey(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A line longer than the terminal is wide is soft-wrapped by readline as it
+// is echoed; it is still recorded with its text, and screened as typed.
+func TestShellRecordsAWrappedLine(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	long := "echo " + strings.Repeat("wrapped-", 19) + "end"
+	denied := "touch " + strings.Repeat("padding-", 11) + "x; touch shutdown-wrapped"
+	out, _ := wb.drive(start.ID, step{keys: long, until: "-end"}, step{keys: "\r"},
+		step{keys: denied, until: "-wrapped"}, step{keys: "\r", until: "Denied"}, step{keys: "exit\r"})
+	if !slices.ContainsFunc(wb.typed(), func(in agent.TerminalInput) bool { return in.Line == long }) {
+		t.Fatalf("the wrapped line was not recorded with its text: %+v", wb.typed())
+	}
+	if fileExists(filepath.Join(wb.workspace, "shutdown-wrapped")) || !strings.Contains(out, "Denied") {
+		t.Fatalf("a denied wrapped line ran:\n%s", out)
+	}
+}
+
+// A server accounts sign in to warns at start when its deny rules for
+// commands are only a screen in the workbench shell.
+func TestShellScreeningWarnedOnAMultiUserServer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit func(*config.Config)
+		warn bool
+	}{
+		"multi-user, shell":    {func(c *config.Config) { c.Auth.Mode = "proxy" }, true},
+		"multi-user, lines":    {func(c *config.Config) { c.Auth.Mode = "proxy"; c.Sandbox.Terminal = "lines" }, false},
+		"single user":          {func(c *config.Config) { c.Auth.Mode = "none" }, false},
+		"no command deny rule": {func(c *config.Config) { c.Auth.Mode = "proxy"; c.Permissions.Deny = []string{"read(**/.env)"} }, false},
+		"managed rules force lines": {func(c *config.Config) {
+			c.Auth.Mode = "proxy"
+			c.Managed, c.ManagedKeys = true, []string{"permissions.deny"}
+		}, false},
+	} {
+		cfg := config.Default()
+		tc.edit(&cfg)
+		var buf bytes.Buffer
+		New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+		if got := strings.Contains(buf.String(), `set sandbox.terminal to \"lines\"`); got != tc.warn {
+			t.Errorf("%s: warned=%v\n%s", name, got, buf.String())
+		}
+	}
+}
+
+// A shell no page watches is listed for its owner to adopt; once a page says
+// it is closing, the shell waits a minute for a reload, not its idle time.
+func TestShellAdoptAndDetach(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	list := func(user string) []openShell {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/sessions/"+wb.session+"/pty", nil)
+		req.Header.Set("X-Abhed-Tenant", "acme")
+		if user != "" {
+			req.Header.Set("X-Abhed-User", user)
+		}
+		wb.h.ServeHTTP(rec, req)
+		var out []openShell
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Fatalf("list: %d %s", rec.Code, rec.Body)
+		}
+		return out
+	}
+	if got := list(""); len(got) != 1 || got[0].ID != start.ID || got[0].Isolation == nil || got[0].Workspace != wb.workspace {
+		t.Fatalf("the unwatched shell was not listed: %+v", got)
+	}
+	if got := list("mallory"); len(got) != 0 {
+		t.Fatalf("another account was offered the shell: %+v", got)
+	}
+	live, _ := wb.s.session(context.Background(), wb.session, "acme", "")
+	live.mu.Lock()
+	run := live.ptys[start.ID]
+	live.mu.Unlock()
+	// Watched, it is not offered.
+	ch := make(chan []byte)
+	run.mu.Lock()
+	run.subs[ch] = struct{}{}
+	run.mu.Unlock()
+	if got := list(""); len(got) != 0 {
+		t.Fatalf("a watched shell was offered: %+v", got)
+	}
+	run.mu.Lock()
+	delete(run.subs, ch)
+	run.mu.Unlock()
+
+	if rec := wb.send("acme", "POST", "pty/"+start.ID+"/detach", nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("detach: %d %s", rec.Code, rec.Body)
+	}
+	run.mu.Lock()
+	run.lastRead = time.Now().Add(-2 * shellDetachGrace)
+	run.mu.Unlock()
+	if !run.abandoned() {
+		t.Fatal("a detached shell waits its whole idle time")
+	}
+	run.detached.Store(false)
+	if run.abandoned() {
+		t.Fatal("a shell went before its idle time")
+	}
+	// A shell another account started in this session is neither offered
+	// nor reachable, though the session is the caller's.
+	own := run.user
+	run.user = "mallory"
+	if got := list(""); len(got) != 0 {
+		t.Fatalf("another account's shell was offered: %+v", got)
+	}
+	for _, c := range []struct{ method, path string }{{"DELETE", ""}, {"POST", "/detach"}, {"POST", "/resize"}} {
+		if rec := wb.send("acme", c.method, "pty/"+start.ID+c.path, map[string]int{"cols": 80, "rows": 24}); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s on another account's shell: %d", c.method, c.path, rec.Code)
+		}
+	}
+	run.user = own
+	if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("kill: %d", rec.Code)
 	}
 }

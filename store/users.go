@@ -38,6 +38,51 @@ CREATE INDEX IF NOT EXISTS users_email_idx  ON users (email) WHERE email <> '';
 
 -- A sign-out everywhere, counted so every server ends older sessions.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS revocations BIGINT NOT NULL DEFAULT 0;
+
+-- Every change to an account's groups or tenant, which is what it may do,
+-- written by a trigger that runs as the table's owner: the server can neither
+-- skip the row nor write one of its own.
+CREATE TABLE IF NOT EXISTS account_changes (
+  seq        BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  username   TEXT        NOT NULL,
+  change     TEXT        NOT NULL,
+  old_groups TEXT,
+  new_groups TEXT,
+  old_tenant TEXT,
+  new_tenant TEXT,
+  by_role    TEXT        NOT NULL,
+  at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS account_changes_no_update ON account_changes;
+CREATE TRIGGER account_changes_no_update BEFORE UPDATE ON account_changes
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS account_changes_no_delete ON account_changes;
+CREATE TRIGGER account_changes_no_delete BEFORE DELETE ON account_changes
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS account_changes_no_truncate ON account_changes;
+CREATE TRIGGER account_changes_no_truncate BEFORE TRUNCATE ON account_changes
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+
+CREATE OR REPLACE FUNCTION abhed_users_noted() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO account_changes (username, change, new_groups, new_tenant, by_role)
+    VALUES (NEW.username, 'created', NEW.groups, NEW.tenant, session_user);
+  ELSIF TG_OP = 'DELETE' THEN
+    INSERT INTO account_changes (username, change, old_groups, old_tenant, by_role)
+    VALUES (OLD.username, 'removed', OLD.groups, OLD.tenant, session_user);
+  ELSIF NEW.groups IS DISTINCT FROM OLD.groups OR NEW.tenant IS DISTINCT FROM OLD.tenant
+        OR NEW.username IS DISTINCT FROM OLD.username THEN
+    INSERT INTO account_changes (username, change, old_groups, new_groups, old_tenant, new_tenant, by_role)
+    VALUES (NEW.username, 'changed', OLD.groups, NEW.groups, OLD.tenant, NEW.tenant, session_user);
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+DROP TRIGGER IF EXISTS users_noted ON users;
+CREATE TRIGGER users_noted AFTER INSERT OR UPDATE OR DELETE ON users
+  FOR EACH ROW EXECUTE FUNCTION abhed_users_noted();
 `
 
 // MigrateUsers creates the accounts table. Separate from the main schema so a
@@ -67,6 +112,23 @@ const accountKeysSchema = `
 CREATE UNIQUE INDEX IF NOT EXISTS users_username_key ON users (lower(username));
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users (lower(btrim(email))) WHERE btrim(email) <> '';
 `
+
+// ensureUsersTable creates the accounts table, if missing, without the
+// version 5 indexes, so the owner move can read it first.
+func ensureUsersTable(ctx context.Context, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("apply users schema: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('abhed.users.schema'))`); err != nil {
+		return fmt.Errorf("apply users schema: %w", err)
+	}
+	if _, err := tx.Exec(ctx, usersSchema); err != nil {
+		return fmt.Errorf("apply users schema: %w", err)
+	}
+	return tx.Commit(ctx)
+}
 
 // migrateUsersSchema applies the accounts table and the version 5 indexes in
 // one transaction, one process at a time, refusing with the accounts to fix

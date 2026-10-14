@@ -242,3 +242,154 @@ func TestWorktreeSubagentHooksUseItsRoots(t *testing.T) {
 		t.Fatal("a permission request the hook's rule matches in the worktree was put to the person")
 	}
 }
+
+// A run going on for queued messages a hook refuses, all of them, records
+// them dropped and ends refused: the model is not called again on the
+// conversation as it was.
+func TestRunQueuedWithEveryMessageRefusedCallsNoModel(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "never"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	l.Steer("the forbidden thing again")
+	reason, err := l.RunQueued(context.Background())
+	if err != nil || reason != TermPromptRefused {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(l.Adapter.(*scriptedAdapter).gotRequests); n != 0 {
+		t.Fatalf("the model was called %d times with nothing new to answer", n)
+	}
+	evs, _ := store.Events("sess1")
+	if !hasEvent(evs, EvMessageDropped) || hasEvent(evs, EvUserMessage) {
+		t.Fatal("the refused message was not recorded as dropped, or was recorded as sent")
+	}
+}
+
+// Messages queued before a prompt a hook refuses are delivered, and answered
+// in the same run, as RunQueued would; they are not left recorded and
+// unanswered until a later message.
+func TestRefusedPromptStillAnswersWhatWasQueuedBeforeIt(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "answered"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	l.Steer("an earlier question")
+	reason, err := l.Run(context.Background(), "the forbidden thing")
+	if err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(l.Adapter.(*scriptedAdapter).gotRequests); n != 1 {
+		t.Fatalf("the model was called %d times, want once for the earlier message", n)
+	}
+	evs, _ := store.Events("sess1")
+	var sent []string
+	for _, e := range evs {
+		if e.Type == EvUserMessage {
+			var m Message
+			_ = json.Unmarshal(e.Payload, &m)
+			sent = append(sent, m.Text)
+		}
+	}
+	if len(sent) != 1 || sent[0] != "an earlier question" {
+		t.Fatalf("recorded as sent: %q", sent)
+	}
+}
+
+// steerOnCall steers the loop as the first model call starts, as a person
+// typing during a turn would.
+type steerOnCall struct {
+	*scriptedAdapter
+	steer func()
+}
+
+func (s *steerOnCall) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	if s.steer != nil {
+		s.steer()
+		s.steer = nil
+	}
+	return s.scriptedAdapter.Complete(ctx, req)
+}
+
+// Messages queued during the final turn that a hook refuses, every one, are
+// dropped, and the model is not called again on the conversation as it was.
+func TestRefusedSteersDuringATurnCallNoModel(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "first"}, {text: "never"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	sa := l.Adapter.(*scriptedAdapter)
+	l.Adapter = &steerOnCall{scriptedAdapter: sa, steer: func() { l.Steer("forbidden one"); l.Steer("forbidden two") }}
+	reason, err := l.Run(context.Background(), "hello")
+	if err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(sa.gotRequests); n != 1 {
+		t.Fatalf("the model was called %d times, want once", n)
+	}
+	evs, _ := store.Events("sess1")
+	dropped := 0
+	for _, e := range evs {
+		if e.Type == EvMessageDropped {
+			dropped++
+		}
+	}
+	if dropped != 2 {
+		t.Fatalf("%d messages recorded as dropped, want 2", dropped)
+	}
+}
+
+// A prompt a hook refuses is recorded as dropped, with why and the client's
+// id, where its surface shows it; RefusedPrompt says so until the next prompt.
+func TestRefusedPromptIsRecordedAndSaid(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "fine"}}, policy.ModeDefault, true)
+	l.Hooks = &fakeHooks{refusePrompt: "forbidden"}
+	if _, err := l.RunMessage(context.Background(), Message{Text: "the forbidden thing", ClientID: "c-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if why := l.RefusedPrompt(); why != "prompt refused by hook" {
+		t.Fatalf("RefusedPrompt = %q", why)
+	}
+	evs, _ := store.Events("sess1")
+	var d DroppedMessage
+	for _, e := range evs {
+		if e.Type == EvMessageDropped {
+			_ = json.Unmarshal(e.Payload, &d)
+		}
+	}
+	if d.ClientID != "c-1" || d.Reason != "prompt refused by hook" {
+		t.Fatalf("recorded as dropped: %+v", d)
+	}
+	if _, err := l.Run(context.Background(), "hello"); err != nil || l.RefusedPrompt() != "" {
+		t.Fatalf("the next prompt: %v, still refused %q", err, l.RefusedPrompt())
+	}
+}
+
+// A refused prompt's recorded end is only that: no turn_end hook fires, and
+// the background tasks keep the last run's end.
+func TestEndRefusedRecordsTheEndOnly(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "fine"}}, policy.ModeDefault, true)
+	NewBackground(l, BackgroundPolicy{Wake: WakeNotify})
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	hooks := &fakeHooks{refusePrompt: "forbidden"}
+	l.Hooks = hooks
+	if _, err := l.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	hooks.mu.Lock()
+	hooks.seen = nil
+	hooks.mu.Unlock()
+	if reason, _ := l.Run(context.Background(), "the forbidden thing"); reason != TermPromptRefused {
+		t.Fatalf("ended %s", reason)
+	}
+	l.EndRefused()
+	hooks.mu.Lock()
+	seen := slices.Clone(hooks.seen)
+	hooks.mu.Unlock()
+	if slices.ContainsFunc(seen, func(s string) bool { return strings.HasPrefix(s, "turn_end") }) {
+		t.Fatalf("a turn_end hook fired for a refused prompt: %v", seen)
+	}
+	l.Background.mu.Lock()
+	last := l.Background.lastReason
+	l.Background.mu.Unlock()
+	if last != TermCompleted {
+		t.Fatalf("the background tasks' last end became %s", last)
+	}
+	evs, _ := store.Events("sess1")
+	if end, _ := LastEnd(evs); end.Reason != TermPromptRefused {
+		t.Fatalf("the recorded end: %s", end.Reason)
+	}
+}

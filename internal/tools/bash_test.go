@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,17 @@ func TestBashRunsAndReportsExit(t *testing.T) {
 	}
 	if res.ExitCode == nil || *res.ExitCode != 0 {
 		t.Fatalf("expected exit 0, got %v", res.ExitCode)
+	}
+}
+
+// An empty result is marked, so a terminal need not read the placeholder as output.
+func TestBashMarksNoOutput(t *testing.T) {
+	s, _ := setup(t)
+	if res := run(t, Bash{}, s, bashArgs{Command: "true", Description: "nothing"}); !res.NoOutput {
+		t.Fatalf("empty output not marked: %q", res.Content)
+	}
+	if res := run(t, Bash{}, s, bashArgs{Command: "echo '[no output]'", Description: "text"}); res.NoOutput {
+		t.Fatalf("real output marked empty: %q", res.Content)
 	}
 }
 
@@ -180,8 +192,8 @@ func TestDetectCdUndoesQuotingAndSaysWhatItDidNotFollow(t *testing.T) {
 		{`pushd plain >/dev/null`, "", "not followed"},
 		{`popd`, "", "not followed"},
 		{`CDPATH=plain && cd packages`, "", "not followed"},
-		{`# && cd plain`, "", "not followed"},
-		{`echo x #&& cd plain`, "", "not followed"},
+		{`# && cd plain`, "", ""},
+		{`echo x #&& cd plain`, "", ""},
 		{`cd plain; ls`, "", "not followed"},
 		{`cd plain | cat`, "", "not followed"},
 		{`cd plain &`, "", "not followed"},
@@ -210,6 +222,14 @@ func TestDetectCdUndoesQuotingAndSaysWhatItDidNotFollow(t *testing.T) {
 		{`ls .`, "", ""},
 		{`./run.sh`, "", ""},
 		{`echo sourced evaluate`, "", ""},
+		{`echo cd`, "", ""},
+		{`echo cd plain && ls`, "", ""},
+		{`grep -r "cd x" .`, "", ""},
+		{`printf '%s\n' eval source`, "", ""},
+		{`if true; then cd plain; fi`, "", "not followed"},
+		{`time cd plain`, "", "not followed"},
+		{`x=1 cd plain`, "", "not followed"},
+		{"echo $(cd plain; pwd)", "", "not followed"},
 		// Quoted, escaped or indirect ways to change directory still get the note.
 		{`"cd" plain`, "", "not followed"},
 		{`'cd' plain`, "", "not followed"},
@@ -323,6 +343,15 @@ func TestBashOutputTruncation(t *testing.T) {
 func TestIsDestructive(t *testing.T) {
 	cases := map[string]bool{
 		"rm -rf /": true,
+
+		// Deletion and rewriting the list had missed.
+		"unlink notes.txt":          true,
+		"cd x && unlink a":          true,
+		"rmdir -p a/b/c":            true,
+		"rmdir -vp a/b":             true,
+		"rmdir --parents a/b":       true,
+		"rmdir empty":               false,
+		"python3 -c 'os.unlink(x)'": false,
 
 		// Line continuations and word-splitting tricks hide the words from a plain read.
 		"rm \\\n-rf scratch":                     true,
@@ -465,5 +494,26 @@ func TestNetworkHintSkipsAVersionQuery(t *testing.T) {
 	}
 	if !networkFailed("curl https://mirror.example/x | jq .", "curl: (6) Could not resolve host: mirror.example\n", 0) {
 		t.Error("a failed curl piped on was not hinted at")
+	}
+}
+
+// The policy's HOME is the registry's bash tool's: its own, hidden for a
+// sandbox that does not say, and the host's for commands run directly.
+func TestCommandHomeFollowsTheBashTool(t *testing.T) {
+	t.Setenv("HOME", "/home/someone")
+	run := func(context.Context, string, string) *exec.Cmd { return nil }
+	for name, c := range map[string]struct {
+		bash    Bash
+		dir     string
+		visible bool
+	}{
+		"direct":    {Bash{}, "/home/someone", true},
+		"sandboxed": {Bash{Sandbox: run}, "", false},
+		"told":      {Bash{Sandbox: run, Home: func() (string, bool) { return "/f/home", true }}, "/f/home", true},
+	} {
+		dir, visible := CommandHome(NewRegistry(c.bash))()
+		if dir != c.dir || visible != c.visible {
+			t.Errorf("%s: %q %v", name, dir, visible)
+		}
 	}
 }

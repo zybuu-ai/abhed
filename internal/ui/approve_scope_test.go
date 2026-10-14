@@ -53,3 +53,24 @@ func TestAlwaysRecordsTheGrantedScope(t *testing.T) {
 		t.Fatalf("answer %+v", answer)
 	}
 }
+
+// A git scope granted under one guard is asked about again once the guard
+// changes, as it does when the repository's config or hooks change.
+func TestGuardedScopeAsksAgainWhenTheGuardChanges(t *testing.T) {
+	var out strings.Builder
+	a := &Approver{In: strings.NewReader("2\n3\n"), Out: &out, Style: NewStyle(io.Discard), Session: NewAllowList()}
+	granted := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(git status *)", Guard: "one"}
+	if ok, err := a.Approve(context.Background(), "bash", nil, granted); err != nil || !ok {
+		t.Fatalf("grant: ok %v err %v", ok, err)
+	}
+	ctx, answer := agent.ExpectAnswer(context.Background())
+	if ok, _ := a.Approve(ctx, "bash", nil, granted); !ok || answer.By != agent.BySessionScope {
+		t.Fatalf("same guard was not covered: %+v", answer)
+	}
+	changed := granted
+	changed.Guard = "two"
+	ctx, answer = agent.ExpectAnswer(context.Background())
+	if ok, _ := a.Approve(ctx, "bash", nil, changed); ok || answer.By == agent.BySessionScope {
+		t.Fatalf("a changed guard was covered: ok %v answer %+v", ok, answer)
+	}
+}

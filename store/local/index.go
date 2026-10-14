@@ -59,8 +59,12 @@ type indexLine struct {
 	Missing    bool   `json:"missing,omitempty"`
 	Verified   *bool  `json:"verified,omitempty"`
 	Unverified string `json:"unverified,omitempty"`
-	Prev       string `json:"prev"`
-	Hash       string `json:"hash,omitempty"`
+	// Witnessed are the record's hashes, as pruned, at the lines the witness
+	// held then; WitnessChecked marks a prune that read the witness.
+	Witnessed      []WitnessedHead `json:"witnessed,omitempty"`
+	WitnessChecked bool            `json:"witness_checked,omitempty"`
+	Prev           string          `json:"prev"`
+	Hash           string          `json:"hash,omitempty"`
 }
 
 func (l *indexLine) seal() ([]byte, error) {
@@ -401,6 +405,8 @@ func fold(ls []indexLine) []Entry {
 		case opPrune:
 			e.Pruned = true
 			e.Head = Head{Lines: l.HeadLines, Seq: l.HeadSeq, Hash: l.HeadHash}
+			e.Tombstone = Tombstone{Head: e.Head, Missing: l.Missing, Verified: l.Verified != nil && *l.Verified, Unverified: l.Unverified,
+				Witnessed: l.Witnessed, WitnessChecked: l.WitnessChecked}
 		}
 	}
 	out := make([]Entry, 0, len(order))

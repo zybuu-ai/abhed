@@ -344,3 +344,16 @@ func TestSkillToolAsksToBeCalledFirst(t *testing.T) {
 		t.Fatalf("description: %s", d)
 	}
 }
+
+// A skill whose name holds a character that does not print as itself, such
+// as a right-to-left override in its folder's name, is refused at load.
+func TestHiddenCharacterNameIsRefused(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "safe\u202etxt.exe", "---\ndescription: Something useful to do.\n---\n\nSteps.\n")
+	writeSkill(t, root, "fine", "---\ndescription: Something useful to do.\n---\n\nSteps.\n")
+	reg, errs := Load([]string{root})
+	if reg.Len() != 1 || len(errs) != 1 || !strings.Contains(errs[0].Error(), "does not print as itself") ||
+		strings.ContainsRune(errs[0].Error(), '\u202e') {
+		t.Fatalf("names %v, problems %v", reg.Names(), errs)
+	}
+}

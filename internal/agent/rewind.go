@@ -88,8 +88,8 @@ func RewindPoints(events []Event) []RewindPoint {
 // a fork through the last step before it, recorded as conversation.forked.
 // Before the first prompt that is a fork at 0, an empty conversation in the
 // same session; the loop is never dropped. It returns how many messages
-// were kept.
-func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
+// were kept and the step the fork was recorded at.
+func (l *Loop) ForkBefore(events []Event, seq int64) (int, int64, error) {
 	var through int64
 	said := false
 	for _, ev := range Live(events) {
@@ -105,20 +105,21 @@ func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
 		}
 	}
 	if said {
-		return l.ForkTo(events, through)
+		// Only the person's own calls before it leave nothing the model saw: an empty history.
+		return l.forkTo(events, through, true)
 	}
 	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	if err := l.refuseForkWhileTasksRun(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: 0}); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	l.Session.ResetScoped()
 	l.messages = nil
-	return 0, nil
+	return 0, 0, nil
 }
 
 // RestoreFile is how a rewind puts one file back: path to data with mode
@@ -201,6 +202,23 @@ func (l *Loop) RestoreCheckpoints(cps []Checkpoint, current func(path string) ([
 	return done, nil
 }
 
+// renumberThrough moves a copied event's through_seq into the copy's numbering.
+func renumberThrough(payload json.RawMessage, renumber func(int64) int64) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(payload, &m) != nil {
+		return payload
+	}
+	var through int64
+	if raw, ok := m["through_seq"]; !ok || json.Unmarshal(raw, &through) != nil || through <= 0 {
+		return payload
+	}
+	m["through_seq"], _ = json.Marshal(renumber(through))
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return payload
+}
+
 func hashOf(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -244,6 +262,9 @@ func BranchCopy(events []Event, through int64, sessionID string, first int64) []
 	out := make([]Event, len(picked))
 	for i, ev := range picked {
 		ev.ID, ev.SessionID, ev.ParentID, ev.Seq = newID(), sessionID, "", first+int64(i)
+		if ev.Type == EvSessionStarted || ev.Type == EvSessionResumed {
+			ev.Payload = renumberThrough(ev.Payload, renumber)
+		}
 		if ev.Type == EvFileRestored {
 			var r FileRestored
 			if json.Unmarshal(ev.Payload, &r) == nil {

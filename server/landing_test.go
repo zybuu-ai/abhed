@@ -88,3 +88,16 @@ func TestLandingDefinesThemeTokensOnRoot(t *testing.T) {
 		}
 	}
 }
+
+// Web search and web fetch share one card, and fetch alone does not claim
+// the agent can search or reach the internet at large.
+func TestLandingWebAccessCard(t *testing.T) {
+	if strings.Contains(landingHTML, "'Web search'") || strings.Contains(landingHTML, "the agent can reach the internet") {
+		t.Error("the landing page still has a web search card that claims internet access")
+	}
+	for _, want := range []string{"card('Web access', webAccess(o), webAccessDetail(o),", "fetch ? 'the agent can read web pages; it cannot search'"} {
+		if !strings.Contains(landingHTML, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 )
 
 // stderrOf runs Main with args and returns what it wrote to stderr.
@@ -28,21 +30,25 @@ func stderrOf(t *testing.T, args []string, opts ...Option) (string, int) {
 	return string(out), code
 }
 
-// Help names every subcommand with what it does, then the flags; an unknown
+// Help names every subcommand with what it does, an edition's own included,
+// in one column wide enough for the longest name, then the flags; an unknown
 // flag gets the same, and -addr reads as a flag with a value.
 func TestUsageListsTheSubcommands(t *testing.T) {
-	own := WithCommand("audit-export", func(string, []string) int { return 0 })
+	own := WithCommandAbout("audit-export", "export the audit record", func(string, []string) int { return 0 })
+	plain := WithCommand("tally", func(string, []string) int { return 0 })
 	for _, args := range [][]string{{"-h"}, {"-no-such-flag"}} {
-		out, code := stderrOf(t, args, own)
+		out, code := stderrOf(t, args, own, plain)
 		if want := map[string]int{"-h": 0, "-no-such-flag": 2}[args[0]]; code != want {
 			t.Errorf("%v: exit %d, want %d", args, code, want)
 		}
 		if !strings.HasPrefix(out, "Usage: abhed [flags] [command [args]]") && !strings.Contains(out, "\nUsage: abhed [flags]") {
 			t.Errorf("%v: no synopsis:\n%s", args, out)
 		}
-		for _, c := range append(subcommands, subcommand{name: "audit-export", about: "a command of this edition"}) {
-			if !strings.Contains(out, "  "+c.name+strings.Repeat(" ", max(1, 11-len(c.name)))+c.about) {
-				t.Errorf("%v: %s is not listed with its description:\n%s", args, c.name, out)
+		const col = 2 + len("audit-export") + 1
+		for _, c := range append(subcommands, subcommand{name: "audit-export", about: "export the audit record"},
+			subcommand{name: "tally", about: "a command of this edition"}) {
+			if !strings.Contains(out, "\n  "+c.name+strings.Repeat(" ", col-2-len(c.name))+wrapAbout(c.about, 72, col)+"\n") {
+				t.Errorf("%v: %s is not listed with its description at column %d:\n%s", args, c.name, col, out)
 			}
 		}
 		if cmds, flags := strings.Index(out, "Commands:"), strings.Index(out, "Flags:"); cmds < 0 || flags < cmds {
@@ -50,6 +56,36 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 		}
 		if !strings.Contains(out, "-addr string\n") || strings.Contains(out, "-addr abhed") {
 			t.Errorf("%v: -addr is not shown as a flag with a value:\n%s", args, out)
+		}
+	}
+}
+
+// abhed -h and abhed sandbox -h name every sandbox command, as abhed sandbox
+// help does; both used to name only connect --stdio.
+func TestHelpListsTheSandboxCommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	top, _ := stderrOf(t, []string{"-h"})
+	_, line, ok := strings.Cut(top, "  sandbox ")
+	line, _, ok2 := strings.Cut(line, "\n  pki ")
+	if !ok || !ok2 {
+		t.Fatalf("abhed -h has no sandbox line:\n%s", top)
+	}
+	help, code := stderrOf(t, []string{"sandbox", "help"})
+	if code != 0 {
+		t.Fatalf("sandbox help: exit %d", code)
+	}
+	for _, name := range sandboxcli.Commands() {
+		if !strings.Contains(" "+strings.Join(strings.Fields(line), " ")+",", " "+name+",") {
+			t.Errorf("abhed -h lacks %s:\n%s", name, line)
+		}
+		if !strings.Contains(help, "\n  "+name+" ") {
+			t.Errorf("abhed sandbox help lacks %s:\n%s", name, help)
+		}
+	}
+	for _, arg := range []string{"-h", "--help"} {
+		got, code := stderrOf(t, []string{"sandbox", arg})
+		if code != 0 || got != help {
+			t.Errorf("sandbox %s: exit %d, differs from sandbox help:\n%s", arg, code, got)
 		}
 	}
 }

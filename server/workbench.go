@@ -52,10 +52,10 @@ type workspaceView struct {
 	conf  *tools.Confined
 }
 
-func (s *Server) openView() (*workspaceView, error) {
+func (s *Server) openView(workspace string) (*workspaceView, error) {
 	// A fresh session rather than the live one: it carries no additional
 	// roots, so the viewer is confined to the workspace itself.
-	sess, err := tools.NewSession(s.opts.Workspace)
+	sess, err := tools.NewSession(workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (s *Server) openView() (*workspaceView, error) {
 	}
 	// The mode decides how a mutation gets approved, and a viewer makes none.
 	// What is left of the evaluation is the hooks and the deny and ask rules.
-	return &workspaceView{sess: sess, pol: s.newPolicy(policy.ModeDefault), root: root, state: sess.FreezeState()}, nil
+	return &workspaceView{sess: sess, pol: s.newPolicyIn(policy.ModeDefault, workspace), root: root, state: sess.FreezeState()}, nil
 }
 
 func (v *workspaceView) Close() {
@@ -190,7 +190,12 @@ func (s *Server) view(w http.ResponseWriter, r *http.Request) (*workspaceView, b
 		WriteError(w, http.StatusNotFound, "session not found")
 		return nil, false
 	}
-	v, err := s.openView()
+	ws, err := s.sessionWorkspace(r.Context(), id)
+	if err != nil {
+		WriteError(w, http.StatusNotFound, "the session's workspace is gone")
+		return nil, false
+	}
+	v, err := s.openView(ws)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "workspace is not readable")
 		return nil, false
@@ -385,6 +390,8 @@ type changedFile struct {
 	Diff    string `json:"diff"`
 	// Note says why there is no diff: binary, too large, denied, outside.
 	Note string `json:"note,omitempty"`
+	// ByCommand marks a change the edit tools did not make: a shell command's.
+	ByCommand bool `json:"by_command,omitempty"`
 }
 
 type changesResponse struct {
@@ -392,6 +399,8 @@ type changesResponse struct {
 	// log: the originals live in memory, with the run.
 	Available bool          `json:"available"`
 	Files     []changedFile `json:"files"`
+	// Partial says why changes made by commands may be missing, when they may.
+	Partial string `json:"partial,omitempty"`
 }
 
 // changesSession reports what the agent changed, as a diff of each file's
@@ -411,8 +420,14 @@ func (s *Server) changesSession(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Available = true
 
+	byTools := map[string]bool{}
 	for _, abs := range live.undo.Changed() {
 		before, existed, _ := live.undo.Original(abs)
+		for _, p := range []string{abs, realPath(abs)} {
+			if r, err := filepath.Rel(v.sess.Root, p); err == nil && filepath.IsLocal(r) {
+				byTools[relSlash(r)] = true
+			}
+		}
 		rel, err := v.resolve(abs)
 		if err != nil {
 			// Named, because the agent did change it; not shown, because the
@@ -446,5 +461,35 @@ func (s *Server) changesSession(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Files = append(out.Files, entry)
 	}
+	shell, partial := shellChanges(v, live.snap, byTools)
+	out.Files, out.Partial = append(out.Files, shell...), partial
 	WriteJSON(w, http.StatusOK, out)
+}
+
+// shellChanges are the files changed since the session opened that the edit
+// tools' undo log does not hold: by a command, the person's or the agent's.
+func shellChanges(v *workspaceView, snap *wsSnapshot, byTools map[string]bool) ([]changedFile, string) {
+	if snap == nil {
+		return nil, ""
+	}
+	changes, partial := snap.changes(byTools)
+	out := make([]changedFile, 0, len(changes))
+	for _, c := range changes {
+		rel, err := v.resolve(c.rel)
+		if err != nil {
+			if errors.Is(err, errDenied) {
+				out = append(out, changedFile{Path: c.rel, Status: c.status, Note: "denied by policy", ByCommand: true})
+			}
+			continue
+		}
+		entry := changedFile{Path: filepath.ToSlash(rel), Status: c.status, ByCommand: true}
+		if c.diffable {
+			entry.Diff, entry.Added, entry.Removed = unifiedDiff(entry.Path, string(c.before), string(c.after))
+		} else {
+			entry.Note = "binary, too large, or no copy kept from when the session opened"
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, partial
 }

@@ -35,6 +35,8 @@ func slashDoctor(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 		cfgResult = "keys nothing reads"
 	case f.notInEffect:
 		cfgResult = "keys this version does not act on yet"
+	case f.rules:
+		cfgResult = "rules that name no tool as written"
 	}
 	rows = append(rows, []string{"configuration", cfgResult}, []string{"trust", trustLine(st.appCfg.Workspace)})
 	if st.sandbox != nil {
@@ -60,7 +62,11 @@ func slashDoctor(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	}
 	if st.set != nil && st.set.Gateway != nil {
 		for _, s := range st.set.Gateway.Servers() {
-			if !s.Connected {
+			switch {
+			case s.Connected:
+			case s.NameRefused:
+				rows = append(rows, []string{"mcp " + s.Name, oneLine(s.Err.Error(), 120)})
+			default:
 				rows = append(rows, []string{"mcp " + s.Name, "not connected; /mcp restart " + s.Name})
 			}
 		}
@@ -122,7 +128,11 @@ func bugReport(st *cliState, what string) (title, body string) {
 	fmt.Fprintf(&b, "- terminal: %s\n", orDefault(os.Getenv("TERM"), "unknown"))
 	fmt.Fprintf(&b, "- provider type: %s\n", orDefault(st.provider.Type, "unknown"))
 	m := st.statusModel("")
-	fmt.Fprintf(&b, "- sandbox: %s; record: %s\n", orDefault(m.SandboxTier, "unknown"), m.Record)
+	tier := orDefault(m.SandboxTier, "unknown")
+	if m.SandboxChecking {
+		tier += " or stronger (still checking)"
+	}
+	fmt.Fprintf(&b, "- sandbox: %s; record: %s\n", tier, m.Record)
 	text := b.String()
 	vault := openVault().Redactor()
 	keys := []string{st.provider.APIKey}
@@ -163,12 +173,27 @@ func slashBug(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if ans, _ := e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: "Open this link in your browser?"}); ans != ui.ChoiceYes {
 		return false, nil
 	}
+	if _, err := openLink(ctx, link); err != nil {
+		return false, fmt.Errorf("could not open the browser: %w; the link is above", err)
+	}
+	return false, nil
+}
+
+// openLink starts the system's opener on link and reaps it when it exits, so
+// it is not left a zombie; the channel closes then.
+func openLink(ctx context.Context, link string) (<-chan struct{}, error) {
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		opener = "open"
 	}
-	if err := exec.CommandContext(ctx, opener, link).Start(); err != nil { // #nosec G204 -- the system opener, on a link the person just agreed to open
-		return false, fmt.Errorf("could not open the browser: %w; the link is above", err)
+	cmd := exec.CommandContext(ctx, opener, link) // #nosec G204 -- the system opener, on a link the person just agreed to open
+	if err := cmd.Start(); err != nil {
+		return nil, err
 	}
-	return false, nil
+	reaped := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(reaped)
+	}()
+	return reaped, nil
 }

@@ -13,6 +13,10 @@ From `store/schema.sql`, on the Postgres storage driver:
 | `events` | Every event in a session, append-only: tool calls, **tool output**, model responses, approvals and refusals — tagged `trusted` or `untrusted` per event |
 | `checkpoints` | The content of a file immediately before the agent changed it, keyed to the event that changed it — this is what `/undo` reads |
 | `models` | The registry of configured model endpoints and their capability profile |
+| `approvals` | Questions asked of a person and their answers, with the call's arguments (the arguments are cleared when the session is deleted) |
+| `sandboxes`, `sandbox_idempotency`, `sandbox_audit`, `sandbox_templates` | Control-plane sandboxes, replayable requests, and the sandboxes' hash-chained audit record |
+| `owner_changes`, `account_changes` | Trigger-written history of every session owner change and every change to an account's groups or tenant |
+| `session_keys` | Each session's sealing key; deleting the session deletes it |
 
 A model's reasoning, where the endpoint reports it, is in `events` twice: in
 parts as it streamed (`agent.reasoning.delta`) and whole (`agent.reasoning`),
@@ -23,8 +27,16 @@ either in this same Postgres database or, without `storage.driver: postgres`
 configured, in `<workspace>/.abhed/users.json` mode `0600` — or wherever `auth.users_file` (`ABHED_USERS_FILE`) points, which a deployment sets to its state directory so accounts never sit in a workspace
 (`docs/ops/enabling-auth.md`, "Where accounts live").
 
-**Uploads** are files the agent reads or writes inside the session workspace.
-They are not a separate store; they are ordinary files in that workspace, and
+**Secrets** are kept in the operator's store, `~/.abhed/secrets.json`. On
+`abhed serve` with sign-in each account has a store of its own under
+`~/.abhed/secrets.d` (or `ABHED_ACCOUNT_SECRETS_DIR`), and the operator's
+serves scheduled runs only. No value is written to the record; a value that
+reaches an event is redacted first.
+
+**Uploads** are files the agent reads or writes inside the session workspace,
+each upload in a folder of its own with a random name. On a server with more
+than one account each session works in a sandbox folder of its own, unless
+`server.shared_sessions` is set. They are not a separate store; they are ordinary files in that workspace, and
 their content that passes through the agent loop is captured in `events` as
 tool output like anything else the agent reads. When the server runs in a
 container, put the workspace on a named volume rather than a host path, so
@@ -74,15 +86,18 @@ mechanism is not implemented in this repository today; there is no scheduled
 job that drops old partitions. Rows persist until an operator does something
 about it at the database level.
 
-**Deleting a session marks it; the rows stay.** Schema version 3 in
-`store/schema.sql` adds `sessions.deleted_at` and `deleted_by`.
-The comment is explicit about what this does and does not do: "Events are
-append-only by trigger, so a delete cannot remove the transcript rows and
-does not try. It marks the session; every read path treats a marked session
-as absent. The rows remain for the audit the deployment promised, reachable
-only by someone with the database, never through the API again." A deleted
-session is gone from the console and the API; it is not gone from the
-database.
+**Deleting a session erases what it said; the rows stay.** Schema version
+3 in `store/schema.sql` adds `sessions.deleted_at` and `deleted_by`, and
+version 10 adds `session_keys`. Since 1.2.8 each session's event payloads
+and file pre-images are sealed (AES-256-GCM) with a key of the session's own,
+and a delete removes that key, the session's label and title, and its
+approvals' arguments. The event rows stay, append-only by trigger, but hold
+ciphertext no one can open; what remains is that each step happened, its
+type, actor, time and hash. Not erased: sessions recorded before 1.2.8, whose
+payloads were never sealed; database backups and WAL archives taken before
+the delete, which hold the key until they expire; streaming replicas, until
+they replay the delete; and the deleted key's bytes until `VACUUM` reclaims
+them and the replicas replay it.
 
 ## What the operator can export or delete
 
@@ -90,8 +105,8 @@ database.
   sessions while their account is active. An operator with database access
   can export anything directly via `pg_dump`.
 - **Delete**: A user can delete their own session from the console UI, which
-  marks it per schema version 3 above — it stops being reachable through the
-  product but the rows remain in Postgres. An operator with direct database
+  marks it and erases its content by key, as above — it stops being reachable
+  through the product, and the rows that remain in Postgres cannot be read. An operator with direct database
   access is the only path to actually removing rows, and doing so against an
   append-only `events` table means operating below the API (the immutability
   triggers block `UPDATE`/`DELETE` from any client, including an
@@ -99,9 +114,11 @@ database.
   first — which is a deliberate, high-friction operation, not a supported
   workflow).
 - **Accounts**: `abhed user remove <username>` deletes the account
-  immediately. It does not delete that user's session history: removing the
-  account ends their access; the audit log of what they did stays, which is
-  the point of keeping it.
+  immediately and stops what a running server runs for it. It does not
+  delete that user's session history: removing the account ends their
+  access; the audit log of what they did stays, which is the point of
+  keeping it. On Postgres their sessions move to an unclaimed owner, so a
+  new account of the same name does not inherit them.
 
 ## Self-hosted deployments
 

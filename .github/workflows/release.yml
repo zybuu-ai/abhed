@@ -1,7 +1,18 @@
 # A release is a tag. Pushing v<major>.<minor>.<patch> builds one archive per
-# platform with the documentation embedded, a checksum file, and a multi-arch
-# container image, and publishes them as a GitHub Release. Nothing is built by
-# hand, so a release is reproducible from its tag.
+# platform with the documentation embedded, the microVM driver's
+# abhed-microvm and abhed-guest for Linux, a checksum file covering all of
+# them, and a multi-arch container image, and publishes them as a GitHub
+# Release. Nothing is built by hand: a release is built from its tag by this
+# workflow, with actions pinned by commit, Go by version, the macOS runner by
+# version and the image's base images by digest. That is not a byte-for-byte
+# rebuild: the runners' images and the image's package upgrades still move.
+# The macOS binaries are built with cgo on a macOS runner; every other
+# platform is built without cgo on Linux.
+#
+# abhed-vmhelper, the macOS microVM helper, is deliberately not published
+# yet: a copy others can run must be signed and notarized with the
+# project's Developer ID (scripts/macos/sign-vmhelper.sh), whose
+# certificate is not in this workflow. Add it here once it is.
 name: Release
 
 on:
@@ -9,49 +20,159 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+env:
+  COSIGN_VERSION: v3.1.3
+  SYFT_VERSION: 1.52.0
+  SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
 
 jobs:
-  binaries:
-    name: Binaries and checksums
-    runs-on: ubuntu-latest
+  # The macOS binaries are built with cgo, so they can use the system's own
+  # logging, and so on a Mac; both architectures come from the one runner.
+  darwin:
+    name: macOS binaries (cgo)
+    runs-on: macos-15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Build
-        run: scripts/build-release.sh -v "$GITHUB_REF_NAME" -o dist
+        run: scripts/build-release.sh -v "$GITHUB_REF_NAME" -o dist -p "darwin/arm64 darwin/amd64" -m ""
+      - name: Each binary is for its architecture and links only the system's libraries
+        run: |
+          set -euo pipefail
+          file "dist/abhed-$GITHUB_REF_NAME-darwin-arm64" | grep -q 'arm64'
+          file "dist/abhed-$GITHUB_REF_NAME-darwin-amd64" | grep -q 'x86_64'
+          for f in dist/abhed-*-darwin-arm64 dist/abhed-*-darwin-amd64; do
+            if otool -L "$f" | tail -n +2 | grep -v -E '^\s+/usr/lib/|^\s+/System/Library/'; then
+              echo "::error::$f links a library outside the system"; exit 1
+            fi
+          done
+          "dist/abhed-$GITHUB_REF_NAME-darwin-arm64" -version | grep -F "$GITHUB_REF_NAME"
+      # The checksums and signature are made once, over every platform, below.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: darwin
+          path: dist/abhed-*
+          if-no-files-found: error
+
+  binaries:
+    name: Binaries, SBOMs, checksums and signatures
+    needs: darwin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # The OIDC token is the signing identity; attestations stores provenance.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: Install syft by checksum
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/syft" && cd "$RUNNER_TEMP/syft"
+          curl -fsSL -o syft.tgz "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  syft.tgz" | sha256sum -c -
+          tar -xzf syft.tgz syft
+          echo "$RUNNER_TEMP/syft" >> "$GITHUB_PATH"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: darwin
+          path: dist
+      # The Linux builds join the macOS ones in dist; the SBOMs and the
+      # checksum file then cover every binary and archive there.
+      - name: Build
+        run: scripts/build-release.sh -v "$GITHUB_REF_NAME" -o dist -p "linux/amd64 linux/arm64 linux/s390x" -s
+      # SHA256SUMS names every binary, archive and SBOM, so one signature
+      # over it covers the release.
+      - name: Sign the checksum file
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore.json dist/SHA256SUMS
+      - name: Build provenance for every file the checksum file names
+        id: provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: dist/SHA256SUMS
+      # Published too, so provenance can be checked without the GitHub API.
+      - name: Keep the provenance beside the release
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" "dist/abhed-${GITHUB_REF_NAME}.provenance.sigstore.json"
+      # The notes open with the changelog's Upgrading list and Known limits;
+      # the generated list of pull requests follows them.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          {
+            python3 scripts/release-notes.py "$GITHUB_REF_NAME"
+            echo
+            echo "Verify a download: https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/guide/01-getting-started.md#verify-a-download"
+          } > "$RUNNER_TEMP/notes.md"
+          pre=()
+          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "Abhed $GITHUB_REF_NAME" \
+            "${pre[@]}" \
             --generate-notes \
-            --notes "Verify a download with: sha256sum -c SHA256SUMS --ignore-missing"
+            --notes-file "$RUNNER_TEMP/notes.md"
 
   image:
-    name: Container image (linux/amd64, linux/arm64)
+    name: Container image (linux/amd64, linux/arm64, linux/s390x), signed
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      # BuildKit attaches an SPDX SBOM and its own provenance to the image.
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/s390x
           build-args: VERSION=${{ github.ref_name }}
           push: true
+          sbom: true
+          provenance: mode=max
+          # A pre-release (a tag with a hyphen, v1.3.0-rc.1) never moves :latest.
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ !contains(github.ref_name, '-') && format('ghcr.io/{0}:latest', github.repository) || '' }}
+      # Signed by digest, never by tag: a tag can be moved after signing.
+      - name: Sign the image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/${GITHUB_REPOSITORY}@${DIGEST}"
+      - name: Build provenance for the image
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

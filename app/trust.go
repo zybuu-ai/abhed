@@ -144,16 +144,9 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 // describeTrust lists what trusting the file would let it set, and what
 // applies without trust.
 func describeTrust(out io.Writer, st config.WorkspaceTrust) {
-	if len(st.Ignored) > 0 {
-		fmt.Fprintln(out, "Trusting it would let it set:")
-		width := 0
-		for _, k := range st.Ignored {
-			width = max(width, len(k.Key))
-		}
-		for _, k := range st.Ignored {
-			fmt.Fprintf(out, "  %-*s  %s%s\n", width, k.Key, k.Value, refusedNote(k))
-		}
-	}
+	widens, refused := splitIgnored(st.Ignored)
+	listKeys(out, "Trusting it would let it set:", widens)
+	listKeys(out, "Not applied whether or not you trust it:", refused)
 	if len(st.Applied) > 0 {
 		fmt.Fprintf(out, "Applied already, since they only tighten: %s\n", strings.Join(st.Applied, ", "))
 	}
@@ -277,6 +270,34 @@ func readAnswer(in io.Reader) (string, error) {
 }
 
 // refusedNote says why a value was refused outright, such as a rule that does not parse.
+// splitIgnored parts what trust would apply from what it would refuse too,
+// such as a setting only the managed configuration makes.
+func splitIgnored(keys []config.IgnoredKey) (widens, refused []config.IgnoredKey) {
+	for _, k := range keys {
+		if k.Reason != "" {
+			refused = append(refused, k)
+		} else {
+			widens = append(widens, k)
+		}
+	}
+	return widens, refused
+}
+
+// listKeys prints keys under heading, aligned, each with why it is refused.
+func listKeys(out io.Writer, heading string, keys []config.IgnoredKey) {
+	if len(keys) == 0 {
+		return
+	}
+	fmt.Fprintln(out, heading)
+	width := 0
+	for _, k := range keys {
+		width = max(width, len(k.Key))
+	}
+	for _, k := range keys {
+		fmt.Fprintf(out, "  %-*s  %s%s\n", width, k.Key, k.Value, refusedNote(k))
+	}
+}
+
 func refusedNote(k config.IgnoredKey) string {
 	if k.Reason == "" {
 		return ""
@@ -284,11 +305,15 @@ func refusedNote(k config.IgnoredKey) string {
 	return "  (refused: " + k.Reason + ")"
 }
 
-// trustCmd is `abhed trust [show|grant [-sha256 H]|revoke|list] [dir]`.
+// trustCmd is `abhed trust [show|grant [-sha256 H]|revoke|list] [dir]` and
+// `abhed trust startup-files [-y]`.
 func trustCmd(workspace string, args []string, out io.Writer) int {
 	verb := "show"
 	if len(args) > 0 {
 		verb, args = args[0], args[1:]
+	}
+	if verb == "startup-files" {
+		return trustStartupFilesCmd(args, out)
 	}
 	// -sha256 pins a grant to the content that was reviewed.
 	var want, wantAgents string
@@ -404,7 +429,7 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(os.Stderr, "abhed: trust: unknown action %q; use show, grant, revoke or list\n", verb)
+	fmt.Fprintf(os.Stderr, "abhed: trust: unknown action %q; use show, grant, revoke, list or startup-files\n", verb)
 	return 2
 }
 
@@ -440,17 +465,23 @@ func printTrust(out io.Writer, st config.WorkspaceTrust) {
 	if st.Reason == "home" {
 		return
 	}
+	widens, refused := splitIgnored(st.Ignored)
 	if st.Trusted {
-		fmt.Fprintln(out, "\nIt applies whole. Without trust these settings would be ignored:")
+		head := "\nIt applies whole. Without trust these settings would be ignored:"
+		if len(refused) > 0 {
+			head = "\nIt applies whole but for the settings listed last. Without trust these settings would be ignored:"
+		}
+		fmt.Fprintln(out, head)
 	} else {
 		fmt.Fprintln(out, "\nIgnored until you trust it (`abhed trust grant`):")
 	}
-	if len(st.Ignored) == 0 {
+	if len(widens) == 0 {
 		fmt.Fprintln(out, "  nothing: every setting in it only tightens")
 	}
-	for _, k := range st.Ignored {
-		fmt.Fprintf(out, "  %s  %s%s\n", k.Key, k.Value, refusedNote(k))
+	for _, k := range widens {
+		fmt.Fprintf(out, "  %s  %s\n", k.Key, k.Value)
 	}
+	listKeys(out, "Not applied whether or not you trust it:", refused)
 	if len(st.Applied) > 0 {
 		fmt.Fprintf(out, "Applied either way, since they only tighten: %s\n", strings.Join(st.Applied, ", "))
 	}

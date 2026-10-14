@@ -14,6 +14,11 @@ sessionList = sortSessions([
   {id:'s-c', prompt:'release notes draft', created:iso(90e3), state:'idle'},
 ]);
 check('the list is in order of last activity', sessionList.map(s => s.id).join() === 's-a,s-c,s-b');
+// The same order whatever offset each time is written in: 10:00Z is after 14:00+05:30.
+check('times in different offsets sort by instant', sortSessions([
+  {id:'s-old', updated:'2026-10-07T14:00:00.123+05:30'},
+  {id:'s-new', updated:'2026-10-07T10:00:00Z'},
+]).map(s => s.id).join() === 's-new,s-old');
 
 // The Sessions view.
 current = 's-c';
@@ -80,4 +85,17 @@ e = key('k', {code:'KeyK', ctrlKey:true});
 check('Ctrl+K opens the sessions alone', switchKeys(e) && e.prevented && __drops === 1);
 e = key('p', {code:'KeyP', ctrlKey:true});
 check('Ctrl+P is left to the palette', !switchKeys(e));
+
+// The workbench session the page opens by itself does not take the view from
+// one the person opened while it was being made, as by sending at once.
+let made; __created = new Promise(r => { made = r; });
+current = null; __opened.length = 0;
+let opening = createWorkbench();
+openSession('s-sent');
+made({session_id:'s-wb'}); await opening;
+check('a workbench session made late leaves the session opened meanwhile', current === 's-sent' && __opened.join() === 's-sent');
+check('and is still listed', sessionList.some(s => s.id === 's-wb'));
+__created = Promise.resolve({session_id:'s-wb2'}); current = null; __opened.length = 0;
+await createWorkbench();
+check('with nothing opened meanwhile it is opened', current === 's-wb2' && __opened.join() === 's-wb2');
 if(!ok) process.exit(1);

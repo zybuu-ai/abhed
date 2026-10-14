@@ -22,6 +22,12 @@ import (
 // Keys are read on the dock's own goroutine, so a dialog always gets them,
 // whatever the session is doing with the lines it has been handed.
 type dock struct {
+	// keysOn opens once the session is ready for keys (LineReader.Ready), or
+	// a question or pager needs them: keys typed before wait, in order, so a
+	// hotkey pressed early does what it does at the prompt.
+	keysOn   chan struct{}
+	keysOnce sync.Once
+
 	mu  sync.Mutex
 	scr *screen
 	kr  *keyReader
@@ -168,6 +174,7 @@ type activity struct {
 
 func newDock(in io.Reader, out io.Writer, st Style) *dock {
 	d := &dock{
+		keysOn:    make(chan struct{}),
 		scr:       newScreen(out),
 		st:        st,
 		size:      func() (int, int) { return 80, 24 },
@@ -195,6 +202,7 @@ func newDock(in io.Reader, out io.Writer, st Style) *dock {
 // lock; handlers that call back into the session run after it is released.
 func (d *dock) run() {
 	defer RestoreOnPanic()
+	<-d.keysOn
 	for {
 		k, err := d.kr.read()
 		if err != nil {
@@ -220,6 +228,9 @@ func (d *dock) run() {
 		}
 	}
 }
+
+// openKeys lets the key reader act on keys, once.
+func (d *dock) openKeys() { d.keysOnce.Do(func() { close(d.keysOn) }) }
 
 // push hands a result to ReadLine. The buffer is deep; a session that stops
 // reading while a person keeps typing loses their lines rather than the

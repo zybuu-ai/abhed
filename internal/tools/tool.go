@@ -119,6 +119,9 @@ type Result struct {
 	Final bool
 	// Tier is the sandbox tier a command ran under, for the record; see Bash.tier.
 	Tier string
+	// NoOutput marks a bash result whose output was empty, so a terminal can
+	// leave out the "[no output]" placeholder without guessing from the text.
+	NoOutput bool
 }
 
 func ok(format string, a ...any) Result {

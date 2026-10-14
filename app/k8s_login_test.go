@@ -65,7 +65,7 @@ func TestDoctorFlagsAnInsecureKubeconfigCluster(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
-		out, _ := stdoutOf(t, func() int { return newApp().doctor(ws) })
+		out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 		return out
 	}
 	const line = "the kubeconfig skips TLS verification"

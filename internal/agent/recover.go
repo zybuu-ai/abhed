@@ -130,6 +130,38 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 	}
 	parent := NewRecorder(store, sessionID, "")
 	parent.Advance(events[len(events)-1].Seq)
+	if err := reconcileChildren(store, parent, sessionID, events); err != nil {
+		return err
+	}
+	// Every request keeps one outcome, so none is left open under the end.
+	if open, ok := InFlight(events); ok {
+		if err := settleOpenCalls(parent, append(open.Calls, open.Others...)); err != nil {
+			return err
+		}
+	}
+	end, ok := LastEnd(events)
+	settled := end.Background > 0 || len(unreturned(events)) > 0
+	if !ok || lastEndSeq(events) < lastRunSeq(events) {
+		end = SessionEnded{Reason: TermShutdown, Turns: end.Turns, TokensIn: end.TokensIn, TokensOut: end.TokensOut}
+	}
+	end.Background, end.Settled, end.Recovered, end.Suggesting = 0, settled, true, false
+	_, err := parent.Record(EvSessionEnded, ActorSystem, Trusted, end)
+	return err
+}
+
+// ReconcileChildren records each background child a crashed process lost as
+// returned lost, as Reconcile does, and writes no end: for a session whose
+// run another process goes on with.
+func ReconcileChildren(store Store, sessionID string, events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	parent := NewRecorder(store, sessionID, "")
+	parent.Advance(events[len(events)-1].Seq)
+	return reconcileChildren(store, parent, sessionID, events)
+}
+
+func reconcileChildren(store Store, parent *Recorder, sessionID string, events []Event) error {
 	for _, id := range unreturned(events) {
 		child := NewRecorder(store, id, sessionID)
 		returned := map[string]any{"session": id, "task_id": id, "background": true, "reason": string(TermLost)}
@@ -140,6 +172,12 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 			// is written now. Either way the return names that end.
 			endSeq := runEndSeq(evs)
 			if endSeq == 0 {
+				// Its open calls get their outcomes before its end, as the parent's do.
+				if open, ok := InFlight(evs); ok {
+					if err := settleOpenCalls(child, append(open.Calls, open.Others...)); err != nil {
+						return err
+					}
+				}
 				ev, err := child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermShutdown, Recovered: true})
 				if err != nil {
 					return err
@@ -152,14 +190,7 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 			return err
 		}
 	}
-	end, ok := LastEnd(events)
-	settled := end.Background > 0 || len(unreturned(events)) > 0
-	if !ok || lastEndSeq(events) < lastRunSeq(events) {
-		end = SessionEnded{Reason: TermShutdown, Turns: end.Turns, TokensIn: end.TokensIn, TokensOut: end.TokensOut}
-	}
-	end.Background, end.Settled, end.Recovered, end.Suggesting = 0, settled, true, false
-	_, err := parent.Record(EvSessionEnded, ActorSystem, Trusted, end)
-	return err
+	return nil
 }
 
 // runEndSeq is the seq of the end of a child's last run: an end recorded after

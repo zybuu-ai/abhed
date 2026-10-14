@@ -49,7 +49,7 @@ func TestPtyContinueAfterExit(t *testing.T) {
 	h.Exit(0)
 }
 
-// Rewind to the first message records a fork at 0 (S6), in the same session.
+// Rewind to the first message records a fork at 0, in the same session.
 func TestPtyRewindToFirstMessage(t *testing.T) {
 	ws := t.TempDir()
 	h := startAtPrompt(t, clitest.Opts{Script: "text \"one\"\n\ntext \"two\"\n", Args: []string{"-C", ws}})

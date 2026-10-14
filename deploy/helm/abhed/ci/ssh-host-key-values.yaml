@@ -1,0 +1,11 @@
+# The control plane on, its :ssh relay host key copied in from a Secret.
+config:
+  control_plane:
+    enabled: true
+controlPlane:
+  sshHostKey:
+    existingSecret: abhed-ssh-host-key
+secretFiles:
+  - secretName: abhed-secrets-store
+    key: secrets.json
+    path: secrets.json

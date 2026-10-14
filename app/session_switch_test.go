@@ -96,7 +96,8 @@ func TestStoredSessionsListTitles(t *testing.T) {
 	st := &cliState{appCfg: config.Default(), store: &listingStore{MemStore: agent.NewMemStore(), rows: dbRows(time.Now())}, sessionID: "s-new"}
 	out := captureStdout(t, func() { slashSessions(context.Background(), nil, nil, nil, nil, st, ui.Style{}) })
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < 3 || !strings.Contains(lines[0], "s-bo") || !strings.Contains(lines[1], "terraform cleanup") {
+	// Only this user's own sessions: bo's is not listed.
+	if len(lines) < 3 || !strings.Contains(lines[0], "terraform cleanup") || strings.Contains(out, "s-bo") {
 		t.Fatalf("/sessions printed:\n%s", out)
 	}
 	if !strings.Contains(out, "* s-new") || !strings.Contains(out, "Release notes") {

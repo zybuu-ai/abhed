@@ -32,6 +32,7 @@ type auditEntry struct {
 // email address) and bob, and a record of what AdminAudit was told.
 type hookRig struct {
 	h     http.Handler
+	srv   *Server
 	local *auth.LocalAuth
 	mu    sync.Mutex
 	audit []auditEntry
@@ -65,7 +66,8 @@ func newHookRig(t *testing.T, check func(context.Context, *auth.Identity) error,
 	if opt != nil {
 		opt(&opts)
 	}
-	rig.h = New(opts).Handler()
+	rig.srv = New(opts)
+	rig.h = rig.srv.Handler()
 	return rig
 }
 
@@ -197,13 +199,17 @@ func TestMCPAuditOmitsCredentials(t *testing.T) {
 			t.Errorf("%q reached the audit (%s) or the log", secret, rec)
 		}
 	}
-	if want := mcpSrv.URL + "/mcp"; g.audit[0].detail["url"] != want {
+	if want := mcpSrv.URL; g.audit[0].detail["url"] != want {
 		t.Errorf("url = %v, want %s", g.audit[0].detail["url"], want)
 	}
 
-	d := mcpAuditDetail(mcpRequest{Command: "/usr/bin/tool --api-key=abc"}, nil)
-	if d["command"] != "/usr/bin/tool" {
+	d := mcpAuditDetail(mcpRequest{Command: "/Applications/My Tools/srv"}, nil)
+	if d["command"] != "srv" {
 		t.Errorf("command = %v", d["command"])
+	}
+	d = mcpAuditDetail(mcpRequest{URL: "https://h.example/s/SECRET-PATH-KEY/mcp?k=1"}, nil)
+	if d["url"] != "https://h.example" {
+		t.Errorf("url = %v", d["url"])
 	}
 }
 

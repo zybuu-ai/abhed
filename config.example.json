@@ -41,10 +41,14 @@
     ],
     "ask": null,
     "allow": [
-      "bash(git status*)",
-      "bash(git diff*)",
-      "bash(git log*)",
-      "bash(ls*)",
+      "bash(git status)",
+      "bash(git status *)",
+      "bash(git diff)",
+      "bash(git diff *)",
+      "bash(git log)",
+      "bash(git log *)",
+      "bash(ls)",
+      "bash(ls *)",
       "bash(pwd)",
       "bash(cat *)"
     ]

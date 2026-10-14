@@ -60,13 +60,38 @@ func Text(r Report) string {
 	}
 	fmt.Fprintf(&b, "  duration  %s  (model %s · tools %s)\n", dur(t.DurationMS), dur(t.ModelMS), dur(t.ToolMS))
 	fmt.Fprintf(&b, "  turns     %d   tool calls %d   events %d\n", t.Turns, t.ToolCalls, t.Events)
-	fmt.Fprintf(&b, "  tokens    %s in · %s out · %.0f%% cached\n", commas(t.TokensIn), commas(t.TokensOut), t.CacheHitRate*100)
+	cache := fmt.Sprintf("%.0f%% cached", t.CacheHitRate*100)
+	if !t.CacheReported {
+		cache = "cache not reported"
+	}
+	fmt.Fprintf(&b, "  tokens    %s in · %s out · %s\n", commas(t.TokensIn), commas(t.TokensOut), cache)
 	if t.Window > 0 {
 		fmt.Fprintf(&b, "  context   peak %s of %s (%d%%)   compactions %d   offloads %d   recalls %d\n",
 			commas(t.PeakContext), commas(t.Window), t.PeakContext*100/t.Window, len(r.Compactions), len(r.Offloads), t.Recalls)
 	}
 	fmt.Fprintf(&b, "  policy    %d allowed · %d denied · %d asked a reviewer   %s\n",
 		r.Policy.Allowed, r.Policy.Denied, r.Policy.Reviewer, steps(r.Policy.ByStep))
+	for _, l := range r.PolicyLayers {
+		what := fmt.Sprintf("%d deny · %d ask · %d allow", len(l.Deny), len(l.Ask), len(l.Allow))
+		if l.Removed {
+			what = "removed"
+		}
+		fmt.Fprintf(&b, "  layer     %s%s at #%d: %s", l.Name, revision(l.Revision), l.Seq, what)
+		if n := r.Policy.ByLayer[l.Name]; n > 0 {
+			fmt.Fprintf(&b, "   decided %d call(s)", n)
+		}
+		if len(l.SetAside) > 0 {
+			fmt.Fprintf(&b, "   %d allow rule(s) set aside under the managed configuration", len(l.SetAside))
+		}
+		b.WriteString("\n")
+	}
+	if n := r.Network; n != nil {
+		fmt.Fprintf(&b, "  network   %d allowed · %d refused", n.Allowed, n.Denied)
+		if n.WouldDeny > 0 {
+			fmt.Fprintf(&b, " · %d would be refused (monitor)", n.WouldDeny)
+		}
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "  record    #%d–#%d", r.Integrity.FirstSeq, r.Integrity.LastSeq)
 	if len(r.Integrity.Gaps) > 0 {
 		fmt.Fprintf(&b, "   GAPS at %v", r.Integrity.Gaps)
@@ -92,7 +117,7 @@ func Text(r Report) string {
 	}
 
 	if len(r.Calls) > 0 {
-		b.WriteString("\n  Calls   ✓ ran · ! failed or refused by the sandbox · ✗ denied · - not run\n")
+		b.WriteString("\n  Calls   ✓ ran · ! failed, or refused by the sandbox or the network · ✗ denied · - not run\n")
 		for _, c := range r.Calls {
 			mark := "✓"
 			switch {
@@ -100,7 +125,7 @@ func Text(r Report) string {
 				mark = "✗"
 			case !c.Ran:
 				mark = "-"
-			case c.IsError || c.SandboxDenied:
+			case c.IsError || c.SandboxDenied || c.NetworkDenied > 0:
 				mark = "!"
 			}
 			fmt.Fprintf(&b, "  %s #%-4d %-6s %-52s %-8s %s\n", mark, c.Seq, c.Tool, clip(oneLine(c.Subject), 52), c.Step, dur(c.DurationMS))
@@ -203,4 +228,11 @@ func short(n int) string {
 		return fmt.Sprintf("%dk", n/1000)
 	}
 	return fmt.Sprint(n)
+}
+
+func revision(r string) string {
+	if r == "" {
+		return ""
+	}
+	return " (revision " + r + ")"
 }

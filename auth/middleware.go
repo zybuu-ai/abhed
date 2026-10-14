@@ -50,6 +50,10 @@ type Middleware struct {
 	// provider holds, and its text is shown to the person, so keep it plain.
 	// A stream runs it again through Recheck for as long as it stays open.
 	Check func(ctx context.Context, id *Identity) error
+	// Authorize, when set, runs after Check with the request itself, for a
+	// credential that is good for some requests only, such as a token scoped
+	// to one sandbox. An error answers 403 with its text and ends no session.
+	Authorize func(r *http.Request, id *Identity) error
 }
 
 func (m Middleware) Wrap(next http.Handler) http.Handler {
@@ -93,6 +97,9 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 			}
 			m.refuse(w, r, err)
 			return
+		case failForbidden:
+			forbidden(w, err.Error())
+			return
 		}
 		if p != nil {
 			forgetRefusal(w, r, p)
@@ -119,6 +126,7 @@ const (
 	failChallenge             // no credentials: sign in
 	failToken                 // a bearer token that did not verify
 	failRefused               // identified, then turned away by Check
+	failForbidden             // identified, but not for this request (Authorize)
 )
 
 // authenticate identifies the caller the way every request is identified. It
@@ -130,6 +138,9 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 			if err := m.check(r.Context(), id); err != nil {
 				return nil, p, failRefused, err
 			}
+			if err := m.authorize(r, id); err != nil {
+				return nil, p, failForbidden, err
+			}
 			return id, p, failNone, nil
 		}
 	}
@@ -137,6 +148,9 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 	if m.Verifier != nil {
 		token := bearerToken(r)
 		if token == "" {
+			if len(m.Providers) > 0 {
+				return nil, nil, failChallenge, m.signInRequired(r)
+			}
 			return nil, nil, failChallenge, errors.New("missing bearer token")
 		}
 		id, err := m.Verifier.Verify(r.Context(), token)
@@ -146,13 +160,16 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 		if err := m.check(r.Context(), id); err != nil {
 			return nil, nil, failRefused, err
 		}
+		if err := m.authorize(r, id); err != nil {
+			return nil, nil, failForbidden, err
+		}
 		return id, nil, failNone, nil
 	}
 
 	if len(m.Providers) > 0 {
 		// Sessions are the whole authentication mechanism here, not a
 		// fallback: no session means not signed in.
-		return nil, nil, failChallenge, errors.New("sign in required")
+		return nil, nil, failChallenge, m.signInRequired(r)
 	}
 
 	if m.TrustHeaders {
@@ -166,6 +183,25 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 	}
 
 	return &Identity{Subject: "anonymous", Tenant: "default"}, nil, failNone, nil
+}
+
+// EndedReasoner is a provider that can say why the session a request still
+// carries has ended, so the caller, or an open stream, is told the cause.
+type EndedReasoner interface {
+	EndedReason(r *http.Request) string
+}
+
+// signInRequired is the challenge's error, naming why the request's session
+// ended when a provider can say.
+func (m Middleware) signInRequired(r *http.Request) error {
+	for _, p := range m.Providers {
+		if e, ok := p.(EndedReasoner); ok {
+			if why := e.EndedReason(r); why != "" {
+				return errors.New("sign in required: " + why)
+			}
+		}
+	}
+	return errors.New("sign in required")
 }
 
 const recheckKey ctxKey = "abhed.recheck"
@@ -246,11 +282,59 @@ func (m Middleware) Identify(w http.ResponseWriter, r *http.Request) (id *Identi
 	return nil, "", nil
 }
 
+// IdentifyToken reports who a request's bearer token names, with Check and
+// Authorize applied as on any other route, for a public handler that says who
+// is calling. ok is false when there is no token or no verifier to read it.
+func (m Middleware) IdentifyToken(r *http.Request) (id *Identity, ok bool, err error) {
+	token := bearerToken(r)
+	if m.Verifier == nil || token == "" {
+		return nil, false, nil
+	}
+	if id, err = m.Verifier.Verify(r.Context(), token); err != nil {
+		return nil, true, err
+	}
+	if err := m.check(r.Context(), id); err != nil {
+		return nil, true, err
+	}
+	if err := m.authorize(r, id); err != nil {
+		return nil, true, forbiddenError{err}
+	}
+	return id, true, nil
+}
+
+// forbiddenError is an Authorize refusal: the caller is known, the credential
+// does not cover the request.
+type forbiddenError struct{ err error }
+
+func (e forbiddenError) Error() string { return e.err.Error() }
+func (e forbiddenError) Unwrap() error { return e.err }
+
+// IsForbidden reports whether IdentifyToken's error is an Authorize refusal,
+// answered 403 rather than 401.
+func IsForbidden(err error) bool {
+	var f forbiddenError
+	return errors.As(err, &f)
+}
+
 func (m Middleware) check(ctx context.Context, id *Identity) error {
 	if m.Check == nil {
 		return nil
 	}
 	return m.Check(ctx, id)
+}
+
+func (m Middleware) authorize(r *http.Request, id *Identity) error {
+	if m.Authorize == nil {
+		return nil
+	}
+	return m.Authorize(r, id)
+}
+
+// forbidden answers a request its credential does not cover.
+func forbidden(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden", "reason": reason})
 }
 
 // refuse answers a request whose identity Check turned away: a browser goes
@@ -324,10 +408,10 @@ func (h *headerOnly) WriteHeader(int)             {}
 // challenge answers a request with no credentials. A browser is sent to sign
 // in, keeping where it was going; an API client gets 401 and a reason.
 //
-// The destination is the first provider with an entry point of its own. With
-// none — local accounts only — it is the front door, where the server renders
-// the sign-in form. Either way the page receives ?return= so it can send the
-// person back afterwards.
+// The destination is the first provider with an entry point of its own, unless
+// a provider has none (local accounts): then it is the front door, where the
+// server renders the sign-in form beside the other providers' buttons. Either
+// way the page receives ?return= so it can send the person back afterwards.
 func (m Middleware) challenge(w http.ResponseWriter, r *http.Request, reason string) {
 	if !wantsHTML(r) || len(m.Providers) == 0 {
 		unauthorized(w, reason)
@@ -335,9 +419,14 @@ func (m Middleware) challenge(w http.ResponseWriter, r *http.Request, reason str
 	}
 	target := "/"
 	for _, p := range m.Providers {
-		if u, _ := p.SignIn(); u != "" {
-			target = u
+		u, _ := p.SignIn()
+		if u == "" {
+			// Local accounts sign in on the front door, which offers the others too.
+			target = "/"
 			break
+		}
+		if target == "/" {
+			target = u
 		}
 	}
 	q := "?return=" + url.QueryEscape(r.URL.RequestURI())

@@ -218,6 +218,9 @@ type LocalAuth struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*browserSession
+	// ended remembers for a while why a session ended, by its cookie, so a
+	// request or stream that still carries it can be told; guarded by mu.
+	ended map[string]endedNote
 
 	changeMu sync.Mutex
 	onChange []func(username string)
@@ -246,9 +249,12 @@ func (l *LocalAuth) changed(username string) {
 	}
 }
 
+// DefaultSessionTTL is how long a local sign-in lasts when nothing sets it.
+const DefaultSessionTTL = 12 * time.Hour
+
 func NewLocalAuth(store UserStore, ttl time.Duration, secure bool) *LocalAuth {
 	if ttl == 0 {
-		ttl = 12 * time.Hour
+		ttl = DefaultSessionTTL
 	}
 	l := &LocalAuth{
 		Store: store, CookieName: "abhed_session",
@@ -265,11 +271,63 @@ func (l *LocalAuth) reap() {
 		l.mu.Lock()
 		for k, s := range l.sessions {
 			if now.After(s.Expires) {
-				delete(l.sessions, k)
+				l.endLocked(k, WhyExpired)
+			}
+		}
+		for k, n := range l.ended {
+			if now.Sub(n.at) > endedKept {
+				delete(l.ended, k)
 			}
 		}
 		l.mu.Unlock()
 	}
+}
+
+// Why a local session ended, as EndedReason reports it.
+const (
+	WhyExpired    = "the sign-in expired"
+	WhySignedOut  = "you signed out"
+	WhyEverywhere = "you were signed out everywhere"
+	WhyRemoved    = "the account was removed"
+	WhyPassword   = "the account's password was changed"
+	WhyEnded      = "an administrator ended this sign-in"
+	WhyReplaced   = "this browser signed in again"
+)
+
+// endedNote is why one session ended, and when.
+type endedNote struct {
+	why string
+	at  time.Time
+}
+
+// endedKept is how long the reason a session ended is remembered.
+const endedKept = 24 * time.Hour
+
+// endLocked ends the session sid for why. The caller holds l.mu.
+func (l *LocalAuth) endLocked(sid, why string) {
+	if _, ok := l.sessions[sid]; !ok {
+		return
+	}
+	delete(l.sessions, sid)
+	if l.ended == nil {
+		l.ended = map[string]endedNote{}
+	}
+	l.ended[sid] = endedNote{why: why, at: time.Now()}
+}
+
+// EndedReason says why the session the request's cookie names ended, or ""
+// when it names none this process ended. It reads no account.
+func (l *LocalAuth) EndedReason(r *http.Request) string {
+	c, err := r.Cookie(l.CookieName)
+	if err != nil {
+		return ""
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if s, ok := l.sessions[c.Value]; ok && time.Now().After(s.Expires) {
+		return WhyExpired
+	}
+	return l.ended[c.Value].why
 }
 
 var validUsername = regexp.MustCompile(`^[a-zA-Z0-9._-]{2,64}$`)
@@ -455,6 +513,7 @@ func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 	s.lastSeen.Store(now.UnixNano())
 	s.pwStamp = passwordStamp(u.Hash)
 	s.revocations = u.Revocations
+	s.accountMade = u.CreatedAt
 	l.mu.Lock()
 	l.sessions[sid] = s
 	l.mu.Unlock()
@@ -548,7 +607,7 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 	u, err := l.Store.Get(ctx, old.Subject)
 	if errors.Is(err, ErrNoSuchUser) || (err == nil && u == nil) {
 		l.mu.Lock()
-		delete(l.sessions, sid)
+		l.endLocked(sid, WhyRemoved)
 		l.mu.Unlock()
 		// Removed, perhaps by another process: what it held here is let go.
 		l.changed(old.Subject)
@@ -568,9 +627,16 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 	if _, live := l.sessions[sid]; !live {
 		return nil, errSessionGone
 	}
-	// A higher count is a sign-out everywhere made after this session began.
+	// A higher count is a sign-out everywhere made after this session began;
+	// another creation time is another account under the same name.
+	if remade(s.accountMade, u.CreatedAt) {
+		l.endLocked(sid, WhyRemoved)
+		// As for a removal: what the old account held here is let go.
+		defer func() { go l.changed(old.Subject) }()
+		return nil, errSessionGone
+	}
 	if u.Revocations > s.revocations {
-		delete(l.sessions, sid)
+		l.endLocked(sid, WhyEverywhere)
 		return nil, errSessionGone
 	}
 	// An empty stamp (no hash, not a local account today) skips this check.
@@ -580,7 +646,7 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 		// An administrator's reset confines the session to /account instead;
 		// a change the user made signs out whoever held the old password.
 		if !u.MustChange {
-			delete(l.sessions, sid)
+			l.endLocked(sid, WhyPassword)
 			return nil, errSessionGone
 		}
 		s.pwStamp = stamp
@@ -592,6 +658,12 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 		s.checked.Store(&accountCheck{version: version, at: now})
 	}
 	return id, nil
+}
+
+// remade reports whether an account's creation time differs from the one a
+// session was issued under. A store that keeps none gives no answer.
+func remade(issued, now time.Time) bool {
+	return !issued.IsZero() && !now.IsZero() && !issued.Equal(now)
 }
 
 // session finds the live session a request's cookie names.
@@ -666,7 +738,7 @@ func (l *LocalAuth) EndSession(id string) bool {
 	l.mu.Lock()
 	for sid, s := range l.sessions {
 		if sessionDigest(sid) == id {
-			delete(l.sessions, sid)
+			l.endLocked(sid, WhyEnded)
 			l.mu.Unlock()
 			l.changed(subjectOf(s))
 			return true
@@ -690,7 +762,7 @@ func (l *LocalAuth) EndRequestSession(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(l.CookieName); err == nil {
 		l.mu.Lock()
 		s, found := l.sessions[c.Value]
-		delete(l.sessions, c.Value)
+		l.endLocked(c.Value, WhySignedOut)
 		l.mu.Unlock()
 		if found {
 			l.changed(subjectOf(s))
@@ -733,6 +805,16 @@ func (l *LocalAuth) SignInHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The session this browser held, as whoever it was, ends with the new sign-in.
+	if c, err := r.Cookie(l.CookieName); err == nil {
+		l.mu.Lock()
+		old, found := l.sessions[c.Value]
+		l.endLocked(c.Value, WhyReplaced)
+		l.mu.Unlock()
+		if found {
+			l.changed(subjectOf(old))
+		}
+	}
 	l.issue(w, u)
 	// An account made again under a removed name must not find the old one's
 	// sessions still held here.
@@ -775,7 +857,7 @@ func (l *LocalAuth) ChangePasswordHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// Other nodes end theirs on the stamp check; this node ends its own now.
-	l.endSessions(id.Subject, sid)
+	l.endSessionsFor(id.Subject, sid, WhyPassword)
 	writeAuthJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -946,6 +1028,11 @@ func (l *LocalAuth) addRevocation(ctx context.Context, username string) error {
 // endSessions drops every live session of username except the one keyed by
 // keep, and returns how many it ended.
 func (l *LocalAuth) endSessions(username, keep string) int {
+	return l.endSessionsFor(username, keep, WhyEverywhere)
+}
+
+// endSessionsFor is endSessions recording why.
+func (l *LocalAuth) endSessionsFor(username, keep, why string) int {
 	if username == "" {
 		return 0
 	}
@@ -957,7 +1044,7 @@ func (l *LocalAuth) endSessions(username, keep string) int {
 	n := 0
 	for sid, s := range l.sessions {
 		if sid != keep && s.Identity != nil && strings.EqualFold(s.Identity.Subject, username) {
-			delete(l.sessions, sid)
+			l.endLocked(sid, why)
 			n++
 		}
 	}

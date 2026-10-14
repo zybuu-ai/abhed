@@ -32,17 +32,34 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
 
       # The process tier is bubblewrap on Linux. Without it the sandbox tests
       # skip, and the filesystem, egress and credential boundaries the trust
       # docs call verified would go unexercised on the platform that ships.
       - name: Install bubblewrap and vim
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap vim
+
+      # Ubuntu 24.04 grants user namespaces only to profiled programs, and
+      # bubblewrap needs one; this profiles bwrap alone, as the fence job does
+      # its binaries, rather than lift the sysctl for every process. Without
+      # it the process tier is unavailable and the sessions the tests start
+      # are refused below their minimum tier.
+      - name: Let bubblewrap make its namespaces
+        run: |
+          set -euo pipefail
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+              "profile abhed-ci-bwrap $(command -v bwrap) flags=(unconfined) {" '  userns,' '}' |
+              sudo tee /etc/apparmor.d/abhed-ci-bwrap > /dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/abhed-ci-bwrap
+          fi
+          bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc true || {
+            echo "ENVIRONMENT: an ordinary user still cannot start bubblewrap here"; exit 1; }
 
       # The public build links web fonts; the copy it embeds must not.
       - name: A public docs build keeps the binary's copy offline
@@ -83,23 +100,47 @@ jobs:
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
           # The page tests need node and python3; here a missing one fails, not skips.
           ABHED_REQUIRE_PAGE_TESTS: "1"
-        run: go test ./... -count=1 -coverprofile=coverage.out
+        run: go test ./... -count=1 -timeout 30m -coverprofile=coverage.out
 
       # abhed_app owns the tables; abhed_runtime is what a server should run
       # as. These tests are the evidence that the audit record cannot be
-      # altered with the server's credentials, and they skip without the second
-      # role — so a skip here fails the build rather than reading as a pass.
+      # altered with the server's credentials, and that the control plane's
+      # store passes its conformance suite as that role. They skip without
+      # the second role — so a skip here fails the build rather than reading
+      # as a pass.
       - name: The audit record's privilege separation was actually tested
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
         run: |
           set -euo pipefail
-          go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused' > record.log 2>&1 || { cat record.log; exit 1; }
-          for t in TestRuntimeRoleCannotAlterTheRecord TestRuntimeRoleCanDoItsJob TestOpenRefusesARoleThatCanAlterTheRecord TestTruncateIsRefused; do
+          go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused|TestSandbox' > record.log 2>&1 || { cat record.log; exit 1; }
+          for t in TestRuntimeRoleCannotAlterTheRecord TestRuntimeRoleCanDoItsJob TestOpenRefusesARoleThatCanAlterTheRecord TestTruncateIsRefused \
+                   TestSandboxStoreConformance TestSandboxesAreTenantScoped TestSandboxAuditIsAppendOnlyForTheRuntimeRole; do
             grep -q -- "--- PASS: $t" record.log || { echo "$t did not run and pass:"; grep -- "$t" record.log || true; exit 1; }
           done
-          echo "all four ran and passed"
+          echo "all seven ran and passed"
+
+      # A tag can be moved to other code, and the release jobs hold the signing
+      # identity: every action is used by full commit, its version in a comment.
+      # A self-hosted job runs only on a push here, never for a pull request.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Actions are pinned, and self-hosted jobs never run for a pull request
+        run: |
+          python -m pip install --quiet --only-binary :all: --require-hashes -r scripts/ci/workflow-rules.requirements.txt
+          python scripts/ci/workflow-rules.py --self-test
+          python scripts/ci/workflow-rules.py .github/workflows/*.yml
+
+      # A release's notes open with the changelog's Upgrading list; on a
+      # release commit Unreleased is empty, so the newest dated section counts.
+      - name: Release notes come from the changelog
+        run: |
+          python3 scripts/release-notes.py --self-test
+          latest=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | tr -d '#[] ')
+          python3 scripts/release-notes.py v0.0.0-ci | grep -q '^### Upgrading' ||
+            python3 scripts/release-notes.py "v$latest" | grep -q '^### Upgrading'
 
       # A ratchet, not a target: a PR may not lower coverage below what the
       # tree already achieves. Raising the floor is a deliberate commit.
@@ -118,13 +159,13 @@ jobs:
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
-        run: go test ./... -race -count=1
+        run: go test ./... -race -count=1 -timeout 30m
 
       # The end-to-end CLI tests are evidence only if they ran. A test may
       # skip only as pending on an item listed here, each still being built:
       # "editor", a fix to the line editor (a data race when typing while
       # output arrives). Delete an item once it lands, and its tests must
-      # then pass. "netns" is this runner, which
+      # then pass. "netns" is a runner that
       # cannot unshare a network namespace for the statusline; the sandbox
       # job below runs those tests and lets none skip. "fence" is the fence
       # tier's end-to-end tests, which need a delegated cgroup v2 user scope
@@ -140,19 +181,23 @@ jobs:
           python3 scripts/ci/clitest-skips.py < clitest.json
 
       # A skipped boundary test reads exactly like a passing one, and the trust
-      # docs cite these by name. One reason is expected here: the hosted runner
-      # cannot unshare a network namespace, so bubblewrap cannot start. The
-      # boundaries themselves are verified in the privileged job below. A skip
-      # for any other reason means a boundary stopped being checked, so the
-      # build fails rather than let the count drift.
+      # docs cite these by name. Bubblewrap starts here (see above), but a
+      # skip for want of its namespaces stays accounted for; the boundaries
+      # are also verified in the privileged job below. A skip for any other
+      # reason means a boundary stopped being checked, so the build fails
+      # rather than let the count drift.
       # The fence tier's kernel tests need a delegated cgroup v2 user scope
       # this runner lacks; the fence job below runs them, and none may skip there.
+      # The real-engine relay tests run in the container-tier job, the fence's
+      # spec as root in the sandbox job, and the TMPDIR test on macOS.
       - name: Sandbox boundary tests actually ran
+        env:
+          CGO_ENABLED: "0" # the test binary is the egress relay; see the sandbox job
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
-          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup|set ABHED_TEST_RELAY_BINARY to a Linux build|fence_etc_test.go:[0-9]+: needs root|tmpdir_test.go:[0-9]+: TMPDIR handling is macOS-specific|bwrap cannot grant the relay the resolver.s port here" sandbox.log || true)
           if [ "$skipped" -ne "$expected" ]; then
             echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
             grep -B3 -- "--- SKIP" sandbox.log
@@ -180,9 +225,11 @@ jobs:
             echo "cmd/abhed depends on an ee/ package"; exit 1
           fi
           # The changelog and the scan record are history and may name the
-          # old tree; this workflow names the pattern it looks for.
+          # old tree; this workflow names the pattern it looks for. The open
+          # Helm chart, deploy/helm/, is not that tree.
           if git grep -n -E '(^|[^a-z])deploy/' -- '*.go' '*.yml' '*.md' \
-               ':!CHANGELOG.md' ':!docs/trust/security-scans.md' ':!.github/workflows/ci.yml'; then
+               ':!CHANGELOG.md' ':!docs/trust/security-scans.md' ':!.github/workflows/ci.yml' \
+               | grep -E '(^|[^a-z])deploy/($|[^h]|h($|[^e])|he($|[^l])|hel($|[^m])|helm($|[^/]))'; then
             echo "references to the private deployment tree"; exit 1
           fi
 
@@ -194,19 +241,27 @@ jobs:
     name: Linux sandbox boundaries
     runs-on: ubuntu-latest
     container:
-      image: golang:1.26
+      image: golang:1.26.9
       options: --privileged
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install bubblewrap and vim
         run: apt-get update && apt-get install -y --no-install-recommends bubblewrap vim
+      # Without cgo, as the release is built: the test binary is the egress
+      # relay, and a cgo build cannot drop its capabilities, so the
+      # in-sandbox resolver would be off and its test would skip.
       - name: Every process-sandbox boundary runs under bubblewrap
+        env:
+          CGO_ENABLED: "0"
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile' -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
+          # As root here, the fence's spec for root, which the fence job cannot run.
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|^TestFenceSpecAsRootHidesShadow$|^TestEgressResolverInTheSandbox$' -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           if grep -q -- "--- SKIP" sandbox.log; then
             echo "a boundary test skipped under a privileged runner:"; grep -B3 -- "--- SKIP" sandbox.log; exit 1
           fi
+          grep -q -- "--- PASS: TestFenceSpecAsRootHidesShadow " sandbox.log || { echo "TestFenceSpecAsRootHidesShadow did not run and pass as root"; exit 1; }
+          grep -q -- "--- PASS: TestEgressResolverInTheSandbox " sandbox.log || { echo "TestEgressResolverInTheSandbox did not run and pass as root"; exit 1; }
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
       # The statusline's pinned script, end to end under bubblewrap: it runs,
       # and swapped for a link into ~/.abhed it neither runs nor reads.
@@ -277,7 +332,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
+      # The process tier's per-command cgroup is tested here, in a delegated scope.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
       - name: Build the test binaries
         run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
       - name: Allow user namespaces to those binaries, mount the alias, start the user manager
@@ -286,7 +344,8 @@ jobs:
         run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
       - name: Every gated fence test runs and passes in a delegated scope
         run: |
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
@@ -309,7 +368,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Install python3-venv
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv
       - name: Build the test binaries
@@ -320,12 +379,175 @@ jobs:
         run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
       - name: Name resolution and package installs work under the fence
         run: |
-          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
           systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run-network "$FENCE_DIR"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: fence-network-logs
+          path: |
+            ${{ env.FENCE_DIR }}/*.log
+            ${{ env.FENCE_DIR }}/*.json
+
+  # The microVM driver boots real Firecracker VMs here, so the boundary its
+  # docs describe is tested, not only the stand-in the unit tests use. The
+  # runner must offer KVM: without /dev/kvm the job fails rather than skips.
+  # Firecracker, the guest kernel and the Alpine base are fetched by
+  # checksum, and the root filesystem is built with the script operators use.
+  microvm-kvm:
+    name: microVM driver on KVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FC_VERSION: v1.17.0
+      FC_SHA256: 06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
+      KERNEL_URL: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155
+      KERNEL_SHA256: e20e46d0c36c55c0d1014eb20576171b3f3d922260d9f792017aeff53af3d4f2
+      ALPINE_URL: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.2-x86_64.tar.gz
+      ALPINE_SHA256: c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: The runner offers KVM
+        run: |
+          if [ ! -c /dev/kvm ]; then
+            echo "::error::/dev/kvm is missing: this runner cannot boot a microVM"
+            exit 1
+          fi
+          ls -l /dev/kvm
+      - name: Fetch Firecracker, the guest kernel and the Alpine base by checksum
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mvm" && cd "$RUNNER_TEMP/mvm"
+          curl -fsSL -o fc.tgz "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-x86_64.tgz"
+          echo "${FC_SHA256}  fc.tgz" | sha256sum -c -
+          curl -fsSL -o vmlinux "$KERNEL_URL"
+          echo "${KERNEL_SHA256}  vmlinux" | sha256sum -c -
+          curl -fsSL -o alpine.tar.gz "$ALPINE_URL"
+          echo "${ALPINE_SHA256}  alpine.tar.gz" | sha256sum -c -
+          tar -xzf fc.tgz
+          sudo install -o root -g root -m 0755 "release-${FC_VERSION}-x86_64/firecracker-${FC_VERSION}-x86_64" /usr/local/bin/firecracker
+          sudo install -o root -g root -m 0755 "release-${FC_VERSION}-x86_64/jailer-${FC_VERSION}-x86_64" /usr/local/bin/jailer
+          chmod 0644 vmlinux
+      - name: Build the guest agent and the root filesystem
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/mvm/abhed-guest" ./cmd/abhed-guest
+          sudo scripts/microvm/build-rootfs.sh -b "$RUNNER_TEMP/mvm/alpine.tar.gz" -g "$RUNNER_TEMP/mvm/abhed-guest" -o "$RUNNER_TEMP/mvm/rootfs.ext4"
+      - name: Real microVMs boot, run, copy back, reach only the proxy, and are recovered
+        run: |
+          set -euo pipefail
+          go test -c -o "$RUNNER_TEMP/mvm/mvm.test" ./driver/microvm/
+          cd /tmp
+          sudo ABHED_TEST_FIRECRACKER=1 \
+            ABHED_TEST_FC_BINARY=/usr/local/bin/firecracker \
+            ABHED_TEST_FC_JAILER=/usr/local/bin/jailer \
+            ABHED_TEST_FC_KERNEL="$RUNNER_TEMP/mvm/vmlinux" \
+            ABHED_TEST_FC_ROOTFS="$RUNNER_TEMP/mvm/rootfs.ext4" \
+            "$RUNNER_TEMP/mvm/mvm.test" -test.run '^TestFirecrackerOnKVM$' -test.count=1 -test.v 2>&1 | tee "$RUNNER_TEMP/mvm/kvm.log"
+          for t in TestFirecrackerOnKVM TestFirecrackerOnKVM/egress TestFirecrackerOnKVM/recover; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/mvm/kvm.log" || { echo "::error::$t did not run and pass"; exit 1; }
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: microvm-kvm-log
+          path: ${{ runner.temp }}/mvm/kvm.log
+
+  # Linux on Z. There is no s390x runner, so this cross-builds and vets every
+  # package, then runs unit tests under qemu-user. That covers the seccomp
+  # table against x/sys, the filter's big-endian argument layout, and code
+  # that parses bytes; it cannot load a seccomp filter (qemu-user does not
+  # implement seccomp), so the fence's gated tests need a real s390x kernel.
+  s390x:
+    name: Linux on Z (s390x), cross-built and emulated
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOOS: linux
+      GOARCH: s390x
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: Install qemu-user for s390x
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-user-static
+          [ -e /proc/sys/fs/binfmt_misc/qemu-s390x ] || sudo systemctl restart systemd-binfmt
+          test -e /proc/sys/fs/binfmt_misc/qemu-s390x
+      - name: Embed the documentation
+        run: python3 scripts/docsite/build.py --embed-only
+      - name: go build
+        run: go build ./... && go build -o /tmp/abhed ./cmd/abhed && file /tmp/abhed | grep -q 'IBM S/390'
+      - name: go vet
+        run: go vet ./...
+      # Every package but app, whose terminal tests need a sandbox backend
+      # and take too long emulated. Skipped, each for a gap in the emulator
+      # or this runner, not in s390x, and each run natively in the test job:
+      # qemu-user 8.2 drops stat's nanoseconds (the change-time tests, and the
+      # microVM guest's sync, which finds changes by change time) and has
+      # no openat2 (TestBarred); timing budgets do not hold emulated; and
+      # bubblewrap is not installed here (the sandboxed-session tests).
+      - name: Unit tests under emulation
+        run: |
+          skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
+          skip+='|TestSyncSendsOnlyChanges|TestExecCopiesChangesBack'
+          skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestBudgetDeltaLatency|TestBudgetStartupWithSlowPodman|TestBudgetStartupWithBrokenBwrap|TestIndexScales'
+          skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
+          mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
+          go test -count=1 -skip "$skip" "${pkgs[@]}"
+      - name: The s390x table was checked on s390x
+        run: |
+          go test -count=1 -v -run 'TestNativeTableMatchesUnix|TestTablesMatchXSys' ./internal/fence/seccomp/ > table.log 2>&1 || { cat table.log; exit 1; }
+          for t in TestNativeTableMatchesUnix TestTablesMatchXSys; do
+            grep -q -- "--- PASS: $t" table.log || { echo "$t did not run and pass:"; cat table.log; exit 1; }
+          done
+
+  # The fence's kernel tests on a real Linux on Z kernel, which qemu-user
+  # cannot give. Hosted runners have no s390x, so this runs only once a
+  # self-hosted runner labelled s390x is registered and the repository
+  # variable ABHED_S390X_RUNNER is "true"; until then it is skipped, and the
+  # docs say the fence on s390x is tested under emulation only.
+  # A pull request can rewrite this file, variable check and all, so the job
+  # runs only on a push to this repository, never a pull request. Before the
+  # runner is registered: it is ephemeral (--ephemeral, one job then gone), it
+  # sits in a runner group limited to this repository, and workflows from
+  # outside contributors' fork pull requests need approval (CONTRIBUTING.md).
+  fence-s390x:
+    name: Fence tier on a real s390x kernel
+    if: github.event_name == 'push' && github.repository == 'zybuu-ai/abhed' && vars.ABHED_S390X_RUNNER == 'true'
+    runs-on: [self-hosted, linux, s390x]
+    timeout-minutes: 45
+    env:
+      FENCE_DIR: /var/tmp/abhed-fence-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      # The process tier's per-command cgroup is tested here, in a delegated scope.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Build the test binaries
+        run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
+      - name: Allow user namespaces to those binaries, mount the alias, start the user manager
+        run: scripts/ci/fence-gated.sh prepare "$FENCE_DIR"
+      - name: The kernel offers what the fence needs
+        run: scripts/ci/fence-gated.sh check "$FENCE_DIR"
+      - name: Every gated fence test runs and passes in a delegated scope
+        run: |
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          systemd-run --user --scope --quiet -p Delegate=yes -- scripts/ci/fence-gated.sh run "$FENCE_DIR"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fence-logs-s390x
           path: |
             ${{ env.FENCE_DIR }}/*.log
             ${{ env.FENCE_DIR }}/*.json
@@ -336,45 +558,97 @@ jobs:
     name: macOS case-folding paths
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
 
+      # Each case-folding test runs alone by name, and `go test -json`
+      # decides: any skip or a named test missing fails, whatever its message.
       - name: Path rules hold on a disk that folds case
-        run: |
-          set -euo pipefail
-          go test -race -count=1 -v ./internal/tools/... ./internal/policy/... ./internal/agent/... > case.log 2>&1 || { cat case.log; exit 1; }
-          go test -race -count=1 -v ./server/... -run 'Explorer|DiskPath|Case' >> case.log 2>&1 || { cat case.log; exit 1; }
-          go test -race -count=1 -v ./internal/forge/... -run 'WithoutCase' >> case.log 2>&1 || { cat case.log; exit 1; }
-          if grep -E "this disk keeps|needs a disk that folds|hard links unavailable|link count is not read|does not open|names are case-sensitive here|this disk is case-sensitive" case.log; then
-            echo "a case-folding test skipped on a disk that should fold case"; exit 1
-          fi
-          for t in TestDiskPathSpellsWhatTheDiskHolds TestDiskPathFollowsARenameToAnotherCase \
-                   TestDiskPathSeesARenameBehindAnOldTime TestDiskPathPrefersTheNameOverAHardLink \
-                   TestDiskPathFoldsAsTheDiskDoes TestIdentityScanPassesOverAHardLinkedFile TestPushComparesPathsWithoutCase \
-                   TestPathRulesHoldForEveryCaseTheDiskOpens TestRelativeRulesHoldUnderARootNamedInAnotherCase \
-                   TestAgentFileToolsMeetRulesInAnyCase TestManualRefusedRecordsOnlyADenial \
-                   TestExplorerRulesHoldForEveryCaseTheDiskOpens TestExplorerWriteRuleRefusalsAreRecorded; do
-            grep -q -- "--- PASS: $t " case.log || { echo "$t did not run and pass:"; grep -- "$t" case.log || true; exit 1; }
-          done
-          echo "$(grep -c -- "--- PASS" case.log) tests passed; every case-folding test ran"
+        run: scripts/ci/case-fold.sh "$RUNNER_TEMP/case"
 
       # The Seatbelt profile is only exercised on macOS: every process-sandbox
-      # boundary test must run here, none skipped.
+      # boundary test must run here, none skipped, with the probe that a
+      # command cannot reach LaunchServices to open a URL or an app.
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
             echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
           fi
           for t in TestProcessSandboxRefusesANewGitFile TestProcessSandboxProtectsNestedRepositories \
-                   TestProcessSandboxDeniesHomeSecretsThroughALink; do
+                   TestProcessSandboxDeniesHomeSecretsThroughALink \
+                   TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices \
+                   TestSandboxAllowsToolchainTempDir; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done
           echo "$(grep -c -- "--- PASS" seatbelt.log) boundary tests ran under Seatbelt"
+
+  # Windows folds case as macOS does, so the path-fold fix is tested here
+  # too, and the build and lint run natively (unused code behind a unix-only
+  # build tag shows only under GOOS=windows). The sandbox tiers do not run
+  # on Windows; only the path rules are claimed for it.
+  windows:
+    name: Windows build, lint and case-folding paths
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: go build and vet
+        run: go build ./... && go vet ./...
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
+      # NTFS keeps Unicode forms apart and its link count is not read, so
+      # those two tests may skip; these must run and pass. The push test's
+      # repository plants shell programs, so the macOS job requires it.
+      - name: Path rules hold on a disk that folds case
+        run: |
+          set -euo pipefail
+          go test -count=1 -json -run '^TestDiskPath|^TestIdentityScan' ./internal/tools/ > case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          go test -count=1 -json -run '^(TestPathRulesHoldForEveryCaseTheDiskOpens|TestRelativeRulesHoldUnderARootNamedInAnotherCase)$' ./internal/policy/ >> case.json || { jq -r 'select(.Output) | .Output' case.json; exit 1; }
+          jq -r 'select(.Action == "skip" and .Test != null) | "skipped: \(.Test)"' case.json
+          for t in TestDiskPathSpellsWhatTheDiskHolds TestDiskPathFollowsARenameToAnotherCase TestDiskPathFoldsAsTheDiskDoes \
+                   TestPathRulesHoldForEveryCaseTheDiskOpens TestRelativeRulesHoldUnderARootNamedInAnotherCase; do
+            jq -e --arg t "$t" 'select(.Test == $t and .Action == "pass")' case.json >/dev/null || { echo "$t did not run and pass"; exit 1; }
+          done
+
+      # Holding a pinned statusline script open would lock it on Windows.
+      - name: A pinned file stays free to rename and remove
+        run: |
+          set -euo pipefail
+          go test -count=1 -v -run '^TestPinDoesNotLockTheFile$' ./internal/sandbox/ > pin.log 2>&1 || { cat pin.log; exit 1; }
+          grep -q -- "--- PASS: TestPinDoesNotLockTheFile " pin.log || { echo "TestPinDoesNotLockTheFile did not run and pass"; cat pin.log; exit 1; }
+
+  # The workbench in a real browser: a built abhed serve with a scripted
+  # model, checked by headless Chromium through a pinned Playwright. The
+  # header keeps Sign out on screen at 320, 900 and 1440 px, the side-panel
+  # toggle keeps the grid whole, and a first turn's call is asked and runs:
+  # in the session's own sandbox by default, and in the workspace with
+  # server.shared_sessions.
+  workbench-browser:
+    name: Workbench in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Header, grid and first-turn approval, per-session and shared
+        env:
+          WITH_DEPS: "1"
+        run: scripts/ci/workbench-e2e/run.sh "$RUNNER_TEMP/wbe2e"
 
   # The container tier on a real engine: the hosted runner has Docker, so
   # the flags are checked by what they do, not only by what is passed.
@@ -382,37 +656,96 @@ jobs:
     name: Container tier on Docker
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
       - name: Pull the sandbox image
         run: docker pull docker.io/library/debian:bookworm-slim
       - name: The container tier's boundaries hold on Docker
         run: |
           set -euo pipefail
-          ABHED_REQUIRE_CONTAINER=1 go test ./internal/sandbox/ -run 'TestContainerTierOnARealEngine$' -count=1 -v > engine.log 2>&1 || { cat engine.log; exit 1; }
-          grep -q -- "--- PASS: TestContainerTierOnARealEngine " engine.log || { echo "the engine test did not run and pass:"; cat engine.log; exit 1; }
+          ABHED_REQUIRE_CONTAINER=1 go test ./internal/sandbox/ -run 'TestContainerTierOnARealEngine$|TestContainerServerFilesAreConfinedOnARealEngine$' -count=1 -v > engine.log 2>&1 || { cat engine.log; exit 1; }
+          for t in TestContainerTierOnARealEngine TestContainerServerFilesAreConfinedOnARealEngine; do
+            grep -q -- "--- PASS: $t " engine.log || { echo "$t did not run and pass:"; cat engine.log; exit 1; }
+          done
+      # Studio's interactive terminal on the container tier, where the engine
+      # holds the shell's terminal and lines are judged by Abhed's prompt alone.
+      - name: Studio's interactive terminal on the container tier
+        run: |
+          set -euo pipefail
+          ABHED_REQUIRE_CONTAINER=1 go test ./app/ -run '^TestStudioInteractiveTerminalInAContainer$' -count=1 -v > term.log 2>&1 || { cat term.log; exit 1; }
+          grep -q -- "--- PASS: TestStudioInteractiveTerminalInAContainer " term.log || { echo "the terminal test did not run and pass:"; cat term.log; exit 1; }
+      # The egress allowlist on a real engine, with a static build as the relay.
+      - name: The container tier's allowlist holds on Docker
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/abhed-relay" ./cmd/abhed
+          ABHED_TEST_RELAY_BINARY=$RUNNER_TEMP/abhed-relay go test ./internal/sandbox/ -count=1 -v \
+            -run '^(TestContainerAllowlistOnARealEngine|TestContainerInspectionCAOnARealEngine|TestContainerRelayIsOutOfTheCommandsReach)$' > relay.log 2>&1 || { cat relay.log; exit 1; }
+          for t in TestContainerAllowlistOnARealEngine TestContainerInspectionCAOnARealEngine TestContainerRelayIsOutOfTheCommandsReach; do
+            grep -q -- "--- PASS: $t " relay.log || { echo "$t did not run and pass:"; cat relay.log; exit 1; }
+          done
+
+  # The docker and podman drivers, one long-lived container per sandbox, on
+  # both engines; static, so the test binary can be bound in as the relay.
+  container-drivers:
+    name: Container drivers on ${{ matrix.engine }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: Pull the sandbox image
+        run: ${{ matrix.engine }} pull docker.io/library/debian:bookworm-slim
+      - name: The drivers' boundaries hold on ${{ matrix.engine }}
+        env:
+          CGO_ENABLED: "0"
+          ABHED_REQUIRE_CONTAINER_DRIVER: ${{ matrix.engine }}
+        run: |
+          set -euo pipefail
+          go test ./driver/container/ -run 'OnARealEngine$' -count=1 -v > drivers.log 2>&1 || { cat drivers.log; exit 1; }
+          for t in TestContainerDriverOnARealEngine TestContainerDriverMountsAttachCopyOnARealEngine TestContainerDriverAllowlistOnARealEngine; do
+            grep -q -- "--- PASS: $t " drivers.log || { echo "$t did not run and pass:"; cat drivers.log; exit 1; }
+          done
 
   container:
     name: Container image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build the image
         run: docker build --build-arg VERSION=v0.0.0-ci -t abhed:ci -f Dockerfile .
       - name: The image runs and reports its version
         run: docker run --rm --entrypoint /usr/local/bin/abhed abhed:ci -version | grep -F v0.0.0-ci
 
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Lint, render every values file in the chart's ci/ folder, validate the
+      # result against the Kubernetes schemas, and check the refusals; helm
+      # and kubeconform are pinned and checksummed by the script.
+      - name: Lint, render and validate the chart
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/helm-tools
+        run: scripts/ci/helm-check.sh deploy/helm/abhed
+
   security:
     name: CVE scans and report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.9"
 
       - name: Embed the documentation
         run: python3 scripts/docsite/build.py --embed-only
@@ -431,7 +764,7 @@ jobs:
 
       # Dependency and OS package CVEs in the tree.
       - name: Trivy filesystem
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -446,7 +779,7 @@ jobs:
 
       # The shipped artefact, not just the source it was built from.
       - name: Trivy image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: abhed:scan
@@ -466,8 +799,52 @@ jobs:
         if: always()
         run: cat scans/report.md >> "$GITHUB_STEP_SUMMARY" || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: security-scans
           path: scans/
+
+  # The macOS microVM helper is built, signed ad hoc with its entitlement and
+  # the hardened runtime, and its protocol, refusals and signature checks are
+  # tested against the real binary. Hosted macOS runners are VMs without
+  # nested virtualization, so Virtualization.framework cannot start a VM on
+  # them: the boot test (TestVZHelperBootsAMicroVM) runs on a real Mac, and
+  # this job says so rather than claiming it ran.
+  macos-vmhelper:
+    name: macOS microVM helper (build, sign, protocol)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.9"
+      - name: Build without warnings, then build and sign ad hoc
+        run: |
+          set -euo pipefail
+          xcrun swift --version
+          xcrun swift build --package-path macos/abhed-vmhelper -c release -Xswiftc -warnings-as-errors
+          scripts/macos/build-vmhelper.sh -o "$RUNNER_TEMP/abhed-vmhelper"
+      - name: The helper speaks protocol 1, refuses what it must, and is checked before use
+        run: |
+          set -euo pipefail
+          ABHED_TEST_VZ_HELPER="$RUNNER_TEMP/abhed-vmhelper" go test -race -count=1 -v ./driver/microvm/ 2>&1 | tee "$RUNNER_TEMP/vmhelper.log"
+          for t in TestVZHelperWithoutBooting TestHelperSignatureIsChecked TestHelperBackendWithFakeHelper TestHelperRefusedWithoutAHelper TestHelperEndsWithItsDriver TestEgressThroughFakeHelper; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/vmhelper.log" || { echo "::error::$t did not run and pass"; exit 1; }
+          done
+      - name: Whether this runner can boot a VM
+        run: |
+          set -euo pipefail
+          answer="$("$RUNNER_TEMP/abhed-vmhelper" check)"
+          echo "$answer"
+          echo "$answer" | grep -q '"protocol":1' || { echo "::error::check did not answer protocol 1"; exit 1; }
+          if echo "$answer" | grep -q 'entitlement'; then
+            echo "::error::the ad-hoc signed helper does not hold its entitlement"; exit 1
+          fi
+          echo "::notice::the boot test is not run on hosted macOS runners (no nested virtualization); run it on a Mac with ABHED_TEST_VZ=1"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: macos-vmhelper-log
+          path: ${{ runner.temp }}/vmhelper.log

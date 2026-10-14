@@ -39,11 +39,11 @@ func Run(ctx context.Context, req Requirements) Report {
 	if unix.Uname(&u) == nil {
 		r.Kernel, r.Machine = unix.ByteSliceToString(u.Release[:]), unix.ByteSliceToString(u.Machine[:])
 	}
-	r.Checks = append(r.Checks, platformCheck(r), notRootCheck())
-	r.Checks = append(r.Checks, childChecks(ctx)...)
-
 	abi, abiErr := landlockABI()
 	r.LandlockABI = abi
+	r.Checks = append(r.Checks, platformCheck(r), notRootCheck(abi, req.AllowRoot))
+	r.Checks = append(r.Checks, childChecks(ctx)...)
+
 	c := abiCheck(CheckLandlockABI, abi, req.minABI(), "the fence")
 	if abiErr != nil {
 		c.Reason += ": " + abiErr.Error()
@@ -56,20 +56,42 @@ func Run(ctx context.Context, req Requirements) Report {
 func platformCheck(r Report) Check {
 	c := Check{ID: CheckPlatform, Required: true, Value: strings.TrimSpace("Linux " + r.Kernel + " " + r.Machine)}
 	if _, ok := seccompArch(); !ok {
-		c.Status, c.Reason = Fail, "the fence supports amd64 and arm64, not "+runtime.GOARCH
+		c.Status, c.Reason = Fail, "the fence supports amd64, arm64 and s390x, not "+runtime.GOARCH
 		return c
 	}
 	c.Status, c.Reason = Pass, "Linux on "+runtime.GOARCH
 	return c
 }
 
-func notRootCheck() Check {
+// rootLandlockABI is the first Landlock ABI that scopes signals: below it a
+// command run as root could signal every other root process on the host.
+const rootLandlockABI = 6
+
+func notRootCheck(abi int, allow bool) Check {
 	c := Check{ID: CheckNotRoot, Required: true}
 	ru, eu, su := unix.Getresuid()
 	rg, eg, sg := unix.Getresgid()
 	c.Value = fmt.Sprintf("uid %d/%d/%d gid %d/%d/%d", ru, eu, su, rg, eg, sg)
-	if ru == 0 || eu == 0 || su == 0 {
-		c.Status, c.Reason = Fail, "running as root; the fence refuses root in this release (run Abhed as an ordinary user)"
+	return rootVerdict(c, ru == 0 || eu == 0 || su == 0, abi, allow)
+}
+
+// rootVerdict judges c for a process that is root or not, on Landlock ABI
+// abi, with root allowed by the managed configuration or not.
+func rootVerdict(c Check, root bool, abi int, allow bool) Check {
+	if root && !allow {
+		c.Status, c.Reason = Fail, "running as root, which the fence refuses unless the managed fence.allow_root is true; "+
+			"run Abhed as an ordinary user"
+		return c
+	}
+	if root {
+		if abi < rootLandlockABI {
+			c.Status, c.Reason = Fail, fmt.Sprintf("running as root, which the fence supports only with Landlock ABI %d (Linux 6.12), "+
+				"whose signal scoping keeps a command from signalling the host's other root processes; this host has ABI %d. "+
+				"Run Abhed as an ordinary user", rootLandlockABI, abi)
+			return c
+		}
+		c.Status, c.Reason = Pass, "running as root, as the managed fence.allow_root allows: each command drops every capability, empties its "+
+			"bounding set and locks the securebits, Landlock scopes its signals, and files under /etc only root may read are hidden"
 		return c
 	}
 	c.Status, c.Reason = Pass, "running as an ordinary user"
@@ -206,9 +228,8 @@ func seccompCheck(ctx context.Context) Check {
 	return c
 }
 
-// cgroupCheck requires the unified hierarchy and a subtree this user may make
-// a child cgroup in and move a process into. It creates and removes one empty
-// child; managing cgroups is not the probe's job.
+// cgroupCheck requires cgroup v2 and a subtree this user may make a child in
+// and move a process into; it makes and removes one empty child.
 func cgroupCheck(req Requirements) Check {
 	c := Check{ID: CheckCgroup, Required: !req.CgroupOptional}
 	dir, value, err := cgroupWritable(req.CgroupDir)
@@ -269,9 +290,8 @@ func ownCgroup() (string, error) {
 	return "", errors.New("this process is in no cgroup v2 (no 0:: line in /proc/self/cgroup)")
 }
 
-// mountsCheck starts a helper in a user and mount namespace of its own, as
-// the launcher would be, and has it hold a folder read-only, hide another and
-// drop its capabilities.
+// mountsCheck has a helper in its own user and mount namespace hold a folder
+// read-only, hide another and drop its capabilities.
 func mountsCheck(ctx context.Context, req Requirements) Check {
 	c := Check{ID: CheckMounts, Required: req.Mounts}
 	dir, err := os.MkdirTemp("", "abhed-fence-probe-mounts-")
@@ -291,13 +311,14 @@ func mountsCheck(ctx context.Context, req Requirements) Check {
 		return c
 	}
 	attr := &syscall.SysProcAttr{}
-	mountns.Attr(attr)
+	// As the launcher starts: in a PID namespace of its own too.
+	mountns.AttrWith(attr, mountns.Spaces{PID: true})
 	out, err := runHelperAttr(ctx, attr, stageMounts, dir)
 	switch {
 	case err != nil:
 		c.Status, c.Reason = Fail, "an ordinary user cannot have a user and mount namespace of its own here: "+err.Error()
 	case !out.OK:
-		c.Status, c.Reason = Fail, "a user and mount namespace was made, but could not hold paths read-only: "+out.Reason
+		c.Status, c.Reason = Fail, "a user and mount namespace was made, but the fence's mounts in it failed: "+out.Reason
 	default:
 		c.Status, c.Reason, c.Value = Pass, out.Reason, "mount_namespace"
 	}

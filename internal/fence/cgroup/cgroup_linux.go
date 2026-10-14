@@ -12,10 +12,8 @@ import (
 )
 
 // Discover finds the delegated cgroup v2 subtree this process may manage: its
-// own cgroup, or the one above it when Abhed already moved itself into the
-// host leaf. It returns an error wrapping ErrNotDelegated, naming the way to
-// get one, when the cgroup is the hierarchy's root or not this user's to
-// write; the caller must then refuse to run, not run unbounded.
+// own cgroup, or the one above it when Abhed already moved itself into the host
+// leaf. Without one it wraps ErrNotDelegated: refuse, never run unbounded.
 func Discover() (*Base, error) {
 	procCgroup, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
@@ -62,9 +60,7 @@ func delegated(dir string) error {
 }
 
 // Place makes cmd start inside the leaf: the kernel creates its first process
-// there (CLONE_INTO_CGROUP), so nothing it runs is ever outside. The rest of
-// cmd.SysProcAttr is kept. Call it before cmd.Start and remove the leaf only
-// after Start returns. A kernel without clone3 fails the Start.
+// there (CLONE_INTO_CGROUP), so nothing it runs is ever outside.
 func (l *Leaf) Place(cmd *exec.Cmd) error {
 	if cmd.Process != nil {
 		return errors.New("cgroup: place: the command has already started")

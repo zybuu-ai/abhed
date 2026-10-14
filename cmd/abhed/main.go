@@ -22,6 +22,7 @@ const devVersion = "dev"
 var version = devVersion
 
 func main() {
+	app.HideEnvironment()
 	if version == devVersion {
 		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 			version = bi.Main.Version

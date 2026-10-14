@@ -127,6 +127,12 @@ func startSession(ctx context.Context, st *cliState, r *ui.Renderer) {
 // fork when another Abhed process has it open.
 func continueSession(ctx context.Context, st *cliState, r *ui.Renderer, id string, events []agent.Event) {
 	s := r.Style()
+	// Refused before anything is replayed: a subagent's record is shown
+	// through the session that started it.
+	if err := subagentRefusal(id, events); err != nil {
+		fmt.Printf("  %s not resumed: %v\n", s.Red("✕"), err)
+		return
+	}
 	if rec, ok, _ := storedSession(ctx, st, id); ok && rec.EndedAt == nil && id != st.sessionID {
 		answer, err := st.ui().Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm,
 			Title: fmt.Sprintf("Session %s is open in another Abhed process. Fork it into a new session?", id),
@@ -536,11 +542,18 @@ func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, fr
 	if err := recordSession(ctx, es, id, cfg); err != nil {
 		return "", err
 	}
+	// A copy that fails part way is deleted, so no half branch is left listed.
+	failed := func(err error) (string, error) {
+		if del, ok := es.(agent.SessionDeleter); ok {
+			_ = del.DeleteSession(id)
+		}
+		return "", err
+	}
 	rec := agent.NewRecorder(es, id, "")
 	rec.Redact = openVault().Redactor()
 	if _, err := rec.Record(agent.EvSessionBranched, agent.ActorUser, agent.Trusted,
 		agent.SessionBranched{From: from, ThroughSeq: last, Unverified: unverified}); err != nil {
-		return "", err
+		return failed(err)
 	}
 	red := openVault().Redactor()
 	for _, ev := range copied {
@@ -550,7 +563,7 @@ func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, fr
 			ev.Trust = agent.Untrusted
 		}
 		if err := es.Append(ev); err != nil {
-			return "", fmt.Errorf("copy into %s: %w", id, err)
+			return failed(fmt.Errorf("copy into %s: %w", id, err))
 		}
 	}
 	return id, nil

@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,9 +52,8 @@ func TestProcessSandboxShieldsHarnessState(t *testing.T) {
 	}
 }
 
-// The state directory's denial must not break what walks the workspace: ls
-// -R, pytest's collection and git stat it and pass it by, and none may read
-// it. On macOS find and du still report it; bubblewrap shows an empty folder.
+// Denying the state directory must not break walkers (ls -R, pytest, git)
+// and none may read it; macOS find and du still list it, bwrap shows empty.
 func TestProcessSandboxWalksPastHarnessState(t *testing.T) {
 	requireNetNS(t)
 	ws := workspace(t)
@@ -240,9 +240,8 @@ func TestReadableFileSwappedLosesItsAllow(t *testing.T) {
 	}
 }
 
-// Under bubblewrap a pinned file is bound read-only at its resolved path,
-// after every mount that could hide it, and not at all once swapped for a
-// link, another file or a folder.
+// Under bubblewrap a pinned file is bound read-only at its resolved path
+// after any mount that could hide it, and never once swapped out.
 func TestBwrapBindsReadableFilesLast(t *testing.T) {
 	ws := workspace(t)
 	dir := workspace(t)
@@ -345,5 +344,54 @@ func TestBwrapBindsMissingGitHooksReadOnly(t *testing.T) {
 		if !strings.Contains(args, "--ro-bind-try "+q+" "+q) {
 			t.Errorf("missing %s not bound read-only:\n%s", f, args)
 		}
+	}
+}
+
+// While a file is pinned its inode is not freed, so no file made after it
+// is removed can take its number and, with timestamps as coarse as some
+// kernels keep, pass for it.
+func TestPinnedFileInodeIsNotHandedOutAgain(t *testing.T) {
+	dir := workspace(t)
+	path := filepath.Join(dir, "status.sh")
+	f := pinned(t, path, "#!/bin/sh\n")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 200 {
+		p := filepath.Join(dir, fmt.Sprintf("n%d", i))
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- a script the test names
+			t.Fatal(err)
+		}
+		if fi, err := os.Lstat(p); err == nil && os.SameFile(fi, f.Info) {
+			// Put where the pin is, with its times: only the inode's being held tells them apart.
+			_ = os.Chtimes(p, f.Info.ModTime(), f.Info.ModTime())
+			_ = os.Rename(p, path)
+			t.Fatalf("the pinned file's inode number was given to a new file (Same = %v)", f.Same())
+		}
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- a script the test names
+		t.Fatal(err)
+	}
+	if f.Same() {
+		t.Fatal("a new file at the pinned path passes for the pinned one")
+	}
+	runtime.KeepAlive(f)
+}
+
+// Pinning a file leaves it free to be renamed and removed, as Windows would
+// not for a file held open; the pin then no longer matches.
+func TestPinDoesNotLockTheFile(t *testing.T) {
+	dir := workspace(t)
+	path := filepath.Join(dir, "status.sh")
+	f := pinned(t, path, "#!/bin/sh\n")
+	moved := filepath.Join(dir, "moved.sh")
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatalf("a pinned file cannot be renamed: %v", err)
+	}
+	if err := os.Remove(moved); err != nil {
+		t.Fatalf("a pinned file cannot be removed: %v", err)
+	}
+	if f.Same() {
+		t.Fatal("a removed file still matches its pin")
 	}
 }

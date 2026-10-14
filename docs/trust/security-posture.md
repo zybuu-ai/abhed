@@ -16,8 +16,8 @@ whose strength is explicit and self-reporting (`internal/sandbox/sandbox.go`):
 | `none` | Runs directly on the host | Suitable only for a trusted single-user local run |
 | `process` | Process-level confinement: macOS `sandbox-exec`; on Linux, bubblewrap with its own PID, IPC, UTS and (with no network) network namespaces and a read-only view of the system. No seccomp filter or Landlock ruleset is applied | The minimum to set on any shared server: `sandbox.min_tier: "process"` |
 | `container` | OCI container: namespace isolation, shared kernel | |
-| `vm` | gVisor (`runsc`): a user-space kernel that intercepts system calls, run as a container runtime. Not a microVM; the name is kept for compatibility | Strongest tier implemented |
-| `fence` | Preview, Linux only, off unless `sandbox.tier: "fence"`: each command confined by Landlock and a seccomp filter, in a cgroup per tool call (`internal/sandbox/fence_linux.go`). Where an ordinary user may make a user namespace (mode `mount_namespace`), each command also gets a mount namespace of its own: git's config and hooks and an editor's protected files bound read-only, the workspace's `.abhed` under an empty tmpfs (`internal/fence/mountns`). Without one (mode `landlock_only`) the command line runs fenced and `abhed serve` and Studio are refused. Not a microVM; shares the host kernel | Counts as `process` for `min_tier`; fails closed, never falls back to another tier, and records its mode in `fence.qualified`. Requirements and limits: [Configuration](../guide/02-configuration.md#the-fence-tier-preview-linux) |
+| `vm` | gVisor (`runsc`): a user-space kernel that intercepts system calls, run as a container runtime. Not a microVM; the name is kept for compatibility | Strongest tier for the agent's own commands; control-plane sandboxes can also use the experimental `microvm` driver (see "Drivers" below) |
+| `fence` | Preview, Linux only, off unless `sandbox.tier: "fence"`: each command confined by Landlock and a seccomp filter, in a cgroup per tool call (`internal/sandbox/fence_linux.go`). Where an ordinary user may make a user namespace (mode `mount_namespace`), each command also gets a mount namespace of its own: git's config and hooks and an editor's protected files bound read-only, the workspace's `.abhed` under an empty tmpfs (`internal/fence/mountns`). Without one (mode `landlock_only`) the command line runs fenced and `abhed serve` and Studio are refused. An `abhed serve` that accounts sign in to needs Linux 6.12 (Landlock ABI 6), which scopes signals; from 6.12 the fence also runs as root where the managed `fence.allow_root` allows it, each command dropping every capability; root still reads root-only files Landlock grants (under `/usr`, `/opt`, `/sys`), but under `/etc` only what every user may read is granted. A FUSE, overlay or network view of the workspace refuses it. Not a microVM; shares the host kernel | Counts as `process` for `min_tier`; fails closed, never falls back to another tier, and records its mode in `fence.qualified`. Requirements and limits: [Configuration](../guide/02-configuration.md#the-fence-tier-preview-linux) |
 
 `Select` (`internal/sandbox/sandbox.go`) picks the strongest backend
 available that meets the configured `MinTier`, and **refuses to start** if
@@ -30,10 +30,13 @@ unnoticed; `abhed doctor` reports the tier actually in force.
 **The agent does not administer Abhed.** Inside an agent's command, the
 subcommands that change Abhed's own state are refused: `record prune`,
 `trust grant`, `init`, `user add|passwd|remove|import`, `secret set|rm`,
-`mcp add|remove` and `migrate`, as are `-trust-workspace`,
-`-dangerously-skip-permissions` and `-mode bypass` on a nested session,
-and bypass mode, an allow rule or a git extension that `-settings`, `-agents`,
-`-mcp-config` or `-allowedTools` would add to its configuration.
+`mcp add|remove`, `login`, `logout`, `profile use|rm`, every `sandbox`
+command, `admin` and `migrate`, as are `-trust-workspace`,
+`-dangerously-skip-permissions` and a `-mode` looser than the configured
+one (`bypass`, or `auto` over `default`) on a nested session. `-settings`
+and `-mcp-config` are refused outright, and so is an allow rule, a looser
+mode or a git extension that `-agents` or `-allowedTools` would add to its
+configuration.
 A command counts as the agent's when `ABHED_SANDBOX` is set, or when an
 `abhed` process is above it in the process tree, so unsetting the variable
 is not enough. A daemon that detaches from the tree escapes the check, so it
@@ -44,12 +47,45 @@ is, and with the sandbox off (`none`) nothing is. Reading (`record list`,
 Note: `docs/architecture/03-security.md` describes a more elaborate tier
 design (gVisor by default, a microVM per session) as the target architecture.
 That document is explicit that this is **engineering judgment, not verified
-practice**, and the tiers actually implemented in
+practice**. The tiers for the agent's own commands implemented in
 `internal/sandbox/sandbox.go` today are `none` / `process` / `container` /
 `vm`, verified by the escape tests in that package, plus the `fence` preview
 on Linux, which is off unless chosen, counts as `process` for `min_tier`,
-fails closed and is not a microVM. Treat the design doc as direction, and
-this document and the code as what runs today.
+fails closed and is not a microVM. A microVM per sandbox exists as the
+experimental `microvm` driver for `abhed serve`'s control plane (below); it
+is not a `sandbox.tier`. gVisor by default remains direction.
+
+**Drivers.** `abhed serve`'s control plane (`/v1/sandboxes`, and a sandbox
+per session) runs sandboxes through drivers (`driver/`):
+
+- `process`: the tiers above, in a folder of its own per sandbox that the
+  other sandboxes' commands can neither read nor write. It lives in the one
+  server that made it, so under the Enterprise edition's high availability
+  `abhed serve` refuses it as the per-session driver.
+- `docker` and `podman` (`control_plane.docker`, `control_plane.podman`): one
+  long-lived container per sandbox with no capabilities,
+  `no-new-privileges`, the engine's seccomp profile, a read-only root, a
+  non-root user and no network; after start the driver checks from inside
+  what the kernel reports and removes a container that is weaker. Every
+  key of theirs but `enabled`, `image` and `name_prefix` is managed only.
+  They share the host's kernel.
+- `microvm` (experimental; `sandbox.microvm_socket`, managed only): a
+  virtual machine per sandbox with its own kernel, Firecracker under its
+  jailer on Linux and Virtualization.framework on macOS, with no network
+  device; the workspace is copied in and back, never into `.abhed` or git's
+  files. It has not had an outside review.
+- `kubernetes`: a Team edition driver, configured by the managed
+  `control_plane.kubernetes`; a Community binary refuses to start with it.
+  Kubernetes has no per-pod process limit, so the node's `podPidsLimit` is
+  the bound.
+
+An `abhed serve` with more than one account, or able to gain one, gives
+each session a sandbox of its own by default; `server.shared_sessions`
+keeps every account in the server's one workspace, where one account's
+agent can read and change another's files. The tenancy red team has not yet
+exercised `/v1/sandboxes` ownership, the `:ssh` relay, `:expose` or the
+per-session boundary, so no isolation claim is made for them beyond what the
+code and its tests show.
 
 **Policy engine order.** Every tool call is evaluated in a fixed order,
 documented at the top of `internal/policy/policy.go`:
@@ -62,19 +98,36 @@ Arguments → Hooks → Deny rules → Ask rules → Permission mode → Allow r
 call even in `bypass` mode — the most permissive mode Abhed has
 (`internal/policy/policy.go`, `ModeBypass` comment: "dangerous; refusable by
 org policy") — whether the agent or a person makes it. One scope limit: what a
-person runs inside the workbench's interactive shell is bounded by the sandbox,
-and there deny rules are a best-effort screen on each line as typed (see "A
-person's terminal is sandboxed" below). The workbench Explorer's New folder,
-rename and delete are judged as actions of their own (`mkdir`, `rename`,
-`delete`), not as command text, so `bash(...)` rules do not apply to them;
-`write(...)` rules on their paths and rules naming the action do (a
+person runs inside the workbench's interactive shell is bounded by the
+sandbox, and there deny rules are a best-effort screen on each line as typed
+(see "A person's terminal is sandboxed" below). The workbench Explorer's New
+folder, rename and delete are judged as actions of their own (`mkdir`,
+`rename`, `delete`), not as command text, so `bash(...)` rules do not apply to
+them; `write(...)` rules on their paths and rules naming the action do (a
 `rename(...)` rule is matched against both names, and a `delete(...)` rule
-against the old one, since a rename removes it). Hooks and extensions see
-those action names, not `bash`. Rules are
-scoped per-command, not per-tool: allowing `bash(npm test)` never allows
-`bash(rm -rf /)`. A deployment's deny list should block reads of SSH keys,
-cloud credentials and `.env` files, and no allow rule should pre-approve an interpreter or file-reading command that could be
-used to exfiltrate one of those files under the cover of an approved rule.
+against the old one, since a rename removes it; for a folder each entry inside
+is judged too, a rename at its old and new path, and a folder of more than
+5,000 entries is refused). Hooks and extensions see those action names, not
+`bash`. Rules are scoped per-command, not per-tool: allowing `bash(npm test)`
+never allows `bash(rm -rf /)`. A built-in tool's name in a rule is matched in
+any case (`Bash(curl *)` is `bash(curl *)`); MCP, knowledge-base and extension
+tool names are matched exactly, and an extension may not take a built-in name
+in any case, so folding never moves a rule onto another tool. A managed deny
+or ask rule that names no tool here fails `abhed doctor`; a managed deny rule
+whose tool name is evidently a mistake (another tool's name for a built-in, or
+`MCP__` in another case, when no managed extension may provide tools; a
+built-in in look-alike letters; or a managed MCP server or knowledge base in
+another case) refuses startup rather than run without it. A name merely close
+to a built-in, such as `git` or `sql`, fails the doctor but does not refuse
+startup. A name that may be meant ahead, such as an MCP server or extension
+tool not set up on this machine, does not. A deployment's deny list should
+block reads of SSH keys, cloud credentials and `.env` files, and no allow rule
+should pre-approve an interpreter or file-reading command that could be used
+to exfiltrate one of those files under the cover of an approved rule. The
+built-in ask rules only ask before the read tool opens `.env`, `.env.*`,
+`*.pem`, `*.key` and SSH keys in the workspace (a headless run refuses them);
+a command can still print such a file, and a `permissions.ask` list of your
+own replaces these rules.
 
 **The managed configuration binds every entry point.** `/etc/abhed/config.json`
 is read last, and `config.Load` records which keys it set
@@ -84,15 +137,23 @@ managed setting and refuses, with an error, anything that would loosen one:
 `bypass` mode, a mode other than `plan` when the file pins one, a weaker
 `tools.syntax_check`, a higher `limits.max_turns`, an added allow rule or
 directory when the file sets those lists. Deny rules from a caller are only
-ever added. The SDK reads the managed file even without a `ConfigDir`, marks
+ever added, and a managed `permissions.deny` or `permissions.ask` list adds
+to the user's and workspace's lists rather than replacing them. Where the
+managed file sets the permissions, `/permissions allow` is refused; an
+"always allow" answered at an approval prompt still covers the same call
+for the rest of that session. The SDK reads the managed file even without a `ConfigDir`, marks
 its engine managed as the CLI and server do, applies the configured ask rules,
 and wraps bash in the configured sandbox when the file sets a `sandbox` key.
-The console lets a client narrow its session to `plan` and nothing else. Not
-bound: the `ABHED_*` environment variables, which override the endpoint,
-credentials and database over the managed file; the choice of model; and, in
-the SDK, the organisation's `/etc/abhed/ABHED.md` (the SDK loads no memory
-files, and `Options.SystemPrompt` replaces the prompt), `limits.max_budget_tokens`
-and `limits.max_tokens`, which the SDK does not apply. A managed file that
+The console lets a client narrow its session to `plan` and nothing else. An
+`ABHED_*` variable changes a setting only where the managed file leaves it
+unset; otherwise it is ignored with a warning naming the key. A managed
+`model.default` pins the model on every surface: `-model`, `/model`, the
+console's picker, a custom command's `model`, `abhed acp`, and the SDK's
+`SetModel` and `Options.Provider`. Not bound, in the SDK: the
+organisation's `/etc/abhed/ABHED.md`, since memory files load only with
+`Options.ConfiguredTools`, and `Options.SystemPrompt`, which replaces the
+prompt. `limits.max_budget_tokens` and `limits.max_tokens` apply in the SDK
+as on the command line. A managed file that
 exists but cannot be read, or a link at the managed path to nothing, stops
 Abhed rather than being taken as absent. `abhed eval`, which approves every
 prompt with nobody to ask, refuses to run under a managed file, and the
@@ -102,31 +163,32 @@ a `config.Config` built by hand carries no managed keys.
 
 **The agent cannot reach its own configuration.** `.abhed/` in the workspace
 and in the home directory holds the policy, the users file, the keys and the
-workspace-trust decisions (`~/.abhed/trust.json`). One
-check, `tools.StateSet` (`internal/tools/state.go`), is shared by the agent's
-file tools, glob, grep, the code index and the server's download, viewer,
-search and upload endpoints. It compares path components with `.abhed`
-without case, judges both the path as given and the path with every link
-followed, and asks the filesystem, by identity (`os.SameFile`), whether the
-path or a folder above it is a state directory or a state file; the users,
-config and secrets files are always known, and other files and folders there
-up to 4,096. Files are opened under the workspace held open as an `os.Root`
-(`internal/tools/confined.go`), so a link swapped in after the check leads
-neither out of the workspace nor into the state, and what was opened is
-judged again. A folder an upload needs is made one step at a time the same
-way, so a link into the state is refused before anything is made there. The
-process sandbox denies commands reading and writing
-`.abhed/` (`internal/sandbox/process.go`), with `~/.abhed/skills` the one
-readable part. That denial is by path, not by file: a hard link to a state
+workspace-trust decisions (`~/.abhed/trust.json`). One check, `tools.StateSet`
+(`internal/tools/state.go`), is shared by the agent's file tools, glob, grep,
+the code index and the server's download, viewer, search and upload endpoints.
+It compares path components with `.abhed` without case, judges both the path
+as given and the path with every link followed, and asks the filesystem, by
+identity (`os.SameFile`), whether the path or a folder above it is a state
+directory or a state file; the users, config and secrets files are always
+known, and other files and folders there up to 4,096. Files are opened under
+the workspace held open as an `os.Root` (`internal/tools/confined.go`), so a
+link swapped in after the check leads neither out of the workspace nor into
+the state, and what was opened is judged again. A folder an upload needs is
+made one step at a time the same way, so a link into the state is refused
+before anything is made there. The process sandbox denies commands reading and
+writing `.abhed/` (`internal/sandbox/process.go`), with `~/.abhed/skills` the
+one readable part. That denial is by path, not by file: a hard link to a state
 file elsewhere in the workspace is a path the sandbox does not guard. The
 agent cannot make one on macOS, and one that already exists stops Abhed: every
 entry point that builds the sandbox refuses to start, and `abhed doctor`
 fails, when a state file (the users, config and secrets files and the other
 files the state check knows, in the workspace and the home directory, and the
 users, config and secrets files the user could rewrite in every folder above
-the workspace, other than a world-writable sticky one) has more than one name, and `config.Load` refuses
-a configuration file with more than one name (`internal/nlink`,
-`internal/sandboxconfig`). Link counts are not read on Windows.
+the workspace, other than a world-writable sticky one) has more than one name,
+and `config.Load` refuses a configuration file with more than one name
+(`internal/nlink`, `internal/sandboxconfig`). On Windows these named-file
+checks read the link count from the file itself; the walk over the state
+folders, and files Abhed has already opened, are not counted there.
 
 A users file set with `auth.users_file`, or a secrets file set with
 `ABHED_SECRETS_FILE`, is refused by the same check. Abhed refuses to start
@@ -139,9 +201,38 @@ removed by editing that file. `internal/tools/state_test.go`,
 `internal/sandbox/state_test.go` and `server/state_paths_test.go` try the
 spellings, links, swaps and hardlinks, and fail if any succeeds.
 
-Abhed's own git commands run on the host, outside the sandbox, in a repository
-the agent can write: the branch and change count in each prompt, worktrees for
-parallel runs, and a resolved issue's commit and push. They switch off, in
+The server's other private files are state the same way: the TLS keys, the
+client CA `abhed serve` reloads (whoever rewrites it can mint a certificate
+for any account), the command-line token key, the workload identity key and
+trust bundles, the replicas' relay key and CA, and a configured
+`control_plane.ssh_host_key`; each is refused where commands can write and
+denied to them. So are the command line's profiles file wherever
+`ABHED_PROFILES_FILE` puts it, and the client certificate, key and CA each
+profile names (`abhed login -cert`, `-key`, `-ca`); those are denied by path
+and not checked for placement, so keep them out of any workspace. The control
+plane's state folder (`~/Library/Application Support/Abhed/control-plane` on
+macOS, `$XDG_STATE_HOME/abhed/control-plane` elsewhere), which holds the
+relay's host key, snapshots and the sandboxes' own folders, and a configured
+`control_plane.snapshot_dir`, are denied to every session's commands; a
+control-plane sandbox keeps only its own folder there. A `process` driver
+sandbox resolves these paths against serve's workspace, as serve does, and
+is denied that workspace's `.abhed` as well (`internal/sandboxconfig`,
+`driver/process`).
+
+Abhed's own git commands work in a repository the agent can write: the branch
+and change count in each prompt, file mentions, worktrees for parallel runs,
+and a resolved issue's commit and push. Where the session's sandbox runs
+commands on this host (the process tier, bubblewrap or Seatbelt, and the
+fence), they run inside it, as the agent's commands do: the terminal CLI,
+`abhed -p`, `abhed rpc`, Studio and `abhed serve` all do this. Three kinds stay
+on the host: `git worktree add`, `remove` and `prune` and `git submodule
+update`, the agent's own too when given as the whole command (the sandbox
+holds the folders git writes them into; a path outside the workspace refuses
+them), the push of a resolved issue from a repository Abhed makes
+itself, and every git command under the container, vm and none tiers, whose
+commands do not run on this host or run unconfined. A commit inside the
+sandbox takes the author's name and address from your configuration, read on
+the host. Wherever they run, they switch off, in
 git's command-line scope (through `GIT_CONFIG_COUNT`, which names any driver),
 the settings known to name a program git would run for these commands:
 fsmonitor, hooks, clean and smudge filters, merge drivers, textconv and
@@ -150,10 +241,10 @@ They do not enter submodules, refuse to commit a change holding a repository
 of its own, and drop git's environment variables (`internal/hostgit`). The git
 they run is the one on `PATH`, links followed, and is refused when it lies in
 the repository or in a folder sandboxed commands may write (temp folders,
-toolchain caches), where the agent could have planted one. This is
-a list, so it is best effort: a setting a later git adds is not covered until
-it is listed. Running these commands inside the sandbox is the complete
-answer, and is tracked as follow-up work. A resolved issue's branch is pushed
+toolchain caches), where the agent could have planted one. On the host
+this is a list, so it is best effort: a setting a later git adds is not
+covered until it is listed; inside the sandbox such a program runs as
+confined as the agent's own commands. A resolved issue's branch is pushed
 to an https address built from the issue, from a temporary repository with no
 configuration of its own that borrows the checkout's objects, so the
 agent-writable repository configuration cannot choose where the token goes;
@@ -161,7 +252,9 @@ agent-writable repository configuration cannot choose where the token goes;
 operator's global configuration still applies, and is trusted only while the
 agent cannot write it. Assuming the process sandbox tier, the push is refused
 when `~/.gitconfig`, `~/.config/git/config` or `$XDG_CONFIG_HOME/git/config`,
-or the folder it would be made in, lies in the run's worktree or a writable
+the system file (`/etc/gitconfig`, or `etc/gitconfig` under git's install
+prefix), a file any of them brings in with `include.path` or `includeIf`, or
+the folder one would be made in, lies in the run's worktree or a writable
 area of the sandbox (temp folders, toolchain caches). The temporary repository
 is made in `~/.abhed/push`, a private folder sandboxed commands cannot write;
 when that folder is in a writable area, is a file or a link, or is not the
@@ -186,7 +279,10 @@ it, so `ls -R`, pytest's collection and `git add -A` (with a warning that it
 cannot open the directory) pass it by; it cannot list it or read, write, link
 or clone what it holds (`TestProcessSandboxWalksPastHarnessState`). A walk
 that descends into every folder, such as `find .` or `du`, still reports
-`.abhed` and exits 1. Nothing is written into the workspace to achieve this.
+`.abhed` and exits 1. Metadata includes a link's target and extended
+attribute names, so those show. Where `.abhed` is tracked by git and a file
+in it has changed, `git add -A` and `git diff` fail, since they must read
+it. Nothing is written into the workspace to achieve this.
 On Linux bubblewrap mounts an empty directory over it instead.
 
 **A person's terminal is sandboxed; its line checks are best effort.** Each
@@ -231,13 +327,16 @@ inside it. So, for the terminal:
   while a command runs are echoed as they arrive, so they are in the recorded
   output as they were on screen;
 - which program has the keys is asked of the terminal on the process and none
-  tiers (its foreground process group against the shell's); while it is not
-  the shell, keys are neither screened nor recorded. On the container tier
-  the engine's CLI holds the terminal, and a switch to the alternate screen is
-  the only sign; printing that sequence switches screening and recording off
-  there until it is switched back;
-- ending a shell (Kill, closing its tab, deleting the session, the idle or
-  twelve-hour limit, or `exit`) hangs it up, bash hangs up its background
+  tiers, and the fence's (its foreground process group against the
+  shell's); while it is not the shell, keys are neither screened nor
+  recorded. On the container tier the engine's CLI holds the terminal: at
+  each Enter after a switch to the alternate screen the server asks the
+  engine whether a program has the terminal, and screens and records the
+  line unless one does;
+- ending a shell (Kill, closing its tab, a page closed for a minute with no
+  reload, deleting the session, the idle or twelve-hour limit, the
+  account's removal or loss of administrator rights, a server stop, or
+  `exit`; the list is the common cases, not every one) hangs it up, bash hangs up its background
   jobs, and then every process left in the shell's session is stopped and
   killed, pass after pass until none is new (`Leader` in
   `internal/sandbox/leader.go`). That covers `nohup`, `disown`, `( cmd & )`,
@@ -249,54 +348,88 @@ inside it. So, for the terminal:
   signalled by number, both the SIGSTOP and the SIGKILL. If the id were reused
   in between, which needs a pid wrap within microseconds and is not reachable
   in practice, the signal would land on a foreign process: a stop is found on
-  the recheck and undone with SIGCONT, a kill is not. A strict fix
+  the recheck and answered with SIGCONT, sent blind, which would also resume
+  a reused process that had been stopped before; a kill is not undone. A strict fix
   there would need signalling by audit token. When the sweep cannot run (the
   start time unreadable, or no pidfd on a Linux kernel before 5.3) the server
   logs that containment did not run. A process that starts a session of its own
-  (`setsid`, a daemon) escapes and runs until it ends, within the sandbox;
-  bubblewrap and the container tier end everything regardless. A shell runs
+  (`setsid`, a daemon) is found by the `ABHED_COMMAND_ID` it inherits and
+  ended; one that also cleared its environment, or on macOS runs a program
+  Apple ships, escapes and runs until it ends, within the sandbox; macOS has
+  no cgroup to freeze. Bubblewrap and the container tier end everything
+  regardless. A shell runs
   as the server's user; on the process tier it can start at most
   `sandbox.max_procs` more processes than that user ran when it opened (see
-  "Resource limits" below), and on the none tier nothing bounds it. A pids
-  cgroup per shell is the planned follow-up.
+  "Resource limits" below), and on the none tier nothing bounds it. On
+  Linux, where Abhed runs in a delegated cgroup, each process-tier command
+  and shell has a cgroup of its own bounded by `max_procs` and
+  `max_memory_mb`; macOS has no such bound.
 
 What the shell can reach is the tier's, as for the agent's commands, but a
 person now has it interactively. On the macOS process tier, Seatbelt denies
-writes outside the workspace and reads of `.abhed` and of the credential
-paths in home listed in `HomeSecrets` (`internal/sandbox/process.go`): keys
-and cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
-`~/.config/gcloud`, `~/.azure`, …), git host and registry tokens
-(`~/.netrc`, `~/.git-credentials`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`,
-…), database and model tokens, shell history, the keychains and browser
-profiles. Each is named both as given and with its links resolved, so a
-home reached through a link is covered. The list is a deny list: another
-file in home that holds a secret is readable, where Linux's bubblewrap
-leaves home out altogether. Signals stay inside the sandbox: the profile
-allows a command or shell to signal only processes in its own Seatbelt
-sandbox (`(allow signal (target same-sandbox))`), so it cannot stop Abhed
-(`kill $PPID`), the server, or another command's processes, as bubblewrap's
-PID namespace keeps them apart on Linux (`TestSeatbeltSignalsStayInside`).
-One consequence: a command cannot stop a server an earlier command left
-running; Abhed's own stop for a background shell, sent from outside, does.
-The profile starts from `(allow default)`, and the only Mach lookups it
-denies are the network and system configuration services, with the network
-off or under the allowlist; other `mach-lookup` services stay reachable: a command can ask the user's per-session services
-(the pasteboard, Launch Services, which opens applications and URLs, and
-others) to act for it outside the sandbox. Linux has no equivalent. A
-deny-by-default profile for Mach services is not done yet. The environment is an allowlist
-(`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
-`ABHED_` settings. On macOS that does not keep them from a command: the
-kernel returns any same-user process's environment (`kern.procargs2`) unless
-it is a restricted program, as Apple's are, and Seatbelt cannot refuse it, so a
-command reads Abhed's environment and a concurrent command's
-(`TestSeatbeltProcArgsExposure`). On the `none` tier the shell has the server's environment
-without its `ABHED_` settings, which leaves anything else the operator
-exported, and nothing contains it.
+writes outside the workspace and reads of `.abhed` and of the credential paths
+in home listed in `HomeSecrets` (`internal/sandbox/process.go`): keys and
+cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
+`~/.config/gcloud`, `~/.azure`, …), git host and registry tokens (`~/.netrc`,
+`~/.git-credentials`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, …), database
+and model tokens, shell history, the keychains and browser profiles. Each is
+named both as given and with its links resolved, so a home reached through a
+link is covered. Beyond that list, home is unreadable by default: a command
+reads in home only the workspace, `read_only_paths`, the toolchains (`~/go`,
+`~/.cargo`, `~/.rustup`, `~/.npm`, `~/.nvm`, `~/.pyenv`, `~/.local/bin`,
+`~/.local/share/uv` and the like, the folders `GOPATH`, `GOROOT`,
+`CARGO_HOME`, `JAVA_HOME` and similar variables name, each `PATH` folder under
+home with the install a program linked there comes from, never a whole folder
+at the top of home), the caches (`~/.cache`, `~/Library/Caches`) and the files
+git, vim and shells read (`~/.gitconfig`, `~/.config/git`, `~/.vimrc`,
+`~/.zshrc`, …). The credential list above still applies inside those. What
+remains: a secret kept inside one of those folders, such as a token in
+`~/.cache`, is readable, since the rules are paths, not contents; the
+container or vm tier keeps home out altogether, as Linux's bubblewrap does.
+`sandbox.readable_home: true` returns to reading all of home but the
+credential list. Commands write caches of the session's own, removed when it
+ends, not your real `~/.cache`, `~/Library/Caches`, `~/.npm`,
+`~/.cargo/registry` or `~/go/pkg/mod`, which they can only read (Go modules
+come through `GOPROXY`); `sandbox.shared_caches: true` lets them write the
+shared ones again. Signals stay inside the sandbox: the profile allows a
+command or shell to signal only processes in its own Seatbelt sandbox (`(allow
+signal (target same-sandbox))`), so it cannot stop Abhed (`kill $PPID`), the
+server, or another command's processes, as bubblewrap's PID namespace keeps
+them apart on Linux (`TestSeatbeltSignalsStayInside`). One consequence: a
+command cannot stop a server an earlier command left running; Abhed's own stop
+for a background shell, sent from outside, does. The profile starts from
+`(allow default)`. The Mach services it denies are Launch Services and Apple
+events (which open applications and URLs), the pasteboard (`pbpaste` and
+`pbcopy` fail), the window server's session port and screen capture, on every
+network setting, and the network and system configuration services with the
+network off or under the allowlist. Other `mach-lookup` services stay
+reachable, and some act outside the sandbox for a command (`trustd` fetches a
+certificate's URLs, for one; TLS needs it). A deny-by-default Mach profile
+would break the system services every program uses, so what remains is that
+list's gap: a per-session service not named above can still be asked to act.
+The container and vm tiers have no Mach services at all. The environment is an
+allowlist (`internal/sandbox/process.go`, `env`): no provider keys, no vault
+secrets, no `ABHED_` settings. On macOS that does not keep them from a
+command: the kernel returns any same-user process's environment
+(`kern.procargs2`) unless it is a restricted program, as Apple's are, and
+Seatbelt cannot refuse it, so a command reads a concurrent command's
+environment and that of an MCP server or extension Abhed started, which get
+only `PATH`, `HOME`, the locale and temporary-folder variables and what their
+configuration lists (`TestSeatbeltProcArgsExposure`). Abhed's own is hidden:
+it re-executes itself with a short list of variables in its exec environment
+and reads the rest from a pipe (`app.HideEnvironment`,
+`TestHideEnvironmentKeepsItFromProcArgs`). Signing Abhed restricted (`codesign
+-o restrict`) would also hide its environment, since the kernel omits a
+restricted process's, but not its arguments, its children's, or an unsigned
+build's, and it changes how the binary loads; releases are not signed that
+way. On the `none` tier the shell has the server's environment without its
+`ABHED_` settings, which leaves anything else the operator exported, and
+nothing contains it.
 
 `sandbox.terminal: "lines"` returns the terminal to one policy-checked `bash`
-call per line with no shell state, and a managed policy with deny rules for
-`bash` or for every tool (`*`), or with a policy hook, gets that mode
-automatically. Even then a rule checks the line, not what
+call per line with no shell state, and a managed file that itself sets
+`permissions.deny`, with rules for `bash` or for every tool (`*`), or sets
+`extensions`, gets that mode automatically. Even then a rule checks the line, not what
 a script the line runs does. On the `none` tier the shell runs on the host, and
 the terminal banner and status bar say so.
 
@@ -311,10 +444,14 @@ still crowd out the server's own processes until it is stopped; the kernel
 does not bound root at all. The headroom is shared: the user's other programs
 and concurrent commands use it too, and a long-lived workbench shell keeps the
 limit it opened with. The limit never exceeds the one already in force, and
-the server itself runs without it. `sandbox.max_memory_mb` is applied only on the
-container and vm tiers; the none and process tiers do not bound memory, and
-`abhed doctor` warns when it is set for one of them, as it does for
-`max_procs` on the none tier or under root. The none tier bounds neither. A command past its
+the server itself runs without it. `sandbox.max_memory_mb` (4096 by default)
+bounds each process's data on the Linux process tier, as a hard limit, and
+the command's total where Abhed runs in a delegated cgroup; set in a
+configuration file without one, the process tier is refused rather than run
+unbounded. It is the container's limit on the container and vm tiers, and
+the fence's. macOS and the none tier bound no memory, and `abhed doctor`
+warns when it is set there, as it does for `max_procs` on the none tier or
+under root. The none tier bounds neither. A command past its
 timeout is stopped with everything descended from it, including a child that
 left its group with `setsid` while its parent still ran
 (`TestBashTimeoutEndsADetachedChild`). A process whose parent had already
@@ -363,11 +500,13 @@ Headless runs never prompt; trust comes from a stored grant,
   person has read, not a sandbox for it.
 - The `none` sandbox tier confines nothing, so a command there can write
   `~/.abhed/trust.json` as it can every other file of the user's.
-- The default configuration asks before a bash command that mentions
-  `ABHED_TRUST_WORKSPACE` or `trust-workspace`, so the agent cannot quietly
-  start a nested trusted run. A configuration that sets its own
-  `permissions.ask` replaces those rules, and a command that assembles the
-  name or runs a script is not caught by them.
+- Abhed asks before a bash command that mentions `ABHED_TRUST_WORKSPACE`
+  or `trust-workspace`, in every mode and whatever `permissions.ask` a
+  configuration sets. A command that assembles the name or sets it in a
+  script is not caught by that, so a nested `abhed` inside an agent's
+  command ignores `ABHED_TRUST_WORKSPACE` and refuses `-trust-workspace`.
+  That nesting is found by `ABHED_SANDBOX` or an `abhed` parent process; a
+  command that daemonises out of both at the `none` tier is not seen.
 
 Design and the classification of every setting:
 `docs/architecture/workspace-trust.md`.
@@ -383,67 +522,73 @@ cannot unshare a network namespace — per `docs/architecture/03-security.md`
 §7), and a containerised server with no
 bind mount has no route to the host filesystem.
 
-With the network off, a command cannot see the host's network either. On
-Linux the network namespace has only loopback. On the macOS process tier,
-Seatbelt also denies the routing sysctls that list interfaces and addresses,
-routing sockets, and the system configuration and network services, so
-`ifconfig`, `netstat -rn`, `route -n get`, `scutil --nwi` and `ipconfig` fail
-instead of showing the LAN address, the gateway or a VPN tunnel (`TestProcessSandboxHidesTheHostsNetwork`). What remains visible
-on macOS: the hardware ports and their MAC addresses, which come from the I/O
-registry (`networksetup -listallhardwareports`, `ioreg`), and the host name.
-Programs that enumerate interfaces get an error rather than a loopback-only
-list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
-pytest are unaffected.
+With the network off, a command cannot see the host's network either. On Linux
+the network namespace has only loopback. On the macOS process tier, Seatbelt
+also denies the routing sysctls that list interfaces and addresses, routing
+sockets, and the system configuration and network services, so `ifconfig`,
+`netstat -rn`, `route -n get`, `scutil --nwi` and `ipconfig` fail instead of
+showing the LAN address, the gateway or a VPN tunnel
+(`TestProcessSandboxHidesTheHostsNetwork`). What remains visible on macOS: the
+hardware ports and their MAC addresses, which come from the I/O registry
+(`networksetup -listallhardwareports`, `ioreg`), and the host name. Programs
+that enumerate interfaces get an error rather than a loopback-only list, as
+Node's `os.networkInterfaces()` does; Python, git, `go build` and pytest are
+unaffected.
 
 **Under `sandbox.network: "allowlist"`**, set in the managed configuration,
 each session gets a proxy on loopback and the `egress` rules decide what
 leaves, default deny, each decision recorded as an `egress.decision` event
 with the call or session it came from, never bodies or credentials. Brokered
-this way: `bash` commands (only the process tier accepts the setting; on
-Linux a command reaches the proxy only through a relay in its own network
-namespace, on macOS Seatbelt allows only the proxy's port), the model
-client, `web_fetch`, `web_search` and MCP servers over HTTP (judged in
-Abhed's process, request by request), and stdio MCP servers' direct sockets
+this way: `bash` commands (on the process tier, where on Linux a command
+reaches the proxy only through a relay in its own network namespace and on
+macOS Seatbelt allows only the proxy's port; the fence in `mount_namespace`
+mode, or otherwise with the managed `fence.egress_port_only`; and
+the container and vm tiers through a relay, refused where the engine is
+remote and no `relay_binary` is set), the model client, `web_fetch`,
+`web_search`, MCP servers over HTTP, `ssh_connect`, the `k8s_*` tools, `rag`
+over HTTP and `abhed resolve`'s forge API and push (judged in Abhed's
+process, request by request), and stdio MCP servers' direct sockets
 (confined to a proxy of their own; not started where they cannot be, or as
-root on Linux). Not brokered: `ssh`, the `k8s_*` tools, remote RAG, a stdio
-server's files (it can plant something that runs later outside any
-sandbox), and requests system services make on a command's or server's
+root on Linux). A stdio server on the process tier sees only a home of its
+own under `~/.abhed/mcp` and its install folder, unless `host_files: true`.
+Not brokered: requests system services make on a command's or server's
 behalf, outside the proxy and unrecorded: on macOS `trustd` fetches a
 certificate's AIA and OCSP URLs, and on Linux, for a stdio server, a
-resolver reached over a unix socket left visible looks names up. HTTPS is judged by host and port
-only; there is no TLS inspection. Details:
-`docs/guide/21-network-policy.md`.
+resolver reached over a unix socket left visible looks names up. HTTPS is
+judged by host and port unless the managed `egress.inspect_tls` is on.
+Details: `docs/guide/21-network-policy.md`.
 
-**`web_search` and `web_fetch`, when enabled**, are the two narrow,
-structured exceptions: a Go tool in the Abhed process makes the request, not
-the sandboxed shell. `web_search` sends a query to the configured provider.
-`web_fetch` sends only GETs with no body, to the one URL policy judged on a
-public host (a redirect is followed only to that same URL or its https
-upgrade, at most five times), and nothing else: no other method, no
-connection the model holds. A port other than
-the scheme's default asks unless an allow rule names it, even for a host on
-`web_fetch.allowed_hosts`, except in bypass mode (unless a managed policy
-disables it) and `abhed eval`, which approve every ask. Both are off by default (`web_search.enabled`
-and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
+**`web_search` and `web_fetch`, when enabled**, are the two narrow, structured
+exceptions: a Go tool in the Abhed process makes the request, not the
+sandboxed shell. `web_search` sends a query to the configured provider, and
+asks before each search in every mode short of bypass unless an allow rule
+names `web_search`. `web_fetch` sends only GETs with no body, to the one URL
+policy judged on a public host (a redirect is followed only to that same URL
+or its https upgrade, at most five times), and nothing else: no other method,
+no connection the model holds. A port other than the scheme's default asks
+unless an allow rule names it, even for a host on `web_fetch.allowed_hosts`,
+except in bypass mode (unless a managed policy disables it) and `abhed eval`,
+which approve every ask. Both are off by default (`web_search.enabled` and
+`web_fetch.enabled` are false in `config/config.go`'s defaults), each is
 enabled on its own, and neither enables shell networking. Both sections are
 managed only: only the managed configuration turns them on or names the
 provider, endpoint, key or hosts. The user's file, `-settings`, a workspace
-trusted or not and the SDK may only turn them off or narrow them (no
-`ABHED_*` variable sets either), and each attempt that did not take effect is recorded as a
-`config.refused` event naming who made it (`config/websection.go`). `web_fetch`
-fetches only the URL policy has judged: it refuses schemes other than
-http and https, and any loopback, private, link-local, metadata or reserved
-address, checked on the address it connects to, on every redirect hop
-(`internal/webfetch/guard.go`). It follows a redirect only to the same URL
-or its https upgrade, and hands any other back to the model as a new call.
-It ignores proxy settings from the environment, refuses a URL that holds a
-stored secret as written, percent-encoded or in another case (not one
-encoded otherwise or split across the URL), and
-can be held to an operator's host list (`web_fetch.allowed_hosts`). A URL is
-a channel out: whatever the model puts in it reaches the site. Without a
-host list every call asks, in plan mode too, unless an operator's allow rule
-names it (`Engine.AskReadOnly` in `internal/policy/policy.go`); bypass mode
-(unless a managed policy disables it) and `abhed eval` do not ask, and a run with no one to ask refuses it.
+trusted or not and the SDK may only turn them off or narrow them (no `ABHED_*`
+variable sets either), and each attempt that did not take effect is recorded
+as a `config.refused` event naming who made it (`config/websection.go`).
+`web_fetch` fetches only the URL policy has judged: it refuses schemes other
+than http and https, and any loopback, private, link-local, metadata or
+reserved address, checked on the address it connects to, on every redirect hop
+(`internal/webfetch/guard.go`). It follows a redirect only to the same URL or
+its https upgrade, and hands any other back to the model as a new call. It
+ignores proxy settings from the environment, refuses a URL that holds a stored
+secret as written, percent-encoded or in another case (not one encoded
+otherwise or split across the URL), and can be held to an operator's host list
+(`web_fetch.allowed_hosts`). A URL is a channel out: whatever the model puts
+in it reaches the site. Without a host list every call asks, in plan mode too,
+unless an operator's allow rule names it (`Engine.AskReadOnly` in
+`internal/policy/policy.go`); bypass mode (unless a managed policy disables
+it) and `abhed eval` do not ask, and a run with no one to ask refuses it.
 
 **The model endpoint the operator configured.** Prompts and context go to
 whatever model endpoint is set in `model.providers`. Abhed is model-agnostic
@@ -479,8 +624,11 @@ owned the tables, so it could truncate them or switch the triggers off. With
 
 **What is not covered.** The owner role and any database superuser can still
 alter the record; that is what owning a database means. Keep those credentials
-off the server host. Detecting tampering by them needs a hash chain over the
-events with the head stored elsewhere, which is not built.
+off the server host. Postgres events are hash-chained per session by a
+trigger, and with a managed `record.witness` each head is also sent off the
+host, so `abhed record verify` detects a record cut back, re-chained or
+restored from an older copy. Without a witness the owner role can still
+rewrite the chain consistently.
 
 **`FORCE ROW LEVEL SECURITY`**, not just `ENABLE`. The schema comment explains
 why this specific word matters: a table's owner bypasses ordinary RLS, and
@@ -488,18 +636,19 @@ the application role almost always owns the tables it created, so `ENABLE`
 alone leaves the isolation policy silently inert. This was found by
 `TestRowLevelSecurityIsolatesTenants`, which could read another tenant's rows
 until `FORCE` was added (`README.md`'s evidence-discipline section tells the
-same story). `sessions`, `events` and `checkpoints` all carry `ENABLE` and
-`FORCE` together, with a `current_setting('app.tenant_id', true)` policy on
-each.
+same story). Every tenant table (`sessions`, `events`, `checkpoints`,
+`approvals`, the sandbox tables, `owner_changes` and `session_keys`) carries
+`ENABLE` and `FORCE` together, with a tenant policy on each.
 
-**Two database roles, and the app refuses to run as the wrong one.**
+**Separate database roles, and the app refuses to run as the wrong one.**
 Postgres does not apply row-level security to a superuser or a `BYPASSRLS`
 role, not even with `FORCE`, so an Abhed connected as one has every
-isolation policy in the schema and none of the isolation. Provision two
-roles: a superuser used only to create the database and the application
-role, and an application role (`NOSUPERUSER NOBYPASSRLS NOCREATEROLE
-NOCREATEDB`) that owns the application's tables and is the only one in the
-server's DSN. On connect, Abhed checks `rolsuper OR rolbypassrls` on the role
+isolation policy in the schema and none of the isolation. Provision three
+roles: a superuser used only to create the database and the roles, an
+owner role that `abhed migrate` uses to apply the schema, and a runtime role
+(`NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB`) that owns nothing and is
+the only one in the server's DSN (`storage.single_role` lets one role do
+both, by the operator's choice). On connect, Abhed checks `rolsuper OR rolbypassrls` on the role
 it connected as and **refuses to start** if that role is privileged
 (`store/postgres.go`).
 
@@ -509,7 +658,14 @@ Three modes in this edition (`docs/ops/enabling-auth.md`): `none` (local dev
 only), `local` (username/password Abhed holds), and `proxy` (identity from a
 trusted reverse proxy's headers). OIDC sign-in against an IdP — full token
 verification against the JWKS, PKCE, single-use `state`, browser sessions —
-is part of the Enterprise Edition and documented with it.
+is part of the Team and Enterprise editions and documented with them.
+`abhed serve` can terminate TLS 1.2 or later itself, take client
+certificates (`server.tls.client_ca_file`, with a revocation list), and,
+with `auth.cli.enabled`, sign the command line in with `abhed login`, by a
+token that ends at logout, a password change or the account's removal
+(`docs/guide/26-tls-and-cli-login.md`). On a server people sign in to, each
+account has its own secrets store under `~/.abhed/secrets.d`; the
+operator's store serves scheduled runs only.
 
 - **Local accounts use bcrypt** at the library default cost
   (`auth/local.go`, `auth/filestore.go`). A wrong password
@@ -521,9 +677,11 @@ is part of the Enterprise Edition and documented with it.
   account lands with no groups — it can use the console and read its own
   sessions, and cannot administer the console or change policy unless an
   administrator puts it in the admin group (`-admin`). Invites, access
-  requests and grants are part of the Enterprise Edition.
+  requests and grants are part of the Team and Enterprise editions.
 - **Sign-in is rate-limited** for anonymous callers (`throttle` in
-  `server/server.go`).
+  `server/server.go`). Every request has a `request` line in the server
+  log, including one refused before it was identified (a `401`, a sign-in
+  `429` or a refused origin), which carries `identified=false`.
 
 ## Container hardening
 
@@ -543,8 +701,9 @@ specific threat:
 | Config mounted read-only at the managed path | `--volume $CONFIG:/etc/abhed/config.json:ro` | Loading config at the managed path sets `Managed`, refusing `bypass` mode, and binds every key it sets against flags and SDK options from inside the container |
 | Skills mounted read-only | `--volume $SKILLS:/workspace/.abhed/skills:ro` | Skills are instructions; the agent must not be able to rewrite its own operating rules |
 
-The transport and browser layers — TLS and HSTS, a Content-Security-Policy,
-`frame-ancestors 'none'` — belong to the reverse proxy in front of the
+Where serve does not terminate TLS itself, the transport and browser layers
+— TLS and HSTS, a Content-Security-Policy, `frame-ancestors 'none'` — belong
+to the reverse proxy in front of the
 container, which should be the only route to the published port.
 
 ## Telemetry
@@ -571,21 +730,22 @@ Stated plainly rather than buried:
   (`internal/redteam`) proves the implemented controls resist the attacks its
   author thought of; it is not independent verification.
   `docs/ops/red-team-scope.md` says what to commission.
-- **No automatic failover.** Several servers can share one Postgres
-  database, and a finished session can be continued on any of them (see
-  `docs/guide/11-sessions.md`). Nothing moves work off a server that stops:
-  its running turns end with it and are recorded as interrupted, and the
-  session can be continued from there. Its background subagents end with it
-  too: the server that next takes the session over (by a message, or its
-  sweep once the stopped server's claim is stale) records them as `lost`,
-  and their work is not resumed on its own.
+- **No automatic failover in this edition.** The Enterprise edition's high
+  availability moves running turns between replicas; without it, several
+  servers can share one Postgres database, and a finished session can be
+  continued on any of them (see `docs/guide/11-sessions.md`). Nothing moves
+  work off a server that stops: its running turns end with it and are recorded
+  as interrupted, and the session can be continued from there. Its background
+  subagents end with it too: the server that next takes the session over (by a
+  message, or its sweep once the stopped server's claim is stale) records them
+  as `lost`, and their work is not resumed on its own.
 - **Agent-command detection can be escaped on the `none` tier.** Whether a
   process is the agent's is decided by `ABHED_SANDBOX` and by an `abhed`
   ancestor in the process tree. A command that unsets the variable and
   double-forks, so its process is reparented to init or launchd, has no
   `abhed` ancestor, and `abhed admin`, `trust grant`, `-settings` and the
-  other refusals above no longer recognise it. On the `process`, `container`
-  and `vm` tiers the sandbox's deny on `~/.abhed` and the state paths
+  other refusals above no longer recognise it. On the `process`, `fence`,
+  `container` and `vm` tiers the sandbox's deny on `~/.abhed` and the state paths
   still holds; on `none` nothing stands behind the check. Run
   a tier other than `none` wherever the agent must not administer Abhed.
 - **A small team.** Zybuu is a small company. There is no security team, no

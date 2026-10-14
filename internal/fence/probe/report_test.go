@@ -114,3 +114,12 @@ func TestAddDecidesAgain(t *testing.T) {
 		t.Fatalf("after a failed added check: qualified %v, summary %q", r.Qualified, r.Summary)
 	}
 }
+
+// A host with no kernel version, as off Linux, is named without a gap.
+func TestSummaryNamesAHostWithoutAKernel(t *testing.T) {
+	r := Report{OS: "darwin", Arch: "arm64", Checks: []Check{{ID: CheckPlatform, Status: Fail, Required: true, Reason: "needs Linux"}}}
+	r.finish()
+	if !strings.Contains(r.Summary, "on darwin arm64:") {
+		t.Fatalf("summary: %q", r.Summary)
+	}
+}

@@ -291,6 +291,24 @@ func TestCLIForkCarriesIntoNextTask(t *testing.T) {
 	checkRecord(t, c.export(), 3)
 }
 
+// /fork 0 keeps the whole conversation, so it reports the last step it kept,
+// not a fork before the first message.
+func TestCLIForkZeroReportsTheStepKept(t *testing.T) {
+	c := startCLI(t)
+	c.task("Remember the codeword ZEBRA-41.")
+	end := lastEnd(c.export())
+	c.command("/fork 0", "messages kept")
+	out := c.out.String()
+	i := strings.LastIndex(out, "messages kept")
+	line := out[strings.LastIndex(out[:i], "\n")+1 : i]
+	if strings.Contains(line, "before the first message") || !strings.Contains(line, fmt.Sprintf("forked at step %d", end)) {
+		t.Fatalf("/fork 0 should report step %d:\n%s", end, line)
+	}
+	if body := c.task("What is the codeword?"); !strings.Contains(body, "ZEBRA-41") {
+		t.Fatalf("/fork 0 dropped the conversation:\n%s", body)
+	}
+}
+
 // /resume makes a recorded session the conversation again: the next task
 // sees it, and its events extend that session's sequence.
 func TestCLIResumeContinuesRecordedConversation(t *testing.T) {

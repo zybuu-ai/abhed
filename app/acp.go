@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -97,11 +98,61 @@ const (
 	errPolicy     = -32001 // refused by managed configuration, trust or a rule
 	errBusy       = -32002 // a prompt is running
 	errRecord     = -32003 // the record is unavailable or failed verification
+	errHeld       = -32004 // another Abhed process has the session open; fork it
 	errParseInput = -32700
 )
 
 func refusal(code int, format string, args ...any) *rpcError {
 	return &rpcError{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// badParams is the -32602 for params that did not decode. It names the field
+// and the JSON kind expected, never the Go type the decoder reports.
+func badParams(where string, err error) *rpcError {
+	if where != "" {
+		where += ": "
+	}
+	var te *json.UnmarshalTypeError
+	var se *json.SyntaxError
+	switch {
+	case errors.As(err, &te):
+		if te.Field == "" {
+			return refusal(errParams, "%sparams must be %s, not %s", where, jsonKind(te.Type), te.Value)
+		}
+		return refusal(errParams, "%s%q must be %s, not %s", where, te.Field, jsonKind(te.Type), te.Value)
+	case errors.As(err, &se), errors.Is(err, io.ErrUnexpectedEOF):
+		return refusal(errParams, "%sparams are not valid JSON", where)
+	}
+	if f, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		return refusal(errParams, "%sunknown field %s", where, f)
+	}
+	return refusal(errParams, "%sparams could not be read", where)
+}
+
+// jsonKind names a Go type as the JSON value that decodes into it.
+func jsonKind(t reflect.Type) string {
+	if t == nil {
+		return "a different value"
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "true or false"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "a whole number"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	case reflect.Map, reflect.Struct:
+		return "an object"
+	}
+	return "a different value"
 }
 
 type acpSession struct {
@@ -123,12 +174,7 @@ type acpSession struct {
 	mu         sync.Mutex
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
-	always map[string]bool
-	// A call salvaged from prose has no id, so the editor knows it by its
-	// action.requested id: the last one requested, and those approved and
-	// awaiting a result, oldest first.
-	lastIdless idlessCall
-	ranIdless  []idlessCall
+	always map[string]string
 	// subAsks are the subagent asks shown as tool calls, by request id, so
 	// their answer settles the card and no other subagent.action draws one.
 	subAsks map[string]bool
@@ -201,7 +247,6 @@ func (s *acpSession) claimTurn(ctx context.Context, cancel context.CancelFunc) (
 
 func (s *acpSession) beginTurnLocked(ctx context.Context, cancel context.CancelFunc) {
 	s.cancel, s.turn = cancel, ctx
-	s.ranIdless = nil // a result the last turn never recorded will not come
 	if w := s.window; w != nil {
 		// Its open asks stay bound to it; new ones go out inside the turn.
 		w.open = false
@@ -248,8 +293,6 @@ func (s *acpSession) pokeLocked() {
 // its own and may repeat the parent's, so its request id is used instead.
 func subagentCallID(requestID string) string { return "subagent-" + requestID }
 
-type idlessCall struct{ id, tool string }
-
 type acpConn struct {
 	out     io.Writer
 	outMu   sync.Mutex
@@ -285,6 +328,42 @@ type acpConn struct {
 	// terms are the sandboxed terminals, by id (§7.1).
 	termMu sync.Mutex
 	terms  map[string]*acpTerminal
+
+	// inflight are the requests being answered; gone closes when stdin
+	// does, so nothing waits for an answer the client can no longer send.
+	inflight sync.WaitGroup
+	goneInit sync.Once
+	gone     chan struct{}
+	goneOnce sync.Once
+}
+
+// drainWait bounds how long the requests read before stdin closed may take
+// to be answered before the process exits anyway.
+const drainWait = 30 * time.Second
+
+// inputClosed says stdin has closed: a prompt running stops as cancelled
+// and an agent→client request fails, so every request read is answered.
+func (c *acpConn) inputClosed() {
+	ch := c.goneCh()
+	c.goneOnce.Do(func() { close(ch) })
+}
+
+// goneCh is closed once stdin has.
+func (c *acpConn) goneCh() chan struct{} {
+	c.goneInit.Do(func() { c.gone = make(chan struct{}) })
+	return c.gone
+}
+
+// drain waits, up to wait, for the replies to every request read.
+func (c *acpConn) drain(wait time.Duration) bool {
+	done := make(chan struct{})
+	go func() { c.inflight.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(wait):
+		return false
+	}
 }
 
 // root is the context every agent and prompt runs under.
@@ -302,8 +381,7 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	c := &acpConn{out: os.Stdout, version: build.Version, build: build, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
 	c.useRecord(workspace, trust)
-	err := c.serve(os.Stdin)
-	c.closeAll()
+	err := c.run(os.Stdin)
 	c.closeRecord()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: acp: %v\n", err)
@@ -312,7 +390,21 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	return 0
 }
 
+// run serves in, answers every request read from it, then closes every
+// session.
+func (c *acpConn) run(in io.Reader) error {
+	err := c.serve(in)
+	if !c.drain(drainWait) {
+		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+drainWait.String())
+	}
+	c.closeAll()
+	return err
+}
+
+// serve answers the requests on in until it ends, then says the input is
+// gone; the replies to requests still running follow (see drain).
 func (c *acpConn) serve(in io.Reader) error {
+	defer c.inputClosed()
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
 	for sc.Scan() {
@@ -333,7 +425,11 @@ func (c *acpConn) serve(in io.Reader) error {
 		default:
 			// A prompt runs for as long as the model does; the loop must keep
 			// reading for the cancel and the permission answers meanwhile.
-			go c.request(msg)
+			c.inflight.Add(1)
+			go func() {
+				defer c.inflight.Done()
+				c.request(msg)
+			}()
 		}
 	}
 	return sc.Err()
@@ -387,6 +483,11 @@ func (c *acpConn) call(ctx context.Context, method string, params any) (json.Raw
 		delete(c.pending, id)
 		c.pendMu.Unlock()
 		return nil, ctx.Err()
+	case <-c.goneCh():
+		c.pendMu.Lock()
+		delete(c.pending, id)
+		c.pendMu.Unlock()
+		return nil, errInputClosed{}
 	case msg := <-ch:
 		if msg.Error != nil {
 			return nil, errors.New(msg.Error.Message)
@@ -394,6 +495,13 @@ func (c *acpConn) call(ctx context.Context, method string, params any) (json.Raw
 		return msg.Result, nil
 	}
 }
+
+// errInputClosed reads as a cancel, so a turn waiting on the client ends as
+// interrupted whichever of this and the turn's own cancel the loop sees first.
+type errInputClosed struct{}
+
+func (errInputClosed) Error() string        { return "the client closed its input and cannot answer" }
+func (errInputClosed) Is(target error) bool { return target == context.Canceled }
 
 func (c *acpConn) answer(msg rpcMessage) {
 	var id int64
@@ -473,8 +581,10 @@ func (c *acpConn) shut(s *acpSession) {
 	if cancel != nil {
 		cancel()
 	}
+	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
 	c.unsubscribeSession(s.id)
+	s.recordClosed(cancel != nil)
 	s.agent.Close()
 }
 
@@ -549,7 +659,7 @@ func sessionMeta(raw map[string]json.RawMessage, into any) *rpcError {
 		dec := json.NewDecoder(strings.NewReader(string(b)))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(into); err != nil {
-			return refusal(errParams, "_meta[%q]: %v", key, err)
+			return badParams(fmt.Sprintf("_meta[%q]", key), err)
 		}
 		return nil
 	}
@@ -597,7 +707,7 @@ func (c *acpConn) newSession(msg rpcMessage) {
 		Meta       map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "session/new: %v", err))
+		c.reply(msg.ID, nil, badParams("session/new", err))
 		return
 	}
 	trust, e := c.requestedTrust(p.Meta)
@@ -656,7 +766,7 @@ func metaOf(res map[string]any) map[string]any {
 // openSession builds a session's agent, in the record when the connection
 // keeps one, and adds it to the connection.
 func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
-	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]bool{}}
+	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]string{}}
 	if s.id == "" {
 		s.id = "s-" + acpID()
 		if c.durable() {
@@ -707,7 +817,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	a, err := newACPAgent(embedded.With(c.root(), settings), opts)
 	if err != nil {
 		if errors.Is(err, local.ErrHeldElsewhere) {
-			return refusal(errRefused, "open in another Abhed process; fork it to go on here")
+			return refusal(errHeld, "open in another Abhed process; fork it to go on here")
 		}
 		return refusal(errRefused, "%s", err.Error())
 	}
@@ -839,11 +949,16 @@ func attachmentRefusal(s *acpSession, blocks []json.RawMessage) (string, error) 
 		}
 		args := argsJSON(map[string]string{"path": path})
 		var d policy.Result
-		if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
+		switch {
+		case u.Host != "" && !strings.EqualFold(u.Host, "localhost"):
 			// Read as a UNC path on Windows; the rules cannot judge another host's files.
 			args = argsJSON(map[string]string{"path": "//" + u.Host + u.Path})
 			d = policy.Result{Decision: policy.Deny, Reason: "the file is on another host", Step: "attachment"}
-		} else {
+		case uncPath(u.Path):
+			// file:////server/share names the same UNC path with an empty host.
+			args = argsJSON(map[string]string{"path": u.Path})
+			d = policy.Result{Decision: policy.Deny, Reason: "the file is on another host", Step: "attachment"}
+		default:
 			d = loop.Policy.Evaluate("read", false, args)
 		}
 		if d.Decision != policy.Deny && tools.IsState(path, s.parts.Session.PolicyRoots()...) {
@@ -857,6 +972,13 @@ func attachmentRefusal(s *acpSession, blocks []json.RawMessage) (string, error) 
 		}
 	}
 	return "", nil
+}
+
+// uncPath reports a URI path that names a network share: //server/share, or
+// a backslash form of it after the leading slash.
+func uncPath(p string) bool {
+	rest := strings.TrimPrefix(p, "/")
+	return strings.HasPrefix(p, "//") || strings.HasPrefix(rest, `\\`) || strings.HasPrefix(rest, `\/`) || strings.HasPrefix(rest, `/\`)
 }
 
 // lineFragment is the line range Studio puts on a selection's URI: #L3-L9.
@@ -881,6 +1003,14 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		defer c.busy()()
 	}
 	ctx, cancel := context.WithCancel(c.root())
+	// With stdin closed no one can steer or cancel the turn: it ends now.
+	go func() {
+		select {
+		case <-c.goneCh():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	// A turn the session woke for runs to its end, or session/cancel, first.
 	for {
 		wait, busy := s.claimTurn(ctx, cancel)
@@ -979,7 +1109,8 @@ func textBlock(t string) map[string]any { return map[string]any{"type": "text", 
 func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 	scope := d.Offer()
 	s.mu.Lock()
-	remembered := scope != "" && s.always[scope]
+	guard, ok := s.always[scope]
+	remembered := ok && d.Covers(scope, guard)
 	s.mu.Unlock()
 	if remembered {
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
@@ -1089,7 +1220,8 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	res, err := c.call(askCtx, "session/request_permission", map[string]any{
 		"sessionId": s.id, "toolCall": toolCall, "options": options,
 	})
-	if err != nil && ctx.Err() == nil && bound != nil && bound.Err() != nil {
+	// Stdin closing also ends the turn; that stays a cancel, not a refusal.
+	if err != nil && ctx.Err() == nil && bound != nil && bound.Err() != nil && !errors.Is(err, errInputClosed{}) {
 		why := "the prompt turn ended before it was answered"
 		if held {
 			why = "the review was closed before it was answered"
@@ -1119,7 +1251,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	switch {
 	case out.Outcome.OptionID == always && offerAlways:
 		s.mu.Lock()
-		s.always[scope] = true
+		s.always[scope] = d.Guard
 		s.mu.Unlock()
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: scope})
 		// Recorded so a later session/load restores it, where policy still allows.
@@ -1272,20 +1404,6 @@ func rawToolTitle(tool string, args json.RawMessage) string {
 		}
 	}
 	return ui.VisibleLine(tool)
-}
-
-// takeIdless names the result of an approved call without an id: the oldest
-// such call of that tool still awaiting one.
-func (s *acpSession) takeIdless(tool string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, c := range s.ranIdless {
-		if c.tool == tool {
-			s.ranIdless = append(s.ranIdless[:i], s.ranIdless[i+1:]...)
-			return c.id
-		}
-	}
-	return ""
 }
 
 func acpID() string {

@@ -84,10 +84,11 @@ capture does not say it left any out.
 
 | Section | What it tells you |
 |---|---|
-| Summary | outcome (how the session ended; `running` with no end recorded; `no agent run` for a session only people worked in, at the workbench's terminal or editor), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window |
+| Summary | outcome (how the session ended; `running` with no end recorded; `idle` for a session open on the server that makes the report with no run going, such as a workbench session between messages; `no agent run` for a session only people worked in, at the workbench's terminal or editor, closed or not; `session_closed` for one an editor let go of after a run), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out (`~` on a turn whose tokens were estimated), cache hit rate (`cache not reported` when no turn's provider gave a cached figure, rather than 0%), peak context against the window, and, when the [egress allowlist](21-network-policy.md) was on, how many connections and requests it allowed and refused (`network` in the JSON) |
 | Findings | rules over the record, each naming its evidence by sequence number |
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
-| Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of is marked `!` |
+| Policy layers | the rules an edition added to the session as a layer of their own, such as a Team workspace's ([Policy layers](04-permissions.md#policy-layers-from-an-edition)), from its `policy.layer` events: name, revision, rules, allow rules set aside, and how many decisions the layer's rules made (`policy_layers` and `policy.by_layer` in the JSON) |
+| Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of, or whose connections the egress allowlist refused (`network_denied`), is marked `!` |
 | Turns | per-turn tokens, time to first token, total latency |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
@@ -100,17 +101,27 @@ count it, so HawkEYE's total can be lower than the session's.
 A turn stopped while the model was still replying counts the tokens its
 provider had reported by then: Anthropic reports the prompt when the reply
 starts, and some OpenAI-compatible servers report usage on every chunk. Most
-OpenAI-compatible servers report it only at the end of a reply, so a turn
-stopped part way there is recorded with no tokens; nothing is estimated.
+OpenAI-compatible servers report it only at the end of a reply. A turn
+stopped before its provider reported anything is estimated instead: the
+prompt as the adapter counts it, and about one token for every four
+characters of what the model had written. Its `model.call` says
+`estimated: true`, and the estimate is spent from the session's token budget.
 
 The summary's tokens and model time include the calls made outside the
 conversation, such as next-prompt suggestions, as the session's own totals
 do. They are not turns, so the Turns table leaves them out.
 
-The policy step is one of `hook`, `deny`, `destructive`, `screen`, `ask`, `mode`,
-`allow` or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that
+The policy step is one of `args`, `hook`, `deny`, `destructive`, `screen`,
+`ask`, `mode`, `allow`, `default` or `monitor` — the stage of the [evaluation order](04-permissions.md#the-order) that
 decided. Counting them shows which part of a policy is doing the work: a
 session where everything lands on `default` has rules that never match.
+A refusal no rule made has its own step: `interrupted` (the run stopped
+while the ask waited), `unanswered` (no one answered: the wait timed out, input ended, the
+client could not ask, or the approver failed) or
+`withheld` (the ask's record could not be redacted, so no one was asked) or
+`owner` (the session's owner lost access). `handover` asks again about a
+call a stopped process may already have run.
+A call a policy layer's rule decided also names the rule and the layer.
 
 ## Findings
 
@@ -120,6 +131,7 @@ and none of them is a model's opinion.
 | Code | Severity | Fires when |
 |---|---|---|
 | `record-gap` | critical | the event sequence skips — the record was filtered, truncated or edited |
+| `fence-state-planted` | critical | a command under the fence made a `.abhed` in the workspace, where Abhed keeps its own state; it was moved and the session's fence runs no further command |
 | `stream-omitted` | info | a stream-json capture skips only where the deltas it says it left out sit |
 | `borrowed-host` | warn | an allowed call names a host the user never mentioned and that first appeared in tool output |
 | `sensitive-path` | warn / info | a call reached, or was stopped from reaching, a credential path |
@@ -133,10 +145,14 @@ and none of them is a model's opinion.
 | `denied` | info | a call was refused; the detail says by whom, from the event's `by` (policy, reviewer, the person, headless, or system for a request that ended unanswered), and names the `approver` where the record does |
 | `subagent-denied` | info | a subagent's call was refused, from the parent's `subagent.action`; the detail says by whom and names the subagent's session |
 | `sandbox-denied` | info | a `bash` command ran under a sandbox tier (its observation's `sandbox` is not `none`) but the sandbox refused an operation in it, whatever its exit status says; records without the tier do not raise it |
+| `network-denied` | info | the egress allowlist refused a connection or request, from its `egress.decision` events, not from the command's output; one finding per call and destination, naming the call (or Abhed's own model, web or MCP request), the rule and how many times. A command can still exit 0 |
+| `network-would-deny` | info | in `monitor` mode, the allowlist let through what it would have refused |
 | `truncated` | info | tool results were cut before the model saw them |
 | `slow-tool` | info | a tool call ran longer than a minute |
 | `cold-cache` | info | under 20% of the prompt was cached across five or more turns whose provider reported a cache figure |
 | `no-end` | info | the record has no terminal event |
+| `fence-limit` | info | a command under the fence ran into its memory or process limit |
+| `shell-owner-gone` | info | a background shell was stopped because its owner's access was withdrawn (`owner_revoked`, `owner_inactive`), not because it failed |
 
 Calls a person made by hand in the workbench (`actor: user`: saves, commands,
 shells, Explorer operations) are in the report as theirs, with the `actor`
@@ -164,9 +180,12 @@ read and not a verdict.
   this report.
 - **It does not detect prompt injection.** It flags one mechanical shape
   injection tends to take. The boundary is still the sandbox and the policy.
-- **It does not see inside `bash`.** File access is counted from the file
-  tools' arguments; guessing paths out of a shell command would report things
-  that did not happen.
+- **It does not see every file inside `bash`.** File access is counted from
+  the file tools' arguments; guessing paths out of a shell command would
+  report things that did not happen. What the sandbox itself records about a
+  command is read: the egress proxy's decisions, a fence limit hit, and a
+  `.abhed` planted in the workspace. No sandbox tier records each file a
+  command opens, so that stays out of the report.
 - **Records written by v0.2.0 or earlier have no per-turn events.** The summary falls
   back to the session's own totals and the context chart is omitted.
 

@@ -31,8 +31,16 @@ var canonicalMeta = []string{"name", "namespace"}
 // ignoring case, at every depth, and kind, apiVersion, metadata, name and
 // namespace spelled only as the API server reads them.
 func DecodeManifest(s string) (*Manifest, error) {
-	if len(bytes.TrimSpace([]byte(s))) == 0 {
+	trimmed := bytes.TrimSpace([]byte(s))
+	if len(trimmed) == 0 || string(trimmed) == "null" {
 		return nil, errors.New("the manifest is empty")
+	}
+	if trimmed[0] == '[' {
+		var items []json.RawMessage
+		if json.Unmarshal(trimmed, &items) == nil {
+			return nil, fmt.Errorf("the manifest is a JSON list of %d items; k8s_apply takes one object, so apply each item in its own call", len(items))
+		}
+		return nil, errors.New("the manifest is a JSON list; k8s_apply takes one object, so apply each item in its own call")
 	}
 	obj, err := tools.DecodeArgs(json.RawMessage(s))
 	if err != nil {

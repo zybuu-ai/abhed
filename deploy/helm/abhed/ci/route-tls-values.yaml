@@ -1,0 +1,9 @@
+openshift:
+  enabled: true
+tls:
+  enabled: true
+  existingSecret: abhed-tls
+route:
+  enabled: true
+  tls:
+    termination: passthrough

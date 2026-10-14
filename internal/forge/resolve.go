@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -24,7 +27,19 @@ type Work struct {
 	Dir    string // the worktree
 	Base   string
 	Start  string // the commit the worktree was made at
+	// Secrets, when set, finds a stored value in what is about to leave:
+	// Push refuses a change whose diff or commit messages hold one.
+	Secrets interface {
+		FindSent(text string) (label string, found bool)
+	}
+	// Egress, when set, judges the push by the egress allowlist before git
+	// connects, as Abhed's own request of kind forge.
+	Egress *egress.Guard
 }
+
+// ErrSecretInChange refuses a push whose change holds a stored secret: the
+// branch and the pull request's description would carry it to the forge.
+var ErrSecretInChange = errors.New("the change holds a stored secret")
 
 // Runner does the actual work in the worktree. It is the agent session; the
 // resolver knows nothing about models.
@@ -203,11 +218,62 @@ func (w *Work) Push(ctx context.Context, repo string, ref Ref, auth, caFile stri
 	if err != nil {
 		return err
 	}
+	if err := w.checkSecrets(ctx, repo); err != nil {
+		return err
+	}
+	if err := w.Egress.Allow(ctx, egress.KindForge, hostOnly(ref.Host), portOf(ref.Host)); err != nil {
+		return fmt.Errorf("refusing to push: %w", err)
+	}
 	return push(ctx, repo, w.Dir, url, "https://"+ref.Host+"/", w.Branch, auth, caFile, nil)
 }
 
+// hostOnly and portOf split a host[:port] as an https URL names it.
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+func portOf(hostport string) uint16 {
+	if _, p, err := net.SplitHostPort(hostport); err == nil {
+		if n, err := strconv.ParseUint(p, 10, 16); err == nil {
+			return uint16(n)
+		}
+	}
+	return 443
+}
+
+// checkSecrets refuses a change whose diff, file names or commit messages
+// hold a stored value in any form FindSent knows, read from the trusted
+// repository with no external diff or text conversion.
+func (w *Work) checkSecrets(ctx context.Context, repo string) error {
+	if w.Secrets == nil {
+		return nil
+	}
+	r := hostgit.New(ctx, repo)
+	span := w.Start + ".." + "refs/heads/" + w.Branch
+	diff, err := git(ctx, r, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text", span)
+	if err != nil {
+		return fmt.Errorf("refusing to push: the change could not be read to check it for stored secrets: %w", err)
+	}
+	msgs, err := git(ctx, r, "log", "--format=%B", span)
+	if err != nil {
+		return fmt.Errorf("refusing to push: the commit messages could not be read to check them for stored secrets: %w", err)
+	}
+	if label, found := w.Secrets.FindSent(diff + "\n" + msgs); found {
+		what := "what may be a stored secret (the secrets store could not be read)"
+		if label != "" {
+			what = "the stored secret " + label
+		}
+		return fmt.Errorf("refusing to push: %w: it holds %s, which the branch and the pull request would carry; "+
+			"the change stays on branch %s", ErrSecretInChange, what, w.Branch)
+	}
+	return nil
+}
+
 func push(ctx context.Context, repo, worktree, url, scope, branch, auth, caFile string, env []string) error {
-	if err := globalConfigWritable(worktree); err != nil {
+	if err := globalConfigWritable(ctx, worktree); err != nil {
 		return err
 	}
 	parent, err := pushParent()
@@ -322,8 +388,9 @@ func pushParent() (string, error) {
 // could have written: a file, or the folder it would be made in, inside the
 // worktree or a writable area. The rest of the checkout, such as a home
 // directory holding dotfiles, is not the run's to write.
-func globalConfigWritable(worktree string) error {
-	var files []string
+func globalConfigWritable(ctx context.Context, worktree string) error {
+	// What the global and system files include, and the system file, too.
+	files := hostgit.ConfigFiles(ctx, worktree)
 	if home, err := os.UserHomeDir(); err == nil {
 		files = append(files, filepath.Join(home, ".gitconfig"), filepath.Join(home, ".config", "git", "config"))
 	}
@@ -334,7 +401,7 @@ func globalConfigWritable(worktree string) error {
 	for _, f := range files {
 		for _, a := range areas {
 			if a != "" && (inside(f, a) || inside(filepath.Dir(f), a)) {
-				return fmt.Errorf("refusing to push: your global git configuration %s is inside %s, "+
+				return fmt.Errorf("refusing to push: your global git configuration (or the system one, or a file either includes) %s is inside %s, "+
 					"which the run can write", f, a)
 			}
 		}

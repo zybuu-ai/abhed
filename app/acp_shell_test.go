@@ -95,3 +95,14 @@ func TestShellLineUnaskedIsAheadUntilThePrompt(t *testing.T) {
 		t.Fatal("a line typed while the command ran was taken as typed at the prompt")
 	}
 }
+
+// bash says when it could not take the terminal; the engine notes it, since
+// programs then share the shell's group and are never seen as programs.
+func TestShellNoticesNoJobControl(t *testing.T) {
+	if !jobControlOff([]byte("bash: cannot set terminal process group (-1): Inappropriate ioctl for device\r\nbash: no job control in this shell\r\n")) {
+		t.Fatal("bash's no-job-control notice was missed")
+	}
+	if jobControlOff([]byte("(sandbox: process) ws $ ")) {
+		t.Fatal("a prompt was taken for the no-job-control notice")
+	}
+}

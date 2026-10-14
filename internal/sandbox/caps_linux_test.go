@@ -30,9 +30,8 @@ func procComm(pid int) string {
 	return strings.TrimSpace(string(b))
 }
 
-// hasAncestor reports whether pid descends from root, following PPid as the
-// host sees it: the command runs in a child pid namespace, but from the host
-// side its parent chain resolves back to Abhed's own child.
+// hasAncestor reports whether pid descends from root by host-side PPid,
+// which leads back to Abhed's child despite the child pid namespace.
 func hasAncestor(pid, root int) bool {
 	for i := 0; i < 64 && pid > 1; i++ {
 		if pid == root {
@@ -47,9 +46,8 @@ func hasAncestor(pid, root int) bool {
 	return pid == root
 }
 
-// sandboxedStatus starts a sleep under the sandbox and reads that command's
-// capability lines from the host side, so the assertion needs no fresh /proc
-// inside the sandbox.
+// sandboxedStatus reads a sandboxed sleep's capabilities from the host,
+// so the check needs no fresh /proc inside the sandbox.
 func sandboxedStatus(t *testing.T, s *Process, ws string) map[string]string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,9 +90,8 @@ func sandboxedStatus(t *testing.T, s *Process, ws string) map[string]string {
 	return got
 }
 
-// assertNoCapabilities fails unless the command held no capability it could
-// use and could gain none: the bounding set is emptied too, so no setuid or
-// file-capability binary can refill it.
+// assertNoCapabilities fails unless every set is empty, bounding set included,
+// so no setuid or file-capability binary can refill it.
 func assertNoCapabilities(t *testing.T, got map[string]string) {
 	t.Helper()
 	for _, k := range []string{"CapInh", "CapPrm", "CapEff", "CapAmb", "CapBnd"} {
@@ -137,10 +134,8 @@ func TestProcessSandboxCommandHoldsNoCapabilities(t *testing.T) {
 	assertNoCapabilities(t, sandboxedStatus(t, s, ws))
 }
 
-// A sandboxed command cannot write the root-owned /proc files that would run
-// code as host root: core_pattern, modprobe and binfmt_misc/register are the
-// escapes, checked whatever the uid (off root the wrong owner blocks them, as
-// root the covers do); the other covered files are checked as root.
+// A sandboxed command cannot write the root-owned /proc files that run code as
+// host root (core_pattern, modprobe, binfmt_misc/register), whatever the uid.
 func TestProcessSandboxProcEscapesClosed(t *testing.T) {
 	ws := workspace(t)
 	s := bwrapProcess(t, ws)

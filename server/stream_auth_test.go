@@ -297,7 +297,7 @@ func TestEventStreamEndsWhenTheSessionIsNoLongerTheirs(t *testing.T) {
 // startTestPTY registers a terminal run on s1 that the test writes to.
 func (g *streamRig) startTestPTY() *ptyRun {
 	// Output already written, so the stream answers as soon as it opens.
-	run := &ptyRun{id: "p1", subs: map[chan []byte]struct{}{}, done: make(chan struct{}),
+	run := &ptyRun{id: "p1", user: g.live.User, subs: map[chan []byte]struct{}{}, done: make(chan struct{}),
 		pumped: make(chan struct{}), record: []byte("ready")}
 	g.live.mu.Lock()
 	g.live.ptys["p1"] = run
@@ -452,6 +452,17 @@ func TestLocalSignOutEndsAnOpenStreamAtOnce(t *testing.T) {
 	}
 	if took := time.Since(start); took > time.Second {
 		t.Fatalf("the stream took %v to end; a sign-out here should end it at once", took)
+	}
+	// The refusal says why the sign-in ended, and so does the next request.
+	if !strings.Contains(strings.Join(seen, "\n"), auth.WhyEverywhere) {
+		t.Fatalf("the stream's refusal gives no cause: %q", seen)
+	}
+	again := httptest.NewRequest("GET", "/v1/sessions", nil)
+	again.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, again)
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), auth.WhyEverywhere) {
+		t.Fatalf("a request with the ended cookie = %d %s", rec.Code, rec.Body)
 	}
 }
 

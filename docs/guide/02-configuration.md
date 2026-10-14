@@ -36,9 +36,11 @@ configuration](#trusting-the-workspace-configuration).
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
 | `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
-| `fence` | `cpu_percent`: the fence tier's CPU bound — [below](#the-fence-tier-preview-linux) |
+| `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall`, and the managed `egress_port_only` and `allow_root` — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
-| `auth` | who may use a server deployment |
+| `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
+| `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
+| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in the server's one workspace instead of the sandbox per session a multi-account server gets by default (off) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
@@ -47,7 +49,7 @@ configuration](#trusting-the-workspace-configuration).
 | `custom_providers` | providers added without a rebuild |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
-| `retrieval`, `rag` | the local index, and external corpora |
+| `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
@@ -93,7 +95,9 @@ built, not passed as an argument.
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. The headroom is a quarter of the window, or half of `compact_at`'s
-share of it when that is less, so a low value still waits for history. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+share of it when that is less, so a low value still waits for history. The
+first check after a compaction leaves the headroom out, so a small window
+is not summarized twice in a row. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost
@@ -196,12 +200,30 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 Shell commands run in the sandbox. On the process tier a command may write the
 workspace and a few shared folders, not only the workspace:
 
-- **Linux:** the workspace, and a private `/tmp` that is gone when the command ends.
-- **macOS:** the workspace, `/private/tmp`, `/private/var/tmp`, your `TMPDIR`, and
-  the toolchain caches `~/.cache`, `~/Library/Caches`, `~/.npm`,
-  `~/.cargo/registry` and `~/go/pkg/mod`. These are the real folders, shared
-  with the rest of your machine, so a command can leave a file there that a
-  program outside the sandbox later reads.
+- **Linux:** the workspace, and a private `/tmp` that is gone when the command ends. The host's
+  `/tmp` and `/var/tmp` are out of every sandboxed command's reach, so state
+  kept there (a `HOME`, `auth.users_file`) is not refused as writable.
+  Under bubblewrap commands read and run the system's `/usr`, `/bin` and
+  `/lib`; a toolchain installed elsewhere (under `/opt` or your home) is
+  found once its folder is listed in `sandbox.read_only_paths`.
+- **macOS:** the workspace, `/private/tmp`, `/private/var/tmp` and your
+  `TMPDIR`. The toolchain caches commands write are folders of the
+  sandbox's own, in `TMPDIR` and removed when the session ends:
+  `XDG_CACHE_HOME`, `GOCACHE`, `GOMODCACHE`, `npm_config_cache`,
+  `PIP_CACHE_DIR` and `CARGO_HOME` point there, so nothing a command writes
+  reaches the real `~/.cache`, `~/Library/Caches`, `~/.npm`,
+  `~/.cargo/registry` or `~/go/pkg/mod`, which stay readable. Go modules
+  already in your module cache are read from it through `GOPROXY`
+  (`file://…/cache/download` first), so a build that worked offline still
+  does; npm, pip and cargo start from an empty cache and need the network
+  for what they fetch. Commands read in home only the workspace, `read_only_paths`, the
+  toolchains, the caches and the files git, editors and shells read (see
+  [security posture](../trust/security-posture.md));
+  `"readable_home": true` lets them read the rest of home but the credential
+  paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
+  folders again, shared with the rest of your machine, where a command can
+  leave a file a program outside the sandbox later reads; a workspace file
+  can only turn it off.
 
 `/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
 design: tools expect a shared temp area there, so keep nothing in them a command
@@ -228,13 +250,30 @@ of variables, but the kernel returns the arguments and environment of any
 process of the same user (the `kern.procargs2` sysctl) that is not a
 restricted program, as Apple's own are, and Seatbelt has no rule that
 refuses it. So a command, a workbench terminal or a stdio MCP server can
-read Abhed's environment, a provider key exported to it included, an MCP
-server's, and what a concurrent command was handed: its egress token and
-its `secrets`. On macOS put a provider key in `api_key` in
-`~/.abhed/config.json`, which commands cannot read, rather than in Abhed's
-environment, and use the container or vm tier where commands must not see
-one another's secrets. On Linux each command's PID namespace hides other
-processes' environments.
+read what an MCP server or an extension was given in its `env`, and what a
+concurrent command was handed: its egress token and its
+`secrets`, and any process's arguments, Abhed's included (an inline
+`-settings` among them). This cannot be closed on the process tier. What
+limits it: each egress token is the call's own and is revoked when the call
+ends; a provider key kept as `api_key` in the configuration, not exported,
+is in no environment; and the container and vm tiers give each command a
+process space of its own, so use one of those where commands must not see
+one another's secrets.
+
+Abhed hides its own environment: as it starts on macOS it runs itself
+again with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `PWD`,
+`TERM`, `TERM_PROGRAM`, `COLORTERM`, `LANG`, `LC_*`, `TZ`, `NO_COLOR`,
+`__CF_USER_TEXT_ENCODING` and the Go runtime's `GODEBUG`, `GOGC`,
+`GOMAXPROCS`, `GOMEMLIMIT` and `GOTRACEBACK` in the environment the kernel
+shows, under the same
+process id, and takes the rest back through a pipe, so a provider key
+exported to it is no longer readable there. `ABHED_SHOW_ENV=1` turns this
+off; Abhed also leaves its environment as it is when the rest is over
+16 KiB, and warns when it cannot run itself again. Still, put a provider
+key in `api_key` in `~/.abhed/config.json`, which commands cannot read,
+rather than in the environment, and use the container or vm tier where commands must not
+see one another's secrets. On Linux each command's PID namespace hides
+other processes' environments.
 
 On the container and vm tiers a command writes only the workspace and a
 throwaway `/tmp`. The process tier is a boundary, not a jail: it is not
@@ -258,24 +297,58 @@ Running Abhed as an ordinary user is still the recommendation.
 start: on the process tier, as a limit of what your user runs plus this many
 (the kernel counts all of the user's processes, and does not bound root), and
 on the container and vm tiers, as the container's own limit. The none tier
-ignores it. `"max_memory_mb"` (4096) is applied on the container and vm tiers
-only; the none and process tiers do not bound memory. `abhed doctor` warns when
-you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
+ignores it. `"max_memory_mb"` (4096) bounds a command's memory on the
+container and vm tiers and the fence. On the Linux process tier, where Abhed
+runs in a cgroup delegated to you (`systemd-run --user --scope -p
+Delegate=yes abhed ...`), each command runs in a cgroup of its own bounded by
+`max_memory_mb` and `max_procs`, and what it leaves running is ended with
+it; without one, each process's data is bounded (its private writable
+memory, `RLIMIT_DATA`), a hard limit the command cannot raise, but not the
+command's total, and `max_procs` is a limit on your user's processes. With
+`max_memory_mb` set in a configuration file and no delegated cgroup, the
+process tier is refused rather than run with memory unbounded. The macOS process tier and the none
+tier do not bound memory; macOS has no cgroups and does not enforce the data
+limit. `abhed doctor` warns when you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
 none tier, and when root runs the process tier, whose processes the kernel
 does not bound.
+
+`"max_cpu_percent"` bounds each container tier command's CPU, in percent of
+one CPU (200, two CPUs, when unset); the fence's own bound is
+`fence.cpu_percent`. A workspace file can only lower it.
+
+`"protect_git"` keeps commands from writing what git reads in every git
+folder in the workspace (config, hooks and the like; see
+[Permissions](04-permissions.md)). Unset, it is on wherever the tier can hold
+those files; `true` also refuses a tier that cannot (the fence without a
+mount namespace); `false` turns it off for the terminal CLI, `abhed -p` and
+`abhed rpc`. Studio and `abhed serve` hold them whatever it says. A workspace
+file you have not trusted cannot set it.
 
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
+`"language_servers"` names, per editor language, the language server the
+workbench editor runs in the session's sandbox for go to definition, hover
+and diagnostics (`{"go": ["gopls"]}`); none runs unless named, and a
+workspace file cannot name one, trusted or not. See [The workbench](16-workbench.md#language-servers).
 
 `"network": "allowlist"`, set only in the managed configuration, sends
 commands' traffic through a per-session proxy that reaches only what the
 `egress` rules allow, and records each decision; it takes the place of
-`allow_network`. Only the process tier enforces it. The `egress` section
-(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`) is managed only
+`allow_network`. The process, container, vm and fence tiers enforce it, the
+fence in `mount_namespace` mode and otherwise only when the managed
+`fence.egress_port_only` is `true` ([below](#the-fence-tier-preview-linux)).
+The `egress` section
+(`rules`, `default`, `mode`, `record_paths`, `idle_seconds`, `inspect_tls`) is managed only
 too. See [Network policy](21-network-policy.md).
+
+`"microvm_socket"`, set only in the managed configuration, is the socket of
+an `abhed-microvm` driver. With it, a sandbox may ask for the `microvm`
+driver by name; the default driver stays `process`, and nothing else
+changes. `abhed doctor` shows whether the driver answers, and is not ready
+when it does not. See [The microVM driver](24-microvm.md).
 
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that
@@ -293,7 +366,8 @@ output that merely mentions such an error, a log being read, does not.
 ```
 
 The fence is a preview. It is off unless `sandbox.tier` is `"fence"`, it runs
-on Linux only (amd64 and arm64), and it fails closed: when anything it needs
+on Linux only (amd64, arm64 and s390x; see [Linux on Z](01-getting-started.md#linux-on-z-s390x)
+for what differs there), and it fails closed: when anything it needs
 is missing, Abhed refuses to start and names the check that failed. It never
 runs a command under another tier in its place. For `sandbox.min_tier` it
 counts as the process tier.
@@ -307,7 +381,24 @@ counts as the process tier.
 - cgroups v2, with a cgroup delegated to you. Abhed asks systemd whether the
   scope it runs in has `Delegate=yes`, and refuses when it does not; a
   cgroup you can merely write is not enough, since systemd still manages it.
-- An ordinary user. The fence refuses root in this release.
+- An ordinary user. Root only where the managed configuration sets
+  `"fence": { "allow_root": true }` (a user's or workspace's file cannot),
+  on Linux 6.12 or later (Landlock ABI 6). As root, each command keeps uid
+  0 but drops every capability, empties its capability bounding set and
+  locks the securebits that would give them back, so it cannot override
+  file permissions, bind a low port or change its uid; Landlock's signal
+  scoping keeps it from signalling the host's other root processes, which
+  below ABI 6 it could, so the fence refuses root there. Keeping uid 0, it
+  still reads every file root's own permission bits allow wherever Landlock
+  grants reading, which an ordinary user's command cannot. So under `/etc`
+  the fence grants root only what every user may read: `shadow`, `gshadow`,
+  `sudoers`, `sudoers.d`, the SSH host keys and anything not world-readable
+  (a folder: not world-searchable) are hidden, and listing `/etc` itself is
+  refused. What root can still read that a user could not: root-only files
+  under `/usr`, `/opt`, `/lib`, `/bin` and `/sbin`, under `/sys` (such as
+  ACPI tables in `/sys/firmware`), in the host's `/proc` in `landlock_only`
+  mode, and under any `read_only_paths`. `fence.socketcall` does not apply
+  as root. Running Abhed as an ordinary user is still the recommendation.
 - For `abhed serve` and Abhed Studio, a host that lets an ordinary user make
   a user namespace (see the modes below). Ubuntu 24.04 and later restrict
   this with AppArmor (`kernel.apparmor_restrict_unprivileged_userns`), and a
@@ -330,7 +421,7 @@ picks its mode from that; `fence.qualified` records it as `mode`, and each
 
 | Mode | When | What it adds | Surfaces |
 |---|---|---|---|
-| `mount_namespace` | the host allows unprivileged user namespaces | each command in a user and mount namespace of its own: git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
+| `mount_namespace` | the host allows unprivileged user namespaces, and a `/proc` of the namespace's own | each command in a user, mount and PID namespace of its own (and a network namespace under the egress allowlist): git's config and hooks and the surface's protected files bound read-only, the folders holding them pinned so they cannot be renamed away, the workspace's `.abhed` and other state there covered, a `/proc` showing only its own processes | the command line, the SDK, `abhed serve`, Abhed Studio (ACP) |
 | `landlock_only` | it does not | nothing: Landlock and seccomp alone | the command line and the SDK; Studio and `serve` are refused, saying why |
 
 The fence never moves from one mode to the other on its own: a surface that
@@ -339,9 +430,13 @@ command whose mounts cannot be made exits 126 having run nothing.
 
 **What it does.** Abhed re-executes itself as a small launcher for every
 command. In order, the launcher checks that this run's probe qualified the
-host; in the `mount_namespace` mode, makes its mounts, with `CAP_SYS_ADMIN` in
-its own user namespace and nothing else, then drops that capability; checks
-it holds no privileges; joins a cgroup made for the tool call, confines
+host; in the `mount_namespace` mode, makes its mounts, with `CAP_SYS_ADMIN`
+(and `CAP_SETPCAP`, for the next step) in its own user namespace and nothing
+else, then empties its capability
+bounding set, locks the securebits that keep uid 0 from gaining any, and
+drops that capability (in `landlock_only` an ordinary user cannot change
+the bounding set, which stays full; no_new_privs and holding no capability
+keep anything in it from being gained); checks it holds no privileges; joins a cgroup made for the tool call, confines
 itself with Landlock and a seccomp filter, reports what it applied, and waits.
 Abhed writes `process.launched` to the record, and only then lets the launcher
 run the command in its place. A launcher that cannot do any step exits 126
@@ -390,22 +485,29 @@ without running anything.
   has dropped every capability, and a mount made later would not take back
   what it had already opened. One the fence cannot check, such as a second mount
   whose path now leads somewhere else, refuses the fence when it qualifies,
-  or the command (exit 126) when it starts, saying which. Only mounts of the
-  same filesystem are found: a view of the workspace through another
-  filesystem that exists before the session, such as a FUSE mount (bindfs),
-  an overlay with the workspace as a lower folder, or an NFS export mounted
-  back, is not found or covered, and a command can read `.abhed` through it,
-  and write protected files where it lies under a writable folder. A command
-  cannot make such a mount itself: it holds no capability and cannot gain
-  one.
+  or the command (exit 126) when it starts, saying which. A view of the
+  workspace through another filesystem, which the covers cannot reach, is
+  refused the same way, when the fence qualifies and again before each
+  command: a FUSE mount (bindfs, sshfs to this host), an overlay with the
+  workspace, a folder in it or one holding it as a layer, or a network
+  share (NFS, CIFS, 9p, virtiofs) of this host's folder, each found by what
+  its mount names as its source or layers. A FUSE program that serves the
+  workspace's files without naming the folder in its mount, or a share
+  named by another host's address that is this one, is not found; `abhed
+  doctor` shows the refusal for those it finds. A command cannot make such
+  a mount itself: it holds no capability and cannot gain one.
 - **Abhed's state in the workspace, `mount_namespace`.** The workspace's
   `.abhed` is covered by an empty tmpfs in each command's namespace: what
   Abhed keeps there is out of sight, and whatever a command writes there is
   gone when it ends, so nothing it writes there ever reaches Abhed. Where the
   workspace has no `.abhed`, the fence makes an empty one to mount over and
-  leaves it in place: other fences on the same workspace (two Studio tabs,
-  Studio beside the command line) mount over it too, and removing it would
-  uncover their commands; empty, it holds nothing. A `.abhed` that was
+  leaves it in place while other fences on the same workspace (two Studio
+  tabs, Studio beside the command line) may mount over it too, since
+  removing it would uncover their commands. Each fence holds a shared lock
+  in `~/.abhed/fence/` while it lasts, and the last to close removes the
+  folder when it is still the same one and was empty from the start, so none
+  is left behind. A fence of 1.2.7 or earlier takes no lock, so run it on its
+  own workspace. A `.abhed` that was
   empty when the session started must stay empty while it runs: anything
   that appears in it is taken out of it one entry at a time, each first
   renamed inside that `.abhed`, where every fence's tmpfs still hides it,
@@ -420,8 +522,11 @@ without running anything.
   held state is Abhed's own, and stays covered. Abhed refuses to start with a state file
   (`auth.users_file`, the secrets file) inside the workspace outside `.abhed`,
   so there is none to hide; another configuration folder's `.abhed` inside
-  the workspace is covered as the workspace's is. A `.abhed` in another
-  spelling of its case is not covered, and is still taken out as below.
+  the workspace is covered as the workspace's is. Where the workspace's disk
+  ignores case, every spelling of `.abhed` (`.ABHED`, `.Abhed` and so on) is
+  covered by the same empty tmpfs; on a disk that keeps case apart, a folder
+  of another spelling is not state, and one a command makes is still taken
+  out as below.
 - **Abhed's state in the workspace, `landlock_only`.** Landlock cannot keep a command from
   making a folder inside the writable workspace, so Abhed checks instead:
   after every command, before the next one and when the session closes. A
@@ -442,11 +547,22 @@ without running anything.
 
   In `mount_namespace` the same check runs as defence in depth, for the
   spellings the tmpfs does not cover. In `landlock_only` the check is not a guard. A file a command writes into the workspace's
-  `.abhed` is there while it runs and until the check that follows it, and
-  Abhed can read it then (for example its users or memory files). After an unclean exit (Abhed killed,
-  the machine down) nothing is checked or moved, so look for a `.abhed` in
-  the workspace yourself. A `.abhed` in a subfolder of the workspace or in a
-  folder added with `--add-dir` is not checked.
+  `.abhed` is there while it runs and until the next check, and Abhed can
+  read it then (for example its users or memory files); in `landlock_only`
+  the check also runs every second while the session is open, so that
+  window is about a second. After an unclean exit (Abhed killed, the machine
+  down), the next fenced session on the workspace looks at what the last one
+  left: each session keeps a mark in `~/.abhed/fence/` that a clean close
+  removes, and where a session's process is gone, it had no `.abhed` when
+  it started, and the `.abhed` there now last changed (by its ctime, which
+  a command cannot set) no later than its last command, that `.abhed` is taken out as above and recorded with `when:
+  after_unclean_exit`. Nothing is taken while another session on the
+  workspace still runs. A `.abhed` you make after such an exit, before the
+  next session, is left. A folder added with `--add-dir` is read-only to
+  fenced commands, so none can be made there. A `.abhed` in a subfolder of
+  the workspace is not checked: it is not this session's state, but it would
+  be a later session's started in that subfolder, so look before starting
+  one there.
 - **Terminals.** Of the devices, a command opens only `/dev/null`,
   `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and `/dev/tty`,
   which reaches only its own terminal. Each command runs in a session of
@@ -463,10 +579,27 @@ without running anything.
   and `pidfd_send_signal` altogether, since a filter cannot see whom a pidfd
   names. Each command also runs in a process group apart from Abhed's.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
-  refused, and Landlock refuses TCP as well. With it true, commands get the
-  host's network, unfiltered. Unix sockets are refused either way.
-  `sandbox.network: "allowlist"` refuses the fence in both modes, since it
-  cannot keep a command's sockets to the egress proxy alone
+  refused, and Landlock refuses TCP as well (plain TCP only: since Linux 6.14
+  Landlock leaves MPTCP and SCTP alone, so the `socket()` refusal is what
+  stops those). With it true, commands get the host's network, unfiltered.
+  Unix sockets are refused either way. On s390x the filter also refuses
+  every socket made through `socketcall()`, which is how glibc and Go make
+  them there, so most programs get no network, unless
+  `"fence": {"socketcall": true}` is set with `allow_network` on a host with
+  Landlock ABI 6 or later: then `socketcall()` sockets are allowed, and since
+  the filter cannot read their family, unix sockets with them (abstract ones
+  scoped by Landlock, named ones not). A workspace file cannot set it.
+  Under `sandbox.network: "allowlist"` a command may make inet and inet6
+  TCP stream sockets only (no UDP, unix, MPTCP or SCTP sockets, the last two
+  being streams Landlock's TCP rules do not hold), and Landlock lets TCP
+  connect only to the session's egress proxy's port. In `mount_namespace`
+  mode each command also gets a network namespace of its own holding only its
+  loopback, where the launcher relays that port to the proxy's socket on the
+  host, so the proxy is the one way out. In `landlock_only` there is no
+  network namespace, and Landlock filters ports, not addresses, so a command
+  could reach that port number on any host; the fence refuses the allowlist
+  there unless the managed `fence.egress_port_only` is `true`, which accepts
+  that. Names are resolved by the proxy, not inside the sandbox
   ([Network policy](21-network-policy.md)).
 - **Limits.** Each session's commands share a cgroup bounded by
   `max_memory_mb` (with no swap), `max_procs` (processes and threads) and
@@ -477,17 +610,27 @@ without running anything.
   fence of its own, with its own cgroup that its tool calls' cgroups sit
   under, closed with the session. A served session qualifies its fence at
   its first command, so a session opened only to be read records nothing.
-  Sessions are not kept apart from each other's processes below Landlock ABI
-  6 (Linux older than 6.12): there, one session's commands can signal
-  another session's commands, those of another account on the same server
-  included, and read their command lines in `/proc`. On Linux 6.12 or later
-  Landlock keeps each command's signals to its own processes; command lines
-  stay readable either way, since there is no PID namespace.
+  In `mount_namespace` mode each command runs in a PID namespace of its
+  own, as the child of the launcher, which stays as the namespace's init: it
+  passes on the signals sent to it (a stop, Ctrl-C), reaps what is orphaned
+  and exits as the command does, which ends everything left in the
+  namespace. The command sees, signals and traces only its own processes,
+  through a `/proc` of its own. Where the kernel refuses a new `/proc`, as
+  in a container that masks parts of it, the probe fails `userns_mounts`, so
+  the fence runs in `landlock_only` or is refused, and a launcher whose
+  mount is refused all the same does not run the command. In `landlock_only` there is no PID
+  namespace: below Landlock ABI 6 (Linux older than 6.12) one session's
+  commands can signal another session's and read their command lines in
+  `/proc`, so an `abhed serve` that accounts sign in to (`auth.mode` other
+  than `none`) refuses the fence there below ABI 6, saying so.
 - **The record.** `fence.qualified` holds the probe's report and the mode
   at the start of the session (for `serve`, before the session's first
   command), `process.launched` each command's launch with its call id
   before it runs, `fence.limit` a command that ran into its memory or
-  process limit, and `fence.state_planted` a `.abhed` found in the workspace.
+  process limit (`pids_max` the forks refused in its own cgroup,
+  `session_pids_max` those refused at the session's limit while it ran,
+  which on Linux 6.14 and later are counted only there and may include
+  another command's), and `fence.state_planted` a `.abhed` found in the workspace.
   `process.launched` names its `source`: `call` for a tool call or a `!`
   command, `harness` for one Abhed runs itself within a session. When
   `fence.qualified` cannot be recorded, the command line closes the fence
@@ -495,14 +638,18 @@ without running anything.
 
 **What it does not cover.** Abhed itself and what it runs in-process (the
 file, web and MCP tools, extensions) stay outside the fence, as on every tier.
-There is no network filtering. Below Landlock ABI 6 (Linux 6.12) a command can
-signal your other processes, and can reach Abhed by one of its thread ids,
-which the filter does not know; Landlock ABI 6 keeps signals inside the
-command's own processes. With no PID namespace a command can read other
-processes' command lines in `/proc` (not their environment or memory). A hard
-link inside the workspace to a file of Abhed's state, made before the
-session, stays readable through the link: Landlock checks the path a file is
-opened by, and the fence makes no such link, but does not look for one. The
+There is no network filtering beyond the egress allowlist above. In
+`landlock_only` mode, below Landlock ABI 6 (Linux 6.12) a command can signal
+your other processes, and can reach Abhed by one of its thread ids, which the
+filter does not know; Landlock ABI 6 keeps signals inside the command's own
+processes; and a command can read other processes' command lines in `/proc`
+(not their environment or memory). The Landlock ABI 6 paths (signal
+scoping, root) were tested only on Linux 6.9, where they are refused. Abhed
+refuses to start when one of its state files has a second name
+([Permissions](04-permissions.md#what-the-agent-may-touch)). A hard link
+made before the session to another file in a state folder, one the state
+check does not know, stays readable through the link: Landlock checks the
+path a file is opened by. The
 planted-state check above has the limits it states in `landlock_only`: a
 file written into the workspace's `.abhed` is visible while its command
 runs, nothing is moved after an unclean exit, and a `.abhed` in a subfolder
@@ -554,6 +701,13 @@ working on, its queries, to a service outside the machine, so it is an
 administrator's setting: **only the managed configuration**
 (`/etc/abhed/config.json`) turns it on or says where the queries go. The
 same holds for [`web_fetch`](#web-fetch).
+
+Once on, every search asks in the default, accept-edits, auto and plan
+modes, as `web_fetch` does without a host list: a query can carry what the
+agent read to the search service. An allow rule runs searches unasked, such
+as `"permissions": {"allow": ["web_search"]}` in the managed file, and
+bypass mode runs them. Before 1.2.8 a search ran unasked as a read-only
+tool.
 
 Every other layer, `~/.abhed/config.json`, `-settings`, a workspace's
 `.abhed/config.json` trusted or not and an SDK `ConfigDir`, may only turn it
@@ -621,10 +775,10 @@ entries with:
 
 | System | Where | Query |
 |---|---|---|
-| macOS | the unified log, through `/usr/bin/logger` | `log show --last 7d --predicate 'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` |
+| macOS | the unified log, written by `abhed` itself through `os_log`, subsystem `com.zybuu.abhed`, category `admin` | `log show --last 7d --predicate 'subsystem == "com.zybuu.abhed"'` |
 | Linux, journald | the journal, through its native socket, identifier `abhed-admin`, facility auth | `journalctl -t abhed-admin` (as root or a member of `adm` or `systemd-journal` to see every user's attempts); `journalctl -t abhed-admin -o verbose` shows the `_UID` journald attached itself |
 | Linux, no journald | syslog, tag `abhed-admin`, facility auth | `grep abhed-admin /var/log/auth.log` (Debian, Ubuntu) or `/var/log/secure` (RHEL, Fedora) |
-| Windows | not written yet | the attempt is in `admin.jsonl` only, and the command says so on stderr |
+| Windows | the Application event log, source `abhed-admin`, event id 1 | `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='abhed-admin'}` |
 
 **Telling real entries apart.** The tag is not a credential: any local user
 can add a line tagged `abhed-admin` to the system log with `logger -t
@@ -636,13 +790,26 @@ message are what `abhed` wrote only when the log itself says who sent it:
   `_COMM=abhed` (a forged one usually `_COMM=logger`, though a user can
   name their own program `abhed`) and a `_UID` that
   matches the `uid=` in the message; for a change, `_UID=0`.
-- **macOS:** every entry is sent by `/usr/bin/logger`, so the process name
-  does not tell them apart. `log show --last 7d --style json --predicate
-  'process == "logger" AND eventMessage CONTAINS "abhed-admin"'` gives each
-  entry's `userID`, the uid the system recorded for the sender; it must match
-  the `uid=` in the message, and is `0` for a change.
+- **macOS:** the system records the sender of each entry itself. `log show
+  --last 7d --style json --predicate 'subsystem == "com.zybuu.abhed"'` gives
+  each entry's `processImagePath`, which must be the `abhed` binary you
+  installed, and `userID`, which must match the `uid=` in the message and is
+  `0` for a change. Another program can use the same subsystem name, but not
+  the installed binary's path.
 - **syslog files** carry no sender the system vouches for; trust them only as
   far as `admin.jsonl` beside the managed file, which only root can write.
+- **Windows:** any program can write an event under the source name
+  `abhed-admin`, and the event carries no sender the system vouches for;
+  trust it only as far as `admin.jsonl`, which only an administrator can
+  write. The source is not registered, so Event Viewer notes that the
+  description is missing and shows the message as the event's data.
+
+A macOS `abhed` built without cgo (`CGO_ENABLED=0`, as `make build` does)
+cannot call `os_log`: it writes through `/usr/bin/logger` instead, with tag
+`abhed-admin`, and warns once that its entries are not attributable to
+`abhed`. Find those with `log show --predicate 'process == "logger" AND
+eventMessage CONTAINS "abhed-admin"'`, where only `userID` tells them apart.
+The release binaries for macOS are built with cgo.
 
 A system log that cannot be written is reported on stderr and does not change
 the command's result. The unified log keeps entries for days, not forever;
@@ -820,10 +987,29 @@ ABHED_DATABASE_URL='postgres://abhed_runtime:…@db/abhed' abhed serve
 
 `abhed migrate` applies the schema as the owner and grants the runtime role
 exactly what the server uses: `INSERT` and `SELECT` on `events`, and nothing
-that changes or removes one. Keep the owner's credentials off the host that
-runs the server; whoever holds them can alter the record. After an upgrade
+that changes or removes one. On `sessions` it may update only the columns a
+session's life changes, never its id, tenant, parent or start; its owner
+(`user_id`) only to the unclaimed form when the account is removed, which a
+trigger enforces. A session's key in `session_keys` can be deleted only
+once the session is marked deleted, and that mark is never cleared or
+rewritten, so the runtime role cannot make a live session's record
+unreadable. Every owner change is written to `owner_changes`, and every
+change to an account's groups or tenant to `account_changes`, by triggers
+that run as the tables' owner: the runtime role can read those tables but
+neither write nor skip a row. Keep the owner's credentials off the host that
+runs the server; whoever holds them can alter the record (see
+[the Postgres record](12-records.md#the-postgres-record) for the chain and
+witness that show it). After an upgrade
 that adds columns, run `abhed migrate` again before starting the server: on a
 schema older than the binary it refuses to start and names what is missing.
+
+The session owner move runs once. Its `--owners` (`local-only` or
+`unclaim`; another value exits `2`) has no effect on a later run, which says
+so. `local-only` refuses when it finds no account while old sessions exist,
+and then records nothing: import the accounts first (`abhed user import`),
+or pass `--owners=unclaim` or `--force-no-accounts`. Like `serve`, `migrate`
+refuses an `auth.users_file` in a place commands can write, such as the
+workspace or a temp folder.
 
 **Abhed refuses to start** if the role in `storage.dsn` could alter the record
 — if it owns `events`, or holds `UPDATE`, `DELETE` or `TRUNCATE` on it — and
@@ -855,12 +1041,22 @@ still running, recorded as `shutdown`, including a turn stopped before the
 model's first reply, and kills the command each is running with everything
 it started. A message steered into a turn that is ended this way is recorded
 as `message.dropped`, not delivered. The terminals of an idle workbench
-session are closed and their results recorded before its end. It then waits
-up to five seconds for turns to record their end, and up to ten more for
-open HTTP requests. The worst case is `drain_seconds` + 15 seconds, so give the
-process at least that much grace: with Kubernetes' default
-`terminationGracePeriodSeconds` of 30, keep `drain_seconds` at 15 or less.
-Without `drain_seconds`, running turns are ended at once. SIGINT and a
+session are closed and their results recorded before its end. Alongside the
+drain, idle sessions are ended and their claims given back all together,
+within 15 seconds; a release the store refuses is tried again within ten
+seconds, and one that never lands lapses when its claim goes stale. It then
+waits up to five seconds for turns to record their end, and up to ten more
+for open HTTP requests; the streams a page holds open (session events,
+terminals, language servers and the workbench's shared stream) are ended
+then rather than waited for, so an open workbench tab does not hold the
+server up. The worst case is `drain_seconds` + 15 seconds, or
+25 seconds when `drain_seconds` is under 10, so give the process at least
+that much grace: with Kubernetes' default `terminationGracePeriodSeconds` of
+30, keep `drain_seconds` at 15 or less.
+Without `drain_seconds`, running turns are ended at once
+([Sessions](11-sessions.md#continuing-a-finished-chat-on-any-node) says what is
+recorded). Moving them to another replica instead is part of the Enterprise
+edition's high availability. SIGINT and a
 hang-up (SIGHUP) stop the server the same way; a hang-up is not a reload.
 Signals that arrive while it drains are ignored, so a second SIGTERM does
 not cut the drain short; SIGKILL, as an orchestrator sends at the end of its
@@ -891,8 +1087,9 @@ no accounts from it, `abhed user list` warns that it is ignoring the file, and
 and one outside the workspace, are read either way. See [Accounts in the
 workspace](../architecture/workspace-trust.md#accounts-in-the-workspace).
 
-A change to an account reaches its live sessions on their next request,
-whichever process made it: an account removed with `abhed user remove` is
+A change to an account reaches its live sessions on their next request with
+a users file, and within about 2 seconds over Postgres, whichever process
+made it: an account removed with `abhed user remove` is
 signed out, and a group added or removed applies at once. Removing
 administrator rights through `POST /v1/admin/users/admin` also ends that
 person's sessions, on every server sharing the account store: at once on the
@@ -901,11 +1098,13 @@ Postgres. An event or terminal stream already open is authorised again while
 it runs, and ends when its sign-in would now be refused: at once for a change
 made on the same server, within 10 seconds otherwise.
 
-Signing out ends sign-ins, not work. After Sign out everywhere, or a removal
-of administrator rights, a background shell or task the person started keeps
-running, and its result still starts a woken run in their session, since the
-account is still active. Stop the session's tasks, or remove the account, to
-end it; see [background tasks](14-parallel-subagents.md#background-tasks).
+Signing out ends sign-ins, not work. After Sign out everywhere, a background
+shell or task the person started keeps running, and its result still starts
+a woken run in their session, since the account is still active. Stop the
+session's tasks to end it; see
+[background tasks](14-parallel-subagents.md#background-tasks). Removing the
+account, or its administrator rights, stops that work, recorded as
+`owner_revoked`.
 
 `auth.require_group` names a group everyone must be in to use the server.
 It is checked once someone has signed in: the sign-in page, sign-in,
@@ -952,40 +1151,79 @@ Later sources win, except that an org-managed file cannot be overridden:
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
-`hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
-`studio.disable_host_terminal`, and the whole of `web_search` and
-`web_fetch`, which a lower layer may only turn off or narrow
-([Web search](#web-search)). A lower layer's value the managed file replaces
+`record.witness`, `hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
+`studio.disable_host_terminal`, `sandbox.network` (which your own file may
+use only to narrow `allow_network`), `sandbox.microvm_socket`,
+`fence.egress_port_only`, every key under `egress`,
+`control_plane.kubernetes`, `control_plane.interceptors`, every key under
+`control_plane.docker` and `control_plane.podman` but `enabled`, `image` and
+`name_prefix`
+([Sandboxes over the API](22-sandboxes.md#the-docker-and-podman-drivers)),
+and the whole of `web_search` and `web_fetch`, which a lower layer may only
+turn off or narrow ([Web search](#web-search)), and, of the settings below
+that the paid editions read, `auth.bound_claims`,
+`control_plane.ha.relay_peer` and `control_plane.ha.relay_key_command`. A lower layer's value the managed file replaces
 is recorded too, as `config.refused` with the decision `overridden`.
 
-Inside an agent's command, a nested `abhed` refuses `-settings` and
+The Community Edition checks these settings and the paid editions act on
+them; each was an environment variable first, which still applies where the
+configuration leaves the key unset and never overrides it:
+
+| Key | Variable | Meaning |
+|---|---|---|
+| `auth.bound_claims` | `ABHED_OIDC_BOUND_CLAIMS` | managed only: an object of claim names to lists of values a bearer token from the identity provider must carry, exactly or, for a value ending in `*`, by prefix; every claim needs a value, and `*` alone is refused |
+| `control_plane.ha.relay_cert_file`, `relay_cert_key_file` | `ABHED_HA_RELAY_CERT_FILE`, `ABHED_HA_RELAY_CERT_KEY_FILE` | this replica's client certificate for relayed calls; both or neither. The key is state the agent cannot reach |
+| `control_plane.ha.relay_peer` | `ABHED_HA_RELAY_PEER` | managed only: the identity the other replicas' certificates must carry; needs the certificate |
+| `control_plane.ha.relay_key_vault` | `ABHED_HA_RELAY_KEY_VAULT` | the relay key from Vault KV, `entry#field` |
+| `control_plane.ha.relay_key_command` | `ABHED_HA_RELAY_KEY_COMMAND` | managed only: a program and its arguments, the program an absolute path, that prints the relay key |
+
+Inside an agent's command, a nested `abhed` ignores `ABHED_TRUST_WORKSPACE`
+with a warning, and refuses `-trust-workspace`, `-settings` and
 `-mcp-config` whatever they hold: either can name an endpoint the nested
-session would send the code or its queries to. A nested run narrows with
+session would send the code or its queries to. It also refuses a `-mode`
+looser than the configured mode (`accept-edits` or `auto` when the
+configuration says `default`), not only `bypass`. A nested run narrows with
 `-mode plan`, `-disallowedTools` or `-max-turns`.
 
 ### The managed file
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
 key it sets replaces what the user and project files said. A list it sets,
-such as `permissions.deny`, replaces the lower files' list; so does a map
-entry, such as one provider under `model.providers`. Its presence makes the
-policy engine managed: `bypass` mode is refused wherever it comes from.
+such as `permissions.allow`, replaces the lower files' list; so does a map
+entry, such as one provider under `model.providers`. `permissions.deny` and
+`permissions.ask` are the exceptions: the managed rules are added to the
+deny and ask rules already in force (the built-in ones,
+`~/.abhed/config.json`, `-settings` and a trusted workspace's file), so a
+managed file can add a deny rule or a question but never take one away. `/permissions` shows each rule with the layer it came from. Its
+presence makes the policy engine managed: `bypass` mode is refused wherever
+it comes from. A call that bypass would approve asks as in default mode, and
+the reason names the managed file; `abhed doctor` shows the mode as
+`bypass (bypass disabled by /etc/abhed/config.json; …)` and the `abhed serve`
+banner prints the same on a `mode` line.
+
+Abhed refuses to start on a managed file with a key repeated in one object
+(`"permissions"` twice, or `"permissions"` and `"PERMISSIONS"`, which are the
+same setting; this applies at every level, to names under `model.providers`
+and to the keys of maps such as an extension's `env` and a corpus's `headers`
+and `headers_env`, so a managed file cannot set both `PATH` and `path` there)
+or a number too large to hold, such as `1e400`,
+even under a comment key. JSON leaves the meaning of such a file open, and an
+organisation's rules must not depend on which reading wins.
 
 When the managed file sets any `permissions` setting but not
 `permissions.allow`, the allow rules `~/.abhed/config.json` and a trusted
 workspace's `.abhed/config.json` add are left out, and Abhed warns at startup
-naming each rule and its file; the built-in allow rules stay. Put rules the
+naming each rule and its file; the built-in allow rules the files' list
+still held stay. Put rules the
 organisation accepts in the managed `permissions.allow`. When the managed file
 sets `permissions.allow`, exactly its list applies. The same holds for
 `permissions.git_extensions`, the git extensions that run without the
 destructive step's question ([Permissions](04-permissions.md#the-order)).
 
 Two effects to plan for. A call that a dropped rule approved now asks, and in
-`-p`, `rpc` and other runs with no one to approve, it is refused. And once
-any file rule is dropped, every built-in allow rule comes back, even one the
-file had left out of a shorter list. To keep a built-in rule from applying
-under a managed file, add an ask or deny rule for it; a shorter allow list
-does not do it.
+`-p`, `rpc` and other runs with no one to approve, it is refused. And a
+built-in allow rule the files' list left out stays out: a shorter list
+removes it under a managed file as it does without one.
 
 What a caller sets over the files, the CLI's flags and the SDK's `Options`,
 may tighten what the managed file set and never loosen it:
@@ -996,7 +1234,8 @@ may tighten what the managed file set and never loosen it:
 | `tools.syntax_check` | make it stricter only (`off` < `report` < `refuse`) |
 | `limits.max_turns` | lower it |
 | `permissions.allow` | add nothing when the file sets any `permissions` setting (the `-allow` and `-allowedTools` flags, `/permissions allow`, `Options.Allow`, rpc `start`); the user's and workspace's files' allow rules are dropped with a warning |
-| `additional_dirs` | add nothing |
+| `additional_dirs` | add nothing when the file sets `additional_dirs` |
+| `memory.auto` | choose only the managed value, when the file sets it |
 | `permissions.deny` | add rules; the managed ones stay |
 
 A refused override stops the command with an error naming the setting. The
@@ -1020,9 +1259,11 @@ managed file.
 
 A managed file that exists but cannot be read, including one in a directory
 that cannot be searched, or a link at the managed path that points nowhere,
-is an error: Abhed stops rather than run unmanaged.
+is an error: Abhed stops rather than run unmanaged. So is a managed folder
+(`/etc/abhed`) that is itself a link to nothing; a folder that does not
+exist at all means no managed file.
 
-The environment variables in step 4 never change a setting the managed file
+The environment variables in step 5 never change a setting the managed file
 makes. Each one is ignored where the managed file sets its key, and Abhed
 warns at startup naming the key, without the value:
 
@@ -1042,11 +1283,13 @@ user's and workspace's files. An administrator who means to pin the endpoint
 sets the provider in the managed file; one who sets only `model.default` leaves
 that provider's endpoint to the lower files and the environment.
 
-The model is not pinned by the managed file alone: `-model` and the console's
-picker choose among the providers any file defines, and the SDK's `Provider`
-names any endpoint.
-An editor over `abhed acp` and the SDK's `SwitchModelNamed` are the
-exception: a managed `model.default` pins them to that model.
+A managed `model.default` pins the model on every surface: `-model`,
+`/model`, a custom command's `model`, the console's picker and the sessions
+it starts, an editor over `abhed acp`, subagents, and the SDK's
+`SwitchModelNamed`, `SetModel` and `Options.Provider` all refuse another
+model. Fallbacks under a managed default are only those the managed
+`model.fallback` names. Without a managed `model.default`, any provider a
+file defines may be chosen, and the SDK's `Provider` names any endpoint.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say. With Postgres storage it
@@ -1092,7 +1335,19 @@ server open.
   `-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
-  list` lists every decision.
+  list` lists every decision. `abhed trust startup-files` is the same for
+  your shell's start-up files (see the permissions guide).
+- **`abhed serve`** says on its front page, under the console's examples,
+  in the workbench's **Tools** panel, and in `GET /v1/overview` as
+  `workspace_config`, whether the file is trusted, why, and the names of the
+  settings it set aside (not their values), each with why: a trusted file's
+  too, such as a language server it names. To a signed-in person, or to
+  anyone where nobody signs in.
+
+The prompt and `abhed trust` list a managed-only setting the file makes, such
+as `sandbox.network` or the `egress` rules, apart from the rest, under "Not
+applied whether or not you trust it", with the reason: trusting the file does
+not apply it.
 
 A workspace's subagent definitions in `.abhed/agents/*.md` are covered by the
 same decision, with a hash of their own: until you trust them they are not

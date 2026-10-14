@@ -189,7 +189,7 @@ func rewindConversation(ctx context.Context, st *cliState, seq int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = st.loop.ForkBefore(events, seq)
+	_, _, err = st.loop.ForkBefore(events, seq)
 	return err
 }
 
@@ -357,14 +357,14 @@ func slashFork(ctx context.Context, fields []string, r *ui.Renderer,
 	if fresh, err := st.store.Events(st.sessionID); err == nil {
 		events = fresh
 	}
-	kept, forkErr := st.loop.ForkTo(events, seq)
+	kept, at, forkErr := st.loop.ForkTo(events, seq)
 	release()
 	if forkErr != nil {
 		fmt.Printf("  %s %v\n", s.Red("✕"), forkErr)
 		return false
 	}
 	fmt.Printf("  %s\n", s.Dim(fmt.Sprintf(
-		"forked at step %d — %d messages kept; the next thing you type continues from there", seq, kept)))
+		"%s — %d messages kept; the next thing you type continues from there", agent.ForkedAt(at), kept)))
 	return false
 }
 

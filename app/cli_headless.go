@@ -186,7 +186,7 @@ func schemaFlag(v, workspace string) (json.RawMessage, error) {
 	if v == "" {
 		return nil, nil
 	}
-	data := []byte(v)
+	data, from := []byte(v), "-json-schema"
 	if strings.HasPrefix(v, "@") {
 		path := v[1:]
 		if !filepath.IsAbs(path) {
@@ -203,13 +203,25 @@ func schemaFlag(v, workspace string) (json.RawMessage, error) {
 		if len(data) > maxSchema {
 			return nil, fmt.Errorf("-json-schema: %s is larger than 1 MiB", path)
 		}
+		from = "-json-schema " + path
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) != nil {
-		return nil, errors.New("-json-schema is not a JSON object")
+		return nil, fmt.Errorf("%s is not a JSON object", from)
+	}
+	// The schema goes to the model, so a JSON file that is not one (a
+	// credentials file named by mistake) is refused rather than sent.
+	if !slices.ContainsFunc(schemaKeywords, func(k string) bool { _, ok := obj[k]; return ok }) {
+		return nil, fmt.Errorf("%s is not a JSON Schema: it has none of %s", from, strings.Join(schemaKeywords, ", "))
+	}
+	if from != "-json-schema" {
+		fmt.Fprintf(os.Stderr, "abhed: the answer's schema is %s\n", strings.TrimPrefix(from, "-json-schema "))
 	}
 	return json.RawMessage(data), nil
 }
+
+// schemaKeywords are the top-level keys of which a schema has at least one.
+var schemaKeywords = []string{"type", "properties", "$schema", "$ref", "anyOf", "oneOf", "allOf", "enum", "const", "items"}
 
 // systemPrompt is what the command line does to the system prompt.
 type systemPrompt struct {
@@ -415,6 +427,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			}
 			switch {
 			case streaming:
+				// stdout stays the events alone; the note goes where a person sees it.
+				if note := withheldNoteOf(ev); note != "" {
+					fmt.Fprintf(os.Stderr, "abhed: %s\n", note)
+				}
 				if o.format == "stream-json" && !o.partial &&
 					(ev.Type == agent.EvAgentDelta || ev.Type == agent.EvAgentReasoningDelta) {
 					continue
@@ -460,6 +476,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, extHost, sessionID)
+	toolset.Hook(loop, extHost, func(s string, _ bool) { fmt.Fprintf(os.Stderr, "abhed: %s\n", s) })
 	if extHost != nil && extHost.Len() > 0 {
 		recordFired(extHost, func() *agent.Recorder { return rec })
 	}
@@ -582,4 +599,17 @@ func printUsage(r *ui.Renderer, u agent.Usage) {
 		line += fmt.Sprintf(" · %d compaction(s)", u.Compactions)
 	}
 	fmt.Printf("%s\n", s.Dim(line))
+}
+
+// withheldNoteOf is the note a user.message that withheld stored secrets
+// earns, or "".
+func withheldNoteOf(ev agent.Event) string {
+	if ev.Type != agent.EvUserMessage {
+		return ""
+	}
+	var m agent.Message
+	if json.Unmarshal(ev.Payload, &m) != nil {
+		return ""
+	}
+	return ui.WithheldNote(m.SecretsWithheld)
 }

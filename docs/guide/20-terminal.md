@@ -234,6 +234,15 @@ followed by Enter while the question is open answers it, typed or pasted.
 A line typed before the question appeared is your next message, not an
 answer.
 
+Asks reach you one at a time, so answers piped in answer them in the order
+they arrive. After each answer the terminal prints what it answered, such as
+`accepted: bash touch made.txt (subagent scan logs)`. What remains is that a
+blind pipe cannot know which ask it is answering: with subagents or a
+pipeline running, the next ask may not be the one the script expected. To
+answer one ask and only that one, use the server's API, which takes the
+request's id (`request_id` on `POST /v1/sessions/{id}/approve`), or set
+rules so the calls are allowed or denied without asking.
+
 A key counts as an answer only when it is meant as one:
 
 - no key counts until the question has been on screen for 300 ms;
@@ -271,7 +280,7 @@ status as JSON on stdin (`model`, `provider`, `mode`, `session_title`, `context_
 `context_percent`, `tokens_in`, `tokens_out`, `background_tasks`,
 `sandbox_tier`, `git_branch`, `cwd` and more) and runs at most once a
 second, under the process sandbox with the network off whatever the session
-allows, and is stopped after 300 ms; only its first 4 KB are read. Where
+allows, and is stopped after one second; only its first 4 KB are read. Where
 that sandbox is missing, or its script is where the agent could change it,
 it is not run, and the footer says why (see [the command
 line](18-cli.md)). Its colours

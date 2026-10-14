@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // TestMain gives the tests an empty home, so none reads the developer's own
@@ -12,13 +14,26 @@ import (
 // helper process keeps the home its parent test prepared, as does a session
 // helper, whose record the parent reads afterwards.
 func TestMain(m *testing.M) {
+	// No test reads this machine's managed file; a test that needs one sets its own.
+	none := filepath.Join(os.TempDir(), fmt.Sprintf("abhed-no-managed-%d", os.Getpid()))
+	managed.ConfigFile, managed.AgentsDir = filepath.Join(none, "config.json"), filepath.Join(none, "agents")
 	// Tests re-run this binary as their own helpers; only a test that sets it
 	// sees itself inside an agent's command.
 	inAgentCommand = func() string { return "" }
 	// No test writes the real system log; one that checks it captures it.
 	sysLogWrite = func(string) error { return nil }
+	// No test reaches the host's container engine; one that needs an engine
+	// puts a stand-in of its own on PATH. ABHED_REQUIRE_CONTAINER asks for the
+	// real one, as CI's container job does.
+	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
+		keepOffRealEngine()
+	}
 	if os.Getenv("ABHED_TRUST_MAIN_ARGS") != "" || os.Getenv("ABHED_CONV_KEEP_HOME") != "" || os.Getenv("ABHED_SESS_WS") != "" {
-		os.Exit(m.Run())
+		code := m.Run()
+		if realEngineRan() {
+			code = 1
+		}
+		os.Exit(code)
 	}
 	dir, err := os.MkdirTemp("", "abhed-home-*")
 	if err != nil {
@@ -28,6 +43,9 @@ func TestMain(m *testing.M) {
 	_ = os.Unsetenv("ABHED_SECRETS_FILE")
 	code := m.Run()
 	_ = os.RemoveAll(dir)
+	if realEngineRan() {
+		code = 1
+	}
 	// No test leaves a record or an export in the package's own folder.
 	if left, _ := filepath.Glob("*.jsonl"); len(left) > 0 && code == 0 {
 		fmt.Fprintf(os.Stderr, "a test left record files in the package: %v\n", left)

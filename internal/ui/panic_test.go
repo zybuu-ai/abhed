@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,13 +30,15 @@ func TestPanicHelper(t *testing.T) {
 	if os.Getenv("ABHED_UI_PANIC_HELPER") == "key" {
 		// The panic happens on the dock's own key reader, in a hotkey.
 		l.Hotkey("ctrl+t", func() { panic("boom from a goroutine") })
+		l.Ready()
 	} else {
 		go func() {
 			defer RestoreOnPanic()
 			panic("boom from a goroutine")
 		}()
 	}
-	time.Sleep(5 * time.Second)
+	// The panic ends the program long before this; the test stops it if not.
+	time.Sleep(time.Minute)
 }
 
 // A panic on any goroutine puts the terminal back before the program ends:
@@ -54,23 +57,61 @@ func panicRestores(t *testing.T, mode string) {
 		t.Skipf("no pty: %v", err)
 	}
 	defer tty.Close()
-	go func() { // answer the startup questions, as a terminal would
-		time.Sleep(20 * time.Millisecond)
+	var mu sync.Mutex
+	var out bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := tty.Read(buf)
+			mu.Lock()
+			out.Write(buf[:n])
+			mu.Unlock()
+			if err != nil {
+				close(done)
+				return
+			}
+		}
+	}()
+	screen := func() string { mu.Lock(); defer mu.Unlock(); return out.String() }
+	// Each step waits for what it answers, not for a time, so a slow machine
+	// (an emulated one) gets the same sequence as a fast one.
+	waitFor := func(what string) bool {
+		for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+			if strings.Contains(screen(), what) {
+				return true
+			}
+			select {
+			case <-done:
+				return strings.Contains(screen(), what)
+			default:
+			}
+		}
+		return false
+	}
+	go func() { // answer the startup questions once asked, as a terminal would
+		if !waitFor("\x1b]11;?") {
+			return
+		}
 		_, _ = io.WriteString(tty, "\x1b]11;rgb:0000/0000/0000\x07\x1b[?62c")
-		if mode == "key" {
-			time.Sleep(200 * time.Millisecond)
+		// The key goes once the dock is drawn and reading keys.
+		if mode == "key" && waitFor(modesOn) && waitFor("? for shortcuts") {
 			_, _ = io.WriteString(tty, "\x14") // Ctrl-T
 		}
 	}()
-	var out bytes.Buffer
-	done := make(chan struct{})
-	go func() { _, _ = io.Copy(&out, tty); close(done) }()
-	_ = cmd.Wait()
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	select {
+	case <-exited:
+	case <-time.After(45 * time.Second):
+		_ = cmd.Process.Kill()
+		<-exited
+	}
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
 	}
-	got := out.String()
+	got := screen()
 	on, off := strings.Index(got, modesOn), strings.LastIndex(got, modesOff)
 	if on < 0 || off < on {
 		t.Fatalf("the terminal was not restored after the panic:\n%q", got)

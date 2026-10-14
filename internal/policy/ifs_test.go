@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // A command that changes IFS must not get past a deny rule in any mode: the
 // rules read it split on the new separators, and an expansion it may split is refused.
@@ -83,6 +86,42 @@ func TestChangedIFSCannotPassADenyRule(t *testing.T) {
 	}
 }
 
+// The refusal says what the command does to IFS: an eval of a variable
+// leaves it alone as written and is not said to change it.
+func TestIFSRefusalReason(t *testing.T) {
+	for command, want := range map[string]string{
+		`eval "$x"`:                     "runs text built from an expansion",
+		`bash -c "$cmd"`:                "runs text built from an expansion",
+		"eval ${a}FS=_; $x":             "runs text built from an expansion",
+		"IFS=_; x=git_reset_--hard; $x": "changes IFS",
+		"read IFS <<< _; $x":            "sets IFS to a value its text does not show",
+		// Only what the command does to IFS counts, not the word in its text.
+		`echo IFS; eval "$x"`:       "runs text built from an expansion",
+		`IFS=" "; eval "$x"`:        "runs text built from an expansion",
+		`printf -v IFS %s _; $x`:    "sets IFS to a value its text does not show",
+		`for IFS in _; do $x; done`: "sets IFS in a for loop",
+		`: ${IFS:=_}; $x`:           "sets IFS to a value its text does not show",
+		// Each way IFS is unknown has its own reason.
+		`for IFS in a b; do $c; done`:  "sets IFS in a for loop",
+		`for IFS in "$@"; do $c; done`: "sets IFS to a value its text does not show",
+		`((IFS=1)); $x`:                "sets IFS by arithmetic",
+		`(( IFS += 1 )); $x`:           "sets IFS by arithmetic",
+		`declare -n r=IFS; r=_; $x`:    "sets IFS to a value its text does not show",
+	} {
+		e := New(ModeBypass)
+		if err := e.AddDeny("bash(git reset --hard*)"); err != nil {
+			t.Fatal(err)
+		}
+		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
+		if res.Decision != Deny || res.Step != "screen" || !strings.Contains(res.Reason, want) {
+			t.Errorf("%q = %s at %s (%s), want a screen deny saying %q", command, res.Decision, res.Step, res.Reason, want)
+		}
+		if want != "changes IFS" && strings.Contains(res.Reason, "changes IFS") {
+			t.Errorf("%q: reason says the command changes IFS: %s", command, res.Reason)
+		}
+	}
+}
+
 // IFS uses that split nothing new are not refused: blanks only, a prefix to
 // read, unset IFS, reading $IFS, or a changed IFS with nothing to split.
 func TestUnchangedIFSIsNotRefused(t *testing.T) {
@@ -95,6 +134,11 @@ func TestUnchangedIFSIsNotRefused(t *testing.T) {
 		"echo posix; IFS=_ read a; echo $a",
 		"grep IFS f; echo $x",
 		"man bash | grep -n IFS; echo $HOME",
+		// A name that only holds the letters IFS is not IFS.
+		"((MYIFS=1)); echo $x",
+		"declare -n r=MYIFS; echo $x",
+		"printf -v MYIFS %s _; echo $x",
+		"read MYIFS <<< _; echo $x",
 	} {
 		e := New(ModeBypass)
 		if err := e.AddDeny("bash(git reset --hard*)"); err != nil {
@@ -113,6 +157,36 @@ func TestChangedIFSIsDestructiveWithoutRules(t *testing.T) {
 		res := New(ModeBypass).Evaluate("bash", true, args(map[string]string{"command": command}))
 		if res.Decision != Ask || res.Step != "destructive" {
 			t.Errorf("%q = %s at %s (%s), want ask at destructive", command, res.Decision, res.Step, res.Reason)
+		}
+	}
+}
+
+// A prefix IFS on read splits only read's input, so it is neither asked
+// about as hidden words nor confirmed as a changed IFS, and an exec runs it.
+func TestReadPrefixIFSIsNotScreened(t *testing.T) {
+	for _, command := range []string{
+		"IFS=, read -r a b <f",
+		"IFS=, read -r a b <<< \"$line\"",
+		"while IFS=, read -r a b; do echo \"$a\"; done < f",
+		"IFS=: read -ra parts <<< \"$PATH\"",
+	} {
+		e := New(ModeDefault)
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
+		if res.Step == "screen" || res.Step == "destructive" || res.Decision == Deny {
+			t.Errorf("%q = %s at %s (%s)", command, res.Decision, res.Step, res.Reason)
+		}
+	}
+	// An IFS after a read prefix still counts.
+	for _, command := range []string{"IFS=, read a <f; IFS=_; x=c_u_r_l; $x", "IFS=, read a; IFS=_ eval $x"} {
+		e := New(ModeDefault)
+		if err := e.AddDeny("bash(curl *)"); err != nil {
+			t.Fatal(err)
+		}
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Deny {
+			t.Errorf("%q = %s at %s (%s), want deny", command, res.Decision, res.Step, res.Reason)
 		}
 	}
 }

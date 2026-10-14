@@ -2,16 +2,13 @@ package mountns
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// An ostree host (Fedora CoreOS, Silverblue) as its mountinfo shows it: /var
-// and /sysroot are the same filesystem, so a workspace under /var/home is
-// reachable through /sysroot too. A bind mount of a folder holding the
-// workspace, and one of a folder inside it, are aliases as well; other
-// filesystems and unrelated folders are not.
-// ostree mounts a deployment folder; DEPL stands for its name in the sample.
+// An ostree host's mountinfo (DEPL is the deployment): /sysroot reaches
+// /var/home, as do binds of folders holding or inside the workspace.
 var ostreeMountinfo = strings.ReplaceAll(`
 1 0 0:30 / / ro,relatime - overlay composefs ro
 60 1 252:4 / /sysroot ro,relatime - xfs /dev/vda4 rw
@@ -100,5 +97,33 @@ func TestWithin(t *testing.T) {
 		if rest, ok := within(c.parent, c.child); rest != c.rest || ok != c.ok {
 			t.Errorf("within(%q, %q) = %q %v", c.parent, c.child, rest, ok)
 		}
+	}
+}
+
+// A FUSE, overlay or network view naming the workspace, a folder in it or one
+// holding it is found; others, and plain mounts, are not.
+func TestViewsOfTheWorkspace(t *testing.T) {
+	info := `20 1 8:1 / / rw - ext4 /dev/sda1 rw
+30 20 0:50 / /mnt/b rw,nosuid - fuse.bindfs /home/u/ws rw,user_id=1000
+31 20 0:51 / /mnt/o rw - overlay overlay rw,lowerdir=/srv/base:/home/u/ws/sub,upperdir=/tmp/up,workdir=/tmp/wk
+32 20 0:52 / /mnt/n rw - nfs4 localhost:/home rw,vers=4.2
+33 20 0:53 / /mnt/s rw - fuse.sshfs u@far:/home rw
+34 20 0:54 / /mnt/t rw - tmpfs tmpfs rw
+35 20 0:55 / /mnt/x rw - fuse.bindfs /home/u/other rw
+36 20 0:56 / /home rw - nfs4 filer:/home rw
+37 20 0:57 / /mnt/me rw - fuse.sshfs u@box:/home/u rw
+`
+	entries, err := parseMountinfo(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[1].Type != "fuse.bindfs" || entries[1].Source != "/home/u/ws" {
+		t.Fatalf("parsed %+v", entries[1])
+	}
+	// 36 is the workspace's own mount, a network home folder.
+	got := views(entries, 36, "/home/u/ws", "box")
+	want := []string{"/mnt/b", "/mnt/o", "/mnt/n", "/mnt/me"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("views %v, want %v", got, want)
 	}
 }

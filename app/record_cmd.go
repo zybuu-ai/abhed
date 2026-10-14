@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,7 +20,9 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
+	"github.com/zybuu-ai/abhed/store/witness"
 )
 
 // recordCmd is `abhed record`: list, show, verify, export and prune the local
@@ -29,7 +33,9 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 		fmt.Fprint(stderr, `usage: abhed record <command>
   list    [-all|-repo] [-n N] [-json]   sessions in this workspace, latest active first
   show    <session> [-json]            a session's events
-  verify  [session|file ...]           check the chain; no argument checks everything
+  verify  [-witness file] [-witness-key key] [session|file ...]
+                                       check the chain; no argument checks everything,
+                                       and the heads a witness holds (record.witness.file)
   export  <session> [-o path] [-format jsonl|html|txt] [-unverified]
                                        jsonl carries its head for checking elsewhere
   prune   <session> | -older-than 90d [-yes]
@@ -48,6 +54,9 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 	}
 	// A moved record is state here too, so no export is written into it.
 	registerState(cfg, workspace)
+	if args[0] == "verify" && cfg.Storage.Driver == "postgres" {
+		return verifyPostgres(cfg, args[1:], stdout, stderr)
+	}
 	rec, err := openRecord(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
@@ -219,6 +228,17 @@ func eventSummary(ev agent.Event) string {
 }
 
 func (c recordCtx) verify(args []string) int {
+	fs := flag.NewFlagSet("record verify", flag.ContinueOnError)
+	fs.SetOutput(c.err)
+	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the record against")
+	witnessKey := fs.String("witness-key", "", "the installation's public key, or its witness.key file, the heads must be signed with")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	args = fs.Args()
+	if *witnessed == "" && c.cfg.ManagedSets("record.witness") {
+		*witnessed = c.cfg.Record.Witness.File
+	}
 	if len(args) == 0 {
 		idx, reps, err := c.rec.VerifyAll()
 		if err != nil {
@@ -229,6 +249,7 @@ func (c recordCtx) verify(args []string) int {
 			bad = printReport(c.out, r.ID, r) || bad
 		}
 		fmt.Fprintf(c.out, "%d session(s) checked in %s\n", len(reps), c.rec.Dir())
+		bad = c.checkWitness(*witnessed, *witnessKey) || bad
 		fmt.Fprintln(c.out, verifyScope)
 		if bad {
 			return 1
@@ -263,6 +284,7 @@ func (c recordCtx) verify(args []string) int {
 		}
 		bad = printReport(c.out, a, rep) || bad
 	}
+	bad = c.checkWitness(*witnessed, *witnessKey) || bad
 	fmt.Fprintln(c.out, verifyScope)
 	if bad {
 		return 1
@@ -270,8 +292,83 @@ func (c recordCtx) verify(args []string) int {
 	return 0
 }
 
+// checkWitness checks the record against every head the witness file holds
+// for this tenant, and reports whether any is no longer in it.
+func (c recordCtx) checkWitness(path, keyGiven string) bool {
+	if path == "" {
+		return false
+	}
+	key, err := witnessKey(c.cfg, keyGiven)
+	if err != nil {
+		fmt.Fprintf(c.err, "abhed: the witness's heads cannot be checked without the installation's key (-witness-key): %v\n", err)
+		return true
+	}
+	f, err := os.Open(path) // #nosec G304 -- the managed witness file, or one the person names
+	if err != nil {
+		fmt.Fprintf(c.err, "abhed: the witness's heads: %v\n", err)
+		return true
+	}
+	defer f.Close()
+	stmts, unreadable := witness.Read(f)
+	for _, err := range unreadable {
+		fmt.Fprintf(c.out, "FAILED  witness: %v\n", err)
+	}
+	problems, err := witness.Check(stmts, key, "local", cliTenant(c.cfg), c.rec.HashAt, c.prunedHead)
+	if err != nil {
+		fmt.Fprintf(c.err, "abhed: the witness's heads: %v\n", err)
+		return true
+	}
+	printWitnessProblems(c.out, problems)
+	fmt.Fprintf(c.out, "%d witnessed head(s) checked from %s against key %s\n", len(stmts), path, base64.StdEncoding.EncodeToString(key))
+	return len(unreadable) > 0 || witness.Failed(problems) > 0
+}
+
+// prunedHead accounts for a pruned session's witnessed head: its tombstone must
+// hold that hash at that line, of a record that verified when it was pruned.
+func (c recordCtx) prunedHead(session string, line int64, hash string) (string, bool, error) {
+	t, pruned := c.rec.Pruned(session)
+	h := t.Head
+	if !pruned || line > h.Lines || line == h.Lines && hash != h.Hash {
+		return "", false, nil
+	}
+	kept := line == h.Lines
+	for _, w := range t.Witnessed {
+		if w.Lines != line {
+			continue
+		}
+		if w.Hash != hash {
+			return fmt.Sprintf("the witness holds line %d, and the record held another line there when it was pruned: it was rewritten first", line), false, nil
+		}
+		kept = true
+	}
+	// A prune of a record already cut or gone cannot launder what was done to it.
+	switch {
+	case t.Missing:
+		return fmt.Sprintf("the witness holds line %d, and the session's file was gone before it was pruned", line), false, nil
+	case !t.Verified:
+		return fmt.Sprintf("the witness holds line %d, and the record did not verify when it was pruned: %s", line, t.Unverified), false, nil
+	case !kept && !t.WitnessChecked:
+		return fmt.Sprintf("the witness holds line %d, and the prune kept the record's hash only at its head (line %d), with no witness file to check: a record re-chained before it was pruned cannot be told apart", line, h.Lines), false, nil
+	case !kept:
+		return fmt.Sprintf("the witness holds line %d, which the witness file did not hold when the session was pruned, so the prune kept no hash there", line), false, nil
+	}
+	return fmt.Sprintf("pruned; the witness holds line %d, and the index's tombstone keeps the same hash there, its head at line %d (%s)", line, h.Lines, short(h.Hash)), true, nil
+}
+
+// printWitnessProblems names each witnessed head the record no longer holds:
+// FAILED, or pruned when a recorded removal accounts for it.
+func printWitnessProblems(w io.Writer, problems []witness.Problem) {
+	for _, p := range problems {
+		label := "FAILED"
+		if p.Removed {
+			label = "pruned"
+		}
+		fmt.Fprintf(w, "%-6s  %s: %s\n", label, p.Statement.Session, p.Reason)
+	}
+}
+
 // verifyScope says what a passing verify does and does not show.
-const verifyScope = "A passing check shows no line was edited, added, moved or removed, and none the head counts was cut, by the agent or by accident. Lines after the last sync are not covered, and the head and index files can be rewritten by the machine's owner, who can also re-chain the record: it is not proof against them."
+const verifyScope = "A passing check shows no line was edited, added, moved or removed, and none the head counts was cut, by the agent or by accident. Lines after the last sync are not covered. Without a witness the head and index files can be rewritten by the machine's owner, who can also re-chain the record or put back an older copy; with record.witness each head the witness holds must still be in the record."
 
 // inRecordFolder reports whether path is in this records directory at all.
 func (c recordCtx) inRecordFolder(path string) bool {
@@ -488,11 +585,25 @@ func (c recordCtx) prune(args []string) int {
 }
 
 func printPruned(w io.Writer, pruned []local.Pruned) {
+	bad := 0
 	for _, p := range pruned {
-		fmt.Fprintf(w, "pruned %s: tombstone keeps head seq %d %s\n", p.ID, p.Head.Seq, short(p.Head.Hash))
+		switch {
+		case p.Missing:
+			bad++
+			fmt.Fprintf(w, "pruned %s, whose file was already gone: tombstone keeps head seq %d %s\n", p.ID, p.Head.Seq, short(p.Head.Hash))
+		case !p.Verified:
+			bad++
+			fmt.Fprintf(w, "pruned %s, which did not verify (%s): tombstone keeps head seq %d %s and records that\n", p.ID, p.Unverified, p.Head.Seq, short(p.Head.Hash))
+		default:
+			fmt.Fprintf(w, "pruned %s: tombstone keeps head seq %d %s\n", p.ID, p.Head.Seq, short(p.Head.Hash))
+		}
 	}
-	if len(pruned) == 0 {
+	switch {
+	case len(pruned) == 0:
 		fmt.Fprintln(w, "nothing to prune")
+	case bad > 0:
+		// The tamper evidence went with the file; the tombstone is what is left of it.
+		fmt.Fprintf(w, "%d pruned, %d of them did not verify\n", len(pruned), bad)
 	}
 }
 
@@ -544,4 +655,107 @@ func reorderFlags(args []string) []string {
 		rest = append(rest, a)
 	}
 	return append(flags, rest...)
+}
+
+// pgVerifyLimit is how many sessions record verify walks when none is named.
+var pgVerifyLimit = 100000
+
+// verifyPostgres walks the event chain of each named session in the
+// database, or of every session the tenant lists, and checks the heads a
+// witness file holds for it.
+func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("record verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the database against")
+	witnessKeyGiven := fs.String("witness-key", "", "the installation's public key, or its witness.key file, the heads must be signed with")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	if *witnessed == "" && cfg.ManagedSets("record.witness") {
+		*witnessed = cfg.Record.Witness.File
+	}
+	ctx := context.Background()
+	pg, err := store.Open(ctx, storeConfig(cfg))
+	if err != nil {
+		fmt.Fprintf(stderr, "abhed: %v\n", err)
+		return 1
+	}
+	defer pg.Close()
+	ids := fs.Args()
+	capped := false
+	kind := map[string]string{}
+	if len(ids) == 0 {
+		rows, err := pg.ChainSessions(ctx, pgVerifyLimit+1)
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: %v\n", err)
+			return 1
+		}
+		if capped = len(rows) > pgVerifyLimit; capped {
+			rows = rows[:pgVerifyLimit]
+		}
+		for _, r := range rows {
+			ids = append(ids, r.ID)
+			switch {
+			case r.Deleted:
+				kind[r.ID] = " (deleted, erased by key)"
+			case r.Subagent:
+				kind[r.ID] = " (a subagent's)"
+			}
+		}
+	}
+	bad := false
+	for _, id := range ids {
+		r, err := pg.VerifyChain(ctx, id)
+		switch {
+		case err != nil:
+			fmt.Fprintf(stderr, "abhed: %s: %v\n", id, err)
+			bad = true
+		case !r.OK():
+			fmt.Fprintf(stdout, "FAILED  %s: the chain breaks at event %d of %d: a row was changed, removed or put out of order\n", id, r.FirstBad, r.Rows)
+			bad = true
+		default:
+			note := ""
+			if r.Unchained > 0 {
+				note = fmt.Sprintf(" (%d event(s) from before the chain, not covered)", r.Unchained)
+			}
+			fmt.Fprintf(stdout, "ok      %s: %d chained event(s), head %s%s%s\n", id, r.Rows, short(r.Head), note, kind[id])
+		}
+	}
+	if *witnessed != "" {
+		key, err := witnessKey(cfg, *witnessKeyGiven)
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: the witness's heads cannot be checked without the installation's key (-witness-key): %v\n", err)
+			return 1
+		}
+		f, err := os.Open(*witnessed) // #nosec G304 -- the managed witness file, or one the person names
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: the witness's heads: %v\n", err)
+			return 1
+		}
+		defer f.Close()
+		stmts, unreadable := witness.Read(f)
+		for _, err := range unreadable {
+			fmt.Fprintf(stdout, "FAILED  witness: %v\n", err)
+		}
+		// A deleted session's rows stay, erased by key, so nothing removed needs accounting for.
+		problems, err := witness.Check(stmts, key, "postgres", pg.Tenant(), func(session string, n int64) (string, bool, error) {
+			return pg.ChainHashAt(ctx, session, n)
+		}, nil)
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: the witness's heads: %v\n", err)
+			return 1
+		}
+		printWitnessProblems(stdout, problems)
+		fmt.Fprintf(stdout, "%d witnessed head(s) checked from %s against key %s\n", len(stmts), *witnessed, base64.StdEncoding.EncodeToString(key))
+		bad = bad || len(unreadable) > 0 || witness.Failed(problems) > 0
+	}
+	if capped {
+		fmt.Fprintf(stdout, "NOTE    only the %d most recent sessions were checked; name the others to check them\n", pgVerifyLimit)
+	}
+	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered by anyone short of the tables' owner. "+
+		"An owner can recompute the chain; with record.witness each head the witness holds must still be in the database.")
+	if bad {
+		return 1
+	}
+	return 0
 }

@@ -22,9 +22,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
-// statuslineTimeout bounds one run of the statusline command: it runs on
-// every redraw of the status and must never hold the session.
-var statuslineTimeout = 300 * time.Millisecond
+// statuslineTimeout bounds one run of the statusline command. It runs in the
+// background, one at a time and at most once a second, so it never holds the
+// session; a loaded macOS host took over 300 ms just to start the sandbox.
+var statuslineTimeout = time.Second
 
 // statuslineMax bounds what is read of its output.
 const statuslineMax = 4 << 10
@@ -105,9 +106,11 @@ func statuslineScript(command, workspace string, state, granted []string) (sandb
 	writable := append(append([]string{workspace}, granted...), sandbox.WritableAreas()...)
 	for _, p := range []string{path, pin.Path} {
 		if under(p, stateDirs) {
+			pin.Release()
 			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is in Abhed's own state, which a statusline script may not be", config.Printable(first))
 		}
 		if under(p, writable) {
+			pin.Release()
 			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is where the agent can change it (the workspace, a folder granted to its tools, a temp or cache area); put the script elsewhere, such as ~/bin", config.Printable(first))
 		}
 	}
@@ -278,8 +281,26 @@ func (c *cliState) statuslineReady() (sandbox.Sandbox, string, string) {
 	// Judged again when the session's folders change, as /add-dir does, so
 	// a script in a folder granted since is refused from then on.
 	if roots := c.grantedDirs(); !c.statuslineJudged || !slices.Equal(roots, c.statuslineRoots) {
+		again, first := c.statuslineJudged, c.statuslinePin
 		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace, roots)
 		c.statuslineJudged, c.statuslineRoots = true, roots
+		// Judged again, the script is still the one the session pinned first,
+		// or none if it pinned none: a file put at its path since is not taken up.
+		changed := c.statuslineErr == nil && (first.Info != nil && (c.statuslinePin.Path != first.Path || !first.Same()) ||
+			again && first.Info == nil && c.statuslinePin.Info != nil)
+		if changed {
+			path := first.Path
+			if path == "" {
+				path = c.statuslinePin.Path
+			}
+			c.statuslineSB, c.statuslineErr = nil, fmt.Errorf("not run: %s has changed since the session started; start a new session to use it as it is now",
+				config.Printable(path))
+		}
+		if again {
+			// Only the first pin is kept, and the new one's file let go now.
+			c.statuslinePin.Release()
+			c.statuslinePin = first
+		}
 	}
 	// A missing sandbox is said once, as it holds for the whole session;
 	// a refused script every time, until it is moved.

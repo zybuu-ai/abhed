@@ -11,6 +11,7 @@ package auth
 import (
 	"net/mail"
 	"strings"
+	"unicode"
 )
 
 // Identity is the verified caller.
@@ -28,6 +29,9 @@ type Identity struct {
 	// EmailVerified is set only when Provider vouched for Email itself.
 	// A local account's email is typed by the person and never is.
 	EmailVerified bool `json:"email_verified,omitempty"`
+	// Scopes are what a bearer token was narrowed to, set by the verifier that
+	// accepted it; empty means the account's own rights, unnarrowed.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // Providers this package sets on the identities it builds.
@@ -153,8 +157,25 @@ func ownerEmail(e string) bool {
 // comments and anything net/mail would rewrite are refused.
 func ValidEmail(e string) error {
 	a, err := mail.ParseAddress(e)
-	if err != nil || a.Name != "" || a.Address != e || strings.Count(e, "@") != 1 {
+	if err != nil || a.Name != "" || a.Address != e || strings.Count(e, "@") != 1 || hasInvisible(e) {
 		return ErrBadEmail
 	}
 	return nil
+}
+
+// hasInvisible reports a character that shows as nothing or as a plain space,
+// so two addresses that look alike could name different accounts: format
+// characters (zero-width joiners and the like), default-ignorable code points,
+// variation selectors, controls, and spaces other than the ASCII one.
+func hasInvisible(s string) bool {
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Cc, r),
+			unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r),
+			unicode.Is(unicode.Variation_Selector, r),
+			r > unicode.MaxASCII && unicode.IsSpace(r), unicode.Is(unicode.Zs, r) && r != ' ':
+			return true
+		}
+	}
+	return false
 }

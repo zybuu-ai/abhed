@@ -24,9 +24,10 @@ type UnknownKey struct {
 }
 
 func (u UnknownKey) String() string {
-	s := fmt.Sprintf("%s: unknown key %s is ignored", u.File, u.Path)
+	// The key is the file's own text, which may hold control bytes.
+	s := fmt.Sprintf("%s: unknown key %s is ignored", Printable(u.File), Printable(u.Path))
 	if u.Suggest != "" {
-		s += fmt.Sprintf(" (did you mean %s?)", u.Suggest)
+		s += fmt.Sprintf(" (did you mean %s?)", Printable(u.Suggest))
 	}
 	if u.Managed {
 		s += "; this is the managed configuration, which whoever manages it must correct"
@@ -51,30 +52,51 @@ var (
 	warned   = map[string]bool{}
 )
 
-// warnUnknown writes each unknown key once per process, however often the
+// warnSink takes a load's warnings when a caller gives one (LoadOptions.Warn);
+// nil writes each to stderr once per process, however often the
 // configuration is loaded.
-func warnUnknown(keys []UnknownKey) {
+type warnSink func(string)
+
+func (s warnSink) emit(id, msg string) {
+	if s != nil {
+		s(msg)
+		return
+	}
 	warnedMu.Lock()
-	defer warnedMu.Unlock()
+	first := !warned[id]
+	warned[id] = true
+	warnedMu.Unlock()
+	if first {
+		fmt.Fprintf(warnOut, "abhed: warning: %s\n", msg)
+	}
+}
+
+// warnUnknown warns of each unknown key.
+func warnUnknown(w warnSink, keys []UnknownKey) {
 	for _, k := range keys {
-		if id := k.File + "\x00" + k.Path; !warned[id] {
-			warned[id] = true
-			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
+		w.emit(k.File+"\x00"+k.Path, k.String())
+	}
+}
+
+// warnNeverAllows warns of each bash allow rule whose own pattern holds shell
+// control syntax: no command it could match is ever allowed.
+func warnNeverAllows(w warnSink, rules []string) {
+	for _, r := range rules {
+		if policy.NeverAllows(r) {
+			w.emit("allow\x00"+r, "allow rule "+Printable(r)+" never matches: "+
+				"an allow rule approves only a single command without ; & | ( ) < > $( ${ ` or a newline, so such a command is asked about")
 		}
 	}
 }
 
-// warnNeverAllows writes, once per process, each bash allow rule whose own
-// pattern holds shell control syntax: no command it could match is ever allowed.
-func warnNeverAllows(rules []string) {
-	warnedMu.Lock()
-	defer warnedMu.Unlock()
-	for _, r := range rules {
-		if id := "allow\x00" + r; !warned[id] && policy.NeverAllows(r) {
-			warned[id] = true
-			fmt.Fprintf(warnOut, "abhed: warning: allow rule %s never matches: "+
-				"an allow rule approves only a single command without ; & | ( ) < > $( ${ ` or a newline, so such a command is asked about\n", r)
+// warnRuleFindings warns of each rule that names no tool as written. A
+// managed deny rule that misnames its tool is refused, not warned of.
+func warnRuleFindings(w warnSink, findings []RuleFinding) {
+	for _, f := range findings {
+		if f.Managed() && f.List == "deny" && f.Mistake {
+			continue
 		}
+		w.emit("tool\x00"+f.List+"\x00"+f.Rule, f.String())
 	}
 }
 

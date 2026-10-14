@@ -1,0 +1,265 @@
+package tools
+
+import (
+	"path"
+	"slices"
+	"strings"
+)
+
+// gitRunsOrWritesLong are git options, after the subcommand, that write a file
+// or run a program, with the shortest prefix of each read as it: git accepts
+// a unique prefix, --op for --open-files-in-pager, so any prefix counts.
+var gitRunsOrWritesLong = []struct {
+	name string
+	min  int
+	why  string
+}{
+	{"output", 1, "writes its output to the file it names"},
+	{"output-directory", 1, "writes patch files into the folder it names"},
+	{"ext-diff", 1, "runs the external diff program git's configuration names"},
+	// --text is its own option, so only a longer prefix is --textconv.
+	{"textconv", 5, "runs the text conversion programs git's configuration names"},
+	{"open-files-in-pager", 1, "runs a pager program on the matching files"},
+	{"upload-pack", 1, "runs the program it names"},
+	{"receive-pack", 1, "runs the program it names"},
+	{"exec", 1, "runs the command it names"},
+}
+
+// gitRunsOrWritesShort are the short forms of those options, per subcommand.
+var gitRunsOrWritesShort = map[string]struct{ letters, why string }{
+	"grep":         {"O", "runs a pager program on the matching files"},
+	"format-patch": {"o", "writes patch files into the folder it names"},
+	"clone":        {"uc", "runs the program it names, or sets configuration that can name one"},
+	"ls-remote":    {"u", "runs the program it names"},
+	"rebase":       {"x", "runs the command it names"},
+}
+
+// gitRunsOrWritesSubLong are long options that run a program or set
+// configuration for one subcommand only, any prefix counting.
+var gitRunsOrWritesSubLong = map[string][]string{
+	"clone":    {"config", "template"},
+	"init":     {"template"},
+	"cat-file": {"filters"},
+}
+
+// gitTextSubs take a message as text and have none of the options these
+// checks look for, so a word in the message (-m "fix --exec") is not one.
+var gitTextSubs = set("commit", "tag", "merge", "notes")
+
+// gitTakesText reports a subcommand whose words may be message text the
+// shell split: one of gitTextSubs, or stash other than show and list.
+func gitTakesText(sub string, rest []string) bool {
+	if gitTextSubs[sub] {
+		return true
+	}
+	if sub != "stash" {
+		return false
+	}
+	for _, w := range rest {
+		if !strings.HasPrefix(w, "-") {
+			return w != "show" && w != "list"
+		}
+	}
+	return true
+}
+
+// gitRunsPrograms are subcommands whose purpose is to run a program or a
+// command: their own, the configured tool, or one named on the line.
+var gitRunsPrograms = map[string]string{
+	"difftool":      "runs a diff tool program",
+	"mergetool":     "runs a merge tool program",
+	"filter-branch": "runs the filter commands it is given",
+	"send-email":    "sends mail through the programs and servers it is given or configured with",
+	"instaweb":      "runs a web server and a browser program",
+}
+
+// gitRunsOperand are subcommands that run a command when an operand names the action.
+var gitRunsOperand = map[string]string{"bisect": "run", "submodule": "foreach"}
+
+// gitEndsOptions are the subcommands that find -- before reading options, so
+// a -- given as an option's value still ends them; parse-options subcommands
+// such as grep read on (git grep -e -- -O prog), and so does diff --no-index.
+var gitEndsOptions = set("log", "show", "whatchanged")
+
+// gitConfigReads are git config's forms that only read.
+var gitConfigReads = set("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l")
+
+// GitRunsOrWrites says why the command runs git with an option that writes a
+// file or runs a program, such as --output, --ext-diff, or -c, -p or -C
+// before the subcommand; "" when none. A read-only allow rule such as bash(git diff *)
+// does not approve these. Rough on purpose: a false match only asks.
+func (c Canonical) GitRunsOrWrites() string {
+	forms := append([]string{c.command, c.Text}, c.shell.commands...)
+	for _, form := range forms {
+		for _, line := range []string{form, collapseSubstitutions(form)} {
+			if why := gitRunsOrWritesParts(line); why != "" {
+				return why
+			}
+		}
+	}
+	return ""
+}
+
+func gitRunsOrWritesParts(command string) string {
+	for _, part := range strings.Split(shellBreaks.Replace(command), "\n") {
+		words := strings.Fields(shellQuotes.Replace(part))
+		seen := 0
+		pos := position{on: true}
+		for i, w := range words {
+			run := pos.next(w)
+			if strings.TrimSuffix(CommandName(path.Base(w)), ".exe") != "git" && (!run || w != gitSubstitution) {
+				continue
+			}
+			if seen++; seen > maxGitWords {
+				return "too many git commands in one line to check"
+			}
+			if why := gitOptionRunsOrWrites(words[i+1:]); why != "" {
+				return why
+			}
+		}
+	}
+	return ""
+}
+
+// gitOptionRunsOrWrites reads the words after git: its options before the
+// subcommand, then every option of the subcommand before --, wherever it
+// sits among the operands, as git reads them.
+func gitOptionRunsOrWrites(words []string) string {
+	i := 0
+	for ; i < len(words) && strings.HasPrefix(words[i], "-"); i++ {
+		w := words[i]
+		switch {
+		case strings.HasPrefix(w, "-c"), strings.HasPrefix(w, "--config-env"):
+			return "git " + w + " sets configuration, which can name a program to run"
+		case strings.HasPrefix(w, "--exec-path"):
+			return "git " + w + " sets where git finds its commands"
+		case w == "-p", w == "--paginate":
+			return "git " + w + " runs the pager program git's configuration names"
+		// Another repository's config can name a program for the subcommand to run.
+		case w == "-C", strings.HasPrefix(w, "--git-dir"), strings.HasPrefix(w, "--work-tree"):
+			return "git " + w + " runs git on a repository whose configuration can name a program to run"
+		}
+		if gitGlobalsWithValue[w] {
+			i++
+		}
+	}
+	if i >= len(words) {
+		return ""
+	}
+	sub, rest := words[i], words[i+1:]
+	if why, ok := gitRunsPrograms[sub]; ok {
+		return "git " + sub + " " + why
+	}
+	if op, ok := gitRunsOperand[sub]; ok && slices.Contains(rest, op) {
+		return "git " + sub + " " + op + " runs the command it is given"
+	}
+	if sub == "config" && !gitConfigReadOnly(rest) {
+		return "git config can set configuration, which can name a program to run"
+	}
+	// Checked before the message exemption: merge takes -s, unlike --output.
+	if name := gitStrategy(sub, rest); name != "" {
+		return "git " + sub + " -s " + name + " runs git-merge-" + name + ", a program found on PATH"
+	}
+	if gitTakesText(sub, rest) {
+		return ""
+	}
+	short := gitRunsOrWritesShort[sub]
+	for _, w := range rest {
+		if w == "--" && gitEndsOptions[sub] {
+			break
+		}
+		if name, ok := strings.CutPrefix(w, "--"); ok {
+			name, _, _ = strings.Cut(name, "=")
+			for _, l := range gitRunsOrWritesSubLong[sub] {
+				if gitLongPrefix("--"+name, "--"+l) {
+					return "git " + sub + " --" + l + " runs or sets up programs git's configuration names"
+				}
+			}
+			for _, o := range gitRunsOrWritesLong {
+				if len(name) >= o.min && gitLongPrefix("--"+name, "--"+o.name) {
+					return "git " + sub + " --" + o.name + " " + o.why
+				}
+			}
+			continue
+		}
+		// A short option anywhere in a cluster, value or not: -nOvim is -n -O vim.
+		if short.letters != "" && len(w) > 1 && w[0] == '-' && strings.ContainsAny(w[1:], short.letters) {
+			return "git " + sub + " " + w + " " + short.why
+		}
+	}
+	return ""
+}
+
+// gitConfigReadOnly reports a git config call that only reads: get or list,
+// in either syntax, with no option that edits.
+func gitConfigReadOnly(words []string) bool {
+	read := len(words) > 0 && (words[0] == "get" || words[0] == "list")
+	for _, w := range words {
+		name, _, _ := strings.Cut(w, "=")
+		switch {
+		case gitConfigReads[name]:
+			read = true
+		case name == "-e" || name == "--edit" || name == "--add" || strings.HasPrefix(name, "--unset") ||
+			strings.HasPrefix(name, "--replace") || strings.HasPrefix(name, "--rename") || strings.HasPrefix(name, "--remove"):
+			return false
+		}
+	}
+	return read
+}
+
+// gitLongPrefix reports a word naming the long option opt (both with their
+// leading --) in full or by any prefix, as git accepts; the value is cut off.
+// Both the destructive check and GitRunsOrWrites read options this way.
+func gitLongPrefix(word, opt string) bool {
+	name, _, _ := strings.Cut(word, "=")
+	n, ok := strings.CutPrefix(name, "--")
+	return ok && abbreviates(n, strings.TrimPrefix(opt, "--"))
+}
+
+// gitStrategyShort are, per subcommand that takes -s, its short options that
+// take a value, so a cluster such as -ms is -m with the value s.
+var gitStrategyShort = map[string]string{
+	"merge": "mFsX", "pull": "sXo", "rebase": "sXxC", "cherry-pick": "msX", "revert": "msX",
+}
+
+// gitBuiltinStrategies are the merge strategies built into git.
+var gitBuiltinStrategies = set("ort", "recursive", "resolve", "octopus", "ours", "subtree")
+
+// gitStrategy is a merge strategy named with -s or --strategy, by any
+// prefix, that is not built into git, or "". Every word is read: these
+// subcommands read options past a -- given as a value.
+func gitStrategy(sub string, words []string) string {
+	letters, ok := gitStrategyShort[sub]
+	if !ok {
+		return ""
+	}
+	for i, w := range words {
+		value, found := "", false
+		if name, v, glued := strings.Cut(w, "="); gitLongPrefix(name, "--strategy") {
+			value, found = v, true
+			if !glued && i+1 < len(words) {
+				value = words[i+1]
+			}
+		} else if len(w) > 1 && w[0] == '-' && w[1] != '-' {
+			for k := 1; k < len(w); k++ {
+				if !strings.ContainsRune(letters, rune(w[k])) {
+					continue
+				}
+				if w[k] == 's' {
+					value, found = w[k+1:], true
+					if value == "" && i+1 < len(words) {
+						value = words[i+1]
+					}
+				}
+				break
+			}
+		}
+		if found && !gitBuiltinStrategies[value] {
+			if value == "" {
+				value = "?"
+			}
+			return value
+		}
+	}
+	return ""
+}

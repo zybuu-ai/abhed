@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -43,6 +45,9 @@ type Bash struct {
 	// Sandbox, when set, wraps the command (e.g. a bubblewrap, container or gVisor exec).
 	// Nil means direct execution, which is only appropriate for local dev.
 	Sandbox func(ctx context.Context, cwd, command string) *exec.Cmd
+	// Home is the HOME Sandbox gives a command, as a host path, and whether
+	// the host can read it. Nil with a Sandbox is taken as hidden.
+	Home func() (string, bool)
 	// Secrets resolves names the model asked for into NAME=value pairs for
 	// one command's environment. Policy has allowed each name by the time
 	// this runs. Nil means no secrets are available.
@@ -57,6 +62,9 @@ type Bash struct {
 	// RanUnder, when set, is the tier a command ran under, for a sandbox
 	// chosen after start-up; Isolation.Tier is then the weakest it can be.
 	RanUnder func() string
+	// Forward, when set, passes named variables already in a command's Env
+	// into what Sandbox built, in place of sandbox.ForwardEnv.
+	Forward func(cmd *exec.Cmd, names []string)
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -197,6 +205,8 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\btruncate\s+-s\s*0\b`), "file truncation"},
 	{regexp.MustCompile(`\bgit\s+checkout\s+--\s+\.`), "discard all working-tree changes"},
 	{regexp.MustCompile(`\bgit\s+branch\s+-D\b`), "force branch delete"},
+	{regexp.MustCompile(`\bunlink\s+\S`), "delete via unlink"},
+	{regexp.MustCompile(`\brmdir\b.*\s(?:-[a-zA-Z]*p[a-zA-Z]*|--parents?)\b`), "delete parent folders (rmdir -p)"},
 }
 
 // Note on completeness: this list cannot be exhaustive. Shell affords endless
@@ -240,24 +250,8 @@ func (c Canonical) DestructiveWith(gitExtensions map[string]bool) (string, bool)
 			return what, true
 		}
 	}
-	if c.IFSSplit {
-		return "words split by a changed IFS", true
-	}
-	// The program is read in the text as written and as canonicalised, and by the parser.
-	if what, ok := hiddenWords(command, canon); ok {
+	if what := c.Unreadable(); what != "" {
 		return what, true
-	}
-	if what, ok := hiddenWords(command, command); ok {
-		return what, true
-	}
-	if c.shell.edited || c.shell.expands {
-		return "program named by an expansion", true
-	}
-	if c.shell.opaque != "" {
-		return c.shell.opaque, true
-	}
-	if c.shell.gitBuilt != "" {
-		return c.shell.gitBuilt, true
 	}
 	// The commands the parser found, in function bodies and eval, trap and -c text.
 	for _, cmd := range c.shell.commands {
@@ -266,6 +260,35 @@ func (c Canonical) DestructiveWith(gitExtensions map[string]bool) (string, bool)
 		}
 	}
 	return "", false
+}
+
+// Unreadable says why the program a command runs, or the words it runs
+// with, are known only when it runs, so no rule can read them; "" when they
+// are read. Destructive counts each of these as needing a person's yes.
+func (c Canonical) Unreadable() string {
+	if c.IFSSplit {
+		switch c.IFSCause {
+		case IFSByUnparsed:
+			return "a command that cannot be parsed, so where it sets IFS is not known"
+		case IFSByBuilt:
+			return "text built from an expansion that could set IFS"
+		}
+		return "words split by a changed IFS"
+	}
+	// The program is read in the text as written and as canonicalised, and by the parser.
+	if what, ok := hiddenWords(c.command, c.Text); ok {
+		return what
+	}
+	if what, ok := hiddenWords(c.command, c.command); ok {
+		return what
+	}
+	if c.shell.edited || c.shell.expands {
+		return "program named by an expansion"
+	}
+	if c.shell.opaque != "" {
+		return c.shell.opaque
+	}
+	return c.shell.gitBuilt
 }
 
 func destructiveText(command string, gitExtensions map[string]bool) (string, bool) {
@@ -487,14 +510,15 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		cdNote = s.FollowCd(a.Command)
 	}
 
-	if content == "" {
+	noOutput := content == ""
+	if noOutput {
 		content = "[no output]"
 	}
 	if bgNote != "" {
-		content += "\n\n" + bgNote
+		content = withNote(content, bgNote)
 	}
 	if cdNote != "" {
-		content += "\n\n" + cdNote
+		content = withNote(content, cdNote)
 	}
 
 	// A non-zero exit is a valid observation the model must reason about, not a
@@ -503,15 +527,22 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
-		content += "\n\n" + networkHint
-	} else if hint := sandboxHint(content); hint != "" && b.ranTier() != "none" {
-		content += "\n\n" + hint
+		content = withNote(content, networkHint)
+	} else if hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
+		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
+		content = withNote(content, hint)
 	}
 	return Result{
 		Content:   header + "\n" + content,
 		Truncated: truncated,
 		ExitCode:  &exitCode,
+		NoOutput:  noOutput,
 	}
+}
+
+// withNote puts a note after the output with one blank line between, however the output ends.
+func withNote(content, note string) string {
+	return strings.TrimRight(content, "\n") + "\n\n" + note
 }
 
 // command makes the process for a call: under the sandbox when there is
@@ -523,11 +554,16 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	} else {
 		cmd = exec.CommandContext(ctx, "bash", "-c", a.Command)
 		cmd.Dir = cwd
-		// No sandbox: the server's own environment, less BASH_ENV and CDPATH.
+		// No sandbox: the server's own environment, less the variables hostDropped names.
 		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
 	}
 	// A stopped turn ends what the command started, not only its shell.
 	sandbox.EndWithCommand(cmd)
+
+	// git never runs a command a repository's own config names for ext:: or fsmonitor.
+	var gitNames []string
+	cmd.Env, gitNames = WithGitSafeConfig(cmd.Env)
+	b.forward(cmd, gitNames)
 
 	if len(a.Secrets) > 0 {
 		env, err := b.Secrets(a.Secrets)
@@ -542,10 +578,18 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 				names = append(names, k)
 			}
 		}
-		// A container sees only what is forwarded to it by name.
-		sandbox.ForwardEnv(cmd, names)
+		b.forward(cmd, names)
 	}
 	return cmd, nil
+}
+
+// forward gives a container the variables named, which it sees only by name.
+func (b Bash) forward(cmd *exec.Cmd, names []string) {
+	if b.Forward != nil {
+		b.Forward(cmd, names)
+	} else {
+		sandbox.ForwardEnv(cmd, names)
+	}
 }
 
 // moveToBackground hands a running foreground command to the session's host
@@ -792,7 +836,9 @@ func asExitError(err error, target **exec.ExitError) bool {
 func (s *Session) FollowCd(command string) string {
 	next, why := detectCd(command, s)
 	if next != "" {
+		s.mu.Lock()
 		s.Cwd = next
+		s.mu.Unlock()
 	}
 	return why
 }
@@ -809,7 +855,7 @@ func detectCd(command string, s *Session) (next, why string) {
 		return s.Root, ""
 	}
 	if !IsCdLine(line) {
-		if changesDir.MatchString(unquoted.Replace(line)) {
+		if mayChangeDir(line) {
 			return "", unfollowed
 		}
 		return "", ""
@@ -846,6 +892,41 @@ var changesDir = regexp.MustCompile("(?:^|[\\s;&|(){}`!])(?:cd|pushd|popd|eval|s
 
 // unquoted drops a line's quotes and backslashes, for changesDir.
 var unquoted = strings.NewReplacer(`"`, "", `'`, "", `\`, "")
+
+// mayChangeDir reports a line that runs a command able to change directory, read
+// by the parser so that `echo cd` or a comment is not one; a line it cannot read falls back to changesDir.
+func mayChangeDir(line string) bool {
+	if strings.Contains(line, "CDPATH") {
+		return true
+	}
+	var file *syntax.File
+	var err error
+	if len(line) <= maxShellBytes {
+		file, err = syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(line), "")
+	}
+	if file == nil || err != nil {
+		return changesDir.MatchString(unquoted.Replace(line))
+	}
+	found := false
+	syntax.Walk(file, func(n syntax.Node) bool {
+		call, ok := n.(*syntax.CallExpr)
+		if !ok || found {
+			return !found
+		}
+		for _, w := range call.Args {
+			name, lit := literal(w)
+			if !lit || (name != "builtin" && name != "command") {
+				found = lit && dirWords[name]
+				break
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// dirWords are the commands that can change the shell's directory.
+var dirWords = map[string]bool{"cd": true, "pushd": true, "popd": true, "eval": true, "source": true, ".": true}
 
 // IsCdLine reports a line that is the cd command with an argument: cd, then
 // a space or a tab, the only blanks bash splits a line's words on.
@@ -924,4 +1005,21 @@ func shellWord(s string) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// CommandHome is the HOME the registry's bash tool gives a command, as the
+// policy reads start-up files from it: the host's when commands run directly.
+func CommandHome(reg *Registry) func() (string, bool) {
+	return func() (string, bool) {
+		t, _ := reg.Get("bash")
+		b, ok := t.(Bash)
+		switch {
+		case ok && b.Home != nil:
+			return b.Home()
+		case ok && b.Sandbox != nil:
+			return "", false
+		}
+		h := os.Getenv("HOME")
+		return h, h != ""
+	}
 }

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,6 +56,8 @@ type acpShell struct {
 	pumped    chan struct{}
 	// prompt follows whether the shell is back at its prompt.
 	prompt *termline.Prompt
+	// sawProgram and jobsOff keep each log line about the foreground to once.
+	sawProgram, jobsOff atomic.Bool
 }
 
 // startShell opens the shell, refusing where a line-by-line terminal is the
@@ -67,13 +70,13 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 		return refusal(errPolicy, `this configuration's terminal judges each line before it runs (sandbox.terminal is "lines"); open the terminal in lines mode`)
 	case b.Shell == nil:
 		return refusal(errRefused, "this sandbox cannot host an interactive shell; open the terminal in lines mode")
-	case pol.Managed && pol.Screens("bash"):
-		// A managed policy is the organisation's word that its rules hold.
+	case parts.Config.ManagedScreens() && pol.Screens("bash"):
+		// Managed deny rules or extensions are the organisation's word that they hold.
 		return refusal(errPolicy, "your organisation's policy has deny rules or hooks that only a line-by-line terminal applies to every command; open the terminal in lines mode")
 	}
 	loop := parts.Loop
 	id := "u" + acpID()
-	args, _ := json.Marshal(map[string]any{"command": "bash -i", "description": "interactive Abhed terminal in the session sandbox", "interactive": true})
+	args, _ := json.Marshal(map[string]any{"command": sandbox.TerminalCommand, "description": "interactive Abhed terminal in the session sandbox", "interactive": true})
 	_, refused, err := loop.ManualAuthorize("bash", id, args)
 	if err != nil {
 		return refusal(errRecord, "the terminal could not be recorded, so it was not opened: %v", err)
@@ -129,7 +132,12 @@ func (c *acpConn) pumpShell(t *acpTerminal) {
 			if sh.local && sh.shellPgrp.Load() == 0 {
 				if fg, _, ok := ttyNow(sh.tty); ok {
 					sh.shellPgrp.Store(int64(fg))
+					fmt.Fprintf(os.Stderr, "abhed: acp: terminal %s: the shell's process group is %d\n", sh.id, fg)
 				}
+			}
+			if sh.local && jobControlOff(chunk) && sh.jobsOff.CompareAndSwap(false, true) {
+				// Programs then share the shell's group, so what is typed into them is judged as the shell's.
+				fmt.Fprintf(os.Stderr, "abhed: acp: terminal %s: the shell has no job control; lines typed into its programs are judged as shell lines\n", sh.id)
 			}
 			sh.mu.Lock()
 			sh.tail = termline.KeepTail(append(sh.tail, chunk...), shellTail)
@@ -182,6 +190,7 @@ func (c *acpConn) waitShell(t *acpTerminal) {
 	c.termMu.Lock()
 	delete(c.terms, t.id)
 	c.termMu.Unlock()
+	close(t.done)
 	c.notification("_abhed/terminal/exit", map[string]any{"terminalId": t.id, "code": code})
 }
 
@@ -266,7 +275,15 @@ func (sh *acpShell) ask(e *termline.Entered) {
 		return
 	}
 	e.Known, e.Secret, e.Program = true, canonical, sh.isProgram(fg)
+	if e.Program && sh.sawProgram.CompareAndSwap(false, true) {
+		fmt.Fprintf(os.Stderr, "abhed: acp: terminal %s: a program (process group %d) has the terminal; the shell's is %d\n", sh.id, fg, sh.shellPgrp.Load())
+	}
 	e.Ahead = !sh.prompt.At()
+}
+
+// jobControlOff is bash's word that it could not take the terminal.
+func jobControlOff(out []byte) bool {
+	return bytes.Contains(out, []byte("no job control in this shell"))
 }
 
 // follow notes when the shell is back at its prompt.

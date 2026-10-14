@@ -8,8 +8,8 @@ import (
 )
 
 // RealPath follows symlinks in the part of p that exists, so a path to a file
-// not yet created still lands under its real parent. A link whose target does
-// not exist yet is followed too: writing through it would create the target.
+// not yet created still lands under its real parent. A dangling link is
+// followed too: writing through it would create the target.
 func RealPath(p string) string {
 	return realPath(p, 0)
 }
@@ -84,10 +84,8 @@ func parts(p string) []string {
 	return out
 }
 
-// holders are the folders inside the workspace that hold a write-protected
-// path, such as .git for .git/hooks. Renaming one would carry the protected
-// path out from under its rule, so each is pinned in place: up to the nearest
-// .git, or else every folder up to the workspace.
+// holders are the folders holding a write-protected path, such as .git; each is
+// pinned, as renaming it would carry the path out of its rule.
 func holders(workspaces, protected []string) []string {
 	seen := map[string]bool{}
 	var out []string

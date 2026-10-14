@@ -390,3 +390,47 @@ func TestSDKRefusesASecretInAFileName(t *testing.T) {
 		t.Fatal("a write ran while the secrets store could not be loaded")
 	}
 }
+
+// A stored value typed into a prompt reaches the model as [secret:NAME], and
+// the user.message names it, so an embedding program can tell its user.
+func TestSDKWithholdsATypedSecretFromTheModel(t *testing.T) {
+	vaultWith(t)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, bodies := scripted(t)
+	var mu sync.Mutex
+	var withheld []string
+	a, err := abhed.New(context.Background(), abhed.Options{
+		Workspace: ws, Mode: "default",
+		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192},
+		OnEvent: func(ev abhed.Event) {
+			var m abhed.Message
+			if ev.Type == abhed.EvUserMessage && json.Unmarshal(ev.Payload, &m) == nil {
+				mu.Lock()
+				withheld = append(withheld, m.SecretsWithheld)
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if _, err := a.Run(context.Background(), "log in with "+fakeSecret); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b := bodies()
+	if len(b) == 0 || strings.Contains(b[0], fakeSecret) || !strings.Contains(b[0], "log in with [secret:FAKE_TOKEN]") {
+		t.Fatalf("the model was sent %v", b)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(withheld) != 1 || withheld[0] != "FAKE_TOKEN" {
+		t.Fatalf("the user.message named %q", withheld)
+	}
+}

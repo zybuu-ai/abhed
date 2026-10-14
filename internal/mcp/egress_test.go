@@ -64,7 +64,7 @@ func TestStdioServerConfinedUnderTheAllowlist(t *testing.T) {
 	g := NewGateway()
 	g.MustConfine = true
 	errs := g.Connect(ctx, []ServerConfig{{Name: "s", Command: "true", Enabled: true}})
-	if len(errs) != 1 || !errors.Is(errs[0], errUnconfined) {
+	if len(errs) != 1 || !errors.Is(errs[0], ErrUnconfined) {
 		t.Fatalf("an unconfinable server: %v", errs)
 	}
 	var argv []string
@@ -79,7 +79,9 @@ func TestStdioServerConfinedUnderTheAllowlist(t *testing.T) {
 }
 
 // A stdio server's decisions go to the session whose call is in flight, or
-// with none the latest; calls of two sessions at once are not attributed.
+// with none the latest; with calls of two sessions in flight, to each, no
+// call named; one made before any call, to each session on its first call.
+// None goes only to the log.
 func TestStdioServerDecisionsGoToTheCaller(t *testing.T) {
 	var s serverCallers
 	var mu sync.Mutex
@@ -92,28 +94,36 @@ func TestStdioServerDecisionsGoToTheCaller(t *testing.T) {
 			return nil
 		}}
 	}
+	hosts := func(session string) string {
+		var out []string
+		for _, m := range recs[session] {
+			out = append(out, fmt.Sprintf("%v/%v", m["host"], m["call_id"]))
+		}
+		return strings.Join(out, ",")
+	}
 	rec := s.recordFor("srv")
-	_ = rec(egress.EventName, map[string]any{"host": "a"}) // before any call: logged only
+	_ = rec(egress.EventName, map[string]any{"host": "a"}) // before any call: kept
 	endA := s.begin("srv", caller("A", "a1"))
 	_ = rec(egress.EventName, map[string]any{"host": "b", "call_id": "mcp/srv"})
 	endB := s.begin("srv", caller("B", "b1"))
-	_ = rec(egress.EventName, map[string]any{"host": "c"}) // two sessions: logged only
+	_ = rec(egress.EventName, map[string]any{"host": "c"}) // two sessions: each
 	endA()
 	endB()
 	_ = rec(egress.EventName, map[string]any{"host": "d"}) // none in flight: the latest, B
-	if len(recs["A"]) != 1 || recs["A"][0]["host"] != "b" || recs["A"][0]["call_id"] != "a1" || recs["A"][0]["mcp_server"] != "srv" {
-		t.Fatalf("A: %v", recs["A"])
+	if got := hosts("A"); got != "a/,b/a1,c/" || recs["A"][0]["before_call"] != true || recs["A"][2]["shared_sessions"] != 2 {
+		t.Fatalf("A: %s %v", got, recs["A"])
 	}
-	if len(recs["B"]) != 1 || recs["B"][0]["host"] != "d" || recs["B"][0]["call_id"] != "" || recs["B"][0]["session"] != "B" {
-		t.Fatalf("B: %v", recs["B"])
+	if got := hosts("B"); got != "a/,c/,d/" || recs["B"][2]["session"] != "B" {
+		t.Fatalf("B: %s %v", got, recs["B"])
 	}
-	// Two calls of one session: its record, naming neither call.
+	// Two calls of one session: its record, naming neither call; the early
+	// decisions are not given again.
 	end1, end2 := s.begin("srv", caller("A", "a2")), s.begin("srv", caller("A", "a3"))
 	_ = rec(egress.EventName, map[string]any{"host": "e"})
 	end1()
 	end2()
-	if len(recs["A"]) != 2 || recs["A"][1]["host"] != "e" || recs["A"][1]["call_id"] != "" {
-		t.Fatalf("A: %v", recs["A"])
+	if got := hosts("A"); got != "a/,b/a1,c/,e/" {
+		t.Fatalf("A: %s", got)
 	}
 }
 

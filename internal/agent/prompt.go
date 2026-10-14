@@ -350,6 +350,9 @@ func fileHas(path, s string) bool {
 func gitState(dir string) (branch string, dirty int, isRepo bool) {
 	// Run on the host on every prompt build, in a repository the agent can
 	// write: hostgit keeps its configuration from running a program.
+	if !mayBeInRepo(dir) {
+		return "", 0, false
+	}
 	ctx := context.Background()
 	r := hostgit.New(ctx, dir)
 	cmd := r.Command(ctx, "rev-parse", "--abbrev-ref", "HEAD")
@@ -369,6 +372,32 @@ func gitState(dir string) (branch string, dirty int, isRepo bool) {
 	}
 	return branch, dirty, true
 }
+
+// mayBeInRepo reports whether git could find a repository at dir: a .git
+// entry, or a bare repository's own files, in dir or a folder above it.
+// Elsewhere git is not started at all; on macOS each start can cost a
+// few hundred milliseconds, all of it before the first prompt is drawn.
+func mayBeInRepo(dir string) bool {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		if isFile(filepath.Join(dir, "HEAD")) && isDir(filepath.Join(dir, "objects")) && isDir(filepath.Join(dir, "refs")) {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+func isFile(p string) bool { fi, err := os.Stat(p); return err == nil && fi.Mode().IsRegular() }
+func isDir(p string) bool  { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
 // modelLine is the prompt's line naming the model, which a switch rewrites.
 func modelLine(name string, window int) string {

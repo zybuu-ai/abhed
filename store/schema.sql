@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   mode            TEXT        NOT NULL DEFAULT 'default',
   -- The opening request, kept so a session list is readable at a glance.
   prompt          TEXT        NOT NULL DEFAULT '',
-  parent_id       TEXT        REFERENCES sessions(id),
+  -- Its parent in the same tenant only: see sessions_parent_same_tenant.
+  parent_id       TEXT,
   started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at        TIMESTAMPTZ,
   terminal_reason TEXT,
@@ -76,6 +77,9 @@ CREATE TABLE IF NOT EXISTS approvals (
 -- The "always allow" scope an answer carried, empty for this call only: the
 -- waiting node widens the session's allow list only from this.
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS answer_scope TEXT NOT NULL DEFAULT '';
+-- The action.requested event the row asks about, so another node can check an
+-- answer bound to it. Empty on rows from before the column.
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '';
 -- Set when the request stopped waiting, answered or not. An ended row takes
 -- no answer, so nothing is approved after the turn it was asked in. When the
 -- column is first added, the rows already there are from turns that are no
@@ -110,6 +114,22 @@ CREATE INDEX IF NOT EXISTS sessions_tenant_started_idx
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions (parent_id)
   WHERE parent_id IS NOT NULL;
+
+-- A parent is found in the session's own tenant. A key on parent_id alone was
+-- checked outside row security, so a write naming another tenant's session as
+-- parent succeeded and confirmed that the id existed there. Rows already
+-- stored are not re-checked (NOT VALID); every write from now on is.
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_tenant_id_key ON sessions (tenant_id, id);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conname = 'sessions_parent_same_tenant'
+                   AND conrelid = to_regclass(current_schema() || '.sessions')) THEN
+    ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_parent_id_fkey;
+    ALTER TABLE sessions ADD CONSTRAINT sessions_parent_same_tenant
+      FOREIGN KEY (tenant_id, parent_id) REFERENCES sessions (tenant_id, id) NOT VALID;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS events (
   id         TEXT        PRIMARY KEY,
@@ -276,3 +296,320 @@ CREATE TRIGGER events_inserted_at BEFORE INSERT ON events
   FOR EACH ROW EXECUTE FUNCTION abhed_events_inserted_at();
 
 INSERT INTO schema_version (version) VALUES (6) ON CONFLICT DO NOTHING;
+
+-- Schema version 7: the sandbox control plane (docs/architecture/control-plane-contract.md).
+--
+-- A sandbox is kept whole as JSON beside the columns its queries filter on.
+-- resource_version comes from one sequence, so it rises across every write
+-- and a list can be resumed. The audit table is append-only like events:
+-- who asked for what is part of the record.
+CREATE SEQUENCE IF NOT EXISTS sandbox_resource_version;
+
+CREATE TABLE IF NOT EXISTS sandboxes (
+  tenant_id        TEXT   NOT NULL,
+  id               TEXT   NOT NULL,
+  owner            TEXT   NOT NULL,
+  state            TEXT   NOT NULL,
+  resource_version BIGINT NOT NULL,
+  object           JSONB  NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS sandboxes_owner_idx ON sandboxes (tenant_id, owner, id);
+
+CREATE TABLE IF NOT EXISTS sandbox_idempotency (
+  tenant_id    TEXT        NOT NULL,
+  scope        TEXT        NOT NULL,
+  key          TEXT        NOT NULL,
+  request_hash TEXT        NOT NULL,
+  state        TEXT        NOT NULL,
+  status       INT         NOT NULL DEFAULT 0,
+  body         BYTEA,
+  expires_at   TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, scope, key)
+);
+ALTER TABLE sandbox_idempotency ADD COLUMN IF NOT EXISTS claim_token TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS sandbox_audit (
+  seq         BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tenant_id   TEXT        NOT NULL,
+  at          TIMESTAMPTZ NOT NULL,
+  principal   TEXT        NOT NULL,
+  action      TEXT        NOT NULL,
+  sandbox_id  TEXT        NOT NULL,
+  generation  BIGINT      NOT NULL,
+  outcome     TEXT        NOT NULL,
+  code        TEXT        NOT NULL DEFAULT '',
+  detail      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  inserted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sandbox_audit_sandbox_idx ON sandbox_audit (tenant_id, sandbox_id, seq);
+
+DROP TRIGGER IF EXISTS sandbox_audit_no_update ON sandbox_audit;
+CREATE TRIGGER sandbox_audit_no_update BEFORE UPDATE ON sandbox_audit
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS sandbox_audit_no_delete ON sandbox_audit;
+CREATE TRIGGER sandbox_audit_no_delete BEFORE DELETE ON sandbox_audit
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS sandbox_audit_no_truncate ON sandbox_audit;
+CREATE TRIGGER sandbox_audit_no_truncate BEFORE TRUNCATE ON sandbox_audit
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+
+ALTER TABLE sandboxes           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_idempotency ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_audit       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandboxes           FORCE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_idempotency FORCE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_audit       FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS sandboxes_tenant_isolation ON sandboxes;
+CREATE POLICY sandboxes_tenant_isolation ON sandboxes
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+DROP POLICY IF EXISTS sandbox_idempotency_tenant_isolation ON sandbox_idempotency;
+CREATE POLICY sandbox_idempotency_tenant_isolation ON sandbox_idempotency
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+DROP POLICY IF EXISTS sandbox_audit_tenant_isolation ON sandbox_audit;
+CREATE POLICY sandbox_audit_tenant_isolation ON sandbox_audit
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- Sandbox templates: named defaults a sandbox is created from, versioned
+-- from the same sequence as sandboxes.
+CREATE TABLE IF NOT EXISTS sandbox_templates (
+  tenant_id        TEXT   NOT NULL,
+  name             TEXT   NOT NULL,
+  resource_version BIGINT NOT NULL,
+  object           JSONB  NOT NULL,
+  PRIMARY KEY (tenant_id, name)
+);
+ALTER TABLE sandbox_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sandbox_templates FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sandbox_templates_tenant_isolation ON sandbox_templates;
+CREATE POLICY sandbox_templates_tenant_isolation ON sandbox_templates
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+INSERT INTO schema_version (version) VALUES (7) ON CONFLICT DO NOTHING;
+
+-- Schema version 8: a hash chain over each append-only record.
+--
+-- Every row is linked to the one written before it under the same key (a
+-- session's events, a tenant's sandbox audit): chain_pos counts them, prev_hash
+-- is the previous row's hash, and hash covers prev_hash and the row itself.
+-- The trigger sets all three, whatever the writer sent, and takes a lock on the
+-- key so two writers cannot both link to the same row. A row removed or changed
+-- by someone who owns the table breaks the chain at that point; one who
+-- recomputes the whole chain is caught only by a head kept outside the
+-- database (record.witness). Rows written before this version have none and
+-- are reported as unchained, never as broken.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS chain_pos BIGINT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS events_chain_idx ON events (session_id, chain_pos) WHERE chain_pos IS NOT NULL;
+ALTER TABLE sandbox_audit ADD COLUMN IF NOT EXISTS chain_pos BIGINT;
+ALTER TABLE sandbox_audit ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+ALTER TABLE sandbox_audit ADD COLUMN IF NOT EXISTS hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS sandbox_audit_chain_idx ON sandbox_audit (tenant_id, chain_pos) WHERE chain_pos IS NOT NULL;
+
+-- abhed_chain_hash is a row's hash: the named columns of the row as JSON,
+-- after the previous hash. Only named columns, so a column added later does
+-- not change the hash of a row written before it; the time zone is fixed so
+-- every session renders a timestamp the same way.
+CREATE OR REPLACE FUNCTION abhed_chain_hash(prev text, rec jsonb, cols text[]) RETURNS text AS $$
+  SELECT encode(sha256(convert_to(prev || E'\n' ||
+    COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(rec) e WHERE e.key = ANY(cols)), '{}'::jsonb)::text,
+    'UTF8')), 'hex')
+$$ LANGUAGE sql IMMUTABLE SET timezone TO 'UTC';
+
+-- abhed_chain_insert links a new row. Its first argument names the key
+-- column; the rest name the columns the hash covers.
+CREATE OR REPLACE FUNCTION abhed_chain_insert() RETURNS trigger AS $$
+DECLARE
+  k    text := to_jsonb(NEW) ->> TG_ARGV[0];
+  last record;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(TG_TABLE_NAME || '/' || k, 0));
+  EXECUTE format('SELECT chain_pos, hash FROM %I WHERE %I = $1 AND chain_pos IS NOT NULL
+                  ORDER BY chain_pos DESC LIMIT 1', TG_TABLE_NAME, TG_ARGV[0])
+    INTO last USING k;
+  NEW.chain_pos := COALESCE(last.chain_pos, 0) + 1;
+  NEW.prev_hash := COALESCE(last.hash, repeat('0', 64));
+  NEW.hash := abhed_chain_hash(NEW.prev_hash, to_jsonb(NEW), TG_ARGV[1:]);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SET timezone TO 'UTC';
+
+-- Named to sort last: BEFORE triggers fire in name order, and the hash must
+-- cover what the others set.
+DROP TRIGGER IF EXISTS zz_events_chain ON events;
+CREATE TRIGGER zz_events_chain BEFORE INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION abhed_chain_insert('session_id',
+    'id', 'session_id', 'tenant_id', 'parent_id', 'seq', 'type', 'payload', 'actor', 'trust', 'created_at');
+DROP TRIGGER IF EXISTS zz_sandbox_audit_chain ON sandbox_audit;
+CREATE TRIGGER zz_sandbox_audit_chain BEFORE INSERT ON sandbox_audit
+  FOR EACH ROW EXECUTE FUNCTION abhed_chain_insert('tenant_id',
+    'seq', 'tenant_id', 'at', 'principal', 'action', 'sandbox_id', 'generation', 'outcome', 'code', 'detail');
+
+-- abhed_chain_verify walks one key's chain and returns the first position
+-- whose link or hash does not hold (0 when all do), with the chain's length,
+-- its head hash and how many rows carry no chain. cols are the trigger's.
+CREATE OR REPLACE FUNCTION abhed_chain_verify(tbl regclass, keycol text, k text, cols text[],
+  OUT first_bad bigint, OUT rows_chained bigint, OUT head text, OUT unchained bigint) AS $$
+DECLARE
+  r    record;
+  prev text := repeat('0', 64);
+  want bigint := 1;
+BEGIN
+  first_bad := 0; rows_chained := 0; head := '';
+  EXECUTE format('SELECT count(*) FROM %s WHERE %I = $1 AND chain_pos IS NULL', tbl, keycol)
+    INTO unchained USING k;
+  FOR r IN EXECUTE format('SELECT chain_pos, prev_hash, hash, to_jsonb(t) AS rec FROM %s t
+                           WHERE %I = $1 AND chain_pos IS NOT NULL ORDER BY chain_pos', tbl, keycol) USING k LOOP
+    IF first_bad = 0 AND (r.chain_pos <> want OR r.prev_hash IS DISTINCT FROM prev
+                          OR r.hash IS DISTINCT FROM abhed_chain_hash(prev, r.rec, cols)) THEN
+      first_bad := want;
+    END IF;
+    prev := r.hash; want := r.chain_pos + 1;
+    rows_chained := rows_chained + 1; head := r.hash;
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql STABLE SET timezone TO 'UTC';
+
+INSERT INTO schema_version (version) VALUES (8) ON CONFLICT DO NOTHING;
+
+-- Schema version 9: who owns a session changes only by the paths that may
+-- change it, and every change is recorded.
+--
+-- The running server may move a removed account's sessions to its unclaimed
+-- form, and nothing else; the owner role (a migration) may do more. A
+-- session's id, tenant and parent never change. Each owner change is written
+-- to owner_changes by a trigger that runs as the table's owner, so the server
+-- can neither skip the row nor write one of its own.
+CREATE TABLE IF NOT EXISTS owner_changes (
+  seq        BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tenant_id  TEXT        NOT NULL,
+  session_id TEXT        NOT NULL,
+  from_user  TEXT        NOT NULL,
+  to_user    TEXT        NOT NULL,
+  by_role    TEXT        NOT NULL,
+  at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS owner_changes_no_update ON owner_changes;
+CREATE TRIGGER owner_changes_no_update BEFORE UPDATE ON owner_changes
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS owner_changes_no_delete ON owner_changes;
+CREATE TRIGGER owner_changes_no_delete BEFORE DELETE ON owner_changes
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS owner_changes_no_truncate ON owner_changes;
+CREATE TRIGGER owner_changes_no_truncate BEFORE TRUNCATE ON owner_changes
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+ALTER TABLE owner_changes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE owner_changes FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS owner_changes_tenant_isolation ON owner_changes;
+CREATE POLICY owner_changes_tenant_isolation ON owner_changes
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- Runs as the writer, so it can tell the table's owner from the server.
+CREATE OR REPLACE FUNCTION abhed_sessions_guard() RETURNS trigger AS $$
+BEGIN
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+     OR NEW.parent_id IS DISTINCT FROM OLD.parent_id THEN
+    RAISE EXCEPTION 'a session''s id, tenant and parent do not change';
+  END IF;
+  IF NEW.user_id IS DISTINCT FROM OLD.user_id
+     AND NEW.user_id IS DISTINCT FROM 'unclaimed:' || OLD.user_id
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+    RAISE EXCEPTION 'a session''s owner changes only when its account is removed (to unclaimed:%), or by a migration', OLD.user_id;
+  END IF;
+  -- A deletion names who made it, and is final: its key is gone, and the
+  -- mark says who and when.
+  IF OLD.deleted_at IS NULL
+     AND (NEW.deleted_at IS NULL AND NEW.deleted_by IS DISTINCT FROM OLD.deleted_by
+          OR NEW.deleted_at IS NOT NULL AND COALESCE(NEW.deleted_by, '') = '')
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+    RAISE EXCEPTION 'a session''s deletion says who made it, and is set only with the deletion';
+  END IF;
+  IF OLD.deleted_at IS NOT NULL
+     AND (NEW.deleted_at IS DISTINCT FROM OLD.deleted_at OR NEW.deleted_by IS DISTINCT FROM OLD.deleted_by)
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+    RAISE EXCEPTION 'a session''s deletion is not undone or rewritten';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS sessions_guard ON sessions;
+CREATE TRIGGER sessions_guard BEFORE UPDATE ON sessions
+  FOR EACH ROW EXECUTE FUNCTION abhed_sessions_guard();
+
+-- Runs as the table's owner: the server cannot write owner_changes itself.
+-- The tenant is set for the insert, as row security requires.
+CREATE OR REPLACE FUNCTION abhed_sessions_owner_noted() RETURNS trigger AS $$
+DECLARE
+  was text := current_setting('app.tenant_id', true);
+BEGIN
+  PERFORM set_config('app.tenant_id', NEW.tenant_id, true);
+  INSERT INTO owner_changes (tenant_id, session_id, from_user, to_user, by_role)
+  VALUES (NEW.tenant_id, NEW.id, OLD.user_id, NEW.user_id, session_user);
+  PERFORM set_config('app.tenant_id', COALESCE(was, ''), true);
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+DROP TRIGGER IF EXISTS sessions_owner_noted ON sessions;
+CREATE TRIGGER sessions_owner_noted AFTER UPDATE OF user_id ON sessions
+  FOR EACH ROW WHEN (NEW.user_id IS DISTINCT FROM OLD.user_id)
+  EXECUTE FUNCTION abhed_sessions_owner_noted();
+
+INSERT INTO schema_version (version) VALUES (9) ON CONFLICT DO NOTHING;
+
+-- Schema version 10: erasure by key.
+--
+-- Events cannot be deleted, so a session's payloads and checkpoint pre-images
+-- are sealed with a key of the session's own, kept here. Deleting a session
+-- deletes its key; what stays in events can no longer be read by anyone. The
+-- chain still covers the sealed rows, so the record of what happened, and
+-- when, survives the erasure of what was said.
+CREATE TABLE IF NOT EXISTS session_keys (
+  session_id TEXT        PRIMARY KEY,
+  tenant_id  TEXT        NOT NULL,
+  key        BYTEA       NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- A key belongs to a session; none is kept for one that does not exist.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'session_keys_session_fk') THEN
+    ALTER TABLE session_keys ADD CONSTRAINT session_keys_session_fk
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+ALTER TABLE session_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE session_keys FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS session_keys_tenant_isolation ON session_keys;
+CREATE POLICY session_keys_tenant_isolation ON session_keys
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- A key goes only with its session's deletion, marked first in the same
+-- transaction, so the server's role cannot make a live session unreadable.
+CREATE OR REPLACE FUNCTION abhed_session_keys_guard() RETURNS trigger AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM sessions WHERE id = OLD.session_id AND deleted_at IS NOT NULL)
+     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+    RAISE EXCEPTION 'a session''s key is deleted only with the session';
+  END IF;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS session_keys_guard ON session_keys;
+CREATE TRIGGER session_keys_guard BEFORE DELETE ON session_keys
+  FOR EACH ROW EXECUTE FUNCTION abhed_session_keys_guard();
+DROP TRIGGER IF EXISTS session_keys_no_truncate ON session_keys;
+CREATE TRIGGER session_keys_no_truncate BEFORE TRUNCATE ON session_keys
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+
+INSERT INTO schema_version (version) VALUES (10) ON CONFLICT DO NOTHING;

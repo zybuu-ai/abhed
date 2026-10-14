@@ -48,12 +48,13 @@ type pendingApproval struct {
 	ready, answer, final chan struct{}
 }
 
+// approvalReadyWait bounds how long an answer waits for its request's row.
+var approvalReadyWait = 30 * time.Second
+
 const (
 	// requestWait is how long an answer naming a request waits for the turn
 	// to publish it: the event reaches the client just before the turn waits.
 	requestWait = 2 * time.Second
-	// approvalReadyWait bounds how long an answer waits for its request's row.
-	approvalReadyWait = 30 * time.Second
 	// maxParked bounds the answers one session holds waiting at a time.
 	maxParked = 8
 	// endedKept is how many requests that stopped waiting a session remembers.
@@ -116,10 +117,14 @@ func (l *liveSession) pendingFor(ctx context.Context, requestID string) (*pendin
 			return nil, "this approval is answered only by its request_id"
 		case p != nil && (requestID == "" || p.RequestID == requestID):
 			return p, ""
-		case p != nil || ended:
+		case ended:
 			return nil, "that approval is no longer pending"
-		case requestID == "" || time.Now().After(deadline):
+		case p != nil:
+			return nil, "no such pending request: another request is waiting"
+		case requestID == "":
 			return nil, "no approval is pending for this session"
+		case time.Now().After(deadline):
+			return nil, "no such pending request"
 		}
 		select {
 		case <-ctx.Done():
@@ -166,15 +171,25 @@ func (s *Server) answerHere(w http.ResponseWriter, r *http.Request, live *liveSe
 	case <-r.Context().Done():
 		return
 	case <-time.After(approvalReadyWait):
+		w.Header().Set("Retry-After", "1")
 		WriteError(w, http.StatusServiceUnavailable, "the approval is still being recorded; retry")
 		return
 	}
+	owner := s.ownerOf(live)
 	live.mu.Lock()
 	state, durableID := p.state, p.DurableID
+	ans := ApprovalAnswer{Tenant: live.Tenant, SessionID: live.ID, Owner: owner, Request: requestKey(p),
+		Tool: p.Tool, Reason: p.Reason, Since: p.Since, By: UserOf(r.Context()), Approved: req.Approved, Scope: req.Scope}
 	live.mu.Unlock()
 	if state != askWaiting {
 		refuse(w, state)
 		return
+	}
+	if s.opts.ApprovalGate != nil {
+		ans.Args = redactedArgs(live, p.Args)
+		if !s.gateAnswer(w, r, ans) {
+			return
+		}
 	}
 
 	// The store's row is the one arbiter between answers: the first to
@@ -270,7 +285,8 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	offer := res.Offer()
 	if offer != "" {
 		l.mu.Lock()
-		remembered := l.allowed[offer]
+		guard, ok := l.allowed[offer]
+		remembered := ok && res.Covers(offer, guard)
 		l.mu.Unlock()
 		if remembered {
 			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: offer})
@@ -327,7 +343,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalReadyWait)
 			defer cancel()
 			id, err := l.durable.AskApproval(wctx, store.Approval{
-				ID: rowID, SessionID: l.ID, Tool: tool, Args: args,
+				ID: rowID, SessionID: l.ID, RequestID: p.RequestID, Tool: tool, Args: args,
 				Reason: res.Reason, Scope: offer,
 			})
 			if err != nil {
@@ -404,7 +420,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			// matching the same rule is not re-prompted.
 			if approved && scope != "" && scope == offer {
 				l.mu.Lock()
-				l.allowed[scope] = true
+				l.allowed[scope] = res.Guard
 				l.mu.Unlock()
 			} else {
 				scope = ""
@@ -432,7 +448,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			// only to the scope this request offered.
 			if approved && scope != "" && scope == offer {
 				l.mu.Lock()
-				l.allowed[scope] = true
+				l.allowed[scope] = res.Guard
 				l.mu.Unlock()
 			} else {
 				scope = ""

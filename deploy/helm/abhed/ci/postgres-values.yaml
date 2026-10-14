@@ -1,0 +1,29 @@
+config:
+  model:
+    default: claude
+    providers:
+      claude:
+        type: anthropic
+        model: claude-opus-5
+        api_key_env: ANTHROPIC_API_KEY
+  control_plane:
+    enabled: true
+postgres:
+  enabled: true
+  existingSecret: abhed-db
+  networkPolicy:
+    cidrs: [10.30.0.0/24]
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: databases
+    podSelector:
+      matchLabels:
+        app: postgres
+secretEnv:
+  - name: ANTHROPIC_API_KEY
+    secretName: abhed-model
+    key: api-key
+networkPolicy:
+  modelEndpoints:
+    - cidr: 160.79.104.0/23
+      ports: [443]

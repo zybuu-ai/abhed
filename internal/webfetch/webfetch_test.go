@@ -636,8 +636,34 @@ func TestAHostListRunsUnaskedOnlyOnTheDefaultPort(t *testing.T) {
 			t.Errorf("%s: reason %q", tc.url, got.Reason)
 		}
 	}
-	if AskReadOnly(false, nil) != nil {
+	if AskReadOnly(false, nil)["web_fetch"] != nil {
 		t.Error("a disabled tool set an ask")
+	}
+}
+
+// A search asks in every mode short of bypass unless an allow rule names it,
+// as a query can carry data out; it was read-only and ran unasked.
+func TestWebSearchAsksUnlessAllowed(t *testing.T) {
+	args := []byte(`{"query":"what the agent read"}`)
+	for _, enabled := range []bool{false, true} {
+		for _, mode := range []policy.Mode{policy.ModeDefault, policy.ModeAcceptEdits, policy.ModeAuto, policy.ModePlan} {
+			e := policy.New(mode)
+			e.AskReadOnly = AskReadOnly(enabled, nil)
+			if got := e.Evaluate("web_search", false, args); got.Decision != policy.Ask || got.Reason != SearchAskReason {
+				t.Errorf("%s: %s (%s)", mode, got.Decision, got.Reason)
+			}
+		}
+	}
+	e := policy.New(policy.ModeDefault)
+	e.AskReadOnly = AskReadOnly(true, nil)
+	_ = e.AddAllow("web_search")
+	if got := e.Evaluate("web_search", false, args); got.Decision != policy.Allow {
+		t.Errorf("an allow rule: %s (%s)", got.Decision, got.Reason)
+	}
+	e = policy.New(policy.ModeBypass)
+	e.AskReadOnly = AskReadOnly(true, nil)
+	if got := e.Evaluate("web_search", false, args); got.Decision != policy.Allow {
+		t.Errorf("bypass: %s", got.Decision)
 	}
 }
 

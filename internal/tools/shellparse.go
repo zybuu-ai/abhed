@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"maps"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,9 +51,14 @@ type shellFacts struct {
 	// expands reports a program named by any other expansion that may split.
 	expands bool
 	// seps holds the separators literal IFS assignments set; ifsUnknown
-	// reports IFS set in a way the text does not show.
+	// reports IFS set in a way the text does not show, and ifsNamed that
+	// a command names IFS itself as what it sets, not only built text.
 	seps       string
 	ifsUnknown bool
+	ifsNamed   bool
+	// ifsLoop and ifsArith report IFS set by a for loop with literal words or
+	// by arithmetic; ifsOther that it is set some other way the text hides.
+	ifsLoop, ifsArith, ifsOther bool
 	// commands are the simple commands whose words are all literal, decoded,
 	// from each word that may be the program: function bodies, subshells,
 	// and the text eval, trap and a shell's -c run included.
@@ -66,6 +73,89 @@ type shellFacts struct {
 	// prefixes are assignments before read, which set how read splits its
 	// input and not the shell's words.
 	prefixes map[*syntax.Assign]bool
+	// scripts are the files, named literally, that a shell, source or . runs,
+	// and programs named by a path, which run as shell text when they are not
+	// a binary or another interpreter's script.
+	scripts []Script
+	// writes are the literal files output redirections and the copying
+	// commands (cp, mv, ln, tee, dd, sed -i…) write.
+	writes []string
+	// writeHidden says why a file the command writes is not known, as one
+	// named by an expansion; "" when each is literal.
+	writeHidden string
+	// moves reports a command that may change the folder later commands run
+	// in: cd, pushd, popd, env -C, sudo -D, find -execdir.
+	moves bool
+	// scriptsCut reports scripts past maxScripts that were not recorded.
+	scriptsCut bool
+	// braced reports braces expanded and braceHidden ones that could not be;
+	// braceWords counts the words made, inBraces is set while they are read.
+	braced, braceHidden, inBraces bool
+	braceWords                    int
+	// pathSet reports PATH set, pathDirs the folders it names, pathUnknown
+	// one it builds; bare are programs named without a folder.
+	pathSet, pathUnknown, bareCut bool
+	pathDirs, bare                []string
+	// startupHidden says why a shell start-up file the command sets is not known.
+	startupHidden string
+	// startupDirs are what HOME and ZDOTDIR are set to, startupDirHidden why
+	// one is not known; shellRun reports a shell started.
+	startupDirs      []startupDirSet
+	startupDirHidden string
+	shellRun         bool
+	// homeFiles are the start-up files the shells the line starts read from
+	// the HOME they inherit, by name.
+	homeFiles map[string]bool
+	// ttyFiles are those a shell reading its input reads when that is a terminal.
+	ttyFiles map[string]bool
+	// envFiles and envHidden are what ENV names, read by an interactive shell
+	// only; interactive reports one started, ttyShell one reading its input.
+	envFiles              []string
+	envHidden             string
+	interactive, ttyShell bool
+	// vars are the variables the line sets to known values, exported those it
+	// exports, inherited the environment it is read in, forgotten those whose
+	// value is no longer known; callEnv is the running command's environment.
+	vars, inherited     map[string]string
+	exported, forgotten map[string]bool
+	callEnv             map[string]string
+	// scriptHidden says why a script the line sources or runs is not known;
+	// setsEnv reports the line changing the environment a shell gets.
+	scriptHidden string
+	setsEnv      bool
+	// askUnderRules says why the line is asked about under a rule for bash.
+	askUnderRules string
+	// varsDead reports a line past what the variable model follows, after
+	// which no value is known; sawOther a statement other than a plain one.
+	// pinned are the inherited HOME and ZDOTDIR the text never names, which
+	// stay known until something that may change anything runs (pinsDead).
+	varsDead, sawOther, pinsDead bool
+	pinned                       map[string]bool
+	// plainShell reports a line that is one simple command starting a shell,
+	// with nothing before it and no assignment of its own; innerShell a shell
+	// started inside the text another runs.
+	plainShell, innerShell bool
+	// shellEnv is the environment of the last shell the line starts.
+	shellEnv map[string]string
+}
+
+// Script is a file a command runs as shell text, as named on its line.
+type Script struct {
+	Path string
+	// Direct marks a program named by a path, run as a script only when it
+	// has no #! line or a shell's.
+	Direct bool
+	// Sourced marks a file read by source or ., which runs in the shell
+	// itself, so a cd in it moves the commands after it.
+	Sourced bool
+	// Env is the environment the script runs in, as far as the line shows it.
+	Env map[string]string
+	// Trusted marks a file the person's baseline holds as it is: its own text
+	// is not judged, what it sources and runs still is.
+	Trusted bool
+	// Startup marks a start-up file in a HOME or ZDOTDIR folder the line
+	// sets, which a shell reads only when it is there.
+	Startup bool
 }
 
 // maxReadings bounds the commands read from one simple command's words, so a
@@ -85,13 +175,51 @@ const maxCommandBytes = 4 * maxShellBytes
 const maxShellDepth = 8
 
 // parseShell reads command with a bash parser.
-func parseShell(command string) shellFacts {
+func parseShell(command string) shellFacts { return parseShellEnv(command, nil) }
+
+// parseShellEnv reads command run in the environment env.
+func parseShellEnv(command string, env map[string]string) shellFacts {
 	var f shellFacts
+	f.withEnv(env)
+	f.pinned = map[string]bool{}
+	for _, name := range []string{"HOME", "ZDOTDIR"} {
+		if _, ok := env[name]; ok && !namesBare(command, name) {
+			f.pinned[name] = true
+		}
+	}
 	f.read(command, 0)
 	return f
 }
 
+// namesBare reports name written in text other than as an expansion ($NAME,
+// ${NAME}): an assignment, export, read or unset may change it there.
+func namesBare(text, name string) bool {
+	for i := 0; ; {
+		j := strings.Index(text[i:], name)
+		if j < 0 {
+			return false
+		}
+		j += i
+		before := byte(' ')
+		if j > 0 {
+			before = text[j-1]
+		}
+		after := byte(' ')
+		if end := j + len(name); end < len(text) {
+			after = text[end]
+		}
+		word := !isNameByte(after) && (j == 0 || !isNameByte(before))
+		if word && before != '$' && before != '{' {
+			return true
+		}
+		i = j + len(name)
+	}
+}
+
 func (f *shellFacts) read(command string, depth int) {
+	// Text run from a word brace expansion made has braces of its own.
+	defer func(in bool) { f.inBraces = in }(f.inBraces)
+	f.inBraces = false
 	if f.tooLong || len(command) > maxShellBytes {
 		f.tooLong = true
 		return
@@ -153,6 +281,9 @@ var posixMode = regexp.MustCompile(`set\s+(?:-[a-zA-Z]*\s+)*[-+]o\s+posix|--posi
 
 // walk reads a parsed command, file, whose text is command.
 func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
+	if depth == 0 {
+		f.plainShell = plainShellStart(file)
+	}
 	src, gits := f.src, f.gits
 	defer func() { f.src, f.gits = src, gits }()
 	f.src, f.gits = command, nil
@@ -177,6 +308,7 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 		switch n := n.(type) {
 		case *syntax.FuncDecl:
 			f.posix = f.posix || n.Name != nil && n.Name.Value == "read"
+			f.varsDead, f.pinsDead = true, true // a call to it may set anything
 		case *syntax.CallExpr:
 			for _, a := range n.Args {
 				if v, _ := literal(a); strings.HasPrefix(v, "read=") {
@@ -193,12 +325,14 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 				f.feed(n.Y)
 			}
 		case *syntax.Stmt:
+			f.redirectTargets(n)
 			// Visited before what it holds, so its input passes inward.
 			if f.fed[n] || inputRedirect(n) {
 				for _, in := range innerStmts(n.Cmd) {
 					f.feed(in)
 				}
 			}
+			f.stmtVars(n)
 			if c, ok := n.Cmd.(*syntax.CallExpr); ok {
 				if inputRedirect(n) && bareExec(c.Args) {
 					f.execIn = true // exec < f: every later command reads f
@@ -211,8 +345,21 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 		case *syntax.DeclClause:
 			f.decl(n)
 		case *syntax.ForClause:
+			if it, ok := n.Loop.(*syntax.WordIter); ok && it.Name != nil {
+				f.setsByName(it.Name.Value)
+			}
 			if it, ok := n.Loop.(*syntax.WordIter); ok && it.Name != nil && it.Name.Value == "IFS" {
-				f.ifsUnknown = true
+				f.ifsUnknown, f.ifsNamed = true, true
+				literalWords := true
+				for _, w := range it.Items {
+					_, lit := literal(w)
+					literalWords = literalWords && lit
+				}
+				if literalWords {
+					f.ifsLoop = true
+				} else {
+					f.ifsOther = true
+				}
 			}
 		case *syntax.CoprocClause:
 			if n.Name != nil {
@@ -230,13 +377,16 @@ func (f *shellFacts) walk(file *syntax.File, command string, depth int) {
 			if n.Exp != nil && (n.Exp.Op == syntax.AssignUnset || n.Exp.Op == syntax.AssignUnsetOrNull) &&
 				(n.Excl || n.Param == nil || n.Param.Value == "IFS") {
 				f.ifsUnknown = true
+				f.ifsNamed = f.ifsNamed || !n.Excl && n.Param != nil
+				f.ifsOther = f.ifsOther || !n.Excl && n.Param != nil
 			}
 		}
 		return true
 	})
 }
 
-// bareExec reports an exec with no command, also behind command or builtin.
+// bareExec reports an exec with no command, also behind command or builtin,
+// and past exec's own options: -c, -l, -a NAME and --.
 func bareExec(args []*syntax.Word) bool {
 	i := 0
 	for i < len(args) {
@@ -252,7 +402,23 @@ func bareExec(args []*syntax.Word) bool {
 			}
 			continue
 		case "exec":
-			return i == len(args)-1
+			for i++; i < len(args); i++ {
+				o, lit := literal(args[i])
+				if !lit {
+					return true // it may expand to nothing
+				}
+				if !strings.HasPrefix(o, "-") || o == "-" {
+					return false
+				}
+				if o == "--" {
+					return i == len(args)-1
+				}
+				// -a takes the next word as the name, or what follows it glued.
+				if k := strings.IndexByte(o, 'a'); k > 0 && k == len(o)-1 {
+					i++
+				}
+			}
+			return true
 		}
 		return false
 	}
@@ -281,14 +447,27 @@ func (f *shellFacts) arithTarget(x syntax.ArithmExpr) {
 		return
 	}
 	name, lit := literal(w)
-	if !lit || strings.Contains(name, "IFS") {
-		f.ifsUnknown = true
+	if !lit || NamesIFS(name) {
+		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsArith = f.ifsArith || lit
 	}
 }
+
+// NamesIFS reports a variable name, or name=value, that sets IFS itself:
+// IFS, IFS+= or an index of it, and not a name that only holds the letters.
+func NamesIFS(v string) bool {
+	n, _, _ := strings.Cut(v, "=")
+	n = strings.TrimSuffix(n, "+")
+	return n == "IFS" || strings.HasPrefix(n, "IFS[")
+}
+
+// ifsHidden marks IFS set, by a name that is IFS, to a value the text hides.
+func (f *shellFacts) ifsHidden() { f.ifsUnknown, f.ifsNamed, f.ifsOther = true, true, true }
 
 // assign reads an assignment: a literal value of IFS is its separators; any
 // other value, or an index, leaves it unknown.
 func (f *shellFacts) assign(a *syntax.Assign) {
+	f.setsVar(a)
 	if f.prefixes[a] {
 		return
 	}
@@ -302,7 +481,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		return
 	}
 	if a.Naked {
-		f.ifsUnknown = true
+		f.ifsHidden()
 		return
 	}
 	value, lit := "", true
@@ -310,7 +489,7 @@ func (f *shellFacts) assign(a *syntax.Assign) {
 		value, lit = literal(a.Value)
 	}
 	if !lit || a.Index != nil || a.Array != nil {
-		f.ifsUnknown = true
+		f.ifsHidden()
 		return
 	}
 	f.seps += value
@@ -359,8 +538,12 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 	}
 	for _, a := range d.Args {
 		if a.Value != nil && !a.Naked {
-			if v, lit := literal(a.Value); !lit || strings.Contains(v, "IFS") {
-				f.ifsUnknown = true
+			if v, lit := literal(a.Value); lit {
+				f.setsByName(v)
+			}
+			if v, lit := literal(a.Value); !lit || NamesIFS(v) {
+				f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+				f.ifsOther = f.ifsOther || lit
 			}
 		}
 	}
@@ -370,21 +553,27 @@ func (f *shellFacts) decl(d *syntax.DeclClause) {
 // "${v}FS=_": a name built from an expansion, or one spelled IFS, may set it.
 func (f *shellFacts) declWord(w *syntax.Word) {
 	v, lit := literal(w)
-	if !lit || !strings.HasPrefix(v, "-") && strings.Contains(v, "IFS") {
-		f.ifsUnknown = true
+	if !lit || !strings.HasPrefix(v, "-") && NamesIFS(v) {
+		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsOther = f.ifsOther || lit
 	}
 }
 
 // name reads a word a command sets as a variable.
 func (f *shellFacts) name(w *syntax.Word) {
-	if v, lit := literal(w); !lit || strings.Contains(v, "IFS") {
-		f.ifsUnknown = true
+	if v, lit := literal(w); lit {
+		f.setsByName(v)
+	}
+	if v, lit := literal(w); !lit || NamesIFS(v) {
+		f.ifsUnknown, f.ifsNamed = true, f.ifsNamed || lit
+		f.ifsOther = f.ifsOther || lit
 	}
 }
 
 // call reads one simple command: the words that may be its program, the
 // variables it sets by name, and the shell text it runs.
 func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
+	f.callEnv = f.commandEnv(c)
 	words := make([]string, len(c.Args))
 	lits := make([]bool, len(c.Args))
 	for i, w := range c.Args {
@@ -393,6 +582,7 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 			words[i] = wordText(w)
 		}
 	}
+	f.braces(c, st, depth)
 	readings, dispatched := 0, false
 	pos := position{on: true}
 	for i, w := range c.Args {
@@ -418,6 +608,9 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 				}
 			}
 			f.command(strings.Join(words[i:], " "))
+			if lits[i] && !strings.Contains(reading, "/") {
+				f.bareProgram(reading)
+			}
 		}
 		if lits[i] && !value && !strings.Contains(reading, "=") && globWord(w) {
 			f.expands = true // cur? and c*l name whatever file matches
@@ -438,6 +631,10 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 			continue
 		}
 		if !dispatched {
+			// A program named by a path may be a script the shell runs.
+			if !value && strings.Contains(words[i], "/") && !strings.HasSuffix(words[i], "/") && !isAssignment(words[i]) {
+				f.script(words[i], true)
+			}
 			dispatched = f.runs(c, st, path.Base(words[i]), c.Args[i+1:], depth)
 		}
 	}
@@ -446,8 +643,11 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 // runs reads what the command name does with its arguments, when it runs
 // shell text or sets variables by name, and reports whether it was one.
 func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args []*syntax.Word, depth int) bool {
+	f.placeAndWrites(name, args)
+	f.ptyShell(name, args, depth)
 	switch {
 	case name == "alias":
+		f.setsEnv, f.varsDead, f.pinsDead = true, true, true
 		// An alias's value is shell text run where its name is: read it so.
 		for _, a := range args {
 			v, lit := literal(a)
@@ -467,15 +667,30 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 			}
 		}
 	case name == "source" || name == ".":
+		// A sourced file may change anything: nothing after it is followed.
+		defer func() { f.setsEnv, f.varsDead, f.pinsDead = true, true, true }()
 		if len(args) > 0 {
-			if v, _ := literal(args[0]); stdinFile(v) {
+			v, lit := literal(args[0])
+			if !lit && !hasProcSubst(args[0]) {
+				v, lit = f.resolveWord(args[0])
+				if !lit {
+					f.scriptHidden = "it sources a script named by an expansion (" + wordText(args[0]) + ")"
+				}
+			}
+			if stdinFile(v) {
 				f.opaque = "a script read from its input"
+			} else if lit {
+				f.script(v, false)
+				if n := len(f.scripts); n > 0 && f.scripts[n-1].Path == v {
+					f.scripts[n-1].Sourced = true
+				}
 			}
 			if hasProcSubst(args[0]) {
 				f.opaque = "a script made when it runs"
 			}
 		}
 	case name == "eval":
+		f.setsEnv, f.varsDead, f.pinsDead = true, true, true
 		f.shellText(args, depth)
 	case name == "trap":
 		// trap's first argument is shell text run later; -p and -l list.
@@ -493,7 +708,7 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		f.envSplit(args, depth)
 		return false
 	case name == "find":
-		f.findExec(args)
+		f.findExec(st, args, depth)
 		return false
 	case name == "watch":
 		f.watch(args, depth)
@@ -501,8 +716,12 @@ func (f *shellFacts) runs(c *syntax.CallExpr, st *syntax.Stmt, name string, args
 		f.gitCall(args, depth)
 		return false
 	case name == "su" || name == "flock" || name == "script":
+		f.shellRun = true
 		f.runner(args, depth)
 	case cShells[name]:
+		f.shellRun = true
+		f.innerShell = f.innerShell || depth > 0
+		f.shellStart(name, args)
 		f.shell(st, args, depth)
 	case ifsSetters[name]:
 		if name == "read" && !f.posix {
@@ -535,19 +754,31 @@ scan:
 		case !lit:
 			if hasProcSubst(args[j]) {
 				f.opaque = "a shell running a script made when it runs"
+			} else if w, ok := f.resolveWord(args[j]); ok {
+				f.script(w, false)
+			} else {
+				f.scriptHidden = "a shell runs a script named by an expansion (" + wordText(args[j]) + ")"
 			}
 			script = true
 			break scan
 		case v == "--":
 			script = j+1 < len(args)
 			if script {
-				if w, _ := literal(args[j+1]); stdinFile(w) {
+				w, lit := literal(args[j+1])
+				switch {
+				case stdinFile(w):
 					stdin = true
+				case lit:
+					f.script(w, false)
 				}
 			}
 			break scan
 		case v == "--rcfile" || v == "--init-file":
-			j++ // its value is a file read at start, not the script
+			// Its value is a file an interactive shell runs first.
+			if j++; j < len(args) {
+				w, lit := literal(args[j])
+				f.startupFile(v, w, lit)
+			}
 		case strings.HasPrefix(v, "--"):
 		case len(v) > 1 && (v[0] == '-' || v[0] == '+'):
 			value := false
@@ -555,8 +786,12 @@ scan:
 				switch o {
 				case 'c':
 					if v[0] == '-' {
-						if j+1 < len(args) {
-							f.shellText(args[j+1:j+2], depth)
+						texts, lits := make([]string, len(args)-j), make([]bool, len(args)-j)
+						for k, a := range args[j:] {
+							texts[k], lits[k] = literal(a)
+						}
+						if k := ShellCommandString(texts, lits); k > 0 {
+							f.shellText(args[j+k:j+k+1], depth)
 						}
 						return
 					}
@@ -572,6 +807,9 @@ scan:
 		default:
 			script = true
 			stdin = stdin || stdinFile(v) || v == "-"
+			if !stdin {
+				f.script(v, false)
+			}
 			break scan
 		}
 	}
@@ -599,6 +837,40 @@ scan:
 	default:
 		f.opaque = "a shell reading its commands from a file"
 	}
+}
+
+// ShellCommandString finds the text a shell given -c runs: words[0] is the
+// option word holding c, and the text is the first operand after it, past
+// further options, their values and "--", as the shell reads them. It is
+// the index of that word, or -1 when there is none. lits says which words
+// are literal text; one that is not is taken as the operand.
+func ShellCommandString(words []string, lits []bool) int {
+	skip := 0
+	if len(words) > 0 {
+		skip = strings.Count(words[0], "o") + strings.Count(words[0], "O")
+	}
+	for i := 1; i < len(words); i++ {
+		v := words[i]
+		switch {
+		case skip > 0:
+			skip--
+		case !lits[i]:
+			return i
+		case v == "--" || v == "-":
+			if i+1 < len(words) {
+				return i + 1
+			}
+			return -1
+		case v == "--rcfile" || v == "--init-file":
+			skip = 1
+		case strings.HasPrefix(v, "--"):
+		case len(v) > 1 && (v[0] == '-' || v[0] == '+'):
+			skip = strings.Count(v, "o") + strings.Count(v, "O")
+		default:
+			return i
+		}
+	}
+	return -1
 }
 
 // stdinRedirect reports whether r sets fd 0: an input redirect with no fd
@@ -630,8 +902,17 @@ func (f *shellFacts) runner(args []*syntax.Word, depth int) {
 			f.read(strings.TrimPrefix(v, "--command="), depth+1)
 			return
 		case len(v) > 1 && v[0] == '-' && v[1] != '-' && strings.Contains(v, "c"):
+			// getopt gives -c the next word; a shell's reading takes the first
+			// operand past options and --. Both are read, so neither hides.
 			if j+1 < len(args) {
 				f.shellText(args[j+1:j+2], depth)
+			}
+			texts, lits := make([]string, len(args)-j), make([]bool, len(args)-j)
+			for k, a := range args[j:] {
+				texts[k], lits[k] = literal(a)
+			}
+			if k := ShellCommandString(texts, lits); k > 1 {
+				f.shellText(args[j+k:j+k+1], depth)
 			}
 			return
 		}
@@ -652,6 +933,8 @@ func (f *shellFacts) envSplit(args []*syntax.Word, depth int) {
 		case !lit:
 			if t := wordText(a); strings.HasPrefix(t, "-S") || strings.HasPrefix(t, "--split-string") {
 				f.opaque = "env -S given text built when it runs"
+			} else if isAssignment(t) {
+				f.envAssign(a)
 			}
 			continue
 		case v == "--split-string" || v == "-S":
@@ -661,6 +944,9 @@ func (f *shellFacts) envSplit(args []*syntax.Word, depth int) {
 		case len(v) > 2 && v[0] == '-' && v[1] != '-' && strings.Contains(v, "S"):
 			text = v[strings.IndexByte(v, 'S')+1:]
 			next = text == ""
+		case isAssignment(v):
+			f.envAssign(a)
+			continue
 		case !strings.HasPrefix(v, "-"):
 			return // the command, read as the program
 		default:
@@ -676,33 +962,21 @@ func (f *shellFacts) envSplit(args []*syntax.Word, depth int) {
 
 // findExec reads the commands find runs with -exec, -execdir, -ok and -okdir:
 // a command for the rules, and a program named by an expansion.
-func (f *shellFacts) findExec(args []*syntax.Word) {
+func (f *shellFacts) findExec(st *syntax.Stmt, args []*syntax.Word, depth int) {
 	for j := 0; j < len(args); j++ {
 		v, _ := literal(args[j])
 		if v != "-exec" && v != "-execdir" && v != "-ok" && v != "-okdir" {
 			continue
 		}
-		var words []string
 		k := j + 1
 		for ; k < len(args); k++ {
-			w, lit := literal(args[k])
-			if lit && (w == ";" || w == "+") {
+			if w, lit := literal(args[k]); lit && (w == ";" || w == "+") {
 				break
 			}
-			if !lit {
-				w = wordText(args[k])
-			}
-			words = append(words, w)
 		}
-		if len(words) > 0 {
-			f.command(strings.Join(words, " "))
-			if _, lit := literal(args[j+1]); !lit {
-				if editedWord(args[j+1]) {
-					f.edited = true
-				} else if splitsAsProgram(args[j+1]) {
-					f.expands = true
-				}
-			}
+		if k > j+1 {
+			// Read as a command of its own, so a shell's -c text under it is read too.
+			f.call(&syntax.CallExpr{Args: args[j+1 : k]}, st, depth)
 		}
 		j = k
 	}
@@ -728,6 +1002,31 @@ func (f *shellFacts) watch(args []*syntax.Word, depth int) {
 
 // gitRunsCommand are git's options whose value is a command git runs.
 var gitRunsCommand = []string{"--exec", "--upload-pack", "--receive-pack"}
+
+// gitRunsCommandShort are their short forms, per subcommand.
+var gitRunsCommandShort = map[string]string{"clone": "u", "ls-remote": "u", "rebase": "x"}
+
+// gitShortCommand reads a short option of sub whose value is a command, in
+// any cluster and past any --, which parse-options may take as a value.
+func (f *shellFacts) gitShortCommand(sub, letter string, args []*syntax.Word, depth int) {
+	for j, a := range args {
+		v, lit := literal(a)
+		if !lit || len(v) < 2 || v[0] != '-' || v[1] == '-' {
+			continue
+		}
+		k := strings.Index(v, letter)
+		if k < 0 {
+			continue
+		}
+		f.gitBuilt = "git " + sub + " -" + letter + ", which runs the command it is given"
+		switch {
+		case k+1 < len(v):
+			f.read(v[k+1:], depth+1)
+		case j+1 < len(args):
+			f.shellText(args[j+1:j+2], depth)
+		}
+	}
+}
 
 // gitExtEscapes undoes the escapes of an ext:: URL; %s, %S, %G and %V become words.
 var gitExtEscapes = strings.NewReplacer("%%", "%", "% ", " ", "%s", "x", "%S", "x", "%G", "x", "%V", "x")
@@ -805,16 +1104,33 @@ func gitSubcommand(args []*syntax.Word) int {
 // an option. An expansion after a literal --name= is that option's value,
 // and a quoted pattern (git tag -l 'v*') is git's, not the shell's.
 func (f *shellFacts) gitCall(args []*syntax.Word, depth int) {
-	// --exec, --upload-pack and --receive-pack run their value as a command.
-	for j, a := range args {
+	// --exec, --upload-pack and --receive-pack run their value as a command,
+	// read in every word but message text.
+	runs := args
+	if i := gitSubcommand(args); i < len(args) {
+		sub, lit := literal(args[i])
+		rest := make([]string, 0, len(args)-i-1)
+		for _, a := range args[i+1:] {
+			rest = append(rest, wordText(a))
+		}
+		if lit && gitTakesText(sub, rest) {
+			runs = nil
+		}
+		// log, show and whatchanged find -- first: what follows is paths.
+		if k := slices.Index(rest, "--"); lit && gitEndsOptions[sub] && k >= 0 {
+			runs = args[:i+1+k]
+		}
+	}
+	for j, a := range runs {
 		v, lit := literal(a)
 		t := v
 		if !lit {
 			t = wordText(a)
 		}
+		name, value, glued := strings.Cut(t, "=")
 		for _, opt := range gitRunsCommand {
-			value, glued := strings.CutPrefix(t, opt+"=")
-			if t != opt && !glued {
+			// Any prefix git may accept: --u=x is --upload-pack=x.
+			if !gitLongPrefix(name, opt) {
 				continue
 			}
 			f.gitBuilt = "git " + opt + ", which runs the command it is given"
@@ -834,6 +1150,9 @@ func (f *shellFacts) gitCall(args []*syntax.Word, depth int) {
 		return
 	}
 	sub, lit := literal(args[i])
+	if letter, ok := gitRunsCommandShort[sub]; ok && lit {
+		f.gitShortCommand(sub, letter, args[i+1:], depth)
+	}
 	if !lit || !gitDiscarding[sub] && !gitOutput[sub] {
 		return
 	}
@@ -991,6 +1310,39 @@ func globWord(w *syntax.Word) bool {
 	return false
 }
 
+// maxScripts bounds the scripts one command records.
+const maxScripts = 16
+
+// script records a file the command runs as shell text.
+func (f *shellFacts) script(name string, direct bool) {
+	if name == "" {
+		return
+	}
+	if len(f.scripts) >= maxScripts {
+		f.scriptsCut = true
+		return
+	}
+	env := maps.Clone(f.callEnv)
+	if f.varsDead {
+		env = nil
+	}
+	f.scripts = append(f.scripts, Script{Path: name, Direct: direct, Env: env})
+}
+
+// redirectTargets records the literal files st's output redirections write.
+func (f *shellFacts) redirectTargets(st *syntax.Stmt) {
+	for _, r := range st.Redirs {
+		switch r.Op {
+		case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
+			if v, lit := literal(r.Word); lit {
+				f.wrote(v)
+			} else {
+				f.writeHidden = "a redirection to a file named by an expansion"
+			}
+		}
+	}
+}
+
 // command keeps one command the rules and checks read, failing closed past
 // maxCommandBytes.
 func (f *shellFacts) command(text string) {
@@ -1042,8 +1394,9 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 			for j := 1; j < len(v); j++ {
 				if strings.IndexByte(names, v[j]) >= 0 {
 					if rest := v[j+1:]; rest != "" {
-						if strings.Contains(rest, "IFS") {
-							f.ifsUnknown = true
+						f.setsByName(rest)
+						if NamesIFS(rest) {
+							f.ifsHidden()
 						}
 					} else {
 						name = true
@@ -1061,8 +1414,8 @@ func (f *shellFacts) setter(setter string, args []*syntax.Word) {
 		case operands:
 			if !lit {
 				f.ifsUnknown = true
-			} else if n, _, _ := strings.Cut(v, "="); n == "IFS" || strings.HasPrefix(n, "IFS[") || strings.HasSuffix(n, "+") && strings.TrimSuffix(n, "+") == "IFS" {
-				f.ifsUnknown = true
+			} else if f.setsByName(v); NamesIFS(v) {
+				f.ifsHidden()
 			}
 		}
 	}

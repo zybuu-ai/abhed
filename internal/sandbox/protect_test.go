@@ -111,9 +111,8 @@ func TestProcessSandboxProtectsThroughALinkedWorkspace(t *testing.T) {
 	}
 }
 
-// Under bubblewrap and in a container the folders holding a protected path
-// are mounted onto themselves before the read-only mounts, both forms of each
-// path are mounted, and a path outside the workspace is not shown.
+// Under bubblewrap and containers a protected path's holders are pinned
+// before read-only mounts, both path forms mount, outside paths are hidden.
 func TestMountsPinHoldersAndBothForms(t *testing.T) {
 	real := workspace(t)
 	link := filepath.Join(workspace(t), "ws")
@@ -192,9 +191,8 @@ func TestSeatbeltGitPatternQuotesTheWorkspace(t *testing.T) {
 	}
 }
 
-// With ProtectGit, every git folder's config and hooks are kept from a
-// command on both Seatbelt (by pattern) and bubblewrap (by the folders found
-// when the command starts); the rest of the repository is writable.
+// With ProtectGit every git folder's config and hooks are kept from a
+// command on Seatbelt and bubblewrap; the rest stays writable.
 func TestProcessSandboxProtectGitHoldsOnEveryBackend(t *testing.T) {
 	requireNetNS(t)
 	ws := workspace(t)

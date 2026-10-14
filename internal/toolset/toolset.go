@@ -9,6 +9,12 @@ package toolset
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -152,13 +158,16 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	if o.Parts&MCP != 0 {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
-		ConfineMCP(s.Gateway, cfg, o.Sandbox)
+		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {
 			warn("%v", err)
 		}
 		for _, t := range s.Gateway.Tools() {
 			s.Registry.Add(t)
+		}
+		for _, m := range s.Gateway.Overlaps() {
+			warn("%s", m)
 		}
 		DeferMCP(s.Registry, DeferThreshold)
 	}
@@ -221,7 +230,52 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			s.Registry.Add(&index.SearchTool{Index: ix})
 		}
 	}
+	warnCaseOnly(cfg, s.Registry.Names(), warn)
 	return s
+}
+
+// warnCaseOnly warns of each CaseOnlyRules finding once per process: a server
+// builds a set per session.
+func warnCaseOnly(cfg config.Config, names []string, warn func(string, ...any)) {
+	for _, m := range CaseOnlyRules(cfg, names) {
+		if _, seen := caseWarned.LoadOrStore(m, true); !seen {
+			warn("%s", m)
+		}
+	}
+}
+
+// caseWarned holds the case-only rule warnings already given.
+var caseWarned sync.Map
+
+// caseOnlyServer reports whether an mcp__server__* rule names tool's server
+// only in another case.
+func caseOnlyServer(rule, tool string) bool {
+	prefix, ok := policy.MCPServerWildcard(rule)
+	return ok && len(tool) > len(prefix) && strings.EqualFold(tool[:len(prefix)], prefix)
+}
+
+// CaseOnlyRules names each permission rule whose tool is one of names only
+// in another case: an MCP or extension tool, whose name is compared exactly,
+// so the rule never matches it.
+func CaseOnlyRules(cfg config.Config, names []string) []string {
+	var out []string
+	for list, rules := range map[string][]string{"deny": cfg.Permissions.Deny, "ask": cfg.Permissions.Ask, "allow": cfg.Permissions.Allow} {
+		for _, raw := range rules {
+			r, err := policy.ParseRule(raw)
+			if err != nil || slices.ContainsFunc(names, r.ForTool) {
+				continue
+			}
+			for _, n := range names {
+				if strings.EqualFold(n, r.Tool()) || caseOnlyServer(r.Tool(), n) {
+					out = append(out, fmt.Sprintf("permissions.%s rule %s never matches: the tool is %s, and its name is compared exactly, case included",
+						list, config.Printable(raw), config.Printable(n)))
+					break
+				}
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Close ends the MCP connections and the extension processes, then takes
@@ -266,16 +320,99 @@ func (s *Set) EndSession(id string) {
 	}
 }
 
-// ConfineMCP has gw start stdio servers with their network confined by sb
-// under sandbox.network allowlist, and refuse them where sb cannot.
-func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox) {
-	if cfg.Sandbox.Network != config.NetworkAllowlist {
+// ConfineMCP has gw start stdio servers confined by sb: their files always,
+// their network under sandbox.network allowlist. On the none tier they run
+// unconfined, but under the allowlist, where they are refused, as on a tier
+// that cannot confine them. A sandbox still being chosen is waited for when a
+// server starts. warn, when set, is told of each server that runs unconfined
+// on the none tier, with why.
+func ConfineMCP(gw *mcp.Gateway, cfg config.Config, sb sandbox.Sandbox, warn func(string, ...any)) {
+	allowlist := cfg.Sandbox.Network == config.NetworkAllowlist
+	gw.MustConfine = allowlist
+	gw.Cleanup = sandbox.ServerCleanup
+	p, ok := sb.(sandbox.Pending)
+	if !ok {
+		gw.Confine, gw.ConfineNet = serverLaunchers(sb, allowlist)
+		if gw.Confine == nil && !allowlist {
+			gw.Confine = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+				warnUnconfined(gw, warn, name, sb)
+				return launchOrPlain(ctx, nil, false, name, argv, env, record)
+			}
+		}
 		return
 	}
-	gw.MustConfine = true
-	if l, ok := sb.(sandbox.ServerLauncher); ok {
-		gw.Confine = l.ServerCommand
+	gw.Confine = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+		chosen, err := p.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("no sandbox: %w", err)
+		}
+		launch, _ := serverLaunchers(chosen, allowlist)
+		if launch == nil && !allowlist {
+			warnUnconfined(gw, warn, name, chosen)
+		}
+		return launchOrPlain(ctx, launch, allowlist, name, argv, env, record)
 	}
+	if allowlist {
+		gw.ConfineNet = func(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+			chosen, err := p.Resolve()
+			if err != nil {
+				return nil, fmt.Errorf("no sandbox: %w", err)
+			}
+			_, launch := serverLaunchers(chosen, allowlist)
+			return launchOrPlain(ctx, launch, allowlist, name, argv, env, record)
+		}
+	}
+}
+
+// warnUnconfined says a stdio server runs with the person's home readable and
+// writable, because sb, the none tier or no sandbox, confines nothing, and why;
+// gw keeps the mark for the panels that list its servers.
+func warnUnconfined(gw *mcp.Gateway, warn func(string, ...any), name string, sb sandbox.Sandbox) {
+	why := "no sandbox is in use"
+	if sb != nil {
+		why = "the sandbox tier is none: " + sandbox.NoneReason(sb)
+	}
+	gw.MarkUnconfined(name, why)
+	if warn == nil {
+		return
+	}
+	warn("mcp server %q runs unconfined, with your home folder readable and writable, because %s; "+
+		"make the process tier available, or set \"host_files\": true on it to run it so knowingly", name, why)
+}
+
+// serverLaunchers are sb's launchers for a stdio server, its files and
+// network confined and its network alone; both nil on the none tier. A tier
+// that cannot confine a server's files refuses it, unless set to host_files.
+func serverLaunchers(sb sandbox.Sandbox, allowlist bool) (confine, confineNet mcp.Launcher) {
+	if sb == nil || sb.Tier() == sandbox.TierNone {
+		return nil, nil
+	}
+	if l, ok := sb.(sandbox.ServerLauncher); ok {
+		confine = l.ServerCommand
+	} else {
+		why := fmt.Errorf("%w: the %s tier cannot confine a stdio server's files; set \"host_files\": true on it to run it unconfined", mcp.ErrUnconfined, sb.Tier())
+		confine = func(context.Context, string, []string, []string, func(string, map[string]any) error) (*exec.Cmd, error) {
+			return nil, why
+		}
+	}
+	if n, ok := sb.(sandbox.ServerNetLauncher); ok && allowlist {
+		confineNet = n.ServerNetCommand
+	}
+	return confine, confineNet
+}
+
+// launchOrPlain runs launch, or, with none, the server as the gateway would
+// unconfined; never under the allowlist.
+func launchOrPlain(ctx context.Context, launch mcp.Launcher, allowlist bool, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+	if launch != nil {
+		return launch(ctx, name, argv, env, record)
+	}
+	if allowlist {
+		return nil, fmt.Errorf("%w: sandbox.network is allowlist and no sandbox here can confine its network", mcp.ErrUnconfined)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- the configured server, as the gateway starts one
+	cmd.Env = append([]string{}, env...)
+	return cmd, nil
 }
 
 // OwnEgress is the guard of Abhed's own requests under sandbox.network
@@ -339,9 +476,55 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 	if h == nil || h.Len() == 0 || pol == nil {
 		return
 	}
-	pol.EngineHooks = append(pol.EngineHooks, func(e *policy.Engine) policy.Hook {
-		return h.PolicyHookFor(context.Background(), sessionID, e)
+	pol.ContextHooks = append(pol.ContextHooks, func(e *policy.Engine) policy.ContextHook {
+		return h.ContextPolicyHookFor(sessionID, e)
 	})
+}
+
+// HostHooks are the extensions' hooks at the loop's own points: a message
+// submitted, a call about to be asked, a run ending. Note, when set, hears
+// what the person should be told: a message refused (refused true), or one
+// that went unscreened. Nothing a hook says approves anything.
+type HostHooks struct {
+	Host *extension.Host
+	Note func(text string, refused bool)
+}
+
+var _ agent.Hooks = HostHooks{}
+
+func (h HostHooks) note(s string, refused bool) {
+	if h.Note != nil {
+		h.Note(s, refused)
+	}
+}
+
+func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
+	why := h.Host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
+	if why != "" {
+		h.note("your message was not sent: "+why, true)
+	} else if down := h.Host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
+		// A prompt hook fails open; the person is told it did not look.
+		h.note("not screened: the user_prompt_submit hook "+strings.Join(down, ", ")+" is not running", false)
+	}
+	return why
+}
+
+func (h HostHooks) PermissionRequested(ctx context.Context, pol *policy.Engine, sessionID, tool string, args json.RawMessage, reason string) string {
+	return h.Host.Veto(ctx, extension.EvPermissionRequest, extension.Request{
+		SessionID: sessionID, Tool: tool, Args: args, Content: reason, Policy: pol,
+	})
+}
+
+func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
+	h.Host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
+}
+
+// Hook gives loop the extensions' hooks at its own points, when any are loaded.
+func Hook(loop *agent.Loop, h *extension.Host, note func(text string, refused bool)) {
+	if loop == nil || h == nil || h.Len() == 0 {
+		return
+	}
+	loop.Hooks = HostHooks{Host: h, Note: note}
 }
 
 // Summarize lets an extension supply or refuse a compaction summary: the

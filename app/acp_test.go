@@ -163,11 +163,15 @@ func (cl *acpClient) notify(method string, params any) {
 	cl.write(rpcMessage{JSONRPC: "2.0", Method: method, Params: raw})
 }
 
+// acpReplyWait bounds the wait for a reply; session/new builds a real agent,
+// which takes seconds on a loaded machine.
+const acpReplyWait = 30 * time.Second
+
 func (cl *acpClient) request(id int, method string, params any) rpcMessage {
 	cl.t.Helper()
 	raw, _ := json.Marshal(params)
 	cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(itoa(id)), Method: method, Params: raw})
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(acpReplyWait)
 	for {
 		select {
 		case m := <-cl.lines:
@@ -187,7 +191,7 @@ func (cl *acpClient) prompt(id int, params any) (rpcMessage, []map[string]any) {
 	raw, _ := json.Marshal(params)
 	cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(itoa(id)), Method: method, Params: raw})
 	var updates []map[string]any
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(acpReplyWait)
 	for {
 		select {
 		case m := <-cl.lines:

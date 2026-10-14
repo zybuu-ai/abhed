@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -221,29 +222,99 @@ func runConsoleCases(t *testing.T, set, harness, casesFile string) (string, erro
 
 // The model picker is the console's only way to switch a session's model. A
 // width rule that hides it removes the control, so it must always have a
-// place: the header on wider screens, the rail on a phone.
+// place: the header on wider screens, the rail on a phone. The rules are read
+// by the widths they apply at, not by how they are written.
 func TestConsoleKeepsTheModelPickerReachable(t *testing.T) {
 	for _, want := range []string{`id="mdlstat"`, `id="railmodel"`, "function placeModel()", "matchMedia('(max-width:760px)')",
-		"if(sw && !sw.hidden) $('railmodel').appendChild(sw)", ".rail-model #switchuser:not([hidden])"} {
+		"if(sw && !sw.hidden) $('railmodel').appendChild(sw)"} {
 		if !strings.Contains(consoleHTML, want) {
 			t.Errorf("the console lost %s", want)
 		}
 	}
-	i := strings.Index(consoleHTML, "@media (min-width:761px) and (max-width:1180px){\n  .top .brand")
-	if i < 0 {
-		t.Fatal("the tablet header rule moved; check the model picker is still shown there")
-	}
-	rule := consoleHTML[i : i+strings.Index(consoleHTML[i:], "}")]
-	for _, hidden := range []string{"#mdlstat", "#mdlpick", ".stat:not", ".top .stat{", "#switchuser"} {
-		if strings.Contains(rule, hidden) {
-			t.Errorf("the tablet header rule hides %s, a control that must stay reachable", hidden)
+	picker := regexp.MustCompile(`#mdlstat|#mdlpick|#switchuser|(^|[\s,>])\.stat(\s*$|[\s,{])`)
+	for _, width := range []int{1400, 1000} {
+		for _, r := range cssRulesAt(consoleHTML, width) {
+			if picker.MatchString(r.selector) && hides(r.body) {
+				t.Errorf("at %dpx the rule %q hides the model picker", width, r.selector)
+			}
 		}
 	}
+	shown := map[string]bool{}
+	for _, r := range cssRulesAt(consoleHTML, 500) {
+		if strings.Contains(r.selector, ".rail-model") && strings.Contains(r.body, "display:") && !hides(r.body) {
+			for _, part := range []string{".stat", "#switchuser"} {
+				if strings.Contains(r.selector, part) {
+					shown[part] = true
+				}
+			}
+		}
+	}
+	if !shown[".stat"] || !shown["#switchuser"] {
+		t.Errorf("on a phone the rail does not show the model picker and Switch: %v", shown)
+	}
 	// The workbench keeps Switch at every width; the Enterprise guide promises it.
-	if m := regexp.MustCompile(`(?m)^.*#switchuser[^{]*\{[^}]*display:none`).FindString(ideHTML); m != "" {
-		t.Errorf("the workbench hides Switch: %s", m)
+	for _, width := range []int{1400, 1000, 500} {
+		for _, r := range cssRulesAt(ideHTML, width) {
+			if strings.Contains(r.selector, "#switchuser") && hides(r.body) {
+				t.Errorf("at %dpx the workbench hides Switch: %q", width, r.selector)
+			}
+		}
 	}
 }
+
+type cssRule struct{ selector, body string }
+
+// cssRulesAt is every rule in html's styles that applies at a viewport of
+// width pixels: those outside any @media, and those in a width query it meets.
+// Other queries (colour scheme, motion, hover) are taken to apply.
+func cssRulesAt(html string, width int) []cssRule {
+	var out []cssRule
+	var walk func(css string, applies bool)
+	walk = func(css string, applies bool) {
+		for i := 0; i < len(css); {
+			open := strings.IndexByte(css[i:], '{')
+			if open < 0 {
+				return
+			}
+			head := strings.TrimSpace(css[i : i+open])
+			if k := strings.LastIndexAny(head, "};"); k >= 0 {
+				head = strings.TrimSpace(head[k+1:])
+			}
+			depth, j := 1, i+open+1
+			for ; j < len(css) && depth > 0; j++ {
+				switch css[j] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+			}
+			inner := css[i+open+1 : j-1]
+			if strings.HasPrefix(head, "@media") {
+				walk(inner, applies && mediaApplies(head, width))
+			} else if applies && !strings.HasPrefix(head, "@") {
+				out = append(out, cssRule{selector: head, body: strings.ReplaceAll(inner, " ", "")})
+			}
+			i = j
+		}
+	}
+	for _, m := range regexp.MustCompile(`(?s)<style[^>]*>(.*?)</style>`).FindAllStringSubmatch(html, -1) {
+		walk(regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(m[1], ""), true)
+	}
+	return out
+}
+
+func mediaApplies(query string, width int) bool {
+	for _, m := range regexp.MustCompile(`(min|max)-width:\s*(\d+)px`).FindAllStringSubmatch(query, -1) {
+		n, _ := strconv.Atoi(m[2])
+		if (m[1] == "min" && width < n) || (m[1] == "max" && width > n) {
+			return false
+		}
+	}
+	return true
+}
+
+func hides(body string) bool { return strings.Contains(body, "display:none") }
 
 // On a phone the workbench's composer row must keep Send on screen: the
 // selects and the hint shrink, Send never does.

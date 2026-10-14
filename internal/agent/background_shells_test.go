@@ -381,7 +381,12 @@ func TestShellKilledBySessionEndAndStop(t *testing.T) {
 	pids := r.children(t, r.start(t, spawner))
 	r.l.Background.Close(TermSessionClosed)
 	waitFor(t, "every process of the shell to end", func() bool { return allGone(pids) })
-	ends := payloads[ShellEnded](r.events(t), EvShellEnded)
+	// The end is recorded after the processes go, so wait for the event itself.
+	var ends []ShellEnded
+	waitFor(t, "the second shell.ended", func() bool {
+		ends = payloads[ShellEnded](r.events(t), EvShellEnded)
+		return len(ends) >= 2
+	})
 	if len(ends) != 2 || ends[1].Reason != string(TermSessionClosed) || ends[1].State != ShellKilled {
 		t.Fatalf("shell.ended: %+v", ends)
 	}
@@ -892,8 +897,10 @@ func TestShellGapSkipCarriesPastAShortRead(t *testing.T) {
 	l.Recorder.Redact = vault.Redactor()
 	b := &Background{loop: l}
 	redact := func(s string) string { return strings.ReplaceAll(s, standIn, "[secret:STAND_IN]") }
-	hold := shellHold(len(standIn))
-	pre, post := strings.Repeat(".", 300), strings.Repeat("#", 600)+"\n"
+	// The hold follows the longest form a value is matched in, its encodings
+	// included, not the value's own length.
+	hold := shellHold(vault.Redactor().Span())
+	pre, post := strings.Repeat(".", 300), strings.Repeat("#", 2*hold+600)+"\n"
 	stream := pre + standIn + post
 	for start := 250; start < len(pre)+len(standIn); start += 7 {
 		for _, g := range []int{1, 40, 120, hold - 1} {
@@ -950,7 +957,7 @@ func TestShellGapSkipCarriesPastAShortRead(t *testing.T) {
 		outs += out
 	}
 	out, _ := sh.redactRead(b, tools.ShellRead{}, true)
-	if outs += out; shownPart(outs, stream, standIn, 4, redact) != "" || !strings.HasSuffix(outs, post) {
+	if outs += out; shownPart(outs, stream, standIn, 4, redact) != "" || !strings.HasSuffix(outs, post[2*hold:]) {
 		t.Fatalf("a value across the skip point, read in two: %q", outs)
 	}
 }

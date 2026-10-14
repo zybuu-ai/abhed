@@ -14,6 +14,13 @@ not triaged, or appears there more often than before.
     python3 scripts/ci/gosec-gate.py gosec.json            # check
     python3 scripts/ci/gosec-gate.py gosec.json --update   # after triaging
 
+gosec scans only the files built for the platform it runs on, so findings in
+darwin-only files appear on macOS and not on Linux, where CI runs. Given
+several reports, the gate takes the most each reports for a rule and file;
+--update from a Linux and a macOS scan together keeps both platforms' findings:
+
+    python3 scripts/ci/gosec-gate.py linux.json darwin.json --update
+
 --update rewrites the baseline from the current report. Only do that after
 adding the new findings to docs/trust/security-scans.md; the baseline is the
 list of what has been read, not a place to hide what has not.
@@ -62,9 +69,12 @@ def load(path):
 
 
 def main():
-    if len(sys.argv) < 2:
+    reports = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not reports:
         sys.exit(__doc__)
-    now = load(sys.argv[1])
+    now = collections.Counter()
+    for r in reports:
+        now |= load(r)  # the larger count of each rule and file
     with open(BASELINE, encoding="utf-8") as f:
         base = json.load(f)
 

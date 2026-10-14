@@ -47,6 +47,26 @@ func TestProgramExpansionCannotPassADenyRule(t *testing.T) {
 		"eval 'curl x'",
 		// What the parser cannot read is refused, not guessed at.
 		"echo \"unclosed; x=git; ${x%/} reset --hard",
+		// A brace sequence is read as the words bash makes of it.
+		"{c..c}url http://e",
+		"c{u..u}rl http://e",
+		"cur{l..l} http://e",
+		"git reset --{h..h}ard",
+		// And so are braces in text a shell, eval or trap runs, comma lists too.
+		"bash -c 'c{u..u}rl http://e'",
+		"sh -c \"{c..c}url http://e\"",
+		"eval '{c..c}url http://e'",
+		"eval 'c{u..u}rl http://e'",
+		"trap 'c{u..u}rl http://e' EXIT",
+		"bash <<<'c{u..u}rl http://e'",
+		"bash <<'E'\n{curl,http://e}\nE",
+		"bash -c '{curl,http://e}'",
+		"eval '{curl,http://e}'",
+		"f() { c{u,}rl http://e; }; f",
+		"echo $(c{u..u}rl http://e)",
+		"bash -c \"eval '{c..c}url http://e'\"",
+		"git reset --{h,}ard",
+		"bash -c 'git reset --{h..h}ard'",
 	}
 	// A run of runners, option values and durations before a quoted or escaped name.
 	refused = append(refused,
@@ -112,6 +132,12 @@ func TestProgramExpansionCannotPassADenyRule(t *testing.T) {
 		"builtin exec < f; bash",
 		"command -p exec < f; bash",
 		"command builtin exec <<< 'curl x'; bash",
+		// exec's own options and -- leave it with no program.
+		"exec -- < f; bash",
+		"exec -a x < f; bash",
+		"exec -c -l < f; bash",
+		"exec -la x -- < f; bash",
+		"exec $empty < f; bash",
 		"git -c protocol.ext.allow=always ls-remote 'ext::curl x'",
 		"git -c protocol.ext.allow=always clone 'ext::curl% x' d",
 		"git -c remote.o.url='EXT::curl x' fetch o",
@@ -148,6 +174,8 @@ func TestProgramExpansionCannotPassADenyRule(t *testing.T) {
 		"git push --receive-pack='curl x' o",
 	)
 	notAllowed := append([]string{
+		"c{u..u..1}rl http://e",
+		"c{u..u}rl{1..2000} http://e",
 		"x=git; ${x} reset --hard",
 		"x=git; $x reset --hard",
 		"x='git reset --hard '; $x/.",

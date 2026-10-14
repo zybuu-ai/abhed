@@ -14,8 +14,7 @@ type Launch struct {
 	// CallID is the model's id for the tool call, as agent.CallIDOf gives it.
 	CallID string
 	// Session is the id of the session the call belongs to: the top-level
-	// session for a subagent's call. Backends that keep state per session,
-	// such as the egress proxy, key it by this.
+	// session for a subagent's call.
 	Session string
 	// Record writes one event to the session's record and reports whether
 	// it was written. Nil when the command runs outside a session.
@@ -42,10 +41,9 @@ func LaunchOf(ctx context.Context) Launch {
 // with what releases the wait: *exec.Cmd -> func().
 var pendingLaunches sync.Map
 
-// Release frees at once what a backend holds for a command that never
-// started, because building or starting it failed: the fence's channel,
-// the call's cgroup and the wait for its launcher. A command that started
-// is left alone; calling it then, or twice, does nothing.
+// Release frees at once what a backend holds for a command that never started,
+// because building or starting it failed: the fence's channel, the call's
+// cgroup and the wait for its launcher.
 func Release(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process != nil {
 		return

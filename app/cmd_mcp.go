@@ -92,13 +92,12 @@ var errUsage = errors.New("usage")
 // parseMCPAdd reads add's flags and words into a server entry, enabled.
 func parseMCPAdd(args []string, errw io.Writer) (config.MCPServerConfig, error) {
 	var s config.MCPServerConfig
-	var envs, headers multiFlag
-	var allowTools string
+	var envs, headers, allowTools multiFlag
 	fs := flag.NewFlagSet("mcp add", flag.ContinueOnError)
 	fs.SetOutput(errw)
 	fs.Var(&envs, "env", "KEY=VALUE for a command server's environment, or KEY to pass your own value (repeatable)")
 	fs.Var(&headers, "header-env", "HEADER=VAR: send header HEADER with the value of environment variable VAR (repeatable)")
-	fs.StringVar(&allowTools, "allow-tools", "", "comma-separated tools to offer; empty offers all")
+	fs.Var(&allowTools, "allow-tools", "comma-separated tools to offer (repeatable); none offers all")
 	if err := fs.Parse(args); err != nil {
 		return s, errUsage
 	}
@@ -138,7 +137,7 @@ func parseMCPAdd(args []string, errw io.Writer) (config.MCPServerConfig, error) 
 	if len(s.HeadersEnv) > 0 && s.URL == "" {
 		return s, errors.New("-header-env is for a URL server")
 	}
-	s.AllowTools = splitRules(allowTools)
+	s.AllowTools = splitLists(allowTools)
 	return s, nil
 }
 

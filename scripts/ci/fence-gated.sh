@@ -6,13 +6,15 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 mod=github.com/zybuu-ai/abhed
 
-# suites PKGS prints name|package|-run pattern. Fence packages run whole, so
-# a new one is covered.
+# suites PKGS prints name|package|file|-run pattern, file naming the one test
+# file gated, or empty for all. Fence packages run whole, so a new one is covered.
 suites() {
 	local pkg
-	for pkg in $1; do echo "fence-${pkg##*/}|$pkg|."; done
-	echo "sandbox|$mod/internal/sandbox|Fence|Mounts|Launch|Select"
-	echo "clitest|$mod/internal/clitest|Fence"
+	for pkg in $1; do echo "fence-${pkg##*/}|$pkg||."; done
+	echo "sandbox|$mod/internal/sandbox||Fence|Mounts|Launch|Select|BoundedLeaf"
+	echo "clitest|$mod/internal/clitest||Fence"
+	# Serve on the fence: only this file's tests are gated here.
+	echo "app|$mod/app|serve_fence_linux_test.go|^(TestServeRunsEachSessionUnderItsOwnFence|TestServedFenceSessionHomeIsItsFencesOnceMade)\$"
 }
 
 build() {
@@ -28,11 +30,13 @@ build() {
 	[ -n "$fence" ] || { echo "go list found no fence package"; return 1; }
 	all=$(suites "$fence")
 	: > "$dir/suites"
-	while IFS='|' read -r -u 3 name pkg pattern; do
+	while IFS='|' read -r -u 3 name pkg only pattern; do
 		tests=$(go list -f '{{range .TestGoFiles}}{{$.Dir}}/{{.}} {{end}}{{range .XTestGoFiles}}{{$.Dir}}/{{.}} {{end}}' "$pkg")
 		[ -n "$tests" ] || { echo "$pkg has no tests for this platform; nothing to run"; continue; }
 		# The package's own code too: a gate helper may live outside the tests.
 		files="$(go list -f '{{range .GoFiles}}{{$.Dir}}/{{.}} {{end}}' "$pkg") $tests"
+		# A suite that names one file gates only that file's tests.
+		[ -z "$only" ] || files="$(go list -f '{{.Dir}}' "$pkg")/$only"
 		go test -c -o "$dir/$name.test" "$pkg"
 		[ -x "$dir/$name.test" ] || { echo "$pkg has tests but built no binary"; return 1; }
 		# Gated by what the tests check, not by name: run must list every one.
@@ -48,17 +52,24 @@ build() {
 	go build -o "$dir/test2json" cmd/test2json
 }
 
-# prepare lets DIR's binaries make user namespaces and starts the user's
-# systemd manager. It uses sudo and changes no sysctl.
+# prepare lets DIR's binaries and bubblewrap make user namespaces and starts
+# the user's systemd manager. It uses sudo and changes no sysctl.
 prepare() {
-	local dir=$1 bus
+	local dir=$1 bus bwrap
 	# Ubuntu 24.04 grants user namespaces only to profiled binaries; this
-	# profiles DIR alone, where the sysctl would lift it for every process.
+	# profiles DIR and bubblewrap alone, where the sysctl would lift it for every process.
 	if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
 		printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
 			"profile abhed-fence-ci $dir/** flags=(unconfined) {" '  userns,' '}' |
 			sudo tee /etc/apparmor.d/abhed-fence-ci > /dev/null
 		sudo apparmor_parser -r /etc/apparmor.d/abhed-fence-ci
+		# The process tier's cgroup test runs bubblewrap, which needs one too.
+		if bwrap=$(command -v bwrap); then
+			printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+				"profile abhed-fence-ci-bwrap $bwrap flags=(unconfined) {" '  userns,' '}' |
+				sudo tee /etc/apparmor.d/abhed-fence-ci-bwrap > /dev/null
+			sudo apparmor_parser -r /etc/apparmor.d/abhed-fence-ci-bwrap
+		fi
 	fi
 	# A second mount of a folder, for the test that the fence covers aliases.
 	install -d -m 0755 "$dir/alias-src" "$dir/alias-mirror"
@@ -77,7 +88,7 @@ check() {
 	if [ "$(id -u)" -eq 0 ]; then
 		echo "ENVIRONMENT: running as root; the fence refuses root"; bad=1
 	fi
-	# landlock_create_ruleset(NULL, 0, VERSION) is syscall 444 on x86-64 and arm64.
+	# landlock_create_ruleset(NULL, 0, VERSION) is syscall 444 on x86-64, arm64 and s390x.
 	if ! abi=$(python3 -c 'import ctypes; l=ctypes.CDLL(None, use_errno=True); l.syscall.restype=ctypes.c_long; print(l.syscall(444, None, ctypes.c_size_t(0), ctypes.c_uint32(1)))' 2>&1); then
 		echo "ENVIRONMENT: could not read the Landlock ABI: $abi"; abi=-1; bad=1
 	fi
@@ -104,6 +115,9 @@ check() {
 
 # Tests for other platforms, which skip on Linux by design.
 off_linux=" TestDiscoverElsewhere TestRestrictRefusesOffLinux "
+# Tests that need root, which the fence refuses; the privileged sandbox job
+# in ci.yml runs each as root and lets none skip.
+as_root=" TestFenceSpecAsRootHidesShadow "
 
 # passed_all NAME DIR GATED fails unless every listed test passed, or skipped
 # off-Linux, pending on an item in FENCE_PENDING, or proven by a run of its own
@@ -122,6 +136,12 @@ passed_all() {
 		fi
 		if grep -q -- "--- SKIP: $t " "$log"; then
 			[[ $off_linux == *" $t "* ]] && continue
+			if [[ $as_root == *" $t "* ]] && grep -A2 -- "=== RUN   $t\$" "$log" | grep -q "needs root"; then continue; fi
+			# Serve on the fence asks more of Landlock than this runner's kernel has: said, not passed.
+			if [ "$name" = app ] && grep -A2 -- "=== RUN   $t\$" "$log" | grep -q "serve on the fence needs Landlock ABI"; then
+				echo "SKIPPED on this kernel: $t: $(grep -A2 -- "=== RUN   $t\$" "$log" | grep -o "serve on the fence needs.*")"
+				continue
+			fi
 			# Proven by a run of its own, under the condition it needs.
 			grep -qx -- "$name $t" "$dir/elsewhere" 2>/dev/null && continue
 			item=$(sed -n "/=== RUN   $t\$/,/--- SKIP: $t /s/^ *[^ ]*\.go:[0-9]*: clitest: pending (\([a-z]*\)):.*/\1/p" "$log" | head -1)

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -32,6 +33,14 @@ func TestEditionRefusesKeysItCannotHonour(t *testing.T) {
 		{"schedules", func(c *config.Config) {
 			c.Schedules = []config.ScheduleConfig{{Name: "n", Cron: "@daily", Prompt: "p"}}
 		}, "schedules", "Team"},
+		{"ha", func(c *config.Config) { c.ControlPlane.HA.Enabled = true }, "control_plane.ha.enabled", "Enterprise"},
+		{"interceptors", func(c *config.Config) {
+			c.ControlPlane.Interceptors = []config.InterceptorConfig{{Name: "opa", Phase: "validate", URL: "https://opa"}}
+		}, "control_plane.interceptors", "Enterprise"},
+		{"workload", func(c *config.Config) { c.Auth.Workload.Enabled = true }, "auth.workload.enabled", "Enterprise"},
+		{"kubernetes", func(c *config.Config) {
+			c.ControlPlane.Kubernetes = json.RawMessage(`{"namespace":"abhed"}`)
+		}, "control_plane.kubernetes", "Team"},
 	} {
 		cfg := config.Default()
 		tc.adjust(&cfg)
@@ -54,9 +63,13 @@ func TestEditionRefusesKeysItCannotHonour(t *testing.T) {
 		WithAuthMode("oidc", func(context.Context, config.Config, string, auth.UserStore) (auth.Provider, auth.TokenVerifier, error) {
 			return nil, nil, nil
 		}),
-		WithFeature("schedules"), WithFeature("telemetry"))
+		WithFeature("schedules"), WithFeature("telemetry"), WithFeature("ha"), WithFeature("interceptors"), WithFeature("workload"), WithFeature("kubernetes"))
 	cfg := config.Default()
+	cfg.ControlPlane.HA.Enabled = true
+	cfg.ControlPlane.Interceptors = []config.InterceptorConfig{{Name: "opa", Phase: "validate", URL: "https://opa"}}
 	cfg.Auth.Mode = "oidc"
+	cfg.Auth.Workload.Enabled = true
+	cfg.ControlPlane.Kubernetes = json.RawMessage(`{"namespace":"abhed"}`)
 	cfg.Telemetry.Enabled = true
 	cfg.Schedules = []config.ScheduleConfig{{Name: "n", Cron: "@daily", Prompt: "p"}}
 	if err := full.checkEdition(cfg); err != nil {

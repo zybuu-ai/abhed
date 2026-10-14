@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,6 +150,81 @@ func TestCapabilitiesReportExtensionStatus(t *testing.T) {
 	for _, e := range c.Extensions {
 		if e.Name == "blocker.sh" && e.Status != "stopped" {
 			t.Fatalf("a closed extension reads as %q", e.Status)
+		}
+	}
+}
+
+// Whether an extension is running is shown to administrators only, where
+// people sign in: to anyone else it says when a veto is down.
+func TestExtensionStatusIsForAdministrators(t *testing.T) {
+	s, _ := scriptedServer(t, [2]string{}, [2]string{}, nil, withExtensions(t, "blocker.sh"), func(c *config.Config) {
+		c.Auth.Mode = "proxy"
+		c.Extensions = []config.ExtensionConfig{{Name: "blocker.sh", Command: "bash"}}
+	})
+	get := func(groups string) capExtension {
+		req := httptest.NewRequest("GET", "/v1/capabilities", nil)
+		req.Header.Set("X-Abhed-User", "dana")
+		if groups != "" {
+			req.Header.Set("X-Abhed-Groups", groups)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		var c capabilities
+		if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil || len(c.Extensions) != 1 {
+			t.Fatalf("capabilities: %d %s", rec.Code, rec.Body)
+		}
+		return c.Extensions[0]
+	}
+	if e := get(""); e.Status != "" || e.Name != "blocker.sh" {
+		t.Fatalf("a non-administrator sees %+v", e)
+	}
+	if e := get(DefaultAdminGroup); e.Status != "running" {
+		t.Fatalf("an administrator sees %+v", e)
+	}
+}
+
+// A user_prompt_submit hook on the server refuses a session's message: it is
+// never recorded as sent, nor sent to the model.
+func TestServerPromptHookRefusesAMessage(t *testing.T) {
+	h := extension.NewHost(nil)
+	if errs := h.Load(context.Background(), []extension.Config{{Name: "gatekeeper.sh", Command: "bash",
+		Args:   []string{filepath.Join("..", "internal", "extension", "testdata", "gatekeeper.sh")},
+		Events: []extension.Event{extension.EvUserPromptSubmit}, Timeout: 5 * time.Second}}); len(errs) > 0 {
+		t.Fatalf("load: %v", errs)
+	}
+	t.Cleanup(h.Close)
+	s, _ := scriptedServer(t, [2]string{}, [2]string{}, nil, func(o *Options) { o.Extensions = h })
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"the forbidden thing"}`))
+	waitState(t, s, id, "done")
+	evs, _ := s.store.Events(id)
+	for _, ev := range evs {
+		if ev.Type == agent.EvUserMessage || ev.Type == agent.EvModelCall {
+			t.Fatalf("a refused message was recorded or answered: %v", typesOf(evs))
+		}
+	}
+	// The person is told why in the session, where the workbench shows it.
+	if d := payloadOf[agent.DroppedMessage](t, evs, agent.EvMessageDropped); d.Reason != "that topic is off limits" {
+		t.Fatalf("recorded as dropped: %+v", d)
+	}
+	// The run's end is recorded, so a page watching leaves its live state.
+	if e := payloadOf[agent.SessionEnded](t, evs, agent.EvSessionEnded); e.Reason != agent.TermPromptRefused {
+		t.Fatalf("the refused run ended as %+v", e)
+	}
+	// A follow-up refused ends visibly too.
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"more forbidden talk"}`); w.Code >= 300 {
+		t.Fatalf("follow-up %d %s", w.Code, w.Body)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for ends := 0; ends < 2; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the refused follow-up recorded no end: %v", typesOf(evs))
+		}
+		evs, _ = s.store.Events(id)
+		ends = 0
+		for _, ev := range evs {
+			if ev.Type == agent.EvSessionEnded {
+				ends++
+			}
 		}
 	}
 }

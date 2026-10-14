@@ -649,9 +649,14 @@ func TestViewingWritesNothing(t *testing.T) {
 	b := newBGServer(t, st)
 	before, _ := st.Events(id)
 	claims := st.claims
+	takenUp := time.Now()
 	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Taken up now, but made when its record says: an account made in between owns none of it.
+	if live.Created.IsZero() || !live.Created.Before(takenUp) {
+		t.Fatalf("began %v, taken up %v", live.Created, takenUp)
 	}
 	time.Sleep(2500 * time.Millisecond) // past the idle settle window
 	after, _ := st.Events(id)
@@ -1098,5 +1103,27 @@ func TestForkBeforeTheFirstMessageRefusedWhileTasksRun(t *testing.T) {
 	waitUntil(t, "state done", func() bool { return b.state(id) == "done" })
 	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/fork", `{"before_seq":`+strconv.FormatInt(first, 10)+`}`); rec.Code != http.StatusOK {
 		t.Fatalf("fork once the task ended: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A session taken up on another server keeps the time it began, so an
+// account made again since does not own it there.
+func TestTakenUpSessionKeepsWhenItBegan(t *testing.T) {
+	st, id := drainedWithResultOwed(t)
+	st.mu.Lock()
+	r := st.rows[id]
+	r.StartedAt = time.Now().Add(-time.Hour)
+	st.rows[id] = r
+	st.mu.Unlock()
+	b := newBGServer(t, st)
+	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live.Created.Equal(r.StartedAt) {
+		t.Fatalf("created %v; want the record's %v", live.Created, r.StartedAt)
+	}
+	if n := b.s.ReleaseSessionsBefore("acme", "alice", time.Now().Add(-time.Minute)); n != 1 {
+		t.Fatalf("released %d; want the session begun an hour ago", n)
 	}
 }

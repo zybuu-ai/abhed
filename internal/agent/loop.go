@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,8 @@ func terminalForCancel(ctx context.Context) TerminalReason {
 		return stop.Reason
 	case errors.Is(context.Cause(ctx), ErrShutdown):
 		return TermShutdown
+	case errors.Is(context.Cause(ctx), ErrHandOver):
+		return TermHandedOver
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return TermDeadline
 	}
@@ -45,6 +49,42 @@ type Approver interface {
 }
 
 type requestIDKey struct{}
+
+// maxIgnoredKeys bounds the keys of one call the record and the model are told
+// were ignored; the model chooses them, so neither their number nor length is its to set.
+const maxIgnoredKeys = 32
+
+// boundKeys clips each key and keeps at most maxIgnoredKeys, naming how many more there were.
+func boundKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]string, 0, min(len(keys), maxIgnoredKeys+1))
+	for i, k := range keys {
+		if i == maxIgnoredKeys {
+			out = append(out, fmt.Sprintf("+%d more", len(keys)-i))
+			break
+		}
+		if r := []rune(k); len(r) > 64 {
+			k = string(r[:64]) + "…"
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// withCallID gives a call the model left without an id, or with one already
+// used this turn, an id of its own, so its events and result pair with it alone.
+func withCallID(c model.ToolCall, prior []model.ToolCall) model.ToolCall {
+	taken := c.ID == ""
+	for _, p := range prior {
+		taken = taken || p.ID == c.ID
+	}
+	if taken {
+		c.ID = "call_" + newID()
+	}
+	return c
+}
 
 // RequestIDOf reports the id of the action.requested event an Approver is
 // asked about. Unlike a model's call id it is unique, so an answer that names
@@ -182,7 +222,7 @@ func unanswered(ctx context.Context, held bool) string {
 		what = "before the answer was applied"
 	}
 	switch {
-	case errors.Is(context.Cause(ctx), ErrShutdown):
+	case errors.Is(context.Cause(ctx), ErrShutdown), errors.Is(context.Cause(ctx), ErrHandOver):
 		return "server shut down " + what
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return "deadline passed " + what
@@ -219,7 +259,14 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
-	Adapter model.Adapter
+	// refused is why a hook refused the last RunMessage's own message, or "".
+	refusedMu sync.Mutex
+	refused   string
+	// startupNoted is the trusted start-up files last recorded for this
+	// loop, by path and hash, guarded by startupMu.
+	startupMu    sync.Mutex
+	startupNoted string
+	Adapter      model.Adapter
 	// Provider is the configured name Adapter came from, when the surface
 	// knows it. A subagent that runs on its parent's model records it.
 	Provider  string
@@ -245,6 +292,9 @@ type Loop struct {
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
 	OwnerActive func() bool
+	// unknown holds the calls answered as outcome unknown after a hand-over,
+	// which are asked of a person before they run again.
+	unknown mayHaveRun
 	// reasoning and recentCalls are the monitor's short memory: the agent's
 	// last few stated thoughts, and the last few calls with their outcomes.
 	// Calls in one turn run concurrently, so both sit behind monitorMu.
@@ -303,6 +353,10 @@ type Loop struct {
 	// they abort the process.
 	repeatedFailures map[string]int
 	failuresMu       sync.Mutex
+	// justCompacted is set by a compaction and cleared by the next check.
+	justCompacted bool
+	// ignored holds, by call id, the argument keys a tool did not take, told to the model with its result.
+	ignored sync.Map
 
 	// recordErr is the first failure to write an event. The record is the
 	// session: a run that continued past a store that stopped taking events
@@ -462,6 +516,13 @@ func (l *Loop) takeSteering() []QueuedMessage {
 
 // deliverQueued records and applies every waiting message, oldest first.
 func (l *Loop) deliverQueued() error {
+	_, err := l.deliverQueuedCount()
+	return err
+}
+
+// deliverQueuedCount is deliverQueued, and says how many it delivered.
+func (l *Loop) deliverQueuedCount() (int, error) {
+	n := 0
 	for _, q := range l.takeSteering() {
 		if why := l.promptRefused(context.Background(), q.Text); why != "" {
 			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
@@ -472,16 +533,59 @@ func (l *Loop) deliverQueued() error {
 		// A steer that cannot be recorded is not applied: the record is the
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
-		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: q.Text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered}); err != nil {
-			return err
+		text, withheld := l.withholdSecrets(q.Text)
+		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld}); err != nil {
+			return n, err
 		}
-		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
-		l.setPrompt(q.Text)
+		n++
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+		l.setPrompt(text)
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
 		l.wakeCap = 0
 	}
-	return nil
+	return n, nil
+}
+
+// secretLabel is a stored secret's placeholder, as the redactor writes it.
+var secretLabel = regexp.MustCompile(`\[secret:([A-Z][A-Z0-9_]*)\]`)
+
+// withholdSecrets is a person's message as the model may see it, each stored
+// secret's value replaced by [secret:NAME] as in the record, and the names of
+// those replaced, comma-separated. A store that cannot be read withholds it all.
+func (l *Loop) withholdSecrets(text string) (string, string) {
+	red := l.Recorder.redactor()
+	if red == nil {
+		return text, ""
+	}
+	out := redactedText(red.Redact, text)
+	if out == text {
+		return text, ""
+	}
+	var names []string
+	for _, m := range secretLabel.FindAllStringSubmatch(out, -1) {
+		if !slices.Contains(names, m[1]) && strings.Count(out, m[0]) > strings.Count(text, m[0]) {
+			names = append(names, m[1])
+		}
+	}
+	return out, strings.Join(names, ",")
+}
+
+// WithheldText is text with each stored secret's value red holds replaced
+// by [secret:NAME], as a person's message is before it is kept anywhere.
+func WithheldText(red Redactor, text string) string {
+	red = usableRedactor(red)
+	if red == nil {
+		return text
+	}
+	return redactedText(red.Redact, text)
+}
+
+// Withheld is text as this loop keeps a person's message: its stored
+// secrets withheld.
+func (l *Loop) Withheld(text string) string {
+	out, _ := l.withholdSecrets(text)
+	return out
 }
 
 func (l *Loop) setPrompt(text string) {
@@ -557,6 +661,10 @@ func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	if cfg.OffloadAt > 0 {
 		l.Offloader = NewOffloader(cfg.OffloadAt)
 	}
+	// Start-up files are read from the HOME the session's bash gives a command.
+	if pol != nil && pol.Home == nil && reg != nil {
+		pol.Home = tools.CommandHome(reg)
+	}
 	// recall is bound to this session's record, so it goes on a copy: a server
 	// shares one registry across sessions, and adding it there would hand
 	// every session the tool that reads the last one's record.
@@ -591,25 +699,66 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 
 // RunMessage is Run for a prompt that carries a client's id, which the
 // recorded user.message echoes so the client can match it.
-func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error) {
+func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err error) {
+	defer func() { err = l.redactErr(err) }()
 	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
 	// Messages left queued by a run that ended first keep their place ahead
 	// of the new prompt.
-	if err := l.deliverQueued(); err != nil {
+	delivered, err := l.deliverQueuedCount()
+	if err != nil {
 		return TermError, err
 	}
-	if l.promptRefused(ctx, m.Text) != "" {
-		return TermPromptRefused, nil
+	l.setRefused("")
+	if why := l.promptRefused(ctx, m.Text); why != "" {
+		// Said in the session, where its surface shows it, as a steer refused is.
+		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(), Reason: why})
+		l.setRefused(why)
+		// Those delivered are answered now, as RunQueued would, not left
+		// recorded and unanswered until a later message.
+		if delivered == 0 {
+			return TermPromptRefused, nil
+		}
+		l.startMessage()
+		return l.run(ctx)
 	}
-	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: m.Text, ClientID: m.ClientID}); err != nil {
+	if err := l.noteTrustedStartup(); err != nil {
 		return TermError, err
 	}
-	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
-	l.setPrompt(m.Text)
+	text, withheld := l.withholdSecrets(m.Text)
+	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld}); err != nil {
+		return TermError, err
+	}
+	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
+}
+
+// EndRefused records the end of a run a hook refused before it began, for a
+// surface whose clients see a run end only when its end is recorded.
+func (l *Loop) EndRefused() {
+	l.runMu.Lock()
+	defer l.unlockRun()
+	// Only the end is recorded: no turn ran, so no turn_end hook fires, and
+	// the background tasks' last end stays the last run's.
+	l.record(EvSessionEnded, ActorSystem, l.endPayload(TermPromptRefused))
+}
+
+// RefusedPrompt is why a hook refused the last RunMessage's own message, or
+// "" when it was sent. A run that answered earlier queued messages instead
+// still completes; this says the caller's own message was not among them.
+func (l *Loop) RefusedPrompt() string {
+	l.refusedMu.Lock()
+	defer l.refusedMu.Unlock()
+	return l.refused
+}
+
+func (l *Loop) setRefused(why string) {
+	l.refusedMu.Lock()
+	l.refused = why
+	l.refusedMu.Unlock()
 }
 
 // startMessage gives a new message its own allowance of turns, when the loop
@@ -620,6 +769,24 @@ func (l *Loop) startMessage() {
 	}
 }
 
+// moreForTheModel reports whether a completed run has something new for the
+// model: a background result, or a queued message the hooks let through,
+// which it delivers now. Messages the hooks refuse, every one, leave nothing,
+// and the model is not called again on the conversation as it was.
+func (l *Loop) moreForTheModel() (bool, error) {
+	if l.Background.Pending() > 0 {
+		return true, nil
+	}
+	if len(l.Queued()) == 0 {
+		return false, nil
+	}
+	n, err := l.deliverQueuedCount()
+	if err != nil {
+		return false, err
+	}
+	return n > 0 || l.hasWork(), nil
+}
+
 // RunQueued continues the conversation with only the queued messages, for a
 // message that arrived after the last run had already decided to end.
 func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
@@ -628,6 +795,15 @@ func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
 	defer l.unlockRun()
 	if !l.hasWork() {
 		return TermCompleted, nil
+	}
+	// Queued messages a hook refuses all are dropped, and with nothing else
+	// waiting the model is not called on the conversation as it was.
+	more, err := l.moreForTheModel()
+	if err != nil {
+		return TermError, err
+	}
+	if !more {
+		return TermPromptRefused, nil
 	}
 	l.startMessage()
 	return l.run(ctx)
@@ -664,6 +840,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		b.deferred = nil
 		b.mu.Unlock()
 	}
+turns:
 	for {
 		if ctx.Err() != nil {
 			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
@@ -730,11 +907,28 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 			// is answered now rather than left waiting for a prompt that may
 			// never come.
 			if reason == TermCompleted && l.hasWork() {
-				continue
+				more, err := l.moreForTheModel()
+				if err != nil {
+					l.finish(TermError)
+					return TermError, err
+				}
+				if more {
+					continue
+				}
 			}
 			// Joined children are waited for: the run ends with them.
 			if reason == TermCompleted && l.Background.joinedLive() > 0 {
-				if l.waitBackground(ctx) || ctx.Err() != nil {
+				for l.waitBackground(ctx) {
+					more, err := l.moreForTheModel()
+					if err != nil {
+						l.finish(TermError)
+						return TermError, err
+					}
+					if more {
+						continue turns
+					}
+				}
+				if ctx.Err() != nil {
 					continue
 				}
 			}
@@ -763,9 +957,12 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		return nil
 	}
 	check := l.Compactor.ShouldCompact
-	if !reserve {
+	// Right after a compaction the history is as small as it gets: room for
+	// the next turn on top would compact again at once in a small window.
+	if !reserve || l.justCompacted {
 		check = l.Compactor.ShouldCompactNow
 	}
+	l.justCompacted = false
 	should, used, err := check(l.Config.SystemPrompt, l.messages, toolDefs(l.Tools))
 	if err != nil || !should {
 		return err
@@ -790,6 +987,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 
 	l.messages = compacted
 	l.usage.Compactions++
+	l.justCompacted = true
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
@@ -1002,7 +1200,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				flushThinking(false)
 			}
 		case model.ChunkToolCall:
-			calls = append(calls, *chunk.ToolCall)
+			calls = append(calls, withCallID(*chunk.ToolCall, calls))
 		case model.ChunkError:
 			streamErr = chunk.Err
 		case model.ChunkDone:
@@ -1032,6 +1230,24 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
+	}
+	// A reply stopped before the provider reported usage still cost tokens:
+	// they are estimated, marked so, and spent from the budget.
+	if ctx.Err() != nil && callUsage.InputTokens == 0 && callUsage.OutputTokens == 0 {
+		mc.TokensIn, _ = l.Adapter.CountTokens(req)
+		produced := text.Len() + reasoning.Len()
+		for _, c := range calls {
+			produced += len(c.Name) + len(c.Args)
+		}
+		mc.TokensOut = (produced + 3) / 4
+		if mc.TokensIn > 0 || mc.TokensOut > 0 {
+			mc.Estimated = true
+			l.Budget.Spend(mc.TokensIn + mc.TokensOut)
+			// The session's totals count them too, as the record's call does.
+			l.usage.InputTokens += mc.TokensIn
+			l.usage.OutputTokens += mc.TokensOut
+			l.usage.ColdPrefillTokens += mc.TokensIn
+		}
 	}
 	// A stream cut by our own cancel is an interrupt, recorded as such at
 	// session end, not a model failure.
@@ -1219,6 +1435,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		c.Args = json.RawMessage(`{}`)
 		return l.refuseArgs(ctx, tool, call, err)
 	}
+	dropped = boundKeys(dropped)
+	if len(dropped) > 0 {
+		l.ignored.Store(call.ID, dropped)
+	}
 	// Before policy, approval, the record and history see it: a credential
 	// where a secret's name belongs is never kept.
 	canon = tools.WithholdSecretValues(tool, canon)
@@ -1242,6 +1462,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		return l.refuseUnresolvable(ctx, call, unresolvable)
 	}
 
+	if call.Name == "bash" {
+		_ = l.noteTrustedStartup() // best effort: the decision itself is recorded
+	}
 	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
@@ -1249,6 +1472,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	} else if refused := l.pathSecretRefused(call); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
+	} else if decision.Decision == policy.Allow && l.unknown.has(call.Name, call.Args) {
+		// It may already have run on a process that stopped: a person says whether to run it again.
+		decision = policy.Result{Decision: policy.Ask, Step: "handover",
+			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
@@ -1321,7 +1548,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	case policy.Ask:
 		if requestedFrom(asked).Withheld {
 			l.record(EvActionDenied, ActorSystem, map[string]string{
-				"call_id": call.ID, "reason": withheldAsk, "step": "ask", "by": BySystem,
+				"call_id": call.ID, "reason": withheldAsk, "step": "withheld", "by": BySystem,
 			})
 			return false, tools.Result{Content: "Denied: " + withheldAsk + ". The call was not run.", IsError: true}, ""
 		}
@@ -1337,13 +1564,18 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.
+			// Its own step, so a refusal no one gave is not counted as the ask rule's.
 			cancelled := ctx.Err() != nil || errors.Is(err, context.Canceled)
-			why := "approval failed: " + err.Error()
+			if cancelled && l.handingOver(ctx) {
+				// Left open: the process taking the turn over asks again.
+				return false, tools.Result{Content: "Interrupted.", IsError: true}, TermHandedOver
+			}
+			why, step := "approval failed: "+err.Error(), "unanswered"
 			if cancelled {
-				why = unanswered(ctx, answer.Held)
+				why, step = unanswered(ctx, answer.Held), "interrupted"
 			}
 			l.record(EvActionDenied, ActorSystem, map[string]string{
-				"call_id": call.ID, "reason": why, "step": "ask", "by": BySystem,
+				"call_id": call.ID, "reason": why, "step": step, "by": BySystem,
 			})
 			if cancelled {
 				return false, tools.Result{Content: "Interrupted.", IsError: true}, terminalForCancel(ctx)
@@ -1358,7 +1590,11 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 					why = answer.Reason + ": " + decision.Reason
 				}
 			}
-			denied := map[string]string{"call_id": call.ID, "reason": why, "step": decision.Step, "by": by}
+			step := decision.Step
+			if by == BySystem {
+				step = "unanswered" // no one declined it: timed out, input ended, or the client failed
+			}
+			denied := withRule(map[string]string{"call_id": call.ID, "reason": why, "step": step, "by": by}, decision)
 			if answer.Approver != "" {
 				denied["approver"] = answer.Approver
 			}
@@ -1401,9 +1637,17 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			}
 		}
 	}
-	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
+	// A call runs only with its approval on record: one that ran unrecorded
+	// would be asked again, and could run again, wherever the session goes on.
+	if _, err := l.Recorder.Record(EvActionApproved, actorFor(approvedBy["by"]), Trusted, approvedBy); err != nil {
+		l.noteRecordErr(err)
+		return false, tools.Result{Content: notRecorded, IsError: true}, ""
+	}
 	return true, tools.Result{}, ""
 }
+
+// notRecorded answers a call left unrun because the record could not be written.
+const notRecorded = "Not run: the session's record could not be written, so the call was not run."
 
 // ownerGateKey carries a woken run's OwnerActive to its calls and to the
 // foreground subagents it starts.
@@ -1428,11 +1672,14 @@ func (l *Loop) deniedOwnerGone(callID string) (bool, tools.Result, TerminalReaso
 	return false, tools.Result{Content: "Denied: " + ownerGoneReason + ".", IsError: true}, TermOwnerInactive
 }
 
-// withRule adds the rule that decided, when one did, so an approval or
-// denial by policy names what made it.
+// withRule adds the rule that decided, when one did, and the policy layer
+// it came from, so an approval or denial names what made it.
 func withRule(p map[string]string, d policy.Result) map[string]string {
 	if d.Rule != "" {
 		p["rule"] = d.Rule
+	}
+	if d.Layer != "" {
+		p["layer"] = d.Layer
 	}
 	return p
 }
@@ -1560,6 +1807,10 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		result.Content = redactedText(red.Redact, result.Content)
 	}
 	elapsed := time.Since(start)
+	// Without this the model reads "path is required" and never learns its file_path was not taken.
+	if keys, ok := l.ignored.LoadAndDelete(call.ID); ok {
+		result.Content += "\n\n[ignored: " + strings.Join(keys.([]string), ", ") + " (not arguments of " + call.Name + ")]"
+	}
 
 	// An identical call that keeps failing means the model is not reading the
 	// error. Escalate the message rather than letting it consume every turn:
@@ -1606,6 +1857,12 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 
 // finishStopped is finish with the detail a person's Interrupt gave, if any.
 func (l *Loop) finishStopped(ctx context.Context, reason TerminalReason) TerminalReason {
+	if reason == TermHandedOver {
+		if l.handingOver(ctx) {
+			return l.handedOver()
+		}
+		reason = TermShutdown // a subagent does not move with its parent
+	}
 	var in Interrupt
 	if reason == TermUserInterrupt && errors.As(context.Cause(ctx), &in) {
 		l.endDetail = in.Detail
@@ -1628,9 +1885,18 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// Children the end takes with it are stopped before it is recorded, so
 	// the end says how many live on.
 	l.Background.onRunEnd(reason)
+	end := l.endPayload(reason)
+	l.record(EvSessionEnded, ActorSystem, end)
+	l.Background.noteEnd(end)
+	l.observe(context.Background(), HookTurnEnd, "", string(reason))
+	return reason
+}
+
+// endPayload is the session.ended a run ending for reason records.
+func (l *Loop) endPayload(reason TerminalReason) SessionEnded {
 	l.usage.Turns = l.turns
 	ctxTokens, window := l.contextSize()
-	end := SessionEnded{
+	return SessionEnded{
 		Reason:        reason,
 		Turns:         l.turns,
 		TokensIn:      l.usage.InputTokens,
@@ -1643,10 +1909,6 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 		Suggesting:    l.endSuggesting,
 		Detail:        l.endDetail,
 	}
-	l.record(EvSessionEnded, ActorSystem, end)
-	l.Background.noteEnd(end)
-	l.observe(context.Background(), HookTurnEnd, "", string(reason))
-	return reason
 }
 
 // promptRefused asks the hooks about a person's message, and why they
@@ -1819,6 +2081,7 @@ func (l *Loop) resultLimitChars() int {
 // order they finished, for the same reason.
 func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalReason {
 	results := make([]callOutcome, len(calls))
+	l.ignored.Clear() // a call refused last turn never ran to take its entry
 
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
@@ -1841,8 +2104,15 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	// not depend on which goroutine won.
 	var wg sync.WaitGroup
 	var mutating []int
+	unrecorded := func(i int) bool {
+		if l.recordFailure() == nil {
+			return false
+		}
+		results[i] = callOutcome{result: tools.Result{Content: notRecorded, IsError: true}, set: true}
+		return true
+	}
 	for i, call := range calls {
-		if !approved[i] {
+		if !approved[i] || unrecorded(i) {
 			continue
 		}
 		tool, found := l.Tools.Get(call.Name)
@@ -1860,6 +2130,9 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	wg.Wait()
 
 	for _, i := range mutating {
+		if unrecorded(i) {
+			continue
+		}
 		res, terminal := l.invoke(ctx, calls[i])
 		results[i] = callOutcome{result: res, terminal: terminal, set: true}
 		if terminal != "" {
@@ -2067,14 +2340,43 @@ func (b *fragmentBuffer) push(s string) string {
 	}
 	raw := b.carry + s
 	whole := redactedText(b.redact, raw)
+	if whole == raw {
+		// Nothing in raw matches, so no part of it can: one redaction, not one per candidate cut.
+		cut := len(raw) - (b.span - 1)
+		for cut > 0 && cut < len(raw) && !utf8.RuneStart(raw[cut]) {
+			cut--
+		}
+		if cut <= 0 {
+			b.carry = raw
+			return ""
+		}
+		b.carry = raw[cut:]
+		return raw[:cut]
+	}
+	safe := func(cut int) (string, bool) {
+		head := redactedText(b.redact, raw[:cut])
+		return head, head+redactedText(b.redact, raw[cut:]) == whole
+	}
 	for cut := len(raw) - (b.span - 1); cut > 0; cut -= max(b.span-1, 1) {
 		for cut > 0 && cut < len(raw) && !utf8.RuneStart(raw[cut]) {
 			cut--
 		}
 		// A cut is safe only where splitting changes nothing. A secret that
 		// crosses it starts less than a span before it, so the next try is there.
-		head := redactedText(b.redact, raw[:cut])
-		if cut > 0 && head+redactedText(b.redact, raw[cut:]) == whole {
+		if cut > 0 {
+			if head, ok := safe(cut); ok {
+				b.carry = raw[cut:]
+				return head
+			}
+		}
+	}
+	// Each try fell inside a value (encoded values are longer than the text
+	// between them): look rune by rune below the first try before holding all.
+	for cut := len(raw) - b.span; cut > 0; cut-- {
+		if !utf8.RuneStart(raw[cut]) {
+			continue
+		}
+		if head, ok := safe(cut); ok {
 			b.carry = raw[cut:]
 			return head
 		}
@@ -2245,4 +2547,28 @@ func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCa
 func timedOut(err error) bool {
 	var te *model.TimeoutError
 	return errors.As(err, &te)
+}
+
+// noteTrustedStartup records the start-up files the baseline leaves
+// unjudged whenever that set changes, so the record says whose word they ran on.
+func (l *Loop) noteTrustedStartup() error {
+	if l.Policy == nil || len(l.Policy.StartupBaseline) == 0 {
+		return nil
+	}
+	files := l.Policy.TrustedStartupFiles()
+	var key strings.Builder
+	for _, f := range files {
+		key.WriteString(f.Path + "\x00" + f.SHA256 + "\n")
+	}
+	l.startupMu.Lock()
+	defer l.startupMu.Unlock()
+	if key.String() == l.startupNoted {
+		return nil
+	}
+	l.startupNoted = key.String()
+	if files == nil {
+		files = []policy.TrustedStartupFile{}
+	}
+	_, err := l.Recorder.Record(EvStartupTrusted, ActorSystem, Trusted, map[string]any{"files": files})
+	return err
 }

@@ -6,10 +6,8 @@ import (
 	"strings"
 )
 
-// The kernel lets a user write a cgroup that systemd still manages (any
-// scope under the user's own manager), and systemd then rewrites or removes
-// what Abhed made there. So writability is not delegation: the manager that
-// made the cgroup is asked.
+// Writability is not delegation: systemd rewrites what Abhed makes in a scope
+// it still manages, so the manager that made the cgroup is asked.
 
 // Manager answers whether a systemd unit has Delegate=yes. user selects the
 // person's own manager (systemctl --user) rather than the system's.
@@ -17,8 +15,7 @@ type Manager func(ctx context.Context, unit string, user bool) (string, error)
 
 // ConfirmDelegated asks the manager of the base cgroup whether it really
 // delegated it, and refuses, wrapping ErrNotDelegated, when it did not or
-// cannot say. Outside systemd, as in a container whose runtime delegated its
-// cgroup, the cgroup and its interface files must belong to this user.
+// cannot say.
 func (b *Base) ConfirmDelegated(ctx context.Context) error {
 	return confirmDelegated(ctx, b.dir, askSystemd, ownedByUser)
 }
@@ -42,9 +39,8 @@ func confirmDelegated(ctx context.Context, dir string, ask Manager, owned func(s
 	return nil
 }
 
-// unitOf is the nearest systemd unit at or above dir that can be delegated
-// (a scope or a service), whether it belongs to a user's own manager, and
-// whether dir is under systemd at all.
+// unitOf is the nearest delegable systemd unit at or above dir, whether it is a
+// user manager's, and whether dir is under systemd at all.
 func unitOf(dir string) (unit string, user, managed bool) {
 	parts := strings.Split(strings.TrimPrefix(path.Clean(dir), cgroupMount), "/")
 	for i := len(parts) - 1; i >= 0; i-- {

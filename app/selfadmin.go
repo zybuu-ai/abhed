@@ -31,8 +31,8 @@ func selfAdmin(rest []string) string {
 	case "init":
 		return "abhed init"
 	case "trust":
-		if verb == "grant" {
-			return "abhed trust grant"
+		if verb == "grant" || verb == "startup-files" {
+			return "abhed trust " + verb
 		}
 	case "record":
 		if verb == "prune" {
@@ -49,6 +49,18 @@ func selfAdmin(rest []string) string {
 	case "mcp":
 		if slices.Contains([]string{"add", "remove", "rm"}, verb) {
 			return "abhed mcp " + verb
+		}
+	case "login", "logout":
+		// A session must not hold, or end, the person's sign-in to a server.
+		return "abhed " + rest[0]
+	case "profile":
+		if slices.Contains([]string{"use", "rm", "remove"}, verb) {
+			return "abhed profile " + verb
+		}
+	case "sandbox":
+		// Nor reach a server's sandboxes with it.
+		if verb != "" && verb != "-h" && verb != "--help" && verb != "help" {
+			return "abhed sandbox " + verb
 		}
 	case "migrate":
 		return "abhed migrate"
@@ -91,6 +103,9 @@ func widened(base, eff config.Config) string {
 	if eff.Permissions.Mode == string(policy.ModeBypass) && base.Permissions.Mode != string(policy.ModeBypass) {
 		return "bypass mode from the command line's settings"
 	}
+	if from, to := orDefault(base.Permissions.Mode, "default"), orDefault(eff.Permissions.Mode, "default"); modeLooseness(to) > modeLooseness(from) {
+		return fmt.Sprintf("mode %s, looser than the configured %s", to, from)
+	}
 	for _, r := range eff.Permissions.Allow {
 		if !slices.Contains(base.Permissions.Allow, r) {
 			return fmt.Sprintf("an allow rule added on the command line (%s)", r)
@@ -124,6 +139,22 @@ func widened(base, eff config.Config) string {
 		return "a web_search or web_fetch change on the command line"
 	}
 	return ""
+}
+
+// modeLooseness orders the modes by what they approve without asking; an
+// unknown mode counts as the loosest, so it is refused rather than let through.
+func modeLooseness(m string) int {
+	switch policy.Mode(m) {
+	case policy.ModePlan:
+		return 0
+	case policy.ModeDefault:
+		return 1
+	case policy.ModeAcceptEdits:
+		return 2
+	case policy.ModeAuto:
+		return 3
+	}
+	return 4
 }
 
 // refuseInAgent refuses what, when this process runs inside an agent's

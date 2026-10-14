@@ -112,8 +112,11 @@ func TestClaimFailureFailsTheHold(t *testing.T) {
 	if err := s.holdNode(live); err == nil || live.beatStop != nil {
 		t.Fatalf("hold with a failed claim: err %v, heartbeat started %v", err, live.beatStop != nil)
 	}
-	s.releaseNode("s-1") // logged, not fatal
-	if len(f.claimed) != 2 || len(f.released) != 1 {
+	retry := releaseRetry
+	releaseRetry = 300 * time.Millisecond
+	defer func() { releaseRetry = retry }()
+	s.releaseNode("s-1") // tried again, then logged, not fatal
+	if len(f.claimed) != 2 || len(f.released) < 2 {
 		t.Fatalf("claimed %v released %v", f.claimed, f.released)
 	}
 }
@@ -228,7 +231,7 @@ func TestApprovalIsRecordedDurably(t *testing.T) {
 	f := newFakeApprovals()
 	l := &liveSession{
 		ID:      "s-1",
-		allowed: map[string]bool{}, durable: f,
+		allowed: map[string]string{}, durable: f,
 	}
 	// Answer immediately through the durable path so Approve returns.
 	go func() {
@@ -258,7 +261,7 @@ func TestApproveStillWorksWhenRecordingFails(t *testing.T) {
 	f.askErr = errors.New("database is down")
 	l := &liveSession{
 		ID:      "s-2",
-		allowed: map[string]bool{}, durable: f,
+		allowed: map[string]string{}, durable: f,
 	}
 	go answerWhenAsked(l, true, "")
 
@@ -282,7 +285,7 @@ func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
 			f := newFakeApprovals()
 			l := &liveSession{
 				ID:      "s-3",
-				allowed: map[string]bool{}, durable: f,
+				allowed: map[string]string{}, durable: f,
 			}
 			go func() {
 				for f.askedCount() == 0 {
@@ -301,7 +304,7 @@ func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
 				t.Fatalf("answer %+v", answer)
 			}
 			l.mu.Lock()
-			remembered := l.allowed["bash(go test*)"]
+			_, remembered := l.allowed["bash(go test*)"]
 			l.mu.Unlock()
 			if remembered != c.remembered {
 				t.Fatalf("remembered = %v, want %v", remembered, c.remembered)

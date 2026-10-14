@@ -559,7 +559,7 @@ var errSubscriptionRestricted = fmt.Errorf( //nolint:staticcheck // a multi-line
 		"  A Claude Pro or Max token is restricted to Anthropic's own clients; it checks " +
 		"the system prompt and refuses other clients.\n" +
 		"  Use an API key from platform.claude.com instead:\n" +
-		"      unset CLAUDE_CODE_OAUTH_TOKEN\n" +
+		"      unset ABHED_ANTHROPIC_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN\n" +
 		"      export ANTHROPIC_API_KEY=sk-ant-api03-...")
 
 // fatalStatus stops the retry loop for a failure that will not clear.

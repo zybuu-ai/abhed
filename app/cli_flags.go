@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,7 +24,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
-	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 )
 
 // usage prints the synopsis, the subcommands and then the flags.
@@ -33,20 +34,49 @@ func (a *App) usage(fs *flag.FlagSet) {
 		"       abhed [flags] \"task\"      interactive, starting with the task (or: abhed -- task words)\n"+
 		"       abhed -p [flags] [task]   headless; the task may also come on stdin\n\n")
 	fmt.Fprintf(w, "With no command, abhed opens an interactive session in the workspace;\n-p runs one task headless and exits.\n\nCommands:\n")
-	for _, c := range subcommands {
-		fmt.Fprintf(w, "  %-10s %s\n", c.name, c.about)
-	}
 	var own []string
+	width := 10
+	for _, c := range subcommands {
+		width = max(width, len(c.name))
+	}
 	for name := range a.commands {
 		own = append(own, name)
+		width = max(width, len(name))
 	}
 	sort.Strings(own)
+	list := slices.Clone(subcommands)
 	for _, name := range own {
-		fmt.Fprintf(w, "  %-10s a command of this edition\n", name)
+		about := a.about[name]
+		if about == "" {
+			about = "a command of this edition"
+		}
+		list = append(list, subcommand{name: name, about: about})
+	}
+	for _, c := range list {
+		fmt.Fprintf(w, "  %-*s %s\n", width, c.name, wrapAbout(c.about, 72, width+3))
 	}
 	fmt.Fprintf(w, "\nFlags:\n")
 	fs.PrintDefaults()
 	fmt.Fprint(w, exitCodesHelp)
+}
+
+// wrapAbout breaks a long description at spaces, indenting each further
+// line under the first, which starts at column indent.
+func wrapAbout(s string, width, indent int) string {
+	var b strings.Builder
+	n := 0
+	for i, word := range strings.Fields(s) {
+		if i > 0 && n+1+len(word) > width {
+			b.WriteString("\n" + strings.Repeat(" ", indent))
+			n = 0
+		} else if i > 0 {
+			b.WriteByte(' ')
+			n++
+		}
+		b.WriteString(word)
+		n += len(word)
+	}
+	return b.String()
 }
 
 // exitCodesHelp is the exit-code table, as docs/guide/10-automation.md has it.
@@ -82,17 +112,17 @@ type cliFlags struct {
 	modelID         string
 	fallbackModel   string
 	workdir         string
-	addDirs         string
+	addDirs         multiFlag
 	maxTurns        int
 	maxBudget       int
 	format          string
 	inputFormat     string
 	partial         bool
 	verbose         bool
-	allow           string
-	deny            string
-	allowedTools    string
-	disallowedTools string
+	allow           multiFlag
+	deny            multiFlag
+	allowedTools    multiFlag
+	disallowedTools multiFlag
 	appendSystem    string
 	appendFile      string
 	systemPrompt    string
@@ -127,7 +157,7 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.StringVar(&f.modelID, "model", "", "provider name from config")
 	fs.StringVar(&f.fallbackModel, "fallback-model", "", "comma-separated configured providers to move to, in order, when the model is unreachable or refuses access")
 	fs.StringVar(&f.workdir, "C", "", "workspace directory (default: current)")
-	fs.StringVar(&f.addDirs, "add-dir", "", "comma-separated extra directories the agent may read and write")
+	fs.Var(&f.addDirs, "add-dir", "comma-separated extra directories the agent may read and write; repeatable")
 	fs.IntVar(&f.maxTurns, "max-turns", 0, "override the turn limit")
 	fs.IntVar(&f.maxBudget, "max-budget-tokens", 0, "end the run once it has used this many tokens (exit 3)")
 	fs.StringVar(&f.format, "output-format", "text", "text|json|stream-json: json and stream-json write one event per line, then a result line")
@@ -135,12 +165,12 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.BoolVar(&f.noStdin, "no-stdin", false, "with -p, do not read stdin, as with < /dev/null; for a loop that reads a list on stdin")
 	fs.BoolVar(&f.partial, "include-partial-messages", false, "with stream-json, include the streamed text fragments")
 	fs.BoolVar(&f.verbose, "verbose", false, "show reasoning in full, and each model call's tokens on stderr")
-	fs.StringVar(&f.allow, "allow", "", "comma-separated allow rules, e.g. 'bash(go test*)'")
-	fs.StringVar(&f.deny, "deny", "", "comma-separated deny rules")
-	fs.StringVar(&f.allowedTools, "allowedTools", "", "allow rules with tool names in any case, e.g. 'Read,Bash(npm test:*)'")
-	fs.StringVar(&f.allowedTools, "allowed-tools", "", "same as -allowedTools")
-	fs.StringVar(&f.disallowedTools, "disallowedTools", "", "deny rules with tool names in any case")
-	fs.StringVar(&f.disallowedTools, "disallowed-tools", "", "same as -disallowedTools")
+	fs.Var(&f.allow, "allow", "comma-separated allow rules, e.g. 'bash(go test*)'; repeatable")
+	fs.Var(&f.deny, "deny", "comma-separated deny rules; repeatable")
+	fs.Var(&f.allowedTools, "allowedTools", "allow rules with tool names in any case, e.g. 'Read,Bash(npm test:*)'; repeatable")
+	fs.Var(&f.allowedTools, "allowed-tools", "same as -allowedTools")
+	fs.Var(&f.disallowedTools, "disallowedTools", "deny rules with tool names in any case; repeatable")
+	fs.Var(&f.disallowedTools, "disallowed-tools", "same as -disallowedTools")
 	fs.StringVar(&f.appendSystem, "append-system-prompt", "", "add these instructions to the system prompt (recorded by sha256)")
 	fs.StringVar(&f.appendFile, "append-system-prompt-file", "", "add the instructions in this file to the system prompt")
 	fs.StringVar(&f.systemPrompt, "system-prompt", "", "replace the system prompt; refused under a managed configuration (recorded by sha256)")
@@ -203,7 +233,7 @@ func (f *cliFlags) task() string {
 // the exit code. It is what every edition's main calls.
 func Main(args []string, opts ...Option) int {
 	// No background shell outlives the process that started it.
-	defer tools.EndBackgroundShells(shellEndWait)
+	defer endAtExit()
 	a := newApp(opts...)
 	var f cliFlags
 	fs := newFlagSet(&f)
@@ -224,6 +254,15 @@ func Main(args []string, opts ...Option) int {
 			return 0
 		}
 		return 2
+	}
+	// The command line's own flags may follow a subcommand too.
+	if len(f.sub) > 0 {
+		sub, err := hoistGlobalFlags(fs, f.sub)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 2
+		}
+		f.sub = sub
 	}
 
 	if f.showVer || (len(f.sub) > 0 && f.sub[0] == "version") {
@@ -267,25 +306,37 @@ func Main(args []string, opts ...Option) int {
 	if err != nil {
 		fail(err)
 	}
-	// Also accepted after the subcommand, as in `abhed serve -trust-workspace`.
 	rest := f.sub
-	if len(rest) > 1 {
-		rest = leadingTrustFlag(rest, &f.trustWS)
-	}
 	if f.trustWS {
 		a.trust = config.TrustGranted
+	}
+	// A nested run never takes workspace trust from its environment: the
+	// command could have set it under a name no rule can read.
+	if os.Getenv(config.TrustEnv) != "" {
+		if why := inAgentCommand(); why != "" {
+			_ = os.Unsetenv(config.TrustEnv)
+			fmt.Fprintf(os.Stderr, "abhed: %s is ignored inside an agent's command (%s)\n", config.TrustEnv, why)
+		}
 	}
 	if refuseInAgent(f.escalation()) {
 		return 1
 	}
 	if len(rest) > 0 {
+		if ignored := ignoredBefore(fs, rest[0]); len(ignored) > 0 {
+			fmt.Fprintf(os.Stderr, "abhed: %s does not apply to %s; see abhed %s -h\n", strings.Join(ignored, ", "), rest[0], rest[0])
+			return 2
+		}
 		if refuseInAgent(selfAdmin(rest)) {
-			if rest[0] == "admin" {
+			switch rest[0] {
+			case "admin":
 				logAdminInAgent(rest[1:], inAgentCommand(), os.Stderr)
+			case "sandbox":
+				// Its own exit table: 3, not allowed.
+				return sandboxcli.ExitAuth
 			}
 			return 1
 		}
-		return a.subcommand(workspace, rest, f.listenAddr)
+		return a.subcommand(workspace, rest, &f)
 	}
 	if len(f.words) > 0 && !f.print.on && !f.dashed {
 		// An edition's own subcommand.
@@ -306,7 +357,7 @@ func Main(args []string, opts ...Option) int {
 }
 
 // subcommand runs a built-in subcommand; rest[0] is its name.
-func (a *App) subcommand(workspace string, rest []string, listenAddr string) int {
+func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 	// `abhed index -h` used to build the index and `abhed init -h` to write
 	// a config: a command that reads no flags of its own answers help here.
 	if len(rest) > 1 && isHelpArg(rest[1]) && !ownsHelp[rest[0]] {
@@ -327,10 +378,24 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 	case "trust":
 		return trustCmd(workspace, rest[1:], os.Stdout)
 	case "doctor":
-		if len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
-			return a.doctorJSON(os.Stdout, workspace)
+		// Checked as a run with the same -settings would load it.
+		var set flagSettings
+		if f.settings != "" {
+			var err error
+			if set.data, set.name, err = newFlagFiles(workspace, a.trust).read("-settings", f.settings); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 2
+			}
 		}
-		return a.doctor(workspace)
+		asJSON, timeout, err := doctorArgs(rest[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: doctor: %v\n", err)
+			return 2
+		}
+		if asJSON {
+			return a.doctorJSON(os.Stdout, workspace, set)
+		}
+		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
 	case "record":
@@ -354,6 +419,18 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "login":
+		return loginCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "logout":
+		return logoutCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "profile":
+		return profileCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "sandbox":
+		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "pki":
+		return pkiCmd(rest[1:], os.Stdout, os.Stderr)
+	case "egress-proxy":
+		return egressProxyCmd(rest[1:], os.Stdout, os.Stderr)
 	case "admin":
 		return adminCmd(rest[1:], os.Stdout, os.Stderr)
 	case "mcp":
@@ -374,11 +451,15 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		// Re-parse the remaining args so `abhed serve -addr :9000` works: Go's
 		// flag package stops at the first non-flag argument.
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
-		serveAddr := serveFlags.String("addr", listenAddr, "listen address")
+		serveAddr := serveFlags.String("addr", f.listenAddr, "listen address")
 		serveTrust := serveFlags.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
+		serveCheck := serveFlags.Bool("check", false, "check everything serve needs, then exit without serving")
 		_ = serveFlags.Parse(rest[1:])
 		if *serveTrust {
 			a.trust = config.TrustGranted
+		}
+		if *serveCheck {
+			return a.serveCheck(os.Stdout, workspace, *serveAddr)
 		}
 		return a.serveCmd(workspace, *serveAddr)
 	}
@@ -415,32 +496,10 @@ var permissionModes = map[string]string{
 	"plan": "plan", "auto": "auto", "bypassPermissions": "bypass", "bypass": "bypass",
 }
 
-// leadingTrustFlag takes -trust-workspace when it is the first argument
-// after a subcommand the registry marks as loading the workspace
-// configuration; for any other, an edition's included, it is left alone.
-// serve, eval and resolve also parse it among their own flags.
-func leadingTrustFlag(args []string, trust *bool) []string {
-	takes := false
-	for _, c := range subcommands {
-		if c.name == args[0] {
-			takes = c.trust
-		}
-	}
-	if !takes {
-		return args
-	}
-	switch args[1] {
-	case "-trust-workspace", "--trust-workspace", "-trust-workspace=true", "--trust-workspace=true":
-		*trust = true
-		return append(args[:1:1], args[2:]...)
-	}
-	return args
-}
-
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true,
+	"sandbox": true, "secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true,
 }
 
 func isHelpArg(s string) bool {
@@ -490,20 +549,30 @@ func validMode(m string) bool {
 
 // applyFlags lays the command line over the configuration. The managed
 // configuration binds the flags exactly as it binds the SDK's Options.
-func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny, addDirs string) (config.Config, error) {
+func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny, addDirs []string) (config.Config, error) {
 	return cfg.Apply(config.Overrides{
 		Mode: mode, MaxTurns: maxTurns,
-		Allow: splitTop(allow), Deny: splitTop(deny), AdditionalDirs: splitRules(addDirs),
+		Allow: allow, Deny: deny, AdditionalDirs: addDirs,
 	})
 }
 
 // toolRules turns a familiar tool list ("Read,Edit,Bash(npm test:*)") into
 // Abhed rules ("read", "edit", "bash(npm test*)"). It splits at commas
 // outside parentheses; a rule already in Abhed's form comes out unchanged.
-func toolRules(list string) []string {
+func toolRules(lists ...string) []string {
 	var out []string
-	for _, r := range splitTop(list) {
+	for _, r := range splitEach(lists) {
 		out = append(out, toolRule(r))
+	}
+	return out
+}
+
+// splitEach splits each value of a repeated rule flag on its own, so an
+// unbalanced parenthesis in one never joins it to the next.
+func splitEach(lists []string) []string {
+	var out []string
+	for _, l := range lists {
+		out = append(out, splitTop(l)...)
 	}
 	return out
 }
@@ -542,9 +611,12 @@ var toolNames = map[string]string{
 
 func toolRule(s string) string {
 	name, pattern, hasPattern := strings.Cut(s, "(")
-	name = strings.ToLower(strings.TrimSpace(name))
-	if mapped, ok := toolNames[name]; ok {
+	name = strings.TrimSpace(name)
+	// Only Abhed's own names are folded: an MCP tool's name keeps its case.
+	if mapped, ok := toolNames[strings.ToLower(name)]; ok {
 		name = mapped
+	} else {
+		name = policy.CanonicalTool(name)
 	}
 	if !hasPattern {
 		return name
@@ -558,8 +630,26 @@ func toolRule(s string) string {
 }
 
 // joinRules adds rules in the familiar form to rules in Abhed's.
-func joinRules(abhed, familiar string) string {
-	return strings.Join(append(splitTop(abhed), toolRules(familiar)...), ",")
+func joinRules(abhed, familiar []string) []string {
+	return append(splitEach(abhed), toolRules(familiar...)...)
+}
+
+// joinDenyRules is joinRules for deny rules. Up to 1.2.7 the flag lowered
+// every tool name, so a deny for an MCP or extension tool also keeps that
+// spelling: a deny only ever gains a match. Allow rules stay exact.
+func joinDenyRules(abhed, familiar []string) []string {
+	rules := splitEach(abhed)
+	for _, r := range toolRules(familiar...) {
+		rules = append(rules, r)
+		name, rest, found := strings.Cut(r, "(")
+		if lower := strings.ToLower(name); lower != name {
+			if found {
+				lower += "(" + rest
+			}
+			rules = append(rules, lower)
+		}
+	}
+	return rules
 }
 
 // budgetFlag applies -max-budget-tokens. Under a managed budget it may only

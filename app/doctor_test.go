@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -48,7 +49,7 @@ func TestDoctorFailsOnUnknownKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
-		return stdoutOf(t, func() int { return newApp().doctor(ws) })
+		return stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	}
 
 	// The key is listed before any check that needs the environment.
@@ -152,13 +153,13 @@ func TestDoctorFailsOnAStateFileWithASecondName(t *testing.T) {
 	if err := os.WriteFile(users, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, code := stdoutOf(t, func() int { return newApp().doctor(ws) }); code != 0 {
+	if out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) }); code != 0 {
 		t.Fatalf("the doctor failed without the link (%d):\n%s", code, out)
 	}
 	if err := os.Link(users, filepath.Join(ws, "notes.json")); err != nil {
 		t.Skipf("hard links unavailable: %v", err)
 	}
-	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	if code != 1 || !strings.Contains(out, users+" has 2 names") || !strings.Contains(out, "-samefile") ||
 		!strings.Contains(out, "checking sandbox exec... FAILED") || strings.Contains(out, "Ready.") {
 		t.Fatalf("the doctor did not fail on and name the linked state file (%d):\n%s", code, out)
@@ -175,6 +176,11 @@ func TestLimitWarningsNameWhatATierIgnores(t *testing.T) {
 	// Set in a file to the default value: still set by someone.
 	set := config.Default()
 	set.SetKeys = []string{"sandbox.max_memory_mb"}
+	// The Linux process tier bounds each process's data by it.
+	var processMemory []string
+	if runtime.GOOS != "linux" {
+		processMemory = []string{"max_memory_mb"}
+	}
 	for _, c := range []struct {
 		cfg  config.Config
 		tier sandbox.Tier
@@ -184,7 +190,7 @@ func TestLimitWarningsNameWhatATierIgnores(t *testing.T) {
 		{config.Default(), sandbox.TierProcess, false, nil},
 		{config.Default(), sandbox.TierNone, false, []string{"max_procs"}},
 		{config.Default(), sandbox.TierProcess, true, []string{"runs as root"}},
-		{set, sandbox.TierProcess, false, []string{"max_memory_mb"}},
+		{set, sandbox.TierProcess, false, processMemory},
 		{set, sandbox.TierNone, false, []string{"max_memory_mb", "max_procs"}},
 		{set, sandbox.TierContainer, true, nil},
 		{set, sandbox.TierVM, false, nil},
@@ -220,7 +226,7 @@ func TestDoctorFailsWhenTheSandboxCannotBeBuilt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
-	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	if code != 1 || !strings.Contains(out, "checking sandbox exec... FAILED") || strings.Contains(out, "SKIPPED") || strings.Contains(out, "Ready.") {
 		t.Fatalf("the doctor did not fail on the sandbox (%d):\n%s", code, out)
 	}
@@ -258,7 +264,7 @@ func doctorWith(t *testing.T, extra string) (string, int) {
 	}
 	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	t.Setenv("ABHED_DATABASE_URL", "")
-	return stdoutOf(t, func() int { return newApp().doctor(ws) })
+	return stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 }
 
 // An event store doctor cannot open, as before `abhed migrate`, is not ready.
@@ -276,7 +282,8 @@ func TestDoctorIsNotReadyWithoutTheEventStore(t *testing.T) {
 // Memory storage is named as serve uses it, beside the command line's record.
 func TestDoctorNamesMemoryStorage(t *testing.T) {
 	out, code := doctorWith(t, `"storage":{"driver":"memory"},`)
-	if code != 0 || !strings.Contains(out, "storage     memory (sessions do not survive restart) for serve") || !strings.Contains(out, "for the command line") {
+	if code != 0 || !strings.Contains(out, "storage     memory (sessions do not survive restart) for serve") || !strings.Contains(out, "for the command line") ||
+		!strings.Contains(out, "sandboxes   off (control_plane.enabled)") {
 		t.Fatalf("doctor with memory storage (%d):\n%s", code, out)
 	}
 }
@@ -298,7 +305,7 @@ func TestDoctorDoesNotProbeTheDefaultForAnUntrustedModel(t *testing.T) {
 	if err != nil || cfg.Workspace.Trusted || !modelAwaitsTrust(cfg) {
 		t.Fatalf("an untrusted model was not seen as waiting: trusted %v, %v", cfg.Workspace.Trusted, err)
 	}
-	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, code := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	if code != 1 || !strings.Contains(out, "not probed") || strings.Contains(out, "checking endpoint") {
 		t.Fatalf("doctor (%d):\n%s", code, out)
 	}
@@ -321,13 +328,93 @@ func TestDoctorNamesTheManagedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(config.TrustEnv, "1")
-	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws, flagSettings{}, doctorTimeout) })
 	if !strings.Contains(out, "managed     "+managed.ConfigFile+" (sets 1 setting(s))") {
 		t.Fatalf("the doctor does not name the managed file:\n%s", out)
 	}
 	var b strings.Builder
-	_ = newApp().doctorJSON(&b, ws)
+	_ = newApp().doctorJSON(&b, ws, flagSettings{})
 	if !strings.Contains(b.String(), "in force from "+managed.ConfigFile) {
 		t.Fatalf("doctor --json does not name it:\n%s", b.String())
+	}
+}
+
+// abhed -settings <file> doctor checks the configuration a run with the same
+// flag would load, and says where the settings came from.
+func TestDoctorHonoursSettingsFlag(t *testing.T) {
+	srv := doctorEndpoint(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ABHED_DATABASE_URL", "")
+	ws := t.TempDir()
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.TrustEnv, "1")
+	set := filepath.Join(t.TempDir(), "plan.json")
+	if err := os.WriteFile(set, []byte(`{"permissions":{"mode":"plan"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "-settings", set, "doctor"}) })
+	if !strings.Contains(out, "mode        plan") || !strings.Contains(out, "settings    "+set) ||
+		!strings.Contains(out, "git         held read-only from commands on every tier but none") {
+		t.Fatalf("-settings was not applied:\n%s", out)
+	}
+	if out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "doctor"}) }); !strings.Contains(out, "mode        default") || strings.Contains(out, "settings    ") {
+		t.Fatalf("without -settings:\n%s", out)
+	}
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"permissions":{"mood":"plan"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "-settings", bad, "doctor", "--json"}) }); !strings.Contains(out, "1 setting(s) no part of Abhed reads") {
+		t.Fatalf("doctor --json missed an unknown key from -settings:\n%s", out)
+	}
+	if code := Main([]string{"-C", ws, "-settings", filepath.Join(ws, "missing.json"), "doctor"}); code != 2 {
+		t.Fatalf("an unreadable -settings file: exit %d, want 2", code)
+	}
+}
+
+// The doctor names how long a sign-in lasts, and fails on a negative length.
+func TestDoctorReportsSessionHours(t *testing.T) {
+	out, code := doctorWith(t, `"auth":{"mode":"local","session_hours":48},`)
+	if !strings.Contains(out, "a sign-in lasts 48 hours (auth.session_hours)") {
+		t.Fatalf("doctor did not name the sign-in length (%d):\n%s", code, out)
+	}
+	if out, _ := doctorWith(t, `"auth":{"mode":"local"},`); !strings.Contains(out, "a sign-in lasts 12 hours") {
+		t.Fatalf("doctor did not name the default sign-in length:\n%s", out)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	_, code = doctorWith(t, `"auth":{"mode":"local","session_hours":-5},`)
+	os.Stderr = old
+	_ = w.Close()
+	msg, _ := io.ReadAll(r)
+	if code == 0 || !strings.Contains(string(msg), "auth.session_hours is -5") {
+		t.Fatalf("doctor accepted a negative session_hours (%d): %s", code, msg)
+	}
+}
+
+// caveatSandbox is a sandbox that works but lacks something here.
+type caveatSandbox struct{ sandbox.Sandbox }
+
+func (caveatSandbox) Tier() sandbox.Tier { return sandbox.TierProcess }
+func (caveatSandbox) Caveat() string     { return "no /proc" }
+
+// doctor and serve -check name what the tier lacks beside it.
+func TestTierLabelNamesACaveat(t *testing.T) {
+	if got := tierLabel(caveatSandbox{}); got != "process (no /proc)" {
+		t.Fatalf("label %q", got)
+	}
+	if got := tierLabel(&sandbox.None{}); got != "none" {
+		t.Fatalf("label %q", got)
 	}
 }

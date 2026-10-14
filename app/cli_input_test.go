@@ -94,7 +94,15 @@ func TestSchemaFlagFile(t *testing.T) {
 			t.Fatal("/dev/zero was taken")
 		}
 	}
-	for _, v := range []string{`[1]`, `"s"`, `nope`} {
+	// A JSON object that is not a schema, such as a credentials file, is
+	// refused and named, not sent to the model as the schema.
+	if err := os.WriteFile(filepath.Join(ws, "creds.json"), []byte(`{"api_key":"sk-hidden"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := schemaFlag("@creds.json", ws); err == nil || !strings.Contains(err.Error(), "creds.json is not a JSON Schema") || strings.Contains(err.Error(), "sk-hidden") {
+		t.Fatalf("creds: %v", err)
+	}
+	for _, v := range []string{`[1]`, `"s"`, `nope`, `{}`, `{"token":"x"}`} {
 		if _, err := schemaFlag(v, ws); err == nil {
 			t.Errorf("%s was taken", v)
 		}

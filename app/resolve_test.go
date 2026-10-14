@@ -436,3 +436,65 @@ func TestResolveKeepsAWorktreeItCannotCheck(t *testing.T) {
 		t.Fatal("the branch was deleted")
 	}
 }
+
+// captureStderr runs f and returns what it wrote to stderr.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	f()
+	os.Stderr = old
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// A headless resolve that stops at the pull request's approval says which
+// local branch holds the change.
+func TestResolveNamesTheBranchWhenNotApproved(t *testing.T) {
+	repo, _ := resolveRepo(t)
+	stubResolve(t, &fakeForge{}, "one\ntwo\n")
+	out := captureStderr(t, func() { resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}, "") })
+	if !strings.Contains(out, "the change is on branch abhed/issue-5") {
+		t.Fatalf("stderr: %s", out)
+	}
+}
+
+// -allow splits between rules, not inside a rule's own commas.
+func TestResolveAllowKeepsARulesCommas(t *testing.T) {
+	repo, _ := resolveRepo(t)
+	stubForge(t, &fakeForge{})
+	oldRunner := newResolveRunner
+	t.Cleanup(func() { newResolveRunner = oldRunner })
+	var got []string
+	newResolveRunner = func(_ context.Context, opts abhed.Options) (forge.Runner, error) {
+		got = opts.Allow
+		return func(context.Context, string, string) error { return nil }, nil
+	}
+	resolveCmd(repo, []string{"-allow", "bash(x a,b), read", "https://git.example/t/r/issues/5"}, "")
+	if fmt.Sprint(got) != "[bash(x a,b) read]" {
+		t.Fatalf("allow rules: %q", got)
+	}
+}
+
+// Without a configured identity the commit would carry one git guessed from
+// the host, so resolve refuses before it starts.
+func TestResolveRefusesWithoutAGitIdentity(t *testing.T) {
+	repo, remote := resolveRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if out, err := exec.Command("git", "-C", repo, "config", "--unset", "user.email").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	fg := &fakeForge{}
+	stubResolve(t, fg, "one\ntwo\n")
+	var code int
+	out := captureStderr(t, func() { code = resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, "") })
+	if code == 0 || !strings.Contains(out, "user.email") || fg.opened != nil || branchOnRemote(t, remote) {
+		t.Fatalf("exit %d, opened %v: %s", code, fg.opened, out)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/monitor"
 )
 
 // Budget enforces hierarchical spend limits across a session and its subagents.
@@ -411,6 +412,17 @@ type SubagentFactory struct {
 	Background bool
 }
 
+type subagentModeKey struct{}
+
+// SubagentMode is the permission mode the subagent whose row is being created
+// runs in, for a SessionCreator; fallback when the factory did not say.
+func SubagentMode(ctx context.Context, fallback string) string {
+	if m, _ := ctx.Value(subagentModeKey{}).(string); m != "" {
+		return m
+	}
+	return fallback
+}
+
 // SessionCreator is implemented by durable stores that need a session row
 // before events can reference it. The memory store does not implement it, so
 // the local path is unaffected. parentID is the session that spawned it.
@@ -556,7 +568,11 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 		if parent != nil && parent.rec != nil {
 			parentSession = parent.rec.sessionID
 		}
-		if err := creator.CreateSubagentSession(ctx, sessionID, parentSession, req.Description); err != nil {
+		mode := ""
+		if p := narrowMode(f.Policy, def.PermissionMode); p != nil {
+			mode = string(p.Mode)
+		}
+		if err := creator.CreateSubagentSession(context.WithValue(ctx, subagentModeKey{}, mode), sessionID, parentSession, req.Description); err != nil {
 			return nil, fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}
@@ -567,6 +583,10 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 	}
 	for k, v := range extra {
 		spawned[k] = v
+	}
+	// The parent's call that started it, so a trace pairs them by id, not by description.
+	if id := CallIDOf(ctx); id != "" {
+		spawned["call_id"] = id
 	}
 	_, _ = c.sub.Recorder.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
 	c.parent.record(EvSubagentSpawned, ActorAgent, spawned)
@@ -720,6 +740,11 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 	// A subagent's calls reach the same person, so the same hooks screen them.
 	if parent != nil && parent.loop != nil && parent.loop.Hooks != nil {
 		sub.Hooks = childHooks{parent.loop.Hooks}
+	}
+	// The parent's judge reviews the child's calls too, with a turn budget of the child's own.
+	if parent != nil && parent.loop != nil && parent.loop.Monitor != nil {
+		g := parent.loop.Monitor
+		sub.Monitor = &monitor.Guard{Monitor: g.Monitor, Timeout: g.Timeout, OnUnavailable: g.OnUnavailable, MaxPerTurn: g.MaxPerTurn}
 	}
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.
@@ -1283,6 +1308,8 @@ func childPolicy(pol *policy.Engine, session *tools.Session) *policy.Engine {
 		}
 		return roots
 	}
+	// A script a command names is found from the child's own folder.
+	child.Cwd = session.WorkDir
 	return &child
 }
 

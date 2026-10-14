@@ -178,3 +178,16 @@ func TestAnEndedApprovalTakesNoAnswer(t *testing.T) {
 		t.Fatalf("ending changed the answer: answered=%v approved=%v", answered, approved)
 	}
 }
+
+// A row keeps the request it asks about, so another node can check an answer
+// bound to it.
+func TestPendingCarriesTheRequestID(t *testing.T) {
+	pg, ctx := approvalStore(t, "default")
+	if _, err := pg.AskApproval(ctx, Approval{SessionID: "s-ap-rid", RequestID: "ev-9", Tool: "bash"}); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	got, found, err := pg.PendingApproval(ctx, "s-ap-rid")
+	if err != nil || !found || got.RequestID != "ev-9" {
+		t.Fatalf("pending = %+v found=%v err=%v, want request ev-9", got, found, err)
+	}
+}

@@ -107,9 +107,8 @@ func TestMethodsAndPaths(t *testing.T) {
 			t.Errorf("%s %s allowed %v, want %v", c.method, c.path, got, c.want)
 		}
 	}
-	// Deny rules on paths under an open host: a server that reads path
-	// parameters routes /admin;x as /admin and /secret;x/a as /secret/a, so
-	// a ; is refused before any rule is read.
+	// Deny rules on paths under an open host: servers route /admin;x as /admin,
+	// so a ; is refused before any rule is read.
 	d := mustCompile(t, Config{Rules: []Rule{
 		{Host: "api.test", Ports: []int{80}, Decision: "allow"},
 		{Host: "api.test", Ports: []int{80}, Paths: []string{"/admin", "/secret/*"}, Decision: "deny"},
@@ -121,9 +120,8 @@ func TestMethodsAndPaths(t *testing.T) {
 			t.Errorf("deny rules: GET %s allowed %v, want %v", path, got, want)
 		}
 	}
-	// A tunnel's path is not seen: a narrowed allow cannot allow it, and a
-	// narrowed deny refuses it. The narrowed allows alone, with no deny rule
-	// to refuse the tunnel for them.
+	// A tunnel's path is unseen: a narrowed allow cannot allow it, a narrowed
+	// deny refuses it. Here the narrowed allows alone.
 	n := mustCompile(t, Config{Rules: []Rule{
 		{Host: "api.test", Ports: []int{80}, Methods: []string{"GET"}, Decision: "allow"},
 		{Host: "api.test", Ports: []int{80}, Paths: []string{"/v1/*"}, Decision: "allow"},
@@ -286,5 +284,35 @@ func TestParseRequestLine(t *testing.T) {
 		if _, err := ParseRequestLine(l); err == nil {
 			t.Errorf("%q parsed", l)
 		}
+	}
+}
+
+// DecideHost opens a tunnel the proxy will look inside on any allow rule for
+// the host and port, narrowed or not; only an unnarrowed deny refuses it.
+func TestDecideHostForAnInspectedTunnel(t *testing.T) {
+	p := mustCompile(t, Config{InspectTLS: true, Rules: []Rule{
+		{Host: "api.example.com", Paths: []string{"/v1"}, Methods: []string{"GET"}, Decision: "allow"},
+		{Host: "api.example.com", Paths: []string{"/admin"}, Decision: "deny"},
+		{Host: "blocked.example.com", Decision: "deny"},
+		{Host: "blocked.example.com", Paths: []string{"/ok"}, Decision: "allow"},
+	}})
+	for _, tc := range []struct {
+		host string
+		port int
+		want Decision
+	}{
+		{"api.example.com", 443, Allow},
+		{"api.example.com", 22, Deny},
+		{"blocked.example.com", 443, Deny},
+		{"other.example.com", 443, Deny},
+	} {
+		v := p.DecideHost(Request{Host: tc.host, Port: uint16(tc.port), Method: "CONNECT"}) // #nosec G115 -- a port
+		if v.Decision != tc.want {
+			t.Errorf("%s:%d: %s (%s), want %s", tc.host, tc.port, v.Decision, v.Rule, tc.want)
+		}
+	}
+	// The same narrowed allow cannot open a tunnel it cannot look inside.
+	if v := p.Decide(Request{Host: "api.example.com", Port: 443, Method: "CONNECT"}); v.Allowed() {
+		t.Fatalf("a narrowed rule allowed an uninspected tunnel: %+v", v)
 	}
 }

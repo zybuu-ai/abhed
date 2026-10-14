@@ -72,7 +72,7 @@ go build -o abhed ./cmd/abhed
 ./abhed                     # interactive
 ./abhed serve -addr :8080   # web console + API
 ./abhed eval                # run the evaluation corpus
-./abhed index               # build the retrieval index
+./abhed index               # embed the workspace ahead of a session (with retrieval.embed)
 ```
 
 Air-gapped: the binary is static, the console is self-contained, and nothing
@@ -155,7 +155,7 @@ go build -o abhed-bench ./cmd/abhed-bench
 | Read-before-edit, exact-match, near-miss recovery | ✅ tested |
 | Ordered policy engine, deny absolute for every tool call, always-confirm destructive | ✅ tested |
 | OpenAI-compatible adapter, streaming, reasoning-token stripping | ✅ tested |
-| **Execution sandbox** (Seatbelt / bubblewrap / OCI / gVisor) | ✅ escape-tested |
+| **Execution sandbox** (Seatbelt / bubblewrap / OCI / gVisor, and the fence preview) | ✅ escape-tested |
 | **Compaction** with PreCompact hook, tool-call integrity | ✅ tested |
 | **Subagents** with hierarchical budgets, profile-scoped tools | ✅ tested |
 | **MCP gateway** with tool-poisoning defense | ✅ tested |
@@ -168,7 +168,7 @@ go build -o abhed-bench ./cmd/abhed-bench
 | **Eval harness** — assertions + behavioural flags | ✅ tested |
 | **Adversarial suite** — 24 attacks | ✅ all blocked |
 
-`make check` — 29 packages, 531 test functions. Drop `-short` for the slow
+`make check` runs vet and every package's tests. Drop `-short` for the slow
 network-exfiltration checks; set `ABHED_TEST_DSN` for the Postgres integration tests.
 
 ## Architecture
@@ -180,7 +180,7 @@ Inference OpenAI-compatible gateway (any model)
 Execution tiered sandbox for shell commands, no egress by default
 Data      event store · hybrid index · MCP gateway
           ═══ air-gap boundary ═══
-Egress    none by default; opt-in tools and MCP servers reach out from the host
+Egress    none by default; an administrator's allowlist proxy judges and records each request
 ```
 
 | Doc | Contents |
@@ -196,6 +196,7 @@ Egress    none by default; opt-in tools and MCP servers reach out from the host
 | [10 Data model](docs/architecture/10-data-model.md) | Events, schema, protocol, adapter interface |
 | [Infrastructure tools](docs/ops/infrastructure.md) | Kubernetes, SSH and external retrieval |
 | [Enabling authentication](docs/ops/enabling-auth.md) | Local accounts and proxy-header identity |
+| [Network policy](docs/guide/21-network-policy.md) | The egress allowlist: what commands and Abhed's own requests may reach, each decision recorded |
 
 ## Design decisions worth knowing
 
@@ -254,11 +255,15 @@ because it only tries what its author thought of. **A human red-team engagement
 remains outstanding and is not substitutable.** For untrusted repositories set
 `sandbox.min_tier` to `container` or `vm` and commission one first.
 
-## License
+## License and editions
 
 The Community Edition, everything in this repository, is open source under the
 [Apache License 2.0](LICENSE). Use it, modify it, ship it, sell services on it.
-The Team and Enterprise features described on the product page (OIDC, the
-admin and access dashboard, scheduled runs, multi-tenant isolation, audit
-export, the signed air-gap bundle, telemetry export) are a separate,
-proprietary edition built on this module; they are not in this repository.
+The Team and Enterprise features described on the product page are a
+separate, proprietary edition built on this module; they are not in this
+repository. Team adds OIDC and GitHub sign-in, single sign-on for `abhed
+login`, the admin and access dashboard, scheduled runs and the Kubernetes
+driver; Enterprise adds high availability, admission interceptors, workload
+identity, multi-tenant isolation, audit and telemetry export, and the signed
+air-gap bundle. A Community binary refuses a configuration key for one of
+them, naming the edition.

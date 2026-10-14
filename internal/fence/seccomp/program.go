@@ -30,14 +30,12 @@ const (
 	opRet   = 0x06 // BPF_RET | BPF_K
 )
 
-// Offsets into struct seccomp_data; an argument's low word on a
-// little-endian machine.
+// Offsets into struct seccomp_data; an argument's low word is at
+// archInfo.argLow.
 const (
 	offNr   = 0
 	offArch = 4
 )
-
-func offArg(i uint32) uint32 { return 16 + 8*i }
 
 // Return values.
 const (
@@ -46,7 +44,7 @@ const (
 	retAllow       = 0x7fff0000
 )
 
-// Errnos, the same on amd64 and arm64.
+// Errnos, the same on amd64, arm64 and s390x.
 const (
 	errEPERM  = 1
 	errENOSYS = 38
@@ -154,7 +152,9 @@ func retName(k uint32) string {
 	return fmt.Sprintf("%#x", k)
 }
 
-// Digest is the SHA-256 of the program as the kernel receives it, in hex.
+// Digest is the SHA-256 of the program, in hex: each instruction laid out as
+// struct sock_filter, little-endian on every host so a digest names one program
+// wherever it is computed.
 func (p Program) Digest() string {
 	h := sha256.New()
 	var buf [8]byte

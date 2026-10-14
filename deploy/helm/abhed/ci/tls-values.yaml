@@ -1,0 +1,13 @@
+tls:
+  enabled: true
+  existingSecret: abhed-tls
+  caKey: ca.crt
+  minVersion: "1.3"
+  clientCA:
+    existingSecret: abhed-client-ca
+    clientAuth: optional
+config:
+  auth:
+    mode: local
+    cli:
+      enabled: true

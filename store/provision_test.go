@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -89,6 +91,14 @@ func TestRuntimeRoleCannotAlterTheRecord(t *testing.T) {
 		t.Fatalf("after the attempts the runtime role can alter the record: %q (err %v)", how, err)
 	}
 
+	// A live session's key is not deleted, so its record stays readable.
+	if _, err := p.pool.Exec(ctx, `DELETE FROM session_keys WHERE session_id = $1`, id); err == nil {
+		t.Error("the runtime role deleted a live session's key")
+	}
+	if _, err := p.pool.Exec(ctx, `TRUNCATE session_keys`); err == nil {
+		t.Error("the runtime role truncated the session keys")
+	}
+
 	events, err := p.Events(id)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
@@ -99,6 +109,32 @@ func TestRuntimeRoleCannotAlterTheRecord(t *testing.T) {
 	for _, e := range events {
 		if !strings.Contains(string(e.Payload), "deploy to prod") {
 			t.Fatalf("event #%d was rewritten: %s", e.Seq, e.Payload)
+		}
+	}
+
+	// A deletion names who made it; no key is kept for a session that does not exist.
+	for what, sql := range map[string]string{
+		"mark it deleted by no one":        `UPDATE sessions SET deleted_at = now(), deleted_by = '' WHERE id = $1`,
+		"name a deleter of a live session": `UPDATE sessions SET deleted_by = 'someone' WHERE id = $1`,
+		"keep a key for no session":        `INSERT INTO session_keys (session_id, tenant_id, key) VALUES ($1 || '-none', 't-sep', '\x00')`,
+	} {
+		if _, err := p.pool.Exec(ctx, sql, id); err == nil {
+			t.Errorf("the runtime role was able to %s", what)
+		}
+	}
+
+	// A deletion is final: not undone, and its mark not rewritten.
+	if err := p.DeleteSession(id); err != nil {
+		t.Fatalf("delete as the runtime role: %v", err)
+	}
+	for what, sql := range map[string]string{
+		"undo a deletion":         `UPDATE sessions SET deleted_at = NULL WHERE id = $1`,
+		"rewrite who deleted it":  `UPDATE sessions SET deleted_by = 'someone' WHERE id = $1`,
+		"rewrite when it was":     `UPDATE sessions SET deleted_at = now() - interval '1 day' WHERE id = $1`,
+		"undo and clear the mark": `UPDATE sessions SET deleted_at = NULL, deleted_by = NULL WHERE id = $1`,
+	} {
+		if _, err := p.pool.Exec(ctx, sql, id); err == nil {
+			t.Errorf("the runtime role was able to %s", what)
 		}
 	}
 }
@@ -437,5 +473,131 @@ func TestInsertedAtIsTheDatabasesClock(t *testing.T) {
 	}
 	if old {
 		t.Error("the writer set inserted_at")
+	}
+}
+
+// The control plane's sandbox audit is a record too: a runtime role that
+// could rewrite it is refused as one that could rewrite the events.
+func TestOpenRefusesARoleThatCanAlterTheSandboxAudit(t *testing.T) {
+	runtimeStore(t, "t-sbx-audit") // provisions the runtime role
+	owner, runtime := testDSN(t), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	rc, err := pgx.ParseConfig(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	role := pgx.Identifier{rc.User}.Sanitize()
+	if _, err := pool.Exec(ctx, `GRANT UPDATE, DELETE ON sandbox_audit TO `+role); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `REVOKE UPDATE, DELETE ON sandbox_audit FROM `+role) })
+	_, err = Open(ctx, DefaultConfig(runtime))
+	if err == nil || !strings.Contains(err.Error(), "UPDATE on sandbox_audit") || !strings.Contains(err.Error(), "DELETE on sandbox_audit") {
+		t.Fatalf("a runtime role that can rewrite the sandbox audit was accepted: %v", err)
+	}
+}
+
+// Provisions run at once (two migrates, or replicas starting together) all
+// succeed, and leave the runtime role its grants.
+func TestConcurrentProvisionsSucceed(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+		t.Fatal(err)
+	}
+	for round := range 3 {
+		errs := make(chan error, 8)
+		for range 8 {
+			go func() { errs <- Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}) }()
+		}
+		var failed []error
+		for range 8 {
+			if err := <-errs; err != nil {
+				failed = append(failed, err)
+			}
+		}
+		if len(failed) > 0 {
+			t.Fatalf("round %d: %d of 8 concurrent provisions failed, the first: %v", round, len(failed), failed[0])
+		}
+	}
+	conn, err := pgx.Connect(ctx, runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, "SELECT count(*) FROM sessions"); err != nil {
+		t.Fatalf("the runtime role lost its grants: %v", err)
+	}
+}
+
+// A provision's grants and a schema change made at the same time, as a
+// server applies schema.sql at start, both succeed.
+func TestProvisionAlongsideASchemaChange(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	errs := make(chan error, 256)
+	stop := make(chan struct{})
+	var changes sync.WaitGroup
+	for range 3 {
+		changes.Add(1)
+		go func() {
+			defer changes.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := applySchema(ctx, pool); err != nil {
+					errs <- fmt.Errorf("schema change: %w", err)
+				}
+			}
+		}()
+	}
+	for range 10 {
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+					errs <- fmt.Errorf("provision: %w", err)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	close(stop)
+	changes.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }

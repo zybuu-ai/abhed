@@ -96,6 +96,13 @@ func aliasCase(name, dir string) error {
 		if err := Drop(); err != nil {
 			return err
 		}
+		// Nothing can be gained back: the bounding set is empty, the securebits locked.
+		if st, err := os.ReadFile("/proc/thread-self/status"); err != nil || !strings.Contains(string(st), "CapBnd:\t0000000000000000") {
+			return fmt.Errorf("the bounding set is not empty after Drop: %w %s", err, st)
+		}
+		if v, err := unix.PrctlRetInt(unix.PR_GET_SECUREBITS, 0, 0, 0, 0); err != nil || v != lockedSecurebits {
+			return fmt.Errorf("securebits %#x, want %#x: %w", v, lockedSecurebits, err)
+		}
 		for _, w := range []string{"alias-ws/.git/config", "alias-ws/.git/hooks/pre-commit", "alias-ws/.git/hooks/x", "alias-git/config", "alias-git/hooks/x", "alias-config"} {
 			f, err := os.OpenFile(filepath.Join(dir, w), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 			if err == nil {
@@ -190,9 +197,8 @@ func aliasCase(name, dir string) error {
 	return fmt.Errorf("no case %q", name)
 }
 
-// Each case runs in a child holding CAP_SYS_ADMIN in a user namespace of its
-// own, where the bind mounts it makes stand for a host's: an ostree host's
-// /sysroot is the same case as alias-ws.
+// Each case runs in a child with CAP_SYS_ADMIN in its own user namespace, whose
+// bind mounts stand for a host's (ostree /sysroot is alias-ws).
 func TestApplyCoversAliases(t *testing.T) {
 	if os.Getenv("ABHED_REQUIRE_FENCE") != "1" {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 where an ordinary user can make a user namespace")

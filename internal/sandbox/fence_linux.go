@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -21,6 +23,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/fence/cgroup"
 	"github.com/zybuu-ai/abhed/internal/fence/landlock"
 	"github.com/zybuu-ai/abhed/internal/fence/mountns"
@@ -28,20 +31,21 @@ import (
 	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
 )
 
-// The launcher runs before anything else in any binary that links this
-// package, so the abhed command and an SDK embedder fence commands alike.
-// It runs whole on this thread, which executes the command: the mounts'
-// capability, its drop, Landlock and the checks of them are all per thread.
+// The launcher runs first in any binary linking this package, whole on this
+// thread: capabilities and Landlock are per thread.
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == fenceLauncherArg {
 		runtime.LockOSThread()
 		os.Exit(runLauncher(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == fenceChildArg {
+		runtime.LockOSThread()
+		os.Exit(runChild(os.Args[2:]))
+	}
 }
 
-// folderIdentity is p's identity, not following a link, with its birth time
-// where the filesystem records one; both are read from one descriptor, so a
-// folder swapped in between cannot lend the other its birth time.
+// folderIdentity is p's identity with birth time, both from one descriptor, so
+// a folder swapped in between cannot lend the other its birth time.
 func folderIdentity(p string) (folderID, error) {
 	fd, err := unix.Open(p, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -73,6 +77,16 @@ const fenceLaunchWait = 2 * time.Minute
 type fenceSpec struct {
 	Landlock landlock.Spec `json:"landlock"`
 	Network  bool          `json:"network"`
+	// ProxyOnly allows inet stream sockets alone, which Landlock confines to
+	// the egress proxy's port; Egress, in mount_namespace mode, is the relay
+	// the launcher runs in the command's network namespace.
+	ProxyOnly bool             `json:"proxy_only,omitempty"`
+	Egress    *fenceEgressSpec `json:"egress,omitempty"`
+	// PIDNS is set when the launcher is init of a PID namespace of its own:
+	// it runs the command as its child and passes signals on.
+	PIDNS bool `json:"pidns,omitempty"`
+	// Socketcall allows socketcall(SOCKET) with Network, on s390x.
+	Socketcall bool `json:"socketcall,omitempty"`
 	// Leaf is the call's cgroup, which the launcher joins first.
 	Leaf string `json:"leaf"`
 	// Qualified and ProbePID pass this run's probe: the launcher trusts it
@@ -141,9 +155,8 @@ func sweepFenceTemps() {
 	}
 }
 
-// sweepFenceCgroups removes the cgroups of runs that ended without closing
-// their fence, killing what they left running: those whose Abhed process,
-// named first in the id, is gone.
+// sweepFenceCgroups removes cgroups whose Abhed process is gone, killing what
+// they left running.
 func sweepFenceCgroups(base *cgroup.Base) {
 	for _, id := range base.Sandboxes() {
 		pidText, _, ok := strings.Cut(id, "-")
@@ -163,10 +176,8 @@ func sweepFenceCgroups(base *cgroup.Base) {
 // path only, so a workspace with search permission alone still serves.
 const dirSearchOpen = unix.O_PATH
 
-// chmodNoFollow changes the mode of name in the folder parent, never
-// following a link there. Before Linux 6.6 there is no fchmodat2, so the
-// entry is opened by path alone, checked to be no link, and changed through
-// its descriptor.
+// chmodNoFollow changes name's mode in parent, never following a link; before
+// Linux 6.6 it goes through a descriptor checked to be no link.
 func chmodNoFollow(parent int, name string, mode uint32) error {
 	err := unix.Fchmodat(parent, name, mode, unix.AT_SYMLINK_NOFOLLOW)
 	if !errors.Is(err, unix.EOPNOTSUPP) && !errors.Is(err, unix.ENOSYS) {
@@ -184,6 +195,18 @@ func chmodNoFollow(parent int, name string, mode uint32) error {
 	if t := st.Mode & unix.S_IFMT; t != unix.S_IFDIR && t != unix.S_IFREG {
 		return err
 	}
+	return unix.Chmod("/proc/self/fd/"+strconv.Itoa(fd), mode)
+}
+
+// openFileNoFollow holds the file name in parent by path only, which needs no
+// permission on it, never through a link.
+func openFileNoFollow(parent int, name string) (int, error) {
+	return unix.Openat(parent, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+}
+
+// chmodHeld changes the mode of the file fd holds; an O_PATH descriptor has
+// no fchmod, so it goes through /proc, which names that file and no other.
+func chmodHeld(fd int, mode uint32) error {
 	return unix.Chmod("/proc/self/fd/"+strconv.Itoa(fd), mode)
 }
 
@@ -210,7 +233,12 @@ func FenceProbe(ctx context.Context, p Policy) probe.Report {
 
 func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	base, derr := cgroup.Discover()
-	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit}
+	req := probe.Requirements{AllowNetwork: p.AllowNetwork, Mounts: len(p.WriteProtected) > 0 || p.ProtectGit && p.GitRequired,
+		AllowRoot: p.FenceAllowRoot}
+	if p.ScopeSignals {
+		// Below it, one account's commands could signal another's, which share the uid.
+		req.LandlockABI = signalScopeABI
+	}
 	if derr == nil {
 		req.CgroupDir = base.Path()
 	}
@@ -230,6 +258,10 @@ func fenceProbe(ctx context.Context, p Policy) (probe.Report, *cgroup.Base) {
 	r.Add(c)
 	return r, base
 }
+
+// signalScopeABI is the first Landlock ABI that scopes signals and abstract
+// unix sockets to the command's own domain.
+const signalScopeABI = 6
 
 // mountsRefusal is why a surface with protected paths is refused on a host
 // that gives commands no mount namespace of their own.
@@ -253,6 +285,9 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 		}
 		return false, mountsRefusal(why)
 	}
+	if why := f.egressModeRefusal(); why != "" {
+		return false, why
+	}
 	if !f.report.Qualified {
 		return false, f.report.Summary
 	}
@@ -264,9 +299,13 @@ func (f *Fence) qualifyHost(ctx context.Context) (bool, string) {
 			return false, "mode mount_namespace: " + err.Error() + "; the fence covers every other mount of the workspace's filesystem, and refuses where it cannot"
 		}
 		f.aliases, f.unreachableAliases = aliases, unreachable
+		f.sweepCrashed(f.sessionRecord())
 		if err := f.prepareStateMount(); err != nil {
 			return false, err.Error()
 		}
+	}
+	if !f.mounts {
+		f.sweepCrashed(f.sessionRecord())
 	}
 	// A .abhed made to mount over stays when the session cannot be made:
 	// another fence on the workspace may already mount over it.
@@ -315,12 +354,22 @@ func (f *Fence) qualifySession(base *cgroup.Base) (bool, string) {
 	leaf := limits
 	leaf.OOMGroup = true
 	f.host = &fenceHost{sb: sb, leaf: leaf}
+	f.markPath = f.writeMark()
+	if !f.mounts {
+		f.watchState()
+	}
 	return true, ""
 }
 
 // wrap runs argv through the launcher in a cgroup leaf of its own. A command
 // that cannot be fenced does not start.
 func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...string) *exec.Cmd {
+	return f.launch(ctx, cwd, env, nil, argv...)
+}
+
+// launch runs argv fenced; files, when set, is a stdio server's confinement,
+// which it runs under in place of a command's.
+func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *serverFiles, argv ...string) *exec.Cmd {
 	if ok, why := f.Available(); !ok {
 		return refusedCmd("%s", why)
 	}
@@ -334,12 +383,34 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	}
 	// A .abhed left since the last check is moved out before anything runs.
 	_ = f.checkPlanted(rec, "", "before_command")
+	touchMark(f.markPath)
 	if why := f.planted.Load(); why != nil {
 		return refusedCmd("%s", *why)
 	}
 	spec := f.spec()
+	network := f.policy.AllowNetwork
+	if files != nil {
+		spec = f.serverSpec(*files)
+		// As on the process tier, a server's network is open but under the allowlist.
+		network = network || f.policy.Egress == nil
+	}
 	if err := spec.Validate(); err != nil {
 		return refusedCmd("%v", err)
+	}
+	var relay *fenceEgressSpec
+	if f.policy.Egress != nil {
+		fc, err := f.eg.call(ctx, f.policy.Egress, f.mounts)
+		if err != nil {
+			return refusedCmd("%v", err)
+		}
+		env = append(append([]string{}, env...), fc.env...)
+		// TCP only to the call's own way in; in mount mode the port is the
+		// relay's, in a network namespace with nothing else in it.
+		spec.ConnectTCP = []uint16{fc.port}
+		relay = fc.relay
+		if fc.caDir != "" {
+			spec.Read = append(spec.Read, fc.caDir) // the inspection CA bundle's folder, where its clients are pointed
+		}
 	}
 	leaf, err := f.host.sb.NewLeaf(f.leafName(launch.CallID), f.host.leaf)
 	if err != nil {
@@ -363,8 +434,9 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 			return refusedCmd("%v", err)
 		}
 	}
-	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: f.policy.AllowNetwork, Leaf: leaf.Path(),
-		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan})
+	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: network, Socketcall: network && f.policy.FenceSocketcall, Leaf: leaf.Path(),
+		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan,
+		ProxyOnly: f.policy.Egress != nil, Egress: relay, PIDNS: plan != nil})
 	if err != nil {
 		drop()
 		return refusedCmd("%v", err)
@@ -387,7 +459,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 	cmd.ExtraFiles = []*os.File{theirs}
 	if plan != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
-		mountns.Attr(cmd.SysProcAttr)
+		mountns.AttrWith(cmd.SysProcAttr, mountns.Spaces{PID: true, Net: relay != nil})
 	}
 	// Release ends the wait at once for a command that never starts.
 	abandoned := make(chan struct{})
@@ -398,7 +470,7 @@ func (f *Fence) wrap(ctx context.Context, cwd string, env []string, argv ...stri
 			_ = ours.SetReadDeadline(time.Now())
 		})
 	})
-	sup := supervision{ours: ours, theirs: theirs, leaf: leaf, launch: launch, rec: rec, source: source, drop: drop, plan: plan,
+	sup := supervision{ours: ours, theirs: theirs, leaf: leaf, launch: launch, rec: rec, source: source, drop: drop, plan: plan, pidns: plan != nil,
 		abandoned: abandoned, done: func() { pendingLaunches.Delete(cmd) }}
 	// The supervisor outlives this call by design: it holds the launch until
 	// the command exits, and cleans up with contexts of its own.
@@ -416,8 +488,10 @@ type supervision struct {
 	rec    func(string, map[string]any) error
 	source string
 	drop   func()
-	// plan is what the command's mount namespace holds, nil without one.
-	plan *mountns.Plan
+	// plan is what the command's mount namespace holds, nil without one;
+	// pidns is set when the command runs in a PID namespace of its own.
+	plan  *mountns.Plan
+	pidns bool
 	// abandoned closes when the command is released unstarted; done
 	// forgets it once the launcher has reported or the wait is over.
 	abandoned <-chan struct{}
@@ -427,10 +501,8 @@ type supervision struct {
 // ackByte lets the launcher run the command, once its launch is recorded.
 const ackByte = 'y'
 
-// supervise answers one launcher: it records the launch before acking, so
-// a command runs only once the record holds it, then waits for the command
-// to exit, ends what it left running, records the limits it ran into, and
-// checks the command planted no state.
+// supervise records the launch before acking, so a command runs only once the
+// record holds it, then reaps it and checks for planted state.
 func (f *Fence) supervise(ctx context.Context, sv supervision) {
 	defer func() { _ = sv.ours.Close() }()
 	rep, err := readReport(ctx, sv.ours, sv.abandoned)
@@ -443,6 +515,16 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	leaf := sv.leaf
+	// In a PID namespace the launcher stays init until the command ends, so its
+	// exit status comes before the leaf's removal kills it.
+	initfd := -1
+	if sv.pidns {
+		rep.PID = hostPid(leaf.Path(), rep.PID)
+		if fd, err := unix.PidfdOpen(hostPid(leaf.Path(), 1), 0); err == nil {
+			initfd = fd
+			defer func() { _ = unix.Close(fd) }()
+		}
+	}
 	pidfd, err := unix.PidfdOpen(rep.PID, 0)
 	if err != nil || !slices.Contains(leafPids(leaf.Path()), rep.PID) {
 		if err == nil {
@@ -452,6 +534,12 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	defer func() { _ = unix.Close(pidfd) }()
+	waitExit := func(fd int) {
+		waitExit(fd)
+		if initfd >= 0 {
+			waitExitFor(initfd, 5*time.Second)
+		}
+	}
 	// Refused, the launcher finds the channel closed and exits 126 on its own.
 	refuse := func() {
 		_ = sv.ours.Close()
@@ -474,19 +562,24 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 			return
 		}
 	}
+	// Read before the command runs: a fork refused at the session's limit is
+	// counted only there since Linux 6.14, never in the call's own cgroup.
+	sessionBefore := f.host.sb.OwnPidsMax()
 	if _, err := sv.ours.Write([]byte{ackByte}); err != nil {
 		refuse()
 		return
 	}
 	waitExit(pidfd)
-	// The limits are recorded before what the command left is ended: while
-	// it runs, it holds the output the caller waits on, so the event comes
-	// before the call's result.
-	if ev, err := leaf.Events(); err == nil && sv.rec != nil && (ev.OOM > 0 || ev.OOMKill > 0 || ev.OOMGroupKill > 0 || ev.PidsMax > 0) {
-		_ = sv.rec("fence.limit", map[string]any{
-			"call_id": l.CallID, "sandbox": f.id, "oom": ev.OOM, "oom_kill": ev.OOMKill, "oom_group_kill": ev.OOMGroupKill,
-			"pids_max": ev.PidsMax, "memory_max_mb": f.policy.MaxMemoryMB, "max_procs": f.policy.MaxProcs,
-		})
+	// Limits are recorded before leftovers are ended, so the event comes before
+	// the call's result.
+	if ev, err := leaf.Events(); err == nil && sv.rec != nil {
+		session := sessionRefusals(sessionBefore, f.host.sb.OwnPidsMax(), ev.PidsMax)
+		if ev.OOM > 0 || ev.OOMKill > 0 || ev.OOMGroupKill > 0 || ev.PidsMax > 0 || session > 0 {
+			_ = sv.rec("fence.limit", map[string]any{
+				"call_id": l.CallID, "sandbox": f.id, "oom": ev.OOM, "oom_kill": ev.OOMKill, "oom_group_kill": ev.OOMGroupKill,
+				"pids_max": ev.PidsMax, "session_pids_max": session, "memory_max_mb": f.policy.MaxMemoryMB, "max_procs": f.policy.MaxProcs,
+			})
+		}
 	}
 	rctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -536,6 +629,16 @@ func readReport(ctx context.Context, ch *os.File, abandoned <-chan struct{}) (fe
 	}
 }
 
+// waitExitFor is waitExit for at most d.
+func waitExitFor(pidfd int, d time.Duration) {
+	done := make(chan struct{})
+	go func() { waitExit(pidfd); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
+
 // waitExit returns once the process behind pidfd has exited.
 func waitExit(pidfd int) {
 	for {
@@ -544,6 +647,26 @@ func waitExit(pidfd int) {
 			return
 		}
 	}
+}
+
+// hostPid is the process in the cgroup at dir whose pid in its innermost PID
+// namespace is nspid, as this process sees it; 0 when there is none.
+func hostPid(dir string, nspid int) int {
+	for _, p := range leafPids(dir) {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", p)) // #nosec G304 -- a numbered /proc entry
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if rest, ok := strings.CutPrefix(line, "NSpid:"); ok {
+				f := strings.Fields(rest)
+				if len(f) > 1 && f[len(f)-1] == strconv.Itoa(nspid) {
+					return p
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // leafPids are the processes in the cgroup at dir.
@@ -561,33 +684,30 @@ func leafPids(dir string) []int {
 // launcherFD is the channel to Abhed, the launcher's first extra file.
 const launcherFD = 3
 
-// runLauncher fences this process, in order: the probe's pass, the call's
-// cgroup, Landlock, then seccomp; reports what it applied, waits for Abhed
-// to record it, and executes the command in its own place. Any failure
-// exits 126 having run nothing.
+// runLauncher fences this process, reports it, waits for Abhed to record it,
+// then execs the command; any failure exits 126 having run nothing.
 func runLauncher(args []string) int {
-	fail := func(format string, a ...any) int {
-		fmt.Fprintf(os.Stderr, "abhed: the command was not run: the fence could not confine it: "+format+"\n", a...)
-		return 126
-	}
 	if len(args) < 3 || args[1] != "--" {
-		return fail("the launcher was started without a command")
+		return launchFail("the launcher was started without a command")
 	}
 	var s fenceSpec
 	if err := json.Unmarshal([]byte(args[0]), &s); err != nil {
-		return fail("the launcher's spec cannot be read: %v", err)
+		return launchFail("the launcher's spec cannot be read: %v", err)
 	}
-	// 1. The probe: this run's pass, from the Abhed that started this
-	// launcher, never one kept from another run; and what it checked of the
-	// would-be command, checked again here.
-	if !s.Qualified || s.ProbePID != os.Getppid() {
-		return fail("no qualification from the Abhed process that started it")
+	// 1. The probe: this run's pass, rechecked. As init of its own PID
+	// namespace, only the namespace's maker can have started the launcher.
+	started := s.ProbePID == os.Getppid()
+	if s.PIDNS {
+		started = os.Getpid() == 1 && os.Getppid() == 0
+	}
+	if !s.Qualified || !started {
+		return launchFail("no qualification from the Abhed process that started it")
 	}
 	// 1a. The mounts, in this launcher's own namespace, where it holds
 	// CAP_SYS_ADMIN only to make them; then every capability is dropped.
 	if s.Mounts != nil {
 		if err := mountns.Apply(*s.Mounts); err != nil {
-			return fail("%v", err)
+			return launchFail("%v", err)
 		}
 		// The working folder was entered before the mounts; entered again,
 		// it is seen through them.
@@ -596,70 +716,187 @@ func runLauncher(args []string) int {
 			err = unix.Chdir(wd)
 		}
 		if err != nil {
-			return fail("entering the working folder again: %v", err)
+			return launchFail("entering the working folder again: %v", err)
+		}
+		// A namespace-own /proc shows only its processes; the host's would
+		// show every command line, so a refused mount refuses the command.
+		if s.PIDNS {
+			if err := mountns.MountProc(); err != nil {
+				return launchFail("%v", err)
+			}
+		}
+		if s.Egress != nil {
+			if err := mountns.LoopbackUp(); err != nil {
+				return launchFail("%v", err)
+			}
 		}
 		if err := mountns.Drop(); err != nil {
-			return fail("%v", err)
+			return launchFail("%v", err)
+		}
+	}
+	// Root keeps its uid but gives up every capability, its bounding set
+	// and its way back to them, before anything else confines it.
+	if os.Geteuid() == 0 && s.Mounts == nil {
+		if err := mountns.Drop(); err != nil {
+			return launchFail("%v", err)
 		}
 	}
 	if err := holdsNothing(); err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
-	// 2. The call's cgroup, and a session and process group apart from
-	// Abhed's: the command's own kill(0) cannot reach Abhed, and /dev/tty
-	// opens only a terminal it was started on, never Abhed's.
+	// 2. The call's cgroup.
 	if err := joinLeaf(s.Leaf); err != nil {
-		return fail("joining the call's cgroup: %v", err)
+		return launchFail("joining the call's cgroup: %v", err)
 	}
+	if s.PIDNS {
+		return runInit(s, args)
+	}
+	// A session apart from Abhed's: kill(0) cannot reach Abhed, and /dev/tty
+	// opens only the command's own terminal.
 	if sid, err := unix.Getsid(0); err != nil || sid != os.Getpid() {
 		if _, err := unix.Setsid(); err != nil {
-			return fail("leaving Abhed's session: %v", err)
+			return launchFail("leaving Abhed's session: %v", err)
 		}
 	}
 	abhed := os.Getppid()
 	abhedGroup, err := unix.Getpgid(abhed)
 	if err != nil {
-		return fail("reading Abhed's process group: %v", err)
+		return launchFail("reading Abhed's process group: %v", err)
 	}
 	if unix.Getpgrp() == abhedGroup {
 		if err := unix.Setpgid(0, 0); err != nil {
-			return fail("leaving Abhed's process group: %v", err)
+			return launchFail("leaving Abhed's process group: %v", err)
 		}
 	}
+	return confineAndRun(s, args[2:], abhed, abhedGroup)
+}
+
+// launchFail says why the command was not run and is the launcher's exit code.
+func launchFail(format string, a ...any) int {
+	fmt.Fprintf(os.Stderr, "abhed: the command was not run: the fence could not confine it: "+format+"\n", a...)
+	return 126
+}
+
+// fenceChildArg starts the command's stage under an init launcher: the child
+// it starts in its PID namespace, which confines itself and runs the command.
+const fenceChildArg = "__abhed_fence_child"
+
+// initSignals are passed from the init launcher to the command, as a
+// process outside the namespace sends them to init.
+var initSignals = []os.Signal{unix.SIGINT, unix.SIGTERM, unix.SIGHUP, unix.SIGQUIT, unix.SIGUSR1, unix.SIGUSR2,
+	unix.SIGWINCH, unix.SIGCONT, unix.SIGALRM}
+
+// runInit is the launcher as PID namespace init: init ignores unhandled
+// signals, so the command runs as its child and init relays them.
+func runInit(s fenceSpec, args []string) int {
+	if s.Egress != nil {
+		ln, err := net.Listen("tcp", s.Egress.Listen)
+		if err != nil {
+			return launchFail("the egress relay: %v", err)
+		}
+		go egress.Relay(ln, s.Egress.Sock)
+	}
+	// A terminal goes to the command's session: init gives it up first.
+	_, terr := unix.IoctlGetTermios(0, unix.TCGETS)
+	tty := terr == nil
+	if tty {
+		signal.Ignore(unix.SIGHUP)
+		_ = unix.IoctlSetInt(0, unix.TIOCNOTTY, 0)
+	}
+	sigs := make(chan os.Signal, 16)
+	signal.Notify(sigs, initSignals...)
+	argv := append([]string{"/proc/self/exe", fenceChildArg}, args...)
+	p, err := os.StartProcess("/proc/self/exe", argv, &os.ProcAttr{
+		Env:   os.Environ(),
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr, os.NewFile(launcherFD, "fence-channel")},
+		Sys:   &syscall.SysProcAttr{Setsid: true, Setctty: tty, Ctty: 0},
+	})
+	if err != nil {
+		return launchFail("starting the command under init: %v", err)
+	}
+	_ = unix.Close(launcherFD)
+	go func() {
+		for sig := range sigs {
+			_ = p.Signal(sig)
+		}
+	}()
+	for {
+		var ws unix.WaitStatus
+		pid, err := unix.Wait4(-1, &ws, 0, nil)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return 126
+		}
+		if pid != p.Pid {
+			continue
+		}
+		if ws.Signaled() {
+			return 128 + int(ws.Signal())
+		}
+		return ws.ExitStatus()
+	}
+}
+
+// runChild is the command's stage under an init launcher: in a session of
+// its own already, it confines itself and runs the command.
+func runChild(args []string) int {
+	if len(args) < 3 || args[1] != "--" {
+		return launchFail("the command's stage was started without a command")
+	}
+	var s fenceSpec
+	if err := json.Unmarshal([]byte(args[0]), &s); err != nil || !s.PIDNS || os.Getppid() != 1 {
+		return launchFail("the command's stage was not started by the fence's init")
+	}
+	if err := holdsNothing(); err != nil {
+		return launchFail("%v", err)
+	}
+	// Abhed is outside the namespace: no signal names it from here.
+	return confineAndRun(s, args[2:], s.ProbePID, 0)
+}
+
+// confineAndRun applies Landlock and seccomp to this thread, reports what it
+// applied, waits for Abhed to record it, and runs argv in this process's place.
+func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{}); err != nil {
-		return fail("turning core dumps off: %v", err)
+		return launchFail("turning core dumps off: %v", err)
 	}
 	// 3. Landlock, on this thread, from which the command is executed.
 	abi, err := landlock.Detect()
 	if err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
+	s.Landlock.Root = os.Geteuid() == 0
 	rs, err := landlock.New(s.Landlock, abi)
 	if err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
 	if err := rs.Restrict(); err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
 	// 4. seccomp, on every thread, refusing signals to Abhed by its id.
 	pol := seccomp.Command(s.Network, abhed, abhedGroup)
+	pol.ProxyOnly = s.ProxyOnly
+	// Only where Landlock scopes abstract unix sockets: a pathname one is
+	// still reachable through it, as the setting's documentation says.
+	pol.Socketcall = s.Network && s.Socketcall && socketcallOff(int(abi), os.Geteuid() == 0) == ""
 	if err := seccomp.Install(pol); err != nil {
-		return fail("%v", err)
+		return launchFail("%v", err)
 	}
 	prog, _ := pol.Program(runtime.GOARCH)
 	rep, _ := json.Marshal(fenceReport{PID: os.Getpid(), Cgroup: s.Leaf, ABI: int(abi), Landlock: rs.Describe(),
 		Seccomp: seccomp.Profile, Digest: prog.Digest()})
 	if _, err := unix.Write(launcherFD, rep); err != nil {
-		return fail("reporting to Abhed: %v", err)
+		return launchFail("reporting to Abhed: %v", err)
 	}
 	ack := make([]byte, 1)
 	if n, err := unix.Read(launcherFD, ack); err != nil || n != 1 || ack[0] != ackByte {
-		return fail("Abhed did not record the launch")
+		return launchFail("Abhed did not record the launch")
 	}
 	_ = unix.Close(launcherFD)
 
 	// 5. The command, in this process's place.
-	argv := args[2:]
 	path := argv[0]
 	if p, err := exec.LookPath(path); err == nil {
 		path = p
@@ -669,12 +906,14 @@ func runLauncher(args []string) int {
 	return 127
 }
 
-// holdsNothing refuses root and any capability this thread holds: the one
-// that executes the command, whose capabilities the command starts with.
-// Other threads may still hold the mounts' capability, which an exec drops.
+// holdsNothing refuses any capability the exec'ing thread holds, and for root a
+// non-empty bounding set or unlocked securebits.
 func holdsNothing() error {
-	if os.Getuid() == 0 || os.Geteuid() == 0 {
-		return errors.New("the fence refuses root in this release")
+	root := os.Getuid() == 0 || os.Geteuid() == 0
+	if root {
+		if v, err := unix.PrctlRetInt(unix.PR_GET_SECUREBITS, 0, 0, 0, 0); err != nil || v&0x3 != 0x3 {
+			return fmt.Errorf("running as root without the securebits that keep it from regaining capabilities (%#x, %w)", v, err)
+		}
 	}
 	f, err := os.Open("/proc/thread-self/status")
 	if err != nil {
@@ -684,7 +923,8 @@ func holdsNothing() error {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), ":")
-		if !ok || !slices.Contains([]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}, k) {
+		checked := slices.Contains([]string{"CapInh", "CapPrm", "CapEff", "CapAmb"}, k) || root && k == "CapBnd"
+		if !ok || !checked {
 			continue
 		}
 		if n, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64); err != nil || n != 0 {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +67,10 @@ func TestRunStatusline(t *testing.T) {
 	if err != nil || got != `"mode":"plan"` {
 		t.Fatalf("%q %v", got, err)
 	}
-	if _, err := runStatusline(context.Background(), sb, ws, "sleep 2", m); err == nil || !strings.Contains(err.Error(), "300 ms") {
+	if statuslineTimeout < time.Second {
+		t.Fatalf("the statusline gets %v: less than a second, a loaded host cannot start the sandbox in time", statuslineTimeout)
+	}
+	if _, err := runStatusline(context.Background(), sb, ws, "sleep 2", m); err == nil || !strings.Contains(err.Error(), "1000 ms") {
 		t.Fatalf("slow command: %v", err)
 	}
 	if got, err := runStatusline(context.Background(), sb, ws, "", m); got != "" || err != nil {
@@ -298,7 +302,8 @@ func TestStatuslineScriptRefusedInStateAndWritableAreas(t *testing.T) {
 	if err := os.Chmod(tmp.Name(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := statuslineScript(tmp.Name(), ws, nil, nil); err == nil {
+	// On Linux no sandboxed command writes the host's temp, so only elsewhere is it refused.
+	if _, _, err := statuslineScript(tmp.Name(), ws, nil, nil); err == nil && runtime.GOOS != "linux" {
 		t.Errorf("a temp script %s was taken", tmp.Name())
 	}
 	// A link from a fine place into the state resolves there, and is refused.
@@ -352,5 +357,124 @@ func TestStatuslineRejudgedWhenFoldersChange(t *testing.T) {
 	}
 	if got := st.statusLine(context.Background(), "default"); !strings.Contains(got, "granted to its tools") {
 		t.Fatalf("not refused once granted: %q", got)
+	}
+}
+
+// Judged again when the session's folders change, the script is still the
+// one the session pinned first: one put at its path since is not run.
+func TestStatuslineKeepsTheFirstPinWhenRejudged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := homeOutsideTemp(t)
+	ws := t.TempDir()
+	script := filepath.Join(home, "bin4", "s.sh")
+	writeStatusScript(t, script, "#!/bin/sh\necho first\n")
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.Statusline.Command = script
+	if _, _, _, err := statuslineSandbox(cfg, ws, nil); errors.Is(err, errNoProcessSandbox) {
+		t.Skipf("no process sandbox here: %v", err)
+	}
+	old := statuslineTimeout
+	statuslineTimeout = 10 * time.Second
+	t.Cleanup(func() { statuslineTimeout = old })
+	st := &cliState{appCfg: cfg, workspace: ws, sess: sess}
+	if got := st.statusLine(context.Background(), "default"); got != "first" {
+		t.Skipf("the process sandbox cannot run the script here: %q", got)
+	}
+	if err := os.Remove(script); err != nil {
+		t.Fatal(err)
+	}
+	writeStatusScript(t, script, "#!/bin/sh\necho replaced\n")
+	if err := sess.AddRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if got := st.statusLine(context.Background(), "default"); strings.Contains(got, "replaced") || !strings.Contains(got, "start a new session") {
+			t.Fatalf("a script replaced before the folders changed: %q", got)
+		}
+	}
+}
+
+// A script that was not there when the session started is not taken up
+// when the session's folders change: none pinned at the start stays final.
+func TestStatuslineNoScriptAtTheStartStaysSo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := homeOutsideTemp(t)
+	ws := t.TempDir()
+	script := filepath.Join(home, "bin5", "s.sh")
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.Statusline.Command = script
+	if _, _, _, err := statuslineSandbox(cfg, ws, nil); errors.Is(err, errNoProcessSandbox) {
+		t.Skipf("no process sandbox here: %v", err)
+	}
+	old := statuslineTimeout
+	statuslineTimeout = 10 * time.Second
+	t.Cleanup(func() { statuslineTimeout = old })
+	st := &cliState{appCfg: cfg, workspace: ws, sess: sess}
+	_ = st.statusLine(context.Background(), "default")
+	writeStatusScript(t, script, "#!/bin/sh\necho appeared\n")
+	if err := sess.AddRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.statusLine(context.Background(), "default"); strings.Contains(got, "appeared") || !strings.Contains(got, "start a new session") {
+		t.Fatalf("a script made after the session started: %q", got)
+	}
+}
+
+// Judging the script again lets go of the file the new judgement opened at
+// once, so folders added one after another do not each keep one open.
+func TestStatuslineRejudgingHoldsNoMoreFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	open := func() int {
+		d, err := os.Open("/dev/fd")
+		if err != nil {
+			t.Skipf("no /dev/fd: %v", err)
+		}
+		defer d.Close()
+		names, err := d.Readdirnames(-1)
+		if err != nil {
+			t.Skipf("/dev/fd cannot be listed: %v", err)
+		}
+		return len(names)
+	}
+	home := homeOutsideTemp(t)
+	ws := t.TempDir()
+	script := filepath.Join(home, "bin6", "s.sh")
+	writeStatusScript(t, script, "#!/bin/sh\necho ok\n")
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.Statusline.Command = script
+	// No collection, so no finaliser closes a file the code left open.
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	st := &cliState{appCfg: cfg, workspace: ws, sess: sess}
+	_, _, _ = st.statuslineReady()
+	before := open()
+	for range 20 {
+		if err := sess.AddRoot(t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _ = st.statuslineReady()
+	}
+	if after := open(); after > before+2 {
+		t.Fatalf("open files grew from %d to %d over 20 folders added", before, after)
 	}
 }

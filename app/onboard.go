@@ -90,19 +90,8 @@ func fenceOf(sb sandbox.Sandbox) *sandbox.Fence {
 	return f
 }
 
-// ServerCommand confines a stdio MCP server's network once the backend is
-// chosen; one that cannot gives the reason.
-func (l *lazySandbox) ServerCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
-	sb, err := l.wait()
-	if err != nil {
-		return nil, fmt.Errorf("no sandbox: %w", err)
-	}
-	sl, ok := sb.(sandbox.ServerLauncher)
-	if !ok {
-		return nil, fmt.Errorf("the %s tier cannot confine a server's network", sb.Tier())
-	}
-	return sl.ServerCommand(ctx, name, argv, env, record)
-}
+// Resolve waits for the choice.
+func (l *lazySandbox) Resolve() (sandbox.Sandbox, error) { return l.wait() }
 
 // Close releases what the chosen backend holds, once it is chosen.
 func (l *lazySandbox) Close() error {
@@ -142,6 +131,15 @@ func (l *lazySandbox) Available() (bool, string) {
 	return sb.Available()
 }
 
+// CommandHome is the chosen sandbox's, hidden while no choice is made.
+func (l *lazySandbox) CommandHome() (string, bool) {
+	sb, err := l.wait()
+	if err != nil {
+		return "", false
+	}
+	return sandbox.CommandHome(sb)
+}
+
 // Command waits for the choice; a failed choice gives a command that does
 // not start, with the reason.
 func (l *lazySandbox) Command(ctx context.Context, cwd, command string) *exec.Cmd {
@@ -150,6 +148,17 @@ func (l *lazySandbox) Command(ctx context.Context, cwd, command string) *exec.Cm
 		return &exec.Cmd{Err: fmt.Errorf("no sandbox: %w", err)}
 	}
 	return sb.Command(ctx, cwd, command)
+}
+
+// Caveat is the resolved sandbox's, "" until it is resolved.
+func (l *lazySandbox) Caveat() string {
+	if !l.Resolved() {
+		return ""
+	}
+	if sb, err := l.wait(); err == nil {
+		return sandbox.Caveat(sb)
+	}
+	return ""
 }
 
 func (l *lazySandbox) Describe() string {
@@ -167,6 +176,23 @@ func (l *lazySandbox) Label() string {
 	}
 	return string(l.floor) + " or stronger (checking)"
 }
+
+// noteIfNone writes one line to w once the choice is made, when the banner
+// said the tier was still being checked and the answer is none: the label
+// promised "or stronger", and nothing stronger was found.
+func (l *lazySandbox) noteIfNone(w io.Writer) {
+	if l == nil || l.Resolved() || l.floor != sandbox.TierNone {
+		return
+	}
+	go func() {
+		if sb, err := l.wait(); err == nil && sb.Tier() == sandbox.TierNone {
+			fmt.Fprintln(w, "abhed: sandbox: none — no stronger tier is available, so commands run unconfined as you; `abhed doctor` says why")
+		}
+	}()
+}
+
+// checking reports whether the tier is still being chosen.
+func (l *lazySandbox) checking() bool { return l != nil && !l.Resolved() }
 
 // tierNow is the tier as far as it is known, without waiting: the answer
 // when it is in, else the floor. Without a sandbox the network is open.

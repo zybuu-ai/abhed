@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/termline"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // waitOutput waits until a terminal's output from index from on holds want.
@@ -95,6 +98,281 @@ func TestStudioTerminalLines(t *testing.T) {
 	r.cl.ok("_abhed/terminal/kill", map[string]any{"terminalId": term.TerminalID}, nil)
 	r.cl.waitFor(from, "terminal exit", func(m rpcMessage) bool { return m.Method == "_abhed/terminal/exit" })
 	r.cl.refused(errParams, "_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "ls\n"})
+}
+
+// A lines-mode terminal reads like a shell: a prompt naming where the next
+// line runs, the typed command in bold, its output, then its exit status.
+func TestStudioTerminalLinesShowOutputBeforeTheStatus(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("sub/keep.txt", "")
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo order-check\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "\r\norder-check\r\n")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cd sub\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, filepath.Join(filepath.Base(r.ws), "sub")+" $")
+	got := terminalOutput(r.cl.since(from), term.TerminalID)
+	root := "\x1b[2m" + filepath.Base(r.ws) + " $\x1b[0m "
+	want := root + "\x1b[1mecho order-check\x1b[0m\r\norder-check\r\n\x1b[2mexit 0 · "
+	if !strings.HasPrefix(got, want) {
+		t.Fatalf("the line's output, status and prompt are out of order:\n%q\nwant prefix\n%q", got, want)
+	}
+	if strings.Contains(got, "[no output]") {
+		t.Fatalf("the record's placeholder reached the terminal: %q", got)
+	}
+	if !strings.HasSuffix(got, "ms\x1b[0m\r\n\x1b[2m"+filepath.Join(filepath.Base(r.ws), "sub")+" $\x1b[0m ") {
+		t.Fatalf("the prompt does not follow the cd: %q", got)
+	}
+	// A cd that is not followed has no output but a note: the note shows, the placeholder does not.
+	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cd /\r"}, nil)
+	waitOutput(r.cl, at, term.TerminalID, "outside the workspace")
+	if got := terminalOutput(r.cl.since(at), term.TerminalID); strings.Contains(got, "[no output]") {
+		t.Fatalf("the placeholder reached the terminal after a refused cd: %q", got)
+	}
+}
+
+// Keys that send escape sequences, an arrow or a bracketed paste's markers,
+// are dropped whole in lines mode; none leaves its tail to run as a command.
+func TestStudioTerminalLinesDropEscapeSequences(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	for _, in := range []string{
+		"\x1b[A\r",                              // an arrow alone
+		"\x1b[Aecho one\x1bOB\r",                // CSI and SS3 arrows around a line
+		"\x1b[200~echo two\x1b[201~\r",          // a bracketed paste
+		"\x1b]0;title\x07\x1b[1;5Decho three\r", // a terminal's reply and Ctrl-Left
+		"\x1b[1;5", "Cecho four\r",              // a sequence split across inputs
+		"\x1b", "echo five\r", // the Esc key on its own
+	} {
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": in}, nil)
+	}
+	waitOutput(r.cl, from, term.TerminalID, "\r\nfive\r\n")
+	var ran []string
+	reqs, _ := r.recorded(id, agent.EvActionRequested)
+	for _, q := range reqs {
+		ran = append(ran, q["args"].(map[string]any)["command"].(string))
+	}
+	if want := []string{"echo one", "echo two", "echo three", "echo four", "echo five"}; !slices.Equal(ran, want) {
+		t.Fatalf("lines run: %q, want %q", ran, want)
+	}
+	if out := terminalOutput(r.cl.since(from), term.TerminalID); strings.Contains(out, "not found") {
+		t.Fatalf("part of a key sequence ran: %q", out)
+	}
+}
+
+// A Tab typed or pasted into a line separates words as bash does, so the
+// line judged and run is the one bash would see, not two words joined.
+func TestStudioTerminalLinesTabSeparatesWords(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(wget *)"]}`)
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "wget\thttp://x\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "Denied")
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo\ttab-ok\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "tab-ok\r\n\x1b[2mexit 0")
+	var ran []string
+	reqs, _ := r.recorded(id, agent.EvActionRequested)
+	for _, q := range reqs {
+		ran = append(ran, q["args"].(map[string]any)["command"].(string))
+	}
+	if want := []string{"wget http://x", "echo tab-ok"}; !slices.Equal(ran, want) {
+		t.Fatalf("lines judged: %q, want %q", ran, want)
+	}
+}
+
+// Ctrl-C while a line runs stops it and drops the lines typed ahead of the
+// prompt, as a shell flushes its input on an interrupt, and says so.
+func TestStudioTerminalLinesCtrlCDropsTypedAhead(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	waitOutput(r.cl, from, term.TerminalID, " $\x1b[0m ")
+	input := func(data string) {
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": data}, nil)
+	}
+	input("sleep 30\r")
+	r.cl.conn.termMu.Lock()
+	at := r.cl.conn.terms[term.TerminalID]
+	r.cl.conn.termMu.Unlock()
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		at.mu.Lock()
+		running := at.running != nil
+		at.mu.Unlock()
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the line never started")
+		}
+	}
+	input("echo typed-ahead\r")
+	input("\x03")
+	waitOutput(r.cl, from, term.TerminalID, "abhed: 1 typed-ahead line was not run\r\n")
+	input("echo after\r")
+	waitOutput(r.cl, from, term.TerminalID, "\r\nafter\r\n")
+	var ran []string
+	reqs, _ := r.recorded(id, agent.EvActionRequested)
+	for _, q := range reqs {
+		ran = append(ran, q["args"].(map[string]any)["command"].(string))
+	}
+	if want := []string{"sleep 30", "echo after"}; !slices.Equal(ran, want) {
+		t.Fatalf("lines run: %q, want %q", ran, want)
+	}
+}
+
+// A line sent the moment create answers is echoed at the terminal's first
+// prompt, not ahead of it, with its output on the line after.
+func TestStudioTerminalLinesPromptComesFirst(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	for i := 0; i < 20; i++ {
+		var term struct {
+			TerminalID string `json:"terminalId"`
+		}
+		from := r.cl.mark()
+		r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "x"}, nil)
+		var got strings.Builder
+		r.cl.waitFor(from, "the echo of x", func(m rpcMessage) bool {
+			got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+			return strings.Contains(got.String(), "\x1b[1mx")
+		})
+		if want := "\x1b[1mx\x1b[0m"; !strings.HasPrefix(got.String(), "\x1b[2m") || !strings.HasSuffix(got.String(), " $\x1b[0m "+want) {
+			t.Fatalf("attempt %d: %q, want the prompt then the echo", i, got.String())
+		}
+		r.cl.ok("_abhed/terminal/kill", map[string]any{"terminalId": term.TerminalID}, nil)
+	}
+}
+
+// A session let go of, by session/close or the editor going away, records
+// its end, after its terminals' last lines, so its report has one; one a
+// run ended keeps that run's totals.
+func TestStudioSessionRecordsItsEndWhenLetGo(t *testing.T) {
+	r := newStudioRig(t, "")
+	lines := func(id, data, want string) {
+		var term struct {
+			TerminalID string `json:"terminalId"`
+		}
+		from := r.cl.mark()
+		r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": data}, nil)
+		waitOutput(r.cl, from, term.TerminalID, want)
+	}
+	lastEnd := func(id string) (agent.SessionEnded, []agent.Event) {
+		t.Helper()
+		evs := r.events(id)
+		last := evs[len(evs)-1]
+		var end agent.SessionEnded
+		if last.Type != agent.EvSessionEnded || json.Unmarshal(last.Payload, &end) != nil {
+			t.Fatalf("the record ends with %s, not session.ended", last.Type)
+		}
+		if rep := hawkeye.Analyze(id, evs); slices.ContainsFunc(rep.Findings, func(f hawkeye.Finding) bool { return f.Code == "no-end" }) {
+			t.Fatalf("HawkEYE finds no end: %+v", rep.Findings)
+		}
+		return end, evs
+	}
+
+	closed := r.open()
+	lines(closed, "echo closed\r", "\r\nclosed\r\n")
+	r.cl.ok("session/close", map[string]any{"sessionId": closed}, nil)
+	if end, _ := lastEnd(closed); end.Reason != agent.TermSessionClosed {
+		t.Fatalf("session/close ended it as %q", end.Reason)
+	}
+
+	ran := r.open()
+	if stop, _ := r.prompt(ran, "hello"); stop != "end_turn" {
+		t.Fatalf("stop: %s", stop)
+	}
+	lines(ran, "sleep 30\r", "\x1b[1msleep 30\x1b[0m\r\n")
+	left := r.open()
+	// The editor going away lets every session go.
+	r.cl.conn.closeAll()
+	end, evs := lastEnd(ran)
+	if end.Reason != agent.TermSessionClosed || end.Turns != 1 || end.TokensIn == 0 {
+		t.Fatalf("closing end after a run: %+v", end)
+	}
+	if obs := evs[len(evs)-2]; obs.Type != agent.EvObservation {
+		t.Fatalf("the stopped line's result is not before the end: %s", obs.Type)
+	}
+	if end, _ := lastEnd(left); end.Reason != agent.TermSessionClosed {
+		t.Fatalf("an untouched session ended as %q", end.Reason)
+	}
+	// The run's end and the closing one; a session closed before records no second.
+	if a, b := count(r.events(ran), agent.EvSessionEnded), count(r.events(closed), agent.EvSessionEnded); a != 2 || b != 1 {
+		t.Fatalf("ends: %d after a run, %d once closed", a, b)
+	}
+}
+
+func TestLineResultPutsTheStatusLast(t *testing.T) {
+	code := 1
+	got := string(lineResult(tools.Result{Content: "exit 1 · 12ms\nboom\nbang", ExitCode: &code}))
+	if got != "boom\r\nbang\r\n\x1b[2mexit 1 · 12ms\x1b[0m\r\n" {
+		t.Fatalf("%q", got)
+	}
+	got = string(lineResult(tools.Result{Content: "exit 1 · 12ms\n[no output]", ExitCode: &code, NoOutput: true}))
+	if got != "\x1b[2mexit 1 · 12ms\x1b[0m\r\n" {
+		t.Fatalf("no output: %q", got)
+	}
+	// The placeholder goes, the tool's note after it stays.
+	zero := 0
+	got = string(lineResult(tools.Result{Content: "exit 0 · 3ms\n[no output]\n\ncd: / is outside the workspace; still in .", ExitCode: &zero, NoOutput: true}))
+	if got != "cd: / is outside the workspace; still in .\r\n\x1b[2mexit 0 · 3ms\x1b[0m\r\n" {
+		t.Fatalf("note after no output: %q", got)
+	}
+	// Real output keeps its leading blank lines, and real text that reads like the placeholder.
+	got = string(lineResult(tools.Result{Content: "exit 0 · 3ms\n\n\nafter", ExitCode: &zero}))
+	if !strings.HasPrefix(got, "\r\n\r\nafter") {
+		t.Fatalf("leading blank lines dropped: %q", got)
+	}
+	got = string(lineResult(tools.Result{Content: "exit 0 · 3ms\n[no output]", ExitCode: &zero}))
+	if !strings.HasPrefix(got, "[no output]\r\n") {
+		t.Fatalf("real placeholder text hidden: %q", got)
+	}
+	// A command whose real output is the placeholder's text keeps it.
+	got = string(lineResult(tools.Result{Content: "exit 0 · 9ms\n[no output]\nreal\n", ExitCode: &code}))
+	if !strings.HasPrefix(got, "[no output]\r\nreal") {
+		t.Fatalf("real output hidden: %q", got)
+	}
+	// A refusal or a tool error has no status to move.
+	if got := string(lineResult(tools.Result{Content: "Denied: curl", IsError: true})); got != "Denied: curl\r\n" {
+		t.Fatalf("refusal: %q", got)
+	}
+}
+
+// A line's output keeps its colour, but cannot move the cursor, erase a line
+// or overwrite one, so it cannot draw a fake prompt or status line.
+func TestLineResultShowsOnlyTextAndColour(t *testing.T) {
+	zero := 0
+	out := "\x1b[31mred\x1b[0m\n\x1b[2K\x1b[1Aabhed$ \x1b]0;title\x07\rdone\bX\u009b2J\x7f\x9b"
+	got := string(lineResult(tools.Result{Content: "exit 0 · 1ms\n" + out, ExitCode: &zero}))
+	want := "\x1b[31mred\x1b[0m\r\n\u241b[2K\u241b[1Aabhed$ \u241b]0;title\u2407\r\ndone\u2408X⟨U+009B⟩2J\u2421\ufffd\r\n\x1b[2mexit 0 · 1ms\x1b[0m\r\n"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if got := string(crlf("Denied: \x1b[1A")); got != "Denied: \u241b[1A\r\n" {
+		t.Fatalf("refusal: %q", got)
+	}
 }
 
 // §7.3: a person's save is recorded manual.edit by: user; a path outside
@@ -489,7 +767,21 @@ func waitForProgram(t *testing.T, r *studioRig, terminalID string) {
 // to the deny rules at its Enter and recorded as the person's, and a line the
 // terminal did not show, as at a password prompt, is recorded withheld.
 func TestStudioInteractiveTerminal(t *testing.T) {
-	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"]}`)
+	studioInteractiveTerminal(t, "", "")
+}
+
+// The same on the container tier, where this process does not hold the
+// shell's terminal and judges lines by Abhed's prompt alone. It needs an
+// engine, so it runs only with ABHED_REQUIRE_CONTAINER set, as CI sets it.
+func TestStudioInteractiveTerminalInAContainer(t *testing.T) {
+	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
+		t.Skip("set ABHED_REQUIRE_CONTAINER=1 to run the container tier on a real engine")
+	}
+	studioInteractiveTerminal(t, `,"sandbox":{"min_tier":"container"}`, "container")
+}
+
+func studioInteractiveTerminal(t *testing.T, extra, wantTier string) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"]}`+extra)
 	id := r.open()
 	var term struct {
 		TerminalID string `json:"terminalId"`
@@ -497,8 +789,8 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	}
 	from := r.cl.mark()
 	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
-	if term.TerminalID == "" || term.Tier == "none" {
-		t.Fatalf("create: %+v", term)
+	if term.TerminalID == "" || term.Tier == "none" || (wantTier != "" && term.Tier != wantTier) {
+		t.Fatalf("create: %+v, want tier %q", term, wantTier)
 	}
 	prompted := func(s string) bool {
 		p := strings.TrimRight(termline.PlainText([]byte(s)), " ")
@@ -575,5 +867,44 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	obs, _ := r.recorded(id, agent.EvObservation)
 	if !strings.Contains(obs[len(obs)-1]["content"].(string), "interactive Abhed terminal") {
 		t.Fatalf("the shell's end: %v", obs[len(obs)-1])
+	}
+}
+
+// Only a managed file that sets deny rules forces line mode on Studio's
+// terminal; one that only turns web search on leaves it interactive.
+func TestStudioInteractiveTerminalUnderManagedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, managedBody string
+		refused           bool
+	}{
+		{"managed deny", `{"permissions":{"deny":["bash(*curl*)"]}}`, true},
+		{"managed web search", `{"web_search":{"enabled":true}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newStudioRig(t, "")
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(tc.managedBody), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			old := managed.ConfigFile
+			managed.ConfigFile = path
+			t.Cleanup(func() { managed.ConfigFile = old })
+			id := r.open()
+			params := map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}
+			if tc.refused {
+				if msg := r.cl.refused(errPolicy, "_abhed/terminal/create", params); !strings.Contains(msg, "lines mode") {
+					t.Fatalf("refusal does not name lines mode: %q", msg)
+				}
+				return
+			}
+			var term struct {
+				TerminalID string `json:"terminalId"`
+			}
+			r.cl.ok("_abhed/terminal/create", params, &term)
+			if term.TerminalID == "" {
+				t.Fatal("no interactive terminal opened")
+			}
+			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
+		})
 	}
 }

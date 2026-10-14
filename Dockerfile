@@ -17,8 +17,11 @@
 # ---------------------------------------------------------------- build stage
 # Pinned to a patch release on purpose: go.mod names the same one, so the
 # stdlib CVEs govulncheck reports against an older toolchain cannot come back
-# on a day the floating tag happens to resolve differently.
-FROM golang:1.26.8-bookworm AS build
+# on a day the floating tag happens to resolve differently. Both base images
+# are pinned by digest; Dependabot moves the digests.
+# It runs on the builder's own platform and cross-compiles, so a multi-arch
+# build does not compile Go under emulation.
+FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
 
 WORKDIR /src
 
@@ -42,7 +45,8 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends python3
 # VERSION is stamped as the release build stamps it; the image has no .git,
 # so without it `abhed version` said "dev".
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/abhed ./cmd/abhed
@@ -53,7 +57,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # without them would be smaller and useless.
 # trixie rather than bookworm: the same packages, and the scan drops from 16
 # critical CVEs in the base image to none (docs/trust/security-scans.md).
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # ca-certificates is required to verify TLS to the model endpoint. git and the
 # rest are what an agent working in a repository actually reaches for.
@@ -93,13 +97,22 @@ RUN apt-get update \
 # against breaking a distro's own Python tooling, and this container has no
 # distro tooling to break. A venv would add a layer and a PATH to maintain for
 # no benefit in a single-purpose image.
+#
+# PyPI has no s390x wheels for matplotlib, numpy or Pillow, and this image has
+# no compiler to build them, so on s390x Debian's packages stand in for them.
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = s390x ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends python3-matplotlib python3-pil \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 RUN pip3 install --no-cache-dir --break-system-packages \
       python-docx==1.1.2 \
       openpyxl==3.1.5 \
       python-pptx==1.0.2 \
       reportlab==4.2.5 \
       pypdf==6.19.0 \
-      matplotlib==3.9.2 \
+      $([ "$TARGETARCH" = s390x ] || echo matplotlib==3.9.2) \
       graphviz==0.20.3 \
  `# pip was only ever needed to install these; leaving it in the image is` \
  `# attack surface with no job. Purged without autoremove on purpose: the` \

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -42,6 +43,9 @@ type LoadOptions struct {
 	Trust TrustChoice
 	// Quiet leaves the untrusted warning to the caller, which may prompt instead.
 	Quiet bool
+	// Warn, when set, takes each of this load's warnings instead of stderr,
+	// every time, for an embedder that shows or drops them itself.
+	Warn func(string)
 	// Settings is a file the person named for this run (-settings), merged
 	// over their own file as one of their own: managed-only keys are set
 	// aside, and the managed file still binds. SettingsName says where it came from.
@@ -92,15 +96,16 @@ type WorkspaceTrust struct {
 type IgnoredKey struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
-	// Reason is set when the value was refused rather than merely not trusted.
+	// Reason is set when the value was refused rather than merely not
+	// trusted: trusting the file would not apply it either.
 	Reason string `json:"reason,omitempty"`
 }
 
 // deploymentSections decide who may sign in and where the record goes, so
 // leaving them out opens a server rather than narrowing it.
-var deploymentSections = []string{"auth", "storage", "server"}
+var deploymentSections = []string{"auth", "storage", "server", "control_plane"}
 
-// IgnoredDeployment lists the ignored settings under auth, storage or server.
+// IgnoredDeployment lists the ignored settings under the deployment sections.
 func (w WorkspaceTrust) IgnoredDeployment() []string {
 	var out []string
 	for _, k := range w.Ignored {
@@ -120,11 +125,33 @@ func (w WorkspaceTrust) DeploymentError(command string) error {
 	if len(keys) == 0 {
 		return nil
 	}
+	var why []string
+	for _, k := range keys {
+		if r := deploymentReason(k); !slices.Contains(why, r) {
+			why = append(why, r)
+		}
+	}
 	return fmt.Errorf("the workspace configuration %s sets %s, but it is not trusted. "+
-		"%s refuses to run without them: it would start with no sign-in or no durable record. "+
+		"%s refuses to run without them: it would start %s. "+
 		"Review it with `abhed trust`, then trust it with `abhed trust grant` or run `abhed -trust-workspace %s`; "+
 		"or move these settings to ~/.abhed/config.json or the managed /etc/abhed/config.json",
-		Printable(w.File), strings.Join(keys, ", "), command, command)
+		Printable(w.File), strings.Join(keys, ", "), command, strings.Join(why, ", "), command)
+}
+
+// deploymentReason says what running without one ignored deployment setting
+// would lose.
+func deploymentReason(key string) string {
+	switch {
+	case key == "auth.require_group" || strings.HasPrefix(key, "auth.require_group"):
+		return "without the group a person must be in to sign in"
+	case key == "auth" || strings.HasPrefix(key, "auth."):
+		return "with sign-in other than the file sets"
+	case key == "storage" || strings.HasPrefix(key, "storage."):
+		return "without the durable record the file names"
+	case key == "control_plane" || strings.HasPrefix(key, "control_plane."):
+		return "with the sandbox API's settings other than the file sets"
+	}
+	return "with server settings other than the file sets"
 }
 
 // NeedsDecision reports whether the person should be asked: an untrusted file
@@ -165,6 +192,9 @@ func (w WorkspaceTrust) Warning() string {
 	if len(ignored) == 0 {
 		return ""
 	}
+	for i, k := range ignored {
+		ignored[i] = Printable(k)
+	}
 	why := "is not trusted"
 	switch reason {
 	case "changed":
@@ -178,17 +208,9 @@ func (w WorkspaceTrust) Warning() string {
 
 // warnUntrusted warns once per process: a command that loads the workspace
 // twice (resolve, then its agent; ACP, per session) used to say it twice.
-func warnUntrusted(w WorkspaceTrust) {
-	s := w.Warning()
-	if s == "" {
-		return
-	}
-	warnedMu.Lock()
-	first := !warned["untrusted\x00"+s]
-	warned["untrusted\x00"+s] = true
-	warnedMu.Unlock()
-	if first {
-		fmt.Fprintf(warnOut, "abhed: warning: %s\n", s)
+func warnUntrusted(sink warnSink, w WorkspaceTrust) {
+	if s := w.Warning(); s != "" {
+		sink.emit("untrusted\x00"+s, s)
 	}
 }
 
@@ -256,13 +278,17 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	st.Trusted, st.Reason = decide(st, o)
 	if st.Trusted {
 		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
+		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
+		servers := maps.Clone(cfg.Sandbox.LanguageServers)
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
 		// Trust does not reach these: a workspace never makes a managed-only
 		// setting, may only turn auto memory off, and may only import less deep.
-		setAside(cfg, path, LayerWorkspace)
+		setAside(cfg, path, LayerWorkspace, data)
 		noteOrigins(cfg, path, LayerWorkspace, data)
+		keepHA(cfg, path, data, ha, before, prior)
+		keepLanguageServers(cfg, path, data, servers, before, prior)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -278,6 +304,46 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		return st, nil
 	}
 	return st, tighten(cfg, path, data, &st)
+}
+
+// keepHA restores control_plane.ha as it was before a trusted workspace's
+// file: only an operator's file joins the server to other replicas and
+// names the relay's key, never one that arrives with a repository.
+func keepHA(cfg *Config, path string, data []byte, ha HAConfig, before []string, prior map[string]origin) {
+	keepOperatorOnly(cfg, path, data, before, prior, "control_plane.ha", "a workspace never joins the server to replicas",
+		func() { cfg.ControlPlane.HA = ha })
+}
+
+// keepLanguageServers restores sandbox.language_servers likewise: a language
+// server is a program started when a file is opened, so a repository never names one.
+func keepLanguageServers(cfg *Config, path string, data []byte, servers map[string][]string, before []string, prior map[string]origin) {
+	keepOperatorOnly(cfg, path, data, before, prior, "sandbox.language_servers", "a workspace never names a language server",
+		func() { cfg.Sandbox.LanguageServers = servers })
+}
+
+// keepOperatorOnly undoes what a trusted workspace's file set under section,
+// noting each key as set aside.
+func keepOperatorOnly(cfg *Config, path string, data []byte, before []string, prior map[string]origin, section, why string, restore func()) {
+	var raw any
+	if json.Unmarshal(data, &raw) != nil {
+		return
+	}
+	walkSet("", raw, reflect.TypeFor[Config](), func(k string, v any) {
+		if k != section && !strings.HasPrefix(k, section+".") {
+			return
+		}
+		restore()
+		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Layer: LayerWorkspace, Key: k,
+			Value: RedactValue(k, v), Reason: why})
+		if !slices.Contains(before, k) {
+			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(s string) bool { return s == k })
+		}
+		if o, ok := prior[k]; ok {
+			cfg.origins[k] = o
+		} else {
+			delete(cfg.origins, k)
+		}
+	})
 }
 
 // decide applies a caller's choice, then TrustEnv, then the stored decision.
@@ -370,7 +436,9 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 			noteOrigin(cfg, path, LayerWorkspace, s.key, s.val)
 			continue
 		}
-		st.Ignored = append(st.Ignored, IgnoredKey{Key: Printable(s.key), Value: shortJSON(redact(s.key, s.val))})
+		// Trust would not apply a managed-only setting either; say so rather than offer it.
+		why := managedOnly[s.key]
+		st.Ignored = append(st.Ignored, IgnoredKey{Key: Printable(s.key), Value: shortJSON(redact(s.key, s.val)), Reason: why})
 	}
 	sort.SliceStable(st.Ignored, func(i, j int) bool { return st.Ignored[i].Key < st.Ignored[j].Key })
 	return nil
@@ -399,7 +467,8 @@ func redact(key string, v any) any {
 	if i := strings.LastIndex(key, "."); i >= 0 {
 		last = key[i+1:]
 	}
-	if secretKey(last) || last == "extra" || last == "body" {
+	// The edition's driver options are opaque here and may hold a kubeconfig.
+	if secretKey(last) || last == "extra" || last == "body" || key == "control_plane.kubernetes" {
 		return redactAll(v)
 	}
 	if list, ok := v.([]any); ok && last == "args" {
@@ -603,12 +672,18 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.allow_network":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
 	"sandbox.max_memory_mb":         {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }, zeroIs(4096)), "only lower"},
 	"sandbox.max_procs":             {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }, zeroIs(512)), "only lower"},
+	"sandbox.readable_home":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.ReadableHome }), "only false"},
+	"sandbox.shared_caches":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.SharedCaches }), "only false"},
+	"sandbox.max_cpu_percent":       {lower(func(c *Config) *int { return &c.Sandbox.MaxCPUPercent }, zeroIs(200)), "only lower"},
 	"sandbox.terminal":              {onlyLines, "only lines"},
 	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
+	"sandbox.protect_git":           {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
+	"sandbox.language_servers":      {nil, "a language server is a process"},
 	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
 	"fence":                         {nil, "tunes the fence tier's limits"},
 	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},
+	"sandbox.microvm_socket":        {nil, "managed only: names the microVM driver"},
 	"egress":                        {nil, "managed only: names the destinations commands reach"},
 
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
@@ -666,8 +741,13 @@ var workspaceRules = map[string]fieldRule{
 	"extensions":       {nil, "an extension is a process"},
 	"storage":          {nil, "where the record goes and with which credentials"},
 	"server":           {nil, "deployment settings for serve"},
+	"control_plane":    {nil, "turns on an API that runs commands, and sets its limits"},
 	"schedules":        {nil, "prompts the server runs on its own"},
 	"auth":             {nil, "who may sign in"},
+
+	"control_plane.kubernetes":   {nil, "only the managed configuration sets it"},
+	"control_plane.interceptors": {nil, "only the managed configuration sets it"},
+	"control_plane.ha":           {nil, "never from a workspace, trusted or not: joins the server to replicas"},
 }
 
 func union(field func(*Config) *[]string) func(dst, ws *Config) bool {

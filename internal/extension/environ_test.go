@@ -5,26 +5,17 @@ import (
 	"testing"
 )
 
-// environ layers the extension's own variables on top of Abhed's environment,
-// as Config.Env documents. It used to return only `extra`, which silently
-// dropped HOME, the locale and PATH — so setting a single variable broke the
-// extension process in ways hard to trace back to the cause.
-func TestEnvironLayersOnInheritedEnv(t *testing.T) {
-	t.Setenv("ABHED_TEST_INHERITED", "yes")
-	t.Setenv("ABHED_TEST_OVERRIDE", "old")
+// An extension gets PATH, HOME and the locale from Abhed's environment, never
+// Abhed's own keys, then its configured variables; an empty value passes
+// Abhed's own value of that name. It inherited the whole environment, so
+// ABHED_API_KEY and provider keys reached every extension.
+func TestEnvironKeepsAbhedsKeysOut(t *testing.T) {
+	t.Setenv("ABHED_API_KEY", "abhed-key-123456")
+	t.Setenv("OPENAI_API_KEY", "sk-provider-123456")
+	t.Setenv("HOME", "/home/someone")
+	t.Setenv("EXT_TOKEN", "handed-on-purpose")
 
-	// No extra vars still means inherit unchanged.
-	if environ(nil) != nil {
-		t.Error("environ(nil) should inherit the environment unchanged")
-	}
-
-	got := environ(map[string]string{
-		"FOO":                 "bar",
-		"ABHED_TEST_OVERRIDE": "new",
-	})
-
-	// The last value for a repeated key wins in exec, so an explicit override
-	// in extra still takes effect.
+	got := environ(map[string]string{"FOO": "bar", "EXT_TOKEN": "", "HOME": "/override"})
 	find := func(key string) (string, bool) {
 		var val string
 		var ok bool
@@ -35,14 +26,24 @@ func TestEnvironLayersOnInheritedEnv(t *testing.T) {
 		}
 		return val, ok
 	}
-
-	if v, ok := find("ABHED_TEST_INHERITED"); !ok || v != "yes" {
-		t.Errorf("inherited var dropped: setting one extension var must not remove the rest (got %q, %v)", v, ok)
+	for _, k := range []string{"ABHED_API_KEY", "OPENAI_API_KEY"} {
+		if _, ok := find(k); ok {
+			t.Errorf("%s reached the extension", k)
+		}
 	}
-	if v, ok := find("FOO"); !ok || v != "bar" {
-		t.Errorf("FOO = %q, %v; want bar", v, ok)
+	if v, _ := find("FOO"); v != "bar" {
+		t.Errorf("FOO = %q", v)
 	}
-	if v, ok := find("ABHED_TEST_OVERRIDE"); !ok || v != "new" {
-		t.Errorf("override = %q, %v; extra should win over the inherited value", v, ok)
+	if v, _ := find("EXT_TOKEN"); v != "handed-on-purpose" {
+		t.Errorf("an empty value did not pass Abhed's own: %q", v)
+	}
+	if v, _ := find("HOME"); v != "/override" {
+		t.Errorf("HOME = %q; a configured value wins", v)
+	}
+	if _, ok := find("PATH"); !ok {
+		t.Error("PATH was dropped")
+	}
+	if environ(nil) == nil {
+		t.Error("no configured variables must still give the base names, not Abhed's whole environment")
 	}
 }

@@ -151,3 +151,12 @@ func TestDepthLimitAndClippedKeys(t *testing.T) {
 		t.Fatalf("a long key is echoed in full: %d bytes", len(err.Error()))
 	}
 }
+
+// A value that is not an object says what it is.
+func TestDecodeArgsNamesWhatItGot(t *testing.T) {
+	for raw, want := range map[string]string{`[1]`: "not a list", `"x"`: "not a string", `true`: "not a boolean", `3`: "not a number"} {
+		if _, err := DecodeArgs(json.RawMessage(raw)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+}

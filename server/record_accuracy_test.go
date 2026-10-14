@@ -19,7 +19,7 @@ func TestShutdownRecordsATerminalsResultBeforeTheEnd(t *testing.T) {
 	wb := shellBench(t, nil)
 	start := wb.startPTY("sleep 60")
 	time.Sleep(200 * time.Millisecond)
-	wb.s.closeIdle()
+	wb.s.closeIdle(time.Now().Add(idleBudget))
 	obs, end := -1, -1
 	for i, e := range wb.events() {
 		switch e.Type {
@@ -54,7 +54,7 @@ func TestRememberedScopeIsRecordedAsTheSessionScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	live := &liveSession{allowed: map[string]bool{"write(*)": true}}
+	live := &liveSession{allowed: map[string]string{"write(*)": ""}}
 	store := agent.NewMemStore()
 	ad := &editingAdapter{calls: [][]model.ToolCall{{
 		toolCall("c1", "write", map[string]string{"path": filepath.Join(ws, "x.txt"), "content": "x"}),

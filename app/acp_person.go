@@ -8,12 +8,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 
@@ -66,13 +69,19 @@ type acpTerminal struct {
 	sess    *tools.Session
 	mu      sync.Mutex
 	line    []byte
-	queue   chan string
-	ctx     context.Context
-	cancel  context.CancelFunc
+	// esc is where typed input stands within an escape sequence.
+	esc   escState
+	queue chan queuedLine
+	// gen counts the Ctrl-Cs; a line queued before the last one is not run.
+	gen    uint64
+	ctx    context.Context
+	cancel context.CancelFunc
 	// running cancels the command running now; nil when none is.
 	running context.CancelFunc
 	// shell is set for an interactive terminal.
 	shell *acpShell
+	// done is closed once the terminal has recorded its last line or exit.
+	done chan struct{}
 }
 
 func (c *acpConn) terminalCreate(msg rpcMessage) {
@@ -116,13 +125,18 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
-	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan string, 16), ctx: ctx, cancel: cancel}
+	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	if p.Mode == "interactive" {
 		if e := c.startShell(t, parts, bash, iso, p.Cols, p.Rows); e != nil {
 			cancel()
 			c.reply(msg.ID, nil, e)
 			return
 		}
+	}
+	if t.shell == nil {
+		// Input works out its echo under t.mu and writes it after, so with
+		// t.mu held until the prompt is written no echo can come before it.
+		t.mu.Lock()
 	}
 	c.termMu.Lock()
 	c.terms[t.id] = t
@@ -134,6 +148,10 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		go c.runTerminal(t)
 	}
 	c.reply(msg.ID, map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true}, nil)
+	if t.shell == nil {
+		c.output(t, linePrompt(t.sess))
+		t.mu.Unlock()
+	}
 }
 
 func (c *acpConn) terminal(params json.RawMessage) (*acpTerminal, *rpcError) {
@@ -177,38 +195,66 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 		return
 	}
 	var lines []string
-	var echo []byte
+	var echo lineEcho
+	dropped := 0
 	t.mu.Lock()
 	for _, b := range []byte(p.Data) {
+		if t.esc.drop(b) {
+			continue
+		}
+		// bash splits words on a Tab as on a space; dropped, it would join them.
+		if b == '\t' {
+			b = ' '
+		}
 		switch {
-		case b == 0x03: // Ctrl-C stops the command running and drops the line
+		case b == 0x03:
+			// Ctrl-C stops the command running and drops the line, and the
+			// lines typed ahead, as a shell flushes its input on an interrupt.
+			dropped += t.flushLocked(lines)
+			lines = lines[:0]
 			if t.running != nil {
 				t.running()
+			} else {
+				// Nothing ran, so nothing else brings the prompt back.
+				lines = append(lines, "")
 			}
 			t.line = t.line[:0]
-			echo = append(echo, "^C\r\n"...)
+			echo.control("^C\r\n")
 		case b == '\r' || b == '\n':
 			lines = append(lines, string(t.line))
 			t.line = t.line[:0]
-			echo = append(echo, "\r\n"...)
+			echo.control("\r\n")
 		case b == 0x7f || b == 0x08:
 			if len(t.line) > 0 {
 				t.line = t.line[:len(t.line)-1]
-				echo = append(echo, "\b \b"...)
+				echo.control("\b \b")
 			}
 		case b < 0x20:
 		default:
 			if len(t.line) < maxTerminalLine {
 				t.line = append(t.line, b)
-				echo = append(echo, b)
+				echo.typed(b)
 			}
 		}
 	}
+	// An Esc on its own at the end of an input is the Esc key, not the start
+	// of a sequence the next input finishes.
+	if t.esc == escStart {
+		t.esc = escNone
+	}
+	gen := t.gen
 	t.mu.Unlock()
-	c.output(t, echo)
+	if dropped > 0 {
+		what := "line was"
+		if dropped > 1 {
+			what = "lines were"
+		}
+		echo.control(fmt.Sprintf("abhed: %d typed-ahead %s not run\r\n", dropped, what))
+	}
+	c.output(t, echo.bytes())
 	for _, l := range lines {
 		select {
-		case t.queue <- l:
+		case t.queue <- queuedLine{line: l, gen: gen}:
 		default:
 			c.output(t, []byte("abhed: too many lines waiting; this one was not run\r\n"))
 		}
@@ -216,22 +262,183 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
-// runTerminal runs the terminal's lines one at a time until it is killed.
+// queuedLine is a line waiting to run, with the Ctrl-C count when it was entered.
+type queuedLine struct {
+	line string
+	gen  uint64
+}
+
+// flushLocked drops the lines waiting to run, and pending, the lines of this
+// input before the Ctrl-C, and returns how many were commands. The caller
+// holds t.mu.
+func (t *acpTerminal) flushLocked(pending []string) int {
+	t.gen++
+	n := 0
+	for _, l := range pending {
+		if l != "" {
+			n++
+		}
+	}
+	for {
+		select {
+		case q := <-t.queue:
+			if q.line != "" {
+				n++
+			}
+		default:
+			return n
+		}
+	}
+}
+
+// escState follows an escape sequence through typed input. Arrow and
+// function keys, bracketed-paste markers and a terminal's replies are keys
+// for a program, never text for a line, so each is dropped whole.
+type escState uint8
+
+const (
+	escNone      escState = iota
+	escStart              // after ESC
+	escCSI                // ESC [, up to its final byte
+	escSS3                // ESC O, one more byte
+	escString             // OSC, DCS, SOS, PM or APC, up to BEL or ESC \
+	escStringEsc          // an ESC within one of those
+)
+
+// drop reports whether b belongs to an escape sequence. A line break or
+// Ctrl-C ends an unfinished one, so it never swallows the line.
+func (e *escState) drop(b byte) bool {
+	if b == '\r' || b == '\n' || b == 0x03 {
+		*e = escNone
+		return false
+	}
+	switch *e {
+	case escStart:
+		switch b {
+		case '[':
+			*e = escCSI
+		case 'O':
+			*e = escSS3
+		case ']', 'P', 'X', '^', '_':
+			*e = escString
+		case 0x1b: // Alt with a key that sends a sequence of its own
+		default: // Alt with a key
+			*e = escNone
+		}
+		return true
+	case escCSI:
+		if b < 0x20 || b > 0x7e {
+			// Not part of a sequence: the sequence was cut short.
+			*e = escNone
+			return false
+		}
+		if b >= 0x40 {
+			*e = escNone
+		}
+		return true
+	case escSS3:
+		*e = escNone
+		return true
+	case escString:
+		switch b {
+		case 0x07:
+			*e = escNone
+		case 0x1b:
+			*e = escStringEsc
+		}
+		return true
+	case escStringEsc:
+		*e = escNone
+		return true
+	}
+	if b == 0x1b {
+		*e = escStart
+		return true
+	}
+	return false
+}
+
+// runTerminal runs the terminal's lines one at a time until it is killed,
+// showing a prompt whenever it is ready for the next one.
 func (c *acpConn) runTerminal(t *acpTerminal) {
 	defer func() {
 		c.notification("_abhed/terminal/exit", map[string]any{"terminalId": t.id, "code": 0})
+		close(t.done)
 	}()
+	ahead := false
 	for {
 		select {
 		case <-t.ctx.Done():
 			return
-		case line := <-t.queue:
-			if line == "" {
+		case q := <-t.queue:
+			t.mu.Lock()
+			stale := q.gen != t.gen
+			t.mu.Unlock()
+			if stale {
+				// Taken as a Ctrl-C flushed the rest.
 				continue
 			}
-			c.runLine(t, line)
+			line := q.line
+			if ahead {
+				// Typed while the last line ran: its echo is above, so show it at its prompt.
+				var e lineEcho
+				for _, b := range []byte(line) {
+					e.typed(b)
+				}
+				e.control("\r\n")
+				c.output(t, e.bytes())
+			}
+			if line != "" {
+				c.runLine(t, line)
+			}
+			if t.ctx.Err() == nil {
+				ahead = len(t.queue) > 0
+				c.output(t, linePrompt(t.sess))
+			}
 		}
 	}
+}
+
+// linePrompt is the lines-mode prompt: where the next line runs, as the
+// workspace folder and the path under it, dimmed.
+func linePrompt(s *tools.Session) []byte {
+	where := filepath.Base(s.Root)
+	if rel := s.Rel(s.Cwd); rel != "." && rel != "" {
+		where = filepath.Join(where, rel)
+	}
+	return []byte("\x1b[2m" + ui.VisibleLine(where) + " $\x1b[0m ")
+}
+
+// lineEcho is what lines mode echoes for an input: typed text in bold, so a
+// command stays apart from its output, and line editing as it is.
+type lineEcho struct {
+	b    []byte
+	bold bool
+}
+
+func (e *lineEcho) typed(b byte) {
+	if !e.bold {
+		e.b = append(e.b, "\x1b[1m"...)
+		e.bold = true
+	}
+	e.b = append(e.b, b)
+}
+
+func (e *lineEcho) control(s string) {
+	e.end()
+	e.b = append(e.b, s...)
+}
+
+func (e *lineEcho) end() {
+	if e.bold {
+		e.b = append(e.b, "\x1b[0m"...)
+		e.bold = false
+	}
+}
+
+func (e *lineEcho) bytes() []byte {
+	e.end()
+	return e.b
 }
 
 // runLine is one entered line: a bash call put to policy as the person's,
@@ -274,17 +481,73 @@ func (c *acpConn) runLine(t *acpTerminal, line string) {
 	t.mu.Unlock()
 	result.Content = redacted(result.Content)
 	_ = loop.ManualObserve(id, "bash", result, time.Since(start))
-	c.output(t, crlf(result.Content))
+	c.output(t, lineResult(result))
 }
 
-// crlf ends each line as a terminal expects.
+// lineResult is a line's result as a terminal shows it. The bash tool heads
+// its result with "exit N · time" for the record; here that comes after the
+// output, dimmed, and the "[no output]" placeholder is left out.
+func lineResult(r tools.Result) []byte {
+	head, body, ok := strings.Cut(r.Content, "\n")
+	if r.ExitCode == nil || !ok || !strings.HasPrefix(head, "exit ") {
+		return crlf(r.Content)
+	}
+	if r.NoOutput {
+		// The tool's own text: the placeholder, then any notes after a blank line.
+		body = strings.TrimPrefix(strings.TrimPrefix(body, "[no output]"), "\n\n")
+	}
+	out := crlf(body)
+	return append(out, "\x1b[2m"+head+"\x1b[0m\r\n"...)
+}
+
+// crlf ends each line as a terminal expects. The text is a command's output,
+// so only colour passes; see terminalSafe.
 func crlf(s string) []byte {
-	b := bytes.ReplaceAll([]byte(s), []byte("\r\n"), []byte("\n"))
+	b := bytes.ReplaceAll([]byte(terminalSafe(s)), []byte("\r\n"), []byte("\n"))
 	b = bytes.ReplaceAll(b, []byte("\n"), []byte("\r\n"))
 	if len(b) > 0 && !bytes.HasSuffix(b, []byte("\r\n")) {
 		b = append(b, "\r\n"...)
 	}
 	return b
+}
+
+// sgr is a colour or text-style sequence, the one escape output may keep.
+var sgr = regexp.MustCompile(`^\x1b\[[0-9;:]*m`)
+
+// terminalSafe keeps a command's output from drawing anything but text and
+// colour: other escapes (cursor moves, line erases, titles, OSC links) and
+// control characters are shown as symbols, and a lone carriage return or a
+// backspace cannot write over what is already on the line.
+func terminalSafe(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == 0x1b:
+			if m := sgr.FindString(s[i:]); m != "" {
+				b.WriteString(m)
+				i += len(m)
+				continue
+			}
+			b.WriteRune('\u241b')
+		case r == '\r' && !strings.HasPrefix(s[i+1:], "\n"):
+			b.WriteByte('\n')
+		case r == '\t' || r == '\n' || r == '\r':
+			b.WriteRune(r)
+		case r < 0x20:
+			b.WriteRune(0x2400 + r)
+		case r == 0x7f:
+			b.WriteRune('\u2421')
+		case r >= 0x80 && r <= 0x9f:
+			fmt.Fprintf(&b, "⟨U+%04X⟩", r)
+		case r == utf8.RuneError && n == 1:
+			b.WriteRune(utf8.RuneError) // a stray byte a terminal might read as a C1 control
+		default:
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
 }
 
 func (c *acpConn) terminalResize(msg rpcMessage) {
@@ -327,7 +590,11 @@ func (c *acpConn) dropTerminal(t *acpTerminal) {
 	t.cancel()
 }
 
-// killTerminals ends a session's terminals, or every one for "".
+// terminalDrain bounds how long killTerminals waits for terminals to settle.
+var terminalDrain = 10 * time.Second
+
+// killTerminals ends a session's terminals, or every one for "", and waits a
+// while for each to record what it ran.
 func (c *acpConn) killTerminals(sessionID string) {
 	c.termMu.Lock()
 	var mine []*acpTerminal
@@ -339,6 +606,14 @@ func (c *acpConn) killTerminals(sessionID string) {
 	c.termMu.Unlock()
 	for _, t := range mine {
 		c.dropTerminal(t)
+	}
+	bound := time.After(terminalDrain)
+	for _, t := range mine {
+		select {
+		case <-t.done:
+		case <-bound:
+			return
+		}
 	}
 }
 

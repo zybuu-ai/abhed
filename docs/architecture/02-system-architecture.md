@@ -47,9 +47,9 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 ┌─────────────────────────────────▼────────────────────────────────────────┐
 │  EGRESS. Off by default. With sandbox.network "allowlist", a proxy per   │
 │  session on loopback judges bash commands, the model client, web_fetch,  │
-│  web_search, MCP over HTTP and stdio servers' direct sockets against the │
-│  egress rules, and records every decision. A separate egress host with   │
-│  content audit is a target design, not yet built.                        │
+│  web_search, MCP over HTTP, ssh, k8s, rag, the forge and stdio servers'  │
+│  direct sockets against the egress rules, and records every decision. A  │
+│  separate egress host with content audit is a target design, not built.  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,10 +57,10 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 it must be independently versionable and testable. The inference plane is swappable by
 construction (P12). The execution plane is the blast radius. Egress is off by default.
 With `sandbox.network: "allowlist"` each session gets a proxy on loopback, and the `egress`
-rules decide what leaves: `bash` commands (process tier only), the model client,
-`web_fetch`, `web_search`, MCP servers over HTTP, and stdio MCP servers' direct sockets.
-Every decision is an `egress.decision` event. Outside the allowlist's reach are `ssh`, the
-`k8s_*` tools, remote RAG, a stdio server's files, and requests system services make on a
+rules decide what leaves: `bash` commands (every tier but none), the model client,
+`web_fetch`, `web_search`, MCP servers over HTTP, `ssh_connect`, the `k8s_*` tools, remote
+RAG, `abhed resolve`'s forge requests, and stdio MCP servers' direct sockets.
+Every decision is an `egress.decision` event. Outside the allowlist's reach are requests system services make on a
 command's or server's behalf (`trustd` on macOS; on Linux, for a stdio server, a resolver
 reached over a unix socket left visible); see 03-security.md §5 and §6. A separate egress host, the only thing
 that would cross the air gap, with full content audit, is a target design not yet built.

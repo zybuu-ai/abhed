@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -82,7 +83,15 @@ func sameAs(dir string, names []string, info os.FileInfo) (string, bool) {
 }
 
 // foldKey is a name as a disk that ignores case and Unicode form compares it: STRASSE is straße.
-func foldKey(n string) string { return norm.NFC.String(cases.Fold().String(norm.NFC.String(n))) }
+// It is Unicode folding; HFS+ and NTFS fold with their own tables, which differ for a few letters.
+func foldKey(n string) string {
+	c := folders.Get().(*cases.Caser)
+	defer folders.Put(c)
+	return norm.NFC.String(c.String(norm.NFC.String(n)))
+}
+
+// folders keeps Casers for foldKey, which are costly to make and not safe to share at once.
+var folders = sync.Pool{New: func() any { c := cases.Fold(); return &c }}
 
 // A folder's listing is kept while its identity and times are unchanged. Where the disk keeps
 // whole seconds, a folder changed in the last few could change again unseen, so it is not kept.
@@ -147,4 +156,108 @@ func listDir(dir string) *dirListing {
 		listings.Unlock()
 	}
 	return l
+}
+
+// FoldsCaseAt reports whether the disk holding p opens a name in another
+// case. It only reads: an entry of p is tried first, as an ancestor may sit on
+// another volume, then p and each folder above it by its name in its parent.
+// A path with nothing to judge by is taken to keep case.
+func FoldsCaseAt(p string) bool {
+	dir := filepath.Clean(p)
+	if !filepath.IsAbs(dir) {
+		return false
+	}
+	if folds, known := namesFold(dir, ""); known {
+		return folds
+	}
+	for q := dir; ; q = filepath.Dir(q) {
+		parent := filepath.Dir(q)
+		if parent == q {
+			return false
+		}
+		if folds, known := namesFold(parent, filepath.Base(q)); known {
+			return folds
+		}
+	}
+}
+
+// caseFolds holds, per folder, whether names in it open in another case: every
+// entry of one folder is on the same disk, so one answer serves them all.
+var caseFolds = foldMemo{max: maxCaseFolds}
+
+// maxCaseFolds bounds the folders caseFolds keeps; past it, it starts again.
+const maxCaseFolds = 4096
+
+// foldMemo is a map of folder answers that empties itself when full, so a
+// long-lived server reading many folders does not grow it without end.
+type foldMemo struct {
+	mu  sync.Mutex
+	m   map[string]bool
+	max int
+}
+
+func (c *foldMemo) Load(dir string) (folds, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.m[dir]
+	return v, ok
+}
+
+func (c *foldMemo) Store(dir string, folds bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil || len(c.m) >= c.max {
+		c.m = make(map[string]bool)
+	}
+	c.m[dir] = folds
+}
+
+func (c *foldMemo) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.m)
+}
+
+// namesFold judges dir by name, one of its entries, or with name empty by the
+// first of its entries whose names have case.
+func namesFold(dir, name string) (folds, known bool) {
+	if folds, ok := caseFolds.Load(dir); ok {
+		return folds, true
+	}
+	names := []string{name}
+	if name == "" {
+		f, err := openDir(dir)
+		if err != nil {
+			return false, false
+		}
+		names, _ = f.Readdirnames(64)
+		_ = f.Close()
+	}
+	for _, n := range names {
+		if folds, known := opensFlipped(dir, n); known {
+			caseFolds.Store(dir, folds)
+			return folds, true
+		}
+	}
+	return false, false
+}
+
+// opensFlipped reports whether name in dir opens under its case swapped; known is false when
+// the name has no case to swap or does not exist.
+func opensFlipped(dir, name string) (folds, known bool) {
+	flipped := strings.Map(func(r rune) rune {
+		if unicode.IsUpper(r) {
+			return unicode.ToLower(r)
+		}
+		return unicode.ToUpper(r)
+	}, name)
+	if flipped == name {
+		return false, false
+	}
+	a, err := os.Lstat(filepath.Join(dir, name))
+	if err != nil {
+		return false, false
+	}
+	b, err := os.Lstat(filepath.Join(dir, flipped))
+	return err == nil && os.SameFile(a, b), true
 }

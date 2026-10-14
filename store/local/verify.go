@@ -360,3 +360,52 @@ func (s *Store) VerifyAll() (Report, []Report, error) {
 	}
 	return idx, out, nil
 }
+
+// Pruned is the tombstone the index keeps for session id, and whether id was
+// pruned (by retention, abhed record prune, or a delete).
+func (s *Store) Pruned(id string) (Tombstone, bool) {
+	e, ok := s.index.get(id)
+	return e.Tombstone, ok && e.Pruned
+}
+
+// HashAt is the hash of line n (from 1) of session id's chain, or of the
+// index when id is "index", and whether the record holds that line; for
+// checking a head a witness kept against the record as it is now.
+func (s *Store) HashAt(id string, n int64) (string, bool, error) {
+	hs, err := s.hashesAt(id, []int64{n})
+	if err != nil || len(hs) == 0 {
+		return "", false, err
+	}
+	return hs[n], true, nil
+}
+
+// hashesAt is the hash at each of lines the record holds, read once.
+func (s *Store) hashesAt(id string, lines []int64) (map[int64]string, error) {
+	path := s.index.path()
+	if id != "index" {
+		if err := checkID("session", id); err != nil {
+			return nil, err
+		}
+		path = s.Path(id)
+	}
+	data, err := readOwn(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	raws := scan(data).raws
+	out := map[int64]string{}
+	for _, n := range lines {
+		if n <= 0 || n > int64(len(raws)) {
+			continue
+		}
+		var l struct {
+			Hash string `json:"hash"`
+		}
+		_ = json.Unmarshal(raws[n-1], &l) // a line that is not one: no hash matches it
+		out[n] = l.Hash
+	}
+	return out, nil
+}

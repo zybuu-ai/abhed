@@ -188,8 +188,12 @@ func (p *ShellProc) Done() <-chan struct{} { return p.done }
 // Pid is the process the command runs as, which leads its process group.
 func (p *ShellProc) Pid() int { return p.cmd.Process.Pid }
 
-// Stop ends the command and its process group.
-func (p *ShellProc) Stop() { p.stop() }
+// Stop ends the command and its process group, and what it left running
+// once it had exited, which its cancel no longer reaches.
+func (p *ShellProc) Stop() {
+	p.stop()
+	sandbox.EndLeft(p.cmd)
+}
 
 // Exit reports the exit status once the command has ended, and how long it ran.
 func (p *ShellProc) Exit() (code int, ended bool, ran time.Duration) {

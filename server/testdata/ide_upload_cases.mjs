@@ -90,4 +90,16 @@ check('a fork that fails sends nothing', !__posted.some(p => p.route.endsWith('/
 live = false; __posted.length = 0; $('q').value = 'sixth, edited'; await send(); await tick();
 check('and the next send forks again', __posted.some(p => p.route.endsWith('/fork')));
 
+// A fork the server refuses leaves edit mode: the text stays in the box and the
+// next send adds it after the last message rather than trying the fork again.
+setLive(false); __root.querySelectorAll('editmsg')[0].on.click();
+const refusedFork = __defer('POST /v1/sessions/s1/fork');
+live = false; __posted.length = 0; $('q').value = 'seventh, edited';
+sending = send(); await tick(); const refusedB = sent[sent.length - 1];
+refusedFork.reject(Object.assign(new Error('not forked: nothing to fork from'), {status: 409})); await sending; await tick();
+check('a refused fork leaves edit mode', !$('hint').textContent.startsWith('Editing') && $('q').value === 'seventh, edited');
+check('and says the conversation was not taken back', String(refusedB.qnote).includes('not taken back') && String(refusedB.qnote).includes('nothing to fork from'));
+live = false; __posted.length = 0; await send(); await tick();
+check('the next send forks nothing', __posted.some(p => p.route.endsWith('/messages')) && !__posted.some(p => p.route.endsWith('/fork')));
+
 if(!ok) process.exit(1);

@@ -152,10 +152,12 @@ answers `202` with `"delivery": "steered"` and a `queue_id`,
 `DELETE /v1/sessions/{id}/queue/{qid}` withdraws one. The `user.message` that
 delivers a queued message carries the same id as `queue_id`, and a
 `client_id` sent with any message comes back on its `user.message` too.
-Posting with `"interrupt": true` is Send now. On a server with node routing,
-the queue routes, `/interrupt` and an `/approve` that names its request
-answer `421` with `Abhed-Session-Node` for
-a session running on another node. Streamed reasoning is recorded as
+Posting with `"interrupt": true` is Send now. Under the Enterprise edition's
+high availability (`control_plane.ha.node_id` on each replica), the queue
+routes and `/interrupt` answer `421` with `Abhed-Session-Node` for a session
+running on another node; a single server never answers `421`. An `/approve` there is recorded on the
+stored approval when it names no request or names the one the stored row
+asks about; one naming another request also gets the `421`. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
 text, so a reader that ignores the parts is unaffected.
 
@@ -165,7 +167,11 @@ it and send, and the conversation goes on from just before it, as `/fork`
 does in the terminal. The fork is recorded as `conversation.forked`, the
 abandoned steps stay in the record and above it in the chat, and files the
 agent changed are not put back. Esc in the box cancels the edit. It is refused
-while a run, a queued message or a background task is still going.
+while a run, a queued message or a background task is still going; a refused
+edit leaves the text in the box and ends the edit, so sending it again adds
+it after the last message. Your first message can be edited too, even after
+commands you ran yourself: the conversation goes on from an empty history,
+and those commands stay in the record.
 `POST /v1/sessions/{id}/fork` with `{"before_seq": <the message's step>}` is the
 same for any client.
 
@@ -182,7 +188,9 @@ agent panel, or an image pasted into the message box attaches it to the next
 message. Nothing is uploaded until you send; × takes a file off. On send each
 file goes through the same upload route as the console's (`POST
 /v1/sessions/{id}/upload`, 32 MiB a file, refused before upload when larger),
-into the session's own folder under `uploads/`, and the message names its path
+into a folder of its own under `uploads/`, named at random rather than after
+the session so that other accounts sharing the workspace cannot read session
+ids off the folder names, and the message names its path
 for the agent to open with `read`, under the read rules every workspace file
 meets. An image is recognised by its bytes, not its name, and a model that can
 see reads it as an image. A file the server refuses keeps the message unsent
@@ -296,6 +304,15 @@ screen on each line as typed (see **Terminal** below).
 | What git reads in `.git` (`config`, `hooks`, `commondir` and the like) | cannot be written by a command | cannot be written by your commands or shell either |
 | The record | every call, decision and result | the same events, marked as yours (`actor: user`, `by: user`); in a shell, each line you enter, as typed (see below) |
 
+A save that leaves a file no longer parsing (invalid JSON, a Go file with an
+unclosed bracket) is made, never refused, and the line above the editor says
+so, as the agent's own edit would; `tools.syntax_check: off` turns that off.
+
+Replies, reasoning and messages in the chat show a zero-width, bidi or other
+format character as its code point (`⟨U+202E⟩`), as tool cards do; a
+no-break, narrow or em space there is drawn as a space. File names, tool
+cards and output still mark every space other than a plain one.
+
 So HawkEYE's report covers what people did as well as what the agent did, and a
 save shows up under **Changes** with a diff like any other edit. The chat shows
 the conversation with the agent only: your own saves, commands, shells and
@@ -317,8 +334,8 @@ recorded as your write. *Accept* keeps the change and moves the file's
 baseline, so it stops showing as a change and `/undo` returns to it; the
 acceptance is recorded as `change.accepted`. The baseline only moves to text on
 disk, so accepting in a tab with unsaved edits saves them first. Rejecting
-everything in a file the session created deletes the file, as the Explorer
-does.
+everything in a file the session created, with *Reject all* or by rejecting
+its last change, deletes the file, as the Explorer does.
 
 **Comments on the changes.** A click in the diff's gutter, beside a line of
 the changed file, or *Comment on this line* from its right-click menu, opens a
@@ -377,7 +394,10 @@ command in the terminal.
 **Search.** Search reads what the Explorer shows and nothing more: a folder or
 file a read rule withholds is not opened, and neither is `.abhed/`, `.git/` or
 a folder the `grep` tool passes over (`node_modules`, `vendor`, `dist`, `.venv`
-and the like). Binary files are skipped. A regular expression is RE2, as in
+and the like). A linked git worktree inside the workspace (a folder whose
+`.git` is a file pointing into `.git/worktrees/`) is passed over too, since
+its files are the repository's again; a submodule is searched. Binary files
+are skipped. A regular expression is RE2, as in
 `grep`. A search stops at 2,000 results, 20,000 files or five seconds and
 says which; a file with more than 100 matches is listed with its first 100 and
 marked. A line is shown as at most 240 bytes around the match. A session runs
@@ -400,9 +420,16 @@ Tabs are opened with **+**, renamed by double-clicking, and closed with **×**.
 terminal, which interrupts the program in the foreground, as in any terminal.
 Pasting several lines runs them in turn. The shell keeps its own working
 directory, so a `cd` there never moves the agent. Reloading the page
-reattaches to the shells it had open, with their recent output. A shell nobody
-has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), and one
-is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
+reattaches to the shells it had open, with their recent output. Opening a
+session, in another tab or another browser, adopts your own shells on it that
+no page is watching (`GET /v1/sessions/{id}/pty` lists them), so a closed tab's
+shells are not lost. A shell or command answers only the account that started
+it, even after its session passes to another account. A page that closes tells the server
+(`POST /v1/sessions/{id}/pty/{pty}/detach`), and its shells end a minute later
+unless a page reattaches in that time, as a reload does. A shell nobody
+has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), which
+covers a page that could not say it was closing (a crash, a lost connection),
+and one is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
 its tab, deleting the session or either limit, hangs it up, and bash hangs up
 the jobs it started in the background; so does typing `exit`. Once the shell
 has exited, and before its process is released, everything still in its
@@ -417,17 +444,23 @@ signalled by its number: if its id were reused in between, which needs the
 ids to wrap round within microseconds and is not reachable in practice, the
 stop or the kill would land on a stranger: a stop is undone at once with a
 continue signal, a kill is not.
-Closing that gap strictly would need signalling by audit token. What escapes is
-a process that makes a session of its own, with `setsid` or by daemonising;
-it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
+Closing that gap strictly would need signalling by audit token. A process
+that makes a session of its own, with `setsid` or by daemonising, is ended
+too, by the `ABHED_COMMAND_ID` every process the shell starts carries; one
+that also cleared its environment, or on macOS runs a program Apple ships
+(whose environment macOS hides), escapes and runs until it ends, within the
+sandbox. Processes in the session that cannot be signalled (another user's,
+after a setuid program) are counted in the server's log line. On Linux bubblewrap ends everything
 in the sandbox with the shell, and a container is removed. A shell runs as
 the server's user. On the process tier it starts with a process limit of what
 that user runs plus `sandbox.max_procs` (512 by default), so a fork bomb
 there stops at that many more processes; the kernel counts all of the user's
 processes, so it can still crowd out the server's own for a while, and root
-is not bounded at all. On the none tier nothing bounds it. Memory is bounded
-only on the container and vm tiers; a pids cgroup per shell is the planned
-follow-up.
+is not bounded at all. On the none tier nothing bounds it. On Linux the
+process tier bounds each process's data at `sandbox.max_memory_mb` (4096 MB
+by default), and where Abhed runs in a delegated cgroup the shell's
+processes and memory are held in a cgroup of their own. The fence,
+container and vm tiers bound memory too. On macOS memory is not bounded.
 
 **Git's own files.** In a served session no command, the agent's or yours,
 in a line or in a shell, can write what git reads in a git folder as
@@ -436,11 +469,12 @@ configuration or follows elsewhere: `.git/config`, `.git/hooks`,
 [Permissions](04-permissions.md). So nothing run here can plant a program
 that your next `git status` outside Abhed would run. Git itself works as
 usual: `add`, `commit`, `branch`, `checkout`, `fetch`, and on Linux
-`git worktree add`. A few commands fail inside the sandbox and are run
-outside Abhed: `git submodule update` on a submodule already checked out, on
-every tier; `git worktree remove` on Linux and macOS; and on macOS also
-`git worktree add` and `git submodule add` or `update --init` for a
-submodule not yet checked out. **Changes** and **Review** compare each
+`git worktree add`. A few commands cannot work inside the sandbox: `git
+worktree add`, `remove` and `prune` and `git submodule update`, given as the
+whole line, run through host git with Abhed's safety settings on the process
+tier and the fence (see [Permissions](04-permissions.md)); `git submodule
+add` still fails there, and the container and vm tiers run none of them on
+the host, so run those outside Abhed. **Changes** and **Review** compare each
 file with what it held before its first edit, by the server rather than
 through a command, and are unaffected.
 
@@ -467,7 +501,11 @@ What a shell changes about the checks, stated plainly:
   line that only asks, such as a program named by `$x`, is not refused here
   at all. It does not screen lines typed ahead while a command still runs:
   they go to the terminal while that command has it, and the shell reads them
-  after. Such a line is not recorded while another program has the terminal,
+  after. Another program is told from the shell by the terminal's
+  foreground process group: the shell runs with job control on, so each
+  program it starts has a group of its own (where bash reports it has no job
+  control, the server logs it and treats every line as the shell's).
+  Such a line is not recorded while another program has the terminal,
   and is recorded without its text while the shell itself is busy (the
   terminal is then in the mode a password is read in). Nor does it see what
   the shell makes of a line: history recall (the arrow keys, `!!`, Ctrl-R,
@@ -476,46 +514,75 @@ What a shell changes about the checks, stated plainly:
   anything typed into another program, including a nested shell.
 - **Lines are recorded as typed, best effort.** Each line is recorded as
   `terminal.input`, marked `edited` when it used keys the server cannot follow
-  (Tab, the arrow keys), since the shell may then have run something else. When
-  the server cannot be sure the terminal showed a line as it was typed, it
-  records that a line was entered but not its text: when the terminal is in
+  (Tab, the arrow keys), since the shell may then have run something else.
+  When the server cannot be sure the terminal showed a line as it was typed,
+  it records that a line was entered but not its text: when the terminal is in
   canonical mode, where bash does not read its own prompt (a password prompt,
   or keys typed while a builtin ran), for a line whose whole text it did not
   see echoed before the Enter (so keys a program took without an Enter, as
-  `read -s -n` does, never prefix a recorded line), for an edited line, and for a short line where it could not ask the
-  terminal. Keys typed ahead while a command still runs are shown by the
-  terminal as they arrive, so a password typed ahead of its prompt can be on
-  screen. The output the record keeps then drops it, best effort: every line
-  of that output holding four or more characters in a row of a line recorded
-  without its text is replaced by `[withheld]`, and a shorter such line is
-  replaced where it stands alone on a line. Where a line recorded without its
-  text was edited as it was typed (Backspace, Ctrl-U, the arrow keys), the
-  terminal showed something other than its text, so none of the output is
-  kept, only a note that it was withheld; an edited command typed at the
-  shell's prompt, not ahead of it, does not count. The same holds once more
-  than 256 lines in one terminal were recorded without their text: the
-  earliest are no longer kept to look for, so none of the output is. So is
+  `read -s -n` does, never prefix a recorded line), for an edited line, and
+  for a short line where it could not ask the terminal. A line longer than the
+  terminal is wide, which the shell wraps onto the next row as it echoes it,
+  is recorded with its text. Keys typed ahead while a command still runs are
+  shown by the terminal as they arrive, so a password typed ahead of its
+  prompt can be on screen. The output the record keeps then drops it, best
+  effort: every line of that output holding four or more characters in a row
+  of a line recorded without its text is replaced by `[withheld]`, and a
+  shorter such line is replaced where it stands alone on a line. Where a line
+  recorded without its text was edited as it was typed (Backspace, Ctrl-U, the
+  arrow keys), the terminal showed something other than its text, so none of
+  the output is kept, only a note that it was withheld; an edited command
+  typed at the shell's prompt, not ahead of it, does not count. The same holds
+  once more than 256 lines in one terminal were recorded without their text:
+  the earliest are no longer kept to look for, so none of the output is. So is
   none of it kept when more text was withheld than the search is bounded to
-  (65,536 distinct four-character pieces). A line typed while another
-  program has the terminal is not recorded at all; when that program left the
-  terminal reading lines (`sleep`, `make`, `ssh` before its prompt, a script's
-  `read`), the line may be a password typed ahead of a later prompt, so it is
-  taken out of the recorded output the same way. Keys typed into a program
-  that reads them raw (an editor, a REPL) stay in the recorded output, as they
-  were on screen. The rule is eager: a command typed ahead takes out every
-  output line sharing four characters in a row with it. What is not caught:
-  pieces of a password shorter than four characters, split apart by other
-  output or by where the kept output begins.
-  Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
-  in canonical mode too, so from then on every line is recorded without its
-  text; it is still screened.
-- **Which program has the keys.** On the process and none tiers the server
-  asks the terminal which process group is in the foreground: while it is not
-  the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
+  (65,536 distinct four-character pieces). A line typed while another program
+  has the terminal is not recorded at all; when that program left the terminal
+  reading lines (`sleep`, `make`, `ssh` before its prompt, a script's `read`),
+  the line may be a password typed ahead of a later prompt, so it is taken out
+  of the recorded output the same way. Keys typed into a program that reads
+  them raw (an editor, a REPL) stay in the recorded output, as they were on
+  screen. The rule is eager: a command typed ahead takes out every output line
+  sharing four characters in a row with it. A line of exactly four characters
+  is the exception: it takes out a line holding it where no letter, digit or
+  `_` follows, so a typed-ahead `make` takes `make: done` and `remake` but
+  leaves `makes`. What is not caught: pieces of a password shorter than four
+  characters, split apart by other output or by where the kept output begins.
+  Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt in
+  canonical mode too, so from then on every line is recorded without its text;
+  it is still screened.
+- **Characters that draw as nothing.** In a shell the terminal draws a
+  bidi control or a zero-width character as nothing, so `cd d`, U+202E,
+  `rlo` reads as `cd drlo`. When such a line is entered at the shell, the
+  server writes it back with the characters marked (`cd d⟨U+202E⟩rlo`) as it
+  runs; it is screened and recorded with the characters themselves. What remains: the
+  line reads wrongly on screen until Enter, a line typed into another
+  program is not written back, and a line typed faster than the terminal
+  echoes it is recorded without its text (above). The line-by-line terminal
+  marks each such character as it is typed; deny rules for `bash` in a
+  managed file force it.
+- **Which program has the keys.** On the process, fence and none tiers the
+  server asks the terminal which process group is in the foreground: while it
+  is not the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
   screened nor recorded. On the container tier the engine's CLI holds the
-  terminal, so the server can only watch for a program switching to the
-  alternate screen; a `printf` of that sequence switches the screening and the
-  recording off there until the screen is switched back. Nor can it tell a
+  terminal, so the server watches for a program switching to the alternate
+  screen, and once one has, asks at each Enter whether the terminal's
+  foreground group is the shell's. Nothing in the container is run for this,
+  since commands can replace its programs. The engine gives the shell's
+  process id on its host (`inspect`), and that process's `/proc` stat is read
+  there, once it is confirmed to be still that container's: directly on
+  Linux, and through `podman machine ssh` for podman elsewhere. Docker on
+  macOS or Windows is asked through its own `top -o pid,pgid,tpgid` instead.
+  Only when the answer is that a program has the terminal is a line left
+  unscreened and unrecorded; with no answer (a remote engine whose host this
+  machine cannot read, or none within three seconds), the line is screened
+  and recorded, which inside an editor can refuse a line of text that
+  matches a deny rule. A `printf` of the
+  switch alone no longer turns anything off. Programs that do not switch
+  screens (`python`, `cat`) have their lines screened and recorded there as
+  commands. A program that takes the foreground and hands the terminal back
+  to the shell's group while it keeps reading is beyond what the terminal
+  reports on any tier. Nor can it tell a
   password prompt there: a password that also appears in what was printed
   while it was typed, such as a user name in `[sudo] password for root:`, can
   be recorded. Nor can it ask whether the shell is at its prompt, so there a
@@ -526,81 +593,111 @@ What a shell changes about the checks, stated plainly:
   that way (a nested shell's prompt) passes it, and a prompt changed to end
   otherwise makes every line recorded without its text there.
 
-Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
-tab then runs every line as a `bash` call of its own, judged before it runs, on
-its own pseudo-terminal, and shell state does not carry from one line to the
-next (variables, `export` and aliases are lost; the folder moves only as
-follows). Keys typed into a running command are not recorded; a line typed
-while it reads lines (or anywhere on the container tier) is taken out of the
-command's recorded output as the shell's are, so a password typed ahead of a
-`read -s` is not kept. This covers every answer typed into a command, not
-only passwords: each output line sharing four characters with an answer is
-recorded as `[withheld]`, and an answer edited as it was typed withholds the
-command's whole output. Only a line that is just
+A server accounts sign in to logs a warning at start when deny rules for
+commands are in force (the defaults include some) and `sandbox.terminal` is
+not `"lines"`, since there they only screen each shell's lines.
+
+Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`:
+each tab then runs every line as a `bash` call of its own, judged before it
+runs, on its own pseudo-terminal, and shell state does not carry from one line
+to the next (variables, `export` and aliases are lost; the folder moves only
+as follows). A Tab pasted or typed into a line (in Studio, where Tab does not
+complete) becomes a space, as bash reads it, so `wget<Tab>http://x` is judged
+and run as `wget http://x`; other control characters are dropped. In Studio a
+line's output keeps its colours, but any other escape sequence or control
+character in it is shown as a symbol (`␛[1A`), and a lone carriage return
+starts a new line, so a command cannot move the cursor, erase a line or draw a
+prompt or status line that is not there. Keys typed into a running command are
+not recorded; a line typed while it reads lines (or anywhere on the container
+tier) is taken out of the command's recorded output as the shell's are, so a
+password typed ahead of a `read -s` is not kept. This covers every answer
+typed into a command, not only passwords: each output line sharing four
+characters with an answer is recorded as `[withheld]`, and an answer edited as
+it was typed withholds the command's whole output. Only a line that is just
 `cd <folder>`, with one folder and nothing else, moves the terminal: the
-folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
-`'web app'`, `$'web app'`, and `price\ \$5` for a `$` in the name, as Tab
-writes it), and the prompt shows the new folder at once. A bare `cd` or `cd ~` goes to the workspace
-root. A line that is just `cd` and a folder that is missing, outside the
-workspace, or cannot be read with confidence (a variable, a glob, `cd -`)
-leaves the terminal where it was and says so. So does any other line with
-`cd`, `pushd`, `popd`, `CDPATH`, `eval` or `source` (or `.` as a command) in
-it, quoted or not, such as `mkdir x && cd x`, `ls; cd x`, `builtin "cd" x`
-or `eval "cd x"`: the note names the folder the next line runs in. Each line
-starts in the tracked folder, so a line that changes directory some other
-way only misses the note; it never moves the next one.
-A `cd` in a command that failed is not followed either. The agent's
-commands follow `cd` by the same rule, and its result carries the same note.
-A managed policy (`/etc/abhed/config.json`) with deny rules for `bash` or for every tool (`*`),
-or with a policy hook such as an extension, gets that mode without asking,
-because a managed rule is an organisation's statement that it holds, and a
-hook may refuse any command.
-A destructive line, one that always confirms, is not run on Enter: the terminal
-shows why and asks `1` No or `2` Yes, run it. Only `2` then Enter runs it,
-recorded as confirmed; `1` or Ctrl-C cancels it, recorded as declined. Either
-answer drops the lines queued behind it and anything typed after it, since
-they were typed before the answer. Nothing is chosen for Enter: Enter, a letter or a paste
-asks again, and keys typed in the first 300 ms after the question appears are
-ignored, so an answer typed behind the line is never taken. The server holds the
-same rule: a confirmation is accepted only for a line it asked about, 300 ms
-or more before.
-Any other line is approved by typing it.
-Once a line runs, the program it started owns the terminal until it exits:
-`vi`, `less`, `top` or a Python prompt gets every key as typed, Esc, the arrow
-keys, Ctrl-C and Enter included, and nothing it is sent is judged or queued,
-because the line was judged when it was entered. **Kill** ends a program that
-will not quit, and the line prompt comes back either way. In the process tier
-the sandbox does not let a program write to your home directory, so vim is
-started with its history file (`viminfo`) turned off; without that, it
-stopped at "Press ENTER" after every `:wq`. Your own vimrc (or `~/.exrc`) is
-still read, through `VIMINIT`, except by a vim built without scripting, such
-as `vim.tiny`, which then reads none. On Linux the sandbox shows no home
-directory, so vim there runs with its defaults. Neovim gets the same
-treatment for its history file, untested. The setting is part of every
-process-tier command's environment, so the agent's commands have it too.
-A character you type that draws nothing or changes the text's direction
-(a zero-width space, a bidi control) is shown in the line as one
-reverse-video `?`, so `cd d`, U+202E, `rlo` does not read as `cd drlo`; the line still
-holds and runs the character itself. What your programs print is drawn as
-the terminal draws it.
-While you edit a line, Tab completes the last word, or the part after an
-`=`, against the files and folders in the terminal's directory, from the
-workspace listing the explorer uses, so completing runs nothing: one match is
-filled in (a folder with `/`), several are filled in as far as they agree,
-and a second Tab lists them. Names go in quoted as bash quotes them (`my\
-notes.md`, and `./-rf` for a name that starts with `-`), so what you see is
-what runs; a name with control, invisible or text-direction characters,
-which could make the line look like something it is not, is never offered.
-Nothing is completed inside an open quote (`'`, `"` or `$'`), open
-backticks or an open `$(`, after a lone backslash, after `~` or `/`, or
-after `$`. The first word completes against
-files too: there is no completion of program names from `PATH`. The arrow
-keys recall earlier lines; Esc and the other arrows do nothing.
-Because Tab stays in the terminal, leave it from the keyboard with
-Ctrl \`, which hides the terminal and returns to the editor (press it again
-to come back); on a Mac, ⌘L also goes to the agent's composer.
-Even line by line, a rule checks the line, not what a script the line runs
-does. The banner says which mode a tab is in, and why.
+folder's quoting is read as bash reads it (`web\ app`, `"web app"`, `'web
+app'`, `$'web app'`, and `price\ \$5` for a `$` in the name, as Tab writes
+it), and the prompt shows the new folder at once. A bare `cd` or `cd ~` goes
+to the workspace root. A line that is just `cd` and a folder that is missing,
+outside the workspace, or cannot be read with confidence (a variable, a glob,
+`cd -`) leaves the terminal where it was and says so. So does any other line
+that runs `cd`, `pushd`, `popd`, `eval` or `source` (or `.`) as a command,
+quoted or not, or names `CDPATH`, such as `mkdir x && cd x`, `ls; cd x`,
+`builtin "cd" x` or `eval "cd x"`: the note names the folder the next line
+runs in. A word that is only an argument or a comment, as in `echo cd`, gives
+no note. Each line starts in the tracked folder, so a line that changes
+directory some other way only misses the note; it never moves the next one. A
+`cd` in a command that failed is not followed either. The agent's commands
+follow `cd` by the same rule, and its result carries the same note. A managed
+file (`/etc/abhed/config.json`) that itself sets `permissions.deny` or a
+non-empty `extensions` list gets that mode without asking, when deny rules for
+`bash` or for every tool (`*`), or an extension's hook (an extension counts
+only when it is sent hook events, so not under `hooks.disabled`), are then in
+force, because a managed rule is an organisation's statement that it holds,
+and a hook may refuse any command. So does a session whose edition policy
+layer (a Team workspace's rules) has a deny or ask rule for `bash` or for
+every tool (`*`): the terminal says "your workspace's rules", and each line is
+judged with that layer. The layer is read again when the terminal opens: one
+that cannot be read opens no terminal (`503`), and one that gained such rules
+since the session opened asks for the session to be opened again (`409`). Deny
+rules from the defaults, the user or the workspace folder's own configuration
+do not, even when an unrelated managed file is present (for example one that
+only turns web search on). A destructive line, one that always confirms, is
+not run on Enter: the terminal shows why and asks `1` No or `2` Yes, run it.
+Only `2` then Enter runs it, recorded as confirmed; `1` or Ctrl-C cancels it,
+recorded as declined. Either answer drops the lines queued behind it and
+anything typed after it, since they were typed before the answer. Nothing is
+chosen for Enter: Enter, a letter or a paste asks again, and keys typed in the
+first 300 ms after the question appears are ignored, so an answer typed behind
+the line is never taken. The server holds the same rule: a confirmation is
+accepted only for a line it asked about, 300 ms or more before. Any other line
+is approved by typing it. Once a line runs, the program it started owns the
+terminal until it exits: `vi`, `less`, `top` or a Python prompt gets every key
+as typed, Esc, the arrow keys, Ctrl-C and Enter included, and nothing it is
+sent is judged or queued, because the line was judged when it was entered.
+**Kill** ends a program that will not quit, and the line prompt comes back
+either way. In the process tier the sandbox does not let a program write to
+your home directory, so vim is started with its history file (`viminfo`)
+turned off; without that, it stopped at "Press ENTER" after every `:wq`. Your
+own vimrc (or `~/.exrc`) is still read, through `VIMINIT`, except by a vim
+built without scripting, such as `vim.tiny`, which then reads none. On Linux
+the sandbox shows no home directory, so vim there runs with its defaults.
+Neovim gets the same treatment for its history file, untested. A `VIMINIT` you
+set before starting Abhed is kept: commands get yours with the history files
+turned off after it. The setting is part of every process-tier and fence
+command's environment, so the agent's commands have it too. A character you
+type that draws nothing or changes the text's direction (a zero-width space, a
+bidi control) is shown in the line as one reverse-video `?`, so `cd d`,
+U+202E, `rlo` does not read as `cd drlo`; the line still holds and runs the
+character itself. What your programs print is drawn as the terminal draws it.
+While you edit a line, Tab completes the last word, or the part after an `=`,
+against the files and folders in the terminal's directory, from the workspace
+listing the explorer uses, so completing runs nothing: one match is filled in
+(a folder with `/`), several are filled in as far as they agree, and a second
+Tab lists them. Names go in quoted as bash quotes them (`my\ notes.md`, and
+`./-rf` for a name that starts with `-`), so what you see is what runs; a name
+with control, invisible or text-direction characters, which could make the
+line look like something it is not, is never offered. Nothing is completed
+inside an open quote (`'`, `"` or `$'`), open backticks or an open `$(`, after
+a lone backslash, after `~` or `/`, or after `$`. The first word completes
+against files too: there is no completion of program names from `PATH`. The
+arrow keys recall earlier lines; Esc and the other arrows do nothing. Because
+Tab stays in the terminal, leave it from the keyboard with Ctrl \`, which
+hides the terminal and returns to the editor (press it again to come back); on
+a Mac, ⌘L also goes to the agent's composer. Even line by line, a rule checks
+the line, not what a script the line runs does. The banner says which mode a
+tab is in, and why.
+
+**A program you start takes your lines unjudged, in both modes.** An
+interactive program started at a terminal, such as `sh`, `bash`, `python3` or
+`node`, reads the lines you then type into it itself, and they are not put to
+the per-line screen: in a shell terminal the server leaves keys alone while
+another program has the terminal, and in a line-by-line terminal the program
+owns the terminal once the line that started it was judged. So `sh` and then
+`curl …` runs the `curl` even where `bash(curl *)` is denied. Only the line
+that starts the program is judged; the sandbox still bounds what it does. To
+keep such a program out, deny the line that starts it (for example
+`bash(sh)` or `bash(python3*)`).
 
 **Sessions.** The terminal and the editor work in a session, because that is
 what holds the workspace, the policy and the sandbox. You do not need to ask
@@ -624,16 +721,22 @@ open.
 - **A shell's lines are screened as typed, not judged as run.** See
   *Terminal* above; `sandbox.terminal: "lines"` trades the shell for a policy
   decision on every line.
-- **Shells reattach only in the same browser tab.** Another tab or browser
-  opens new shells; the old ones end once nobody has watched them for the idle
-  limit.
 - **Files over 4 MB are read-only**, shown in part.
-- **Changes** covers saves and edits made with `write` and `edit`. A file
-  changed by a shell command, yours or the agent's, does not appear there.
-- **No go to definition, hover or diagnostics from a language server.** The
-  browser's own language services cover JSON, CSS, HTML, JavaScript and
-  TypeScript; other languages are highlighted only. See below for where a
-  language server will attach.
+- **Changes made by commands are found by comparison, within limits.** As
+  a session opens, the server notes every file in the workspace (outside
+  `.git`, `node_modules` and `.abhed`) with its size, time and hash, and keeps
+  the text of files up to 1 MB, 16 MB in all. A file a shell command changed,
+  created or removed since then, yours or the agent's, is listed under
+  **Changes** beside the edit tools' changes and can be reviewed and accepted
+  the same way; one whose text was not kept is listed without a diff. Only
+  the sizes and times are taken before the session starts; the contents are
+  read just after, and a file changed before its content was read is listed
+  without a diff. Each look at **Changes** reads only files whose size or
+  time moved since the last. In a
+  workspace of more than 20,000 files the files past that are not compared,
+  and **Changes** says so. A change undone before the list is read, or made
+  and reverted by a command, is not listed, and the record holds only what
+  the command was, not what it changed.
 
 ## What it is built on
 
@@ -652,23 +755,73 @@ is opened.
 Tools, rules, extensions, MCP servers and skills
 come from `GET /v1/capabilities`, which any signed-in user may read. An
 extension's name and events are listed; its command line and environment are
-not, because those are the operator's and may hold credentials. File content,
+not, because those are the operator's and may hold credentials. Under a
+managed configuration, `permissions.managed_keys` names the settings the
+managed file makes, and the panel marks the mode "managed by your
+organisation" only when one of them is `permissions.mode`. An MCP server
+started with no sandbox, on the none tier, carries `unconfined` with why,
+and the Extensions panel marks it so. File content,
 tool output and session titles are untrusted, and the page only ever inserts
 them as text.
 
+A tab holds one connection for everything the server sends it. A browser
+opens at most six connections to a server over HTTP/1.1, and a stream for the
+session's events, one per shell and one per language server used to take
+them all, so a page with several shells stopped answering. The page now opens
+`GET /v1/streams` once and asks for each stream on it with `POST
+/v1/streams/{stream}/{channel}` and the stream's own route (`events`,
+`pty/{pty}` or `lsp/{lsp}`); `DELETE` ends one. A channel id still open is
+refused with `409`; it is free again once its `end` arrives. Each is run as its own request
+with that request's sign-in and origin, so it is authorised, refused and
+checked again while open exactly as the route is on its own, and only its
+events travel on the shared connection. A shared stream answers only the
+account that opened it; one account holds at most 16, each with at most 64
+streams.
+
 ## Language servers
 
-Go to definition, hover and diagnostics for other languages need a language
-server, which is not wired in yet. The seam is in `web/ide/editor.js`:
+JSON, CSS, HTML, JavaScript and TypeScript get completion and diagnostics from
+services that run in the browser. For other languages, go to definition
+(F12, or ⌘-click), hover and diagnostics come from a language server the
+operator names, per editor language, in `~/.abhed/config.json` or the managed
+file:
 
-```js
-AbhedEditor.registerLanguageServer("go", {
-  attach(model, editor) { /* connect; return {dispose()} */ },
-});
+```json
+{"sandbox": {"language_servers": {"go": ["gopls"], "python": ["pylsp"]}}}
 ```
 
-The workbench calls `attachLanguageServer` for every file it opens and
-disposes what it returns when the tab closes. Nothing is registered today, so
-it is a no-op. The server half, running the language server in the session's
-sandbox and carrying its messages over the session's own authenticated
-connection, comes with the first provider.
+None runs unless it is named there; a workspace's `.abhed/config.json` cannot
+name one, even a trusted one. The first file opened in a language with a server starts it for the
+session (`POST /v1/sessions/{id}/lsp`), and that start is your `bash` call, as
+opening a shell is: the policy judges its command line (a deny rule naming it
+refuses it, and plan mode does too), it is recorded as yours, and its end and
+the start of its error output are recorded when it stops. It then runs in the
+session's sandbox exactly as a command does, with the same network, folders
+and limits; on the none tier, where there is no sandbox, no language server
+is started. One runs per language, four at most per session; one no page has
+listened to for two minutes is ended, as is every one when the session
+closes, and each one's end is on the record before the session's end. Its messages travel over the session's own authenticated routes, and
+only what the editor needs reaches it: `initialize`, `initialized`, opening,
+changing and closing a file, hover, definition, `shutdown`, `exit`,
+`$/cancelRequest` and answers to the server's own requests. Anything else,
+such as `workspace/executeCommand`, which can have a server run programs the
+policy never judged, is refused with 403. The server's `initialize` is made by
+Abhed from the workspace and the editor's capabilities, whatever the page
+sent, so `initializationOptions` (where a server such as gopls takes its
+environment and build flags) never reach it, and an answer to the server's
+own requests must be `null` or a list of nulls; any other answer is refused
+with 403. On a tier this version does not
+know, as on none, no server starts. A server's header lines are bounded, and
+a page that falls 16 MiB behind its messages has its stream ended. What
+it says is untrusted: the editor shows hovers and diagnostics as plain
+markdown with hidden characters marked. A definition in another workspace
+file opens it in a tab; one outside the workspace is not offered. Settings a
+server asks the editor for are left at the server's defaults; set a server's
+options in its own files or on its command line in `language_servers`.
+Every language server runs with `GOTOOLCHAIN=local`, which the record of its
+start notes, so a `toolchain` line in a `go.mod`, saved or only typed in the
+editor, cannot have the go command fetch and run another Go; whatever else
+the server fetches goes through the sandbox's network policy like any
+command. What you type in a file is sent to the server as you type
+(opening and changing a file) and is not recorded until you save it; a
+save is a recorded write, and the server reads only from the sandbox.

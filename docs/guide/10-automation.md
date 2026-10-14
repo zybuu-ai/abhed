@@ -62,7 +62,10 @@ without `-include-partial-messages` adds
 `"omitted":["agent.delta","agent.reasoning.delta"]`, the event types it left
 out, so `abhed hawkeye` can tell the gaps they leave from missing events. Policy
 decisions are events like any other, so a script sees each refusal and its
-reason.
+reason. A message that held a stored secret's value is recorded with
+`[secret:NAME]` in its place, and its `user.message` event carries
+`secrets_withheld`, the names comma-separated; the same note the terminal
+prints goes to stderr, so stdout stays events alone.
 
 `-verbose` shows reasoning in full and writes each model call's token counts
 to stderr.
@@ -85,7 +88,11 @@ the exit code below. The result line is written once, as the run ends.
 ### Structured answers
 
 `-json-schema` takes a JSON Schema, inline or as `@path` (relative to the
-workspace, `-C`, and at most 1 MiB; a schema must be a JSON object), and makes the
+workspace, `-C`, and at most 1 MiB; a schema must be a JSON object with at
+least one of `type`, `properties`, `$schema`, `$ref`, `anyOf`, `oneOf`,
+`allOf`, `enum`, `const` or `items`, so a JSON file named by mistake, such as
+a credentials file, is refused rather than sent to the model; a schema read
+from a file is named on stderr), and makes the
 answer a JSON value that matches it ([Structured output](13-structured-output.md)).
 With `-output-format text`, stdout is only that JSON; with `json` or
 `stream-json` it is the result line's `structured_output`.
@@ -118,7 +125,16 @@ a managed configuration refuses them the same way, and deny rules win.
 | `-disallowedTools` / `-disallowed-tools` | `-deny` |
 | `-dangerously-skip-permissions` | `-mode bypass`, after typing `yes` on a terminal |
 
-Tool names are matched without regard to case, and a trailing `:*` in a
+`-allow`, `-deny`, `-allowedTools` and `-disallowedTools` (in either
+spelling) may be repeated: each adds its rules to the earlier ones, as one
+comma-separated list would, and each value is split on its own, so a
+parenthesis left open in one never joins it to the next. A managed
+configuration that sets the permissions refuses any allow flag, repeated or
+not.
+
+Built-in tool names are matched without regard to case; an MCP or extension
+tool's name is allowed only as written, and denied both as written and in
+lower case. A trailing `:*` in a
 pattern is a prefix. `-dangerously-skip-permissions` is refused under a
 managed configuration and wherever there is no terminal to confirm on,
 which includes `-p` in a script; `-mode bypass` is the explicit spelling.
@@ -177,8 +193,8 @@ send(method="prompt", prompt="fix the failing tests")
 | Method | |
 |---|---|
 | `start` | open a session — `workspace`, `mode`, `allow`, `deny` |
-| `prompt` | send a prompt, get the final answer |
-| `steer` | redirect a run in progress |
+| `prompt` | send a prompt, get the final answer — `prompt` |
+| `steer` | redirect a run in progress — the text in `prompt` |
 | `usage` | tokens, turns, compactions |
 | `export` | the HTML transcript |
 | `providers` | what this build supports |
@@ -196,10 +212,14 @@ waits for it.
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
-per run. A `steer` goes to the session of the last `start` sent, even one
-not yet answered. It is answered at once: `steered` when a prompt is running
+per run. A `steer` carries its text in `prompt`, as a prompt does; one without
+it is answered with an error. A `steer` goes to the session of the last
+`start` sent, even one not yet answered. It is answered at once: `steered` when a prompt is running
 and will read it before its answer, `queued` when it will lead that
-session's next prompt instead. A queued steer the session never reads, because
+session's next prompt instead. A `steered` steer is read even when a
+`user_prompt_submit` hook refuses the prompt itself: the prompt is answered
+with an error `abhed: ended as prompt_refused: <reason>` whose `answer` is
+the answer to the steer, or, if the hook refuses that too, the error alone. A queued steer the session never reads, because
 `quit`, the end of input or a new `start` came first, is named in an
 `{"type":"error"}` line rather than dropped silently. Every other request, a
 second `prompt` included, waits for the running prompt and is answered in the
@@ -211,6 +231,11 @@ trusted workspace's; an untrusted workspace can only lower it.
 The session has the CLI's tool set, subagents, MCP servers, skills and the
 other tools the configuration enables included. There is no approver, so a
 call that needs approval, a subagent's too, is refused.
+
+A tool call's arguments in the events are the model's, unescaped: a value
+can hold a right-to-left override, a terminal escape or a zero-width
+character. A caller that shows them to a person must mark such characters
+first; a Go caller can use `abhed.Visible` from the SDK.
 
 Commands run in the sandbox tier the workspace's configuration sets
 (`sandbox.min_tier`, `process` by default), as from the terminal: `start`
@@ -238,6 +263,13 @@ GitLab and Gitea/Forgejo** are one command; a self-hosted instance is the
 ordinary case: the kind is inferred from the host, `-kind` names it, and
 `-ca file.pem` (or `ABHED_FORGE_CA`) trusts your certificate authority.
 
+`-allow` takes rules separated by commas; a comma inside a rule's
+parentheses (`bash(x a,b)`) stays part of that rule. It may be repeated,
+each adding its rules. The commit carries
+the `user.name` and `user.email` git's configuration gives for the
+checkout; resolve refuses to start when either is unset, rather than let
+git guess an identity from the host.
+
 The run is sandboxed in the worktree, and your checkout's `.abhed/` is
 Abhed's state for it as well: its commands can neither read nor write it.
 
@@ -260,7 +292,9 @@ configuration do not match it: give a forge's certificate authority with
 
 On the process sandbox tier, the push is refused, rather than trusting a file
 the run could have written, when `~/.gitconfig`, `~/.config/git/config` or
-`$XDG_CONFIG_HOME/git/config`, or the folder it would be made in, lies in the
+`$XDG_CONFIG_HOME/git/config`, a file one of them includes (`include.path`,
+`includeIf`), the system configuration, or the folder one would be made in,
+lies in the
 run's worktree, a temp folder or a toolchain cache (for example a home
 directory under `/tmp`). The rest of the checkout is not the run's to write,
 so a home directory kept as a dotfiles checkout still pushes. The temporary
@@ -288,7 +322,8 @@ Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule
 (`forge_pr(team/tool)`) or `-y` permits it, and otherwise you are asked at
 the terminal by number: `1` No (keep) or `2` Yes, push, with nothing
-chosen for Enter. No mode opens a pull request on its own. A run that changes
+chosen for Enter. Without a terminal, or when the request is refused, resolve
+says which local branch holds the change. No mode opens a pull request on its own. A run that changes
 nothing pushes nothing, removes its worktree and its branch, and exits 2; if
 it left ignored files, the worktree and branch are kept for them. The run is
 asked not to commit, but a commit it made on its branch, on top of where it
@@ -320,6 +355,12 @@ permission request with *Allow once*, *Always allow* the rule policy
 suggests when one is offered, and *Deny*. It can answer an ask; it cannot
 lift a deny rule, and the sandbox tier and the workspace boundary are
 whatever the configuration says, exactly as from the terminal.
+
+When the editor closes `abhed acp`'s stdin, every request it sent before is
+still answered before the process exits: a prompt running then ends as
+`cancelled`, and a permission request it was waiting on counts as refused,
+since no answer can arrive. It waits at most 30 seconds for those answers,
+then closes its sessions and exits.
 
 The request's `toolCallId` is the id of the `tool_call` update for the same
 call, and that update is sent first, so the editor can show the prompt on
@@ -439,7 +480,9 @@ again) and `session/resume` continues it without the replay; both verify the
 chain first and say whether it held in `_meta["zybuu.ai/abhed"].record`. A
 session another Abhed process is writing is refused, and one whose record
 fails verification opens read-only, to be forked. `session/close` lets a
-session go; nothing is deleted over ACP. With `storage.driver` set to
+session go, and records its end as `session_closed` when nothing else would
+(a session of terminal lines only, say), as the editor going away does; it
+can be loaded again. Nothing is deleted over ACP. With `storage.driver` set to
 `postgres` the record is the server's, and sessions here stay in memory.
 
 `session/new` offers the permission modes the engine allows now, as `modes`
@@ -473,8 +516,11 @@ abhed serve -addr :8420
 A web console with an event stream, inline approvals and session history, plus a
 JSON API. This is the multi-user path: local accounts or a reverse proxy's
 identity headers, and with Postgres storage it enforces tenant isolation in the
-database with row-level security. OIDC sign-in is part of the Enterprise
-Edition.
+database with row-level security. With more than one account, or able to gain
+one, `abhed serve` gives each session a sandbox of its own and refuses to
+start when the session driver cannot be used; `"server": {"shared_sessions":
+true}` keeps every account in one workspace. OIDC sign-in is part of the
+Team and Enterprise editions.
 
 ```bash
 B=http://127.0.0.1:8420

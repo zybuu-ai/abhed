@@ -14,7 +14,8 @@
 // The Report says, check by check, pass, fail or skip with a reason and the
 // value measured, and is Qualified only when every required check passed. Any
 // failure refuses the fence: there is no fallback and no partial fence. Root
-// is refused in this release. A pass is never cached; call Run each time.
+// qualifies only with Landlock ABI 6, which scopes signals. A pass is never
+// cached; call Run each time.
 //
 // On anything but Linux, Run reports that the fence is not supported.
 package probe

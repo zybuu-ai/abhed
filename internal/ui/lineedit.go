@@ -189,6 +189,7 @@ func NewLineReaderOn(in io.Reader, out io.Writer, cols, rows int) *LineReader {
 		return cols, rows
 	}
 	l := &LineReader{d: d, raw: true, done: make(chan struct{})}
+	d.openKeys() // a test's keys are taken as they come
 	l.resize = func(c, r int) {
 		mu.Lock()
 		cols, rows = c, r
@@ -309,6 +310,15 @@ func (l *LineReader) Typing() bool {
 	l.d.mu.Lock()
 	defer l.d.mu.Unlock()
 	return !l.d.buf.empty()
+}
+
+// Ready says the session has set up what keys reach (its hotkeys above all):
+// keys typed since the dock appeared are acted on now, in order, and from
+// then on as they come.
+func (l *LineReader) Ready() {
+	if l.raw {
+		l.d.openKeys()
+	}
 }
 
 // Raw reports whether editing is active, so a caller can print its own prompt

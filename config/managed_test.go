@@ -96,7 +96,7 @@ func TestLoadManagedReadsOnlyTheManagedFile(t *testing.T) {
 func managedCfg(keys ...string) Config {
 	c := Default()
 	c.Managed = true
-	c.ManagedKeys = keys
+	c.ManagedKeys = append([]string{}, keys...)
 	return c
 }
 
@@ -219,9 +219,98 @@ func TestAllowRefusedUnderAnyManagedPermission(t *testing.T) {
 	}
 }
 
+// A managed file the config decode and the key walk could read differently is
+// refused: a repeated key, or a value only one of them can hold.
+func TestManagedFileReadTwoWaysIsRefused(t *testing.T) {
+	for name, body := range map[string]string{
+		"repeated, then empty":   `{"permissions":{"deny":["bash(*touch *)"]},"permissions":{}}`,
+		"repeated, then null":    `{"permissions":{"deny":["bash(*touch *)"]},"permissions":null}`,
+		"repeated nested":        `{"permissions":{"deny":["bash(curl *)"],"deny":[]}}`,
+		"number past float64":    `{"_comment":1e400,"permissions":{"deny":["bash(*touch *)"]}}`,
+		"repeated in two cases":  `{"permissions":{"deny":[]},"PERMISSIONS":{"deny":["bash(*touch *)"]}}`,
+		"repeated, long s":       `{"permissions":{"deny":["bash(*touch *)"]},"permiſſions":{}}`,
+		"inner key in two cases": `{"permissions":{"deny":["bash(*touch *)"],"DENY":null}}`,
+		"number past float64 2":  `{"$note":-1e999,"extensions":[{"name":"x","command":"x"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			old := managed.ConfigFile
+			managed.ConfigFile = path
+			t.Cleanup(func() { managed.ConfigFile = old })
+			if _, err := LoadManaged(); err == nil {
+				t.Fatalf("loaded %s", body)
+			}
+		})
+	}
+}
+
+// The refusal of an over-large number says so in plain words.
+func TestManagedFileNumberTooLargeIsNamed(t *testing.T) {
+	err := CheckManagedJSON([]byte(`{"_comment":1e400}`))
+	if err == nil || !strings.Contains(err.Error(), "number too large to read (1e400)") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// A managed Config with nothing known of what it set screens; an empty managed file does not.
+func TestManagedScreensFailsSafe(t *testing.T) {
+	hand := Default()
+	hand.Managed = true
+	if !hand.ManagedScreens() {
+		t.Error("a hand-built managed config did not screen")
+	}
+	if managedCfg().ManagedScreens() {
+		t.Error("a managed file that sets nothing screened")
+	}
+}
+
+// Only a managed file that sets deny rules or extensions makes their refusals
+// the organisation's; one that turns on web search alone does not.
+func TestManagedScreensOnlyForManagedDenyOrExtensions(t *testing.T) {
+	for _, keys := range [][]string{{"permissions.deny"}, {"permissions"}} {
+		if !managedCfg(keys...).ManagedScreens() {
+			t.Errorf("%v: not screening", keys)
+		}
+	}
+	for _, keys := range [][]string{{"web_search.enabled"}, {"permissions.mode", "sandbox.min_tier"}} {
+		if managedCfg(keys...).ManagedScreens() {
+			t.Errorf("%v: screening", keys)
+		}
+	}
+	// An empty managed extensions list runs no hook, so it screens nothing.
+	if managedCfg("extensions").ManagedScreens() {
+		t.Error("an empty managed extensions list screened")
+	}
+	withExt := managedCfg("extensions")
+	withExt.Extensions = []ExtensionConfig{{Name: "x"}}
+	if !withExt.ManagedScreens() {
+		t.Error("a managed extension did not screen")
+	}
+	// With hooks.disabled an extension is sent only its tools' calls, so it
+	// screens nothing either.
+	withExt.Hooks.Disabled = true
+	if withExt.ManagedScreens() {
+		t.Error("a managed extension screened with hooks disabled")
+	}
+	withExt.Extensions = []ExtensionConfig{{Name: "x", Events: []string{"invoke_tool"}}}
+	withExt.Hooks.Disabled = false
+	if withExt.ManagedScreens() {
+		t.Error("a tools-only managed extension screened")
+	}
+	unmanaged := Default()
+	unmanaged.ManagedKeys = []string{"permissions.deny"}
+	if unmanaged.ManagedScreens() {
+		t.Error("an unmanaged config screened")
+	}
+}
+
 // Under a managed file that sets any permissions setting but not
 // permissions.allow, the allow rules the user's and a trusted workspace's
-// files add are left out and each is named; the defaults stay.
+// files add are left out and each is named. A built-in rule the files' list
+// still held stays; one it left out is not brought back.
 func TestManagedLockDropsFileAllowRules(t *testing.T) {
 	for name, body := range map[string]string{
 		"deny only": `{"permissions":{"deny":["bash(curl*)"]}}`,
@@ -241,8 +330,8 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 			if !cfg.AllowLocked() || !cfg.Workspace.Trusted {
 				t.Fatalf("locked %v trusted %v", cfg.AllowLocked(), cfg.Workspace.Trusted)
 			}
-			if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) || cfg.Sets("permissions.allow") {
-				t.Fatalf("allow %v; want exactly the built-in rules", cfg.Permissions.Allow)
+			if len(cfg.Permissions.Allow) != 0 {
+				t.Fatalf("allow %v; the files' list held no built-in rule, so none is brought back", cfg.Permissions.Allow)
 			}
 			userFile := filepath.Join(home, ".abhed", "config.json")
 			for rule, file := range map[string]string{"bash(rm*)": userFile, "bash(*)": cfg.Workspace.File} {
@@ -272,13 +361,17 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 
 	t.Run("a file repeating a default", func(t *testing.T) {
 		withManaged(t, `{"permissions":{"mode":"default"}}`)
-		_, ws := trustHome(t, `{"permissions":{"allow":["bash(ls*)"," bash(pwd) ","bash(rm*)"]}}`, "")
+		_, ws := trustHome(t, `{"permissions":{"allow":["bash(ls *)"," bash(pwd) ","bash(rm*)"]}}`, "")
 		cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) {
-			t.Fatalf("allow %v; want exactly the built-in rules, once each", cfg.Permissions.Allow)
+		var got []string
+		for _, r := range cfg.Permissions.Allow {
+			got = append(got, strings.TrimSpace(r))
+		}
+		if strings.Join(got, "|") != "bash(ls *)|bash(pwd)" {
+			t.Fatalf("allow %v; want the built-in rules the file kept, once each", cfg.Permissions.Allow)
 		}
 	})
 
@@ -341,5 +434,107 @@ func TestDedupeKeepsFirstTrimmed(t *testing.T) {
 	got := dedupe([]string{"bash(ls*)", "read(*)", " bash(ls*) ", "read(*)", "bash(pwd)"})
 	if want := []string{"bash(ls*)", "read(*)", "bash(pwd)"}; !slices.Equal(got, want) {
 		t.Fatalf("dedupe = %q, want %q", got, want)
+	}
+}
+
+// A managed deny list adds to the deny rules of the user's file, -settings, a
+// trusted workspace and the built-in ones; it never takes one away. Each rule
+// keeps its own layer, and none is recorded as overridden.
+func TestManagedDenyAddsToTheOthers(t *testing.T) {
+	const managedDeny = `{"permissions":{"deny":["bash(curl*)","bash(wget*)"]}}`
+	for _, c := range []struct {
+		name, user, ws, settings string
+		rule, layer              string
+	}{
+		{name: "user", user: `{"permissions":{"deny":["bash(nc *)","bash(wget*)"]}}`, rule: "bash(nc *)", layer: LayerUser},
+		{name: "settings", settings: `{"permissions":{"deny":["bash(scp *)"]}}`, rule: "bash(scp *)", layer: LayerSettings},
+		{name: "trusted workspace", ws: `{"permissions":{"deny":["read(secrets/**)"]}}`, rule: "read(secrets/**)", layer: LayerWorkspace},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			withManaged(t, managedDeny)
+			_, ws := trustHome(t, c.user, c.ws)
+			o := LoadOptions{Trust: TrustGranted, Quiet: true}
+			if c.settings != "" {
+				o.Settings, o.SettingsName = []byte(c.settings), "-settings (inline)"
+			}
+			cfg, err := LoadWith(ws, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rule, layer := range map[string]string{"bash(curl*)": LayerManaged, "bash(wget*)": LayerManaged, c.rule: c.layer} {
+				if !slices.Contains(cfg.Permissions.Deny, rule) || cfg.RuleLayer("deny", rule) != layer {
+					t.Errorf("%s: deny %v, layer %s, want %s", rule, cfg.Permissions.Deny, cfg.RuleLayer("deny", rule), layer)
+				}
+			}
+			if cfg.Permissions.Deny[0] != "bash(curl*)" || len(cfg.Permissions.Deny) != 3 {
+				t.Errorf("deny %v: want the managed rules first, each rule once", cfg.Permissions.Deny)
+			}
+			for _, o := range cfg.Overridden {
+				if o.Key == "permissions.deny" {
+					t.Errorf("a deny list recorded as overridden: %+v", o)
+				}
+			}
+		})
+	}
+
+	// With no lower list the built-in deny rules stay beside the managed ones.
+	withManaged(t, managedDeny)
+	_, ws := trustHome(t, "", "")
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range Default().Permissions.Deny {
+		if !slices.Contains(cfg.Permissions.Deny, r) || cfg.RuleLayer("deny", r) != LayerDefault {
+			t.Errorf("built-in %s: deny %v, layer %s", r, cfg.Permissions.Deny, cfg.RuleLayer("deny", r))
+		}
+	}
+	// So does a program that loads only the managed file.
+	if m, err := LoadManaged(); err != nil || !slices.Contains(m.Permissions.Deny, "bash(*mkfs*)") || !slices.Contains(m.Permissions.Deny, "bash(curl*)") {
+		t.Errorf("LoadManaged deny %v (%v)", m.Permissions.Deny, err)
+	}
+}
+
+// With the deny lists merged, a managed rule that repeats a person's is
+// credited to the managed file, and the person's other rules stay theirs: a
+// rule naming no tool in the user's file must not stop startup as a managed one.
+func TestManagedDenyMergeKeepsEachRulesLayer(t *testing.T) {
+	withManaged(t, `{"permissions":{"deny":["bash(wget*)"]}}`)
+	_, ws := trustHome(t, `{"permissions":{"deny":["bash(wget*)","Shell(x)","bash(nc *)"]}}`, "")
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatalf("a person's own rule stopped startup: %v", err)
+	}
+	for rule, layer := range map[string]string{"bash(wget*)": LayerManaged, "Shell(x)": LayerUser, "bash(nc *)": LayerUser} {
+		if !slices.Contains(cfg.Permissions.Deny, rule) || cfg.RuleLayer("deny", rule) != layer {
+			t.Errorf("%s: deny %v, layer %q, want %s", rule, cfg.Permissions.Deny, cfg.RuleLayer("deny", rule), layer)
+		}
+	}
+	if n := len(cfg.Permissions.Deny); n != 3 {
+		t.Errorf("deny %v: want each rule once", cfg.Permissions.Deny)
+	}
+	for _, f := range cfg.RuleFindings() {
+		if f.FailsDoctor() {
+			t.Errorf("a person's rule fails the doctor: %+v", f)
+		}
+	}
+}
+
+// A managed ask list joins the user's ask rules, as a managed deny list
+// joins deny rules: it adds questions and never drops one.
+func TestManagedAskJoinsTheUsersAskRules(t *testing.T) {
+	withManaged(t, `{"permissions":{"ask":["bash(gh *)"]}}`)
+	_, ws := trustHome(t, `{"permissions":{"ask":["bash(kubectl *)"]}}`, "")
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []string{"bash(gh *)", "bash(kubectl *)"} {
+		if !slices.Contains(cfg.Permissions.Ask, r) {
+			t.Errorf("ask %v lacks %s", cfg.Permissions.Ask, r)
+		}
+	}
+	if l := cfg.RuleLayer("ask", "bash(kubectl *)"); l != LayerUser {
+		t.Errorf("the user's ask rule is credited to %s", l)
 	}
 }

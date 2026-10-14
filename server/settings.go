@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -117,6 +118,22 @@ type skillView struct {
 type mcpView struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// Unconfined is why a stdio server runs with no sandbox, if it does.
+	Unconfined string `json:"unconfined,omitempty"`
+}
+
+// mcpViews are gw's connected servers, each marked if it runs unconfined.
+func mcpViews(gw *mcp.Gateway) []mcpView {
+	out := []mcpView{}
+	if gw == nil {
+		return out
+	}
+	loose := gw.Unconfined()
+	for _, line := range gw.Status() {
+		name, _, _ := strings.Cut(line, " (") // names hold no spaces
+		out = append(out, mcpView{Name: line, Status: "connected", Unconfined: loose[name]})
+	}
+	return out
 }
 
 type retrievalView struct {
@@ -155,16 +172,9 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	s.state.mu.RLock()
 	gw := s.state.gateway
 	s.state.mu.RUnlock()
-	if gw != nil {
-		for _, line := range gw.Status() {
-			v.MCP = append(v.MCP, mcpView{Name: line, Status: "connected"})
-		}
-	}
+	v.MCP = mcpViews(gw)
 	if v.Skills == nil {
 		v.Skills = []skillView{}
-	}
-	if v.MCP == nil {
-		v.MCP = []mcpView{}
 	}
 	WriteJSON(w, http.StatusOK, v)
 }
@@ -274,30 +284,52 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	before := map[string]bool{}
-	for _, t := range gw.Tools() {
-		before[t.Name()] = true
-	}
-
-	if errs := gw.Connect(ctx, []mcp.ServerConfig{{
+	errs := gw.Connect(ctx, []mcp.ServerConfig{{
 		Name: req.Name, Command: req.Command, Args: req.Args,
 		URL: req.URL, Enabled: true,
-	}}); len(errs) > 0 {
-		WriteError(w, http.StatusBadRequest, errs[0].Error())
-		return
-	}
+	}})
 
-	// Only the tools this server brought are added, so a reconnect of one
-	// server does not disturb another's.
+	// The registry is brought in line with what the gateway offers now, tool
+	// by tool as server and remote name, not by full name: two servers' tools
+	// can share one. A tool of this server it no longer offers, or one left
+	// out for its name, is taken out; another server's, perhaps mid-restart,
+	// is left alone. This server's new tools are added.
 	added := []string{}
 	s.state.swapTools(func(reg *tools.Registry) {
+		offered := map[string]tools.Tool{}
 		for _, t := range gw.Tools() {
-			if !before[t.Name()] {
+			offered[mcpIdentity(t)] = t
+		}
+		leftOut := gw.OverlappedNames()
+		have := map[string]bool{}
+		for _, t := range reg.All() {
+			id := mcpIdentity(t)
+			if id == "" {
+				continue
+			}
+			if _, ok := offered[id]; ok {
+				have[id] = true
+				continue
+			}
+			if n, _ := t.(mcpNamed); n.ServerName() == req.Name || leftOut[t.Name()] {
+				reg.Remove(t.Name())
+			}
+		}
+		if len(errs) > 0 {
+			return
+		}
+		for id, t := range offered {
+			if n, _ := t.(mcpNamed); n != nil && n.ServerName() == req.Name && !have[id] {
 				reg.Add(t)
 				added = append(added, t.Name())
 			}
 		}
+		sort.Strings(added)
 	})
+	if len(errs) > 0 {
+		WriteError(w, http.StatusBadRequest, errs[0].Error())
+		return
+	}
 
 	s.adminAudit(r, "mcp.added", req.Name, mcpAuditDetail(req, added))
 	WriteJSON(w, http.StatusOK, map[string]any{
@@ -306,16 +338,33 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mcpNamed is a tool that knows its MCP server and its name there.
+type mcpNamed interface {
+	ServerName() string
+	RemoteName() string
+}
+
+// mcpIdentity is an MCP tool's server and remote name, or "" for another tool.
+func mcpIdentity(t tools.Tool) string {
+	n, ok := t.(mcpNamed)
+	if !ok {
+		return ""
+	}
+	return n.ServerName() + "\x00" + n.RemoteName()
+}
+
 // mcpAuditDetail describes an added MCP server without its secrets: the URL
-// keeps scheme, host and path, and the command only its program.
+// keeps scheme and host only, since a path can carry a key (/s/<key>/mcp),
+// and the command its program's base name. The command is run as one path,
+// spaces and all, so it is not split at a space.
 func mcpAuditDetail(req mcpRequest, added []string) map[string]any {
 	d := map[string]any{"tools": added}
-	if f := strings.Fields(req.Command); len(f) > 0 {
-		d["command"] = f[0]
+	if c := strings.TrimSpace(req.Command); c != "" {
+		d["command"] = filepath.Base(c)
 	}
 	if req.URL != "" {
-		if u, err := url.Parse(req.URL); err == nil {
-			d["url"] = (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+		if u, err := url.Parse(req.URL); err == nil && u.Host != "" {
+			d["url"] = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 		} else {
 			d["url"] = "(unparseable)"
 		}

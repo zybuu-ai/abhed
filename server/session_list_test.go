@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,5 +184,35 @@ func TestSessionListIgnoresRenamesAndModelSwitches(t *testing.T) {
 		if !after[i].Updated.Equal(before[i].Updated) {
 			t.Errorf("session %s: updated moved from %v to %v", after[i].ID, before[i].Updated, after[i].Updated)
 		}
+	}
+}
+
+// Every time in the list is written in UTC, whichever zone it was read in, so
+// a page comparing them as text orders them as instants.
+func TestSessionListWritesUTC(t *testing.T) {
+	ist := time.FixedZone("IST", 5*3600+1800)
+	older := time.Date(2026, 10, 7, 14, 0, 0, 0, ist) // 08:30Z
+	newer := time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC)
+	w := httptest.NewRecorder()
+	writeSessionPage(w, []sessionSummary{
+		{ID: "live", Created: older, Updated: older, PendingAsk: &pendingAsk{Tool: "bash", Since: older}},
+		{ID: "rec", Created: newer, Updated: newer},
+	}, listPage{})
+	var raw []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 2 || raw[0]["id"] != "rec" {
+		t.Fatalf("order: %s", w.Body.String())
+	}
+	for _, s := range raw {
+		for _, k := range []string{"created", "updated"} {
+			if v, _ := s[k].(string); !strings.HasSuffix(v, "Z") {
+				t.Errorf("%s %s = %q, not UTC", s["id"], k, v)
+			}
+		}
+	}
+	if since, _ := raw[1]["pending_ask"].(map[string]any)["since"].(string); since != "2026-10-07T08:30:00Z" {
+		t.Errorf("pending_ask.since = %q", since)
 	}
 }

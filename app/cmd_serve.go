@@ -5,22 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
+	"github.com/zybuu-ai/abhed/server/expose"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -49,12 +56,23 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	cfg, iso, err := serveSessionIsolation(cfg, workspace)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if err := checkPerSessionConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
 
 	cfg, sb, bash, err := serveSandbox(cfg, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	// Abhed's own git in the workspace runs inside the sandbox too.
+	defer hostgit.Register(workspace, sb)()
 	// Under the fence each session gets a fence of its own, with its own
 	// cgroup, qualified at its first command; this one qualifies the host at
 	// startup and confines nothing else.
@@ -87,7 +105,27 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	// Unusable TLS stops here, before anything listens: never plain HTTP instead.
+	tlsL, err := buildTLS(cfg, workspace, slog.Default())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	cliLogin, err := buildCLILogin(cfg, workspace, authMW)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
 	fmt.Printf("auth        %s\n", authLabel(cfg, authMW))
+	fmt.Printf("tls         %s\n", tlsLabel(cfg, tlsL))
+	if tlsL != nil {
+		for _, w := range tlsL.Warnings() {
+			fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", w)
+		}
+	}
+	if cliLogin != nil {
+		fmt.Printf("cli login   abhed login, by device code or browser; tokens last %d hours\n", orDefaultInt(cfg.Auth.CLI.TokenHours, 168))
+	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
 	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
 	if line, failed := extensionsLabel(cfg, set); line != "" {
@@ -184,20 +222,63 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 
+	// The sandbox control plane, only when the configuration turns it on.
+	var cp *controlplane.Service
+	var exposed *expose.Server
+	var sshKey ssh.Signer
+	var perSession *sessionsandbox.Manager
+	if cfg.ControlPlane.Enabled {
+		live := openVault().Live()
+		built, err := buildControlPlane(context.Background(), cfg, workspace, eventStore,
+			func(text string) string { return string(live.Redact([]byte(text))) }, a.cpHooks...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 1
+		}
+		cp, exposed, sshKey = built.svc, built.expose, built.sshKey
+		// Deferred before the reconciler's stop, so it runs after the reconciler has ended.
+		defer built.close()
+		if exposed != nil {
+			defer exposed.Close()
+		}
+		if iso.adminAPI {
+			fmt.Printf("sandboxes   /v1/sandboxes (store %s; administrators only, as control_plane.enabled is unset)\n", built.label)
+		} else {
+			fmt.Printf("sandboxes   /v1/sandboxes (store %s)\n", built.label)
+		}
+		if cfg.ControlPlane.PerSession {
+			if perSession, err = buildSessionSandboxes(cfg, built); err != nil {
+				if iso.auto {
+					err = fmt.Errorf("%w (each session gets a sandbox of its own because this server has more than one account; "+
+						"set server.shared_sessions to share one workspace instead)", err)
+				}
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+			fmt.Printf("sessions    each gets a sandbox: %s\n", perSessionLabel(cfg))
+			if iso.auto {
+				fmt.Println("            (several accounts; server.shared_sessions keeps one shared workspace)")
+			}
+		}
+	}
+
 	opts := server.Options{
-		Addr:         addr,
-		Workspace:    workspace,
-		HomeURL:      cfg.Server.HomeURL,
-		EventTap:     fanIn(taps),
-		Config:       cfg,
-		Adapter:      buildAdapter(provider),
-		Registry:     set.Registry,
-		Redact:       openVault().Live(),
-		SkillListing: set.SkillListing,
-		SkillDirs:    set.SkillDirs(),
-		Extensions:   set.Extensions,
-		Store:        eventStore,
-		Auth:         authMW,
+		ControlPlane:  cp,
+		Expose:        exposed,
+		SandboxSSHKey: sshKey,
+		Addr:          addr,
+		Workspace:     workspace,
+		HomeURL:       cfg.Server.HomeURL,
+		EventTap:      fanIn(taps),
+		Config:        cfg,
+		Adapter:       buildAdapter(provider),
+		Registry:      set.Registry,
+		Redact:        openVault().Live(),
+		SkillListing:  set.SkillListing,
+		SkillDirs:     set.SkillDirs(),
+		Extensions:    set.Extensions,
+		Store:         eventStore,
+		Auth:          authMW,
 		// The live objects behind the settings surface. Passing the registries
 		// rather than only their rendered output is what lets a change reach
 		// the next session without a restart.
@@ -211,6 +292,15 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Index:         set.Index,
 		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
+		CLILogin:      cliLogin,
+		// Nil unless control_plane.per_session: sessions then share sb as before.
+		SessionSandboxes:    perSession,
+		SoleOwner:           iso.sole,
+		SandboxAPIAdminOnly: iso.adminAPI,
+	}
+	if tlsL != nil {
+		opts.TLS = tlsL.Config()
+		opts.ClientCertRevoked = tlsL.Revoked
 	}
 	// A session leaving this process takes its egress proxy, and what the
 	// guard of Abhed's own requests counts for it, with it.
@@ -221,7 +311,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 			_ = es.EndSession(id)
 		}
 	}
-	if fence != nil {
+	opts.StartupBaseline = config.StartupBaseline
+	// Under per-session sandboxes each session's sandbox is a fence of its own already.
+	if fence != nil && perSession == nil {
 		opts.SessionBash = fenceSessionBash(cfg, workspace)
 	}
 	for _, h := range a.serverOpts {
@@ -240,6 +332,39 @@ func (a *App) serveCmd(workspace, addr string) int {
 	stopper := cancelOnStop(stopDrains)
 	defer stopper.stop()
 	ctx := stopper.ctx
+	runTLS(ctx, tlsL)
+
+	if cp != nil {
+		cpCtx, cpStop := context.WithCancel(ctx)
+		cpDone := make(chan struct{})
+		go func() {
+			defer close(cpDone)
+			_ = cp.Run(cpCtx)
+		}()
+		defer func() {
+			cpStop()
+			<-cpDone
+		}()
+	}
+	if perSession != nil {
+		// Runs before the reconciler stops: the warm pool stops filling, then
+		// the sessions' sandboxes get their retention and the pool drains.
+		poolCtx, poolStop := context.WithCancel(ctx)
+		poolDone := make(chan struct{})
+		go func() {
+			defer close(poolDone)
+			perSession.Run(poolCtx)
+		}()
+		defer func() {
+			poolStop()
+			<-poolDone
+			closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := perSession.Close(closeCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: stopping the sessions' sandboxes: %v\n", err)
+			}
+		}()
+	}
 
 	for _, h := range a.serveHooks {
 		stopHook, err := h(ctx, srv, cfg)
@@ -254,25 +379,44 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 
+	// Port 0 asks the system for one, so the listener is opened now and the
+	// banner names the port it got, not ":0".
+	var ln net.Listener
+	shown := addr
+	if _, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
+		if ln, err = net.Listen("tcp", addr); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 1
+		}
+		shown = ln.Addr().String()
+	}
 	bs := ui.NewStyle(os.Stdout)
 	fmt.Printf("%s %s %s  %s\n", bs.Accent(ui.Glyph),
-		bs.Bold("ABHED"), bs.Dim(a.version), browsableURL(addr))
+		bs.Bold("ABHED"), bs.Dim(a.version), serveURL(shown, tlsL != nil))
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
+	fmt.Printf("  git       %s\n", gitHeldLabel(cfg, sb.Tier()))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("  managed   %s\n", line)
 	}
+	if line := bypassDisabled(cfg); line != "" {
+		fmt.Printf("  mode      %s\n", line)
+	}
 	switch {
 	case docsite.Available():
-		fmt.Printf("  docs      %s/docs\n", browsableURL(addr))
+		fmt.Printf("  docs      %s/docs\n", serveURL(shown, tlsL != nil))
 	case docsite.PublicURL != "":
 		// Not embedded in this build; say where the same pages are, once,
 		// here — never from a page, which must stay usable with no route out.
 		fmt.Printf("  docs      %s (not embedded in this build)\n", docsite.PublicURL)
 	}
 
-	if err := srv.ListenAndServe(ctx); err != nil && err.Error() != "http: Server closed" {
+	serve := srv.ListenAndServe
+	if ln != nil {
+		serve = func(ctx context.Context) error { return srv.Serve(ctx, ln) }
+	}
+	if err := serve(ctx); err != nil && err.Error() != "http: Server closed" {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
@@ -284,12 +428,20 @@ func (a *App) serveCmd(workspace, addr string) int {
 // as Studio's do: a planted hook or fsmonitor would run at the person's next git command.
 func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.Sandbox, tools.Bash, error) {
 	cfg.Sandbox.ProtectGit = true
+	// Accounts share the host's uid: under the fence, only Landlock keeps one's commands from signalling another's.
+	cfg.Sandbox.ScopeSignals = cfg.Auth.Mode != "" && cfg.Auth.Mode != "none"
 	sb, err := buildSandbox(cfg, workspace)
 	if err != nil {
 		return cfg, nil, tools.Bash{}, err
 	}
-	bash := tools.Bash{Sandbox: sb.Command,
-		Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
+	// Asked for in the configuration, git's files held is not given up silently.
+	if p := cfg.Sandbox.GitProtect; p != nil && *p && sb.Tier() == sandbox.TierNone {
+		_ = sandbox.Close(sb)
+		return cfg, nil, tools.Bash{}, errors.New("sandbox.protect_git is true, but the sandbox tier is none, which cannot keep commands from writing git's config and hooks; " +
+			"make the process tier available, or set sandbox.protect_git false to serve without it")
+	}
+	bash := tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
+		Home: sandbox.HomeFunc(sb), Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
 		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
@@ -330,6 +482,22 @@ func browsableURL(addr string) string {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+// serveURL is browsableURL with the scheme the listener speaks.
+func serveURL(addr string, tls bool) string {
+	u := browsableURL(addr)
+	if tls {
+		return "https://" + strings.TrimPrefix(u, "http://")
+	}
+	return u
+}
+
+func orDefaultInt(v, def int) int {
+	if v == 0 {
+		return def
+	}
+	return v
 }
 
 // buildAuth constructs the identity layer from the registered builders.
@@ -374,10 +542,13 @@ func (a *App) buildAuth(ctx context.Context, cfg config.Config, workspace string
 			public = append(public, p.PublicPaths()...)
 		}
 		if v != nil {
-			mw.Verifier = v
+			mw.Verifier = auth.ChainVerifier(mw.Verifier, v)
 		}
 	}
 	mw.PublicPaths = public
+	if err := addClientCertAuth(cfg, mw); err != nil {
+		return nil, err
+	}
 	return mw, nil
 }
 

@@ -248,7 +248,7 @@ func TestPathSubjectsStayInsideRoots(t *testing.T) {
 	e := New(ModeBypass)
 	e.Roots = func() []string { return []string{ws} }
 	_ = e.AddDeny("write(../*)")
-	all, allow := e.pathSubjects(filepath.Join(filepath.Dir(ws), "sibling"))
+	all, allow := e.pathSubjects(filepath.Join(filepath.Dir(ws), "sibling"), true)
 	for _, s := range append(all, allow...) {
 		if strings.HasPrefix(s, "..") || strings.HasPrefix(s, "./..") {
 			t.Errorf("spelling %q climbs out of the root", s)
@@ -296,5 +296,18 @@ func TestPathRulesMatchInEitherUnicodeForm(t *testing.T) {
 		if got := e.Evaluate("write", true, args); got.Decision != c.want {
 			t.Errorf("deny %q ask %q allow %q on %q: %s (%s), want %s", c.deny, c.ask, c.allow, c.path, got.Decision, got.Reason, c.want)
 		}
+	}
+}
+
+// Folding lowers only a rule's program name: text after its first wildcard
+// keeps its case, so bash(git*TAG*) does not take `GIT tag` for TAG.
+func TestFoldingLowersOnlyTheProgramName(t *testing.T) {
+	defer tools.FoldCommandNamesForTest(tools.FoldsCommandNames())()
+	tools.FoldCommandNamesForTest(true)
+	if d := denyOnly(t, "git*TAG*", "GIT tag v1"); d == Deny {
+		t.Errorf("bash(git*TAG*) on %q: %s; folding lowered more than the program name", "GIT tag v1", d)
+	}
+	if d := denyOnly(t, "git*TAG*", "GIT push TAG"); d != Deny {
+		t.Errorf("bash(git*TAG*) on %q: %s, want deny", "GIT push TAG", d)
 	}
 }

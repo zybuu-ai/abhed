@@ -33,10 +33,8 @@ func TestProcArgsHelper(t *testing.T) {
 	}
 }
 
-// Seatbelt has no rule that refuses kern.procargs2, not even a blanket
-// (deny sysctl-read), so a command reads the environment of any same-user
-// process the system does not restrict; the guide says so. If this fails,
-// macOS started refusing it and the guide can say more.
+// Seatbelt cannot refuse kern.procargs2, so a command reads unrestricted
+// same-user environments, as the guide says; failing means macOS changed.
 func TestSeatbeltProcArgsExposure(t *testing.T) {
 	ws := workspace(t)
 	s := NewProcess(DefaultPolicy(ws))

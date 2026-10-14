@@ -87,4 +87,11 @@ render(ev(82, 'user.message', 'user', {text:'fix' + R + 'txt.exe' + String.fromC
 const um = text();
 check('a person\'s message shows hidden characters and keeps its layout: ' + JSON.stringify(um),
   !um.includes(R) && !um.includes(String.fromCharCode(0x1b)) && um.includes('fix⟨U+202E⟩txt.exe⟨U+001B⟩[2J\n    indented'));
+// A message whose stored secret was withheld from the model says so, once, under it.
+__added.length = 0;
+render(ev(83, 'user.message', 'user', {text:'use [secret:API_TOKEN] and [secret:DB_PASS]', secrets_withheld:'API_TOKEN,DB_PASS'}));
+render(ev(84, 'user.message', 'user', {text:'plain'}));
+const wn = text();
+check('the withheld secrets are named once: ' + JSON.stringify(wn),
+  wn.split('not sent to the model').length === 2 && wn.includes('stored secrets API_TOKEN, DB_PASS'));
 if(!ok) process.exit(1);

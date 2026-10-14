@@ -167,7 +167,12 @@ A provided tool is a tool like any other: it appears in the model's list, its
 call goes through the policy engine, and its call and result are recorded as
 events. Providing one adds a capability, never a way around the rules — a deny
 rule naming it still wins, and one that mutates is subject to approval exactly
-as a built-in is.
+as a built-in is. An extension may not provide a tool named like a built-in,
+in any case; such a tool is refused with a warning.
+
+An extension does not inherit Abhed's environment: it gets `PATH`, `HOME`,
+the locale and temporary-folder variables, then each variable its `env`
+lists, an empty value passing your own.
 
 Two defaults are deliberately strict. A tool that does not say whether it
 mutates is **assumed to**, because Abhed cannot know what someone else's tool

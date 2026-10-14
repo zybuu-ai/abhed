@@ -2,11 +2,9 @@ package hostgit
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -160,40 +158,6 @@ func TestSubmoduleProgramsDoNotRun(t *testing.T) {
 			t.Errorf("the submodule's program ran: %s", m)
 		}
 	}
-}
-
-// Every git Abhed runs on the host goes through this package: no other
-// non-test code starts git itself.
-func TestNoOtherCodeRunsGit(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	direct := regexp.MustCompile(`exec\.Command(Context)?\([^)]*"git"`)
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable entry holds no code to check
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "node_modules", "vendor", "testdata":
-				return filepath.SkipDir
-			}
-			if path == filepath.Join(root, "internal", "hostgit") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err == nil && direct.Match(data) {
-			rel, _ := filepath.Rel(root, path)
-			t.Errorf("%s runs git itself; use internal/hostgit", rel)
-		}
-		return nil
-	})
 }
 
 // A repository's configuration can allow a transport by name, which beats

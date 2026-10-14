@@ -49,10 +49,13 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 	if !found {
 		return tools.Result{}, fmt.Errorf("unknown tool %q", run)
 	}
-	decision := l.Policy.Evaluate(action, true, args)
+	// ctx bounds the policy hooks of every subject, so a slow hook cannot
+	// hold a large batch of them past its deadline.
+	decision := l.Policy.EvaluateContext(ctx, action, true, args)
 	if refused := l.namesSecret(action, args); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	}
+	seen := make(map[string]bool, len(also))
 	for _, a := range also {
 		if decision.Decision == policy.Deny {
 			break
@@ -61,7 +64,12 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 		if name == "" {
 			name = action
 		}
-		if d := l.Policy.Evaluate(name, true, a.Args); weight(d) > weight(decision) {
+		key := name + "\x00" + string(a.Args)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if d := l.Policy.EvaluateContext(ctx, name, true, a.Args); weight(d) > weight(decision) {
 			decision = d
 		}
 	}
@@ -103,6 +111,9 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 	tool, found := l.Tools.Get(call)
 	if !found {
 		return nil, nil, fmt.Errorf("unknown tool %q", call)
+	}
+	if call == "bash" {
+		_ = l.noteTrustedStartup()
 	}
 	decision := l.Policy.Evaluate(call, tools.MutatesCall(tool, args), args)
 	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
@@ -154,7 +165,9 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 	if !found {
 		return nil, nil, "", fmt.Errorf("unknown tool %q", "bash")
 	}
-	decision := l.Policy.Evaluate("bash", tool.Mutates(), args)
+	_ = l.noteTrustedStartup()
+	// Each line runs with the terminal as its input, so a shell it starts is judged with its start-up files.
+	decision := l.Policy.EvaluateTyped("bash", tool.Mutates(), args)
 	needs := decision.Decision == policy.Ask && decision.Step == "destructive"
 	switch {
 	case needs && answer == Unanswered:
@@ -191,7 +204,11 @@ func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision poli
 	if asked && answer == Confirmed {
 		approved["confirmed"] = "true"
 	}
-	l.record(EvActionApproved, actorFor(ByUser), approved)
+	// Not run unless its approval is on record, as for the model's calls.
+	if _, err := l.Recorder.Record(EvActionApproved, actorFor(ByUser), Trusted, approved); err != nil {
+		l.noteRecordErr(err)
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -214,10 +231,14 @@ func (l *Loop) ManualScreen(id, line string) (*tools.Result, error) {
 		return nil, fmt.Errorf("unknown tool %q", "bash")
 	}
 	args, _ := json.Marshal(map[string]string{"command": line, "description": "entered in the interactive terminal"})
-	if l.Policy.EvaluateLine("bash", tool.Mutates(), args).Decision != policy.Deny {
+	_ = l.noteTrustedStartup()
+	// The line's own judgement is the one recorded: judged again as a whole
+	// command, a shell it starts would not be read with its start-up files.
+	decision := l.Policy.EvaluateLine("bash", tool.Mutates(), args)
+	if decision.Decision != policy.Deny {
 		return nil, nil
 	}
-	_, refused, err := l.ManualAuthorize("bash", id, args)
+	refused, err := l.manualDecide("bash", id, args, decision, Unanswered)
 	if err != nil || refused == nil {
 		return refused, err
 	}

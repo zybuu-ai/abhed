@@ -60,6 +60,8 @@ type saveRequest struct {
 type saveResponse struct {
 	Path string `json:"path"`
 	Hash string `json:"hash"`
+	// Note is the write tool's warning, such as a file that no longer parses.
+	Note string `json:"note,omitempty"`
 }
 
 func contentHash(b []byte) string {
@@ -79,7 +81,7 @@ func (s *Server) saveFile(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "the request is malformed")
 		return
 	}
-	v, err := s.openView()
+	v, err := s.openView(s.workspaceOf(live))
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "workspace is not readable")
 		return
@@ -134,7 +136,9 @@ func (s *Server) saveFile(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusForbidden, res.Content)
 		return
 	}
-	WriteJSON(w, http.StatusOK, saveResponse{Path: filepath.ToSlash(rel), Hash: contentHash([]byte(req.Content))})
+	// The tool's first line says what was written; a warning follows it.
+	_, note, _ := strings.Cut(res.Content, "\n")
+	WriteJSON(w, http.StatusOK, saveResponse{Path: filepath.ToSlash(rel), Hash: contentHash([]byte(req.Content)), Note: strings.TrimSpace(note)})
 }
 
 type execRequest struct {

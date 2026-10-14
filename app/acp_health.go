@@ -52,6 +52,16 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	default:
 		add("config", "Configuration", "ok", "loaded")
 	}
+	if findings := cfg.RuleFindings(); len(findings) > 0 {
+		status, lines := "warn", make([]string, 0, len(findings))
+		for _, f := range findings {
+			if f.FailsDoctor() {
+				status = "fail"
+			}
+			lines = append(lines, f.String())
+		}
+		add("rules", "Permission rules", status, strings.Join(lines, "\n"))
+	}
 	ws := cfg.Workspace
 	switch {
 	case ws.File == "":
@@ -83,6 +93,8 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 			add("sandbox", "Sandbox", "fail", fmt.Sprintf("the %s tier could not run a command", sb.Tier()))
 		case sb.Tier() == sandbox.TierNone:
 			add("sandbox", "Sandbox", "warn", "commands run on the host, with no sandbox")
+		case sandbox.Caveat(sb) != "":
+			add("sandbox", "Sandbox", "warn", "commands run under the "+tierLabel(sb)+" tier")
 		default:
 			add("sandbox", "Sandbox", "ok", "commands run under the "+string(sb.Tier())+" tier")
 		}
@@ -99,7 +111,9 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 			add("record", "Record", "ok", "the local record's index verifies")
 		}
 	}
-	if n := len(cfg.MCP.Servers); n > 0 {
+	if overlaps := cfg.MCPServerOverlaps(); len(overlaps) > 0 {
+		add("mcp", "MCP servers", "fail", strings.Join(overlaps, "\n"))
+	} else if n := len(cfg.MCP.Servers); n > 0 {
 		add("mcp", "MCP servers", "ok", fmt.Sprintf("%d configured; started with a session", n))
 	} else {
 		add("mcp", "MCP servers", "ok", "none configured")
@@ -152,7 +166,7 @@ func (c *acpConn) doctorACP(msg rpcMessage) {
 		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		c.reply(msg.ID, nil, badParams("", err))
 		return
 	}
 	// A Restricted window's checks must not dial a host only the trusted file names.
@@ -190,8 +204,8 @@ func indexVerified(rep local.Report, err error) error {
 }
 
 // doctorJSON is `abhed doctor --json`: the same checks, one JSON object.
-func (a *App) doctorJSON(w io.Writer, workspace string) int {
-	cfg, err := a.loadConfig(workspace)
+func (a *App) doctorJSON(w io.Writer, workspace string, set flagSettings) int {
+	cfg, err := a.loadConfigWith(workspace, set)
 	c := &acpConn{}
 	c.useRecord(workspace, a.trust)
 	var verify func() error

@@ -342,3 +342,19 @@ func TestLoginValidatesArguments(t *testing.T) {
 		}
 	}
 }
+
+// A credential helper gets what cloud sign-in helpers read, never Abhed's
+// own keys.
+func TestHelperEnvKeepsAbhedsKeysOut(t *testing.T) {
+	t.Setenv("ABHED_API_KEY", "abhed-key-123456")
+	t.Setenv("ANTHROPIC_API_KEY", "provider-key-123456")
+	t.Setenv("AWS_PROFILE", "prod")
+	t.Setenv("KUBECONFIG", "/k")
+	env := strings.Join(helperEnv(), "\n")
+	if strings.Contains(env, "abhed-key") || strings.Contains(env, "provider-key") {
+		t.Fatalf("a key reached the helper:\n%s", env)
+	}
+	if !strings.Contains(env, "AWS_PROFILE=prod") || !strings.Contains(env, "KUBECONFIG=/k") {
+		t.Fatalf("the helper lost what it reads:\n%s", env)
+	}
+}

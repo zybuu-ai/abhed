@@ -189,7 +189,7 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 		WriteError(w, http.StatusForbidden, "commands are not enabled on this server, so the explorer cannot change files")
 		return
 	}
-	v, err := s.openView()
+	v, err := s.openView(s.workspaceOf(live))
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "workspace is not readable")
 		return

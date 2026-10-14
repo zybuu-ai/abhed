@@ -33,15 +33,16 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | Method | |
 |---|---|
 | `New` | build from options, a config directory, or both |
-| `Run`, `Continue` | send a prompt; `Continue` keeps the conversation |
+| `Run`, `Continue` | send a prompt; `Continue` keeps the conversation. A prompt a `user_prompt_submit` hook refuses returns an `*EndedError` with `Reason` `prompt_refused` and `Detail` the hook's reason; when steering messages queued before it were delivered, they are answered in that run and the returned message is that answer, with the same error saying your own prompt was not sent; otherwise the returned message is empty. `RunQueued` with every queued message refused returns an empty message too |
 | `Steer` | redirect a run in progress, from another goroutine |
+| `Queued`, `RunQueued` | count the steering messages not yet delivered, and run on for them; when a `user_prompt_submit` hook refuses every one, `RunQueued` drops them, calls no model, and returns an `*EndedError` with `Reason` `prompt_refused` |
 | `Fork` | rebuild the conversation up to a sequence number (0 for all of it), and record a `conversation.forked` event so later rebuilds leave out what came after; a step an earlier fork abandoned, or past the end, is refused, and so is a fork while a run is in progress (`ErrForkDuringRun`) |
 | `Events` | everything recorded; the stream is the session. `abhed.Live(events)` drops the steps a fork abandoned (`EvForked`, payload `abhed.Forked`) |
 | `Flush` | wait until `OnEvent` has returned for every event recorded so far |
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |
 | `Models`, `SwitchModelNamed` | list the configured models, and move the conversation to one by its configured name, recorded as `model.switched`. Only providers a trusted configuration file defines are listed, never a built-in nobody configured, and a managed `model.default` pins the model. An unknown name is `ErrUnknownModel`, a switch while a run is in progress is `ErrSwitchDuringRun`, and a provider whose `api_key_env` is unset is an error naming the variable |
-| `SetModel` | swap providers mid-conversation; the switch is recorded as `model.switched`, and one the record refuses is an error and is not made |
+| `SetModel` | swap providers mid-conversation; the switch is recorded as `model.switched`, and one the record refuses, or one away from a managed `model.default`, is an error and is not made |
 | `Providers` | the provider types this build supports |
 
 `OnEvent` gets every event, in the order the store records them, from a
@@ -72,7 +73,11 @@ the agent has. `Close` ends the MCP connections and extension processes, and
 the cluster logins and hosts the agent's session made. `Options.Warn`
 receives what the tool set skipped or found unsafe as it was built, such as
 an MCP server that did not start or a cluster that skips TLS verification;
-nil discards it.
+nil discards it. When set, it also takes the configuration's warnings (an
+unknown key, a setting set aside, a rule that never matches), which `New`
+otherwise writes to stderr; a function that does nothing silences them.
+`config.LoadOptions.Warn` does the same for a program that loads the
+configuration itself.
 
 A subagent's own events stay in the agent's store; `Events` and `OnEvent`
 carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
@@ -128,6 +133,15 @@ Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.De
     return askTheUser(tool, args, d.Reason)
 },
 ```
+
+The `tool`, `args` and `d.Reason` passed to `Approve`, and the arguments in
+events, are the model's, unescaped: a value can hold a right-to-left
+override, a terminal escape or a zero-width character that makes it read as
+something else. **Showing them to a person is the embedder's duty:** pass
+what you display through `abhed.Visible` (or `abhed.VisibleLine` for a
+one-line field), which marks every character that would not print as
+itself, and consider refusing a call outright when `abhed.ArgsHidden(args)`
+is true, as the CLI's prompt warns of one.
 
 Inside `Approve`, `abhed.CallIDOf(ctx)` is the call id its tool call events
 carry (empty for a call the model wrote as prose), and
@@ -193,7 +207,10 @@ agent (`config.TrustGranted` or `config.TrustRefused`), and
 `Agent.WorkspaceTrust()` reports what was decided and what was ignored. If
 the untrusted file names its own model and `Options.Provider` is nil, `New`
 returns `abhed.ErrUntrustedModel` rather than run on a different model; set
-`Options.AllowDefaultModel` to run on the configured default instead.
+`Options.AllowDefaultModel` to run on the configured default instead, which
+`New` then warns of, naming the model in use, through `Options.Warn` or on
+stderr. `abhed acp`, `abhed rpc` and `abhed resolve` run that way, so an
+editor's session in an untrusted workspace says which model it runs on.
 
 | Option | Without a managed file | Under a managed file |
 |---|---|---|
@@ -219,7 +236,9 @@ SDK builds no sandbox and bash runs as the embedding process.
 Not bound by the managed file:
 
 - `Provider` and `SetModel`, which name any endpoint, as a user's own config
-  file may.
+  file may, unless the managed file sets `model.default`: then both are
+  refused with a `*config.ManagedError`, and `SwitchModelNamed` and `Models`
+  offer only that model.
 - The memory files (`ABHED.md`, the organisation's `/etc/abhed/ABHED.md`
   included). The built-in prompt carries them, as the CLI's does, only with
   `Options.ConfiguredTools`: an embedder running on repositories it does not

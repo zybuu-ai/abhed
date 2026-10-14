@@ -2,6 +2,7 @@ package docsite
 
 import (
 	"io/fs"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -37,5 +38,17 @@ func TestEmbeddedDocsLoadNothingFromOutside(t *testing.T) {
 	}
 	if pages == 0 {
 		t.Fatal("documentation is embedded but no page was checked")
+	}
+}
+
+// Every docs response carries a policy that runs no script, embedded or not.
+func TestHandlerSetsCSP(t *testing.T) {
+	for _, p := range []string{"/docs/", "/docs/guide/01-getting-started", "/docs/missing.html"} {
+		rec := httptest.NewRecorder()
+		Handler("/docs").ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		csp := rec.Header().Get("Content-Security-Policy")
+		if !strings.Contains(csp, "default-src 'none'") || strings.Contains(csp, "script-src") {
+			t.Errorf("%s: CSP %q", p, csp)
+		}
 	}
 }

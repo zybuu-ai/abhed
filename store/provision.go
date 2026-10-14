@@ -24,12 +24,26 @@ import (
 // or removes an event, so the role is not given the means to.
 var runtimeGrants = []struct{ table, privileges string }{
 	{"events", "SELECT, INSERT"},
-	{"sessions", "SELECT, INSERT, UPDATE"},
+	// Only the columns a session's life changes: never its id, tenant,
+	// parent or start, and its owner only as the sessions_guard trigger allows.
+	{"sessions", "SELECT, INSERT, UPDATE (user_id, model, mode, prompt, title, ended_at, terminal_reason, turns, " +
+		"tokens_in, tokens_out, tokens_cached, compactions, gpu_seconds, cost_usd, context_tokens, context_window, " +
+		"node_id, node_seen_at, deleted_at, deleted_by)"},
+	{"owner_changes", "SELECT"},
+	// A key is deleted to erase its session; it is never rewritten.
+	{"session_keys", "SELECT, INSERT, DELETE"},
 	{"approvals", "SELECT, INSERT, UPDATE"},
 	{"checkpoints", "SELECT, INSERT"},
 	{"users", "SELECT, INSERT, UPDATE, DELETE"},
+	{"account_changes", "SELECT"},
 	{"models", "SELECT"},
 	{"schema_version", "SELECT"},
+	// The control plane: sandboxes are rewritten and removed by design; its
+	// audit table is a record, so insert and read only.
+	{"sandboxes", "SELECT, INSERT, UPDATE, DELETE"},
+	{"sandbox_idempotency", "SELECT, INSERT, UPDATE, DELETE"},
+	{"sandbox_audit", "SELECT, INSERT"},
+	{"sandbox_templates", "SELECT, INSERT, DELETE"},
 }
 
 // Extension lets an edition add its own tables in the same pass, so they are
@@ -56,6 +70,9 @@ type ProvisionConfig struct {
 	OwnerAccounts   []*auth.User
 	AllowNoAccounts bool
 	AccountsFound   func(table, extra, distinct int)
+	// OwnersDone, when set, is told the owner migration ran before, so this
+	// run's Owners has no effect.
+	OwnersDone func()
 }
 
 // Provision applies the schema as the owner and grants the runtime role what
@@ -89,7 +106,32 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			"CREATE ROLE %s LOGIN PASSWORD '…'", cfg.RuntimeRole, pgx.Identifier{cfg.RuntimeRole}.Sanitize())
 	}
 
+	// Two provisions at once (two migrates, or replicas starting together)
+	// update the same catalog rows and fail with "tuple concurrently updated":
+	// each holds this lock from the schema to the last grant.
+	lock, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("provision: %w", err)
+	}
+	defer lock.Release()
+	if _, err := lock.Exec(ctx, `SELECT pg_advisory_lock(hashtext('abhed.provision'))`); err != nil {
+		return fmt.Errorf("provision: wait for another provision: %w", err)
+	}
+	defer func() {
+		_, _ = lock.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('abhed.provision'))`)
+	}()
+
 	if err := applySchema(ctx, pool); err != nil {
+		return err
+	}
+	// The owner move reads the accounts table and may refuse; it runs before
+	// version 5 is recorded, so a refused migration records nothing new.
+	if err := ensureUsersTable(ctx, pool); err != nil {
+		return err
+	}
+	if _, err := migrateOwners(ctx, pool, OwnerMigration{Policy: cfg.Owners,
+		Accounts: cfg.OwnerAccounts, AllowNoAccounts: cfg.AllowNoAccounts, Found: cfg.AccountsFound,
+		Done: cfg.OwnersDone}); err != nil {
 		return err
 	}
 	if err := migrateUsersSchema(ctx, pool); err != nil {
@@ -108,11 +150,6 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 		}
 	}
 
-	if _, err := migrateOwners(ctx, pool, OwnerMigration{Policy: cfg.Owners,
-		Accounts: cfg.OwnerAccounts, AllowNoAccounts: cfg.AllowNoAccounts, Found: cfg.AccountsFound}); err != nil {
-		return err
-	}
-
 	role := pgx.Identifier{cfg.RuntimeRole}.Sanitize()
 	// Sequences too: an edition's serial column is useless to a role that
 	// may insert but cannot draw the next id.
@@ -129,10 +166,25 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			"REVOKE ALL ON "+table+" FROM "+role,
 			"GRANT "+g.privileges+" ON "+table+" TO "+role)
 	}
+	// One transaction, so a running server's role is never left between a
+	// REVOKE and its GRANT.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("provision grants: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// A schema change elsewhere (a server applying schema.sql at start) alters
+	// the same catalog rows; it holds abhed.schema, always taken after abhed.provision.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('abhed.schema'))`); err != nil {
+		return fmt.Errorf("provision grants: wait for a schema change: %w", err)
+	}
 	for _, s := range stmts {
-		if _, err := pool.Exec(ctx, s); err != nil {
+		if _, err := tx.Exec(ctx, s); err != nil {
 			return fmt.Errorf("%s: %w", s, err)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("provision grants: %w", err)
 	}
 	return nil
 }
@@ -160,31 +212,44 @@ var privilegeList = func() *regexp.Regexp {
 	return regexp.MustCompile(`^\s*` + item + `(?:\s*,\s*` + item + `)*\s*$`)
 }()
 
-// recordExposure reports how the connected role could alter the event record,
-// or "" when it cannot. It is asked of the database rather than assumed from
-// configuration: what matters is what this connection is able to do.
+// recordTables are the append-only records: the session events and the
+// control plane's sandbox audit, which an older schema does not have yet.
+var recordTables = []string{"events", "sandbox_audit"}
+
+// recordExposure reports how the connected role could alter an append-only
+// record, or "" when it cannot. It is asked of the database rather than
+// assumed from configuration: what matters is what this connection is able to do.
 func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
-	var owns, canUpdate, canDelete, canTruncate bool
-	err := pool.QueryRow(ctx, `
-		SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
-		       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
-		       has_table_privilege(current_user, c.oid, 'DELETE'),
-		       has_table_privilege(current_user, c.oid, 'TRUNCATE')
-		FROM pg_class c WHERE c.oid = to_regclass('public.events')`).
-		Scan(&owns, &canUpdate, &canDelete, &canTruncate)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", errNoSchema
-	}
-	if err != nil {
-		return "", fmt.Errorf("check record privileges: %w", err)
-	}
 	var how []string
-	if owns {
-		how = append(how, "owns the events table, so it can disable the append-only triggers or drop it")
-	}
-	for name, can := range map[string]bool{"UPDATE": canUpdate, "DELETE": canDelete, "TRUNCATE": canTruncate} {
-		if can && !owns {
-			how = append(how, "holds "+name+" on events")
+	for _, table := range recordTables {
+		var owns, canUpdate, canDelete, canTruncate bool
+		err := pool.QueryRow(ctx, `
+			SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
+			       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
+			       has_table_privilege(current_user, c.oid, 'DELETE'),
+			       has_table_privilege(current_user, c.oid, 'TRUNCATE')
+			FROM pg_class c WHERE c.oid = to_regclass('public.' || $1)`, table).
+			Scan(&owns, &canUpdate, &canDelete, &canTruncate)
+		if errors.Is(err, pgx.ErrNoRows) {
+			if table == "events" {
+				return "", errNoSchema
+			}
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("check record privileges: %w", err)
+		}
+		if owns {
+			how = append(how, "owns the "+table+" table, so it can disable the append-only triggers or drop it")
+			continue
+		}
+		for _, p := range []struct {
+			name string
+			can  bool
+		}{{"UPDATE", canUpdate}, {"DELETE", canDelete}, {"TRUNCATE", canTruncate}} {
+			if p.can {
+				how = append(how, "holds "+p.name+" on "+table)
+			}
 		}
 	}
 	return strings.Join(how, "; "), nil
@@ -195,7 +260,8 @@ var errNoSchema = errors.New("the schema has not been applied")
 // requiredColumns are columns this build writes that an older schema lacks.
 // The runtime role cannot add them, so a missing one is found at start rather
 // than as a failed write the first time someone answers an approval.
-var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"users", "revocations"}, {"sessions", "title"}, {"events", "inserted_at"}}
+var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"approvals", "request_id"}, {"users", "revocations"}, {"sessions", "title"},
+	{"events", "inserted_at"}, {"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"}}
 
 // missingColumns names the required columns the connected database lacks.
 func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {

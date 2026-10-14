@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"os"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -64,8 +65,8 @@ func TestScopeIsOfferedOnlyForListedTools(t *testing.T) {
 		"rg --pre sh x":           "",
 
 		// Code flags, and words the shell would rewrite.
-		"grep -e x f":      "",
-		"grep -ce x f":     "",
+		"grep -e x f":      "bash(grep *)",
+		"grep -ce x f":     "bash(grep *)",
 		"cat --exec=x":     "",
 		"git \"status\"":   "",
 		"'git' status":     "",
@@ -85,7 +86,10 @@ func TestScopeIsOfferedOnlyForListedTools(t *testing.T) {
 		"GIT_PAGER=cat git log -n 3":   "",
 		"LD_PRELOAD=/tmp/x.so ls":      "",
 		"PAGER=sh git log":             "",
-		"wc -c f":                      "",
+		"wc -c f":                      "bash(wc *)",
+		"head -c 10 f":                 "bash(head *)",
+		"du -sch .":                    "bash(du *)",
+		"git commit -c HEAD":           "",
 		"git status $(id)":             "",
 	} {
 		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
@@ -207,6 +211,36 @@ func TestScopeFoldsCommandNames(t *testing.T) {
 			if got := New(ModeDefault).Evaluate("bash", true, args(map[string]string{"command": command})).Offer(); got != want {
 				t.Errorf("fold=%v %q: scope %q, want %q", fold, command, got, want)
 			}
+		}
+	}
+}
+
+// A scope is not offered for a program PATH finds inside the workspace, such
+// as a planted ./venv/bin/ls, nor when PATH has a relative entry before it.
+func TestScopeIsWithheldForAProgramInTheWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	bin := ws + "/venv/bin"
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin+"/ls", []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := New(ModeDefault)
+	e.Roots = func() []string { return []string{ws} }
+	sys := os.Getenv("PATH")
+	for path, want := range map[string]string{
+		bin + string(os.PathListSeparator) + sys:        "",
+		"venv/bin" + string(os.PathListSeparator) + sys: "",
+		sys: "bash(ls *)",
+	} {
+		t.Setenv("PATH", path)
+		res := e.Evaluate("bash", true, args(map[string]string{"command": "ls -la"}))
+		if res.Scope != want {
+			t.Errorf("PATH %q: scope %q, want %q", path, res.Scope, want)
+		}
+		if want == "" && res.Suggest != "bash(ls -la)" {
+			t.Errorf("PATH %q: suggested %q", path, res.Suggest)
 		}
 	}
 }

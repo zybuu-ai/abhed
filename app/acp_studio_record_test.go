@@ -106,7 +106,7 @@ func TestStudioLoadRefusesHeldAndForeignSessions(t *testing.T) {
 	if err := other.Acquire(id); err != nil {
 		t.Fatal(err)
 	}
-	msg := r.cl.refused(errRefused, "session/load", map[string]any{"sessionId": id, "cwd": r.ws})
+	msg := r.cl.refused(errHeld, "session/load", map[string]any{"sessionId": id, "cwd": r.ws})
 	if !strings.Contains(msg, "another Abhed process") {
 		t.Fatalf("refusal: %s", msg)
 	}

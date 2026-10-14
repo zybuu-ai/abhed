@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -79,6 +80,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			}
 			mu.Lock()
 			switch {
+			case req.Method == "steer" && strings.TrimSpace(req.Prompt) == "":
+				// An empty steer would be answered steered and carry nothing.
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: `steer needs its text in "prompt"`})
 			case req.Method == "steer":
 				if latest == nil {
 					mu.Unlock()
@@ -226,11 +230,17 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			cur.running = true
 			mu.Unlock()
 			answer, err := a.Run(ctx, req.Prompt)
+			// The prompt's own refusal is kept, and said first whatever the
+			// steers run after it end as.
+			var refused error
+			if rpcRefused(err) {
+				refused = err
+			}
 			// A steer that came as the run was ending is run now, since it was
 			// answered steered; steers after this point are answered queued.
 			for {
 				mu.Lock()
-				more := err == nil && a.Queued() > 0
+				more := rpcRunsOn(err, a.Queued())
 				if !more {
 					cur.running = false
 				}
@@ -240,6 +250,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				}
 				answer, err = a.RunQueued(ctx)
 			}
+			err = keepRefusal(refused, err)
 			// The run's events, its end included, go out before its reply, and
 			// both before an exit on a stop signal is let through.
 			flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
@@ -403,4 +414,36 @@ type rpcResponse struct {
 	Tasks []abhed.TaskInfo `json:"tasks,omitempty"`
 	// WorkspaceTrust, on ready, says whether the workspace file applied whole.
 	WorkspaceTrust *config.WorkspaceTrust `json:"workspace_trust,omitempty"`
+}
+
+// rpcRunsOn reports whether a prompt's run goes on for messages queued as it
+// ended: it ended cleanly, or a hook refused its own message, as the terminal
+// and the server go on.
+func rpcRunsOn(err error, queued int) bool {
+	if queued == 0 {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	var ended *abhed.EndedError
+	return errors.As(err, &ended) && ended.Reason.RunsOnForQueued()
+}
+
+// keepRefusal is the prompt's reply error: its own refusal, when it was
+// refused, then the error the steers run after it ended with, if another.
+func keepRefusal(refused, later error) error {
+	switch {
+	case refused == nil:
+		return later
+	case later == nil || rpcRefused(later):
+		return refused
+	}
+	return errors.Join(refused, later)
+}
+
+// rpcRefused reports whether err is a prompt a hook refused.
+func rpcRefused(err error) bool {
+	var ended *abhed.EndedError
+	return errors.As(err, &ended) && ended.Reason == agent.TermPromptRefused
 }

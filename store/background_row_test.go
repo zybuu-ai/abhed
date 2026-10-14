@@ -273,3 +273,51 @@ func TestOpenSessionsPages(t *testing.T) {
 		t.Fatal("an ended session was listed")
 	}
 }
+
+// A parked session is written by no process, routed to none, and taken by
+// no plain claim or resume: only by its edition's claim, or as an orphan once
+// its last write is stale.
+func TestParkedSessionIsFenced(t *testing.T) {
+	p := openStore(t, "t-parked")
+	ctx := context.Background()
+	id := testID(t, "sess-park-")
+	newSession(t, p, id, "t-parked")
+	if err := p.ClaimNode(ctx, id, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET node_id = $2, node_seen_at = NULL WHERE id = $1`, id, Parked); err != nil {
+		t.Fatal(err)
+	}
+	ev := agent.Event{ID: testID(t, "ev-"), SessionID: id, Seq: 1, Type: agent.EvUserMessage,
+		Payload: []byte(`{"text":"x"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: time.Now().UTC()}
+	if err := p.HeldBy("node-a", nil).Append(ev); !errors.Is(err, ErrNotHolder) {
+		t.Fatalf("the old holder wrote to a parked session: %v", err)
+	}
+	if node, err := p.NodeFor(ctx, id, HolderStale); err != nil || node != "" {
+		t.Fatalf("a parked session is routed to %q (%v)", node, err)
+	}
+	if err := p.ClaimNode(ctx, id, "node-c"); !errors.Is(err, ErrHeldElsewhere) {
+		t.Fatalf("ClaimNode took a parked session: %v", err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET ended_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := p.HeldBy("node-c", nil).ClaimResume(ctx, id); err != nil || ok {
+		t.Fatalf("ClaimResume took a parked session: %v %v", ok, err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET ended_at = NULL WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := p.ClaimOrphan(ctx, id, "node-b", HolderStale); err != nil || ok {
+		t.Fatalf("a freshly parked session was taken as an orphan: %v %v", ok, err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET started_at = now() - interval '10 minutes' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := p.ClaimOrphan(ctx, id, "node-b", HolderStale); err != nil || !ok {
+		t.Fatalf("a stale parked session was not taken as an orphan: %v %v", ok, err)
+	}
+	if err := p.HeldBy("node-b", nil).Append(ev); err != nil {
+		t.Fatalf("the new holder's write: %v", err)
+	}
+}

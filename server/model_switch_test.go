@@ -230,7 +230,7 @@ func TestResumedSessionKeepsTheModelItStartedOn(t *testing.T) {
 			if strings.Contains(body, "prompt") {
 				turnsEnded(t, st, id, 1)
 			} else {
-				s.closeIdle() // a restart ends an idle workbench session, as shutdown does
+				s.closeIdle(time.Now().Add(idleBudget)) // a restart ends an idle workbench session, as shutdown does
 			}
 			before := b.calls.Load()
 			forget(s, id)

@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -93,6 +94,8 @@ var gitValues = map[string]struct {
 	"branch":   {"u", []string{"set-upstream-to", "sort", "format", "contains", "no-contains", "points-at", "merged", "no-merged"}},
 	"stash":    {"m", []string{"message", "pathspec-from-file"}},
 	"archive":  {"o", []string{"output", "format", "prefix", "remote", "exec"}},
+	"commit": {"mFCct", []string{"message", "file", "reuse-message", "reedit-message", "template", "author", "date",
+		"cleanup", "fixup", "squash", "pathspec-from-file", "trailer"}},
 }
 
 // maxGitWords bounds the git words read in one simple command, each to its
@@ -193,6 +196,7 @@ func substitutionWord(inner string) string {
 var gitRunners = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "dash": true, "env": true, "command": true, "exec": true, "nohup": true, "nice": true, "sudo": true, "doas": true,
 	"time": true, "timeout": true, "xargs": true, "setsid": true, "stdbuf": true, "ionice": true, "builtin": true,
+	"busybox": true, // runs the applet named next as that program
 }
 
 // position follows a simple command's words to the program it runs: past
@@ -254,7 +258,10 @@ var argvRunners = map[string]bool{
 // before it, and the pathspec after it. Option values are left out.
 type gitArgs struct {
 	flags, operands, paths []string
-	shortValues            string
+	// late are option-like words after a -- that a subcommand reading its
+	// options with parse-options may take as a value and read on past.
+	late        []string
+	shortValues string
 }
 
 func parseGitArgs(sub string, words []string) gitArgs {
@@ -266,6 +273,9 @@ func parseGitArgs(sub string, words []string) gitArgs {
 		switch {
 		case dashdash:
 			g.paths = append(g.paths, w)
+			if strings.HasPrefix(w, "-") && !gitEndsOptions[sub] {
+				g.late = append(g.late, w)
+			}
 		case w == "--":
 			dashdash = true
 		case strings.HasPrefix(w, "--"):
@@ -350,6 +360,16 @@ func pathLike(w string) bool {
 		strings.HasPrefix(w, ":") || strings.ContainsAny(w, "*?[")
 }
 
+// fileLike reports a single checkout operand named like a file, `main.go`, which
+// git restores from the index when no branch has that name.
+func fileLike(w string) bool {
+	base := w[strings.LastIndexByte(w, '/')+1:]
+	dot := strings.LastIndexByte(base, '.')
+	return dot > 0 && fileExt.MatchString(base[dot+1:])
+}
+
+var fileExt = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,9}$`)
+
 // gitDiscards reads the words after git. run is true when that git is the
 // program the shell runs, so a subcommand git does not have is an alias or an
 // extension whose effect cannot be read here.
@@ -393,11 +413,17 @@ var (
 	}
 )
 
+// The reasons gitDiscards gives for git code no rule can read.
+const (
+	gitAliasReason   = "a git alias set on the command line, which may run anything"
+	gitForeignSuffix = ", an alias or extension that cannot be checked"
+)
+
 func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (string, bool) {
 	i := 0
 	for i < len(words) && strings.HasPrefix(words[i], "-") {
 		if value, ok := gitGlobalValue(words, i); ok && configAliases(words[i], value) {
-			return "a git alias set on the command line, which may run anything", true
+			return gitAliasReason, true
 		}
 		if gitGlobalsWithValue[words[i]] {
 			i++
@@ -413,11 +439,24 @@ func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (strin
 		if gitExtensions[sub] {
 			return "", false
 		}
-		return "git " + sub + ", an alias or extension that cannot be checked", true
+		return "git " + sub + gitForeignSuffix, true
 	}
 	g := parseGitArgs(sub, words[i+1:])
+	// Options git may read past a --, unless the words are message text.
+	all := gitArgs{flags: append(append([]string(nil), g.flags...), g.late...), shortValues: g.shortValues}
+	if gitTakesText(sub, words[i+1:]) {
+		all = gitArgs{}
+	}
+	for _, opt := range gitRunsCommand {
+		if all.risky(strings.TrimPrefix(opt, "--"), "") {
+			return "git " + opt + ", which runs the command it is given", true
+		}
+	}
+	if letter, ok := gitRunsCommandShort[sub]; ok && all.risky("", letter) {
+		return "git " + sub + " -" + letter + ", which runs the command it is given", true
+	}
 	// Every subcommand that takes diff or log options, stash list included, writes --output.
-	if g.risky("output", "") {
+	if all.risky("output", "") {
 		return "write over a file (git --output)", true
 	}
 	switch sub {
@@ -447,8 +486,12 @@ func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (strin
 				return "discard uncommitted changes to the named paths (git checkout)", true
 			}
 		}
-		if len(g.operands) > 1 {
+		if len(g.operands) > 1 || (len(g.operands) == 1 && fileLike(g.operands[0])) {
 			return "discard uncommitted changes to the named paths (git checkout)", true
+		}
+	case "commit":
+		if g.risky("amend", "") {
+			return "replace the last commit (git commit --amend)", true
 		}
 	case "switch":
 		if g.risky("discard-changes", "") || g.risky("force", "f") {

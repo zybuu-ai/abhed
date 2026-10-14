@@ -2,10 +2,8 @@ package egress
 
 import "net/netip"
 
-// blockedPrefixes are ranges never reached unless a rule names them, beyond
-// what netip's own predicates cover: shared, reserved and documentation
-// space, and the IPv6 forms that embed an IPv4 address a gateway would
-// forward to.
+// blockedPrefixes are refused unless a rule names them: ranges netip misses,
+// and IPv6 forms embedding an IPv4 address a gateway would forward to.
 var blockedPrefixes = func() []netip.Prefix {
 	var out []netip.Prefix
 	for _, s := range []string{
@@ -39,9 +37,9 @@ var blockedPrefixes = func() []netip.Prefix {
 	return out
 }()
 
-// AddrRefusal says why an address is not reached unless a rule names it, or
-// "" when it may be: loopback, private, link-local, cloud metadata,
-// multicast, unspecified, and reserved or internal ranges.
+// AddrRefusal says why an address is not reached unless a rule names it, or ""
+// when it may be: loopback, private, link-local, cloud metadata, multicast,
+// unspecified, and reserved or internal ranges.
 func AddrRefusal(a netip.Addr) string {
 	a = a.Unmap()
 	switch {

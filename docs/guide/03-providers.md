@@ -87,7 +87,7 @@ policy decision, not a limit that clears. Abhed recognises the shape (a 429
 carrying none of the headers a real rate limit carries), reports it as what it
 is, and does not retry.
 
-Abhed reads `CLAUDE_CODE_OAUTH_TOKEN` and `oauth_token` because the mechanism is
+Abhed reads `ABHED_ANTHROPIC_OAUTH_TOKEN` and `oauth_token` because the mechanism is
 correct and the restriction may not be permanent. Today it is useful only for
 models outside the check.
 
@@ -147,8 +147,9 @@ model the next one starts on; with one open it switches that session
 its model when it is continued from its record, after a restart or on another
 node; if that provider is no longer configured it continues on the default,
 and its next turn records the move. A switch is refused while a turn is
-running, for a provider that is not configured, and when the switch cannot be
-recorded; the picker says why and goes back to the model still in use.
+running, for a provider that is not configured or that a managed
+`model.default` does not allow, and when the switch cannot be recorded; the
+picker says why and goes back to the model still in use.
 
 A switch is recorded as a `model.switched` event (`provider`, `model`,
 `from`), each `model.call` names the model it went to, and the session list

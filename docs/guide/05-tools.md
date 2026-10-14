@@ -22,7 +22,16 @@ in Abhed's state, so a new file in a new folder needs no shell approval in
 `accept-edits` or `auto` mode. A write that fails takes back the folders it made,
 and `/undo` of the new file removes them while they are empty.
 
-`bash` takes an optional `secrets` list: names from the operator's store,
+`glob` and `grep` pass over vendored and build folders (`node_modules`,
+`vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
+names such a folder anywhere in its pattern, such as
+`services/x/node_modules/**`, says so in its no-match and gives the `path` to
+pass. On a disk that ignores case, such as the default macOS one, a glob
+matches without case, as the disk opens names: `core/Vault/**` finds
+`core/vault`.
+
+`bash` takes an optional `secrets` list: names from the secrets store (on a
+server people sign in to, the account's own),
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
@@ -87,14 +96,15 @@ hides its environment; bubblewrap ends everything in its namespace. See
   as an `observation`, redacted like any other; `shell.started` and
   `shell.ended` record the rest.
 - Once the shell's own command has ended, what it started and left running
-  (`server &`, then the shell exits) is no longer reached: not by
-  `shell_kill`, the session closing, a stop or Abhed exiting, nor by revoking
-  the session in Enterprise. It keeps running in the sandbox until it ends.
-  Keep a long-running process in the foreground of its background shell
-  (`server`, not `server &`) so that stopping the shell stops it. If Abhed
-  itself is killed, its shells are left running the same way. Bubblewrap on
-  Linux is the exception to both: its process namespace ends with the shell,
-  and the shell with Abhed.
+  (`server &`, then the shell exits) is still ended by `shell_kill`, the
+  session closing, a stop or Abhed exiting: by the process group the shell
+  led, which outlives it while a member is left, and by `ABHED_COMMAND_ID`
+  for one that left the group. On the none tier and the macOS process tier,
+  one that both left the group (`setsid`, a daemon) and cleared its
+  environment, or on macOS runs a program Apple ships, is not found and runs
+  until it ends, within the sandbox. If Abhed itself is killed, its shells
+  are left running. Bubblewrap on Linux ends everything with the shell: its
+  process namespace ends with the shell, and the shell with Abhed.
 - A subagent cannot start one, and neither can a surface that runs no
   background work (`abhed eval`).
 
@@ -116,6 +126,8 @@ Where a credential goes is the operator's choice, not the model's.
 verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.
+`k8s_apply` takes one object per call; a JSON list is refused with a message
+that says to apply each item in its own call.
 `ssh_connect` sends a password only to a host whose key is already in
 `known_hosts`.
 
@@ -153,21 +165,32 @@ What it refuses:
   address is checked where the connection is made, on every hop, so a name
   that resolves to a public address once and an internal one the next time
   is refused;
-- a URL that holds a value from the secrets store, as written or
-  percent-encoded, in any case. A value encoded otherwise (base64, hex) or
-  split across the URL is not caught: the ask, or the host list, is the
-  control for that;
+- a URL that holds a value from the secrets store, as written,
+  percent-encoded or in any case, and for a value of 12 characters or more
+  also base64- or hex-encoded. A value split across the URL, or encoded
+  another way, is not caught: the ask, or the host list, is the control for
+  that;
 - a host not on `web_fetch.allowed_hosts`, when that is set;
 - a URL written in any but its one form (see
   [Permissions](04-permissions.md#rules)), including a port with leading
   zeros, an IPv4 address written as IPv6 or as one number, and a path
   segment of dots, a control character or a doubly encoded `.`, `/` or `\`.
-  A URL that carries another URL in its path, as `web.archive.org` links do
-  (`https://web.archive.org/web/2020/https://example.com/`), has an empty
-  segment and cannot be fetched. Nor can one with an encoded slash (`%2F`)
-  in its path, such as GitLab's `projects/group%2Fproject` or npm's
-  `@scope%2Fname`: written with `/` it names another resource, so no
-  spelling is suggested.
+  Characters a reader cannot see (format characters, variation selectors,
+  the grapheme joiner, Hangul fillers) are dropped before a segment is
+  judged, so they cannot make one that reads as `..` pass.
+
+An encoded slash (`%2F`) in the path, such as GitLab's
+`projects/group%2Fproject` or npm's `@scope%2Fname`, is fetched only on a host
+that no deny or ask rule in the configuration names a path on: a rule such
+as `web_fetch(https://gitlab.com/api/*)` refuses it there, since a server
+reads `group%2Fproject` as another spelling of a path the rule names, while a
+rule on the whole host (`https://gitlab.com/*`) does not. It is written
+upper-case (`%2F`), and each part between slashes, encoded or not, is checked
+as a segment, so `a%2F..%2Fadmin` is refused as `a/../admin` is. A URL that
+carries another URL in its path, as `web.archive.org` links do, is fetched
+with that URL's slashes encoded
+(`https://web.archive.org/web/2020/https:%2F%2Fexample.com%2F`); written
+with plain slashes it has an empty segment and is refused.
 
 It follows a redirect only to the same URL or its upgrade from `http` to
 `https`, up to five. Any other redirect, including to another path on the
@@ -179,8 +202,7 @@ the connection goes.
 
 `web_search`'s description points at `web_fetch` only when both are on, and
 the system prompt names only the web tools the session has. A search query
-that holds a stored secret, as written, percent-encoded or in another case,
-is refused before it reaches the provider, as a URL holding one is for
+that holds a stored secret, in the same forms, is refused before it reaches the provider, as a URL holding one is for
 `web_fetch`.
 
 ### An edit that would break the file
@@ -194,7 +216,8 @@ comments and trailing commas by convention — `.jsonc`, `tsconfig*.json`,
 `deno.json`, `turbo.json`, `biome.json`, `tslint.json`, `api-extractor.json`,
 `cspell.json`, `settings.json`, `launch.json`, and anything in a `.vscode` or
 `.devcontainer` directory — are parsed that way; other `.json` files are
-strict JSON.
+strict JSON. A trailing comma is allowed only after a value, so `{,}` or
+`[1,,]` still fails.
 
 An `edit` whose new text is a pasted diff hunk — every non-empty line starts
 with `+` or `-`, there is at least one of each, and the old text has no such
@@ -206,9 +229,12 @@ is a pasted diff.
 
 Python is compiled, never run, by the `python3` on the path — the real
 interpreter behind it, never one inside the workspace or an added directory,
-with site packages and the environment switched off. With no `python3`, or
-when `python3` is a version-manager shim (pyenv, asdf) that needs its
-environment, Python is not checked. The host's interpreter decides what
+with site packages and the environment switched off. When `python3` is a
+pyenv, asdf or mise shim, the manager is asked which interpreter it runs
+(`pyenv which python3`), from a temporary folder, so a version file in the
+workspace does not choose it; that interpreter's version then decides. With
+no `python3`, or a shim the manager cannot resolve to an interpreter outside
+the workspace, Python is not checked. The host's interpreter decides what
 parses, so one older than 3.12, which could reject newer syntax the project
 accepts, warns instead of refusing.
 

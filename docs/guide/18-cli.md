@@ -24,8 +24,8 @@ more often a mistyped command than a task.
 | `-model NAME` | a configured provider for this run |
 | `-fallback-model A,B` | configured providers to move to when the model is unavailable |
 | `-mode MODE` | `default`, `accept-edits`, `plan`, `auto` or `bypass` |
-| `-allow RULES`, `-deny RULES` | rules for this run, e.g. `bash(go test*)` |
-| `-add-dir DIRS` | more directories the agent may read and write |
+| `-allow RULES`, `-deny RULES` | rules for this run, e.g. `bash(go test*)`; repeatable |
+| `-add-dir DIRS` | more directories the agent may read and write; repeatable |
 | `-max-turns N`, `-max-budget-tokens N` | limits for this run; a managed limit may only be lowered |
 | `-append-system-prompt TEXT` | instructions added to the system prompt |
 | `-system-prompt TEXT` | the system prompt replaced; refused under a managed configuration |
@@ -34,6 +34,20 @@ more often a mistyped command than a task.
 | `-mcp-config FILE`, `-strict-mcp-config` | MCP servers for this run, and whether they are the only ones; see below |
 | `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
+
+These flags come before a subcommand or after it: `abhed -C ~/src/app
+doctor` and `abhed doctor -C ~/src/app` are the same. Before or after a
+subcommand, only the ones it reads are taken (`-C` is always accepted before
+one): `-C` by every subcommand that works on a
+workspace (all but `providers`, `secret`, `pki` and `admin`),
+`-trust-workspace` by those that load its configuration, and `-settings` by
+`doctor`. Any other one there stops the command with exit code 2 and a
+message naming it, as does an argument to a subcommand that takes none
+(`init`, `acp`, `rpc`, `index`, `providers`; `doctor` takes only `--json`
+and `-timeout`, and `version` only `--json`). A subcommand's own flag keeps its meaning (`serve -addr`,
+`record list -n`, `resolve -mode`), and nothing after `--` or in a command
+passed on as given (`mcp add NAME COMMAND ARGS`, `sandbox exec ID COMMAND
+ARGS`) is read as one of these.
 
 ### Moving between sessions
 
@@ -68,6 +82,8 @@ temporary folder, so name only files you wrote or have read.
   laid over it, a managed-only setting in it is ignored with a warning, and
   when the managed file sets any `permissions` setting its allow rules are
   left out, as yours are. `/permissions` shows its rules as `settings`.
+  `abhed -settings FILE doctor` checks the configuration a run with the same
+  flag would load and names the file on its `settings` line.
 - **`-mcp-config`** (repeatable) adds MCP servers, in the
   `{"mcpServers": {"name": {"command": …}}}` shape or Abhed's
   `{"mcp": {"servers": […]}}`. Naming the file is your consent, so each of its
@@ -97,7 +113,7 @@ to do.
 | Command | |
 |---|---|
 | `/model` | pick a configured model: its id, context window, and whether it is local |
-| `/model NAME` | switch to a configured provider, keeping the conversation; recorded |
+| `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on |
 | `/effort low\|medium\|high` | the reasoning effort, where the provider takes one |
 | `/effort on\|off` | thinking on or off, where the provider has the switch |
 | `/effort default` | back to the provider's own setting |
@@ -156,6 +172,11 @@ The command reads the session's status as one JSON object on stdin:
  "record":"local","git_branch":"main","cwd":"~/src/app"}
 ```
 
+While the sandbox is still being chosen at start, `sandbox_tier` is the
+least it will be and `"sandbox_checking": true` is added; if the answer is
+`none`, one line on stderr says so, since the banner said "none or stronger
+(checking)".
+
 `record` is the store the session writes to: `local` for the local record,
 `unverified` for Postgres, which this process has not verified, and `memory`
 when nothing outlives the process.
@@ -164,7 +185,7 @@ On a terminal its first line replaces the footer's second row, run again at
 most once a second as the session changes; in a piped session it is printed
 after each task; `/status` shows it too. It runs under the
 process sandbox with the network off, whatever the session's tier or
-`sandbox.allow_network`, for at most 300 ms. Where the process sandbox is
+`sandbox.allow_network`, for at most one second. Where the process sandbox is
 not available it does not run at all: the status line is empty and one
 warning says why. When the command starts with a script named by path (`~/…` or
 absolute), such as the example above, that file is checked once, when the
@@ -178,17 +199,23 @@ session starts, and pinned:
   refused, whether it is named there or a link resolves there. The status
   line then shows the reason, on every redraw, and nothing else.
 - The file it resolves to is what runs, and it is shown to the sandbox
-  read-only; on Linux, where the sandbox does not show your home directory,
-  that one file is bound in.
+  read-only. That one file is let into the sandbox, which does not show
+  your home directory on Linux, nor on macOS unless `sandbox.readable_home`
+  is set.
 - Before each run it must still be the same file, unchanged: the same inode,
   size, modification and change times. Replaced, edited, or swapped for a
   link, a folder or another file, it is not run, the allow goes with it, and
   the status line says so; start a new session to use the script as it is
-  now.
+  now. On Linux and macOS Abhed keeps the file open while it is pinned, so
+  its inode cannot be given to a file put in its place (on Windows, where an
+  open file cannot be moved or removed, and for a script with no read
+  permission, it is pinned by those checks alone). Judged again when the
+  session's folders change (`/add-dir`), it is still the script pinned
+  first: one put at its path since is not run.
 
 What the script itself reads must be visible to the sandbox too: the
-workspace and the system directories are, while on Linux the rest of your
-home directory is not. Only
+workspace and the system directories are, while the rest of your home
+directory is not (on macOS, unless `sandbox.readable_home` is set). Only
 text and colour reach the terminal: a sequence that would move the cursor,
 clear the screen, set the title or write the clipboard is dropped. In a
 workspace's configuration it needs trust, like any other process.

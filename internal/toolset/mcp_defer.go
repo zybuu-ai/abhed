@@ -39,6 +39,9 @@ func DeferMCP(reg *tools.Registry, threshold int) bool {
 	mcp = keepSmallServers(mcp)
 	search := &ToolSearch{}
 	for _, t := range mcp {
+		if !deferrable(t) {
+			continue // offered in full, so nothing it says of itself is lost
+		}
 		d := &deferredTool{Tool: t}
 		search.tools = append(search.tools, d)
 		reg.Add(d) // replaces the tool under the same name
@@ -166,11 +169,59 @@ type deferredTool struct {
 
 func (d *deferredTool) Hidden() bool { return !d.loaded.Load() }
 
+// deferrable reports whether t can be wrapped without losing an optional
+// interface: one whose mere presence the loop reads (SecretArgs, ModeScoped,
+// FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
+func deferrable(t tools.Tool) bool {
+	switch t.(type) {
+	case tools.SecretArgs, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
+		return false
+	}
+	return true
+}
+
+// The optional interfaces whose absence means their default are forwarded,
+// so wrapping a tool never drops a check it makes of itself.
+
+func (d *deferredTool) MutatesCall(args json.RawMessage) bool {
+	if m, ok := d.Tool.(tools.CallMutator); ok {
+		return m.MutatesCall(args)
+	}
+	return false
+}
+
+func (d *deferredTool) Precheck(sess *tools.Session, args json.RawMessage) error {
+	if p, ok := d.Tool.(tools.Prechecker); ok {
+		return p.Precheck(sess, args)
+	}
+	return nil
+}
+
+func (d *deferredTool) ResolveArgs(sess *tools.Session, args json.RawMessage) (json.RawMessage, []string, error) {
+	if r, ok := d.Tool.(tools.ArgResolver); ok {
+		return r.ResolveArgs(sess, args)
+	}
+	return nil, nil, nil
+}
+
+func (d *deferredTool) Target(sess *tools.Session, args json.RawMessage) string {
+	if t, ok := d.Tool.(tools.Targeter); ok {
+		return t.Target(sess, args)
+	}
+	return ""
+}
+
 // ServerName is the wrapped tool's server, so a role narrowed to some MCP
 // servers can tell a deferred tool's apart from a server whose name holds "__".
 func (d *deferredTool) ServerName() string {
 	server, _ := splitMCP(d.Tool)
 	return server
+}
+
+// RemoteName is the wrapped tool's name on its server.
+func (d *deferredTool) RemoteName() string {
+	_, name := splitMCP(d.Tool)
+	return name
 }
 
 // ToolSearch finds deferred tools by words in their names and descriptions

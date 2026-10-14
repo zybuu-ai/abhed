@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const protocolVersion = "2025-06-18"
@@ -156,7 +157,8 @@ func (c *Client) refreshTools(ctx context.Context) error {
 
 // validToolName is what a remote tool's name must look like to be offered,
 // the same rule tool_search lists names by: the name reaches prompts, the
-// approval card and "always allow" scopes.
+// approval card and "always allow" scopes. The MCP specification allows 128
+// characters; 64 is kept because model providers refuse longer tool names.
 var validToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
 // WarnOut receives the warning for each tool refused for its name.
@@ -181,7 +183,7 @@ func keepNamed(server string, defs []ToolDef) (kept []ToolDef, refused []string)
 		if id := server + "\x00" + d.Name; !warned[id] {
 			warned[id] = true
 			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q offers a tool named %+q, which is not registered: "+
-				"a tool name may hold only letters, digits, _ . and -, up to 64\n", server, d.Name)
+				"a tool name may hold only letters, digits, _ . and -, up to 64 characters (%d here)\n", server, d.Name, utf8.RuneCountInString(d.Name))
 		}
 		warnedMu.Unlock()
 	}
@@ -430,6 +432,9 @@ type StdioTransport struct {
 	mu     sync.Mutex
 	// cancel ends a confined server's own context, revoking its egress credential.
 	cancel context.CancelFunc
+	// cleanup removes what the server runs in, such as its container, which
+	// killing the engine's client would leave running.
+	cleanup func()
 }
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
@@ -486,6 +491,10 @@ func (t *StdioTransport) Receive(_ context.Context) ([]byte, error) {
 
 func (t *StdioTransport) Close() error {
 	_ = t.stdin.Close()
+	// Before the kill: the container goes first, so nothing outlives the close.
+	if t.cleanup != nil {
+		t.cleanup()
+	}
 	if t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
 	}

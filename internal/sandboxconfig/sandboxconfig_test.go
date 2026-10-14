@@ -77,6 +77,35 @@ func TestStatePathInAWritableAreaIsRefused(t *testing.T) {
 	}
 }
 
+// The refusal for a server file inside the workspace names the setting that
+// put it there, not only the account, secrets and database settings.
+func TestStateRefusalNamesTheSetting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	ws := t.TempDir()
+	for setting, set := range map[string]func(*config.Config){
+		"server.tls.key_file": func(c *config.Config) {
+			c.Server.TLS.CertFile, c.Server.TLS.KeyFile = "certs/server.pem", "certs/server-key.pem"
+		},
+		"server.tls.additional_certificates[0].key_file": func(c *config.Config) {
+			c.Server.TLS.CertFile, c.Server.TLS.KeyFile = "/elsewhere/a.pem", "/elsewhere/a-key.pem"
+			c.Server.TLS.AdditionalCertificates = []config.CertificatePair{{CertFile: "b.pem", KeyFile: "b-key.pem"}}
+		},
+		"server.tls.client_ca_file": func(c *config.Config) {
+			c.Server.TLS.CertFile, c.Server.TLS.KeyFile = "/elsewhere/a.pem", "/elsewhere/a-key.pem"
+			c.Server.TLS.ClientCAFile = "ca.pem"
+		},
+		"auth.users_file": func(c *config.Config) { c.Auth.UsersFile = "users.json" },
+	} {
+		cfg := config.Default()
+		set(&cfg)
+		err := CheckStatePaths(cfg, ws)
+		if err == nil || !strings.Contains(err.Error(), "Keep "+setting+" outside the workspace") {
+			t.Errorf("%s: %v", setting, err)
+		}
+	}
+}
+
 // outsideWritableAreas makes a folder that no writable area holds, so the
 // test runs where temp folders live under /tmp too: under the home directory,
 // or else under this package's folder, removed when the test ends.
@@ -212,7 +241,9 @@ func TestEnclosingStateThroughALinkedWorkspaceIsRefused(t *testing.T) {
 
 // Only the files a run loads count above the workspace, and nothing in a
 // folder anyone may write, such as /tmp: another user could otherwise stop
-// every workspace under it from starting.
+// every workspace under it from starting. The files here are this user's, so
+// this proves the sticky-folder skip; another user's file left uncounted
+// would need a second account, which a test run without root does not have.
 func TestAncestorStateCountsOnlyWhatARunLoads(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -308,6 +339,29 @@ func TestStatePathsHoldTheAccountStores(t *testing.T) {
 	}
 }
 
+// TLS keys and the command-line token key are state: a TLS key the agent can
+// read lets it pose as the server, and a token key lets it sign in as anyone.
+func TestStatePathsHoldServerKeys(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Auth.CLI.Enabled = true
+	cfg.Server.TLS = config.ServerTLSConfig{CertFile: "/srv/tls/c.pem", KeyFile: "/srv/tls/k.pem"}
+	got := StatePaths(cfg, ws)
+	key, _ := cfg.CLIKeyFile(ws)
+	for _, want := range []string{"/srv/tls/k.pem", key, key + ".revoked"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s is not among the state paths %v", want, got)
+		}
+	}
+	// A key inside the workspace is refused at start, like any state file there.
+	cfg.Server.TLS.KeyFile = "certs/k.pem"
+	if err := CheckStatePaths(cfg, ws); err == nil || !strings.Contains(err.Error(), "k.pem") {
+		t.Errorf("a TLS key in the workspace: %v", err)
+	}
+}
+
 // sandbox.network allowlist gives the policy the compiled egress rules and
 // takes allow_network out of play: the proxy is the only way out.
 func TestAllowlistReplacesAllowNetwork(t *testing.T) {
@@ -356,5 +410,56 @@ func TestPolicyCarriesSkillDirs(t *testing.T) {
 	cfg.Skills.Disabled = true
 	if p, err := Policy(cfg, t.TempDir()); err != nil || len(p.SkillDirs) != 0 {
 		t.Errorf("skills off: %v %v", p.SkillDirs, err)
+	}
+}
+
+// The control plane's database is state, kept out of every workspace, its
+// .abhed included, and out of the sandboxes' own folders.
+func TestControlPlaneDatabasePlacement(t *testing.T) {
+	base := outsideWritableAreas(t)
+	t.Setenv("TMPDIR", filepath.Join(base, "tmp"))
+	ws := filepath.Join(base, "ws")
+	home := filepath.Join(base, "home")
+	t.Setenv("HOME", home)
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	roots := filepath.Join(base, "sandboxes")
+	cases := []struct {
+		path    string
+		refused bool
+	}{
+		{"", false}, // ~/.abhed/controlplane/sandboxes.db
+		{filepath.Join(base, "state", "cp.db"), false},
+		{filepath.Join(ws, "cp.db"), true},
+		{filepath.Join(ws, ".abhed", "cp.db"), true},
+		{filepath.Join(roots, "cp.db"), true},
+		{filepath.Join(base, "tmp", "cp.db"), true},
+		{"cp.db", true},
+	}
+	for _, c := range cases {
+		cfg := config.Default()
+		cfg.ControlPlane = config.ControlPlaneConfig{Enabled: true, SQLitePath: c.path, WorkspaceRoot: roots}
+		err := CheckStatePaths(cfg, ws)
+		if c.refused != (err != nil) {
+			t.Errorf("sqlite_path %q: refused=%v, want %v (%v)", c.path, err != nil, c.refused, err)
+		}
+		db := ControlPlaneDB(cfg)
+		if c.path == "" && db != filepath.Join(home, ".abhed", "controlplane", "sandboxes.db") {
+			t.Errorf("default database %q", db)
+		}
+		for _, f := range []string{db, db + "-wal", db + "-shm"} {
+			if !slices.Contains(StatePaths(cfg, ws), f) {
+				t.Errorf("%s is not state", f)
+			}
+		}
+	}
+	// Off, or on Postgres, there is no database to guard.
+	cfg := config.Default()
+	cfg.ControlPlane.SQLitePath = filepath.Join(ws, "cp.db")
+	if ControlPlaneDB(cfg) != "" || CheckStatePaths(cfg, ws) != nil {
+		t.Error("a database was placed for a control plane that is off")
+	}
+	cfg.ControlPlane.Enabled, cfg.Storage.Driver = true, "postgres"
+	if ControlPlaneDB(cfg) != "" || CheckStatePaths(cfg, ws) != nil {
+		t.Error("a database was placed for a control plane on Postgres")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Session carries the per-session state tools need: the workspace root that
@@ -127,6 +128,35 @@ func (s *Session) ResetScoped() {
 	sc.m = map[any]any{}
 	sc.mu.Unlock()
 	closeAll(vals)
+}
+
+// ScopedRewinder is a scoped value that can forget what it took after a time,
+// so a fork keeps the logins made before its step.
+type ScopedRewinder interface {
+	ForgetAfter(t time.Time)
+}
+
+// ForgetScopedAfter forgets what the session's tools kept after t: a value
+// that can rewind keeps what came before; any other is closed and forgotten.
+func (s *Session) ForgetScopedAfter(t time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	sc := s.scopedLocked()
+	s.mu.Unlock()
+	sc.mu.Lock()
+	gone := map[any]any{}
+	for k, v := range sc.m {
+		if r, ok := v.(ScopedRewinder); ok {
+			r.ForgetAfter(t)
+			continue
+		}
+		gone[k] = v
+		delete(sc.m, k)
+	}
+	sc.mu.Unlock()
+	closeAll(gone)
 }
 
 func closeAll(vals map[any]any) {
@@ -341,6 +371,13 @@ func (s *Session) PolicyRoots() []string {
 	}
 	out = append(out, s.Roots...)
 	return append(out, s.rawRoots...)
+}
+
+// WorkDir is where the next bash call starts, read under the session's lock.
+func (s *Session) WorkDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Cwd
 }
 
 // within reports whether an absolute, cleaned path sits inside any root.

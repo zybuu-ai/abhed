@@ -97,7 +97,7 @@ func call(id, name string, args map[string]string) string {
 	return string(c)
 }
 
-// The review's probe: an embedder's record inside the workspace is refused
+// An embedder's record inside the workspace is refused
 // at New, rather than left where the agent's tools reach it.
 func TestSDKRecordInTheWorkspaceIsRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -170,7 +170,10 @@ func TestSymlinkedRecordsAreProtectedWhereTheyAre(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("ABHED_SECRETS_FILE", "")
-	real := filepath.Join(home, "elsewhere", "records")
+	// The real folder is in the workspace, where commands write on every OS
+	// (on Linux the host's temp is out of their reach).
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	real := filepath.Join(ws, "elsewhere", "records")
 	_ = os.MkdirAll(real, 0o700)
 	_ = os.MkdirAll(filepath.Join(home, ".abhed"), 0o700)
 	if err := os.Symlink(real, filepath.Join(home, ".abhed", "records")); err != nil {
@@ -184,13 +187,11 @@ func TestSymlinkedRecordsAreProtectedWhereTheyAre(t *testing.T) {
 	if want, _ := filepath.EvalSymlinks(real); rec.Dir() != want {
 		t.Fatalf("the record is at %s, not its real path %s", rec.Dir(), want)
 	}
-	ws, _ := filepath.EvalSymlinks(t.TempDir())
-	// Here the real directory is in a temp folder, where commands can write,
-	// so New refuses it outright, naming where it really is.
+	// New refuses it outright, naming where it really is.
 	_, err = abhed.New(context.Background(), abhed.Options{Workspace: ws, Store: rec,
 		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:1", Model: "m", ContextWindow: 8192}})
 	if err == nil || !strings.Contains(err.Error(), rec.Dir()) {
-		t.Fatalf("a record linked into a temp folder was accepted: %v", err)
+		t.Fatalf("a record linked into the workspace was accepted: %v", err)
 	}
 	// Wherever it is, the real path is state: the CLI and SDK register it.
 	var found bool

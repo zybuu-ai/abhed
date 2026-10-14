@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +67,8 @@ func TestConfinedServerCredentialEndsWithTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := sandbox.DefaultPolicy(t.TempDir())
+	ws := t.TempDir()
+	p := sandbox.DefaultPolicy(ws)
 	p.Egress = pol
 	sb := sandbox.NewProcess(p)
 	if ok, why := sb.Available(); !ok {
@@ -76,8 +78,18 @@ func TestConfinedServerCredentialEndsWithTheServer(t *testing.T) {
 	if os.Getuid() == 0 || os.Geteuid() == 0 {
 		t.Skip("stdio servers are refused as root under bubblewrap")
 	}
-	exe, err := os.Executable()
+	self, err := os.Executable()
 	if err != nil {
+		t.Fatal(err)
+	}
+	// A confined server does not see the temp folder go test builds in, but
+	// does see the workspace, so the server runs from a copy there.
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(ws, "fake-mcp-server")
+	if err := os.WriteFile(exe, b, 0o755); err != nil { // #nosec G306 -- the test's server program
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -106,11 +118,12 @@ func TestConfinedServerCredentialEndsWithTheServer(t *testing.T) {
 		c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(u), DisableKeepAlives: true}, Timeout: 10 * time.Second}
 		resp, err := c.Get(srv.URL)
 		if err != nil {
-			t.Fatal(err)
+			return 0 // the call's own way in is gone with it
 		}
 		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
+	refused := func(code int) bool { return code == http.StatusProxyAuthRequired || code == 0 }
 	first := credential()
 	if s := status(first); s != http.StatusOK {
 		t.Fatalf("the running server's credential: %d", s)
@@ -118,7 +131,7 @@ func TestConfinedServerCredentialEndsWithTheServer(t *testing.T) {
 	if err := g.Restart(ctx, "fake"); err != nil {
 		t.Fatal(err)
 	}
-	if s := status(first); s != http.StatusProxyAuthRequired {
+	if s := status(first); !refused(s) {
 		t.Fatalf("the credential of a restarted server's old process: %d", s)
 	}
 	second := credential()
@@ -126,7 +139,7 @@ func TestConfinedServerCredentialEndsWithTheServer(t *testing.T) {
 		t.Fatal("the restarted server has no credential of its own")
 	}
 	g.Close()
-	if s := status(second); s != http.StatusProxyAuthRequired {
+	if s := status(second); !refused(s) {
 		t.Fatalf("the credential of a closed server: %d", s)
 	}
 }

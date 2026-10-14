@@ -64,8 +64,10 @@ sent while no run is live starts one rather than being queued as steering.
 A subagent's worktrees are made under the session's workspace, and on a
 server each session binds its own `task` and `tasks`, so one person's
 subagents run in, and record into, that person's session only. On a
-server every account shares one workspace, so those worktrees are
-in the same directory tree as everyone else's.
+server with several accounts each session has a sandbox and folder of its
+own, so its worktrees are too; with `server.shared_sessions` every account
+shares one workspace, and those worktrees are in the same directory tree as
+everyone else's.
 
 A subagent, in a worktree or not, uses the cluster logins and connected
 hosts of the session that started it, and never another session's: a
@@ -168,8 +170,9 @@ the call, the reason and the `request_id` an answer names), and a
 `subagent.action` for every call of the subagent's that was refused or put to
 an approver, with the same `request_id`. On a server with durable storage a
 subagent's session row belongs to the person whose session started it and
-names that session as its parent; it is not listed among their sessions, and
-nobody else can open it. Resuming a subagent's session id is refused, in the
+names that session as its parent, with the permission mode the subagent ran
+in (its role's narrower mode, when it has one); it is not listed among their
+sessions, and nobody else can open it. Resuming a subagent's session id is refused, in the
 CLI and the console; resume the session that started it. Deleting the session deletes its subagents the same
 way: in Postgres the rows are marked deleted and kept for the audit, as the
 session's own are. Calls the
@@ -249,19 +252,25 @@ user's work on the server at once (`StopOwnerBackground`): the live run,
 background shells and tasks, and terminals end as `owner_revoked` (a
 terminal's observation reads `exit 137 · on a terminal, owner_revoked`), and
 no wake runs for them afterwards. A call then waiting on an answer is refused
-as interrupted (`action.denied`, step `ask`, "interrupted before an
-answer"), not at step `owner`. The Community Edition does not call it:
-`abhed user remove` signs the account out, but a run already going for it
-goes on until it ends, or until a woken run or a background result finds
-the owner gone, as above.
-Signing a person out is not that. After Sign out everywhere, or after their
-administrator rights are removed, which also signs them out, the account is
+as interrupted (`action.denied`, step `interrupted`, "interrupted before an
+answer"), not at step `owner`. The Community Edition calls it for local
+accounts: a server checks its accounts every 15 seconds, and at once when
+it sees one change, so an account removed with `abhed user remove`, even
+from another process, or removed and made again under the same name, has
+its work there stopped this way. Only sessions begun before the account was
+made again are stopped; the new account's own sessions run on. The two times
+come from different clocks: the account's from the machine that made it, a
+session's start from the server that began it. A session begun within the
+clocks' difference of the account being made again can be judged the wrong
+way, so keep the servers' and that machine's clocks in step (NTP); a
+difference of a second matters only for a session begun in that second.
+Removing a person's administrator rights
+stops their work too, as well as signing them out.
+Signing a person out is not that. After Sign out everywhere the account is
 still active: a background shell or task they started keeps running, and its
 result still starts a woken run in their session, under the same policy and
 with no one signed in to watch it. To stop that work, stop the session's
-tasks first (Stop, `/tasks`), or remove the account (`abhed user remove`),
-after which a result wakes nothing and the session's other tasks are
-cancelled as `owner_inactive`.
+tasks first (Stop, `/tasks`), or remove the account (`abhed user remove`).
 
 **Stop means stop.** An explicit stop cancels every background task: Stop or
 `/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),
@@ -313,9 +322,10 @@ rebuilt from the record). A result that finished
 before a restart, and a task a crashed process lost (ended `lost`), are
 delivered on the session's next run.
 
-Each server process holds the sessions it runs under a liveness identity (its
-`node_id` with a token of this process after a `#`, or an id of its own when
-no `node_id` is set) and refreshes it every 30
+Each server process holds the sessions it runs under a liveness identity (an
+id of its own, or, under the Enterprise edition's high availability, its
+`control_plane.ha.node_id` with a token of this process after a `#`) and
+refreshes it every 30
 seconds while a run, a background task or a workbench hold is live. Another
 process takes a session over only once that heartbeat is two minutes stale,
 so a live task on one server is never mistaken for a crashed one by another
@@ -333,7 +343,7 @@ even before its next heartbeat, and the refusal stops it there. What a tool
 was already doing when the session was lost (a command running, a file being
 written) is not something a record can undo. Another durable store an
 embedder supplies is not fenced this way, and the server warns of it at
-start. A node restarted with the same
+start. Under Enterprise HA, a node restarted with the same
 `node_id` takes back the sessions it held when it starts, before it serves
 anything, under its new token, so the process it replaced, if it still runs,
 writes nothing more into them. Two running nodes must still never share a

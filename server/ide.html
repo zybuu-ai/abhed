@@ -54,6 +54,8 @@ button:focus-visible,[tabindex]:focus-visible,textarea:focus-visible,input:focus
   grid-template-columns:48px var(--side) 4px minmax(0,1fr) 4px var(--agent)}
 #app.noside{grid-template-columns:48px 0 0 minmax(0,1fr) 4px var(--agent)}
 #app.noside #side,#app.noside #split-side{display:none}
+/* Placed by column, so a hidden side panel leaves its tracks empty instead of shifting the rest into them. */
+#act{grid-column:1}#side{grid-column:2}#split-side{grid-column:3}#center{grid-column:4}#split-agent{grid-column:5}#agent{grid-column:6}
 #title{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--chrome);border-bottom:1px solid var(--line)}
 #title .brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.01em}
 #title .brand .lockup img{height:20px}
@@ -128,10 +130,10 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .card .t b{font:600 12px var(--mono);overflow-wrap:anywhere}
 .card p{margin:4px 0 0;color:var(--ink-2);font-size:12px;overflow-wrap:anywhere}
 .pill{font:10px/1 var(--mono);padding:3px 6px;border-radius:10px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap;flex:none}
-.pill.mut{color:var(--warn);border-color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
+.pill.mut{color:var(--warn);border-color:var(--warn)}.card p.warn{color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
 .pill.on{color:var(--ok);border-color:var(--ok)}
 .rules{margin:0 12px 6px;font:12px var(--mono);color:var(--ink-2);overflow-wrap:anywhere}
-.rules div{padding:2px 0}.rules .k{display:inline-block;width:44px;color:var(--muted)}
+.rules div{padding:2px 0}.rules div.warn{color:var(--warn)}.rules .k{display:inline-block;width:44px;color:var(--muted)}
 .empty{margin:8px 12px;padding:10px;border:1px dashed var(--line-strong);border-radius:6px;color:var(--muted);font-size:12px}
 .empty code{font:11px var(--mono);color:var(--ink-2)}
 .primary{margin:8px 12px;height:30px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600;flex:none}
@@ -379,12 +381,14 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   #app[data-pane="side"] #center,#app[data-pane="side"] #agent,
   #app[data-pane="center"] #side,#app[data-pane="center"] #agent,
   #app[data-pane="agent"] #side,#app[data-pane="agent"] #center{display:none}
-  #app.noside #side{display:flex}
+  #app.noside[data-pane="side"] #side{display:flex}
   #palette-open,#title .ws{display:none}
   /* The mark alone, and only the links a phone needs; the name links to the account page. */
-  #title .brand .lockup .lk-word,#pwlink,#title .right a[href="/console"]{display:none!important}
+  #title .brand .lockup .lk-word,#pwlink,#title .right a[href="/console"],#title .right a[href="/docs"]{display:none!important}
   #title .right{min-width:0;overflow:hidden}
-  #who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px}
+  /* A long name gives way, never sign out: it is the one control a phone must keep. */
+  #who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;min-width:0;flex:0 1 auto}
+  #switchuser,#signout{flex:none}
 }
 @media (prefers-reduced-motion:no-preference){.dot.running{animation:pulse 1.6s ease-in-out infinite}}
 @keyframes pulse{50%{opacity:.45}}
@@ -545,7 +549,9 @@ const fmt = n => (n || 0).toLocaleString('en-US');
 
 async function api(path, opts){
   let r; try{ r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts}); }
-  catch(e){ connLost(false); throw e; }
+  catch{
+    // The browser's own words ("Failed to fetch", "Load failed") say nothing a person can act on.
+    connLost(false); const e = new Error('the server could not be reached; check the connection and try again'); e.offline = true; throw e; }
   if(r.status === 401) signInEnded();
   if(!r.ok){ let m = r.statusText, b = {}; try{ b = await r.json() || {}; m = b.error || m; }catch{}
     // A refused identity (dropped from require_group) has had its sign-in ended; say why.
@@ -927,6 +933,8 @@ async function acceptHunk(t, c){
 function rejectHunk(t, c){
   const text = spliceLines(t.model.getLinesContent(), c.modifiedStartLineNumber, c.modifiedEndLineNumber,
     linesOf(t.orig, c.originalStartLineNumber, c.originalEndLineNumber)).join(t.model.getEOL());
+  // An added file with its last change rejected is not left empty: it is removed, as Reject all does.
+  if(!t.existed && text === t.orig.getValue()) return rejectAll(t);
   replaceAll(t, text); save(t);
 }
 // replaceAll is an edit, not a reload: it can be undone and it marks the tab unsaved.
@@ -952,7 +960,7 @@ async function save(t){
   try{
     const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.model.getValue(), base:t.base})});
     t.base = r.hash; t.saved = version; t.dirty = t.model.getAlternativeVersionId() !== version; drawTabs();
-    crumbs(t.path, 'saved · recorded as your change'); changesSoon(300); hawkSoon();
+    crumbs(t.path, r.note ? 'saved · ' + r.note : 'saved · recorded as your change'); changesSoon(300); hawkSoon();
   }catch(e){ crumbs(t.path, 'not saved — ' + visible(e.message)); }
   t.saving = false;
 }
@@ -960,6 +968,123 @@ const saveActive = () => save(activeTab());
 async function saveAll(){ for(const t of tabs.filter(x => x.dirty)) await save(t); }
 const openFile = (path, at) => openTab(newTab('file', path), at);
 const openDiff = path => openTab(newTab('diff', path));
+
+/* ---------------------------------------------------------------- language servers */
+// Go to definition, hover and diagnostics come from a language server the operator names in
+// sandbox.language_servers, run by the server in the session's sandbox as the person's
+// recorded call. A language with none answers 404 and is not asked again this session.
+// What a server says is untrusted: it is drawn through reveal, as plain markdown.
+const lspConns = new Map(), lspNone = new Set(), lspProviders = new Set();
+const lspURI = (c, path) => 'file://' + (c.root + path).split('/').map(encodeURIComponent).join('/');
+function lspRel(c, uri){
+  let p; try{ p = decodeURIComponent(String(uri).replace(/^file:\/\//, '')); }catch{ return null; }
+  if(!p.startsWith(c.root + '/')) return null;
+  // A server's '..' is resolved, so a path that climbs out of the workspace is not offered.
+  const out = [];
+  for(const s of p.slice(c.root.length + 1).split('/')){
+    // A backslash or control character would name a different file on some hosts.
+    if(/[\\\x00-\x1f\x7f]/.test(s)) return null;
+    if(s === '..'){ if(!out.length) return null; out.pop(); } else if(s && s !== '.') out.push(s);
+  }
+  return out.length ? out.join('/') : null;
+}
+const lspRange = r => new M.Range(r.start.line + 1, r.start.character + 1, r.end.line + 1, r.end.character + 1);
+function lspFor(lang){
+  for(const [k, p] of lspConns) if(!k.startsWith(current + ' ')){ lspConns.delete(k); p.then(c => c && lspClose(c)); }
+  const key = current + ' ' + lang;
+  if(!current || lspNone.has(key)) return null;
+  if(!lspConns.has(key)) lspConns.set(key, lspOpen(current, lang).catch(e => {
+    lspConns.delete(key);
+    // Not configured, no sandbox to run it in, or refused: not asked again.
+    if(e && (e.status === 403 || e.status === 404 || e.status === 409)) lspNone.add(key);
+    return null; }));
+  return lspConns.get(key);
+}
+async function lspOpen(session, lang){
+  const r = await api('/v1/sessions/' + session + '/lsp', {method:'POST', body: JSON.stringify({language: lang})});
+  const base = '/v1/sessions/' + session + '/lsp/' + r.id;
+  const c = {session, lang, root: r.root, base, seq:0, pending:new Map(), docs:new Map(), es:null};
+  await new Promise((ok, fail) => {
+    const es = new StreamSource(base); c.es = es;
+    es.addEventListener('ready', () => ok());
+    es.addEventListener('msg', e => lspIncoming(c, e.data));
+    es.addEventListener('exit', () => lspClose(c));
+    es.onerror = () => { if(es.readyState === EventSource.CLOSED){ lspClose(c); fail(new Error('the language server stream closed')); } };
+  });
+  c.send = m => fetch(base, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(Object.assign({jsonrpc:'2.0'}, m))}).catch(() => {});
+  c.request = (method, params) => new Promise((ok, fail) => {
+    const id = ++c.seq; c.pending.set(id, {ok, fail}); c.send({id, method, params});
+    setTimeout(() => { const q = c.pending.get(id); if(q){ c.pending.delete(id); q.fail(new Error('no answer')); } }, 15000); });
+  const uri = lspURI(c, '');
+  await c.request('initialize', {processId:null, rootUri:uri, workspaceFolders:[{uri, name:c.root.split('/').pop()}],
+    capabilities:{textDocument:{hover:{contentFormat:['markdown','plaintext']}, definition:{linkSupport:true}, publishDiagnostics:{}, synchronization:{}}, workspace:{configuration:true}}});
+  c.send({method:'initialized', params:{}});
+  lspRegister(lang);
+  return c;
+}
+function lspClose(c){
+  if(c.closed) return; c.closed = true;
+  if(c.es){ c.es.close(); c.es = null; }
+  for(const q of c.pending.values()) q.fail(new Error('closed')); c.pending.clear();
+  for(const m of c.docs.values()) if(!m.isDisposed()) M.editor.setModelMarkers(m, 'lsp', []);
+  fetch(c.base, {method:'DELETE', credentials:'same-origin'}).catch(() => {});
+}
+function lspIncoming(c, b64){
+  let m; try{ m = JSON.parse(new TextDecoder().decode(bytesOf(b64))); }catch{ return; }
+  if(m.id != null && !m.method){ const q = c.pending.get(m.id); if(q){ c.pending.delete(m.id); m.error ? q.fail(new Error(String(m.error.message || 'error'))) : q.ok(m.result); } return; }
+  // A server's own requests: settings it asks for are left at its defaults, the rest acknowledged.
+  if(m.id != null) c.send({id:m.id, result: m.method === 'workspace/configuration' ? ((m.params && m.params.items) || []).map(() => null) : null});
+  if(m.method === 'textDocument/publishDiagnostics' && m.params){
+    const rel = lspRel(c, m.params.uri), model = rel == null ? null : [...c.docs.values()].find(x => x.uri.path === '/' + rel);
+    if(!model || model.isDisposed()) return;
+    const sev = {1:M.MarkerSeverity.Error, 2:M.MarkerSeverity.Warning, 3:M.MarkerSeverity.Info, 4:M.MarkerSeverity.Hint};
+    M.editor.setModelMarkers(model, 'lsp', (m.params.diagnostics || []).slice(0, 500).map(d => ({
+      startLineNumber:d.range.start.line + 1, startColumn:d.range.start.character + 1, endLineNumber:d.range.end.line + 1, endColumn:d.range.end.character + 1,
+      message: reveal(String(d.message || ''), true), severity: sev[d.severity] || M.MarkerSeverity.Info, source: d.source ? reveal(String(d.source)) : 'language server'})));
+  }
+}
+function lspPos(c, model, pos){ return {textDocument:{uri:lspURI(c, model.uri.path)}, position:{line:pos.lineNumber - 1, character:pos.column - 1}}; }
+function lspRegister(lang){
+  if(lspProviders.has(lang)) return; lspProviders.add(lang);
+  M.languages.registerHoverProvider(lang, {async provideHover(model, pos){
+    const c = model.uri.scheme === 'file' ? await lspFor(lang) : null; if(!c) return null;
+    let r; try{ r = await c.request('textDocument/hover', lspPos(c, model, pos)); }catch{ return null; }
+    if(!r || !r.contents) return null;
+    const parts = (Array.isArray(r.contents) ? r.contents : [r.contents]).map(x => typeof x === 'string' ? x
+      : x.kind === 'plaintext' ? '```\n' + x.value + '\n```' : x.language ? '```' + x.language + '\n' + x.value + '\n```' : x.value);
+    return {contents: parts.filter(Boolean).map(v => ({value: reveal(String(v), true), isTrusted:false, supportHtml:false}))};
+  }});
+  M.languages.registerDefinitionProvider(lang, {async provideDefinition(model, pos){
+    const c = model.uri.scheme === 'file' ? await lspFor(lang) : null; if(!c) return null;
+    let r; try{ r = await c.request('textDocument/definition', lspPos(c, model, pos)); }catch{ return null; }
+    const out = [];
+    for(const l of (Array.isArray(r) ? r : r ? [r] : [])){
+      const uri = l.targetUri || l.uri, range = l.targetSelectionRange || l.targetRange || l.range, rel = range && lspRel(c, uri);
+      if(rel == null) continue; // outside the workspace: nothing the workbench can open
+      out.push({uri: '/' + rel === model.uri.path ? model.uri : M.Uri.from({scheme:'file', path:'/' + rel}), range: lspRange(range)});
+    }
+    return out;
+  }});
+}
+// A definition in another file opens it in a tab of its own, at the place.
+M.editor.registerEditorOpener({openCodeEditor(source, resource, at){
+  if(resource.scheme !== 'file') return false;
+  const p = at && (at.startLineNumber ? {line:at.startLineNumber, col:at.startColumn} : at.lineNumber ? {line:at.lineNumber, col:at.column} : null);
+  openFile(resource.path.slice(1), p || undefined); return true;
+}});
+const lspProvider = {attach(model){
+  const lang = model.getLanguageId(), p = lspFor(lang); if(!p) return null;
+  let c = null, gone = false, v = 1, timer = 0;
+  p.then(conn => { if(!conn || gone) return; c = conn; const uri = lspURI(c, model.uri.path); c.docs.set(uri, model);
+    c.send({method:'textDocument/didOpen', params:{textDocument:{uri, languageId:lang, version:v, text:model.getValue()}}}); });
+  const sub = model.onDidChangeContent(() => { clearTimeout(timer); timer = setTimeout(() => {
+    if(c && !c.closed) c.send({method:'textDocument/didChange', params:{textDocument:{uri:lspURI(c, model.uri.path), version:++v}, contentChanges:[{text:model.getValue()}]}}); }, 300); });
+  return {dispose(){ gone = true; sub.dispose(); clearTimeout(timer);
+    if(c && !c.closed){ const uri = lspURI(c, model.uri.path); c.docs.delete(uri); c.send({method:'textDocument/didClose', params:{textDocument:{uri}}}); }
+    if(!model.isDisposed()) M.editor.setModelMarkers(model, 'lsp', []); }};
+}};
+// Any language may have a server; the first file in one asks, once a session.
+M.languages.getLanguages().forEach(l => { if(l.id !== 'plaintext') E.registerLanguageServer(l.id, lspProvider); });
 
 /* ---------------------------------------------------------------- explorer + changes */
 // Every folder listed is remembered with where it is drawn, and every open one
@@ -1172,7 +1297,9 @@ function withNotes(text, notes){
 async function postFile(id, file, name, dir){
   const fd = new FormData(); if(dir != null) fd.append('dir', dir); fd.append('file', file, name);
   let r; try{ r = await fetch(id ? '/v1/sessions/' + id + '/upload' : '/v1/uploads', {method:'POST', body:fd, credentials:'same-origin'}); }
-  catch(e){ connLost(false); throw e; }
+  catch{
+    // The browser's own words ("Failed to fetch", "Load failed") say nothing a person can act on.
+    connLost(false); const e = new Error('the server could not be reached; check the connection and try again'); e.offline = true; throw e; }
   if(r.status === 401) signInEnded();
   let b = {}; try{ b = await r.json() || {}; }catch{}
   if(!r.ok){ const e = new Error(b.error || r.statusText || String(r.status)); e.status = r.status; throw e; }
@@ -1297,11 +1424,14 @@ async function loadChanges(){
   clear(box); const files = res.files || [];
   $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
   if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
-  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save and edits the agent makes through write and edit appear here; changes made by shell commands do not.')); return; }
+  // Changes made by commands are found against the workspace as the session opened, within limits.
+  if(res.partial) box.appendChild(el('div', 'empty', 'Changes made by commands may be missing here: ' + visible(res.partial) + '.'));
+  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save, edits the agent makes, and files changed by commands, yours or the agent\'s, appear here.')); return; }
   for(const f of files){
     const row = el('button', 'row'); row.type = 'button';
     row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
     row.appendChild(el('span', 'name mono', reveal(f.path)));
+    if(f.by_command) row.title = 'Not changed through the edit tools: a command or an upload' + (f.note ? ' · ' + visible(f.note) : '');
     const m = el('span', 'meta'); m.appendChild(el('span', 'plus', '+' + f.added)); m.appendChild(document.createTextNode(' ')); m.appendChild(el('span', 'minus', '−' + f.removed));
     row.appendChild(m); row.addEventListener('click', () => openDiff(f.path)); box.appendChild(row);
   }
@@ -1310,13 +1440,17 @@ $('changes-reload').addEventListener('click', loadChanges);
 const changesSoon = (ms = 1500) => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !t.dirty && !editorFocused()) showTab(t); }, ms); };
 
 /* ---------------------------------------------------------------- tools + extensions */
+// The workspace's own config, from the overview: trusted or not, and what it set aside.
+let wsConf = null;
+/*{{WS_CONFIG}}*/
 function drawCaps(){
   const c = caps, t = $('tools'), x = $('extensions'); clear(t); clear(x);
   t.appendChild(el('div', 'group', 'Permissions'));
   const r = el('div', 'rules');
   const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
-  line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
+  line('mode', c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : ''));
   line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');
+  const w = wsConfigLine(wsConf); if(w){ line('config', visible(w.text)); r.lastChild.title = visible(w.title, true); if(w.warn) r.lastChild.className = 'warn'; }
   t.appendChild(r);
   t.appendChild(el('div', 'empty', 'A deny rule holds for every tool call, the agent\'s and yours, in every mode, including auto. In your interactive terminal it only screens each line as typed. Rules are set in the server configuration.'));
   const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
@@ -1336,11 +1470,16 @@ function drawCaps(){
     items.forEach(i => x.appendChild(draw(i)));
   };
   sect('Extensions', c.extensions, e => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(e.name))); top.appendChild(el('span', 'pill on', 'active'));
+    // Status is running, stopped or not started (and only for those allowed to see it): never assumed.
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(e.name))); if(e.status) top.appendChild(el('span', 'pill' + (e.status === 'running' ? ' on' : ''), visible(e.status)));
     card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (visible(e.events.join(', ')) || 'all events'))); return card;
   }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
   sect('MCP servers', c.mcp, m => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status))); card.appendChild(top); return card;
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status)));
+    // Started with no sandbox on the none tier: said here as the server's log says it.
+    if(m.unconfined){ top.appendChild(el('span', 'pill mut', 'unconfined')); card.appendChild(top);
+      card.appendChild(el('p', 'warn', 'Runs with your home folder readable and writable, because ' + visible(m.unconfined) + '. Make the process tier available, or set "host_files": true on it to run it so knowingly.')); return card; }
+    card.appendChild(top); return card;
   }, 'No MCP servers connected. Add one under', 'mcp.servers');
   sect('Skills', c.skills, s => {
     const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(s.name)));
@@ -1357,7 +1496,7 @@ async function loadHawkeye(){
   clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
   [['Outcome', visible(r.outcome)],['Model', visible((r.models || []).join(' → ')) || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
    ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
-   ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'],['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
+   ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'], ...(r.network ? [['Network', r.network.allowed + ' ok · ' + r.network.denied + ' refused']] : []),['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
    .forEach(([k, v]) => { const d = el('div'); d.appendChild(el('dt', '', k)); d.appendChild(el('dd', '', String(v))); dl.appendChild(d); });
   box.appendChild(dl);
   const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => visible(k) + ' ' + v).join(' · ');
@@ -1387,7 +1526,9 @@ async function loadSessions(){
 // The list is in order of last activity: a session just continued comes first.
 const sessionTime = s => s.updated || s.created || '';
 function sortSessions(list){
-  return (list || []).slice().sort((a, b) => String(sessionTime(b)).localeCompare(String(sessionTime(a))) || (a.id < b.id ? 1 : -1));
+  // By instant, not text: two times in different offsets do not sort as strings.
+  const t = s => Date.parse(sessionTime(s)) || 0;
+  return (list || []).slice().sort((a, b) => t(b) - t(a) || (a.id < b.id ? 1 : -1));
 }
 // matchSession is the filter: every word in the title or the first message, as written and as shown.
 function matchSession(s, q){
@@ -1726,25 +1867,88 @@ function openSession(id, state, opts){
   $('s-rename').hidden = $('s-export').hidden = false; $('s-resume').hidden = !resumeCommand(id);
   restoreTabs(); connect(id); loadChanges(); loadSessions(); if(live) loadQueue(id);
   if(window.innerWidth <= 900) $('app').dataset.pane = 'agent';
-  newTerminal(opts);
+  newTerminal(Object.assign({adopt:true}, opts));
 }
 // A session with no prompt: the workspace and sandbox, ready for the terminal and the editor.
 async function createWorkbench(note){
+  const was = current;
   try{
     const mode = $('mode').value;
     const provider = chosenProvider();
     const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({workbench:true, mode, provider})});
     sessionList.unshift({id:r.session_id, prompt:'', state:'idle', mode, provider, model: modelOf(provider)});
+    // A session opened while this one was made, as by a message sent at once, keeps the view.
+    if(current !== was) return;
     openSession(r.session_id, 'idle', {note});
   }catch(e){ noTerminal('Could not open a workbench session: ' + visible(e.message)); }
 }
 $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
 
+// A browser opens six connections to one server over HTTP/1.1, and the page held a
+// stream for its events, one per shell and one per language server: a few shells
+// starved every other request. Each stream now rides one shared stream, asked for
+// by its own route, which the server checks as it always has. A StreamSource
+// behaves as an EventSource does: a refusal closes it, a drop is asked for again.
+const mux = {es:null, id:'', chans:new Map(), n:0};
+function muxStream(){
+  if(mux.es) return;
+  const es = new EventSource('/v1/streams'); mux.es = es;
+  es.addEventListener('mux', e => { let m; try{ m = JSON.parse(e.data); }catch{ return; }
+    mux.id = m.id; for(const c of new Set(mux.chans.values())) c._ask(); });
+  es.addEventListener('c', e => { let f; try{ f = JSON.parse(e.data); }catch{ return; } const c = mux.chans.get(f.ch); if(c) c._frame(f); });
+  es.onerror = () => { mux.id = '';
+    const closed = es.readyState === EventSource.CLOSED; if(closed) mux.es = null;
+    for(const c of new Set(mux.chans.values())) c._dropped(closed); };
+}
+class StreamSource {
+  constructor(url){ this.url = url; this.readyState = 0; this.onopen = this.onmessage = this.onerror = null;
+    this._on = {}; this._last = ''; this._retry = 1000; this._ch = ''; this._timer = 0;
+    this._key(); muxStream(); if(mux.id) this._ask(); }
+  // Each ask is a channel of its own, so frames of one the server ended are not this one's.
+  _key(){ if(this._ch) mux.chans.delete(this._ch); this._ch = 'c' + (++mux.n); mux.chans.set(this._ch, this); }
+  addEventListener(type, fn){ (this._on[type] = this._on[type] || []).push(fn); }
+  removeEventListener(type, fn){ const l = this._on[type] || [], i = l.indexOf(fn); if(i >= 0) l.splice(i, 1); }
+  _fire(type, ev){ ev.type = type; const h = this['on' + type]; if(typeof h === 'function') h.call(this, ev); for(const fn of (this._on[type] || []).slice()) fn.call(this, ev); }
+  async _ask(){
+    if(this.readyState === 2 || !mux.id) return;
+    clearTimeout(this._timer); this._key(); const id = mux.id, ch = this._ch;
+    let r; try{ r = await fetch('/v1/streams/' + id + '/' + ch, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({path:this.url, last_event_id:this._last})}); }catch{ if(this._ch === ch) this._dropped(false); return; }
+    if(r.ok || this._ch !== ch) return;
+    // A shared stream the server no longer has is opened again; this is asked for on it.
+    if(r.status === 404 && mux.id === id){ mux.id = ''; if(mux.es){ mux.es.close(); mux.es = null; } muxStream(); return; }
+    this._fail();
+  }
+  _frame(f){
+    if(this.readyState === 2) return;
+    switch(f.t){
+      case 'open': this.readyState = 1; this._fire('open', {}); break;
+      case 'ev': if(f.has_id) this._last = f.id; this._fire(f.event || 'message', {data:f.data || '', lastEventId:this._last}); break;
+      case 'retry': this._retry = f.retry; break;
+      case 'end': this._dropped(false); break;
+      case 'fail': this._fail(); break;
+    }
+  }
+  _fail(){ if(this.readyState === 2) return; this.readyState = 2; clearTimeout(this._timer); mux.chans.delete(this._ch); this._fire('error', {}); }
+  _dropped(closed){
+    if(this.readyState === 2) return;
+    if(closed){ this._fail(); return; }
+    this.readyState = 0; this._fire('error', {});
+    if(this.readyState === 2) return;
+    clearTimeout(this._timer); this._timer = setTimeout(() => this._ask(), this._retry);
+  }
+  close(){
+    if(this.readyState === 2) return;
+    this.readyState = 2; clearTimeout(this._timer); mux.chans.delete(this._ch);
+    if(mux.id) fetch('/v1/streams/' + mux.id + '/' + this._ch, {method:'DELETE', credentials:'same-origin', keepalive:true}).catch(() => {});
+  }
+}
+
 // A reconnect asks only for what came after the last event drawn, so a
 // dropped connection costs the gap rather than a replay of the whole session.
 function connect(id){
   if(es) es.close();
-  es = new EventSource('/v1/sessions/' + id + '/events' + (lastSeq ? '?after=' + lastSeq : ''));
+  es = new StreamSource('/v1/sessions/' + id + '/events' + (lastSeq ? '?after=' + lastSeq : ''));
   let opened = false;
   es.onopen = () => { opened = true; startTries.delete(id + ' events'); setConn(true); };
   es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
@@ -1756,8 +1960,8 @@ function connect(id){
 function streamLost(id){
   // A stream cannot tell a 401 from a dropped connection: a request can, and ends the retries once signed out.
   if((live || bgLive) && current === id){ connLost(true); setTimeout(async () => {
-    if(current !== id || es || signInGone) return;
-    try{ await api('/v1/sessions/' + id + '/state'); }catch{}
+    if(current !== id || es || signInGone || goneIds.has(id)) return;
+    try{ await api('/v1/sessions/' + id + '/state'); goneTries.delete(id); }catch(e){ if(sessionGone(id, e)) return; }
     if(current === id && !es && !signInGone) connect(id); }, 1000); }
   else{ connLost(false); if(current === id) loadHawkeye(); }
 }
@@ -1823,14 +2027,28 @@ setInterval(connIdle, 5000);
 // tab or client may start the next turn: ask after that session now and then,
 // and follow the turn.
 async function watchIdle(){
-  const id = current; if(!id || live || es || document.hidden || signInGone || leaving) return;
-  let st; try{ st = await api('/v1/sessions/' + id + '/state'); }catch{ return; }
+  const id = current; if(!id || live || es || document.hidden || signInGone || leaving || goneIds.has(id)) return;
+  let st; try{ st = await api('/v1/sessions/' + id + '/state'); goneTries.delete(id); }catch(e){ sessionGone(id, e); return; }
   if(current !== id || live || es || !st) return;
   if(st.state === 'running' || st.state === 'waiting_approval'){ setLive(true); connect(id); }
   // A turn that started and ended between two asks still changes the count: read it back.
   else if(st.turns !== undefined && st.turns !== idleTurns.get(id)){ idleTurns.set(id, st.turns); connect(id); }
 }
 const idleTurns = new Map(), idleWatch = setInterval(watchIdle, 2000);
+// A session deleted in another tab answers 404 for good. After three in a row (one
+// may be a session still starting on another server) the page says so and stops asking.
+const goneTries = new Map(), goneIds = new Set();
+function sessionGone(id, e){
+  if(!e || e.status !== 404 || current !== id){ goneTries.delete(id); return false; }
+  const n = (goneTries.get(id) || 0) + 1; goneTries.set(id, n);
+  if(n < 3) return false;
+  goneTries.delete(id); goneIds.add(id);
+  if(es){ es.close(); es = null; }
+  setLive(false); setConn(true);
+  add(el('div', 'sys bad', 'This session was deleted, or is no longer one you can open. Nothing more will appear here: pick another session or start a new one.'));
+  loadSessions();
+  return true;
+}
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
@@ -1870,8 +2088,13 @@ function visible(s, lines){
 }
 // reveal is visible without the spacing rule, for prose and code whose layout is its own:
 // replies, reasoning, and file names in the explorer, tabs and dialogs.
-function reveal(s, lines){
-  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?! )\p{Zs}|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+// Prose (replies, reasoning, messages) passes prose: other spaces (no-break, narrow, em) are
+// drawn as spaces, which typography puts there and which hide nothing. Format, bidi and
+// zero-width characters stay marked.
+function reveal(s, lines, prose){
+  const hidden = prose ? /[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu
+    : /[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?! )\p{Zs}|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu;
+  return String(s).replace(hidden, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1893,6 +2116,8 @@ function hasHidden(v, depth = 0){
 function subjectOf(tool, args){
   if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
   if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
+  if(tool === 'skill' && args.name) return args.name;
+  if(tool === 'tasks' && Array.isArray(args.tasks)) return args.tasks.length + (args.tasks.length === 1 ? ' subagent: ' : ' subagents: ') + args.tasks.map(t => (t && (t.description || t.agent_type)) || 'task').join(', ');
   if(args.url) return args.url; if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
   const s = JSON.stringify(args); return s === '{}' ? '' : s;
 }
@@ -1916,10 +2141,10 @@ function flushStream(){
   if(flushRaf){ cancelAnimationFrame(flushRaf); flushRaf = 0; }
   if(!pendText && !pendThink) return;
   const stick = nearBottom();
-  if(pendThink){ thinkLive().body.appendData(reveal(pendThink, true)); pendThink = ''; }
+  if(pendThink){ thinkLive().body.appendData(reveal(pendThink, true, true)); pendThink = ''; }
   if(pendText){
     if(!streaming){ streaming = bubble('agent', 'abhed', ''); streamBody = streaming.lastChild; add(streaming); }
-    streamBody.appendData(reveal(pendText, true)); pendText = '';
+    streamBody.appendData(reveal(pendText, true, true)); pendText = '';
   }
   follow(stick);
 }
@@ -1937,7 +2162,7 @@ function thinkLive(at){
 }
 function endThinking(at, whole){
   const t = thinkBlock; if(!t) return false;
-  if(whole != null && reveal(whole, true) !== t.body.data) t.body.data = reveal(whole, true);
+  if(whole != null && reveal(whole, true, true) !== t.body.data) t.body.data = reveal(whole, true, true);
   if(t.live){ t.live = false; t.secs = Math.max(1, Math.round(((at || Date.now()) - t.since) / 1000)); t.node.classList.remove('live'); if(!t.pinned) t.node.open = false; }
   t.summary.textContent = '▸ thought for ' + t.secs + 's · ' + words(t.body.data) + ' words';
   return true;
@@ -1961,7 +2186,7 @@ function mdInline(parent, s){
   if(at < s.length) parent.appendChild(document.createTextNode(s.slice(at)));
 }
 function md(text){
-  const root = el('div', 'md'), lines = reveal(String(text || ''), true).split('\n');
+  const root = el('div', 'md'), lines = reveal(String(text || ''), true, true).split('\n');
   let list = null, kind = '', para = null, quote = null;
   const flat = () => { list = null; kind = ''; para = null; quote = null; };
   for(let i = 0; i < lines.length; i++){
@@ -2005,7 +2230,7 @@ function md(text){
 // Every message carries an id of the page's own, echoed on the user.message
 // that records it, so matching never depends on the recorded text.
 const newCid = () => 'c-' + Array.from(crypto.getRandomValues(new Uint8Array(9)), x => x.toString(16).padStart(2, '0')).join('');
-function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', reveal(text, true)); b.text = text; b.cid = newCid(); return b; }
+function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', reveal(text, true, true)); b.text = text; b.cid = newCid(); return b; }
 function drawQueued(b){
   const old = b.querySelector('.qbar'); if(old) old.remove();
   const bar = el('div', 'qbar');
@@ -2085,8 +2310,10 @@ function render(ev){
   logEvent(ev, p);
   switch(ev.type){
   case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
-  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p), node = b || bubble('user', 'you', reveal(p.text || '', true)); add(node);
+  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p), node = b || bubble('user', 'you', reveal(p.text || '', true, true)); add(node);
     node.seq = ev.seq; if(!b) node.said = p.text || ''; lastUser = node;
+    if(p.secrets_withheld){ const n = String(p.secrets_withheld).split(',');
+      add(el('div', 'sys', 'Your message held the value of the stored secret' + (n.length > 1 ? 's ' : ' ') + visible(n.join(', ')) + '; it was not sent to the model, which got [secret:NAME] in its place.')); }
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
     // This page's own message means its run has started, whichever of the
@@ -2101,7 +2328,7 @@ function render(ev){
     follow(stick); break; }
   case 'agent.reasoning':
     if(thinkBlock){ endThinking(at, p.text || ''); thinkBlock = null; break; }
-    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', reveal(p.text || '', true))); add(d); }
+    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', reveal(p.text || '', true, true))); add(d); }
     break;
   case 'action.requested': {
     // The chat is the conversation with the agent: what the person did by
@@ -2112,7 +2339,7 @@ function render(ev){
     const d = el('details', 'call'), s = el('summary'); const subj = p.withheld ? p.withheld : subjectOf(p.tool, p.args);
     s.appendChild(el('span', 'tool', visible(p.tool || 'call'))); s.appendChild(el('span', 'subj', visible(subj))); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s);
-    const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0};
+    const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0, reason:p.reason, asked:!!p.requires_approval};
     // Arguments and output are drawn when the call is opened, so a session of
     // hundreds of calls keeps only their headers in the page.
     d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
@@ -2121,11 +2348,11 @@ function render(ev){
     if(p.requires_approval){ asks.set(p.call_id, {p, rid: ev.id, shown:false}); if(live) offerAsks(); }
     break; }
   case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
-    if(c){ c.node.appendChild(el('div', 'why', visible('allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')))); c.res.textContent = 'running…'; }
-    settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? reveal(c.tool) : 'tool')); break; }
+    if(c){ c.node.appendChild(el('div', 'why', visible('allowed · step ' + (p.step || '?') + byWhom(p) + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')))); c.res.textContent = 'running…'; }
+    answered(p, c, 'allowed' + byWhom(p) + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '')); if(live) waiting('Running ' + (c ? reveal(c.tool) : 'tool')); break; }
   case 'action.denied': { if(mineCalls.has(p.call_id)){ hawkSoon(); break; } const c = calls.get(p.call_id);
-    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + ' — ' + (p.reason || '')))); }
-    settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
+    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + byWhom(p) + ' — ' + (p.reason || '')))); }
+    answered(p, c, 'denied' + byWhom(p) + (p.reason ? ' — ' + p.reason : '')); hawkSoon(); break; }
   case 'observation': {
     const mine = mineCalls.has(p.call_id), c = mine ? null : calls.get(p.call_id); const body = p.content || '';
     if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
@@ -2144,7 +2371,7 @@ function render(ev){
   case 'context.offloaded': if(p.withheld){ add(el('div', 'sys', 'old results offloaded to the record · ' + visible(p.withheld))); break; }
     add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
-  case 'conversation.forked': add(el('div', 'sys', p.withheld ? 'forked · ' + visible(p.withheld) : 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
+  case 'conversation.forked': add(el('div', 'sys', p.withheld ? 'forked · ' + visible(p.withheld) : (p.through_seq > 0 ? 'forked at step ' + p.through_seq : 'forked before the first message') + ' · the steps after it, above, were abandoned'));
     if(lastUser && lastUser.seq > p.through_seq){ lastUser = null; offerEdit(); } break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   // Task names, results and reasons are the model's or a command's text: shown, never obeyed (bidi, zero-width).
@@ -2180,6 +2407,8 @@ function render(ev){
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
     if(b && !b.delivered){ const kept = !$('q').value || $('q').value === b.text;
       failed(b, (p.reason || 'the run ended first') + (kept ? '; its text is back in the message box' : ''), 'Not delivered'); }
+    // A message this page did not send, such as a session's first, is said too.
+    else if(!b && p.reason) add(el('div', 'sys', 'Not sent: ' + visible(p.reason)));
     break; }
   // The run's own asks end with it; a background subagent's ask outlives the
   // run while background work is owed, settled by its outcome or the closing end.
@@ -2332,6 +2561,26 @@ function focusSoon(){
   focusTimer = setTimeout(() => { const open = [...tx().querySelectorAll('.ask')].filter(a => a.querySelector('.btns'));
     if(open.length) open[open.length - 1].querySelector('.btns').firstChild.focus({preventScroll:true}); }, 100);
 }
+// byWhom names who decided a call: the person who answered, or the rule or scope that did.
+const byWhom = p => p.by === 'reviewer' || (!p.by && p.step === 'reviewer') ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '';
+// answered settles a call's prompt from the record. A call a session scope allowed was never
+// put to anyone, so a prompt drawn for it goes; one a person answered keeps who and what
+// scope, and a replay draws it settled, as it was decided.
+function answered(p, c, how){
+  if(p.by === 'session-scope'){
+    asks.delete(p.call_id);
+    for(const a of tx().querySelectorAll('.ask')) if(a.dataset.call === p.call_id && a.querySelector('.btns')) a.remove();
+    return;
+  }
+  const person = p.by === 'reviewer' || (!p.by && p.step === 'reviewer');
+  if(person && c && c.asked && ![...tx().querySelectorAll('.ask')].some(x => x.dataset.call === p.call_id)){
+    asks.delete(p.call_id);
+    const a = el('div', 'ask'); a.dataset.call = p.call_id;
+    a.appendChild(el('b', '', 'Allow ' + visible(c.tool || 'call') + '?')); a.appendChild(el('p', '', visible(c.subject || '') + (c.reason ? '  —  ' + visible(c.reason) : '')));
+    a.appendChild(el('div', 'done', visible(how))); add(a); return;
+  }
+  settleAsk(p.call_id, visible(how));
+}
 function settleAsk(callID, how){
   asks.delete(callID);
   for(const a of tx().querySelectorAll('.ask')){ if(a.dataset.call !== callID) continue;
@@ -2356,7 +2605,7 @@ function makeTerm(name, kind){
     convertEol:kind === 'agent', scrollback:5000, theme:isDark() ? TERM_DARK : TERM_LIGHT, allowTransparency:true, disableStdin:kind === 'agent'});
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(pane);
   // Sized before the shell starts, so it is told the right width from the first prompt.
-  if($('p-terminal').offsetHeight) try{ fit.fit(); }catch{}
+  if(termRoom()) try{ fit.fit(); }catch{}
   const t = {id:++termSeq, name, kind, pane, term, fit, session:current, run:null, es:null, mode:null, dead:false,
     line:'', queue:[], hist:[], at:0, cwd:'.', q:'', sending:false, watch:false};
   terms.push(t);
@@ -2393,7 +2642,13 @@ const shellsKey = id => 'abhed.ide.shells.' + id;
 // Streams closing as the page unloads must not read as shells that ended.
 let leaving = false;
 addEventListener('beforeunload', () => { leaving = true; });
-addEventListener('pagehide', () => { leaving = true; });
+// A closing page tells the server it no longer watches its shells: they end
+// a minute later unless a page reattaches, as a reload does.
+addEventListener('pagehide', () => {
+  leaving = true;
+  for(const t of terms) if(t.kind === 'shell' && t.mode === 'shell' && t.run)
+    fetch(ptyURL(t, '/' + t.run + '/detach'), {method:'POST', keepalive:true, credentials:'same-origin'}).catch(() => {});
+});
 function saveShells(id){
   id = id || current;
   if(!id || leaving) return;
@@ -2423,8 +2678,11 @@ function closeTerm(t){
   drawTermTabs(); saveShells(t.session); if(!terms.length) noTerminal();
 }
 function closeAllTerms(){ [...terms].forEach(closeTerm); }
+// termRoom reports whether the terminal panel is on screen with room to fit to: fitted while
+// hidden or squeezed, a terminal shrinks to xterm's two-column minimum and the shell is told so.
+const termRoom = () => { const b = $('tpanes'); return $('p-terminal').offsetHeight > 0 && b.clientWidth >= 120 && b.clientHeight >= 40; };
 function fitActive(){
-  const t = activeTerm; if(!t || !$('p-terminal').offsetHeight) return;
+  const t = activeTerm; if(!t || !termRoom()) return;
   try{ t.fit.fit(); }catch{}
   if(t.run && t.session === current) api(ptyURL(t, '/' + t.run + '/resize'), {method:'POST', body: JSON.stringify({cols:t.term.cols, rows:t.term.rows})}).catch(() => {});
 }
@@ -2438,7 +2696,15 @@ function noTerminal(why){
 }
 async function newTerminal(opts){
   if(!current){ await createWorkbench(); return; }
-  const saved = opts && opts.reattach ? savedShells(current) : [];
+  let saved = opts && opts.reattach ? savedShells(current) : [];
+  // Opening a session adopts your own shells on it that no page is watching:
+  // left by a closed tab, or opened in another browser.
+  if(!saved.length && opts && opts.adopt){
+    const id = current; let open = [];
+    try{ open = await api('/v1/sessions/' + id + '/pty'); }catch{}
+    if(id !== current) return;
+    saved = (open || []).map((o, i) => ({id:o.id, name:'shell ' + (i + 1), info:{isolation:o.isolation, workspace:o.workspace}}));
+  }
   if(saved.length){
     for(const s of saved){
       const t = makeTerm(s.name, 'shell'); t.mode = 'shell'; t.info = s.info;
@@ -2451,7 +2717,8 @@ async function newTerminal(opts){
   const t = makeTerm('shell ' + n, 'shell'); setPanel('terminal'); await startTerm(t, opts || {});
 }
 $('t-new').addEventListener('click', () => newTerminal());
-$('t-kill').addEventListener('click', () => { const t = activeTerm; if(t && t.run) fetch(ptyURL(t, '/' + t.run), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); });
+// The button disables itself once the shell ends; focus goes to the terminal, where Enter opens a new one.
+$('t-kill').addEventListener('click', () => { const t = activeTerm; if(t && t.run) fetch(ptyURL(t, '/' + t.run), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); if(t) t.term.focus(); });
 
 // The banner says what contains the shell, before anything is typed into it.
 function banner(t, r, note){
@@ -2484,7 +2751,7 @@ async function startTerm(t, opts){
 // reattach: the shell was opened before a reload; if it has gone, a new one starts.
 function attach(t, id, reattach){
   t.run = id; drawTermTabs(); if(t === activeTerm) fitActive();
-  const es = new EventSource(ptyURL(t, '/' + id)); t.es = es; let opened = 0;
+  const es = new StreamSource(ptyURL(t, '/' + id)); t.es = es; let opened = 0;
   // A reconnect is sent the recent output again, so the screen starts over.
   es.onopen = () => { if(opened++ && t.mode === 'shell') t.term.reset(); };
   es.addEventListener('out', e => { t.term.write(bytesOf(e.data)); if(t.watch) treeSoon(); });
@@ -2545,7 +2812,9 @@ function linesData(t, d){
   // ended are keys for a program, never text for the line.
   d = d.replace(keySeq, '').replace(/\r\n/g, '\r').replace(/\n/g, '\r');
   let quiet = t.busy || t.queue.length > 0, dropped = 0;
-  for(const ch of d){
+  for(let ch of d){
+    // A pasted Tab separates words as a space does in bash; dropped, it would join them.
+    if(ch === '\t') ch = ' ';
     if(ch === '\r'){
       const cmd = t.line.trim(); t.line = '';
       if(!quiet) t.term.write('\r\n');
@@ -2854,12 +3123,16 @@ async function send(){
   if(busy){ const stick = nearBottom(); if(qbox.parentNode !== tx()) tx().appendChild(qbox); qbox.appendChild(b); follow(stick); }
   else{ add(b); waiting('Thinking'); }
   drawQueued(b);
-  let forked = false;
+  let forked = false, refused = false;
   try{
     const files = await flushUploads(id); b.files = files;
     b.prompt = withFiles(withNotes(await withMentions(typed), notes), files);
     if(id){
-      if(fork){ await api('/v1/sessions/' + id + '/fork', {method:'POST', body: JSON.stringify({before_seq: fork.seq})}); forked = true; }
+      if(fork){
+        try{ await api('/v1/sessions/' + id + '/fork', {method:'POST', body: JSON.stringify({before_seq: fork.seq})}); }
+        catch(e){ refused = e.status >= 400 && e.status < 500; throw e; }
+        forked = true;
+      }
       // A workbench session is named by its first message.
       const s = sessionList.find(x => x.id === id);
       if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = sessionLabel(s); }
@@ -2885,11 +3158,14 @@ async function send(){
   }catch(e){
     if(current !== id) return;
     // Forked and not sent: the text goes back in the box and the note says the
-    // conversation now ends before the edited message. Not forked: the next send forks.
-    if(fork && !forked) editing = fork;
+    // conversation now ends before the edited message. Not forked: the next send
+    // forks, unless the server refused the fork, which leaves edit mode.
+    if(fork && !forked && !refused) editing = fork;
+    if(refused) $('hint').textContent = live ? 'Enter queues it · Esc twice stops the run' : 'Enter sends · Shift+Enter for a new line';
     // Comments not delivered go back above the box, ahead of any written since.
     if(notes.length && !b.delivered){ reviewNotes = [...notes, ...reviewNotes]; drawNotes(); }
-    failed(b, visible(e.message), forked ? 'Not sent, though the conversation was taken back to before the message you edited; send it again' : undefined);
+    failed(b, visible(e.message), forked ? 'Not sent, though the conversation was taken back to before the message you edited; send it again'
+      : refused ? 'Not sent, and the conversation was not taken back; sending again adds it after the last message' : undefined);
     if(!busy) waiting(false);
   }
 }
@@ -2924,6 +3200,7 @@ function palItems(){
   const out = [], mod = isMac ? '⌘' : 'Ctrl+';
   SLASH.forEach(s => out.push({k:'command', l:s[1], h:s[0], run:s[2]}));
   out.push({k:'command', l:'Toggle the side panel', h:mod + 'B', run:() => $('app').classList.toggle('noside')});
+  out.push({k:'command', l:'Open the documentation', h:'', run:() => window.open('/docs', '_blank', 'noopener')});
   out.push({k:'command', l:'Toggle the terminal panel', h:mod + 'J', run:() => $('app').classList.toggle('nopanel')});
   out.push({k:'command', l:'Toggle the terminal', h:'Ctrl+`', run:toggleTerminal});
   out.push({k:'command', l:'Switch light / dark', h:'', run:() => $('theme').click()});
@@ -3034,13 +3311,7 @@ function postSignOut(e){
   signOut();
 }
 // A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
-async function signOut(){
-  try{
-    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
-    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
-  }catch{}
-  location.href = '/logout';
-}
+/*{{SIGN_OUT}}*/
 $('signout').addEventListener('click', postSignOut);
 $('switchuser').addEventListener('click', postSignOut);
 
@@ -3050,6 +3321,7 @@ $('switchuser').addEventListener('click', postSignOut);
   try{ caps = await api('/v1/capabilities'); setConn(true); }
   catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + visible(e.message))); return; }
   stat.window = caps.model.context_window; drawCaps(); drawNotify();
+  api('/v1/overview').then(o => { if(o && o.workspace_config){ wsConf = o.workspace_config; drawCaps(); } }).catch(() => {});
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');
   if(sb.tier === 'none') sbox.className = 'off';

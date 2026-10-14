@@ -8,9 +8,8 @@ import (
 	"strings"
 )
 
-// Spec is what a command may reach. Every path is absolute. A grant covers
-// the path and everything beneath it; a grant that does not exist when the
-// ruleset is applied is left out, which only narrows the domain.
+// Spec is what a command may reach. A grant covers all beneath it; one missing
+// at apply time is left out, which only narrows.
 type Spec struct {
 	// Exec are folders and files to read and run programs from: the system
 	// folders.
@@ -28,11 +27,18 @@ type Spec struct {
 	Deny []string `json:"deny,omitempty"`
 	// Within are Exec grants allowed to sit inside a denied path: a part of
 	// Abhed's state a command may read and run but never write, such as the
-	// skills in ~/.abhed/skills. Each must also be listed in Exec.
+	// skills in ~/.abhed/skills.
 	Within []string `json:"within,omitempty"`
 	// DenyTCP refuses every TCP connect and bind, for when the network is
-	// off. It needs ABI 4 (Linux 6.7) or later.
+	// off. It needs ABI 4 (Linux 6.7) or later, and does not cover MPTCP.
 	DenyTCP bool `json:"deny_tcp,omitempty"`
+	// ConnectTCP are the ports TCP may still connect to with DenyTCP, such
+	// as the egress proxy's: on any address, since Landlock filters ports only.
+	ConnectTCP []uint16 `json:"connect_tcp,omitempty"`
+	// Root lets uid 0 be confined: the caller has dropped every capability,
+	// emptied the bounding set and locked the securebits, so root cannot leave
+	// the domain by them.
+	Root bool `json:"root,omitempty"`
 }
 
 type grantKind struct {
@@ -46,10 +52,8 @@ func (s Spec) grants() []grantKind {
 	}
 }
 
-// Validate refuses a spec that Landlock cannot apply as written: a relative
-// or empty path, a denied path under any grant, or a grant inside denied
-// state. It checks paths as written and with symbolic links resolved, so a
-// link cannot hide the overlap. It needs no kernel support.
+// Validate refuses a spec that Landlock cannot apply as written: a relative or
+// empty path, a denied path under any grant, or a grant inside denied state.
 func (s Spec) Validate() error {
 	for _, g := range append(s.grants(), grantKind{"deny", s.Deny}) {
 		for _, p := range g.paths {
@@ -101,9 +105,8 @@ func within(p, base string) bool {
 	return p == base || base == "/" || strings.HasPrefix(p, base+"/")
 }
 
-// resolve follows symbolic links in p as far as the path exists, keeping the
-// rest as written, so a denied path not yet created still compares by where
-// it would land.
+// resolve follows links in p as far as it exists, keeping the rest, so a denied
+// path not yet created compares by where it would land.
 func resolve(p string) string {
 	p = path.Clean(p)
 	rest := ""

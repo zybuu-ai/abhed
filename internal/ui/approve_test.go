@@ -68,6 +68,20 @@ func TestApproveEOFRefuses(t *testing.T) {
 	}
 }
 
+// Input ending is no one's answer: the record says the system refused it, not a person.
+func TestApproveEOFIsNotAPersonsNo(t *testing.T) {
+	for _, in := range []string{"", "1\n"} { // the second runs out at the destructive confirm
+		ctx, ans := agent.ExpectAnswer(context.Background())
+		a := newTestApprover(strings.NewReader(in))
+		if got, _ := a.Approve(ctx, "bash", json.RawMessage(`{"command":"rm -rf x"}`), policy.Result{Step: "destructive"}); got {
+			t.Fatalf("in %q: accepted", in)
+		}
+		if ans.By != agent.BySystem || ans.Reason != "input ended" {
+			t.Fatalf("in %q: answer %+v, want the system's input ended", in, *ans)
+		}
+	}
+}
+
 // TestApproveSingleKey covers the path Prepare installs: the answer is read
 // through it, and the thinking indicator is paused and resumed exactly once
 // around the prompt.

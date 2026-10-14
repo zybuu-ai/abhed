@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -252,6 +255,28 @@ func TestRPCSteerRightAfterStartIsKept(t *testing.T) {
 	}
 }
 
+// A steer without text in "prompt", such as one sent with "text", is refused
+// naming the field, not answered steered with nothing in it.
+func TestRPCSteerWithoutPromptIsRefused(t *testing.T) {
+	m := &globModel{text: true}
+	ws := rpcWorkspace(t, m.serve(t).URL, "")
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"id":"1"`)
+	for i, line := range []string{`{"id":"2","method":"steer","text":"Also count lines."}`, `{"id":"3","method":"steer","prompt":"  "}`} {
+		s.send(line)
+		id := fmt.Sprintf(`"id":"%d"`, i+2)
+		if out := s.waitFor(t, id); !strings.Contains(out, `"type":"error"`) || !strings.Contains(out, `\"prompt\"`) {
+			t.Fatalf("%s: want an error naming the prompt field:\n%s", line, out)
+		}
+	}
+	s.send(`{"id":"4","method":"prompt","prompt":"go"}`)
+	s.waitFor(t, `"id":"4"`)
+	if reqs := m.requests(); len(reqs) == 0 || strings.Contains(reqs[0], "count lines") {
+		t.Fatal("the refused steer reached the model")
+	}
+}
+
 // A steer read after a second start, still queued behind a prompt, goes to
 // that new session; it once went to the old one, which the start then closed.
 func TestRPCSteerAfterAQueuedStartGoesToTheNewSession(t *testing.T) {
@@ -324,5 +349,174 @@ func TestRPCRefusesRequestsBeyondTheCap(t *testing.T) {
 	}
 	if out := s.waitFor(t, `"id":"u256"`); !strings.Contains(out, "requests are already waiting") {
 		t.Fatalf("the request past the cap was not refused:\n%s", out)
+	}
+}
+
+// A stored secret's value in a prompt or a steer reaches the model as
+// [secret:NAME]; the user.message event names it for the caller to say so.
+func TestRPCWithholdsATypedSecret(t *testing.T) {
+	steered, inFirst := make(chan struct{}), make(chan struct{})
+	m := &globModel{}
+	m.hold = func(n int) {
+		if n == 1 {
+			close(inFirst)
+			select {
+			case <-steered:
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}
+	ws := rpcWorkspace(t, m.serve(t).URL, `, "limits": {"max_turns": 2}`)
+	// After rpcWorkspace, which gives the test a home of its own.
+	t.Setenv(secrets.EnvFile, "")
+	for name, value := range map[string]string{"API_TOKEN": "tok-9f8e7d-rpc", "DB_PASS": "hunter2-hunter2-rpc"} {
+		if err := secrets.Default().Set(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"use tok-9f8e7d-rpc"}`)
+	<-inFirst
+	s.send(`{"id":"3","method":"steer","prompt":"and hunter2-hunter2-rpc"}`)
+	out := s.waitFor(t, `"type":"steered"`)
+	close(steered)
+	out += s.waitFor(t, `"id":"2"`)
+	reqs := m.requests()
+	if len(reqs) < 2 {
+		t.Fatalf("%d model requests", len(reqs))
+	}
+	for _, r := range reqs {
+		if strings.Contains(r, "tok-9f8e7d-rpc") || strings.Contains(r, "hunter2-hunter2-rpc") {
+			t.Fatalf("the model was sent a stored value: %s", r)
+		}
+	}
+	if !strings.Contains(reqs[1], "use [secret:API_TOKEN]") || !strings.Contains(reqs[1], "and [secret:DB_PASS]") {
+		t.Fatalf("the model was not sent the placeholders: %s", reqs[1])
+	}
+	for _, want := range []string{`"secrets_withheld":"API_TOKEN"`, `"secrets_withheld":"DB_PASS"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no event with %s:\n%s", want, out)
+		}
+	}
+}
+
+// A prompt's run goes on for a steer queued as it ended when it ended
+// cleanly or a hook refused its own message, as the terminal's does.
+func TestRPCRunsOnForAQueuedSteer(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		err    error
+		queued int
+		want   bool
+	}{
+		{"completed", nil, 1, true},
+		{"nothing queued", nil, 0, false},
+		{"message refused by a hook", &abhed.EndedError{Reason: agent.TermPromptRefused}, 1, true},
+		{"out of turns", &abhed.EndedError{Reason: agent.TermMaxTurns}, 1, false},
+		{"interrupted", &abhed.EndedError{Reason: agent.TermUserInterrupt}, 1, false},
+		{"failed", errors.New("model down"), 1, false},
+	} {
+		if got := rpcRunsOn(c.err, c.queued); got != c.want {
+			t.Errorf("%s: runs on %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A user_prompt_submit hook refuses an rpc prompt: the model is never sent
+// it, and the answer says the run ended refused.
+func TestRPCPromptHookRefusesAPrompt(t *testing.T) {
+	m := &globModel{text: true}
+	ws := rpcWorkspace(t, m.serve(t).URL, `, "extensions":[{"name":"gate","command":"bash","args":[`+
+		jsonQuote(writeScript(t, gatekeeper))+`],"events":["user_prompt_submit"]}]`)
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"the forbidden thing"}`)
+	if out := s.waitFor(t, `"id":"2"`); !strings.Contains(out, "ended as prompt_refused") {
+		t.Fatalf("the refused prompt's answer:\n%s", out)
+	}
+	if n := len(m.requests()); n != 0 {
+		t.Fatalf("the model was sent %d requests; the refused prompt must not be one", n)
+	}
+}
+
+// A -p run's prompt a user_prompt_submit hook refuses is never sent, and the
+// person is told why.
+func TestHeadlessPromptHookRefusesThePrompt(t *testing.T) {
+	g := newSessRig(t)
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + g.url +
+		`","model":"m","context_window":8192}}},"extensions":[{"name":"gate","command":"bash","args":[` +
+		jsonQuote(writeScript(t, gatekeeper)) + `],"events":["user_prompt_submit"]}]}`
+	if err := os.WriteFile(filepath.Join(g.ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := g.cmd("-p", "the forbidden thing").CombinedOutput()
+	g.mu.Lock()
+	n := len(g.bodies)
+	g.mu.Unlock()
+	if n != 0 || !strings.Contains(string(out), "your message was not sent: that topic is off limits") {
+		t.Fatalf("%d model requests; output:\n%s", n, out)
+	}
+}
+
+// A steer that arrives while the hook is judging the prompt is answered, and
+// the prompt's own refusal is not lost: the reply is the refusal error,
+// carrying the steer's answer.
+func TestRPCKeepsTheRefusalWhenASteerArrivesDuringIt(t *testing.T) {
+	m := &globModel{text: true}
+	slowGate := `#!/bin/bash
+while IFS= read -r line; do
+  case "$line" in
+    *'"event":"user_prompt_submit"'*forbidden*) sleep 1; echo '{"block":true,"reason":"that topic is off limits"}' ;;
+    *) echo '{}' ;;
+  esac
+done
+`
+	ws := rpcWorkspace(t, m.serve(t).URL, `, "extensions":[{"name":"gate","command":"bash","args":[`+
+		jsonQuote(writeScript(t, slowGate))+`],"events":["user_prompt_submit"]}]`)
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"the forbidden thing"}`)
+	time.Sleep(300 * time.Millisecond) // the hook is judging the prompt
+	s.send(`{"id":"3","method":"steer","prompt":"a fair question"}`)
+	out := s.waitFor(t, `"id":"2"`)
+	if !strings.Contains(out, `"type":"steered"`) {
+		t.Skipf("the steer did not arrive while the prompt ran, so this checks nothing:\n%s", out)
+	}
+	last := out[strings.LastIndex(out, `{"id":"2"`):]
+	if !strings.Contains(last, `"type":"error"`) || !strings.Contains(last, "prompt_refused") || !strings.Contains(last, `"answer":"done"`) {
+		t.Fatalf("the prompt's reply: %s", last)
+	}
+}
+
+// A prompt's refusal is said first whatever the steers run after it end as.
+func TestRPCKeepsTheRefusalFirst(t *testing.T) {
+	refused := &abhed.EndedError{Reason: agent.TermPromptRefused, Detail: "off limits"}
+	turns := &abhed.EndedError{Reason: agent.TermMaxTurns}
+	for _, c := range []struct {
+		name         string
+		refused, err error
+		want         []string
+	}{
+		{"not refused", nil, turns, []string{"max_turns"}},
+		{"steers completed", refused, nil, []string{"prompt_refused: off limits"}},
+		{"steers refused too", refused, &abhed.EndedError{Reason: agent.TermPromptRefused}, []string{"prompt_refused: off limits"}},
+		{"steers out of turns", refused, turns, []string{"prompt_refused: off limits", "max_turns"}},
+	} {
+		got := keepRefusal(c.refused, c.err)
+		for _, w := range c.want {
+			if got == nil || !strings.Contains(got.Error(), w) {
+				t.Errorf("%s: %v lacks %q", c.name, got, w)
+			}
+		}
+		if c.refused != nil {
+			var ended *abhed.EndedError
+			if !errors.As(got, &ended) || ended.Reason != agent.TermPromptRefused || !strings.HasPrefix(got.Error(), refused.Error()) {
+				t.Errorf("%s: the refusal is not first: %v", c.name, got)
+			}
+		}
 	}
 }

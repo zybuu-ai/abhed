@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
 	"github.com/zybuu-ai/abhed/internal/extension"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -144,7 +146,10 @@ type Options struct {
 	// Warn receives what the tool set skipped or found unsafe as it was
 	// built: an MCP server or extension that did not start, a cluster or
 	// host that skips verification; and, at Close, a fence that found state
-	// planted in the workspace or could not list it. Nil discards it.
+	// planted in the workspace or could not list it. Nil discards it. When
+	// set, it also takes the configuration's warnings (an unknown key, a set
+	// aside setting, a rule that never matches), which otherwise go to stderr;
+	// a function that does nothing silences them.
 	Warn func(format string, args ...any)
 
 	// ConfiguredTools gives the agent the tool set the CLI runs with, as the
@@ -227,7 +232,9 @@ type Agent struct {
 	// sandbox is the backend New built for commands, closed with the agent;
 	// warn is Options.Warn, which hears what closing it found.
 	sandbox sandbox.Sandbox
-	warn    func(format string, args ...any)
+	// unconfine undoes the registration that runs Abhed's own git inside it.
+	unconfine func()
+	warn      func(format string, args ...any)
 	// running counts the runs in progress, under forkMu: Fork holds it while
 	// it forks and refuses while a run is in progress, and a run starting
 	// meanwhile waits for the fork to finish.
@@ -243,29 +250,50 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: Workspace is required")
 	}
 
+	// The configuration's warnings go to Warn when it is set, else to stderr.
+	var cfgWarn func(string)
+	if opts.Warn != nil {
+		cfgWarn = func(s string) { opts.Warn("abhed: warning: %s", s) }
+	}
 	// The managed configuration applies with or without a config file.
-	load := config.LoadManaged
+	load := func() (config.Config, error) { return config.LoadManagedWith(config.LoadOptions{Warn: cfgWarn}) }
 	if opts.ConfigDir != "" {
 		load = func() (config.Config, error) {
-			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust})
+			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust, Warn: cfgWarn})
 		}
 	}
 	cfg, err := load()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
-	if keys := untrustedModelKeys(cfg.Workspace); len(keys) > 0 && opts.Provider == nil &&
+	keys := untrustedModelKeys(cfg.Workspace)
+	if len(keys) > 0 && opts.Provider == nil && opts.AllowDefaultModel {
+		// Not silently: the person expects the workspace's model.
+		msg := fmt.Sprintf("the workspace configuration %s sets %s, which waits for trust; this session runs on %s instead",
+			config.Printable(cfg.Workspace.File), strings.Join(keys, ", "), config.Printable(cfg.Model.Default))
+		if cfgWarn != nil {
+			cfgWarn(msg)
+		} else {
+			fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", msg)
+		}
+	}
+	if len(keys) > 0 && opts.Provider == nil &&
 		opts.WorkspaceTrust == config.TrustAsStored && !opts.AllowDefaultModel {
 		return nil, fmt.Errorf("abhed: %w (%s in %s): trust it with `abhed trust grant`, or set Options.WorkspaceTrust, "+
 			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
 		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
-		Allow: opts.Allow, Deny: opts.Deny,
+		Allow: opts.Allow, Deny: opts.Deny, Warn: cfgWarn,
 	}); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 	if p := opts.Provider; p != nil {
+		// A managed model.default pins the model; an endpoint the caller
+		// names is not it.
+		if err := cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+			return nil, fmt.Errorf("abhed: Options.Provider: %w", err)
+		}
 		cfg.Model.Default = "embedded"
 		cfg.Model.Providers = map[string]config.ProviderConfig{"embedded": {
 			Type: p.Type, BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
@@ -310,6 +338,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
+	pol.Cwd = sess.WorkDir
+	pol.StartupBaseline = config.StartupBaseline()
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
 		return nil, fmt.Errorf("abhed: deny rule: %w", err)
 	}
@@ -338,21 +368,24 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// A chosen tier confines commands too: none runs unconfined in its place.
 	var fence *sandbox.Fence
 	var sbox sandbox.Sandbox
+	unconfine := func() {}
 	if opts.Sandbox || cfg.ManagedSets("sandbox") || cfg.Sandbox.Tier != "" {
 		sb, err := sandboxconfig.Build(cfg, opts.Workspace, stateRoots...)
 		if err != nil {
 			return nil, fmt.Errorf("abhed: %w", err)
 		}
 		sbox = sb
-		bash.Sandbox = sb.Command
+		unconfine = hostgit.Register(opts.Workspace, sb)
+		bash.Sandbox = hostgit.Broker(opts.Workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command)
 		bash.Isolation = sandboxconfig.Isolation(cfg, string(sb.Tier()))
+		bash.Home = sandbox.HomeFunc(sb)
 		fence, _ = sb.(*sandbox.Fence)
 		if in, ok := sb.(sandbox.Interactive); ok {
 			bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
 		}
 	}
 	// A users or secrets file kept outside .abhed is state all the same.
-	for _, p := range sandboxconfig.StatePaths(cfg, opts.Workspace) {
+	for _, p := range sandboxconfig.ToolStatePaths(cfg, opts.Workspace) {
 		tools.AddStatePath(p)
 	}
 
@@ -369,6 +402,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	var release func() // lets go of the record once recordFor has opened it
 	fail := func(err error) (*Agent, error) {
 		set.Close()
+		unconfine()
 		_ = sandbox.Close(sbox)
 		if release != nil {
 			release()
@@ -456,6 +490,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
+	toolset.Hook(loop, set.Extensions, func(s string, _ bool) {
+		if opts.Warn != nil {
+			opts.Warn("%s", s)
+		}
+	})
 	loop.Budget = budget
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
@@ -484,7 +523,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		fence.SetRecord(agent.SandboxRecord(rec))
 	}
 	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
-		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, warn: opts.Warn}
+		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, unconfine: unconfine, warn: opts.Warn}
 	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
@@ -492,12 +531,22 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	return a, nil
 }
 
-// Run sends a prompt and returns the agent's final message.
+// Run sends a prompt and returns the agent's final message. A prompt a
+// user_prompt_submit hook refuses ends with an *EndedError whose Reason is
+// prompt_refused and whose Detail says why; when messages queued before it
+// were answered instead, the returned message is that answer.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 	defer a.startRun()()
 	reason, err := a.loop.Run(ctx, prompt)
 	if err != nil {
 		return "", err
+	}
+	if why := a.loop.RefusedPrompt(); why != "" {
+		answer := ""
+		if reason != agent.TermPromptRefused {
+			answer = a.lastMessage() // the answer to messages queued before it
+		}
+		return answer, &EndedError{Reason: agent.TermPromptRefused, Detail: why}
 	}
 	if reason != agent.TermCompleted {
 		return a.lastMessage(), &EndedError{Reason: reason}
@@ -507,9 +556,19 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 
 // EndedError is a run that ended for another reason than completing its
 // work, such as the turn limit; Reason is the terminal reason recorded.
-type EndedError struct{ Reason TerminalReason }
+type EndedError struct {
+	Reason TerminalReason
+	// Detail says more where there is more to say, such as why a hook
+	// refused the prompt.
+	Detail string
+}
 
-func (e *EndedError) Error() string { return fmt.Sprintf("abhed: ended as %s", e.Reason) }
+func (e *EndedError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("abhed: ended as %s: %s", e.Reason, e.Detail)
+	}
+	return fmt.Sprintf("abhed: ended as %s", e.Reason)
+}
 
 // RunJSON runs a prompt whose answer must be a JSON value matching schema,
 // and decodes it into out.
@@ -584,15 +643,20 @@ func (a *Agent) Queued() int { return len(a.loop.Queued()) }
 
 // RunQueued continues the conversation with only the queued steering
 // messages, for one that arrived as the last run ended. With none it does
-// nothing and returns the last message.
+// nothing and returns the last message. When a user_prompt_submit hook
+// refuses every queued message, they are dropped, no model is called, and it
+// returns an *EndedError with Reason prompt_refused.
 func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 	defer a.startRun()()
 	reason, err := a.loop.RunQueued(ctx)
 	if err != nil {
 		return "", err
 	}
+	if reason == agent.TermPromptRefused {
+		return "", &EndedError{Reason: reason} // nothing was answered
+	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+		return a.lastMessage(), &EndedError{Reason: reason}
 	}
 	return a.lastMessage(), nil
 }
@@ -615,8 +679,8 @@ func (a *Agent) Usage() Usage { return a.loop.Usage() }
 // steps after throughSeq stay in the record but leave the conversation (see
 // Live), and it refuses a step past the end or one an earlier fork abandoned.
 // It returns ErrForkDuringRun while Run, Continue, RunJSON or RunStructured is
-// in progress: a fork rewrites the conversation and ends its logins, which
-// must not happen under a turn. A run started while a fork is under way
+// in progress: a fork rewrites the conversation and ends the logins made
+// after its step, which must not happen under a turn. A run started while a fork is under way
 // waits for it.
 func (a *Agent) Fork(throughSeq int64) error {
 	a.forkMu.Lock()
@@ -624,7 +688,7 @@ func (a *Agent) Fork(throughSeq int64) error {
 	if a.running > 0 {
 		return ErrForkDuringRun
 	}
-	_, err := a.loop.ForkTo(a.Events(), throughSeq)
+	_, _, err := a.loop.ForkTo(a.Events(), throughSeq)
 	return err
 }
 
@@ -649,8 +713,12 @@ var ErrForkDuringRun = errors.New("abhed: cannot fork while a run is in progress
 func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) }
 
 // SetModel swaps the provider mid-conversation, keeping the history. A switch
-// the record refuses is not made.
+// the record refuses is not made, nor one a managed model.default pins away
+// from: an endpoint named here is not the managed model.
 func (a *Agent) SetModel(p Provider) error {
+	if err := a.cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+		return fmt.Errorf("abhed: SetModel: %w", err)
+	}
 	cfg := config.ProviderConfig{
 		Type: p.Type, BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
 		ContextWindow: p.ContextWindow,
@@ -692,6 +760,9 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	if a.unconfine != nil {
+		a.unconfine()
+	}
 	// The fence closes before the record is released, so state it finds
 	// planted then is recorded; its error goes to Warn.
 	if a.sandbox != nil {

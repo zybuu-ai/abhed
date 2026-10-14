@@ -3,11 +3,13 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -206,7 +209,7 @@ const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => tru
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
 const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {}, loadDownloads = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
-const requestAnimationFrame = f => f(), idleTurns = new Map();
+const requestAnimationFrame = f => f(), idleTurns = new Map(), setConn = () => {};
 // api answers the session list from __sessions, after the next of __delays;
 // a route given to __defer answers when the test resolves it.
 let __sessions = [], __delays = []; const __pending = {};
@@ -262,6 +265,7 @@ globalThis.fetch = async url => {
 class EventSource { constructor(url){ this.url = url; this.readyState = 0; __streams.push(this); }
   close(){ this.readyState = 2; } addEventListener(){} }
 EventSource.CLOSED = 2;
+const StreamSource = EventSource;
 `
 	if out, err := runConsoleCases(t, "ide-conn", harness, "ide_conn_cases.mjs"); err != nil {
 		t.Fatalf("the connection indicator failed:\n%s", out)
@@ -541,6 +545,7 @@ const nodes = {}; const $ = id => nodes[id] || (nodes[id] = new El('div'));
 const EVT_MAX = 500; let evtN = 0, current = 's1';
 const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:{turns:1, tokens_in:1}, offloads:[],
   policy:{allowed:1, denied:0, by_step:{'default\u2066':1}}, findings:[{severity:'warn', title:'t\u200b', detail:';fs- mr\u202e', seq:3}]});
+let caps = null, wsConf = null; const wsConfigLine = () => null;
 `
 	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's panels failed:\n%s", out)
@@ -553,9 +558,9 @@ func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
 	for fn, wants := range map[string][]string{
 		"function drawTabs(){":             {"el('span', 'nm', reveal(t.label))", "b.title = reveal(", "'Close ' + reveal(t.label)"},
 		"function crumbs(path, meta){":     {"reveal(p)"},
-		"function flushStream(){":          {"appendData(reveal(pendThink, true))", "appendData(reveal(pendText, true))"},
+		"function flushStream(){":          {"appendData(reveal(pendThink, true, true))", "appendData(reveal(pendText, true, true))"},
 		"async function loadChanges(){":    {"reveal(f.path)"},
-		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true)"},
+		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true, true)"},
 	} {
 		start := strings.Index(ideHTML, fn)
 		if start < 0 {
@@ -716,12 +721,15 @@ globalThis.__opened = []; globalThis.__states = {}; globalThis.__tab = {}; globa
 globalThis.location = {href:'https://h/ide', search:''};
 globalThis.history = {state:null, replaceState(_, __, url){ const u = new URL(url, 'https://h'); location.href = u.href; location.search = u.search; }};
 globalThis.sessionStorage = {getItem: k => k in __tab ? __tab[k] : null, setItem(k, v){ __tab[k] = String(v); }, removeItem(k){ delete __tab[k]; }};
-const api = async path => {
+const api = async (path, opts) => {
+  if(path === '/v1/sessions' && opts && opts.method === 'POST') return __created;
   const m = /^\/v1\/sessions\/([^/]+)\/state$/.exec(path);
   if(m && __states[m[1]]) return __states[m[1]];
   const e = new Error('session not found'); e.status = 404; throw e;
 };
 const add = () => {}, editTitle = () => {}, sessionMenu = () => {}, deleteSession = () => {};
+const chosenProvider = () => 'p', modelOf = () => 'm', noTerminal = () => {};
+let __created = null;
 const openSession = id => { __opened.push(id); current = id; };
 const openDrop = () => { __drops++; $('sdrop').hidden = false; }, closeDrop = () => { $('sdrop').hidden = true; };
 $('sdrop').hidden = true; $('sfilter').value = ''; $('sdropq').value = '';
@@ -732,5 +740,135 @@ $('sdrop').hidden = true; $('sfilter').value = ''; $('sdropq').value = '';
 func TestIDESwitchesSessions(t *testing.T) {
 	if out, err := runConsoleCases(t, "ide-switch", ideSwitchHarness, "ide_switch_cases.mjs"); err != nil {
 		t.Fatalf("switching sessions failed:\n%s", out)
+	}
+}
+
+// Every pane of the workbench's grid is placed by column: with the side
+// panel hidden (⌘B) its tracks are empty, and auto-placement would move the
+// editor into them and the agent over the editor.
+func TestIDEGridPlacesEachPaneByColumn(t *testing.T) {
+	for id, col := range map[string]string{"act": "1", "side": "2", "split-side": "3", "center": "4", "split-agent": "5", "agent": "6"} {
+		if !strings.Contains(ideHTML, "#"+id+"{grid-column:"+col+"}") {
+			t.Errorf("#%s is not placed in column %s", id, col)
+		}
+	}
+	if !strings.Contains(ideHTML, `#app.noside[data-pane="side"] #side{display:flex}`) {
+		t.Error("on a phone a hidden side panel is drawn over the pane being shown")
+	}
+}
+
+// A terminal is fitted only when its panel is on screen with room: fitted
+// hidden or squeezed, it shrinks to two columns and the shell is told so.
+func TestIDETerminalFitsOnlyWithRoom(t *testing.T) {
+	for _, want := range []string{"  if(termRoom()) try{ fit.fit(); }catch{}", "const t = activeTerm; if(!t || !termRoom()) return;", "new ResizeObserver(() => fitActive()).observe($('tpanes'));"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("missing: %s", want)
+		}
+	}
+}
+
+// The Extensions view shows each extension's real status, never a fixed
+// "active"; Kill hands focus to the terminal, not to the button it disables.
+func TestIDEExtensionStatusAndKillFocus(t *testing.T) {
+	if strings.Contains(ideHTML, "el('span', 'pill on', 'active')") {
+		t.Error("every extension is labelled active")
+	}
+	if !strings.Contains(ideHTML, "if(e.status) top.appendChild(el('span', 'pill' + (e.status === 'running' ? ' on' : ''), visible(e.status)));") {
+		t.Error("the extension's status is not shown")
+	}
+	if !strings.Contains(ideHTML, "{method:'DELETE', credentials:'same-origin'}).catch(() => {}); if(t) t.term.focus(); });") {
+		t.Error("Kill leaves focus on itself")
+	}
+}
+
+// ideReviewHarness is what rejecting a change in the review calls out to.
+const ideReviewHarness = `let current = 's1';
+globalThis.__posted = []; globalThis.__saved = []; globalThis.__closed = [];
+const api = async (url, opts) => { __posted.push({url, body: JSON.parse(opts.body)}); return {}; };
+const save = async t => { __saved.push(t.path); };
+const closeTab = id => { __closed.push(id); }, changesSoon = () => {}, refreshDir = () => {}, crumbs = () => {};
+const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '', visible = s => s;
+`
+
+// Rejecting the only change of a file the session added removes it, as
+// Reject all does, rather than leaving the file on disk empty.
+func TestIDERejectingAnAddedFilesOnlyChangeRemovesIt(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-review", ideReviewHarness, "ide_review_cases.mjs"); err != nil {
+		t.Fatalf("rejecting a change:\n%s", out)
+	}
+}
+
+// The Tools panel says the mode is the organisation's only when the managed
+// file sets it: one that only turns on web search leaves the mode alone.
+func TestCapabilitiesSayWhichSettingsAreManaged(t *testing.T) {
+	for name, tc := range map[string]struct {
+		keys []string
+		want bool
+	}{
+		"web search only": {[]string{"web_search.enabled"}, false},
+		"the mode":        {[]string{"permissions.deny", "permissions.mode"}, true},
+		"unknown":         {nil, true},
+	} {
+		cfg := config.Default()
+		cfg.Managed, cfg.ManagedKeys = true, tc.keys
+		s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/capabilities", nil))
+		var c capabilities
+		if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Permissions.ModeManaged != tc.want || !slices.Equal(c.Permissions.ManagedKeys, tc.keys) {
+			t.Errorf("%s: mode_managed %v, managed_keys %v", name, c.Permissions.ModeManaged, c.Permissions.ManagedKeys)
+		}
+	}
+	if !strings.Contains(ideHTML, "c.permissions.mode + (c.permissions.mode_managed ? ' · managed by your organisation' : '')") {
+		t.Error("the Tools panel does not take the mode's own managed flag")
+	}
+}
+
+// Every server-to-page stream rides one shared stream, and behaves on it as
+// an EventSource would: reconnecting from its last id, closing on a refusal.
+func TestIDEStreamsShareOneConnection(t *testing.T) {
+	harness := `globalThis.__es = []; globalThis.__fetches = []; globalThis.__status = 202;
+class EventSource { constructor(url){ this.url = url; this.readyState = 0; this.on = {}; __es.push(this); }
+  addEventListener(type, f){ this.on[type] = f; } close(){ this.readyState = 2; }
+  emit(type, data){ this.readyState = 1; this.on[type]({data: JSON.stringify(data)}); } }
+EventSource.CLOSED = 2;
+globalThis.fetch = async (url, opts) => { __fetches.push({url, method: opts.method, body: opts.body ? JSON.parse(opts.body) : null}); return {ok: __status < 400, status: __status}; };
+const setTimeout = (f, ms) => globalThis.setTimeout(f, Math.min(ms, 5)), clearTimeout = id => globalThis.clearTimeout(id);
+`
+	if out, err := runConsoleCases(t, "ide-streams", harness, "ide_streams_cases.mjs"); err != nil {
+		t.Fatalf("the shared stream:\n%s", out)
+	}
+	for _, want := range []string{"new StreamSource(base)", "new StreamSource('/v1/sessions/' + id + '/events'", "new StreamSource(ptyURL(t, '/' + id))"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("a stream does not ride the shared one: %s", want)
+		}
+	}
+	if strings.Count(ideHTML, "new EventSource(") != 1 {
+		t.Error("the page opens an EventSource of its own besides the shared stream")
+	}
+}
+
+// An MCP server running unconfined on the none tier is marked so in the
+// capabilities the workbench's Extensions panel draws, with the reason.
+func TestCapabilitiesMarkUnconfinedMCP(t *testing.T) {
+	gw := mcp.NewGateway()
+	t.Cleanup(gw.Close)
+	if errs := gw.Connect(context.Background(), []mcp.ServerConfig{{Name: "probe", URL: fakeMCP(t, "look"), Enabled: true}}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	gw.MarkUnconfined("probe", "the sandbox tier is none: chosen in the configuration")
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Gateway: gw})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/capabilities", nil))
+	var c capabilities
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if len(c.MCP) != 1 || c.MCP[0].Unconfined != "the sandbox tier is none: chosen in the configuration" {
+		t.Fatalf("mcp: %+v", c.MCP)
 	}
 }

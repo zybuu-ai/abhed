@@ -8,8 +8,7 @@ be written in any language and need no build step in Abhed.
 
 **An extension may veto, never permit.**
 
-It can block a call, force it to an approval prompt, rewrite arguments before a
-tool runs, rewrite a result before the model reads it, drop messages before they
+It can block a call, force it to an approval prompt, rewrite a result before the model reads it, drop messages before they
 go upstream, supply a compaction summary, and add tools. It cannot turn a denied
 action into an allowed one.
 
@@ -36,7 +35,7 @@ exactly one reply.
 
 | Event | When | The reply may |
 |---|---|---|
-| `tool_call` | before a tool runs | `block`, `ask`, rewrite `args` |
+| `tool_call` | before a tool runs | `block`, `ask` (an `args` in the reply is ignored) |
 | `tool_result` | before the model sees output | rewrite `content`, set `is_error` |
 | `context` | before each model call | `keep` a subset of messages, by index |
 | `before_agent_start` | once per run | append to `system` |
@@ -44,11 +43,11 @@ exactly one reply.
 | `list_tools` | once at startup | declare `tools` this extension provides |
 | `invoke_tool` | the model called one | return its `result` |
 | `session_start`, `session_end` | run boundaries | nothing; setup and teardown |
-| `user_prompt_submit` | before a message you send is recorded and sent (interactive CLI) | `block` it; you are told why and the model never sees it. A steering message typed during a run that is blocked is recorded as dropped |
-| `permission_request` | before a call is put to you, a subagent's included (interactive CLI) | `block` it. Nothing in the reply approves the call; `allow` is ignored |
-| `turn_end` | the agent has finished answering, with the reason it stopped (interactive CLI) | nothing; it only observes |
-| `subagent_end` | a subagent the agent waited on has returned (interactive CLI) | nothing; it only observes |
-| `notification` | the agent needs you, as when a call waits for approval (interactive CLI) | nothing; it only observes |
+| `user_prompt_submit` | before a message you send is recorded and sent | `block` it; the model never sees it, and it is recorded as `message.dropped` with the reason. You are told why: in the terminal and the workbench, on stderr for `-p`, `abhed rpc` and `abhed acp` (rpc's and acp's answers say `prompt_refused` too), and in the SDK as an `*EndedError` whose `Reason` is `prompt_refused` and `Detail` the reason. A steering message typed during a run that is blocked is recorded as dropped the same way |
+| `permission_request` | before a call is put to you, a subagent's included | `block` it. Nothing in the reply approves the call; `allow` is ignored |
+| `turn_end` | the agent has finished answering, with the reason it stopped | nothing; it only observes |
+| `subagent_end` | a subagent the agent waited on has returned | nothing; it only observes |
+| `notification` | the agent needs you, as when a call waits for approval | nothing; it only observes |
 
 Declaring no `events` subscribes to the events up to `session_end` above; the
 five after it are sent only to an extension that names them. An empty reply
@@ -84,6 +83,12 @@ new one; a hook that keeps a count or a log should expect that.
   a deny rule is: each part of a chained command, a path relative to the
   workspace or absolute, and in any Unicode normal form. A call that cannot be
   read that far is sent. With no `match`, every call reaches the extension.
+- `env` sets variables for the process. An extension does not inherit
+  Abhed's environment, which holds `ABHED_API_KEY` and model provider keys:
+  it gets `PATH`, `HOME`, `USER`, `LOGNAME`, the locale, `TMPDIR` and `TZ`
+  (on Windows also what a program needs to start), then its `env`, which
+  wins. A variable given an empty value, `"GITHUB_TOKEN": ""`, passes your
+  own value of it. Before 1.2.8 an extension inherited everything.
 - `async` sends the events that only observe (`turn_end`, `subagent_end`,
   `notification`, `session_start`, `session_end`) without waiting for a reply.
 - A workspace's extensions start only once the workspace is trusted.
@@ -149,8 +154,24 @@ past its timeout, or replies with something unparseable is marked dead. On a
 `tool_call` or `permission_request`, the call it failed on is refused, and
 while it is not running every call it would have screened is asked, since the
 veto it stood for is gone. For the other events it is skipped: a
-`user_prompt_submit` hook that has stopped fails open, and the CLI says each
-message went unscreened. The session goes on either way.
+`user_prompt_submit` hook that has stopped fails open, and each message is
+said to have gone unscreened: in the terminal, on stderr for `-p`, `abhed rpc`
+and `abhed acp` (and to an SDK caller's `Warn`), and in `abhed serve`'s log.
+These hooks run on every surface that loads extensions: the terminal, `-p`,
+`abhed rpc`, `abhed acp`, `abhed serve` and the SDK; before 1.2.8 only the
+terminal asked them. The session goes on either way.
+
+**One decision's policy hooks have a deadline.** A `tool_call` hook must
+decide within 30 seconds of the decision, or by the deadline of the request
+it serves if that comes first, such as an Explorer rename or delete judging
+each file it touches. A call whose hooks have not all decided by then is
+refused, and once that deadline has passed the rest of the batch is refused
+without asking the hooks again, so a slow extension cannot hold the
+workbench for the length of a large folder. The bound is kept by hooks given
+the decision's context, as extensions' are (`Engine.ContextHooks` in the Go
+API). A Go program's own `Engine.Hooks` or `Engine.EngineHooks` get no
+context: one that returns after the deadline has its allow refused, but one
+that never returns holds the decision, so give a slow hook a context.
 
 **A hung extension is not retried.** The read is abandoned but the stream is
 not, so a later reply would be matched to the wrong request.
@@ -167,8 +188,10 @@ compacts, one request at a time. An extension that must not see one user's
 work alongside another's belongs on a server of its own. The serve banner
 lists the extensions and names any that is not running, and
 `/v1/capabilities` gives each one's `status`: `running`, `stopped` (it
-crashed, hung or was closed) or `not started`. A stopped `tool_call`
-extension's calls are asked, as above.
+crashed, hung or was closed) or `not started`. Where people sign in, only an
+administrator is given `status`, since it says when a veto is down; others
+see each extension's name and events. A stopped `tool_call` extension's
+calls are asked, as above.
 
 ## Providing tools
 

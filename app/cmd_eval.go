@@ -30,7 +30,7 @@ func evalAllowed(cfg config.Config) error {
 }
 
 // evalAllow lets corpora that compile and test code do so unattended.
-var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(cat *)", "bash(ls*)"}
+var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(cat *)", "bash(ls)", "bash(ls *)"}
 
 // evalCmd runs the evaluation corpus against the configured model.
 //
@@ -97,7 +97,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		// depends on the harness and the task and not on what those reach.
 		set := toolset.Build(ctx, cfg, toolset.Options{
 			Workspace: ws,
-			Bash: tools.Bash{Sandbox: sb.Command,
+			Bash: tools.Bash{Sandbox: sb.Command, Home: sandbox.HomeFunc(sb),
 				Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))},
 			Parts: toolset.Skills | toolset.WebSearch | toolset.WebFetch,
 			Vault: vault,
@@ -110,6 +110,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		pol := policy.New(policy.ModeAuto)
 		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 		pol.Roots = sess.PolicyRoots
+		pol.Cwd = sess.WorkDir
 		must(pol.AddDeny(cfg.Permissions.Deny...))
 		// The operator's own allow rules apply, so an eval run is governed the
 		// same way a real session is. The build-tool defaults stay for corpora

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -293,6 +294,32 @@ func TestPanicIsRecoveredAndLogged(t *testing.T) {
 	}
 }
 
+// A stream a relay aborts, as a reverse proxy does when the other end cuts
+// it short, ends the way net/http ends it, quietly, and is logged as the
+// request it was rather than as a panic.
+func TestAbortedStreamIsLoggedAsARequest(t *testing.T) {
+	s := testServer(t)
+	var logged bytes.Buffer
+	s.log = slog.New(slog.NewTextHandler(&logged, nil))
+	h := s.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{\"exit\":0}\n"))
+		panic(http.ErrAbortHandler)
+	}))
+	func() {
+		defer func() {
+			if err, _ := recover().(error); !errors.Is(err, http.ErrAbortHandler) {
+				t.Errorf("the abort did not reach net/http: %v", err)
+			}
+		}()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/sandboxes/x:exec", nil))
+	}()
+	out := logged.String()
+	if strings.Contains(out, "panic") || !strings.Contains(out, "msg=request") || !strings.Contains(out, "status=200") || !strings.Contains(out, "aborted=true") {
+		t.Fatalf("logged %q", out)
+	}
+}
+
 // The overview is public so the landing page can describe the deployment before
 // sign-in, but the workspace is an absolute host path: it names the operator's
 // account and directory layout to anyone who asks.
@@ -447,6 +474,39 @@ func TestReleaseSessionsUnclaimsLiveSessions(t *testing.T) {
 	delete(s.running, "b")
 	delete(s.running, "c")
 	s.mu.Unlock()
+}
+
+// An account made again lets go of the sessions made before it, even one taken
+// up here since, and keeps those made since.
+func TestReleaseSessionsBeforeKeepsNewerRuns(t *testing.T) {
+	s := proxyServer(t)
+	made := time.Now()
+	s.mu.Lock()
+	s.running["old"] = &liveSession{ID: "old", Tenant: "default", User: "local:bob", Created: made.Add(-time.Minute)}
+	s.running["new"] = &liveSession{ID: "new", Tenant: "default", User: "local:bob", Created: made.Add(time.Second)}
+	// Taken up here after the re-make, but made by the earlier account: Created is when it began.
+	s.running["resumed"] = &liveSession{ID: "resumed", Tenant: "default", User: "local:bob", Created: made.Add(-time.Hour)}
+	// Made by the new account elsewhere, handed over here.
+	s.running["handed"] = &liveSession{ID: "handed", Tenant: "default", User: "local:bob", Created: made.Add(time.Millisecond)}
+	s.mu.Unlock()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		for _, id := range []string{"old", "new", "resumed", "handed"} {
+			delete(s.running, id)
+		}
+		s.mu.Unlock()
+	})
+	if n := s.ReleaseSessionsBefore("default", "local:bob", made); n != 2 {
+		t.Fatalf("released %d, want 2", n)
+	}
+	for id, want := range map[string]string{"old": "unclaimed:local:bob", "resumed": "unclaimed:local:bob", "new": "local:bob", "handed": "local:bob"} {
+		if got := s.running[id].User; got != want {
+			t.Errorf("%s owned by %q, want %q", id, got, want)
+		}
+	}
+	if n := s.ReleaseSessionsBefore("default", "local:bob", time.Time{}); n != 0 {
+		t.Errorf("a zero creation time released %d", n)
+	}
 }
 
 // The list and the single-session fetch must agree. A list more permissive than

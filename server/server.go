@@ -7,10 +7,13 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,8 +25,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
@@ -35,10 +41,12 @@ import (
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
+	"github.com/zybuu-ai/abhed/server/expose"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -161,6 +169,13 @@ type InviteRedeemer interface {
 	Redeemed(ctx context.Context, code, username string) error
 }
 
+// InviteReleaser is an InviteRedeemer that can give a spent code back. Signup
+// asks it when the account could not be made after the code was redeemed, as
+// when another sign-up took the name first.
+type InviteReleaser interface {
+	Release(ctx context.Context, code, username string) error
+}
+
 // InviteEmailChecker is an InviteRedeemer whose codes may be made out to one
 // address. Signup asks it before the code is spent, so a refusal keeps the code.
 type InviteEmailChecker interface {
@@ -178,8 +193,11 @@ type TenantResolver interface {
 }
 
 type Options struct {
-	Addr      string
-	Workspace string
+	// StartupBaseline, when set, gives each new session's policy the shell
+	// start-up files the person trusted (abhed trust startup-files).
+	StartupBaseline func() map[string]policy.StartupFile
+	Addr            string
+	Workspace       string
 	// NodeID identifies this process among several behind a load balancer.
 	// It holds no '#', which separates it from a lease's incarnation token.
 	// Empty means a single-node deployment: nothing is claimed and routing
@@ -279,6 +297,20 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// TurnMover, set by an edition, moves running turns between processes
+	// instead of ending them: a drain offers it the turns still running after
+	// DrainTimeout, and the orphan sweep, the start-up sweep and a message to
+	// a session another process left running offer it that session. Nil, a
+	// turn whose process stops is ended, as before.
+	TurnMover TurnMover
+	// SoleOwner, when set, is the one account a server that shares its
+	// workspace between sessions was started for: a session for anyone else
+	// is refused, since another account would share that workspace.
+	SoleOwner string
+	// ClientCertRevoked, when set, says whether a verified client certificate
+	// has since been revoked; a request on a connection made with one is
+	// refused, though its handshake predates the revocation.
+	ClientCertRevoked func(*x509.Certificate) bool
 	// SessionEnded, when set, is told a session's id as the session leaves
 	// this process (deleted, or taken by another), so what the sandbox keeps
 	// for it, such as its egress proxy, goes with it.
@@ -289,17 +321,67 @@ type Options struct {
 	// It is given the registry's bash to start from; a registry without one
 	// is left as it is.
 	SessionBash func(sessionID string, rec *agent.Recorder, shared tools.Bash) (tools.Bash, func() error)
+	// SessionSandboxes, when set, gives each session a control-plane sandbox
+	// of its own (control_plane.per_session): its commands, terminals and
+	// file tools work in that sandbox and its folder, never in Workspace.
+	// Nil keeps the one sandbox every session shares, exactly as before.
+	SessionSandboxes *sessionsandbox.Manager
+	// TLS, when set, is served on Addr instead of plain HTTP. Its
+	// certificates are read per handshake, so a reload needs no restart.
+	TLS *tls.Config
+	// CLILogin, when set, serves command-line sign-in for local accounts:
+	// the device and PKCE endpoints and the page that approves them.
+	CLILogin *auth.CLILogin
 	// StreamRecheck is how often an open event or terminal stream is
 	// authorised again. Zero means the default; it can only be shortened, and
 	// anything above maxStreamRecheck is held to it.
 	StreamRecheck time.Duration
+	// ControlPlane, when set, serves /v1/sandboxes from it and joins the
+	// readiness check. Nil leaves the routes unregistered.
+	ControlPlane *controlplane.Service
+	// SandboxAPIAdminOnly answers /v1/sandboxes and /v1/sandbox-templates
+	// for administrators only: the control plane was turned on to give each
+	// session a sandbox, not to let every account make its own.
+	SandboxAPIAdminOnly bool
+	// Expose serves the control plane's :expose and the exposed services'
+	// path; nil, or off, and :expose answers 501.
+	Expose *expose.Server
+	// SandboxCaller, when set, refines who a sandbox request acts as, from
+	// the caller the server worked out: an edition confines it to a scope,
+	// such as a workspace, or changes what it may administer. An error
+	// refuses the request (controlplane.ErrForbidden is 403). Under
+	// SessionSandboxes it is also asked for each session's sandbox, with a
+	// POST /v1/sandboxes request carrying the session's tenant and user and
+	// no headers; its scope is stamped on the sandbox and its warm pool.
+	// It must build on the c it is given, whose Principal and Admin the
+	// server resolved: r may be one the server made for a session, with no
+	// headers, so who is asking comes from c, never from r's headers.
+	SandboxCaller func(r *http.Request, c controlplane.Caller) (controlplane.Caller, error)
+	// ApprovalGate, when set, decides who may answer a session's pending
+	// approvals and when an answer settles one. Nil: the session's owner
+	// answers, and the first answer settles it.
+	ApprovalGate ApprovalGate
+	// SessionPolicy, when set, gives each session started, opened or
+	// continued the permission rules its owner's edition layer adds, such as
+	// a workspace's; nil for none. An error, or a layer that does not
+	// validate, refuses the session. See PolicyLayer.
+	SessionPolicy func(ctx context.Context, req SessionPolicyRequest) (*PolicyLayer, error)
+	// SandboxRouter, when set, relays each call that acts on a sandbox to the
+	// replica that owns it. Nil handles every call here.
+	SandboxRouter SandboxRouter
+	// SandboxSSHKey is the host key of the SSH server sandboxes are reached
+	// by through :ssh. Nil leaves :ssh answering 501.
+	SandboxSSHKey ssh.Signer
 }
 
 // Server holds live sessions and serves the API.
 type Server struct {
 	opts Options
-	// searching counts the workspace searches running per session.
-	searching sync.Map
+	// muxes are the pages' shared streams; see streams.go.
+	muxes streamMuxes
+	// searching counts the workspace searches running per session, under searchMu.
+	searchMu  sync.Mutex
+	searching map[string]int
 	store     EventStore
 	sessions  SessionRecorder // nil when the store is not durable
 	log       *slog.Logger
@@ -311,6 +393,9 @@ type Server struct {
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
+	// ownerSweep is set by the first sweepRemovedOwners: its OnChange listener
+	// is never removed, so a second would double every stop.
+	ownerSweep atomic.Bool
 	// holder is this process's liveness identity: NodeID when set, otherwise
 	// an id of its own for its lifetime. Every session it holds is claimed
 	// and heartbeated under it, so "no heartbeat" never reads as "dead".
@@ -319,6 +404,16 @@ type Server struct {
 	// Throttles for the endpoints reachable before authentication succeeds.
 	signinLimiter  *limiter
 	sessionLimiter *limiter
+	cliLimiter     *limiter
+	// Per-caller limits on the sandbox routes, from the settings registry.
+	cpMutations *limiter
+	cpExec      *limiter
+	// cpStreams counts the attach, exec, forward and SSH streams open, per caller.
+	cpStreams streamSlots
+	// streamsEnd ends the page streams when the HTTP shutdown begins: they
+	// never end by themselves, and the shutdown would wait its budget out.
+	streamsEnd    context.Context
+	endStreamsNow context.CancelFunc
 
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
@@ -326,6 +421,10 @@ type Server struct {
 	// adminMu serialises admin-rights changes, so two demotions at once
 	// cannot leave nobody an administrator. It holds within one process only.
 	adminMu sync.Mutex
+	// signupMu holds one self-registration at a time (signup).
+	signupMu sync.Mutex
+	// claiming counts the workbench writes claiming a session now.
+	claiming atomic.Int64
 
 	// state holds what a settings change may replace, behind its own lock.
 	// Separate from opts, which stays immutable — mixing "set once" and
@@ -348,7 +447,7 @@ type liveSession struct {
 	Tenant  string
 	Loop    *agent.Loop
 	Cancel  context.CancelFunc
-	Created time.Time
+	Created time.Time // when the session began, on whichever node
 	Prompt  string
 	State   string // running | waiting_approval | background | idle | done
 	// title is the name a person last gave the session; guarded by mu.
@@ -379,10 +478,12 @@ type liveSession struct {
 	// session, so default mode stops re-prompting for the same kind of call.
 	// It mirrors the CLI's session AllowList; without it the console asked
 	// again on every mutating tool with no way to say "don't ask again".
-	allowed map[string]bool
+	allowed map[string]string
 	// undo holds each file's content from before the agent first changed it,
 	// which is what the console's changes view diffs against.
 	undo *agent.UndoLog
+	// snap is the workspace as the session opened, for changes made by commands.
+	snap *wsSnapshot
 	// manual is the tool session of the person at the workbench, and manualMu
 	// runs their calls one at a time so two commands never share a cd.
 	manual   *tools.Session
@@ -393,6 +494,10 @@ type liveSession struct {
 	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.
 	ptys map[string]*ptyRun
+	// lsps are the workbench editor's language servers; lspGen moves each
+	// time closeTerminals stops them.
+	lsps   map[string]*lspRun
+	lspGen int
 	// unclaimed is a finished session opened from its record to view: its
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.
@@ -414,7 +519,15 @@ type liveSession struct {
 	// fallback is a resumed session's move to the default because its recorded
 	// provider no longer resolves, written by its next turn; guarded by claimMu.
 	fallback *agent.ModelSwitched
+	// layer is the edition's policy layer the session runs under, nil for
+	// none. layerNote is a continued session's policy.layer event, owed to
+	// its record and written by its next turn; guarded by claimMu.
+	layer     *appliedLayer
+	layerNote map[string]any
 
+	// workspace is the folder the session works in: its own sandbox's under
+	// per-session sandboxes, else empty for the server's workspace.
+	workspace string
 	// closeBash releases the session's own bash, when it has one.
 	closeBash     func() error
 	closeBashOnce sync.Once
@@ -422,6 +535,38 @@ type liveSession struct {
 	// fresh while a run or a background child is live; guarded by mu.
 	beatStop func()
 	mu       sync.Mutex
+}
+
+// errSecretsUnreadable refuses a new session while the operator's secrets
+// store cannot be loaded: its record would have every payload withheld.
+var errSecretsUnreadable = errors.New("the secrets store cannot be read, so the session's record could not be redacted; " +
+	"the server log has the cause")
+
+// operatorSecretsReadable reports why the operator's secrets store cannot be
+// loaded now, nil when it can or when Redact reads no store.
+func (s *Server) operatorSecretsReadable() error {
+	if fresh, ok := s.opts.Redact.(interface {
+		Session() (*secrets.Fresh, error)
+	}); ok {
+		_, err := fresh.Session()
+		return err
+	}
+	if live, ok := s.opts.Redact.(interface {
+		Load() (*secrets.Redactor, error)
+	}); ok {
+		_, err := live.Load()
+		return err
+	}
+	return nil
+}
+
+// refuseUnreadableSecrets is the check a new session makes before it starts.
+func (s *Server) refuseUnreadableSecrets() error {
+	if err := s.operatorSecretsReadable(); err != nil {
+		s.log.Error("session refused: the secrets store cannot be read", "err", err)
+		return errSecretsUnreadable
+	}
+	return nil
 }
 
 // sessionRedactor is the redactor a session records with: the store read as it
@@ -575,6 +720,12 @@ func New(opts Options) *Server {
 		opts.Logger.Warn("the node id holds '#', which separates a lease's incarnation; it is used with '_' in its place", "node_id", opts.NodeID)
 		opts.NodeID = strings.ReplaceAll(opts.NodeID, "#", "_")
 	}
+	// Accounts that sign in each get their own secrets store, unless the
+	// embedder gives one of its own.
+	accounts := defaultAccountSecrets(opts)
+	if accounts != nil {
+		opts.SecretsFor = accounts.For
+	}
 	if rules := sharedSecretRules(opts); len(rules) > 0 {
 		opts.Logger.Warn("every account on this server shares one secrets store: any account can use, "+
 			"and by transforming the value read, every secret these allow rules name; run a server per person "+
@@ -619,6 +770,9 @@ func New(opts Options) *Server {
 		// password needs, and far below what makes guessing viable.
 		signinLimiter:  newLimiter(10, time.Minute),
 		sessionLimiter: newLimiter(60, time.Minute),
+		// A terminal polls every five seconds while it waits; this leaves room
+		// for a few at once behind one address and none for guessing codes.
+		cliLimiter: newLimiter(30, 30*time.Second),
 		state: &mutable{
 			registry: opts.Registry,
 			skills:   opts.SkillRegistry,
@@ -627,16 +781,43 @@ func New(opts Options) *Server {
 			cfg:      opts.Config,
 		},
 	}
+	s.streamsEnd, s.endStreamsNow = context.WithCancel(context.Background())
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
+	if accounts != nil {
+		s.mounts = append(s.mounts, accounts.mount)
+	}
+	if cp := opts.ControlPlane; cp != nil {
+		v := cp.Settings().For(nil)
+		s.cpMutations = newLimiter(int(v.Int(controlplane.SetMutationsPerMin)), cpRateWindow)
+		s.cpExec = newLimiter(int(v.Int(controlplane.SetExecPerMin)), cpRateWindow)
+	}
+	if opts.SessionSandboxes != nil && opts.SandboxCaller != nil {
+		opts.SessionSandboxes.SetScope(s.sessionSandboxScope)
+	}
 	srv = s
 	s.reportConfigAttempts()
+	s.warnShellScreening()
 	if local := s.LocalAuth(); local != nil {
 		local.OnChange(func(username string) {
 			s.releaseStale(local, username)
 			s.RecheckStreams()
 		})
+		// A sign-in outside auth.require_group is refused at the form, rather
+		// than answered ok and then turned away on the first page.
+		if group := opts.Config.Auth.RequireGroup; group != "" {
+			next := local.Admit
+			local.Admit = func(ctx context.Context, u *auth.User) error {
+				if !slices.Contains(u.Groups, group) {
+					return notMember(group)
+				}
+				if next != nil {
+					return next(ctx, u)
+				}
+				return nil
+			}
+		}
 	}
 	return s
 }
@@ -662,10 +843,15 @@ func (s *Server) leaseRefused(id string) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// top is the finished handler, which a shared stream runs each of its channels through.
+	var top http.Handler
 
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
-	mux.HandleFunc("GET /v1/sessions/{id}/events", s.streamEvents)
+	mux.HandleFunc("GET /v1/sessions/{id}/events", s.untilShutdown(s.streamEvents))
+	mux.HandleFunc("GET /v1/streams", s.untilShutdown(s.openStreamMux))
+	mux.Handle("POST /v1/streams/{mux}/{ch}", s.openStreamChannel(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { top.ServeHTTP(w, r) })))
+	mux.HandleFunc("DELETE /v1/streams/{mux}/{ch}", s.closeStreamChannel)
 	mux.HandleFunc("GET /v1/sessions/{id}/replay", s.replaySession)
 	mux.HandleFunc("GET /v1/sessions/{id}/hawkeye", s.hawkeyeSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/tree", s.treeSession)
@@ -680,7 +866,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
-	mux.HandleFunc("GET /v1/sessions/{id}/pty/{pty}", s.streamPTY)
+	mux.HandleFunc("POST /v1/sessions/{id}/lsp", s.startLSP)
+	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.untilShutdown(s.streamLSP))
+	mux.HandleFunc("POST /v1/sessions/{id}/lsp/{lsp}", s.sendLSP)
+	mux.HandleFunc("DELETE /v1/sessions/{id}/lsp/{lsp}", s.stopLSP)
+	mux.HandleFunc("GET /v1/sessions/{id}/pty", s.listShells)
+	mux.HandleFunc("GET /v1/sessions/{id}/pty/{pty}", s.untilShutdown(s.streamPTY))
+	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/detach", s.detachPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/input", s.writePTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/resize", s.resizePTY)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
@@ -690,6 +882,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/wake", s.setWake)
 	mux.HandleFunc("GET /v1/sessions/{id}/queue", s.listQueue)
 	mux.HandleFunc("GET /v1/sessions/{id}/state", s.sessionState)
+	mux.HandleFunc("GET /v1/sessions/{id}/permissions", s.sessionPermissions)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/queue/{qid}", s.cancelQueued)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -717,6 +910,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/interrupt", s.interruptSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/approve", s.approveAction)
 	mux.HandleFunc("GET /v1/health", s.health)
+	mux.HandleFunc("GET /v1/ready", s.ready)
+	s.sandboxRoutes(mux)
+	s.cliRoutes(mux)
 
 	// Each provider registers the routes it owns: local accounts and an
 	// identity provider are not mutually exclusive, and the server does not
@@ -759,6 +955,11 @@ func (s *Server) Handler() http.Handler {
 		} else {
 			mux.HandleFunc("GET /logout", s.authDisabledPage)
 		}
+	case s.authMiddleware().Verifier != nil:
+		// Tokens only: whoami answers for a bearer token.
+		mux.HandleFunc("GET /v1/whoami", s.whoami)
+		mux.HandleFunc("GET /login", s.authDisabledPage)
+		mux.HandleFunc("GET /logout", s.authDisabledPage)
 	default:
 		// Sign-in is not configured. These routes still answer, because a 404
 		// leaves the console unable to tell "no auth here" from "the server is
@@ -818,13 +1019,62 @@ func (s *Server) Handler() http.Handler {
 	// still a response a browser will act on.
 	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins, s.log)(limited)
 	headed := securityHeaders(s.bodyLimit(guarded), s.opts.Config.Server.HSTS)
-	return canonicalHost(s.opts.Config.Server.CanonicalHost, headed)
+	top = s.logRefused(s.refuseRevokedCert(canonicalHost(s.opts.Config.Server.CanonicalHost, headed)))
+	return top
+}
+
+// refuseRevokedCert answers 401 to a request whose connection was verified
+// with a client certificate revoked since its handshake.
+func (s *Server) refuseRevokedCert(next http.Handler) http.Handler {
+	revoked := s.opts.ClientCertRevoked
+	if revoked == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil {
+			for _, chain := range r.TLS.VerifiedChains {
+				for _, c := range chain {
+					if revoked(c) {
+						WriteError(w, http.StatusUnauthorized, "the client certificate has been revoked")
+						return
+					}
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// logMark records that withMiddleware logged the request.
+type logMark struct{ done bool }
+
+// logRefused is outermost, so a request answered before it reaches
+// withMiddleware (a 401 from sign-in, a 429 from the throttle, a refused
+// origin) is in the request log too.
+func (s *Server) logRefused(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		mark := &logMark{}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), ctxLogMark, mark)))
+		if !mark.done {
+			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+				"user", "", "duration", time.Since(start), "identified", false)
+		}
+	})
+}
+
+// markLogged tells logRefused that the request has its log line.
+func markLogged(r *http.Request) {
+	if m, ok := r.Context().Value(ctxLogMark).(*logMark); ok {
+		m.done = true
+	}
 }
 
 // PublicPaths answer before anyone signs in, whichever providers are
 // configured; each provider adds the paths it owns. Kept short on purpose.
 func PublicPaths() []string {
-	return []string{"/", "/v1/health", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg"}
+	return []string{"/", "/v1/health", "/v1/ready", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg", CLIDiscoveryPath}
 }
 
 // Mount adds routes for the next Handler call, for a caller that has the
@@ -882,6 +1132,8 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case "/v1/signin", "/v1/signup", "/v1/password":
 			rateLimit(s.signinLimiter, trustProxy, next).ServeHTTP(w, r)
+		case auth.CLIDevicePath, auth.CLITokenPath, auth.CLIApprovePath, auth.CLIAuthorizePath, TokenExchangePath:
+			rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
 		case "/v1/sessions":
 			// Creating a session starts an agent loop, which is the most
 			// expensive thing this server does. It is authenticated, so the
@@ -893,6 +1145,11 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		default:
+			// An edition's command-line sign-in lives under /v1/cli/ too.
+			if strings.HasPrefix(r.URL.Path, "/v1/cli/") && r.URL.Path != "/v1/cli/whoami" {
+				rateLimit(s.cliLimiter, trustProxy, next).ServeHTTP(w, r)
+				return
+			}
 			next.ServeHTTP(w, r)
 		}
 	})
@@ -907,8 +1164,17 @@ func (s *Server) accountOutage(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health says whether the server is up, and sign-out must work regardless.
-		if r.URL.Path != "/v1/health" && r.URL.Path != "/logout" {
-			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) {
+		if r.URL.Path != "/v1/health" && r.URL.Path != "/v1/ready" && r.URL.Path != "/logout" {
+			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) &&
+				!s.otherCredential(r, local) {
+				if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					w.Header().Set("Retry-After", "5")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(accountOutageHTML))
+					return
+				}
+				w.Header().Set("Retry-After", "5")
 				WriteError(w, http.StatusServiceUnavailable, auth.ErrAccountUnchecked.Error())
 				return
 			}
@@ -916,6 +1182,31 @@ func (s *Server) accountOutage(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// otherCredential reports whether something other than the local session
+// identifies the request: a bearer token, or another provider's session.
+// Such a request is judged by that, not by a local cookie it also carries.
+func (s *Server) otherCredential(r *http.Request, local *auth.LocalAuth) bool {
+	if h := r.Header.Get("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
+		return true
+	}
+	for _, p := range s.signIns() {
+		if p == auth.Provider(local) {
+			continue
+		}
+		if _, ok := p.Identify(r); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// accountOutageHTML is what a browser is shown while the accounts cannot be read.
+const accountOutageHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Try again shortly</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}</style></head>
+<body><h1>Try again shortly</h1><p>This server could not check your sign-in just now, because it cannot read its accounts.
+You are still signed in. Reload the page in a moment.</p></body></html>`
 
 // authMiddleware builds the identity layer from config unless one was injected.
 func (s *Server) authMiddleware() auth.Middleware {
@@ -985,6 +1276,7 @@ func (s *Server) requireGroup(next http.Handler) http.Handler {
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		markLogged(r)
 
 		// Identity comes from the auth layer, which has already verified it.
 		id, _ := auth.FromContext(r.Context())
@@ -1009,6 +1301,13 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		// names packages, paths, and versions.
 		defer func() {
 			if v := recover(); v != nil {
+				// A relayed stream the other end cut short is aborted, as net/http
+				// does quietly, and logged as the request it was.
+				if err, ok := v.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+					s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+						"user", user, "tenant", tenant, "duration", time.Since(start), "aborted", true)
+					panic(v)
+				}
 				s.log.Error("panic serving request",
 					"method", r.Method, "path", r.URL.Path,
 					"user", user, "panic", v)
@@ -1029,8 +1328,9 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 type ctxKey string
 
 const (
-	ctxUser   ctxKey = "user"
-	ctxTenant ctxKey = "tenant"
+	ctxUser    ctxKey = "user"
+	ctxTenant  ctxKey = "tenant"
+	ctxLogMark ctxKey = "logmark"
 )
 
 // UserOf is the caller the middleware resolved, for a handler that records
@@ -1099,6 +1399,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap lets http.ResponseController reach the connection, so a
+// WebSocket upgrade can take it over.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 // Flush lets SSE writes reach the client through the wrapper.
 func (r *statusRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
@@ -1122,6 +1426,22 @@ type createRequest struct {
 	// so the workbench has a sandbox to work in before anyone asks the agent.
 	Workbench bool `json:"workbench,omitempty"`
 }
+
+// errNotSoleOwner refuses a session on a shared server for another account.
+var errNotSoleOwner = errors.New("this server shares one workspace and was started for one account; " +
+	"an administrator restarts it to give each session a sandbox of its own")
+
+// checkSoleOwner refuses a session for anyone but Options.SoleOwner, when it
+// is set. A scheduled run owned by no identity is the server's own.
+func (s *Server) checkSoleOwner(user string) error {
+	if s.opts.SoleOwner == "" || user == s.opts.SoleOwner || strings.HasPrefix(user, auth.SchedulePrefix) {
+		return nil
+	}
+	return errNotSoleOwner
+}
+
+// errBadClientID refuses a client id validClientID does not accept.
+var errBadClientID = errors.New("client_id is up to 64 letters, digits, - and _")
 
 // validClientID keeps a client's id short and plain, since it is recorded.
 func validClientID(id string) bool {
@@ -1165,6 +1485,9 @@ type StartSpec struct {
 	// OnEnd is called when the run finishes, however it finishes, with the
 	// terminal reason as the event stream records it.
 	OnEnd func(reason string, err error)
+	// admin is whether the person starting it is a server administrator,
+	// which an edition's SandboxCaller is told for the session's sandbox.
+	admin bool
 }
 
 // recordConfigAttempts records, after a session's start, the settings the
@@ -1226,12 +1549,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validClientID(req.ClientID) {
-		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
+		WriteError(w, http.StatusBadRequest, errBadClientID.Error())
 		return
 	}
 	spec := StartSpec{
 		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID,
-		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()),
+		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()), admin: s.isAdminCtx(r.Context()),
 	}
 	start := s.StartSession
 	if idle {
@@ -1247,10 +1570,28 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			writeHoldFailed(w)
 		case errors.Is(err, errBadMode):
 			WriteError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, errBadClientID):
+			WriteError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, errNotSoleOwner):
+			WriteError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, ErrPolicyLayer):
+			s.log.Error("session refused: its policy layer", "user", spec.User, "error", err)
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
 		case strings.HasPrefix(err.Error(), "provider:"):
 			WriteError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "provider: "))
+		case errors.Is(err, controlplane.ErrForbidden):
+			WriteError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, controlplane.ErrUnavailable):
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, err.Error())
+		case errors.Is(err, errSecretsUnreadable):
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
 		default:
-			WriteError(w, http.StatusInternalServerError, err.Error())
+			// The cause can name store internals, so it goes to the log only.
+			s.log.Error("session not started", "user", spec.User, "error", err)
+			WriteError(w, http.StatusInternalServerError, "the session could not be started; the server log has the cause")
 		}
 		return
 	}
@@ -1261,6 +1602,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 // agent is running. The context passed in governs creation only; the run
 // itself gets its own, cancelled through the live session.
 func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, error) {
+	// Checked here as well as on the route: a caller in Go reaches this directly.
+	if !validClientID(spec.ClientID) {
+		return "", errBadClientID
+	}
+	if err := s.checkSoleOwner(spec.User); err != nil {
+		return "", err
+	}
 	// The mode is resolved before anything is persisted or started, because a
 	// rejected mode must not leave a half-created session behind.
 	mode, ok := requestMode(s.opts.Config.Permissions.Mode, spec.Mode)
@@ -1290,28 +1638,40 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 	sessionID := newSessionID()
 	defer s.startingDone(s.startingNow(sessionID))
-	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, true); err != nil {
+	if err := s.refuseUnreadableSecrets(); err != nil {
+		return "", err
+	}
+	vault, red, err := s.sessionSecrets(spec)
+	if err != nil {
+		return "", err
+	}
+	// The row, the list and the title keep the prompt as the record does: a
+	// stored secret typed into it is withheld. The run gets it whole, and
+	// withholds it itself, naming what it withheld.
+	shown := spec
+	shown.Prompt = agent.WithheldText(red, spec.Prompt)
+	if err := s.persistSession(ctx, sessionID, shown, mode, adapter, true); err != nil {
 		return "", err
 	}
 
-	vault, red, err := s.sessionSecrets(spec)
-	if err != nil {
-		s.forgetUnstarted(sessionID)
-		return "", err
-	}
 	rec := agent.NewRecorder(s.store, sessionID, "")
 	rec.Redact = red
-	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, vault, rec)
+	live, loop, err := s.buildLive(sessionID, shown, mode, adapter, registry, skillReg, vault, rec)
 	if err != nil {
+		s.forgetUnstarted(sessionID)
 		return "", err
 	}
 	// Names the provider, so a resume cannot mistake it for another serving the same model.
 	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]any{
-		"origin": "chat", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
+		"origin": "chat", "workspace": s.workspaceOf(live), "model": adapter.Profile().Name, "mode": mode,
 		"provider": live.provider, "web": toolset.WebState(s.opts.Config),
 	}); err != nil {
 		s.forgetUnstarted(sessionID)
 		return "", fmt.Errorf("record session start: %w", err)
+	}
+	if err := recordLayer(rec, live.layer); err != nil {
+		s.forgetUnstarted(sessionID)
+		return "", err
 	}
 	s.recordConfigAttempts(rec, spec.User)
 
@@ -1348,7 +1708,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := loop.RunMessage(runCtx, agent.Message{Text: spec.Prompt, ClientID: spec.ClientID})
-		for live.settle(runCtx, reason, err) {
+		for endRefused(runCtx, live, reason, err); live.settle(runCtx, reason, err); endRefused(runCtx, live, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
 		waitSuggestion(live)
@@ -1401,6 +1761,9 @@ func (s *Server) persistSession(ctx context.Context, id string, spec StartSpec, 
 // openWorkbench creates a session with no prompt: the same workspace, policy,
 // sandbox, owner and record as any other, idle until a message arrives.
 func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, error) {
+	if err := s.checkSoleOwner(spec.User); err != nil {
+		return "", err
+	}
 	mode, ok := requestMode(s.opts.Config.Permissions.Mode, spec.Mode)
 	if !ok {
 		return "", errBadMode
@@ -1419,6 +1782,9 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	}
 	sessionID := newSessionID()
 	defer s.startingDone(s.startingNow(sessionID))
+	if err := s.refuseUnreadableSecrets(); err != nil {
+		return "", err
+	}
 	vault, red, err := s.sessionSecrets(spec)
 	if err != nil {
 		return "", err
@@ -1436,7 +1802,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	live.State = "idle"
 	// The first event, so the session has a record to be resumed from.
 	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]any{
-		"origin": "workbench", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
+		"origin": "workbench", "workspace": s.workspaceOf(live), "model": adapter.Profile().Name, "mode": mode,
 		"provider": live.provider, "web": toolset.WebState(s.opts.Config),
 	}); err != nil {
 		// An empty session left listed would be one nobody can open.
@@ -1444,6 +1810,12 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 			_ = del.DeleteSession(sessionID)
 		}
 		return "", fmt.Errorf("record session start: %w", err)
+	}
+	if err := recordLayer(rec, live.layer); err != nil {
+		if del, ok := s.under().(agent.SessionDeleter); ok {
+			_ = del.DeleteSession(sessionID)
+		}
+		return "", err
 	}
 	s.recordConfigAttempts(rec, spec.User)
 	s.mu.Lock()
@@ -1484,10 +1856,18 @@ func (s *Server) forgetUnstarted(sessionID string) {
 // newPolicy builds the engine from the operator's rules. One constructor, so
 // a rule cannot bind the agent and not the endpoints that serve files.
 func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
+	return s.newPolicyIn(mode, s.opts.Workspace)
+}
+
+// newPolicyIn is newPolicy with path rules relative to workspace, a
+// session's own folder under per-session sandboxes.
+func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine {
 	pol := policy.New(mode)
 	pol.Managed = s.opts.Config.Managed
+	if s.opts.StartupBaseline != nil {
+		pol.StartupBaseline = s.opts.StartupBaseline()
+	}
 	// Path rules relative to the workspace; buildLive gives a session its own roots.
-	workspace := s.opts.Workspace
 	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
@@ -1504,11 +1884,27 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
 	registry *tools.Registry, skillReg *skills.Registry, vault *secrets.Store, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
 
-	sess, err := tools.NewSession(s.opts.Workspace)
+	workspace := s.opts.Workspace
+	var bound *sessionsandbox.Bound
+	if s.opts.SessionSandboxes != nil {
+		b, err := s.bindSandbox(sessionID, spec, registry, rec)
+		if err != nil {
+			return nil, nil, err
+		}
+		bound, workspace = &b, b.Workspace
+	}
+	release := func() {
+		if bound != nil {
+			s.opts.SessionSandboxes.Release(sessionID)
+		}
+	}
+	sess, err := tools.NewSession(workspace)
 	if err != nil {
+		release()
 		return nil, nil, err
 	}
 	if sess.Syntax, err = tools.ParseSyntaxMode(s.opts.Config.Tools.SyntaxCheck); err != nil {
+		release()
 		return nil, nil, err
 	}
 	// Extra roots come from the operator's config, applied to every session.
@@ -1521,25 +1917,36 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	dirs = append(dirs, s.opts.SkillDirs...)
 	for _, dir := range dirs {
 		if err := sess.AddRoot(dir); err != nil {
+			release()
 			return nil, nil, fmt.Errorf("additional_dirs: %w", err)
 		}
 	}
 
 	pol := s.newPolicy(policy.Mode(mode))
 	pol.Roots = sess.PolicyRoots
+	pol.Cwd = sess.WorkDir
+	layer, err := s.sessionLayer(spec)
+	if err == nil {
+		err = applyLayer(pol, layer)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
 	undo := agent.NewUndoLog(sess.RestoreFile, sess.RemoveFile)
 	// The server reads only each file's baseline, so one copy per file is kept, not one per edit.
 	undo.KeepFirst = true
 	sess.Checkpoint = undo.Record
 
 	live := &liveSession{
-		ID: sessionID, User: spec.User, Tenant: spec.Tenant,
+		ID: sessionID, User: spec.User, Tenant: spec.Tenant, workspace: workspace,
 		Created: time.Now(), Prompt: spec.Prompt, State: "running",
 		// Replaced when a turn starts; a session opened idle has nothing to cancel.
 		Cancel:  func() {},
-		allowed: map[string]bool{},
+		allowed: map[string]string{},
 		durable: s.approvalStore(),
 		undo:    undo,
+		snap:    takeSnapshot(sess.Root),
+		layer:   layer,
 		// A spec with no provider runs on the configured default.
 		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
 		model:    adapter.Profile().Name,
@@ -1566,7 +1973,15 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		approver = agent.AutoApprove{Yes: false}
 	}
 	budget := toolset.Budget(s.opts.Config)
-	if s.opts.SessionBash != nil && registry != nil {
+	if bound != nil {
+		if registry != nil {
+			if _, ok := registry.Get("bash"); ok {
+				registry = registry.Clone()
+				registry.Add(bound.Bash)
+			}
+		}
+		live.closeBash = func() error { release(); return nil }
+	} else if s.opts.SessionBash != nil && registry != nil {
 		if t, ok := registry.Get("bash"); ok {
 			if shared, ok := t.(tools.Bash); ok {
 				bash, release := s.opts.SessionBash(sessionID, rec, shared)
@@ -1580,7 +1995,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		registry = tools.BindStores(registry, vault)
 	}
 	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
-	cfg.SystemPrompt = toolset.SystemPrompt(s.opts.Workspace, adapter, s.skillListing(skillReg), own.Names())
+	cfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, s.skillListing(skillReg), own.Names())
 	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
 	// Background children belong to the session. An unattended run has
 	// nobody to come back to it, so its children are joined: it waits for
@@ -1609,6 +2024,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
+	toolset.Hook(loop, s.opts.Extensions, func(msg string, _ bool) { s.log.Warn("extension hook", "session", sessionID, "note", msg) })
 	loop.Budget = budget
 	loop.Provider = live.provider
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.
@@ -1650,7 +2066,7 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 	f := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol, Session: sess, Budget: budget, Config: cfg,
 		Workspace: sess.Root, Redact: rec.Redact, Background: true,
-		Store:       s.subagentStore(sessionID, spec, mode),
+		Store:       s.subagentStoreIn(sessionID, spec, mode, s.workspaceOfSess(sess)),
 		Definitions: s.state.agentDefs(),
 		// Only a provider this server offers sessions, by name, as the
 		// console's model picker; a subagent never falls back to another.
@@ -1664,10 +2080,15 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 // naming the session that spawned it, so a child is served only to whoever may
 // see its parent, is left out of lists, and is deleted with it.
 func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) agent.Store {
+	return s.subagentStoreIn(sessionID, spec, mode, s.opts.Workspace)
+}
+
+// subagentStoreIn is subagentStore naming workspace on each child's row.
+func (s *Server) subagentStoreIn(sessionID string, spec StartSpec, mode, workspace string) agent.Store {
 	if s.sessions == nil {
 		return s.store
 	}
-	tenant, user, workspace := storeTenant(s.opts.Config, spec.Tenant), spec.User, s.opts.Workspace
+	tenant, user := storeTenant(s.opts.Config, spec.Tenant), spec.User
 	return subSessions{EventStore: s.store, owns: func(ctx context.Context, childID, parentID string) (bool, error) {
 		// A resume is only for the session that started the child, as its owner.
 		getter, ok := s.sessions.(interface {
@@ -1687,7 +2108,7 @@ func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) ag
 		}
 		return s.sessions.CreateSession(ctx, store.SessionRecord{
 			ID: id, Tenant: tenant, User: user, Workspace: workspace,
-			Model: "subagent", Mode: mode, ParentID: parentID,
+			Model: "subagent", Mode: agent.SubagentMode(ctx, mode), ParentID: parentID,
 			Prompt: description, StartedAt: time.Now().UTC(),
 		})
 	}}
@@ -1766,6 +2187,9 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if s.sessions != nil && !ownsSession(rec.Tenant, rec.User, tenant, user) {
 		return nil, errNoSession
 	}
+	if err := s.checkSoleOwner(user); err != nil && claim {
+		return nil, err
+	}
 	// Before the claim, so a refusal leaves the session for its owner to retry.
 	vault, red, err := s.sessionSecrets(StartSpec{User: user, Tenant: tenant})
 	if err != nil {
@@ -1797,63 +2221,9 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		}
 	}
 
-	msgs, err := agent.Fork(events, 0)
-	if err != nil && messaged(events) {
-		return nil, fmt.Errorf("rebuild conversation: %w", err)
-	}
-	mode, ok := requestMode(s.opts.Config.Permissions.Mode, rec.Mode)
-	if !ok {
-		mode, _ = requestMode(s.opts.Config.Permissions.Mode, "")
-	}
-	registry, skillReg, _ := s.state.snapshot()
-	recorder := agent.NewRecorder(s.store, id, "")
-	recorder.Redact = red
-	recorder.Advance(events[len(events)-1].Seq)
-
-	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant}
-	if spec.Prompt == "" {
-		spec.Prompt = prompt
-	}
-	adapter, provider, lost := s.recordedProvider(id, events, rec.Model)
-	spec.Provider = provider
-	live, loop, err := s.buildLive(id, spec, mode, adapter, registry, skillReg, vault, recorder)
+	live, err := s.liveFromRecord(ctx, id, rec, events, prompt, user, tenant, vault, red, durable, claim)
 	if err != nil {
 		return nil, err
-	}
-	if lost {
-		// Recorded by the next turn, once claimed: opening a session to view it writes nothing.
-		live.fallback = &agent.ModelSwitched{Provider: s.opts.Config.Model.Default,
-			Model: adapter.Profile().Name, From: orDefaultStr(agent.LastModel(events), rec.Model)}
-	}
-	loop.SetHistory(msgs, rec.Turns)
-	if end, ok := agent.LastEnd(events); ok {
-		loop.CarryUsage(end)
-	}
-	// Results a background child left that the conversation never took,
-	// such as one that finished before a drain, arrive at the next boundary,
-	// once the session is claimed: a session opened only to view it writes
-	// nothing, and an idle delivery would. The allowance goes on from what
-	// the session already spent.
-	if !durable || claim {
-		loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
-	}
-	loop.Budget.Carry(agent.CarriedSpend(events))
-	live.Turns = rec.Turns
-	live.title = agent.TitleOf(events)
-	// Idle until the caller's prompt starts it: postMessage treats a running
-	// session as one to steer, and there is nothing running yet to steer.
-	live.State = "done"
-	live.Reason = agent.TerminalReason(rec.TerminalReason)
-	live.priorEnd = priorEnd(events, rec)
-	if durable {
-		// Claimed or not: a claim given back unused leaves the session to be claimed again.
-		live.unclaimed.Store(!claim)
-		recorder.Gate = func() error {
-			if live.fenced.Load() {
-				return errLeaseLost
-			}
-			return s.claimForWrite(id, live)
-		}
 	}
 
 	s.mu.Lock()
@@ -1873,6 +2243,81 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	s.running[id] = live
 	s.mu.Unlock()
 	s.log.Info("session resumed from record", "session", id, "user", user, "events", len(events))
+	return live, nil
+}
+
+// liveFromRecord rebuilds a session from its record and row to go on here,
+// not yet registered: idle, its conversation, model, budget and policy layer
+// as the record left them. claim says whether this process holds it now.
+func (s *Server) liveFromRecord(ctx context.Context, id string, rec store.SessionRecord, events []agent.Event,
+	prompt, user, tenant string, vault *secrets.Store, red agent.Redactor, durable, claim bool) (*liveSession, error) {
+	msgs, err := agent.Fork(events, 0)
+	if err != nil && messaged(events) {
+		return nil, fmt.Errorf("rebuild conversation: %w", err)
+	}
+	mode, ok := requestMode(s.opts.Config.Permissions.Mode, rec.Mode)
+	if !ok {
+		mode, _ = requestMode(s.opts.Config.Permissions.Mode, "")
+	}
+	registry, skillReg, _ := s.state.snapshot()
+	recorder := agent.NewRecorder(s.store, id, "")
+	recorder.Redact = red
+	recorder.Advance(events[len(events)-1].Seq)
+
+	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant, admin: s.isAdminCtx(ctx)}
+	if spec.Prompt == "" {
+		spec.Prompt = agent.WithheldText(red, prompt) // shown, as the record keeps it
+	}
+	adapter, provider, lost := s.recordedProvider(id, events, rec.Model)
+	spec.Provider = provider
+	live, loop, err := s.buildLive(id, spec, mode, adapter, registry, skillReg, vault, recorder)
+	if err != nil {
+		return nil, err
+	}
+	// When the session began, not when it was taken up: owners are judged by it.
+	if live.Created = rec.StartedAt; live.Created.IsZero() {
+		live.Created = events[0].CreatedAt
+	}
+	// A change of the layer since the record last named it is written by the
+	// next turn, as a change of model is.
+	live.layerNote = layerChange(events, live.layer)
+	if lost {
+		// Recorded by the next turn, once claimed: opening a session to view it writes nothing.
+		live.fallback = &agent.ModelSwitched{Provider: s.opts.Config.Model.Default,
+			Model: adapter.Profile().Name, From: orDefaultStr(agent.LastModel(events), rec.Model)}
+	}
+	loop.SetHistory(msgs, rec.Turns)
+	if end, ok := agent.LastEnd(events); ok {
+		loop.CarryUsage(end)
+	}
+	// Results a background child left that the conversation never took,
+	// such as one that finished before a drain, arrive at the next boundary,
+	// once the session is claimed: a session opened only to view it writes
+	// nothing, and an idle delivery would. The allowance goes on from what
+	// the session already spent.
+	if !durable || claim {
+		loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
+	}
+	loop.Budget.Carry(agent.CarriedSpend(events))
+	loop.NoteUnknownOutcomes(events)
+	live.Turns = rec.Turns
+	live.title = agent.TitleOf(events)
+	// Idle until the caller's prompt starts it: postMessage treats a running
+	// session as one to steer, and there is nothing running yet to steer.
+	live.State = "done"
+	live.Reason = agent.TerminalReason(rec.TerminalReason)
+	live.priorEnd = priorEnd(events, rec)
+	if durable {
+		// Claimed or not: a claim given back unused leaves the session to be claimed again.
+		live.unclaimed.Store(!claim)
+		recorder.Gate = func() error {
+			if live.fenced.Load() {
+				return errLeaseLost
+			}
+			return s.claimForWrite(id, live)
+		}
+	}
+
 	return live, nil
 }
 
@@ -1958,15 +2403,33 @@ func (s *Server) claimForWrite(id string, live *liveSession) error {
 		live.holdMu.Unlock()
 		return nil
 	}
+	// Counted before draining is read, so a drain waits for this claim to
+	// settle before it releases the holds.
+	s.claiming.Add(1)
+	defer s.claiming.Add(-1)
 	if s.draining.Load() {
 		return errDraining
 	}
-	newly, err := s.claimOpened(context.Background(), id, live)
+	ctx, cancel := context.WithTimeout(context.Background(), claimTimeout)
+	defer cancel()
+	newly, err := s.claimOpened(ctx, id, live)
 	if err != nil || !newly {
 		return err
 	}
 	s.holdClaim(id, live)
 	return nil
+}
+
+// claimTimeout bounds a workbench write's claim, so a stalled store cannot
+// hold claimMu, and the write, for ever.
+const claimTimeout = 10 * time.Second
+
+// waitClaims waits, up to limit, for the claims writes have started to settle.
+func (s *Server) waitClaims(limit time.Duration) {
+	deadline := time.Now().Add(limit)
+	for s.claiming.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // holdClaim keeps a claim taken for workbench work until it goes quiet, then
@@ -2416,20 +2879,6 @@ func (s *Server) listOwned(ctx context.Context, user string, limit int) ([]store
 	return s.sessions.ListSessions(ctx, limit)
 }
 
-// ownsStored reports whether the caller owns a session this node is not
-// running, found by id where the store can, so an older session is not missed.
-func (s *Server) ownsStored(r *http.Request, id string) bool {
-	g, ok := s.sessions.(sessionGetter)
-	if !ok {
-		return s.mayAccess(r, id)
-	}
-	rec, err := g.GetSession(r.Context(), id)
-	if err != nil {
-		return false
-	}
-	return ownsSession(rec.Tenant, rec.User, TenantOf(r.Context()), UserOf(r.Context()))
-}
-
 // ownsSession reports whether a caller may see a session.
 //
 // One definition used by both the list and the single-session lookup, because
@@ -2508,10 +2957,22 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
-		backlog, err := s.store.Events(id)
-		if err != nil || len(backlog) == 0 {
-			WriteError(w, http.StatusNotFound, "session not found")
-			return
+		// An administrator watching a scheduled run this process is running
+		// follows it as it goes; the stream only reads.
+		if _, sched := s.scheduledForAdmin(r, id); sched {
+			s.mu.RLock()
+			l := s.running[id]
+			s.mu.RUnlock()
+			if l != nil && l.Tenant == TenantOf(r.Context()) {
+				live, running = l, true
+			}
+		}
+		if !running {
+			backlog, err := s.store.Events(id)
+			if err != nil || len(backlog) == 0 {
+				WriteError(w, http.StatusNotFound, "session not found")
+				return
+			}
 		}
 	}
 
@@ -2715,9 +3176,15 @@ func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Live here whoever owns it: mayAccess has already admitted the caller.
 	s.mu.RLock()
-	_, live := s.running[id]
+	ls, live := s.running[id]
 	s.mu.RUnlock()
-	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live})
+	idle := false
+	if live {
+		ls.mu.Lock()
+		idle = ls.State == "idle"
+		ls.mu.Unlock()
+	}
+	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live, Idle: idle})
 	if r.URL.Query().Get("format") != "html" {
 		WriteJSON(w, http.StatusOK, rep)
 		return
@@ -2767,6 +3234,12 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
+		// A turn another process left running goes on here, and the message steers it.
+		if m := s.opts.TurnMover; m != nil && m.TakeOver(r.Context(), s, id, false) == nil {
+			live, ok = s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+		}
+	}
+	if !ok {
 		resumed, err := s.resumeSession(r.Context(), id, req.Prompt, UserOf(r.Context()), TenantOf(r.Context()), true)
 		switch {
 		case errors.Is(err, errNoSession):
@@ -2780,6 +3253,11 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			// of rotation", rather than as an error to show the user.
 			w.Header().Set("Retry-After", "5")
 			WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
+			return
+		case errors.Is(err, ErrPolicyLayer):
+			s.log.Error("resume refused: its policy layer", "session", id, "error", err)
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "the session was not continued: "+err.Error())
 			return
 		case err != nil:
 			s.log.Error("resume failed", "session", id, "error", err)
@@ -2829,6 +3307,14 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		live.fallback = nil
 	}
+	if live.layerNote != nil {
+		if _, err := live.Loop.Recorder.Record(agent.EvPolicyLayer, agent.ActorSystem, agent.Trusted, live.layerNote); err != nil {
+			s.log.Error("policy layer not recorded", "session", id, "error", err)
+			WriteError(w, http.StatusInternalServerError, "could not continue the session: its policy layer could not be recorded")
+			return
+		}
+		live.layerNote = nil
+	}
 
 	// The hold, with its liveness, comes before the run: a process that
 	// cannot record that it holds the session does not run it. A message
@@ -2842,6 +3328,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			s.releaseNodeIfQuiet(live)
 		}
 	}()
+	owner := s.ownerOf(live)
 	live.mu.Lock()
 	// While draining, nothing is started, steered or interrupted: a steering
 	// message could be dropped, and Send now would stop the turn the drain
@@ -2854,7 +3341,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// The owner's own admitted turn shows them active again, so wakes and
 	// suggestions a revoke held come back for a restored owner.
-	if UserOf(r.Context()) == live.User {
+	if UserOf(r.Context()) == owner {
 		live.ownerGone.Store(false)
 	}
 	// Busy means a run is live, not an ask pending: an ask can wait with no
@@ -2912,13 +3399,24 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	live.Turns++
 	if live.Prompt == "" {
-		live.Prompt = req.Prompt // a workbench session is named by its first message
+		live.Prompt = live.Loop.Withheld(req.Prompt) // a workbench session is named by its first message
 	}
 	s.startRunLocked(live, "follow-up", func(ctx context.Context) (agent.TerminalReason, error) {
 		return live.Loop.RunMessage(ctx, msg)
 	})
 	started = true
 	WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
+}
+
+// endRefused records the end of a run a hook refused before it began, when
+// nothing waits to run on, before the session is settled: the workbench and
+// other clients leave their live state on a run's end, which such a run
+// otherwise never records.
+func endRefused(ctx context.Context, live *liveSession, reason agent.TerminalReason, err error) {
+	// A cancelled run does not go on for what is queued, so its end is recorded too.
+	if err == nil && reason == agent.TermPromptRefused && (len(live.Loop.Queued()) == 0 || ctx.Err() != nil) {
+		live.Loop.EndRefused()
+	}
 }
 
 // startRunLocked starts a run on its own goroutine: a person's message or a
@@ -2939,7 +3437,7 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := start(ctx)
-		for live.settle(ctx, reason, err) {
+		for endRefused(ctx, live, reason, err); live.settle(ctx, reason, err); endRefused(ctx, live, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
 		waitSuggestion(live)
@@ -2965,9 +3463,9 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 	if errors.Is(err, agent.ErrNothingToWake) {
 		reason, err = l.Reason, nil
 	}
-	// A wake run stopped at its cap leaves a message queued after it last
-	// looked as a completed run does: it runs now.
-	if err == nil && ctx.Err() == nil && (reason == agent.TermCompleted || reason == agent.TermWakeLimit) && len(l.Loop.Queued()) > 0 {
+	// A wake run stopped at its cap, or a run whose message a hook refused,
+	// leaves a message queued after it last looked as a completed run does: it runs now.
+	if err == nil && ctx.Err() == nil && reason.RunsOnForQueued() && len(l.Loop.Queued()) > 0 {
 		return true
 	}
 	l.State = "done"
@@ -3043,6 +3541,12 @@ func (s *Server) RecoverOrphans(ctx context.Context) int {
 		_, here := s.running[id]
 		s.mu.RUnlock()
 		if here || ctx.Err() != nil {
+			return
+		}
+		if m := s.opts.TurnMover; m != nil {
+			if err := m.TakeOver(ctx, s, id, false); err == nil {
+				n++
+			}
 			return
 		}
 		events, err := s.store.Events(id)
@@ -3124,7 +3628,14 @@ func (s *Server) RecoverOwnAtStart(ctx context.Context) int {
 			if err != nil || !agent.Orphaned(events) {
 				return
 			}
-			if mine, err := r.ReclaimOwn(ctx, id, s.holder); err == nil && mine && s.reconcile(id, events) {
+			mine, err := r.ReclaimOwn(ctx, id, s.holder)
+			switch {
+			case err != nil || !mine:
+			case s.opts.TurnMover != nil:
+				if s.opts.TurnMover.TakeOver(ctx, s, id, true) == nil {
+					n++
+				}
+			case s.reconcile(id, events):
 				s.releaseNode(id)
 				n++
 			}
@@ -3195,6 +3706,11 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 		}
 	}
 	s.mu.RUnlock()
+	return s.stopRevoked(ctx, hit, user)
+}
+
+// stopRevoked is StopOwnerBackground for the sessions in hit, whose owner was user.
+func (s *Server) stopRevoked(ctx context.Context, hit []*liveSession, user string) int {
 	n := 0
 	ran := make([]chan struct{}, len(hit))
 	for i, live := range hit {
@@ -3244,13 +3760,89 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 	return n
 }
 
+// removedOwnerSweep is how often stopRemovedOwners runs under local accounts.
+const removedOwnerSweep = 15 * time.Second
+
+// sweepRemovedOwners runs stopRemovedOwners every interval, and at once when
+// the local accounts report a change, until ctx ends.
+func (s *Server) sweepRemovedOwners(ctx context.Context, every time.Duration) {
+	local := s.LocalAuth()
+	if local == nil || s.opts.OwnerActive != nil || !s.ownerSweep.CompareAndSwap(false, true) {
+		return
+	}
+	poke := make(chan struct{}, 1)
+	local.OnChange(func(string) {
+		select {
+		case poke <- struct{}{}:
+		default:
+		}
+	})
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-poke:
+		}
+		s.stopRemovedOwners(ctx)
+	}
+}
+
+// stopRemovedOwners stops the work this process runs for local accounts that
+// were removed, perhaps by `abhed user remove` in another process, or removed
+// and made again after the session began. A store that cannot be read stops
+// nothing.
+func (s *Server) stopRemovedOwners(ctx context.Context) int {
+	local := s.LocalAuth()
+	if local == nil || s.opts.OwnerActive != nil {
+		return 0
+	}
+	lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	users, err := local.Store.List(lctx)
+	cancel()
+	if err != nil {
+		return 0
+	}
+	made := make(map[string]time.Time, len(users))
+	for _, u := range users {
+		made[auth.LocalOwner(u.Username)] = u.CreatedAt
+	}
+	// Judged per session: an account made again keeps the sessions it began.
+	gone := map[string][]*liveSession{}
+	s.mu.RLock()
+	for _, live := range s.running {
+		// releaseStale may have released it on a request's recheck already;
+		// its work still runs, so judge it by the owner it had.
+		owner := strings.TrimPrefix(live.User, auth.UnclaimedPrefix)
+		if !strings.HasPrefix(owner, auth.ProviderLocal+":") {
+			continue
+		}
+		at, ok := made[owner]
+		// An account made after the session began is another person under the old name.
+		// The times are from two clocks; a skew between them is documented as the bound.
+		if ok && (at.IsZero() || live.Created.IsZero() || !at.After(live.Created)) {
+			continue
+		}
+		gone[owner] = append(gone[owner], live)
+	}
+	s.mu.RUnlock()
+	n := 0
+	for owner, hit := range gone {
+		n += s.stopRevoked(ctx, hit, owner)
+	}
+	return n
+}
+
 // ownerActive asks Options.OwnerActive, or the local accounts when there
 // are any: the owner's account must still exist. live.User is an owner key.
 func (s *Server) ownerActive(live *liveSession) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	owner := s.ownerOf(live)
 	if s.opts.OwnerActive != nil {
-		return s.opts.OwnerActive(ctx, live.Tenant, live.User)
+		return s.opts.OwnerActive(ctx, live.Tenant, owner)
 	}
 	local := s.LocalAuth()
 	if local == nil {
@@ -3262,7 +3854,7 @@ func (s *Server) ownerActive(live *liveSession) bool {
 	}
 	for _, u := range users {
 		// Sessions are owned by the owner key, as Identity.Owner makes it.
-		if auth.LocalOwner(u.Username) == live.User {
+		if auth.LocalOwner(u.Username) == owner {
 			return true
 		}
 	}
@@ -3331,7 +3923,12 @@ func (s *Server) fence(live *liveSession) {
 	if cancelCause != nil {
 		cancelCause(agent.StopCause{Reason: agent.TermLeaseLost})
 	}
-	live.closeTerminals(closedWithSession)
+	// Ended before the sandbox lets the session go; their ends are refused, the lease being gone.
+	wctx, cancel := context.WithTimeout(context.Background(), turnEndWait)
+	if !waitClosed(live.closeTerminals(closedWithSession), wctx.Done()) {
+		s.log.Warn("terminals did not end before the session was fenced", "session", live.ID)
+	}
+	cancel()
 	live.Loop.Background.Close(agent.TermLeaseLost)
 	s.releaseBash(live)
 	s.sessionEnded(live.ID)
@@ -3370,6 +3967,39 @@ func (s *Server) releaseBashes() {
 	}
 }
 
+// releaseClaims lets go, at once, of every session this process still holds.
+// A handed-over session is no longer this process's, and is left as it is.
+// A run still going (cancelRunning gave up waiting) keeps its claim, so no
+// other replica writes beside it; the run's own end releases it.
+func (s *Server) releaseClaims() {
+	s.mu.RLock()
+	all := make([]*liveSession, 0, len(s.running))
+	for _, live := range s.running {
+		all = append(all, live)
+	}
+	s.mu.RUnlock()
+	var wg sync.WaitGroup
+	for _, live := range all {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			live.mu.Lock()
+			stop := live.beatStop
+			if live.ran != nil {
+				stop = nil
+			} else {
+				live.beatStop = nil
+			}
+			live.mu.Unlock()
+			if stop != nil {
+				stop()
+				s.releaseNode(live.ID)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // releaseNodeNow ends the hold whatever is live, for a session going away
 // (deleted, or the process draining).
 func (s *Server) releaseNodeNow(live *liveSession) {
@@ -3391,7 +4021,10 @@ func (s *Server) releaseNodeIfQuiet(live *liveSession) {
 	live.holdMu.Unlock()
 	live.mu.Lock()
 	stop := live.beatStop
-	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0
+	// A suspended run keeps its claim until SuspendRunning parks the row,
+	// so no writer slips in between the release and the mark.
+	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0 &&
+		live.Reason != agent.TermHandedOver
 	if quiet {
 		live.beatStop = nil
 	}
@@ -3558,17 +4191,23 @@ type approveRequest struct {
 func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req approveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		badBody(w, err, "invalid JSON body")
+	// The session is looked up first, so an unknown one is 404 whatever the body.
+	decErr := json.NewDecoder(r.Body).Decode(&req)
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	if !ok {
+		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	}
+	// Too large is refused as such whoever sends it.
+	if tooBig := new(http.MaxBytesError); errors.As(decErr, &tooBig) {
+		badBody(w, decErr, "invalid JSON body")
 		return
 	}
-	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		// The session is not here. If the store holds the approval, answer it
 		// anyway: the waiting node polls for the result, so the reviewer's
 		// decision still arrives. This is the case sticky routing exists to
 		// avoid and the one durability exists to survive when it does not.
-		if s.answerElsewhere(w, r, id, req) {
+		if decErr == nil && s.answerElsewhere(w, r, id, req) {
 			return
 		}
 		if node := s.elsewhere(r.Context(), id); node != "" {
@@ -3578,6 +4217,10 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		WriteError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if decErr != nil {
+		badBody(w, decErr, "invalid JSON body")
 		return
 	}
 	s.answerHere(w, r, live, req)
@@ -3647,17 +4290,27 @@ func (c *redirectCapture) Write(b []byte) (int, error) {
 }
 
 func (s *Server) endSignIn(w http.ResponseWriter, r *http.Request) {
-	// The local session the cookie names ends even when its account cannot be read.
-	if l := s.LocalAuth(); l != nil && l.HasSession(r) {
-		l.SignOut(w, r)
-		return
+	// The local session the cookie names ends even when its account cannot be
+	// read; a single sign-on session the browser also holds is ended after it.
+	l := s.LocalAuth()
+	endedLocal := false
+	if l != nil && l.HasSession(r) {
+		l.EndRequestSession(w, r)
+		endedLocal = true
 	}
 	providers := s.signIns()
 	for _, p := range providers {
+		if p == auth.Provider(l) {
+			continue
+		}
 		if _, found := p.Identify(r); found {
 			p.SignOut(w, r)
 			return
 		}
+	}
+	if endedLocal {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
 	}
 	providers[0].SignOut(w, r)
 }
@@ -3665,7 +4318,25 @@ func (s *Server) endSignIn(w http.ResponseWriter, r *http.Request) {
 // whoami answers for whichever session exists, and says which mechanism
 // holds it, so the console can show the right chip.
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
-	id, mode, err := s.authMiddleware().Identify(w, r)
+	mw := s.authMiddleware()
+	id, mode, err := mw.Identify(w, r)
+	if id == nil && err == nil {
+		// A command line or a workload calls with a bearer token, as on
+		// /v1/cli/whoami; one that does not verify is refused the same way.
+		tid, sent, terr := mw.IdentifyToken(r)
+		if sent {
+			if terr != nil {
+				code := http.StatusUnauthorized
+				if auth.IsForbidden(terr) {
+					code = http.StatusForbidden
+				}
+				WriteError(w, code, terr.Error())
+				return
+			}
+			WriteJSON(w, http.StatusOK, tokenWhoami(tid, orDefaultStr(s.opts.Config.Auth.Mode, "none")))
+			return
+		}
+	}
 	if id == nil {
 		out := map[string]any{
 			"authenticated": false,
@@ -3765,6 +4436,11 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 	//
 	// A new account gets NO groups, so an invited user is an ordinary user
 	// until an administrator promotes them.
+	// One sign-up at a time here, from the name check to the account, so two
+	// for one name cannot both spend an invite.
+	s.signupMu.Lock()
+	defer s.signupMu.Unlock()
+	redeemed := false
 	if !s.opts.Config.Auth.AllowSignup {
 		if s.opts.Invites == nil {
 			WriteJSON(w, http.StatusForbidden, map[string]string{
@@ -3798,6 +4474,7 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 				"error": err.Error()})
 			return
 		}
+		redeemed = true
 	}
 
 	u := auth.User{
@@ -3805,6 +4482,12 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		Tenant: orDefaultStr(s.opts.Config.Auth.DefaultTenant, "default"),
 	}
 	if err := local.CreateUser(r.Context(), u, req.Password); err != nil {
+		// Another server may have made the name meanwhile: the code goes back.
+		if rel, ok := s.opts.Invites.(InviteReleaser); ok && redeemed {
+			if rerr := rel.Release(r.Context(), req.Invite, req.Username); rerr != nil {
+				s.log.Error("give back an invite after a failed sign-up", "user", req.Username, "err", rerr)
+			}
+		}
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -3817,6 +4500,21 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// tokenWhoami is whoami's answer for a bearer token: who it names and what
+// it was narrowed to, with no browser session to sign out of or switch.
+func tokenWhoami(id *auth.Identity, mode string) map[string]any {
+	me := map[string]any{
+		"authenticated": true, "auth_mode": mode, "credential": "token",
+		"subject": id.Subject, "email": id.Email, "name": id.Name,
+		"tenant": id.Tenant, "groups": id.Groups, "owner": id.Owner(),
+		"provider": id.Provider, "expires": id.Expires,
+	}
+	if len(id.Scopes) > 0 {
+		me["scopes"] = id.Scopes
+	}
+	return me
 }
 
 // whoamiDisabled reports that this deployment runs without authentication.
@@ -3918,6 +4616,24 @@ type overviewResponse struct {
 	Sessions       int      `json:"sessions"`
 	Events         int64    `json:"events"`
 	Running        int      `json:"running"`
+	// WorkspaceConfig is whether the workspace's .abhed/config.json is
+	// trusted and which of its settings were set aside, for a signed-in
+	// caller or where nobody signs in; absent when the workspace has none.
+	WorkspaceConfig *overviewTrust `json:"workspace_config,omitempty"`
+}
+
+// overviewTrust is the workspace configuration's trust, without its values.
+type overviewTrust struct {
+	Trusted bool              `json:"trusted"`
+	Reason  string            `json:"reason"`
+	Applied []string          `json:"applied,omitempty"`
+	Ignored []overviewIgnored `json:"ignored,omitempty"`
+}
+
+// overviewIgnored is one setting set aside; its value stays in the file.
+type overviewIgnored struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -3991,6 +4707,24 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	// disclosed only to someone who has already authenticated.
 	if o.Authenticated {
 		o.Workspace = s.opts.Workspace
+	}
+	if mw := s.authMiddleware(); (o.Authenticated || len(mw.Providers) == 0 && mw.Verifier == nil && !mw.TrustHeaders) &&
+		cfg.Workspace.File != "" {
+		t := &overviewTrust{Trusted: cfg.Workspace.Trusted, Reason: cfg.Workspace.Reason, Applied: cfg.Workspace.Applied}
+		seen := map[string]bool{}
+		for _, k := range cfg.Workspace.Ignored {
+			seen[k.Key] = true
+			t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+		}
+		// Trust does not reach every setting: what the file made that was set
+		// aside anyway, such as a language server, is listed with why.
+		for _, k := range cfg.SetAside {
+			if k.Layer == config.LayerWorkspace && !seen[k.Key] {
+				seen[k.Key] = true
+				t.Ignored = append(t.Ignored, overviewIgnored{Key: k.Key, Reason: k.Reason})
+			}
+		}
+		o.WorkspaceConfig = t
 	}
 
 	s.mu.RLock()
@@ -4161,30 +4895,50 @@ func (s *Server) releaseNode(sessionID string) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Tried again within one budget: a claim left behind holds the session
+	// from every other node until it goes stale.
+	ctx, cancel := context.WithTimeout(context.Background(), releaseRetry)
 	defer cancel()
-	if err := r.ReleaseNode(ctx, sessionID, s.holder); err != nil {
-		s.log.Warn("could not release session claim", "session", sessionID, "err", err)
+	var err error
+	for wait := 200 * time.Millisecond; ; wait *= 2 {
+		if err = r.ReleaseNode(ctx, sessionID, s.holder); err == nil || errors.Is(err, store.ErrHeldElsewhere) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			s.log.Warn("could not release session claim; it lapses once stale", "session", sessionID,
+				"err", err, "stale_after", nodeStale)
+			return
+		case <-time.After(wait):
+		}
 	}
 }
+
+// releaseRetry bounds the tries at giving a claim back; a variable for tests.
+var releaseRetry = 10 * time.Second
 
 // answerElsewhere records a decision for a session this node is not running,
 // and reports whether it did. The node that is waiting polls for the result,
 // so the answer is delivered without the request ever reaching it.
 func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, sessionID string, req approveRequest) bool {
 	d := s.approvalStore()
-	// The store's rows do not carry the request id, so an answer naming one
-	// is left to the node running the session, which can check it.
-	if d == nil || req.RequestID != "" {
+	if d == nil {
 		return false
 	}
 	// The same owner check the local path makes, against the stored row:
 	// without it anyone signed in could answer another person's card.
-	if !s.ownsStored(r, sessionID) {
+	tenant, owner, mayAnswer := s.storedAnswerer(r, sessionID)
+	if !mayAnswer {
 		return false
 	}
 	pending, found, err := d.PendingApproval(r.Context(), sessionID)
 	if err != nil || !found {
+		return false
+	}
+	// An answer naming a request is recorded only on that request's row. One
+	// naming another (perhaps not asked yet), or a row from before rows carried
+	// the id, is left to the node running the session.
+	if req.RequestID != "" && req.RequestID != pending.RequestID {
 		return false
 	}
 	// Only a node running the session waits on the row. A row left by a
@@ -4196,6 +4950,11 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 	}
 	if req.Scope != "" && req.Scope != pending.Scope {
 		WriteError(w, http.StatusBadRequest, "scope must be empty or the scope this request offered")
+		return true
+	}
+	if !s.gateAnswer(w, r, ApprovalAnswer{Tenant: tenant, SessionID: sessionID, Owner: owner, Request: pending.ID,
+		Tool: pending.Tool, Args: withheldArgs(pending.Args), Reason: pending.Reason, Since: pending.AskedAt,
+		By: UserOf(r.Context()), Approved: req.Approved, Scope: req.Scope}) {
 		return true
 	}
 	answered, err := d.AnswerApproval(r.Context(), pending.ID, req.Approved, req.Scope, UserOf(r.Context()))
@@ -4325,6 +5084,14 @@ func (s *Server) releaseStale(local *auth.LocalAuth, username string) {
 	}
 }
 
+// ownerOf is live's owner key. It is read under s.mu, which every change to
+// it holds; call it holding neither s.mu nor live.mu.
+func (s *Server) ownerOf(live *liveSession) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return live.User
+}
+
 // ReleaseSessions moves the sessions this process holds for owner in tenant
 // to auth.UnclaimedOwner, as a removed account's rows are, and returns how many.
 func (s *Server) ReleaseSessions(tenant, owner string) int {
@@ -4336,6 +5103,25 @@ func (s *Server) ReleaseSessions(tenant, owner string) int {
 	n := 0
 	for _, live := range s.running {
 		if live.Tenant == tenant && live.User == owner {
+			live.User = auth.UnclaimedOwner(owner)
+			n++
+		}
+	}
+	return n
+}
+
+// ReleaseSessionsBefore is ReleaseSessions for the sessions this process
+// holds that began before before, wherever they began: an account made again
+// at before owns none of them, and keeps those begun since.
+func (s *Server) ReleaseSessionsBefore(tenant, owner string, before time.Time) int {
+	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) || before.IsZero() {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, live := range s.running {
+		if live.Tenant == tenant && live.User == owner && live.Created.Before(before) {
 			live.User = auth.UnclaimedOwner(owner)
 			n++
 		}
@@ -4417,8 +5203,21 @@ func badBody(w http.ResponseWriter, err error, msg string) {
 	WriteError(w, http.StatusBadRequest, msg)
 }
 
-// ListenAndServe starts the HTTP server.
+// ListenAndServe starts the HTTP server. With Options.TLS set every
+// connection is a TLS one.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	return s.serve(ctx, func() (net.Listener, error) { return net.Listen("tcp", s.opts.Addr) })
+}
+
+// Serve is ListenAndServe on a listener the caller opened; it closes ln.
+// Connections may queue on ln while the startup sweep runs.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	return s.serve(ctx, func() (net.Listener, error) { return ln, nil })
+}
+
+// serve opens its listener only after the startup sweep, so nothing is
+// accepted, even into the backlog, before it has finished.
+func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error)) error {
 	srv := &http.Server{
 		Addr:              s.opts.Addr,
 		Handler:           s.Handler(),
@@ -4439,7 +5238,23 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// a crashed process left open reconciled, before anything is served; then
 	// again every stale window, by staleness alone.
 	s.RecoverOwnAtStart(ctx)
+	if s.opts.SessionSandboxes != nil {
+		// Sandboxes whose session is gone, as a restart finds them; none made from now on.
+		since := time.Now()
+		go func() {
+			if err := s.opts.SessionSandboxes.Sweep(ctx, since, s.sessionExists); err != nil && ctx.Err() == nil {
+				s.log.Warn("removing the sandboxes of deleted sessions", "error", err)
+			}
+		}()
+	}
+	ln, err := listen()
+	if err != nil {
+		return err
+	}
+	srv.Addr = ln.Addr().String()
 	go s.sweepOrphans(ctx, nodeStale)
+	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
+	srv.RegisterOnShutdown(s.endStreams)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -4452,15 +5267,45 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			s.log.Warn("shutdown did not complete cleanly", "err", err)
 		}
 		s.releaseBashes()
+		// Nothing more runs here: a claim a tab's work took while the drain
+		// ran would otherwise hold the session from every replica until stale.
+		s.releaseClaims()
 	}()
-	s.log.Info("abhed server listening", "addr", s.opts.Addr, "workspace", s.opts.Workspace)
-	err := srv.ListenAndServe()
+	s.log.Info("abhed server listening", "addr", srv.Addr, "workspace", s.opts.Workspace, "tls", s.opts.TLS != nil)
+	if s.opts.TLS != nil {
+		srv.TLSConfig = s.opts.TLS
+		err = srv.ServeTLS(ln, "", "")
+	} else {
+		err = srv.Serve(ln)
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		// Serve returns as soon as Shutdown begins. Returning then would let
 		// the process exit before cancelled turns record how they ended.
 		<-stopped
 	}
 	return err
+}
+
+// untilShutdown runs a stream's handler with a context that also ends when
+// the HTTP shutdown begins, after the drain, so turns finish in view.
+func (s *Server) untilShutdown(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.streamsEnd == nil {
+			h(w, r)
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		stop := context.AfterFunc(s.streamsEnd, cancel)
+		defer func() { stop(); cancel() }()
+		h(w, r.WithContext(ctx))
+	}
+}
+
+// endStreams ends every page stream open and any opened after it.
+func (s *Server) endStreams() {
+	if s.endStreamsNow != nil {
+		s.endStreamsNow()
+	}
 }
 
 // drain stops this node taking new turns and gives the running ones until
@@ -4473,8 +5318,18 @@ func (s *Server) drain() {
 	s.draining.Store(true)
 	// Alongside the drain, so closing terminals adds nothing to the worst case.
 	idleClosed := make(chan struct{})
-	go func() { defer close(idleClosed); s.closeIdle() }()
+	go func() {
+		defer close(idleClosed)
+		// A first write that passed the draining check before it was set may
+		// still be claiming; its hold is released with the others.
+		deadline := time.Now().Add(idleBudget)
+		s.waitClaims(time.Until(deadline) - turnEndWait)
+		s.closeIdle(deadline)
+	}()
 	defer func() { <-idleClosed }()
+	streamsEnded := make(chan struct{})
+	go func() { defer close(streamsEnded); s.cpStreams.shutdown(turnEndWait) }()
+	defer func() { <-streamsEnded }()
 
 	if s.opts.DrainTimeout > 0 {
 		deadline := time.NewTimer(s.opts.DrainTimeout)
@@ -4490,7 +5345,7 @@ func (s *Server) drain() {
 			case <-deadline.C:
 				s.log.Warn("drain budget spent, ending turns still running",
 					"turns", s.runningCount())
-				s.cancelRunning()
+				s.stopRunning()
 				return
 			case <-poll.C:
 			}
@@ -4498,12 +5353,21 @@ func (s *Server) drain() {
 		s.log.Info("drained with no turns left running")
 		return
 	}
+	s.stopRunning()
+}
+
+// stopRunning ends the turns a drain did not wait out, as a shutdown, after
+// an edition's TurnMover has moved those it can.
+func (s *Server) stopRunning() {
+	if m := s.opts.TurnMover; m != nil {
+		m.HandOver(context.Background(), s)
+	}
 	s.cancelRunning()
 }
 
 // closeIdle ends the terminals of sessions opened with no prompt and marks
 // their records ended, so a restarted server can reopen them from the record.
-func (s *Server) closeIdle() {
+func (s *Server) closeIdle(by time.Time) {
 	s.mu.Lock()
 	var idle []*liveSession
 	for _, live := range s.running {
@@ -4523,32 +5387,45 @@ func (s *Server) closeIdle() {
 	for _, live := range idle {
 		closing = append(closing, live.closeTerminals(closedWithSession)...)
 	}
-	deadline := time.NewTimer(turnEndWait)
-	defer deadline.Stop()
-wait:
-	for _, done := range closing {
-		select {
-		case <-done:
-		case <-deadline.C:
-			s.log.Warn("terminals did not record their end before shutdown")
-			break wait
-		}
+	wctx, cancel := context.WithTimeout(context.Background(), turnEndWait)
+	defer cancel()
+	if !waitClosed(closing, wctx.Done()) {
+		s.log.Warn("terminals did not record their end before shutdown")
 	}
+	// In parallel under one deadline: one at a time, a stalled store cost each
+	// session its own wait.
+	var wg sync.WaitGroup
 	for _, live := range idle {
 		if live.unclaimed.Load() {
 			continue // its row still holds the end it was opened with
 		}
-		live.holdMu.Lock()
-		held := live.held
-		live.holdMu.Unlock()
-		if held {
-			s.releaseHeld(live.ID, live, true) // workbench work alone: ended as it was opened
-			continue
-		}
-		_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
-			agent.SessionEnded{Reason: agent.TermShutdown})
+		wg.Add(1)
+		go func(live *liveSession) {
+			defer wg.Done()
+			live.holdMu.Lock()
+			held := live.held
+			live.holdMu.Unlock()
+			if held {
+				s.releaseHeld(live.ID, live, true) // workbench work alone: ended as it was opened
+				return
+			}
+			_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
+				agent.SessionEnded{Reason: agent.TermShutdown})
+		}(live)
+	}
+	ended := make(chan struct{})
+	go func() { wg.Wait(); close(ended) }()
+	select {
+	case <-ended:
+	case <-time.After(max(time.Until(by), time.Second)):
+		s.log.Warn("idle sessions did not record their end before shutdown")
 	}
 }
+
+// idleBudget bounds everything a shutdown does for idle sessions: waiting for
+// claims in flight, closing their terminals, and recording their ends and
+// giving back their claims, all of them together.
+const idleBudget = 15 * time.Second
 
 func (s *Server) runningCount() int {
 	s.mu.Lock()

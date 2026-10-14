@@ -168,9 +168,8 @@ func (l Limits) controllers() []string {
 	return out
 }
 
-// ParseSize reads a size as a configuration gives it: "max", a byte count, or
-// a count with K, M, G or T (powers of 1024, with an optional "i" and "B").
-// An empty string is zero, which leaves the limit unset.
+// ParseSize reads a size as a configuration gives it: "max", a byte count, or a
+// count with K, M, G or T (powers of 1024, with an optional "i" and "B").
 func ParseSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	switch strings.ToLower(s) {

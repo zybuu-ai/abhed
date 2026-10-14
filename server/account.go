@@ -46,7 +46,7 @@ const $ = (id) => document.getElementById(id);
 try{ if(new URLSearchParams(location.search).get('must_change')) $('must').hidden = false; }catch{}
 fetch('/v1/whoami').then(r => r.json()).then(me => {
   if(!me.authenticated){ location.href = '/'; return; }
-  if(!me.password_url){ document.querySelector('main').textContent = 'This account signs in through your identity provider; change its password there.'; return; }
+  if(!me.password_url){ $('f').hidden = true; $('must').hidden = true; $('who').textContent = 'This account signs in through your identity provider; change its password there.'; return; }
   $('who').textContent = 'Signed in as ' + (me.email || me.name || me.subject) + '.';
   if(me.must_change_password) $('must').hidden = false;
 }).catch(() => {});
@@ -96,12 +96,6 @@ a{color:var(--acc)}nav{margin-top:22px}
 // signOutScript is the sign-out both pages above run. The form stays as the
 // fallback without script; the server accepts it by Sec-Fetch-Site.
 const signOutScript = `// A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
-async function signOut(){
-  try{
-    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
-    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
-  }catch{}
-  location.href = '/logout';
-}
+/*{{SIGN_OUT}}*/
 document.getElementById('so').addEventListener('submit', e => { e.preventDefault(); signOut(); });
 `

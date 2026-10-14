@@ -28,7 +28,8 @@
 // against the agent and against accidental or partial edits, and verifiable
 // offline. It is not proof against the machine's owner, who can rewrite a
 // file and compute a new chain. Options.Anchor is where a witness outside the
-// machine can be given each head; this edition does not provide one.
+// machine is given each head (package store/witness, record.witness), which
+// makes a rewrite or a restored older copy show against what it holds.
 //
 // # Writes
 //
@@ -39,9 +40,11 @@
 //
 // # Retention
 //
-// Nothing is deleted automatically. There is no SessionDeleter: pruning is
-// an explicit command that writes a tombstone (id, head hash, time) to the
-// index, and a managed record.retention_days can require it.
+// Nothing is deleted automatically. Pruning is an explicit command that
+// writes a tombstone (id, head hash, time) to the index, and a managed
+// record.retention_days can require it. DeleteSession (agent.SessionDeleter)
+// is a prune by the person, used for a delete and for a start refused after
+// its session was recorded.
 package local
 
 import (
@@ -121,6 +124,27 @@ type Entry struct {
 	Subagent bool
 	// Pruned marks a session removed by prune; only its tombstone remains.
 	Pruned bool
+	// Tombstone is what the prune found, set when Pruned.
+	Tombstone Tombstone
+}
+
+// Tombstone is what a prune recorded of the session it removed: its head,
+// whether its file was already gone, and whether it verified.
+type Tombstone struct {
+	Head       Head
+	Missing    bool
+	Verified   bool
+	Unverified string // why it did not verify
+	// Witnessed are the record's hashes at the lines the witness held when
+	// it was pruned, and WitnessChecked marks a prune that read the witness.
+	Witnessed      []WitnessedHead
+	WitnessChecked bool
+}
+
+// WitnessedHead is a line of a session's chain and its hash.
+type WitnessedHead struct {
+	Lines int64  `json:"lines"`
+	Hash  string `json:"hash"`
 }
 
 // Head is the last line of a session's chain: how many lines it has, and

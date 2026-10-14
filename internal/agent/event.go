@@ -98,6 +98,15 @@ const (
 	// EvSessionResumed marks an editor continuing a recorded session in a new
 	// agent: the trust it opened under, before the settings it refused.
 	EvSessionResumed EventType = "session.resumed"
+	// EvSandboxBound links the session to the control-plane sandbox its
+	// commands run in, before the first of them in this process.
+	EvSandboxBound EventType = "sandbox.bound"
+	// EvPolicyLayer records the permission rules an edition added to the
+	// session's policy as a layer of their own, such as a workspace's.
+	EvPolicyLayer EventType = "policy.layer"
+	// EvStartupTrusted names the shell start-up files left unjudged this run
+	// because they match the person's baseline (path and sha256).
+	EvStartupTrusted EventType = "policy.startup_trusted"
 )
 
 type Actor string
@@ -146,6 +155,13 @@ const (
 	// do its background children.
 	TermWakeLimit TerminalReason = "wake_limit"
 )
+
+// RunsOnForQueued reports whether a run that ended this way goes on for a
+// message queued after it last looked: it completed, a wake reached its cap,
+// or a hook refused its own message, which leaves the next one to be judged.
+func (r TerminalReason) RunsOnForQueued() bool {
+	return r == TermCompleted || r == TermWakeLimit || r == TermPromptRefused
+}
 
 // ExitCode maps a terminal reason to a process exit code for headless runs.
 func (r TerminalReason) ExitCode() int {
@@ -235,6 +251,9 @@ type Observation struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// NotRun marks the answer to a call the turn ended before running.
 	NotRun bool `json:"not_run,omitempty"`
+	// OutcomeUnknown marks the answer to a call that may have run on a
+	// process that stopped before recording its result; see ContinueTurn.
+	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
 }
 
 type Message struct {
@@ -247,6 +266,10 @@ type Message struct {
 	ClientID string `json:"client_id,omitempty"`
 	// Steered marks a message sent while a run was working, to redirect it.
 	Steered bool `json:"steered,omitempty"`
+	// SecretsWithheld names, comma-separated, the stored secrets whose values
+	// the message held: the model got [secret:NAME] in their place. A string
+	// keeps Message comparable.
+	SecretsWithheld string `json:"secrets_withheld,omitempty"`
 }
 
 // DroppedMessage is a queued message the model never saw. It is not a
@@ -293,8 +316,11 @@ type ModelCall struct {
 	ToolCalls    int   `json:"tool_calls"`
 	// CutOff marks a turn that spent the whole output budget: the model was
 	// still writing when the limit ended it, so what it said is not an answer.
-	CutOff bool   `json:"cut_off,omitempty"`
-	Error  string `json:"error,omitempty"`
+	CutOff bool `json:"cut_off,omitempty"`
+	// Estimated marks token counts the harness worked out itself, for a reply
+	// stopped before its provider reported any.
+	Estimated bool   `json:"estimated,omitempty"`
+	Error     string `json:"error,omitempty"`
 	// Retryable marks an Error from a call or stall timeout: nothing was wrong
 	// with the request, so the same call may be sent again.
 	Retryable bool `json:"retryable,omitempty"`
@@ -661,13 +687,22 @@ var withheldPayload = []byte(`{"withheld":"` + Withheld + `"}`)
 // redactor returns the recorder's redactor, or nil when none is set, a typed
 // nil included.
 func (r *Recorder) redactor() Redactor {
-	if r == nil || r.Redact == nil {
+	if r == nil {
 		return nil
 	}
-	if v := reflect.ValueOf(r.Redact); v.Kind() == reflect.Pointer && v.IsNil() {
+	return usableRedactor(r.Redact)
+}
+
+// usableRedactor is red, or nil when it is nil or holds a nil pointer, which
+// would panic on its first call.
+func usableRedactor(red Redactor) Redactor {
+	if red == nil {
 		return nil
 	}
-	return r.Redact
+	if v := reflect.ValueOf(red); v.Kind() == reflect.Pointer && v.IsNil() {
+		return nil
+	}
+	return red
 }
 
 func NewRecorder(store Store, sessionID, parentID string) *Recorder {

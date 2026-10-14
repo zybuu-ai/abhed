@@ -13,6 +13,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -84,7 +85,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return 2
 	}
 	modeFlagGiven = f.mode != ""
-	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinRules(f.deny, f.disallowedTools), f.addDirs); err != nil {
+	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinDenyRules(f.deny, f.disallowedTools), splitLists(f.addDirs)); err != nil {
 		fail(err)
 	}
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
@@ -161,6 +162,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
+	pol.Cwd = sess.WorkDir
+	pol.StartupBaseline = config.StartupBaseline()
 	pol.Session = &policy.Overlay{}
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
@@ -172,6 +175,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fail(err)
 	}
 	defer func() { _ = sb.Close() }()
+	// Abhed's own git in the workspace (the prompt's branch, worktrees) runs inside it too.
+	defer hostgit.Register(workspace, sb)()
 	// With a floor the session does not wait: a process floor is never
 	// none, and a none floor is shown as such until the answer is in.
 	if sb.floor == "" && sb.Tier() == sandbox.TierNone {
@@ -197,7 +202,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	vault := openVault()
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
-		Bash: tools.Bash{Sandbox: sb.Command,
+		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
+			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
 		Parts:   toolset.All,
@@ -391,6 +397,15 @@ func resolveWorkspace(dir string) (string, error) {
 	return abs, nil
 }
 
+// splitLists splits each value of a repeated comma-separated flag on its own.
+func splitLists(values []string) []string {
+	var out []string
+	for _, v := range values {
+		out = append(out, splitRules(v)...)
+	}
+	return out
+}
+
 func splitRules(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil
@@ -441,8 +456,15 @@ func must(err error) {
 
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
-	tools.EndBackgroundShells(shellEndWait)
+	endAtExit()
 	os.Exit(1)
+}
+
+// endAtExit ends what an exit would leave behind: background shells, and
+// MCP servers' containers, which their closes did not reach.
+func endAtExit() {
+	tools.EndBackgroundShells(shellEndWait)
+	sandbox.EndServers()
 }
 
 // shellEndWait bounds how long an exit waits for background shells to end.

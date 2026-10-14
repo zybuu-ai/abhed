@@ -36,8 +36,8 @@ happened — so it can be adopted rather than rebuilt. It runs where the
 organisation needs it: privately hosted, or fully air-gapped, with the same
 guarantees at both tiers.
 
-Two honest qualifications. Good open-source harnesses exist, and we name the
-closest ones below. And for an organisation whose data can go to a vendor's
+Two honest qualifications. Good open-source harnesses exist, and we describe
+the closest ones below. And for an organisation whose data can go to a vendor's
 cloud, the vendors' own agent products are mature, well-funded, and often the
 better purchase. Our claim is narrower: for the buyer who needs the harness
 itself to be auditable, self-hosted, and provable, the options thin out

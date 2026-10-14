@@ -102,7 +102,11 @@ func (t *Tool) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
 // a path of at least "/", no needless escapes and no fragment. A URL written
 // any other way is refused with this spelling, so a rule on a host cannot be
 // stepped around by writing the host differently.
-func canonical(raw string) (*url.URL, error) {
+//
+// An encoded slash (%2F) in a segment is taken only for a host no deny or ask
+// rule names a path on: pathRuled says which do, and nil refuses it on every
+// host, since group%2Fproject could be another spelling of a path a rule names.
+func canonical(raw string, pathRuled func(host string) bool) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("not a URL: %w", err)
@@ -149,17 +153,42 @@ func canonical(raw string) (*url.URL, error) {
 	}
 	// Written with /, %2F names another resource (GitLab's group%2Fproject),
 	// so there is no spelling to suggest.
+	var rawPath string
 	if strings.Contains(strings.ToLower(u.EscapedPath()), "%2f") {
-		return nil, errors.New("the path has an encoded slash (%2F); such a URL cannot be fetched")
-	}
-	if err := plainPath(u.Path); err != nil {
+		if pathRuled == nil || pathRuled(host) {
+			return nil, errors.New("the path has an encoded slash (%2F), and a deny or ask rule names a path on this host, " +
+				"which another spelling could step around; such a URL cannot be fetched")
+		}
+		var err error
+		if rawPath, err = slashEscaped(u.EscapedPath()); err != nil {
+			return nil, err
+		}
+		if err := plainSlashedPath(rawPath); err != nil {
+			return nil, err
+		}
+	} else if err := plainPath(u.Path); err != nil {
 		return nil, err
 	}
-	out := &url.URL{Scheme: scheme, Host: hostport, Path: u.Path, RawQuery: u.RawQuery}
+	out := &url.URL{Scheme: scheme, Host: hostport, Path: u.Path, RawPath: rawPath, RawQuery: u.RawQuery}
 	if out.Path == "" {
 		out.Path = "/"
 	}
 	return out, nil
+}
+
+// slashEscaped is the one spelling of a path whose segments hold encoded
+// slashes: each segment decoded and escaped again as Go writes a path, with
+// its slashes as %2F, so no needless escape survives.
+func slashEscaped(escaped string) (string, error) {
+	segs := strings.Split(escaped, "/")
+	for i, seg := range segs {
+		dec, err := url.PathUnescape(seg)
+		if err != nil {
+			return "", fmt.Errorf("the path is not validly escaped: %w", err)
+		}
+		segs[i] = strings.ReplaceAll((&url.URL{Path: dec}).EscapedPath(), "/", "%2F")
+	}
+	return strings.Join(segs, "/"), nil
 }
 
 // canonicalHost gives a host its one spelling. An address is written as
@@ -240,36 +269,90 @@ func plainPath(p string) error {
 		if seg == "" && i == len(segs)-1 {
 			continue
 		}
-		// Some servers drop ;parameters before resolving, so /..;/ is .. to them.
-		name, _, _ := strings.Cut(seg, ";")
-		if name == "" || strings.Trim(name, ". ") == "" {
-			return errors.New("the path has an empty, . or .. segment; write the path " +
-				"of the page itself, with each folder named once")
-		}
-		// A server that applies NFKC reads fullwidth dots as dots, and one that
-		// trims Unicode spaces drops a no-break space.
-		// Format characters (zero-width space, soft hyphen, BOM) are invisible
-		// and dropped here, so they cannot pad a segment that reads as dots.
-		folded := strings.TrimFunc(norm.NFKC.String(strings.Map(func(r rune) rune {
-			if unicode.Is(unicode.Cf, r) {
-				return -1
-			}
-			return r
-		}, name)), unicode.IsSpace)
-		if strings.Trim(folded, ". ") == "" || strings.ContainsAny(folded, "/\\") {
-			return errors.New("the path has a segment that reads as . or .. or holds a slash " +
-				"once normalised; write the path of the page itself")
-		}
-		// A control character, or an escape left after decoding, is how a
-		// server that trims or decodes twice turns a segment into .. or /.
-		lower := strings.ToLower(seg)
-		if strings.ContainsFunc(seg, func(r rune) bool { return r < 0x20 || r == 0x7f }) ||
-			strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
-			return errors.New("the path has a control character or a doubly encoded . / or \\; " +
-				"write the path of the page itself")
+		if err := plainSegment(seg); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// plainSlashedPath is plainPath for a path whose segments hold encoded
+// slashes, given escaped: each part between slashes, encoded or not, is
+// checked as a segment, so a .. written as %2F..%2F is refused as /../ is.
+// An empty part is taken only right after a scheme (https:%2F%2Fhost), as a
+// URL carried in the path has, or at the end of a segment.
+func plainSlashedPath(escaped string) error {
+	segs := strings.Split(strings.TrimPrefix(escaped, "/"), "/")
+	for i, seg := range segs {
+		if seg == "" && i == len(segs)-1 {
+			continue
+		}
+		dec, err := url.PathUnescape(seg)
+		if err != nil {
+			return fmt.Errorf("the path is not validly escaped: %w", err)
+		}
+		if strings.Contains(dec, "\\") {
+			return errors.New("the path has a backslash; write it with / only")
+		}
+		parts := strings.Split(dec, "/")
+		for j, part := range parts {
+			if part == "" && j > 0 && (j == len(parts)-1 || isScheme(parts[j-1])) {
+				continue
+			}
+			if err := plainSegment(part); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isScheme reports whether a path part reads as a URL scheme and its colon.
+func isScheme(part string) bool {
+	name, ok := strings.CutSuffix(part, ":")
+	return ok && name != "" && strings.Trim(strings.ToLower(name), "abcdefghijklmnopqrstuvwxyz0123456789+-.") == ""
+}
+
+// plainSegment refuses one decoded segment a server could read as . or ..
+// or as holding a slash.
+func plainSegment(seg string) error {
+	// Some servers drop ;parameters before resolving, so /..;/ is .. to them.
+	name, _, _ := strings.Cut(seg, ";")
+	if name == "" || strings.Trim(name, ". ") == "" {
+		return errors.New("the path has an empty, . or .. segment; write the path " +
+			"of the page itself, with each folder named once")
+	}
+	// A server that applies NFKC reads fullwidth dots as dots, and one that
+	// trims Unicode spaces drops a no-break space.
+	// Invisible characters (format characters such as a zero-width space,
+	// variation selectors, the grapheme joiner, Hangul fillers) are dropped
+	// here, so they cannot pad a segment that reads as dots.
+	folded := strings.TrimFunc(norm.NFKC.String(strings.Map(func(r rune) rune {
+		if invisible(r) {
+			return -1
+		}
+		return r
+	}, name)), unicode.IsSpace)
+	if strings.Trim(folded, ". ") == "" || strings.ContainsAny(folded, "/\\") {
+		return errors.New("the path has a segment that reads as . or .. or holds a slash " +
+			"once normalised; write the path of the page itself")
+	}
+	// A control character, or an escape left after decoding, is how a
+	// server that trims or decodes twice turns a segment into .. or /.
+	lower := strings.ToLower(seg)
+	if strings.ContainsFunc(seg, func(r rune) bool { return r < 0x20 || r == 0x7f }) ||
+		strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+		return errors.New("the path has a control character or a doubly encoded . / or \\; " +
+			"write the path of the page itself")
+	}
+	return nil
+}
+
+// invisible reports a character a renderer or a server may drop: Unicode's
+// default-ignorable code points, which take in format characters and
+// variation selectors.
+func invisible(r rune) bool {
+	return unicode.In(r, unicode.Cf, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point)
 }
 
 // sameTarget reports whether a redirect may be followed without going back

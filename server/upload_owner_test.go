@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -87,5 +88,44 @@ func TestStagedUploadNeedsNoOwnership(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("staged upload was refused: got %d, want 200", rec.Code)
+	}
+}
+
+// The folder an upload lands in does not name the session, so another account
+// listing the shared uploads folder learns no one's session id; two uploads
+// to one session get folders of their own.
+func TestUploadFolderDoesNotNameTheSession(t *testing.T) {
+	s := proxyServer(t)
+	req := httptest.NewRequest("POST", "/v1/sessions", strings.NewReader(`{"prompt":"hi"}`))
+	req.Header.Set("X-Abhed-User", "alice")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	var paths []string
+	for i := 0; i < 2; i++ {
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+		fw, _ := mw.CreateFormFile("file", "note.txt")
+		fw.Write([]byte("hello"))
+		mw.Close()
+		req := httptest.NewRequest("POST", "/v1/sessions/"+created.SessionID+"/upload", body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("X-Abhed-User", "alice")
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		var out uploadResponse
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Fatalf("upload: %d %s", rec.Code, rec.Body)
+		}
+		if strings.Contains(out.Path, created.SessionID) {
+			t.Fatalf("the upload's path names the session: %s", out.Path)
+		}
+		paths = append(paths, filepath.Dir(out.Path))
+	}
+	if paths[0] == paths[1] {
+		t.Fatalf("two uploads shared one folder: %s", paths[0])
 	}
 }

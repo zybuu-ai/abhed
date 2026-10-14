@@ -1,0 +1,277 @@
+# Values for the abhed chart. Every value is checked against values.schema.json.
+# The guide is docs/guide/27-kubernetes.md in the Abhed repository.
+
+image:
+  repository: ghcr.io/zybuu-ai/abhed
+  # Defaults to v<appVersion>.
+  tag: ""
+  # sha256:<64 hex>. When set the image is pulled by digest and the tag is
+  # kept only as a label for people reading the manifest.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# More than one replica needs shared storage (Postgres) and a workspace and
+# state that are not a ReadWriteOnce volume; the chart refuses otherwise.
+replicaCount: 1
+
+# Leave empty for Recreate when persistence uses a ReadWriteOnce volume, and
+# RollingUpdate otherwise.
+strategy: {}
+
+# The server's configuration, written as YAML and mounted as JSON at the
+# managed path /etc/abhed/config.json, so nothing in the workspace or the
+# environment can loosen it and bypass mode is refused. Never put a secret
+# here: the chart refuses keys such as api_key, dsn, password and
+# client_secret. Name environment variables instead (api_key_env,
+# client_secret_env) and fill them from Secrets with secretEnv.
+config:
+  permissions:
+    mode: default
+  sandbox:
+    allow_network: false
+
+# Settings that differ per pod, written to ~/.abhed/config.json by an init
+# container before the server starts. Kubernetes expands $(POD_NAME),
+# $(POD_IP) and $(POD_NAMESPACE) inside string values. The managed file above
+# still wins any key it sets. Empty writes nothing.
+podConfig: {}
+
+server:
+  port: 8080
+  # Extra arguments after `serve -addr 0.0.0.0:<port>`.
+  extraArgs: []
+  terminationGracePeriodSeconds: 30
+
+# Run `abhed serve -check` in an init container, with the same configuration,
+# secrets and volumes, so a pod that could not serve never starts.
+preflight:
+  enabled: true
+  resources: {}
+
+# TLS terminated by abhed itself (server.tls), from a kubernetes.io/tls
+# Secret mounted at /etc/abhed/tls. Probes switch to HTTPS.
+tls:
+  enabled: false
+  existingSecret: ""
+  certKey: tls.crt
+  keyKey: tls.key
+  # A CA bundle in the same Secret (cert-manager writes ca.crt), mounted
+  # beside the certificate for settings that name a CA file.
+  caKey: ""
+  # A Secret key holding a CA bundle turns on client certificates.
+  clientCA:
+    existingSecret: ""
+    key: ca.crt
+    # require or optional
+    clientAuth: require
+  # "1.2" or "1.3"; empty keeps abhed's default (1.2).
+  minVersion: ""
+
+# Postgres for sessions, the record and sandboxes. The connection string of
+# the runtime role comes from a Secret as ABHED_DATABASE_URL and is never
+# written to the ConfigMap. Run `abhed migrate` as the owning role first.
+postgres:
+  enabled: false
+  existingSecret: ""
+  key: database-url
+  # Where the database is, for the NetworkPolicy: ipBlock CIDRs and/or pod
+  # and namespace selectors, and the port.
+  networkPolicy:
+    cidrs: []
+    podSelector: {}
+    namespaceSelector: {}
+    port: 5432
+
+# Environment variables filled from Secrets, such as a provider key that
+# config names with api_key_env:
+#   - name: ANTHROPIC_API_KEY
+#     secretName: abhed-model
+#     key: api-key
+secretEnv: []
+
+# Secret keys abhed refuses to read unless only its own user can (the
+# secrets store, a relay key). An init container copies each into an
+# in-memory volume at /run/abhed/secrets/<path>, mode 0400, owned by the
+# server's user, and the server sees that volume read-only.
+#   - secretName: abhed-secrets-store
+#     key: secrets.json
+#     path: secrets.json
+secretFiles: []
+
+# The control plane's :ssh relay host key, from an existing Secret holding
+# an OpenSSH private key, so every replica presents the same key. It is
+# copied in like a secretFiles entry, mode 0400, and named in the config as
+# control_plane.ssh_host_key. Needs config.control_plane.enabled.
+#   kubectl create secret generic abhed-ssh-host-key \
+#     --from-file=ssh_host_ed25519_key=./ssh_host_ed25519_key
+controlPlane:
+  sshHostKey:
+    existingSecret: ""
+    key: ssh_host_ed25519_key
+
+# Plain environment variables (no secrets).
+extraEnv: []
+
+# One volume for the workspace, ~/.abhed and the control plane's state
+# (XDG_STATE_HOME: relay host key, sandbox folders, snapshots), so a
+# restarted pod keeps them. Off, each is an emptyDir lost with the pod.
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  annotations: {}
+  # Keep the claim when the release is uninstalled.
+  keep: true
+
+# Writable scratch for commands and tools; the root filesystem is read-only.
+tmp:
+  sizeLimit: 1Gi
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # Only a Kubernetes driver needs the API token; nothing else in the pod
+  # calls the API.
+  automountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+# The restricted Pod Security level. On OpenShift set openshift.enabled so
+# the SCC picks the user and group. Where the runtime's default seccomp
+# profile refuses bubblewrap, files/seccomp-bwrap.json is a Localhost
+# profile that allows it (see the Kubernetes guide); set it here and in
+# securityContext.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+openshift:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+    ephemeral-storage: 1Gi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+    ephemeral-storage: 4Gi
+
+probes:
+  startup:
+    periodSeconds: 2
+    failureThreshold: 60
+    timeoutSeconds: 3
+  liveness:
+    periodSeconds: 15
+    failureThreshold: 3
+    timeoutSeconds: 5
+  readiness:
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 5
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+  # ClientIP keeps a browser on one replica, whose sign-in sessions are its own.
+  sessionAffinity: None
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: abhed.example.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: abhed-ingress-tls
+  #    hosts: [abhed.example.internal]
+
+# OpenShift Route. With tls.enabled use passthrough or reencrypt; edge
+# terminates at the router and speaks plain HTTP to the pod.
+route:
+  enabled: false
+  host: ""
+  path: /
+  annotations: {}
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+    # The CA the router trusts for reencrypt.
+    destinationCACertificate: ""
+
+networkPolicy:
+  enabled: true
+  # Who may reach the server's port. Empty allows any source, which an
+  # ingress controller or router in another namespace needs.
+  ingressFrom: []
+  dns:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kube-system
+    podSelector:
+      matchLabels:
+        k8s-app: kube-dns
+    ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+  # Model endpoints the server calls, by address (NetworkPolicy has no
+  # hostnames):
+  #   - cidr: 10.20.0.15/32
+  #     ports: [443]
+  modelEndpoints: []
+  # Further egress rules, as NetworkPolicyEgressRule objects.
+  extraEgress: []
+
+podDisruptionBudget:
+  enabled: true
+  # Set one of the two. With one replica, maxUnavailable 1 lets a drain
+  # proceed; minAvailable 1 would block it.
+  minAvailable: ""
+  maxUnavailable: 1
+
+# soft or hard spreads replicas across nodes; empty adds no anti-affinity.
+podAntiAffinity: ""
+antiAffinityTopologyKey: kubernetes.io/hostname
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+extraVolumes: []
+extraVolumeMounts: []
+extraInitContainers: []

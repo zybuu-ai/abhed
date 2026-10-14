@@ -130,3 +130,32 @@ func TestStatusLineFirstSlowRunIsNotSaid(t *testing.T) {
 		t.Fatalf("the second slow run said %q", got)
 	}
 }
+
+// A status line refused while a run of it is in flight shows the refusal at
+// once, and the run, when it ends, does not put the old line back.
+func TestStatusLineRefusedMidRunKeepsTheRefusal(t *testing.T) {
+	sb := &recordingSandbox{tier: sandbox.TierProcess}
+	var mu sync.Mutex
+	refused := false
+	ready := func() (sandbox.Sandbox, string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if refused {
+			return nil, "", "statusline: not run: changed since the session started"
+		}
+		return sb, "sleep 0.5; printf old", ""
+	}
+	f := &footer{editor: ui.NewLineReader(""), r: ui.NewRenderer(io.Discard, false), root: t.TempDir(), ready: ready}
+	f.runStatusLine()
+	mu.Lock()
+	refused = true
+	mu.Unlock()
+	f.runStatusLine()
+	if line := f.model().Line; !strings.Contains(line, "not run") {
+		t.Fatalf("the refusal was not shown at once: %q", line)
+	}
+	time.Sleep(time.Second)
+	if line := f.model().Line; !strings.Contains(line, "not run") {
+		t.Fatalf("the run in flight put back %q", line)
+	}
+}

@@ -2,9 +2,12 @@ package toolset
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -34,7 +37,7 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 		out = append(out, mcp.ServerConfig{
 			Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env,
 			URL: s.URL, Headers: s.Headers, HeadersEnv: s.HeadersEnv,
-			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest,
+			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest, HostFiles: s.HostFiles,
 		})
 	}
 	return out
@@ -54,8 +57,9 @@ func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
 	if vault != nil {
 		load = vault.LoadRedactor
 	}
+	ruled := append(append([]string(nil), cfg.Permissions.Deny...), cfg.Permissions.Ask...)
 	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts,
-		Secrets: load, MaxChars: cfg.WebFetch.MaxChars}
+		Secrets: load, MaxChars: cfg.WebFetch.MaxChars, PathRuled: webfetch.PathRuled(ruled)}
 }
 
 // WebSearchTool constructs the web search tool when enabled. Returns nil, nil
@@ -133,18 +137,12 @@ func AgentRoots(cfg config.Config) []string {
 func OfferedModels(cfg config.Config) []string {
 	var out []string
 	for name := range cfg.Model.Providers {
-		if cfg.Offered(name) && !pinnedAway(cfg, name) {
+		if cfg.ModelAllowed(name) == nil {
 			out = append(out, name)
 		}
 	}
 	sort.Strings(out)
 	return out
-}
-
-// pinnedAway reports a provider other than the one a managed model.default
-// pins every model choice to.
-func pinnedAway(cfg config.Config, name string) bool {
-	return cfg.ManagedSets("model.default") && name != cfg.Model.Default
 }
 
 // ModelResolver is a subagent factory's model choice over the configuration:
@@ -157,7 +155,7 @@ func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
 	offered := OfferedModels(cfg)
 	return func(name string) (model.Adapter, error) {
 		avail := strings.Join(offered, ", ")
-		if pinnedAway(cfg, name) {
+		if cfg.PinnedAway(name) != nil {
 			return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
 		}
 		if !slices.Contains(offered, name) {
@@ -333,15 +331,38 @@ func OpenIndex(ctx context.Context, cfg config.Config, workspace string) (*index
 	ix := index.New(workspace)
 	opts := index.DefaultBuildOptions()
 
+	var cache *index.FileVectorCache
 	if cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != "" {
 		provider, _ := cfg.Provider()
 		ix = ix.WithEmbedder(index.NewOpenAIEmbedder(
 			cfg.Retrieval.EmbedBaseURL, provider.APIKey,
 			cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims))
 		opts.Embed = true
+		if path := VectorCachePath(cfg, workspace); path != "" {
+			cache = index.OpenFileVectorCache(path)
+			ix = ix.WithVectorCache(cache)
+		}
 	}
 	if err := ix.Build(ctx, opts); err != nil {
 		return nil, err
 	}
+	if cache != nil {
+		// Kept for the next start; a cache that cannot be written only costs
+		// that start the embedding again.
+		_ = cache.Save()
+	}
 	return ix, nil
+}
+
+// VectorCachePath is where the workspace's embeddings are kept between
+// builds: under ~/.abhed, which sandboxed commands cannot write, one file per
+// workspace and embedding model. "" when there is no home directory.
+func VectorCachePath(cfg config.Config, workspace string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", tools.RealPath(workspace),
+		cfg.Retrieval.EmbedBaseURL, cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims)))
+	return filepath.Join(home, ".abhed", "index", "vectors-"+hex.EncodeToString(sum[:8])+".gob")
 }

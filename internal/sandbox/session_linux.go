@@ -18,9 +18,8 @@ const (
 	killSignal = unix.SIGKILL
 )
 
-// procStat returns the fields of /proc/<pid>/stat after the command name,
-// which may itself hold spaces and parentheses: state is [0], the session
-// [3], the start time [19].
+// procStat returns /proc/<pid>/stat's fields after the command name: state is
+// [0], the session [3], the start time [19].
 func procStat(pid int) []string {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat") // #nosec G304 -- a numbered /proc entry
 	if err != nil {
@@ -96,9 +95,8 @@ func sweepSupported() (bool, string) {
 	return false, "a pidfd could not be opened: " + err.Error()
 }
 
-// signalMember signals pid only if it is in session sid. A pidfd names the
-// process itself, so the check and the signal are about the same process
-// even if the number is reused in between.
+// signalMember signals pid only if it is in session sid; a pidfd keeps check
+// and signal on the same process even if the number is reused.
 func signalMember(pid, sid int, sig unix.Signal) bool {
 	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
@@ -110,3 +108,6 @@ func signalMember(pid, sid int, sig unix.Signal) bool {
 	}
 	return unix.PidfdSendSignal(fd, sig, nil, 0) == nil
 }
+
+// signalRefused reports whether pid exists and refuses this user's signals.
+func signalRefused(pid int) bool { return errors.Is(unix.Kill(pid, 0), unix.EPERM) }

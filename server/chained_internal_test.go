@@ -43,21 +43,34 @@ func TestChainedKeepsPathCheckAndNames(t *testing.T) {
 	}
 }
 
-// The shared-store warning is given at each session's start as well as at
-// startup, naming whose session it is.
-func TestSharedStoreWarnsPerSession(t *testing.T) {
+// A server accounts sign in to binds each session to its account's own
+// store, under the accounts directory, with no shared-store warning; a caller
+// with no account gets an empty store nobody can write.
+func TestAccountSessionsReadTheirOwnStore(t *testing.T) {
 	t.Setenv(secrets.EnvFile, filepath.Join(t.TempDir(), "secrets.json"))
+	dir := t.TempDir()
+	t.Setenv(secrets.EnvAccountsDir, dir)
 	var buf bytes.Buffer
 	cfg := config.Default()
 	cfg.Auth.Mode = "local"
 	cfg.Permissions.Allow = []string{"secret(GITHUB_TOKEN)"}
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
 		Registry: tools.NewRegistry(tools.Read{}), Logger: slog.New(slog.NewTextHandler(&buf, nil))})
-	buf.Reset()
-	if _, _, err := s.sessionSecrets(StartSpec{User: "ann"}); err != nil {
+	v, _, err := s.sessionSecrets(StartSpec{User: "ann"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if out := buf.String(); !strings.Contains(out, "shares the operator's secrets store") || !strings.Contains(out, "user=ann") {
-		t.Fatalf("no warning at the session's start:\n%s", out)
+	if !strings.HasPrefix(v.Path(), dir) {
+		t.Fatalf("ann's store is %s, not under %s", v.Path(), dir)
+	}
+	if strings.Contains(buf.String(), "shares") {
+		t.Fatalf("a shared-store warning:\n%s", buf.String())
+	}
+	none, _, err := s.sessionSecrets(StartSpec{User: "anonymous"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := none.Names(); len(names) != 0 || none.Set("GITHUB_TOKEN", "value-123456789") == nil {
+		t.Fatal("a caller with no account got a store with values, or one it can write")
 	}
 }

@@ -150,12 +150,17 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
+| `control_plane` | ignored, and `serve`, `user` and `migrate` refuse to run (below): it turns on an API that runs commands and sets that API's limits |
 | `schedules` | ignored: prompts that the server runs on its own |
 | `commands.dirs`, `rules.dirs` | ignored: a custom command or a rule is instructions to the agent |
 | `statusline` | ignored: a statusline command is a process |
 | `memory.auto` | **applied** only when false, trusted or not: a workspace never turns auto memory on |
 | `memory.import_depth` | **applied** only when lower, trusted or not; zero means the default of 5, and no file may set more than 10 |
 | `cli.mode_cycle`, `record.dir`, `record.retention_days`, `hooks.disabled`, `hooks.managed_only` | ignored, trusted or not, as in the user's own file: only the managed configuration makes these |
+| `control_plane.kubernetes` | ignored, trusted or not, as in the user's own file: only the managed configuration configures the Kubernetes driver, and its values are hidden in the warning |
+| `control_plane.interceptors` | ignored, trusted or not, as in the user's own file: only the managed configuration sets what admits sandbox calls |
+| `control_plane.ha` | ignored, trusted or not: only an operator's file (the user's own or the managed one) joins the server to replicas and names the relay's key, never a file that arrives with a repository |
+| `sandbox.language_servers` | ignored, trusted or not: only an operator's file (the user's own or the managed one) names the program the workbench editor starts as a file is opened |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse
@@ -169,7 +174,9 @@ For most settings, leaving the file's value out keeps the safer default. For
 `auth`, `storage` and `server` the default is the loosest value: no sign-in,
 an in-memory record, no group restriction. Ignoring an untrusted `auth`
 section would therefore start `serve` as an open console. So when an
-untrusted file sets anything under these three sections, `serve`, `user` and
+untrusted file sets anything under these three sections, or under
+`control_plane`, whose limits would otherwise fall back to looser defaults,
+`serve`, `user` and
 `migrate` refuse to start. The error names the settings and says how to go
 on: `abhed trust grant`, `abhed -trust-workspace serve`, or moving the
 settings to `~/.abhed/config.json` or the managed file. Commands that do not
@@ -317,11 +324,13 @@ line per ignored setting.
 - **The variable and the flag are not inherited.** Commands the agent runs do
   not inherit `ABHED_TRUST_WORKSPACE`: the process tier passes only an
   allowlist, and a command on the host has it removed. A command can still set
-  the variable or pass `-trust-workspace` itself, so the default configuration
-  asks before any bash command that mentions either
-  (`bash(*ABHED_TRUST_WORKSPACE*)`, `bash(*trust-workspace*)`). A
-  configuration that replaces `permissions.ask` drops these defaults. Set the
-  variable for a single CI step, not in a shell profile.
+  the variable or pass `-trust-workspace` itself, so the policy asks, in every
+  mode and whatever `permissions.ask` a configuration sets, before any bash
+  command that names either in any case. A command can also assemble the name
+  or set it in a script, which no check on its text can see, so a nested
+  `abhed` (one inside an agent's command) ignores `ABHED_TRUST_WORKSPACE`
+  with a warning and refuses `-trust-workspace`. Set the variable for a single
+  CI step, not in a shell profile.
 - **Where `abhed acp` keeps its record** is read once, at startup, with the
   folder's stored trust, before any editor says whether its window is
   untrusted. It chooses a location only: `record.dir` is managed-only even

@@ -29,6 +29,9 @@ type browserSession struct {
 	pwPrev string
 	// revocations is the account's User.Revocations when the session was issued.
 	revocations int64
+	// accountMade is the account's User.CreatedAt at issue, so an account
+	// removed and made again under the name does not inherit the session.
+	accountMade time.Time
 }
 
 // passwordStamp is a short fingerprint of a password hash, so a session need

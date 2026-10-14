@@ -19,6 +19,9 @@ const outputKeep = 4000
 type Options struct {
 	// Live is set when the session is still running where the report is made.
 	Live bool
+	// Idle is set when the session is open where the report is made but no
+	// run is going, as a workbench session between messages.
+	Idle bool
 	// Omitted is what the capture says it left out, from a -p run's result line.
 	// Only the delta types are honoured: a gap that only they could fill is no hole.
 	Omitted []string
@@ -84,7 +87,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				N: len(r.Turns) + 1, Seq: e.Seq, Model: m.Model, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
 				TokensCached: m.TokensCached, CacheReported: m.CacheReported,
 				Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
-				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff,
+				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff, Estimated: m.Estimated,
 			})
 
 		case agent.EvActionRequested:
@@ -99,6 +102,13 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			order = append(order, a.CallID)
 			touch(files, a.Tool, a.Args)
 
+		case agent.EvPolicyLayer:
+			var l PolicyLayer
+			if json.Unmarshal(e.Payload, &l) == nil {
+				l.Seq = e.Seq
+				r.PolicyLayers = append(r.PolicyLayers, l)
+			}
+
 		case agent.EvActionApproved, agent.EvActionDenied:
 			var d map[string]string
 			_ = json.Unmarshal(e.Payload, &d)
@@ -107,6 +117,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
+			c.Rule, c.Layer = d["rule"], d["layer"]
 			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
 			c.Decision = "allowed"
 			if e.Type == agent.EvActionDenied {
@@ -138,6 +149,9 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			c.SandboxDenied = c.Tool == "bash" && o.Sandbox != "" && o.Sandbox != "none" && sandboxRefused(o.Content)
 			c.Truncated, c.DurationMS = o.Truncated, o.DurationMS
 			c.Output, c.OutputLen = clip(o.Content, outputKeep), len(o.Content)
+
+		case agent.EvEgressDecision:
+			network(&r, calls, e)
 
 		case agent.EvCompactDone:
 			var k agent.Compaction
@@ -198,9 +212,12 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	}
 
 	// A session only people worked in, at the workbench's terminal or editor,
-	// has no run to be running: say that rather than "running".
-	if r.Outcome == "running" && len(r.Turns) == 0 && !slices.ContainsFunc(evs, func(e agent.Event) bool { return e.Type == agent.EvUserMessage }) {
+	// has no run to be running, nor one a close ended: say that instead.
+	if (r.Outcome == "running" || r.Outcome == string(agent.TermSessionClosed)) && len(r.Turns) == 0 && !slices.ContainsFunc(evs, func(e agent.Event) bool { return e.Type == agent.EvUserMessage }) {
 		r.Outcome = "no agent run"
+	}
+	if r.Outcome == "running" && opt.Idle {
+		r.Outcome = "idle"
 	}
 	for _, id := range order {
 		r.Calls = append(r.Calls, *calls[id])
@@ -213,6 +230,59 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	r.totals(ended)
 	r.Findings = findings(r, evs, opt)
 	return r
+}
+
+// network counts one egress.decision and keeps a refusal once per call and
+// destination; it marks a call only when the record holds one by that id.
+func network(r *Report, calls map[string]*Call, e agent.Event) {
+	var d struct {
+		CallID   string `json:"call_id"`
+		Kind     string `json:"kind"`
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Method   string `json:"method"`
+		Path     string `json:"path"`
+		Decision string `json:"decision"`
+		Rule     string `json:"rule"`
+		Reason   string `json:"reason"`
+		Repeats  int64  `json:"repeats"`
+	}
+	if json.Unmarshal(e.Payload, &d) != nil {
+		return
+	}
+	if r.Network == nil {
+		r.Network = &NetworkStats{}
+	}
+	// A summary stands for the decisions it says were not recorded one by one.
+	n := 1
+	if d.Repeats > 0 {
+		n = int(d.Repeats)
+	}
+	switch d.Decision {
+	case "allow":
+		r.Network.Allowed += n
+		return
+	case "would_deny":
+		r.Network.WouldDeny += n
+	default:
+		// Anything but allow or would_deny was not let through.
+		d.Decision = "deny"
+		r.Network.Denied += n
+		if c := calls[d.CallID]; c != nil && d.CallID != "" {
+			c.NetworkDenied += n
+		}
+	}
+	for i := range r.Network.Refusals {
+		f := &r.Network.Refusals[i]
+		if f.CallID == d.CallID && f.Host == d.Host && f.Port == d.Port && f.Decision == d.Decision {
+			f.Count += n
+			return
+		}
+	}
+	r.Network.Refusals = append(r.Network.Refusals, NetworkRefusal{
+		Seq: e.Seq, CallID: d.CallID, Kind: d.Kind, Host: d.Host, Port: d.Port, Method: d.Method,
+		Path: clip(d.Path, 200), Decision: d.Decision, Rule: d.Rule, Reason: clip(d.Reason, 300), Count: n,
+	})
 }
 
 func (r *Report) totals(ended agent.SessionEnded) {
@@ -234,6 +304,12 @@ func (r *Report) totals(ended agent.SessionEnded) {
 		}
 		if c.Step != "" {
 			r.Policy.ByStep[c.Step]++
+		}
+		if c.Layer != "" {
+			if r.Policy.ByLayer == nil {
+				r.Policy.ByLayer = map[string]int{}
+			}
+			r.Policy.ByLayer[c.Layer]++
 		}
 	}
 	for _, turn := range r.Turns {
@@ -264,6 +340,8 @@ func (r *Report) totals(ended agent.SessionEnded) {
 	if t.TokensIn > 0 {
 		t.CacheHitRate = float64(t.TokensCached) / float64(t.TokensIn)
 	}
+	// A cached figure anywhere is one reported, records older than the flag included.
+	t.CacheReported = t.TokensCached > 0 || slices.ContainsFunc(r.Turns, func(x Turn) bool { return x.CacheReported })
 }
 
 func integrity(evs []agent.Event, ordered bool, opt Options) Integrity {

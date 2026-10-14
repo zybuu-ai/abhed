@@ -24,9 +24,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The confined checks run in this test binary re-executed with stageEnv set:
-// TestMain answers before any test runs, so the test process itself is never
-// filtered.
+// Confined checks run in this binary re-executed with stageEnv; TestMain
+// answers before any test, so the test process is never filtered.
 const (
 	stageEnv = "ABHED_SECCOMP_TEST_STAGE"
 	dirEnv   = "ABHED_SECCOMP_TEST_DIR"
@@ -39,6 +38,7 @@ const (
 	stageOrdinaryOn = "ordinary-on"  // ordinary work, under Command(true)
 	stageOrdinaryNo = "ordinary-off" // ordinary work, under Command(false)
 	stageSocketsOn  = "sockets-on"   // the socket checks, under Command(true)
+	stageSocketsPx  = "sockets-px"   // the socket checks, under Command(false) with ProxyOnly
 )
 
 func TestMain(m *testing.M) {
@@ -75,6 +75,14 @@ func stageMain(stage, dir string) int {
 		out = append(deniedChecks(dir), outcome{"a second Install", result(Install(guarded(false)))})
 	case stageSocketsOn:
 		if err := Install(guarded(true)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		out = socketChecks()
+	case stageSocketsPx:
+		p := guarded(false)
+		p.ProxyOnly = true
+		if err := Install(p); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
@@ -233,7 +241,8 @@ func signalChecks() []outcome {
 	return out
 }
 
-// socketChecks create one socket of each kind, and a socketpair.
+// socketChecks create one socket of each kind through socket(2) itself, and
+// a socketpair; on s390x also through socketcall(2), as glibc and Go do there.
 func socketChecks() []outcome {
 	var out []outcome
 	for _, s := range []struct {
@@ -242,6 +251,9 @@ func socketChecks() []outcome {
 	}{
 		{"socket(AF_INET stream)", unix.AF_INET, unix.SOCK_STREAM, 0},
 		{"socket(AF_INET datagram)", unix.AF_INET, unix.SOCK_DGRAM, 0},
+		// Landlock's TCP rules do not cover these; with the network off only this filter stops them.
+		{"socket(AF_INET MPTCP)", unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP},
+		{"socket(AF_INET SCTP)", unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_SCTP},
 		{"socket(NETLINK_ROUTE)", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_ROUTE},
 		{"socket(AF_UNIX stream)", unix.AF_UNIX, unix.SOCK_STREAM, 0},
 		{"socket(AF_UNIX datagram)", unix.AF_UNIX, unix.SOCK_DGRAM, 0},
@@ -250,17 +262,15 @@ func socketChecks() []outcome {
 		{"socket(NETLINK_AUDIT)", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_AUDIT},
 		{"socket(NETLINK_KOBJECT_UEVENT)", unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_KOBJECT_UEVENT},
 	} {
-		fd, err := unix.Socket(s.domain, s.typ|unix.SOCK_CLOEXEC, s.p)
-		if err == nil {
-			_ = unix.Close(fd)
-		}
+		err := closeIfFD(unix.RawSyscall(unix.SYS_SOCKET, uintptr(s.domain), uintptr(s.typ|unix.SOCK_CLOEXEC), uintptr(s.p))) // #nosec G115 -- small constants
 		out = append(out, outcome{s.name, result(err)})
 	}
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err == nil {
 		_, _ = unix.Close(fds[0]), unix.Close(fds[1])
 	}
-	return append(out, outcome{"socketpair(AF_UNIX)", result(err)})
+	out = append(out, outcome{"socketpair(AF_UNIX)", result(err)})
+	return append(out, socketcallChecks()...)
 }
 
 func callErrno(_, _ uintptr, e syscall.Errno) syscall.Errno { return e }
@@ -512,7 +522,7 @@ func requireFence(t *testing.T) {
 		t.Skip("set ABHED_REQUIRE_FENCE=1 on a host that should qualify for the fence")
 	}
 	if _, ok := arches[runtime.GOARCH]; !ok {
-		t.Fatalf("the fence needs amd64 or arm64, not %s", runtime.GOARCH)
+		t.Fatalf("the fence needs amd64, arm64 or s390x, not %s", runtime.GOARCH)
 	}
 }
 
@@ -551,6 +561,7 @@ func TestFilterRefusesEachFamily(t *testing.T) {
 		"finit_module": "EPERM", "kexec_load": "EPERM", "keyctl": "EPERM", "add_key": "EPERM",
 		"seccomp(SET_MODE_FILTER)": "EPERM", "prctl(PR_SET_SECCOMP)": "EPERM",
 		"socket(AF_INET stream)": "EPERM", "socket(AF_INET datagram)": "EPERM", "socket(NETLINK_ROUTE)": "EPERM",
+		"socket(AF_INET MPTCP)": "EPERM", "socket(AF_INET SCTP)": "EPERM",
 		"socket(AF_UNIX stream)": "EPERM", "socket(AF_UNIX datagram)": "EPERM",
 		"socket(AF_PACKET)": "EPERM", "socket(AF_VSOCK)": "EPERM",
 		"socket(NETLINK_AUDIT)": "EPERM", "socket(NETLINK_KOBJECT_UEVENT)": "EPERM",
@@ -558,6 +569,9 @@ func TestFilterRefusesEachFamily(t *testing.T) {
 		"kill(Abhed)": "EPERM", "kill(Abhed's group)": "EPERM", "kill(-1)": "EPERM", "tkill(Abhed)": "EPERM",
 		"tgkill(Abhed)": "EPERM", "rt_sigqueueinfo(Abhed)": "EPERM", "rt_tgsigqueueinfo(Abhed)": "EPERM",
 		"pidfd_send_signal": "EPERM", "kill(self)": "ok", "kill(own group)": "ok",
+	}
+	if arches[runtime.GOARCH].socketcall {
+		want["socketcall(SOCKET, AF_INET)"], want["socketcall(SOCKET, AF_UNIX)"], want["socketcall(SOCKETPAIR)"] = "EPERM", "EPERM", "ok"
 	}
 	control := runStage(t, stageControl)
 	denied := runStage(t, stageDenied)
@@ -600,11 +614,38 @@ func TestNetworkOnSockets(t *testing.T) {
 		"socket(NETLINK_AUDIT)": "EPERM", "socket(NETLINK_KOBJECT_UEVENT)": "EPERM",
 		"socketpair(AF_UNIX)": "ok",
 	}
+	// The filter cannot read socketcall's family, so it refuses every socket
+	// made that way, the network on or off.
+	if arches[runtime.GOARCH].socketcall {
+		want["socketcall(SOCKET, AF_INET)"], want["socketcall(SOCKET, AF_UNIX)"], want["socketcall(SOCKETPAIR)"] = "EPERM", "EPERM", "ok"
+	}
 	got := runStage(t, stageSocketsOn)
 	for name, w := range want {
 		t.Logf("%-32s %s", name, got[name])
 		if got[name] != w {
 			t.Errorf("%s with the network on: got %q, want %q", name, got[name], w)
+		}
+	}
+}
+
+// Under ProxyOnly only an inet or inet6 TCP stream is made: MPTCP and SCTP
+// streams, which Landlock's TCP port rules do not hold, are refused.
+func TestProxyOnlySockets(t *testing.T) {
+	requireFence(t)
+	want := map[string]string{
+		"socket(AF_INET stream)": "ok", "socket(AF_INET datagram)": "EPERM", "socket(NETLINK_ROUTE)": "EPERM",
+		"socket(AF_INET MPTCP)": "EPERM", "socket(AF_INET SCTP)": "EPERM",
+		"socket(AF_UNIX stream)": "EPERM", "socket(AF_UNIX datagram)": "EPERM",
+		"socket(AF_PACKET)": "EPERM", "socket(AF_VSOCK)": "EPERM", "socketpair(AF_UNIX)": "ok",
+	}
+	if arches[runtime.GOARCH].socketcall {
+		want["socketcall(SOCKET, AF_INET)"], want["socketcall(SOCKET, AF_UNIX)"], want["socketcall(SOCKETPAIR)"] = "EPERM", "EPERM", "ok"
+	}
+	got := runStage(t, stageSocketsPx)
+	for name, w := range want {
+		t.Logf("%-32s %s", name, got[name])
+		if got[name] != w {
+			t.Errorf("%s under ProxyOnly: got %q, want %q", name, got[name], w)
 		}
 	}
 }
@@ -615,8 +656,8 @@ func refused(got string) bool {
 	return strings.Contains(got, "EPERM") || strings.Contains(strings.ToLower(got), "operation not permitted")
 }
 
-// Ordinary build work still succeeds under the filter, with the network on
-// and off; network use works only with it on, and unix sockets never.
+// Build work succeeds under the filter, network on or off; the network works
+// only when on, unix sockets never, and on s390x neither.
 func TestOrdinaryWorkUnderFilter(t *testing.T) {
 	requireFence(t)
 	required := []string{"sh pipeline and redirection", "child inherits the filter", "go version", "go build and run",
@@ -641,9 +682,9 @@ func TestOrdinaryWorkUnderFilter(t *testing.T) {
 			t.Logf("%s %-30s %s", stage, name, got[name])
 			switch {
 			case got[name] == "absent":
-			case stage == stageOrdinaryOn && got[name] != "ok":
+			case stage == stageOrdinaryOn && !arches[runtime.GOARCH].socketcall && got[name] != "ok":
 				t.Errorf("%s: %s: %s", stage, name, got[name])
-			case stage == stageOrdinaryNo && !refused(got[name]):
+			case (stage == stageOrdinaryNo || arches[runtime.GOARCH].socketcall) && !refused(got[name]):
 				t.Errorf("%s: %s was not refused: %s", stage, name, got[name])
 			}
 		}

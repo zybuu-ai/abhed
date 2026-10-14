@@ -173,7 +173,7 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		c.reply(msg.ID, nil, badParams("", err))
 		return
 	}
 	trust, terr := c.requestedTrust(p.Meta)
@@ -237,7 +237,7 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		}
 	} else {
 		// Read, never written to: going on from it is a fork.
-		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]bool{}, agent: recordOnly{},
+		s = &acpSession{id: e.ID, cwd: cwd, trust: trust, always: map[string]string{}, agent: recordOnly{},
 			readOnly: "the record failed verification at seq " + strconv.FormatInt(rep.FirstBad, 10)}
 		c.sessMu.Lock()
 		c.sessions[s.id] = s
@@ -341,7 +341,8 @@ func (c *acpConn) restore(s *acpSession, rec *local.Store, events []agent.Event)
 			var g agent.ScopeGranted
 			if json.Unmarshal(ev.Payload, &g) == nil && g.Scope != "" {
 				if _, err := policy.ParseRule(g.Scope); err == nil {
-					s.always[g.Scope] = true
+					// No guard: a git scope restored is asked about again, as its repository may have changed.
+					s.always[g.Scope] = ""
 				}
 			}
 		}
@@ -364,6 +365,40 @@ func (c *acpConn) dropSession(s *acpSession) {
 	delete(c.sessions, s.id)
 	c.sessMu.Unlock()
 	c.shut(s)
+}
+
+// recordClosed ends a session's record as it is let go, by session/close or
+// the editor going away, unless a run of its own is still to end it. The
+// session can be loaded again, as one a run ended can; without this a
+// session of terminal lines and saves only would never record an end.
+func (s *acpSession) recordClosed(running bool) {
+	if !s.inner || s.readOnly != "" || running {
+		return
+	}
+	loop := s.parts.Loop
+	// Background work owed records its own closing end as the agent closes.
+	if loop.Background.Owed() > 0 {
+		return
+	}
+	events, err := s.parts.Store.Events(s.id)
+	if err != nil || len(events) == 0 {
+		return
+	}
+	// Only a record whose last event is this session's own, and not an end already.
+	if last := events[len(events)-1]; last.Type == agent.EvSessionEnded || last.Seq != loop.Recorder.LastAppended() {
+		return
+	}
+	// The totals go on from the last end, so a report still counts the runs.
+	end, _ := agent.LastEnd(events)
+	u := loop.Usage()
+	end.Reason = agent.TermSessionClosed
+	end.Turns = max(end.Turns, u.Turns)
+	end.TokensIn, end.TokensOut = max(end.TokensIn, u.InputTokens), max(end.TokensOut, u.OutputTokens)
+	end.TokensCached, end.Compactions = max(end.TokensCached, u.CachedTokens), max(end.Compactions, u.Compactions)
+	end.Background, end.Settled, end.Suggesting, end.Recovered, end.Detail = 0, false, false, false, ""
+	if _, err := loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, end); err != nil {
+		warnf("the record did not take the session's end: %v", err)
+	}
 }
 
 func (c *acpConn) closeSession(msg rpcMessage) {
@@ -408,7 +443,7 @@ func (c *acpConn) forkSession(msg rpcMessage) {
 		Meta       map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
-		c.reply(msg.ID, nil, refusal(errParams, "%v", err))
+		c.reply(msg.ID, nil, badParams("", err))
 		return
 	}
 	trust, terr := c.requestedTrust(p.Meta)
@@ -499,18 +534,23 @@ func (c *acpConn) copyInto(rec *local.Store, src local.Entry, events []agent.Eve
 		Workspace: src.Cwd, StartedAt: time.Now().UTC()}); err != nil {
 		return "", 0, err
 	}
+	// A copy that fails part way is deleted, so no half branch is left listed.
+	failed := func(err error) (string, int64, error) {
+		_ = rec.DeleteSession(id)
+		return "", 0, err
+	}
 	r := agent.NewRecorder(rec, id, "")
 	r.Redact = openVault().Redactor()
 	if _, err := r.Record(agent.EvSessionBranched, agent.ActorUser, agent.Trusted,
 		agent.SessionBranched{From: src.ID, ThroughSeq: last, Unverified: unverified}); err != nil {
-		return "", 0, err
+		return failed(err)
 	}
 	for _, ev := range copied {
 		if unverified != "" {
 			ev.Trust = agent.Untrusted
 		}
 		if err := rec.Append(ev); err != nil {
-			return "", 0, err
+			return failed(err)
 		}
 	}
 	// Handed back at rest, so this process's resume can claim it.

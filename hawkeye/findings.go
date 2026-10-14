@@ -92,6 +92,42 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 		}
 		add(Info, "no-end", "The session has no recorded end", detail, 0)
 	}
+	// What happened inside a command, as the sandbox saw it: a shell stopped
+	// because its owner lost access, a fence limit hit, harness state planted.
+	for _, e := range evs {
+		switch e.Type {
+		case agent.EvShellEnded:
+			var end agent.ShellEnded
+			if json.Unmarshal(e.Payload, &end) != nil {
+				continue
+			}
+			if end.Reason == string(agent.TermOwnerRevoked) || end.Reason == string(agent.TermOwnerInactive) {
+				add(Info, "shell-owner-gone", "A background shell was stopped: "+end.Reason,
+					fmt.Sprintf("Background shell %s was ended because its owner's access was withdrawn (%s), "+
+						"not because it failed or finished; its work may be incomplete.", end.ShellID, end.Reason), e.Seq)
+			}
+		case agent.EvFenceLimit:
+			var p struct {
+				CallID  string `json:"call_id"`
+				PidsMax int    `json:"pids_max"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			what := "its memory limit"
+			if p.PidsMax > 0 {
+				what = "its process limit"
+			}
+			add(Info, "fence-limit", "A fenced command hit "+what,
+				fmt.Sprintf("Call %s ran into %s under the fence; its output may be cut short.", p.CallID, what), e.Seq)
+		case agent.EvFenceStatePlanted:
+			var p struct {
+				CallID string `json:"call_id"`
+				Reason string `json:"reason"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			add(Critical, "fence-state-planted", "A command wrote where Abhed keeps its own state",
+				fmt.Sprintf("Call %s: %s.", p.CallID, p.Reason), e.Seq)
+		}
+	}
 	if why, bad := abnormal[r.Outcome]; bad {
 		add(Warn, "abnormal-end", "Ended as "+r.Outcome, "The session did not complete: "+why+".", r.Integrity.LastSeq)
 	}
@@ -149,6 +185,8 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 				fmt.Sprintf("%s %s ran for %ds.", c.Tool, clip(c.Subject, 120), c.DurationMS/1000), c.Seq)
 		}
 	}
+
+	out = append(out, networkFindings(r)...)
 
 	for _, a := range r.SubagentActions {
 		who := a.By
@@ -286,4 +324,49 @@ func hosts(s string) []string {
 
 func local(h string) bool {
 	return h == "localhost" || strings.HasPrefix(h, "127.") || h == "0.0.0.0"
+}
+
+// networkFindings names each destination the egress allowlist refused, or in
+// monitor mode would have refused, with the call that tried it.
+func networkFindings(r Report) []Finding {
+	if r.Network == nil {
+		return nil
+	}
+	byID := map[string]Call{}
+	for _, c := range r.Calls {
+		byID[c.CallID] = c
+	}
+	var out []Finding
+	for _, f := range r.Network.Refusals {
+		dest := f.Host
+		if f.Port > 0 {
+			dest = fmt.Sprintf("%s:%d", f.Host, f.Port)
+		}
+		who := fmt.Sprintf("Abhed's own %s request", f.Kind)
+		if c, ok := byID[f.CallID]; ok && f.CallID != "" {
+			who = fmt.Sprintf("%s %s", c.Tool, clip(c.Subject, 160))
+		} else if f.CallID != "" {
+			who = fmt.Sprintf("a command (call %q, not in this record)", f.CallID)
+		} else if f.Kind == "connect" || f.Kind == "http" || f.Kind == "summary" {
+			who = "commands in this session"
+		}
+		what := f.Kind
+		if f.Method != "" {
+			what += " " + f.Method + " " + f.Path
+		}
+		times := ""
+		if f.Count > 1 {
+			times = fmt.Sprintf(" %d times.", f.Count)
+		}
+		if f.Decision == "would_deny" {
+			out = append(out, Finding{Severity: Info, Code: "network-would-deny", Seq: f.Seq,
+				Title:  "The network allowlist would have refused " + dest,
+				Detail: fmt.Sprintf("%s — %s, rule %q: %s. Monitor mode let it through.%s", who, what, f.Rule, f.Reason, times)})
+			continue
+		}
+		out = append(out, Finding{Severity: Info, Code: "network-denied", Seq: f.Seq,
+			Title:  "The network allowlist refused " + dest,
+			Detail: fmt.Sprintf("%s — %s, rule %q: %s.%s The call may report success; the connection did not happen.", who, what, f.Rule, f.Reason, times)})
+	}
+	return out
 }

@@ -1,31 +1,44 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // LoadManaged is the built-in defaults with only the managed configuration
 // applied: what a program that keeps no config file of its own runs under.
-func LoadManaged() (Config, error) {
+func LoadManaged() (Config, error) { return LoadManagedWith(LoadOptions{}) }
+
+// LoadManagedWith is LoadManaged with o.Warn taking its warnings; the other
+// options do not apply.
+func LoadManagedWith(o LoadOptions) (Config, error) {
+	w := warnSink(o.Warn)
 	cfg := Default()
+	cfg.noteRuleLayer(LayerDefault)
 	if err := mergeManaged(&cfg); err != nil {
 		return cfg, err
 	}
-	warnUnknown(cfg.Unknown)
-	warnNeverAllows(cfg.Permissions.Allow)
-	warnNotYetInEffect(cfg)
-	return cfg, nil
+	cfg.noteRuleLayer(LayerManaged)
+	warnUnknown(w, cfg.Unknown)
+	warnNeverAllows(w, cfg.Permissions.Allow)
+	warnNotYetInEffect(w, cfg)
+	findings := cfg.RuleFindings()
+	warnRuleFindings(w, findings)
+	return cfg, managedNeverDenies(findings)
 }
 
 // mergeManaged applies the managed file, if there is one, over cfg and
@@ -34,23 +47,135 @@ func mergeManaged(cfg *Config) error {
 	path := managed.ConfigFile
 	// Only nothing at the path means unmanaged; a file that cannot be read,
 	// or a link to nothing, is an error.
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Nor is a folder that is a link to nothing: the file is gone, not absent.
+		dir := filepath.Dir(path)
+		if di, derr := os.Lstat(dir); derr == nil && di.Mode()&fs.ModeSymlink != 0 {
+			if _, serr := os.Stat(dir); errors.Is(serr, fs.ErrNotExist) {
+				return fmt.Errorf("managed configuration folder %s is a link to nothing", dir)
+			}
+		}
 		return nil
 	}
-	data, err := readMerge(cfg, path)
-	if err != nil {
-		return err
+	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		if info != nil && info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("managed configuration %s is a link to nothing", path)
+		}
+		return fmt.Errorf("managed configuration %s was removed while it was read", path)
 	}
-	if data == nil {
-		return fmt.Errorf("managed configuration %s is a link to nothing", path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	// What the file sets is read twice, once into the config and once as keys;
+	// a file the two could read differently is refused, not guessed at.
+	if err := CheckManagedJSON(data); err != nil {
+		return fmt.Errorf("managed configuration %s: %w", path, err)
+	}
+	if _, err := mergeData(cfg, path, data); err != nil {
+		return err
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	cfg.managedRules = managedRuleSet(data)
+	if cfg.ManagedSets("permissions.deny") {
+		// Its deny rules join the others: a managed file may add a deny rule, never take one away.
+		cfg.Permissions.Deny = dedupe(append(slices.Clone(cfg.Permissions.Deny), below...))
+		delete(cfg.origins, "permissions.deny")
+	}
+	if cfg.ManagedSets("permissions.ask") {
+		// So do its ask rules: a managed ask list adds questions, never drops the user's.
+		cfg.Permissions.Ask = dedupe(append(slices.Clone(cfg.Permissions.Ask), belowAsk...))
+		delete(cfg.origins, "permissions.ask")
+	}
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
 		cfg.Unknown[i].Managed = cfg.Unknown[i].File == path
 	}
 	return nil
+}
+
+// CheckManagedJSON refuses a document with a key repeated in one object, or a
+// value a generic decode cannot hold, since either lets the config and its keys disagree.
+func CheckManagedJSON(data []byte) error {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		var ute *json.UnmarshalTypeError
+		if errors.As(err, &ute) && strings.HasPrefix(ute.Value, "number") {
+			return fmt.Errorf("it holds a number too large to read (%s)", strings.TrimPrefix(ute.Value, "number "))
+		}
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dupKeys(dec, "")
+}
+
+// dupKeys walks one JSON value from dec and reports the first repeated key.
+func dupKeys(dec *json.Decoder, path string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		// Keyed folded: the config decode matches keys regardless of case, so
+		// "PERMISSIONS" after "permissions" is the same setting written twice.
+		seen := map[string]string{}
+		for dec.More() {
+			k, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, _ := k.(string)
+			fold := foldKey(key)
+			if first, ok := seen[fold]; ok {
+				if first == key {
+					return fmt.Errorf("the key \"%s\" appears twice in %s", Printable(key), Printable(orRoot(path)))
+				}
+				return fmt.Errorf("the keys \"%s\" and \"%s\" in %s are the same setting", Printable(first), Printable(key), Printable(orRoot(path)))
+			}
+			seen[fold] = key
+			if err := dupKeys(dec, join(path, key)); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	case json.Delim('['):
+		for dec.More() {
+			if err := dupKeys(dec, path); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	}
+	return nil
+}
+
+// foldKey is a key as encoding/json compares it to a field name: by simple
+// case folding, so "permiſſions" and "PERMISSIONS" both fold to "permissions".
+func foldKey(k string) string {
+	var b strings.Builder
+	for _, r := range k {
+		// The smallest rune of r's fold orbit stands for the whole orbit.
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		b.WriteRune(least)
+	}
+	return b.String()
+}
+
+func orRoot(path string) string {
+	if path == "" {
+		return "the top level"
+	}
+	return path
 }
 
 // managedKeys lists the settings a file makes, as sorted dotted paths.
@@ -59,7 +184,8 @@ func managedKeys(data []byte) []string {
 	if json.Unmarshal(data, &raw) != nil {
 		return nil
 	}
-	var out []string
+	// Empty, not nil, for a file read: nil means nothing is known of it.
+	out := []string{}
 	walkSet("", raw, reflect.TypeFor[Config](), func(path string, _ any) { out = append(out, path) })
 	sort.Strings(out)
 	return out
@@ -118,6 +244,27 @@ func (c Config) ManagedSets(path string) bool {
 // configuration sets a permissions key, whichever one. Every surface asks this.
 func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
+// ManagedScreens reports whether the managed file itself sets the deny rules
+// or the extensions, so a refusal they make is the organisation's to hold.
+// A managed Config with no ManagedKeys at all, such as one built by hand,
+// is taken to screen.
+func (c Config) ManagedScreens() bool {
+	if c.Managed && c.ManagedKeys == nil {
+		// Nothing is known of what the file set, so assume it set the rules.
+		return true
+	}
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && c.extensionHooksRun())
+}
+
+// extensionHooksRun reports whether an extension is sent a hook event, not
+// only its tools' calls: with hooks.disabled none is, so none can screen.
+func (c Config) extensionHooksRun() bool {
+	return slices.ContainsFunc(c.ExtensionSpecs(), func(s extension.Config) bool {
+		// No events listed means every event, hooks included.
+		return len(s.Events) == 0 || len(toolEventsOnly(s.Events)) < len(s.Events)
+	})
+}
+
 // dropLockedAllow sets aside the allow rules the user's and the workspace's
 // files added when the managed file locks allow rules without listing its own.
 func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {
@@ -157,9 +304,12 @@ func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {
 			Reason: "the managed configuration sets the permissions, so only its own permissions.allow adds allow rules"})
 	}
 	if len(kept) < len(c.Permissions.Allow) {
-		// The files' list had replaced the built-in rules; put those back.
-		c.Permissions.Allow = dedupe(append(slices.Clone(Default().Permissions.Allow), kept...))
-		c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+		// Only the built-in rules the files' list still held stay: one it
+		// left out was removed on purpose, and is not brought back.
+		c.Permissions.Allow = dedupe(kept)
+		if slices.Equal(c.Permissions.Allow, Default().Permissions.Allow) {
+			c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+		}
 	}
 }
 
@@ -187,6 +337,45 @@ func (c Config) Offered(name string) bool {
 	return !builtIn
 }
 
+// ErrNoSuchModel is ModelAllowed's answer for a name that is not an offered,
+// configured provider.
+var ErrNoSuchModel = errors.New("no such provider is configured")
+
+// ModelAllowed says whether a session may start on, or switch to, the
+// configured provider name: nil, ErrNoSuchModel, or a ManagedError when a
+// managed model.default pins the model to another. The CLI, the console, ACP
+// and the SDK all ask it, so the pin holds on every surface.
+func (c Config) ModelAllowed(name string) error {
+	if _, ok := c.Model.Providers[name]; !ok || !c.Offered(name) {
+		return fmt.Errorf("%w: %q", ErrNoSuchModel, Printable(name))
+	}
+	return c.PinnedAway(name)
+}
+
+// PinnedAway is the refusal of a model other than the one a managed
+// model.default pins every choice to, or nil.
+func (c Config) PinnedAway(name string) error {
+	if c.ModelPinned() && name != c.Model.Default {
+		return refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
+	}
+	return nil
+}
+
+// EndpointPinnedAway is the refusal of a model named by its endpoint rather
+// than by a configured provider (desc says which) under a managed
+// model.default, or nil when nothing pins the model.
+func (c Config) EndpointPinnedAway(desc string) error {
+	if c.ModelPinned() {
+		return refuse("model.default", desc, "the managed configuration sets the model to "+c.Model.Default)
+	}
+	return nil
+}
+
+// ModelPinned reports whether a managed model.default pins the model. A model
+// that is not from the configuration, such as an endpoint an embedder names,
+// is refused then too.
+func (c Config) ModelPinned() bool { return c.ManagedSets("model.default") }
+
 // Sets reports whether a configuration file made the setting at path, a
 // dotted path such as "sandbox.max_memory_mb", whatever value it gave.
 func (c Config) Sets(path string) bool {
@@ -209,6 +398,9 @@ type Overrides struct {
 	AdditionalDirs []string
 	// MemoryAuto, when set, turns auto memory on or off.
 	MemoryAuto *bool
+	// Warn, when set, takes the warnings about the rules added here, as
+	// LoadOptions.Warn does.
+	Warn func(string)
 }
 
 // ManagedError is an override refused because it would loosen a setting the
@@ -221,7 +413,7 @@ type ManagedError struct {
 }
 
 func (e *ManagedError) Error() string {
-	return fmt.Sprintf("%s %s is refused: %s (set in %s)", e.Key, e.Value, e.Reason, e.File)
+	return fmt.Sprintf("%s %s is refused: %s (set in %s)", Printable(e.Key), Printable(e.Value), e.Reason, Printable(e.File))
 }
 
 // refuse builds a ManagedError naming the managed file.
@@ -288,11 +480,14 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
-	warnNeverAllows(o.Allow)
+	warnNeverAllows(warnSink(o.Warn), o.Allow)
 	c.ruleLayers = maps.Clone(c.ruleLayers)
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)
 	c.noteRuleLayer(LayerFlag)
+	if len(o.Allow)+len(o.Deny) > 0 {
+		warnRuleFindings(warnSink(o.Warn), c.RuleFindings())
+	}
 	// Copied, so the result never shares a list with the configuration it came from.
 	c.AdditionalDirs = append(append([]string{}, c.AdditionalDirs...), o.AdditionalDirs...)
 	return c, nil
@@ -330,8 +525,8 @@ const (
 )
 
 // noteRuleLayer credits the permission rules and extensions not yet
-// credited to layer. The managed layer takes every entry of a list it sets,
-// since it replaced that list; the others take only entries new to it.
+// credited to layer. The managed layer takes every entry of a list it replaced,
+// and of deny, which it adds to, only its own; the others take only new entries.
 func (c *Config) noteRuleLayer(layer string) {
 	if c.ruleLayers == nil {
 		c.ruleLayers = map[string]string{}
@@ -340,10 +535,11 @@ func (c *Config) noteRuleLayer(layer string) {
 		"allow": c.Permissions.Allow, "ask": c.Permissions.Ask, "deny": c.Permissions.Deny,
 		"git_extensions": c.Permissions.GitExtensions,
 	} {
-		replaced := layer == LayerManaged && c.ManagedSets("permissions."+list)
 		for _, r := range rules {
 			k := list + "\x00" + strings.TrimSpace(r)
-			if _, have := c.ruleLayers[k]; !have || replaced {
+			// Credited to the managed file only where it lists the rule: a file
+			// setting another permissions key does not make the rest its own.
+			if _, have := c.ruleLayers[k]; !have || layer == LayerManaged && c.managedRules[k] {
 				c.ruleLayers[k] = layer
 			}
 		}
@@ -355,6 +551,27 @@ func (c *Config) noteRuleLayer(layer string) {
 			c.ruleLayers[k] = layer
 		}
 	}
+}
+
+// managedRuleSet is the rules the managed file lists, keyed as ruleLayers is.
+func managedRuleSet(data []byte) map[string]bool {
+	var m struct {
+		Permissions struct {
+			Allow, Ask, Deny []string
+			GitExtensions    []string `json:"git_extensions"`
+		}
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for list, rules := range map[string][]string{"allow": m.Permissions.Allow, "ask": m.Permissions.Ask,
+		"deny": m.Permissions.Deny, "git_extensions": m.Permissions.GitExtensions} {
+		for _, r := range rules {
+			out[list+"\x00"+strings.TrimSpace(r)] = true
+		}
+	}
+	return out
 }
 
 // ExtensionLayer names where a configured extension came from, as

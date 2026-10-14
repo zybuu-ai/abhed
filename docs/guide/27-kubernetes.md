@@ -1,0 +1,314 @@
+# Running on Kubernetes
+
+The Helm chart in `deploy/helm/abhed` runs `abhed serve` on Kubernetes 1.30
+or later, and on OpenShift. It needs Abhed 1.2.8 or later, the first release
+with `GET /v1/ready` and `abhed serve -check`.
+
+```bash
+helm install abhed deploy/helm/abhed --namespace abhed --create-namespace \
+  -f my-values.yaml
+kubectl -n abhed rollout status deployment/abhed
+```
+
+Every value is checked against `values.schema.json`, so a misspelt key or a
+value the chart cannot honour stops `helm install` before anything is
+created. The chart never creates a Secret and never writes a secret into
+what it renders: each one is a Secret you create, which the chart names.
+
+## What it creates
+
+| Object | Why |
+|---|---|
+| Deployment | One replica by default, running `abhed serve -addr 0.0.0.0:8080` from `/workspace`. |
+| ConfigMap | Your `config` values as `config.json`, mounted read-only at the managed path `/etc/abhed/config.json`. |
+| PersistentVolumeClaim | One volume with three folders: `workspace` at `/workspace`; `state` at `~/.abhed` (accounts, keys, trust decisions, the SQLite store), which the agent cannot reach; and `local-state` at `~/.local/state` (`XDG_STATE_HOME`), where the control plane keeps its relay host key, sandbox folders and snapshots. Kept when the release is uninstalled. |
+| Service | The server's port. |
+| ServiceAccount | With no API token mounted. |
+| NetworkPolicy | Ingress to the server's port only; egress denied except DNS, the endpoints you list, Postgres and the other replicas. |
+| PodDisruptionBudget | `maxUnavailable: 1` by default, so a single replica does not block a node drain. |
+| Ingress, Route | Only when turned on. |
+
+## Configuration
+
+`config` is Abhed's configuration, written as YAML; the guide to every key is
+[Configuration](02-configuration.md). It is mounted as the **managed file**,
+so neither the workspace's `.abhed/config.json` nor an environment variable
+can loosen it, `bypass` mode is refused, and a `permissions` setting there
+drops allow rules from lower files ([the managed file](02-configuration.md#the-managed-file)).
+
+```yaml
+config:
+  model:
+    default: claude
+    providers:
+      claude:
+        type: anthropic
+        model: claude-opus-5
+        api_key_env: ANTHROPIC_API_KEY
+  permissions:
+    mode: default
+  sandbox:
+    allow_network: false
+secretEnv:
+  - name: ANTHROPIC_API_KEY
+    secretName: abhed-model
+    key: api-key
+networkPolicy:
+  modelEndpoints:
+    - cidr: 160.79.104.0/23
+      ports: [443]
+```
+
+**No secrets in `config`.** The chart refuses to render when `config` holds
+a key named `api_key`, `dsn`, `migrate_dsn`, `password`, `client_secret`,
+`secret`, `token` or `private_key`. Name a variable instead (`api_key_env`,
+`client_secret_env`) and fill it from a Secret with `secretEnv`.
+
+**Changing `config`** rolls the pods: the Deployment carries a checksum of it.
+
+**`podConfig`** is for settings that must differ per pod. An init container
+writes it to `~/.abhed/config.json` before the server starts, and Kubernetes
+expands `$(POD_NAME)`, `$(POD_IP)` and `$(POD_NAMESPACE)` in its strings. The
+managed file still wins any key both set. With persistence on, it replaces
+whatever `~/.abhed/config.json` the volume held.
+
+## Files that must be private
+
+Abhed refuses to read the secrets store, a command-line token key or a
+replica relay key that anyone but its owner can read. A Secret volume
+with `fsGroup` set is group-readable, so list such keys under
+`secretFiles`: an init container copies each into an in-memory volume at
+`/run/abhed/secrets/<path>`, mode `0400`, owned by the server's user, and the
+server sees that volume read-only.
+
+```yaml
+secretFiles:
+  - secretName: abhed-secrets-store
+    key: secrets.json
+    path: secrets.json
+extraEnv:
+  - name: ABHED_SECRETS_FILE
+    value: /run/abhed/secrets/secrets.json
+```
+
+A copied file does not follow a later change to its Secret; restart the
+pods after rotating one. The command-line token key (`auth.cli.key_file`)
+needs no Secret on one replica: Abhed creates it, mode 600, in `~/.abhed` on
+the volume at the first start.
+
+The control plane's `:ssh` relay presents a host key, which each pod would
+otherwise make for itself. Set `controlPlane.sshHostKey.existingSecret` on
+every install with the control plane, one replica or several: the key then
+lives in a Secret you back up and rotate, not only on the volume. The chart
+copies it in the same way and sets `control_plane.ssh_host_key` to it. It
+needs `config.control_plane.enabled`, and the chart refuses
+`config.control_plane.ssh_host_key` set by hand. With sign-in for more than
+one account, `abhed serve` turns the control plane on by itself for
+per-session sandboxes; set `config.control_plane.enabled: true` so the
+chart's checks see it. A `process` sandbox lives in the pod that made it,
+so keep a session on one pod (session affinity) or set
+`server.shared_sessions: true`. Without it the server makes
+a key under `~/.local/state/abhed/control-plane` on the volume, which lasts
+as long as the claim; with persistence off it changes on every restart, and
+clients that check host keys strictly are refused.
+
+```yaml
+config:
+  control_plane:
+    enabled: true
+controlPlane:
+  sshHostKey:
+    existingSecret: abhed-ssh-host-key   # an OpenSSH private key
+    key: ssh_host_ed25519_key
+```
+
+Make one with `ssh-keygen -t ed25519 -N '' -f ssh_host_ed25519_key` and
+`kubectl create secret generic abhed-ssh-host-key
+--from-file=ssh_host_ed25519_key`.
+
+## Checks before and while serving
+
+- **Preflight.** An init container runs `abhed serve -check` with the same
+  configuration, Secrets and volumes, so a pod whose model, secrets store,
+  sandbox, sign-in, storage or control plane would stop the server never
+  starts. `kubectl logs deployment/abhed -c preflight` shows each check. Turn it
+  off with `preflight.enabled: false`.
+- **Startup and liveness** probe `GET /v1/health`: the process is up.
+- **Readiness** probes `GET /v1/ready`: the server is not draining, and the
+  secrets store, the event store and the control plane each answer. A pod
+  that fails it gets no traffic but is not restarted.
+
+## The pod
+
+Every container is held to the `restricted` Pod Security level: non-root
+(uid and gid 10001), every capability dropped, no privilege escalation,
+seccomp `RuntimeDefault`, a read-only root filesystem, no service-account
+token, and no Service environment variables. The writable places are the
+volume, a sized `/tmp`, and an empty home directory. Values that would
+weaken this (`privileged`, an added capability, a writable root, root) are
+refused by the schema.
+
+**The sandbox inside the pod.** The image's `process` tier is bubblewrap,
+which needs an unprivileged user namespace. Some container runtimes' default
+seccomp profiles refuse to create one; containerd's is one. Abhed then
+does not run commands unsandboxed: the default `sandbox.min_tier` is
+`process`, so preflight fails on its `sandbox` check and the pod stays in
+`Init`. Your choices:
+
+- a `Localhost` seccomp profile that allows what bubblewrap needs, installed
+  on the nodes and named in `podSecurityContext.seccompProfile` and
+  `securityContext.seccompProfile` (restricted allows `Localhost`). User
+  namespaces alone are not enough: bubblewrap also calls `mount`, `umount2`
+  and `pivot_root` inside the namespace it makes. The chart ships one,
+  `files/seccomp-bwrap.json`: the Docker engine's default profile (moby
+  v28.0.1, Apache-2.0) plus one rule allowing `unshare`, `clone`, `setns`,
+  `mount`, `umount2` and `pivot_root`, for x86-64, arm64 and s390x. Copy it
+  to each node's kubelet seccomp folder (by default
+  `/var/lib/kubelet/seccomp/`) as `abhed/seccomp-bwrap.json` and set
+  `seccompProfile: {type: Localhost, localhostProfile: abhed/seccomp-bwrap.json}`
+  in both places. It widens what the kernel accepts from the pod: user
+  namespaces are kernel attack surface, and a cluster whose policy forbids
+  them should use one of the other choices. Under it bubblewrap still cannot
+  mount a fresh `/proc` (the runtime masks the pod's), so commands run with
+  no `/proc`: `ps`, `top` and anything reading `/proc/self` fail. Preflight
+  and `abhed doctor` say so, showing the sandbox as `process (no /proc)`
+  rather than plain `process`, and a control-plane sandbox's
+  `IsolationVerified` condition reads `tier process (no /proc)`;
+- `sandbox.min_tier: none` in `config`, which makes the pod's own isolation
+  the only boundary around the agent's commands. They then run as the
+  server's own user with nothing between them and its files: a command can
+  read and write `~/.abhed` (accounts, keys, trust decisions, the SQLite
+  store), which every sandbox tier keeps out of its reach, and the control
+  plane's state, its relay host key included. Use it only where nothing in
+  the pod must be kept from the agent. With sign-in for more than one
+  account each session gets a sandbox of its own, and one with no isolation
+  is refused; set `server.shared_sessions: true` to keep every account in
+  the pod's one workspace;
+- the Kubernetes driver in the Team edition, which runs each sandbox as its
+  own restricted pod.
+
+## Persistence
+
+`persistence.enabled` (on by default) makes one `ReadWriteOnce` claim and
+the Deployment uses the `Recreate` strategy, since the old and new pod cannot
+share the volume. `persistence.existingClaim` uses a claim you made.
+With persistence off, every folder is an `emptyDir` and lost with the pod.
+
+The chart sets `XDG_STATE_HOME` to `~/.local/state`, a folder on the volume,
+so the control plane's state outlives a pod restart: its relay host key
+(unless it comes from `controlPlane.sshHostKey`), each sandbox's folder
+under `abhed/control-plane/sandboxes`, and snapshots under
+`abhed/control-plane/snapshots`. Abhed makes these folders mode `0700` and
+refuses one that others may write. `control_plane.workspace_root` and
+`control_plane.snapshot_dir` in `config` move the sandbox folders or the
+snapshots elsewhere; keep them on the volume too, or the sandboxes the store
+still lists lose their files when the pod restarts.
+
+## Postgres
+
+```yaml
+postgres:
+  enabled: true
+  existingSecret: abhed-db       # key database-url: postgres://abhed_runtime:...@db:5432/abhed
+  networkPolicy:
+    cidrs: [10.30.0.0/24]
+```
+
+The connection string reaches the server as `ABHED_DATABASE_URL`, from the
+Secret, and the chart sets `storage.driver: postgres`. Apply the schema as
+the owning role before the first start and after each upgrade, from
+somewhere other than the serving pod, which never holds the owner's
+credentials:
+
+```bash
+ABHED_MIGRATE_DATABASE_URL='postgres://abhed_owner:...@db/abhed' \
+ABHED_DATABASE_URL='postgres://abhed_runtime:...@db/abhed' abhed migrate
+```
+
+Until it has run, preflight fails on `storage`.
+
+## TLS
+
+```yaml
+tls:
+  enabled: true
+  existingSecret: abhed-tls      # a kubernetes.io/tls Secret
+  minVersion: "1.3"
+  clientCA:
+    existingSecret: abhed-client-ca
+    clientAuth: optional
+```
+
+The Secret is mounted at `/etc/abhed/tls`, and the chart sets
+`server.tls.cert_file` and `key_file` (and `client_ca_file` with
+`clientCA`). Abhed reads the files again every 10 seconds, so a certificate
+renewed in the Secret is served without a restart. The probes switch to
+HTTPS. The kubelet cannot present a client certificate, so with
+`clientAuth: require` the probes only check that the port accepts
+connections; `optional` keeps the HTTP checks and still verifies any
+certificate a client sends. Set TLS here rather than under
+`config.server.tls`; the chart refuses the latter. Behind an Ingress, tell
+the controller the backend speaks HTTPS (for ingress-nginx,
+`nginx.ingress.kubernetes.io/backend-protocol: HTTPS`). The TLS settings themselves are in [TLS and command-line sign-in](26-tls-and-cli-login.md).
+
+## Ingress and OpenShift
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: abhed.example.internal
+      paths: [{path: /, pathType: Prefix}]
+  tls:
+    - secretName: abhed-ingress-tls
+      hosts: [abhed.example.internal]
+```
+
+Long-running streams (SSE, the workbench terminal) need the controller's read
+timeout raised, for ingress-nginx `nginx.ingress.kubernetes.io/proxy-read-timeout`.
+Set `server.trust_proxy` and `server.allowed_origins` in `config` for the
+public origin.
+
+On OpenShift set `openshift.enabled`, which leaves the user, group and
+`fsGroup` to the `restricted-v2` SCC, and `route.enabled`. The Route
+terminates TLS at the router (`edge`) by default; with `tls.enabled` use
+`passthrough` or `reencrypt`. OpenShift's DNS listens on 5353 in
+`openshift-dns`; set `networkPolicy.dns` to match (the chart's
+`ci/route-values.yaml` shows how).
+
+## Network policy
+
+Egress is denied except to the cluster DNS, `networkPolicy.modelEndpoints`,
+the Postgres peers in `postgres.networkPolicy`, the other replicas, and any
+`networkPolicy.extraEgress` rules. NetworkPolicy matches addresses, not host
+names: list your model endpoint's addresses, or send model traffic through a
+proxy you allow. `networkPolicy.ingressFrom` narrows who may reach the port,
+for example to the ingress controller's namespace. A cluster whose network
+plugin does not enforce NetworkPolicy ignores all of this.
+
+## Image
+
+`image.tag` defaults to `v<appVersion>`. Set `image.digest` (`sha256:…`) to
+pull by digest; the tag is then ignored.
+
+## Several replicas
+
+`replicaCount` above 1 needs `postgres.enabled` and a workspace that is not a
+`ReadWriteOnce` volume (`persistence.accessModes: [ReadWriteMany]`, or
+persistence off); the chart refuses otherwise. With the control plane on,
+several replicas (or `control_plane.ha`) also need
+`controlPlane.sshHostKey.existingSecret`, so every pod presents the same
+`:ssh` relay host key. `podAntiAffinity: hard` or
+`soft` spreads the pods across nodes, and `podDisruptionBudget.minAvailable`
+keeps some serving through a drain. Sign-in sessions are held by the replica
+that made them, so set `service.sessionAffinity: ClientIP` or session
+affinity at the ingress. Sharing sandboxes between replicas, with ownership
+and failover, is the Enterprise edition's high availability.
+
+## Checking the chart
+
+`scripts/ci/helm-check.sh` lints and renders the chart for every file in its
+`ci/` folder, validates the result against the Kubernetes 1.30 and 1.33
+schemas with kubeconform, and checks that the values above are refused. It
+downloads pinned helm and kubeconform releases and verifies their checksums.

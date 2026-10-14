@@ -92,16 +92,74 @@ func (s *Session) interpreter() (string, [2]int, bool) {
 		return "", [2]int{}, false
 	}
 	real, err := filepath.EvalSymlinks(found)
-	if err != nil {
+	if err != nil || s.inRoots(real) {
 		return "", [2]int{}, false
 	}
-	for _, root := range append([]string{s.Root}, s.Roots...) {
-		if rel, err := filepath.Rel(root, real); err == nil && (rel == "." || filepath.IsLocal(rel)) {
+	if behind, isShim := shimTarget(real, s.inRoots); isShim {
+		if behind == "" {
 			return "", [2]int{}, false
 		}
+		real = behind
 	}
 	ver, ok := pythonVersion(real)
 	return real, ver, ok
+}
+
+// inRoots reports whether p is inside a root the agent can write.
+func (s *Session) inRoots(p string) bool {
+	for _, root := range append([]string{s.Root}, s.Roots...) {
+		if rel, err := filepath.Rel(root, p); err == nil && (rel == "." || filepath.IsLocal(rel)) {
+			return true
+		}
+	}
+	return false
+}
+
+var shimTargets sync.Map // shim path -> interpreter, successes only
+
+// shimTarget resolves a version manager's shim, which runs nothing without its own
+// environment, to the interpreter it would pick from a neutral folder. An empty
+// target with isShim true means the shim could not be resolved safely.
+func shimTarget(shim string, inRoots func(string) bool) (target string, isShim bool) {
+	dir := filepath.Dir(shim)
+	if filepath.Base(dir) != "shims" {
+		return "", false
+	}
+	var tool string
+	for _, t := range []string{"pyenv", "asdf", "mise"} {
+		if strings.Contains(filepath.ToSlash(dir), t) {
+			tool = t
+			break
+		}
+	}
+	if tool == "" {
+		return "", true
+	}
+	if v, ok := shimTargets.Load(shim); ok {
+		return v.(string), true
+	}
+	bin, err := exec.LookPath(tool)
+	if err != nil {
+		bin = filepath.Join(filepath.Dir(dir), "bin", tool)
+	}
+	if bin, err = filepath.EvalSymlinks(bin); err != nil || inRoots(bin) {
+		return "", true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pythonTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "which", filepath.Base(shim))
+	cmd.Dir = os.TempDir() // a version file in the workspace does not choose what runs
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		return "", true
+	}
+	target, err = filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil || inRoots(target) || filepath.Base(filepath.Dir(target)) == "shims" {
+		return "", true
+	}
+	shimTargets.Store(shim, target)
+	return target, true
 }
 
 var pyVersions sync.Map // interpreter path -> [2]int, successes only
@@ -351,7 +409,7 @@ func stripComments(src []byte) []byte {
 }
 
 // trailingCommas drops a comma, outside strings, whose next non-space byte
-// closes an object or an array.
+// closes an object or an array and which follows a value: `{,}` stays invalid.
 func trailingCommas(src []byte) []byte {
 	out := make([]byte, 0, len(src))
 	inString, escaped := false, false
@@ -377,11 +435,17 @@ func trailingCommas(src []byte) []byte {
 			for j < len(src) && strings.ContainsRune(" \t\r\n", rune(src[j])) {
 				j++
 			}
-			if j < len(src) && (src[j] == '}' || src[j] == ']') {
+			if j < len(src) && (src[j] == '}' || src[j] == ']') && afterValue(out) {
 				continue
 			}
 		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// afterValue reports whether what was kept so far ends in a value, not an opening or a comma.
+func afterValue(out []byte) bool {
+	t := strings.TrimRight(string(out), " \t\r\n")
+	return t != "" && !strings.ContainsRune("{[,:", rune(t[len(t)-1]))
 }

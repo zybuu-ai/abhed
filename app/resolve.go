@@ -13,7 +13,9 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/forge"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -63,6 +65,19 @@ var pushWork = func(ctx context.Context, w *forge.Work, repo string, ref forge.R
 // the test can stand in a git that fails.
 var workUntouched = func(ctx context.Context, w *forge.Work) (bool, error) { return w.Untouched(ctx) }
 
+// missingIdentity names the first of user.name and user.email that git's
+// configuration for the repository lacks, or "". Replaced in tests.
+var missingIdentity = func(ctx context.Context, repo string) string {
+	r := hostgit.New(ctx, repo)
+	for _, key := range []string{"user.name", "user.email"} {
+		out, err := r.Command(ctx, "config", "--get", key).Output()
+		if err != nil || strings.TrimSpace(string(out)) == "" {
+			return key
+		}
+	}
+	return ""
+}
+
 // resolveMode is the run's mode. The default, auto, yields to a mode the
 // managed configuration pins; a mode asked for by flag is judged as given.
 func resolveMode(cfg config.Config, fs *flag.FlagSet, mode string) string {
@@ -81,7 +96,8 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	remote := fs.String("remote", "", "ignored: the branch is pushed to the issue's repository")
 	ca := fs.String("ca", os.Getenv("ABHED_FORGE_CA"), "PEM file with the certificate authority of a self-hosted forge")
 	mode := fs.String("mode", "auto", "permission mode for the run; a mode the managed configuration pins replaces the default")
-	allow := fs.String("allow", "", "comma-separated allow rules for the run, e.g. 'bash(go test*)'")
+	var allow multiFlag
+	fs.Var(&allow, "allow", "comma-separated allow rules for the run, e.g. 'bash(go test*)'; repeatable")
 	yes := fs.Bool("y", false, "open the pull request without asking (an allow rule forge_pr(*) does the same)")
 	trustWS := fs.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
 	fs.Usage = func() {
@@ -129,7 +145,14 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 		return fail(err)
 	}
 	*mode = resolveMode(cfg, fs, *mode)
-	opts := forge.Options{Kind: *kind, CAFile: *ca}
+	if missing := missingIdentity(ctx, workspace); missing != "" {
+		return fail(fmt.Errorf("git has no %s for this repository, so the commit would carry a guessed identity; set it (git config %s …) and resolve again", missing, missing))
+	}
+	own := toolset.OwnEgress(cfg) // the forge API and the push, under the allowlist
+	if own != nil {
+		defer own.Close()
+	}
+	opts := forge.Options{Kind: *kind, CAFile: *ca, Egress: own}
 	if opts.Kind != "" {
 		opts.Token = tokenFor(opts.Kind)
 	}
@@ -165,6 +188,8 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 		return fail(err)
 	}
 	worktree = work.Dir
+	work.Secrets = openVault().Session() // a stored value in the change refuses the push
+	work.Egress = own
 	defer func() {
 		if !kept {
 			work.Cleanup(context.WithoutCancel(ctx), workspace)
@@ -173,7 +198,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 
 	runner, err := newResolveRunner(ctx, abhed.Options{
 		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode, WorkspaceTrust: trust, AllowDefaultModel: true,
-		Allow: splitRules(*allow), Sandbox: true,
+		Allow: splitEach(allow), Sandbox: true,
 		OnEvent: func(ev abhed.Event) { resolveEvent(ev) },
 	})
 	if err != nil {
@@ -220,7 +245,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	verdict := pol.Evaluate("forge_pr", true, subject)
 	switch {
 	case verdict.Decision == policy.Deny:
-		return fail(fmt.Errorf("opening a pull request on %s/%s is denied: %s", ref.Owner, ref.Repo, verdict.Reason))
+		return fail(fmt.Errorf("opening a pull request on %s/%s is denied: %s; the change is on branch %s", ref.Owner, ref.Repo, verdict.Reason, work.Branch))
 	case verdict.Decision == policy.Allow && verdict.Step == "allow", *yes:
 	case term.IsTerminal(int(os.Stdin.Fd())):
 		q := fmt.Sprintf("Push %s (%s) and open a pull request against %s on %s?", work.Branch, sha, target, ref.Host)
@@ -229,7 +254,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 			return 4
 		}
 	default:
-		return fail(fmt.Errorf("opening a pull request needs approval: pass -y, or add the rule forge_pr(%s/%s) to permissions.allow", ref.Owner, ref.Repo))
+		return fail(fmt.Errorf("opening a pull request needs approval: pass -y, or add the rule forge_pr(%s/%s) to permissions.allow; the change is on branch %s", ref.Owner, ref.Repo, work.Branch))
 	}
 
 	// The branch goes to the issue's own repository, from the operator's

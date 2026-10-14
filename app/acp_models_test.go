@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,6 +71,7 @@ func acpModelsEnv(t *testing.T, userCfg string) (captured func() []*abhed.Agent)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("ABHED_SECRETS_FILE", "")
 	t.Setenv(config.TrustEnv, "")
+	hideContainerEngines(t)
 	old := managed.ConfigFile
 	managed.ConfigFile = filepath.Join(t.TempDir(), "absent.json")
 	t.Cleanup(func() { managed.ConfigFile = old })
@@ -97,6 +99,26 @@ func acpModelsEnv(t *testing.T, userCfg string) (captured func() []*abhed.Agent)
 		defer mu.Unlock()
 		return append([]*abhed.Agent(nil), made...)
 	}
+}
+
+// hideContainerEngines, on macOS, puts engines that are not running first on
+// PATH, so a session picks its tier without asking the host's engine:
+// `docker info` against a podman machine took over two seconds, five under
+// load, which is all a request here is given. macOS always has the process
+// tier; on Linux a runner without one relies on its engine, so it is kept,
+// as it is for the container-tier tests.
+func hideContainerEngines(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "darwin" || os.Getenv("ABHED_REQUIRE_CONTAINER") != "" {
+		return
+	}
+	bin := t.TempDir()
+	for _, name := range []string{"docker", "podman", "nerdctl"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 type acpModelOption struct {

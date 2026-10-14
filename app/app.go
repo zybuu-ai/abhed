@@ -13,11 +13,14 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	abhed "github.com/zybuu-ai/abhed/sdk"
@@ -35,10 +38,12 @@ type App struct {
 	auth       map[string]AuthBuilder
 	features   map[string]bool
 	commands   map[string]Command
+	about      map[string]string
 	migrate    []store.Extension
 	taps       []TapBuilder
 	serverOpts []ServerOptionsHook
 	serveHooks []ServeHook
+	cpHooks    []ControlPlaneHook
 	// trust is -trust-workspace: the say the command line gives over the
 	// workspace's own configuration file.
 	trust config.TrustChoice
@@ -54,6 +59,7 @@ func newApp(opts ...Option) *App {
 		auth:     map[string]AuthBuilder{},
 		features: map[string]bool{},
 		commands: map[string]Command{},
+		about:    map[string]string{},
 	}
 	WithAuthMode("local", buildLocal)(a)
 	for _, o := range opts {
@@ -120,6 +126,16 @@ func WithCommand(name string, run Command) Option {
 	return func(a *App) {
 		if _, builtin := builtinCommands[name]; !builtin {
 			a.commands[name] = run
+			delete(a.about, name)
+		}
+	}
+}
+
+// WithCommandAbout is WithCommand with the one line abhed -h shows for it.
+func WithCommandAbout(name, about string, run Command) Option {
+	return func(a *App) {
+		if _, builtin := builtinCommands[name]; !builtin {
+			a.commands[name], a.about[name] = run, about
 		}
 	}
 }
@@ -148,6 +164,17 @@ func WithServerOptions(h ServerOptionsHook) Option {
 	return func(a *App) { a.serverOpts = append(a.serverOpts, h) }
 }
 
+// ControlPlaneHook adjusts the sandbox control plane's configuration before
+// the service is built, when control_plane.enabled is set: to add an
+// interceptor, an ownership rule, a fenced store or the replica's node id.
+// An error is a startup refusal.
+type ControlPlaneHook func(ctx context.Context, cfg config.Config, c *controlplane.Config) error
+
+// WithControlPlane registers a hook on the control plane's configuration.
+func WithControlPlane(h ControlPlaneHook) Option {
+	return func(a *App) { a.cpHooks = append(a.cpHooks, h) }
+}
+
 // ServeHook runs after the server is built and before it listens, with the
 // context that ends at shutdown. It is where something that needs the
 // running server — a scheduler that starts sessions on it — is bound and
@@ -162,7 +189,7 @@ func OnServe(h ServeHook) Option {
 
 // subcommands are the ones Main dispatches itself, as its usage lists them.
 // subcommand is one Main dispatches itself. trust marks those that load the
-// workspace configuration and so take -trust-workspace right after the name.
+// workspace configuration and so take -trust-workspace after the name too.
 type subcommand struct {
 	name, about string
 	trust       bool
@@ -176,6 +203,12 @@ var subcommands = []subcommand{
 	{name: "providers", about: "list the model provider types this build supports"},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
 	{name: "secret", about: "manage stored secrets: set, list, rm"},
+	{name: "login", about: "sign this command line in to an Abhed server and save it as a profile"},
+	{name: "logout", about: "sign the current profile (or -profile NAME) out"},
+	{name: "profile", about: "the servers this command line knows: list, use, rm"},
+	{name: "sandbox", about: "a server's sandboxes: " + strings.Join(sandboxcli.Commands(), ", ")},
+	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
+	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
 	{name: "record", about: "the local record: list, show, verify, export, prune", trust: true},
@@ -185,7 +218,7 @@ var subcommands = []subcommand{
 	{name: "resolve", about: "work on a forge issue in its own branch and open a pull request", trust: true},
 	{name: "acp", about: "speak the Agent Client Protocol on stdio, for editors", trust: true},
 	{name: "rpc", about: "take line-delimited JSON requests on stdin, answer on stdout", trust: true},
-	{name: "index", about: "build the workspace's search index ahead of a session", trust: true},
+	{name: "index", about: "embed the workspace ahead of a session and keep the embeddings; each session rebuilds the rest", trust: true},
 	{name: "eval", about: "run the evaluation corpus against the configured model", trust: true},
 	{name: "version", about: "print the version and exit"},
 }
@@ -201,9 +234,13 @@ var builtinCommands = func() map[string]bool {
 
 // paidFeatures maps each gated feature to the tier that includes it.
 var paidFeatures = map[string]string{
-	"oidc":      "Team",
-	"schedules": "Team",
-	"telemetry": "Enterprise",
+	"oidc":         "Team",
+	"schedules":    "Team",
+	"telemetry":    "Enterprise",
+	"ha":           "Enterprise",
+	"interceptors": "Enterprise",
+	"workload":     "Enterprise",
+	"kubernetes":   "Team",
 }
 
 // EditionError is a config key this binary cannot honour.
@@ -214,9 +251,20 @@ type EditionError struct {
 }
 
 func (e *EditionError) Error() string {
-	return fmt.Sprintf("%s is a %s feature and is not in this %s binary. "+
+	return fmt.Sprintf("%s is %s feature and is not in this %s binary. "+
 		"Remove the key to run here, or run the edition that includes it "+
-		"(README: Editions)", e.Key, paidFeatures[e.Feature], e.Edition)
+		"(README: Editions)", e.Key, withArticle(paidFeatures[e.Feature]), e.Edition)
+}
+
+// withArticle puts "a" or "an" before an edition name ("an Enterprise").
+func withArticle(edition string) string {
+	if edition == "" {
+		return "a paid"
+	}
+	if strings.ContainsRune("AEIOUaeiou", rune(edition[0])) {
+		return "an " + edition
+	}
+	return "a " + edition
 }
 
 // checkEdition refuses a config that names a feature this binary lacks.
@@ -246,6 +294,18 @@ func (a *App) checkEdition(cfg config.Config) error {
 	if len(cfg.Schedules) > 0 && !a.features["schedules"] {
 		return &EditionError{Key: "schedules", Feature: "schedules", Edition: a.edition}
 	}
+	if cfg.ControlPlane.HA.Enabled && !a.features["ha"] {
+		return &EditionError{Key: "control_plane.ha.enabled", Feature: "ha", Edition: a.edition}
+	}
+	if len(cfg.ControlPlane.Interceptors) > 0 && !a.features["interceptors"] {
+		return &EditionError{Key: "control_plane.interceptors", Feature: "interceptors", Edition: a.edition}
+	}
+	if len(cfg.ControlPlane.Kubernetes) > 0 && !a.features["kubernetes"] {
+		return &EditionError{Key: "control_plane.kubernetes", Feature: "kubernetes", Edition: a.edition}
+	}
+	if cfg.Auth.Workload.Enabled && !a.features["workload"] {
+		return &EditionError{Key: "auth.workload.enabled", Feature: "workload", Edition: a.edition}
+	}
 	return nil
 }
 
@@ -254,7 +314,17 @@ func (a *App) checkEdition(cfg config.Config) error {
 // the paid keys configure; the CLI loop does not, because none of those keys
 // change what a terminal session does.
 func (a *App) loadConfig(workspace string) (config.Config, error) {
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust})
+	return a.loadConfigWith(workspace, flagSettings{})
+}
+
+// flagSettings is a -settings value read for a subcommand: its JSON and name.
+type flagSettings struct {
+	data []byte
+	name string
+}
+
+func (a *App) loadConfigWith(workspace string, set flagSettings) (config.Config, error) {
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust, Settings: set.data, SettingsName: set.name})
 	if err != nil {
 		return cfg, err
 	}
@@ -265,7 +335,7 @@ func (a *App) loadConfig(workspace string) (config.Config, error) {
 // registerState marks the state files a configuration moves out of .abhed,
 // so the agent's tools and the server's readers refuse them there too.
 func registerState(cfg config.Config, workspace string) {
-	for _, p := range sandboxconfig.StatePaths(cfg, workspace) {
+	for _, p := range sandboxconfig.ToolStatePaths(cfg, workspace) {
 		tools.AddStatePath(p)
 	}
 }
@@ -274,5 +344,6 @@ func registerState(cfg config.Config, workspace string) {
 // itself, for a deployment with no identity provider.
 func buildLocal(_ context.Context, cfg config.Config, _ string, users auth.UserStore) (auth.Provider, auth.TokenVerifier, error) {
 	ttl := time.Duration(cfg.Auth.SessionHours) * time.Hour
-	return auth.NewLocalAuth(users, ttl, cfg.Auth.CookieSecure), nil, nil
+	// A server terminating TLS itself never sends its session cookie in clear.
+	return auth.NewLocalAuth(users, ttl, cfg.Auth.CookieSecure || cfg.Server.TLS.Enabled()), nil, nil
 }

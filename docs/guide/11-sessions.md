@@ -13,7 +13,8 @@ number, an actor, and a **trust tag**: content read from files, tool output and
 search results is data, never instruction, and the tag travels with it.
 
 Before any event is written it passes the redactor: a value from the secrets
-store, wherever it appears in a payload, is replaced with `[secret:NAME]`. The
+store, as written or in the encoded forms
+[Secrets](04-permissions.md#secrets) lists, is replaced with `[secret:NAME]`. The
 record is append-only, so this is the only moment a secret can be kept out of
 it. A streamed reply or reasoning is redacted across its fragments, not one
 fragment at a time, so a value split between two is still caught. See
@@ -183,10 +184,19 @@ after its last write, once no terminal is open and no result is owed, by recordi
 opened with again, so that work appears in the record after an end. A
 session running elsewhere is not opened at all.
 
-What this is not: a running turn on a node that dies is not migrated. It
-ends, is recorded as interrupted, and the session can be continued from
-there. High availability of *sessions* is this; high availability of
-*turns in flight* is not something Abhed claims.
+A running turn on a node that stops, whether it dies or drains past
+`drain_seconds`, is not moved to another node in this edition. It ends, is
+recorded as interrupted, and the session can be continued from there.
+Before the end, each call the turn left open gets its one outcome: one that
+was approved, and so may have run, is answered "outcome unknown", and any
+other is denied with step `handover`. A call answered "outcome unknown" is
+asked of a person before the same call (tool and arguments) runs again in
+that session, in every mode.
+
+Moving a running turn to another replica, on a drain or once a replica
+dies, is part of the Enterprise edition's high availability. An edition
+does it through `server.Options.TurnMover`; with none set, as here, nothing
+continues a stopped turn on its own.
 
 ## Reading the workspace and what changed
 
@@ -201,8 +211,10 @@ curl -s "$B/v1/sessions/$SID/file?path=cmd/main.go"
 curl -s  $B/v1/sessions/$SID/changes               # unified diffs
 ```
 
-It is read-only. Nothing can be edited or saved from the browser: a change to
-the workspace that no event accounts for would make the record incomplete.
+This panel is read-only; edits from the browser go through the
+[workbench](16-workbench.md), where each save is a recorded action, since a
+change to the workspace that no event accounts for would make the record
+incomplete.
 
 What it will not show:
 
@@ -216,8 +228,10 @@ What it will not show:
 - more than 512 KB of one file (`truncated` is set), or a binary file's bytes
   (`binary` is set and there is no content).
 
-**Changes** covers edits made with the `write` and `edit` tools. A file the
-agent changed through `bash` is not listed. The originals are kept in memory
+**Changes** covers edits made with the `write` and `edit` tools, and files
+changed by shell commands, marked `by_command`, against a note of the
+workspace taken as the session opens; past 20,000 files `partial` says the
+rest were not compared. The originals are kept in memory
 with the running session, so a session reopened from its record after a
 restart reports `"available": false` rather than an empty list, and once it is
 continued it lists changes from that point on.
@@ -232,12 +246,30 @@ chat is stopped first.
 What "delete" means depends on the store, and the console says so rather than
 pretending:
 
-- **Postgres** marks the session deleted. It disappears from every list, get
-  and replay — nothing reads it through the API again — but the transcript
-  rows stay, because the events table refuses `DELETE` by trigger and that
-  refusal is a property this store promises. The mark records who deleted it
-  and when. Someone with the database can still see it; someone with only the
-  API cannot.
+- **Postgres** erases what the session said and keeps that it happened. Each
+  session's event payloads and file pre-images are sealed (AES-256-GCM) with
+  a key of its own, kept in `session_keys`; delete removes the key, along with
+  the session's label, title and its approvals' arguments. The event rows
+  stay, because the events table refuses `DELETE` by trigger and that refusal
+  is a property this store promises, but what is left in them is ciphertext
+  no one can open: type, actor, time and hash remain, the words do not. Its
+  subagents' sessions go the same way. The mark records who deleted it and
+  when. Every replica reads a session's key from the database on each read
+  rather than from memory, so once the delete commits no server that shares
+  the database opens those payloads again; an audit export over the time
+  range shows the deleted session's events as `{"erased":true}`. A write to a
+  deleted session, such as a run another server still holds, is refused
+  rather than stored. What
+  erasure does not reach: sessions recorded before 1.2.8, whose
+  payloads were never sealed; a database backup or WAL archive taken before
+  the delete, which still holds the key until it expires; a streaming
+  replica, until it replays the delete; and, until `VACUUM` runs and the
+  replicas replay it, the deleted key's bytes in the table's free space.
+- **The local record** (`~/.abhed/records`) deletes as `abhed record prune`
+  does: the session's file, its subagents' and the pre-images no other session
+  names are removed, and a tombstone in the index keeps its id and head. Lines
+  the index wrote earlier, such as its title, stay, since the index is
+  append-only.
 - **Memory** drops the events outright.
 - A store built without deletion answers `501`, and the console reports that
   this deployment keeps an append-only record. A delete button that silently

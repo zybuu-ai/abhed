@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -150,16 +151,75 @@ func TestSearchSaysWhatCutItShort(t *testing.T) {
 func TestSearchLimitsConcurrentSearches(t *testing.T) {
 	wb := newWorkbench(t, nil)
 	wb.write("a.txt", "hello\n")
-	n, _ := wb.s.searching.LoadOrStore(wb.session, new(atomic.Int32))
-	n.(*atomic.Int32).Add(maxSearchesInFlight)
+	for range maxSearchesInFlight {
+		wb.s.startSearch(wb.session)
+	}
 	if code, _ := wb.search("hello", ""); code != http.StatusTooManyRequests {
 		t.Fatalf("search beyond the limit = %d, want 429", code)
 	}
-	n.(*atomic.Int32).Add(-maxSearchesInFlight)
+	for range maxSearchesInFlight {
+		wb.s.endSearch(wb.session)
+	}
 	if code, _ := wb.search("hello", ""); code != http.StatusOK {
 		t.Fatalf("search after the others finished = %d", code)
 	}
-	if _, left := wb.s.searching.Load(wb.session); left {
+	wb.s.searchMu.Lock()
+	_, left := wb.s.searching[wb.session]
+	wb.s.searchMu.Unlock()
+	if left {
 		t.Fatal("an idle search counter was kept")
+	}
+}
+
+// Many searches started at once never run more than the limit together,
+// however their starts and ends interleave.
+func TestSearchLimitHoldsUnderRaces(t *testing.T) {
+	s := &Server{}
+	var running, peak atomic.Int32
+	var wg sync.WaitGroup
+	for range 200 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !s.startSearch("s1") {
+				return
+			}
+			n := running.Add(1)
+			for {
+				p := peak.Load()
+				if n <= p || peak.CompareAndSwap(p, n) {
+					break
+				}
+			}
+			running.Add(-1)
+			s.endSearch("s1")
+		}()
+	}
+	wg.Wait()
+	if p := peak.Load(); p > maxSearchesInFlight {
+		t.Fatalf("%d searches ran at once, over the limit of %d", p, maxSearchesInFlight)
+	}
+}
+
+// A linked worktree inside the workspace holds the repository's files again,
+// so the search passes over it rather than listing every hit twice; a
+// submodule, whose files are its own, is searched.
+func TestSearchSkipsALinkedWorktree(t *testing.T) {
+	wb := newWorkbench(t, nil)
+	wb.write("a.txt", "needle\n")
+	wb.write("wt/a.txt", "needle\n")
+	wb.write("wt/.git", "gitdir: "+filepath.Join(wb.workspace, ".git", "worktrees", "wt")+"\n")
+	wb.write("sub/b.txt", "needle\n")
+	wb.write("sub/.git", "gitdir: ../.git/modules/sub\n")
+	code, r := wb.search("needle", "")
+	if code != http.StatusOK {
+		t.Fatalf("search = %d", code)
+	}
+	var paths []string
+	for _, f := range r.Files {
+		paths = append(paths, f.Path)
+	}
+	if strings.Join(paths, ",") != "a.txt,sub/b.txt" {
+		t.Fatalf("searched %v, want a.txt and sub/b.txt", paths)
 	}
 }

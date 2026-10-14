@@ -10,7 +10,7 @@ import (
 	"github.com/zybuu-ai/abhed/store"
 )
 
-// The review's probe: files found wider than 0600 are made private when the
+// Files found wider than 0600 are made private when the
 // record opens them.
 func TestWideFilesAreMadePrivate(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -36,7 +36,7 @@ func TestWideFilesAreMadePrivate(t *testing.T) {
 	}
 }
 
-// The review's probe: a session file that is a link to elsewhere is not
+// A session file that is a link to elsewhere is not
 // written through; nor is one with a second name.
 func TestLinkedSessionFilesAreRefused(t *testing.T) {
 	dir := t.TempDir()

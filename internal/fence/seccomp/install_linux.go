@@ -11,8 +11,7 @@ import (
 )
 
 // Install sets no_new_privs and loads p's filter on every thread of this
-// process, for good. It is meant for a re-executed helper just before it
-// execs the command, which inherits both.
+// process, for good. The command exec'd next inherits both.
 func Install(p Policy) error {
 	if _, ok := arches[runtime.GOARCH]; !ok {
 		return ErrUnsupported

@@ -21,6 +21,8 @@ type Pruned struct {
 	// record verified as it was pruned.
 	Missing  bool
 	Verified bool
+	// Unverified is why it did not verify, as its tombstone keeps it.
+	Unverified string
 }
 
 // Prune removes session id and the subagent sessions it started. For each,
@@ -80,6 +82,18 @@ func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 		locks[sid] = lk
 	}
 	defer release()
+	// The witness's heads are read before anything goes: one that cannot be
+	// read stops the prune.
+	held := map[string][]WitnessedHead{}
+	if s.witnessed != nil {
+		for _, sid := range ids {
+			hs, err := s.witnessed(s.tenant, sid)
+			if err != nil {
+				return nil, fmt.Errorf("session %s: the witness's heads: %w; nothing was pruned", sid, err)
+			}
+			held[sid] = hs
+		}
+	}
 	gone := map[string]bool{}
 	var refs []string
 	keepAll := false
@@ -110,6 +124,17 @@ func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 				tomb.Unverified = verr.Error()
 			}
 		}
+		if s.witnessed != nil {
+			kept, why, err := s.checkWitnessed(sid, held[sid])
+			if err != nil {
+				return out, err
+			}
+			tomb.Witnessed, tomb.WitnessChecked = kept, true
+			if why != "" && p.Verified {
+				p.Verified, tomb.Verified, tomb.Unverified = false, boolPtr(false), why
+			}
+		}
+		p.Unverified = tomb.Unverified
 		if err := s.index.append(tomb); err != nil {
 			return out, err
 		}
@@ -190,4 +215,69 @@ func (s *Store) PruneOlder(cutoff time.Time, by, reason string) (pruned []Pruned
 		pruned = append(pruned, p...)
 	}
 	return pruned, skipped, nil
+}
+
+// DeleteSession erases session id and its subagents, as the Postgres store's
+// delete does: what they said goes (the files and the blobs no other session
+// names), and a tombstone in the index keeps that they existed and their
+// heads. A session this process holds is let go first. Deleting one that is
+// not recorded, or already gone, is not an error: the caller asked for a state.
+func (s *Store) DeleteSession(id string) error {
+	if err := checkID("session", id); err != nil {
+		return err
+	}
+	e, ok := s.index.get(id)
+	if !ok || e.Pruned {
+		return nil
+	}
+	all, err := s.index.entries()
+	if err != nil {
+		return err
+	}
+	ids := []string{id}
+	for i := 0; i < len(ids); i++ {
+		for _, c := range all {
+			if c.Subagent && c.Parent == ids[i] && !c.Pruned {
+				ids = append(ids, c.ID)
+			}
+		}
+	}
+	for _, sid := range ids {
+		if err := s.Release(sid); err != nil {
+			return fmt.Errorf("delete session %s: %w", sid, err)
+		}
+	}
+	if _, err := s.Prune(id, "user", "deleted"); err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	return nil
+}
+
+// checkWitnessed is the record's hash at each line the witness holds, and why
+// the record does not match the witness there ("" when it does).
+func (s *Store) checkWitnessed(sid string, heads []WitnessedHead) ([]WitnessedHead, string, error) {
+	lines := make([]int64, len(heads))
+	for i, h := range heads {
+		lines[i] = h.Lines
+	}
+	got, err := s.hashesAt(sid, lines)
+	if err != nil {
+		return nil, "", err
+	}
+	var kept []WitnessedHead
+	why := ""
+	for _, h := range heads {
+		hash, ok := got[h.Lines]
+		switch {
+		case !ok:
+			if why == "" {
+				why = fmt.Sprintf("the record no longer has line %d, which the witness holds", h.Lines)
+			}
+			continue
+		case hash != h.Hash && why == "":
+			why = fmt.Sprintf("line %d is not the one the witness holds: the record was rewritten", h.Lines)
+		}
+		kept = append(kept, WitnessedHead{Lines: h.Lines, Hash: hash})
+	}
+	return kept, why, nil
 }

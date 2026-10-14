@@ -238,6 +238,29 @@ func TestFreshFollowsTheStore(t *testing.T) {
 	}
 }
 
+// A store opened to others withholds even where the change time cannot show
+// the chmod (a coarse clock, or an emulator that drops nanoseconds).
+func TestFreshSeesAModeChangeAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"TOKEN":"mode-value-dddd"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := Open(path)
+	first, err := s.LoadRedactor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := s.Fresh(first)
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// As a clock too coarse to tell the chmod from the first look sees it.
+	f.stamp.ctime = f.stat().ctime
+	if got := f.Redact([]byte(`"mode-value-dddd"`)); got != nil {
+		t.Fatalf("a store readable by others did not withhold: %s", got)
+	}
+}
+
 // Fresh sees a rewrite that keeps the size and the modification time, keeps
 // redacting a value rotated out during the session, and withholds for as long
 // as the store cannot be loaded.

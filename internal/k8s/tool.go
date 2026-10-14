@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -59,6 +60,7 @@ type sessionCred struct {
 	token     string
 	cluster   LoginCluster
 	namespace string
+	at        time.Time // when it was logged in, for a fork to keep or drop it
 }
 
 // Close forgets the session's credentials and drops its connections, when the
@@ -75,6 +77,21 @@ func closeClients(cs map[string]*Cluster) {
 	for _, c := range cs {
 		if c.client != nil {
 			c.client.CloseIdleConnections()
+		}
+	}
+}
+
+// ForgetAfter drops the logins made after t, and their connections.
+func (l *logins) ForgetAfter(t time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for name, c := range l.creds {
+		if c.at.After(t) {
+			delete(l.creds, name)
+			if cl, ok := l.clusters[name]; ok {
+				closeClients(map[string]*Cluster{"": cl})
+				delete(l.clusters, name)
+			}
 		}
 	}
 }
@@ -104,6 +121,7 @@ func (m *Manager) login(sess *tools.Session, cred sessionCred) error {
 	if l.closed {
 		return fmt.Errorf("the session has ended; nothing was stored")
 	}
+	cred.at = time.Now()
 	l.creds[cred.cluster.Name] = cred
 	// Drop the clients built with the old credential, connections included,
 	// so the next call uses the new one.

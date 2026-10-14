@@ -14,27 +14,70 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
-// ServerLauncher builds an MCP stdio server's command, its network confined
-// to an egress proxy of its own whose decisions go to record.
+// ServerLauncher builds an MCP stdio server's command with its files
+// confined (the home hidden but its own and its install folder, the
+// workspace's .abhed hidden) and, under the allowlist, its network confined to
+// an egress proxy of its own whose decisions go to record.
 type ServerLauncher interface {
 	ServerCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error)
+}
+
+// ServerNetLauncher builds the command of a server set to host_files: the
+// host's files, its network confined under the allowlist.
+type ServerNetLauncher interface {
+	ServerNetCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error)
+}
+
+// Pending is a sandbox whose backend is chosen after it is handed out;
+// Resolve waits for the choice.
+type Pending interface {
+	Resolve() (Sandbox, error)
 }
 
 // ServerKey keys server name's proxy apart from the sessions' and is its call
 // id; no colon, which would end the user name in Basic credentials.
 func ServerKey(name string) string { return "mcp/" + name }
 
-// ServerCommand confines only argv's network: it reaches nothing but its
-// proxy, which lives as long as ctx. Its files are not confined.
+// ServerCommand confines argv's files (see serverFiles) and, under the egress
+// allowlist, its network: it reaches nothing but its proxy, which lives as long
+// as ctx.
 func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
-	if s.policy.Egress == nil {
+	return s.serverCommand(ctx, name, argv, env, record, true)
+}
+
+// ServerNetCommand is ServerCommand with the server's files as the host's, for
+// a server configured with host_files; its network is still confined under the
+// allowlist.
+func (s *Process) ServerNetCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error) (*exec.Cmd, error) {
+	return s.serverCommand(ctx, name, argv, env, record, false)
+}
+
+func (s *Process) serverCommand(ctx context.Context, name string, argv, env []string, record func(string, map[string]any) error, confineFiles bool) (*exec.Cmd, error) {
+	if len(argv) == 0 {
+		return nil, errors.New("sandbox: no command")
+	}
+	if err := serverProgramMissing(argv[0], env); err != nil {
+		return nil, err
+	}
+	var files serverFiles
+	if confineFiles {
+		var err error
+		if files, err = s.serverFilesFor(name, argv[0], env); err != nil {
+			return nil, err
+		}
+		if s.backend == "bwrap" {
+			if err := serverInHiddenTemp(argv[0], env, files); err != nil {
+				return nil, err
+			}
+		}
+		if s.policy.Egress == nil {
+			return s.serverFilesOnly(ctx, files, argv, env)
+		}
+	} else if s.policy.Egress == nil {
 		return nil, errors.New("sandbox: no egress policy to confine a server to")
 	}
 	if why := s.egressAvailable(); why != "" {
 		return nil, errors.New(why)
-	}
-	if len(argv) == 0 {
-		return nil, errors.New("sandbox: no command")
 	}
 	if s.backend == "bwrap" {
 		if err := serverRootRefusal(os.Getuid(), os.Geteuid()); err != nil {
@@ -48,10 +91,14 @@ func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []st
 		return nil, fmt.Errorf("the egress proxy is not available: %w", err)
 	}
 	env = append(serverEnv(env), call.Env()...)
+	if confineFiles {
+		env = serverHomeEnv(env, files.home)
+	}
 	var cmd *exec.Cmd
 	switch s.backend {
 	case "sandbox-exec":
-		cmd = exec.CommandContext(ctx, "sandbox-exec", append([]string{"-p", serverProfile(e.port())}, argv...)...) // #nosec G204 -- the configured server, confined
+		profile := serverProfile(e.portFor(call)) + files.seatbeltRules()
+		cmd = exec.CommandContext(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...)...) // #nosec G204 -- the configured server, confined
 	case "bwrap":
 		// A host /proc would show every process's environment and sockets.
 		if !s.bwrapFreshOK() {
@@ -59,7 +106,14 @@ func (s *Process) ServerCommand(ctx context.Context, name string, argv, env []st
 		}
 		args := append([]string{"--die-with-parent", "--unshare-net", "--unshare-pid", "--dev-bind", "/", "/", "--proc", "/proc"},
 			serverHides(e.dir, e.exe)...)
-		relay := []string{e.exe, egress.RelayArg, filepath.Join(e.dir, "proxy.sock"), e.proxy.Addr().String()}
+		if confineFiles {
+			args = append(args, files.bwrapArgs()...)
+		}
+		sock := filepath.Join(e.dir, "proxy.sock")
+		if call.Socket() != "" {
+			sock = call.Socket() // the server's own, as a command's
+		}
+		relay := []string{e.exe, egress.RelayArg, sock, e.proxy.Addr().String()}
 		if e.dns {
 			// The session's resolver, as commands get it; its socket is in the folder bound back.
 			args = append(args, "--ro-bind", filepath.Join(e.dir, "resolv.conf"), "/etc/resolv.conf")
@@ -87,6 +141,10 @@ func serverProfile(port uint16) string {
 	b.WriteString(denyLaunchServices)
 	return b.String()
 }
+
+// denySessionServices keeps a command from the person's clipboard
+// (pbpaste, pbcopy) and from capturing their screen through the window server.
+const denySessionServices = `(deny mach-lookup (global-name-prefix "com.apple.pasteboard.") (global-name "com.apple.windowserver.active") (global-name-prefix "com.apple.screencapture"))` + "\n"
 
 // denyLaunchServices keeps LaunchServices and Apple events from a profile, which would
 // open a URL or run an app outside it; the coreservices/lsd part in any case, as Seatbelt names are case-sensitive.
@@ -123,6 +181,12 @@ var serverRunSockets = []string{"/run/docker.sock", "/run/podman.sock", "/run/co
 // serverHides hides the run folders, XDG_RUNTIME_DIR and the temp folder
 // (other sessions' egress sockets), binding the server's socket and relay back.
 func serverHides(sockDir, exe string) []string {
+	return append(serverRunHides(), "--bind", sockDir, sockDir, "--ro-bind", exe, exe)
+}
+
+// serverRunHides hides the run folders, XDG_RUNTIME_DIR, the container
+// engines' sockets and the temp folder.
+func serverRunHides() []string {
 	var args []string
 	dirs := append([]string{}, serverRunDirs...)
 	if x := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(x) {
@@ -150,7 +214,28 @@ func serverHides(sockDir, exe string) []string {
 			args = append(args, "--ro-bind", "/dev/null", f)
 		}
 	}
-	return append(args, "--bind", sockDir, sockDir, "--ro-bind", exe, exe)
+	return args
+}
+
+// serverInHiddenTemp refuses a program in the temporary folder, which
+// bubblewrap hides from a confined server, unless the workspace or its own
+// folders show it again: it would start, find nothing, and close its pipe.
+func serverInHiddenTemp(program string, env []string, f serverFiles) error {
+	path := resolveIn(program, env)
+	if path == "" {
+		return nil
+	}
+	shown := append(append([]string{f.home}, f.workspaces...), f.prefix)
+	for _, tmp := range []string{"/tmp", os.TempDir()} {
+		if r, err := filepath.EvalSymlinks(tmp); err == nil {
+			tmp = r
+		}
+		if insideAny(path, []string{tmp}) && !insideAny(path, slices.DeleteFunc(shown, func(s string) bool { return s == "" })) {
+			return fmt.Errorf("sandbox: the server's program %s is in the temporary folder %s, which a confined server does not see; "+
+				"install it elsewhere, or set \"host_files\": true on the server", program, tmp)
+		}
+	}
+	return nil
 }
 
 // serverRootRefusal refuses a stdio server under bubblewrap when Abhed runs

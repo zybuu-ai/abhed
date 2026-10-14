@@ -303,6 +303,43 @@ __sessions = [{id:'s24', state:'idle', turns:3}];
 watchIdle(); await tick();
 check('a quick turn another tab ran is read back', !live && __connected.length === 1 && __connected[0] === 's24');
 
+// A call a session scope allowed was never put to anyone: no prompt is left for it.
+// One a person answered keeps who answered and the scope, live and after a reload.
+fresh('s26', true);
+render(write(1));
+render(ev(2, 'action.approved', {call_id:'w1', step:'reviewer', by:'reviewer', approver:'ana', granted_scope:'write(test.md)'}));
+render(write(3));
+render(ev(4, 'action.approved', {call_id:'w3', step:'default', by:'session-scope', scope:'write(test.md)'}));
+{
+  const cards = __root.querySelectorAll('.ask');
+  check('a session-scope approval leaves no prompt', cards.length === 1 && cards[0].dataset.call === 'w1' && asks.size === 0);
+  check('the answered one says by whom and the scope', cards[0].textContent.includes('allowed · by ana · always allowing write(test.md)'));
+}
+fresh('s27', false);
+render(write(1));
+render(ev(2, 'action.approved', {call_id:'w1', step:'reviewer', by:'reviewer', approver:'ana', granted_scope:'write(test.md)'}));
+render(write(3));
+render(ev(4, 'action.approved', {call_id:'w3', step:'default', by:'session-scope'}));
+render(write(5));
+render(ev(6, 'action.denied', {call_id:'w5', step:'reviewer', by:'reviewer', approver:'bo', reason:'not now'}));
+{
+  const cards = __root.querySelectorAll('.ask');
+  check('a reload draws each answered prompt settled', cards.length === 2 && open().length === 0 && cards[0].dataset.call === 'w1' && cards[1].dataset.call === 'w5');
+  check('with who answered and how', cards[0].textContent.includes('by ana · always allowing write(test.md)') && cards[1].textContent.includes('denied · by bo — not now'));
+}
+
+// A session deleted in another tab answers 404: after three asks in a row the
+// page says so and stops asking, where it used to ask every two seconds for good.
+fresh('s25', false); es = null; __connected.length = 0;
+__sessions = [];
+watchIdle(); await tick(); watchIdle(); await tick();
+check('one or two 404s may be a session still starting', !__root.textContent.includes('was deleted'));
+watchIdle(); await tick();
+check('the third says the session was deleted', __root.textContent.includes('was deleted'));
+__routes.length = 0;
+watchIdle(); await tick(); watchIdle(); await tick();
+check('and nothing more is asked', __routes.length === 0);
+
 // An ask with no request id is not drawn as a card anyone could answer.
 fresh('s23', true);
 render(ev(1, 'subagent.ask', {session:'child', subagent:'x', call_id:'k9', tool:'bash', args:{command:'touch nid'}}));

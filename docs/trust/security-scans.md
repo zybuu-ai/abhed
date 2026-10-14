@@ -6,11 +6,84 @@
 > some of them now live in the Enterprise repository.
 
 Independent, third-party tooling run against this repository and its
-container image on 2026-09-14. Every finding below is listed with its
+container image, first on 2026-09-14 and again for 1.2.8. Every finding below is listed with its
 severity, its `file:line`, and a one-line triage — true positive, false
 positive, accepted with reason, or to fix. Nothing here was fixed as part of
 this pass; fixes are listed, most severe first, in
 [Recommended fixes](#recommended-fixes) at the end.
+
+## Re-run for 1.2.8 — 12 October 2026
+
+Run against the 1.2.8 release candidate with Go 1.26.9. The sections after
+this one are the first scan of 14 September 2026, kept as its record; their
+`file:line` citations give where the code was then.
+
+| Tool | Command | Result |
+|---|---|---|
+| govulncheck v1.8.0 | `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` | No vulnerability reached by the code or in an imported package. One in a required module, not called: GO-2026-5932, `golang.org/x/crypto/openpgp` unmaintained (no fix exists; Abhed does not import `openpgp`) |
+| gosec v2.29.0 | as CI runs it (`scripts/ci/gosec-gate.py`) | See "Refreshed 12 October 2026" under gosec below: 32 new findings triaged, one real bug fixed, 97 in the baseline |
+| gitleaks 8.30.1 | `gitleaks git --redact .` (all 870 commits) | 57 matches, all placeholders: test fixtures (`sk-live-abcdef0123456789`, `AKIAABCDEFGHIJKLMNOP`, `ghp_0123456789abcdef`), the benchmark rig's tests, the e2e check's throwaway password, an xterm.js constant, and the documentation's example password. No live credential |
+| trivy 0.74.0 | `trivy fs --scanners vuln,misconfig .` | `go.mod`: the same GO-2026-5932. `web/ide/package-lock.json`: DOMPurify 3.4.8, which the workbench editor bundle carries, has five advisories (two medium, three low), fixed by 3.4.16; **fixed**: the bundle now takes DOMPurify 3.4.16 in place of the editor's own copy. Helm chart: three findings, all accepted: the chart leaves the namespace to `helm install -n` (KSV-0110) and the image registry to the operator's values (KSV-0125, for the server and its preflight container) |
+
+### `trivy image` on the 1.2.8 image
+
+Built from this tree with the repository's `Dockerfile` (`podman build
+--build-arg VERSION=1.2.8-rc`, linux/arm64, `debian:trixie-slim` base of
+5 October 2026 with Debian 13.7 and the build's `apt-get upgrade`), saved
+with `podman save` and scanned with `trivy image --input <tar> --scanners
+vuln` (trivy 0.74.0, DB of 12 October 2026).
+
+| Target | Critical | High | Medium | Low | Unknown |
+|---|---|---|---|---|---|
+| OS packages (Debian 13.7) | 0 | 91 | 155 | 168 | 63 |
+| Python packages | 0 | 0 | 0 | 0 | 0 |
+| `usr/local/bin/abhed` (Go binary) | 0 | 0 | 0 | 0 | 1 |
+
+No finding has a fixed version available: the image already takes every
+Debian update at build time, so neither a newer base digest nor a package
+pin removes any of them. The 91 HIGH rows are 28 CVEs in 12 source
+packages, each counted once per binary package:
+
+| Source package | CVEs | Debian status | Triage |
+|---|---|---|---|
+| util-linux (`mount`, `login`, `libblkid1`, `libmount1`, `libuuid1`, …) | CVE-2026-76642, -78408, -78409, -78410 | affected, no fix | Accepted until Debian ships one; the agent's shell can run these tools, which is what bubblewrap and the read-only, capability-free container contain |
+| curl (`curl`, `libcurl4t64`, `libcurl3t64-gnutls`) | CVE-2026-12064, -8286, -8458, -8927 | affected, no fix | Accepted until fixed; used by the health check and by the agent's own commands, never by Abhed's Go code |
+| python3.13 | CVE-2026-15308, -19445, -19553, -7210, -82049 | affected, no fix | Accepted until fixed; runs the document libraries and the pypdf fallback in the sandboxed shell |
+| expat (`libexpat1`) | CVE-2026-66046, -76956, -76957, -77214, -93990 | affected, no fix | Accepted until fixed; reached through Python's XML parsing in the document writers |
+| gnutls (`libgnutls30t64`) | CVE-2026-88647, -88648 | affected, no fix | Accepted until fixed; git's HTTPS transport |
+| libtiff (`libtiff6`) | CVE-2026-36849, CVE-2026-52490 | will not fix, affected | Accepted; graphics chain of graphviz and matplotlib |
+| ncurses | CVE-2025-69720 | affected, no fix | Accepted; terminal library of the shell |
+| perl | CVE-2026-9538 | fix deferred | Accepted; base-system dependency Abhed does not call |
+| systemd (`libsystemd0`, `libudev1`) | CVE-2026-16742 | affected, no fix | Accepted; library only, no systemd runs in the image |
+| acl (`libacl1`) | CVE-2026-54369 | affected, no fix | Accepted; base-system library |
+| libx11, libxrender | CVE-2026-88806, CVE-2026-88807 | affected, no fix | Accepted; graphics chain of graphviz and matplotlib |
+
+The Go binary's one finding is GO-2026-5932 (`golang.org/x/crypto` v0.57.0,
+`openpgp` unmaintained), the same advisory govulncheck reports above with no
+call path. Against 14 September (0 critical, 71 high after that day's fixes)
+there are still no critical findings; the high count rose with advisories
+published since for packages whose fixes Debian has not yet released. The
+build's `apt-get upgrade` takes those fixes as they land, so the image
+published for the release should be built, and scanned, on the day.
+
+**G306, file modes.** `app/cmd_eval.go` (the eval report) and
+`internal/eval/eval.go` (an eval task's fixture files) still write `0644`, and
+stay so: the report holds scores and the model's name, and the fixtures are
+the eval's own source files in a scratch workspace, neither of them
+credential-bearing. Undo snapshots, the written config and `abhed init`'s
+output were made `0600` on 14 September.
+
+## The first scan — 14 September 2026
+
+What changed since, so the rows below are not read as open: `internal/server`,
+`internal/auth`, `internal/config` and `internal/store` moved to `server/`,
+`auth/`, `config/` and `store/`, and rows give the old paths. The "To fix"
+rows for `Index.Update`, the OIDC key accessors, `cookie_secure` and the
+`0644` writes of undo snapshots, the config and `abhed init` were fixed the
+same day (see "Fixes applied" at the end). The
+toolchain is now Go 1.26.9 in `go.mod`, the image and CI, and the image's
+pypdf 6.19.0. The image's trivy result and the semgrep run are still from
+this first scan.
 
 **Since this scan,** the CLI's code moved out of `cmd/abhed/main.go`, which
 now only starts the `app` package. Rows citing `cmd/abhed/main.go` give
@@ -236,12 +309,15 @@ Recommended Fixes #1.**
 ### gosec
 
 **In CI.** The triaged findings below are the baseline in
-`deploy/ci/gosec-baseline.json`, keyed by rule and file. The workflow runs
-gosec at the version recorded here and fails only on a finding outside that
-baseline (`deploy/ci/gosec-gate.py`), so a new finding blocks a merge while
+`scripts/ci/gosec-baseline.json`, keyed by rule and file. The workflow runs
+gosec v2.29.0 on Linux and fails only on a finding outside that
+baseline (`scripts/ci/gosec-gate.py`), so a new finding blocks a merge while
 the known set does not keep the job permanently red. A fix that removes a
 finding, or a new one once it has been triaged here, is followed by
-`--update`, which rewrites the baseline from the current report.
+`--update`, which rewrites the baseline from the current report. gosec
+scans only the files built for the platform it runs on, so the update is
+given a Linux and a macOS report together (`gosec-gate.py linux.json
+darwin.json --update`), and keeps the larger count of each.
 
 
 **Command:** `env -u GOROOT go run github.com/securego/gosec/v2/cmd/gosec@latest ./...` (also captured as JSON via `-fmt=json -out=gosec.json`)
@@ -428,7 +504,7 @@ injected content run in a reviewer's browser", not as boilerplate.
 |---|---|---|
 | internal/auth/filestore.go:53,89,92 | Read/write/rename of the local-auth `users.json` (3 sites) | False positive — `f.path` is the fixed, operator-configured location set at startup, never request-derived |
 | internal/k8s/client.go:136 | Kubeconfig read | False positive — same as the G304 finding at this line, env/operator-controlled |
-| internal/server/upload.go:113 | `os.MkdirAll` for `<workspace>/uploads/<sessionID>` | False positive — `sessionID` is validated by `validSessionID()` before use |
+| internal/server/upload.go:113 | `os.MkdirAll` for `<workspace>/uploads/<random id>` | False positive — the folder name is 16 random hex digits made by the server |
 | internal/server/upload.go:118 | `os.WriteFile` at `dir/safeUploadName(header.Filename)` | False positive — `safeUploadName` (upload.go:162) strips path separators, control characters, and leading dots, and appends a random suffix; verified it cannot produce a traversal segment |
 
 #### G306 — WriteFile permissions looser than 0600 (6 findings, MEDIUM)
@@ -436,10 +512,10 @@ injected content run in a reviewer's browser", not as boilerplate.
 | file:line | Finding | Triage |
 |---|---|---|
 | cmd/abhed-bench/main.go:141 | Benchmark results written 0644 | Accepted with reason — dev/CI tool output, not sensitive |
-| cmd/abhed/main.go:845 | Written 0644 | To fix (verify) — confirm this path never carries credentials/tokens before accepting; tighten to 0600 if unsure |
-| cmd/abhed/main.go:1221 | Eval/report JSON written 0644 | Accepted with reason — report output meant to be read by other tooling, not credential-bearing |
-| internal/agent/undo.go:122 | Undo-log snapshot written 0644 | **To fix** — snapshots can contain the full content of any file the agent touched, including ones holding secrets; tighten to 0600 to match the precedent already set by `FileUserStore` (`internal/auth/filestore.go:87`) |
-| internal/config/config.go:662 | Config file written 0644 | To fix (verify) — if this path can persist secrets (API keys, a DSN with a password) it must be 0600; confirm and tighten |
+| cmd/abhed/main.go:845 | Written 0644 | Fixed 14 September: `abhed init`'s output is written 0600 |
+| cmd/abhed/main.go:1221 | Eval/report JSON written 0644 | Accepted with reason — report output meant to be read by other tooling, not credential-bearing (now `app/cmd_eval.go`) |
+| internal/agent/undo.go:122 | Undo-log snapshot written 0644 | Fixed 14 September: snapshots are written 0600 |
+| internal/config/config.go:662 | Config file written 0644 | Fixed 14 September: the config is written 0600 (now `config/config.go`) |
 | internal/eval/eval.go:142 | Eval fixture/output written 0644 | Accepted with reason — dev/CI harness, non-sensitive |
 
 #### G301 — directory permissions looser than 0750 (5 findings, MEDIUM)
@@ -508,6 +584,73 @@ for both — a TOCTOU race here requires local filesystem race access to a
 directory the operator (index.go) or the resolved session workspace
 (search.go) already controls; closing it with `os.Root` is a reasonable
 future hardening step but not urgent.
+
+#### Refreshed 12 October 2026 (1.2.8)
+
+The baseline had last been written at 1.2.4. Scanned again as CI scans
+(`GOOS=linux`, gosec v2.29.0, 531 files, no package that failed to load),
+72 triaged findings were no longer reported: errors now discarded
+explicitly (most of the G104s), git moved behind `internal/hostgit`, and
+reasoned `#nosec` notes. 32 findings, mostly in the microVM driver, had
+never been triaged. One was a real bug and is fixed; the rest are below.
+The baseline now holds 97 findings. The counts above are from the first
+scan and are kept as its record. gosec reads every file whatever its build tag,
+so the darwin-only files are scanned on Linux too.
+
+| Rule | file:line | Finding | Triage |
+|---|---|---|---|
+| G115 | cmd/abhed-microvm/main.go:54 (×2) | `-client-uid`/`-client-gid` converted to uint32 | **Fixed.** An id of 4294967296 or more wrapped, so `-client-uid 4294967296` named uid 0 for the image's user. Both ids must now be given and lie from 1 to 4294967294; the conversion stays, now bounded |
+| G115 | driver/archive/archive.go:308 | tar header mode int64 to FileMode | False positive: only `.Perm()`, the low nine bits, is kept |
+| G115 | driver/microvm/apply_unix.go:363, 424 | mode int64 to uint32 for chmod | False positive: masked to `0o777` in the same expression |
+| G115 | driver/microvm/apply_unix.go:65, 272 | `Stat_t.Dev` to uint64 | False positive: a device number compared with itself; it is int32 only on darwin, and never negative |
+| G115 | wsconn/wsconn.go:206 | frame length compared as uint64 | False positive: the comparison bounds it to the frame limit |
+| G115 | wsconn/wsconn.go:446 | message type to byte | False positive: only Text or Binary pass the check above it |
+| G204 | driver/drivertest/fake.go:353 | `/bin/sh` with arguments | Accepted: the conformance suite's fake driver, used only by tests |
+| G204 | driver/microvm/firecracker.go:221 | the configured jailer | Accepted: an operator-configured absolute path, checked at start; the arguments are built by the driver |
+| G204 | driver/microvm/guest/server.go:146, 149, 151 | the guest agent runs the shell or argv it is sent | Accepted: this is the guest agent's job; it runs inside the microVM, and what reaches it has passed the server's policy |
+| G204 | driver/microvm/helper.go:186, helper_darwin.go:80, 84, 92 | the VM helper and `codesign` | Accepted: the helper path is configured and its signature and folder checked before it runs; `codesign` is the system's, by absolute path |
+| G204 | driver/microvm/workspace_unix.go:44 | `mkfs.ext4` with a size and paths | Accepted: `mkfs_ext4` from the operator's settings, or `mkfs.ext4` from the driver's PATH; the paths are the driver's own build folder, and run as the asking user when the driver is root |
+| G301 | driver/microvm/microvm.go:343, 349; recover.go:55 | state folders made 0711 | Accepted: the image user must pass through them to its own folder; 0711 lets it list and read nothing |
+| G304 | cmd/abhed-microvm/main.go:90 | reads the `-config` file | Accepted: the operator's own settings file, decoded strictly |
+| G304 | config/managed.go:47 | reads the managed file | Accepted: the managed path fixed at build time, never from input |
+| G304 | driver/microvm/firecracker.go:288, 293 | copies a kernel or root filesystem image | Accepted: operator-configured absolute paths; the copy is opened `O_EXCL` |
+| G304 | driver/microvm/guest/tracker.go:151 | the guest reads a changed file to send it back | Accepted: inside the microVM, below the workspace it syncs |
+| G304 | driver/microvm/lock_unix.go:17 | the state folder's lock file | Accepted: `O_NOFOLLOW` in the driver's own folder |
+| G304 | driver/microvm/recover.go:41 | reads a marker it wrote | Accepted: a regular file the driver owns, at most 4 KiB, checked before reading |
+| G702 | app/hideenv_darwin.go:76 | `syscall.Exec` of this program | False positive: `os.Executable()`, the running program itself, with its own arguments |
+| G703 | auth/clitoken.go:289, 302 | reads the revoked-token list | False positive: the key file's path plus `.revoked`, fixed when the server starts |
+
+#### Refreshed 14 October 2026 (1.2.8 release candidate)
+
+Scanned as CI scans (Linux, gosec v2.29.0, no package that failed to
+load), 16 findings were outside the baseline. Two were real and are fixed;
+the rest are below. Five triaged findings are no longer reported on Linux
+or macOS: the two G204 in `internal/sandbox/container.go` because the
+engine is no longer run from that file, and G120 `server/upload.go`, G705
+`server/export.go` and G705 `server/server.go` with their code unchanged
+but no longer flagged; the last three stay in the baseline, triaged above,
+so a refactor that brings them back does not read as new. The findings in
+darwin-only files (`driver/microvm/helper_darwin.go`, `app/hideenv_darwin.go`,
+two G115 in `driver/microvm/apply_unix.go`) are reported on macOS and no
+longer on Linux (the 12 October note that gosec reads every file whatever
+its build tag no longer holds); they stay in the baseline too, which is now
+written from the Linux and macOS scans together.
+
+| Rule | file:line | Finding | Triage |
+|---|---|---|---|
+| G123 | internal/servetls/servetls.go:173, 178 | client certificates checked in `VerifyPeerCertificate` while TLS session resumption stays on | **Fixed.** Go does not call `VerifyPeerCertificate` on a resumed session, so a client whose certificate was revoked, or whose CA was taken out of `client_ca_file`, could resume a session made before the reload. The check is now `VerifyConnection`, which runs on every handshake, and a resumed session's certificate is verified again against the client CA in force. `TestResumedSessionsAreCheckedAgain` resumes a session, then revokes the certificate and replaces the CA |
+| G122 | internal/sandbox/process.go (`removeTemp`, `removeCaches`, as scanned on 14 October) | `os.Chmod` on each folder of a walk over the sandbox's temp folder and caches | **Fixed.** Commands write those folders, so one swapped for a link between the walk listing it and the chmod would have made a folder outside writable to its owner. `makeRemovable` (`internal/sandbox/removable_unix.go`) now walks them by descriptor: each folder is checked from its parent without following a link, changed by name without following one when it cannot be read, opened `O_NOFOLLOW` and changed through that descriptor. Only the deepest folder is held open and a level is returned to by `..`, checked to be the folder left, so there is no depth limit a command could build past. No file's mode is changed, as removal does not need it. A link put in the top folder's place, or inside it, is never followed, and `RemoveAll` removes the link itself. The fence gives a planted `.abhed` back to its owner with the same walk, which also restores a file's owner read and write through a descriptor opened without following a link and checked to have one link. Caches inside the private temp folder are removed with it (`TestRemovalNeverFollowsALinkAtItsFolder`, `TestRemovalMakesItsOwnTreeRemovable` with a top folder made 000, `TestRemovalHasNoDepthLimit` at 300 levels, `TestRemovalChangesNoFile` with a hard link to a file outside, `TestCachesGoWithAnUnreadableTempFolder`, `TestFenceTakesOutADeepLockedTree`) |
+| G204 | internal/tools/syntax.go:150 | runs a version manager's `which` to resolve a `python3` shim | Accepted: the manager (`pyenv`, `asdf`, `mise`) is found on the harness's own `PATH`, resolved through its links and refused inside the workspace or an extra root; it runs from the temp directory with a bounded wait, and what it names is refused if it lies in the roots or is another shim. The same reasoning as the interpreter itself, above |
+| G301 | cmd/abhed-guest/main_linux.go:93 | `/dev/pts` made 0755 in the guest | Accepted: the mount point of the guest's pseudo-terminals, made at boot inside the microVM; the image's user must reach its terminal through it, as on any Linux system |
+| G304 | driver/microvm/firecracker_linux.go:97, 116 | writes `cgroup.kill` and `cgroup.freeze` | False positive: the VM's cgroup under `/sys/fs/cgroup`; the watchdog refuses a parent that is not a plain cgroup name and a VM id with `/` or `.` before either is joined |
+| G304 | internal/mcp/digest.go:152 | reads the MCP server's program to check its pinned digest | Accepted: the program the operator's `command` names, found on the server's `PATH` with links followed; reading it is the check |
+| G703 | internal/mcp/digest.go:135 | `os.Stat` on each `PATH` entry joined with the command | Accepted: the same lookup, through absolute `PATH` entries only, of the operator's configured command |
+| G304 | internal/secrets/open_unix.go:29 | opens the secrets store's lock file | False positive: the store's own path plus `.lock`, opened `O_NOFOLLOW` and 0600, in a folder created 0700 |
+| G304 | server/search.go:195 | reads a folder's `.git` file to tell a linked worktree | False positive: a folder inside the workspace the search is walking; the file is read only when `Lstat` shows a regular file of at most 4 KiB, and checked again once open |
+| G702 | internal/sandbox/fence_linux.go:797 | `os.StartProcess` of `/proc/self/exe` | False positive: the fence's init starts this program again as the command's launcher, inside the namespaces it already made; the arguments are the fenced command, which is what the fence exists to run |
+| G703 | internal/policy/scope.go:128 | `os.Stat` on each `PATH` entry joined with a program name | False positive: deciding whether a scoped program resolves outside the workspace; a relative `PATH` entry ends the check as inside, and nothing is opened |
+| G703 | internal/sandbox/paths.go:23 | `os.Lstat` while resolving a path's links | False positive: `RealPath` resolves the paths rules are put to, so that a link cannot dodge them; it reads link targets and opens nothing |
+| G703 | internal/sandbox/process_mcpfiles.go:100 | `os.Stat` on each `PATH` entry joined with an MCP server's program | Accepted: finding the operator's configured program, through absolute `PATH` entries only, so its install folder can be shown to the server's sandbox; a folder that holds Abhed's state is refused |
 
 #### Single-instance rules
 

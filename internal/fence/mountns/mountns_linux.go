@@ -15,27 +15,77 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Attr starts the process it is given to in a new user and mount namespace,
-// as the same user and group, holding CAP_SYS_ADMIN there and nothing else,
-// so it can apply a Plan before it drops it.
+// Attr starts the process it is given to in a new user and mount namespace, as
+// the same user and group, holding CAP_SYS_ADMIN and CAP_SETPCAP there and
+// nothing else, so it can apply a Plan and empty its bounding set before Drop.
 func Attr(a *syscall.SysProcAttr) {
 	a.Cloneflags |= unix.CLONE_NEWUSER | unix.CLONE_NEWNS
 	a.UidMappings = []syscall.SysProcIDMap{{ContainerID: os.Getuid(), HostID: os.Getuid(), Size: 1}}
 	a.GidMappings = []syscall.SysProcIDMap{{ContainerID: os.Getgid(), HostID: os.Getgid(), Size: 1}}
 	a.GidMappingsEnableSetgroups = false
-	a.AmbientCaps = []uintptr{unix.CAP_SYS_ADMIN}
+	// SETPCAP only to empty the bounding set and lock the securebits in Drop.
+	a.AmbientCaps = []uintptr{unix.CAP_SYS_ADMIN, unix.CAP_SETPCAP}
 }
 
-// Apply makes every mount private to this namespace, then applies p: the
-// pins, the read-only binds and the empty folders, in that order, at the
-// workspace and at every other mount that reaches its files (an alias), so
-// no second path to them stays open. An alias it cannot cover refuses the
-// plan. It needs CAP_SYS_ADMIN in the namespace, and checks each mount.
+// Spaces are the namespaces beside the user and mount ones a command gets.
+type Spaces struct {
+	// PID gives the launcher a PID namespace of its own, where it is init.
+	PID bool
+	// Net gives it a network namespace of its own, with CAP_NET_ADMIN there
+	// to bring its loopback up before Drop.
+	Net bool
+}
+
+// AttrWith is Attr with the namespaces sp asks for too.
+func AttrWith(a *syscall.SysProcAttr, sp Spaces) {
+	Attr(a)
+	if sp.PID {
+		a.Cloneflags |= unix.CLONE_NEWPID
+	}
+	if sp.Net {
+		a.Cloneflags |= unix.CLONE_NEWNET
+		a.AmbientCaps = append(a.AmbientCaps, unix.CAP_NET_ADMIN)
+	}
+}
+
+// MountProc mounts a /proc of this PID namespace over the inherited one, so it
+// shows only the namespace's processes.
+func MountProc() error {
+	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+		return fmt.Errorf("mounting a /proc of the command's own: %w", err)
+	}
+	return nil
+}
+
+// LoopbackUp brings the network namespace's loopback up, its only interface.
+func LoopbackUp() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("bringing the loopback up: %w", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	ifr, err := unix.NewIfreq("lo")
+	if err != nil {
+		return err
+	}
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("reading the loopback's flags: %w", err)
+	}
+	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("bringing the loopback up: %w", err)
+	}
+	return nil
+}
+
+// Apply makes every mount private to this namespace, then applies p: the pins,
+// the read-only binds and the empty folders, in that order, at the workspace
+// and at every other mount that reaches its files (an alias), so no second path
+// to them stays open.
 func Apply(p Plan) error { return apply(p, true) }
 
-// apply is Apply, covering the aliases only when asked: the probe's self
-// test checks the mechanisms in a temp folder, whose filesystem's other
-// mounts say nothing about the workspace's.
+// apply is Apply, covering aliases only when asked: the probe's self test runs
+// in a temp folder unrelated to the workspace's mounts.
 func apply(p Plan, covered bool) error {
 	if err := p.Validate(); err != nil {
 		return err
@@ -147,6 +197,11 @@ func findAliases(root int) (_ []aliasTarget, unreachable []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	hostname, _ := os.Hostname()
+	if v := views(entries, int(stx.Mnt_id), wsPath, hostname); len(v) > 0 { // #nosec G115 -- as above
+		return nil, nil, fmt.Errorf("%w: %s shows the workspace's files through a filesystem of its own (FUSE, overlay or a network share), "+
+			"where Abhed's state and git's files are not covered; unmount it, or run Abhed on a workspace it does not show", errAlias, strings.Join(v, ", "))
+	}
 	if len(found) == 0 && len(deleted) == 0 {
 		return nil, nil, nil
 	}
@@ -247,9 +302,8 @@ func fromSlash(p string) string {
 	return "."
 }
 
-// cover applies p at the alias: all of it where the alias shows the whole
-// workspace, else the part inside what it shows, or covers the alias whole
-// where it shows part of a folder p hides or holds read-only.
+// cover applies p at the alias: wholly, or the part inside what it shows, or
+// covers the alias whole where it shows part of a hidden or read-only folder.
 func (t aliasTarget) cover(p Plan) error {
 	if t.rel == "" {
 		return applyAt(t.fd, t.path, p)
@@ -283,9 +337,8 @@ func (t aliasTarget) cover(p Plan) error {
 // isEmpty is whether a plan holds nothing to apply.
 func (p Plan) isEmpty() bool { return len(p.Pin)+len(p.ReadOnly)+len(p.Empty) == 0 }
 
-// beneath opens rel under root by path alone, refusing a symbolic link at
-// any step and any escape from root; it crosses mounts, so a path opened
-// again after a mount reaches the mount.
+// beneath opens rel under root by path alone, refusing any symbolic link or
+// escape from root; it crosses mounts, so it reaches one made since.
 func beneath(root int, rel string, flags uint64) (int, error) {
 	return unix.Openat2(root, rel, &unix.OpenHow{
 		Flags:   unix.O_PATH | unix.O_CLOEXEC | unix.O_NOFOLLOW | flags,
@@ -494,9 +547,12 @@ func emptyFD(fd int, reopen func() (int, error)) error {
 }
 
 // Drop clears this thread's capabilities, ambient, inheritable, permitted and
-// effective, and checks none is left. The command is executed from this
-// thread, so it starts with none.
+// effective, empties its bounding set, locks the securebits that keep uid 0
+// from regaining any, and checks none is left.
 func Drop() error {
+	if err := DropBounding(); err != nil {
+		return err
+	}
 	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
 		return fmt.Errorf("clearing the ambient capabilities: %w", err)
 	}
@@ -516,11 +572,41 @@ func Drop() error {
 	return nil
 }
 
-// SelfTest applies a plan over dir, which holds the folders ro, pin and
-// hidden (with a file secret), as a launcher would; checks a write to ro
-// is refused and secret is hidden; and drops the capabilities. It runs in a
-// process started with Attr, and says what it saw.
-func SelfTest(dir string) (string, error) {
+// lockedSecurebits is libcap's pure-capability mode, locked, so uid 0 gains no
+// capability by exec, a uid change or an ambient raise.
+const lockedSecurebits = 1<<0 | 1<<1 | 1<<2 | 1<<3 | 1<<5 | 1<<6 | 1<<7
+
+// DropBounding empties this thread's capability bounding set and locks its
+// securebits, which needs CAP_SETPCAP: a launcher in a user namespace of its
+// own holds it until Drop, and root does.
+func DropBounding() error {
+	last := 40
+	if b, err := os.ReadFile("/proc/sys/kernel/cap_last_cap"); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 && n < 64 {
+			last = n
+		}
+	}
+	for c := 0; c <= last; c++ {
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(c), 0, 0, 0); err != nil && !errors.Is(err, unix.EINVAL) {
+			return fmt.Errorf("dropping capability %d from the bounding set: %w", c, err)
+		}
+	}
+	for c := 0; c <= last; c++ {
+		if v, err := unix.PrctlRetInt(unix.PR_CAPBSET_READ, uintptr(c), 0, 0, 0); err == nil && v != 0 {
+			return fmt.Errorf("capability %d is left in the bounding set", c)
+		}
+	}
+	if err := unix.Prctl(unix.PR_SET_SECUREBITS, lockedSecurebits, 0, 0, 0); err != nil {
+		return fmt.Errorf("locking the securebits: %w", err)
+	}
+	return nil
+}
+
+// SelfTest applies a plan over dir, which holds the folders ro, pin and hidden
+// (with a file secret), as a launcher would; checks a write to ro is refused
+// and secret is hidden; with proc, mounts a /proc of its own, as a launcher
+// in a PID namespace does; and drops the capabilities.
+func SelfTest(dir string, proc bool) (string, error) {
 	p := Plan{Root: dir, Pin: []string{"pin"}, ReadOnly: []string{"ro"}, Empty: []string{"hidden"}}
 	if err := apply(p, false); err != nil {
 		return "", err
@@ -535,8 +621,44 @@ func SelfTest(dir string) (string, error) {
 	if err := unix.Rename(filepath.Join(dir, "pin"), filepath.Join(dir, "moved")); !errors.Is(err, unix.EBUSY) {
 		return "", fmt.Errorf("a pinned folder was not kept in place (%w)", err)
 	}
+	what := "read-only bind, tmpfs and pin applied in a user namespace"
+	if proc {
+		if err := MountProc(); err != nil {
+			return "", err
+		}
+		what += ", /proc of its own mounted"
+	}
 	if err := Drop(); err != nil {
 		return "", err
 	}
-	return "read-only bind, tmpfs and pin applied in a user namespace; capabilities dropped", nil
+	return what + "; capabilities dropped", nil
+}
+
+// Views are the FUSE, overlay and network mounts that name the workspace at
+// root, a folder in it or one holding it; looked for again before each command,
+// since one can be made while a session runs.
+func Views(root string) ([]string, error) {
+	fd, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	var stx unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH, unix.STATX_MNT_ID, &stx); err != nil {
+		return nil, err
+	}
+	wsPath, err := os.Readlink(fdPath(fd))
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := parseMountinfo(string(data))
+	if err != nil {
+		return nil, err
+	}
+	hostname, _ := os.Hostname()
+	return views(entries, int(stx.Mnt_id), wsPath, hostname), nil // #nosec G115 -- mount ids are small kernel counters
 }

@@ -30,8 +30,30 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 // Policy is the sandbox policy a configuration asks for, after checking its
 // state paths. Build selects a backend for it.
 func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Policy, error) {
-	if err := CheckStatePaths(cfg, workspace, stateRoots...); err != nil {
+	return policy(cfg, workspace, workspace, stateRoots)
+}
+
+// InstancePolicy is Policy for a control-plane sandbox working in its own
+// folder, workspace, beside serve's serveWorkspace: state and secret paths
+// are resolved against serve's workspace, as serve reads them, and its
+// .abhed is denied too.
+func InstancePolicy(cfg config.Config, workspace, serveWorkspace string) (sandbox.Policy, error) {
+	if serveWorkspace == "" {
+		serveWorkspace = workspace
+	}
+	return policy(cfg, workspace, serveWorkspace, []string{serveWorkspace})
+}
+
+// policy is Policy with the state paths resolved against base.
+func policy(cfg config.Config, workspace, base string, stateRoots []string) (sandbox.Policy, error) {
+	if err := CheckStatePaths(cfg, base, stateRoots...); err != nil {
 		return sandbox.Policy{}, err
+	}
+	if base != workspace {
+		// The links in the sandbox's own folder are checked as well.
+		if err := checkLinks(cfg, base, []string{workspace}); err != nil {
+			return sandbox.Policy{}, err
+		}
 	}
 	p := sandbox.DefaultPolicy(workspace)
 	if cfg.Sandbox.MinTier != "" {
@@ -48,11 +70,23 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.WriteProtected = cfg.Sandbox.WriteProtected
-	p.ProtectGit = cfg.Sandbox.ProtectGit
-	p.StatePaths = StatePaths(cfg, workspace)
+	p.ProtectGit, p.GitRequired = cfg.Sandbox.GitProtected()
+	p.ScopeSignals = cfg.Sandbox.ScopeSignals
+	p.StatePaths = StatePaths(cfg, base)
 	for _, r := range stateRoots {
 		if filepath.Clean(r) != filepath.Clean(workspace) {
 			p.StatePaths = append(p.StatePaths, filepath.Join(r, tools.StateDir))
+		}
+	}
+	// The command line's sign-in tokens and client keys, wherever kept.
+	p.StatePaths = append(p.StatePaths, config.ProfileFiles()...)
+	// A control-plane sandbox's own folder may lie in the state folder: the
+	// rest of it is hidden around that folder, as its siblings are.
+	for _, f := range ControlPlaneFolders(cfg) {
+		if holds(f, workspace) {
+			p.Hidden = append(p.Hidden, f)
+		} else {
+			p.StatePaths = append(p.StatePaths, f)
 		}
 	}
 	if cfg.Sandbox.MaxMemoryMB > 0 {
@@ -61,8 +95,20 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 	if cfg.Sandbox.MaxProcs > 0 {
 		p.MaxProcs = cfg.Sandbox.MaxProcs
 	}
+	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
+	p.MemoryRequired = cfg.Sets("sandbox.max_memory_mb")
+	p.SharedCaches = cfg.Sandbox.SharedCaches
+	// The container tier picks its engine later; either engine's relay serves.
+	p.RelayBinary = cfg.ControlPlane.Podman.RelayBinary
+	if p.RelayBinary == "" {
+		p.RelayBinary = cfg.ControlPlane.Docker.RelayBinary
+	}
+	p.ReadableHome = cfg.Sandbox.ReadableHome
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
+	p.FenceSocketcall = cfg.Fence.Socketcall
+	p.FenceEgressPortOnly = cfg.Fence.EgressPortOnly
+	p.FenceAllowRoot = cfg.Fence.AllowRoot
 	p.SkillDirs = skillDirs(cfg)
 	return p, nil
 }
@@ -87,10 +133,78 @@ func skillDirs(cfg config.Config) []string {
 	return out
 }
 
+// ControlPlaneDB is the SQLite file serve's control plane keeps sandboxes
+// in, or "" when it keeps none: the control plane is off or uses Postgres.
+func ControlPlaneDB(cfg config.Config) string {
+	if !cfg.ControlPlane.Enabled || cfg.Storage.Driver == "postgres" {
+		return ""
+	}
+	if p := cfg.ControlPlane.SQLitePath; p != "" {
+		return filepath.Clean(p)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, tools.StateDir, "controlplane", "sandboxes.db")
+}
+
+// controlPlaneFiles are the database and the files SQLite keeps beside it.
+func controlPlaneFiles(cfg config.Config) []string {
+	db := ControlPlaneDB(cfg)
+	if db == "" {
+		return nil
+	}
+	return []string{db, db + "-wal", db + "-shm", db + "-journal"}
+}
+
+// ControlPlaneFolders are the control plane's state folder, which holds the
+// relay's host key, snapshots and the sandboxes' own folders, and a
+// snapshot_dir configured elsewhere. No command may read or write them,
+// apart from its own sandbox's folder inside one.
+func ControlPlaneFolders(cfg config.Config) []string {
+	var out []string
+	if d, err := config.ControlPlaneStateDir(); err == nil {
+		out = append(out, d)
+	}
+	if cfg.ControlPlane.SnapshotDir != "" {
+		if d, err := cfg.SnapshotDir(); err == nil {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// ToolStatePaths are StatePaths with the command line's profiles and client
+// keys, and the control plane's secrets in its state folder, the relay's
+// host key and the snapshots, for the file tools
+// and the server's readers to refuse. The folder itself is not one: a
+// per-session sandbox's workspace lies in it.
+func ToolStatePaths(cfg config.Config, workspace string) []string {
+	out := append(StatePaths(cfg, workspace), config.ProfileFiles()...)
+	if p, err := cfg.SSHHostKeyFile(); err == nil {
+		out = append(out, p)
+	}
+	if p, err := cfg.SnapshotDir(); err == nil {
+		out = append(out, p)
+	}
+	return out
+}
+
+// holds reports whether dir is or holds path, either as written or with
+// links followed.
+func holds(dir, path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	return under([]string{abs, tools.RealPath(abs)}, []string{dir})
+}
+
 // StatePaths are the files holding Abhed's state that a configuration can put
 // outside .abhed: the local accounts, the secrets store, the per-account
-// stores and a managed record directory. The tools, the server and the
-// sandbox all refuse them.
+// stores, a managed record directory and the control plane's database. The
+// tools, the server and the sandbox all refuse them.
 func StatePaths(cfg config.Config, workspace string) []string {
 	users := cfg.Auth.UsersFile
 	if users == "" {
@@ -99,6 +213,9 @@ func StatePaths(cfg config.Config, workspace string) []string {
 		users = filepath.Join(workspace, users)
 	}
 	out := []string{users}
+	// TLS keys and the command-line token key: whoever reads them can pose as
+	// the server or sign tokens for any account.
+	out = append(out, cfg.ServerSecretFiles(workspace)...)
 	if path, err := secrets.DefaultPath(); err == nil {
 		out = append(out, path)
 	}
@@ -122,6 +239,7 @@ func StatePaths(cfg config.Config, workspace string) []string {
 			out = append(out, real)
 		}
 	}
+	out = append(out, controlPlaneFiles(cfg)...)
 	return append(out, cfg.Record.Also...)
 }
 
@@ -135,12 +253,12 @@ func StatePaths(cfg config.Config, workspace string) []string {
 func CheckStatePaths(cfg config.Config, workspace string, stateRoots ...string) error {
 	// A .abhed is a shield only where it really is: not a link to a folder
 	// elsewhere, which the sandbox's rule for it would not cover.
-	var shielded []string
+	var shielded, homeShield []string
 	bases := []string{workspace}
 	if home, err := os.UserHomeDir(); err == nil {
 		bases = append(bases, home)
 	}
-	for _, b := range bases {
+	for i, b := range bases {
 		abs, err := filepath.Abs(b)
 		if err != nil {
 			continue
@@ -148,29 +266,115 @@ func CheckStatePaths(cfg config.Config, workspace string, stateRoots ...string) 
 		want := filepath.Join(tools.RealPath(abs), ".abhed")
 		if tools.RealPath(filepath.Join(abs, ".abhed")) == want {
 			shielded = append(shielded, want)
+			if i == 1 {
+				homeShield = []string{want}
+			}
 		}
 	}
 	areas := append([]string{workspace}, cfg.AdditionalDirs...)
 	areas = append(areas, sandbox.WritableAreas()...)
+	if cfg.ControlPlane.Enabled && cfg.ControlPlane.WorkspaceRoot != "" {
+		// Every sandbox's own folder is somewhere its commands write.
+		areas = append(areas, cfg.ControlPlane.WorkspaceRoot)
+	}
+	db := controlPlaneFiles(cfg)
+	if len(db) > 0 && !filepath.IsAbs(db[0]) {
+		return fmt.Errorf("refusing to start: control_plane.sqlite_path %q is not an absolute path", db[0])
+	}
 	for _, p := range StatePaths(cfg, workspace) {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return err
 		}
 		real := tools.RealPath(abs)
-		if inside(real, shielded) {
+		// The control plane's database stays out of every workspace, its
+		// .abhed included; only the home directory's shields it.
+		shields := shielded
+		if slices.Contains(db, p) {
+			shields = homeShield
+		}
+		if inside(real, shields) {
 			continue
 		}
 		for _, a := range areas {
 			if under([]string{abs, real}, []string{a}) {
+				what, where := "auth.users_file, ABHED_SECRETS_FILE and control_plane.sqlite_path", " (the home directory's only, for the database)"
+				if s := stateSetting(cfg, workspace, p); s != "" {
+					what, where = s, ""
+					if slices.Contains(db, p) {
+						where = " (the home directory's only)"
+					}
+				}
 				return fmt.Errorf("refusing to start: the state file %s is inside %s, where commands "+
-					"can write and could move it or replace it. Keep auth.users_file and "+
-					"ABHED_SECRETS_FILE outside the workspace, added directories, temp folders and "+
-					"caches, or under the workspace's or the home directory's .abhed", p, a)
+					"can write and could move it or replace it. Keep %s outside the workspace, added "+
+					"directories, sandbox folders, temp folders and caches, or under the workspace's "+
+					"or the home directory's .abhed%s", p, a, what, where)
 			}
 		}
 	}
 	return checkLinks(cfg, workspace, stateRoots)
+}
+
+// stateSetting names what puts the state file p where it is: a setting, or
+// the variable for the secrets store; "" when nothing names it alone.
+func stateSetting(cfg config.Config, workspace, p string) string {
+	named := map[string]string{}
+	add := func(path, setting string) {
+		if path != "" {
+			if _, ok := named[path]; !ok {
+				named[path] = setting
+			}
+		}
+	}
+	if cfg.Auth.UsersFile != "" {
+		add(StatePaths(cfg, workspace)[0], "auth.users_file")
+	}
+	if path, err := secrets.DefaultPath(); err == nil {
+		add(path, "ABHED_SECRETS_FILE")
+	}
+	for _, f := range controlPlaneFiles(cfg) {
+		add(f, "control_plane.sqlite_path")
+	}
+	if cfg.Server.TLS.Enabled() {
+		t := cfg.ResolvedTLS(workspace)
+		add(t.KeyFile, "server.tls.key_file")
+		for i, c := range t.AdditionalCertificates {
+			add(c.KeyFile, fmt.Sprintf("server.tls.additional_certificates[%d].key_file", i))
+		}
+		add(t.ClientCAFile, "server.tls.client_ca_file")
+	}
+	if ha := cfg.ResolvedHA(workspace); ha.Enabled {
+		add(ha.RelayKeyFile, "control_plane.ha.relay_key_file")
+		add(ha.RelayCAFile, "control_plane.ha.relay_ca_file")
+		add(ha.RelayCertKeyFile, "control_plane.ha.relay_cert_key_file")
+	}
+	if cfg.Auth.CLI.Enabled {
+		if k, err := cfg.CLIKeyFile(workspace); err == nil {
+			for _, f := range []string{k, k + ".revoked", k + config.CLIEditionStateSuffix} {
+				add(f, "auth.cli.key_file")
+			}
+		}
+	}
+	if w := cfg.ResolvedWorkload(workspace); w.Enabled {
+		if k, err := cfg.WorkloadKeyFile(workspace); err == nil {
+			add(k, "auth.workload.key_file")
+			add(k+config.CLIEditionStateSuffix, "auth.workload.key_file")
+		}
+		add(w.JWTBundleFile, "auth.workload.jwt_bundle_file")
+		add(w.X509BundleFile, "auth.workload.x509_bundle_file")
+	}
+	if cfg.ControlPlane.Enabled && cfg.ControlPlane.SSHHostKey != "" {
+		if k, err := cfg.SSHHostKeyFile(); err == nil {
+			add(k, "control_plane.ssh_host_key")
+		}
+	}
+	if cfg.Record.Dir != "" {
+		add(cfg.Record.Dir, "record.dir")
+	}
+	for _, f := range cfg.Record.Also {
+		add(f, "record.also")
+	}
+	return named[p]
 }
 
 // checkLinks refuses a state file with a second name: the sandbox guards the
@@ -262,6 +466,12 @@ func under(spellings, dirs []string) bool {
 		}
 	}
 	return false
+}
+
+// NetworkOpen reports whether cfg gives commands the network with no
+// allowlist, so git run for them on the host reaches no more than they could.
+func NetworkOpen(cfg config.Config) bool {
+	return cfg.Sandbox.AllowNetwork && cfg.Sandbox.Network != config.NetworkAllowlist
 }
 
 // Isolation is what the bash tool tells the model of the sandbox of tier:

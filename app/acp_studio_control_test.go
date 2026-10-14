@@ -1,16 +1,19 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
@@ -90,6 +93,12 @@ func TestStudioManagedModeCeiling(t *testing.T) {
 func TestStudioExplainAndPolicyView(t *testing.T) {
 	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"],"ask":["bash(gh *)"]}`)
 	id := r.open()
+	// No hook is asked, an extension's context hook included.
+	var asked atomic.Bool
+	engine := r.cl.conn.session(id).parts.Loop.Policy
+	engine.ContextHooks = append(engine.ContextHooks, func(*policy.Engine) policy.ContextHook {
+		return func(context.Context, string, json.RawMessage) *policy.Result { asked.Store(true); return nil }
+	})
 	before := len(r.events(id))
 	var d map[string]any
 	r.cl.ok("_abhed/policy/explain", map[string]any{"sessionId": id, "tool": "bash", "args": map[string]any{"command": "curl example.com"}}, &d)
@@ -102,6 +111,9 @@ func TestStudioExplainAndPolicyView(t *testing.T) {
 	}
 	if after := len(r.events(id)); after != before {
 		t.Fatalf("explain was recorded: %d events, then %d", before, after)
+	}
+	if asked.Load() {
+		t.Fatal("explain asked a hook about a call that is not being made")
 	}
 	var caps map[string]any
 	r.cl.ok("_abhed/capabilities", map[string]any{"sessionId": id}, &caps)
@@ -491,7 +503,7 @@ func TestStudioFileAttachmentIsCheckedByPolicy(t *testing.T) {
 			map[string]any{"type": "resource", "resource": map[string]any{"uri": uri, "text": "hidden-words"}},
 		}}
 	}
-	for _, uri := range []string{"file://" + r.ws + "/secret/k.txt", "file://" + r.ws + "/.abhed/config.json", "file://" + r.ws + "/.ABHED/x", "file://fileserver/share/k.txt"} {
+	for _, uri := range []string{"file://" + r.ws + "/secret/k.txt", "file://" + r.ws + "/.abhed/config.json", "file://" + r.ws + "/.ABHED/x", "file://fileserver/share/k.txt", "file:////fileserver/share/k.txt", `file:///\\fileserver\share\k.txt`} {
 		if msg := r.cl.refused(errPolicy, "session/prompt", attach(uri)); !strings.Contains(msg, "may not be read") {
 			t.Errorf("%s: %s", uri, msg)
 		}

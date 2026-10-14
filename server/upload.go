@@ -65,8 +65,8 @@ type uploadResponse struct {
 	MediaType string `json:"media_type,omitempty"`
 }
 
-// uploadFile accepts a multipart file and stores it under the session's
-// upload directory.
+// uploadFile accepts a multipart file and stores it in a folder of its own
+// under the upload directory.
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	// An empty id means the file was attached before the chat existed, which
 	// is the normal case in a new conversation: someone drops in a document
@@ -154,13 +154,30 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	// this file depends on: the file is read with the ordinary read tool,
 	// under the same boundary as any other workspace file, with no special
 	// case in the policy engine.
-	dir := filepath.Join(s.opts.Workspace, uploadDirName, sessionID)
+	ws := s.opts.Workspace
+	if s.opts.SessionSandboxes != nil {
+		// A file staged before its session has no sandbox folder to go to yet.
+		if staged {
+			WriteError(w, http.StatusConflict, "this server gives each session a sandbox of its own: start the session, then attach the file")
+			return
+		}
+		var err error
+		if ws, err = s.sessionWorkspace(r.Context(), sessionID); err != nil {
+			WriteError(w, http.StatusNotFound, "session not found")
+			return
+		}
+	}
+	// A random folder per upload: named by the session, the shared uploads
+	// folder told every account on the server the ids of everyone's sessions.
+	var folder [8]byte
+	_, _ = rand.Read(folder[:])
+	dir := filepath.Join(ws, uploadDirName, hex.EncodeToString(folder[:]))
 	dest := filepath.Join(dir, name)
 	// The upload folder is in the workspace, where the agent can plant a
 	// link: a write through one could replace Abhed's state or leave it. The
 	// file is created new under the workspace held open as a root, so no
 	// link, even one swapped in now, leads it out or into the state.
-	if err := s.createUpload(dest, data); err != nil {
+	if err := s.createUploadIn(ws, dest, data); err != nil {
 		if errors.Is(err, tools.ErrState) || errors.Is(err, tools.ErrOutside) {
 			WriteError(w, http.StatusForbidden, "the upload folder leads outside the workspace or into Abhed's state; remove the link in "+uploadDirName)
 			return
@@ -310,13 +327,13 @@ func isProbablyBinary(data []byte) bool {
 	return false
 }
 
-// createUpload writes a new upload under the workspace root.
-func (s *Server) createUpload(dest string, data []byte) error {
-	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+// createUploadIn writes a new upload under the workspace ws.
+func (s *Server) createUploadIn(ws, dest string, data []byte) error {
+	root, err := filepath.EvalSymlinks(ws)
 	if err != nil {
 		return err
 	}
-	c, err := tools.NewStateSet(s.opts.Workspace).Confine(root, s.opts.Workspace)
+	c, err := tools.NewStateSet(ws).Confine(root, ws)
 	if err != nil {
 		return err
 	}

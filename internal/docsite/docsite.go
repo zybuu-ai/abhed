@@ -46,6 +46,11 @@ func Available() bool {
 	return true
 }
 
+// CSP is the policy on every docs response. The pages run no script and load
+// nothing; their one stylesheet is inline, so only inline style is allowed.
+const CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; " +
+	"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 // Handler serves the embedded documentation under the given prefix.
 func Handler(prefix string) http.Handler {
 	sub, err := fs.Sub(site, "site")
@@ -57,6 +62,7 @@ func Handler(prefix string) http.Handler {
 	files := http.FileServer(http.FS(sub))
 
 	return http.StripPrefix(prefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", CSP)
 		p := strings.TrimPrefix(r.URL.Path, "/")
 
 		// The site is generated with extensionless links, because Cloudflare

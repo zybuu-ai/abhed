@@ -11,7 +11,10 @@
 #   extract.py ide.html ide-lines     the line-by-line terminal
 #   extract.py ide.html ide-term      the agent's terminal tab
 #   extract.py ide.html ide-call      an opened call and the plan
+#   extract.py ide.html ide-lsp       a language server's file URI as a workspace path
 #   extract.py ide.html ide-files     downloads, a session's title and delete, notifications
+#   extract.py ide.html ide-review    rejecting a change in the review
+#   extract.py ide.html ide-streams   the shared stream and StreamSource
 #   extract.py console.go model       the model picker (ide-model: the workbench's)
 #   extract.py console.go switch      the chat list, the address and the switcher (ide-switch: the workbench's)
 #   extract.py console.go hidden      hasHidden (ide-hidden: the workbench's)
@@ -56,12 +59,12 @@ sets = {
     # From ide.html: sending, the run's live state and the approval prompt.
     'ide-chat': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
           'function userBubble(text, state){','function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
-          'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
-          'function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','async function watchIdle(){','function offerNext(t){','function takeNext(e){',
+          'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','const byWhom = ','function answered(p, c, how){','function settleAsk(callID, how){',
+          'function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','async function watchIdle(){','const goneTries = ','function sessionGone(id, e){','function offerNext(t){','function takeNext(e){',
           'const MAX_UPLOAD = ','let pending = ','function addFiles(list){','function drawFiles(){','let reviewNotes = ','function addNote(path, line, code, text){','function drawNotes(){','function withNotes(text, notes){','async function postFile(id, file, name, dir){','async function flushUploads(id){','function withFiles(prompt, uploaded){',
           'const NOTE_TEXT = ','const notifyOn = ','function notify(kind){','let lastUser = ','const EDIT_HINT = ','function offerEdit(){','function editLast(b){','function stopEditing(){'],
     'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(why){',
-          'function connect(id){','function streamLost(id){','const STARTING_WAITS = ','function stillStarting(id, what, again){','async function notHere(id){',
+          'function connect(id){','function streamLost(id){','const goneTries = ','function sessionGone(id, e){','const STARTING_WAITS = ','function stillStarting(id, what, again){','async function notHere(id){',
           'async function api(path, opts){','function attach(t, id, reattach){'],
     # From ide.html: the explorer's tree and its name input.
     'ide-tree': ['const el = (tag, cls, text) => {','function reveal(s, lines){','const clear = ','const parentOf = ','const joinPath = ','const dirs = ','const heldLoads = ',
@@ -71,6 +74,10 @@ sets = {
     'ide-files': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const fmtSize = ','async function download(path, report){','async function loadDownloads(){',
           'const sessionLabel = ','function editTitle(span, s){','async function setTitle(s, title, span){','async function deleteSession(s){','const resumeCommand = ','async function copyResume(id, btn){','function exportSession(id, format){',
           'const NOTE_TEXT = ','const notifyOn = ','function notify(kind){','function drawNotify(){','async function toggleNotify(){'],
+    # From ide.html: the shared stream every server-to-page stream rides.
+    'ide-streams': ['const mux = ','function muxStream(){','class StreamSource {'],
+    # From ide.html: rejecting a change in the review.
+    'ide-review': ['const linesOf = ','function spliceLines(lines, s, e, put){','function rejectHunk(t, c){','function replaceAll(t, text){','async function rejectAll(t){'],
     # hasHidden alone, from either page: ide-hidden takes ide.html's.
     'hidden': ['function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){'],
     'ide-hidden': ['function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){'],
@@ -86,16 +93,18 @@ sets = {
     'ide-at': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function drawAt(){'],
     'ide-pal': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const sessionLabel = ','function palItems(){','function drawPal(){'],
     'ide-subject': ['function tail(p){','function subjectOf(tool, args){'],
+    # From ide.html: where a language server's file URI lands in the workspace.
+    'ide-lsp': ['function lspRel(c, uri){'],
     # From ide.html: the session list's order and filter, the address, the dropdown and its keys.
     'ide-switch': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','const sessionLabel = ',
           'const sessionTime = ','function sortSessions(list){','function matchSession(s, q){','function ageOf(iso){','const dayOf = ','function drawSessions(){',
           'const SESSION_ID = ','function sessionFromURL(){','function setURL(id){','let startNote = ','async function startingSession(){','function neighbour(dir){',
-          'let dropSel = ','function drawDrop(){','function switchKeys(e){'],
+          'let dropSel = ','function drawDrop(){','function switchKeys(e){','async function createWorkbench(note){'],
     'ide-modes': ['function limitModes(m){', 'function modeForNewSession(){'],
     # From ide.html: the Events and HawkEYE panels, which draw record text.
     'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function reveal(s, lines){','function tail(p){','function subjectOf(tool, args){',
-          'function logEvent(ev, p){','async function loadHawkeye(){'],
-    'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function bubble(cls, who, text){','function render(ev){','function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','function offerNext(t){','let lastUser = ','function offerEdit(){'],
+          'function logEvent(ev, p){','async function loadHawkeye(){','function drawCaps(){'],
+    'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function bubble(cls, who, text){','const byWhom = ','function answered(p, c, how){','function render(ev){','function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','function offerNext(t){','let lastUser = ','function offerEdit(){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function visible(s, lines){','function reveal(s, lines){','function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
     'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
@@ -110,8 +119,11 @@ sets = {
 }
 seen=set(); out=[]
 for fn in sets[which]:
+    # The workbench's reveal takes a third argument, prose; the console's does not.
+    if fn == 'function reveal(s, lines){' and fn not in src:
+        fn = 'function reveal(s, lines, prose){'
     if fn not in src: continue
-    name = re.match(r'(?:async function|function|const|let) (\w+)', fn).group(1)
+    name = re.match(r'(?:async function|function|const|let|class) (\w+)', fn).group(1)
     if name in seen: continue
     seen.add(name); out.append(grab(fn))
 if which in ('render', 'ask'):

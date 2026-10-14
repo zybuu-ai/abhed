@@ -8,3 +8,8 @@ import "os"
 func openDir(dir string) (*os.File, error) {
 	return os.Open(dir) // #nosec G304 -- lists a folder on the path being judged; no file is read
 }
+
+// openNoWait opens a file for reading; this platform has no flag to refuse a FIFO.
+func openNoWait(p string) (*os.File, error) {
+	return os.Open(p) // #nosec G304 -- a script the command being judged names; read only to judge it
+}

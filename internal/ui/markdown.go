@@ -293,6 +293,17 @@ func parseInline(text string, lenient bool) []seg {
 		case strings.HasPrefix(rest, "**") || strings.HasPrefix(rest, "__"):
 			m := rest[:2]
 			opens := len(rest) > 2 && rest[2] != ' ' && (strings.Contains(rest[2:], m) || lenient)
+			if m == "__" {
+				// Underscores inside a word, as in __init__.py, are literal.
+				if cur.bold {
+					opens = false
+					if !underscoreCloses(text, i+2) {
+						break
+					}
+				} else {
+					opens = len(rest) > 2 && rest[2] != ' ' && (i == 0 || !isWordByte(text[i-1])) && underscoreCloser(text, i+2, m) >= 0
+				}
+			}
 			if cur.bold || opens {
 				emit()
 				cur.bold = !cur.bold
@@ -308,6 +319,9 @@ func parseInline(text string, lenient bool) []seg {
 			}
 		case rest[0] == '*' || rest[0] == '_':
 			m := rest[:1]
+			if cur.italic && m == "_" && !underscoreCloses(text, i+1) {
+				break
+			}
 			if cur.italic {
 				emit()
 				cur.italic = false
@@ -316,7 +330,15 @@ func parseInline(text string, lenient bool) []seg {
 			}
 			prevWord := i > 0 && isWordByte(text[i-1])
 			if len(rest) > 1 && rest[1] != ' ' && !prevWord {
-				if j := strings.Index(rest[1:], m); j > 0 && rest[j] != ' ' {
+				j := strings.Index(rest[1:], m)
+				if m == "_" {
+					if k := underscoreCloser(text, i+1, m); k >= 0 {
+						j = k - (i + 1)
+					} else {
+						j = -1
+					}
+				}
+				if j > 0 && rest[j] != ' ' {
 					emit()
 					cur.italic = true
 					i++
@@ -583,4 +605,47 @@ func indentRows(rows []string, lead string) []string {
 		}
 	}
 	return out
+}
+
+// underscoreCloses reports an underscore run ending at end that may close
+// emphasis: not followed by a word, nor by a dot, dash or slash and a word,
+// as a file name such as __init__.py goes on.
+func underscoreCloses(text string, end int) bool {
+	if end >= len(text) {
+		return true
+	}
+	c := text[end]
+	if isWordByte(c) || c == '_' {
+		return false
+	}
+	if (c == '.' || c == '-' || c == '/') && end+1 < len(text) && isWordByte(text[end+1]) {
+		return false
+	}
+	return true
+}
+
+// underscoreCloser is where the m after from that closes emphasis starts:
+// the nearest one ending a word, or -1 when that one runs on into a name.
+func underscoreCloser(text string, from int, m string) int {
+	for k := from; k < len(text); {
+		j := strings.Index(text[k:], m)
+		if j < 0 {
+			return -1
+		}
+		at := k + j
+		if !isWordByte(text[at-1]) && text[at-1] != ' ' {
+			k = at + len(m)
+			continue
+		}
+		if text[at-1] != ' ' {
+			// The nearest closer ends inside its own word (__init__.py): the
+			// opener is literal, not paired with one further on.
+			if underscoreCloses(text, at+len(m)) {
+				return at
+			}
+			return -1
+		}
+		k = at + len(m)
+	}
+	return -1
 }

@@ -10,16 +10,21 @@
 package policy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/zybuu-ai/abhed/internal/kubescope"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -56,6 +61,22 @@ type Result struct {
 	// Rule is the rule that decided, as written, for the deny, ask and allow
 	// steps; "" when no rule did.
 	Rule string
+	// Suggest is an allow rule a person could write for exactly this call,
+	// when the default step asks and offers no scope; "" otherwise.
+	Suggest string
+	// Layer is the policy layer the deciding rule came from when an edition
+	// added it with AddLayer; "" for configured and session rules.
+	Layer string
+	// Guard, for a scope on a git command, sums what git reads in the
+	// workspace's repositories as the call is decided. A remembered scope
+	// covers a later call only with the same Guard: a hook or fsmonitor
+	// planted after the grant is asked about again.
+	Guard string
+}
+
+// Covers reports whether a scope remembered with guard covers r.
+func (r Result) Covers(scope, guard string) bool {
+	return scope != "" && scope == r.Offer() && guard == r.Guard
 }
 
 // Offer is the scope a person may "always allow", and the only one a
@@ -76,11 +97,19 @@ type Rule struct {
 	// folded is pattern with the literal start of its program name lowered, for
 	// systems that ignore case; nil when that changes nothing.
 	folded *regexp.Regexp
+	// caseless is pattern matching without regard to case, which deny and ask
+	// path rules also use on a disk that folds case; nil when it has no letter.
+	caseless *regexp.Regexp
 	// nfc is pattern in Unicode NFC, which deny and ask path rules also match
 	// against NFC subjects; nil for a pattern with no non-ASCII character.
 	nfc *regexp.Regexp
+	// flags is the glob read with its flags as a set, for deny and ask
+	// rules on bash; nil when it names none.
+	flags *flagForm
 	// session marks a rule a person added for this session; see Overlay.
 	session bool
+	// layer names the policy layer an edition added the rule under; see AddLayer.
+	layer string
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -115,6 +144,12 @@ func ParseRule(s string) (Rule, error) {
 			return Rule{}, fmt.Errorf("rule %q: %w", s, err)
 		}
 		r.pattern, r.glob = re, glob
+		r.flags = parseFlagForm(glob)
+		if strings.ToLower(glob) != strings.ToUpper(glob) {
+			if r.caseless, err = regexp.Compile("(?i)" + re.String()); err != nil {
+				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
+			}
+		}
 		if hasNonASCII(glob) {
 			if r.nfc, err = globToRegexp(norm.NFC.String(glob)); err != nil {
 				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
@@ -126,7 +161,28 @@ func ParseRule(s string) (Rule, error) {
 			}
 		}
 	}
+	// Bash(curl *) is bash(curl *): a built-in name in another case used to
+	// match no tool, so a deny rule copied in that style never fired.
+	r.tool = CanonicalTool(strings.TrimSpace(r.tool))
 	return r, nil
+}
+
+// ForTool reports whether the rule is for tool: it names it, any tool (*), or
+// every tool of the MCP server tool belongs to (mcp__server__*).
+func (r Rule) ForTool(tool string) bool {
+	if r.tool == tool || r.tool == "*" {
+		return true
+	}
+	prefix, ok := MCPServerWildcard(r.tool)
+	return ok && strings.HasPrefix(tool, prefix) && len(tool) > len(prefix)
+}
+
+// Canonical is the rule with its tool name as Abhed spells it.
+func (r Rule) Canonical() string {
+	if r.pattern == nil {
+		return r.tool
+	}
+	return r.tool + "(" + r.glob + ")"
 }
 
 func globToRegexp(glob string) (*regexp.Regexp, error) {
@@ -151,7 +207,7 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 }
 
 func (r Rule) Matches(tool string, subject string) bool {
-	if r.tool != tool && r.tool != "*" {
+	if !r.ForTool(tool) {
 		return false
 	}
 	if r.pattern == nil {
@@ -202,7 +258,7 @@ func (e *Engine) rulesSeeParts(tool string) bool {
 // patterned reports whether any of rules has a pattern for tool.
 func patterned(rules []Rule, tool string) bool {
 	for _, r := range rules {
-		if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+		if r.ForTool(tool) && r.pattern != nil {
 			return true
 		}
 	}
@@ -235,7 +291,7 @@ func (r Rule) matchesPathAny(tool string, subjects []string) bool {
 	if r.matchesAny(tool, subjects) {
 		return true
 	}
-	if r.tool != tool && r.tool != "*" {
+	if !r.ForTool(tool) {
 		return false
 	}
 	for _, s := range subjects {
@@ -253,6 +309,34 @@ func (r Rule) matchesPathAny(tool string, subjects []string) bool {
 	return false
 }
 
+// matchesCaselessAny is matchesAny without regard to case, on both sides in NFC.
+func (r Rule) matchesCaselessAny(tool string, subjects []string) bool {
+	if r.caseless == nil || !r.ForTool(tool) {
+		return false
+	}
+	for _, s := range subjects {
+		if r.caseless.MatchString(s) || hasNonASCII(s) && r.caseless.MatchString(norm.NFC.String(s)) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathFoldsCase reports whether the disk under the first absolute path among
+// subjects folds case; where the system as a whole ignores case it is taken
+// to, which can only add deny and ask matches.
+func pathFoldsCase(subjects []string) bool {
+	if tools.FoldsCommandNames() {
+		return true
+	}
+	for _, s := range subjects {
+		if filepath.IsAbs(s) {
+			return tools.FoldsCaseAt(s)
+		}
+	}
+	return false
+}
+
 func hasNonASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {
@@ -264,6 +348,9 @@ func hasNonASCII(s string) bool {
 
 func (r Rule) String() string { return r.raw }
 
+// Layer is the policy layer an edition added the rule under, "" for others.
+func (r Rule) Layer() string { return r.layer }
+
 // Tool is the tool name the rule is for, "*" for any.
 func (r Rule) Tool() string { return r.tool }
 
@@ -272,6 +359,9 @@ func (r Rule) named() string {
 	if r.session {
 		return "session rule " + r.raw
 	}
+	if r.layer != "" {
+		return r.layer + " rule " + r.raw
+	}
 	return "rule " + r.raw
 }
 
@@ -279,6 +369,15 @@ func (r Rule) named() string {
 // after the deny, plan-mode and ask steps, before the mode; an Allow, or nil, is
 // no opinion. A hook can tighten a decision and never loosen one.
 type Hook func(tool string, args json.RawMessage) *Result
+
+// ContextHook is a Hook given the decision's context, which carries a
+// deadline: the caller's, or HookTimeout from when the hooks start. A hook
+// that has not decided by then refuses the call, so a slow one cannot hold
+// a decision, or a batch of them, past it.
+type ContextHook func(ctx context.Context, tool string, args json.RawMessage) *Result
+
+// DefaultHookTimeout bounds the hooks of one decision when the caller sets no deadline.
+const DefaultHookTimeout = 30 * time.Second
 
 type Engine struct {
 	Mode  Mode
@@ -289,6 +388,11 @@ type Engine struct {
 	// EngineHooks are hooks made for the engine evaluating, so one copied for
 	// a subagent, with more roots, judges with those.
 	EngineHooks []func(*Engine) Hook
+	// ContextHooks are EngineHooks given the decision's context.
+	ContextHooks []func(*Engine) ContextHook
+	// HookTimeout bounds the hooks of one decision when its context has no
+	// earlier deadline; 0 is DefaultHookTimeout.
+	HookTimeout time.Duration
 
 	// Managed marks the engine as org-controlled: bypass mode is refused and
 	// local config cannot escalate past it (docs P7, §10 precedence).
@@ -301,6 +405,24 @@ type Engine struct {
 	// Roots returns the workspace and added directories, so a path rule
 	// written relative to one matches. Nil matches paths only as given.
 	Roots func() []string
+
+	// Cwd returns the folder a bash command starts in. When set, deny and
+	// ask rules also read the scripts a command runs (bash ./s.sh, source f,
+	// ./tool) from there. Nil reads none, for an engine judging commands in
+	// a sandbox whose files are not the host's.
+	Cwd func() string
+
+	// Home is the HOME commands get, as a host path ("" while not made yet),
+	// and whether the host can read it; nil is this process's own.
+	Home func() (dir string, visible bool)
+
+	// SandboxFiles marks an engine for a sandbox whose files the host cannot
+	// read (an :exec): a line that would run one is refused under rules.
+	SandboxFiles bool
+
+	// StartupBaseline are the start-up files, by path, the person trusted
+	// with abhed trust startup-files; one that still matches is not judged.
+	StartupBaseline map[string]StartupFile
 
 	// AskReadOnly names read-only tools that may still ask in the default,
 	// accept-edits, auto and plan modes. Each is given the call's subject and
@@ -317,6 +439,14 @@ type Engine struct {
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
+
+// WithoutHooks is a copy of e that asks no hook of any kind, for a dry run
+// that must not show a hook a call that is not being made.
+func (e *Engine) WithoutHooks() *Engine {
+	dry := *e
+	dry.Hooks, dry.EngineHooks, dry.ContextHooks = nil, nil, nil
+	return &dry
+}
 
 // AllowGitExtensions opts the named git extensions in; a name that is not a
 // plain subcommand, or is one of git's own, is refused.
@@ -337,6 +467,31 @@ func (e *Engine) AddDeny(patterns ...string) error  { return addAll(&e.Deny, pat
 func (e *Engine) AddAsk(patterns ...string) error   { return addAll(&e.Ask, patterns) }
 func (e *Engine) AddAllow(patterns ...string) error { return addAll(&e.Allow, patterns) }
 
+// AddLayer adds the deny, ask and allow rules of one policy layer an edition
+// supplies, such as a workspace's, named so a reason and Result.Layer say
+// where the deciding rule came from. Every rule is parsed first, so one that
+// does not parse adds none of them.
+func (e *Engine) AddLayer(layer string, deny, ask, allow []string) error {
+	if strings.TrimSpace(layer) == "" {
+		return errors.New("a policy layer needs a name")
+	}
+	var parsed [3][]Rule
+	for i, list := range [][]string{deny, ask, allow} {
+		for _, p := range list {
+			r, err := ParseRule(p)
+			if err != nil {
+				return fmt.Errorf("policy layer %s: %w", layer, err)
+			}
+			r.layer = layer
+			parsed[i] = append(parsed[i], r)
+		}
+	}
+	e.Deny = append(e.Deny, parsed[0]...)
+	e.Ask = append(e.Ask, parsed[1]...)
+	e.Allow = append(e.Allow, parsed[2]...)
+	return nil
+}
+
 func addAll(dst *[]Rule, patterns []string) error {
 	for _, p := range patterns {
 		r, err := ParseRule(p)
@@ -352,11 +507,11 @@ func addAll(dst *[]Rule, patterns []string) error {
 // tool and not others. Something that cannot show each call to the engine,
 // such as an interactive shell, cannot honour such a rule and must not run.
 func (e *Engine) Screens(tool string) bool {
-	if len(e.Hooks)+len(e.EngineHooks) > 0 {
+	if len(e.Hooks)+len(e.EngineHooks)+len(e.ContextHooks) > 0 {
 		return true
 	}
 	for _, r := range e.DenyRules() {
-		if r.tool == tool || r.tool == "*" {
+		if r.ForTool(tool) {
 			return true
 		}
 	}
@@ -376,15 +531,26 @@ func (e *Engine) Screens(tool string) bool {
 // refuses for bash. The list is priority order, most security-relevant first;
 // the first key present wins, so a single subject string is returned as before.
 //
-// ssh takes both `command` and `host`; command wins here because it is the more
-// consequential field and ssh already asks unconditionally. Scoping ssh by host
-// needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
+// A tool that names its own subject (a tools.Subjector, such as ssh's
+// host/command) is judged on that, as a Kubernetes tool is on its cluster.
 func Subject(tool string, args json.RawMessage) string {
-	_, s, _ := subjectOf(args)
-	if target, ok := clusterSubject(tool, args); ok {
+	_, s, _ := subjectOf(args) // a subject of another kind reads as its JSON text
+	if target, ok := toolSubject(tool, args); ok {
 		return target
 	}
 	return s
+}
+
+// toolSubject is the subject a Kubernetes tool or a registered Subjector
+// names for the call, which says where it goes first.
+func toolSubject(tool string, args json.RawMessage) (string, bool) {
+	if target, ok := clusterSubject(tool, args); ok {
+		return target, true
+	}
+	if s := tools.SubjectorFor(tool); s != nil {
+		return s.PolicySubject(args)
+	}
+	return "", false
 }
 
 // clusterSubject is the subject of a Kubernetes tool, which names where the
@@ -441,26 +607,51 @@ func clusterSubject(tool string, args json.RawMessage) (string, bool) {
 
 // subjectOf is Subject with the argument it came from. Arguments are decoded
 // strictly and keys matched as a tool's struct matches them, so both read one value.
+// The first subject argument present is the subject: a list of strings is
+// read as its words joined by blanks, and any other kind is its JSON text
+// with errNonStringSubject, as passing on to the next key would judge the
+// call on what it does not do.
 func subjectOf(args json.RawMessage) (key, subject string, err error) {
 	m, err := tools.DecodeArgs(args)
 	if err != nil {
 		return "", "", err
 	}
 	for _, key := range tools.SubjectKeys {
-		if v, found := tools.Lookup(m, key); found {
-			if s, isStr := v.(string); isStr {
-				return key, s, nil
+		v, found := tools.Lookup(m, key)
+		if !found || v == nil {
+			continue
+		}
+		switch v := v.(type) {
+		case string:
+			return key, v, nil
+		case []any:
+			words := make([]string, len(v))
+			all := true
+			for i, w := range v {
+				s, isStr := w.(string)
+				all = all && isStr
+				words[i] = s
+			}
+			if all {
+				return key, strings.Join(words, " "), nil
 			}
 		}
+		text, _ := json.Marshal(v)
+		return key, string(text), fmt.Errorf("%w: %q is not a string or a list of strings, so a rule with a pattern cannot read it", errNonStringSubject, key)
 	}
 	return "", "", nil
 }
+
+// errNonStringSubject marks a subject argument of another kind than text.
+var errNonStringSubject = errors.New("malformed arguments")
 
 // pathSubjects are the spellings a path rule is matched against. Deny and ask
 // rules see every one: the path as given, absolute, with its links resolved,
 // and relative to each root, with and without a leading ./. Allow rules see
 // only the target: the resolved path, absolute and relative to the workspace.
-func (e *Engine) pathSubjects(p string) (all, allow []string) {
+// With disk false the disk's spellings are left out, for a tool no deny or
+// ask rule reads by path.
+func (e *Engine) pathSubjects(p string, disk bool) (all, allow []string) {
 	add := func(to *[]string, s string) {
 		for _, have := range *to {
 			if have == s {
@@ -474,15 +665,19 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 		return all, all
 	}
 	var roots []string
+	firstReal := ""
 	if e.Roots != nil {
-		for _, r := range e.Roots() {
+		for i, r := range e.Roots() {
+			real, disk := rootSpellings(r)
+			if i == 0 {
+				firstReal = real
+			}
 			roots = append(roots, r)
-			real := tools.RealPath(r)
 			if real != r {
 				roots = append(roots, real)
 			}
 			// A root named in another case than the disk holds would miss the disk's spelling below.
-			if disk := tools.DiskPath(real); disk != real {
+			if disk != real {
 				roots = append(roots, disk)
 			}
 		}
@@ -510,9 +705,13 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 	}
 	// Deny and ask rules also see the case the disk holds: on a disk that folds case,
 	// core/VAULT is core/vault. Allow rules keep the spelling given, so this only tightens.
-	diskAbs, diskReal := tools.DiskPath(abs), tools.DiskPath(real)
-	if real == abs {
-		diskReal = diskAbs
+	// Only deny and ask rules read them, so with none for paths they are not looked up.
+	diskAbs, diskReal := abs, real
+	if disk {
+		diskAbs, diskReal = tools.DiskPath(abs), tools.DiskPath(real)
+		if real == abs {
+			diskReal = diskAbs
+		}
 	}
 	for _, a := range []string{abs, real, diskAbs, diskReal} {
 		add(&all, filepath.ToSlash(a)+dir)
@@ -522,9 +721,46 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 	}
 	allow = []string{filepath.ToSlash(real) + dir}
 	if len(roots) > 0 {
-		relTo(&allow, tools.RealPath(roots[0]), real)
+		relTo(&allow, firstReal, real)
 	}
 	return all, allow
+}
+
+// rootSpellingsFor is how long a root's resolved and disk spellings are
+// kept: a decision's own path is read each time, its roots at most this often.
+const rootSpellingsFor = time.Second
+
+// rootMemo holds rootSpellings' answers; past maxRootMemo roots it starts again.
+var rootMemo = struct {
+	sync.Mutex
+	m map[string]rootSpelling
+}{}
+
+// maxRootMemo bounds the roots rootMemo keeps, as a server sees many workspaces.
+const maxRootMemo = 1024
+
+type rootSpelling struct {
+	real, disk string
+	at         time.Time
+}
+
+// rootSpellings is root with its links resolved, and that as the disk spells it.
+func rootSpellings(root string) (real, disk string) {
+	rootMemo.Lock()
+	s, ok := rootMemo.m[root]
+	rootMemo.Unlock()
+	if ok && time.Since(s.at) < rootSpellingsFor {
+		return s.real, s.disk
+	}
+	real = tools.RealPath(root)
+	disk = tools.DiskPath(real)
+	rootMemo.Lock()
+	if rootMemo.m == nil || len(rootMemo.m) >= maxRootMemo {
+		rootMemo.m = make(map[string]rootSpelling)
+	}
+	rootMemo.m[root] = rootSpelling{real: real, disk: disk, at: time.Now()}
+	rootMemo.Unlock()
+	return real, disk
 }
 
 // pathRules reports whether any deny, ask or allow rule for tool has a pattern.
@@ -532,7 +768,7 @@ func (e *Engine) pathRules(tool string) bool {
 	deny, ask, allow := e.rules()
 	for _, rules := range [][]Rule{deny, ask, allow} {
 		for _, r := range rules {
-			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+			if r.ForTool(tool) && r.pattern != nil {
 				return true
 			}
 		}
@@ -543,7 +779,31 @@ func (e *Engine) pathRules(tool string) bool {
 // Evaluate applies the ordered decision flow. A prompt shows the command as
 // written; its reason notes continuations the checks joined.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
-	return e.evaluateAs(tool, mutates, args, false)
+	return e.evaluateAs(context.Background(), tool, mutates, args, asCommand)
+}
+
+// EvaluateTyped judges a whole command typed at a terminal that runs with
+// that terminal as its input: a shell it starts reads its start-up files, so
+// they are read under the rules. Every other step is Evaluate's.
+func (e *Engine) EvaluateTyped(tool string, mutates bool, args json.RawMessage) Result {
+	return e.evaluateAs(context.Background(), tool, mutates, args, asTyped)
+}
+
+// readAs is how a bash subject is read: as a command, as a whole command
+// typed at a terminal, or as one line of an interactive shell's input.
+type readAs int
+
+const (
+	asCommand readAs = iota
+	asTyped
+	asLine
+)
+
+// EvaluateContext is Evaluate with the context its hooks are given: a
+// deadline on ctx bounds them, and once it has passed, a decision that needs
+// a hook refuses at once.
+func (e *Engine) EvaluateContext(ctx context.Context, tool string, mutates bool, args json.RawMessage) Result {
+	return e.evaluateAs(ctx, tool, mutates, args, asCommand)
 }
 
 // EvaluateLine judges one line typed at an interactive terminal. The shell
@@ -552,11 +812,11 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 // judged by the text checks alone, not refused for that; every other step
 // is Evaluate's.
 func (e *Engine) EvaluateLine(tool string, mutates bool, args json.RawMessage) Result {
-	return e.evaluateAs(tool, mutates, args, true)
+	return e.evaluateAs(context.Background(), tool, mutates, args, asLine)
 }
 
-func (e *Engine) evaluateAs(tool string, mutates bool, args json.RawMessage, line bool) Result {
-	res := e.evaluate(tool, mutates, args, line)
+func (e *Engine) evaluateAs(ctx context.Context, tool string, mutates bool, args json.RawMessage, as readAs) Result {
+	res := e.evaluate(ctx, tool, mutates, args, as)
 	if res.Decision == Ask && tool == "bash" {
 		// Only a backslash before a newline can be joined; the rest is not parsed again.
 		if _, subject, err := subjectOf(args); err == nil && strings.Contains(subject, "\\\n") && tools.CanonicalCommand(subject).Joined {
@@ -566,9 +826,11 @@ func (e *Engine) evaluateAs(tool string, mutates bool, args json.RawMessage, lin
 	return res
 }
 
-func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line bool) Result {
+func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args json.RawMessage, as readAs) Result {
 	key, subject, err := subjectOf(args)
-	if err != nil {
+	// A subject that is not text is read as its JSON, unless a deny or ask
+	// rule with a pattern is there to read it, which it could not.
+	if err != nil && (!errors.Is(err, errNonStringSubject) || e.rulesSeeParts(tool)) {
 		return Result{Decision: Deny, Reason: err.Error(), Scope: "", Step: "args"}
 	}
 	// Deny and ask rules see each command in a bash chain. A narrow allow rule
@@ -576,12 +838,16 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
 	allowSubjects := []string{subject}
 	var canon tools.Canonical
+	var script scriptRead
 	switch {
 	case tool == "bash":
 		// Every step sees the command as written and as the shell splits it,
 		// continuations joined; an allow rule sees no more than the joined form.
 		canon = tools.CanonicalCommand(subject)
-		if line {
+		switch as {
+		case asTyped:
+			canon = canon.AtTerminal()
+		case asLine:
 			canon = canon.AsTerminalLine()
 		}
 		subjects, complete = commandSegments(subject)
@@ -598,6 +864,14 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		// And the commands a bash parser finds, in function bodies and in the
 		// text eval, trap and -c run, read whole: their quoting is undone.
 		subjects = append(subjects, canon.Commands()...)
+		// And the commands in the scripts it runs, read from where it starts.
+		if e.rulesSeeParts(tool) {
+			script = e.readScripts(canon)
+			subjects = append(subjects, script.subjects...)
+		}
+		// Deny and ask rules also see each program named by a path as its
+		// base name: bash(curl *) holds for /usr/bin/curl x and ./curl x.
+		subjects = withBaseNames(subjects)
 		if canon.Joined && !canon.Reworded {
 			allowSubjects, narrowAllows = []string{canon.Text}, !hasShellControl(canon.Text)
 		}
@@ -605,13 +879,13 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 			narrowAllows = false
 		}
 	case key == "path" && e.pathRules(tool):
-		subjects, allowSubjects = e.pathSubjects(subject)
+		subjects, allowSubjects = e.pathSubjects(subject, e.rulesSeeParts(tool))
 	}
-	// A Kubernetes call is judged on where it goes. Deny and ask rules also
+	// A Kubernetes or ssh call is judged on where it goes. Deny and ask rules also
 	// see the argument its subject used to be, so a rule written on a
 	// resource, a verb or a namespace still holds; allow rules and the
 	// offered scope see only the cluster-first subject.
-	if target, ok := clusterSubject(tool, args); ok {
+	if target, ok := toolSubject(tool, args); ok {
 		subjects, allowSubjects = []string{target}, []string{target}
 		if subject != "" && subject != target {
 			subjects = append(subjects, subject)
@@ -623,12 +897,34 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
 	// steps below, so a hook can never turn a refusal into a question.
 	var hookAsk *Result
-	hooks := e.Hooks
+	hooks := make([]ContextHook, 0, len(e.Hooks)+len(e.EngineHooks)+len(e.ContextHooks))
+	for _, h := range e.Hooks {
+		hooks = append(hooks, func(_ context.Context, tool string, args json.RawMessage) *Result { return h(tool, args) })
+	}
 	for _, bind := range e.EngineHooks {
-		hooks = append(hooks[:len(hooks):len(hooks)], bind(e))
+		h := bind(e)
+		hooks = append(hooks, func(_ context.Context, tool string, args json.RawMessage) *Result { return h(tool, args) })
+	}
+	for _, bind := range e.ContextHooks {
+		hooks = append(hooks, bind(e))
+	}
+	if len(hooks) > 0 {
+		timeout := e.HookTimeout
+		if timeout <= 0 {
+			timeout = DefaultHookTimeout
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	for _, h := range hooks {
-		res := h(tool, args)
+		if ctx.Err() != nil {
+			return hookLate(ctx)
+		}
+		res := h(ctx, tool, args)
+		if (res == nil || res.Decision == Allow) && ctx.Err() != nil {
+			return hookLate(ctx)
+		}
 		if res == nil || res.Decision == Allow {
 			continue
 		}
@@ -647,6 +943,19 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	matches := Rule.matchesAny
 	if key == "path" && tool != "bash" {
 		matches = Rule.matchesPathAny
+		// On a disk that folds case, a rule spelled in another case than the
+		// disk holds still names the same files.
+		if pathFoldsCase(subjects) {
+			matches = func(r Rule, tool string, subjects []string) bool {
+				return r.matchesPathAny(tool, subjects) || r.matchesCaselessAny(tool, subjects)
+			}
+		}
+	}
+	// A bash rule naming flags also holds with them moved or split.
+	if tool == "bash" {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			return r.matchesAny(tool, subjects) || r.matchesFlagsAny(tool, subjects)
+		}
 	}
 	// A Kubernetes call on every namespace, `*`, reads each one: a deny or ask
 	// rule matches it when the rule would match some namespace it covers.
@@ -655,7 +964,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 			if r.matchesAny(tool, subjects) {
 				return true
 			}
-			return (r.tool == tool || r.tool == "*") && r.pattern != nil && globsMeet(r.glob, subject)
+			return r.ForTool(tool) && r.pattern != nil && globsMeet(r.glob, subject)
 		}
 	}
 
@@ -663,7 +972,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	denyRules, askRules, allowRules := e.rules()
 	for _, r := range denyRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw}
+			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw, Layer: r.layer}
 		}
 	}
 	// A program named by an expansion with an operator, ${x%/} or ${x//_/ },
@@ -680,11 +989,14 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 	if canon.Unparsed() && patterned(denyRules, tool) {
 		return Result{Decision: Deny, Reason: "the command cannot be parsed as the shell reads it, so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
 	}
+	if script.refuse != "" && patterned(denyRules, tool) {
+		return Result{Decision: Deny, Reason: "the command runs a script no rule can read (" + script.refuse + "), so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
+	}
 
 	// 2a. Under a changed IFS an expansion's value splits into words no rule
 	// can read; a deny rule must hold in every mode, so this refuses, not asks.
 	if canon.IFSSplit && patterned(denyRules, tool) {
-		return Result{Decision: Deny, Reason: "the command changes IFS and then expands words, so they cannot be checked against the deny rules", Scope: "", Step: "screen"}
+		return Result{Decision: Deny, Reason: ifsReason(canon), Scope: "", Step: "screen"}
 	}
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
@@ -701,17 +1013,26 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		}
 	}
 
+	// 2c'. Naming workspace trust for a nested run asks in every mode; a
+	// prompt, not the control, as a nested abhed ignores the variable anyway.
+	if tool == "bash" && namesTrust(append(subjects, canon.Text)) {
+		return Result{Decision: Ask, Reason: "the command names ABHED_TRUST_WORKSPACE or -trust-workspace, which would trust a workspace for a nested run — always requires confirmation", Scope: "", Step: "ask"}
+	}
+
 	// 2d. A command too long or tangled to split in full may hide a part a
 	// deny or ask rule would match, so no mode or allow rule approves it.
 	if !complete && e.rulesSeeParts(tool) {
 		return Result{Decision: Ask, Reason: "the command is too long or complex to check each part against the rules", Scope: "", Step: "screen"}
+	}
+	if why := firstNonEmpty(script.refuse, script.ask); why != "" {
+		return Result{Decision: Ask, Reason: "the command runs a script that cannot be checked in full against the rules (" + why + ")", Scope: "", Step: "screen"}
 	}
 
 	// 3. Ask rules — force a prompt even if a later allow would match, so they
 	// offer no scope: a remembered one would stop them asking.
 	for _, r := range askRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw}
+			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw, Layer: r.layer}
 		}
 	}
 
@@ -739,7 +1060,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		}
 	case ModeBypass:
 		if e.Managed {
-			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy", Scope: "", Step: "mode"}
+			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy (" + managed.ConfigFile + "), so this asks as in default mode", Scope: "", Step: "mode"}
 		}
 		return Result{Decision: Allow, Reason: "bypass mode", Scope: "", Step: "mode"}
 	case ModeAcceptEdits:
@@ -758,21 +1079,80 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line 
 		}
 	}
 
-	// 5. Allow rules.
+	// 5. Allow rules. A git option that writes a file or runs a program is
+	// approved only by a rule naming the command exactly, or allowing every one.
+	gitRuns := ""
+	if tool == "bash" {
+		gitRuns = canon.GitRunsOrWrites()
+	}
 	for _, r := range allowRules {
+		if gitRuns != "" && !r.matchesEverything() && strings.ContainsAny(r.glob, "*?") {
+			continue
+		}
 		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
-			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw}
+			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw, Layer: r.layer}
 		}
 	}
 
 	// 6. Default: read-only tools proceed, mutations ask.
 	if why := e.readOnlyAsk(tool, subject); why != "" && !mutates {
-		return Result{Decision: Ask, Reason: why, Scope: suggestScope(tool, subject), Step: "default"}
+		return e.defaultAsk(tool, subject, why)
 	}
 	if !mutates {
 		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
 	}
-	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+	why := askReason(tool, e.Mode)
+	if gitRuns != "" {
+		why += " (" + gitRuns + ", so no allow rule with a wildcard approves it)"
+	}
+	return e.defaultAsk(tool, subject, why)
+}
+
+// defaultAsk is the default step's question, with the scope it offers, or,
+// when it offers none, the rule a person could add to allow the command.
+func (e *Engine) defaultAsk(tool, subject, why string) Result {
+	res := Result{Decision: Ask, Reason: why, Scope: e.suggestScope(tool, subject), Step: "default"}
+	if res.Scope == "" {
+		if res.Suggest = suggestRule(tool, subject); res.Suggest != "" {
+			res.Reason += " (to always allow exactly this, add " + res.Suggest + " to permissions.allow)"
+		}
+	}
+	return e.guarded(res)
+}
+
+// trustWords are spellings that trust a workspace for a nested run.
+var trustWords = []string{"abhed_trust_workspace", "trust-workspace", "trust_workspace"}
+
+// namesTrust reports a command text naming workspace trust, in any case.
+func namesTrust(texts []string) bool {
+	for _, t := range texts {
+		lower := strings.ToLower(t)
+		for _, w := range trustWords {
+			if strings.Contains(lower, w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hookLate is the refusal of a call whose hooks did not all decide before
+// the decision's deadline: a hook's veto must not be skipped for being slow.
+func hookLate(ctx context.Context) Result {
+	why := "the policy hooks did not decide before the deadline"
+	if errors.Is(ctx.Err(), context.Canceled) {
+		why = "the decision was cancelled before the policy hooks decided"
+	}
+	return Result{Decision: Deny, Reason: why + ", so the call is refused", Step: "hook"}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // sessionControl names tools that change only the session's own background
@@ -819,7 +1199,7 @@ func askReason(tool string, mode Mode) string {
 
 // suggestScope proposes a narrow "always allow" rule for the approval prompt.
 // Narrow by construction: allowing `git commit *` must never allow `rm`.
-func suggestScope(tool, subject string) string {
+func (e *Engine) suggestScope(tool, subject string) string {
 	if subject == "" {
 		return tool
 	}
@@ -834,8 +1214,12 @@ func suggestScope(tool, subject string) string {
 			return tool
 		}
 		fields[0] = tools.CommandName(fields[0])
+		// A scope is a wildcard rule, which would not approve the call it was offered for.
+		if tools.CanonicalCommand(subject).GitRunsOrWrites() != "" {
+			return ""
+		}
 		prefix := bashScope(fields)
-		if prefix == "" {
+		if prefix == "" || !e.resolvesOutsideRoots(fields[0]) {
 			return ""
 		}
 		return fmt.Sprintf("%s(%s *)", tool, prefix)
@@ -878,4 +1262,25 @@ func globsMeet(a, b string) bool {
 		return ok
 	}
 	return meet(0, 0)
+}
+
+// ifsReason says why a command whose expansions IFS may split is refused:
+// it sets IFS where the text shows it, or runs built text that could.
+func ifsReason(canon tools.Canonical) string {
+	const tail = ", so the words that run cannot be checked against the deny rules"
+	switch {
+	case canon.IFS != "":
+		return "the command changes IFS and then expands words" + tail
+	case canon.IFSCause == tools.IFSByLoop:
+		return "the command sets IFS in a for loop and then expands words" + tail
+	case canon.IFSCause == tools.IFSByArithmetic:
+		return "the command sets IFS by arithmetic and then expands words" + tail
+	case canon.IFSCause == tools.IFSByName:
+		return "the command sets IFS to a value its text does not show and then expands words" + tail
+	case canon.IFSCause == tools.IFSByUnparsed:
+		return "the command cannot be parsed as the shell reads it, so where it sets IFS is not known" + tail
+	default:
+		return "the command runs text built from an expansion (given to eval, a shell's -c or a command that sets variables by name), " +
+			"which could set IFS and split its words" + tail
+	}
 }

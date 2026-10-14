@@ -51,6 +51,11 @@ type Postgres struct {
 
 	owners        OwnerPolicy
 	ownerAccounts func() ([]*auth.User, error)
+
+	// keys caches the payload ciphers of sessions written lately; see seal.go.
+	keys keyCache
+	// anchor is given a session's chain head at each run's end.
+	anchor func(tenant, session string, pos int64, hash string)
 }
 
 type Config struct {
@@ -74,6 +79,10 @@ type Config struct {
 	// the local accounts kept outside the users table. Called only when the
 	// migration runs; its error stops the start.
 	OwnerAccounts func() ([]*auth.User, error)
+	// Anchor, when set, is given a session's event chain head (its last
+	// position and hash) at the end of each run, for a witness outside the
+	// database. It must not block; an error it has is its own to report.
+	Anchor func(tenant, session string, pos int64, hash string)
 }
 
 func DefaultConfig(dsn string) Config {
@@ -140,7 +149,8 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"(see docs/guide/02-configuration.md)")
 	}
 
-	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts}
+	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts,
+		anchor: cfg.Anchor}
 	if cfg.SingleRole {
 		if err := p.Migrate(ctx); err != nil {
 			pool.Close()
@@ -228,7 +238,9 @@ SET LOCAL lock_timeout = '100ms';
 DO $$
 DECLARE t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version'] LOOP
+  FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version',
+                           'sandboxes', 'sandbox_idempotency', 'sandbox_audit',
+                           'sandbox_templates', 'owner_changes', 'session_keys'] LOOP
     IF to_regclass(t) IS NOT NULL THEN
       EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE NOWAIT', t);
     END IF;
@@ -285,6 +297,9 @@ func applySchemaOnce(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func (p *Postgres) Close() { p.pool.Close() }
+
+// Ping reports whether the database answers, for a readiness probe.
+func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
 // CreateSession records a session before its first event. Events reference
 // sessions, so this must happen first.
@@ -377,7 +392,7 @@ const SubagentUser = auth.Subagent
 func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
 		ID: id, Tenant: p.tenant, User: SubagentUser,
-		Workspace: description, Model: "subagent", Mode: "auto",
+		Workspace: description, Model: "subagent", Mode: agent.SubagentMode(ctx, "auto"),
 		ParentID: parentID, StartedAt: time.Now().UTC(),
 	})
 }
@@ -411,7 +426,7 @@ func (p *Postgres) HeldBy(holder string, refused func(sessionID string)) *Held {
 // Otherwise it answers ErrNotHolder and takes no seq.
 func (h *Held) Append(ev agent.Event) error {
 	err := h.appendAs(ev, h.holder)
-	if errors.Is(err, ErrNotHolder) && h.refused != nil {
+	if (errors.Is(err, ErrNotHolder) || errors.Is(err, ErrSessionDeleted)) && h.refused != nil {
 		h.refused(leaseSession(ev))
 	}
 	return err
@@ -433,16 +448,27 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Sealed with the session's key, so deleting the key erases it.
+	stored := []byte(ev.Payload)
+	if a, err := p.sealer(ctx, ev.SessionID); err != nil {
+		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
+	} else if a != nil {
+		if stored, err = sealPayload(a, ev.SessionID, ev.Seq, stored); err != nil {
+			return fmt.Errorf("append event %s/%d: seal: %w", ev.SessionID, ev.Seq, err)
+		}
+	}
+
 	var tag pgconn.CommandTag
 	var err error
 	if holder == "" {
 		tag, err = p.pool.Exec(ctx, `
 			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
 			                    payload, actor, trust, created_at)
-			VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
+			SELECT $1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10
+			WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE id = $2 AND deleted_at IS NOT NULL)
 			ON CONFLICT (session_id, seq) DO NOTHING`,
 			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
-			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt)
+			stored, string(ev.Actor), string(ev.Trust), ev.CreatedAt)
 	} else {
 		tag, err = p.pool.Exec(ctx, `
 			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
@@ -453,7 +479,7 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 			                AND (s.node_id = $12 OR (s.node_id IS NULL AND s.ended_at IS NULL)))
 			ON CONFLICT (session_id, seq) DO NOTHING`,
 			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
-			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt,
+			stored, string(ev.Actor), string(ev.Trust), ev.CreatedAt,
 			leaseSession(ev), holder)
 	}
 	if err != nil {
@@ -465,6 +491,9 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
 	if tag.RowsAffected() == 0 {
+		if err := p.deletedErr(ctx, ev.SessionID); err != nil {
+			return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
+		}
 		if holder != "" {
 			var mine bool
 			if err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions s
@@ -574,6 +603,12 @@ func (p *Postgres) finalizeSession(ctx context.Context, ev agent.Event) {
 		ev.SessionID, endedAt, string(ended.Reason), ended.Turns,
 		ended.TokensIn, ended.TokensOut, ended.TokensCached, ended.Compactions,
 		ctxTokens, ctxWindow)
+	// Each run's end is a head worth keeping outside the database.
+	if p.anchor != nil {
+		if pos, h, err := p.chainHead(ctx, ev.SessionID); err == nil && pos > 0 {
+			p.anchor(p.tenant, ev.SessionID, pos, h)
+		}
+	}
 }
 
 // truncatePrompt bounds what goes in the label column.
@@ -610,6 +645,7 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 	defer rows.Close()
 
 	var out []agent.Event
+	keys := p.readKeys()
 	for rows.Next() {
 		var ev agent.Event
 		var payload []byte
@@ -621,6 +657,9 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
+		if payload, err = keys.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+			return nil, err
+		}
 		ev.Payload = payload
 		out = append(out, ev)
 	}
@@ -694,6 +733,9 @@ func (p *Postgres) GetSession(ctx context.Context, id string) (SessionRecord, er
 
 var ErrNotFound = errors.New("not found")
 
+// ErrSessionDeleted refuses a write to a deleted session.
+var ErrSessionDeleted = errors.New("the session was deleted")
+
 // ErrStepTaken is an append of a different event at a step already recorded.
 var ErrStepTaken = agent.ErrStepTaken
 
@@ -721,9 +763,9 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 func (h *Held) ClaimResume(ctx context.Context, sessionID string) (bool, error) {
 	tag, err := h.pool.Exec(ctx, `
 		UPDATE sessions SET ended_at = NULL, terminal_reason = NULL, node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL
+		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL AND node_id IS DISTINCT FROM $4
 		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
-		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String())
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String(), Parked)
 	if err != nil {
 		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
 	}
@@ -776,6 +818,12 @@ func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, st
 	return tag.RowsAffected() == 1, nil
 }
 
+// Parked is a holder no process runs under. A session an edition parks
+// under it is written by no process, and ClaimNode and ClaimResume never
+// take it: only the edition's own claim does, or ClaimOrphan once its last
+// write is stale.
+const Parked = "parked"
+
 // randomID is the unguessable half of an approval id. An id that appears in
 // a URL should not be derivable from the session it belongs to.
 func randomID() (string, error) {
@@ -790,8 +838,12 @@ func randomID() (string, error) {
 
 // Approval is a request for a human decision, and the decision when it comes.
 type Approval struct {
-	ID         string
-	SessionID  string
+	ID        string
+	SessionID string
+	// RequestID is the action.requested event the row asks about, so a node
+	// that is not running the session can check an answer bound to it.
+	// Empty on rows written before 1.2.8.
+	RequestID  string
 	Tool       string
 	Args       []byte
 	Reason     string
@@ -822,9 +874,9 @@ func (p *Postgres) AskApproval(ctx context.Context, a Approval) (string, error) 
 		args = []byte("{}")
 	}
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO approvals (id, session_id, tenant_id, tool, args, reason, scope)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		id, a.SessionID, p.tenant, a.Tool, args, a.Reason, a.Scope)
+		INSERT INTO approvals (id, session_id, tenant_id, tool, args, reason, scope, request_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		id, a.SessionID, p.tenant, a.Tool, args, a.Reason, a.Scope, a.RequestID)
 	if err != nil {
 		return "", fmt.Errorf("ask approval for %s: %w", a.SessionID, err)
 	}
@@ -860,11 +912,11 @@ func (p *Postgres) EndApproval(ctx context.Context, id string) error {
 func (p *Postgres) PendingApproval(ctx context.Context, sessionID string) (Approval, bool, error) {
 	var a Approval
 	err := p.pool.QueryRow(ctx, `
-		SELECT id, session_id, tool, args, reason, scope, asked_at, ended_at IS NOT NULL
+		SELECT id, session_id, request_id, tool, args, reason, scope, asked_at, ended_at IS NOT NULL
 		FROM approvals
 		WHERE session_id = $1 AND answered_at IS NULL
 		ORDER BY asked_at DESC LIMIT 1`, sessionID).
-		Scan(&a.ID, &a.SessionID, &a.Tool, &a.Args, &a.Reason, &a.Scope, &a.AskedAt, &a.Ended)
+		Scan(&a.ID, &a.SessionID, &a.RequestID, &a.Tool, &a.Args, &a.Reason, &a.Scope, &a.AskedAt, &a.Ended)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, false, nil
 	}
@@ -940,13 +992,14 @@ var ErrHeldElsewhere = errors.New("the session is held by another process")
 //
 // It never takes a session from another live holder: the row must hold no
 // one, this node, or a holder whose claim is older than HolderStale (a
-// process that went away). Otherwise it answers ErrHeldElsewhere.
+// process that went away). Otherwise it answers ErrHeldElsewhere. A row
+// parked (Parked) is never taken here.
 func (p *Postgres) ClaimNode(ctx context.Context, sessionID, nodeID string) error {
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND deleted_at IS NULL
+		WHERE id = $1 AND deleted_at IS NULL AND node_id IS DISTINCT FROM $4
 		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
-		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String())
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String(), Parked)
 	if err != nil {
 		return fmt.Errorf("claim node for %s: %w", sessionID, err)
 	}
@@ -1020,13 +1073,13 @@ func (p *Postgres) NodeFor(ctx context.Context, sessionID string, stale time.Dur
 	return *node, nil
 }
 
-// DeleteSession marks a session deleted. The transcript rows stay — the events
-// table refuses DELETE by trigger, and that refusal is a property the
-// deployment promised — but Events, ListSessions and GetSession all treat a
-// marked session as absent from then on, which is what the person who pressed
-// delete needed: nothing reads it through the API again. The marking is not
-// a second delete path around the audit log; it is the audit log recording
-// that a delete happened, and by whom.
+// DeleteSession marks a session deleted and erases what it said. The
+// transcript rows stay — the events table refuses DELETE by trigger, and that
+// refusal is a property the deployment promised — but the session's key is
+// deleted, so its sealed payloads and pre-images can no longer be opened, and
+// its label, title and pending approvals' arguments are cleared. Events,
+// ListSessions and GetSession treat it as absent from then on. What stays is
+// that each step happened, when, by whom, and its hash.
 //
 // Deleting a session that is already deleted, or that belongs to another
 // tenant (RLS makes it invisible), is not an error: the caller asked for a
@@ -1036,26 +1089,61 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 	defer cancel()
 	// The session's subagents go with it: their records hold its work. They
 	// are marked the same way, so their rows stay for the audit too.
-	_, err := p.pool.Exec(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
 		WITH RECURSIVE tree(id) AS (
 			SELECT id FROM sessions WHERE id = $1
 			UNION
 			SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
 		)
-		UPDATE sessions SET deleted_at = now(), deleted_by = user_id
-		WHERE id IN (SELECT id FROM tree) AND deleted_at IS NULL`, sessionID)
+		SELECT id FROM tree`, sessionID)
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	for _, q := range []string{
+		`UPDATE sessions SET deleted_at = now(), deleted_by = user_id WHERE id = ANY($1) AND deleted_at IS NULL`,
+		`UPDATE sessions SET prompt = '', title = '' WHERE id = ANY($1)`,
+		`UPDATE approvals SET args = '{}'::jsonb, reason = '' WHERE session_id = ANY($1)`,
+		`DELETE FROM session_keys WHERE session_id = ANY($1)`,
+	} {
+		if _, err := tx.Exec(ctx, q, ids); err != nil {
+			return fmt.Errorf("delete session %s: %w", sessionID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	for _, id := range ids {
+		p.keys.drop(id)
 	}
 	return nil
 }
 
 // SaveCheckpoint records a file's prior content, backing /undo.
 func (p *Postgres) SaveCheckpoint(ctx context.Context, sessionID string, seq int64, path string, before []byte) error {
-	_, err := p.pool.Exec(ctx, `
+	a, err := p.sealer(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if before, err = sealBlob(a, sessionID, seq, before); err != nil {
+		return err
+	}
+	tag, err := p.pool.Exec(ctx, `
 		INSERT INTO checkpoints (id, session_id, tenant_id, event_seq, path, before)
-		VALUES ($1,$2,$3,$4,$5,$6)`,
+		SELECT $1,$2,$3,$4,$5,$6
+		WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE id = $2 AND deleted_at IS NOT NULL)`,
 		fmt.Sprintf("%s-%d", sessionID, seq), sessionID, p.tenant, seq, path, before)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = fmt.Errorf("session %s: %w", sessionID, ErrSessionDeleted)
+	}
 	return err
 }
 
@@ -1114,6 +1202,8 @@ func (p *Postgres) Scan(ctx context.Context, from, to time.Time, fn func(agent.E
 		return fmt.Errorf("scan events: %w", err)
 	}
 	defer rows.Close()
+	// A deleted session's events stay, for the chain, and open as erased.
+	keys := p.readKeys()
 	for rows.Next() {
 		var ev agent.Event
 		var payload []byte
@@ -1125,6 +1215,9 @@ func (p *Postgres) Scan(ctx context.Context, from, to time.Time, fn func(agent.E
 		ev.Type = agent.EventType(typ)
 		ev.Actor = agent.Actor(actor)
 		ev.Trust = agent.Trust(trust)
+		if payload, err = keys.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
+			return err
+		}
 		ev.Payload = payload
 		if err := fn(ev); err != nil {
 			return err

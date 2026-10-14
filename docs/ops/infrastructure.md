@@ -5,6 +5,13 @@ files. All are **off by default**: reaching a cluster, a VM, or a corpus is an
 authorization decision, and credentials already sitting on the machine are not
 a reason to hand them to an agent unasked.
 
+Under `sandbox.network: "allowlist"`, the Kubernetes and SSH tools and RAG
+over HTTP are judged by the `egress` rules, recorded as kinds `k8s`, `ssh`
+and `rag`: add an allow rule for each cluster, host and corpus
+([Network policy](../guide/21-network-policy.md)). A kubeconfig's credential
+helper gets only what a program needs to run, plus the variables cloud
+sign-in tools read.
+
 ## Kubernetes
 
 ```json
@@ -104,11 +111,13 @@ A login belongs to the conversation that made it, and to that
 conversation's subagents, in the console as in the terminal. Another
 session on the same server, another user's included, keeps using the
 operator's kubeconfig. Log in again in a new session, after a server
-restart, and in the terminal after `/clear`, `/resume` or a fork: each
-starts a conversation with no logins and no connected hosts, and the last
-one's are closed. An embedded agent is one conversation: its logins and
-hosts are closed by the SDK's `Close` and `Fork`, by a new `start` on `abhed
-rpc`, and when an `abhed acp` connection ends. A resumed or forked
+restart, and in the terminal after `/clear` or `/resume`: each starts a
+conversation with no logins and no connected hosts, and the last one's are
+closed. A fork (`/fork`, `/rewind`, the SDK's `Fork`) keeps the logins and
+hosts made before the step it goes on from, and closes the ones made after
+it, since the turns that made them are gone. An embedded agent is one
+conversation: its logins and hosts are closed by the SDK's `Close`, by a new
+`start` on `abhed rpc`, and when an `abhed acp` connection ends. A resumed or forked
 conversation's `k8s_get` and `k8s_apply` that name no `cluster` fall back
 to the operator's kubeconfig until it logs in again, even where its
 history shows a login. The secret itself is the operator's:
@@ -255,8 +264,11 @@ connection works, and registers the host **for that conversation only**.
 Nothing is written to `~/.ssh/config`. Another session on the same server
 cannot run on it or see its name, and in the terminal `/clear`, `/resume` and
 a fork close it; connect again there. A name an `ssh.hosts` entry uses, in any case, cannot
-be taken, and names are plain ASCII. That does not stop every look-alike:
-`pr0d` or `buiId1` still pass beside `prod` and `build1`. The approval for
+be taken, and names are plain ASCII. Nor can one that reads like it once
+look-alike characters are read as one (`0` as `o`, `1`, `I` and `i` as `l`,
+`5` as `s`, `rn` as `m`, and the like) and `-`, `_` and `.` are dropped:
+`pr0d`, `pr-od` and `buiId1` are refused beside `prod` and `build1`. No list
+covers every look-alike, so the name is not the control. The approval for
 each `ssh` command names the account and address it runs on, as
 `runs as user@addr`, and says whether the host was declared by the operator
 or added in this session; that address, not the name, is what to check.
@@ -308,6 +320,20 @@ rather than the consequence.
 
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.
+
+### Rules on a host
+
+Permission rules and "always allow" read an `ssh` call as `host/command`,
+so a rule or an answer for one host never covers another:
+`ssh(build1/*)` allows every command on `build1` and nothing elsewhere, and
+"don't ask again" for `uptime` on `build1` offers `ssh(build1/uptime)`.
+Deny and ask rules also read the command alone, so `ssh(rm *)` still stops
+`rm` on every host.
+
+```json
+"deny":  ["ssh(db1/*)", "ssh(rm *)"],
+"allow": ["ssh(build1/uptime)"]
+```
 
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment

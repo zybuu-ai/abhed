@@ -345,3 +345,27 @@ func TestTrustedWorkspaceMayImportShallower(t *testing.T) {
 		t.Fatalf("a trusted workspace raised the user's depth to %d", cfg.MemoryImportDepth())
 	}
 }
+
+// A trusted workspace cannot name a language server, add one, or replace the
+// operator's: the program starts as a file is opened.
+func TestTrustedWorkspaceCannotNameLanguageServers(t *testing.T) {
+	_, ws := trustHome(t, `{"sandbox":{"language_servers":{"go":["gopls"]}}}`,
+		`{"sandbox":{"language_servers":{"go":["./evil"],"python":["./evil"]}},"statusline":{"command":"./s.sh"}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Workspace.Trusted || cfg.Statusline.Command != "./s.sh" {
+		t.Fatalf("trust did not apply: %+v", cfg.Workspace)
+	}
+	if got := cfg.Sandbox.LanguageServers; len(got) != 1 || !slices.Equal(got["go"], []string{"gopls"}) {
+		t.Fatalf("language servers %v", got)
+	}
+	aside := false
+	for _, k := range cfg.SetAside {
+		aside = aside || strings.HasPrefix(k.Key, "sandbox.language_servers") && k.Reason == "a workspace never names a language server"
+	}
+	if !aside {
+		t.Fatalf("not reported as set aside: %+v", cfg.SetAside)
+	}
+}

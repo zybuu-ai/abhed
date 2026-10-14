@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -102,7 +103,7 @@ func TestToolRules(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("%q", got)
 	}
-	if j := joinRules("bash(ls*)", "Grep"); j != "bash(ls*),grep" {
+	if j := joinRules([]string{"bash(ls*)"}, []string{"Grep"}); !slices.Equal(j, []string{"bash(ls*)", "grep"}) {
 		t.Fatalf("%q", j)
 	}
 }
@@ -189,7 +190,7 @@ func TestSkipPermissionsTakesEffectAfterYes(t *testing.T) {
 	if err := skipPermissions(cfg, f, func(config.Config) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	got, err := applyFlags(cfg, f.mode, 0, "", "", "")
+	got, err := applyFlags(cfg, f.mode, 0, nil, nil, nil)
 	if err != nil || got.Permissions.Mode != "bypass" {
 		t.Fatalf("mode %q %v", got.Permissions.Mode, err)
 	}
@@ -205,7 +206,7 @@ func TestSkipPermissionsTakesEffectAfterYes(t *testing.T) {
 // A comma inside a rule's parentheses stays in the rule, through the join
 // and the split, in either spelling.
 func TestRulesKeepCommasInParentheses(t *testing.T) {
-	got, err := applyFlags(config.Default(), "", 0, joinRules("bash(echo x,y)", "Bash(git push origin a,b),Read"), "", "")
+	got, err := applyFlags(config.Default(), "", 0, joinRules([]string{"bash(echo x,y)"}, []string{"Bash(git push origin a,b),Read"}), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +214,37 @@ func TestRulesKeepCommasInParentheses(t *testing.T) {
 		if !slices.Contains(got.Permissions.Allow, want) {
 			t.Errorf("no %q in %q", want, got.Permissions.Allow)
 		}
+	}
+}
+
+// A repeated rule flag adds to the earlier ones, in either spelling, and each
+// value is split on its own.
+func TestRuleFlagsAccumulate(t *testing.T) {
+	f := parse(t, "-allow", "bash(go test*)", "-allow", "read,grep", "-allowedTools", "Edit", "-allowed-tools", "Bash(npm test:*)",
+		"-deny", "bash(curl*)", "-deny", "bash(wget*)", "-disallowedTools", "WebFetch", "-disallowed-tools", "Bash(nc:*)")
+	if got, want := joinRules(f.allow, f.allowedTools), []string{"bash(go test*)", "read", "grep", "edit", "bash(npm test*)"}; !slices.Equal(got, want) {
+		t.Errorf("allow %q, want %q", got, want)
+	}
+	if got, want := joinDenyRules(f.deny, f.disallowedTools), []string{"bash(curl*)", "bash(wget*)", "web_fetch", "bash(nc*)"}; !slices.Equal(got, want) {
+		t.Errorf("deny %q, want %q", got, want)
+	}
+	f = parse(t, "-allow", "bash(echo a", "-allow", "b)")
+	if got := joinRules(f.allow, nil); !slices.Equal(got, []string{"bash(echo a", "b)"}) {
+		t.Errorf("two values made one rule: %q", got)
+	}
+}
+
+// -add-dir and mcp add's -allow-tools add each value's list too.
+func TestListFlagsAccumulate(t *testing.T) {
+	if got := splitLists(parse(t, "-add-dir", "/a,/b", "-add-dir", "/c").addDirs); !slices.Equal(got, []string{"/a", "/b", "/c"}) {
+		t.Errorf("add-dir %q", got)
+	}
+	s, err := parseMCPAdd([]string{"-allow-tools", "search,read", "-allow-tools", "list", "docs", "node", "server.js"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.AllowTools, []string{"search", "read", "list"}) {
+		t.Errorf("allow-tools %q", s.AllowTools)
 	}
 }
 

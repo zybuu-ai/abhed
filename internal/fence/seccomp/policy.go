@@ -11,21 +11,23 @@ import (
 const Profile = "command/3"
 
 // ErrUnsupported is returned by Install where the filter cannot be applied.
-var ErrUnsupported = errors.New("seccomp: the fence's system-call filter needs Linux on amd64 or arm64")
+var ErrUnsupported = errors.New("seccomp: the fence's system-call filter needs Linux on amd64, arm64 or s390x")
 
 // Policy is the filter for one command.
 type Policy struct {
 	// AllowNetwork lets the command create inet, inet6 and route netlink
-	// sockets, reaching the host's network unfiltered. Off, socket() is
-	// refused for every family. Unix sockets are refused either way, since
-	// they reach host daemons that no file rule can stop; socketpair() is
-	// allowed either way.
+	// sockets, reaching the host's network unfiltered. Unix sockets, which
+	// reach host daemons no file rule stops, are refused either way.
 	AllowNetwork bool
+	// ProxyOnly, for the egress allowlist, allows inet and inet6 stream
+	// sockets alone, which Landlock then lets connect only to the proxy's port.
+	ProxyOnly bool
+	// Socketcall, with AllowNetwork, allows socketcall(SOCKET) where the
+	// architecture has it: the family is behind a pointer the filter cannot
+	// read, so unix sockets are reachable through it.
+	Socketcall bool
 	// Abhed is the process id of the Abhed that launches the command, and
-	// AbhedGroup its process group. Signals aimed at either are refused:
-	// kill, tgkill, tkill and the queued forms naming that process, kill of
-	// its group or of every process, and pidfd_send_signal, whose target a
-	// filter cannot read.
+	// AbhedGroup its process group. Signals aimed at either are refused.
 	Abhed      int
 	AbhedGroup int
 }
@@ -39,12 +41,13 @@ func Command(allowNetwork bool, abhed, abhedGroup int) Policy {
 type cond int
 
 const (
-	always  cond = iota // the call is refused outright
-	maskSet             // refused when arg & k != 0
-	below               // refused when arg < k
-	equal               // refused when arg == k
-	family              // socket: refused unless inet, inet6 or route netlink
-	oneOf               // refused when arg equals any of ks
+	always     cond = iota // the call is refused outright
+	maskSet                // refused when arg & k != 0
+	below                  // refused when arg < k
+	equal                  // refused when arg == k
+	family                 // socket: refused unless inet, inet6 or route netlink
+	oneOf                  // refused when arg equals any of ks
+	streamInet             // socket: refused unless an inet or inet6 stream socket
 )
 
 type rule struct {
@@ -68,6 +71,8 @@ const (
 	afInet6         = 10
 	afNetlink       = 16
 	netlinkRoute    = 0
+	ipprotoTCP      = 6
+	sysSocket       = 1 // socketcall's call number for socket
 	prSetSeccomp    = 22
 	seccompGetOpMin = 2 // SECCOMP_GET_ACTION_AVAIL; lower ops install a filter or strict mode
 )
@@ -80,15 +85,21 @@ func eperm(group string, names ...string) []rule {
 	return rs
 }
 
-// rules is the profile, in the order the filter tests them.
-func (p Policy) rules() []rule {
+// rules is the profile on one architecture, in the order the filter tests
+// them.
+func (p Policy) rules(info archInfo) []rule {
 	var rs []rule
 	rs = append(rs, eperm("process tampering", "ptrace", "process_vm_readv", "process_vm_writev", "kcmp", "pidfd_getfd")...)
 	rs = append(rs, eperm("namespaces", "unshare", "setns")...)
 	rs = append(rs,
-		rule{group: "namespaces", name: "clone", errno: errEPERM, cond: maskSet, arg: 0, k: cloneNamespaceFlags, note: "clone with namespace flags"},
+		rule{group: "namespaces", name: "clone", errno: errEPERM, cond: maskSet, arg: info.cloneFlags, k: cloneNamespaceFlags, note: "clone with namespace flags"},
 		rule{group: "namespaces", name: "clone3", errno: errENOSYS, note: "clone3 with ENOSYS, so the C library falls back to clone"})
-	rs = append(rs, eperm("mounts", "mount", "umount2", "open_tree", "open_tree_attr", "move_mount",
+	mounts := []string{"mount", "umount2"}
+	if info.umount {
+		mounts = append(mounts, "umount")
+	}
+	rs = append(rs, eperm("mounts", mounts...)...)
+	rs = append(rs, eperm("mounts", "open_tree", "open_tree_attr", "move_mount",
 		"fsopen", "fsconfig", "fsmount", "fspick", "mount_setattr", "pivot_root", "chroot")...)
 	rs = append(rs, eperm("kernel interfaces", "bpf", "perf_event_open", "userfaultfd",
 		"io_uring_setup", "io_uring_enter", "io_uring_register")...)
@@ -112,22 +123,37 @@ func (p Policy) rules() []rule {
 		rule{group: "signals to Abhed", name: "rt_sigqueueinfo", errno: errEPERM, cond: oneOf, arg: 0, ks: []uint32{pid}, note: "rt_sigqueueinfo of it"},
 		rule{group: "signals to Abhed", name: "rt_tgsigqueueinfo", errno: errEPERM, cond: oneOf, arg: 0, ks: []uint32{pid}, note: "rt_tgsigqueueinfo of it"},
 		rule{group: "signals to Abhed", name: "pidfd_send_signal", errno: errEPERM, note: "pidfd_send_signal to any process"})
-	if p.AllowNetwork {
+	switch {
+	case p.ProxyOnly:
+		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: streamInet,
+			note: "socket other than an inet or inet6 TCP stream, unix, UDP, MPTCP and SCTP included; socketpair allowed"})
+	case p.AllowNetwork:
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: family,
 			note: "socket families other than inet, inet6 and route netlink, unix included; socketpair allowed"})
-	} else {
+	default:
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM,
 			note: "socket for every family; socketpair allowed"})
+	}
+	if info.socketcall && (!p.AllowNetwork || !p.Socketcall || p.ProxyOnly) {
+		// Its arguments are behind a pointer the filter cannot read, so the
+		// family is unknown: refused in both modes.
+		rs = append(rs, rule{group: "sockets", name: "socketcall", errno: errEPERM, cond: equal, arg: 0, k: sysSocket,
+			note: "socketcall creating a socket of any family, whose family the filter cannot read"})
 	}
 	return rs
 }
 
-// Program assembles the policy's filter for a Go architecture, amd64 or arm64.
+// Program assembles the policy's filter for a Go architecture: amd64, arm64
+// or s390x.
 func (p Policy) Program(arch string) (Program, error) {
 	if p.Abhed <= 1 {
 		return nil, fmt.Errorf("seccomp: the filter needs Abhed's process id, not %d", p.Abhed)
 	}
-	return build(arch, p.rules())
+	info, ok := arches[arch]
+	if !ok {
+		return nil, fmt.Errorf("seccomp: no system-call table for %s", arch)
+	}
+	return build(arch, p.rules(info))
 }
 
 func build(arch string, rules []rule) (Program, error) {
@@ -160,19 +186,19 @@ func build(arch string, rules []rule) (Program, error) {
 			a.mark(next)
 			continue
 		case maskSet:
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			a.jump(opJset, r.k, deny, allow)
 		case below:
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			a.jump(opJge, r.k, allow, deny)
 		case equal:
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			a.jump(opJeq, r.k, deny, allow)
 		case oneOf:
 			if len(r.ks) == 0 {
 				return nil, fmt.Errorf("seccomp: rule %q compares with nothing", r.name)
 			}
-			a.ld(offArg(r.arg))
+			a.ld(info.argLow(r.arg))
 			for j, k := range r.ks {
 				if j == len(r.ks)-1 {
 					a.jump(opJeq, k, deny, allow)
@@ -180,12 +206,25 @@ func build(arch string, rules []rule) (Program, error) {
 					a.jump(opJeq, k, deny, "")
 				}
 			}
+		case streamInet:
+			a.ld(info.argLow(0))
+			a.jump(opJeq, afInet, fmt.Sprintf("%d.type", i), "")
+			a.jump(opJeq, afInet6, fmt.Sprintf("%d.type", i), deny)
+			a.mark(fmt.Sprintf("%d.type", i))
+			// The type's low nibble is 1 for a stream and has another bit set for every other.
+			a.ld(info.argLow(1))
+			a.jump(opJset, 0xe, deny, fmt.Sprintf("%d.proto", i))
+			// MPTCP and SCTP streams pass Landlock's TCP port rules, so only TCP is allowed.
+			a.mark(fmt.Sprintf("%d.proto", i))
+			a.ld(info.argLow(2))
+			a.jump(opJeq, 0, allow, "")
+			a.jump(opJeq, ipprotoTCP, allow, deny)
 		case family:
-			a.ld(offArg(0))
+			a.ld(info.argLow(0))
 			a.jump(opJeq, afInet, allow, "")
 			a.jump(opJeq, afInet6, allow, "")
 			a.jump(opJeq, afNetlink, "", deny)
-			a.ld(offArg(2))
+			a.ld(info.argLow(2))
 			a.jump(opJeq, netlinkRoute, allow, deny)
 		default:
 			return nil, fmt.Errorf("seccomp: rule %q has an unknown condition", r.name)
@@ -227,7 +266,7 @@ func (p Policy) describe(arch string) string {
 			groups = append(groups, group+" ("+strings.Join(names, ", ")+")")
 		}
 	}
-	for _, r := range p.rules() {
+	for _, r := range p.rules(arches[arch]) {
 		if r.group != group {
 			flush()
 			group, names = r.group, nil
@@ -242,6 +281,9 @@ func (p Policy) describe(arch string) string {
 	s := fmt.Sprintf("seccomp %s on linux/%s, network %s: kills other architectures", Profile, arch, network)
 	if arches[arch].x32 {
 		s += " and x32"
+	}
+	if arch == "s390x" {
+		s += ", 31-bit s390 included"
 	}
 	s += "; refuses with EPERM " + strings.Join(groups, "; ")
 	return s + fmt.Sprintf("; %d instructions, sha256 %s", len(prog), prog.Digest())

@@ -106,7 +106,7 @@ func (s *Server) forkSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "that step is not a message of yours in the conversation as it stands")
 		return
 	}
-	kept, err := live.Loop.ForkBefore(events, req.BeforeSeq)
+	kept, _, err := live.Loop.ForkBefore(events, req.BeforeSeq)
 	if err != nil {
 		if errors.Is(err, errBusySession) || errors.Is(err, errHoldFailed) {
 			writeUnrecorded(w, err, "the session was not forked")

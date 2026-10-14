@@ -156,8 +156,9 @@ func dump(msgs []model.Message) string {
 	return out
 }
 
-// ForkTo(0) keeps the whole conversation, as Fork(0) did; a step past the end
-// or one an earlier fork abandoned is refused.
+// ForkTo(0) keeps the whole conversation, as Fork(0) did, and says it forked at
+// the last live step, not before the first message; a step past the end or one
+// an earlier fork abandoned is refused.
 func TestForkToZeroKeepsAllAndRefusesAbandonedSteps(t *testing.T) {
 	events := []Event{
 		ev(1, EvUserMessage, Message{Text: "one"}),
@@ -169,11 +170,11 @@ func TestForkToZeroKeepsAllAndRefusesAbandonedSteps(t *testing.T) {
 	sess, _ := tools.NewSession(tempDir(t))
 	l := NewLoop(nil, nil, nil, nil, sess, NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
 	l.Recorder.Advance(5)
-	if n, err := l.ForkTo(events, 0); err != nil || n != 3 {
-		t.Fatalf("ForkTo(0) = %d, %v; want the 3 live messages", n, err)
+	if n, at, err := l.ForkTo(events, 0); err != nil || n != 3 || at != 5 {
+		t.Fatalf("ForkTo(0) = %d at %d, %v; want the 3 live messages at step 5", n, at, err)
 	}
 	for _, seq := range []int64{3, 99} {
-		if _, err := l.ForkTo(events, seq); err == nil {
+		if _, _, err := l.ForkTo(events, seq); err == nil {
 			t.Errorf("ForkTo(%d) was taken", seq)
 		}
 	}

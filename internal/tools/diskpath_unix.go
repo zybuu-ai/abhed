@@ -11,3 +11,8 @@ import (
 func openDir(dir string) (*os.File, error) {
 	return os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0) // #nosec G304 -- lists a folder on the path being judged; no file is read
 }
+
+// openNoWait opens a file for reading without waiting on a FIFO or a device.
+func openNoWait(p string) (*os.File, error) {
+	return os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- a script the command being judged names; read only to judge it
+}

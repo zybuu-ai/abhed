@@ -20,7 +20,7 @@ func New(spec Spec, abi ABI) (*Ruleset, error) {
 }
 
 func newRuleset(spec Spec, abi ABI, uid, euid int) (*Ruleset, error) {
-	if err := refuseRoot(uid, euid); err != nil {
+	if err := refuseRoot(uid, euid); err != nil && !spec.Root {
 		return nil, err
 	}
 	if err := abi.Check(); err != nil {
@@ -62,9 +62,12 @@ func (r *Ruleset) Describe() string {
 	add("read and write", r.spec.Write)
 	add("devices", r.spec.Devices)
 	add("denied", r.spec.Deny)
-	if r.spec.DenyTCP {
-		parts = append(parts, "TCP connect and bind refused")
-	} else {
+	switch {
+	case r.spec.DenyTCP && len(r.spec.ConnectTCP) > 0:
+		parts = append(parts, fmt.Sprintf("TCP bind refused, connect only to port %v (TCP only, not MPTCP)", r.spec.ConnectTCP))
+	case r.spec.DenyTCP:
+		parts = append(parts, "TCP connect and bind refused (TCP only, not MPTCP)")
+	default:
 		parts = append(parts, "TCP not restricted by Landlock")
 	}
 	if r.abi.scopes() != 0 {

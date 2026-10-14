@@ -92,10 +92,27 @@ func TestUnansweredApprovalRecordsAnOutcome(t *testing.T) {
 			evs, _ := store.Events("sess1")
 			e, p := outcome(t, evs, "cwrite")
 			if e.Type != EvActionDenied || e.Actor != ActorSystem || p["by"] != BySystem ||
-				p["step"] != "ask" || p["reason"] != tc.reason {
+				p["step"] != "interrupted" || p["reason"] != tc.reason {
 				t.Fatalf("outcome %s %s %v", e.Type, e.Actor, p)
 			}
 		})
+	}
+}
+
+// An approver that fails is not the ask rule refusing: the step says no answer came.
+func TestFailedApprovalIsNotCountedAsTheAskRule(t *testing.T) {
+	dir := tempDir(t)
+	l, store := harnessIn(t, dir, writeTurns(dir), policy.ModeDefault, false)
+	l.Approver = approverFunc(func(context.Context, policy.Result) (bool, error) {
+		return false, errors.New("terminal gone")
+	})
+	if _, err := l.Run(context.Background(), "write it"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("sess1")
+	e, p := outcome(t, evs, "cwrite")
+	if e.Type != EvActionDenied || p["step"] != "unanswered" || p["reason"] != "approval failed: terminal gone" {
+		t.Fatalf("outcome %s %v", e.Type, p)
 	}
 }
 
@@ -462,5 +479,23 @@ func TestMemStoreRefusesAClashingStep(t *testing.T) {
 	}
 	if events, _ := st.Events("s"); len(events) != 1 {
 		t.Fatalf("%d events held, want 1", len(events))
+	}
+}
+
+// A refusal the system gave for the person, such as a timeout, is not the ask rule's either.
+func TestSystemRefusalOfAnAskIsUnanswered(t *testing.T) {
+	dir := tempDir(t)
+	l, store := harnessIn(t, dir, writeTurns(dir), policy.ModeDefault, false)
+	l.Approver = approverFunc(func(ctx context.Context, _ policy.Result) (bool, error) {
+		NoteAnswer(ctx, Answer{By: BySystem, Reason: "no answer within 30 minutes"})
+		return false, nil
+	})
+	if _, err := l.Run(context.Background(), "write it"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("sess1")
+	e, p := outcome(t, evs, "cwrite")
+	if e.Type != EvActionDenied || p["step"] != "unanswered" || p["by"] != BySystem {
+		t.Fatalf("outcome %s %v", e.Type, p)
 	}
 }

@@ -29,8 +29,10 @@
 // ABI.Describe and Ruleset.Describe give the one-line accounts that abhed
 // doctor and the record show.
 //
-// What it does not cover: UDP and other socket families (the fence's seccomp
-// layer refuses those), a hard link to denied state made before the command
+// What it does not cover: UDP and other socket families, and inet sockets of
+// another protocol, such as MPTCP, SCTP and SMC, which Landlock's TCP rules
+// leave alone since its erratum 1 (Linux 6.14 and stable kernels with the
+// fix); the fence's seccomp layer refuses all of those. Also a hard link to denied state made before the command
 // started, the same file reached through another mount, and, below ABI 6
 // (Linux 6.12), signals to processes outside the domain.
 //

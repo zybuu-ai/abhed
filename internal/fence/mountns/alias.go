@@ -9,14 +9,16 @@ import (
 	"strings"
 )
 
-// mountEntry is one line of /proc/self/mountinfo: the mount's id, its
-// filesystem's device, the folder of that filesystem it shows (root), and
-// where it is mounted (point).
+// mountEntry is one /proc/self/mountinfo line: mount id, device, the folder of
+// the filesystem it shows (root) and where it is mounted (point).
 type mountEntry struct {
 	ID    int
 	Dev   string
 	Root  string
 	Point string
+	// Type, Source and Super follow the separator: the filesystem's type,
+	// what it was mounted from, and its own options.
+	Type, Source, Super string
 }
 
 // parseMountinfo reads /proc/self/mountinfo's lines.
@@ -34,7 +36,14 @@ func parseMountinfo(data string) ([]mountEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("a mountinfo line's id: %q", line)
 		}
-		out = append(out, mountEntry{ID: id, Dev: f[2], Root: unescapeMountinfo(f[3]), Point: unescapeMountinfo(f[4])})
+		e := mountEntry{ID: id, Dev: f[2], Root: unescapeMountinfo(f[3]), Point: unescapeMountinfo(f[4])}
+		if i := slices.Index(f, "-"); i > 5 && i+2 < len(f) {
+			e.Type, e.Source = f[i+1], unescapeMountinfo(f[i+2])
+			if i+3 < len(f) {
+				e.Super = unescapeMountinfo(f[i+3])
+			}
+		}
+		out = append(out, e)
 	}
 	return out, nil
 }
@@ -77,9 +86,8 @@ func deletedRoot(root string) bool {
 	return strings.HasSuffix(root, "//deleted") || strings.HasSuffix(root, " (deleted)")
 }
 
-// alias is another mount that reaches the workspace's files: Path is where
-// it does. Rel is "" when Path is the workspace itself, else the mount shows
-// only the workspace's Rel, and Path is that.
+// alias is another mount reaching the workspace's files at Path. Rel is "" when
+// Path is the workspace itself, else the folder Path alone shows.
 type alias struct {
 	Path string
 	Rel  string
@@ -136,9 +144,8 @@ const (
 	wholeEmpty    = "empty"
 )
 
-// rebase is the part of p that falls inside the workspace's folder rel, as
-// a plan relative to rel. When rel itself lies in a folder p hides or holds
-// read-only, the whole of it is covered instead, and whole says how.
+// rebase is p's part inside workspace folder rel, relative to rel; if rel is in
+// a folder p hides or holds read-only, all of it is covered (whole).
 func rebase(p Plan, rel string) (sub Plan, whole string) {
 	inside := func(q string) (string, bool) { return within("/"+rel, "/"+q) }
 	covers := func(q string) bool { _, ok := within("/"+q, "/"+rel); return ok }
@@ -160,4 +167,65 @@ func rebase(p Plan, rel string) (sub Plan, whole string) {
 		}
 	}
 	return sub, ""
+}
+
+// viewTypes are filesystems that show another folder's files under a device
+// of their own, so the device check above does not find them.
+func viewType(t string) bool {
+	switch {
+	case strings.HasPrefix(t, "fuse"), t == "overlay", t == "aufs", strings.HasPrefix(t, "nfs"),
+		t == "cifs", t == "smb3", t == "9p", t == "virtiofs":
+		return true
+	}
+	return false
+}
+
+// views are mounts of such a filesystem naming the workspace, or a folder in or
+// above it, as source or overlay layer: the fence's covers miss them.
+func views(entries []mountEntry, wsMount int, wsPath, hostname string) []string {
+	var out []string
+	related := func(p string) bool {
+		p = path.Clean(p)
+		if !strings.HasPrefix(p, "/") {
+			return false
+		}
+		_, in := within(p, wsPath)
+		_, holds := within(wsPath, p)
+		return (in || holds) && p != "/"
+	}
+	for _, e := range entries {
+		// The workspace's own mount, as on a network home folder, is no view of it.
+		if !viewType(e.Type) || e.ID == wsMount {
+			continue
+		}
+		var named []string
+		// A source host:/path shows this host's folder only when the host is this one.
+		if host, p, ok := strings.Cut(e.Source, ":"); ok && !strings.HasPrefix(e.Source, "/") {
+			if _, h, at := strings.Cut(host, "@"); at {
+				host = h
+			}
+			host = strings.Trim(host, "[]")
+			if host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.") || (hostname != "" && strings.EqualFold(host, hostname)) {
+				named = append(named, p)
+			}
+		} else {
+			named = append(named, e.Source)
+		}
+		for _, opt := range strings.Split(e.Super, ",") {
+			k, v, ok := strings.Cut(opt, "=")
+			if !ok {
+				continue
+			}
+			switch k {
+			case "lowerdir", "upperdir", "workdir", "lowerdir+", "datadir+":
+				named = append(named, strings.Split(v, ":")...)
+			}
+		}
+		for _, n := range named {
+			if related(n) && !slices.Contains(out, e.Point) {
+				out = append(out, e.Point)
+			}
+		}
+	}
+	return out
 }

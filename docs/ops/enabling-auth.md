@@ -17,6 +17,10 @@ much security sounds good.
 | Change your own password at `/account` | yes | yes | yes |
 | OIDC single sign-on (Keycloak, Okta, Entra ID, Auth0, Google and other OIDC providers) and API bearer tokens from the same provider | — | yes | yes |
 | Invites, an admin page, access requests and grants with a recorded reason | — | yes | yes |
+| GitHub sign-in (`auth.github`) | — | yes | yes |
+| Sign out everywhere, and revoking a person's sign-ins and tokens | — | yes | yes |
+| Single sign-on for `abhed login` | — | yes | yes |
+| Workload identity and token exchange (SPIFFE JWT-SVIDs, `auth.workload`) | — | — | yes |
 | Tenant mapping from the identity provider | — | — | yes |
 
 The paid editions are built on this module and document their own setup.
@@ -55,6 +59,11 @@ trust](../architecture/workspace-trust.md).
   "storage": { "driver": "postgres", "dsn": "postgres://..." }
 }
 ```
+
+`session_hours` is how long a browser sign-in lasts: 12 when unset, at most
+8760 (a year). A negative value or one above that stops every command from
+loading the configuration, and `abhed doctor` names it; `abhed doctor` also
+shows the length in force under `auth`.
 
 Create the first account from the CLI:
 
@@ -128,8 +137,12 @@ accounts are created by an administrator, which is true and actionable.
 An account's email is optional. When given, at `user add`, sign-up or an
 administrator's account creation, it must be a plain address
 (`name@example.com`, no display name) that no other account holds and that is
-not another account's username, compared without regard to case. The email is
-for people to read and for notices; it grants nothing.
+not another account's username, compared without regard to case. An address
+with a character that shows as nothing or as a plain space (a zero-width
+joiner, a soft hyphen, a variation selector, a control character, or any
+space but the ASCII one) is refused, so it cannot pass for another; such an
+email from a single sign-on provider or a trusted proxy does not decide who
+owns a session. The email is for people to read and for notices; it grants nothing.
 
 ### Who owns a session
 
@@ -153,18 +166,38 @@ the changelog's Upgrading notes for 1.2.2.
 
 ### What accounts share
 
-Accounts separate sessions, not the machine. Every account on one server:
+A server that has more than one account, or can gain one while it runs
+(single sign-on, a trusted proxy, open sign-up, or local accounts with none
+yet), gives **each session a sandbox of its own** by default: the session
+works in its sandbox's folder, not in the server's workspace, and its
+commands and terminals run in that sandbox (see
+[per-session sandboxes](../guide/22-sandboxes.md#per-session-sandboxes)).
+This turns on `control_plane.enabled` and `control_plane.per_session` for
+the run; `abhed serve` says so on its `sessions` line, and refuses to start
+when the session driver cannot be used. Sessions' sandboxes share no temp
+space either: on the process driver each has a temp folder of its own, and
+the host's `/tmp`, `/var/tmp` and the server account's `TMPDIR` are out of
+its commands' reach. The sandbox API it turns on with
+them (`/v1/sandboxes`, `/v1/sandbox-templates`) answers administrators only,
+so no account can make sandboxes of its own; set `control_plane.enabled`
+yourself to open it to every account. A server with exactly one local
+account and no sign-up keeps the shared workspace, and refuses a session
+for any other account added while it runs, until it is restarted. Sign-in
+off is one person and unchanged.
+
+`"server": {"shared_sessions": true}` keeps the earlier arrangement, in which
+every account on one server:
 
 - works in the **same workspace directory**. One account's files, and the
   files its agent or terminal writes, are visible to every other account's
   explorer, agent and shell, which can read and change them. The file API
   returns a file's raw contents, including any secret written into it;
   redaction applies to the record and the model, not to a person's editor.
+  That cannot be closed while they share: give each session a sandbox, or
+  run one server per group of people who may see each other's files.
 - runs its tools and terminals as the **same operating-system user**, the one
-  the server runs as.
-- draws on the **same secret store** (`abhed secret`). A secret an allow rule
-  permits is available to every account's sessions, not only to the person
-  who stored it.
+  the server runs as, and on the process tier shares that user's temp
+  folders (`/tmp`, `/var/tmp`, `TMPDIR`) with every other account.
 - under the fence tier on Linux older than 6.12 (Landlock ABI below 6), has
   its **commands unseparated from other accounts' commands**: one session's
   commands can signal another's and read their command lines in `/proc`.
@@ -172,9 +205,12 @@ Accounts separate sessions, not the machine. Every account on one server:
   readable either way.
 
 What is per account: sessions and their records, subagent records, approvals,
-and each session's terminals. People who must not see each other's files or
-secrets need separate servers, each with its own workspace, OS user and secret
-store.
+each session's terminals, and secrets: each account has its own store under
+`~/.abhed/secrets.d`, managed with `GET /v1/secrets` and `PUT` and `DELETE
+/v1/secrets/{name}`, and the operator's store (`abhed secret`) serves
+scheduled runs only ([Permissions](../guide/04-permissions.md#secrets)).
+People who must not see each other's files need a sandbox per session, the
+default on a server with more than one account, or separate servers.
 
 ### Password handling
 
@@ -212,8 +248,8 @@ for other servers, it answers `200` with `sessions_ended`,
 every server, but the person's sessions on the others stay signed in without
 them. Every change under `/v1/admin/*` is written to the server log as
 `admin action`, with the action, the target and who made it. An MCP server's
-URL is recorded as scheme, host and path only, and its command as the program
-alone, since either can carry a credential.
+URL is recorded as scheme and host only, and its command as the program's
+base name alone, since a path, a query or arguments can carry a credential.
 
 The last-administrator rule holds within one server process. Two nodes
 sharing a Postgres account store can each remove the other's last
@@ -224,8 +260,13 @@ A live session re-reads its account before a request once the account may
 have changed: at once for the users file, within a couple of seconds for
 Postgres. An account removed with `abhed user remove`, even while the server
 runs, is signed out there, and the agent sessions that server holds for it
-go to no one, so an account made again under the name does not reach them;
-no restart is needed. A group change, a reset or a must-change flag
+go to no one, so an account made again under the name does not reach them,
+nor do the removed account's browser sessions: a session ends when its
+account's creation time is no longer the one it was issued under. Signing in
+from a browser ends the session that browser already held, whoever it was
+for. No restart is needed. Within 15 seconds the server also stops what it runs
+for the removed account: the live run, background shells and tasks, and
+terminals end as `owner_revoked`. A group change, a reset or a must-change flag
 applies on every node without a new sign-in. Removing administrator rights,
 and any sign-out everywhere an edition offers, ends the person's sessions on
 every server sharing the account store: at once on the server that did it,
@@ -238,7 +279,12 @@ meets: at once when a sign-out, removal, group change or reset happens on
 the same server, and otherwise at least every 10 seconds and before any write
 once its last check is that old. A stream that fails ends with an
 `event: refused` carrying the reason, and reconnecting meets the ordinary
-`401` or `403`. `StreamRecheck` in the server options can shorten the
+`401` or `403`. For a local session that ended, the reason says why, on the
+stream and on the `401` alike: `sign in required: ` followed by "you signed
+out", "you were signed out everywhere", "the account was removed", "the
+account's password was changed", "an administrator ended this sign-in",
+"this browser signed in again" or "the sign-in expired". A server remembers
+why for a day, and only for the sessions it ended itself. `StreamRecheck` in the server options can shorten the
 interval, never lengthen it past 15 seconds. The terminal's command itself
 keeps running until it ends or is stopped. Each recheck reruns the sign-in
 providers and reads the session once, so 1,000 open streams cost about 100
@@ -251,8 +297,11 @@ on other servers stay live.
 
 While the account store cannot be read, a request with a local session gets
 `503 {"error":"could not check your sign-in; try again shortly"}` rather
-than `401`: the session is kept, and the workbench does not report it as
-signed out. Sign-out and `/v1/health` still answer.
+than `401`, with `Retry-After: 5`, and a browser opening a page gets a short
+page saying so: the session is kept, and the workbench does not report it as
+signed out. Sign-out and `/v1/health` still answer. A request that a bearer
+token or another provider's session also identifies is judged by that
+instead, not refused for the local cookie it carries.
 
 ## Behind a reverse proxy
 
@@ -307,17 +356,34 @@ Chrome posts a plain form as `Origin: null`; that is accepted only when the
 browser also says `Sec-Fetch-Site: same-origin`, so the confirm page's form
 still works without script.
 
+A local sign-in goes back to the page that sent you to sign in (the
+`?return=` path, when it is a path on this server), and to the workbench
+otherwise. The account page of a single sign-on account says to change the
+password with the identity provider and keeps its Back and Sign out links.
+
+A browser holding both a local session and a single sign-on session is
+signed out of both: the local one ends, then the provider's own sign-out
+runs. Where local accounts are on, a browser that must sign in is sent to
+the front door, which offers the local form beside the provider's button,
+rather than straight to the identity provider.
+
 ## Requiring a group
 
 ```json
 { "auth": { "mode": "local", "require_group": "abhed-users" } }
 ```
 
-Only members of the group may use the server. The check runs once someone is
-signed in, so the sign-in page, sign-in itself, sign-out, `/v1/whoami` and
-`/v1/health` answer everyone. `/v1/whoami` answers `200` to every caller:
+Only members of the group may use the server. A local account outside the
+group is refused at sign-in itself, `403` with the reason, and given no
+session. For other providers the check runs once someone is signed in, so
+the sign-in page, sign-in itself, sign-out, `/v1/whoami` and `/v1/health`
+answer everyone. Group names match exactly, case included: `Abhed-Users` is
+not `abhed-users`, here and for the administrator group. `/v1/whoami` answers `200` to every caller:
 with no sign-in, or a cookie whose sign-in has ended or expired, it reads
 `"authenticated": false`, while every other API route answers `401`. A
+bearer token is honoured as on every route: whoami names its principal, with
+`"credential": "token"` and the `scopes` it was narrowed to, and answers
+`401` for a token that does not verify. A
 signed-in person outside the group is signed
 out and told why: a browser lands on the front page with the reason, and an
 API client gets `403` with it, marked `"refused": true`. The workbench shows
@@ -357,8 +423,12 @@ than no link.
 
 ## API clients
 
-The Community Edition issues no API tokens. A script signs in with a
-password and sends the session cookie back:
+For a person at a terminal, `abhed login` signs the command line in to a
+server with local accounts and keeps a token in a profile, once
+`auth.cli.enabled` is on; a client certificate can also sign an account in.
+See [TLS and command-line sign-in](../guide/26-tls-and-cli-login.md). A
+script without either signs in with a password and sends the session cookie
+back:
 
 ```bash
 curl -c jar -H 'Content-Type: application/json' \
@@ -380,28 +450,38 @@ above without them.
 
 | Hook | Called | Effect of an error |
 |---|---|---|
-| `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued | `403` with the error text; no session |
+| `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued; also when a command-line token is issued and on each use, and for a client certificate that signs the account in | `403` with the error text; no session, no token |
+| `auth.CLILoginAdvertiser` on a `Provider` | when `abhed login` reads `GET /v1/cli` | its methods are listed after the local one; the middleware's `Verifier` must accept the tokens they lead to |
+| `auth.Middleware.Authorize(r, *Identity) error` | on every request after the caller is identified, and on each stream recheck | `403` with its text; no session is ended |
+| `server.(*Server).RecheckStreams()` | when an edition ends sessions or withdraws access | every open event and terminal stream is checked again before it writes more |
 | `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…,"refused":true}`; whoami answers `authenticated: false` with the reason |
-| `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way. `user.admin_revoked` carries `sessions_ended` (on this server) and, when the sign-out could not be recorded for other servers, `revocation_error` |
+| `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way. `user.admin_revoked` carries `sessions_ended` (on this server), `work_stopped` (runs, shells, tasks and terminals stopped here) and, when the sign-out could not be recorded for other servers, `revocation_error` |
 
 Notes for an edition setting them:
 
 - **The reason is shown to the person.** Admit's and Check's error text
   appears in the sign-in form, in whoami, and on the front door after "Access
-  refused:", cut to 200 characters. Write it for them; never pass through an
-  internal error such as a database message.
+  refused:". The front door and its reason cookie keep only the first 200
+  characters; the API's `403` and whoami carry it whole. Write it for them;
+  never pass through an internal error such as a database message.
 - **Admit covers local accounts only.** A single sign-on session is issued at
   its callback, which is public, and is ended by Check on its first checked
   request. Refuse at the provider's own callback where it matters.
-- **Check runs when a request arrives.** A stream already open (session
-  events, a terminal) is not cut when access is withdrawn; it is refused when
-  it reconnects.
+- **Check also runs on open streams.** An event or terminal stream is
+  checked again at least every 10 seconds, and at once when
+  `RecheckStreams` is called; one Check refuses ends with the reason. Call
+  `Server.RecheckStreams` when your edition ends sessions or withdraws
+  access.
 - **AdminAudit may run while the admin-rights lock is held**, so it must not
   call an admin route itself.
 
 `auth.LocalAuth.Sessions()` lists live local sessions — a digest of the
 cookie as the ID, never the cookie, with the user, when it was created, last
 seen and expires — and `EndSession(id)` ends one by that digest.
+`EndSession` checks nothing itself: a route an edition adds to call it must
+be for administrators only, must record the action through `AdminAudit`,
+and must sit behind the server's origin check, so a cross-site form cannot
+end someone's sign-in.
 
 ## Tenant
 

@@ -13,20 +13,29 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/enginecli"
 )
 
-// Image is the default execution image. In an air-gapped install this is
-// digest-pinned and ships inside the signed bundle (docs/ops/air-gap.md);
-// a tag is mutable and therefore unreproducible.
-var Image = envOr("ABHED_SANDBOX_IMAGE", "docker.io/library/debian:bookworm-slim")
+// DefaultImage is the execution image when nothing names another.
+const DefaultImage = "docker.io/library/debian:bookworm-slim"
 
-// Container runs commands in an OCI container.
-//
-// Namespace isolation with a SHARED KERNEL. Adequate for confining accidental
-// damage and scoping the filesystem; NOT adequate against code actively trying
-// to escape, because a kernel exploit crosses this boundary. That is why
-// TierContainer sits below TierVM and why untrusted work should require the
-// latter.
+// Image, when set, is the execution image in place of ABHED_SANDBOX_IMAGE.
+var Image string
+
+// SandboxImage is the execution image: Image, else $ABHED_SANDBOX_IMAGE, read
+// when used, since on macOS the variable arrives after package init, else
+// DefaultImage. Air-gapped installs pin it by digest: a tag is mutable.
+func SandboxImage() string {
+	if Image != "" {
+		return Image
+	}
+	return envOr("ABHED_SANDBOX_IMAGE", DefaultImage)
+}
+
+// Container runs commands in an OCI container. The kernel is shared, so an
+// exploit crosses it: untrusted work needs TierVM.
 type Container struct {
 	policy  Policy
 	runtime string // docker | podman | nerdctl
@@ -38,20 +47,35 @@ type Container struct {
 	// podman is set when the runtime is Podman by what it says it is, as the
 	// podman-docker wrapper named docker is; see engine.
 	podman bool
+	// info is the engine's plain `info`, asked once per process.
+	info []byte
 	// git is what the look for git folders keeps between commands.
 	git gitMemory
+
+	// The egress proxy under sandbox.network allowlist, started once.
+	egOnce  sync.Once
+	eg      *egressState
+	egProxy *egress.Proxy
+	egErr   error
+	// egDir holds each call's own socket, on the host alone.
+	egDir string
+	// egCalls ends each call's container still standing, keyed by call:
+	// Close ends them all, and waits for their removal.
+	egCallsMu sync.Mutex
+	egCalls   map[*int]func()
+	egClosed  bool
 }
+
+// LookEngine finds a container engine's CLI by name. Tests replace it to keep
+// off the host's engine.
+var LookEngine = exec.LookPath
 
 func NewContainer(p Policy) *Container {
 	return &Container{policy: p}
 }
 
-// NewGVisor is a Container pinned to the runsc runtime.
-//
-// gVisor intercepts syscalls in userspace, which is a materially stronger
-// boundary than namespaces: the guest kernel surface the workload can reach is
-// a reimplementation, not the host kernel. Reported overhead is roughly
-// 10-20% on syscall-heavy work — worth it for untrusted code.
+// NewGVisor is a Container pinned to the runsc runtime. gVisor serves syscalls
+// in userspace, keeping the host kernel out of reach.
 func NewGVisor(p Policy) *Container {
 	return &Container{policy: p, extra: []string{"--runtime", "runsc"}}
 }
@@ -73,25 +97,27 @@ func (c *Container) Tier() Tier {
 }
 
 func (c *Container) Available() (bool, string) {
-	// The proxy listens on the host's loopback, which the container's
-	// network cannot reach without opening more than the proxy.
+	// The proxy listens on the host's loopback, which a container with no
+	// network reaches only through a relay inside it.
 	if c.policy.Egress != nil {
-		return false, egressRefusal(c.Tier())
+		if _, why := c.containerRelay(); why != "" {
+			return false, why
+		}
 	}
 	c.once.Do(func() {
 		for _, rt := range []string{"docker", "podman", "nerdctl"} {
-			path, err := exec.LookPath(rt)
+			path, err := LookEngine(rt)
 			if err != nil {
 				continue
 			}
 			// A binary on PATH is not a working daemon; check for real.
-			probe := exec.Command(path, "info", "--format", "{{.ServerVersion}}")
-			if err := probe.Run(); err != nil {
-				c.reason = rt + " found but its daemon is not responding"
+			info, podman, err := probeEngine(path)
+			if err != nil {
+				c.reason = rt + " found but its daemon is not responding: " + err.Error()
 				continue
 			}
-			c.runtime = path
-			c.podman = saysPodman(path)
+			c.runtime, c.info = path, info
+			c.podman = podman
 			c.available = true
 			c.reason = ""
 			return
@@ -114,8 +140,7 @@ func (c *Container) runscInstalled() bool {
 	if _, err := exec.LookPath("runsc"); err == nil {
 		return true
 	}
-	out, err := exec.Command(c.runtime, "info", "--format", "{{json .Runtimes}}").Output()
-	return err == nil && strings.Contains(string(out), "runsc")
+	return infoHasRunsc(c.info)
 }
 
 func (c *Container) Describe() string {
@@ -128,14 +153,13 @@ func (c *Container) Describe() string {
 		engine = engine[i+1:]
 	}
 	if c.isGVisor() {
-		return fmt.Sprintf("gVisor (runsc) via %s · syscall interception · %s · image %s", engine, net, Image)
+		return fmt.Sprintf("gVisor (runsc) via %s · syscall interception · %s · image %s", engine, net, SandboxImage())
 	}
-	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, Image)
+	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, SandboxImage())
 }
 
-// engine is the runtime's program name, such as docker or podman: podman
-// for Podman under any name (podman-remote, or the podman-docker wrapper
-// named docker), which reads PID and UTS from its own configuration.
+// engine is the runtime's program name: podman for Podman under any name, which
+// reads PID and UTS from its own configuration.
 func (c *Container) engine() string {
 	base := filepath.Base(c.runtime)
 	if c.podman || strings.HasPrefix(base, "podman") {
@@ -146,14 +170,37 @@ func (c *Container) engine() string {
 
 // saysPodman reports whether the runtime at path calls itself Podman.
 func saysPodman(path string) bool {
-	out, err := exec.Command(path, "--version").Output() // #nosec G204 -- the container runtime found on PATH
+	out, err := engineProbe(path, "--version")
 	return err == nil && strings.Contains(strings.ToLower(string(out)), "podman")
 }
 
-// runArgs is everything up to the image: the confinement both a command and
-// a shell run under. It begins with "run --rm -i". An error is why the
-// command is not run.
+// engineProbeWait bounds each engine query while the tier is chosen, so a hung
+// engine cannot hold a session's start.
+var engineProbeWait = 5 * time.Second
+
+// engineProbe runs the engine's CLI with args and returns its output, ended
+// with everything it started after engineProbeWait.
+func engineProbe(path string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), engineProbeWait)
+	defer cancel()
+	cmd := enginecli.Command(ctx, path, args...)
+	ownGroup(cmd)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return out, fmt.Errorf("%s %s did not answer within %s", filepath.Base(path), strings.Join(args, " "), engineProbeWait)
+	}
+	return out, err
+}
+
+// runArgs is the confinement a command and a shell both run under, up to the
+// image; an error is why the command is not run.
 func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
+	return c.runArgsWith(ctx, cwd, c.policy, c.policy.AllowNetwork && c.policy.Egress == nil)
+}
+
+// runArgsWith is runArgs for policy p, with the network open or none.
+func (c *Container) runArgsWith(ctx context.Context, cwd string, p Policy, netOpen bool) ([]string, error) {
 	args := []string{"run", "--rm", "-i"}
 	args = append(args, c.extra...)
 
@@ -164,26 +211,19 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 		"--security-opt", "no-new-privileges",
 	)
 
-	// The image itself is immutable. A writable rootfs lets a session drop a
-	// binary somewhere on PATH, or edit a shell profile, and lets one command
-	// leave something behind for the next — the container is per-command, so
-	// without this the filesystem is the one place state could persist.
+	// A read-only rootfs stops a command leaving a binary on PATH or an edited
+	// profile behind for the next one.
 	args = append(args, "--read-only")
 
-	// Somewhere to write, sized and mounted noexec so it cannot become the
-	// place a downloaded binary is run from. Compilers and package managers
-	// need a scratch directory; an attacker needs an executable one, and
-	// these are not the same requirement.
+	// Scratch space is sized and noexec, so it cannot run a downloaded binary.
 	args = append(args,
 		"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=256m",
 		"--tmpfs", "/run:rw,noexec,nosuid,nodev,size=16m",
 	)
 
-	// Fork bombs and disk-fill are denial of service against the host, which
-	// the memory and pid caps below do not cover on their own. Processes are
-	// bounded by --pids-limit when there is one: an nproc limit counts every
-	// process of the same uid on the host under rootful Docker.
-	if c.policy.MaxProcs <= 0 {
+	// Fork bombs and disk-fill are host DoS. --pids-limit is preferred: under
+	// rootful Docker nproc counts the uid's every host process.
+	if p.MaxProcs <= 0 {
 		args = append(args, "--ulimit", "nproc=256:256")
 	}
 	args = append(args,
@@ -194,7 +234,7 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 
 	// A CPU cap so one session cannot starve the host. Not security, but a
 	// session that pins every core is indistinguishable from an outage.
-	args = append(args, "--cpus", "2")
+	args = append(args, "--cpus", c.cpus())
 
 	// No IPC sharing, and a hostname of its own: the engine refuses a hostname
 	// with the host's UTS namespace, so the flag also fails closed.
@@ -205,60 +245,29 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 		args = append(args, "--pid", "private", "--uts", "private")
 	}
 
-	if !c.policy.AllowNetwork {
+	// Under the allowlist the relay is the only way out, whatever AllowNetwork says.
+	if !netOpen {
 		args = append(args, "--network", "none")
 	}
-	if c.policy.MaxMemoryMB > 0 {
+	if p.MaxMemoryMB > 0 {
 		// Swap set to the same: by default the engine allows as much swap
 		// again, so the bound was twice what it said.
-		m := strconv.Itoa(c.policy.MaxMemoryMB) + "m"
+		m := strconv.Itoa(p.MaxMemoryMB) + "m"
 		args = append(args, "--memory", m, "--memory-swap", m)
 	}
-	if c.policy.MaxProcs > 0 {
-		args = append(args, "--pids-limit", strconv.Itoa(c.policy.MaxProcs))
+	if p.MaxProcs > 0 {
+		args = append(args, "--pids-limit", strconv.Itoa(p.MaxProcs))
 	}
 
-	// The workspace is the only writable host path. Mounted at the same path
-	// inside so the model's absolute paths stay valid across the boundary.
-	args = append(args, "-v", c.policy.Workspace+":"+c.policy.Workspace)
-	for _, p := range c.policy.ReadOnlyPaths {
-		args = append(args, "-v", p+":"+p+":ro")
+	mounts, err := mountArgs(ctx, p, string(c.Tier()), &c.git)
+	if err != nil {
+		return nil, err
 	}
-	// Mounted over the workspace's own, so only the paths that exist can be.
-	// A folder holding one is mounted onto itself, so it cannot be renamed.
-	ws := PathForms(c.policy.Workspace)
-	var protected []string
-	for _, p := range formsOf(c.policy.WriteProtected) {
-		if insideAny(p, ws) {
-			protected = append(protected, p)
-		}
-	}
-	// The git folders found now, as on bubblewrap, after a planted
-	// commondir is taken out.
-	if c.policy.ProtectGit {
-		found, err := gitGuard(ctx, c.policy.Workspace, string(c.Tier()), &c.git)
-		if err != nil {
-			return nil, err
-		}
-		protected = append(protected, found...)
-	}
-	for _, p := range holders(ws, protected) {
-		if info, err := os.Lstat(p); err == nil && info.IsDir() {
-			args = append(args, "-v", p+":"+p)
-		} else if err == nil && info.Mode().IsRegular() {
-			args = append(args, "-v", p+":"+p+":ro")
-		}
-	}
-	for _, p := range protected {
-		if _, err := os.Stat(p); err == nil {
-			args = append(args, "-v", p+":"+p+":ro")
-		}
-	}
-	args = append(args, c.stateMounts()...)
+	args = append(args, mounts...)
 
 	workdir := cwd
 	if workdir == "" {
-		workdir = c.policy.Workspace
+		workdir = p.Workspace
 	}
 	args = append(args, "-w", workdir)
 
@@ -272,7 +281,73 @@ func (c *Container) runArgs(ctx context.Context, cwd string) ([]string, error) {
 	return args, nil
 }
 
+// cpus is the --cpus value: MaxCPUPercent of one CPU, two when unset.
+func (c *Container) cpus() string {
+	pct := c.policy.MaxCPUPercent
+	if pct <= 0 {
+		pct = 200
+	}
+	return strconv.FormatFloat(float64(pct)/100, 'f', -1, 64)
+}
+
+// mountArgs are a container's host mounts for p, Abhed's state hidden; backend
+// names the tier in records, mem is what the git look keeps.
+func mountArgs(ctx context.Context, p Policy, backend string, mem *gitMemory) ([]string, error) {
+	var args []string
+	// The workspace is the only writable host path. Mounted at the same path
+	// inside so the model's absolute paths stay valid across the boundary.
+	args = append(args, "-v", p.Workspace+":"+p.Workspace)
+	for _, ro := range p.ReadOnlyPaths {
+		args = append(args, "-v", ro+":"+ro+":ro")
+	}
+	// Mounted over the workspace's own, so only the paths that exist can be.
+	// A folder holding one is mounted onto itself, so it cannot be renamed.
+	ws := PathForms(p.Workspace)
+	var protected []string
+	for _, wp := range formsOf(p.WriteProtected) {
+		if insideAny(wp, ws) {
+			protected = append(protected, wp)
+		}
+	}
+	// The git folders found now, as on bubblewrap, after a planted
+	// commondir is taken out.
+	if p.ProtectGit {
+		found, err := gitGuardFor(ctx, p.Workspace, backend, mem, p.GitRequired)
+		if err != nil {
+			return nil, err
+		}
+		protected = append(protected, found...)
+	}
+	for _, h := range holders(ws, protected) {
+		if info, err := os.Lstat(h); err == nil && info.IsDir() {
+			args = append(args, "-v", h+":"+h)
+		} else if err == nil && info.Mode().IsRegular() {
+			args = append(args, "-v", h+":"+h+":ro")
+		}
+	}
+	for _, pp := range protected {
+		if _, err := os.Stat(pp); err == nil {
+			args = append(args, "-v", pp+":"+pp+":ro")
+		}
+	}
+	return append(args, stateMounts(p)...), nil
+}
+
+// ContainerMounts gives a long-lived container the mounts the container
+// tier gives each command, with its own memory of the git folders found.
+type ContainerMounts struct{ git gitMemory }
+
+// Args are the mounts for p now; backend names the sandbox in records. An
+// error is why no command may start.
+func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([]string, error) {
+	return mountArgs(ctx, p, backend, &m.git)
+}
+
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
+	if c.policy.Egress != nil {
+		cmd, _ := c.egressRun(ctx, cwd, egressPrefix, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
+		return cmd
+	}
 	// Named, so a cancel can remove the container: killing the engine's CLI
 	// leaves what runs inside it running.
 	args, err := c.runArgs(ctx, cwd)
@@ -280,11 +355,10 @@ func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd 
 		return &exec.Cmd{Err: err}
 	}
 	name := containerName("abhed-cmd-")
-	args = append(args, "--name", name, Image, "/bin/sh", "-c", command)
-	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the command runs inside the container
-	// The engine's CLI needs the host's PATH, HOME and DOCKER_HOST; only the
-	// -e flags above reach the container.
-	cmd.Env = os.Environ()
+	args = append(args, "--name", name, SandboxImage(), "/bin/sh", "-c", command)
+	// The engine's CLI gets the host's environment; only the -e flags above
+	// reach the container.
+	cmd := enginecli.Command(ctx, c.runtime, args...)
 	cmd.Cancel = c.remove(cmd, name)
 	return cmd
 }
@@ -298,13 +372,17 @@ func containerName(prefix string) string {
 
 // remove is a cancel that removes the named container, then kills the CLI.
 func (c *Container) remove(cmd *exec.Cmd, name string) func() error {
-	runtime := c.runtime
 	return func() error {
-		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
-		defer cancel()
-		_ = exec.CommandContext(rmCtx, runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
+		c.removeNow(name)
 		return cmd.Process.Kill()
 	}
+}
+
+// removeNow removes the named container, waiting up to engineWait.
+func (c *Container) removeNow(name string) {
+	rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
+	defer cancel()
+	_ = enginecli.Command(rmCtx, c.runtime, c.rmArgs(name)...).Run()
 }
 
 // containerShell prefers bash where the image has it.
@@ -322,9 +400,8 @@ func (c *Container) shellLabel() string {
 	return "abhed.term=" + hex.EncodeToString(sum[:6])
 }
 
-// Shell starts an interactive shell in a container of its own, with a
-// terminal (-t). The container is named so that ending the shell removes it,
-// even when the engine's CLI is killed before it can.
+// Shell starts an interactive shell in a container of its own, with a terminal
+// (-t).
 func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	run, err := c.runArgs(ctx, cwd)
 	if err != nil {
@@ -336,9 +413,8 @@ func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	for _, kv := range shellEnv(c.Tier()) {
 		args = append(args, "-e", kv)
 	}
-	args = append(args, "-e", "HOME=/tmp", Image, "/bin/sh", "-c", containerShell)
-	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the shell is fixed
-	cmd.Env = os.Environ()
+	args = append(args, "-e", "HOME=/tmp", SandboxImage(), "/bin/sh", "-c", containerShell)
+	cmd := enginecli.Command(ctx, c.runtime, args...)
 	cmd.Cancel = c.remove(cmd, name)
 	cmd.WaitDelay = hangUpDelay
 	return cmd
@@ -352,12 +428,12 @@ func (c *Container) SweepShells() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), engineWait)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, c.runtime, "ps", "-aq", "--filter", "label="+c.shellLabel()).Output() // #nosec G204 -- the configured engine
+	out, err := enginecli.Command(ctx, c.runtime, "ps", "-aq", "--filter", "label="+c.shellLabel()).Output()
 	if err != nil {
 		return
 	}
 	if ids := strings.Fields(string(out)); len(ids) > 0 {
-		_ = exec.CommandContext(ctx, c.runtime, append([]string{"rm", "-f"}, ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
+		_ = enginecli.Command(ctx, c.runtime, c.rmArgs(ids...)...).Run()
 	}
 }
 
@@ -381,13 +457,12 @@ func envOr(key, fallback string) string {
 }
 
 // ForwardEnv passes the named variables, already set in cmd.Env, into a
-// container command. `-e NAME` makes the engine read the value from its own
-// environment, so no value appears in its arguments. Other commands are left
-// alone: their cmd.Env already reaches the shell.
+// container command. `-e NAME` keeps each value out of its arguments.
 func ForwardEnv(cmd *exec.Cmd, names []string) {
 	at := -1
 	for i, a := range cmd.Args {
-		if a == Image {
+		// An exec names its container in the image's place.
+		if a == SandboxImage() || strings.HasPrefix(a, egressPrefix) {
 			at = i
 			break
 		}
@@ -403,32 +478,31 @@ func ForwardEnv(cmd *exec.Cmd, names []string) {
 	cmd.Args = args
 }
 
-// stateMounts hide Abhed's own state that the mounts above would show: an
-// empty throwaway folder over the workspace's .abhed, as the process tier
-// mounts, and the same over a state folder, /dev/null over a state file.
-func (c *Container) stateMounts() []string {
-	ws := c.policy.Workspace
+// stateMounts cover Abhed's state the mounts above would show: an empty folder
+// over each state folder, /dev/null over a state file.
+func stateMounts(p Policy) []string {
+	ws := p.Workspace
 	dir := filepath.Join(ws, stateDir)
 	// Made here as the person, or the engine would make it as root.
 	_ = os.Mkdir(dir, 0o700)
 	var args []string
-	tmpfs := func(p string) {
-		args = append(args, "--tmpfs", p+":rw,noexec,nosuid,nodev,size=16m,mode=0700")
+	tmpfs := func(path string) {
+		args = append(args, "--tmpfs", path+":rw,noexec,nosuid,nodev,size=16m,mode=0700")
 	}
 	// On a disk that ignores case, .ABHED reaches the same folder by another
 	// name the engine's own kernel keeps apart, so each spelling is covered.
 	for _, name := range caseSpellings(ws, stateDir) {
 		tmpfs(filepath.Join(ws, name))
 	}
-	visible := append(PathForms(ws), formsOf(c.policy.ReadOnlyPaths)...)
-	for _, p := range formsOf(c.policy.StatePaths) {
-		if !insideAny(p, visible) {
+	visible := append(PathForms(ws), formsOf(p.ReadOnlyPaths)...)
+	for _, sp := range formsOf(p.StatePaths) {
+		if !insideAny(sp, visible) {
 			continue
 		}
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
-			tmpfs(p)
+		if info, err := os.Stat(sp); err == nil && info.IsDir() {
+			tmpfs(sp)
 		} else if err == nil {
-			args = append(args, "-v", "/dev/null:"+p+":ro")
+			args = append(args, "-v", "/dev/null:"+sp+":ro")
 		}
 	}
 	return args
@@ -458,4 +532,17 @@ func caseSpellings(dir, name string) []string {
 		out = append(out, string(b))
 	}
 	return out
+}
+
+// Close stops the egress proxy commands under the allowlist reach.
+func (c *Container) Close() error { return c.closeEgress() }
+
+// rmArgs removes the named containers; --time 0 stops Podman waiting ten
+// seconds on a process that ignores SIGTERM.
+func (c *Container) rmArgs(names ...string) []string {
+	args := []string{"rm", "-f"}
+	if c.engine() == "podman" {
+		args = append(args, "--time", "0")
+	}
+	return append(args, names...)
 }

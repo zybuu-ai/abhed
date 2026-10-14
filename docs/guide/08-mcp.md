@@ -22,11 +22,87 @@ of the file.
 
 ## Where a server runs
 
-A stdio server is a process Abhed starts on your machine, as you, **outside the
-sandbox**. It can read and write what your user can and reach the network,
-whatever the sandbox tier and `allow_network` say. The one exception is the
-network under `sandbox.network: "allowlist"`; see below. A URL server runs
-wherever it is hosted. `digest` is accepted in the configuration but not checked yet.
+A stdio server is a process Abhed starts as you, outside the commands' own
+sandbox but confined by the same tier. On the process (macOS Seatbelt, Linux
+bubblewrap), fence, container and VM tiers its **files are confined**,
+whatever the network setting: your
+home folder is hidden from it, but for a home of its own,
+`~/.abhed/mcp/<server>/home`, which is its `HOME`, which it may write and
+which keeps its caches (`npx`, `uv`) between runs, and the folder it was
+installed in when that is under your home (a node version's folder, a
+toolchain's, never all of `~/.local` or `~/.cargo`), read-only. A server
+whose program sits in `~/.abhed`, or directly in your home, is refused: that
+folder would show it Abhed's state. The workspace
+stays readable and writable, with its `.abhed` hidden. So a server cannot read
+`~/.ssh` or plant a LaunchAgent, a systemd user unit or a shell rc line.
+Files outside your home that your user can write stay writable. A server that
+needs your home (a credential file it reads, a tool installed elsewhere in
+it) is set `"host_files": true`, which runs it with your files as before;
+under the allowlist its network is still confined. Under bubblewrap the
+server is refused where a private `/proc` cannot be mounted (set
+`host_files`), and when Abhed runs as root, since bubblewrap keeps root's
+capabilities over the host: run Abhed as an ordinary user, or set
+`host_files` to run the server unconfined (refused under the allowlist).
+
+On the fence tier the server runs under a fence of its own: Landlock grants
+it the system folders, `read_only_paths` outside your home, the workspace,
+its own home and its install folder, and nothing else; its launch is
+recorded as a command's is, with `mcp/<server>` as its call id, and its
+temporary folder is `~/.abhed/mcp/<server>/home/tmp`. On the container and
+VM tiers it runs in a container of its own from the sandbox image (gVisor
+on the VM tier), its stdio carried by the engine: the commands' mounts
+(the workspace, its `.abhed` covered, `read_only_paths` outside your home),
+its own home mounted as its `HOME` and its install folder read-only, nothing
+else of your home, and its environment in a file only your user can read.
+The container is removed when the server closes or the Abhed process that
+started it exits, Ctrl-C included. For the terminal CLI and `abhed -p` that
+is when the session ends; under `abhed serve` the server and its container
+belong to the server process, shared by its sessions, and are removed when
+`abhed serve` exits, not when a session ends. Each is labelled
+`abhed.mcp.owner` with the Abhed process that started it (host, process id,
+start time); one left by an Abhed that was killed outright (`kill -9`),
+under the allowlist too, is removed the next time a server starts on these tiers, and by `abhed doctor`
+when a stdio server is set to run in one (enabled, not `host_files`), which
+say so. A container without that label is never touched, nor one whose
+process cannot be checked from here (another user's, under `hidepid`): it is
+kept, and `abhed doctor` names it.
+So its program must run in that image: a `docker`-style server, or one
+installed for macOS, does not. Before the server starts, Abhed looks for its
+program in the image (with the server's mounts) and refuses a server whose
+program is not there, or is a macOS binary, naming the program; the session's
+warning, `/mcp` and `abhed doctor` give that reason. Set `ABHED_SANDBOX_IMAGE`
+to an image with its runtime, or `host_files` to run it on the host. A tier that cannot
+confine a server refuses it with that reason, and `host_files` is the way
+out.
+
+The terminal CLI, `abhed -p`, `abhed doctor`, `abhed rpc` and `abhed serve`
+all start a server this way. On the none tier and on Windows a stdio
+server's files are not confined: each such server is named at start-up and by
+`abhed doctor`, with why the process tier is not available, until it is, or
+until the server is set `"host_files": true`. Under `abhed serve` the
+workbench's Extensions panel marks it *unconfined* with the same reason, as
+`GET /v1/capabilities` does in the server's `unconfined` field. Under bubblewrap the temporary
+folder is hidden from a confined server, so one whose program is installed
+there is refused with that reason. Its network is open, whatever
+`allow_network` says, except under `sandbox.network: "allowlist"`; see
+below. A URL server runs wherever it is hosted.
+
+`digest` pins a stdio server's program, as `"sha256:<64 hex digits>"`: just
+before the server starts, the file its `command` resolves to (on the
+server's own `PATH`, links followed) is hashed, a mismatch refuses the
+server, and the resolved path is what starts. When the command is `docker`,
+`podman` or `nerdctl` running an image (`run` or `container run`) and that
+image, the first word after `run`'s options and their values, names an OCI
+image by that digest (`ghcr.io/org/server@sha256:…`), the container engine
+pulls by it and the program is not hashed. The digest anywhere else, as an
+option's value or the image's own argument, pins nothing; an option the
+check does not know is taken to have a value, which at worst leaves the
+engine itself hashed and the server refused. Another program given such an
+argument is hashed as usual. A digest pins the one program
+file: an interpreter's script or packages it loads (`npx`, `python
+server.py`) are not covered, so pin the image or a single binary. A URL
+server with a `digest` is refused, since its program cannot be checked. A
+malformed digest refuses the server too.
 Add a server as you would install any program: only one you trust.
 
 A stdio server does not inherit Abhed's environment, which holds model
@@ -49,7 +125,9 @@ With `sandbox.network: "allowlist"` (see
   `kind: "mcp"`, in the record of the session whose tool call made it. A
   server no rule allows does not connect.
 - **Stdio servers** start with their direct network sockets confined, on
-  the process tier only. On macOS a Seatbelt profile allows no network use
+  the process, fence, container and VM tiers. On the fence the server's own
+  fence lets TCP reach only its proxy; on the container and VM tiers its
+  container has no network but a relay to its proxy, as a command's has. On macOS a Seatbelt profile allows no network use
   but the server's own egress proxy and denies it LaunchServices. On Linux
   the server runs in its own network and process namespaces (bubblewrap)
   behind a relay to that proxy, with the session bus, `/run/user`, the
@@ -59,17 +137,18 @@ With `sandbox.network: "allowlist"` (see
   with a credential of its own, and on Linux the session resolver for
   names. Under bubblewrap a stdio server is not started when Abhed runs as
   root.
-  On Windows, and on any surface with no process-tier sandbox to confine
-  it, a stdio server is not started under the allowlist; the warning at
-  start-up and `/mcp` give the reason.
+  A server set to `host_files` is confined this way on the process tier
+  only, and refused under the allowlist elsewhere. On Windows, and on any
+  surface with no sandbox to confine it, a stdio server is not started
+  under the allowlist; the warning at start-up and `/mcp` give the reason.
 
 **This confines a server's direct network use, not a hostile server.** Add
 only servers you trust, as before. What remains open to a server that
 means to get out:
 
-- **Its files are not confined.** It reads and writes what your user can,
-  so it can plant a LaunchAgent, a systemd user unit or a line in a shell
-  rc file that runs later, outside any sandbox, with your network.
+- **Files outside your home.** Its home is hidden (see above), but what
+  your user can write elsewhere stays writable, and a server set to
+  `host_files` reads and writes what your user can.
 - **Unix sockets it can reach.** On Linux, any AF_UNIX socket in a folder
   that is not hidden (under your home, `/var/tmp`, `/var/run/postgresql`,
   and so on) can be connected to, and whatever listens there acts for it.
@@ -87,10 +166,13 @@ means to get out:
 
 A stdio server's decisions go to the record of the session whose call to
 it is in flight, with that call's id, or with none in flight, the session
-that called it last. Its traffic before any call, or while calls from two
-sessions to the same server are in flight at once (possible under
-`abhed serve`, where servers are shared), cannot be put to one session; it
-is written to Abhed's log instead of a record.
+that called it last. Under `abhed serve`, where servers are shared, its
+traffic while calls from several sessions are in flight cannot be put to
+one of them, so it goes to each of their records, with no call id and
+`shared_sessions` saying how many; its traffic before any call (the latest
+64 decisions) goes to each session's record when that session first calls
+it, marked `before_call`. A session therefore sees what the shared server
+did while it was in use, including on another session's behalf.
 
 ## From the command line
 
@@ -105,11 +187,12 @@ abhed mcp remove docs
 ```
 
 `add` shows the server, every value escaped and `-env` values hidden, and
-asks; only a yes typed at a terminal adds it, enabled, since it lets the
-agent start a process or reach an endpoint. Without a terminal it is
-refused: edit the file instead. `add` and `remove` are also refused inside
-an agent's command, where `ABHED_SANDBOX` is set or an `abhed` process is
-above the command. Neither check is the boundary: a terminal can be faked,
+asks (`-env`, `-header-env` and `-allow-tools` may be repeated, each
+adding to the earlier ones); only a yes typed at a terminal adds it,
+enabled, since it lets the agent start a process or reach an endpoint.
+Without a terminal it is refused: edit the file instead. `add` and `remove`
+are also refused inside an agent's command, where `ABHED_SANDBOX` is set or
+an `abhed` process is above the command. Neither check is the boundary: a terminal can be faked,
 and a detached daemon has no `abhed` above it. What keeps the agent from
 adding a server is the sandbox, which denies it `~/.abhed`; with the
 sandbox off (`none`) nothing does. `remove` narrows, so it does not ask. Each
@@ -144,14 +227,26 @@ warning. Built-in commands, and your own and the workspace's custom
 commands, keep their names: an MCP prompt that would take one is left out,
 and the session says so.
 
+A remote tool's name may hold only letters, digits, `_`, `.` and `-`, up to
+64 characters. The MCP specification allows names of up to 128, but model
+providers refuse tool names over 64, so a longer one is left out: a warning
+names it and gives its length, `/mcp` and Studio list it under its server,
+and `abhed doctor` and the server's MCP status count the tools left out for
+their names beside each server.
+`abhed doctor` also says why each configured server that did not connect
+was not: a program that does not match its `digest`, a URL server given a
+`digest`, a server that would not start.
+
 ## Namespacing and policy
 
 Remote tools are namespaced by server, so two servers offering `search` do not
 collide, and a policy rule can name one precisely:
 
 ```json
-"deny": ["github__create_issue"]
+"deny": ["mcp__github__create_issue"]
 ```
+
+`mcp__github__*` names every tool of that server.
 
 Every MCP tool routes through the policy engine, because Abhed cannot know what
 someone else's tool does. A remote tool is subject to approval exactly as `bash`

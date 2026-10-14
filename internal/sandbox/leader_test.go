@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -72,9 +73,8 @@ func TestSweepSaysWhenMembersRemain(t *testing.T) {
 	}
 }
 
-// A killed member starved of CPU stays listed for longer than any fixed count
-// of passes before it dies; the sweep waits for it rather than report a
-// session it has in fact emptied. The macOS runners showed this under load.
+// A killed member starved of CPU can stay listed past any fixed pass
+// count; the sweep waits for it rather than misreport a session it emptied.
 func TestSweepWaitsForKilledMembersToGo(t *testing.T) {
 	saved := sweepWaitMax
 	sweepWaitMax = time.Millisecond // the passes, not the waits, are under test
@@ -108,5 +108,21 @@ func TestSweepBacksOffWhileMembersDie(t *testing.T) {
 	// 1ms wait makes hundreds.
 	if passes > 40 {
 		t.Fatalf("%d passes in %v: the sweep did not back off", passes, sweepGrace)
+	}
+}
+
+// A member the sweep cannot signal is counted in its reason, not passed over.
+func TestSweepCountsWhatItCannotSignal(t *testing.T) {
+	f := &fakeSession{listings: [][]int{{101, 102}, {101, 102}, {101, 102}, {102}}}
+	f.install(t)
+	signalOne = func(pid, _ int, sig syscall.Signal) bool {
+		f.sent[pid] = append(f.sent[pid], sig)
+		return pid != 102
+	}
+	was := cannotSignal
+	cannotSignal = func(pid int) bool { return pid == 102 }
+	t.Cleanup(func() { cannotSignal = was })
+	if why := named.sweep(); why == "" || !strings.Contains(why, "1 processes") {
+		t.Fatalf("sweep: %q", why)
 	}
 }

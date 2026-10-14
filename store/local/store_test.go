@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -678,12 +679,18 @@ func TestPruneOlderKeepsRecentAndHeldSessions(t *testing.T) {
 	}
 }
 
-// The local record offers no way to delete or rewrite a session: it is not
-// a SessionDeleter, and prune, the one way out, leaves a tombstone.
-func TestNoDeletePath(t *testing.T) {
-	var s any = &Store{}
-	if _, ok := s.(agent.SessionDeleter); ok {
-		t.Fatal("the local record can delete a session")
+// The local record offers no way to rewrite a session: its delete is a
+// prune, which leaves a tombstone with the session's head.
+func TestDeleteLeavesATombstone(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	record(t, s, "s-t", "one")
+	_ = s.Sync("s-t")
+	head, _ := s.readHead("s-t")
+	if err := s.DeleteSession("s-t"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := s.index.get("s-t"); !e.Pruned || e.Head != head {
+		t.Fatalf("delete left %+v, want a tombstone with head %+v", e, head)
 	}
 }
 
@@ -783,5 +790,31 @@ func TestIndexActiveFromAnOlderIndex(t *testing.T) {
 	})
 	if got[0].Active.Format(timeFormat) != at {
 		t.Fatalf("an end after active lines counted as activity: %+v", got)
+	}
+}
+
+// A subscription ended while events are being appended is never sent to
+// after it is closed: the send and the close are ordered.
+func TestUnsubscribeDuringAppends(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	rec := record(t, s, "sub-race")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			if _, err := rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: strconv.Itoa(i)}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		ch := s.Subscribe("sub-race")
+		s.Unsubscribe("sub-race", ch)
 	}
 }

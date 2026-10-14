@@ -66,6 +66,7 @@ person's action, or a command.
 | -32001 | Refused by policy: managed configuration, workspace trust or a policy rule. `data.meta.rule` names the rule when there is one. |
 | -32002 | Busy: a prompt is running and the request must wait for it to end. |
 | -32003 | The record is unavailable or failed verification. |
+| -32004 | Another Abhed process (the CLI) has the session open; it can be forked. |
 
 The engine never answers a refusal with an empty success.
 
@@ -264,7 +265,7 @@ Studio consumes them through the methods below and builds neither.
 | `session/list` (spec) | `{cwd?, cursor?}` → `{sessions: SessionInfo[], nextCursor?}` |
 | `session/load` (spec) | `{sessionId, cwd, mcpServers: [], _meta?: {trust?: "untrusted"}}` → replays the session as `session/update` notifications, then replies `{configOptions, modes, _meta}` |
 | `session/resume` (spec) | same params → no replay; replies as `session/load` |
-| `session/close` (spec) | `{sessionId}` → `{}`: ends the engine's hold on the session; the record stays |
+| `session/close` (spec) | `{sessionId}` → `{}`: ends the engine's hold on the session; the record stays. Unless a running prompt records its own end, or background work its closing one, it records `session.ended` with reason `session_closed` after its terminals' last lines, carrying the last run's totals; so does the editor going away. The session stays resumable. |
 | `_abhed/session/rename` | `{sessionId, name}` → `{}`, recorded `session.named` |
 
 ```ts
@@ -290,13 +291,16 @@ interface SessionMeta {
 
 - **Replay.** `session/load` sends the recorded conversation as the same
   updates a live run would, with the recorded tool call ids and final
-  statuses, and each update's `meta.seq`. It **never re-runs a tool**. Then it
+  statuses (every call has an id from 1.2.8; in an older record a call
+  without one is named by its request's event id, and its result arrives as
+  a `tool_call` of its own rather than being guessed onto a card), and each update's `meta.seq`. It **never re-runs a tool**. Then it
   restores the model, the mode (within today's ceiling), the approval scopes
   recorded as `approval.scope_granted` (only those today's policy still
   allows), the budget and the todo list.
 - **One writer.** A session held by another Abhed process (the CLI) is
-  refused with -32000 "open in another Abhed process"; Studio offers to fork
-  it instead.
+  refused with -32004 "open in another Abhed process"; Studio offers to fork
+  it instead, matching the code rather than the words (engines before 1.2.8
+  sent -32000).
 - **Requested trust.** `session/load`, `session/resume` and
   `_abhed/session/fork` take `meta.trust: "untrusted"` as `session/new` does
   (§5.6): the session opens taking only the workspace settings that tighten,
@@ -785,7 +789,24 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   IDE's interactive terminal does the same. Only the process and none tiers
   can ask the terminal; in a container a typed-ahead line is judged by its
   echo alone.
+- A line typed while a program has the terminal is told from one typed at the
+  shell's prompt by the terminal's foreground process group: the shell runs
+  with job control (`bash -i -m`), so each program gets a group of its own.
+  The engine logs to stderr the shell's group, the first time a program has
+  the terminal, and bash's notice when it has no job control; lines typed
+  into a program are then judged as the shell's.
 - `confirm` is answered only from a modal whose default is No.
+- In `lines` mode the engine draws the prompt (the workspace folder and the
+  path under it, then `$`), echoes typed text in bold, and shows each line's
+  output followed by its dimmed `exit N · time`. It edits the line itself:
+  Backspace deletes, and a key that sends an escape sequence (the arrows,
+  Home, End, function keys, Alt with a key, a paste's bracketed-paste
+  markers, a terminal's replies) is dropped whole, never typed. There is no
+  history or cursor movement; an Esc alone at the end of an input is the Esc
+  key, and a line break ends a sequence left unfinished. Lines entered while
+  one runs wait their turn; Ctrl-C stops the one running and drops those
+  waiting, as a shell flushes its input on an interrupt, and the terminal
+  says `abhed: N typed-ahead lines were not run`.
 - Studio's ACP `terminal` client capability stays `false`: the agent never
   runs commands in Studio's terminals.
 
@@ -1005,7 +1026,8 @@ Where the engine differs from the sections above:
    Enter and recorded `terminal.input`, withheld when the terminal did not
    show it. As in the workbench, it is refused where only a line-by-line
    terminal applies every rule (`sandbox.terminal: "lines"`, or a managed
-   policy whose deny rules or hooks screen `bash`), and a destructive line
+   file that itself sets `permissions.deny` screening `bash`, or sets
+   `extensions`), and a destructive line
    there is not confirmed, since the shell, not the engine, runs it.
 5. **Undo (§7.5).** `turn` is the turn number the record's
    `checkpoint.saved` events carry. An accepted hunk moves the baseline, so

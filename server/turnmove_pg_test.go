@@ -1,0 +1,506 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
+)
+
+// hoAdapter asks for a write on "write" and for the blocking tool on "block",
+// and answers anything else, a tool's result included, in words.
+type hoAdapter struct{ path string }
+
+func (hoAdapter) Name() string                           { return "ho" }
+func (hoAdapter) Profile() model.Profile                 { return model.Profile{Name: "ho", ContextWindow: 32000} }
+func (hoAdapter) CountTokens(model.Request) (int, error) { return 10, nil }
+func (h hoAdapter) Complete(_ context.Context, req model.Request) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 4)
+	last := req.Messages[len(req.Messages)-1]
+	switch {
+	case last.Role == model.RoleUser && last.Content == "write":
+		args, _ := json.Marshal(map[string]string{"path": h.path, "content": "x"})
+		c := model.ToolCall{ID: "w1", Name: "write", Args: args}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+	case last.Role == model.RoleUser && last.Content == "block":
+		c := model.ToolCall{ID: "b1", Name: "blocker", Args: json.RawMessage(`{"n":"1"}`)}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+	case last.Role == model.RoleTool:
+		ch <- model.Chunk{Type: model.ChunkText, Text: "done after " + last.ToolCallID}
+	default:
+		ch <- model.Chunk{Type: model.ChunkText, Text: "ok"}
+	}
+	ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 10}}
+	close(ch)
+	return ch, nil
+}
+
+// blocker is a read-only tool that runs until released, counting its runs.
+type blocker struct {
+	runs    atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func newBlocker() *blocker {
+	return &blocker{started: make(chan struct{}, 4), release: make(chan struct{})}
+}
+func (*blocker) Name() string        { return "blocker" }
+func (*blocker) Description() string { return "waits" }
+func (*blocker) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"n":{"type":"string"}}}`)
+}
+func (*blocker) Mutates() bool { return false }
+func (b *blocker) Run(ctx context.Context, _ *tools.Session, _ json.RawMessage) tools.Result {
+	b.runs.Add(1)
+	b.started <- struct{}{}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return tools.Result{Content: "blocked and released"}
+}
+
+type hoServer struct {
+	t     *testing.T
+	s     *Server
+	h     http.Handler
+	mover *testMover
+}
+
+// testMover moves turns with no protocol of its own: a suspended row is left
+// held by its old holder, and another process claims it as an orphan.
+type testMover struct {
+	pg     *store.Postgres
+	parked atomic.Int32
+}
+
+func (m *testMover) park(context.Context, string, string) (bool, error) {
+	m.parked.Add(1)
+	return true, nil
+}
+
+func (m *testMover) claim(ctx context.Context, id, holder string) (bool, error) {
+	return m.pg.ClaimOrphan(ctx, id, holder, nodeStale)
+}
+
+func (m *testMover) HandOver(ctx context.Context, s *Server) int {
+	return s.SuspendRunning(ctx, m.park)
+}
+
+func (m *testMover) TakeOver(ctx context.Context, s *Server, id string, held bool) error {
+	if held {
+		return s.ContinueOpenTurn(ctx, id, nil)
+	}
+	return s.ContinueOpenTurn(ctx, id, m.claim)
+}
+
+// newHOServer is one process with a TurnMover; processes share the
+// workspace, as on one volume.
+func newHOServer(t *testing.T, st EventStore, blk *blocker, ws string, with ...func(*Options)) *hoServer {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	m := &testMover{}
+	m.pg, _ = st.(*store.Postgres)
+	opts := Options{Workspace: ws, Config: cfg, Adapter: hoAdapter{path: filepath.Join(ws, "x.txt")}, Store: st, TurnMover: m,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, blk)}
+	for _, f := range with {
+		f(&opts)
+	}
+	s := New(opts)
+	return &hoServer{t: t, s: s, h: s.Handler(), mover: m}
+}
+
+// staleClaim ages a row's claim past nodeStale, as a holder that stopped beating.
+func staleClaim(t *testing.T, id string) {
+	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
+}
+
+func tempWorkspace(t *testing.T) string {
+	ws := t.TempDir()
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	return ws
+}
+
+func (h *hoServer) start(prompt string) string {
+	h.t.Helper()
+	id, err := h.s.StartSession(context.Background(), StartSpec{Prompt: prompt, Tenant: "acme", User: "alice"})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return id
+}
+
+func (h *hoServer) do(method, path, body string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	req.Header.Set("X-Abhed-User", "alice")
+	h.h.ServeHTTP(rec, req)
+	return rec
+}
+
+func (h *hoServer) live(id string) *liveSession {
+	h.s.mu.RLock()
+	defer h.s.mu.RUnlock()
+	return h.s.running[id]
+}
+
+func (h *hoServer) state(id string) string {
+	if l := h.live(id); l != nil {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.State
+	}
+	return ""
+}
+
+func (h *hoServer) events(id string) []agent.Event {
+	evs, _ := h.s.store.Events(id)
+	return evs
+}
+
+// oneOutcomeEach fails unless every request in the record has exactly one
+// approval or denial, recorded before the record's last end.
+func oneOutcomeEach(t *testing.T, evs []agent.Event) {
+	t.Helper()
+	requested := map[string]bool{}
+	outcomes := map[string]int{}
+	lastEnd := int64(0)
+	for _, e := range evs {
+		if e.Type == agent.EvSessionEnded {
+			lastEnd = e.Seq
+		}
+	}
+	for _, e := range evs {
+		var p struct {
+			CallID string `json:"call_id"`
+		}
+		_ = json.Unmarshal(e.Payload, &p)
+		switch e.Type {
+		case agent.EvActionRequested:
+			requested[p.CallID] = true
+		case agent.EvActionApproved, agent.EvActionDenied:
+			outcomes[p.CallID]++
+			if e.Seq > lastEnd {
+				t.Errorf("the outcome for %s came after the last end", p.CallID)
+			}
+		}
+	}
+	for id := range requested {
+		if outcomes[id] != 1 {
+			t.Errorf("request %s has %d outcomes", id, outcomes[id])
+		}
+	}
+}
+
+// A drain with a TurnMover suspends the turn waiting on a question, keeping
+// its claim and writing no end; another process continues it when a message
+// for it arrives, asks the question again, runs the call once it is
+// approved, and goes on with the turn, the message steering it.
+func TestTurnMoverSuspendsAndContinuesAQuestion(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	a := newHOServer(t, openSharedPG(t), blk, ws)
+	b := newHOServer(t, openSharedPG(t), blk, ws)
+	id := a.start("write")
+	waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err == nil {
+		t.Fatal("the write ran before it was approved")
+	}
+	a.s.drain() // no drain budget: what runs is suspended at once
+	if a.live(id) != nil {
+		t.Fatal("A kept the session it suspended")
+	}
+	if a.mover.parked.Load() != 1 {
+		t.Fatalf("parked %d sessions", a.mover.parked.Load())
+	}
+	if h := pgHolder(t, id); h != a.s.holder {
+		t.Fatalf("holder after the suspend = %q", h)
+	}
+	if _, ended := agent.LastEnd(b.events(id)); ended {
+		t.Fatal("the suspended run recorded an end")
+	}
+	staleClaim(t, id)
+
+	if rec := b.do("POST", "/v1/sessions/"+id+"/messages", `{"prompt":"also this"}`); rec.Code != http.StatusAccepted ||
+		!strings.Contains(rec.Body.String(), "steered") {
+		t.Fatalf("message to the suspended session = %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "B to ask again", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := b.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("approve on B = %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "B's turn to end", func() bool {
+		end, ok := agent.LastEnd(b.events(id))
+		return ok && end.Reason == agent.TermCompleted
+	})
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err != nil {
+		t.Fatalf("the write asked again did not run: %v", err)
+	}
+	evs := b.events(id)
+	oneOutcomeEach(t, evs)
+	if countType(evs, agent.EvTurnContinued) != 1 || countType(evs, agent.EvSessionEnded) != 1 {
+		t.Fatalf("record: %d turn.continued, %d ends", countType(evs, agent.EvTurnContinued), countType(evs, agent.EvSessionEnded))
+	}
+	var steered bool
+	for _, m := range payloadsOf(evs, agent.EvUserMessage) {
+		steered = steered || m["text"] == "also this"
+	}
+	if !steered {
+		t.Fatal("the message sent to the suspended session never reached the turn")
+	}
+}
+
+// A process that dies while a call runs: once its claim is stale, another
+// process's sweep continues the turn through its TurnMover, answers the call
+// as outcome unknown without running it again, and the turn goes on. The
+// dead process's late result is refused.
+func TestTurnMoverContinuesACrashedTurn(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	a := newHOServer(t, openSharedPG(t), blk, ws)
+	b := newHOServer(t, openSharedPG(t), blk, ws)
+	id := a.start("block")
+	<-blk.started
+	// A stops beating, as a process that died, and its claim goes stale.
+	aLive := a.live(id)
+	aLive.mu.Lock()
+	stop := aLive.beatStop
+	aLive.beatStop = nil
+	aLive.mu.Unlock()
+	stop()
+
+	if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); !errors.Is(err, ErrSessionBusy) {
+		t.Fatalf("B continued a session whose holder is alive: %v", err)
+	}
+	staleClaim(t, id)
+	if n := b.s.RecoverOrphans(context.Background()); n < 1 {
+		t.Fatalf("B's sweep took %d sessions over", n)
+	}
+	waitUntil(t, "B's turn to end", func() bool {
+		end, ok := agent.LastEnd(b.events(id))
+		return ok && end.Reason == agent.TermCompleted
+	})
+	if n := blk.runs.Load(); n != 1 {
+		t.Fatalf("the call ran %d times", n)
+	}
+	close(blk.release) // A's call returns now; its result must not land
+	waitUntil(t, "A to be fenced", func() bool { return aLive.fenced.Load() })
+
+	evs := b.events(id)
+	oneOutcomeEach(t, evs)
+	obs := 0
+	for _, o := range payloadsOf(evs, agent.EvObservation) {
+		if o["call_id"] == "b1" {
+			obs++
+			if o["outcome_unknown"] != true {
+				t.Fatalf("b1 answered without outcome_unknown: %v", o)
+			}
+		}
+	}
+	if obs != 1 {
+		t.Fatalf("b1 has %d results", obs)
+	}
+	var said bool
+	for _, m := range payloadsOf(evs, agent.EvAgentMessage) {
+		said = said || m["text"] == "done after b1"
+	}
+	if !said {
+		t.Fatal("the turn did not go on after the unknown outcome")
+	}
+	if h := pgHolder(t, id); h == a.s.holder {
+		t.Fatal("A holds the session again")
+	}
+}
+
+// A continuation that fails after its claim ends the session as recovered,
+// and first gives each open call its outcome: the question left open is
+// refused, and the call that may have run is answered as outcome unknown.
+func TestFailedContinuationSettlesOpenCalls(t *testing.T) {
+	broken := func(o *Options) {
+		o.SecretsFor = func(string, string) (*secrets.Store, error) { return nil, errors.New("vault down") }
+	}
+	t.Run("suspended", func(t *testing.T) {
+		blk := newBlocker()
+		ws := tempWorkspace(t)
+		a := newHOServer(t, openSharedPG(t), blk, ws)
+		b := newHOServer(t, openSharedPG(t), blk, ws, broken)
+		id := a.start("write")
+		waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+		a.s.drain()
+		staleClaim(t, id)
+		if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); err == nil {
+			t.Fatal("B continued without its secrets")
+		}
+		evs := b.events(id)
+		end, ok := agent.LastEnd(evs)
+		if !ok || !end.Recovered {
+			t.Fatalf("not ended as recovered: %v %+v", ok, end)
+		}
+		oneOutcomeEach(t, evs)
+		var refused bool
+		for _, d := range payloadsOf(evs, agent.EvActionDenied) {
+			refused = refused || d["call_id"] == "w1" && d["step"] == "handover"
+		}
+		if !refused {
+			t.Fatal("the open question was not refused")
+		}
+	})
+	t.Run("crashed while running", func(t *testing.T) {
+		blk := newBlocker()
+		ws := tempWorkspace(t)
+		a := newHOServer(t, openSharedPG(t), blk, ws)
+		b := newHOServer(t, openSharedPG(t), blk, ws, broken)
+		id := a.start("block")
+		<-blk.started
+		aLive := a.live(id)
+		aLive.mu.Lock()
+		stop := aLive.beatStop
+		aLive.beatStop = nil
+		aLive.mu.Unlock()
+		stop()
+		staleClaim(t, id)
+		if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); err == nil {
+			t.Fatal("B continued without its secrets")
+		}
+		close(blk.release)
+		waitUntil(t, "A to be fenced", func() bool { return aLive.fenced.Load() })
+		evs := b.events(id)
+		if _, ok := agent.LastEnd(evs); !ok {
+			t.Fatal("the session was left open")
+		}
+		oneOutcomeEach(t, evs)
+		obs := payloadsOf(evs, agent.EvObservation)
+		if len(obs) != 1 || obs[0]["call_id"] != "b1" || obs[0]["outcome_unknown"] != true {
+			t.Fatalf("b1 results: %v", obs)
+		}
+	})
+}
+
+// A process fenced while its call waits for approval: the approval given to
+// it cannot be recorded, so it never runs the call. The process that
+// continues the session sees no approval, asks again, and runs the call once.
+func TestUnrecordedApprovalNeverRunsWhenContinued(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	a := newHOServer(t, openSharedPG(t), blk, ws)
+	b := newHOServer(t, openSharedPG(t), blk, ws)
+	id := a.start("write")
+	waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+	aLive := a.live(id)
+	aLive.mu.Lock()
+	stop := aLive.beatStop
+	aLive.beatStop = nil
+	aLive.mu.Unlock()
+	stop()
+	// Another process holds the row now: A's writes are refused.
+	pgExec(t, "UPDATE sessions SET node_id = 'node-z', node_seen_at = now() WHERE id = $1", id)
+	_ = a.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`)
+	waitUntil(t, "A's run to stop", func() bool {
+		aLive.mu.Lock()
+		defer aLive.mu.Unlock()
+		return aLive.ran == nil
+	})
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err == nil {
+		t.Fatal("A ran the write with no approval on record")
+	}
+	for _, e := range b.events(id) {
+		if e.Type == agent.EvActionApproved {
+			t.Fatalf("an approval reached the record: %s", e.Payload)
+		}
+	}
+
+	staleClaim(t, id)
+	if err := b.s.ContinueOpenTurn(context.Background(), id, b.mover.claim); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	waitUntil(t, "B to ask again", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := b.do("GET", "/v1/sessions/"+id+"/replay", ""); rec.Code != http.StatusOK {
+		t.Fatalf("B cannot replay the session it continued: %d %s", rec.Code, rec.Body)
+	}
+	if rec := b.do("POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("approve on B = %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "B's turn to end", func() bool {
+		end, ok := agent.LastEnd(b.events(id))
+		return ok && end.Reason == agent.TermCompleted
+	})
+	if _, err := os.Stat(filepath.Join(ws, "x.txt")); err != nil {
+		t.Fatalf("the write asked again did not run: %v", err)
+	}
+	evs := b.events(id)
+	oneOutcomeEach(t, evs)
+	if n := countType(evs, agent.EvActionApproved); n != 1 {
+		t.Fatalf("%d approvals on record; want the one B ran", n)
+	}
+}
+
+// A terminal open in a session being suspended records its end before the
+// row is parked, which would refuse it after.
+func TestSuspendRecordsTheTerminalsEnd(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	withBash := func(o *Options) {
+		o.Registry = tools.NewRegistry(tools.Read{}, tools.Write{}, blk, tools.Bash{})
+		o.Config.Permissions.Allow = []string{"bash(sleep *)"}
+	}
+	a := newHOServer(t, openSharedPG(t), blk, ws, withBash)
+	id := a.start("block")
+	<-blk.started
+	rec := a.do("POST", "/v1/sessions/"+id+"/pty", `{"command":"sleep 30","cols":80,"rows":24}`)
+	var pty ptyStartResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &pty); err != nil || rec.Code != http.StatusOK || pty.ID == "" {
+		t.Fatalf("terminal: %d %s", rec.Code, rec.Body)
+	}
+	a.s.drain()
+	if a.mover.parked.Load() != 1 || a.live(id) != nil {
+		t.Fatalf("not suspended: parked %d", a.mover.parked.Load())
+	}
+	for _, o := range payloadsOf(a.events(id), agent.EvObservation) {
+		if o["call_id"] == pty.ID {
+			return
+		}
+	}
+	t.Fatalf("the terminal's end was not recorded before the suspend: %v", payloadsOf(a.events(id), agent.EvObservation))
+}
+
+// Without a TurnMover a drain ends the running turn as a shutdown and gives
+// its claim up, as 1.2.7 did; nothing continues it on its own.
+func TestDrainWithoutTurnMoverEndsTheTurn(t *testing.T) {
+	blk := newBlocker()
+	ws := tempWorkspace(t)
+	none := func(o *Options) { o.TurnMover = nil }
+	a := newHOServer(t, openSharedPG(t), blk, ws, none)
+	b := newHOServer(t, openSharedPG(t), blk, ws, none)
+	id := a.start("write")
+	waitUntil(t, "A to ask", func() bool { return a.state(id) == "waiting_approval" })
+	a.s.drain()
+	end, ok := agent.LastEnd(a.events(id))
+	if !ok || end.Reason != agent.TermShutdown {
+		t.Fatalf("the drained turn ended %v %+v", ok, end)
+	}
+	staleClaim(t, id)
+	b.s.RecoverOrphans(context.Background())
+	evs := b.events(id)
+	if countType(evs, agent.EvTurnContinued) != 0 || b.live(id) != nil {
+		t.Fatal("a server with no TurnMover continued the turn")
+	}
+	oneOutcomeEach(t, evs)
+}

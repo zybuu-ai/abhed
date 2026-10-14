@@ -29,9 +29,11 @@ type Requirements struct {
 	// process's own cgroup.
 	CgroupDir string
 	// Mounts requires a mount namespace of the command's own, for a surface
-	// that keeps paths inside the workspace read-only. Without it the check
-	// is still made, and reported, but does not refuse.
+	// that keeps paths inside the workspace read-only.
 	Mounts bool
+	// AllowRoot lets the fence run as root, which the managed fence.allow_root
+	// alone turns on.
+	AllowRoot bool
 }
 
 // minABI is the Landlock ABI r asks for, never below the fence's floor.
@@ -120,7 +122,7 @@ func (r *Report) Add(c Check) {
 func (r *Report) finish() {
 	fails := r.Failures()
 	r.Qualified = len(r.Checks) > 0 && len(fails) == 0
-	host := strings.TrimSpace(fmt.Sprintf("%s %s %s", r.OS, r.Kernel, r.Arch))
+	host := strings.Join(strings.Fields(fmt.Sprintf("%s %s %s", r.OS, r.Kernel, r.Arch)), " ")
 	if r.Qualified {
 		passed := 0
 		for _, c := range r.Checks {

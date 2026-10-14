@@ -42,7 +42,10 @@ type StatusModel struct {
 	// SandboxTier is none, process, container or vm; Network is whether the
 	// sandbox lets commands reach the network.
 	SandboxTier string `json:"sandbox_tier"`
-	Network     bool   `json:"network"`
+	// SandboxChecking is set while the tier is still being chosen; SandboxTier
+	// is then the least it will be.
+	SandboxChecking bool `json:"sandbox_checking,omitempty"`
+	Network         bool `json:"network"`
 
 	Record      RecordStatus `json:"record"`
 	SessionName string       `json:"session_name,omitempty"`

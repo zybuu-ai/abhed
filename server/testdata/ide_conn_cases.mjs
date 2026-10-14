@@ -36,8 +36,9 @@ check('a shell stream that drops with the server gone says offline', shown() ===
 __up = true; await tick();
 
 // Any request that cannot reach the server says so, too.
-__up = false; try{ await api('/v1/sessions'); }catch{} await tick();
+let offlineMsg = ''; __up = false; try{ await api('/v1/sessions'); }catch(e){ offlineMsg = e.message; } await tick();
 check('a request that cannot reach the server says offline', shown() === '● offline');
+check('in words a person can act on, not the browser\'s', offlineMsg.startsWith('the server could not be reached') && !offlineMsg.includes('fetch'));
 __up = true; await tick();
 check('and it recovers on its own', shown() === '● connected');
 

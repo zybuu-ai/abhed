@@ -156,7 +156,7 @@ Inside a session:
 
 | Command | What it does |
 |---|---|
-| `/sessions` | this workspace's sessions, latest active first; `*` marks the one you are in |
+| `/sessions` | this workspace's sessions, latest active first; `*` marks the one you are in. On a shared Postgres store, only your own sessions in your tenant |
 | `/resume [id or name]` | continue a session; with no argument, pick one |
 | `/switch [id or name]` | the same as `/resume` |
 | `/rename <name>` | name this session (recorded as `session.named`) |
@@ -248,12 +248,88 @@ What `verify` cannot show:
   first line, or to nothing, with its creation head written back, looks
   exactly like a crash during its first write. That is the same edit as
   rewriting a head, below. With two or more lines left, a creation head fails.
-- **An owner who rewrites the evidence.** Verification is only as strong as
-  the head and index files, and the same owner can rewrite those as well as
-  the lines, or compute a whole new chain. The record is tamper-evident against
-  the agent and against accidental or partial edits, and it can be verified
-  offline. It is not proof against the machine's owner. Abhed does not anchor
-  the chain outside the machine.
+- **An owner who rewrites the evidence, without a witness.** Verification is
+  only as strong as the head and index files, and the same owner can rewrite
+  those as well as the lines, or compute a whole new chain. Without
+  `record.witness` the record is tamper-evident against the agent and against
+  accidental or partial edits, and it can be verified offline, but it is not
+  proof against the machine's owner.
+
+### A witness outside the machine
+
+The managed configuration can send every head, as it is synced, to a witness
+the machine's owner does not control:
+
+```json
+{ "record": { "witness": {
+    "file": "/Volumes/audit-worm/abhed-heads.jsonl",
+    "url": "https://audit.example.com/abhed/heads",
+    "token_secret": "AUDIT_WITNESS_TOKEN" } } }
+```
+
+`file` is appended one signed statement per line (installation, tenant,
+session, line count, seq, hash, time); put it on storage the owner cannot
+rewrite, such as a WORM or object-lock mount or another host's share. `url`
+is sent each statement as a JSON POST, with the named secret as a bearer
+token. Statements are signed with an Ed25519 key kept as `witness.key` in the
+records folder, which says which installation sent them; it does not stop the
+owner, who holds the key, so the witness's value is where it keeps them. A
+witness that is set and cannot be opened, or a `url` that is not an `http` or
+`https` URL with a host, stops the start. A head that fails
+to reach the URL, or to be appended to the file, is logged as a warning when
+it fails, the first at once and then at most one a minute with a count of
+the rest, so a long-running `abhed serve` says so the same day; those not
+yet logged are counted in one last warning when Abhed stops. The URL is
+named without its user information, query or fragment.
+
+`abhed record verify` then also checks every head in `record.witness.file`
+(or a copy named with `-witness <file>`): each must still be in the record,
+line for line. A record cut back, re-chained, or put back from an older copy
+fails there, though it passes every other check. Each statement must also be
+signed with this installation's key, read from `witness.key` in the records
+folder; a statement under any other key fails, since one signed with a key
+of its own proves nothing about who sent it. To check on another machine,
+give the key with `-witness-key`: the public key as statements carry it
+(base64, printed by every check), or a copy of `witness.key`. Without a key
+the heads are not checked and `verify` fails.
+A session pruned on the record (by `record.retention_days`, `abhed record
+prune`, or a delete) is reported as `pruned`, not failed, when the index's
+tombstone holds the witnessed hash at that line and says the record was there
+and verified when it was pruned. The tombstone keeps the hash at its head
+and, when `record.witness.file` is set, at every line the witness file held
+for the session then: a prune reads that file first, checks the record
+against each head in it, and is refused when the file cannot be read (a
+file not written yet, before any head was sent, holds none). A
+record that no longer matched the witness is pruned as unverified, so a
+record re-chained and then pruned still fails. A witnessed line the prune
+kept no hash for fails too: with only `record.witness.url`, or a head the
+file did not hold yet, a prune can show only the session's last line, so set
+a witness file if sessions are pruned. A session file gone with no tombstone
+still fails, and so does one pruned after its file was removed or edited:
+the prune does not account for what was done before it. The tombstone is
+the installation's own word; an owner who writes the index by hand, rather
+than through `abhed record prune`, is caught only by the witness holding
+the index's heads.
+
+What a witness still cannot show: lines written after the last head it was
+sent (the last sync), and anything before it was configured.
+
+### The Postgres record
+
+In Postgres every event is chained to the one before it in its session, by
+the database itself: a trigger sets `chain_pos`, `prev_hash` and `hash`,
+whatever the server sent, and holds a lock per session so concurrent writers
+make one chain. The control plane's `sandbox_audit` is chained per tenant the
+same way. `abhed record verify [session ...]` with `storage.driver: postgres`
+walks each chain in the database (with no session named, the 100000 most
+recent, deleted and subagent sessions among them and marked so, and it says
+so when there are more) and reports the first event that was
+changed, removed or reordered; events written before 1.2.8 are counted as
+unchained, not as broken. The runtime role cannot change a row, but the
+tables' owner can, and can recompute the chain: with `record.witness` each
+session's head is sent at the end of every run, and `verify` checks that the
+database still holds every head the witness has. A deleted session's rows stay, erased by
+key, so its witnessed heads still verify.
 
 ## Exporting
 
@@ -297,7 +373,9 @@ Pruning removes a session and the subagent sessions it started. Before
 anything is removed, a tombstone goes into the index for each, with its id,
 its head as stored (or as the index last recorded it, if the head is gone),
 the time, who pruned it and why, whether its file was already missing, and
-whether it verified. A damaged record can be pruned; its tombstone says so.
+whether it verified. A damaged record can be pruned; its tombstone says so,
+and so does prune: it names each session that did not verify, with why, or
+whose file was already gone, and ends with how many of those it pruned.
 Checkpoint blobs that no remaining session names go with it.
 
 - A session open in any Abhed process, this one included, is not pruned.

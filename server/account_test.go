@@ -157,7 +157,8 @@ func TestIDEVendorRevalidates(t *testing.T) {
 
 // Nothing linked to the workbench, so it could only be reached by typing it.
 func TestWorkbenchIsTheDestinationAndLinked(t *testing.T) {
-	if strings.Count(landingHTML, "'/ide'") < 3 || strings.Contains(landingHTML, "'/console'") {
+	// Sign-in and sign-up go to returnPath(), which is the workbench unless a page sent them.
+	if strings.Count(landingHTML, "'/ide'") < 2 || strings.Count(landingHTML, "returnPath()") < 2 || strings.Contains(landingHTML, "'/console'") {
 		t.Error("sign-in, sign-up and the landing button do not all open the workbench")
 	}
 	if !strings.Contains(consoleHTML, `href="/ide"`) {

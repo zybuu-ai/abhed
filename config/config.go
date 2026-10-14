@@ -9,12 +9,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -81,6 +83,8 @@ type Config struct {
 	// Egress is the rules of the egress proxy that sandbox.network
 	// "allowlist" sends commands through. Managed only.
 	Egress egress.Config `json:"egress,omitempty"`
+	// ControlPlane serves /v1/sandboxes from `abhed serve`. Off by default.
+	ControlPlane ControlPlaneConfig `json:"control_plane,omitempty"`
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
@@ -104,11 +108,16 @@ type Config struct {
 	// Overridden are the settings a lower layer made that the managed file
 	// replaced with another value.
 	Overridden []SetAsideKey `json:"-"`
+	// userNet is the person's own network settings, held until the managed file.
+	userNet *userNetwork
 	// webIntents and origins are what loading holds until the managed file.
 	webIntents []webIntent
 	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
+	// managedRules are the rules the managed file itself lists, by list and
+	// rule as ruleLayers keys them.
+	managedRules map[string]bool
 }
 
 // SettingsSource names a -settings file and the hash of what was merged.
@@ -172,7 +181,24 @@ type RecordConfig struct {
 	// Also are records an embedder hands in beside Dir, never read from a
 	// file; they are state as Dir is.
 	Also []string `json:"-"`
+	// Witness is where each head of the record is sent as it is written, so
+	// the record can be checked against what the machine's owner cannot rewrite.
+	Witness WitnessConfig `json:"witness,omitempty"`
 }
+
+// WitnessConfig names an off-host witness for the record's heads. Managed only.
+type WitnessConfig struct {
+	// File is an append-only file on storage the machine's owner cannot
+	// rewrite, such as a WORM or object-lock mount or another host's share.
+	File string `json:"file,omitempty"`
+	// URL is sent each head as a JSON POST.
+	URL string `json:"url,omitempty"`
+	// TokenSecret names the stored secret sent to URL as a bearer token.
+	TokenSecret string `json:"token_secret,omitempty"`
+}
+
+// On reports whether a witness is configured.
+func (w WitnessConfig) On() bool { return w.File != "" || w.URL != "" }
 
 // SuggestConfig governs the next-prompt suggestion an interactive surface
 // shows after a completed turn. Headless runs never make one.
@@ -182,6 +208,18 @@ type FenceConfig struct {
 	// CPUPercent bounds a session's commands' CPU time, in percent of one
 	// core: 50 is half of one, 200 two whole ones. Zero leaves it unbounded.
 	CPUPercent int `json:"cpu_percent,omitempty"`
+	// Socketcall, on s390x with allow_network, lets commands make sockets
+	// through socketcall(2), as glibc does there. The filter cannot read the
+	// family it is given, so unix sockets are reachable that way too.
+	Socketcall bool `json:"socketcall,omitempty"`
+	// EgressPortOnly lets the fence hold sandbox.network allowlist without a
+	// network namespace (landlock_only), where Landlock can confine TCP to
+	// the proxy's port but not its address: a command reaches that port on
+	// any host. Managed only.
+	EgressPortOnly bool `json:"egress_port_only,omitempty"`
+	// AllowRoot lets the fence run as root (Landlock ABI 6 or later), with
+	// the files under /etc only root may read hidden. Managed only.
+	AllowRoot bool `json:"allow_root,omitempty"`
 }
 
 type SuggestConfig struct {
@@ -229,6 +267,9 @@ func (k SetAsideKey) String() string {
 	return fmt.Sprintf("%s sets %s, which is ignored: %s", Printable(k.File), k.Key, k.Reason)
 }
 
+// MaxSessionHours bounds auth.session_hours at a year.
+const MaxSessionHours = 8760
+
 // NetworkAllowlist is the sandbox.network value that sends commands through
 // the egress proxy.
 const NetworkAllowlist = "allowlist"
@@ -236,30 +277,80 @@ const NetworkAllowlist = "allowlist"
 // managedOnly are the settings only the managed configuration may make. The
 // same key in the user's file or a trusted workspace's is set aside.
 var managedOnly = map[string]string{
-	"cli.mode_cycle":               "only the managed configuration narrows the Shift-Tab modes",
-	"record.dir":                   "only the managed configuration moves the record",
-	"record.retention_days":        "only the managed configuration sets how long the record is kept",
-	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
-	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
-	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
-	"sandbox.network":              "only the managed configuration turns on the egress allowlist",
-	"egress.rules":                 "only the managed configuration sets which destinations commands reach",
-	"egress.default":               "only the managed configuration sets which destinations commands reach",
-	"egress.mode":                  "only the managed configuration sets the egress mode",
-	"egress.record_paths":          "only the managed configuration sets what the egress record keeps",
-	"egress.idle_seconds":          "only the managed configuration sets how long an idle egress connection lasts",
+	"cli.mode_cycle":                     "only the managed configuration narrows the Shift-Tab modes",
+	"record.dir":                         "only the managed configuration moves the record",
+	"record.retention_days":              "only the managed configuration sets how long the record is kept",
+	"record.witness":                     "only the managed configuration says where the record's heads are witnessed",
+	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
+	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
+	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
+	"sandbox.network":                    "only the managed configuration, or your own file narrowing allow_network, turns on the egress allowlist",
+	"fence.egress_port_only":             "only the managed configuration lets the fence hold the allowlist by port alone",
+	"fence.allow_root":                   "only the managed configuration lets the fence run as root",
+	"sandbox.microvm_socket":             "only the managed configuration names the microVM driver",
+	"egress.rules":                       "only the managed configuration sets which destinations commands reach",
+	"egress.default":                     "only the managed configuration sets which destinations commands reach",
+	"egress.mode":                        "only the managed configuration sets the egress mode",
+	"egress.record_paths":                "only the managed configuration sets what the egress record keeps",
+	"egress.idle_seconds":                "only the managed configuration sets how long an idle egress connection lasts",
+	"egress.inspect_tls":                 "only the managed configuration has the egress proxy look inside HTTPS",
+	"control_plane.kubernetes":           "only the managed configuration configures the Kubernetes driver",
+	"control_plane.interceptors":         "only the managed configuration sets what admits sandbox calls",
+	"auth.bound_claims":                  "only the managed configuration sets which identity provider tokens are accepted",
+	"control_plane.ha.relay_peer":        "only the managed configuration names the replicas a relayed call is accepted from",
+	"control_plane.ha.relay_key_command": "only the managed configuration names a program serve runs for the relay key",
+}
+
+// containerManagedOnly are the container drivers' settings that reach more
+// of the host or loosen a bound, under each engine's section.
+var containerManagedOnly = map[string]string{
+	"binary":          "only the managed configuration names the engine's program",
+	"images":          "only the managed configuration adds images a sandbox may run",
+	"mounts":          "only the managed configuration mounts host folders into sandboxes",
+	"mount_roots":     "only the managed configuration lets sandboxes mount host folders",
+	"gpus":            "only the managed configuration gives sandboxes devices",
+	"cpus":            "only the managed configuration sets the CPU bound",
+	"seccomp_profile": "only the managed configuration replaces the seccomp profile",
+	"relay_binary":    "only the managed configuration names the program run inside sandboxes as the egress relay",
+}
+
+func init() {
+	for _, engine := range []string{"docker", "podman"} {
+		for k, why := range containerManagedOnly {
+			managedOnly["control_plane."+engine+"."+k] = why
+		}
+	}
 }
 
 // ManagedOnly reports whether only the managed configuration may make the
-// setting at path.
+// setting at path, or the setting it is an entry of.
 func ManagedOnly(path string) bool {
-	_, ok := managedOnly[path]
+	_, _, ok := managedOnlyOf(path)
 	return ok
+}
+
+// managedOnlyOf is the managed-only setting path is, or is an entry of (a
+// map's entry is a setting of its own), and why.
+func managedOnlyOf(path string) (key, why string, ok bool) {
+	for p := path; ; {
+		if why, ok := managedOnly[p]; ok {
+			return p, why, true
+		}
+		i := strings.LastIndexByte(p, '.')
+		if i < 0 {
+			return "", "", false
+		}
+		p = p[:i]
+	}
 }
 
 // clearManagedOnly resets a managed-only setting to its default.
 func clearManagedOnly(c *Config, key string) {
 	switch key {
+	case "fence.egress_port_only":
+		c.Fence.EgressPortOnly = false
+	case "fence.allow_root":
+		c.Fence.AllowRoot = false
 	case "cli.mode_cycle":
 		c.CLI.ModeCycle = nil
 	case "record.dir":
@@ -274,6 +365,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Studio.DisableHostTerminal = false
 	case "sandbox.network":
 		c.Sandbox.Network = ""
+	case "sandbox.microvm_socket":
+		c.Sandbox.MicroVMSocket = ""
 	case "egress.rules":
 		c.Egress.Rules = nil
 	case "egress.default":
@@ -284,19 +377,61 @@ func clearManagedOnly(c *Config, key string) {
 		c.Egress.RecordPaths = nil
 	case "egress.idle_seconds":
 		c.Egress.IdleSeconds = 0
+	case "egress.inspect_tls":
+		c.Egress.InspectTLS = false
+	case "control_plane.kubernetes":
+		c.ControlPlane.Kubernetes = nil
+	case "control_plane.interceptors":
+		c.ControlPlane.Interceptors = nil
+	case "auth.bound_claims":
+		c.Auth.BoundClaims = nil
+	case "control_plane.ha.relay_peer":
+		c.ControlPlane.HA.RelayPeer = ""
+	case "control_plane.ha.relay_key_command":
+		c.ControlPlane.HA.RelayKeyCommand = nil
+	}
+	for engine, cc := range map[string]*ContainerDriverConfig{"docker": &c.ControlPlane.Docker, "podman": &c.ControlPlane.Podman} {
+		switch key {
+		case "control_plane." + engine + ".binary":
+			cc.Binary = ""
+		case "control_plane." + engine + ".images":
+			cc.Images = nil
+		case "control_plane." + engine + ".mounts":
+			cc.Mounts = nil
+		case "control_plane." + engine + ".mount_roots":
+			cc.MountRoots = nil
+		case "control_plane." + engine + ".gpus":
+			cc.GPUs = nil
+		case "control_plane." + engine + ".cpus":
+			cc.CPUs = 0
+		case "control_plane." + engine + ".seccomp_profile":
+			cc.SeccompProfile = ""
+		case "control_plane." + engine + ".relay_binary":
+			cc.RelayBinary = ""
+		}
 	}
 }
 
 // setAside leaves out the managed-only settings the files merged so far
 // made, crediting them to file. It runs before the managed file is merged,
 // so every managed-only value present came from a lower layer.
-func setAside(c *Config, file, layer string) {
+func setAside(c *Config, file, layer string, data []byte) {
 	setAsideWeb(c, file, layer)
 	kept := c.SetKeys[:0:0]
 	for _, k := range c.SetKeys {
-		if why, ok := managedOnly[k]; ok {
+		if why, ok := managedOnly[k]; ok && layer == LayerUser && (k == "sandbox.network" || strings.HasPrefix(k, "egress.")) {
+			// Held until the managed file is read: the person's own file may
+			// narrow allow_network to an allowlist of their own.
+			if c.userNet == nil {
+				c.userNet = &userNetwork{network: c.Sandbox.Network, egress: c.Egress}
+			}
+			c.userNet.keys = append(c.userNet.keys, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
 			clearManagedOnly(c, k)
-			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Reason: why})
+			continue
+		}
+		if key, why, ok := managedOnlyOf(k); ok {
+			clearManagedOnly(c, key)
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Value: valueIn(data, k), Reason: why})
 			continue
 		}
 		kept = append(kept, k)
@@ -304,15 +439,76 @@ func setAside(c *Config, file, layer string) {
 	c.SetKeys = kept
 }
 
-// warnSetAside writes each set-aside setting once per process.
-func warnSetAside(keys []SetAsideKey) {
-	warnedMu.Lock()
-	defer warnedMu.Unlock()
-	for _, k := range keys {
-		if id := "aside\x00" + k.File + "\x00" + k.Key + "\x00" + k.Value; !warned[id] {
-			warned[id] = true
-			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
+// userNetwork is the person's own sandbox.network and egress settings, held
+// until the managed file is read.
+type userNetwork struct {
+	network string
+	egress  egress.Config
+	keys    []SetAsideKey
+}
+
+// userOwnNever are the egress settings the person's own allowlist does not
+// carry: they change what is inspected and recorded, not what is reached.
+var userOwnNever = map[string]bool{"egress.inspect_tls": true, "egress.record_paths": true}
+
+// userAllowlistNarrows applies the person's own allowlist and egress rules
+// where they only narrow: allow_network is true and the managed file sets
+// none of allow_network, sandbox.network or egress. Otherwise they are set
+// aside, so they never open a host that no network, or the managed rules,
+// would have kept closed.
+func userAllowlistNarrows(c *Config) {
+	u := c.userNet
+	c.userNet = nil
+	if u == nil {
+		return
+	}
+	managedNet := c.ManagedSets("sandbox.allow_network") || c.ManagedSets("sandbox.network") || c.ManagedSets("egress")
+	if u.network == NetworkAllowlist && c.Sandbox.AllowNetwork && !managedNet {
+		c.Sandbox.Network, c.Egress = NetworkAllowlist, u.egress
+		for _, k := range u.keys {
+			// Looking inside HTTPS and what the record keeps are not narrowing:
+			// they stay the managed file's, as their reasons say.
+			if userOwnNever[k.Key] {
+				clearManagedOnly(c, k.Key)
+				c.SetAside = append(c.SetAside, k)
+				continue
+			}
+			c.SetKeys = append(c.SetKeys, k.Key)
 		}
+		return
+	}
+	for _, k := range u.keys {
+		switch {
+		case managedNet:
+		case u.network != NetworkAllowlist:
+			k.Reason = "your own egress settings apply only with sandbox.network \"allowlist\" in the same file"
+		default:
+			k.Reason = "your own allowlist applies only over sandbox.allow_network true, which it narrows; without it commands already reach nothing"
+		}
+		c.SetAside = append(c.SetAside, k)
+	}
+}
+
+// valueIn is the value data gives the setting at key, as a record shows it,
+// or "" when data does not set it.
+func valueIn(data []byte, key string) string {
+	var raw any
+	if json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	out := ""
+	walkSet("", raw, reflect.TypeFor[Config](), func(p string, v any) {
+		if p == key {
+			out = RedactValue(p, v)
+		}
+	})
+	return out
+}
+
+// warnSetAside warns of each set-aside setting.
+func warnSetAside(w warnSink, keys []SetAsideKey) {
+	for _, k := range keys {
+		w.emit("aside\x00"+k.File+"\x00"+k.Key+"\x00"+k.Value, k.String())
 	}
 }
 
@@ -526,10 +722,21 @@ type AuthConfig struct {
 	Scopes        []string `json:"scopes,omitempty"`
 	// CookieSecure should be true anywhere but local HTTP development.
 	CookieSecure bool `json:"cookie_secure,omitempty"`
-	SessionHours int  `json:"session_hours,omitempty"`
+	// SessionHours is how long a browser sign-in lasts, 0 to MaxSessionHours.
+	SessionHours int `json:"session_hours,omitempty"`
 	// ProxyLogoutURL is the authenticating proxy's own sign-out, in proxy
 	// mode. Without it the console offers no sign-out, since the proxy owns it.
 	ProxyLogoutURL string `json:"proxy_logout_url,omitempty"`
+	// CLI is command-line sign-in (abhed login): against local accounts, or
+	// through the identity provider in an edition that serves auth.mode oidc.
+	CLI CLILoginConfig `json:"cli,omitempty"`
+	// Workload is workload identity (SPIFFE) and token exchange, which the
+	// Enterprise edition serves. The Community Edition refuses enabled.
+	Workload WorkloadAuthConfig `json:"workload,omitempty"`
+	// BoundClaims holds the identity provider's bearer tokens to claim
+	// values: each claim named must match one of its values, exactly or, for
+	// one ending in *, by prefix. An edition's OIDC reads it; managed only.
+	BoundClaims map[string][]string `json:"bound_claims,omitempty"`
 	// GitHub restricts GitHub sign-in, which only the paid editions provide.
 	// The Community Edition validates these keys and otherwise ignores them.
 	GitHub GitHubAuthConfig `json:"github,omitempty"`
@@ -604,6 +811,214 @@ type StorageConfig struct {
 	SingleRole bool `json:"single_role,omitempty"`
 }
 
+// ControlPlaneConfig turns on the sandbox control plane in `abhed serve` and
+// sets the global values of the settings registry (controlplane.Settings).
+// A value the managed file sets is a ceiling a sandbox may only tighten.
+// Zero values mean the registry's defaults.
+type ControlPlaneConfig struct {
+	// Enabled serves /v1/sandboxes and runs the reconciler. Off leaves serve
+	// exactly as it was.
+	Enabled bool `json:"enabled,omitempty"`
+	// WorkspaceRoot is where each sandbox gets a folder of its own. Empty
+	// means a folder in the control plane's state folder, outside ~/.abhed
+	// and the server's workspace.
+	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	// SharedWorkspace gives every sandbox the server's workspace instead, as
+	// sessions have; WorkspaceRoot must then be unset.
+	SharedWorkspace bool `json:"shared_workspace,omitempty"`
+	// SnapshotDir holds sandbox snapshots, outside every workspace. Empty
+	// means a folder in the control plane's state folder.
+	SnapshotDir string `json:"snapshot_dir,omitempty"`
+	// Expose lets :expose publish a sandbox's port to whoever asked, on an
+	// authenticated path. Off by default.
+	Expose bool `json:"expose,omitempty"`
+	// ExposeMaxTTLSeconds bounds an exposure's life. Zero means an hour.
+	ExposeMaxTTLSeconds int `json:"expose_max_ttl_seconds,omitempty"`
+	// SQLitePath is the database file sandboxes are kept in when storage is
+	// not Postgres. Empty is ~/.abhed/controlplane/sandboxes.db. Must be
+	// absolute, in a folder only the server's user can enter, outside any
+	// workspace.
+	SQLitePath string `json:"sqlite_path,omitempty"`
+	// ExecTimeoutSeconds bounds one :exec.
+	ExecTimeoutSeconds int `json:"exec_timeout_seconds,omitempty"`
+	// ExecOutputBytes bounds what one :exec may write, stdout and stderr together.
+	ExecOutputBytes int64 `json:"exec_output_bytes,omitempty"`
+	// RestartPolicy is never, on-failure or always.
+	RestartPolicy string `json:"restart_policy,omitempty"`
+	// MaxRestarts is how often the policy restarts a sandbox before giving up.
+	MaxRestarts *int `json:"max_restarts,omitempty"`
+	// RestartBackoffSeconds is the first restart's delay; each next one doubles.
+	RestartBackoffSeconds int `json:"restart_backoff_seconds,omitempty"`
+	// MutationsPerMinute and ExecPerMinute limit each caller on the sandbox routes.
+	MutationsPerMinute int `json:"mutations_per_minute,omitempty"`
+	ExecPerMinute      int `json:"exec_per_minute,omitempty"`
+	// ReconcileSeconds is how often every sandbox is checked against its driver.
+	ReconcileSeconds int `json:"reconcile_seconds,omitempty"`
+	// SSHHostKey is the :ssh relay's host key file, so replicas can share one
+	// key from a secret. Empty means a key the server makes in the control
+	// plane's state folder. Absolute, readable by its owner only, not a link,
+	// outside every workspace; read, never made.
+	SSHHostKey string `json:"ssh_host_key,omitempty"`
+	// SSH bounds the sessions reached through the :ssh relay.
+	SSH SSHSessionConfig `json:"ssh,omitempty"`
+	// SandboxCPUs and SandboxMemoryMB size every sandbox that does not set
+	// its own; zero leaves the size to the driver.
+	SandboxCPUs     float64 `json:"sandbox_cpus,omitempty"`
+	SandboxMemoryMB int     `json:"sandbox_memory_mb,omitempty"`
+	// PerSession gives each served session a control-plane sandbox of its
+	// own, made as Sessions says, in place of the one sandbox every session
+	// shares. Needs Enabled. Off leaves sessions exactly as they were.
+	PerSession bool `json:"per_session,omitempty"`
+	// Sessions shapes the sandboxes PerSession makes.
+	Sessions SessionSandboxConfig `json:"sessions,omitempty"`
+	// Docker and Podman register the container drivers by those names.
+	Docker ContainerDriverConfig `json:"docker,omitempty"`
+	Podman ContainerDriverConfig `json:"podman,omitempty"`
+	// HA runs several replicas of serve on one Postgres (Enterprise).
+	HA HAConfig `json:"ha,omitempty"`
+	// Interceptors admit every mutating sandbox call, in order (Enterprise).
+	Interceptors []InterceptorConfig `json:"interceptors,omitempty"`
+	// Kubernetes is the edition's Kubernetes driver options, kept as written
+	// for the edition to decode. A JSON object; managed only.
+	Kubernetes json.RawMessage `json:"kubernetes,omitempty"`
+}
+
+// SessionSandboxConfig is how control_plane.per_session gives sessions
+// their sandboxes.
+type SessionSandboxConfig struct {
+	// Scope is "session", a sandbox per session (the default), or "user",
+	// one per user that all of that user's sessions share.
+	Scope string `json:"scope,omitempty"`
+	// Template is the template each sandbox is made from; "session" when empty.
+	Template string `json:"template,omitempty"`
+	// Driver is the registered driver each runs under; the default when empty.
+	Driver string `json:"driver,omitempty"`
+	// Retention is what a session's sandbox does when the server stops:
+	// "stop" (the default), "delete" or "keep". Deleting a session always
+	// deletes a sandbox of its own.
+	Retention string `json:"retention,omitempty"`
+	// WarmPool keeps this many Ready sandboxes for new sessions to claim;
+	// zero keeps none, at most 16.
+	WarmPool int `json:"warm_pool,omitempty"`
+	// ReadySeconds bounds how long a session waits for its sandbox; 120 when zero.
+	ReadySeconds int `json:"ready_seconds,omitempty"`
+}
+
+// ContainerDriverConfig registers the docker or podman driver. Every key
+// that lets a sandbox reach more of the host, or loosens a bound, is
+// managed only.
+type ContainerDriverConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// Binary is the engine's CLI, found on PATH by the engine's name when
+	// empty. Managed only.
+	Binary string `json:"binary,omitempty"`
+	// Image is the default image; ABHED_SANDBOX_IMAGE or the container
+	// tier's when empty.
+	Image string `json:"image,omitempty"`
+	// Images are further images a sandbox may ask for. Managed only.
+	Images []string `json:"images,omitempty"`
+	// Mounts are host folders every sandbox gets. Managed only.
+	Mounts []ContainerMount `json:"mounts,omitempty"`
+	// MountRoots are where a sandbox's own mounts may come from. Managed only.
+	MountRoots []ContainerMountRoot `json:"mount_roots,omitempty"`
+	// GPUs are the CDI device names a sandbox may ask for. Managed only.
+	GPUs []string `json:"gpus,omitempty"`
+	// CPUs bounds each sandbox's CPU; 2 when zero. Managed only.
+	CPUs float64 `json:"cpus,omitempty"`
+	// SeccompProfile is a profile file in place of the engine's default;
+	// "unconfined" is refused. Managed only.
+	SeccompProfile string `json:"seccomp_profile,omitempty"`
+	// NamePrefix starts every container's name, "abhed-sbx-" when empty;
+	// letters, digits, '_', '.' and '-', starting with a letter or digit.
+	NamePrefix string `json:"name_prefix,omitempty"`
+	// RelayBinary is a Linux build of Abhed run inside each container as the
+	// egress relay where the engine is in a VM or on another host. Managed only.
+	RelayBinary string `json:"relay_binary,omitempty"`
+}
+
+// ContainerMount is a host folder every container sandbox sees.
+type ContainerMount struct {
+	Host     string `json:"host"`
+	Target   string `json:"target"`
+	Writable bool   `json:"rw,omitempty"`
+	Relabel  bool   `json:"relabel,omitempty"`
+}
+
+// ContainerMountRoot is a host folder under which a sandbox may ask for mounts.
+type ContainerMountRoot struct {
+	Path     string `json:"path"`
+	Writable bool   `json:"rw,omitempty"`
+	Relabel  bool   `json:"relabel,omitempty"`
+}
+
+// SSHSessionConfig bounds an SSH connection to a sandbox. Its commands are
+// bounded by these rather than by exec_timeout_seconds, so a long-lived
+// server an editor starts over SSH keeps running.
+type SSHSessionConfig struct {
+	// IdleTimeoutSeconds closes a connection with no traffic either way for
+	// this long. Zero means an hour.
+	IdleTimeoutSeconds int `json:"idle_timeout_seconds,omitempty"`
+	// MaxSessionSeconds closes a connection this long after it opened. Zero
+	// means twelve hours.
+	MaxSessionSeconds int `json:"max_session_seconds,omitempty"`
+}
+
+// HAConfig makes this server one of several replicas sharing a Postgres
+// store: each sandbox is owned by one replica under a lease, and a call for
+// it on another replica is relayed to the owner. Enterprise only.
+type HAConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// NodeID names this replica; unique among the replicas, without '#'.
+	NodeID string `json:"node_id,omitempty"`
+	// AdvertiseURL is where the other replicas reach this one, https unless
+	// AllowHTTPRelay is set.
+	AdvertiseURL string `json:"advertise_url,omitempty"`
+	// RelayKeyFile or RelayKeyEnv holds the key replicas sign relayed calls
+	// with: at least 32 bytes, the same on every replica.
+	RelayKeyFile string `json:"relay_key_file,omitempty"`
+	RelayKeyEnv  string `json:"relay_key_env,omitempty"`
+	// RelayCAFile, when set, is the CA bundle the replicas' certificates are
+	// checked against, instead of the system's.
+	RelayCAFile string `json:"relay_ca_file,omitempty"`
+	// AllowHTTPRelay permits plain-HTTP advertise URLs, for a private network.
+	AllowHTTPRelay bool `json:"allow_http_relay,omitempty"`
+	// LeaseSeconds is how long a replica's hold on a sandbox lasts without
+	// renewal; another replica takes it over after that.
+	LeaseSeconds int `json:"lease_seconds,omitempty"`
+	// RelayCertFile and RelayCertKeyFile are this replica's client certificate
+	// for relayed calls; RelayPeer is the identity the others' must carry
+	// (the certificate's own common name when unset). Managed only: RelayPeer.
+	RelayCertFile    string `json:"relay_cert_file,omitempty"`
+	RelayCertKeyFile string `json:"relay_cert_key_file,omitempty"`
+	RelayPeer        string `json:"relay_peer,omitempty"`
+	// RelayKeyVault ("entry#field" in Vault KV) and RelayKeyCommand (a
+	// program and its arguments that prints the key) are the relay key's
+	// other sources. Managed only: RelayKeyCommand, since it runs a program.
+	RelayKeyVault   string   `json:"relay_key_vault,omitempty"`
+	RelayKeyCommand []string `json:"relay_key_command,omitempty"`
+}
+
+// InterceptorConfig is one admission hook on the sandbox API. Enterprise only.
+type InterceptorConfig struct {
+	Name string `json:"name"`
+	// Phase is validate (allow or deny), patch (may return an RFC 6902 patch
+	// of labels and settings) or post_commit (told after the call).
+	Phase string `json:"phase"`
+	// Operations limits the hook to these calls; empty means all of them.
+	Operations []string `json:"operations,omitempty"`
+	// URL is an HTTP endpoint to POST each request to, or Command is a
+	// program speaking JSON Lines on stdin and stdout. One of the two.
+	URL     string   `json:"url,omitempty"`
+	Command []string `json:"command,omitempty"`
+	// TokenEnv names an environment variable sent as a bearer token to URL.
+	TokenEnv string `json:"token_env,omitempty"`
+	// TimeoutMS bounds one answer; 500 when unset.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
+	// FailOpen lets a call through when this hook errs or times out, and
+	// records that it did. A denial is always enforced.
+	FailOpen bool `json:"fail_open,omitempty"`
+}
+
 // ServerConfig holds the settings that only matter once `abhed serve` is
 // reachable from a network Abhed does not control.
 //
@@ -647,6 +1062,69 @@ type ServerConfig struct {
 	// to drain to. Turns still running when the budget is spent are recorded
 	// as a shutdown and can be resumed elsewhere.
 	DrainSeconds int `json:"drain_seconds,omitempty"`
+	// TLS makes `abhed serve` terminate TLS itself instead of behind a proxy.
+	// Unset, the server speaks plain HTTP as it always has.
+	TLS ServerTLSConfig `json:"tls,omitempty"`
+	// SharedSessions keeps every account's sessions in the server's one
+	// workspace and sandbox, as before 1.2.8. Unset, a server with more than
+	// one account gives each session a sandbox of its own.
+	SharedSessions bool `json:"shared_sessions,omitempty"`
+}
+
+// ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
+// resolved against the workspace, as auth.users_file is.
+type ServerTLSConfig struct {
+	CertFile string `json:"cert_file,omitempty"`
+	KeyFile  string `json:"key_file,omitempty"`
+	// AdditionalCertificates are served by SNI name and key type: an RSA
+	// certificate beside an ECDSA one, or the next certificate during a
+	// rotation. The first that suits the client wins; cert_file is first.
+	AdditionalCertificates []CertificatePair `json:"additional_certificates,omitempty"`
+	// MinVersion is "1.2" (the default) or "1.3".
+	MinVersion string `json:"min_version,omitempty"`
+	// ClientCAFile turns on client certificates, verified against this CA.
+	ClientCAFile string `json:"client_ca_file,omitempty"`
+	// ClientRevokedFile lists client certificates refused although they
+	// verify: PEM CRLs signed by the client CA, or hex serial numbers one to
+	// a line. Re-read like the CA.
+	ClientRevokedFile string `json:"client_revoked_file,omitempty"`
+	// ClientAuth is "require" (the default once client_ca_file is set), or
+	// "optional" to let a browser without a certificate use another sign-in.
+	ClientAuth string `json:"client_auth,omitempty"`
+	// ClientCertAccounts signs a local account in from a verified client
+	// certificate whose common name is its username. Needs auth.mode local.
+	ClientCertAccounts bool `json:"client_cert_accounts,omitempty"`
+	// ReloadSeconds is how often the files are checked for a change; 10 when unset.
+	ReloadSeconds int `json:"reload_seconds,omitempty"`
+}
+
+// CertificatePair is one certificate chain file and its key file.
+type CertificatePair struct {
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+}
+
+// Enabled reports whether any TLS setting is made, so serve terminates TLS
+// and refuses to start without a usable certificate.
+func (t ServerTLSConfig) Enabled() bool {
+	return t.CertFile != "" || t.KeyFile != "" || len(t.AdditionalCertificates) > 0 ||
+		t.ClientCAFile != "" || t.ClientRevokedFile != "" || t.ClientAuth != "" || t.ClientCertAccounts || t.MinVersion != ""
+}
+
+// CLILoginConfig is command-line sign-in (`abhed login`) for local accounts.
+type CLILoginConfig struct {
+	// Enabled serves the device-code and browser (PKCE) sign-in endpoints.
+	Enabled bool `json:"enabled,omitempty"`
+	// TokenHours is how long a command-line token lasts; 168 (a week) when unset.
+	TokenHours int `json:"token_hours,omitempty"`
+	// KeyFile holds the key tokens are signed with; ~/.abhed/cli-token.key
+	// when unset. Servers sharing an account store share it, or each
+	// accepts only the tokens it issued.
+	KeyFile string `json:"key_file,omitempty"`
+	// ClientID is the identity provider's client the command line signs in
+	// through with auth.mode oidc, in an edition that serves it; auth.client_id
+	// when unset. It must allow the device grant and loopback redirects.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // RetrievalConfig controls the on-prem index. Retrieval is an accelerator over
@@ -826,6 +1304,9 @@ type MCPServerConfig struct {
 	Enabled    bool              `json:"enabled"`
 	AllowTools []string          `json:"allow_tools,omitempty"`
 	Digest     string            `json:"digest,omitempty"`
+	// HostFiles runs a stdio server with the host's files rather than
+	// confined to its own home and the workspace on the process tier.
+	HostFiles bool `json:"host_files,omitempty"`
 }
 
 // SandboxConfig controls execution isolation. Defaults deny egress, because a
@@ -841,22 +1322,61 @@ type SandboxConfig struct {
 	// of allow_network. Managed only.
 	Network       string   `json:"network,omitempty"`
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
-	// MaxMemoryMB applies on the container and vm tiers only; MaxProcs on
-	// every tier but none.
+	// MaxMemoryMB applies on every tier but none and the macOS process tier;
+	// MaxProcs on every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
 	MaxProcs    int `json:"max_procs"`
+	// MaxCPUPercent bounds a container tier command's CPU, in percent of one
+	// CPU; zero means 200.
+	MaxCPUPercent int `json:"max_cpu_percent,omitempty"`
+	// SharedCaches lets macOS process-tier commands write the real toolchain
+	// caches (~/.cache, ~/Library/Caches, ~/.npm, ~/.cargo/registry,
+	// ~/go/pkg/mod) instead of folders of the session's own.
+	SharedCaches bool `json:"shared_caches,omitempty"`
+	// ReadableHome lets macOS process-tier commands read the whole home
+	// folder but the known credential paths, as before 1.2.8, in place of
+	// only the toolchain folders, the workspace and read_only_paths.
+	ReadableHome bool `json:"readable_home,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
 	// TerminalIdleMinutes ends a workbench shell nobody has watched for this
 	// long. Zero means 30.
 	TerminalIdleMinutes int `json:"terminal_idle_minutes,omitempty"`
+	// LanguageServers maps an editor language (go, python, typescript) to the
+	// command line of a language server the workbench editor runs for it, in
+	// the session's sandbox. None is run unless named here.
+	LanguageServers map[string][]string `json:"language_servers,omitempty"`
 	// WriteProtected are workspace paths commands may not write, set by the
 	// surface that runs the session, never by a file.
 	WriteProtected []string `json:"-"`
 	// ProtectGit write-protects what git reads in every git folder in the
-	// workspace (config, hooks, commondir and the like); set as WriteProtected is.
+	// workspace (config, hooks, commondir and the like); set as WriteProtected
+	// is, by a surface that requires it.
 	ProtectGit bool `json:"-"`
+	// ScopeSignals, set by a server accounts sign in to, refuses a fence
+	// whose Landlock cannot keep one session's commands from signalling
+	// another's (ABI 6, Linux 6.12).
+	ScopeSignals bool `json:"-"`
+	// GitProtect is sandbox.protect_git: unset, git's files are protected
+	// wherever the tier can hold them; true requires it; false turns it off
+	// where no surface requires it.
+	GitProtect *bool `json:"protect_git,omitempty"`
+	// MicroVMSocket is the socket of an abhed-microvm driver; when set, the
+	// control plane can choose the microvm driver by name. Managed only.
+	MicroVMSocket string `json:"microvm_socket,omitempty"`
+}
+
+// GitProtected reports whether commands are kept from writing git's files,
+// and required reports whether a tier that cannot hold them is refused.
+func (s SandboxConfig) GitProtected() (on, required bool) {
+	switch {
+	case s.ProtectGit:
+		return true, true
+	case s.GitProtect == nil:
+		return true, false
+	}
+	return *s.GitProtect, *s.GitProtect
 }
 
 type LimitsConfig struct {
@@ -933,15 +1453,23 @@ func Default() Config {
 				"write(/etc/**)",
 			},
 			Allow: []string{
-				"bash(git status*)", "bash(git diff*)", "bash(git log*)",
-				"bash(ls*)", "bash(pwd)", "bash(cat *)",
+				// Each a whole command with any arguments: "ls*" was lsof too.
+				"bash(git status)", "bash(git status *)", "bash(git diff)", "bash(git diff *)",
+				"bash(git log)", "bash(git log *)", "bash(ls)", "bash(ls *)", "bash(pwd)", "bash(cat *)",
 			},
 			// A command that trusts a workspace for a nested run is the
 			// person's decision, not the agent's. So is a memory file, which
 			// every later session reads as instructions.
 			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)",
 				"write(ABHED.md)", "edit(ABHED.md)", "write(ABHED.local.md)", "edit(ABHED.local.md)",
-				"write(AGENTS.md)", "edit(AGENTS.md)"},
+				"write(AGENTS.md)", "edit(AGENTS.md)",
+				// Files that commonly hold credentials are read only with a
+				// yes. A speed bump for the read tool, not credential protection:
+				// a command can still print them.
+				"read(.env)", "read(**/.env)", "read(.env.*)", "read(**/.env.*)",
+				"read(*.pem)", "read(**/*.pem)", "read(*.key)", "read(**/*.key)",
+				"read(id_rsa*)", "read(**/id_rsa*)", "read(id_ed25519*)", "read(**/id_ed25519*)",
+				"read(id_ecdsa*)", "read(**/id_ecdsa*)"},
 		},
 		Context: ContextConfig{
 			CompactAt:   0.90,
@@ -991,7 +1519,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		if err != nil {
 			return cfg, err
 		}
-		setAside(&cfg, userFile, LayerUser)
+		setAside(&cfg, userFile, LayerUser, data)
 		noteOrigins(&cfg, userFile, LayerUser, data)
 		cfg.noteRuleLayer(LayerUser)
 	}
@@ -999,7 +1527,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		if _, err := mergeData(&cfg, o.SettingsName, o.Settings); err != nil {
 			return cfg, err
 		}
-		setAside(&cfg, o.SettingsName, LayerSettings)
+		setAside(&cfg, o.SettingsName, LayerSettings, o.Settings)
 		noteOrigins(&cfg, o.SettingsName, LayerSettings, o.Settings)
 		cfg.noteRuleLayer(LayerSettings)
 		sum := sha256.Sum256(o.Settings)
@@ -1021,14 +1549,17 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg.origins = nil
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
+	userAllowlistNarrows(&cfg)
 
 	applyEnv(&cfg)
-	warnUnknown(cfg.Unknown)
-	warnSetAside(cfg.SetAside)
-	warnNotYetInEffect(cfg)
-	warnNeverAllows(cfg.Permissions.Allow)
+	w := warnSink(o.Warn)
+	warnUnknown(w, cfg.Unknown)
+	warnSetAside(w, cfg.SetAside)
+	warnNotYetInEffect(w, cfg)
+	warnNeverAllows(w, cfg.Permissions.Allow)
+	warnRuleFindings(w, cfg.RuleFindings())
 	if !o.Quiet {
-		warnUntrusted(cfg.Workspace)
+		warnUntrusted(w, cfg.Workspace)
 	}
 	return cfg, cfg.Validate()
 }
@@ -1218,6 +1749,9 @@ func (c Config) Validate() error {
 	if _, err := egress.Compile(c.Egress); err != nil {
 		return err
 	}
+	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
+		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
 	}
@@ -1264,6 +1798,9 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+	if err := managedNeverDenies(c.RuleFindings()); err != nil {
+		return err
+	}
 	if err := new(policy.Engine).AllowGitExtensions(c.Permissions.GitExtensions...); err != nil {
 		return fmt.Errorf("permissions.git_extensions: %w", err)
 	}
@@ -1273,10 +1810,31 @@ func (c Config) Validate() error {
 	if o := c.Context.OffloadAt; o != nil && (*o < 0 || *o >= c.Context.CompactAt) {
 		return fmt.Errorf("context.offload_at must be 0 (off) or below compact_at (%v), got %v", c.Context.CompactAt, *o)
 	}
+	if h := c.Auth.SessionHours; h < 0 || h > MaxSessionHours {
+		return fmt.Errorf("auth.session_hours is %d; use a number of hours up to %d (a year), or 0 for the default", h, MaxSessionHours)
+	}
 	switch c.Auth.Mode {
 	case "none", "proxy", "oidc", "local", "":
 	default:
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
+	}
+	if err := c.validateTLS(); err != nil {
+		return err
+	}
+	if err := c.validateCLILogin(); err != nil {
+		return err
+	}
+	if err := c.validateControlPlanePaths(); err != nil {
+		return err
+	}
+	if err := c.Auth.Workload.validate(); err != nil {
+		return err
+	}
+	if err := ValidateBoundClaims("auth.bound_claims", c.Auth.BoundClaims); err != nil {
+		return err
+	}
+	if err := c.ControlPlane.HA.validateRelay(); err != nil {
+		return err
 	}
 	if c.Auth.Mode == "oidc" && c.Auth.Issuer == "" && c.Auth.Provider == "" {
 		return fmt.Errorf("auth.mode is oidc but neither auth.issuer nor " +
@@ -1334,8 +1892,19 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown sandbox.terminal %q (want shell or lines)", c.Sandbox.Terminal)
 	}
+	for lang, argv := range c.Sandbox.LanguageServers {
+		if !languageID.MatchString(lang) {
+			return fmt.Errorf("sandbox.language_servers: %q is not an editor language name", lang)
+		}
+		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+			return fmt.Errorf("sandbox.language_servers.%s: the command is empty", lang)
+		}
+	}
 	return nil
 }
+
+// languageID is an editor language name, as the workbench's editor knows it.
+var languageID = regexp.MustCompile(`^[a-z][a-z0-9_+-]{0,31}$`)
 
 // validLogoutURL accepts an absolute http(s) URL or a path with no host; a
 // "//" or backslash prefix would send the browser to another site.
@@ -1470,4 +2039,58 @@ func validHostPattern(h string) bool {
 		}
 	}
 	return true
+}
+
+// validateTLS checks server.tls for what can be told without reading a file.
+func (c Config) validateTLS() error {
+	t := c.Server.TLS
+	if !t.Enabled() {
+		return nil
+	}
+	if t.CertFile == "" || t.KeyFile == "" {
+		return fmt.Errorf("server.tls needs both cert_file and key_file")
+	}
+	for i, p := range t.AdditionalCertificates {
+		if p.CertFile == "" || p.KeyFile == "" {
+			return fmt.Errorf("server.tls.additional_certificates[%d] needs both cert_file and key_file", i)
+		}
+	}
+	switch t.MinVersion {
+	case "", "1.2", "1.3":
+	default:
+		return fmt.Errorf("server.tls.min_version is %q; use 1.2 or 1.3", t.MinVersion)
+	}
+	switch t.ClientAuth {
+	case "", "require", "optional":
+	default:
+		return fmt.Errorf("server.tls.client_auth is %q; use require or optional", t.ClientAuth)
+	}
+	if (t.ClientAuth != "" || t.ClientCertAccounts) && t.ClientCAFile == "" {
+		return fmt.Errorf("server.tls.client_auth and client_cert_accounts need server.tls.client_ca_file")
+	}
+	if t.ClientCertAccounts && c.Auth.Mode != "local" {
+		return fmt.Errorf("server.tls.client_cert_accounts signs local accounts in, so it needs auth.mode local")
+	}
+	if t.ReloadSeconds < 0 || t.ReloadSeconds > 3600 {
+		return fmt.Errorf("server.tls.reload_seconds is %d; use 1 to 3600, or 0 for 10", t.ReloadSeconds)
+	}
+	return nil
+}
+
+// validateCLILogin checks auth.cli.
+func (c Config) validateCLILogin() error {
+	l := c.Auth.CLI
+	if l.TokenHours < 0 || l.TokenHours > 24*90 {
+		return fmt.Errorf("auth.cli.token_hours is %d; use 1 to %d, or 0 for a week", l.TokenHours, 24*90)
+	}
+	if l.Enabled && c.Auth.Mode != "local" && c.Auth.Mode != "oidc" {
+		return fmt.Errorf("auth.cli.enabled signs accounts in from the command line, so it needs auth.mode local (or oidc, in an edition that serves it)")
+	}
+	return nil
+}
+
+// jsonObject reports whether raw is one JSON object.
+func jsonObject(raw json.RawMessage) bool {
+	var m map[string]json.RawMessage
+	return json.Unmarshal(raw, &m) == nil && m != nil
 }

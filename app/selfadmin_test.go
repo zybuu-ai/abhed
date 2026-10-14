@@ -51,6 +51,9 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 		{"-trust-workspace", "-p", "hi"},
 		{"-dangerously-skip-permissions", "-p", "hi"},
 		{"-mode", "bypass", "-p", "hi"},
+		// Any mode looser than the configured one, not only bypass.
+		{"-mode", "accept-edits", "-p", "hi"},
+		{"-mode", "auto", "-p", "hi"},
 		// The merged configuration counts, not only the flags that name a mode.
 		{"-settings", `{"permissions":{"mode":"bypass"}}`, "-p", "hi"},
 		{"-settings", settingsFile, "-p", "hi"},
@@ -77,7 +80,7 @@ func TestSelfAdministrationRefusedInAgentCommand(t *testing.T) {
 	}
 	// Reading, and a session with one more deny rule or a narrower mode, are still allowed.
 	for _, args := range [][]string{{"record", "list"}, {"trust", "show"}, {"mcp", "list"},
-		{"-p", "hi"}, {"-mode", "plan", "-p", "hi"},
+		{"-p", "hi"}, {"-mode", "plan", "-p", "hi"}, {"-mode", "default", "-p", "hi"},
 		{"-disallowedTools", "Bash(wget:*)", "-p", "hi"}} {
 		if out, _ := stderrOf(t, append([]string{"-C", ws}, args...)); strings.Contains(out, "refused inside") {
 			t.Errorf("%v refused: %s", args, out)
@@ -93,6 +96,9 @@ func TestSelfAdminNamesOnlyChanges(t *testing.T) {
 		"mcp add a b": true, "mcp rm a": true, "mcp remove a": true, "mcp list": false, "init": true, "doctor": false,
 		"eval -trust-workspace": true, "resolve --trust-workspace=true u": true,
 		"admin web-search on": true, "admin web-search off": true,
+		"login https://a.test": true, "logout": true, "profile use a": true, "profile rm a": true,
+		"profile list": false, "pki init": false, "sandbox connect --stdio sbx_0123456789abcdef": true,
+		"sandbox list": true, "sandbox get sbx_0123456789abcdef": true, "sandbox template list": true, "sandbox -h": false,
 	} {
 		if got := selfAdmin(strings.Fields(args)) != ""; got != want {
 			t.Errorf("selfAdmin(%q) = %v, want %v", args, got, want)
@@ -112,6 +118,23 @@ func TestWidenedNamesOnlyAdditions(t *testing.T) {
 	base.Permissions.Mode, eff.Permissions.Mode = "bypass", "bypass"
 	if got := widened(base, eff); got != "" {
 		t.Errorf("bypass already configured: %q", got)
+	}
+}
+
+// A mode looser than the configured one widens; the same or a narrower does not.
+func TestWidenedNamesALooserMode(t *testing.T) {
+	for _, c := range []struct {
+		base, eff string
+		want      bool
+	}{{"", "accept-edits", true}, {"default", "auto", true}, {"plan", "default", true},
+		{"accept-edits", "accept-edits", false}, {"auto", "plan", false}, {"", "", false}, {"", "nonsense", true}} {
+		var base config.Config
+		base.Permissions.Mode = c.base
+		eff := base
+		eff.Permissions.Mode = c.eff
+		if got := widened(base, eff); (got != "") != c.want {
+			t.Errorf("%q -> %q: %q", c.base, c.eff, got)
+		}
 	}
 }
 
@@ -150,5 +173,20 @@ func TestWidenedNamesFenceSettings(t *testing.T) {
 	eff.Fence.CPUPercent = 400
 	if got := widened(base, eff); !strings.Contains(got, "fence setting") {
 		t.Errorf("cpu changed: %q", got)
+	}
+}
+
+// A nested run ignores ABHED_TRUST_WORKSPACE, which its command could have
+// set under a name no rule can read.
+func TestNestedRunIgnoresTrustEnv(t *testing.T) {
+	ws := t.TempDir()
+	asAgentCommand(t)
+	t.Setenv(config.TrustEnv, "1")
+	out, _ := stderrOf(t, []string{"-C", ws, "trust", "show"})
+	if !strings.Contains(out, config.TrustEnv+" is ignored inside an agent's command") {
+		t.Errorf("no word that the trust variable was ignored: %q", out)
+	}
+	if v, ok := os.LookupEnv(config.TrustEnv); ok {
+		t.Errorf("%s is still %q", config.TrustEnv, v)
 	}
 }

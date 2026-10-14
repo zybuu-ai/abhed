@@ -10,12 +10,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// errCgo says why a cgo build has no in-sandbox resolver, and what to do.
+var errCgo = errors.New("this binary is built with cgo, which cannot drop capabilities on every thread; build it with CGO_ENABLED=0 for the in-sandbox resolver")
+
 // lastCap is past every capability a kernel defines; dropping one it lacks is EINVAL.
 const lastCap = 64
 
 // dropCaps clears the relay's capabilities on every thread, with bounding its bounding set too;
 // a cgo build cannot reach every thread, so it fails rather than drop on one.
 func dropCaps(bounding bool) error {
+	if cgoBuild {
+		return errCgo
+	}
 	all := func(trap, a1, a2 uintptr) syscall.Errno {
 		_, _, e := syscall.AllThreadsSyscall6(trap, a1, a2, 0, 0, 0, 0)
 		return e

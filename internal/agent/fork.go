@@ -3,9 +3,11 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -143,10 +145,12 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 	msgs = truncateAt(msgs, cutCalls)
 	msgs = answerAll(msgs, denied)
 	if len(msgs) == 0 {
-		return nil, fmt.Errorf("nothing to fork from: no messages at or before seq %d", throughSeq)
+		return nil, fmt.Errorf("%w: no messages at or before seq %d", errNothingToFork, throughSeq)
 	}
 	return msgs, nil
 }
+
+var errNothingToFork = errors.New("nothing to fork from")
 
 // answerAll gives every call without a result one saying so, and puts each
 // turn's results in call order, which providers matching by position need.
@@ -197,6 +201,15 @@ func truncateAt(msgs []model.Message, pending map[string]model.ToolCall) []model
 	return msgs
 }
 
+// ForkedAt says where a conversation was forked: at a step, or, through
+// step 0, before the first message.
+func ForkedAt(seq int64) string {
+	if seq <= 0 {
+		return "forked before the first message"
+	}
+	return fmt.Sprintf("forked at step %d", seq)
+}
+
 // Forked is the payload of EvForked: the conversation went on from ThroughSeq.
 type Forked struct {
 	ThroughSeq int64 `json:"through_seq"`
@@ -236,30 +249,46 @@ func (l *Loop) refuseForkWhileTasksRun() error {
 }
 
 // ForkTo rebuilds the conversation up to step seq, records that what came after
-// was abandoned, and returns how many messages were kept.
-func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
+// was abandoned, and returns how many messages were kept and the step recorded:
+// seq 0 is the last live step, so a caller reports that, not the 0 it passed.
+func (l *Loop) ForkTo(events []Event, seq int64) (int, int64, error) {
+	return l.forkTo(events, seq, false)
+}
+
+// forkTo is ForkTo; with empty, a step before any message is an empty history.
+func (l *Loop) forkTo(events []Event, seq int64, empty bool) (int, int64, error) {
 	live := Live(events)
 	if seq <= 0 && len(live) > 0 {
 		seq = live[len(live)-1].Seq // 0 keeps the whole conversation
 	}
 	msgs, err := forkPoint(live, seq)
-	if err != nil {
-		return 0, err
+	if err != nil && (!empty || !errors.Is(err, errNothingToFork)) {
+		return 0, 0, err
 	}
 	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	if err := l.refuseForkWhileTasksRun(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: seq}); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	// A login made after the fork point would outlive the turns that made it,
-	// so a fork starts with none; the conversation logs in again.
-	l.Session.ResetScoped()
+	// so it goes; one made before the point stays, as the conversation does.
+	l.Session.ForgetScopedAfter(forkTime(live, seq))
 	l.messages = msgs
-	return len(msgs), nil
+	return len(msgs), seq, nil
+}
+
+// forkTime is when the step a fork goes on from was recorded.
+func forkTime(live []Event, seq int64) time.Time {
+	for _, e := range live {
+		if e.Seq == seq {
+			return e.CreatedAt
+		}
+	}
+	return time.Time{} // not reached: forkPoint refused a step not in live
 }
 
 // CheckForkPoint is ForkTo's refusal of a step, without recording anything,

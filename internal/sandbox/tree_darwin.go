@@ -51,11 +51,8 @@ var procSoftLimit = func() (uint64, bool) {
 // parent are stopped, nothing can reap it, so the number stays its own.
 type treeMember struct{ pid int }
 
-// stopMember stops pid if its parent is in tree. macOS has no pidfd, so the
-// parent is read again once the stop has taken effect, and a process that
-// turned out not to be in the tree is continued and left alone. In that window
-// a reused pid's process is briefly stopped, and one already stopped (Ctrl-Z)
-// is continued; the same window signalMember accepts.
+// stopMember stops pid if its parent is in tree; with no pidfd the parent is
+// reread once stopped, and a non-member is continued.
 func stopMember(pid int, tree map[int]bool) (treeMember, bool) {
 	if syscall.Kill(pid, stopSignal) != nil {
 		return treeMember{}, false
@@ -110,9 +107,8 @@ func marked(marker string) []int {
 // kernProcArgs2 is KERN_PROCARGS2 in <sys/sysctl.h>, which x/sys does not name.
 const kernProcArgs2 = 49
 
-// procArgs reads pid's arguments and environment (KERN_PROCARGS2) into a
-// buffer of kern.argmax: asked for its size first, as SysctlRaw does, the
-// kernel answers with less than another process's whole environment.
+// procArgs reads pid's arguments and environment into a kern.argmax buffer:
+// sized by query, the kernel returns less than the whole environment.
 func procArgs(pid int32) ([]byte, bool) {
 	max, err := unix.SysctlUint32("kern.argmax")
 	if err != nil || max == 0 {

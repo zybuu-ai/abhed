@@ -3,10 +3,12 @@
 package landlock
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,10 +18,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The test binary re-executes itself in two roles. As the launcher it builds
-// the ruleset from the spec in its environment, restricts its thread and
-// execs itself again; as the probe, now confined, it performs one operation
-// and reports whether the kernel allowed it.
+// The binary re-executes itself: as launcher it confines its thread and execs
+// again; as probe it tries one operation and reports the result.
 const (
 	roleEnv    = "ABHED_FENCE_LANDLOCK_ROLE"
 	specEnv    = "ABHED_FENCE_LANDLOCK_SPEC"
@@ -85,9 +85,17 @@ func probe(args []string) int {
 			_ = c.Close()
 		}
 	case "bind":
+		// Plain TCP: Go listens over MPTCP by default where the kernel has it,
+		// and Landlock's TCP rules do not cover MPTCP.
+		var lc net.ListenConfig
+		lc.SetMultipathTCP(false)
 		var l net.Listener
-		if l, err = net.Listen("tcp", arg); err == nil {
+		if l, err = lc.Listen(context.Background(), "tcp", arg); err == nil {
 			_ = l.Close()
+		}
+	case "bind-mptcp":
+		if err = bindProto(arg, unix.IPPROTO_MPTCP); errors.Is(err, unix.EPROTONOSUPPORT) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOPROTOOPT) {
+			return 4 // this kernel has no MPTCP
 		}
 	default:
 		return 2
@@ -170,6 +178,12 @@ func (l layout) spec(t *testing.T, denyTCP bool) Spec {
 // run starts the launcher with spec and returns the probe's exit code.
 func run(t *testing.T, s Spec, op, arg string) int {
 	t.Helper()
+	return runAllowing(t, s, op, arg, 1)
+}
+
+// runAllowing is run, accepting exit codes up to most from the probe.
+func runAllowing(t *testing.T, s Spec, op, arg string, most int) int {
+	t.Helper()
 	raw, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +192,7 @@ func run(t *testing.T, s Spec, op, arg string) int {
 	cmd.Env = append(os.Environ(), roleEnv+"=launch", specEnv+"="+string(raw))
 	out, err := cmd.CombinedOutput()
 	code := cmd.ProcessState.ExitCode()
-	if code > 1 {
+	if code > most || code == 2 || code == 3 {
 		t.Fatalf("%s %s: the launcher or probe failed (exit %d, %v): %s", op, arg, code, err, strings.TrimSpace(string(out)))
 	}
 	return code
@@ -285,15 +299,49 @@ func TestRestrictRefusesTCPWhenNetworkOff(t *testing.T) {
 	}
 	port := free.Addr().String()
 	_ = free.Close()
-	got := run(t, l.spec(t, true), "bind", port)
-	switch {
-	case got == 1:
-	case abi >= 7 && got == 0:
-		// Linux 6.15 (ABI 7) let this bind through on CI; seccomp refuses socket() in the fence first.
-		t.Logf("bind with the network off was allowed on Landlock ABI %d; connect stays refused", abi)
-	default:
-		t.Fatalf("bind with the network off: exit %d, want 1 (refused)", got)
+	if got := run(t, l.spec(t, true), "bind", port); got != 1 {
+		t.Fatalf("TCP bind with the network off: exit %d, want 1 (refused)", got)
 	}
+	if got := run(t, l.spec(t, false), "bind", port); got != 0 {
+		t.Fatalf("TCP bind with the network on: exit %d, want 0", got)
+	}
+	// MPTCP is not TCP to Landlock once the kernel has erratum 1 (Linux 6.14,
+	// and stable kernels with the fix): the fence's seccomp layer refuses it.
+	want := 1
+	if landlockErrata()&1 != 0 {
+		want = 0
+	}
+	switch got := runAllowing(t, l.spec(t, true), "bind-mptcp", port, 4); got {
+	case 4:
+		t.Logf("this kernel has no MPTCP; nothing to check")
+	case want:
+		t.Logf("MPTCP bind with the network off: exit %d, as erratum 1 says (errata %#x)", got, landlockErrata())
+	default:
+		t.Fatalf("MPTCP bind with the network off: exit %d, want %d for errata %#x", got, want, landlockErrata())
+	}
+}
+
+// landlockErrata is the kernel's fixed Landlock errata, 0 where it cannot say.
+func landlockErrata() uintptr {
+	v, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, 0, 0, unix.LANDLOCK_CREATE_RULESET_ERRATA)
+	if errno != 0 {
+		return 0
+	}
+	return v
+}
+
+// bindProto binds an inet stream socket of protocol proto to addr.
+func bindProto(addr string, proto int) error {
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return err
+	}
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, proto)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	return unix.Bind(fd, &unix.SockaddrInet4{Port: int(ap.Port()), Addr: ap.Addr().As4()})
 }
 
 func TestRestrictRevalidates(t *testing.T) {

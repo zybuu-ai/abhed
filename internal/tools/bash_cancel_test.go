@@ -56,8 +56,11 @@ func TestBashCancelEndsWhatTheCommandStarted(t *testing.T) {
 			// The child is not the shell's last command, so the shell forks it
 			// rather than exec'ing it, and the child holds the output pipe.
 			pidFile := filepath.Join(dir, "child.pid")
+			// A sleep of its own, found by its arguments where a PID namespace
+			// makes $$ a number the host does not know.
+			naps := fmt.Sprintf("60.%06d", time.Now().UnixNano()%1_000_000)
 			args, _ := json.Marshal(bashArgs{
-				Command:     `sh -c 'echo $$ > ` + pidFile + `; exec sleep 60'; echo after`,
+				Command:     `sh -c 'echo $$ > ` + pidFile + `; exec sleep ` + naps + `'; echo after`,
 				Description: "a long command", TimeoutMS: 120_000,
 			})
 			ctx, cancel := context.WithCancel(context.Background())
@@ -66,6 +69,12 @@ func TestBashCancelEndsWhatTheCommandStarted(t *testing.T) {
 			go func() { done <- b.Run(ctx, s, args) }()
 
 			pid := waitForPid(t, pidFile, done)
+			if tier.name == "process" && runtime.GOOS == "linux" {
+				// Bubblewrap's PID namespace: the host's PID of the same sleep.
+				if pid = hostPidOf(t, "sleep\x00"+naps+"\x00"); pid == 0 {
+					t.Fatal("the command's sleep is not seen on the host")
+				}
+			}
 			t.Cleanup(func() {
 				if alive(pid) {
 					_ = syscall.Kill(pid, syscall.SIGKILL)
@@ -140,6 +149,27 @@ func waitForPid(t *testing.T, path string, done <-chan Result) int {
 	return 0
 }
 
+// hostPidOf is the PID of the host process whose command line ends with
+// args, or 0.
+func hostPidOf(t *testing.T, args string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, _ := os.ReadDir("/proc")
+		for _, e := range entries {
+			pid, err := strconv.Atoi(e.Name())
+			if err != nil {
+				continue
+			}
+			if b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline")); err == nil && strings.HasSuffix(string(b), args) {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return 0
+}
+
 func alive(pid int) bool {
 	return !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }
@@ -168,15 +198,35 @@ func TestBashOnTheHostGivesNoSandboxHint(t *testing.T) {
 		t.Fatalf("host result: %+v", res)
 	}
 	sb := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, Isolation: Isolation{Tier: "process"}}
-	if res := run(t, sb, s, bashArgs{Command: `echo "x: Operation not permitted"`, Description: "print"}); res.Tier != "process" ||
+	if res := run(t, sb, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.Tier != "process" ||
 		!strings.Contains(res.Content, "the sandbox denied") {
 		t.Fatalf("sandboxed result: %+v", res)
 	}
 	// Started before the sandbox was chosen, which then turned out to be none.
 	late := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, RanUnder: func() string { return "none" }}
-	if res := run(t, late, s, bashArgs{Command: `echo "x: Operation not permitted"`, Description: "print"}); res.Tier != "none" ||
+	if res := run(t, late, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.Tier != "none" ||
 		strings.Contains(res.Content, "the sandbox denied") {
 		t.Fatalf("result once chosen as none: %+v", res)
+	}
+}
+
+// A command that succeeded was not stopped by the sandbox, whatever it printed:
+// git warns about .abhed and exits 0.
+func TestBashSandboxHintOnlyOnFailure(t *testing.T) {
+	s, dir := setup(t)
+	sb := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, Isolation: Isolation{Tier: "process"}}
+	res := run(t, sb, s, bashArgs{Command: `echo "warning: could not open .abhed/x: Operation not permitted"`, Description: "print"})
+	if strings.Contains(res.Content, "the sandbox denied") {
+		t.Fatalf("a hint on exit 0: %q", res.Content)
+	}
+}
+
+// A note follows the output after one blank line, however the output ends.
+func TestBashNotesHaveOneBlankLine(t *testing.T) {
+	s, _ := setup(t)
+	res := run(t, Bash{}, s, bashArgs{Command: "printf 'a\\n\\n\\n'; cd /", Description: "print"})
+	if !strings.Contains(res.Content, "a\n\ncd: ") {
+		t.Fatalf("blank lines before the note: %q", res.Content)
 	}
 }
 

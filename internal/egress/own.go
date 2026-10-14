@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// Abhed's own requests (the model client, web_fetch, web_search, MCP over
-// HTTP) are judged in-process by the same policy the commands' proxy uses.
+// Abhed's own requests (model, web tools, MCP over HTTP, ssh, k8s, retrieval,
+// forge API) are judged in-process by the commands' proxy policy.
 
 // Kinds of Abhed's own requests, as an Event's Kind records them.
 const (
@@ -25,6 +25,10 @@ const (
 	KindWebFetch  = "web_fetch"
 	KindWebSearch = "web_search"
 	KindMCP       = "mcp"
+	KindSSH       = "ssh"
+	KindK8s       = "k8s"
+	KindRAG       = "rag"
+	KindForge     = "forge"
 )
 
 // RuleModel is the rule that allows the model client's own endpoint.

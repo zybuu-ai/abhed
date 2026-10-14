@@ -1,17 +1,13 @@
 package sandbox
 
 import (
+	"fmt"
 	"os/exec"
 	"time"
 )
 
-// A shell started on a terminal leads a session of its own, and what it left
-// running (a job out of its table, one ignoring the hang-up, one that keeps
-// forking) is still in that session when it exits. Ending those must never
-// touch a process this server did not start, so the sweep runs only while the
-// exited shell is unreaped: its pid, and so its session id, cannot be taken
-// by anything else until Wait reaps it. The leader's start time is checked
-// before each sweep as well.
+// Leftovers are swept only while the exited shell is unreaped, so its session
+// id cannot be reused: never a process this server did not start.
 
 // The sweep's view of the system, replaced in tests.
 var (
@@ -19,15 +15,16 @@ var (
 	signalOne   = signalMember
 	startOf     = startTime
 	canSweep    = sweepSupported
+	// cannotSignal reports a process this user may not signal (EPERM).
+	cannotSignal = signalRefused
 )
 
 // maxSweepPasses bounds the passes that stop a session's processes. Each
 // pass stops what it finds, so a job that forks is caught within a few.
 const maxSweepPasses = 50
 
-// sweepGrace bounds how long the sweep waits for the processes it killed to
-// go. One killed while starved of CPU stays listed, running, until it is next
-// scheduled, which on a loaded machine outlasts any fixed number of passes.
+// sweepGrace bounds the wait for killed processes to go: a CPU-starved one
+// stays listed longer than any fixed number of passes.
 var sweepGrace = 10 * time.Second
 
 // Leader is a session leader this process started: its pid and when it
@@ -36,6 +33,8 @@ type Leader struct {
 	Pid   int
 	start uint64
 	ok    bool
+	// marker is what every process the shell started carries, or "".
+	marker string
 }
 
 // Lead names the session leader cmd started. Call it right after Start, on a
@@ -46,13 +45,11 @@ func Lead(cmd *exec.Cmd) Leader {
 	}
 	pid := cmd.Process.Pid
 	start, ok := startTime(pid)
-	return Leader{Pid: pid, start: start, ok: ok}
+	return Leader{Pid: pid, start: start, ok: ok, marker: markerIn(cmd.Env)}
 }
 
 // Wait waits for the shell to exit, ends every process left in its session
 // while the unreaped shell still holds the session id, and then reaps it.
-// refused says why the session was not swept, for the operator's log; it is
-// empty when the sweep ran.
 func (l Leader) Wait(cmd *exec.Cmd) (refused string, err error) {
 	switch {
 	case !l.ok:
@@ -64,13 +61,15 @@ func (l Leader) Wait(cmd *exec.Cmd) (refused string, err error) {
 			refused = l.sweep()
 		}
 	}
+	// A process that left the session (setsid) still carries the marker.
+	if l.marker != "" {
+		endMarked(l.marker)
+	}
 	return refused, cmd.Wait()
 }
 
-// sweep stops every process in the leader's session, pass after pass until a
-// pass finds none it has not stopped, then kills them, and kills anything
-// that appears after. It does nothing unless the process at the leader's pid
-// is the one Lead named, and says why when it does nothing.
+// sweep stops then kills every process in the leader's session, and does
+// nothing unless the leader's pid is still the one Lead named.
 func (l Leader) sweep() string {
 	if !l.ok || l.Pid <= 1 {
 		return "the shell was never named"
@@ -103,26 +102,34 @@ func (l Leader) sweep() string {
 			killed[pid] = true
 		}
 	}
-	// A stopped group can be continued by the kernel when a member exits, and
-	// a process continued in that instant may fork once more. Every member is
-	// killed on every pass until none is left; a pass that finds only members
-	// killed before waits a moment for them to be scheduled and die, while one
-	// that finds a new member goes again at once. The wait doubles while
-	// passes find only those, so a member slow to die is not polled hard.
+	// A stopped group may resume and fork as a member exits, so every pass
+	// kills all members until none is left.
 	deadline := time.Now().Add(sweepGrace)
 	wait := sweepWaitMin
 	for {
-		left, fresh := 0, 0
+		left, fresh, unsignalled := 0, 0, 0
 		for _, pid := range listMembers(l.Pid) {
-			if pid != l.Pid && signalOne(pid, l.Pid, killSignal) {
-				left++
-				if !killed[pid] {
-					killed[pid] = true
-					fresh++
+			if pid == l.Pid {
+				continue
+			}
+			if !signalOne(pid, l.Pid, killSignal) {
+				// Gone, or no longer in the session, is not counted: only a refusal.
+				if cannotSignal(pid) {
+					unsignalled++
 				}
+				continue
+			}
+			left++
+			if !killed[pid] {
+				killed[pid] = true
+				fresh++
 			}
 		}
 		if left == 0 {
+			// Listed but not signalled: another user's, a setuid program's, say.
+			if unsignalled > 0 {
+				return fmt.Sprintf("%d processes in the shell's session could not be signalled (another user's, or one that changed its user) and may still run", unsignalled)
+			}
 			return ""
 		}
 		if time.Now().After(deadline) {

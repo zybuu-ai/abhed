@@ -56,8 +56,11 @@ func GitProtected(ws string) []string { return scanGit(ws).protected }
 
 // scanGit looks at ws's own git folder, then the .git entries known from
 // earlier scans, then walks for others, each folder's .git before its contents.
-func scanGit(ws string, known ...string) *gitScan {
-	g := &gitScan{ws: ws, make: true, seen: map[string]bool{}}
+func scanGit(ws string, known ...string) *gitScan { return walkGit(ws, true, known...) }
+
+// walkGit is scanGit, making a missing config and hooks only when mk is set.
+func walkGit(ws string, mk bool, known ...string) *gitScan {
+	g := &gitScan{ws: ws, make: mk, seen: map[string]bool{}}
 	g.at(ws)
 	for _, p := range known {
 		// One whose folder became a link is passed over, as the walk would.
@@ -98,6 +101,18 @@ func scanGit(ws string, known ...string) *gitScan {
 		return nil
 	})
 	return g
+}
+
+// linkedGits are the symlinked .git entries in ws: seatbelt cannot match them
+// by pattern, so each target folder is held whole.
+func linkedGits(ws string) []string {
+	var out []string
+	for _, l := range walkGit(ws, false).linked {
+		if strings.EqualFold(filepath.Base(l), ".git") {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // scanOwnGit looks only at ws's own git folder, its submodules' and its
@@ -431,11 +446,19 @@ type gitMemory struct {
 	noted atomic.Bool
 	mu    sync.Mutex
 	known map[string][]string // by workspace
+	// based are the workspaces looked at once, and seenGit every .git entry
+	// found since; one found later was made during the session.
+	based   map[string]bool
+	seenGit map[string]bool
+	// partial are workspaces whose first look stopped at its bound, and
+	// knownDirs the git folders that look found.
+	partial   map[string]bool
+	knownDirs map[string][]os.FileInfo
 }
 
-// gitGuard returns the paths in ws to bind read-only before a command starts,
-// or why the command is not run; a planted commondir is taken out first.
-func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string, error) {
+// gitGuardFor returns the paths in ws to bind read-only, or why the command is
+// refused; when required, a bounded walk refuses rather than miss one.
+func gitGuardFor(ctx context.Context, ws, backend string, mem *gitMemory, required bool) ([]string, error) {
 	mem.mu.Lock()
 	known := mem.known[ws]
 	mem.mu.Unlock()
@@ -454,6 +477,13 @@ func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string
 			_ = launch.Record(ev, pay)
 		}
 	}
+	if g.walkBounded && required {
+		why := fmt.Sprintf("sandbox: the command was not run: the workspace has more than %d folders within %d levels, "+
+			"so a repository past them could not be found and its configuration and hooks protected, which this surface requires; "+
+			"remove folders that do not belong there, or run Abhed in a smaller folder", gitWalkFolders, gitWalkDepth)
+		record(EvGitWalkBounded, map[string]any{"bound": gitWalkFolders, "refused": true, "reason": why})
+		return nil, errors.New(why)
+	}
 	if g.walkBounded && mem.noted.CompareAndSwap(false, true) {
 		record(EvGitWalkBounded, map[string]any{"bound": gitWalkFolders, "refused": false,
 			"reason": fmt.Sprintf("the workspace has more than %d folders within %d levels; a repository past them, "+
@@ -467,6 +497,9 @@ func gitGuard(ctx context.Context, ws, backend string, mem *gitMemory) ([]string
 	}
 	if entries, err := takeOutGitPlanted(g.planted); err != nil {
 		record(EvGitPlanted, map[string]any{"entries": entries, "reason": err.Error()})
+		return nil, err
+	}
+	if err := plantedGits(ctx, ws, backend, mem, g); err != nil {
 		return nil, err
 	}
 	if len(g.linked) > 0 {

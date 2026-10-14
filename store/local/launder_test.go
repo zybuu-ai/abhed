@@ -186,7 +186,7 @@ func TestExportOfTamperedDoesNotVerify(t *testing.T) {
 	}
 }
 
-// The review's probe: a head saying zero lines, with lines cut, passed with
+// A head saying zero lines, with lines cut, passed with
 // a note. A head that is not exactly as written is no head, and fails.
 func TestInvalidHeadsFail(t *testing.T) {
 	for name, head := range map[string]string{
@@ -212,7 +212,7 @@ func TestInvalidHeadsFail(t *testing.T) {
 	}
 }
 
-// The review's probe: a session file deleted, then pruned. The prune does
+// A session file deleted, then pruned. The prune does
 // not make an empty file to prune; its tombstone says the file was missing
 // and keeps the head the index recorded, not a clean zero.
 func TestPruneOfAMissingSessionSaysSo(t *testing.T) {
@@ -248,12 +248,12 @@ func TestPruneOfAnUnverifiedSession(t *testing.T) {
 	s2 := openTest(t, dir)
 	cutLines(t, s2.Path("s-1"), 1, "")
 	p, err := s2.Prune("s-1", "user", "by hand")
-	if err != nil || len(p) != 1 || p[0].Verified || p[0].Missing || p[0].Head.Lines != 3 {
+	if err != nil || len(p) != 1 || p[0].Verified || p[0].Unverified == "" || p[0].Missing || p[0].Head.Lines != 3 {
 		t.Fatalf("prune: %+v %v", p, err)
 	}
 }
 
-// The review's probes A and B: a listed session's file deleted, with or
+// A listed session's file deleted, with or
 // without its head. Opening it for writing refuses and makes no file, so
 // verify keeps reporting it missing.
 func TestDeletedSessionFileIsNotRecreated(t *testing.T) {
@@ -287,7 +287,7 @@ func TestDeletedSessionFileIsNotRecreated(t *testing.T) {
 	}
 }
 
-// The review's probe C: a record that fails only through the index (cut
+// A record that fails only through the index (cut
 // behind a head rewritten to match) is exported marked unverified; the
 // copy fails on the mark, and with the mark stripped it still fails.
 func TestUnverifiedMarkIsRequired(t *testing.T) {
@@ -351,7 +351,7 @@ func TestSentinelHeadCoversTheFirstWrite(t *testing.T) {
 	}
 }
 
-// The review's probe R3-A: a live session cut to one line with its head
+// A live session cut to one line with its head
 // deleted fails, is refused for writing, and stays failing.
 func TestCutToOneLineWithoutAHeadFails(t *testing.T) {
 	dir := t.TempDir()
@@ -368,7 +368,7 @@ func TestCutToOneLineWithoutAHeadFails(t *testing.T) {
 	mustFail(t, s2, "after a refused open")
 }
 
-// The review's probe R3-B: the index cut to one line and its head deleted.
+// The index cut to one line and its head deleted.
 // The index fails, the next session is refused, and the sessions it no
 // longer lists are reported by VerifyAll.
 func TestIndexCutToOneLineWithoutAHeadFails(t *testing.T) {
@@ -399,7 +399,7 @@ func TestIndexCutToOneLineWithoutAHeadFails(t *testing.T) {
 	}
 }
 
-// The review's probe E: a line the head counts, cut to a fragment. Verify
+// A line the head counts, cut to a fragment. Verify
 // and open give the same reason, and verify does not promise a repair.
 func TestCountedLineCutShort(t *testing.T) {
 	dir := t.TempDir()
@@ -422,7 +422,7 @@ func TestCountedLineCutShort(t *testing.T) {
 	}
 }
 
-// The review's round-4 probes: the creation head written over a real one.
+// The creation head written over a real one.
 // With more than one line left, that is damage, never a first-write crash,
 // for a session and for the index.
 func TestSentinelOverARealHeadFails(t *testing.T) {
@@ -517,5 +517,52 @@ func TestFirstHeadFailurePoisons(t *testing.T) {
 	}
 	if rep, _ := s.Verify("s-1"); !rep.OK || rep.Events != 1 {
 		t.Fatalf("after: %+v", rep)
+	}
+}
+
+// A prune reads the witness's heads first: when they cannot be read nothing
+// is pruned, and when they are read the tombstone keeps the record's hash at
+// each, and a line that differs makes it unverified.
+func TestPruneKeepsTheWitnessedHeads(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	record(t, s, "s-1", "one", "two", "three")
+	record(t, s, "s-2", "one", "two")
+	h1, _, _ := s.HashAt("s-1", 1)
+	_ = s.Close()
+	witnessed := map[string][]WitnessedHead{
+		"s-1": {{Lines: 1, Hash: h1}, {Lines: 2, Hash: "not-the-hash"}},
+		"s-2": nil,
+	}
+	fail := true
+	s2, err := Open(Options{Dir: dir, User: "tester", Witnessed: func(_, id string) ([]WitnessedHead, error) {
+		if fail {
+			return nil, errors.New("unreachable")
+		}
+		return witnessed[id], nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if _, err := s2.Prune("s-1", "user", "test"); err == nil || !strings.Contains(err.Error(), "nothing was pruned") {
+		t.Fatalf("a prune went ahead without the witness's heads: %v", err)
+	}
+	if _, pruned := s2.Pruned("s-1"); pruned {
+		t.Fatal("pruned without the witness's heads")
+	}
+	fail = false
+	for _, id := range []string{"s-1", "s-2"} {
+		if _, err := s2.Prune(id, "user", "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t1, _ := s2.Pruned("s-1")
+	if t1.Verified || !t1.WitnessChecked || !strings.Contains(t1.Unverified, "line 2 is not the one the witness holds") ||
+		len(t1.Witnessed) != 2 || t1.Witnessed[0] != (WitnessedHead{1, h1}) || t1.Witnessed[1].Hash == "not-the-hash" {
+		t.Fatalf("tombstone: %+v", t1)
+	}
+	if t2, _ := s2.Pruned("s-2"); !t2.Verified || !t2.WitnessChecked || len(t2.Witnessed) != 0 {
+		t.Fatalf("tombstone: %+v", t2)
 	}
 }
