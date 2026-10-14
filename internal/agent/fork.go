@@ -201,6 +201,15 @@ func truncateAt(msgs []model.Message, pending map[string]model.ToolCall) []model
 	return msgs
 }
 
+// ForkedAt says where a conversation was forked: at a step, or, through
+// step 0, before the first message.
+func ForkedAt(seq int64) string {
+	if seq <= 0 {
+		return "forked before the first message"
+	}
+	return fmt.Sprintf("forked at step %d", seq)
+}
+
 // Forked is the payload of EvForked: the conversation went on from ThroughSeq.
 type Forked struct {
 	ThroughSeq int64 `json:"through_seq"`

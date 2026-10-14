@@ -194,6 +194,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A stored secret's value typed into a session's first prompt (or a
+  workbench session's first message) was kept as typed in the session's
+  `prompt`: in memory, in Postgres's `sessions.prompt`, in `GET
+  /v1/sessions`, and in the console's list and title. It is now kept as
+  the record keeps it, `[secret:NAME]`. Rows written before stay as they
+  are. Affects 0.1.0 to 1.2.7.
 - A stored secret's value typed or pasted into a message was redacted in the
   record but sent to the model as typed. It is now replaced by
   `[secret:NAME]` before the model sees it, for a first message, a message
@@ -2005,7 +2011,7 @@ All notable changes to Abhed are recorded here. The format follows
   `StartupFileMark`, `TrustedStartupFile`), `server.Options.StartupBaseline`
   and `agent.EvStartupTrusted` apply and record it.
 - `server.TurnMover` (`Options.TurnMover`), with `Server.SuspendRunning`,
-  `Server.ContinueOpenTurn`, `server.RowClaim`, `ErrNoOpenTurn`,
+  `Server.ContinueOpenTurn`, `Server.ReleaseClaim`, `server.RowClaim`, `ErrNoOpenTurn`,
   `ErrSessionBusy`, `ErrNoSession` and `ErrDraining`, and the
   `store.Parked` holder that `ClaimNode` and `ClaimResume` never take, are
   the hooks an edition moves running turns with; `agent.InFlight`,

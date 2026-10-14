@@ -434,6 +434,12 @@ func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.S
 	if err != nil {
 		return cfg, nil, tools.Bash{}, err
 	}
+	// Asked for in the configuration, git's files held is not given up silently.
+	if p := cfg.Sandbox.GitProtect; p != nil && *p && sb.Tier() == sandbox.TierNone {
+		_ = sandbox.Close(sb)
+		return cfg, nil, tools.Bash{}, errors.New("sandbox.protect_git is true, but the sandbox tier is none, which cannot keep commands from writing git's config and hooks; " +
+			"make the process tier available, or set sandbox.protect_git false to serve without it")
+	}
 	bash := tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
 		Home: sandbox.HomeFunc(sb), Isolation: sandboxconfig.Isolation(cfg, string(sb.Tier()))}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.

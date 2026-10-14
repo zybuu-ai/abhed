@@ -886,7 +886,8 @@ its modes. The none tier holds nothing, and on it the `git` line of
 `abhed rpc`, `"sandbox": {"protect_git": false}` turns this off, and `true`
 also refuses the fence in `landlock_only` mode, which cannot hold these files
 (unset, that fence runs and says so); Studio and `abhed serve` always hold
-them.
+them where the tier can. With `protect_git` set `true`, `abhed serve` does not
+start on the none tier, which cannot hold them.
 
 An "always allow" for a git command (`bash(git status *)`) is remembered
 with a fingerprint of what git reads in the workspace's repositories and
@@ -1258,7 +1259,8 @@ withheld from the model as from the record: the model gets `[secret:NAME]`
 in its place, in the forms above, whichever way the message arrives (the
 terminal, `-p` and its stdin, the console and the workbench, a message sent
 while a run works, ACP, `abhed rpc`, the SDK). You are told once per
-message: the terminal prints a line on stderr naming the secrets, the console
+message: the terminal, and `-p` in every output format, prints a line on
+stderr naming the secrets, the console
 and the workbench show a note under the message, an ACP editor gets the same
 line at the start of the turn (with `secretsWithheld` in its `_meta`), and the
 `user.message` event carries `secrets_withheld`, the names comma-separated,

@@ -340,7 +340,7 @@ func (m *ContainerMounts) Args(ctx context.Context, p Policy, backend string) ([
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	if c.policy.Egress != nil {
-		cmd, _ := c.egressRun(ctx, cwd, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
+		cmd, _ := c.egressRun(ctx, cwd, egressPrefix, c.policy, nil, nil, []string{"/bin/sh", "-c", command})
 		return cmd
 	}
 	// Named, so a cancel can remove the container: killing the engine's CLI

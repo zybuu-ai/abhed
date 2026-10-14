@@ -770,7 +770,8 @@ session's events, one per shell and one per language server used to take
 them all, so a page with several shells stopped answering. The page now opens
 `GET /v1/streams` once and asks for each stream on it with `POST
 /v1/streams/{stream}/{channel}` and the stream's own route (`events`,
-`pty/{pty}` or `lsp/{lsp}`); `DELETE` ends one. Each is run as its own request
+`pty/{pty}` or `lsp/{lsp}`); `DELETE` ends one. A channel id still open is
+refused with `409`; it is free again once its `end` arrives. Each is run as its own request
 with that request's sign-in and origin, so it is authorised, refused and
 checked again while open exactly as the route is on its own, and only its
 events travel on the shared connection. A shared stream answers only the

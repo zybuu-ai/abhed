@@ -1641,18 +1641,22 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	if err := s.refuseUnreadableSecrets(); err != nil {
 		return "", err
 	}
-	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, true); err != nil {
+	vault, red, err := s.sessionSecrets(spec)
+	if err != nil {
+		return "", err
+	}
+	// The row, the list and the title keep the prompt as the record does: a
+	// stored secret typed into it is withheld. The run gets it whole, and
+	// withholds it itself, naming what it withheld.
+	shown := spec
+	shown.Prompt = agent.WithheldText(red, spec.Prompt)
+	if err := s.persistSession(ctx, sessionID, shown, mode, adapter, true); err != nil {
 		return "", err
 	}
 
-	vault, red, err := s.sessionSecrets(spec)
-	if err != nil {
-		s.forgetUnstarted(sessionID)
-		return "", err
-	}
 	rec := agent.NewRecorder(s.store, sessionID, "")
 	rec.Redact = red
-	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, vault, rec)
+	live, loop, err := s.buildLive(sessionID, shown, mode, adapter, registry, skillReg, vault, rec)
 	if err != nil {
 		s.forgetUnstarted(sessionID)
 		return "", err
@@ -2261,7 +2265,7 @@ func (s *Server) liveFromRecord(ctx context.Context, id string, rec store.Sessio
 
 	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant, admin: s.isAdminCtx(ctx)}
 	if spec.Prompt == "" {
-		spec.Prompt = prompt
+		spec.Prompt = agent.WithheldText(red, prompt) // shown, as the record keeps it
 	}
 	adapter, provider, lost := s.recordedProvider(id, events, rec.Model)
 	spec.Provider = provider
@@ -3394,7 +3398,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	live.Turns++
 	if live.Prompt == "" {
-		live.Prompt = req.Prompt // a workbench session is named by its first message
+		live.Prompt = live.Loop.Withheld(req.Prompt) // a workbench session is named by its first message
 	}
 	s.startRunLocked(live, "follow-up", func(ctx context.Context) (agent.TerminalReason, error) {
 		return live.Loop.RunMessage(ctx, msg)
@@ -3949,6 +3953,23 @@ func (s *Server) releaseBashes() {
 	for _, live := range all {
 		s.releaseBash(live)
 	}
+}
+
+// releaseClaims lets go, at once, of every session this process still holds.
+// A handed-over session is no longer this process's, and is left as it is.
+func (s *Server) releaseClaims() {
+	s.mu.RLock()
+	all := make([]*liveSession, 0, len(s.running))
+	for _, live := range s.running {
+		all = append(all, live)
+	}
+	s.mu.RUnlock()
+	var wg sync.WaitGroup
+	for _, live := range all {
+		wg.Add(1)
+		go func() { defer wg.Done(); s.releaseNodeNow(live) }()
+	}
+	wg.Wait()
 }
 
 // releaseNodeNow ends the hold whatever is live, for a session going away
@@ -5218,6 +5239,9 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 			s.log.Warn("shutdown did not complete cleanly", "err", err)
 		}
 		s.releaseBashes()
+		// Nothing more runs here: a claim a tab's work took while the drain
+		// ran would otherwise hold the session from every replica until stale.
+		s.releaseClaims()
 	}()
 	s.log.Info("abhed server listening", "addr", srv.Addr, "workspace", s.opts.Workspace, "tls", s.opts.TLS != nil)
 	if s.opts.TLS != nil {

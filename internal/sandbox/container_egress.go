@@ -96,7 +96,7 @@ func (c *Container) containerProxy() (*egress.Proxy, *egressState, error) {
 // relay to the egress proxy over an exec's stdio. The container takes p's
 // mounts and extra run arguments; argv gets env besides the proxy's. The func
 // returned removes the container and ends the call, at once.
-func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, env, argv []string) (*exec.Cmd, func()) {
+func (c *Container) egressRun(ctx context.Context, cwd, prefix string, p Policy, extra, env, argv []string) (*exec.Cmd, func()) {
 	relay, why := c.containerRelay()
 	if relay == "" {
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: " + why)}, nil
@@ -123,7 +123,7 @@ func (c *Container) egressRun(ctx context.Context, cwd string, p Policy, extra, 
 		call.End()
 		return &exec.Cmd{Err: err}, nil
 	}
-	name := containerName(egressPrefix)
+	name := containerName(prefix)
 	// Detached, with the relay bound read-only; it idles until removed.
 	run := append([]string{"run", "--rm", "-d"}, args[3:]...)
 	run = append(append(run, extra...), "-v", relay+":"+relayInside+":ro")

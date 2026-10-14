@@ -58,6 +58,11 @@ func serverFilesIn(name, program string, env, workspaces []string) (serverFiles,
 		return serverFiles{}, fmt.Errorf("sandbox: the server's own home: %w", err)
 	}
 	f.prefix = installPrefix(real, resolveIn(program, env))
+	// Its install folder is shown to it: never Abhed's state, nor a folder holding it.
+	if state := filepath.Join(real, stateDir); f.prefix != "" && (insideAny(f.prefix, []string{state}) || insideAny(state, []string{f.prefix})) {
+		return serverFiles{}, fmt.Errorf("sandbox: the server's program %s is installed in %s, which holds Abhed's state (%s) and is never shown to a server; "+
+			"install it in a folder of its own, or set \"host_files\": true on the server", program, f.prefix, state)
+	}
 	return f, nil
 }
 

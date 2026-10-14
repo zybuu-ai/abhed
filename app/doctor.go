@@ -119,8 +119,12 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		// MCP servers' containers a killed Abhed left, removed as a session
 		// would; only when one is set to run in a container.
 		if c, ok := sb.(*sandbox.Container); ok && confinedStdioServers(cfg) {
-			if gone := c.SweepServers(context.Background()); len(gone) > 0 {
-				fmt.Printf("            removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(gone), strings.Join(gone, ", "))
+			sw := c.SweepServers(context.Background())
+			if len(sw.Removed) > 0 {
+				fmt.Printf("            removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(sw.Removed), strings.Join(sw.Removed, ", "))
+			}
+			if len(sw.Unchecked) > 0 {
+				fmt.Printf("            kept %d MCP server container(s) whose Abhed process cannot be checked from here (another user's?): %s; remove them yourself if they are left over\n", len(sw.Unchecked), strings.Join(sw.Unchecked, ", "))
 			}
 		}
 	} else {
@@ -764,13 +768,14 @@ func fileExists(path string) bool {
 // gitHeldLabel says whether commands are kept from writing git's files on
 // tier, the one in force, or "" when it is not known.
 func gitHeldLabel(cfg config.Config, tier sandbox.Tier) string {
+	// The tier in force first: none holds nothing, whatever is asked of it.
 	switch on, required := cfg.Sandbox.GitProtected(); {
 	case !on:
 		return "not held: sandbox.protect_git is false (docs/guide/04-permissions.md)"
-	case required:
-		return "held read-only from commands; a tier that cannot hold them is refused"
 	case tier == sandbox.TierNone:
 		return "not held: the sandbox tier is none, so commands can write git's config and hooks; make a stronger tier available (sandbox.protect_git)"
+	case required:
+		return "held read-only from commands; a tier that cannot hold them is refused"
 	}
 	return "held read-only from commands on every tier but none (sandbox.protect_git)"
 }

@@ -1649,7 +1649,7 @@ function render(ev){
     }
 
     case 'conversation.forked': {
-      tx.appendChild(node('note', p.withheld ? 'forked · ' + visible(p.withheld) : 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
+      tx.appendChild(node('note', p.withheld ? 'forked · ' + visible(p.withheld) : (p.through_seq > 0 ? 'forked at step ' + p.through_seq : 'forked before the first message') + ' · the steps after it, above, were abandoned'));
       turnEl = null;
       break;
     }

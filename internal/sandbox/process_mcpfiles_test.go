@@ -83,3 +83,31 @@ func TestInstallPrefix(t *testing.T) {
 		}
 	}
 }
+
+// A server's install folder is never Abhed's state, nor a folder holding it
+// (the home itself): such a server is refused, naming why.
+func TestServerInstallFolderNeverHoldsState(t *testing.T) {
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	for _, rel := range []string{".abhed/bin/srv", ".abhed/tools/srv", "srv"} {
+		prog := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(prog), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(prog, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := serverFilesIn("s", prog, nil, nil); err == nil || !strings.Contains(err.Error(), "holds Abhed's state") {
+			t.Errorf("%s: %v", rel, err)
+		}
+	}
+	ok := filepath.Join(home, "tools", "srv", "bin", "srv")
+	_ = os.MkdirAll(filepath.Dir(ok), 0o755)
+	_ = os.WriteFile(ok, []byte("#!/bin/sh\n"), 0o755)
+	if f, err := serverFilesIn("s", ok, nil, nil); err != nil || f.prefix != filepath.Join(home, "tools", "srv") {
+		t.Fatalf("an ordinary install folder: %+v %v", f, err)
+	}
+}

@@ -427,6 +427,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			}
 			switch {
 			case streaming:
+				// stdout stays the events alone; the note goes where a person sees it.
+				if note := withheldNoteOf(ev); note != "" {
+					fmt.Fprintf(os.Stderr, "abhed: %s\n", note)
+				}
 				if o.format == "stream-json" && !o.partial &&
 					(ev.Type == agent.EvAgentDelta || ev.Type == agent.EvAgentReasoningDelta) {
 					continue
@@ -594,4 +598,17 @@ func printUsage(r *ui.Renderer, u agent.Usage) {
 		line += fmt.Sprintf(" · %d compaction(s)", u.Compactions)
 	}
 	fmt.Printf("%s\n", s.Dim(line))
+}
+
+// withheldNoteOf is the note a user.message that withheld stored secrets
+// earns, or "".
+func withheldNoteOf(ev agent.Event) string {
+	if ev.Type != agent.EvUserMessage {
+		return ""
+	}
+	var m agent.Message
+	if json.Unmarshal(ev.Payload, &m) != nil {
+		return ""
+	}
+	return ui.WithheldNote(m.SecretsWithheld)
 }
