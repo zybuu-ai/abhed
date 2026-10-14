@@ -2,8 +2,11 @@
 # platform with the documentation embedded, the microVM driver's
 # abhed-microvm and abhed-guest for Linux, a checksum file covering all of
 # them, and a multi-arch container image, and publishes them as a GitHub
-# Release. Nothing is built by hand, so a release is reproducible from its
-# tag. The macOS binaries are built with cgo on a macOS runner; every other
+# Release. Nothing is built by hand: a release is built from its tag by this
+# workflow, with actions pinned by commit, Go by version, the macOS runner by
+# version and the image's base images by digest. That is not a byte-for-byte
+# rebuild: the runners' images and the image's package upgrades still move.
+# The macOS binaries are built with cgo on a macOS runner; every other
 # platform is built without cgo on Linux.
 #
 # abhed-vmhelper, the macOS microVM helper, is deliberately not published
@@ -29,7 +32,7 @@ jobs:
   # logging, and so on a Mac; both architectures come from the one runner.
   darwin:
     name: macOS binaries (cgo)
-    runs-on: macos-latest
+    runs-on: macos-15
     permissions:
       contents: read
     steps:
