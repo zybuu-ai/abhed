@@ -20,7 +20,7 @@ import (
 // realDriver is the driver named by ABHED_REQUIRE_CONTAINER_DRIVER (docker
 // or podman) on this machine's engine. It runs only with that set, as the CI
 // job sets it, since it starts containers; there a missing engine fails.
-// Containers are named abhed128-* and removed when the test ends.
+// Containers are named abhedtest-* and removed when the test ends.
 func realDriver(t *testing.T, opts Options) *Driver {
 	t.Helper()
 	name := os.Getenv("ABHED_REQUIRE_CONTAINER_DRIVER")
@@ -31,7 +31,7 @@ func realDriver(t *testing.T, opts Options) *Driver {
 		t.Fatalf("ABHED_REQUIRE_CONTAINER_DRIVER=%q: want docker or podman", name)
 	}
 	if opts.NamePrefix == "" {
-		opts.NamePrefix = "abhed128-"
+		opts.NamePrefix = "abhedtest-"
 	}
 	if img := os.Getenv("ABHED_SANDBOX_IMAGE"); img == "" && opts.Image == "" {
 		opts.Image = "docker.io/library/debian:bookworm-slim"
@@ -268,7 +268,7 @@ func TestContainerDriverAllowlistOnARealEngine(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.Network = config.NetworkAllowlist
 	cfg.Egress.Rules = []egress.Rule{{Host: "example.com", Decision: "allow"}}
-	d, err := newFromConfig(name, cfg, Options{NamePrefix: "abhed128-", Image: "docker.io/library/debian:bookworm-slim"})
+	d, err := newFromConfig(name, cfg, Options{NamePrefix: "abhedtest-", Image: "docker.io/library/debian:bookworm-slim"})
 	if err != nil {
 		t.Fatal(err)
 	}

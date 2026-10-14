@@ -583,7 +583,7 @@ func TestCopyOutRefusesEscapes(t *testing.T) {
 	}
 	evil := map[string][]entry{
 		"dotdot":    {{name: "../escaped", typ: tar.TypeReg}},
-		"absolute":  {{name: "/tmp/abhed128-escaped", typ: tar.TypeReg}},
+		"absolute":  {{name: "/tmp/abhedtest-escaped", typ: tar.TypeReg}},
 		"state":     {{name: "proj/.abhed/config.json", typ: tar.TypeReg}},
 		"stateCase": {{name: ".Abhed/x", typ: tar.TypeReg}},
 		"linkOut":   {{name: "l", link: "../..", typ: tar.TypeSymlink}},
@@ -626,8 +626,8 @@ func TestCopyOutRefusesEscapes(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(parent, "escaped")); err == nil {
 		t.Fatal("an entry escaped the folder")
 	}
-	if _, err := os.Lstat("/tmp/abhed128-escaped"); err == nil {
-		_ = os.Remove("/tmp/abhed128-escaped")
+	if _, err := os.Lstat("/tmp/abhedtest-escaped"); err == nil {
+		_ = os.Remove("/tmp/abhedtest-escaped")
 		t.Fatal("an absolute entry was written")
 	}
 	for _, name := range []string{"state/proj/.abhed", "stateCase/.Abhed"} {

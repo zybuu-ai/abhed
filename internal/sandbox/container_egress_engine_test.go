@@ -20,7 +20,7 @@ func TestContainerAllowlistOnARealEngine(t *testing.T) {
 		t.Skip("set ABHED_TEST_RELAY_BINARY to a Linux build of Abhed to run the allowlist on a real engine")
 	}
 	old := egressPrefix
-	egressPrefix = "abhed128-egr-"
+	egressPrefix = "abhedtest-egr-"
 	t.Cleanup(func() { egressPrefix = old })
 	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestContainerInspectionCAOnARealEngine(t *testing.T) {
 		t.Skip("set ABHED_TEST_RELAY_BINARY to a Linux build of Abhed to run the allowlist on a real engine")
 	}
 	old := egressPrefix
-	egressPrefix = "abhed128-egr-"
+	egressPrefix = "abhedtest-egr-"
 	t.Cleanup(func() { egressPrefix = old })
 	pol, err := egress.Compile(egress.Config{InspectTLS: true, Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
 	if err != nil {
@@ -84,7 +84,7 @@ func TestContainerRelayIsOutOfTheCommandsReach(t *testing.T) {
 		t.Skip("set ABHED_TEST_RELAY_BINARY to a Linux build of Abhed to run the allowlist on a real engine")
 	}
 	old := egressPrefix
-	egressPrefix = "abhed128-egr-"
+	egressPrefix = "abhedtest-egr-"
 	t.Cleanup(func() { egressPrefix = old })
 	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
 	if err != nil {

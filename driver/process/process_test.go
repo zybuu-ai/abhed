@@ -346,7 +346,7 @@ func (s *syncBuffer) String() string {
 
 func localDir(t *testing.T) string {
 	t.Helper()
-	d, err := os.MkdirTemp(".", "abhed128-")
+	d, err := os.MkdirTemp(".", "abhedtest-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func unwritableDir(t *testing.T) string {
 		if writable(p) {
 			continue
 		}
-		d, err := os.MkdirTemp(p, ".abhed128-outside-")
+		d, err := os.MkdirTemp(p, ".abhedtest-outside-")
 		if err != nil {
 			continue
 		}

@@ -42,7 +42,7 @@ func TestRealSandboxesKeepTempApart(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = d.Delete(ctx, id) })
 	}
-	shared := "abhed128-alice-" + filepath.Base(t.TempDir())
+	shared := "abhedtest-alice-" + filepath.Base(t.TempDir())
 	for _, dir := range []string{"/tmp", "/var/tmp"} {
 		t.Cleanup(func() { _ = os.Remove(filepath.Join(dir, shared)) })
 	}
