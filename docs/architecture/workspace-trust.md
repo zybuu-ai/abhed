@@ -138,6 +138,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
+| `plan.runbooks` | **applied** only when false |
 | `monitor.enabled` | **applied** only when true |
 | `monitor.on_unavailable` | **applied** only for `deny` |
 | `monitor.max_per_turn` | **applied** only when more calls are reviewed; zero means no bound, so it is the most |

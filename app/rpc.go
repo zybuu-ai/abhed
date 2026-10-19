@@ -167,7 +167,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			var made *abhed.Agent
 			opts := abhed.Options{
 				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: config.GrantFor(trust, workspace, ws), AllowDefaultModel: true,
-				Allow: req.Allow, Deny: req.Deny,
+				Allow: req.Allow, Deny: req.Deny, Runbook: req.Runbook,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,
 				// The agent the terminal runs, subagents and configured tools included.
@@ -400,6 +400,8 @@ type rpcRequest struct {
 	// a background task for cancel_task.
 	Wake   string `json:"wake,omitempty"`
 	TaskID string `json:"task_id,omitempty"`
+	// Runbook, on start, is a runbook the host approves for the session.
+	Runbook *abhed.Runbook `json:"runbook,omitempty"`
 }
 
 type rpcResponse struct {

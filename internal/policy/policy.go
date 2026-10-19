@@ -440,6 +440,10 @@ type Engine struct {
 	// does not take them as an alias or extension it cannot read. Deny and
 	// ask rules still hold for them.
 	GitExtensions map[string]bool
+
+	// KeepAsk reports an ask rule an approved runbook does not answer: one
+	// the managed configuration made asks for each call, inside a runbook too.
+	KeepAsk func(rule string) bool
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }

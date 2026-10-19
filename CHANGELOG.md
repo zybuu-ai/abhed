@@ -115,7 +115,9 @@ All notable changes to Abhed are recorded here. The format follows
   protection and checkpoints (so `/undo` takes it back); a hunk the
   workspace changed meanwhile is reported as a conflict and left out, and
   the worktree and its branch are removed only when you ask. Each take is
-  recorded as `worktree.taken`
+  recorded as `worktree.taken`. The editor protocol serves the same as
+  `_abhed/worktrees/list` and `_abhed/worktrees/take` (the `worktrees`
+  feature) for Studio to use
   ([Parallel subagents](docs/guide/14-parallel-subagents.md#taking-a-worktree-back)).
 - Changes made through `bash` are checkpointed: before each command the
   workspace's files are noted and copied in memory, within limits, and each
@@ -132,6 +134,38 @@ All notable changes to Abhed are recorded here. The format follows
   workspace looks like a Go, Node, Python or Rust project and the image
   lacks its toolchain, and name an image that has it; nothing is pulled to
   look ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
+- Runbooks: a plan from plan mode can carry the exact calls it will make
+  (`ssh`, `k8s_apply`, `bash`, `edit`, `write`). Each step is checked against
+  the policy and hashed when the plan is proposed, and you approve them once
+  with the plan. A call made exactly as the next step then runs without
+  asking, recorded as `plan.step` with the plan's hash; any other change
+  asks, saying it is not in the approved plan, even where a rule or the mode
+  would allow it. Deny rules, hooks, the supervisor, an ask rule the managed
+  configuration lists and the sandbox still apply, steps that
+  cannot be undone are confirmed a second time, and a rewound or continued
+  session asks for each step again
+  ([Runbooks](docs/guide/28-runbooks.md)).
+- The plan card lists a runbook's steps in the CLI, the workbench, the
+  console and, over ACP, Abhed Studio, which now gets plan mode's
+  `exit_plan` and answers a plan as a permission request. The workbench
+  answers with `POST /v1/sessions/{id}/plan`.
+- `abhed -p -runbook FILE` approves a runbook for a headless run, and
+  `-runbook-sha256` pins the plan hash you reviewed; the SDK takes
+  `Options.Runbook` and `abhed rpc` takes `runbook` on `start`.
+- `plan.runbooks` (on by default) turns runbooks off when false: a plan
+  with one is refused, and so is the operator's `-runbook`. A workspace file
+  may only turn it off; a managed value binds either way
+  ([Configuration](docs/guide/02-configuration.md)).
+- HawkEYE lists remote changes: every `ssh` command and `k8s_apply` write
+  per host and cluster, with the decision, the exit code and the runbook
+  step it was, in the text and HTML reports and the workbench
+  ([HawkEYE](docs/guide/15-hawkeye.md)).
+
+### Changed
+
+- `plan.proposed` carries the plan's `hash`, and its `runbook` when it has
+  one; `plan.decided` carries the `plan_hash` and runbook an accept bound
+  ([Data model](docs/architecture/10-data-model.md)).
 
 ### Fixed
 
@@ -156,6 +190,10 @@ All notable changes to Abhed are recorded here. The format follows
 - Studio's review no longer shows a file whose content was not kept before
   the change (one that holds keys, or one a read rule denies) as a whole
   file added from nothing.
+- The context size that decides when to offload and compact, and that
+  `session.ended` records, counts only the tools the model is offered in the
+  current mode, so a tool of another mode no longer brings compaction early.
+
 
 ## [1.2.8] - 2026-10-14
 

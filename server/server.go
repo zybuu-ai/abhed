@@ -911,6 +911,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/model", s.setSessionModel)
 	mux.HandleFunc("POST /v1/sessions/{id}/interrupt", s.interruptSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/approve", s.approveAction)
+	mux.HandleFunc("POST /v1/sessions/{id}/plan", s.decidePlan)
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/ready", s.ready)
 	s.sandboxRoutes(mux)
@@ -1873,6 +1874,7 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
+	pol.KeepAsk = s.opts.Config.ManagedAsk
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
 	_ = pol.AllowGitExtensions(s.opts.Config.Permissions.GitExtensions...)
 	_ = pol.AllowRemoteReads(s.opts.Config.SSH.ReadCommands...)
@@ -2001,6 +2003,11 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
 	cfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, s.skillListing(skillReg), own.Names())
 	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
+	// Plan mode's exit_plan; the person answers with POST /v1/sessions/{id}/plan.
+	loop.EnablePlanExit()
+	if !s.opts.Config.Plan.Runbooks {
+		loop.DisableRunbooks()
+	}
 	// Background children belong to the session. An unattended run has
 	// nobody to come back to it, so its children are joined: it waits for
 	// them, and its end, and OnEnd, come after theirs.

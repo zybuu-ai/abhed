@@ -90,7 +90,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `suggestions`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `memory`, `suggestions`, `worktrees`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -467,7 +467,14 @@ The same list is also a config option of `category: "mode"`.
 - The change is recorded `mode.changed {from, to, by: "user", via: "studio"}`,
   and the engine sends `current_mode_update`.
 - Plan mode's exit is the engine's `plan.proposed` / `plan.decided` flow, shown
-  as a normal ask.
+  as a normal ask: a `session/request_permission` whose `toolCall` (`kind:
+  "think"`, `_meta.plan: true`, `planHash` and `steps` when the plan has a
+  runbook) carries the plan and its steps as content, with the options
+  `plan:accept-edits`, `plan:approve` and `plan:keep-planning`. A runbook with
+  steps that cannot be undone is followed by a second request
+  (`_meta.destructive: true`, `plan:confirm` or `plan:decline`). Accepting
+  records `mode.changed` `via: plan-exit` and `plan.decided`, and the same
+  prompt turn goes on with the plan.
 
 **Engine today:** `session/set_mode` answers -32601; the mode is fixed at
 construction. **Not implemented in 1.2.2:** a loop-level mode change through the same
@@ -851,6 +858,34 @@ _abhed/review/changed  { sessionId, paths: string[] }
   protected.
 - Studio's renderer never writes a file. There is no auto-accept delay.
 
+### 7.4.1 Taking a subagent's worktree back
+
+```ts
+_abhed/worktrees/list { sessionId } → { worktrees: {
+  id, rel, branch, base,            // .abhed-worktrees/<id>, abhed/<id>, the shared commit
+  files: { path, status: "modified" | "added" | "deleted", whole?: boolean, unsupported?: string,
+           hunks: { old_start, old_count, new_start, new_count, old: string[], new: string[],
+                    before?: string[], after?: string[] }[] }[] }[] }
+_abhed/worktrees/take { sessionId, worktree, accept: { [path]: number[] }, remove?: boolean }
+  → { taken: string[], conflicts: string[], refused: string[], left: number, removed: boolean }
+```
+
+- Listed under the `worktrees` feature. Paths are the workspace's, slash
+  separated; hunk lines keep their newlines and are redacted as other text
+  the engine sends. A file a read rule withholds, in the workspace or the
+  worktree, has no hunks and `unsupported: "denied by policy"`.
+- `accept` names hunks by their index in the list. The changes are read again
+  at the take, so a stale list cannot put in a hunk the worktree no longer
+  holds; an index or path it no longer has is `refused`.
+- Each file taken is the person's write (or delete) through the engine's
+  manual path, as `reject` is: policy-checked, checkpointed, recorded
+  `by: "user"`; the editor's protected files are refused. A hunk the
+  workspace changed at, or next to, is a `conflict`, left out, never forced.
+- `remove` removes the worktree and its branch after the take, as the
+  person's recorded delete of its folder; what was not taken is lost.
+- The take is recorded as `worktree.taken`, and `_abhed/review/changed`
+  names the files written. Refused while a prompt runs, like `reject`.
+
 ### 7.5 Checkpoints and undo
 
 `_abhed/review/undoTurn {sessionId, turn}` → `{restored: {path, beforeSha256,
@@ -992,6 +1027,7 @@ table.
 | HawkEYE | `_abhed/hawkeye` | ext | done |
 | Subagents | `tool_call` cards + events | spec + meta | done |
 | Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | list, cancel, review done; `resume` not yet |
+| Worktree take-back | `_abhed/worktrees/list`, `_abhed/worktrees/take` | ext | done in the engine (1.2.9; `worktrees` in `features`); Studio's view not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
 | Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
