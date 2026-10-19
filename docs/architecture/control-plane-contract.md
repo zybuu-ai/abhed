@@ -784,8 +784,11 @@ event with outcome `requested` before it runs, refused with `503` when that
 cannot be written, and one with `ok` or `failed` (and the status as `code`)
 after it. Its `action` is `api:` and the route pattern, its `sandbox_id`
 empty, and its `detail` the method, route, tenant, caller address and
-wildcard values. The sandbox operations above keep their own events beside
-these. With `server.metrics.enabled`, `abhed_sandbox_operations_total`
+wildcard values; the `ok` event of a create adds `created.id` (or
+`created.session_id`, `created.name`) from its JSON answer. Terminal input
+and language-server messages get the `requested` event only. The sandbox
+operations above keep their own events beside these, chained on SQLite as
+on Postgres. With `server.metrics.enabled`, `abhed_sandbox_operations_total`
 counts each operation's outcome by action, and `abhed_http_requests_total`
 each request by route pattern ([Configuration](../guide/02-configuration.md#metrics-and-the-api-audit)).
 

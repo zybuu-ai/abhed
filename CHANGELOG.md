@@ -91,6 +91,12 @@ All notable changes to Abhed are recorded here. The format follows
   control-plane record: the route pattern as `api:<pattern>`, the method,
   tenant, caller address and wildcard values, never the body or query.
   `abhed record audit` checks the chain, in Postgres or the local file.
+  A create's outcome names the id it made. A terminal's key batches and
+  language-server messages get one event a request instead of two.
+- The control plane's SQLite record (sandbox operations and the
+  reconciler's events) is hash-chained like the Postgres one, and
+  `abhed record audit` checks it; rows from before are reported as
+  unchained.
 - `ssh.read_commands`: commands the operator declares reads on every host.
   An exact entry (`uptime`, `df -h`) matches only its own text
   and may name any program but one that runs what it is given (a shell, a

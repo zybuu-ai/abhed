@@ -313,6 +313,8 @@ func TestOlderSchemaMigratesInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.w.Exec(`DROP TABLE sandbox_templates; ALTER TABLE sandbox_idempotency DROP COLUMN claim_token;
+		DROP INDEX sandbox_audit_chain_idx; ALTER TABLE sandbox_audit DROP COLUMN chain_pos;
+		ALTER TABLE sandbox_audit DROP COLUMN prev_hash; ALTER TABLE sandbox_audit DROP COLUMN hash;
 		DELETE FROM schema_version WHERE version > 1`); err != nil {
 		t.Fatal(err)
 	}
