@@ -47,7 +47,7 @@ func TestSSHReadWildcardOnlyForKnownReads(t *testing.T) {
 // become one is asked about, and in plan mode refused.
 func TestSSHReadWildcardCallsInReadFormsOnly(t *testing.T) {
 	e := readsEngine(t, policy.ModePlan, "journalctl *", "date *", "dmesg *", "sort *", "systemctl status *",
-		"ip addr *", "openssl x509 *", "rg *", "file *", "docker ps *", "rpm -q*", "hostname -*", "cat *")
+		"ip addr *", "openssl x509 *", "rg *", "file *", "docker ps *", "rpm *", "hostname -f", "cat *")
 	for _, cmd := range []string{
 		"journalctl --vacuum-size=1M", "journalctl --vacuum-time 1s", "journalctl --vac=1", "journalctl --rotate",
 		"journalctl --flush", "journalctl --setup-keys", "journalctl --update-catalog",

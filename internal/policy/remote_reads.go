@@ -42,7 +42,7 @@ func ParseRemoteRead(p string) (Rule, error) {
 	if program := strings.Fields(s)[0]; strings.ContainsAny(program, "*?$") || isAssignment(program) {
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q must start with the program it runs, written out (such as \"df -h\")", p)
 	}
-	name := programName(s)
+	name := rawProgram(s)
 	spec, known := knownReads[name]
 	words, _, _ := shellWords(s)
 	wildcard := strings.ContainsAny(s, "*?")
@@ -54,8 +54,8 @@ func ParseRemoteRead(p string) (Rule, error) {
 	case wildcard && !readCallOK(spec, words[1:], func(w string) bool { return strings.ContainsAny(w, "*?") }):
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s (see docs/ops/infrastructure.md#ssh); declare the exact command instead", p, name)
 	case !wildcard && known && !readCallOK(spec, words[1:], func(string) bool { return false }):
-		return Rule{}, fmt.Errorf("ssh.read_commands: %q uses a form of %s that changes the host, so it is not a read", p, name)
-	case !wildcard && !known && runsCommands(name):
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s: it uses a verb or option the list does not hold as a read (see docs/ops/infrastructure.md#ssh)", p, name)
+	case !wildcard && !known && runsCommandsIn(s):
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q runs %s, which runs what it is given, so it is not a read", p, name)
 	}
 	if what, destructive := canon.Destructive(); destructive {
@@ -114,7 +114,7 @@ func (e *Engine) remoteReadRule(rr remoteRead) string {
 // wildcardReadOK reports a call a wildcard entry may approve: its program
 // on the read-only list, called in a form the list allows.
 func wildcardReadOK(text string) bool {
-	spec, known := knownReads[programName(text)]
+	spec, known := knownReads[rawProgram(text)]
 	if !known {
 		return false
 	}
@@ -136,18 +136,28 @@ func carriesStdinSecret(args json.RawMessage) bool {
 	return found && v != nil && (!isStr || s != "")
 }
 
-// programName is the program a command names first, by its base name, with
-// a version suffix such as python3.12's dropped.
-func programName(command string) string {
+// rawProgram is the program a command names first, by its base name.
+func rawProgram(command string) string {
 	fields := strings.Fields(command)
 	if len(fields) == 0 {
 		return ""
 	}
-	name := tools.CommandName(path.Base(fields[0]))
+	return tools.CommandName(path.Base(fields[0]))
+}
+
+// programName is rawProgram with a version suffix such as python3.12's dropped.
+func programName(command string) string {
+	name := rawProgram(command)
 	if trimmed := strings.TrimRight(name, "0123456789."); trimmed != "" {
 		return trimmed
 	}
 	return name
+}
+
+// runsCommandsIn reports a command whose program runs what it is given, by
+// its name as written (sqlite3) or with its version dropped (python3.12).
+func runsCommandsIn(command string) bool {
+	return runsCommands(rawProgram(command)) || runsCommands(programName(command))
 }
 
 // runsCommands reports a program that runs a command or code it is given:

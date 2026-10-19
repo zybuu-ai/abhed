@@ -445,43 +445,54 @@ may name any program but one that runs what it is given: a shell (`sh`,
 is on the list below, the entry must also be a read form of it.
 
 **Wildcard entries.** An entry with `*` or `?` is accepted only for a program
-on this list, after its path and any version suffix are dropped, and only in
-a read form of it; any other is refused at load with "declare the exact
-command instead". Every call the pattern matches is checked against the same
-form, so a dangerous option or verb is never approved through a wildcard,
-whatever the pattern says. For the programs marked *strict*, a call with a
-`$` outside single quotes or an unquoted `*`, `?` or `[` is not a read either,
-since the host's shell could turn it into an option.
+on this list, named as written (its path dropped), and only in a read form of
+it; any other is refused at load with "declare the exact command instead".
+Every call the pattern matches is checked against the same form, so an
+option or verb that is not a read is never approved through a wildcard,
+whatever the pattern says.
+
+A form names the **options it allows**; every other option is refused. A
+long option is matched only in full, so an abbreviation getopt would take
+(`--vac=1` for `--vacuum-size`) is refused, and a cluster of short ones
+(`-Tc`) is refused unless the cluster itself is listed. For an option that
+takes a value, the value is the next word, the text after `=`, or, for a
+short option of a getopt program, the rest of the word (`-n50`); a next
+word that starts with `-` is judged as an option of its own, never skipped
+as a value. Where a program has **verbs**, the verb must be the first word
+after the program, in the entry and in every call, with no option before
+it, so no option's value can be taken for the verb. For the programs marked
+*strict*, a call with a `$` outside single quotes or an unquoted `*`, `?` or
+`[` is not a read either, since the host's shell could turn it into an
+option. In an entry, a wildcard may stand for an operand or for a value
+after `=`, never for an option.
 
 | Program | Read form a wildcard may cover |
 |---|---|
-| `cat`, `head`, `tail`, `wc`, `ls`, `stat`, `df`, `du`, `free`, `uptime`, `uname`, `id`, `whoami`, `groups`, `ps`, `pgrep`, `netstat`, `lsblk`, `findmnt`, `grep`, `egrep`, `fgrep`, `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum`, `cksum`, `lscpu`, `lsmem`, `lsmod`, `lspci`, `lsusb`, `nproc`, `w`, `who`, `getent`, `vmstat`, `basename`, `dirname`, `realpath`, `readlink`, `cut`, `cmp`, `diff`, `lsof`, `zcat` | any arguments |
-| `file` | not `-C`/`--compile` (strict) |
-| `rg` | not `--pre`, `--pre-glob`, `-z`/`--search-zip`, which run programs (strict) |
-| `sort` | not `-o`/`--output`, `--compress-program`, `-T`/`--temporary-directory` (strict) |
-| `date` | not `-s`/`--set` or `-f`/`--file`; each operand starts with `+`, so a date to set is not one (strict) |
-| `hostname` | only `-f`, `-s`, `-i`, `-I`, `-d`, `-a`, `-A` and their long forms, and no operand, which would set it (strict) |
-| `dmesg` | not `-C`/`--clear`, `-c`/`--read-clear`, `-D`, `-E`, `-n` or their long forms (strict) |
-| `journalctl` | not `--vacuum-size`, `--vacuum-time`, `--vacuum-files`, `--rotate`, `--flush`, `--sync`, `--relinquish-var`, `--smart-relinquish-var`, `--setup-keys`, `--update-catalog` (strict) |
-| `systemctl` | first operand `status`, `show`, `cat`, `is-active`, `is-enabled`, `is-failed`, `list-units`, `list-unit-files`, `list-timers`, `list-sockets` or `list-dependencies`, written out in the entry (strict) |
-| `hostnamectl` | `status` (strict) |
-| `timedatectl` | `status` or `show` (strict) |
-| `ip` | object `addr`, `address`, `a`, `link`, `l`, `route`, `r`, `neigh`, `neighbour`, `n`, `rule` or `maddr`, then nothing or `show`, `list`, `ls`, `lst` or `get`; only the options `-4`, `-6`, `-0`, `-o`, `-br`, `-s`, `-d`, `-j`, `-p`, `-c`, `-h`, `-iec`, `-r`, `-f` and their full spellings, since ip takes any prefix of an option (`-ba` is `-batch`); never `netns`, `exec` or `vrf` (strict) |
-| `openssl` | `x509`, `s_client`, `verify` or `version`, never `-out`, `-keyout`, `-engine`, `-provider`, `-provider-path`, `-config`, `-sess_out`, `-keylogfile`, `-msgfile`, `-writerand` or `-signkey`, with one dash or two (strict) |
-| `docker`, `podman` | `ps`, `images`, `inspect`, `logs`, `version` or `info` as the first word (strict) |
-| `apt` | `list`, `show`, `policy` or `search` (strict) |
-| `apt-cache` | `policy`, `show`, `search`, `depends` or `rdepends` (strict) |
-| `dpkg` | only `-l`, `-s`, `-L`, `-S`, `-p`, `--get-selections` and their long forms (strict) |
-| `dpkg-query` | only `-l`, `-W`, `-s`, `-L`, `-S`, `-f` and their long forms (strict) |
-| `rpm` | only the query options `-q`, `-qa`, `-qi`, `-ql`, `-qf`, `-qc`, `-qd`, `-qR`, `-qai` and `--query`, `--all`, `--info`, `--list`, `--file`, `--requires`, `--provides`, `--whatprovides`, `--whatrequires`, `--changelog`, `--last`, `--queryformat`, `--qf` (strict) |
+| `cat`, `head`, `tail`, `wc`, `ls`, `stat`, `df`, `du`, `free`, `uptime`, `uname`, `id`, `whoami`, `groups`, `ps`, `pgrep`, `netstat`, `lsblk`, `findmnt`, `grep`, `egrep`, `fgrep`, `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum`, `cksum`, `lscpu`, `lsmem`, `lsmod`, `lspci`, `lsusb`, `nproc`, `w`, `who`, `getent`, `vmstat`, `basename`, `dirname`, `realpath`, `readlink`, `cut`, `cmp`, `diff`, `zcat` | any arguments: none of their options writes a file or runs a program |
+| `file` | options `-b`, `-L`, `-h`, `-i`, `--mime`, `--mime-type`, `--mime-encoding`, `-k`, `-s`, `-E`, `-N`, `-0`, `-r` and their long forms; values `-m`, `-F`, `-e` (not `-C`, which writes, or `-z`/`-Z`, which run decompressors) (strict) |
+| `rg` | options `-n`, `-N`, `-i`, `-S`, `-s`, `-w`, `-x`, `-v`, `-l`, `-c`, `-F`, `-H`, `-u`, `-uu`, `-L`, `-o`, `-U`, `-P`, `-q`, `-a` and long forms such as `--no-heading`, `--hidden`, `--files`, `--json`; values `-e`, `-g`, `--iglob`, `-t`, `-T`, `-A`, `-B`, `-C`, `-m`, `-d`, `--max-filesize`, `-E`, `--sort` (not `--pre` or `-z`, which run programs) (strict) |
+| `sort` | options `-n`, `-r`, `-u`, `-h`, `-V`, `-f`, `-b`, `-M`, `-g`, `-s`, `-z`, `-c`, `-C`, `-d`, `-i`, `-R` and their long forms; values `-k`, `-t`, `-S`, `--parallel` (not `-o`, `-T` or `--compress-program`) (strict) |
+| `date` | options `-u`, `-R`, `-I` and its `-Idate`…`-Ins` forms, `--iso-8601` and `--rfc-3339` with a value; values `-d`, `-r`; each operand starts with `+` (strict) |
+| `hostname` | options `-f`, `-s`, `-i`, `-I`, `-d`, `-a`, `-A` and their long forms; no operand (strict) |
+| `dmesg` | options `-T`, `-H`, `-k`, `-u`, `-x`, `-t`, `-w`, `-W`, `-P`, `-r`, `-J`, `-e`, `-d`, `-S`, `-L` and their long forms; values `-l`, `-f`, `--since`, `--until`, `--time-format` (strict) |
+| `journalctl` | options `-b`, `-k`, `--no-pager`, `-r`, `-x`, `-f`, `-q`, `-a`, `--no-hostname`, `--utc`, `-N`, `--system`, `--user`, `--list-boots`, `--disk-usage`, `--header`, `--show-cursor`, `--no-full`, `-l`, `-m` and long forms; values `-u`, `--user-unit`, `-n`, `-p`, `-S`, `-U`, `-o`, `--output-fields`, `-g`, `-t`, `-T`, `-F`, `-D`, `--file`, `--cursor`, `--after-cursor` (not `--cursor-file`, `--vacuum-*`, `--rotate` and the other options that write) (strict) |
+| `systemctl` | first word `status`, `show`, `cat`, `is-active`, `is-enabled`, `is-failed`, `list-units`, `list-unit-files`, `list-timers`, `list-sockets` or `list-dependencies`; then options `--no-pager`, `-l`, `-a`, `--value`, `--no-legend`, `--plain`, `-q`, `--user`, `--system`, `-r`, `--reverse`, `--before`, `--after` and long forms; values `-n`, `-o`, `-p`, `-t`, `--state` (strict) |
+| `hostnamectl` | first word `status`; options `--static`, `--transient`, `--pretty` (strict) |
+| `timedatectl` | first word `status` or `show`; options `-a`, `--value`; value `-p` (strict) |
+| `ip` | options before the object, as ip takes them: `-4`, `-6`, `-0`, `-o`, `-br`, `-s`, `-d`, `-j`, `-p`, `-c`, `-h`, `-iec`, `-r` and their full spellings, value `-f`; then object `addr`, `address`, `a`, `link`, `l`, `route`, `r`, `neigh`, `neighbour`, `n`, `rule` or `maddr`, then nothing or `show`, `list`, `ls`, `lst` or `get`; never `netns`, `exec` or `vrf`. ip takes any prefix of an option (`-ba` is `-batch`), so only these, as written, are read (strict) |
+| `openssl` | first word `x509` (options `-noout`, `-text`, `-enddate`, `-startdate`, `-dates`, `-subject`, `-issuer`, `-serial`, `-fingerprint`, `-sha1`, `-sha256`, `-md5`, `-purpose`, `-hash`, `-subject_hash`, `-issuer_hash`, `-email`, `-ocsp_uri`, `-pubkey`, `-modulus`, `-ext_all`; values `-in`, `-inform`, `-checkend`, `-nameopt`, `-ext`, `-certopt`, `-dateopt`), `s_client` (options `-showcerts`, `-verify_return_error`, `-brief`, `-tls1_2`, `-tls1_3`, `-no_ign_eof`, `-quiet`, `-status`, `-crlf`; values `-connect`, `-servername`, `-CAfile`, `-CApath`, `-verify`, `-alpn`, `-starttls`, `-proxy`, `-host`, `-port`), `verify` (options `-verbose`, `-show_chain`, `-crl_check`, `-crl_check_all`, `-partial_chain`, `-x509_strict`; values `-CAfile`, `-CApath`, `-untrusted`, `-purpose`, `-CRLfile`) or `version`; one dash or two (strict) |
+| `docker`, `podman` | first word `ps` (options `-a`, `-q`, `--no-trunc`, `-l`, `-s`; values `-n`, `-f`, `--format`), `images` (options `-a`, `-q`, `--no-trunc`, `--digests`; values `-f`, `--format`), `inspect` (option `-s`; values `-f`, `--type`), `logs` (options `-f`, `-t`, `--details`; values `-n`, `--since`, `--until`), `version` or `info` (value `-f`); no global option such as `-H` (strict) |
+| `apt` | first word `list` (options `--installed`, `--upgradable`, `-a`), `show` (option `-a`), `policy` or `search` (options `--names-only`, `--full`) (strict) |
+| `apt-cache` | first word `policy`, `show`, `search`, `depends` or `rdepends`; options `--names-only`, `--full`, `--installed`, `--recurse`, `-i` (strict) |
+| `dpkg` | options `-l`, `-s`, `-L`, `-S`, `-p`, `--get-selections` and their long forms (strict) |
+| `dpkg-query` | options `-l`, `-W`, `-s`, `-L`, `-S` and their long forms; value `-f` (strict) |
+| `rpm` | options `-q`, `-qa`, `-qi`, `-ql`, `-qf`, `-qc`, `-qd`, `-qR`, `-qai`, `--query`, `--all`, `--info`, `--list`, `--file`, `--requires`, `--provides`, `--whatprovides`, `--whatrequires`, `--changelog`, `--last`; value `--queryformat` (strict) |
 
-Long options are refused by any prefix getopt would take (`--vac=1` is
-`--vacuum-size`), and short ones inside a cluster (`-Tc` holds `-c`). Not on
-the list, so declared exactly or not at all: `find`, `mount`, `ss` (the
-parser reads its operand as a command), `curl`, `wget`, `nginx`, `kubectl`,
-`git`, and every program that runs another. `*` matches any text, spaces
-included, so `ip addr *` does not match `ip addr` alone; write both if both
-are wanted.
+Not on the list, so declared exactly or not at all: `find`, `mount`, `ss`
+(the parser reads its operand as a command), `lsof`, `curl`, `wget`,
+`nginx`, `kubectl`, `git`, and every program that runs another. `*` matches
+any text, spaces included, so `ip addr *` does not match `ip addr` alone;
+write both if both are wanted.
 
 The `ssh` tool's description lists the entries, so the model knows which
 commands it may run in plan mode.
