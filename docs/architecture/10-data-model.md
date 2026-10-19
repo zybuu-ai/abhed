@@ -238,9 +238,40 @@ row it does not cover: one written with the trigger off. The runtime role
 holding INSERT, UPDATE, DELETE or TRUNCATE on `chain_pre` is refused at
 start, as it is for any privilege beyond appending to the record.
 
-The chain's trigger also sets `inserted_at` and `commit_tx` (the writing
-transaction, which orders the commit-ordered scan exporters read),
-whatever the writer sent, so no writer can keep a row out of that scan.
+**Commit order** (schema version 12). `events.commit_tx` (`xid8`, default
+`pg_current_xact_id()`) is the writing transaction, and `(commit_tx,
+created_at, session_id, seq)` is the order `Postgres.ScanCommitted` reads:
+only rows whose transaction is older than every one still running, so a
+reader that resumes from a position (`CommitPos`) never skips a row that
+commits later. Rows from before version 12 have no `commit_tx` and come
+first, by time. The column was added without a default and given one after,
+so existing rows are not rewritten. Version 12's index on `COALESCE(commit_tx,
+'0')` is replaced in **schema version 15** by `events_commit_tx_idx` on
+`(tenant_id, commit_tx, created_at, session_id, seq) WHERE commit_tx IS NOT
+NULL`: under row security Postgres does not take a condition on the
+`COALESCE` into an index, so every scan read all of the tenant's rows; on the
+bare column it is an index range, and rows without a transaction are read on
+their own through `events_tenant_time_idx`.
+
+**The OCSF file's cursors** (schema version 13). `ocsf_cursors` holds, per
+tenant and sink (`serve` for `abhed serve`'s `record.ocsf`), each session's
+last seq written (`seq`), the model `provider` its later lines need, and
+`primed`; the row with session `''` holds `commit_pos`, the place in commit
+order the writer reads on from. Its primary key is `(tenant_id, sink,
+session_id)`, and its row security is forced with the tenant policy every
+tenant table has. The runtime role may SELECT, INSERT and UPDATE it, never
+DELETE; a cursor's seq only moves forward. The writer holds a Postgres
+advisory lock on its own connection while it writes
+([OCSF events and logs](../guide/30-ocsf-and-logs.md#the-ocsf-file)).
+
+**A cheaper chain** (schema version 14). `abhed_events_chain` replaces the
+generic chain trigger on `events` with static queries and one rendering of
+the hashed columns (`jsonb_build_object`, the same text and so the same hash
+as before), and sets `inserted_at` and `commit_tx` itself, whatever the
+writer sent, so no writer can keep a row out of the commit-ordered scan; the
+separate `events_inserted_at` trigger is dropped, so each insert runs one
+trigger. The GIN index on `events.payload` is dropped: no query used it, and
+payloads are sealed, so it indexed ciphertext on every insert.
 
 The chain head API (`store/chain`): `Source.Head(scope)` is the last position
 and hash, and `Source.VerifyRange(scope, from, to)` recomputes positions

@@ -57,18 +57,39 @@ func (p *Postgres) ScanCommitted(ctx context.Context, pos CommitPos, limit int, 
 	if limit <= 0 {
 		limit = 500
 	}
+	// Rows from before schema version 12 have no transaction and come first,
+	// by time; they are all committed.
+	if pos.Tx == 0 {
+		n, err := p.scanCommitted(ctx, `commit_tx IS NULL AND (created_at, session_id, seq) > ($1, $2, $3)
+			ORDER BY created_at, session_id, seq LIMIT $4`, []any{pos.At, pos.Session, pos.Seq, limit}, fn)
+		if err != nil || n == limit {
+			return err
+		}
+		limit -= n
+		pos = CommitPos{}
+	}
+	// The bare column, not a COALESCE of it, so under row security the bound
+	// is an index condition (events_commit_tx_idx) rather than a filter over
+	// every row of the tenant.
+	_, err := p.scanCommitted(ctx, `commit_tx IS NOT NULL AND commit_tx < pg_snapshot_xmin(pg_current_snapshot())
+		AND commit_tx >= $1::text::xid8 AND (commit_tx, created_at, session_id, seq) > ($1::text::xid8, $2, $3, $4)
+		ORDER BY commit_tx, created_at, session_id, seq LIMIT $5`,
+		[]any{strconv.FormatUint(pos.Tx, 10), pos.At, pos.Session, pos.Seq, limit}, fn)
+	return err
+}
+
+// scanCommitted gives fn the events where and its args select, in their
+// order, and returns how many it gave.
+func (p *Postgres) scanCommitted(ctx context.Context, where string, args []any, fn func(agent.Event, CommitPos) error) (int, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, session_id, COALESCE(parent_id,''), seq, type, payload, actor, trust, created_at,
 		       COALESCE(commit_tx, '0'::xid8)::text
-		FROM events
-		WHERE COALESCE(commit_tx, '0'::xid8) < pg_snapshot_xmin(pg_current_snapshot())
-		  AND (COALESCE(commit_tx, '0'::xid8), created_at, session_id, seq) > ($1::text::xid8, $2, $3, $4)
-		ORDER BY COALESCE(commit_tx, '0'::xid8), created_at, session_id, seq
-		LIMIT $5`, strconv.FormatUint(pos.Tx, 10), pos.At, pos.Session, pos.Seq, limit)
+		FROM events WHERE `+where, args...)
 	if err != nil {
-		return fmt.Errorf("scan events in commit order: %w", err)
+		return 0, fmt.Errorf("scan events in commit order: %w", err)
 	}
 	defer rows.Close()
+	n := 0
 	keys := p.readKeys()
 	for rows.Next() {
 		var ev agent.Event
@@ -76,22 +97,23 @@ func (p *Postgres) ScanCommitted(ctx context.Context, pos CommitPos, limit int, 
 		var typ, actor, trust, tx string
 		if err := rows.Scan(&ev.ID, &ev.SessionID, &ev.ParentID, &ev.Seq,
 			&typ, &payload, &actor, &trust, &ev.CreatedAt, &tx); err != nil {
-			return err
+			return n, err
 		}
 		ev.Type, ev.Actor, ev.Trust = agent.EventType(typ), agent.Actor(actor), agent.Trust(trust)
 		if payload, err = keys.openPayload(ctx, ev.SessionID, ev.Seq, payload); err != nil {
-			return err
+			return n, err
 		}
 		ev.Payload = payload
-		n, err := strconv.ParseUint(tx, 10, 64)
+		txn, err := strconv.ParseUint(tx, 10, 64)
 		if err != nil {
-			return fmt.Errorf("scan events in commit order: transaction id %q: %w", tx, err)
+			return n, fmt.Errorf("scan events in commit order: transaction id %q: %w", tx, err)
 		}
-		if err := fn(ev, CommitPos{Tx: n, At: ev.CreatedAt, Session: ev.SessionID, Seq: ev.Seq}); err != nil {
-			return err
+		if err := fn(ev, CommitPos{Tx: txn, At: ev.CreatedAt, Session: ev.SessionID, Seq: ev.Seq}); err != nil {
+			return n, err
 		}
+		n++
 	}
-	return rows.Err()
+	return n, rows.Err()
 }
 
 // PostgresOf is the Postgres store behind s: s itself, a Held store, or a

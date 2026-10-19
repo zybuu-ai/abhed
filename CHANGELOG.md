@@ -55,6 +55,12 @@ All notable changes to Abhed are recorded here. The format follows
 - Postgres: a server started as the runtime role now needs the schema
   through version 13 (`events.commit_tx`, `ocsf_cursors`) and refuses an
   older one, saying to run `abhed migrate`.
+- Postgres: schema version 15 replaces the commit-order index on `events`
+  with one row security lets the commit-ordered scan use
+  (`events_commit_tx_idx`). `abhed migrate` builds it in its transaction,
+  which holds appends to `events` until it is built: on a large table, run
+  it in a quiet window. A server runs without it, its commit-ordered reads
+  (`record.ocsf` on `abhed serve`, an edition's export) only slower.
 - Postgres: schema version 11 adds the `chain_pre` table. Run `abhed migrate`
   as the owner role before starting a server as the runtime role, which
   refuses an older schema and says so; a `storage.single_role` server

@@ -72,9 +72,12 @@ own fields come from the payload, as the table below says.
 
 **Lossless and replayable.** `unmapped.record` and `unmapped.payload` hold
 everything the line holds, so the line can be rebuilt from the event: the
-`ocsf` package's `Replay` does it, and the rebuilt line hashes to the
-`unmapped.record.hash` the record gave it, which is how a reader checks an
-OCSF file against the chain without the record. An older version keeps what
+`ocsf` package's `Replay` does it. For the local record (the command line's,
+and its OCSF file) the rebuilt line hashes to the `unmapped.record.hash` the
+record gave it, which is how a reader checks an OCSF file against the chain
+without the record. Events `abhed serve` maps from Postgres carry no `prev`
+or `hash`: that chain hashes the database's columns, not the line, and is
+checked with `abhed record verify` and its export. An older version keeps what
 it does not define under `unmapped.downgraded`, so a downgraded event
 replays too.
 
@@ -233,7 +236,7 @@ abhed logs s-01J… -format record -after 120   # the chained lines themselves
 | `-f`, `-follow` | keep printing lines as they are recorded, by this process or another, until interrupted |
 | `-since D\|TIME` | only lines from the last `D` (`10m`, `2h`) or after an RFC 3339 time |
 | `-after SEQ` | only lines after this seq, for one session |
-| `-cursor FILE` | start after the seqs `FILE` holds and keep them there as lines are printed: a reader that is stopped and started again goes on where it stopped, with nothing twice and nothing missed |
+| `-cursor FILE` | start after the seqs `FILE` holds and keep them there as lines are printed: a reader that is stopped and started again goes on where it stopped and misses nothing. The file is written after each batch is printed, so a reader killed between the two prints that batch again: at least once, and `metadata.uid` tells a repeat |
 | `-format` | `shorthand` (the default), `ocsf` (one JSON event a line) or `record` (the record's own lines, `prev` and `hash` included) |
 | `-ocsf-version` | `1.8.0` (the default), `1.5.0`, `1.3.0` or `1.1.0` |
 | `-type T,T` | only these record types |
@@ -313,9 +316,13 @@ It polls its store each second rather than being handed lines:
   repeat), and each event is written by one server, in order. A sink's
   first start sets the place at the last committed event. Taking over reads
   only what was committed after the place and only the touched sessions'
-  cursors: on a test table of 10,000 sessions and 1,000,000 events it took
-  about 1 ms, against about 100 ms when it compared every session's last
-  event, which grows with the table. A session is read whole only once, for
+  cursors. `TestOCSFTakeoverCost` in `store` measures it (opt in with
+  `ABHED_OCSF_TAKEOVER_SESSIONS`); on 19 October 2026, with 10,000 sessions
+  of 100 events each in Postgres 17 in a 4-CPU Podman VM on a Mac, the
+  database work of taking over was 0.6 ms, against 120 to 190 ms for
+  comparing every session's last event and cursor, which grows with the
+  table. Before schema version 15 the commit-ordered read itself took about
+  90 ms there, reading every row of the tenant. A session is read whole only once, for
   the model provider a later line needs, when it was started before the
   place.
 

@@ -766,3 +766,14 @@ DROP TRIGGER IF EXISTS events_inserted_at ON events;
 DROP INDEX IF EXISTS events_payload_idx;
 
 INSERT INTO schema_version (version) VALUES (14) ON CONFLICT DO NOTHING;
+
+-- Schema version 15: the commit-ordered scan by an index row security can
+-- use. A COALESCE of commit_tx is not a condition Postgres takes into an
+-- index under row security, so the scan read every row of the tenant; the
+-- bare column is. Rows from before version 12 have no transaction and are
+-- read first, by time, through the tenant's time index.
+CREATE INDEX IF NOT EXISTS events_commit_tx_idx
+  ON events (tenant_id, commit_tx, created_at, session_id, seq) WHERE commit_tx IS NOT NULL;
+DROP INDEX IF EXISTS events_commit_order_idx;
+
+INSERT INTO schema_version (version) VALUES (15) ON CONFLICT DO NOTHING;

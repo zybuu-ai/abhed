@@ -198,11 +198,18 @@ func (w *OCSFWriter) SavePos(pos string) error {
 func (p *Postgres) CommitEnd(ctx context.Context) (CommitPos, error) {
 	var pos CommitPos
 	var tx string
+	// The last row with a transaction, by the same index ScanCommitted reads;
+	// with none, the last from before schema version 12.
 	err := p.pool.QueryRow(ctx, `
-		SELECT COALESCE(commit_tx, '0'::xid8)::text, created_at, session_id, seq FROM events
-		WHERE COALESCE(commit_tx, '0'::xid8) < pg_snapshot_xmin(pg_current_snapshot())
-		ORDER BY COALESCE(commit_tx, '0'::xid8) DESC, created_at DESC, session_id DESC, seq DESC
+		SELECT commit_tx::text, created_at, session_id, seq FROM events
+		WHERE commit_tx IS NOT NULL AND commit_tx < pg_snapshot_xmin(pg_current_snapshot())
+		ORDER BY commit_tx DESC, created_at DESC, session_id DESC, seq DESC
 		LIMIT 1`).Scan(&tx, &pos.At, &pos.Session, &pos.Seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		tx = "0"
+		err = p.pool.QueryRow(ctx, `SELECT created_at, session_id, seq FROM events WHERE commit_tx IS NULL
+			ORDER BY created_at DESC, session_id DESC, seq DESC LIMIT 1`).Scan(&pos.At, &pos.Session, &pos.Seq)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CommitPos{At: time.Unix(0, 0).UTC()}, nil
 	}
