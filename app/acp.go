@@ -802,6 +802,8 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		},
 		// The editor shows a next prompt in its input after a turn.
 		Suggest: true,
+		// A person reads the answer there, so it is labelled unless configured otherwise.
+		VerifyByDefault: true,
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)

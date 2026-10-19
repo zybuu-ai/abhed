@@ -130,7 +130,7 @@ type AnswerVerdict struct {
 // Footer is the one-line summary a surface shows under the answer.
 func (v AnswerVerdict) Footer() string {
 	unv := fmt.Sprintf("%d unverified", v.Unverified)
-	if k := v.unchecked(); k > 0 && k == v.Unverified {
+	if k := v.Unchecked(); k > 0 && k == v.Unverified {
 		unv += " (general knowledge)"
 	} else if k > 0 {
 		unv += fmt.Sprintf(" (%d general knowledge)", k)
@@ -146,7 +146,9 @@ func (v AnswerVerdict) Footer() string {
 	return s
 }
 
-func (v AnswerVerdict) unchecked() int {
+// Unchecked counts the unverified claims that are not about the session's
+// work: general knowledge, and sentences with nothing to check.
+func (v AnswerVerdict) Unchecked() int {
 	n := 0
 	for _, c := range v.Claims {
 		if c.Verdict == ClaimUnverified && !c.LoadBearing {
@@ -296,7 +298,7 @@ func (l *Loop) beginAnswer() {
 		return
 	}
 	v.mu.Lock()
-	v.pending, v.revised = nil, false
+	v.pending, v.revised, v.last = nil, false, nil
 	v.mu.Unlock()
 	if c := v.Contract; c != nil && len(c.Protect) > 0 {
 		snap := c.snapshot(l.Session)
@@ -322,8 +324,9 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	source, text, claims := "", "", []Claim(nil)
 	if given != nil {
 		source, text, claims = "answer_tool", given.Text, given.Claims
-		// The reply the person reads is the answer's text: recorded and kept
-		// as the agent's message, as a plain reply would be.
+		// The reply the person reads is the answer's text: streamed, recorded
+		// and kept as the agent's message, as a plain reply would be.
+		l.record(EvAgentDelta, ActorAgent, Delta{Text: text, Seq: 1})
 		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: text}); err != nil {
 			l.noteRecordErr(err)
 		}

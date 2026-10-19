@@ -10,7 +10,7 @@ import (
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
-func init() { liveFeatures = append(liveFeatures, "suggestions") }
+func init() { liveFeatures = append(liveFeatures, "suggestions", "answer-verdicts") }
 
 // forward maps the record's events onto session/update notifications as
 // they are recorded.
@@ -104,6 +104,9 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 	case agent.EvActionRequested:
 		var p agent.ActionRequested
 		_ = json.Unmarshal(ev.Payload, &p)
+		if p.Tool == agent.AnswerToolName {
+			break // the answer's text arrives as the reply
+		}
 		if p.CallID == "" {
 			// Only a record from before every call had an id: the card is
 			// named by its request, as the permission request names it.
@@ -155,6 +158,9 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 	case agent.EvObservation:
 		var p agent.Observation
 		_ = json.Unmarshal(ev.Payload, &p)
+		if p.Tool == agent.AnswerToolName {
+			break
+		}
 		status := "completed"
 		if p.IsError {
 			status = "failed"
@@ -258,6 +264,19 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(""),
 			"_meta": map[string]any{acpMetaKey: map[string]any{"suggestion": agent.CleanSuggestion(p.Text)}}})
+	case agent.EvAnswerVerdict:
+		// The checks on the reply: as text under it, for an editor that knows
+		// nothing of them, and whole in _meta for one that draws badges.
+		var p agent.AnswerVerdict
+		if json.Unmarshal(ev.Payload, &p) != nil {
+			break
+		}
+		body := ""
+		if rows := ui.VerdictRows(ui.Style{}, p, false); len(rows) > 0 {
+			body = "\n\n" + strings.Join(rows, "\n") + "\n"
+		}
+		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(body),
+			"_meta": map[string]any{acpMetaKey: map[string]any{"verdict": p}}})
 	case agent.EvModelCall:
 		if replay {
 			break

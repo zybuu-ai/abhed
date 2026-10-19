@@ -78,6 +78,8 @@ type Config struct {
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
 	Suggest SuggestConfig `json:"suggest,omitempty"`
+	// Verify governs answer verification and the completion contract.
+	Verify VerifyConfig `json:"verify,omitempty"`
 	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
 	Fence FenceConfig `json:"fence,omitempty"`
 	// Egress is the rules of the egress proxy that sandbox.network
@@ -1764,6 +1766,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("suggest.model is %q, which is not a configured provider; available: %s",
 				m, strings.Join(providerNames(c.Model.Providers), ", "))
 		}
+	}
+	if err := c.validateVerify(); err != nil {
+		return err
 	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)

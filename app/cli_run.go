@@ -91,6 +91,16 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
 		fail(err)
 	}
+	if cfg, err = toolset.VerifyFlag(cfg, f.verify); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: -verify: %v\n", err)
+		return 2
+	}
+	// Checked here so a critic whose model cannot be had stops the start,
+	// rather than leaving answers unchecked.
+	if _, err := toolset.Verifier(cfg, !headless); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
 	cfg, mcpSrc, err := mcpFlags(cfg, ff, f.mcpConfig, f.strictMCP)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
