@@ -2,12 +2,16 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
+	"github.com/zybuu-ai/abhed/store/sqlite"
 )
 
 // verifyAudit is `abhed record audit`: it walks the control-plane audit
@@ -66,6 +70,40 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 		torn = "; its last line is incomplete, as a crash leaves it, and is cut off at the next write"
 	}
 	fmt.Fprintf(stdout, "ok      %s: %d chained line(s), head %s%s\n", path, r.Lines, short(r.Head), torn)
-	fmt.Fprintln(stdout, "A passing check shows no line was edited, added, moved or removed. The machine's owner can rewrite the file and its chain.")
+	code := verifyControlPlaneAudit(cfg, stdout, stderr)
+	fmt.Fprintln(stdout, "A passing check shows no line or row was edited, added, moved or removed. The machine's owner can rewrite the files and their chains.")
+	return code
+}
+
+// verifyControlPlaneAudit walks the chain of the control plane's own SQLite
+// record (sandbox operations and the reconciler's events), when it has one.
+func verifyControlPlaneAudit(cfg config.Config, stdout, stderr io.Writer) int {
+	path := sandboxconfig.ControlPlaneDB(cfg)
+	if path == "" {
+		return 0
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return 0 // the control plane never ran here
+	}
+	db, err := sqlite.Open(context.Background(), path)
+	if err != nil {
+		fmt.Fprintf(stderr, "abhed: the control plane's record: %v\n", err)
+		return 1
+	}
+	defer func() { _ = db.Close() }()
+	r, err := db.VerifyAuditChain(context.Background())
+	if err != nil {
+		fmt.Fprintf(stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if !r.OK() {
+		fmt.Fprintf(stdout, "FAILED  %s: the chain breaks at row %d of %d: a row was changed, removed or put out of order\n", db.Path(), r.FirstBad, r.Rows)
+		return 1
+	}
+	note := ""
+	if r.Unchained > 0 {
+		note = fmt.Sprintf(" (%d row(s) from before the chain, not covered)", r.Unchained)
+	}
+	fmt.Fprintf(stdout, "ok      %s: %d chained row(s), head %s%s\n", db.Path(), r.Rows, short(r.Head), note)
 	return 0
 }

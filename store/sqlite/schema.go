@@ -78,6 +78,15 @@ CREATE TABLE sandbox_templates (
 	`
 ALTER TABLE sandbox_idempotency ADD COLUMN claim_token TEXT NOT NULL DEFAULT '';
 `,
+	// 4: a hash chain over the audit record, as Postgres keeps one: each row
+	// links to the one before it. Rows written before have none and are
+	// reported as unchained.
+	`
+ALTER TABLE sandbox_audit ADD COLUMN chain_pos INTEGER;
+ALTER TABLE sandbox_audit ADD COLUMN prev_hash TEXT;
+ALTER TABLE sandbox_audit ADD COLUMN hash TEXT;
+CREATE UNIQUE INDEX sandbox_audit_chain_idx ON sandbox_audit (chain_pos) WHERE chain_pos IS NOT NULL;
+`,
 }
 
 // SchemaVersion is the newest version this build knows.

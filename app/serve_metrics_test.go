@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/store/local"
+	"github.com/zybuu-ai/abhed/store/sqlite"
 )
 
 func TestServeMetricsOffByDefault(t *testing.T) {
@@ -148,5 +150,28 @@ func TestRecordAuditVerifies(t *testing.T) {
 	out.Reset()
 	if code := verifyAudit(cfg, nil, &out, &errw); code != 1 || !strings.Contains(out.String(), "FAILED") {
 		t.Fatalf("an edit passed: %d %q", code, out.String())
+	}
+}
+
+// With the control plane on SQLite, record audit walks its chain too.
+func TestRecordAuditVerifiesControlPlane(t *testing.T) {
+	cfg := config.Default()
+	cfg.Record.Dir, _ = filepath.EvalSymlinks(t.TempDir())
+	cfg.ControlPlane.Enabled = true
+	cpDir := t.TempDir()
+	_ = os.Chmod(cpDir, 0o700)
+	cfg.ControlPlane.SQLitePath = filepath.Join(cpDir, "sandboxes.db")
+	f, _ := local.OpenAudit(cfg.Record.Dir, "default")
+	_ = f.Append(context.Background(), controlplane.AuditEvent{Principal: "alice", Action: "api:POST /v1/sandboxes", Outcome: "requested"})
+	_ = f.Close()
+	db, err := sqlite.Open(context.Background(), cfg.ControlPlane.SQLitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Append(context.Background(), controlplane.AuditEvent{At: time.Now(), Principal: controlplane.SystemPrincipal, Action: "reconcile", SandboxID: "sb", Outcome: "ok"})
+	_ = db.Close()
+	var out, errw strings.Builder
+	if code := verifyAudit(cfg, nil, &out, &errw); code != 0 || !strings.Contains(out.String(), "1 chained row(s)") {
+		t.Fatalf("%d %q %q", code, out.String(), errw.String())
 	}
 }
