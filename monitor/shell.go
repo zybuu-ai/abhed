@@ -12,8 +12,8 @@ type command struct {
 	// only running the line would give (a variable, a substitution) is kept
 	// as written, with its leading $ so it is never taken for a name.
 	words []string
-	// writes are the files its redirections write.
-	writes []string
+	// writes are the files its redirections write; reads, those they read.
+	writes, reads []string
 }
 
 // script is what the rules read from a shell line.
@@ -56,9 +56,13 @@ func parseScript(src string) (script, bool) {
 					if r.Word != nil {
 						c.writes = append(c.writes, wordText(src, r.Word))
 					}
+				case syntax.RdrIn:
+					if r.Word != nil {
+						c.reads = append(c.reads, wordText(src, r.Word))
+					}
 				}
 			}
-			if len(c.words) > 0 || len(c.writes) > 0 {
+			if len(c.words) > 0 || len(c.writes) > 0 || len(c.reads) > 0 {
 				s.cmds = append(s.cmds, c)
 			}
 		}

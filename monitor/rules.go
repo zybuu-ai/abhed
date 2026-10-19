@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -38,6 +39,9 @@ type Rules struct {
 	// Nil leaves programs unchecked, as where commands run in a container
 	// whose programs the host cannot see.
 	LookPath func(program string) bool
+	// Declared are the hosts and clusters the operator configured, by name
+	// and address: the operator naming one is as good as the person naming it.
+	Declared []string
 }
 
 // Judge applies the rules: a deny for destructive work outside the remit or
@@ -45,6 +49,11 @@ type Rules struct {
 // credential followed by a way out, and ok otherwise.
 func (r Rules) Judge(_ context.Context, c Case) (Verdict, error) {
 	k := facts(c)
+	for _, d := range r.Declared {
+		if d != "" {
+			k.declared = append(k.declared, strings.ToLower(d))
+		}
+	}
 	var ask *Verdict
 	for _, check := range []func(*given, Case) *Verdict{r.drift, r.program, r.evidence, r.composition} {
 		v := check(k, c)
@@ -74,8 +83,9 @@ type given struct {
 	roots []string
 	seen  func(string) bool
 	// done are the subjects of earlier calls that succeeded.
-	done []string
-	args map[string]any
+	done     []string
+	args     map[string]any
+	declared []string
 }
 
 func facts(c Case) *given {
@@ -108,7 +118,7 @@ func (k *given) named(s string) bool {
 		return false
 	}
 	low := strings.ToLower(s)
-	if strings.Contains(k.said, low) {
+	if strings.Contains(k.said, low) || slices.Contains(k.declared, low) {
 		return true
 	}
 	if strings.HasPrefix(s, "/") {
@@ -213,7 +223,11 @@ func line(c Case, k *given) (string, bool) {
 	return "", false
 }
 
-func remote(c Case) bool { return c.Tool == "ssh" }
+func remote(c Case) bool { return c.Tool == "ssh" || c.Tool == "ssh_put" }
+
+// declaredRead is an ssh command the operator declared a read in
+// ssh.read_commands: its program and what it touches are the operator's word.
+func declaredRead(c Case) bool { return c.Tool == "ssh" && c.DeclaredRead != "" }
 
 // drift denies destructive work whose target the remit never named and
 // that is not the session's own ground.
@@ -382,7 +396,7 @@ func (r Rules) program(k *given, c Case) *Verdict {
 		return nil
 	}
 	s, ok := parseScript(src)
-	if !ok || s.setsPath {
+	if !ok || s.setsPath || declaredRead(c) {
 		return nil
 	}
 	for _, cmd := range s.cmds {
@@ -418,13 +432,15 @@ func (r Rules) program(k *given, c Case) *Verdict {
 // named and nothing earlier in the session showed: the shape of a target
 // the model made up, or took from text it fetched.
 func (r Rules) evidence(k *given, c Case) *Verdict {
-	if !c.Mutates {
+	if !c.Mutates || declaredRead(c) {
 		return nil
 	}
 	var paths, hosts []string
 	switch c.Tool {
 	case "write", "edit":
 		paths = append(paths, k.str("path"))
+	case "ssh_put":
+		paths = append(paths, k.str("remote_path"))
 	case "bash", "ssh":
 		s, ok := parseScript(k.str("command"))
 		if !ok {
@@ -613,6 +629,11 @@ func (r Rules) composition(k *given, c Case) *Verdict {
 	if !egressCapable(c, k) {
 		return nil
 	}
+	if f := sentFile(c, k); f != "" {
+		return &Verdict{Decision: policy.Ask, Code: CodeCredentialEgress, Confidence: 0.8,
+			Rationale: fmt.Sprintf("this call reads a credential (%s) and can send it out", clip(f, 80)),
+			Advice:    "do not send credential contents anywhere; if the task needs the credential, ask the person to store it as a secret"}
+	}
 	for _, p := range c.Recent {
 		if p.IsError || !credentialish(p.Subject) {
 			continue
@@ -631,7 +652,7 @@ func (r Rules) composition(k *given, c Case) *Verdict {
 
 func egressCapable(c Case, k *given) bool {
 	switch c.Tool {
-	case "web_fetch", "web_search", "ssh", "ssh_connect":
+	case "web_fetch", "web_search", "ssh", "ssh_connect", "ssh_put":
 		return true
 	case "bash":
 		s, ok := parseScript(k.str("command"))
@@ -655,10 +676,49 @@ func egressCapable(c Case, k *given) bool {
 }
 
 var credentialPatterns = regexp.MustCompile(`(?i)(?:^|[/\s"'])(?:\.ssh/|id_(?:rsa|dsa|ecdsa|ed25519)\b|\.aws/credentials|\.aws/config|` +
-	`\.netrc|\.git-credentials|\.docker/config\.json|\.kube/config|\.npmrc|\.pypirc|\.pgpass|\.vault-token|` +
+	`\.git/config|\.netrc|\.git-credentials|\.docker/config\.json|\.kube/config|\.npmrc|\.pypirc|\.pgpass|\.vault-token|` +
 	`/etc/shadow|\.env(?:\.[a-z0-9_-]+)?(?:$|[\s"'])|[a-z0-9_-]*credentials?\.json|[^\s/"']+\.(?:pem|key|p12|pfx)(?:$|[\s"']))`)
 
-func credentialish(subject string) bool { return credentialPatterns.MatchString(subject) }
+// publicKeyMaterial are files that look like keys but hold only what is
+// published: certificates, chains and public keys.
+var publicKeyMaterial = regexp.MustCompile(`(?i)(?:/certs?/[^\s"']*|[^\s/"']*\.crt\b|[^\s/"']*\.pub\b|(?:^|[/\s"'_.-])(?:cert|fullchain|chain|ca|bundle)\.pem\b|\.env\.(?:example|sample|template|dist)\b)`)
+
+func credentialish(subject string) bool {
+	if !credentialPatterns.MatchString(subject) {
+		return false
+	}
+	// A subject naming a public file is still a credential if it names a secret one too.
+	return !publicKeyMaterial.MatchString(subject) || credentialPatterns.MatchString(publicKeyMaterial.ReplaceAllString(subject, " "))
+}
+
+// sentFile is a credential file the call itself reads and could send: an
+// ssh_put of one, or a bash line that can reach the network and reads one
+// (curl -d @.env, a substitution, a redirection).
+func sentFile(c Case, k *given) string {
+	switch c.Tool {
+	case "ssh_put":
+		if f := k.str("file"); credentialish(f) {
+			return f
+		}
+	case "bash":
+		s, ok := parseScript(k.str("command"))
+		if !ok {
+			return ""
+		}
+		for _, cmd := range s.cmds {
+			for _, w := range append(append([]string(nil), cmd.words...), cmd.reads...) {
+				_, f, _ := strings.Cut(w, "@")
+				if f == "" {
+					f = w
+				}
+				if credentialish(" " + f) {
+					return f
+				}
+			}
+		}
+	}
+	return ""
+}
 
 func clip(s string, n int) string {
 	if rs := []rune(s); len(rs) > n {

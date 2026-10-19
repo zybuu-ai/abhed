@@ -163,12 +163,16 @@ func (l *Loop) supervisorCase(call model.ToolCall, mutates bool, before policy.R
 	if l.Session != nil {
 		roots = append([]string{l.Session.Root}, l.Session.Roots...)
 	}
-	return monitor.Case{
+	c := monitor.Case{
 		Remit: remit, Said: said, Reasoning: thoughts,
 		Tool: call.Name, Args: args, Mutates: mutates, Provisional: before,
 		Provenance: monitor.TraceSeen(args, said, seen), Recent: recent,
 		Roots: roots, Seen: seen,
 	}
+	if l.Policy != nil {
+		c.DeclaredRead = l.Policy.RemoteReadOf(call.Name, call.Args)
+	}
+	return c
 }
 
 // replan counts refused and failed calls in a row and, every replanAfter of

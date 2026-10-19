@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -86,4 +87,14 @@ var remoteShells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh"
 func isWrapper(name string) bool {
 	_, ok := wrapperWords[name]
 	return ok
+}
+
+// RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read, or
+// "" for a call that is not one.
+func (e *Engine) RemoteReadOf(tool string, args json.RawMessage) string {
+	host, command, ok := remoteCommand(tool, args)
+	if !ok {
+		return ""
+	}
+	return e.remoteReadRule(readRemote(host, command))
 }
