@@ -31,13 +31,15 @@ type Report struct {
 	// its policy.layer events recorded them, in order.
 	PolicyLayers []PolicyLayer `json:"policy_layers,omitempty"`
 	// Network is what the egress allowlist decided; nil when the record has no decision.
-	Network     *NetworkStats `json:"network,omitempty"`
-	Compactions []Compaction  `json:"compactions,omitempty"`
-	Offloads    []Offload     `json:"offloads,omitempty"`
-	Subagents   []Subagent    `json:"subagents,omitempty"`
-	Files       []FileTouch   `json:"files,omitempty"`
-	Findings    []Finding     `json:"findings"`
-	Integrity   Integrity     `json:"integrity"`
+	Network *NetworkStats `json:"network,omitempty"`
+	// Supervisor is what the supervisor reviewed and said; nil when it left nothing in the record.
+	Supervisor  *SupervisorStats `json:"supervisor,omitempty"`
+	Compactions []Compaction     `json:"compactions,omitempty"`
+	Offloads    []Offload        `json:"offloads,omitempty"`
+	Subagents   []Subagent       `json:"subagents,omitempty"`
+	Files       []FileTouch      `json:"files,omitempty"`
+	Findings    []Finding        `json:"findings"`
+	Integrity   Integrity        `json:"integrity"`
 
 	// offTurn are the model calls outside the conversation (a suggestion):
 	// no turn, but their tokens and time count in the totals.

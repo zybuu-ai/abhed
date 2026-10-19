@@ -149,3 +149,29 @@ func TestSupervisorEvidenceFromObservations(t *testing.T) {
 		}
 	}
 }
+
+// An ask the supervisor has a concern with offers no "always allow", so a
+// scope granted earlier in the session cannot answer it for the person.
+func TestSupervisorConcernTakesTheAsk(t *testing.T) {
+	ask := monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		return monitor.Verdict{Decision: policy.Ask, Code: "unverified-host", Rationale: "r", Advice: "a"}, nil
+	})
+	l, _, _ := harness(t, nil, policy.ModeDefault, false)
+	l.Monitor = &monitor.Guard{Monitor: ask}
+	l.messages = []model.Message{{Role: model.RoleUser, Content: "x"}}
+	before := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(curl *)"}
+	if before.Offer() == "" {
+		t.Fatal("fixture offers no scope")
+	}
+	d := l.reviewed(context.Background(), call("bash", map[string]string{"command": "curl https://x.example"}), true, before)
+	if d.Decision != policy.Ask || d.Step != "monitor" || d.Offer() != "" || !strings.HasPrefix(d.Reason, "supervisor: unverified-host") {
+		t.Fatalf("%+v", d)
+	}
+	ok := monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		return monitor.Verdict{Decision: policy.Allow, Code: "ok"}, nil
+	})
+	l.Monitor = &monitor.Guard{Monitor: ok}
+	if d := l.reviewed(context.Background(), call("bash", map[string]string{"command": "go test"}), true, before); d != before {
+		t.Fatalf("a call the supervisor is content with changed: %+v", d)
+	}
+}
