@@ -234,13 +234,20 @@ ends with a `[checkpoint: …]` note saying what was not, which the record
 holds with the result; the command is not stopped. `"tools":
 {"bash_checkpoints": "required"}` instead refuses a command, before it runs,
 whenever the snapshot before it is not whole (a file over a limit, or a
-workspace over the file count); `"off"` takes no snapshot, as before 1.2.9. A
-workspace file can only make it `required`, and cannot set the limits.
+workspace over the file count), and refuses every command run with
+`run_in_background`, which is never checkpointed. Only the interactive
+terminal and Studio keep checkpoints for bash commands: where nothing does,
+in `abhed -p`, `abhed rpc`, `abhed eval`, every session of `abhed serve` and
+an SDK agent, `required` refuses every `bash` command, the person's own in
+the workbench included, rather than run it unrecorded. `"off"` takes no
+snapshot, as before 1.2.9. A workspace file can only make it `required`, and
+cannot set the limits.
 
 Limits of the approach:
 
-- A command run with `run_in_background`, and what a command moved to the
-  background with Ctrl-B does after the move, is not checkpointed; nor is the
+- A command run with `run_in_background` (refused under `required`), and
+  what a command moved to the background with Ctrl-B does after the move
+  (under `required` too), is not checkpointed; nor is the
   workbench terminal's interactive shell, or `ssh` and the `k8s_*` tools,
   which change other machines.
 - A change is seen by size and times (the change time, which no command can

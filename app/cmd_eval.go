@@ -89,6 +89,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 			return nil, eval.Result{}, err
 		}
+		sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 		vault := openVault()
 		// Skills, the web tools, the todo list and subagents are part of the
 		// agent under test, not extras: a corpus exercising one would

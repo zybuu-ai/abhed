@@ -370,7 +370,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
-	// Taken only where a caller records checkpoints, as Studio does.
+	// Studio hands checkpoints on; with no one to take them, "required" refuses every command.
 	sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
