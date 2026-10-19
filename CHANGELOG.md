@@ -42,10 +42,12 @@ All notable changes to Abhed are recorded here. The format follows
   command resolved no name, an allowed one included (`getent hosts` gave
   nothing), while the process tier resolved it through the session's
   resolver; requests through the proxy worked. The fence now serves the
-  same resolver in the command's network namespace, over TCP, since its
-  seccomp filter allows no UDP: an allowed name resolves to its
-  `198.18.0.0/15` address and is recorded as a `dns` decision, and any
-  other gets NXDOMAIN.
+  same resolver in the command's network namespace, over UDP and TCP: an
+  allowed name resolves to its `198.18.0.0/15` address, with glibc, Go
+  and musl alike, and is recorded as a `dns` decision, and any other gets
+  NXDOMAIN. To let it, the seccomp filter (now profile `command/4`) allows
+  UDP sockets in that mode alone, where the namespace holds only loopback
+  and a datagram can reach nothing else.
 
 ## [1.2.8] - 2026-10-14
 
