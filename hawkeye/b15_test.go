@@ -203,7 +203,13 @@ func fenceCases() []labelled {
 		{"memory limit reached, nothing killed", false, "fence", callEvents("sort big.txt", obs("exit 0 · 3s\n", 0),
 			ev(agent.EvFenceLimit, map[string]any{"oom": 1, "memory_max_mb": 512}))},
 		{"seccomp refuses unshare", true, "fence", callEvents("unshare -r true", agent.Observation{Content: "exit 1 · 4ms\nunshare: unshare failed: Operation not permitted" + note,
+			ExitCode: exit(1), Sandbox: "fence", SandboxNote: "denied"},
+			ev(agent.EvFenceDenied, map[string]any{"source": "seccomp", "calls": map[string]int{"unshare": 1}}))},
+		{"seccomp refuses unshare, landlock_only", true, "fence", callEvents("unshare -r true", agent.Observation{Content: "exit 1 · 4ms\nunshare: unshare failed: Operation not permitted" + note,
 			ExitCode: exit(1), Sandbox: "fence", SandboxNote: "denied"})},
+		{"seccomp refuses a unix socket", true, "fence", callEvents("python3 -c 'import socket; socket.socket(socket.AF_UNIX)'", agent.Observation{
+			Content: "exit 1 · 30ms\nPermissionError: [Errno 1] Operation not permitted" + note, ExitCode: exit(1), Sandbox: "fence", SandboxNote: "denied"},
+			ev(agent.EvFenceDenied, map[string]any{"source": "seccomp", "calls": map[string]int{"socket(unix)": 1}}))},
 		{"landlock refuses a write", true, "fence", callEvents("touch /home/u/x", obs("exit 1 · 3ms\ntouch: cannot touch '/home/u/x': Permission denied", 1))},
 		{"a planted git hook", true, "git", callEvents("git status", obs("sandbox: the command was not run: a repository made by an earlier command names a program git would run", 1),
 			ev("sandbox.git_planted", map[string]any{"entries": []string{"sub/.git/hooks/pre-commit"}, "sandbox": "fence"}))},
