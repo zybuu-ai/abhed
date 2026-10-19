@@ -507,6 +507,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Provider = cfg.Model.Default
+	if x.PlanExit {
+		loop.EnablePlanExit()
+	}
 	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
