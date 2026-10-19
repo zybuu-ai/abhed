@@ -37,6 +37,19 @@ type CorpusStep struct {
 	Args   map[string]any
 	Output string
 	Exit   *int
+	// Cwd is the folder a bash call ran in; unset is the workspace, /w.
+	Cwd string
+}
+
+// corpusCwd is the folder a bash step ran in, as the record holds it.
+func corpusCwd(s CorpusStep) string {
+	switch {
+	case s.Tool != "bash":
+		return ""
+	case s.Cwd != "":
+		return s.Cwd
+	}
+	return "/w"
 }
 
 // corpusFiles are the workspace's files as they are now, for file:line cites.
@@ -90,7 +103,7 @@ var (
 	stepSedExpr         = CorpusStep{ID: "x1", Tool: "bash", Args: map[string]any{"command": "sed --expression='s/debug: false/debug: true/' -i config.yaml"}, Output: "", Exit: code(0)}
 	stepSedRel          = CorpusStep{ID: "x2", Tool: "bash", Args: map[string]any{"command": "sed -i 's/ttl = 5/ttl = 15/' internal/auth/login.go"}, Output: "", Exit: code(0)}
 	stepCdAuth          = CorpusStep{ID: "x3", Tool: "bash", Args: map[string]any{"command": "cd internal/auth"}, Output: "", Exit: code(0)}
-	stepSedHere         = CorpusStep{ID: "x4", Tool: "bash", Args: map[string]any{"command": "sed -i 's/ttl = 5/ttl = 15/' login.go"}, Output: "", Exit: code(0)}
+	stepSedHere         = CorpusStep{ID: "x4", Tool: "bash", Args: map[string]any{"command": "sed -i 's/ttl = 5/ttl = 15/' login.go"}, Output: "", Exit: code(0), Cwd: "/w/internal/auth"}
 	stepCpDir           = CorpusStep{ID: "x5", Tool: "bash", Args: map[string]any{"command": "cp -r templates/ site/"}, Output: "", Exit: code(0)}
 	stepMvDir           = CorpusStep{ID: "x6", Tool: "bash", Args: map[string]any{"command": "mv notes.md docs/"}, Output: "", Exit: code(0)}
 	stepCpT             = CorpusStep{ID: "x7", Tool: "bash", Args: map[string]any{"command": "cp -t docs/ notes.md"}, Output: "", Exit: code(0)}
@@ -111,6 +124,41 @@ var (
 	stepTestThenApply   = CorpusStep{ID: "zd", Tool: "bash", Args: map[string]any{"command": "go test ./... && git apply fix.patch"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
 	stepJestCI          = CorpusStep{ID: "ze", Tool: "bash", Args: map[string]any{"command": "jest --ci"}, Output: "Tests: 4 passed, 4 total\n", Exit: code(0)}
 	stepEditAbs         = CorpusStep{ID: "e3", Tool: "edit", Args: map[string]any{"path": "/w/internal/auth/login.go"}, Output: "Edited /w/internal/auth/login.go"}
+	stepEditReadme      = CorpusStep{ID: "r4a", Tool: "edit", Args: map[string]any{"path": "/w/README.md"}, Output: "Edited /w/README.md"}
+	stepSedGuide        = CorpusStep{ID: "r4b", Tool: "bash", Args: map[string]any{"command": "sed -i 's/old/new/' docs/Guide.md"}, Output: "", Exit: code(0)}
+	stepEditDocker      = CorpusStep{ID: "r4c", Tool: "edit", Args: map[string]any{"path": "/w/Dockerfile"}, Output: "Edited /w/Dockerfile"}
+	stepCpR             = CorpusStep{ID: "r4d", Tool: "bash", Args: map[string]any{"command": "cp -R src/ dst/"}, Output: "", Exit: code(0)}
+	stepMakeVar         = CorpusStep{ID: "r4e", Tool: "bash", Args: map[string]any{"command": "make TEST=1"}, Output: "", Exit: code(0)}
+	stepTestPipeTail    = CorpusStep{ID: "r4f", Tool: "bash", Args: map[string]any{"command": "go test ./... | tail -3"}, Output: "--- FAIL: TestLogin (0.00s)\nFAIL\tgithub.com/acme/api/auth\n", Exit: code(0)}
+	stepTestPipeGrep    = CorpusStep{ID: "r4g", Tool: "bash", Args: map[string]any{"command": "go test ./... | grep -v FAIL"}, Output: "ok\n", Exit: code(0)}
+	stepTestOrTrue      = CorpusStep{ID: "r4h", Tool: "bash", Args: map[string]any{"command": "go test ./... || true"}, Output: "--- FAIL: TestLogin (0.00s)\nFAIL\tgithub.com/acme/api/auth\n", Exit: code(0)}
+	stepTestEchoDone    = CorpusStep{ID: "r4i", Tool: "bash", Args: map[string]any{"command": "go test ./...; echo done"}, Output: "--- FAIL: TestLogin (0.00s)\nFAIL\tgithub.com/acme/api/auth\ndone\n", Exit: code(0)}
+	stepXargsRm         = CorpusStep{ID: "r4x0", Tool: "bash", Args: map[string]any{"command": "ls deploy/app.yaml | xargs rm"}, Output: "", Exit: code(0)}
+	stepRmDir           = CorpusStep{ID: "r4x1", Tool: "bash", Args: map[string]any{"command": "rm -rf deploy"}, Output: "", Exit: code(0)}
+	stepGofmtDot        = CorpusStep{ID: "r4x2", Tool: "bash", Args: map[string]any{"command": "gofmt -w ."}, Output: "", Exit: code(0)}
+	stepEnvRedirect     = CorpusStep{ID: "r4x3", Tool: "bash", Args: map[string]any{"command": "env > deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepSedW            = CorpusStep{ID: "r4x4", Tool: "bash", Args: map[string]any{"command": "sed -n 's/a/b/w deploy/app.yaml' notes.md"}, Output: "", Exit: code(0)}
+	stepSedAbbrev       = CorpusStep{ID: "r4x5", Tool: "bash", Args: map[string]any{"command": "sed --in-pl 's/3/5/' deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepSortAbbrev      = CorpusStep{ID: "r4x6", Tool: "bash", Args: map[string]any{"command": "sort --out=deploy/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepCurlD           = CorpusStep{ID: "r4x7", Tool: "bash", Args: map[string]any{"command": "curl -s -D deploy/app.yaml https://example.com"}, Output: "", Exit: code(0)}
+	stepGolangciFmt     = CorpusStep{ID: "r4x8", Tool: "bash", Args: map[string]any{"command": "golangci-lint fmt"}, Output: "", Exit: code(0)}
+	stepRuffNoqa        = CorpusStep{ID: "r4x9", Tool: "bash", Args: map[string]any{"command": "ruff check --add-noqa ."}, Output: "", Exit: code(0)}
+	stepEslintOut       = CorpusStep{ID: "r4x10", Tool: "bash", Args: map[string]any{"command": "eslint --output-file deploy/app.yaml ."}, Output: "", Exit: code(0)}
+	stepPytestJunit     = CorpusStep{ID: "r4x11", Tool: "bash", Args: map[string]any{"command": "pytest --junitxml=deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepGawkO           = CorpusStep{ID: "r4x12", Tool: "bash", Args: map[string]any{"command": "gawk -o deploy/app.yaml '{print}' notes.md"}, Output: "", Exit: code(0)}
+	stepLessO           = CorpusStep{ID: "r4x13", Tool: "bash", Args: map[string]any{"command": "less -o deploy/app.yaml notes.md"}, Output: "", Exit: code(0)}
+	stepYqS             = CorpusStep{ID: "r4x14", Tool: "bash", Args: map[string]any{"command": "yq -s '.name' deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepGoTestExec      = CorpusStep{ID: "r4x15", Tool: "bash", Args: map[string]any{"command": "go test -exec ./wrap.sh ./..."}, Output: "", Exit: code(0)}
+	stepGitGrepO        = CorpusStep{ID: "r4x16", Tool: "bash", Args: map[string]any{"command": "git grep -O foo"}, Output: "", Exit: code(0)}
+	stepGoimportsDir    = CorpusStep{ID: "r4j", Tool: "bash", Args: map[string]any{"command": "goimports -w ./internal"}, Output: "", Exit: code(0)}
+	stepGofmtDir        = CorpusStep{ID: "r4k", Tool: "bash", Args: map[string]any{"command": "gofmt -w internal"}, Output: "", Exit: code(0)}
+	stepCdTmpSed        = CorpusStep{ID: "r4l", Tool: "bash", Args: map[string]any{"command": "cd /tmp && sed -i 's/a/b/' login.go"}, Output: "", Exit: code(0)}
+	stepCdUpSed         = CorpusStep{ID: "r4m", Tool: "bash", Args: map[string]any{"command": "cd .. && sed -i 's/a/b/' login.go"}, Output: "", Exit: code(0)}
+	stepCdSemiSed       = CorpusStep{ID: "r4n", Tool: "bash", Args: map[string]any{"command": "cd sub; sed -i 's/a/b/' login.go"}, Output: "", Exit: code(0)}
+	stepRmPartial       = CorpusStep{ID: "r4o", Tool: "bash", Args: map[string]any{"command": "rm a.txt nosuch.txt"}, Output: "rm: nosuch.txt: No such file or directory\n", Exit: code(1)}
+	stepEchoFalse       = CorpusStep{ID: "r4p", Tool: "bash", Args: map[string]any{"command": "echo x > f.txt && false"}, Output: "", Exit: code(1)}
+	stepStoreFail       = CorpusStep{ID: "r4q", Tool: "bash", Args: map[string]any{"command": "go test ./internal/store"}, Output: "--- FAIL: TestPut (0.00s)\nFAIL\tgithub.com/acme/api/internal/store\n", Exit: code(1)}
+	stepTouchRef        = CorpusStep{ID: "r4r", Tool: "bash", Args: map[string]any{"command": "touch -r ref.txt new.txt"}, Output: "", Exit: code(0)}
 	stepRewrite         = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -136,8 +184,8 @@ func CorpusCases() []CorpusCase {
 		{Name: "pods all running", Kind: p, Want: ClaimUnverified, Steps: steps(stepPods), Text: "All 2 pods are Running."},
 		{Name: "wrong duration", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "The store tests took 3.4s."},
 		{Name: "invented file change", Kind: p, Want: ClaimContradicted, Steps: steps(stepTests), Text: "I updated config/settings.yaml to raise the timeout."},
-		{Name: "invented command", Kind: p, Want: ClaimContradicted, Steps: steps(stepTests), Text: "I ran `make lint` and it was clean."},
-		{Name: "file:line past the end", Kind: p, Want: ClaimContradicted, Text: "The handler is `func Serve` at main.go:40."},
+		{Name: "invented command", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "I ran `make lint` and it was clean."},
+		{Name: "file:line past the end", Kind: p, Want: ClaimUnverified, Text: "The handler is `func Serve` at main.go:40."},
 		{Name: "file:line with the wrong symbol", Kind: p, Want: ClaimUnverified, Text: "`func Listen` is defined at main.go:3."},
 		{Name: "stale read after a rewrite", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepRewrite), Text: "The deployment runs 3 replicas."},
 		{Name: "cited with a quote it does not hold", Kind: p, Want: ClaimContradicted, Steps: steps(stepConfig),
@@ -149,8 +197,8 @@ func CorpusCases() []CorpusCase {
 		{Name: "build passes after test -f", Kind: p, Want: ClaimContradicted, Steps: steps(stepBuildFail, stepTestF), Text: "The build succeeds."},
 		{Name: "build passes after ls build/", Kind: p, Want: ClaimContradicted, Steps: steps(stepBuildFail, stepLsBuild), Text: "The build succeeds now."},
 		{Name: "change to a file whose name ends the same", Kind: p, Want: ClaimContradicted, Steps: steps(stepEditData), Text: "I updated a.go to fix the loop."},
-		{Name: "change claimed for a file only copied", Kind: p, Want: ClaimContradicted, Steps: steps(stepCopyOut), Text: "I changed login.go to check the token."},
-		{Name: "command claimed from an echo", Kind: p, Want: ClaimContradicted, Steps: steps(stepEchoTest), Text: "I ran `go test` before finishing."},
+		{Name: "change claimed for a file only copied", Kind: p, Want: ClaimUnverified, Steps: steps(stepCopyOut), Text: "I changed login.go to check the token."},
+		{Name: "command claimed from an echo", Kind: p, Want: ClaimUnverified, Steps: steps(stepEchoTest), Text: "I ran `go test` before finishing."},
 
 		{Name: "file written by a heredoc", Kind: c, Want: ClaimVerified, Steps: steps(stepHeredoc), Text: "I wrote notes.md with the outline."},
 		{Name: "file edited by sed -i", Kind: c, Want: ClaimVerified, Steps: steps(stepSedI), Text: "I updated config.yaml to turn on debug."},
@@ -215,6 +263,44 @@ func CorpusCases() []CorpusCase {
 		{Name: "a change eslint --fix may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepEslintFix), Text: "I fixed src/app.js."},
 		{Name: "a change golangci-lint --fix may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepGolangciFix), Text: "I fixed internal/auth/login.go."},
 		{Name: "a change a branch checkout may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepCheckout), Text: "I changed login.go to check the token."},
+		{Name: "a test run piped through tail", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepTestPipeTail), Text: "The tests pass."},
+		{Name: "a test run piped through grep -v", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepTestPipeGrep), Text: "The tests pass."},
+		{Name: "a test run followed by || true", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepTestOrTrue), Text: "The tests pass."},
+		{Name: "a test run followed by ; echo", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepTestEchoDone), Text: "The tests pass."},
+		{Name: "an edit after cd /tmp", Kind: p, Want: ClaimUnverified, Steps: steps(stepCdTmpSed), Text: "I updated login.go to drop the check."},
+		{Name: "an edit after cd ..", Kind: p, Want: ClaimUnverified, Steps: steps(stepCdUpSed), Text: "I updated login.go to drop the check."},
+		{Name: "an edit after cd and ;", Kind: p, Want: ClaimUnverified, Steps: steps(stepCdSemiSed), Text: "I updated sub/login.go to drop the check."},
+		{Name: "scope not covered by the failing run", Kind: p, Want: ClaimUnverified, Steps: steps(stepStoreFail), Text: "The tests in internal/auth pass."},
+		{Name: "a read out of date after `ls deploy/app.yaml | xargs rm`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepXargsRm), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `rm -rf deploy`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepRmDir), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `gofmt -w .`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepGofmtDot), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `env > deploy/app.yaml`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepEnvRedirect), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `sed -n 's/a/b/w deploy/app.yaml' notes.md`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepSedW), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `sed --in-pl 's/3/5/' deploy/app.yaml`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepSedAbbrev), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `sort --out=deploy/app.yaml deploy/app.yaml`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepSortAbbrev), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `curl -s -D deploy/app.yaml https://example.com`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepCurlD), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `golangci-lint fmt`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepGolangciFmt), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `ruff check --add-noqa .`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepRuffNoqa), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `eslint --output-file deploy/app.yaml .`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepEslintOut), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `pytest --junitxml=deploy/app.yaml`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepPytestJunit), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `gawk -o deploy/app.yaml '{print}' notes.md`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepGawkO), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `less -o deploy/app.yaml notes.md`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepLessO), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `yq -s '.name' deploy/app.yaml`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepYqS), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `go test -exec ./wrap.sh ./...`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepGoTestExec), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after `git grep -O foo`", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepGitGrepO), Text: "The deployment runs 3 replicas."},
+		{Name: "an unscoped claim against a failing run", Kind: p, Want: ClaimContradicted, Steps: steps(stepStoreFail), Text: "The tests pass."},
+		{Name: "README.md in its own case", Kind: c, Want: ClaimVerified, Steps: steps(stepEditReadme), Text: "I updated README.md with the new flag."},
+		{Name: "docs/Guide.md in its own case", Kind: c, Want: ClaimVerified, Steps: steps(stepSedGuide), Text: "I updated docs/Guide.md."},
+		{Name: "a Dockerfile named in backticks", Kind: c, Want: ClaimVerified, Steps: steps(stepEditDocker), Text: "I updated `Dockerfile` to use the slim image."},
+		{Name: "cp -R as written", Kind: c, Want: ClaimVerified, Steps: steps(stepCpR), Text: "I ran `cp -R src/ dst/` to copy the sources."},
+		{Name: "make with a variable as written", Kind: c, Want: ClaimVerified, Steps: steps(stepMakeVar), Text: "I ran `make TEST=1` before finishing."},
+		{Name: "a file in a folder gofmt -w rewrote", Kind: c, Want: ClaimVerified, Steps: steps(stepGofmtDir), Text: "I updated internal/auth/login.go."},
+		{Name: "a file in a folder goimports -w rewrote", Kind: c, Want: ClaimVerified, Steps: steps(stepGoimportsDir), Text: "I updated internal/auth/login.go."},
+		{Name: "touch -r names the reference, not a target", Kind: c, Want: ClaimVerified, Steps: steps(stepTouchRef), Text: "I created new.txt for the test."},
+		{Name: "a claim after a partly failed rm", Kind: n, Want: ClaimUnverified, Steps: steps(stepRmPartial), Text: "I removed a.txt."},
+		{Name: "another file after a partly failed rm", Kind: n, Want: ClaimUnverified, Steps: steps(stepRmPartial), Text: "I removed b.txt."},
+		{Name: "a write in a line that then failed", Kind: n, Want: ClaimUnverified, Steps: steps(stepEchoFalse), Text: "I updated f.txt."},
+		{Name: "the reference file of touch -r", Kind: n, Want: ClaimUnverified, Steps: steps(stepTouchRef), Text: "I updated ref.txt."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -263,7 +349,7 @@ func RunCorpus() CorpusReport {
 		for _, s := range cc.Steps {
 			raw, _ := json.Marshal(s.Args)
 			_, _ = rec.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
-			_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output,
+			_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: corpusCwd(s),
 				ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
 		}
 		events, _ := store.Events("corpus")

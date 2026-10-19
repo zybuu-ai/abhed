@@ -214,9 +214,9 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 32 planted wrong claims none is shown as verified and 16 are
-  contradicted, all 25 true controls are verified, and no true or neutral
-  claim is contradicted; the test holds those figures as a floor.
+  of 72 planted wrong claims none is shown as verified and 15 are
+  contradicted, all 40 true controls are verified, and none of the 55 true or
+  neutral claims is contradicted; the test holds those figures as a floor.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.
@@ -297,32 +297,38 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+From `apidiff` between v1.2.8 and this release:
+
+- Incompatible: `monitor.Guard` now holds a mutex and a slice, so it is no
+  longer comparable: code that compared two `Guard` values with `==` or used
+  one as a map key no longer compiles; use a `*Guard`.
 - `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Options.Supervisor`,
-  `Options.Runbook`, `Agent.Verdict`, and the types `AnswerVerdict`,
+  `Options.Runbook`, `(*Agent).Verdict`, and the types `AnswerVerdict`,
   `ClaimVerdict`, `Conflict`, `ContractResult`, `RequireResult`, `Runbook`
   and `RunbookStep`.
-- `server`: `StartSpec.Verify`.
-- `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`
-  and its `On`), `VerifyRank`, `PlanConfig`, `MonitorConfig` and its
-  `JudgeName`, `ManagedAskRule`, `Overrides.Supervisor`, `SSHConfig.ReadCommands`,
-  `SSHConfig.Transfers`, `SSHConfig.TransferMaxMB`, `SandboxConfig.Image`,
-  and `ToolsConfig.BashCheckpoints`, `BashCheckpointMB` and
-  `BashCheckpointFiles`.
-- `hawkeye`: `RemoteTarget`, `RemoteChange`, `Report.RemoteChanges`,
-  `Report.Answers` with `Answer`, and `SupervisorStats`.
-- `hawkeye`: also `Call.PlanHash`, `Call.PlanStep`, `Report.Supervisor` and
-  `SupervisorVerdict`.
-- `server`: `ApprovalAnswer` and `PendingAsk.StepTools`.
-- `monitor`: the drift suite's `DriftCase`, `DriftCases`, `DriftResult`,
-  `DriftReport` and `RunDrift`; the judges `Rules`, `Model` and `Chain`;
-  `Guard.Honeytokens`, `Guard.Unattended` and `Guard.Child`; the `Case`
-  fields `Said`, `Roots`, `Seen`, `DeclaredRead`, `Plan`, `Observed` and
-  `Credential`; `Verdict.Advice`, `Verdict.LatencyMS` and
-  `Verdict.Correction`; the `Code*` verdict codes; and `RulesVersion`,
-  `HoneytokenVersion` and `PromptVersion`. `monitor.Guard` now holds a
-  mutex and a slice, so it is no longer comparable: code that compared two
-  `Guard` values with `==` or used one as a map key no longer compiles; use a
-  `*Guard`.
+- `server`: `StartSpec.Verify`, `ApprovalAnswer.StepTools` and
+  `PendingAsk.StepTools`.
+- `config`: the `Config` fields `Monitor`, `Plan` and `Verify`, and its
+  method `ManagedAskRule`; the types `VerifyConfig`, `VerifyCriticConfig`,
+  `ContractConfig`, `MonitorConfig` and `PlanConfig`; `VerifyRank`;
+  `Overrides.Supervisor`; `SSHConfig.ReadCommands`, `SSHConfig.Transfers` and
+  `SSHConfig.TransferMaxMB`; `SandboxConfig.Image`; and
+  `ToolsConfig.BashCheckpoints`, `BashCheckpointMB` and `BashCheckpointFiles`.
+- `hawkeye`: `Answer`, `Call.PlanHash`, `Call.PlanStep`, `RemoteChange`,
+  `RemoteTarget`, `Report.Answers`, `Report.RemoteChanges`,
+  `Report.Supervisor`, `SupervisorStats` and `SupervisorVerdict`.
+- `monitor`: `(*Guard).Child`, `Guard.Honeytokens` and `Guard.Unattended`;
+  the `Case` fields `DeclaredRead`, `Plan`, `Roots`, `Said` and `Seen`;
+  `Provenance.Observed`; `Recent.Credential`; `Verdict.Advice` and
+  `Verdict.Correction`; the judges `Rules`, `Model` and `Chain`; the codes
+  `CodeOK`, `CodeCredentialEgress`, `CodeHoneytoken`, `CodeOutOfRemit`,
+  `CodeUnknownProgram`, `CodeUnverifiedHost` and `CodeUnverifiedTarget`;
+  `CredentialSeen`, `DeclaredHost`, `SkippedBudget`, `TraceSeen` and
+  `Untrusted`; `RulesVersion`, `HoneytokenVersion` and `PromptVersion`; and
+  the drift suite's `DriftCase`, `DriftCases`, `DriftDeclared`,
+  `DriftHoneytoken`, `DriftHosts`, `DriftPATH`, `DriftReport`, `DriftResult`
+  and `RunDrift`.
+- A new command, `cmd/abhed-drift`.
 - `abhed -p`'s JSON result line gains `verdict` when answers are checked.
 
 ## [1.2.8] - 2026-10-14

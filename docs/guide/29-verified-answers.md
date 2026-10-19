@@ -71,65 +71,72 @@ counts (`12 tests`, `replicas: 3`). Then:
   `call_id` or `#seq` that is not in the record, or names a message rather than
   a tool result, does not count. A person's own calls at the workbench do not
   count as evidence for the model, though they do count as changes.
-- **The evidence must still be current.** A file read is out of date once that
-  file is edited or a command that may have changed it runs; a command's output
-  is out of date after any change at all. A shell line is read with the same
-  parser policy uses, quoting and redirections as the shell reads them, and
-  each simple command in it is judged on its own, with runners and launchers
-  (`env`, `time`, `sudo`, `timeout`, `xargs`, `npx`, `uv run`, `poetry run`,
-  `pnpm exec` and the like) taken off first. A command counts as changing
-  nothing only when it is a known reader in its reading form: `ls`, `cat`,
-  `grep`, `jq`, `git status` and `git diff`, `go test`, `npm test`, `pytest`
-  and the rest of a short allowlist, each refused with the options or
-  operands that make it write (`-i` and `--in-place`, `-w`, `-o`, `--fix`,
-  `-u` and `--update`, `--write`, `uniq`'s or `xxd`'s second file, `tree -o`,
-  `make` with no checking target, and so on), and with no output redirected
-  to a file. Anything else counts as a change, which is the cautious way to be
-  wrong. Within one line, output printed before a later command on the same
-  line changes something is out of date by that change: `cat f && sed -i … f`
-  does not show the file as it is.
+- **The evidence must still be current.** A file read is out of date once a
+  later call may have changed that file; a command's output is out of date
+  after any change at all. A shell line is read with the parser policy uses,
+  quoting and redirections as the shell reads them, and each simple command
+  in it is judged on its own, with runners and launchers (`env`, `time`,
+  `sudo`, `nice`, `nohup`, `exec`, `timeout`, `npx`, `uv run`, `poetry run`,
+  `pnpm exec` and the like) taken off first unless given an option. A command
+  counts as changing nothing only when it is on a short list of readers:
+  programs with no option that writes a file or runs another (`cat`, `head`,
+  `tail`, `wc`, `ls`, `stat`, `grep`, `diff`, `jq`, `cut`, `tr`, `echo`,
+  `pwd` and a few more); `sed -n` whose script only prints (`p`, `=`, `l`);
+  `sort` and `uniq` without an output file; `rg` without `--pre` or `-z`;
+  `git status`, `diff`, `log`, `show` and `rev-parse`; `find` without
+  `-delete`, `-exec` or `-fprint`; and `go test` and `go vet` with flags that
+  write nothing. Where a program takes long options, only the ones spelled
+  out in full are let through, since GNU and git programs take abbreviations.
+  Everything else, test runners, linters, build tools, `curl` and `xargs`
+  included, is a possible change whose files are unknown, and nothing is
+  redirected to a file. Within one line, output printed before a later command
+  on the same line changes something is out of date by that change: `cat f &&
+  sed -i … f` does not show the file as it is.
 - **What the statement says must be in the output.** Its quote, and every
   path, host, version, date and number in it, must appear in the evidence,
   compared without case, terminal colours or extra spaces. A number with its
   counting word is contradicted when the output counts the same thing with
   another number and never with this one: "15 tests passed" against
   `12 tests passed` is ✗, with `12 tests passed` shown beside it.
-- **"Tests pass" and "the command succeeded" need an exit code.** Such a
-  statement needs a command (of the kind it names: tests, or a build) that
-  exited 0 after the last change, with nothing changed after it on its own
-  line (`go test && sed -i …` does not count). The kind is read from the program and its
-  subcommand (`go test`, `npm test`, `pytest`, `make`, `cargo build`, …), so
-  `ls tests` or `test -f go.mod` is not a test run. If the last such command since the last
-  change failed, the statement is contradicted.
-- **"I changed X" and "I ran `Y`" are checked against the calls.** A statement
-  that the agent edited, created or removed a file needs a call in the record
-  that changed that file, matched as the same file on whole path segments
-  (`a.go` is not `data.go`, and a short name stands for a file in the
-  workspace, not outside it). A command counts for the files a known writer
-  names (a redirection, `tee`, the destination of `cp`, `mv` and `cp -t`,
-  `sed -i` and `sed --expression= -i`, `rm`, `touch`, `gofmt -w`, …), not for
-  one it only reads, each resolved against the folder the call ran in: the
-  workspace, moved by an earlier call that is only `cd <folder>` (as the bash
-  tool follows it) and by a `cd` earlier on the same line. It is contradicted
-  only when every change in the session names its files in full this way and
-  none is this one. After a change whose files cannot be read from the call
-  (a script, `git apply`, `git checkout <branch>`, `yq -i`, `eslint --fix`, a
-  folder's contents copied, a tool other than `write`, `edit`, `bash` and
-  `ssh`), it is unverified instead. One that it ran a command needs that
-  command as one of the simple commands of a call, with any further
-  arguments, runners taken off both: `echo 'go test'` is not `go test`, and
-  "I ran `npx jest`" is met by `jest --ci`; the same program and subcommand
-  with other arguments leaves it unverified. With none, the statement is
-  contradicted.
+- **"Tests pass" and "the build succeeds" need a run.** Such a statement is
+  verified by a command of the kind it names (read from the program and its
+  subcommand: `go test`, `npm test`, `pytest`, `cargo build`, …, so `ls
+  tests` is no test run) that is the whole line, or the last command of an
+  `&&` chain at its top, so that its exit is the line's: not in a pipe and
+  not followed by `;`, `||` or `&`. It must have exited 0 after the last call
+  that may have changed anything. It is contradicted only when the last such
+  run since the last change failed, ran on its own (a `cd` before it at
+  most), and covers what the statement names (`./...`, or the folder or
+  package it names); a failed run of another package leaves it unverified.
+- **"I changed X" is checked against the calls.** It is verified by a call
+  that changed that file as the claim writes it and succeeded: a `write` or
+  `edit`, or a shell line read in full as known writers that exited 0 (a
+  redirection, `tee`, `cp`, `mv` and `cp -t`, `sed -i`, `rm`, `touch`,
+  `mkdir`, `gofmt -w` and `goimports -w`, …), whose files are resolved against
+  the folder the bash tool ran it in, as the record holds it, and a `cd`
+  earlier in its own `&&` chain. A folder a call changed covers the files
+  beneath it. The same file means the same absolute path, the claim's path in
+  the workspace, or a short name for a file in the workspace; the letter case
+  must match, and a match only ignoring case leaves the claim unverified. It
+  is contradicted only when every change in the session came through
+  `write` and `edit`, whose files are exact, and none was to this file; after
+  any shell, `ssh`, subagent or other call that may have changed things, and
+  after a failed call that names the file, it is unverified.
+- **"I ran `Y`" is checked against the commands.** It is verified when one of
+  the simple commands of a call is that command as written, perhaps with more
+  arguments after it, runners taken off both: `echo 'go test'` is not
+  `go test`, and "I ran `npx jest`" is met by `jest --ci`. Otherwise it is
+  unverified, never contradicted.
 - **A subagent's work counts.** The parent's record names each subagent's
   session, and its own record is read too (up to three levels deep): its
   results are evidence and its calls are changes, placed at the parent's
-  entry for its return, which is the `#seq` a verdict cites for them. Where
-  that record cannot be read, a claim about its work is unverified, never
-  contradicted.
-- **`file:line` cites are checked against the file now.** The file must exist
-  and have that line, or the statement is contradicted; text it quotes must be
-  on that line or the two either side.
+  entry for its return, which is the `#seq` a verdict cites for them. Its
+  folder is not known, so its relative files are not either. Where that
+  record cannot be read, a claim about its work is unverified.
+- **`file:line` cites are checked against the file now.** Text a cite quotes
+  must be on that line or the two either side. A cite of a line or a file
+  that is not there now leaves the statement unverified, since the file may
+  have changed since.
 
 A statement with nothing in it to compare ("the design is sound") is
 unverified, and so is general knowledge. These are not counted as about the
@@ -310,27 +317,30 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 46 plant a wrong claim: a test count or result, a replica count,
+session. 72 plant a wrong claim: a test count or result, a replica count,
 port, version, host, path, disk figure, file change, command, `file:line` or
-citation; among them a change claimed for a file a quoted `=>` or `->` only
-grepped, "tests pass" after only `ls tests` ran or with an edit later on the
-same line, and a read relied on after `env sed -i`, `yq -i`, `awk -i
-inplace`, `uniq` in out, `tree -o`, `ruff --fix`, `jest -u`, `npm run lint --
---fix`, `sort -o`, `make` or a `sed -i` later on its own line. 32 controls say
-only what the session showed, among them files written by a heredoc, `sed -i`
-after a `cd` on the line or in an earlier call, `sed --expression= -i`,
-`gofmt -w`, `echo x>>f`, `mv x dir/` and `cp -t`, absolute and relative paths
-for the same file, and tests run under `timeout`, `npx` or `uv run`. 11 are
-neutral: general knowledge, and true change claims after a script, `git
-apply`, `git checkout <branch>`, `yq -i`, `eslint --fix`, `golangci-lint
---fix` or a folder copy, whose files cannot be read from the call. Today none
-of the 46 planted claims is shown as verified (18 are contradicted, the rest
-unverified), all 32 controls are verified, and none of the 43 true or neutral
-claims is contradicted. The test fails if a planted claim is shown as
-verified, if a true one is contradicted, or if either count falls below its
-floor; the floors only go up. The corpus is small and written by the people
-who wrote the checks, so it shows what the checks do on these shapes of
-mistake, not how often a given model makes them.
+citation; among them "tests pass" after a test run piped through `tail` or
+`grep -v`, followed by `|| true` or `; echo`, or with an edit later on its
+line; a change claimed after `cd /tmp`, `cd ..` or a `cd` before `;`; a
+failing run of another package against a claim about one folder; and reads
+relied on after `xargs rm`, `rm -rf` of their folder, `gofmt -w .`, `env > f`,
+`sed` writing with `w` or an abbreviated `--in-place`, `sort --out=`, `curl
+-D`, `golangci-lint fmt`, `ruff --add-noqa`, `eslint --output-file`, `pytest
+--junitxml`, `gawk -o`, `less -o`, `yq -s`, `go test -exec`, `git grep -O`, and
+the earlier rounds' shapes. 40 controls say only what the session showed,
+among them `README.md`, `docs/Guide.md` and a `Dockerfile` in their own case,
+`cp -R` and `make TEST=1` as written, files beneath a folder `gofmt -w` or
+`goimports -w` rewrote, and `touch -r` whose reference is no target. 15 are
+neutral: general knowledge, and true change claims a call whose files cannot
+be read may have made, or a failed call names. Today none of the 72 planted
+claims is shown as verified (15 are contradicted, the rest unverified), all
+40 controls are verified, and none of the 55 true or neutral claims is
+contradicted. The test fails if a planted claim is shown as verified, if a
+true one is contradicted, or if either count falls below its floor; the
+floors only go up. The checks contradict less than they did: by design, only
+the narrow rules above may say a claim is false. The corpus is small and
+written by the people who wrote the checks, so it shows what the checks do on
+these shapes of mistake, not how often a given model makes them.
 
 ## Limits
 
@@ -345,3 +355,8 @@ mistake, not how often a given model makes them.
   makes that output out of date.
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
+- The checks lean to "unverified": most shell work (test runners, builds,
+  linters, scripts) counts as a possible change with unknown files, so
+  what was read before it, and claims about files it may have changed, are
+  left open. Use `write` and `edit` for changes the answer will claim, and
+  run tests as the last command of their line.

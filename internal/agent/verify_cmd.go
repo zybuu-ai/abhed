@@ -12,20 +12,21 @@ import (
 
 // Reading a shell line the way the answer checks need it, on the shell
 // parser policy uses: the simple commands it runs, which of them only read,
-// which write and which files, and where. Both defaults lean to the safe
-// side. A command counts as changing nothing only when it is a known reader
-// in its reading form (verify_readers.go); anything else is a change, and its
-// files are known only when it is a known writer the parser reads in full.
+// which write and which files, and where. Every default leans to the safe
+// side: a command counts as changing nothing only when it is a known reader
+// (verify_readers.go), and its files are known only when it is a known writer
+// whose files the parser reads in full. An unknown leaves a claim unverified,
+// never verified and never contradicted.
 
 // simpleCmd is one simple command of a line.
 type simpleCmd struct {
-	// words are its literal words, runners taken off; nil when its program
-	// is not a literal.
+	// words are its literal words, runners taken off; nil when it is not
+	// a literal simple command.
 	words []string
-	// pure: a known reader in its reading form, with no output redirected.
-	pure bool
+	// pure: a known reader, with no output redirected. cd: a change of folder.
+	pure, cd bool
 	// writes: it may change something. known: every file it may change is
-	// in targets.
+	// in targets, resolved against the folder it ran in.
 	writes, known bool
 	targets       []string
 }
@@ -37,34 +38,42 @@ type lineFacts struct {
 	parsed bool
 	// inspect: every command only reads, so the line changes nothing.
 	inspect bool
-	// known: every change the line may make is in targets, each resolved
-	// against the folder it ran in, absolute where that folder is known.
+	// known: every change the line may make is in targets.
 	known   bool
 	targets []string
 	// selfStale: a command that changes something runs after one whose
 	// output the result shows, so that output may predate the change.
 	selfStale bool
-	// cdTo is where a line that is only `cd <folder>` leaves the shell.
-	cdTo string
+	// shape: the line is one simple command, or a chain of them joined by
+	// && alone: no pipe, ;, ||, & or group. Its exit status is then the last
+	// command's, and an exit of 0 means every command ran and succeeded.
+	shape bool
+	// final is the shaped line's last command; leadCd that every command
+	// before it is a cd.
+	final  []string
+	leadCd bool
+	// writer: a shaped line of literal commands, each a cd, a reader or a
+	// known writer, whose every file is known.
+	writer bool
 }
 
 // maxLineBytes bounds what the checks parse; a longer line is not read.
 const maxLineBytes = 64 << 10
 
-// readLine reads a shell line run in cwd; "" for a folder not known, which
-// leaves relative targets unresolved.
+// readLine reads a shell line run in cwd, the folder the bash tool used;
+// "" leaves relative files unresolved.
 func readLine(line, cwd string) lineFacts {
 	lf := lineFacts{}
 	if len(line) > maxLineBytes {
 		return lf
 	}
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(line), "")
-	if err != nil {
+	if err != nil || len(file.Stmts) == 0 {
 		return lf
 	}
 	lf.parsed = true
-	r := &lineReader{cwd: cwd, lf: &lf}
-	r.stmts(file.Stmts, true)
+	r := &lineReader{cwd: cwd, lf: &lf, shape: len(file.Stmts) == 1}
+	r.stmts(file.Stmts, len(file.Stmts) == 1)
 	lf.inspect, lf.known = true, true
 	seenOutput := false
 	for _, c := range lf.cmds {
@@ -73,12 +82,24 @@ func readLine(line, cwd string) lineFacts {
 			lf.inspect = false
 			lf.known = lf.known && c.known
 			lf.selfStale = lf.selfStale || seenOutput
-		case c.pure:
+		case c.pure && !c.cd:
 			seenOutput = true
 		}
 	}
-	if len(file.Stmts) == 1 && len(lf.cmds) == 1 && r.loneCd != "" {
-		lf.cdTo = r.loneCd
+	if r.shape && len(lf.cmds) > 0 {
+		lf.shape = true
+		last := lf.cmds[len(lf.cmds)-1]
+		lf.final = last.words
+		lf.leadCd = true
+		lf.writer = lf.known
+		for i, c := range lf.cmds {
+			if c.words == nil {
+				lf.writer = false
+			}
+			if i < len(lf.cmds)-1 && !c.cd {
+				lf.leadCd = false
+			}
+		}
 	}
 	return lf
 }
@@ -86,40 +107,53 @@ func readLine(line, cwd string) lineFacts {
 type lineReader struct {
 	cwd string
 	lf  *lineFacts
-	// unresolved: a change of folder the reader could not follow, so relative
-	// targets after it are not known.
+	// shape stays true while the line is one && chain of simple commands.
+	shape bool
+	// unresolved: a change of folder that could not be followed, so the
+	// relative files after it are not known.
 	unresolved bool
-	loneCd     string
 }
 
-func (r *lineReader) stmts(list []*syntax.Stmt, top bool) {
+func (r *lineReader) stmts(list []*syntax.Stmt, follow bool) {
 	for _, st := range list {
-		r.stmt(st, top)
+		r.stmt(st, follow)
 	}
 }
 
-func (r *lineReader) stmt(st *syntax.Stmt, top bool) {
+// stmt reads one statement. follow is true where a cd carries on to what
+// comes after it: the top of the line and the parts of an && chain there.
+func (r *lineReader) stmt(st *syntax.Stmt, follow bool) {
+	if st.Background || st.Coprocess || st.Negated {
+		r.shape = false
+	}
 	switch c := st.Cmd.(type) {
 	case *syntax.CallExpr:
-		r.call(st, c, top)
+		r.call(st, c, follow)
 	case *syntax.BinaryCmd:
-		pipe := c.Op == syntax.Pipe || c.Op == syntax.PipeAll
-		r.stmt(c.X, top && !pipe)
-		r.stmt(c.Y, top && !pipe)
+		and := c.Op == syntax.AndStmt
+		if !and {
+			r.shape = false
+		}
+		r.stmt(c.X, follow && and)
+		r.stmt(c.Y, follow && and)
 	case *syntax.Block:
-		r.stmts(c.Stmts, top)
+		r.shape = false
+		r.stmts(c.Stmts, false)
 		r.redirectsOnly(st)
 	case *syntax.Subshell:
+		r.shape = false
 		r.stmts(c.Stmts, false)
 		r.redirectsOnly(st)
 	case *syntax.TimeClause:
+		r.shape = false
 		if c.Stmt != nil {
-			r.stmt(c.Stmt, top)
+			r.stmt(c.Stmt, false)
 		}
 		r.redirectsOnly(st)
 	default:
 		// Loops, conditionals, functions and the rest: what they do is not
 		// read, so they count as changing anything.
+		r.shape = false
 		r.add(simpleCmd{writes: true})
 	}
 }
@@ -150,7 +184,8 @@ func (r *lineReader) add(c simpleCmd) {
 	}
 }
 
-func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, top bool) {
+func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
+	redirected, redirectKnown, someRedirect := redirectTargets(st)
 	if len(call.Args) == 0 {
 		r.redirectsOnly(st)
 		return // assignments alone
@@ -165,50 +200,60 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, top bool) {
 		return !hidden
 	})
 	words := make([]string, 0, len(call.Args))
-	literalAll := true
+	literalAll := !hidden
 	for _, w := range call.Args {
 		v, ok := wordLiteral(w)
 		literalAll = literalAll && ok
 		words = append(words, v)
 	}
-	if prog, ok := wordLiteral(call.Args[0]); hidden || !ok || prog == "" {
+	if !literalAll {
 		r.add(simpleCmd{writes: true})
 		return
 	}
 	words = unwrap(words)
 	if len(words) == 0 {
-		r.add(simpleCmd{pure: true})
+		// A runner alone, as env, writes only where it is redirected.
+		r.add(simpleCmd{pure: !someRedirect, writes: someRedirect, known: redirectKnown, targets: redirected})
 		return
 	}
 	switch filepath.Base(words[0]) {
 	case "cd", "pushd", "popd":
-		if words[0] == "cd" && len(words) == 2 && literalAll && top && !strings.HasPrefix(words[1], "-") && !strings.HasPrefix(words[1], "~") {
-			switch {
-			case filepath.IsAbs(words[1]):
-				r.cwd = filepath.Clean(words[1])
-			case r.cwd != "":
-				r.cwd = filepath.Join(r.cwd, words[1])
-			}
-			r.loneCd = words[1]
-		} else {
-			r.unresolved = true
-		}
-		r.add(simpleCmd{words: words, pure: true})
+		r.cd(words, follow)
+		r.add(simpleCmd{words: words, pure: !someRedirect, cd: true, writes: someRedirect, known: redirectKnown, targets: redirected})
 		return
 	}
-	redirected, redirectKnown, someRedirect := redirectTargets(st)
 	c := simpleCmd{words: words}
-	if literalAll && pureReader(words) {
+	if pureReader(words) {
 		c.pure, c.writes = !someRedirect, someRedirect
 		c.known, c.targets = redirectKnown, redirected
 	} else {
 		c.writes = true
-		if targets, ok := knownWrites(st, words, literalAll); ok && redirectKnown {
+		if targets, ok := knownWrites(st, words); ok && redirectKnown {
 			targets = append(targets, redirected...)
 			c.known, c.targets = true, targets
 		}
 	}
 	r.add(c)
+}
+
+// cd follows a change of folder where it carries on: `cd <folder>` with one
+// literal folder, at the top of the line or in an && chain there. Anything
+// else (cd alone, cd ~, cd -, pushd, popd, a cd after ; or ||) leaves the
+// folder unknown for the rest of the line.
+func (r *lineReader) cd(words []string, follow bool) {
+	if !follow || words[0] != "cd" || len(words) != 2 || r.cwd == "" || r.unresolved {
+		r.unresolved = true
+		return
+	}
+	dir := words[1]
+	switch {
+	case dir == "" || strings.HasPrefix(dir, "-") || strings.HasPrefix(dir, "~"):
+		r.unresolved = true
+	case filepath.IsAbs(dir):
+		r.cwd = filepath.Clean(dir)
+	default:
+		r.cwd = filepath.Join(r.cwd, dir)
+	}
 }
 
 // redirectTargets are the files a statement's own output redirections write.
@@ -235,20 +280,33 @@ func redirectTargets(st *syntax.Stmt) (targets []string, ok, some bool) {
 	return targets, ok, some
 }
 
+// writerSpecs are the plain writers whose operands are the files they change,
+// with the options each may be given (values not taken as operands); any
+// other option leaves the files unknown.
+var writerSpecs = map[string]readerSpec{
+	"rm": {short: "rRfidvI", long: set("--recursive", "--force", "--dir", "--verbose", "--one-file-system",
+		"--preserve-root", "--no-preserve-root"), maxOperands: -1},
+	"rmdir":  {short: "pv", long: set("--parents", "--verbose", "--ignore-fail-on-non-empty"), maxOperands: -1},
+	"unlink": {maxOperands: -1},
+	"touch": {short: "acmfhrtd", shortValued: "rtd", long: set("--no-create", "--reference", "--date", "--time",
+		"--no-dereference"), longValued: set("--reference", "--date", "--time"), maxOperands: -1},
+	"mkdir": {short: "pvm", shortValued: "m", long: set("--parents", "--verbose", "--mode"), longValued: set("--mode"), maxOperands: -1},
+	"truncate": {short: "cors", shortValued: "rs", long: set("--no-create", "--io-blocks", "--reference", "--size"),
+		longValued: set("--reference", "--size"), maxOperands: -1},
+	"shred": {short: "fnszuvx", shortValued: "ns", long: set("--force", "--iterations", "--size", "--remove", "--verbose",
+		"--exact", "--zero"), longValued: set("--iterations", "--size"), maxOperands: -1},
+}
+
 // knownWrites is what a writer the checks know writes, when it can be read in
-// full: the copying, teeing and in-place editing commands policy reads, and
-// the few others whose operands are the files they change.
-func knownWrites(st *syntax.Stmt, words []string, literalAll bool) ([]string, bool) {
-	if !literalAll {
-		return nil, false
-	}
-	switch filepath.Base(words[0]) {
+// full: the copying and teeing commands policy reads, sed -i and perl -i, the
+// plain writers above, and gofmt -w and goimports -w (whose folders count as
+// every file beneath them).
+func knownWrites(st *syntax.Stmt, words []string) ([]string, bool) {
+	prog := filepath.Base(words[0])
+	switch prog {
 	case "sed", "gsed", "perl":
-		if !hasOpt(words, "i", "--in-place") {
-			return nil, false // not in place, and not a pure reader: a script that may write
-		}
 		return inPlaceFiles(words)
-	case "cp", "mv", "ln", "install", "tee", "dd", "curl", "wget":
+	case "cp", "mv", "ln", "install", "tee", "dd":
 		// Policy's own reading of what these write, quoting and options
 		// included: the command is printed back for it whole.
 		var b bytes.Buffer
@@ -260,23 +318,43 @@ func knownWrites(st *syntax.Stmt, words []string, literalAll bool) ([]string, bo
 			return nil, false
 		}
 		return canon.Writes(), true
-	case "rm", "rmdir", "unlink", "touch", "mkdir", "truncate", "shred":
-		return operands(words), true
 	case "gofmt", "goimports":
-		if hasOpt(words, "w", "") {
-			return operands(words), true
-		}
+		return formatterFiles(words)
+	}
+	if spec, ok := writerSpecs[prog]; ok {
+		_, ops, ok := parseReader(spec, words)
+		return ops, ok && len(ops) > 0
 	}
 	return nil, false
 }
 
+// formatterFiles are the files and folders gofmt -w or goimports -w rewrites.
+func formatterFiles(words []string) ([]string, bool) {
+	var ops []string
+	write := false
+	for i := 1; i < len(words); i++ {
+		switch a := words[i]; {
+		case a == "-w":
+			write = true
+		case a == "-l" || a == "-d" || a == "-s" || a == "-e" || a == "-format-only":
+		case a == "-r" || a == "-local" || a == "-srcdir":
+			i++
+		case strings.HasPrefix(a, "-"):
+			return nil, false
+		default:
+			ops = append(ops, a)
+		}
+	}
+	return ops, write && len(ops) > 0
+}
+
 // inPlaceFiles are the files sed -i or perl -i edits: its operands, less the
-// script when no -e names it, and less the values of -e, -f and their kin.
+// script when no -e names it, and less the values of -e, -f and their kin. Any
+// long option not spelled out in full leaves them unknown.
 func inPlaceFiles(words []string) ([]string, bool) {
 	perl := filepath.Base(words[0]) == "perl"
 	var ops []string
-	script := false // a script given by option
-	ended := false
+	inPlace, script, ended := false, false, false
 	for i := 1; i < len(words); i++ {
 		a := words[i]
 		switch {
@@ -284,18 +362,43 @@ func inPlaceFiles(words []string) ([]string, bool) {
 			ops = append(ops, a)
 		case a == "--":
 			ended = true
-		case a == "-e" || a == "-f" || a == "--expression" || a == "--file" || (perl && a == "-E"):
+		case a == "--in-place" || strings.HasPrefix(a, "--in-place="):
+			inPlace = true
+		case a == "--expression" || a == "--file":
 			script = true
 			i++
 		case strings.HasPrefix(a, "--expression=") || strings.HasPrefix(a, "--file="):
 			script = true
-		case !strings.HasPrefix(a, "--") && (strings.ContainsAny(a[1:], "ef") && !perl || perl && strings.ContainsAny(a[1:], "eE")):
-			// -ne 's/a/b/', -pie: the cluster's last letter takes the next word.
-			script = true
-			if last := a[len(a)-1]; last == 'e' || last == 'f' || last == 'E' {
-				i++
+		case a == "--regexp-extended" || a == "--quiet" || a == "--silent" || a == "--null-data" || a == "--posix" || a == "--separate":
+		case strings.HasPrefix(a, "--"):
+			return nil, false // perhaps an abbreviation of an option that changes what is written
+		default:
+			cluster := a[1:]
+			if strings.HasPrefix(cluster, "i") {
+				inPlace = true // -i or -i.bak: the rest is a suffix
+				continue
+			}
+			takes := "ef"
+			if perl {
+				takes = "eE"
+			}
+			for j := 0; j < len(cluster); j++ {
+				if cluster[j] == 'i' {
+					inPlace = true
+					break // -ni.bak: the rest is the suffix
+				}
+				if strings.IndexByte(takes, cluster[j]) >= 0 {
+					script = true
+					if j == len(cluster)-1 {
+						i++
+					}
+					break
+				}
 			}
 		}
+	}
+	if !inPlace {
+		return nil, false
 	}
 	if !script {
 		if len(ops) == 0 {
@@ -304,37 +407,6 @@ func inPlaceFiles(words []string) ([]string, bool) {
 		ops = ops[1:]
 	}
 	return ops, len(ops) > 0
-}
-
-// operands are a command's words after its program that are not options.
-func operands(words []string) []string {
-	var ops []string
-	ended := false
-	for _, a := range words[1:] {
-		switch {
-		case a == "--" && !ended:
-			ended = true
-		case ended || !strings.HasPrefix(a, "-") || a == "-":
-			ops = append(ops, a)
-		}
-	}
-	return ops
-}
-
-// hasOpt reports a short option letter, alone or in a cluster, or a long
-// option, before any "--".
-func hasOpt(words []string, short, long string) bool {
-	for _, a := range words[1:] {
-		switch {
-		case a == "--":
-			return false
-		case long != "" && (a == long || strings.HasPrefix(a, long+"=")):
-			return true
-		case short != "" && len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.Contains(a[1:], short):
-			return true
-		}
-	}
-	return false
 }
 
 // wordLiteral is a word's value when it holds no expansion, quotes taken off
@@ -385,21 +457,11 @@ func unescapeLit(s string) string {
 
 // unwrap takes off what runs a command for it, so the command itself is
 // judged: variable assignments, runners (sudo, env, nice, time, command,
-// nohup, exec, timeout, xargs) and launchers (npx, bunx, uv run, poetry run,
-// pipenv run, hatch run, pnpm exec and dlx, yarn exec and dlx, bundle exec).
-// A runner given an option that changes the folder, the user or how the
-// command is read is left on, and the command is not judged as a reader.
+// nohup, exec, timeout) and launchers (npx, bunx, uv run, poetry run, pipenv
+// run, hatch run, pnpm exec and dlx, yarn exec and dlx, bundle exec). A
+// runner given any option is left on, and the command is then not a reader.
+// xargs is not taken off: what it runs takes its words from its input.
 func unwrap(words []string) []string {
-	flags := func() bool {
-		for len(words) > 0 && strings.HasPrefix(words[0], "-") {
-			if w := words[0]; w == "-C" || strings.HasPrefix(w, "--chdir") || w == "-D" || w == "-u" || strings.HasPrefix(w, "--user") ||
-				w == "-S" || strings.HasPrefix(w, "--split-string") || w == "-I" || w == "-i" {
-				return false
-			}
-			words = words[1:]
-		}
-		return true
-	}
 	for len(words) > 0 {
 		w := words[0]
 		if name, _, assign := strings.Cut(w, "="); assign && name != "" && !strings.HasPrefix(w, "-") && !strings.Contains(name, "/") {
@@ -411,35 +473,30 @@ func unwrap(words []string) []string {
 			next = words[1]
 		}
 		switch filepath.Base(w) {
-		case "sudo", "env", "nice", "time", "command", "nohup", "exec", "npx", "bunx", "xargs":
-			words = words[1:]
-			if !flags() {
-				return []string{w, "--runner-option"}
+		case "sudo", "env", "nice", "time", "command", "nohup", "exec", "npx", "bunx":
+			if strings.HasPrefix(next, "-") {
+				return []string{w, next}
 			}
+			words = words[1:]
 			continue
 		case "timeout":
-			words = words[1:]
-			if !flags() {
-				return []string{w, "--runner-option"}
+			if strings.HasPrefix(next, "-") || len(words) < 3 {
+				return words
 			}
-			if len(words) > 0 {
-				words = words[1:] // the duration
-			}
+			words = words[2:]
 			continue
 		case "uv", "poetry", "pipenv", "hatch":
-			if next == "run" {
+			if next == "run" && len(words) > 2 && !strings.HasPrefix(words[2], "-") {
 				words = words[2:]
-				flags()
 				continue
 			}
 		case "pnpm", "yarn":
-			if next == "exec" || next == "dlx" {
+			if (next == "exec" || next == "dlx") && len(words) > 2 && !strings.HasPrefix(words[2], "-") {
 				words = words[2:]
-				flags()
 				continue
 			}
 		case "bundle":
-			if next == "exec" {
+			if next == "exec" && len(words) > 2 {
 				words = words[2:]
 				continue
 			}
@@ -450,7 +507,7 @@ func unwrap(words []string) []string {
 }
 
 // simpleCommands are the literal simple commands of a line, runners taken
-// off; a command whose program is not a literal is left out.
+// off; one that is not literal is left out.
 func simpleCommands(line string) [][]string {
 	var out [][]string
 	for _, c := range readLine(line, "").cmds {
@@ -462,32 +519,54 @@ func simpleCommands(line string) [][]string {
 }
 
 // inspectionCommand reports whether a shell line only reads: every simple
-// command in it is a known reader in its reading form, nothing is redirected
-// to a file, and the parser read it all.
+// command in it is a known reader, nothing is redirected to a file, and the
+// parser read it all.
 func inspectionCommand(cmd string) bool {
 	lf := readLine(cmd, "")
-	return lf.parsed && strings.TrimSpace(cmd) != "" && lf.inspect
+	return lf.parsed && lf.inspect
 }
 
-// pathIs reports whether target names the file p a claim gave: the same
-// absolute path, p relative to workDir, or p's segments ending target.
-func pathIs(target, p, workDir string) bool {
+// slashes writes a path with forward slashes, as a claim may give it.
+func slashes(p string) string { return strings.ReplaceAll(p, `\`, "/") }
+
+// pathIs compares a file a call changed with the one a claim names. exact is
+// set when they are the same file as written (the same absolute path, the
+// claim's path in the workspace, a short name for a file in the workspace,
+// or a file beneath a folder the call changed); loose when they are the same
+// only ignoring case, which is not taken as either answer.
+func pathIs(target, p, workDir string) (exact, loose bool) {
 	if target == "" || p == "" {
+		return false, false
+	}
+	if samePath(target, p, workDir) {
+		return true, false
+	}
+	return false, samePath(strings.ToLower(target), strings.ToLower(p), strings.ToLower(workDir))
+}
+
+// samePath is pathIs's exact comparison.
+func samePath(t, q, workDir string) bool {
+	t, q = filepath.Clean(t), slashes(q)
+	var want string
+	switch {
+	case filepath.IsAbs(q):
+		want = filepath.Clean(q)
+	case workDir != "":
+		want = filepath.Join(workDir, strings.TrimPrefix(filepath.Clean(q), "./"))
+	}
+	if want != "" && (t == want || strings.HasPrefix(want, t+"/")) {
+		return true
+	}
+	if filepath.IsAbs(q) {
 		return false
 	}
-	t := filepath.Clean(filepath.ToSlash(target))
-	p = filepath.ToSlash(p)
-	if filepath.IsAbs(p) {
-		return t == filepath.Clean(p)
+	if workDir == "" {
+		short := strings.TrimPrefix(filepath.Clean(q), "./")
+		return t == short || strings.HasSuffix(t, "/"+short)
 	}
-	q := strings.TrimPrefix(filepath.Clean(p), "./")
-	if workDir != "" && filepath.IsAbs(t) {
-		// A short name may stand for a file anywhere in the workspace, not
-		// outside it.
-		w := filepath.Clean(workDir)
-		return t == filepath.Join(w, q) || strings.HasPrefix(t, w+"/") && strings.HasSuffix(t, "/"+q)
-	}
-	return t == q || strings.HasSuffix(t, "/"+q)
+	w := filepath.Clean(workDir)
+	short := strings.TrimPrefix(filepath.Clean(q), "./")
+	return strings.HasPrefix(t, w+"/") && strings.HasSuffix(t, "/"+short)
 }
 
 // claimedCommand is the command a claim quotes, read as a line, unwrapped.
@@ -500,8 +579,8 @@ func claimedCommand(claimed string) []string {
 }
 
 // runsCommand reports whether a shell line runs the command a claim quotes,
-// as one of its simple commands: the same words, or those words and more
-// arguments after them, runners taken off both.
+// as one of its simple commands: the same words, as written, or those words
+// and more arguments after them, runners taken off both.
 func runsCommand(line, claimed string) bool {
 	want := claimedCommand(claimed)
 	if len(want) == 0 {
@@ -515,24 +594,6 @@ func runsCommand(line, claimed string) bool {
 	return false
 }
 
-// sameProgram reports whether a shell line runs the program and subcommand
-// the claimed command starts with, whatever the other arguments.
-func sameProgram(line, claimed string) bool {
-	want := claimedCommand(claimed)
-	if len(want) == 0 {
-		return false
-	}
-	for _, w := range simpleCommands(line) {
-		if filepath.Base(w[0]) != filepath.Base(want[0]) {
-			continue
-		}
-		if len(want) == 1 || (len(w) > 1 && w[1] == want[1]) {
-			return true
-		}
-	}
-	return false
-}
-
 func equalWords(a, b []string) bool {
 	for i := range a {
 		if a[i] != b[i] && (i != 0 || filepath.Base(a[i]) != filepath.Base(b[i])) {
@@ -540,22 +601,6 @@ func equalWords(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-// commandRuns reports whether a shell line runs a command of the kind: a
-// test run, a build, or for "" any command at all.
-func commandRuns(cmd, kind string) bool {
-	if kind == "" {
-		return strings.TrimSpace(cmd) != ""
-	}
-	for _, w := range simpleCommands(cmd) {
-		k := commandKind(w)
-		// A build claim is met by a test run too: tests build first.
-		if k == kind || (kind == "build" && k == "test") {
-			return true
-		}
-	}
-	return false
 }
 
 // commandKind says whether one simple command runs tests ("test"), a build,

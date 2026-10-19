@@ -259,6 +259,8 @@ type Observation struct {
 	// OutcomeUnknown marks the answer to a call that may have run on a
 	// process that stopped before recording its result; see ContinueTurn.
 	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
+	// Cwd is the folder a bash command ran in, as the tool chose it.
+	Cwd string `json:"cwd,omitempty"`
 }
 
 type Message struct {

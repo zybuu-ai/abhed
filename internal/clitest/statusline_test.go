@@ -34,7 +34,11 @@ func TestStatuslineFromUserConfig(t *testing.T) {
 	if h.Screen().Title() == "pwned" {
 		t.Fatal("the statusline set the terminal title")
 	}
-	h.Settle()
+	// The status line command redraws the footer as it answers: the panel is
+	// asked for once the screen is idle and has stopped changing, so the
+	// keys do not land in the middle of a redraw.
+	waitIdle(h)
+	h.WaitQuiet(300*time.Millisecond, 10*time.Second)
 	h.Type("/status\r")
 	h.WaitText("statusline")
 	closePanel(h)

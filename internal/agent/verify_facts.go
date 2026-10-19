@@ -24,6 +24,7 @@ type facts struct {
 	success   bool        // says a command, test or build succeeded
 	testish   string      // "test" or "build" when success names one
 	changed   bool        // says the agent changed the paths it names
+	scope     []string    // packages or folders a test claim names, such as internal/auth
 	ran       []string    // commands the claim says were run
 }
 
@@ -159,19 +160,24 @@ func extractFacts(claim string) facts {
 	}
 	lower := strings.ToLower(text)
 	f.changed = changedRe.MatchString(lower)
+	for _, w := range strings.Fields(text) {
+		if w = rawPath(strings.Trim(w, "`")); strings.Contains(w, "/") && !strings.Contains(w, "://") {
+			f.scope = append(f.scope, w)
+		}
+	}
 	ranCmd := ranRe.MatchString(lower)
 
 	cut(backtickRe, func(m []string) bool {
 		addLit(m[1])
 		if ranCmd {
-			f.ran = append(f.ran, normText(m[1]))
+			f.ran = append(f.ran, strings.TrimSpace(m[1]))
 		}
 		// A path or file:line inside backticks is still one.
 		if fl := fileLineRe.FindStringSubmatch(m[1]); fl != nil {
 			n, _ := strconv.Atoi(fl[2])
 			f.fileLines = append(f.fileLines, fileLine{path: fl[1], line: n})
 		} else if p := pathRe.FindString(m[1]); p == m[1] {
-			f.paths = append(f.paths, normText(p))
+			f.paths = append(f.paths, rawPath(p))
 		}
 		return true
 	})
@@ -186,7 +192,7 @@ func extractFacts(claim string) facts {
 	cut(fileLineRe, func(m []string) bool {
 		n, _ := strconv.Atoi(m[2])
 		f.fileLines = append(f.fileLines, fileLine{path: m[1], line: n})
-		f.paths = append(f.paths, normText(m[1]))
+		f.paths = append(f.paths, rawPath(m[1]))
 		return true
 	})
 	cut(ipRe, func(m []string) bool { addLit(m[0]); f.hosts = append(f.hosts, m[0]); return true })
@@ -198,7 +204,7 @@ func extractFacts(claim string) facts {
 			return false
 		}
 		addLit(p)
-		f.paths = append(f.paths, normText(p))
+		f.paths = append(f.paths, rawPath(p))
 		return true
 	})
 	// What is left: host names, then numbers.
@@ -286,6 +292,12 @@ func looksLikePath(p string) bool {
 	base := p[strings.LastIndex(p, "/")+1:]
 	dot := strings.LastIndex(base, ".")
 	return dot > 0 && fileExts[strings.ToLower(base[dot+1:])]
+}
+
+// rawPath is a path as the claim wrote it, case kept: only quotes and the
+// punctuation of the sentence around it are taken off.
+func rawPath(p string) string {
+	return strings.TrimRight(strings.TrimLeft(strings.TrimSpace(p), "(['\""), ".,;:!?)]}'\"")
 }
 
 func isWordRune(r rune) bool { return unicode.IsLetter(r) || r == '_' }

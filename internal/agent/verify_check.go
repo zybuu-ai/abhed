@@ -107,6 +107,8 @@ type obsRec struct {
 	// selfStale: the call's line changes something after printing what the
 	// result shows, so its output may predate that change.
 	selfStale bool
+	// line is what a shell call's line does.
+	line lineFacts
 }
 
 // mutation is a recorded call that may have changed what later output shows.
@@ -121,6 +123,9 @@ type mutation struct {
 	// known: every file the call may have changed is in targets, absolute.
 	known   bool
 	targets []string
+	// writer: a file tool, or a shell line read in full as known writers
+	// alone, whose exit says whether the change was made.
+	writer bool
 }
 
 type recordIndex struct {
@@ -174,13 +179,6 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 		return *at, float64(*at) - 1 + float64(seq)/float64(top+1)
 	}
 	reqs := map[string]req{}
-	// The folder each bash call ran in: the workspace, moved by a call that
-	// is only `cd <folder>`, as the bash tool follows it. A subagent's record
-	// may be another worktree's, so its folder is not known.
-	cwd := ""
-	if at == nil {
-		cwd = env.workDir
-	}
 	children := map[string]int64{}
 	var order []string
 	for _, e := range Live(events) {
@@ -222,21 +220,16 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			rec.command, rec.path = args.Command, args.Path
 			var line lineFacts
 			if o.Tool == "bash" || o.Tool == "ssh" {
-				// A remote command's folder is not this machine's: its
-				// relative targets are not known.
-				dir := cwd
-				if o.Tool == "ssh" {
-					dir = ""
+				// The folder the bash tool ran the command in, as the record
+				// holds it; a remote command's, or one not recorded, is not
+				// known, and its relative files are not either.
+				dir := ""
+				if o.Tool == "bash" && at == nil {
+					dir = o.Cwd
 				}
 				line = readLine(args.Command, dir)
 				rec.inspect, rec.selfStale = line.parsed && line.inspect, line.selfStale
-				if o.Tool == "bash" && line.cdTo != "" && !o.IsError && cwd != "" {
-					if filepath.IsAbs(line.cdTo) {
-						cwd = filepath.Clean(line.cdTo)
-					} else {
-						cwd = filepath.Join(cwd, line.cdTo)
-					}
-				}
+				rec.line = line
 			}
 			mut := false
 			switch {
@@ -256,13 +249,15 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			}
 			// A refused edit changed nothing; a failed command may have.
 			fileTool := o.Tool == "write" || o.Tool == "edit"
-			if mut && (!fileTool || !o.IsError) || o.OutcomeUnknown {
-				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError}
+			// A refused edit changed nothing, but is kept, failed, so a claim
+			// about its file is left open; a failed command may have changed things.
+			if mut || o.OutcomeUnknown {
+				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError || o.OutcomeUnknown || (o.ExitCode != nil && *o.ExitCode != 0)}
 				switch {
 				case fileTool:
-					m.path, m.known, m.targets = args.Path, args.Path != "", []string{args.Path}
+					m.path, m.known, m.targets, m.writer = args.Path, args.Path != "", []string{args.Path}, true
 				case o.Tool == "bash" || o.Tool == "ssh":
-					m.known, m.targets = line.parsed && line.known, line.targets
+					m.known, m.targets, m.writer = line.parsed && line.known, line.targets, line.parsed && line.writer
 				}
 				ix.mutations = append(ix.mutations, m)
 			}
@@ -316,6 +311,9 @@ func (ix *recordIndex) staleBy(o *obsRec) *mutation {
 			continue
 		}
 		fileEdit := m.tool == "write" || m.tool == "edit"
+		if fileEdit && m.failed {
+			continue // a refused edit changed nothing
+		}
 		switch o.tool {
 		case "read":
 			// A change whose files are all known leaves a read of another alone.
@@ -333,25 +331,31 @@ func (ix *recordIndex) staleBy(o *obsRec) *mutation {
 	return nil
 }
 
+// touches reports a target that is p, or a folder p is beneath.
 func touches(targets []string, p string) bool {
+	if p == "" {
+		return true
+	}
+	p = filepath.Clean(p)
 	for _, t := range targets {
-		if samePath(t, p) {
+		t = filepath.Clean(t)
+		if t == p || strings.HasPrefix(p, t+"/") {
 			return true
 		}
 	}
 	return false
 }
 
-func samePath(a, b string) bool {
-	return a != "" && b != "" && filepath.Clean(a) == filepath.Clean(b)
-}
-
 // lastChange is the last recorded call that may have changed something.
 func (ix *recordIndex) lastChange() *mutation {
-	if len(ix.mutations) == 0 {
-		return nil
+	for i := len(ix.mutations) - 1; i >= 0; i-- {
+		m := &ix.mutations[i]
+		if (m.tool == "write" || m.tool == "edit") && m.failed {
+			continue // a refused edit changed nothing
+		}
+		return m
 	}
-	return &ix.mutations[len(ix.mutations)-1]
+	return nil
 }
 
 func (o *obsRec) evidence() *evidenceText {
@@ -510,7 +514,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			fd := ix.changedPath(p)
 			findings = append(findings, fd)
 			if fd.out == matched {
-				atLine[p] = true
+				atLine[normText(p)] = true
 			}
 		}
 	}
@@ -518,7 +522,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		fd := ix.ranCommand(cmd)
 		findings = append(findings, fd)
 		if fd.out == matched {
-			atLine[cmd] = true
+			atLine[normText(cmd)] = true
 		}
 	}
 	for _, lit := range f.literals {
@@ -543,7 +547,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		findings = append(findings, ix.number(pool, n, cited))
 	}
 	if f.success {
-		findings = append(findings, ix.success(pool, f.testish, cited))
+		findings = append(findings, ix.success(pool, f.testish, f.scope))
 	}
 	return findings
 }
@@ -722,20 +726,25 @@ func countedNumber(cs []countFact, n string) bool {
 // success checks a claim that tests passed or a command succeeded: a command
 // must have ended with exit 0 after the last change, and none of its kind
 // since may have failed.
-func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) finding {
+func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string) finding {
 	last := ix.lastChange()
-	// A command that is itself the last change, as make is, comes after it.
+	// A command that is itself the last change, as a test runner may be,
+	// comes after it.
 	after := func(o *obsRec) bool { return last == nil || o.pos >= last.pos }
+	// A run counts only as the whole line, or the last command of an &&
+	// chain at its top, so its exit is the run's: not in a pipe, and not
+	// followed by ;, || or &. The kind is read from its program and
+	// subcommand, not from a word in it: `ls tests` runs no tests.
 	fits := func(o *obsRec) bool {
-		if o.tool != "bash" || o.exit == nil || !o.usable() {
+		if o.tool != "bash" || o.exit == nil || !o.usable() || !o.line.shape {
 			return false
 		}
-		// Known by its program and subcommand, not by a word in it: `ls tests`
-		// runs no tests.
-		return commandRuns(o.command, testish)
+		if testish == "" {
+			return true
+		}
+		k := commandKind(o.line.final)
+		return k == testish || (testish == "build" && k == "test")
 	}
-	// The latest command of the kind after the last change, anywhere in the
-	// record: if it failed, the record contradicts the claim.
 	var latest *obsRec
 	for i := len(ix.obs) - 1; i >= 0; i-- {
 		if o := ix.obs[i]; fits(o) && after(o) {
@@ -744,31 +753,20 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 		}
 	}
 	if latest != nil && *latest.exit != 0 {
-		return finding{out: conflicted, seq: latest.seq,
-			why: fmt.Sprintf("the last such command since the last change, #%d `%s`, exited %d",
-				latest.seq, clipRunes(latest.command, 60), *latest.exit),
-			conflict: &Conflict{Seq: latest.seq, CallID: latest.callID,
-				Excerpt: fmt.Sprintf("exit %d: %s", *latest.exit, tailLines(latest.content))}}
+		// Contradicted only by a failed run that is the test itself (what
+		// runs before it is a cd at most) and covers what the claim names.
+		if latest.line.leadCd && covers(latest.command, scope) {
+			return finding{out: conflicted, seq: latest.seq,
+				why: fmt.Sprintf("the last such run since the last change, #%d `%s`, exited %d",
+					latest.seq, clipRunes(latest.command, 60), *latest.exit),
+				conflict: &Conflict{Seq: latest.seq, CallID: latest.callID,
+					Excerpt: fmt.Sprintf("exit %d: %s", *latest.exit, tailLines(latest.content))}}
+		}
+		return finding{out: missing, why: fmt.Sprintf("the last such run since the last change, #%d, exited %d", latest.seq, *latest.exit)}
 	}
 	for i := len(pool) - 1; i >= 0; i-- {
-		o := pool[i]
-		if !fits(o) {
-			continue
-		}
-		if !after(o) {
-			continue
-		}
-		// A pass the same line then changed things after is not after the change.
-		if *o.exit == 0 && !o.selfStale {
+		if o := pool[i]; fits(o) && after(o) && *o.exit == 0 {
 			return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq, pooled: true}
-		}
-	}
-	if cited {
-		for _, o := range pool {
-			if o.tool == "bash" && o.exit != nil && *o.exit != 0 {
-				return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("the cited command #%d exited %d", o.seq, *o.exit),
-					conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: fmt.Sprintf("exit %d: %s", *o.exit, tailLines(o.content))}}
-			}
 		}
 	}
 	if last != nil {
@@ -777,62 +775,72 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 	return finding{out: missing, why: "no command of that kind ran in this session"}
 }
 
+// covers reports whether a test run's command covers what a claim names:
+// the claim names nothing, the run takes every package (./...), or it
+// names each of them.
+func covers(command string, scope []string) bool {
+	if len(scope) == 0 || strings.Contains(command, "./...") {
+		return true
+	}
+	for _, sc := range scope {
+		if !strings.Contains(command, strings.TrimPrefix(sc, "./")) {
+			return false
+		}
+	}
+	return true
+}
+
 // changedPath checks "I changed X" against the calls that changed files.
 func (ix *recordIndex) changedPath(p string) finding {
-	// The record contradicts the claim only when every change in it names
-	// its files in full, resolved against the folder it ran in, and none of
-	// them is p.
-	var unread *mutation
+	// Verified by a change that names p exactly and succeeded: a file tool,
+	// or a shell line read in full as known writers. Contradicted only when
+	// every change in the session came through the file tools, whose files
+	// are exact, and none of them named p. Anything else leaves it open.
+	others, loose := false, false
+	var failedOn *mutation
 	for i, m := range ix.mutations {
 		if m.person {
 			continue
 		}
-		if !m.failed {
-			for _, t := range m.targets {
-				if pathIs(t, p, ix.workDir) {
-					return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
-				}
+		fileTool := m.tool == "write" || m.tool == "edit"
+		if !fileTool {
+			others = true
+		}
+		for _, t := range m.targets {
+			exact, l := pathIs(t, p, ix.workDir)
+			switch {
+			case exact && m.failed:
+				failedOn = &ix.mutations[i]
+			case exact && m.writer:
+				return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
+			case exact || l:
+				loose = true
 			}
 		}
-		if !m.known && unread == nil {
-			unread = &ix.mutations[i]
-		}
 	}
-	if unread != nil {
-		return finding{out: missing, why: fmt.Sprintf("no call names a change to %s, but #%d (%s) may have made one", p, unread.seq, mutationLabel(*unread))}
-	}
-	if ix.subagents {
+	switch {
+	case failedOn != nil:
+		return finding{out: missing, why: fmt.Sprintf("#%d (%s) names %s but failed, so whether it changed it is not known", failedOn.seq, mutationLabel(*failedOn), p)}
+	case others:
+		return finding{out: missing, why: "no change the session's calls name in full is to " + p + ", but a command or tool whose changes are not all known ran"}
+	case loose:
+		return finding{out: missing, why: "a change names " + p + " only with other letter case"}
+	case ix.subagents:
 		return finding{out: missing, why: "no change to " + p + " in this session's calls (a subagent ran whose record could not be read)"}
 	}
-	return finding{out: conflicted, why: "the record has no change to " + p + " in this session",
-		conflict: &Conflict{Excerpt: "no write, edit or command touching " + p}}
+	return finding{out: conflicted, why: "every change in this session came through the file tools, and none was to " + p,
+		conflict: &Conflict{Excerpt: "no write or edit of " + p}}
 }
 
 // ranCommand checks "I ran `cmd`" against the commands in the record.
 func (ix *recordIndex) ranCommand(cmd string) finding {
-	var near *obsRec
 	for _, o := range ix.obs {
 		// A command run on a host over ssh is one the agent ran too.
-		if (o.tool != "bash" && o.tool != "ssh") || !o.usable() {
-			continue
-		}
-		if runsCommand(o.command, cmd) {
+		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && runsCommand(o.command, cmd) {
 			return finding{out: matched, what: fmt.Sprintf("`%s` ran at #%d", clipRunes(cmd, 40), o.seq), seq: o.seq}
 		}
-		if near == nil && sameProgram(o.command, cmd) {
-			near = o
-		}
 	}
-	// The same program and subcommand with its arguments in another order:
-	// perhaps the command meant, so not a contradiction.
-	if near != nil {
-		return finding{out: missing, why: fmt.Sprintf("#%d ran `%s`, not quite `%s`", near.seq, clipRunes(near.command, 60), clipRunes(cmd, 60))}
-	}
-	if ix.subagents {
-		return finding{out: missing, why: "`" + clipRunes(cmd, 60) + "` is not among this session's own commands"}
-	}
-	return finding{out: conflicted, why: "the record has no command `" + clipRunes(cmd, 60) + "` in this session",
-		conflict: &Conflict{Excerpt: "no such command was run"}}
+	return finding{out: missing, why: "`" + clipRunes(cmd, 60) + "` is not among this session's commands as written"}
 }
 
 // checkFileLine checks a path:line cite against the file as it is now, and,
@@ -848,12 +856,12 @@ func checkFileLine(env checkEnv, fl fileLine, literals []string) (finding, strin
 	data, err := env.readFile(p)
 	label := fmt.Sprintf("%s:%d", fl.path, fl.line)
 	if err != nil {
-		return finding{out: conflicted, why: label + " cites a file that cannot be read now: " + firstLine(err.Error()),
+		return finding{out: missing, why: label + " cites a file that cannot be read now: " + firstLine(err.Error()),
 			conflict: &Conflict{Excerpt: fl.path + ": " + firstLine(err.Error())}}, ""
 	}
 	lines := strings.Split(string(data), "\n")
 	if fl.line < 1 || fl.line > len(lines) {
-		return finding{out: conflicted, why: fmt.Sprintf("%s cites line %d; the file has %d", label, fl.line, len(lines)),
+		return finding{out: missing, why: fmt.Sprintf("%s cites line %d; the file has %d", label, fl.line, len(lines)),
 			conflict: &Conflict{Excerpt: fmt.Sprintf("%s has %d lines", fl.path, len(lines))}}, ""
 	}
 	from, to := max(0, fl.line-3), min(len(lines), fl.line+2)

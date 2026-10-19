@@ -157,13 +157,17 @@ func TestSuccessNeedsExitZeroAfterLastEdit(t *testing.T) {
 // A command that only reads does not count as a change; one that writes does.
 func TestInspectionCommands(t *testing.T) {
 	for _, c := range []string{"go test ./...", "git status && git diff", "ls -la | wc -l", "cat a.txt 2>/dev/null",
-		"grep -rn foo .", "npm test", "python -m pytest -q", "cd sub && make test"} {
+		"grep -rn foo .", "cd sub && go vet ./...", "sed -n '1,20p' f", "rg -n foo"} {
 		if !inspectionCommand(c) {
 			t.Errorf("%q reads only", c)
 		}
 	}
 	for _, c := range []string{"rm -rf x", "echo hi > a.txt", "sed -i s/a/b/ f", "git commit -m x", "go mod tidy",
-		"find . -delete", "curl -o x https://h", "npm install", "cat $(whoami)", "tee out.txt"} {
+		"find . -delete", "curl -o x https://h", "npm install", "cat $(whoami)", "tee out.txt",
+		// Test runners, linters and build tools may write: snapshots, reports, fixes, outputs.
+		"npm test", "python -m pytest -q", "make test", "go test -coverprofile=c.out ./...", "sort --out=f f",
+		"sed --in-pl s/a/b/ f", "sed -n 's/a/b/w out' f", "ls f | xargs rm", "env > f", "git grep -O foo", "rg --pre x foo",
+		"uniq a b", "git -C sub status"} {
 		if inspectionCommand(c) {
 			t.Errorf("%q may write", c)
 		}
@@ -212,9 +216,11 @@ func TestFileLineCites(t *testing.T) {
 	b := newRec(t)
 	wantVerdict(t, checkText(t, b, dir, "The handler is `func Serve` at main.go:3.")[0], ClaimVerified)
 	wantVerdict(t, checkText(t, b, dir, "The handler is `func Listen` at main.go:3.")[0], ClaimUnverified)
+	// A cite the file does not hold is left unverified: the file may have
+	// changed since, which is not the record contradicting the claim.
 	v := checkText(t, b, dir, "The bug is at main.go:40.")[0]
-	wantVerdict(t, v, ClaimContradicted)
-	wantVerdict(t, checkText(t, b, dir, "The handler is `func Serve` at missing.go:3.")[0], ClaimContradicted)
+	wantVerdict(t, v, ClaimUnverified)
+	wantVerdict(t, checkText(t, b, dir, "The handler is `func Serve` at missing.go:3.")[0], ClaimUnverified)
 }
 
 // Saying a file was changed, or a command run, when the record holds no such
@@ -224,9 +230,12 @@ func TestActionsAgainstTheRecord(t *testing.T) {
 	b.call("c1", "edit", map[string]string{"path": "/w/config.yaml"}, "Edited /w/config.yaml", nil)
 	wantVerdict(t, checkText(t, b, "", "I updated config.yaml to raise the limit.")[0], ClaimVerified)
 	wantVerdict(t, checkText(t, b, "", "I also updated deploy.yaml to match.")[0], ClaimContradicted)
-	wantVerdict(t, checkText(t, b, "", "I ran `make lint` first.")[0], ClaimContradicted)
+	// A command not run is unverified: the record never contradicts that.
+	wantVerdict(t, checkText(t, b, "", "I ran `make lint` first.")[0], ClaimUnverified)
 	b.call("c2", "bash", map[string]string{"command": "make lint"}, "", exit(0))
 	wantVerdict(t, checkText(t, b, "", "I ran `make lint` first.")[0], ClaimVerified)
+	// After a command whose changes are not all known, no change claim is contradicted.
+	wantVerdict(t, checkText(t, b, "", "I also updated deploy.yaml to match.")[0], ClaimUnverified)
 }
 
 // General knowledge and sentences with nothing checkable are unverified, and
@@ -696,7 +705,7 @@ func TestVerifyUnderARunbook(t *testing.T) {
 // Commands are read by program and words, not by text they happen to hold.
 func TestReadingCommands(t *testing.T) {
 	for cmd, kind := range map[string]string{"go test ./...": "test", "cd api && npm run test:unit": "test", "ls tests": "",
-		"test -f go.mod": "", "ls build/": "", "make": "build", "sudo -E go build ./...": "build", "echo 'go test'": "",
+		"test -f go.mod": "", "ls build/": "", "make": "build", "sudo -E go build ./...": "", "echo 'go test'": "",
 		"python3 -m pytest -q": "test", "FOO=1 cargo clippy": "build"} {
 		got := ""
 		for _, w := range simpleCommands(cmd) {
@@ -720,9 +729,13 @@ func TestReadingCommands(t *testing.T) {
 	if _, known := writeTargets("git checkout main"); known {
 		t.Error("git checkout of a branch changes files it does not name")
 	}
-	if !pathIs("/w/internal/auth/login.go", "auth/login.go", "/w") || pathIs("/w/data.go", "a.go", "/w") || pathIs("/w/login.go.bak", "login.go", "/w") ||
-		!pathIs("/w/x/y.go", "/w/x/y.go", "/w") || !pathIs("/w/x/y.go", "x/y.go", "/w") {
-		t.Error("paths match on whole segments")
+	exact := func(t, p string) bool { e, _ := pathIs(t, p, "/w"); return e }
+	if !exact("/w/internal/auth/login.go", "auth/login.go") || exact("/w/data.go", "a.go") || exact("/w/login.go.bak", "login.go") ||
+		!exact("/w/x/y.go", "/w/x/y.go") || !exact("/w/x/y.go", "x/y.go") || !exact("/w/src", "src/a.go") || exact("/tmp/b/login.go", "login.go") {
+		t.Error("paths match as the same file, a folder covering it, or a short name in the workspace")
+	}
+	if e, l := pathIs("/w/README.md", "readme.md", "/w"); e || !l {
+		t.Error("a match in another letter case is loose, not exact")
 	}
 	if !runsCommand("cd api && go test ./... -count=1", "go test ./...") || runsCommand("echo 'go test'", "go test") ||
 		runsCommand("go testdata", "go test") {
@@ -841,7 +854,7 @@ func TestUnwrappedCommands(t *testing.T) {
 			t.Errorf("%q may write", c)
 		}
 	}
-	for _, c := range []string{"env go test ./...", "time go vet ./...", "timeout 60 cat f", "make test"} {
+	for _, c := range []string{"env go test ./...", "time go vet ./...", "timeout 60 cat f"} {
 		if !inspectionCommand(c) {
 			t.Errorf("%q reads only", c)
 		}
@@ -886,4 +899,29 @@ func TestEmptyReplyStillRunsTheContract(t *testing.T) {
 func writeTargets(cmd string) ([]string, bool) {
 	lf := readLine(cmd, "/w")
 	return lf.targets, lf.parsed && lf.known
+}
+
+// A bash observation records the folder the tool ran the command in, as it
+// followed a lone cd; the checks resolve relative files against it.
+func TestBashObservationRecordsItsFolder(t *testing.T) {
+	l, store, _, dir := verifyHarness(t, VerifyOff, false, nil)
+	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
+	l.Adapter.(*scriptedAdapter).turns = []scriptedTurn{
+		{calls: []model.ToolCall{call("bash", map[string]string{"command": "cd sub"})}},
+		{calls: []model.ToolCall{{ID: "c2", Name: "bash", Args: json.RawMessage(`{"command":"pwd"}`)}}},
+		{text: "done"},
+	}
+	l.Run(context.Background(), "go")
+	evs, _ := store.Events("sess1")
+	var cwds []string
+	for _, e := range evs {
+		var o Observation
+		if e.Type == EvObservation && json.Unmarshal(e.Payload, &o) == nil {
+			cwds = append(cwds, o.Cwd)
+		}
+	}
+	real, _ := filepath.EvalSymlinks(dir)
+	if len(cwds) != 2 || (cwds[0] != dir && cwds[0] != real) || !strings.HasSuffix(cwds[1], "/sub") {
+		t.Fatalf("folders recorded %q", cwds)
+	}
 }
