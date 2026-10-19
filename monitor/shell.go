@@ -51,10 +51,11 @@ func parseScriptAt(src, start string) (script, bool) {
 
 // dirState is the working directory as the script walk reaches a command.
 type dirState struct {
-	dir   string
-	known bool
-	prev  string
-	stack []string
+	dir    string
+	known  bool
+	prev   string
+	prevOK bool
+	stack  []string
 }
 
 func (d dirState) clone() *dirState {
@@ -74,11 +75,6 @@ func walkStmts(src string, stmts []*syntax.Stmt, st *dirState, s *script) {
 func walkCmd(src string, stmt *syntax.Stmt, st *dirState, s *script) {
 	switch x := stmt.Cmd.(type) {
 	case *syntax.CallExpr:
-		for _, a := range x.Assigns {
-			if a.Name != nil && a.Name.Value == "PATH" {
-				s.setsPath = true
-			}
-		}
 		simple(src, x, stmt, st, s)
 	case *syntax.BinaryCmd:
 		if x.Op == syntax.Pipe || x.Op == syntax.PipeAll {
@@ -94,17 +90,34 @@ func walkCmd(src string, stmt *syntax.Stmt, st *dirState, s *script) {
 		walkStmts(src, x.Stmts, st, s) // { …; } keeps the shell's directory
 	case *syntax.Subshell:
 		walkStmts(src, x.Stmts, st.clone(), s) // ( … ) is its own shell
+	case *syntax.DeclClause:
+		// export/declare/local/readonly/typeset: a CDPATH among them changes
+		// where cd resolves, so the directory is no longer known.
+		for _, a := range x.Args {
+			if a.Name == nil {
+				continue
+			}
+			if a.Name.Value == "CDPATH" {
+				st.known = false
+			}
+			if a.Name.Value == "PATH" {
+				s.setsPath = true
+			}
+		}
 	case *syntax.FuncDecl:
 		if x.Name != nil {
 			s.funcs[x.Name.Value] = true
 		}
 		// A function body runs only when called; collect its commands for the
-		// rules, but on a copy so its cd does not move the caller.
+		// rules, on a copy so its cd does not move the caller. A later call to
+		// the function makes the directory unknown (see simple).
 		walkCmd(src, x.Body, st.clone(), s)
 	default:
-		// if/while/for/case and the like: collect their commands on a copy so
-		// the directory is right inside the body, and where a cd happened in
-		// one the directory afterwards is unknown, since which branch ran is not.
+		// if/while/for/case and the like: the directory is understood only
+		// when every branch leaves it where it began and known. Collect the
+		// commands on a copy so each is judged in the right directory, and if
+		// any branch moved the directory or lost track of it, the directory
+		// afterwards is unknown — which branch ran is not known statically.
 		before := *st
 		inner := st.clone()
 		syntax.Walk(stmt.Cmd, func(n syntax.Node) bool {
@@ -120,7 +133,12 @@ func walkCmd(src string, stmt *syntax.Stmt, st *dirState, s *script) {
 	}
 }
 
-// simple records one simple command, and applies it when it is a cd.
+// simple records one simple command and, for the small set of forms the walk
+// understands, moves the tracked directory. Any other form that could change
+// the directory or run code that might — a wrapper or runner, env -C, sudo -D,
+// CDPATH, a call to a defined function, eval, source or . — leaves the
+// directory unknown from here on, so a later relative target is asked about
+// rather than wrongly taken as own ground.
 func simple(src string, call *syntax.CallExpr, stmt *syntax.Stmt, st *dirState, s *script) {
 	var c command
 	c.dir, c.dirKnown = st.dir, st.known
@@ -139,21 +157,52 @@ func simple(src string, call *syntax.CallExpr, stmt *syntax.Stmt, st *dirState, 
 			}
 		}
 	}
-	prog, rest := c.program()
-	switch prog {
-	case "cd":
-		applyCd(st, firstWord(rest))
-	case "pushd":
-		st.stack = append(st.stack, st.dir)
-		applyCd(st, firstWord(rest))
-	case "popd":
-		if n := len(st.stack); n > 0 {
-			st.prev, st.dir = st.dir, st.stack[n-1]
-			st.stack = st.stack[:n-1]
-		} else {
+	for _, a := range call.Assigns {
+		if a.Name == nil {
+			continue
+		}
+		if a.Name.Value == "PATH" {
+			s.setsPath = true
+		}
+		if a.Name.Value == "CDPATH" { // changes where cd resolves
 			st.known = false
 		}
 	}
+
+	prog, rest := c.program()
+	head := ""
+	if len(c.words) > 0 {
+		head = c.words[0]
+	}
+	prefix := wrapperPrefix(c.words)
+
+	switch {
+	case head == "cd" && len(prefix) == 0: // a bare cd, the only tracked form
+		applyCd(st, firstWord(rest))
+	case head == "pushd" && len(prefix) == 0:
+		st.stack = append(st.stack, st.dir)
+		applyCd(st, firstWord(rest))
+	case head == "popd" && len(prefix) == 0:
+		if n := len(st.stack); n > 0 {
+			st.prev, st.prevOK = st.dir, true
+			st.dir, st.stack = st.stack[n-1], st.stack[:n-1]
+		} else {
+			st.known = false // nothing to pop: where it lands is not known
+		}
+	case chdirFlag(prefix):
+		// env -C, sudo -D move the directory for this very command, so its
+		// own target runs somewhere the walk did not follow.
+		c.dirKnown, st.known = false, false
+	case prog == "cd" || prog == "pushd" || prog == "popd":
+		st.known = false // reached through a wrapper (command cd, sudo cd): not tracked
+	case setsCDPATH(head, c.words):
+		st.known = false
+	case isRunner(head) || isRunner(prog):
+		st.known = false // eval, source, . run code that may cd
+	case s.funcs[head] || s.funcs[prog]:
+		st.known = false // a function body may cd
+	}
+
 	if len(c.words) > 0 || len(c.writes) > 0 || len(c.reads) > 0 {
 		s.cmds = append(s.cmds, c)
 	}
@@ -167,24 +216,155 @@ func firstWord(args []string) string {
 	return ""
 }
 
-// applyCd moves the tracked directory for a cd to word.
+// wrapperPrefix is the words a command runs through before its program:
+// sudo, env, command, nice and the like, with their flags.
+func wrapperPrefix(words []string) []string {
+	var prefix []string
+	w := words
+	for len(w) > 0 {
+		head := w[0]
+		if strings.Contains(head, "=") && !strings.HasPrefix(head, "=") && !strings.HasPrefix(head, "$") {
+			prefix = append(prefix, head)
+			w = w[1:]
+			continue
+		}
+		if !wrappers[head] {
+			break
+		}
+		prefix = append(prefix, head)
+		w = w[1:]
+		if head == "timeout" {
+			for len(w) > 0 && strings.HasPrefix(w[0], "-") {
+				prefix = append(prefix, w[0])
+				w = w[1:]
+			}
+			if len(w) > 0 {
+				prefix = append(prefix, w[0])
+				w = w[1:]
+			}
+			continue
+		}
+		for len(w) > 0 && strings.HasPrefix(w[0], "-") {
+			prefix = append(prefix, w[0])
+			if wrapperValueFlags[w[0]] && len(w) > 1 {
+				prefix = append(prefix, w[1])
+				w = w[1:]
+			}
+			w = w[1:]
+		}
+	}
+	return prefix
+}
+
+// chdirFlag reports a wrapper flag that changes the working directory:
+// env -C/--chdir, sudo -D/--chdir.
+func chdirFlag(prefix []string) bool {
+	for _, w := range prefix {
+		switch w {
+		case "-C", "--chdir", "-D":
+			return true
+		}
+		if strings.HasPrefix(w, "--chdir=") {
+			return true
+		}
+	}
+	return false
+}
+
+// setsCDPATH reports a command that sets or exports CDPATH, which changes
+// where every later cd resolves.
+func setsCDPATH(head string, words []string) bool {
+	switch head {
+	case "export", "declare", "typeset", "readonly", "local", "set":
+		for _, w := range words[1:] {
+			if w == "CDPATH" || strings.HasPrefix(w, "CDPATH=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isRunner reports a builtin that runs code able to cd the current shell.
+func isRunner(prog string) bool {
+	switch prog {
+	case "eval", "source", ".":
+		return true
+	}
+	return false
+}
+
+// applyCd moves the tracked directory for a bare cd, but only through forms
+// the walk can resolve: a literal absolute path, a literal path under the
+// home (no climbing above it, no ~user), a tracked `cd -`, and a literal
+// relative path. Anything else leaves the directory unknown.
 func applyCd(st *dirState, word string) {
 	switch {
 	case word == "":
-		st.prev, st.dir = st.dir, "~" // cd with no argument goes home
+		setDir(st, "~") // cd with no argument goes home
 	case word == "-":
+		if !st.prevOK {
+			st.known = false
+			return
+		}
 		st.dir, st.prev = st.prev, st.dir
-	case homeish(word):
-		st.prev, st.dir = st.dir, path.Clean(homeTilde(word))
-	case strings.HasPrefix(word, "/"):
-		st.prev, st.dir = st.dir, path.Clean(word)
-	case strings.ContainsAny(word, "$*?`"):
-		st.prev, st.known = st.dir, false // a target only running the line would give
+	case isHomeLiteral(word):
+		setDir(st, cleanHome(word))
+	case strings.HasPrefix(word, "/") && !strings.ContainsAny(word, "$*?`"):
+		setDir(st, path.Clean(word))
+	case isLiteralRelative(word):
+		j := joinDir(st.dir, word)
+		if strings.HasPrefix(st.dir, "~") && !strings.HasPrefix(j, "~") {
+			st.known = false // climbed out of the home directory
+			return
+		}
+		setDir(st, j)
 	default:
-		st.prev, st.dir = st.dir, path.Clean(joinDir(st.dir, word))
+		st.known = false // a variable, glob or substitution: not resolvable
 	}
 }
 
+func setDir(st *dirState, d string) {
+	st.prev, st.dir, st.prevOK = st.dir, d, true
+}
+
+// isHomeLiteral reports ~, ~/literal, $HOME, $HOME/literal or ${HOME}/literal
+// with no climbing (..) and no ~user.
+func isHomeLiteral(word string) bool {
+	rem, ok := homeRemainder(word)
+	return ok && !strings.Contains(rem, "..")
+}
+
+// homeRemainder is what follows the home marker in a home-rooted word.
+func homeRemainder(word string) (string, bool) {
+	for _, pre := range []string{"${HOME}", "$HOME", "~"} {
+		if word == pre {
+			return "", true
+		}
+		if rest, ok := strings.CutPrefix(word, pre+"/"); ok {
+			return "/" + rest, true
+		}
+	}
+	return "", false
+}
+
+// cleanHome writes a home-rooted literal as ~/clean.
+func cleanHome(word string) string {
+	rem, _ := homeRemainder(word)
+	if rem == "" {
+		return "~"
+	}
+	return path.Clean("~" + rem)
+}
+
+// isLiteralRelative reports a relative path with no expansion and no home marker.
+func isLiteralRelative(word string) bool {
+	return word != "" && !strings.HasPrefix(word, "/") && !strings.HasPrefix(word, "~") &&
+		!strings.ContainsAny(word, "$*?`")
+}
+
+// joinDir joins a relative path onto a base directory, treating a leading "~"
+// as a literal first segment so the home marker is kept.
 // joinDir joins a relative path onto a base directory, treating a leading "~"
 // as a literal first segment so the home marker is kept.
 func joinDir(base, rel string) string {
@@ -233,12 +413,12 @@ func raw(src string, w *syntax.Word) string {
 }
 
 // wrappers run the program named after them.
-var wrappers = map[string]bool{"sudo": true, "env": true, "nohup": true, "time": true, "nice": true, "timeout": true,
-	"exec": true, "builtin": true, "stdbuf": true, "ionice": true, "chrt": true, "doas": true}
+var wrappers = map[string]bool{"sudo": true, "env": true, "command": true, "nohup": true, "time": true, "nice": true,
+	"timeout": true, "exec": true, "builtin": true, "stdbuf": true, "ionice": true, "chrt": true, "doas": true}
 
 // wrapperValueFlags are a wrapper's flags that take the next word as their value.
 var wrapperValueFlags = map[string]bool{"-u": true, "-g": true, "-n": true, "-s": true, "-k": true, "-C": true,
-	"-o": true, "-e": true, "-i": true, "-c": true, "-p": true}
+	"-o": true, "-e": true, "-i": true, "-c": true, "-p": true, "-D": true, "--chdir": true}
 
 // program is the program a command runs and the words after it.
 func (c command) program() (string, []string) {

@@ -356,6 +356,11 @@ func TestWorkbenchPlanNotBoundRestoresPlanMode(t *testing.T) {
 	if live.Loop.Policy.Mode != "plan" {
 		t.Fatalf("mode %s", live.Loop.Policy.Mode)
 	}
+	// The plan stays pending after a failed bind, as the CLI and ACP leave it,
+	// so the person can answer it again.
+	if _, ok := live.Loop.PendingPlan(); !ok {
+		t.Fatal("the plan was discarded after a failed bind")
+	}
 	evs, _ := st.Events(id)
 	var got []string
 	for _, e := range evs {

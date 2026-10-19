@@ -289,18 +289,27 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 		prog, args := cmd.program()
 		for _, t := range destroys(prog, args) {
 			if t == "" || strings.HasPrefix(t, "$") && !homeish(t) {
-				continue // a target only running the line would show
+				// A target only running the line would give; but in a directory
+				// known to be a protected root, even an unknown name under it
+				// is dangerous, so it is put to the person.
+				if t != "" && cmd.dirKnown && protectedRoot(cmd.dir) {
+					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+						Rationale: fmt.Sprintf("%s would destroy a target under %s, a protected location, that only running the line would give; %s", prog, cmd.dir, remit(c)),
+						Advice:    "name the path to delete in full, somewhere the task covers, or confirm you mean this one"}
+				}
+				continue
 			}
 			eff, known := effectiveTarget(cmd, t)
-			// A relative target under a cd whose directory could not be
-			// resolved is not own ground: it could be anywhere.
+			// A relative target under a directory the walk could not follow is
+			// not taken as own ground: it could be anywhere. The person named
+			// it outright or they are asked; it is never a silent deny.
 			if !known {
 				if k.named(eff) {
 					continue
 				}
-				return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-					Rationale: fmt.Sprintf("%s would destroy %s under a directory set from a value only running the line would give; %s", prog, t, remit(c)),
-					Advice:    "change into a directory named as a literal path, or name the path to delete in full"}
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in was set in a way the check could not follow, so where it points is not known; %s", prog, t, remit(c)),
+					Advice:    "name the path to delete in full, or change into a directory named as a literal path first"}
 			}
 			// find's operand is where it looks, not what it deletes.
 			if prog != "find" && protectedRoot(eff) {
@@ -339,8 +348,9 @@ func (Rules) ownGround(k *given, c Case, t string) bool {
 			return true
 		}
 		// Over ssh the home is the login's own, so a folder under it whose top
-		// name the task gave is the folder the task meant.
-		return remote(c) && mentions(k.said, homeTop(t))
+		// name the task gave as a bare word — not inside a path, not the host
+		// it names — is the folder the task meant.
+		return remote(c) && bareMentions(k.said, homeTop(t), strings.ToLower(k.str("host")))
 	}
 	if !strings.HasPrefix(t, "/") {
 		clean := path.Clean(t)
@@ -373,16 +383,22 @@ func effectiveTarget(cmd command, t string) (string, bool) {
 	whole := rel == "" || rel == "." || rel == "*"
 	rel = strings.TrimSuffix(rel, "/*")
 	switch {
-	case whole || rel == "..":
+	case whole:
 		if homeBase {
-			return "~", true // the home directory itself, or its parent
-		}
-		if rel == ".." {
-			return orDot(path.Join(base, "..")), true
+			return "~", true // the home directory itself
 		}
 		return orDot(base), true
+	case rel == "..":
+		if homeBase {
+			return "~", false // the parent of the login's home: not known, so ask
+		}
+		return orDot(path.Join(base, "..")), true
 	default:
-		return joinDir(base, rel), true
+		j := joinDir(base, rel)
+		if homeBase && !strings.HasPrefix(j, "~") {
+			return j, false // a relative target that climbs out of the home: ask
+		}
+		return j, true
 	}
 }
 
@@ -783,6 +799,17 @@ func mentions(text, n string) bool {
 
 func hostRune(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '_'
+}
+
+// bareMentions reports word as a whole word in said, counting only where it
+// stands on its own: not inside a path (those are blanked first) and not the
+// host the call names.
+func bareMentions(said, word, host string) bool {
+	if word == "" || word == host {
+		return false
+	}
+	bare := userPaths.ReplaceAllString(said, " ")
+	return mentions(bare, word)
 }
 
 // written names the files a command writes through its arguments.

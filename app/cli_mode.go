@@ -378,16 +378,22 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		// Back to plan mode, with the plan waiting again: an answer the record
 		// does not hold leaves nothing in force.
 		st.loop.UnbindPlan()
-		_ = modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit)
+		if err := modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit); err != nil {
+			surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode could not be put back to plan: " + err.Error()})
+		}
 		st.loop.ReofferPlan(plan)
 		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so the session stays in plan mode and the plan is put to you again after the next turn: " + err.Error()})
 		return ""
 	}
 	if err := st.loop.AcceptPlan(plan); err != nil {
-		// The accepted answer did not take effect: back to plan mode, and on the record.
-		_ = modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit)
+		// The accepted answer did not take effect: back to plan mode, and on
+		// the record. The plan stays pending so it is put to the person again.
+		if merr := modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit); merr != nil {
+			surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode could not be put back to plan: " + merr.Error()})
+		}
 		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
-		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so the session stays in plan mode: " + err.Error()})
+		st.loop.ReofferPlan(plan)
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so the session stays in plan mode and the plan is put to you again after the next turn: " + err.Error()})
 		return ""
 	}
 	st.loop.SetApprovedPlan(plan.Text)

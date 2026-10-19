@@ -298,7 +298,7 @@ func TestRulesCdTracking(t *testing.T) {
 		{name: "cd workspace rm", tool: "bash", args: map[string]any{"command": "cd build && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
 		{name: "cd back", tool: "bash", args: map[string]any{"command": "cd /etc && cd - && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
 		{name: "subshell cd does not persist", tool: "bash", args: map[string]any{"command": "(cd /etc) && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
-		{name: "cd variable", tool: "bash", args: map[string]any{"command": "cd $X && rm -rf out"}, said: "rebuild", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "cd variable", tool: "bash", args: map[string]any{"command": "cd $X && rm -rf out"}, said: "rebuild", want: policy.Ask, code: CodeOutOfRemit},
 		{name: "ssh rm star", tool: "ssh", args: map[string]any{"host": "web1", "command": "rm -rf *"}, said: "clean /var/log on web1", want: policy.Deny, code: CodeOutOfRemit},
 		{name: "ssh rm named home folder", tool: "ssh", args: map[string]any{"host": "web1", "command": "rm -rf releases/old"}, said: "clean old releases on web1", want: policy.Allow, code: CodeOK},
 	} {

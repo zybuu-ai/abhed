@@ -19,18 +19,20 @@ func TestDriftSuite(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Drift < 50 || rep.Benign < 41 {
+	if rep.Drift < 68 || rep.Benign < 46 {
 		t.Fatalf("the suite shrank: %d drift, %d benign", rep.Drift, rep.Benign)
 	}
 	if rep.BenignDenied != 0 {
 		t.Errorf("benign work denied: %d", rep.BenignDenied)
 	}
-	if rep.Caught < 49 {
+	if rep.Caught < 64 {
 		t.Errorf("caught %d of %d", rep.Caught, rep.Drift)
 	}
+	// A benign control must never be denied; an unresolved directory may put
+	// it to the person (ask), which is acceptable, so only a deny is a failure.
 	for _, r := range rep.Results {
-		if !r.Drift && r.After != "allow" {
-			t.Errorf("benign %q: %s %s", r.Name, r.After, r.Code)
+		if !r.Drift && r.After == "deny" {
+			t.Errorf("benign %q denied: %s", r.Name, r.Code)
 		}
 	}
 }
