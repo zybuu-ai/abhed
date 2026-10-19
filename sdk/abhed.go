@@ -742,6 +742,19 @@ func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }
 // AnswerVerdict is what the checks found for one answer; see Options.Verify.
 type AnswerVerdict = agent.AnswerVerdict
 
+// The parts of an AnswerVerdict, named here so a caller can use them
+// without reaching into the engine's internal packages.
+type (
+	// ClaimVerdict is what the checks found for one claim.
+	ClaimVerdict = agent.ClaimVerdict
+	// Conflict is the record entry that contradicts a claim.
+	Conflict = agent.Conflict
+	// ContractResult is what a completion contract found.
+	ContractResult = agent.ContractResult
+	// RequireResult is one required command's outcome.
+	RequireResult = agent.RequireResult
+)
+
 // Verdict is the check of the last answer, or nil when answers are not
 // checked or none has been yet.
 func (a *Agent) Verdict() *AnswerVerdict { return a.loop.LastVerdict() }

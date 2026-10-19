@@ -323,6 +323,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 			return 2
 		}
 	}
+	// Answers must be checkable as configured before any session starts.
+	if _, err := toolset.Verifier(cfg, true); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
 	srv := server.New(opts)
 	// Every session's egress proxy stops with the server, before the store
 	// closes, so the last summaries it records are kept.

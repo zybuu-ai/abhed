@@ -53,3 +53,33 @@ func TestVerdictIsDrawnAndAnswerCallHidden(t *testing.T) {
 		t.Error("an answer with nothing to check draws nothing")
 	}
 }
+
+// A reply with nothing checkable draws no footer; ✓ needs something
+// verified; the footer stays on one line at 80 columns.
+func TestVerdictFooterRules(t *testing.T) {
+	plain := agent.AnswerVerdict{Unverified: 1, Claims: []agent.ClaimVerdict{{N: 1, Text: "Hello from the stub.", Verdict: agent.ClaimUnverified}}}
+	if rows := VerdictRows(Style{}, plain, true); rows != nil {
+		t.Fatalf("a greeting drew %q", rows)
+	}
+	unk := agent.AnswerVerdict{Unverified: 1, Claims: []agent.ClaimVerdict{{N: 1, Text: "It has 9 nodes.", Verdict: agent.ClaimUnverified, LoadBearing: true}}}
+	rows := VerdictRows(Style{}, unk, true)
+	if len(rows) == 0 || strings.Contains(rows[0], "✓") {
+		t.Fatalf("rows %q", rows)
+	}
+	long := agent.AnswerVerdict{Verified: 12, Unverified: 13, Contradicted: 0, Claims: make([]agent.ClaimVerdict, 25)}
+	for i := range long.Claims {
+		long.Claims[i] = agent.ClaimVerdict{Verdict: agent.ClaimVerified}
+		if i >= 12 {
+			long.Claims[i] = agent.ClaimVerdict{Verdict: agent.ClaimUnverified, LoadBearing: i%2 == 0}
+		}
+	}
+	for _, r := range VerdictRows(Style{}, long, true) {
+		if n := len([]rune(r)); strings.Contains(r, "verified ·") && n > 80 {
+			t.Fatalf("footer of %d columns: %q", n, r)
+		}
+	}
+	ok := agent.AnswerVerdict{Verified: 1, Claims: []agent.ClaimVerdict{{Verdict: agent.ClaimVerified}}}
+	if rows := VerdictRows(Style{}, ok, true); len(rows) != 1 || !strings.Contains(rows[0], "✓ 1 verified") || !strings.Contains(rows[0], "/evidence N") {
+		t.Fatalf("rows %q", rows)
+	}
+}

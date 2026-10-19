@@ -20,6 +20,29 @@ All notable changes to Abhed are recorded here. The format follows
   file may keep it on.
 - The reason of a call the supervisor refused starts `supervisor:` instead
   of `monitor:`.
+- Answers are checked and labelled by default in the terminal, the workbench
+  and console, and Abhed Studio. A reply with a statement the record
+  contradicts gets one more model call, the agent's revision turn, and an
+  ACP editor gets one more `agent_message_chunk` after each checked reply,
+  carrying the labels as text and the verdict in `_meta`. Set
+  `"verify": {"mode": "off"}` to turn it off; `-p`, rpc and the SDK check
+  nothing unless asked.
+- Commands run through `bash` are checkpointed by default: before each one
+  the workspace's files are noted and copied in memory, up to 20,000 files
+  and 32 MiB (2 MiB a file). Set `"tools": {"bash_checkpoints": "off"}` to
+  stop it, or lower `tools.bash_checkpoint_files` and
+  `tools.bash_checkpoint_mb`.
+- `ssh` rules read the remote command as bash's: an allow rule with a pattern
+  now approves one simple command, so a rule written for a chain (`ssh(web1/a
+  && b)`) or relying on what follows a pattern no longer matches; write one
+  rule per command. A destructive remote command always asks twice.
+- An accepted plan's runbook answers its own steps by default, and any other
+  change during it asks. Set `"plan": {"runbooks": false}` to have every call
+  judged by policy alone.
+- Sessions on `abhed serve` and in Studio started in plan mode now have
+  plan mode's `exit_plan`, and a proposed plan waits for the person's answer
+  (`POST /v1/sessions/{id}/plan`, or Studio's permission request) before
+  anything changes. A session not started in plan mode is unaffected.
 - `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
   or `stringData`, and withholds its values from the record; build such a
   Secret with `secret_from` from stored secrets and workspace files.
@@ -178,8 +201,8 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 21 planted wrong claims none is shown as verified and 10 are
-  contradicted, all 14 true controls are verified, and no true or neutral
+  of 27 planted wrong claims none is shown as verified and 16 are
+  contradicted, all 19 true controls are verified, and no true or neutral
   claim is contradicted; the test holds those figures as a floor.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
@@ -258,6 +281,15 @@ All notable changes to Abhed are recorded here. The format follows
   `session.ended` records, counts only the tools the model is offered in the
   current mode, so a tool of another mode no longer brings compaction early.
 
+
+### Go API
+
+- `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Agent.Verdict` and the
+  types `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult` and
+  `RequireResult`.
+- `server`: `StartSpec.Verify`.
+- `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`),
+  `VerifyRank`, `PlanConfig`, `MonitorConfig` and `ManagedAsk`.
 
 ## [1.2.8] - 2026-10-14
 

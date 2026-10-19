@@ -54,3 +54,13 @@ func TestVerifyStrictThroughTheSDK(t *testing.T) {
 		t.Fatalf("verdict %+v", v)
 	}
 }
+
+// A verdict's parts are named in the SDK, so a caller outside the module
+// can walk them.
+func TestVerdictTypesAreExported(t *testing.T) {
+	v := abhed.AnswerVerdict{Claims: []abhed.ClaimVerdict{{Conflict: &abhed.Conflict{Seq: 3}}},
+		Contract: &abhed.ContractResult{Require: []abhed.RequireResult{{Command: "go test ./..."}}}}
+	if v.Claims[0].Conflict.Seq != 3 || v.Contract.Require[0].Command == "" {
+		t.Fatal("unreachable")
+	}
+}

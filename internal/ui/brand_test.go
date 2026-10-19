@@ -8,7 +8,7 @@ import (
 // The facts sit beside the mark, so every mark row has to be the same width
 // or the right-hand column staggers.
 func TestBannerKeepsTheFactsAligned(t *testing.T) {
-	out := Banner(Style{}, "v1", "model-x", "~/w", "process", "memory")
+	out := Banner(Style{}, "v1", "model-x", "~/w", "process", "memory", "rules")
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) != len(markRows) {
 		t.Fatalf("banner has %d lines, the mark has %d rows", len(lines), len(markRows))
@@ -37,5 +37,14 @@ func TestAccentIsTheBrandOrange(t *testing.T) {
 	}
 	if got := (Style{}).Accent("x"); got != "x" {
 		t.Errorf("Accent without colour = %q, want plain text", got)
+	}
+}
+
+// The supervisor has its own row, so the sandbox row is not cut at 80
+// columns for it.
+func TestBannerSupervisorRow(t *testing.T) {
+	out := Banner(Style{}, "v1", "m", "~/w", "process · no network", "memory", "rules")
+	if !strings.Contains(out, "supervisor: rules") || !strings.Contains(out, "sandbox  process · no network\n") {
+		t.Fatalf("banner:\n%s", out)
 	}
 }
