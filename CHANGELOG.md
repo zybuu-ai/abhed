@@ -52,13 +52,16 @@ All notable changes to Abhed are recorded here. The format follows
   cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
   without, the new file `<records>/<tenant>/audit/api.jsonl` under
   `record.dir` or `~/.abhed/records`.
-- Postgres: a server started as the runtime role now needs the schema
-  through version 13 (`events.commit_tx`, `ocsf_cursors`) and refuses an
-  older one, saying to run `abhed migrate`.
-- Postgres: schema version 11 adds the `chain_pre` table. Run `abhed migrate`
-  as the owner role before starting a server as the runtime role, which
-  refuses an older schema and says so; a `storage.single_role` server
-  applies it itself.
+- Postgres: this release takes the schema from version 10 to 14. Run
+  `abhed migrate` as the owner role before starting a server as the runtime
+  role; a runtime-role server refuses a schema older than 13 and says to
+  migrate, and a `storage.single_role` server applies it itself. Version 11
+  adds the `chain_pre` table; 12 adds `events.commit_tx` and its index; 13
+  adds the `ocsf_cursors` table; 14 replaces the trigger that chains events
+  (same hash, one trigger per insert instead of two) and drops the GIN index
+  on `events.payload`. Payloads are sealed, so that index held ciphertext,
+  but a query of yours that filters events by payload (`payload @> …`) now
+  scans the table; add your own index if you rely on one.
 - HawkEYE's `sandbox-denied` no longer fires on the words of a command's
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
@@ -277,10 +280,14 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 94 planted wrong claims none is shown as verified and 7 are
-  contradicted (all from cited evidence), all 41 true controls are verified,
-  and none of the 66 true or neutral claims is contradicted; the test holds
-  those figures as a floor.
+  of 109 planted wrong claims none is shown as verified and 10 are
+  contradicted (all from cited, conflicting evidence), all 44 true controls
+  are verified, and none of the 80 true or neutral claims is contradicted;
+  the test holds those figures as a floor. A fact a cited result is silent
+  on leaves a statement unverified, never contradicted; counts are compared
+  only in the same words ("tests passed" with "tests passed"); a test run
+  given any variable but a colour switch is not a whole run; and a write or
+  edit's own report is no evidence for its path.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.
@@ -450,38 +457,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
-From `apidiff` between v1.2.8 and this release:
+From `apidiff -m` between v1.2.8 and this release (internal packages left
+out):
 
-- Incompatible: `monitor.Guard` now holds a mutex and a slice, so it is no
-  longer comparable: code that compared two `Guard` values with `==` or used
-  one as a map key no longer compiles; use a `*Guard`.
-
-- `server`: `Options.APIAudit` (the chained record every mutating request
-  is written to), `Options.Metrics` and the type `Metrics` with
-  `NewMetrics`, `(*Metrics).Handler` and `(*Metrics).AuditLog`, `Mutating`
-  and `APIAuditPrefix`.
-- `store/chain`: `Linker`, which the Postgres event and audit chains and the
-  control plane's SQLite audit answer, handing out their links as stored for
-  an export of a range.
-- `app`: `WithRecordAnchor`, `AnchorBuilder` and `RecordHead`: an edition's
-  anchor is given each head of the record beside the managed
-  `record.witness` (a local session's as it is synced, a Postgres session's
-  at each run's end), and stopped as the record closes.
-- `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Options.Supervisor`,
-  `Options.Runbook`, `(*Agent).Verdict`, and the types `AnswerVerdict`,
-  `ClaimVerdict`, `Conflict`, `ContractResult`, `RequireResult`, `Runbook`
-  and `RunbookStep`.
-- `server`: `StartSpec.Verify`, `ApprovalAnswer.StepTools` and
-  `PendingAsk.StepTools`.
+- Incompatible: `hawkeye.Call` gains `Sandbox`, a slice, and
+  `monitor.Guard` now holds a mutex and a slice, so neither is comparable any
+  more: code that compares two values of either with `==` or uses one as a
+  map key no longer compiles. Compare a `Call`'s fields, and use a `*Guard`.
+- New packages: `ocsf`, `store/chain` and the command `cmd/abhed-drift`.
+- `app`: `AnchorBuilder`, `MetricsPath`, `RecordHead` and `WithRecordAnchor`.
 - `config`: the `Config` fields `Monitor`, `Plan` and `Verify`, and its
-  method `ManagedAskRule`; the types `VerifyConfig`, `VerifyCriticConfig`,
-  `ContractConfig`, `MonitorConfig` and `PlanConfig`; `VerifyRank`;
-  `Overrides.Supervisor`; `SSHConfig.ReadCommands`, `SSHConfig.Transfers` and
-  `SSHConfig.TransferMaxMB`; `SandboxConfig.Image`; and
+  method `ManagedAskRule`; the types `ContractConfig`, `MonitorConfig`,
+  `OCSFConfig`, `PlanConfig`, `ServerMetricsConfig`, `VerifyConfig` and
+  `VerifyCriticConfig`; `OCSFVersions` and `VerifyRank`;
+  `Overrides.Supervisor`; `RecordConfig.OCSF`; `SSHConfig.ReadCommands`,
+  `SSHConfig.Transfers` and `SSHConfig.TransferMaxMB`;
+  `SandboxConfig.Image`; `ServerConfig.Metrics`; and
   `ToolsConfig.BashCheckpoints`, `BashCheckpointMB` and `BashCheckpointFiles`.
-- `hawkeye`: `Answer`, `Call.PlanHash`, `Call.PlanStep`, `RemoteChange`,
-  `RemoteTarget`, `Report.Answers`, `Report.RemoteChanges`,
-  `Report.Supervisor`, `SupervisorStats` and `SupervisorVerdict`.
+- `hawkeye`: `Answer`, `Call.PlanHash`, `Call.PlanStep`, `Call.Sandbox`,
+  `Call.SandboxUnconfirmed`, `RemoteChange`, `RemoteTarget`,
+  `Report.Answers`, `Report.RemoteChanges`, `Report.Supervisor`,
+  `SandboxSignal`, `SupervisorStats` and `SupervisorVerdict`.
 - `monitor`: `(*Guard).Child`, `Guard.Honeytokens` and `Guard.Unattended`;
   the `Case` fields `DeclaredRead`, `Plan`, `Roots`, `Said` and `Seen`;
   `Provenance.Observed`; `Recent.Credential`; `Verdict.Advice` and
@@ -493,32 +489,26 @@ From `apidiff` between v1.2.8 and this release:
   the drift suite's `DriftCase`, `DriftCases`, `DriftDeclared`,
   `DriftHoneytoken`, `DriftHosts`, `DriftPATH`, `DriftReport`, `DriftResult`
   and `RunDrift`.
-- A new command, `cmd/abhed-drift`.
-- `abhed -p`'s JSON result line gains `verdict` when answers are checked.
-- `store/chain`: `Head`, `Range`, `Source`, `Link`, `LinkHash`, `Genesis`,
-  `Walker` and `NewWalker`, and the export format's `Header`, `Writer`,
-  `NewWriter`, `ExportReport`, `VerifyExport`, `IsExport` and
-  `ExportVersion`.
-- `store`: `Postgres.EventChain`, `Postgres.AuditChain`,
-  `Postgres.ExportChain`, and `ChainReport.Reason` and `ChainReport.PreChain`.
-- `store/local`: `Store.Chain` and `AuditChain`.
-- `store/sqlite`: `Store.AuditChain` and `ChainReport.Reason`.
-- `hawkeye`: `SandboxSignal`, `Call.Sandbox` and `Call.SandboxUnconfirmed`.
-- `ocsf`, a new package: `Mapper` (`NewMapper`, `Map`, `Observe`), `Line`,
-  `Options`, `Event`, `Mapping`, `Types`, `MapAudit`, `Downgrade`, `Replay`,
-  `ReplayJSON`, `Validate`, `CheckVersion`, `Shorthand`, `Version`,
-  `Versions`, and the file sink `OpenSink`, `Sink` and `SinkOptions`.
-- `store/local`: `Options.OnAppend`, `Sealed.End`, `LineHash`, and
-  `Store.SessionIDs`, `Store.LinesFrom` and `Store.Size`.
-- `store`: `Postgres.OCSFWriter` with `OCSFWriter`, `OCSFCursor` and
-  `ErrOCSFStandby`, `Postgres.CommitEnd`, and the audit
-  chain's `Postgres.AuditRows`, `Postgres.AuditLinks`, `Sandboxes.AuditLinks`
-  and `AuditChainName`; `store/sqlite`: `Store.AuditRows`,
-  `Store.AuditLinks` and `AuditChainName`; `store/local`: `AuditRows` and
-  `AuditChainName`; `ocsf`: `MapAuditLink` and `AuditLink`.
-- `ocsf`: `Cursor`, `CursorStore`, `ErrStandby`, `Line.Pos`, and
-  `SinkOptions.Cursors`, `Changed` and `Poll`.
-- `config`: `RecordConfig.OCSF`, `OCSFConfig` and `OCSFVersions`.
+- `sdk`: `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
+  `Options.Verify` and `Options.VerifyByDefault`, and the types
+  `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult`,
+  `RequireResult`, `Runbook` and `RunbookStep`.
+- `server`: `APIAuditPrefix`, `Mutating`, `Options.APIAudit`,
+  `Options.Metrics`, `StartSpec.Verify`, `ApprovalAnswer.StepTools` and
+  `PendingAsk.StepTools`.
+- `store`: the `*Postgres` methods `AuditChain`, `AuditLinks`, `AuditRows`,
+  `CommitEnd`, `EventChain`, `ExportChain`, `OCSFWriter`, `ScanCommitted`
+  and `VerifyAuditChain`; `(*Sandboxes).AuditChainName` and
+  `(*Sandboxes).AuditLinks`; `AuditChainName`, `CommitPos`,
+  `ParseCommitPos`, `PostgresOf`, `OCSFCursor`, `OCSFWriter` and
+  `ErrOCSFStandby`; and `ChainReport.PreChain` and `ChainReport.Reason`.
+- `store/local`: the `*Store` methods `Chain`, `LinesFrom`, `SessionIDs`
+  and `Size`; `AuditChain`, `AuditChainName`, `AuditFile`, `AuditPath`,
+  `AuditReport`, `AuditRows`, `LineHash`, `OpenAudit` and `VerifyAudit`;
+  `Options.OnAppend`; and `Sealed.End`.
+- `store/sqlite`: the `*Store` methods `AuditChain`, `AuditChainName`,
+  `AuditLinks`, `AuditRows` and `VerifyAuditChain`; and `AuditChainName`
+  and the type `ChainReport`.
 
 ## [1.2.8] - 2026-10-14
 
