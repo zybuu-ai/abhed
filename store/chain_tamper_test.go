@@ -312,4 +312,14 @@ func TestAuditChainIsASource(t *testing.T) {
 	if _, err := src.Head(ctx, "another-tenant"); err == nil {
 		t.Fatal("another tenant's audit chain was read")
 	}
+	var links []chain.Link
+	if err := src.(chain.Linker).Links(ctx, tenant, 1, 0, func(l chain.Link) bool { links = append(links, l); return true }); err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 3 || links[2].Hash != h.Hash || chain.LinkHash(links[1].Prev, links[1].Row) != links[1].Hash {
+		t.Fatalf("links %+v", links)
+	}
+	if err := src.(chain.Linker).Links(ctx, "another-tenant", 1, 0, func(chain.Link) bool { return true }); err == nil {
+		t.Fatal("another tenant's audit links were read")
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/store/chain"
 )
 
 // The control plane's own record, the reconciler's events among them, is
@@ -78,5 +79,36 @@ func TestAuditChainIsASource(t *testing.T) {
 	}
 	if r, _ := src.VerifyRange(ctx, "", 1, 3); r.OK() || r.FirstBad != 2 {
 		t.Fatalf("after an edit = %+v", r)
+	}
+}
+
+// The record hands out its links as hashed, so an export checks them with
+// nothing but the links.
+func TestAuditChainHandsOutItsLinks(t *testing.T) {
+	s := open(t, dbPath(t))
+	ctx := context.Background()
+	for i := range 4 {
+		if err := s.Append(ctx, controlplane.AuditEvent{At: time.Now(), Principal: "a", Action: "create", SandboxID: "sb",
+			Generation: int64(i), Outcome: "ok", Detail: map[string]string{"n": "v"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := s.AuditChain().(chain.Linker)
+	var got []chain.Link
+	if err := src.Links(ctx, "", 2, 0, func(l chain.Link) bool { got = append(got, l); return true }); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Pos != 2 {
+		t.Fatalf("links %+v", got)
+	}
+	for _, l := range got {
+		if chain.LinkHash(l.Prev, l.Row) != l.Hash {
+			t.Fatalf("link %d does not hash as stored", l.Pos)
+		}
+	}
+	n := 0
+	_ = src.Links(ctx, "", 1, 0, func(chain.Link) bool { n++; return n < 2 })
+	if n != 2 {
+		t.Fatalf("stopping after two read %d", n)
 	}
 }
