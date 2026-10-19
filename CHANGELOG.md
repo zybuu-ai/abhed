@@ -52,6 +52,9 @@ All notable changes to Abhed are recorded here. The format follows
   cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
   without, the new file `<records>/<tenant>/audit/api.jsonl` under
   `record.dir` or `~/.abhed/records`.
+- Postgres: a server started as the runtime role now needs the schema
+  through version 13 (`events.commit_tx`, `ocsf_cursors`) and refuses an
+  older one, saying to run `abhed migrate`.
 - Postgres: schema version 11 adds the `chain_pre` table. Run `abhed migrate`
   as the owner role before starting a server as the runtime role, which
   refuses an older schema and says so; a `storage.single_role` server
@@ -388,8 +391,10 @@ All notable changes to Abhed are recorded here. The format follows
   hash: the chain's trigger uses fixed queries and renders only the hashed
   columns (about 120 down to 30 microseconds a row), sets `inserted_at`
   itself instead of a second trigger, and the unused GIN index on the
-  sealed `payload` is dropped. Apply it with `abhed migrate`; a server on
-  an older schema still starts.
+  sealed `payload` is dropped. Apply it with `abhed migrate`. Each event
+  stays its own transaction; the rate many sessions reach is bound by the
+  database's log flushes, and the records guide says how to raise it
+  without giving up durability.
 - A `bash` note now also names a refusal of a credential file the sandbox
   denies other than `~/.ssh`, `~/.kube`, `~/.aws` and `~/.gnupg` (such as
   `~/.netrc` or `~/.config/gh`), and of Abhed's own state.

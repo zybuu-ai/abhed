@@ -464,6 +464,21 @@ move with it, as it is bound by the flushes, not by the inserts' work. The local
 record, on the same Mac, took about 63,000 events a second with a sync every
 20 (`store/local/soak_test.go`). Measure yours.
 
+Each event stays its own transaction, by design: an append that returns has
+reached the disk, so a crash loses nothing the agent was told was written.
+Events are not batched, and `synchronous_commit` must stay `on`, or the
+database may lose events it reported written. For a higher rate, give the
+database what flushes depend on:
+
+- a server of its own, not shared with other containers or VMs, on a disk
+  with a fast, safe flush (an SSD with power-loss protection, or a cloud
+  volume sized for its IOPS), and the write-ahead log on it;
+- enough concurrent sessions for group commit to work: Postgres flushes the
+  commits that are waiting together, so many writers share one flush;
+- `commit_delay` (microseconds) with `commit_siblings` can widen that group
+  under heavy concurrent load; it made no clear difference on the shared VM
+  measured here, so measure before keeping it.
+
 ### The chain head API
 
 `store/chain` is the stable, storage-neutral view of these chains, for an
