@@ -156,6 +156,7 @@ func ask(path string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), askWait)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- the configured container engine, fixed arguments
+	ownGroup(cmd)
 	cmd.WaitDelay = time.Second
 	return cmd.Output()
 }
