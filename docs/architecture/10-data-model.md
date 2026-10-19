@@ -66,9 +66,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 **The interactive CLI's own events.** These types and their payloads are
 defined (`internal/agent/event_cli.go`) so the work that records them shares
-one shape. The interactive CLI records those without a note; a row marked
-*(not yet emitted)* is defined for work still to come, and the change that
-records it removes the note. A change made before a conversation has a record,
+one shape. The interactive CLI records each of them. A change made before a conversation has a record,
 such as a mode chosen before the first message, is recorded when the
 conversation opens, ahead of that message. A conversation opened after
 `/clear` or `/resume` first restates what it inherits: the mode, as
@@ -92,7 +90,7 @@ and adds `file.restored`; taking a worktree back adds `worktree.taken`.
 | `worktree.taken` | a subagent's worktree taken back by hunk (`/take`, the workbench): `worktree` (`.abhed-worktrees/<id>`), `branch`, `base` (the commit it shares with the workspace), `taken` (paths written or removed), `conflicts`, `refused` (with the reason), `left` (hunks not taken), `removed` (the worktree and its branch). Each file taken is the person's own `write` or `delete` before it, with its decision and `observation` | user |
 | `plan.proposed` | `text`, the plan the agent submitted in plan mode | agent |
 | `plan.decided` | `decision` (`accept` or `keep-planning`), `to_mode`; never `auto` or `bypass` | user |
-| `model.fallback` | `from`, `to`, `reason`; a move to a configured fallback model *(not yet emitted)* | system |
+| `model.fallback` | `from`, `to`, `reason`; a move to the next model in `model.fallback` after the one in use could not be reached or refused access | system |
 | `hook.fired` | `extension`, `event`, `verdict` (`block`, `ask` or `annotate`; a hook never allows) | system |
 | `record.repaired` | `reason`, `truncated_bytes`; recorded by the local record when it is opened for writing and its last line was left unfinished by a crash: cut off when the head does not count it (`truncated_bytes` says how much), or completed when it was whole and lost only its newline (`truncated_bytes` 0) | system |
 | `config.refused` | a setting that did not take effect as written, or a refused change: `layer` (`user`, `settings`, `workspace`, `env` or `command`), `source` (the file, flag or variable), `key`, `value` asked for with credentials redacted, `decision` (`set_aside`, `ignored_untrusted`, `overridden` by the managed file, or `refused` by `/config set`), `reason`, and `principal`: `kind` (`os-user` or `agent-command`), `os_user`, `uid`, `session_owner` on a server, `agent_command` and `command_id` inside an agent's command. Recorded after `session.started`, and when `/config set` refuses | system |

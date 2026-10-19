@@ -332,6 +332,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// Taken only where a caller records checkpoints, as Studio does.
+	sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
 	// Set whatever the tool set holds: web_fetch with no host list asks.

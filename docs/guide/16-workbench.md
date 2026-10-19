@@ -724,7 +724,7 @@ open.
 - **Files over 4 MB are read-only**, shown in part.
 - **Changes made by commands are found by comparison, within limits.** As
   a session opens, the server notes every file in the workspace (outside
-  `.git`, `node_modules` and `.abhed`) with its size, time and hash, and keeps
+  `.git`, `node_modules`, `.abhed` and the subagents' `.abhed-worktrees`) with its size, time and hash, and keeps
   the text of files up to 1 MB, 16 MB in all. A file a shell command changed,
   created or removed since then, yours or the agent's, is listed under
   **Changes** beside the edit tools' changes and can be reviewed and accepted
