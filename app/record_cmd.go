@@ -256,6 +256,10 @@ func (c recordCtx) verify(args []string) int {
 		}
 		return 0
 	}
+	if len(heads) > 0 {
+		fmt.Fprintln(c.err, "abhed: -head checks an exported Postgres chain; name the export file")
+		return 2
+	}
 	if len(args) == 0 {
 		idx, reps, err := c.rec.VerifyAll()
 		if err != nil {
