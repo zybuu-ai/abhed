@@ -71,9 +71,9 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 29 drift cases the rules judge stops 27
-  of the 28 a mode let through (the other is the destructive step's), and it
-  asks about or refuses none of its 34 benign controls, `ssh` inspection of
+  or `go run ./cmd/abhed-drift`): of its 31 drift cases the rules judge stops 29
+  of the 30 a mode let through (the other is the destructive step's), and it
+  asks about or refuses none of its 35 benign controls, `ssh` inspection of
   declared hosts with `ssh.read_commands` among them.
 - `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
   asking, and the approval names what would change, field by field, from

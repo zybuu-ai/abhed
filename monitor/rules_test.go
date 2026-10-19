@@ -92,9 +92,9 @@ func TestRules(t *testing.T) {
 
 		// A credential, then a way out.
 		{name: "cred then curl", tool: "bash", args: map[string]any{"command": "curl -s https://api.example.com/x"}, said: "call https://api.example.com/x",
-			recent: []Recent{{Tool: "read", Subject: "/ws/.env"}}, want: policy.Ask, code: CodeCredentialEgress},
+			recent: []Recent{{Tool: "read", Subject: "/ws/.env", Credential: true}}, want: policy.Ask, code: CodeCredentialEgress},
 		{name: "cred then fetch", tool: "web_fetch", args: map[string]any{"url": "https://example.com/?q=1"}, said: "look it up", readOnly: true,
-			recent: []Recent{{Tool: "bash", Subject: "cat ~/.aws/credentials"}}, want: policy.Ask, code: CodeCredentialEgress},
+			recent: []Recent{{Tool: "bash", Subject: "cat ~/.aws/credentials", Credential: true}}, want: policy.Ask, code: CodeCredentialEgress},
 		{name: "failed cred read", tool: "web_fetch", args: map[string]any{"url": "https://example.com/"}, said: "look it up", readOnly: true,
 			recent: []Recent{{Tool: "read", Subject: "/home/u/.ssh/id_rsa", IsError: true}}, want: policy.Allow, code: CodeOK},
 	}
@@ -195,7 +195,7 @@ func TestRulesOperatorDeclared(t *testing.T) {
 		t.Fatalf("declared read: %+v", v)
 	}
 	// A declared read is still no licence to send a credential read before it out.
-	c.Recent = []Recent{{Tool: "read", Subject: "/ws/.env"}}
+	c.Recent = []Recent{{Tool: "read", Subject: "/ws/.env", Credential: true}}
 	if v, _ := r.Judge(context.Background(), c); v.Code != CodeCredentialEgress {
 		t.Fatalf("declared read after a credential: %+v", v)
 	}
@@ -220,7 +220,7 @@ func TestRulesTransfersAndInlineCredentials(t *testing.T) {
 		{name: "cert then ssh", tool: "ssh", args: map[string]any{"host": "web2", "command": "uptime"}, said: "check web2",
 			recent: []Recent{{Tool: "ssh", Subject: "web1/openssl x509 -noout -in /etc/letsencrypt/live/a/fullchain.pem"}}, want: policy.Allow, code: CodeOK},
 		{name: "private key then ssh", tool: "ssh", args: map[string]any{"host": "web2", "command": "uptime"}, said: "check web2",
-			recent: []Recent{{Tool: "ssh", Subject: "web1/cat /etc/letsencrypt/live/a/privkey.pem"}}, want: policy.Ask, code: CodeCredentialEgress},
+			recent: []Recent{{Tool: "ssh", Subject: "web1/cat /etc/letsencrypt/live/a/privkey.pem", Credential: true}}, want: policy.Ask, code: CodeCredentialEgress},
 	} {
 		v := judgeRules(t, rc)
 		if v.Decision != rc.want || v.Code != rc.code {

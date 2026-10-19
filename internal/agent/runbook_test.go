@@ -370,21 +370,19 @@ func certRotation() []tools.RunbookStep {
 }
 
 // With the supervisor on, as it is by default, its asks are never answered
-// by the plan. Under the plan's message, which names every step, the first
-// two steps of the rotation run unasked; the supervisor's credential-egress
-// rule then asks about every later ssh call, because step 2's command names
-// site.key, and an ssh call can send data out.
+// by the plan. The rotation copies the key on the host and never prints it,
+// so no credential enters the session and every step runs on the plan,
+// under the plan's message or a bare go. A rotation that prints the key
+// does bring it into the session, and the supervisor asks about each ssh
+// call after that.
 func TestRunbookWithTheSupervisor(t *testing.T) {
-	steps := certRotation()
-	turns := func() []scriptedTurn {
-		var out []scriptedTurn
+	run := func(t *testing.T, steps []tools.RunbookStep, prompt func(Runbook) string) (*runbookRig, []Event) {
+		var turns []scriptedTurn
 		for i, s := range steps {
-			out = append(out, scriptedTurn{calls: []model.ToolCall{sshCall(strconv.Itoa(i), s.Target, s.Command)}})
+			turns = append(turns, scriptedTurn{calls: []model.ToolCall{sshCall(strconv.Itoa(i), s.Target, s.Command)}})
 		}
-		return append(out, scriptedTurn{text: "rotated"})
-	}
-	run := func(t *testing.T, prompt func(Runbook) string) (*runbookRig, []Event) {
-		r := runbookHarness(t, policy.ModeDefault, steps, turns())
+		turns = append(turns, scriptedTurn{text: "rotated"})
+		r := runbookHarness(t, policy.ModeDefault, steps, turns)
 		r.l.Monitor = &monitor.Guard{Monitor: monitor.Rules{}, OnUnavailable: policy.Ask}
 		r.appr.yes = false
 		rb, _, _ := r.l.BoundRunbook()
@@ -405,8 +403,7 @@ func TestRunbookWithTheSupervisor(t *testing.T) {
 		}
 		return r, evs
 	}
-	t.Run("the plan's message", func(t *testing.T) {
-		r, evs := run(t, RunbookPrompt)
+	concerns := func(evs []Event) map[string]int {
 		codes := map[string]int{}
 		for _, e := range evs {
 			var v MonitorVerdict
@@ -414,8 +411,29 @@ func TestRunbookWithTheSupervisor(t *testing.T) {
 				codes[v.Code]++
 			}
 		}
-		if len(codes) != 1 || codes[monitor.CodeCredentialEgress] == 0 {
-			t.Fatalf("supervisor concerns %v", codes)
+		return codes
+	}
+	for name, prompt := range map[string]func(Runbook) string{"the plan's message": RunbookPrompt, "a bare go": func(Runbook) string { return "go" }} {
+		t.Run(name, func(t *testing.T) {
+			steps := certRotation()
+			r, evs := run(t, steps, prompt)
+			if c := concerns(evs); len(c) != 0 || len(r.appr.reasons) != 0 {
+				t.Fatalf("supervisor concerns %v, asked %q", c, r.appr.reasons)
+			}
+			got := approvals(t, evs)
+			for i := range steps {
+				if got[strconv.Itoa(i)]["by"] != ByPlan {
+					t.Fatalf("step %d did not run on the plan: %v", i+1, got[strconv.Itoa(i)])
+				}
+			}
+		})
+	}
+	t.Run("a rotation that prints the key", func(t *testing.T) {
+		steps := certRotation()
+		steps[1] = sshStep("web1", "cat /etc/nginx/tls/site.key")
+		r, evs := run(t, steps, RunbookPrompt)
+		if c := concerns(evs); len(c) != 1 || c[monitor.CodeCredentialEgress] == 0 {
+			t.Fatalf("supervisor concerns %v", c)
 		}
 		got := approvals(t, evs)
 		if got["0"]["by"] != ByPlan || got["1"]["by"] != ByPlan {
@@ -425,13 +443,6 @@ func TestRunbookWithTheSupervisor(t *testing.T) {
 			!strings.Contains(r.appr.reasons[0], "supervisor: "+monitor.CodeCredentialEgress) {
 			t.Fatalf("asked %q", r.appr.reasons)
 		}
-	})
-	t.Run("a bare go", func(t *testing.T) {
-		r, _ := run(t, func(Runbook) string { return "go" })
-		if len(r.appr.reasons) == 0 || !strings.Contains(r.appr.reasons[0], "supervisor: ") {
-			t.Fatalf("asked %q", r.appr.reasons)
-		}
-		t.Logf("first ask without the plan's message: %s", r.appr.reasons[0])
 	})
 }
 

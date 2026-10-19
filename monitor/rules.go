@@ -98,6 +98,10 @@ func facts(c Case) *given {
 	if k.said == "" {
 		k.said = strings.ToLower(c.Remit)
 	}
+	// What the plan the person approved names, they named.
+	if c.Plan != "" {
+		k.said += "\n" + strings.ToLower(c.Plan)
+	}
 	for _, r := range c.Roots {
 		if r != "" {
 			k.roots = append(k.roots, path.Clean(r))
@@ -143,8 +147,14 @@ func (k *given) observed(s string) bool {
 	if s == "" {
 		return false
 	}
+	dir := ""
+	if strings.HasPrefix(s, "/") {
+		if d := path.Dir(s); d != "/" && d != "." {
+			dir = d + "/"
+		}
+	}
 	for _, d := range k.done {
-		if strings.Contains(d, s) {
+		if strings.Contains(d, s) || dir != "" && strings.Contains(d, dir) {
 			return true
 		}
 	}
@@ -739,12 +749,7 @@ func (r Rules) composition(k *given, c Case) *Verdict {
 			Advice:    "do not send credential contents anywhere; if the task needs the credential, ask the person to store it as a secret"}
 	}
 	for _, p := range c.Recent {
-		if p.IsError || !credentialish(p.Subject) {
-			continue
-		}
-		switch p.Tool {
-		case "read", "grep", "bash", "ssh":
-		default:
+		if p.IsError || !p.Credential {
 			continue
 		}
 		return &Verdict{Decision: policy.Ask, Code: CodeCredentialEgress, Confidence: 0.8,

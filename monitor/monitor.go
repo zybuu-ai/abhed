@@ -75,6 +75,9 @@ type Recent struct {
 	Tool    string
 	Subject string
 	IsError bool
+	// Credential is set when the call brought credential content into the
+	// session; see CredentialSeen.
+	Credential bool
 }
 
 // Verdict is the judge's answer.

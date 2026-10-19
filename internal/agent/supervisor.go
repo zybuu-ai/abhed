@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -175,6 +176,22 @@ func (l *Loop) supervisorCase(call model.ToolCall, mutates bool, before policy.R
 	l.sup.mu.Lock()
 	c.Plan = l.sup.plan
 	l.sup.mu.Unlock()
+	// A bound runbook's steps are what the person approved, word for word.
+	if rb, _, ok := l.BoundRunbook(); ok {
+		var b strings.Builder
+		b.WriteString(c.Plan)
+		for _, st := range rb.Steps {
+			fmt.Fprintf(&b, "\n%s %s", st.Tool, st.Target)
+			var args map[string]any
+			_ = json.Unmarshal(st.Args, &args)
+			for _, v := range args {
+				if t, ok := v.(string); ok {
+					b.WriteString(" " + t)
+				}
+			}
+		}
+		c.Plan = strings.TrimSpace(b.String())
+	}
 	return c
 }
 

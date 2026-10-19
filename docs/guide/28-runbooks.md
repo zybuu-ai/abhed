@@ -112,12 +112,13 @@ be undone. A server session leaves plan mode only for `default`, or for
   answered by the plan.
 - **The supervisor is never answered by the plan.** When it has a concern
   with a step, the step is put to you (`asked again: supervisor: …`), and a
-  refusal of its stays a refusal. The plan's message names every step, so
-  the supervisor's rules about paths, hosts and programs nobody named are
-  satisfied for the steps you approved. Its credential rule is not: once a
-  command that names a key file (`site.key`, `*.pem`) has run, every later
-  `ssh` call can send data out, and asks. In the example below that is every
-  step after the backup.
+  refusal of its stays a refusal. What the approved runbook names counts as
+  named by you, so the supervisor's rules about paths, hosts and programs
+  nobody named are satisfied for the steps you approved. Its credential rule
+  still holds: once a step has brought credential content into the session
+  (a command that prints a key file, or output that holds key material),
+  every later call that can send data out asks. A step that only names a key
+  file, as a copy on the host does, brings nothing into the session.
 - **Subagents are never steps.** A subagent's change in a session with a
   runbook asks.
 - **Rewinding or continuing a session lets the runbook go.** A rewound
@@ -184,10 +185,10 @@ a time, with a backup and a verification". The agent proposes:
 
 You read the twelve commands once and approve. With the supervisor off,
 the rotation then runs without twelve separate prompts. With it on, as it is
-by default, the first two steps run unasked and the other ten still ask:
-step 2 names `site.key`, and the supervisor asks about every `ssh` call
-after a command that names a key file, since an `ssh` call can send data
-out. The plan does not answer the supervisor's asks. If `nginx -t` fails on `web1`, the agent's
+by default, it runs the same way: step 2 copies `site.key` on the host and
+prints none of it, so the supervisor has no concern. Had a step printed the
+key (`cat site.key`), every `ssh` call after it would ask, since an `ssh`
+call can send data out; the plan does not answer the supervisor's asks. If `nginx -t` fails on `web1`, the agent's
 next move is not in the plan: a rollback such as `mv site.crt.bak site.crt
 && systemctl reload nginx` asks you, named as outside the plan, and so does
 any extra diagnosis it tries.

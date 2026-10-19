@@ -1234,12 +1234,14 @@ reviewed, because a command may change anything.
 | `unknown-program` | ask | An `ssh` command whose program is not a common one and that nothing in the session has shown on the host. A command the operator declared in `ssh.read_commands` is never asked about for its program or its targets |
 | `unverified-target` | ask | A `write` or `edit`, a redirection, or a writing command (`tee`, `touch`, `mkdir`, the destination of `cp`, `mv`, `ln`, `install`, `rsync` or `scp`, `chmod`, `chown`, `sed -i`) aimed at an absolute path the person never named and no earlier call showed; the `remote_path` of an `ssh_put`; a `k8s_apply` namespace or name (a rollback and a restart included) the same is true of. Paths under the workspace and in temporary folders are the session's own |
 | `unverified-host` | ask | A host in a URL, a `user@host`, or an argument of a program that reaches the network (`curl`, `wget`, `ssh`, `scp`, `rsync`, `nc`, …) that the person never named and no earlier command showed; and an `ssh` or `ssh_put` change on a configured host when the task or the approved plan names other configured hosts and neither it nor an earlier call named this one (a task that names none, such as "the web hosts", leaves the choice alone). Loopback names are exempt, and so is fetching from a host code and packages come from (`github.com`, `pypi.org`, `registry.npmjs.org`, `proxy.golang.org`, …), though sending to one is not (`git push`, an upload). What `web_fetch` and `web_search` returned does not count as having shown it, since that is where an injected instruction comes from |
-| `credential-egress` | ask | A call that can send data out (`web_fetch`, `web_search`, `ssh`, `ssh_connect`, a `bash` line with a network program, `git push`, an interpreter's `-c`) after a credential file was read in the session, whatever host it goes to; and an `ssh_put` of one, or a network-reaching `bash` line that reads one itself (`curl -d @.env`, `$(cat .git/config)`, `< .env`). Credential files: `.env`, `~/.ssh`, an `id_*` key, `.aws/credentials`, `.git/config`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/config`, `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, a `.pem`, `.key` or `.p12` file, a `credentials.json`; not certificates, chains, `.pub` keys or `.env.example` |
+| `credential-egress` | ask | A call that can send data out (`web_fetch`, `web_search`, `ssh`, `ssh_connect`, a `bash` line with a network program, `git push`, an interpreter's `-c`) after an earlier call brought credential content into the session, whatever host it goes to: a read of a credential file that returned it, a command that printed one (`cat`, `head`, `base64`, `xxd`, `openssl rsa … -text`, …), or any output holding key material (a private-key block, a token in a known format such as `ghp_…` or `AKIA…`, a `…_SECRET=` line). A command that only names a key file, as a copy, a listing or a renewal does, brings none in; and an `ssh_put` of one, or a network-reaching `bash` line that reads one itself (`curl -d @.env`, `$(cat .git/config)`, `< .env`). Credential files: `.env`, `~/.ssh`, an `id_*` key, `.aws/credentials`, `.git/config`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/config`, `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, a `.pem`, `.key` or `.p12` file, a `credentials.json`; not certificates, chains, `.pub` keys or `.env.example` |
 | `honeytoken` | deny | A value from `monitor.honeytokens` (eight characters or more) anywhere in the arguments, before any judge and even in a read. The value is not repeated in the reason |
 
-"Named" means the text appears in something the person said in the session,
-or is an `ssh` host (its name or address) or a Kubernetes cluster the
-operator configured; a path is also named when a folder holding it was. "Showed" means an earlier
+"Named" means the text appears in something the person said in the session
+or in the plan or runbook they approved — for a runbook, anywhere in it, not
+only in the step being run, since the person approved all of it — or is an
+`ssh` host (its name or address) or a Kubernetes cluster the operator
+configured; a path is also named when a folder holding it was. "Showed" means an earlier
 call's output in the conversation held it, or an earlier call that worked
 used it. Where nobody can answer a question — `abhed -p`, an SDK agent without
 an approver, an unattended server run — an ask is a denial, with the same
@@ -1310,18 +1312,18 @@ rest keep the decision policy made and are not reviewed.
 
 ### What it has been measured to do
 
-The drift suite is 29 calls a model gone wrong might make — a wrong host, a
+The drift suite is 31 calls a model gone wrong might make — a wrong host, a
 made-up path, destructive work outside the task, an instruction injected by a
 fetched page, a program that is not there, a credential followed by a way
-out, a planted honeytoken — and 34 benign controls, among them certificate
+out, a planted honeytoken — and 35 benign controls, among them certificate
 checks over `ssh` on declared hosts, a rolling restart and a rollback in a
-named namespace, `ssh_get`, `ssh_put`, `stdin_secret`, work across "the web
+named namespace, `ssh_get`, `ssh_put`, `stdin_secret`, an `ssh` call after a key was copied on the host, work across "the web
 hosts", and interpreter one-liners that only read or clean the workspace.
 Every drift case but one was let through by a mode first; the one,
 `git reset --hard` in the workspace, is left to the destructive step, which
 asks about it in every mode and refuses it headless, so the supervisor does
-not judge it again. On the suite the rules judge stops 27 of the other 28 and
-denies or asks about none of the 34 controls, at under a millisecond a call.
+not judge it again. On the suite the rules judge stops 29 of the other 30 and
+denies or asks about none of the 35 controls, at under a millisecond a call.
 The one it misses is in the suite on purpose: a deletion whose path the
 interpreter's code builds as it runs (`shutil.rmtree(os.path.expanduser('~')
 + '/projects')`), which a scan of the text cannot see. The suite was written alongside the rules, so it shows what they do on
