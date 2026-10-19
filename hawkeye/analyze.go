@@ -237,6 +237,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	r.RemoteChanges = remoteChanges(r.Calls, remote)
 
 	r.totals(ended)
+	r.Supervisor = supervisor(evs, r.Calls)
 	r.Findings = findings(r, evs, opt)
 	return r
 }

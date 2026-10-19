@@ -6,8 +6,124 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading from 1.2.8
+
+- The supervisor is on by default, with its rules judge. Every surface
+  reviews each call after policy, and a call it has a concern with is asked
+  about, or refused with a correction for the model: destructive commands
+  outside the workspace and the paths you named, a program not on the PATH,
+  a change aimed at a path or host neither you nor an earlier call named, and
+  a call that can send data out after a credential file was read. In
+  `abhed -p`, an SDK agent without an approver and an unattended server run,
+  its asks are refusals. An ask it raised offers no "always allow". Set
+  `"monitor": {"enabled": false}` in your own file to turn it off; a managed
+  file may keep it on.
+- The reason of a call the supervisor refused starts `supervisor:` instead
+  of `monitor:`.
+
+### Security
+
+- `ssh` rules matched the remote command as plain text. A deny rule such
+  as `ssh(rm *)` did not stop `true; rm -rf /srv` or `sudo rm -rf /srv`,
+  an allow rule such as `ssh(web1/openssl x509 *)` also approved anything
+  chained after the command (`openssl x509 -in a.pem; rm -rf /var/www`),
+  and a remote `rm -rf` got a plain question. The command is now read as a
+  `bash` command is: deny and ask rules see each command in a chain, pipe
+  or substitution and behind `sudo`, `env`, `nice` and the other runners;
+  an allow rule with a pattern approves only one simple command; a line
+  that cannot be parsed in full is refused while a deny rule for `ssh` has
+  a pattern; a destructive remote command always confirms twice with no
+  "always"; and "don't ask again" offers no scope for a chain or a
+  wildcard.
+- `k8s_get` of a Secret returned its `data` to the model, and so to the
+  record and every screen: only metadata noise was stripped. A Secret's
+  values, in `data`, `stringData` and kubectl's last-applied annotation, are
+  now shown as each key with the value's length and sha256, for a single
+  Secret, a list, and what the cluster answers a `k8s_apply` of one.
+
 ### Added
 
+- `ssh.read_commands`: commands the operator declares reads on every host,
+  each an exact command or a pattern for one simple command, such as
+  `uptime` or `systemctl status *`. A matching `ssh` call, read as bash
+  reads it, runs in plan mode and asks in no mode, so a plan can start by
+  inspecting the fleet; a chain, pipe, substitution, redirection or a
+  destructive command is never a read. Deny and ask rules come first. Only
+  a trusted configuration file sets it; a managed file that sets it
+  replaces the list, and one that sets the permissions without it sets the
+  person's entries aside. The `ssh` tool's description names the entries.
+- The supervisor, `monitor` in the configuration: it reviews each call after
+  policy and may only make the decision stricter. The rules judge checks for
+  destructive drift, programs that are not there, targets nothing showed, a
+  credential followed by a way out, and planted `honeytokens`;
+  `judge: "model"` adds a model judge behind any OpenAI-compatible endpoint,
+  which fails closed on a reply outside its fixed schema. A refused call
+  tells the model `Supervisor: <code>. <reason>. Do this instead: <advice>`,
+  recorded as `supervisor.correction`, and three refused or failed calls in a
+  row bring a note that restates the task and the approved plan
+  (`supervisor.replan`). It never rewrites a call.
+- The supervisor's verdict on approval cards in the terminal, the console
+  and the workbench; `supervisor: rules|model|off` in the banner, `/status`,
+  `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
+  `Options.Supervisor` in the SDK.
+- The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
+  or `go run ./cmd/abhed-drift`): on its 21 drift cases the rules judge stops
+  19, and it asks about or refuses none of its 19 benign controls.
+- `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
+  asking, and the approval names what would change, field by field, from
+  the live object (a Secret's values only as length and sha256). The
+  request dry-run is the one sent once approved. A change the dry run
+  refuses is refused before anyone is asked, with the cluster's reason.
+  A kubeconfig context whose `exec` credential helper has not run yet is
+  asked about without a dry run, since the helper runs only for an
+  approved call.
+- `k8s_apply` `rollback` puts a Deployment's previous revision (or a named
+  `revision`) back, as `kubectl rollout undo` does; it asks like any write
+  and is refused if the Deployment changed since it was approved.
+  `k8s_get` `wait_seconds` waits, up to 600 seconds, for a Deployment's
+  rollout to finish or fail, so the agent need not poll.
+- `k8s_apply` `secret_from` builds a Secret, `Opaque` or
+  `kubernetes.io/tls`, from stored secrets by NAME and workspace files, so
+  a TLS key never passes through the model: the approval and the record
+  name each source with its value's length and sha256, each stored secret
+  needs its `secret(NAME)` rule, each file is judged as a `read` of it, and
+  the dry run before the approval carries placeholders.
+- `ssh` `stdin_secret` writes a stored secret, by NAME and under its
+  `secret(NAME)` rule, to the remote command's stdin, so a password for
+  `sudo -S` or a key written to a file never appears in the command line,
+  the approval, the record or the model's view; output that echoes it
+  reads `[secret NAME]`.
+- `ssh_put` and `ssh_get` move one file over SFTP, behind `ssh.transfers`
+  (off by default) and `ssh.transfer_max_mb` (16 by default): `ssh_put`
+  sends a workspace file or a stored secret by NAME, so a key reaches a
+  host without passing through the model; `ssh_get` fetches into the
+  workspace. Both ask unless an allow rule on `host:remote_path` covers
+  them, the workspace file is judged as a read or write of it, and the
+  approval and record keep the paths, size and sha256, never the content.
+- A subagent's worktree can be taken back by hunk: `/take` lists the
+  worktrees, `/take <id>` asks about each hunk, and the workbench's Changes
+  view shows them with tick boxes. What you accept is written into the
+  workspace as your own change, through the permission rules, git's
+  protection and checkpoints (so `/undo` takes it back); a hunk the
+  workspace changed meanwhile is reported as a conflict and left out, and
+  the worktree and its branch are removed only when you ask. Each take is
+  recorded as `worktree.taken`
+  ([Parallel subagents](docs/guide/14-parallel-subagents.md#taking-a-worktree-back)).
+- Changes made through `bash` are checkpointed: before each command the
+  workspace's files are noted and copied in memory, within limits, and each
+  file the command changed, removed or made is recorded as `checkpoint.saved`,
+  so `/undo` and `/rewind` (and Studio's undo and review) take them back. A
+  change the limits kept no copy of is named in the record and the command's
+  result, not put back; `tools.bash_checkpoints` is `on` (the default), `off`,
+  or `required`, which refuses a command whose snapshot is not whole, and
+  `tools.bash_checkpoint_mb` and `tools.bash_checkpoint_files` set the limits
+  ([Records](docs/guide/12-records.md#changes-made-through-bash)).
+- `sandbox.image` names the container tier's image, such as one with Go,
+  Node or Python, in place of `ABHED_SANDBOX_IMAGE`; a workspace file
+  cannot set it. `abhed doctor` (and Studio's checks) now warn when the
+  workspace looks like a Go, Node, Python or Rust project and the image
+  lacks its toolchain, and name an image that has it; nothing is pulled to
+  look ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
 - Runbooks: a plan from plan mode can carry the exact calls it will make
   (`ssh`, `k8s_apply`, `bash`, `edit`, `write`). Each step is checked against
   the policy and hashed when the plan is proposed, and you approve them once
@@ -38,6 +154,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- In the terminal UI the output of a `!` command was shown twice: under
+  the call and again below it. It is now shown once, under the call, with
+  up to 40 lines before the rest folds behind ctrl+o. Without the terminal
+  UI (a line view), a failing `!` command's output was also shown twice;
+  it is now shown once.
+- On the fence tier in `mount_namespace` mode under the egress allowlist, a
+  command resolved no name, an allowed one included (`getent hosts` gave
+  nothing), while the process tier resolved it through the session's
+  resolver; requests through the proxy worked. The fence now serves the
+  same resolver in the command's network namespace, over UDP and TCP: an
+  allowed name resolves to its `198.18.0.0/15` address, with glibc, Go
+  and musl alike, and is recorded as a `dns` decision, and any other gets
+  NXDOMAIN. To let it, the seccomp filter (now profile `command/4`) allows
+  UDP sockets in that mode alone, where the namespace holds only loopback
+  and a datagram can reach nothing else.
+- The workbench's Changes view no longer lists the files in a subagent's
+  worktree (`.abhed-worktrees/`) as the workspace's own changes; they are
+  reviewed and taken on their own.
+- Studio's review no longer shows a file whose content was not kept before
+  the change (one that holds keys, or one a read rule denies) as a whole
+  file added from nothing.
 - The context size that decides when to offload and compact, and that
   `session.ended` records, counts only the tools the model is offered in the
   current mode, so a tool of another mode no longer brings compaction early.

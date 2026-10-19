@@ -135,6 +135,19 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .rules{margin:0 12px 6px;font:12px var(--mono);color:var(--ink-2);overflow-wrap:anywhere}
 .rules div{padding:2px 0}.rules div.warn{color:var(--warn)}.rules .k{display:inline-block;width:44px;color:var(--muted)}
 .empty{margin:8px 12px;padding:10px;border:1px dashed var(--line-strong);border-radius:6px;color:var(--muted);font-size:12px}
+.wt{margin:10px 0 6px;border-top:1px solid var(--line-strong);padding-top:6px}
+.wt .vsub{display:flex;gap:8px;align-items:center;padding:2px 12px;font-size:12px;font-weight:600}
+.wt .vsub .meta{font:11px var(--mono);color:var(--muted);font-weight:400}
+.wtf{display:flex;gap:6px;align-items:center;padding:4px 12px 2px;font-size:12px}
+.wtnote{margin:0 12px 4px 30px;color:var(--muted);font-size:11.5px}
+.wth{display:flex;gap:6px;align-items:flex-start;padding:2px 12px 2px 18px;cursor:pointer}
+.wth input{margin-top:3px;flex:none}
+.wtd{flex:1;min-width:0;margin:0;overflow-x:auto;font-size:11.5px;line-height:1.45;border:1px solid var(--line-strong);border-radius:4px;padding:3px 6px}
+.wtd span{display:block;white-space:pre}.wtd .ctx{color:var(--muted)}
+.wtbar{display:flex;flex-wrap:wrap;gap:6px;padding:6px 12px}
+.wtbar button{border:1px solid var(--line-strong);border-radius:4px;padding:0 8px;height:22px;background:var(--surface);color:var(--ink);font:11.5px var(--sans)}
+.wtbar button.ok{color:var(--add);border-color:var(--add)}.wtbar button:hover{filter:brightness(1.1);background:var(--sunken)}.wtbar button:disabled{opacity:.5}
+.wtres{margin:0 12px 6px;font-size:11.5px;color:var(--muted)}
 .empty code{font:11px var(--mono);color:var(--ink-2)}
 .primary{margin:8px 12px;height:30px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600;flex:none}
 .primary:hover{filter:brightness(1.08)}
@@ -290,6 +303,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
 .ask p.hidden-warn{color:var(--bad);font-weight:600}
 .ask p.hidden-field{font:11.5px/1.5 var(--mono)}
+.ask p.sup,.why.sup{font:11.5px/1.5 var(--mono)}.ask p.sup.concern{color:var(--ink);font-weight:600}
 .ask .btns{display:flex;flex-wrap:wrap;gap:6px}
 .ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -1421,15 +1435,16 @@ function findInFiles(){
   setView('search'); if($('sq').value) runSearch();
 }
 
+let changesGen = 0, takeNote = null;
 async function loadChanges(){
-  const box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
+  const gen = ++changesGen, box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
   let res; try{ res = await api('/v1/sessions/' + current + '/changes'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', visible(e.message))); return; }
   clear(box); const files = res.files || [];
   $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
   if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
   // Changes made by commands are found against the workspace as the session opened, within limits.
   if(res.partial) box.appendChild(el('div', 'empty', 'Changes made by commands may be missing here: ' + visible(res.partial) + '.'));
-  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save, edits the agent makes, and files changed by commands, yours or the agent\'s, appear here.')); return; }
+  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save, edits the agent makes, and files changed by commands, yours or the agent\'s, appear here.')); loadWorktrees(box, gen); return; }
   for(const f of files){
     const row = el('button', 'row'); row.type = 'button';
     row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
@@ -1437,6 +1452,66 @@ async function loadChanges(){
     if(f.by_command) row.title = 'Not changed through the edit tools: a command or an upload' + (f.note ? ' · ' + visible(f.note) : '');
     const m = el('span', 'meta'); m.appendChild(el('span', 'plus', '+' + f.added)); m.appendChild(document.createTextNode(' ')); m.appendChild(el('span', 'minus', '−' + f.removed));
     row.appendChild(m); row.addEventListener('click', () => openDiff(f.path)); box.appendChild(row);
+  }
+  loadWorktrees(box, gen);
+}
+
+// A subagent's worktree, taken back by hunk: each ticked hunk is put into the
+// workspace as your own write, through the permission rules, and recorded.
+async function loadWorktrees(box, gen){
+  const sid = current; let res;
+  try{ res = await api('/v1/sessions/' + sid + '/worktrees'); }catch(e){ return; }
+  const list = (res && res.worktrees) || [];
+  // A later load of the view draws its own.
+  if(gen !== changesGen || sid !== current || !box.isConnected) return;
+  // What the last take did stays in view after the reload it causes.
+  if(takeNote && takeNote.sid === sid){
+    const note = el('div', 'wt'); note.appendChild(el('div', 'vsub', 'Last take'));
+    const out = el('div', 'wtres'); takeNote.lines.forEach(l => out.appendChild(el('div', '', visible(l)))); note.appendChild(out); box.appendChild(note);
+  }
+  if(!list.length) return;
+  const empty = box.querySelector(':scope > .empty:last-child');
+  if(empty && !box.querySelector('.row')) empty.remove();
+  for(const w of list){
+    const sec = el('div', 'wt'), head = el('div', 'vsub');
+    head.appendChild(el('span', 'name mono', 'Worktree ' + visible(w.id))); head.appendChild(el('span', 'meta', visible(w.branch)));
+    sec.appendChild(head);
+    const picks = [];
+    if(!(w.files || []).length) sec.appendChild(el('div', 'wtnote', 'It changes nothing.'));
+    for(const f of w.files || []){
+      const fh = el('div', 'wtf'); fh.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
+      fh.appendChild(el('span', 'name mono', reveal(f.path))); sec.appendChild(fh);
+      if(f.unsupported){ sec.appendChild(el('div', 'wtnote', 'Not taken here: ' + visible(f.unsupported))); continue; }
+      (f.hunks || []).forEach((h, i) => {
+        const lab = el('label', 'wth'), cb = el('input'), pre = el('pre', 'wtd mono');
+        cb.type = 'checkbox'; cb.checked = true;
+        const line = (cls, sign, l) => pre.appendChild(el('span', cls, sign + visible(String(l).replace(/\r?\n$/, ''))));
+        if(f.whole) pre.appendChild(el('span', 'ctx', 'binary or large: taken whole'));
+        else { (h.before || []).forEach(l => line('ctx', ' ', l)); (h.old || []).forEach(l => line('minus', '-', l)); (h.new || []).forEach(l => line('plus', '+', l)); (h.after || []).forEach(l => line('ctx', ' ', l)); }
+        lab.appendChild(cb); lab.appendChild(pre); sec.appendChild(lab); picks.push({path: f.path, i, cb});
+      });
+    }
+    const bar = el('div', 'wtbar'), out = el('div', 'wtres');
+    const take = async remove => {
+      const accept = {};
+      for(const p of picks) if(p.cb.checked) (accept[p.path] = accept[p.path] || []).push(p.i);
+      if(!Object.keys(accept).length && !remove){ out.textContent = 'Tick the changes to take.'; return; }
+      if(remove && !confirm('Take the ticked changes, then remove worktree ' + visible(w.id) + ' and its branch ' + visible(w.branch) + '? What is not taken is lost.')) return;
+      bar.querySelectorAll('button').forEach(b => b.disabled = true); out.textContent = 'Taking…';
+      try{
+        const r = await api('/v1/sessions/' + sid + '/worktrees/' + encodeURIComponent(w.id) + '/take', {method: 'POST', body: JSON.stringify({accept, remove})});
+        const lines = [];
+        (r.taken || []).forEach(p => lines.push('took ' + p));
+        (r.conflicts || []).forEach(c => lines.push('conflict: ' + c + '; left as it is'));
+        (r.refused || []).forEach(c => lines.push('not taken: ' + c));
+        lines.push(r.removed ? 'removed the worktree and its branch' : (r.left ? r.left + ' change(s) not taken stay in the worktree' : 'the worktree is kept'));
+        clear(out); lines.forEach(l => out.appendChild(el('div', '', visible(l)))); takeNote = {sid, lines};
+        refreshDir(''); changesSoon(1200);
+      }catch(e){ out.textContent = visible(e.message); bar.querySelectorAll('button').forEach(b => b.disabled = false); }
+    };
+    const b1 = el('button', 'ok', 'Take ticked'), b2 = el('button', '', 'Take ticked, remove worktree');
+    b1.type = b2.type = 'button'; b1.addEventListener('click', () => take(false)); b2.addEventListener('click', () => take(true));
+    bar.appendChild(b1); bar.appendChild(b2); sec.appendChild(bar); sec.appendChild(out); box.appendChild(sec);
   }
 }
 $('changes-reload').addEventListener('click', loadChanges);
@@ -2378,6 +2453,9 @@ function render(ev){
   case 'plan.proposed': if(ev.actor === 'agent') planCard(p); break;
   case 'plan.decided': settleAsk('plan', p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') + (p.plan_hash ? ' · runbook ' + p.plan_hash.slice(0, 12) : '') : 'keep planning'); break;
   case 'plan.step': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why', visible('runbook step ' + p.step + ' of ' + p.of + ' · plan ' + String(p.plan_hash || '').slice(0, 12) + byWhom(p)))); break; }
+  // What the supervisor told the model, under the call it refused; a re-plan note in the transcript.
+  case 'supervisor.correction': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why sup', visible(p.text || ''))); break; }
+  case 'supervisor.replan': add(el('div', 'sys', visible(p.text || ''))); break;
   case 'session.started': recProvider = p.provider || null; break;
   case 'model.switched': showSwitch(p); break;
   // A suggestion's call is counted, but is no turn and says nothing of the context.
@@ -2528,6 +2606,11 @@ function drawPlan(items){
   items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', visible(i.text || ''))); todoNode.appendChild(r); });
   add(todoNode);
 }
+// The supervisor's verdict on a call, as one line: its concern and advice, or ok.
+function supChip(v){
+  const concern = v.code && v.code !== 'ok';
+  return el('p', 'sup' + (concern ? ' concern' : ''), 'supervisor: ' + (concern ? visible(v.decision || '') + ' · ' + visible(v.code) + (v.advice ? ' — ' + visible(v.advice) : '') : 'ok'));
+}
 function askApproval(p, rid){
   // An answer names its request; without one the server would apply it to whatever is pending.
   if(!rid) return;
@@ -2535,7 +2618,8 @@ function askApproval(p, rid){
   // Every field is made visible: the prompt must show exactly what allowing runs.
   const subj = subjectOf(p.tool, p.args) || '';
   a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
-  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v))){
+  if(p.supervisor) a.appendChild(supChip(p.supervisor));
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args, p.supervisor && p.supervisor.advice].some(v => v && hasHidden(v))){
     a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
     // A field the line above does not draw is shown too, so the warning points at something.
     if(p.args && typeof p.args === 'object') for(const [k, x] of Object.entries(p.args))
@@ -2564,7 +2648,7 @@ function askApproval(p, rid){
   if(p.tool === 'bash' && p.args && p.args.run_in_background === true)
     a.appendChild(el('p', 'scope-note', 'Starts in the background: it keeps running after this turn, until it ends or is stopped (Stop, or /tasks).'));
   // Say why the one-click scope is missing, so its absence does not read as a fault.
-  if(!p.scope) a.appendChild(el('p', 'scope-note', 'No Always allow for this call: an ask rule, a destructive command, a chained command and any program off the short list are asked every time. A rule you add can allow it.'));
+  if(!p.scope) a.appendChild(el('p', 'scope-note', 'No Always allow for this call: an ask rule, a destructive command, a chained command, a call the supervisor flagged and any program off the short list are asked every time. A rule you add can allow it.'));
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon(); notify('ask');
   // A pending question is never left half off screen, wherever the reader had scrolled to.

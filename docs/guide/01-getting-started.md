@@ -286,6 +286,7 @@ running turn, and at an empty prompt pressed twice exits. Every key is in
 | `/tree` | the session's steps |
 | `/fork <step>` | rebuild the conversation up to a step and continue from there |
 | `/rewind` | take code and/or the conversation back to before a prompt, recorded |
+| `/take [id]` | review a subagent's worktree hunk by hunk and take what you accept into the workspace |
 | `/clear [name]` | end this session and start a new one; `/cost`, `/diff` and `/undo` start over, the workspace is kept |
 | `/resume [id]` | continue a recorded session; with no id, pick one |
 | `/rename <name>` | name the session, for `/resume` and `-r` |

@@ -865,6 +865,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/search", s.searchSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
+	mux.HandleFunc("GET /v1/sessions/{id}/worktrees", s.listWorktrees)
+	mux.HandleFunc("POST /v1/sessions/{id}/worktrees/{wt}/take", s.takeWorktree)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/lsp", s.startLSP)
 	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.untilShutdown(s.streamLSP))
@@ -1874,6 +1876,7 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
 	_ = pol.AllowGitExtensions(s.opts.Config.Permissions.GitExtensions...)
+	_ = pol.AllowRemoteReads(s.opts.Config.SSH.ReadCommands...)
 	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
@@ -1937,6 +1940,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// The server reads only each file's baseline, so one copy per file is kept, not one per edit.
 	undo.KeepFirst = true
 	sess.Checkpoint = undo.Record
+	// A command's changes are shown from the snapshot the session opened with, not checkpointed.
 
 	live := &liveSession{
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant, workspace: workspace,
@@ -2028,6 +2032,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	toolset.Hook(loop, s.opts.Extensions, func(msg string, _ bool) { s.log.Warn("extension hook", "session", sessionID, "note", msg) })
+	loop.Monitor = toolset.Supervisor(s.opts.Config, own, spec.Unattended)
 	loop.Budget = budget
 	loop.Provider = live.provider
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.

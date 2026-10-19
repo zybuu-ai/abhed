@@ -56,3 +56,34 @@ func TestProxyOnlyAllowsStreamsAlone(t *testing.T) {
 		}
 	}
 }
+
+// With LoopbackDatagram, UDP datagram sockets are made too, and nothing more:
+// no raw, ICMP or UDP-Lite socket, and no other family.
+func TestLoopbackDatagramAllowsUDPAlone(t *testing.T) {
+	p := Policy{Abhed: 9, ProxyOnly: true, LoopbackDatagram: true}
+	for _, arch := range []string{"amd64", "arm64", "s390x"} {
+		prog, err := p.Program(arch)
+		if err != nil {
+			t.Fatalf("%s: %v", arch, err)
+		}
+		nr := arches[arch].nr["socket"]
+		for _, c := range []struct {
+			family, typ, proto uint32
+			allow              bool
+		}{{2, 1, 0, true}, {2, 1, 6, true}, {10, 1 | 0x80000, 0, true},
+			{2, 2, 0, true}, {10, 2, 0, true}, {2, 2 | 0x800 | 0x80000, 17, true}, {10, 2, 17, true},
+			{2, 2, 1, false}, {10, 2, 58, false}, {2, 2, 136, false}, {2, 3, 0, false}, {10, 3, 17, false},
+			{1, 2, 0, false}, {16, 2, 0, false}, {17, 2, 0, false}, {2, 5, 0, false}, {2, 6, 0, false}, {2, 10, 0, false},
+			{2, 1, 262, false}, {2, 1, 132, false}, {2, 1, 17, false}} {
+			got := run(t, prog, call{arch: arches[arch].audit, nr: nr, args: [6]uint64{uint64(c.family), uint64(c.typ), uint64(c.proto)}}) == retAllow
+			if got != c.allow {
+				t.Errorf("%s socket(%d, %#x, %d): allowed %v", arch, c.family, c.typ, c.proto, got)
+			}
+		}
+	}
+	// Without ProxyOnly it changes nothing.
+	off, _ := Policy{Abhed: 9, LoopbackDatagram: true}.Program("amd64")
+	if run(t, off, call{arch: arches["amd64"].audit, nr: arches["amd64"].nr["socket"], args: [6]uint64{2, 2, 0}}) == retAllow {
+		t.Error("LoopbackDatagram without ProxyOnly allowed UDP")
+	}
+}

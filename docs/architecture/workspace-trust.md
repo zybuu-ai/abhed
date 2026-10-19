@@ -131,10 +131,18 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
-| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
+| `tools.bash_checkpoints` | **applied** only when `required` |
+| `tools.bash_checkpoint_mb`, `tools.bash_checkpoint_files` | ignored: they set how much of the workspace is held in memory |
+| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `ssh.transfers` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
+| `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
+| `monitor.enabled` | **applied** only when true |
+| `monitor.on_unavailable` | **applied** only for `deny` |
+| `monitor.max_per_turn` | **applied** only when more calls are reviewed; zero means no bound, so it is the most |
+| `monitor.honeytokens` | **applied**, added to the ones already there |
+| `monitor` (other keys: `judge`, `endpoint`, `model`, `api_key_env`, `timeout_ms`) | ignored: a judge endpoint receives the conversation |
 | `model` (`default`, `providers`, any `base_url`) | ignored: the provider receives the code |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |
@@ -146,7 +154,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |
 | `rag` | ignored: a corpus URL and its headers are egress |
-| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts` | ignored: each names an endpoint, hosts, credentials or machines. The web ones are set aside even when trusted |
+| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts`, `ssh.read_commands` | ignored: each names an endpoint, hosts, credentials or machines, or lets a remote command run unasked. The web ones are set aside even when trusted |
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
@@ -161,6 +169,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `control_plane.interceptors` | ignored, trusted or not, as in the user's own file: only the managed configuration sets what admits sandbox calls |
 | `control_plane.ha` | ignored, trusted or not: only an operator's file (the user's own or the managed one) joins the server to replicas and names the relay's key, never a file that arrives with a repository |
 | `sandbox.language_servers` | ignored, trusted or not: only an operator's file (the user's own or the managed one) names the program the workbench editor starts as a file is opened |
+| `sandbox.image` | ignored, trusted or not: only an operator's file names the image the container tier runs commands in |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse

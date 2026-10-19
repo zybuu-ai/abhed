@@ -78,6 +78,8 @@ type Config struct {
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
 	Suggest SuggestConfig `json:"suggest,omitempty"`
+	// Monitor governs the supervisor, which may only tighten a decision.
+	Monitor MonitorConfig `json:"monitor,omitempty"`
 	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
 	Fence FenceConfig `json:"fence,omitempty"`
 	// Egress is the rules of the egress proxy that sandbox.network
@@ -1238,6 +1240,14 @@ type SSHConfig struct {
 	// ConnectHosts, when set, are the only addresses ssh_connect may reach:
 	// "10.0.0.5", "*.lab.example" or "vm.example:2222", matched without case.
 	ConnectHosts []string `json:"connect_hosts,omitempty"`
+	// ReadCommands are commands an ssh call may run as a read, on any host:
+	// "uptime" or "systemctl status *", each one simple command. A matching
+	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
+	ReadCommands []string `json:"read_commands,omitempty"`
+	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
+	Transfers bool `json:"transfers,omitempty"`
+	// TransferMaxMB bounds one transfer; 0 is 16.
+	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
 }
 
 type SSHHostConfig struct {
@@ -1337,6 +1347,9 @@ type SandboxConfig struct {
 	// folder but the known credential paths, as before 1.2.8, in place of
 	// only the toolchain folders, the workspace and read_only_paths.
 	ReadableHome bool `json:"readable_home,omitempty"`
+	// Image is the container tier's image in place of ABHED_SANDBOX_IMAGE,
+	// such as one with the project's toolchains. Never from a workspace file.
+	Image string `json:"image,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
@@ -1497,6 +1510,7 @@ func Default() Config {
 		// that deliberately crosses the boundary.
 		WebSearch: WebSearchConfig{Enabled: false, Provider: "duckduckgo", MaxResults: 5},
 		Suggest:   SuggestConfig{Enabled: true},
+		Monitor:   MonitorConfig{Enabled: true},
 		CLI:       CLIConfig{Title: true, Copy: true, Notify: "auto"},
 	}
 }
@@ -1722,6 +1736,15 @@ type ToolsConfig struct {
 	// SyntaxCheck is what edit and write do with a change that would leave a
 	// file that parsed no longer parsing: "refuse" (the default), "report" or "off".
 	SyntaxCheck string `json:"syntax_check,omitempty"`
+	// BashCheckpoints is what is kept of the workspace before each bash
+	// command, so /undo and /rewind take its changes back: "on" (the
+	// default), "off", or "required", which refuses a command when the
+	// snapshot is not whole.
+	BashCheckpoints string `json:"bash_checkpoints,omitempty"`
+	// BashCheckpointMB bounds the content held for it (32 when zero), and
+	// BashCheckpointFiles the files looked at (20000 when zero).
+	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
+	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -1751,6 +1774,9 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.Monitor.validate(); err != nil {
+		return err
 	}
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
@@ -1803,6 +1829,9 @@ func (c Config) Validate() error {
 	}
 	if err := new(policy.Engine).AllowGitExtensions(c.Permissions.GitExtensions...); err != nil {
 		return fmt.Errorf("permissions.git_extensions: %w", err)
+	}
+	if err := new(policy.Engine).AllowRemoteReads(c.SSH.ReadCommands...); err != nil {
+		return err
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
@@ -1874,6 +1903,14 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown tools.syntax_check %q (want refuse, report or off)", c.Tools.SyntaxCheck)
 	}
+	switch c.Tools.BashCheckpoints {
+	case "", "on", "off", "required":
+	default:
+		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
+	}
+	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
+		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")
+	}
 	switch c.Sandbox.MinTier {
 	case "none", "process", "container", "vm", "":
 	default:
@@ -1891,6 +1928,9 @@ func (c Config) Validate() error {
 	case "", "shell", "lines":
 	default:
 		return fmt.Errorf("unknown sandbox.terminal %q (want shell or lines)", c.Sandbox.Terminal)
+	}
+	if img := c.Sandbox.Image; img != "" && (strings.HasPrefix(img, "-") || strings.ContainsAny(img, " \t\r\n\x00")) {
+		return fmt.Errorf("sandbox.image %q is not an image reference", img)
 	}
 	for lang, argv := range c.Sandbox.LanguageServers {
 		if !languageID.MatchString(lang) {

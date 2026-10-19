@@ -66,15 +66,13 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 **The interactive CLI's own events.** These types and their payloads are
 defined (`internal/agent/event_cli.go`) so the work that records them shares
-one shape. The interactive CLI records those without a note; a row marked
-*(not yet emitted)* is defined for work still to come, and the change that
-records it removes the note. A change made before a conversation has a record,
+one shape. The interactive CLI records each of them. A change made before a conversation has a record,
 such as a mode chosen before the first message, is recorded when the
 conversation opens, ahead of that message. A conversation opened after
 `/clear` or `/resume` first restates what it inherits: the mode, as
 `mode.changed` with `via: carried`, and each added directory as
 `workspace.dir_added`, so each record stands alone. Rewind reuses `conversation.forked`
-and adds `file.restored`.
+and adds `file.restored`; taking a worktree back adds `worktree.taken`.
 
 | Type | Payload | Emitted by |
 |---|---|---|
@@ -88,11 +86,12 @@ and adds `file.restored`.
 | `session.named` | `name`, from `-n` or `/rename` | user |
 | `session.branched` | the first event of a new session: `from`, the session it was copied from; `through_seq`, the last event taken; `unverified`, why the source's record failed verification, absent when it verified. A copy of the source's conversation and undo history follows, renumbered, with new ids; copies from a file or a failing record are `untrusted`. A `through_seq` inside a copied `session.started` or `session.resumed` is renumbered to the copy's numbering, as a restore's checkpoint is; `conversation.forked` markers are not copied | user |
 | `file.restored` | `path`, `before_sha256` (absent when the file did not exist), `after_sha256` (absent when the restore removed it), `checkpoint`, the seq of the `checkpoint.saved` whose content was put back, `by` (`user`). Recorded after the person's `action.requested`, the decision and its `observation` | user |
-| `checkpoint.saved` | a file's content just before the agent changed it: `path`; `sha256`, the blob holding the content, absent when the file did not exist or none was kept; `turn`; `mode`, its permission bits; `skipped`, why no content was kept (a read deny rule, or a name that holds keys) | system |
+| `checkpoint.saved` | a file's content just before the agent changed it, with the write or edit tools or through a `bash` command: `path`; `sha256`, the blob holding the content, absent when the file did not exist or none was kept; `turn`; `mode`, its permission bits; `skipped`, why no content was kept (a read deny rule, a name that holds keys, or a `bash` snapshot's limit) | system |
+| `worktree.taken` | a subagent's worktree taken back by hunk (`/take`, the workbench): `worktree` (`.abhed-worktrees/<id>`), `branch`, `base` (the commit it shares with the workspace), `taken` (paths written or removed), `conflicts`, `refused` (with the reason), `left` (hunks not taken), `removed` (the worktree and its branch). Each file taken is the person's own `write` or `delete` before it, with its decision and `observation` | user |
 | `plan.proposed` | `text`, the plan the agent submitted in plan mode; `hash`, what an answer names; `runbook`, when it has one: `hash` (sha256 over the text and each step's hash, in order) and `steps`, each `index`, `tool`, `target`, `args` as the loop will see the call, its `hash`, `note`, and `destructive`, why it cannot be undone. Recorded `user` when the operator supplied the runbook (`-runbook`, `Options.Runbook`) | agent |
 | `plan.decided` | `decision` (`accept` or `keep-planning`), `to_mode`; never `auto` or `bypass`; `plan_hash` and `runbook` when an accept bound one; `via: operator` when the operator's setting approved it | user |
 | `plan.step` | a call that ran as a runbook step: `call_id`, `plan_hash`, `step`, `of`, `step_hash`, `tool`, `target`, `by` (`plan` when the plan's approval stood in for the ask, else who let it through). Follows its `action.approved` | the approver's actor |
-| `model.fallback` | `from`, `to`, `reason`; a move to a configured fallback model *(not yet emitted)* | system |
+| `model.fallback` | `from`, `to`, `reason`; a move to the next model in `model.fallback` after the one in use could not be reached or refused access | system |
 | `hook.fired` | `extension`, `event`, `verdict` (`block`, `ask` or `annotate`; a hook never allows) | system |
 | `record.repaired` | `reason`, `truncated_bytes`; recorded by the local record when it is opened for writing and its last line was left unfinished by a crash: cut off when the head does not count it (`truncated_bytes` says how much), or completed when it was whole and lost only its newline (`truncated_bytes` 0) | system |
 | `config.refused` | a setting that did not take effect as written, or a refused change: `layer` (`user`, `settings`, `workspace`, `env` or `command`), `source` (the file, flag or variable), `key`, `value` asked for with credentials redacted, `decision` (`set_aside`, `ignored_untrusted`, `overridden` by the managed file, or `refused` by `/config set`), `reason`, and `principal`: `kind` (`os-user` or `agent-command`), `os_user`, `uid`, `session_owner` on a server, `agent_command` and `command_id` inside an agent's command. Recorded after `session.started`, and when `/config set` refuses | system |

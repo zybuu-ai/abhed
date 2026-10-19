@@ -409,7 +409,11 @@ func TestNamespaceAllowNeverCoversClusterScopedObjects(t *testing.T) {
 	if got, reqs, _ := step(apply("Widget", "example.com/v1", "dev")); got != "args" || len(reqs) != 0 {
 		t.Errorf("an apply of a kind of unknown scope was not refused: %s %v", got, reqs)
 	}
-	if got, reqs, _ := step(apply("ConfigMap", "v1", "")); got != "allow" || len(reqs) != 1 || !strings.Contains(reqs[0], "/namespaces/dev/configmaps/pwn") {
+	// The live read and the dry run come first, then the one write.
+	if got, reqs, _ := step(apply("ConfigMap", "v1", "")); got != "allow" || len(reqs) != 3 ||
+		!strings.HasPrefix(reqs[0], "GET /api/v1/namespaces/dev/configmaps/pwn") ||
+		!strings.HasSuffix(reqs[1], "&dryRun=All") ||
+		reqs[2] != "PATCH /api/v1/namespaces/dev/configmaps/pwn?fieldManager=abhed&force=true" {
 		t.Errorf("a namespaced apply in dev was not allowed: %s %v", got, reqs)
 	}
 	if got, _, _ := step(`{"action":"restart","resource":"deployments","name":"web"}`); got != "allow" {
@@ -486,12 +490,16 @@ func TestManifestKeysAreReadOneWay(t *testing.T) {
 // before the rules read it, and the tool sends exactly those bytes.
 func TestAppliedManifestIsTheOneJudged(t *testing.T) {
 	var mu sync.Mutex
-	var bodies []string
+	var bodies, dryRuns []string
 	srv, ca := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch {
 			b, _ := io.ReadAll(r.Body)
 			mu.Lock()
-			bodies = append(bodies, string(b))
+			if r.URL.Query().Get("dryRun") == "All" {
+				dryRuns = append(dryRuns, string(b))
+			} else {
+				bodies = append(bodies, string(b))
+			}
 			mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -532,6 +540,9 @@ func TestAppliedManifestIsTheOneJudged(t *testing.T) {
 	defer mu.Unlock()
 	if len(bodies) != 1 || bodies[0] != judged.Manifest {
 		t.Fatalf("sent %q, judged %q", bodies, judged.Manifest)
+	}
+	if len(dryRuns) != 1 || dryRuns[0] != judged.Manifest {
+		t.Fatalf("dry-ran %q, judged %q", dryRuns, judged.Manifest)
 	}
 	want := `{"apiVersion":"v1","data":{"h":"<&>","n":1.50},"kind":"ConfigMap","metadata":{"name":"cfg"}}`
 	if judged.Manifest != want {

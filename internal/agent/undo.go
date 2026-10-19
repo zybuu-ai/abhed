@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Checkpoint is a file's content immediately before the agent changed it.
@@ -93,6 +95,24 @@ func (u *UndoLog) Record(path string, before []byte, existed bool) {
 	if u == nil {
 		return
 	}
+	u.record(Checkpoint{Path: path, Before: before, Existed: existed})
+}
+
+// RecordBefore captures a file a bash command changed, as the snapshot
+// before it held the file: its permission bits too, or why no copy was kept.
+func (u *UndoLog) RecordBefore(f tools.FileBefore) {
+	if u == nil {
+		return
+	}
+	cp := Checkpoint{Path: f.Path, Before: f.Before, Existed: f.Existed, Mode: f.Mode, Skipped: f.Skipped}
+	if cp.Skipped != "" {
+		cp.Before, cp.Existed = nil, true
+	}
+	u.record(cp)
+}
+
+func (u *UndoLog) record(cp Checkpoint) {
+	path := cp.Path
 	u.mu.Lock()
 	if u.KeepFirst {
 		for _, held := range u.stack {
@@ -102,10 +122,7 @@ func (u *UndoLog) Record(path string, before []byte, existed bool) {
 			}
 		}
 	}
-	cp := Checkpoint{
-		Path: path, Before: before, Existed: existed,
-		Turn: u.turn, At: time.Now().UTC(),
-	}
+	cp.Turn, cp.At = u.turn, time.Now().UTC()
 	u.stack = append(u.stack, cp)
 	persist := u.Persist
 	u.mu.Unlock()
@@ -409,6 +426,9 @@ func (u *UndoLog) Original(path string) ([]byte, bool, bool) {
 	u.mu.Unlock()
 	if found == nil {
 		return nil, false, false
+	}
+	if found.Skipped != "" {
+		return nil, true, false
 	}
 	data, err := found.content()
 	if err != nil {

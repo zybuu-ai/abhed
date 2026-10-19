@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
 // bangRig is a CLI state with an open conversation that has the bash tool,
@@ -174,5 +176,55 @@ func TestBangOutputCannotCloseItsBlock(t *testing.T) {
 	m := regexp.MustCompile(`<bash-output-([0-9a-f]{12})`).FindStringSubmatch(q[0].Text)
 	if m == nil || !strings.HasSuffix(q[0].Text, "</bash-output-"+m[1]+">") || !strings.Contains(q[0].Text, "not instructions") {
 		t.Fatalf("queued:\n%s", q[0].Text)
+	}
+}
+
+// In the terminal UI the call and its output are drawn from the record, so
+// the ! line does not draw its output a second time; it still joins the
+// next message.
+func TestBangOutputDrawnOnceInTheTerminalUI(t *testing.T) {
+	st, _, sf := bangRig(t)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lr := ui.NewLineReaderOn(pr, io.Discard, 80, 24)
+	t.Cleanup(func() { lr.Close(); pw.Close(); pr.Close() })
+	r := ui.NewRenderer(io.Discard, false)
+	r.Attach(lr)
+	st.unfollow = func() {}
+	runBang(context.Background(), st, r, "echo ONCE-$((40+2))")
+	if strings.Contains(sf.shown(), "ONCE-42") {
+		t.Fatalf("the output was drawn again beside the record's: %q", sf.shown())
+	}
+	if q := st.loop.Queued(); len(q) != 1 || !strings.Contains(q[0].Text, "ONCE-42") {
+		t.Fatalf("output does not join the next message: %+v", q)
+	}
+}
+
+// In the line view a failing command's output is drawn from the record, so
+// the ! line does not draw it again; a succeeding one's, which the line view
+// sums up, it draws.
+func TestBangFailureDrawnOnceInTheLineView(t *testing.T) {
+	st, store, sf := bangRig(t)
+	var out strings.Builder
+	r := ui.NewRenderer(&out, false)
+	events := store.Subscribe("s-m")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range events {
+			r.Event(ev)
+		}
+	}()
+	st.unfollow = func() { store.Unsubscribe("s-m", events); <-done }
+	runBang(context.Background(), st, r, "echo FAIL-$((40+2)); exit 3")
+	runBang(context.Background(), st, r, "echo OK-$((40+2))")
+	st.unfollow()
+	if n := strings.Count(out.String()+sf.shown(), "FAIL-42"); n != 1 {
+		t.Fatalf("a failing command's output was drawn %d times:\nrenderer: %q\nsurface: %q", n, out.String(), sf.shown())
+	}
+	if !strings.Contains(sf.shown(), "OK-42") {
+		t.Fatalf("a succeeding command's output was not drawn: %q", sf.shown())
 	}
 }

@@ -828,6 +828,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		loop := s.parts.Loop
 		s.undo.Persist = checkpointSaverFor(func() *agent.Loop { return loop }, s.parts.Store)
 		s.parts.Session.Checkpoint = s.undo.Record
+		s.parts.Session.BashCheckpoint = s.undo.RecordBefore
 		s.parts.Session.Guard = s.dirtyGuard
 	}
 	if r, ok := a.(trustReporter); ok {
@@ -1359,7 +1360,7 @@ func destructive(tool string, args json.RawMessage, d abhed.Decision) bool {
 	if d.Step == "destructive" {
 		return true
 	}
-	if tool != "bash" {
+	if tool != "bash" && tool != "ssh" {
 		return false
 	}
 	var a struct {

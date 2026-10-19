@@ -18,8 +18,8 @@ import (
 // one fails this test until it is forwarded by deferredTool, kept off
 // deferral, or named as not a tool's own. Wrapping must never drop one.
 func TestDeferredToolAccountsForEveryOptionalInterface(t *testing.T) {
-	forwarded := map[string]bool{"Tool": true, "Hidden": true, "CallMutator": true, "Prechecker": true, "ArgResolver": true, "Targeter": true}
-	notDeferred := map[string]bool{"SecretArgs": true, "ModeScoped": true, "FixedArgs": true, "StoreBound": true}
+	forwarded := map[string]bool{"Tool": true, "Hidden": true, "CallMutator": true, "Prechecker": true, "ArgResolver": true, "Targeter": true, "FileArgs": true}
+	notDeferred := map[string]bool{"SecretArgs": true, "SecretPaths": true, "ModeScoped": true, "FixedArgs": true, "StoreBound": true}
 	// Subjector is found by tool name in a registry, never on the tool value;
 	// ScopedRewinder is a session's scoped value, not a tool.
 	notATools := map[string]bool{"Asker": true, "ShellHost": true, "Subjector": true, "ScopedRewinder": true}
@@ -65,7 +65,7 @@ func TestDeferredToolAccountsForEveryOptionalInterface(t *testing.T) {
 	var d any = &deferredTool{Tool: fakeMCP{name: "mcp__s__x"}}
 	for _, ok := range []bool{
 		implements[tools.Hidden](d), implements[tools.CallMutator](d), implements[tools.Prechecker](d),
-		implements[tools.ArgResolver](d), implements[tools.Targeter](d),
+		implements[tools.ArgResolver](d), implements[tools.Targeter](d), implements[tools.FileArgs](d),
 	} {
 		if !ok {
 			t.Fatal("deferredTool does not forward an interface it is said to")

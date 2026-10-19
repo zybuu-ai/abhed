@@ -374,6 +374,7 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		return ""
 	}
 	st.recordCLI(agent.EvPlanDecided, decided)
+	st.loop.SetApprovedPlan(plan.Text)
 	if !st.recordsLive() {
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
 	}

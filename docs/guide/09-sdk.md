@@ -216,6 +216,7 @@ editor's session in an untrusted workspace says which model it runs on.
 |---|---|---|
 | `Mode` | replaces `permissions.mode` | `bypass` is refused; if the file sets `permissions.mode`, only that mode or `plan` |
 | `SyntaxCheck` | replaces `tools.syntax_check` (`refuse`, `report`, `off`) | if the file sets it, only as strict or stricter (`off` < `report` < `refuse`) |
+| `Supervisor` | `rules` (the default), `model` (the rules, then the configured model judge) or `off`, over the `monitor` section ([The supervisor](04-permissions.md#the-supervisor)); with no `Approve`, its asks are denials | `off` is refused if the file turns it on, and a judge the file chose may not be changed |
 | `MaxTurns` | replaces the default turn limit | if the file sets `limits.max_turns`, at most that; zero uses it |
 | `ConfiguredLimits` | when `MaxTurns` is zero, the files' `limits.max_turns` binds, as for the CLI; off, it does not | the same, the managed value still the ceiling |
 | `Allow` | added to `permissions.allow` | refused if the file sets any `permissions` setting (mode, deny, ask or allow) |

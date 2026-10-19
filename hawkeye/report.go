@@ -49,6 +49,9 @@ type Report struct {
 	// SubagentActions are the subagents' refused or asked-about calls, as the
 	// parent's record holds them.
 	SubagentActions []SubagentAction `json:"subagent_actions,omitempty"`
+
+	// Supervisor is what the supervisor reviewed and said; nil when it left nothing in the record.
+	Supervisor *SupervisorStats `json:"supervisor,omitempty"`
 }
 
 type Totals struct {

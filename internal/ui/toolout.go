@@ -81,7 +81,14 @@ type toolCall struct {
 	args    json.RawMessage
 	// asked is set when the call waited on a person: the dialog drew it.
 	asked bool
+	// byPerson is a call the person made, such as a ! command: they asked
+	// for its output, so more of it is shown.
+	byPerson bool
 }
+
+// personShownLines is how much of a person's own command output is shown
+// before the rest folds behind ctrl+o.
+const personShownLines = 40
 
 // SetWorkspace tells the renderer the workspace root, so paths in tool
 // headers, scopes and messages are shown relative to it.
@@ -229,11 +236,11 @@ func (r *Renderer) toolHeader(tool string, args json.RawMessage) string {
 	return s.Accent("● ") + s.Bold(toolTitle(tool)) + s.Dim("(") + sum + s.Dim(")")
 }
 
-func (r *Renderer) toolRequested(d *dock, a agent.ActionRequested) {
+func (r *Renderer) toolRequested(d *dock, a agent.ActionRequested, byPerson bool) {
 	if r.tools.calls == nil {
 		r.tools.calls = map[string]*toolCall{}
 	}
-	c := &toolCall{tool: a.Tool, args: a.Args, summary: summarizeArgsRel(a.Tool, a.Args, r.rel), asked: a.RequiresApproval}
+	c := &toolCall{tool: a.Tool, args: a.Args, summary: summarizeArgsRel(a.Tool, a.Args, r.rel), asked: a.RequiresApproval, byPerson: byPerson}
 	r.tools.calls[a.CallID] = c
 	d.act.label = "Running " + toolTitle(a.Tool)
 	if a.RequiresApproval {
@@ -272,6 +279,9 @@ func (r *Renderer) toolObserved(d *dock, o agent.Observation) {
 			b.headN, b.tailN = 6, 4
 		} else if len(b.body) == 0 {
 			b.head = s.Dim("(no output) · " + strings.TrimPrefix(first, "exit 0 · "))
+		}
+		if c != nil && c.byPerson {
+			b.headN, b.tailN = personShownLines, 0
 		}
 		d.commit(b)
 	default:

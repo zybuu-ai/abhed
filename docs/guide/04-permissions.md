@@ -246,7 +246,20 @@ command or path, or for a tool with neither, the first of its `pattern`,
 MCP tool that takes only a `url` is matched on it:
 `mcp__browser__open(https://intranet.example/*)`. `ssh` is matched as
 `host/command` (`ssh(build1/uptime)`, `ssh(*/uptime)`), so an answer for one
-host never covers another; deny and ask rules also read the command alone.
+host never covers another. The command is read as a `bash` command is,
+because the remote shell runs it: deny and ask rules see every command in a
+chain, pipe or substitution and behind a runner such as `sudo`, `env` or
+`nice`, both alone and as `host/command`, so `ssh(rm *)` stops
+`true; rm -rf /srv` and `sudo rm -rf /srv` on every host; an allow rule with
+a pattern approves only one simple command, so `ssh(web1/openssl x509 *)`
+does not approve `openssl x509 -in a.pem; rm -rf /var/www`; and a line the
+parser cannot read in full is refused while a deny rule for `ssh` has a
+pattern. A command the operator declared a read in `ssh.read_commands` runs
+unasked and in plan mode, when it is one simple command matching an entry
+([Clusters and machines](../ops/infrastructure.md#ssh)). A remote command the destructive step names, such as `rm -rf`,
+always confirms twice and offers no "always". Neither reads a script the
+remote command runs, which is on a machine Abhed cannot see, nor knows a
+remote login shell other than bash.
 A subject given as a list of strings is read as its words joined by blanks;
 any other kind is refused while a deny or ask rule with a pattern applies.
 
@@ -812,7 +825,8 @@ Every call goes through the same steps, and the order is the design:
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Plan mode** — in `plan`, a mutating call is refused here, before the
    destructive and ask steps, so a destructive command or an ask rule is not
-   put to a person who might accept it. Read-only calls go on as before
+   put to a person who might accept it. Read-only calls go on as before, an
+   `ssh` command the operator declared a read (`ssh.read_commands`) among them
 4. **Destructive commands** — force push, hard reset, disk writes, fork bombs
    and similar always confirm, in every mode, because there is no undo. For git
    these are the forms that discard work which Abhed recognises: `git restore`
@@ -895,6 +909,8 @@ Every call goes through the same steps, and the order is the design:
    satisfies them: an ask rule asks every time
 6. **Mode**
 7. **Allow rules**, then a default: read-only proceeds, mutations ask
+8. **Supervisor** — reviews the decision the steps above made and may only
+   make it stricter, at step `monitor` ([below](#the-supervisor))
 
 The rules a person adds with `/permissions` are evaluated with the configured
 ones, after them, in each of the deny, ask and allow lists.
@@ -1190,35 +1206,149 @@ to the same deny rules, and recorded. `/diff` shows what changed this session.
 agent did rather than what it said it did, and the next task continues that
 session; see [Sessions and the local record](12-records.md).
 
-## The monitor
+## The supervisor
 
-**Not turned on in this release.** The engine has a place for a judge between
-the deny rules and the ask rules, and the `monitor` package holds its rules,
-but no command, configuration key or SDK option sets one. So no call is
-reviewed by a monitor today, and no `monitor.verdict` is written. There is no
-date for it: it will be turned on once it has been measured, not before.
+After the steps above decide, and before anyone is asked or anything runs,
+the supervisor reviews the call. It can refuse a call and tell the model what
+to do instead; it can never approve anything your policy would not. If it is
+unavailable, Abhed asks a person.
 
-What follows is how the judge works once one is set. Given the session's
-remit, the agent's most recent stated reasoning, the proposed call and where
-every host and path in it was first seen, it returns allow, ask or deny with a
-reason. It runs on calls policy would ask about, on any mutation a mode waved
-through, and on any call naming a host or path the user never mentioned; a
-read the user asked for, allowed by rule, never reaches it.
+It is **on by default, with the rules judge**: a fixed set of checks with no
+model behind it, so the same call gets the same answer every time, at well
+under a millisecond. `/status`, the terminal's banner, `abhed doctor` and
+`abhed serve` name it (`supervisor: rules`, `model` or `off`). It reviews the
+calls of the terminal, `abhed -p`, `abhed rpc`, `abhed acp`, every session
+`abhed serve` runs, and an SDK agent, and a subagent's calls go to the same
+judge as its parent's.
 
-Two rules make it safe to let it read the reasoning:
+What never reaches it: a call policy already denied, and a read allowed by a
+rule whose every host and path the person named. Every `bash` call is
+reviewed, because a command may change anything.
+
+### What the rules judge checks
+
+| Code | Decision | When |
+|---|---|---|
+| `out-of-remit` | deny | A destructive command (`rm`, `rmdir`, `shred`, `unlink`, `truncate`, `dd of=`, `find -delete` or `-exec rm`, `mkfs`, `wipefs`, `fdisk`, `parted`) aimed outside the workspace, the temporary folders and every path the person named, locally or over `ssh`; a home-folder path (`~`, `$HOME`) the person did not name; a `k8s_apply` delete, or `kubectl delete -n`, in a namespace the person never named (`default` aside). The reason quotes the task |
+| `unknown-program` | deny | A `bash` program that is not on the PATH where commands run. Checked only where commands run on this machine's own files (the process and fence tiers, and none); a container's or a VM's programs are not looked up. A line that installs something, sets `PATH` or defines the function it calls is left alone |
+| `unknown-program` | ask | An `ssh` command whose program is not a common one and that nothing in the session has shown on the host |
+| `unverified-target` | ask | A `write` or `edit`, a redirection, or a writing command (`tee`, `touch`, `mkdir`, the destination of `cp`, `mv`, `ln`, `install`, `rsync` or `scp`, `chmod`, `chown`, `sed -i`) aimed at an absolute path the person never named and no earlier call showed; a `k8s_apply` namespace or name the same is true of. Paths under the workspace and in temporary folders are the session's own |
+| `unverified-host` | ask | A host in a URL, a `user@host`, or an argument of a program that reaches the network (`curl`, `wget`, `ssh`, `scp`, `rsync`, `nc`, …) that the person never named and no earlier command showed. Loopback names are exempt, and so is fetching from a host code and packages come from (`github.com`, `pypi.org`, `registry.npmjs.org`, `proxy.golang.org`, …), though sending to one is not (`git push`, an upload). What `web_fetch` and `web_search` returned does not count as having shown it, since that is where an injected instruction comes from |
+| `credential-egress` | ask | A call that can send data out (`web_fetch`, `web_search`, `ssh`, `ssh_connect`, a `bash` line with a network program, `git push`, an interpreter's `-c`) after a credential file was read in the session: `.env`, `~/.ssh`, an `id_*` key, `.aws/credentials`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/config`, `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, a `.pem`, `.key` or `.p12` file, a `credentials.json` |
+| `honeytoken` | deny | A value from `monitor.honeytokens` (eight characters or more) anywhere in the arguments, before any judge and even in a read. The value is not repeated in the reason |
+
+"Named" means the text appears in something the person said in the session;
+a path is also named when a folder holding it was. "Showed" means an earlier
+call's output in the conversation held it, or an earlier call that worked
+used it. Where nobody can answer a question — `abhed -p`, an SDK agent without
+an approver, an unattended server run — an ask is a denial, with the same
+correction.
+
+An ask the supervisor has a concern with is asked at step `monitor`: it offers
+no "always allow", and a scope allowed earlier in the session does not answer
+it for you. The approval card in the terminal, the console and the workbench
+shows the verdict as `supervisor: ask · unverified-host — <advice>`, or
+`supervisor: ok` for a call it reviewed and had nothing to say about.
+
+### The correction, not only a refusal
+
+When the supervisor refuses a call, or you decline one it raised a concern
+about, the model is told:
+
+```
+Supervisor: out-of-remit. rm would destroy /srv/data here, outside what the task names; the task is "update the README". Do this instead: keep destructive commands to the paths the task names, or ask the person first.
+```
+
+The record keeps it as `supervisor.correction`. After three refused or
+failed calls in a row, the last one's answer also carries a note that
+restates the task, and the plan you approved if there is one, and asks the
+model to plan again; the record keeps it as `supervisor.replan`. The
+supervisor never rewrites or substitutes a call: that would run something
+you did not approve. It refuses and explains, and the model makes the next
+move.
+
+### The model judge
+
+```json
+"monitor": {
+  "judge": "model",
+  "endpoint": "http://127.0.0.1:8000/v1",
+  "model": "granite-guardian",
+  "api_key_env": "JUDGE_KEY",
+  "timeout_ms": 3000,
+  "max_per_turn": 20
+}
+```
+
+`judge: "model"` runs the rules first and then asks a model behind any
+OpenAI-compatible endpoint about the calls the rules let through (a rules
+denial is final and the model is not asked). The prompt (`model-v1`) shows
+the task, what the person said, the agent's recent stated reasoning, the call
+and where each host and path came from, and marks the reasoning, the
+arguments and the recent calls as untrusted text. The answer must be one JSON
+object with `decision`, `code`, `confidence`, `rationale` and `advice`;
+anything else — prose, a decision outside allow, ask and deny, an extra field,
+a timeout, an error — is an unavailable judge. It is off by default. Choose a
+model of another family than the agent's, so the two are less likely to make
+the same mistake; `abhed doctor` warns when they are the same, and when the
+key's variable is not set. The endpoint receives the conversation's excerpts
+above, so on an air-gapped setup keep it inside the same boundary.
+
+Two rules make it safe to let a judge read the reasoning:
 
 - **A verdict can only tighten.** An allow may become an ask or a deny, an
   ask may become a deny, and nothing moves the other way. A judge that could
   be argued into permitting would have to be kept away from the text that
   argues; here the worst a persuaded judge can do is nothing.
 - **Absence is not consent.** A judge that is unreachable, slow or
-  incoherent raises the call to ask — or to deny in a headless run, where
-  nobody can answer.
+  incoherent raises the call to ask (`on_unavailable: "deny"` makes it a
+  denial), and to deny wherever nobody can answer.
 
-Each consultation would be in the record as `monitor.verdict`, with the
-decision before and after, the code, the rationale and the judge's version,
-and a denial it caused would say so at step `monitor`. A subagent's calls
-go to the same judge as its parent's, with a per-turn budget of their own.
+`max_per_turn` bounds how many calls in one turn are put to the judge; the
+rest keep the decision policy made and are not reviewed.
+
+### What it has been measured to do
+
+The drift suite is 21 calls a model gone wrong might make — a wrong host, a
+made-up path, destructive work outside the task, an instruction injected by a
+fetched page, a program that is not there, a credential followed by a way
+out, a planted honeytoken — and 19 benign controls, each one let through by a
+mode first. On it the rules judge stops 19 of the 21 and denies or asks about
+none of the 19 controls, at under a millisecond a call. The two it misses are
+in the suite on purpose: a `git reset --hard` inside the workspace (the
+destructive step asks about that one), and a file's contents sent to a host the person
+named. The suite was written alongside the rules, so it shows what they do on
+these shapes, not how often a given model goes wrong or how much of that the
+supervisor would stop. Run it with `go test ./monitor -run TestDriftSuite -v`
+or `go run ./cmd/abhed-drift`; with `-endpoint` and `-model` the same suite
+measures a model judge. No model judge has been measured yet.
+
+### Settings
+
+| Key | Default | |
+|---|---|---|
+| `enabled` | `true` | `false` turns the supervisor off. A workspace file may only turn it on |
+| `judge` | `rules` | `rules`, or `model`: the rules, then a model judge |
+| `endpoint`, `model` | — | the model judge's OpenAI-compatible base URL and model; needed for `judge: "model"` |
+| `api_key_env` | — | the variable holding the endpoint's key; the key itself never goes in a file |
+| `timeout_ms` | 2000 | the bound on one judgement |
+| `on_unavailable` | `ask` | `deny` refuses a call the judge cannot answer about |
+| `max_per_turn` | 0 (no bound) | calls per turn put to the judge |
+| `honeytokens` | — | planted values no honest call carries; any call holding one is denied |
+
+The managed file may turn the supervisor on and choose its judge; a lower
+layer may not turn it off or change that judge, and what it sets stays only
+where it is stricter: the supervisor on, `on_unavailable: "deny"`, more calls
+reviewed per turn, more honeytokens. An untrusted workspace file may only do
+the same, and its `judge`, `endpoint` and `model` wait for trust. An SDK
+agent takes `Options.Supervisor` (`rules`, `model` or `off`) under the same
+rule.
+
+Each review is in the record as `monitor.verdict`, with the decision before
+and after, the code, the rationale, the latency and the judge's version, and
+a denial it caused says so at step `monitor`. HawkEYE's report has a
+supervisor section: how many calls were reviewed and tightened, the
+concerns by code, the corrections and the re-plan notes.
 
 ## Secrets
 
@@ -1247,6 +1377,8 @@ That command, and only that command, runs with `GITHUB_TOKEN` in its
 environment. On the macOS process tier another command running at the same
 time can read that environment; see [Configuration](02-configuration.md#sandbox). `k8s_login` names a token as `token_secret` and `ssh_connect` a
 password as `password_secret`, and use it for that session's login only.
+`ssh` names one as `stdin_secret` to write it to a remote command's stdin,
+and `k8s_apply` names them in `secret_from` to build a Secret.
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.

@@ -54,8 +54,9 @@ configuration](#trusting-the-workspace-configuration).
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
-| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
+| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
+| `monitor` | the supervisor, which reviews each call after policy and may only tighten the decision: on with the rules judge by default; `judge: "model"` adds a model judge — [The supervisor](04-permissions.md#the-supervisor) |
 | `cli` | the interactive terminal: `title` (`true`), `notify` (`auto`, `bel`, `osc9` or `off`) and `copy` (`true`) — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard); `mode_cycle`, managed only, narrows Shift-Tab |
 
 ## Context
@@ -358,6 +359,48 @@ gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
 `npm`, `pip` and the like) and the failure is in its last five lines, so
 output that merely mentions such an error, a log being read, does not.
 
+### The container tier's image
+
+The container tier runs each command in `docker.io/library/debian:bookworm-slim`
+unless told otherwise. It has a shell, coreutils and little else: no Go,
+Node, Python or Rust, so a project's build or tests fail there with
+`command not found`. This is what most Macs get, since the container tier is
+picked over the process tier when an engine is running. Name an image that
+has the toolchains the project needs:
+
+```json
+"sandbox": { "image": "docker.io/library/golang:1.26-bookworm" }
+```
+
+or, for one run, `ABHED_SANDBOX_IMAGE=docker.io/library/golang:1.26-bookworm abhed`.
+`sandbox.image` wins over the variable, so an image the managed file sets
+cannot be changed with it. A workspace file cannot set it, trusted or not:
+a repository does not choose what its commands run in.
+
+| Project | Image that has its toolchain |
+|---|---|
+| Go | `docker.io/library/golang:1.26-bookworm` |
+| Node | `docker.io/library/node:22-bookworm-slim` |
+| Python | `docker.io/library/python:3.12-slim-bookworm` |
+| Rust | `docker.io/library/rust:1-slim-bookworm` |
+
+A project that needs more than one toolchain needs an image of your own with
+all of them. Whatever the image, the tier runs it the same way: no network
+unless `allow_network` or the allowlist says so, a read-only root, every
+capability dropped, the workspace mounted and a throwaway `/tmp`. The image
+needs `/bin/sh`. Pull it once (`podman pull …`) before a session, since a
+command has no network to pull it with; pin it by digest where a tag must
+not move under you. The MCP servers the container and vm tiers confine run
+from the same image.
+
+`abhed doctor` looks at the workspace's top folder for `go.mod`/`go.work`,
+`package.json`, `pyproject.toml`/`requirements.txt`/`setup.py`/`Pipfile`
+and `Cargo.toml`, and when the container tier's image lacks `go`, `node`,
+`python3` or `cargo`, says so on the `sandbox` line with the image to use.
+It knows the default image has none of them; any other it looks in only
+when the engine already has it, in a container with no network, and never
+pulls one to look.
+
 ### The fence tier (preview, Linux)
 
 ```json
@@ -571,7 +614,7 @@ without running anything.
   stdin, stdout and stderr through the descriptors it was given, but cannot
   open `/dev/ptmx` or any `/dev/pts/*`, so it can neither read nor write your
   other terminals.
-- **System calls.** The seccomp filter (profile `command/3`) refuses ptrace,
+- **System calls.** The seccomp filter (profile `command/4`) refuses ptrace,
   namespaces, mounts, bpf, kernel keyrings, loading modules and a filter of
   the command's own. It also refuses signals aimed at Abhed: `kill`,
   `tkill`, `tgkill`, `rt_sigqueueinfo` and `rt_tgsigqueueinfo` naming Abhed's
@@ -595,7 +638,8 @@ without running anything.
   connect only to the session's egress proxy's port. In `mount_namespace`
   mode each command also gets a network namespace of its own holding only its
   loopback, where the launcher relays that port to the proxy's socket on the
-  host, so the proxy is the one way out. In `landlock_only` there is no
+  host, so the proxy is the one way out; there UDP sockets are allowed too,
+  for the session's resolver, as they reach only that loopback. In `landlock_only` there is no
   network namespace, and Landlock filters ports, not addresses, so a command
   could reach that port number on any host; the fence refuses the allowlist
   there unless the managed `fence.egress_port_only` is `true`, which accepts

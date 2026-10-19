@@ -114,7 +114,7 @@ func TestFenceWritesTheWorkspaceAfterTheLaunchIsRecorded(t *testing.T) {
 		t.Fatal("the command ran before its launch was recorded")
 	}
 	l := ev.of("process.launched")
-	if len(l) != 1 || l[0]["call_id"] != "call-write" || l[0]["seccomp"] != "command/3" || l[0]["source"] != "call" {
+	if len(l) != 1 || l[0]["call_id"] != "call-write" || l[0]["seccomp"] != "command/4" || l[0]["source"] != "call" {
 		t.Fatalf("process.launched: %v", l)
 	}
 }
@@ -520,7 +520,7 @@ func TestFenceRefusesSignalsToAbhed(t *testing.T) {
 		t.Errorf("own processes: %v\n%s", err, out)
 	}
 	for _, l := range ev.of("process.launched") {
-		if l["seccomp"] != "command/3" {
+		if l["seccomp"] != "command/4" {
 			t.Errorf("profile %v", l["seccomp"])
 		}
 	}

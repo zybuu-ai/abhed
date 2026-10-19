@@ -112,7 +112,7 @@ func TestFenceEndToEndRecordsQualificationAndLaunches(t *testing.T) {
 	if len(ids) != 1 || !strings.Contains(text[ids[0]], "hi") {
 		t.Fatalf("result: %v", text)
 	}
-	if p := launched(rec)[ids[0]]; p == nil || p["seccomp"] != "command/3" {
+	if p := launched(rec)[ids[0]]; p == nil || p["seccomp"] != "command/4" {
 		t.Fatalf("no launch for call %s: %v", ids[0], launched(rec))
 	}
 	if b, err := os.ReadFile(filepath.Join(h.Workspace(), "made.txt")); err != nil || strings.TrimSpace(string(b)) != "hi" {

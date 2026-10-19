@@ -170,11 +170,11 @@ type deferredTool struct {
 func (d *deferredTool) Hidden() bool { return !d.loaded.Load() }
 
 // deferrable reports whether t can be wrapped without losing an optional
-// interface: one whose mere presence the loop reads (SecretArgs, ModeScoped,
-// FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
+// interface: one whose mere presence the loop reads (SecretArgs, SecretPaths,
+// ModeScoped, FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
-	case tools.SecretArgs, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
+	case tools.SecretArgs, tools.SecretPaths, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
 		return false
 	}
 	return true
@@ -202,6 +202,20 @@ func (d *deferredTool) ResolveArgs(sess *tools.Session, args json.RawMessage) (j
 		return r.ResolveArgs(sess, args)
 	}
 	return nil, nil, nil
+}
+
+func (d *deferredTool) FilesRead(args json.RawMessage) []string {
+	if f, ok := d.Tool.(tools.FileArgs); ok {
+		return f.FilesRead(args)
+	}
+	return nil
+}
+
+func (d *deferredTool) FilesWritten(args json.RawMessage) []string {
+	if f, ok := d.Tool.(tools.FileArgs); ok {
+		return f.FilesWritten(args)
+	}
+	return nil
 }
 
 func (d *deferredTool) Target(sess *tools.Session, args json.RawMessage) string {

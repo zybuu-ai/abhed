@@ -279,7 +279,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	if st.Trusted {
 		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
 		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
-		servers := maps.Clone(cfg.Sandbox.LanguageServers)
+		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
@@ -289,6 +289,8 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		keepHA(cfg, path, data, ha, before, prior)
 		keepLanguageServers(cfg, path, data, servers, before, prior)
+		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
+			func() { cfg.Sandbox.Image = image })
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -680,6 +682,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
 	"sandbox.protect_git":           {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
 	"sandbox.language_servers":      {nil, "a language server is a process"},
+	"sandbox.image":                 {nil, "chooses the image commands run in"},
 	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
 	"fence":                         {nil, "tunes the fence tier's limits"},
 	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},
@@ -699,7 +702,10 @@ var workspaceRules = map[string]fieldRule{
 	"subagents.max_wakes_per_hour":    {lowerOrZero(func(c *Config) *int { return &c.Subagents.MaxWakesPerHour }), "only lower; zero never wakes"},
 	"subagents.wake_max_turns":        {lower(func(c *Config) *int { return &c.Subagents.WakeMaxTurns }, zeroIs(8)), "only lower"},
 
-	"tools.syntax_check": {stricterSyntax, "only stricter"},
+	"tools.syntax_check":          {stricterSyntax, "only stricter"},
+	"tools.bash_checkpoints":      {onlyRequired, "only required"},
+	"tools.bash_checkpoint_mb":    {nil, "sets how much of the workspace is held in memory"},
+	"tools.bash_checkpoint_files": {nil, "sets how much of the workspace is held in memory"},
 
 	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
 	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
@@ -713,6 +719,9 @@ var workspaceRules = map[string]fieldRule{
 	"ssh.enabled":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
 	"ssh.hosts":              {nil, "names machines and keys the agent reaches"},
 	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
+	"ssh.read_commands":      {nil, "lets ssh commands run without asking"},
+	"ssh.transfers":          {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
+	"ssh.transfer_max_mb":    {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
 	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
 	"skills.dirs":            {nil, "a skill is instructions to the agent"},
 	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
@@ -730,6 +739,12 @@ var workspaceRules = map[string]fieldRule{
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
 	"suggest.model":       {nil, "a provider receives the conversation"},
+
+	"monitor.enabled":        {onlyTrue(func(c *Config) *bool { return &c.Monitor.Enabled }), "only true"},
+	"monitor.on_unavailable": {stricterUnavailable, "only deny"},
+	"monitor.max_per_turn":   {moreReviews, "only more calls reviewed"},
+	"monitor.honeytokens":    {union(func(c *Config) *[]string { return &c.Monitor.Honeytokens }), "added to the honeytokens"},
+	"monitor":                {nil, "a judge endpoint receives the conversation"},
 
 	"additional_dirs":  {nil, "widens the directories the agent may reach"},
 	"model":            {nil, "a provider and its base_url receive the code"},
@@ -895,6 +910,14 @@ func onlyLines(dst, ws *Config) bool {
 		return false
 	}
 	dst.Sandbox.Terminal = "lines"
+	return true
+}
+
+func onlyRequired(dst, ws *Config) bool {
+	if ws.Tools.BashCheckpoints != "required" {
+		return false
+	}
+	dst.Tools.BashCheckpoints = "required"
 	return true
 }
 

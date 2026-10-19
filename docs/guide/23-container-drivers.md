@@ -67,8 +67,8 @@ A container is tier `container`. A sandbox whose `Spec.MinTier`, or whose
 
 ## Images
 
-The default image is `ABHED_SANDBOX_IMAGE`, as for the container tier, or
-`Options.Image`. A sandbox may ask for another with `Config["image"]` only
+The default image is `Options.Image`, or the container tier's
+(`sandbox.image`, then `ABHED_SANDBOX_IMAGE`). A sandbox may ask for another with `Config["image"]` only
 when it is listed in `Options.Images`. The image's own entrypoint is not
 run; the image needs `/bin/sh` and `sleep`.
 
