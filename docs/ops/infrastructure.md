@@ -412,6 +412,17 @@ Deny and ask rules also read the command alone, so `ssh(rm *)` still stops
 "allow": ["ssh(build1/uptime)"]
 ```
 
+**A secret on the remote command's stdin.** A command that needs a
+password or a key (`sudo -S`, `chpasswd`, `cat > /etc/app/key`) takes it
+from the secrets store: store it with `abhed secret set DB_PW`, allow
+`secret(DB_PW)`, and the agent passes `"stdin_secret": "DB_PW"` beside the
+command. The value is written to the command's stdin, with a final newline
+if it has none, and is never in the command line, the approval, the record
+or the model's view: the approval names it (`writes stored secret DB_PW to
+the command's stdin`), and anything the command prints of it comes back as
+`[secret DB_PW]`. The rules read the call as they read any `ssh` call, by
+`host/command`, and the secret needs its own rule in every mode.
+
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment
 variable, never the password itself. A passphrase-protected key says so and

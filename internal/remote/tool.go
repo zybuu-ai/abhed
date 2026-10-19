@@ -122,7 +122,20 @@ func (r *Registry) Close() {
 }
 
 // Tool runs a command on a declared host.
-type Tool struct{ R *Registry }
+type Tool struct {
+	R *Registry
+	// Secret returns a stored secret's value, for stdin_secret; nil means no store.
+	Secret func(name string) (string, error)
+}
+
+// BindStore is the tool reading stdin_secret from v instead.
+func (t Tool) BindStore(v *secrets.Store) tools.Tool {
+	t.Secret = v.Value
+	return t
+}
+
+// SecretArgs puts stdin_secret to a secret(NAME) rule.
+func (Tool) SecretArgs() []string { return []string{"stdin_secret"} }
 
 func init() { tools.RegisterSubjector("ssh", Tool{}) }
 
@@ -164,7 +177,9 @@ func (t Tool) Description() string {
 		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
 		"the sandbox with no undo. Prefer one command that answers the question " +
-		"over several exploratory ones."
+		"over several exploratory ones. To give a command a password or key, have the " +
+		"user store it with `abhed secret set NAME` and pass the NAME as stdin_secret; " +
+		"never put a secret in the command."
 }
 
 func (Tool) Schema() json.RawMessage {
@@ -173,16 +188,18 @@ func (Tool) Schema() json.RawMessage {
   "properties":{
     "host":{"type":"string","description":"Name of a configured host."},
     "command":{"type":"string","description":"The shell command to run."},
-    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120."}
+    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120."},
+    "stdin_secret":{"type":"string","description":"NAME of a stored secret to write to the command's stdin, such as a password for sudo -S or a key for a file. Never the value, and never put a secret in command."}
   },
   "required":["host","command"]
 }`)
 }
 
 type sshArgs struct {
-	Host    string `json:"host"`
-	Command string `json:"command"`
-	Timeout int    `json:"timeout_seconds"`
+	Host        string `json:"host"`
+	Command     string `json:"command"`
+	Timeout     int    `json:"timeout_seconds"`
+	StdinSecret string `json:"stdin_secret"`
 }
 
 func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
@@ -215,8 +232,17 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 			a.Host, strings.Join(names, ", "))
 	}
 
+	stdin, err := t.stdinSecret(a.StdinSecret)
+	if err != nil {
+		return errf("%v", err)
+	}
 	timeout := time.Duration(a.Timeout) * time.Second
-	out, err := h.Run(ctx, a.Command, timeout)
+	out, err := h.RunInput(ctx, a.Command, timeout, stdin)
+	if out != nil && stdin != nil {
+		// The command may echo what it read; the model never sees it.
+		out.Stdout = hideSecret(out.Stdout, stdin, a.StdinSecret)
+		out.Stderr = hideSecret(out.Stderr, stdin, a.StdinSecret)
+	}
 	if err != nil {
 		if out != nil && (out.Stdout != "" || out.Stderr != "") {
 			return errf("%v\n%s", err, combine(out))
@@ -252,7 +278,52 @@ func (t Tool) Target(sess *tools.Session, raw json.RawMessage) string {
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("runs as %s@%s, %s", h.User(), h.Addr(), origin)
+	target := fmt.Sprintf("runs as %s@%s, %s", h.User(), h.Addr(), origin)
+	if a.StdinSecret != "" {
+		target += "; writes stored secret " + a.StdinSecret + " to the command's stdin"
+	}
+	return target
+}
+
+// stdinSecret reads the stored secret a call writes to stdin, nil for none.
+// A value without a final newline gets one, as a terminal would send.
+func (t Tool) stdinSecret(name string) ([]byte, error) {
+	if name == "" {
+		return nil, nil
+	}
+	if !secrets.ValidName(name) {
+		return nil, fmt.Errorf("stdin_secret is the NAME of a stored secret, such as DB_PASSWORD, " +
+			"never its value. Ask the user to store it with `abhed secret set NAME`")
+	}
+	if t.Secret == nil {
+		return nil, fmt.Errorf("no secrets store is available here, so stdin_secret cannot be read")
+	}
+	v, err := t.Secret(name)
+	if err != nil {
+		return nil, err
+	}
+	if v == "" {
+		return nil, fmt.Errorf("stored secret %s is empty", name)
+	}
+	if !strings.HasSuffix(v, "\n") {
+		v += "\n"
+	}
+	return []byte(v), nil
+}
+
+// hideSecret replaces the secret, and each of its lines, wherever s shows them.
+func hideSecret(s string, secret []byte, name string) string {
+	mark := "[secret " + name + "]"
+	whole := strings.TrimRight(string(secret), "\r\n")
+	if whole != "" {
+		s = strings.ReplaceAll(s, whole, mark)
+	}
+	for _, line := range strings.Split(whole, "\n") {
+		if line = strings.TrimSpace(line); len(line) >= 4 {
+			s = strings.ReplaceAll(s, line, mark)
+		}
+	}
+	return s
 }
 
 // knownNames lists the operator's hosts and the session's own.

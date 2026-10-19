@@ -1240,6 +1240,8 @@ That command, and only that command, runs with `GITHUB_TOKEN` in its
 environment. On the macOS process tier another command running at the same
 time can read that environment; see [Configuration](02-configuration.md#sandbox). `k8s_login` names a token as `token_secret` and `ssh_connect` a
 password as `password_secret`, and use it for that session's login only.
+`ssh` names one as `stdin_secret` to write it to a remote command's stdin,
+and `k8s_apply` names them in `secret_from` to build a Secret.
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.

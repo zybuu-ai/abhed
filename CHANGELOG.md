@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
   name each source with its value's length and sha256, each stored secret
   needs its `secret(NAME)` rule, each file is judged as a `read` of it, and
   the dry run before the approval carries placeholders.
+- `ssh` `stdin_secret` writes a stored secret, by NAME and under its
+  `secret(NAME)` rule, to the remote command's stdin, so a password for
+  `sudo -S` or a key written to a file never appears in the command line,
+  the approval, the record or the model's view; output that echoes it
+  reads `[secret NAME]`.
 
 ## [1.2.8] - 2026-10-14
 
