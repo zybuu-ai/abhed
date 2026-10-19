@@ -165,7 +165,7 @@ func (l *Loop) prepareStep(s tools.RunbookStep) (RunbookStep, error) {
 		case d.Decision == policy.Deny:
 			return RunbookStep{}, fmt.Errorf("the policy refuses it (%s)", d.Reason)
 		case d.Decision == policy.Ask && d.Step == "destructive":
-			st.Destructive = d.Reason
+			st.Destructive = strings.TrimSuffix(d.Reason, " — always requires confirmation")
 		}
 		if st.Destructive == "" {
 			st.Destructive = remoteDestructive(name, canon, dry.GitExtensions)

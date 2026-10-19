@@ -330,28 +330,55 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		}
 	}
 	choices = append(choices, ui.Choice{ID: planKeep, Label: "No, keep planning (tell it what to change)"})
+	body := []ui.Block{{Kind: ui.BlockMarkdown, Text: plan.Text}}
+	why := "proposed by the agent with exit_plan; it changes nothing until you answer"
+	if rb := plan.Runbook; rb != nil {
+		body = append(body, ui.Block{Kind: ui.BlockMarkdown, Text: runbookMarkdown(rb)})
+		why += fmt.Sprintf("; yes approves its %d runbook steps: each runs without asking when it is made exactly as listed, and any other change asks", len(rb.Steps))
+	}
 	answer, err := surface.Dialog(ctx, ui.DialogSpec{
 		Kind:    ui.DialogChoice,
 		Title:   "Proceed with this plan?",
-		Body:    []ui.Block{{Kind: ui.BlockMarkdown, Text: plan.Text}},
+		Body:    body,
 		Choices: choices,
 		Default: planKeep,
-		Why:     "proposed by the agent with exit_plan; it changes nothing until you answer",
+		Why:     why,
 	})
 	to := map[string]policy.Mode{planAcceptEdits: policy.ModeAcceptEdits, planAskEach: policy.ModeDefault}[answer]
+	if err == nil && to != "" {
+		// Steps with no undo are confirmed again, as each would have been asked.
+		if risky := destructiveSteps(plan.Runbook); len(risky) > 0 {
+			if yes, cerr := surface.Dialog(ctx, runbookConfirm(risky)); cerr != nil || yes != ui.ChoiceYes {
+				to = ""
+			}
+		}
+	}
 	if err != nil || to == "" {
 		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "still in plan mode; say what to change"})
 		return ""
 	}
+	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)}
+	if rb := plan.Runbook; rb != nil {
+		if err := st.loop.BindPlan(rb.Hash); err != nil {
+			st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
+			surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so planning goes on: " + err.Error()})
+			return ""
+		}
+		decided.PlanHash, decided.Runbook = rb.Hash, rb
+	}
 	if err := modes.Set(ctx, to, agent.ViaPlanExit); err != nil {
+		st.loop.UnbindPlan()
 		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
 		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode was not changed, so planning goes on: " + err.Error()})
 		return ""
 	}
-	st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)})
+	st.recordCLI(agent.EvPlanDecided, decided)
 	if !st.recordsLive() {
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
+	}
+	if rb := plan.Runbook; rb != nil {
+		return fmt.Sprintf("The plan is approved (mode %s). Carry it out.\n", to) + agent.RunbookPrompt(*rb)
 	}
 	return fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
 }
