@@ -101,6 +101,46 @@ type Sink struct {
 	closing sync.Once
 	err     error
 	writer  bool // this process held the right to write at its last try
+	// backoff is how long after a failed write the record is read again,
+	// doubling to maxBackoff; retryAt is when, and before it nothing is.
+	backoff time.Duration
+	retryAt time.Time
+}
+
+// The wait after a failed write: from minBackoff, doubling, to maxBackoff.
+var (
+	minBackoff = 100 * time.Millisecond
+	maxBackoff = 30 * time.Second
+)
+
+// retry marks sessions to be read from the record again after a failure,
+// once the backoff has passed, never at once: a file that cannot be written
+// is not read for over and over.
+func (s *Sink) retry(ids []string, err error) {
+	s.fail(err)
+	s.mu.Lock()
+	for _, id := range ids {
+		s.behind[id] = true
+	}
+	s.backoff = min(max(s.backoff*2, minBackoff), maxBackoff)
+	s.retryAt = time.Now().Add(s.backoff)
+	wait := s.backoff
+	s.mu.Unlock()
+	time.AfterFunc(wait, s.poke)
+}
+
+// written ends a backoff: the file takes lines again.
+func (s *Sink) written() {
+	s.mu.Lock()
+	s.backoff, s.retryAt = 0, time.Time{}
+	s.mu.Unlock()
+}
+
+// waiting reports whether a backoff is still running.
+func (s *Sink) waiting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Now().Before(s.retryAt)
 }
 
 // OpenSink starts a sink. Sessions with no cursor yet when the first is
@@ -153,6 +193,11 @@ func (s *Sink) scan(first bool) error {
 	full := first || !s.writer
 	s.writer = true
 	s.mu.Unlock()
+	if full {
+		// Another process may have written since this one last did: what a
+		// session said before its cursor is the cursor's, not this memory's.
+		s.mapper.provider = map[string]string{}
+	}
 	// A sink with a feed compares no session's cursor here: only whether it began.
 	var only []string
 	if s.o.Feed != nil {
@@ -220,7 +265,9 @@ func (s *Sink) Add(l Line) {
 	case s.in <- l:
 	default:
 		s.behind[l.SessionID] = true
-		s.poke()
+		if !time.Now().Before(s.retryAt) {
+			s.poke()
+		}
 	}
 }
 
@@ -298,6 +345,10 @@ func (s *Sink) run() {
 
 // catchUp writes, from the record, the sessions the queue did not carry.
 func (s *Sink) catchUp() {
+	// During a backoff the record is not read; its timer pokes when it ends.
+	if s.waiting() {
+		return
+	}
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.behind))
 	for id := range s.behind {
@@ -315,15 +366,23 @@ func (s *Sink) catchUp() {
 			return
 		}
 		if err != nil {
-			s.fail(err)
+			s.retry([]string{id}, err)
 			continue
 		}
 		lines, err := s.o.Read(id, cur)
 		if err != nil {
-			s.fail(fmt.Errorf("ocsf: read session %s: %w", id, err))
+			s.retry([]string{id}, fmt.Errorf("ocsf: read session %s: %w", id, err))
 			continue
 		}
-		s.write(lines, true)
+		if !s.write(lines, true) && s.waiting() {
+			// The rest wait out the backoff too.
+			s.mu.Lock()
+			for _, rest := range ids {
+				s.behind[rest] = true
+			}
+			s.mu.Unlock()
+			return
+		}
 	}
 	// Drained here too, so a close writes what was still queued.
 	var rest []Line
@@ -355,6 +414,9 @@ func (s *Sink) cursorOf(id string) (Cursor, error) {
 // feed writes what Feed gives and, once it is in the file, lets Feed keep
 // its place; lines not written are given again at the next poll.
 func (s *Sink) feed() {
+	if s.waiting() {
+		return
+	}
 	lines, done, err := s.o.Feed()
 	if err != nil {
 		s.fail(err)
@@ -373,15 +435,6 @@ func (s *Sink) write(lines []Line, fromRecord bool) bool {
 	if len(lines) == 0 {
 		return true
 	}
-	unlock, err := s.o.Cursors.Lock()
-	if errors.Is(err, ErrStandby) {
-		return false
-	}
-	if err != nil {
-		s.fail(err)
-		return false
-	}
-	defer unlock()
 	ids := map[string]bool{}
 	for _, l := range lines {
 		ids[l.SessionID] = true
@@ -390,9 +443,19 @@ func (s *Sink) write(lines []Line, fromRecord bool) bool {
 	for id := range ids {
 		names = append(names, id)
 	}
+	unlock, err := s.o.Cursors.Lock()
+	if errors.Is(err, ErrStandby) {
+		return false
+	}
+	if err != nil {
+		// Not lost: the lines are read from the record once the lock is had.
+		s.retry(names, err)
+		return false
+	}
+	defer unlock()
 	cur, _, err := s.o.Cursors.Load(names)
 	if err != nil {
-		s.fail(err)
+		s.retry(names, err)
 		return false
 	}
 	s.mu.Lock()
@@ -446,27 +509,23 @@ func (s *Sink) write(lines []Line, fromRecord bool) bool {
 		// Read from the record, they move it, so the next catch-up reads past them.
 		if fromRecord && len(moved) > 0 {
 			if err := s.o.Cursors.Save(moved); err != nil {
-				s.fail(err)
+				s.retry(names, err)
 				return false
 			}
 		}
 		return true
 	}
 	if err := s.append(buf.Bytes()); err != nil {
-		// The cursor stays: the lines are written again from the record.
-		s.fail(err)
-		s.mu.Lock()
-		for _, l := range lines {
-			s.behind[l.SessionID] = true
-		}
-		s.mu.Unlock()
-		s.poke()
+		// The cursor stays: the lines are written again from the record,
+		// after the backoff.
+		s.retry(names, err)
 		return false
 	}
 	if err := s.o.Cursors.Save(moved); err != nil {
-		s.fail(err)
+		s.retry(names, err)
 		return false
 	}
+	s.written()
 	return true
 }
 

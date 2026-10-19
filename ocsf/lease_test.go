@@ -1,7 +1,9 @@
 package ocsf_test
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -163,5 +165,74 @@ func TestFeedMovesOnlyAfterTheWrite(t *testing.T) {
 	_ = sink.Close()
 	if n := fileEvents(t, path); n != 1 || done.Load() == 0 {
 		t.Fatalf("wrote %d, moved %d times", n, done.Load())
+	}
+}
+
+// A writer that loses the lease and gets it back takes what a session said
+// before its cursor from the cursor, which the other writer moved on: here
+// the provider a model.switched named while it stood by.
+func TestProviderAfterALeaseFlap(t *testing.T) {
+	st := agent.NewMemStore()
+	shared := &sharedCursors{rows: map[string]ocsf.Cursor{}}
+	dir := t.TempDir()
+	open := func(name string) *ocsf.Sink {
+		sink, err := ocsf.OpenSink(ocsf.SinkOptions{
+			Path: filepath.Join(dir, name+".jsonl"), Cursors: leaseView{shared, name}, Poll: 10 * time.Millisecond,
+			Read: func(id string, from ocsf.Cursor) ([]ocsf.Line, error) {
+				evs, err := st.Since(id, from.Seq)
+				out := make([]ocsf.Line, len(evs))
+				for i, ev := range evs {
+					out[i] = ocsf.Line{Event: ev}
+				}
+				return out, err
+			},
+			Sessions: func() (map[string]ocsf.Cursor, error) {
+				out := map[string]ocsf.Cursor{}
+				for id, seq := range st.Ends() {
+					out[id] = ocsf.Cursor{Seq: seq}
+				}
+				return out, nil
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sink
+	}
+	r := agent.NewRecorder(st, "s-1", "")
+	record := func(typ agent.EventType, payload any) {
+		if _, err := r.Record(typ, agent.ActorSystem, agent.Trusted, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait := func(name string, n int) {
+		deadline := time.Now().Add(5 * time.Second)
+		for fileEvents(t, filepath.Join(dir, name+".jsonl")) < n && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if got := fileEvents(t, filepath.Join(dir, name+".jsonl")); got < n {
+			t.Fatalf("%s holds %d events, want %d", name, got, n)
+		}
+	}
+	hand := func(to string) {
+		shared.mu.Lock()
+		shared.holder = to
+		shared.mu.Unlock()
+	}
+	a := open("a")
+	defer a.Close()
+	b := open("b")
+	defer b.Close()
+	record(agent.EvSessionStarted, map[string]any{"provider": "first", "model": "m"})
+	wait("a", 1)
+	hand("b")
+	record(agent.EvModelSwitched, map[string]any{"provider": "second", "model": "m"})
+	wait("b", 1)
+	hand("a")
+	record(agent.EvModelCall, map[string]any{"model": "m", "tokens_in": 1, "tokens_out": 1})
+	wait("a", 2)
+	got := readEventsIfAny(t, filepath.Join(dir, "a.jsonl"))
+	data, _ := os.ReadFile(filepath.Join(dir, "a.jsonl"))
+	if got[len(got)-1].Type != agent.EvModelCall || !strings.Contains(string(data), `"ai_provider":"second"`) {
+		t.Fatalf("after the flap a wrote %s", data)
 	}
 }

@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/ocsf"
@@ -328,4 +330,57 @@ func readEventsIfAny(t *testing.T, path string) []ocsf.Line {
 		return nil
 	}
 	return readEvents(t, path)
+}
+
+// A file that cannot be written is retried after a growing wait, not at
+// once: here its path is a folder, and the record is read a handful of
+// times in half a second, not thousands.
+func TestSinkBacksOffAFailedWrite(t *testing.T) {
+	path := t.TempDir() // a folder: every append to it fails
+	var reads atomic.Int32
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	line := ocsf.Line{Event: agent.Event{ID: "e-1", SessionID: "s-1", Seq: 1, Type: agent.EvUserMessage,
+		Payload: []byte(`{"text":"m"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: at}}
+	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: path, Cursors: &memCursors{},
+		Read: func(string, ocsf.Cursor) ([]ocsf.Line, error) {
+			reads.Add(1)
+			return []ocsf.Line{line}, nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.Add(line)
+	time.Sleep(500 * time.Millisecond)
+	n := reads.Load()
+	_ = sink.Close()
+	if n == 0 || n > 6 {
+		t.Fatalf("the record was read %d times in 500 ms after a failed write; want a few, backing off", n)
+	}
+	if sink.Err() == nil {
+		t.Fatal("the failed write was not reported")
+	}
+}
+
+// memCursors keeps cursors in memory, for a sink whose file is the test.
+type memCursors struct {
+	mu   sync.Mutex
+	rows map[string]ocsf.Cursor
+}
+
+func (m *memCursors) Lock() (func(), error) { m.mu.Lock(); return m.mu.Unlock, nil }
+func (m *memCursors) Load(_ []string) (map[string]ocsf.Cursor, bool, error) {
+	out := map[string]ocsf.Cursor{}
+	for k, v := range m.rows {
+		out[k] = v
+	}
+	return out, m.rows != nil, nil
+}
+func (m *memCursors) Save(c map[string]ocsf.Cursor) error {
+	if m.rows == nil {
+		m.rows = map[string]ocsf.Cursor{}
+	}
+	for k, v := range c {
+		m.rows[k] = v
+	}
+	return nil
 }
