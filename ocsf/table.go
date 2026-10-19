@@ -1,6 +1,7 @@
 package ocsf
 
 import (
+	"encoding/json"
 	"net"
 	"sort"
 	"strconv"
@@ -107,6 +108,7 @@ var table = map[agent.EventType]rule{
 	agent.EvSupervisorReplan:     {fn: finding("Supervisor replan", 2), classes: []int{2004}},
 	agent.EvFenceLimit:           {fn: finding("Fence limit", 2), classes: []int{2004}},
 	sandbox.EvFenceStatePlanted:  {fn: finding("State planted in the workspace", 4), classes: []int{2004}},
+	sandbox.EvFenceDenied:        {fn: mapFenceDenied, classes: []int{2004}},
 	sandbox.EvGitPlanted:         {fn: finding("Git folder planted", 4), classes: []int{2004}},
 	sandbox.EvGitLinked:          {fn: finding("Git folder linked", 3), classes: []int{2004}},
 	sandbox.EvGitWalkBounded:     {fn: finding("Git walk bounded", 2), classes: []int{2004}},
@@ -592,6 +594,32 @@ func finding(title string, sev int) func(*builder) {
 		b.set("finding_info", info)
 		b.set("message", title)
 	}
+}
+
+// mapFenceDenied is the system calls the fence's seccomp filter refused a
+// command: a security control's detection, Denied and Blocked, its count the
+// refusals in all.
+func mapFenceDenied(b *builder) {
+	finding("System calls refused by the fence", 3)(b)
+	b.decision(false, 2)
+	calls, _ := b.p["calls"].(map[string]any)
+	names := make([]string, 0, len(calls))
+	var total int64
+	for name, n := range calls {
+		names = append(names, name)
+		if v, ok := n.(json.Number); ok {
+			if i, err := v.Int64(); err == nil {
+				total += i
+			}
+		}
+	}
+	sort.Strings(names)
+	if total > 0 {
+		b.set("count", total)
+	}
+	info := b.ev["finding_info"].(map[string]any)
+	info["desc"] = b.str("source") + " refused " + strings.Join(names, ", ")
+	b.set("message", "fence refused "+strings.Join(names, ", ")+" for "+b.str("call_id"))
 }
 
 func mapMonitor(b *builder) {

@@ -83,14 +83,15 @@
 2026-10-19T11:59:24.123Z s-1#83 FIND:Create LOW Supervisor correction
 2026-10-19T11:59:25.123Z s-1#84 FIND:Create LOW Supervisor replan
 2026-10-19T11:59:26.123Z s-1#85 FIND:Create LOW Fence limit
-2026-10-19T11:59:27.123Z s-1#86 FIND:Create HIGH State planted in the workspace
-2026-10-19T11:59:28.123Z s-1#87 FIND:Create HIGH Git folder planted
-2026-10-19T11:59:29.123Z s-1#88 FIND:Create MED Git folder linked
-2026-10-19T11:59:30.123Z s-1#89 FIND:Create LOW Git walk bounded
-2026-10-19T11:59:31.123Z s-1#90 FIND:Create LOW Record repaired
-2026-10-19T11:59:32.123Z s-1#91 BASE:Other INFO compaction.started
-2026-10-19T11:59:33.123Z s-1#92 BASE:Other INFO compaction.completed
-2026-10-19T11:59:34.123Z s-1#93 BASE:Other INFO context.offloaded
-2026-10-19T11:59:35.123Z s-1#94 BASE:Other INFO plan.updated
-2026-10-19T11:59:36.123Z s-1#95 BASE:Other INFO todo.updated
-2026-10-19T11:59:37.123Z s-1#96 BASE:Other INFO suggestion.offered
+2026-10-19T11:59:27.123Z s-1#86 FIND:Create MED DENIED fence refused ptrace, socket(unix) for c-1
+2026-10-19T11:59:28.123Z s-1#87 FIND:Create HIGH State planted in the workspace
+2026-10-19T11:59:29.123Z s-1#88 FIND:Create HIGH Git folder planted
+2026-10-19T11:59:30.123Z s-1#89 FIND:Create MED Git folder linked
+2026-10-19T11:59:31.123Z s-1#90 FIND:Create LOW Git walk bounded
+2026-10-19T11:59:32.123Z s-1#91 FIND:Create LOW Record repaired
+2026-10-19T11:59:33.123Z s-1#92 BASE:Other INFO compaction.started
+2026-10-19T11:59:34.123Z s-1#93 BASE:Other INFO compaction.completed
+2026-10-19T11:59:35.123Z s-1#94 BASE:Other INFO context.offloaded
+2026-10-19T11:59:36.123Z s-1#95 BASE:Other INFO plan.updated
+2026-10-19T11:59:37.123Z s-1#96 BASE:Other INFO todo.updated
+2026-10-19T11:59:38.123Z s-1#97 BASE:Other INFO suggestion.offered

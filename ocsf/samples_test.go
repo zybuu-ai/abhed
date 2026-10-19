@@ -103,6 +103,7 @@ var samples = []sample{
 	{agent.EvSupervisorCorrection, agent.ActorSystem, `{"call_id":"c-4","code":"scope","decision":"deny","text":"Supervisor: scope."}`},
 	{agent.EvSupervisorReplan, agent.ActorSystem, `{"failures":3,"text":"restate"}`},
 	{agent.EvFenceLimit, agent.ActorSystem, `{"call_id":"c-1","sandbox":"f-1","oom":1,"oom_kill":1,"oom_group_kill":0,"pids_max":0,"session_pids_max":0,"memory_max_mb":4096,"max_procs":512}`},
+	{"fence.denied", agent.ActorSystem, `{"call_id":"c-1","sandbox":"f-1","source":"seccomp","calls":{"ptrace":2,"socket(unix)":1}}`},
 	{"fence.state_planted", agent.ActorSystem, `{"when":"after_command","entries":[{"path":".abhed","outcome":"moved"}],"call_id":"c-1"}`},
 	{"sandbox.git_planted", agent.ActorSystem, `{"call_id":"c-1","sandbox":"bwrap","workspace":"/w","entries":[{"path":".git/commondir","outcome":"moved"}],"reason":"commondir points out of the workspace"}`},
 	{"sandbox.git_linked", agent.ActorSystem, `{"call_id":"c-1","sandbox":"bwrap","workspace":"/w","paths":[".git/hooks"],"refused":true}`},
