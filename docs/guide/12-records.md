@@ -381,22 +381,87 @@ sent (the last sync), and anything before it was configured.
 ### The Postgres record
 
 In Postgres every event is chained to the one before it in its session, by
-the database itself: a trigger sets `chain_pos`, `prev_hash` and `hash`,
-whatever the server sent, and holds a lock per session so concurrent writers
-make one chain. The control plane's `sandbox_audit`, which holds the sandbox
-operations and every API request that changes something, is chained per
-tenant the same way; `abhed record audit` walks it (and, without Postgres,
-the server's `<records>/<tenant>/audit/api.jsonl`, chained line by line).
-`abhed record verify [session ...]` with `storage.driver: postgres`
-walks each chain in the database (with no session named, the 100000 most
-recent, deleted and subagent sessions among them and marked so, and it says
-so when there are more) and reports the first event that was
-changed, removed or reordered; events written before 1.2.8 are counted as
-unchained, not as broken. The runtime role cannot change a row, but the
-tables' owner can, and can recompute the chain: with `record.witness` each
-session's head is sent at the end of every run, and `verify` checks that the
-database still holds every head the witness has. A deleted session's rows stay, erased by
-key, so its witnessed heads still verify.
+the database itself, in the same transaction as the insert: a trigger sets
+`chain_pos`, `prev_hash` and `hash`, whatever the server sent, and holds a
+lock per session so concurrent writers make one chain. The runtime role can
+add events and read them, and cannot change, remove or truncate them. The
+control plane's `sandbox_audit`, which holds the sandbox operations and every
+API request that changes something, is chained per tenant the same way;
+`abhed record audit` walks it (and, without Postgres, the server's
+`<records>/<tenant>/audit/api.jsonl`, chained line by line).
+
+The chain is per session, not per tenant, so sessions never wait on each
+other's lock and each session's chain is whole on its own. What no chain can
+show on its own is its end cut off, or a whole session removed, by someone
+who can write the tables; that is what a head kept elsewhere is for.
+
+```
+abhed record verify                      the 100000 most recent sessions
+abhed record verify <session> ...        the sessions named
+abhed record export <session>            ~/.abhed/exports/<session>.chain.jsonl
+abhed record verify s.chain.jsonl        an export, with no database
+abhed record verify -head 42:<hash> s.chain.jsonl
+```
+
+With `storage.driver: postgres`, `abhed record verify` walks each chain and
+recomputes every hash itself, from the rows, rather than trusting a function
+in the database that the tables' owner could replace. It names the first
+event that was changed, removed or put out of order, and fails a session
+holding an event with no chain that was not there when the chain began: one
+written with the trigger off. With no session named it checks the 100000
+most recent, deleted and subagent sessions among them and marked so, and
+says so when there are more.
+
+Events written before 1.2.8 have no chain. Schema version 11 counted them,
+once, per session (the unchained events below the session's first chained
+one), in `chain_pre`, which the runtime role can only read. `verify` reports
+them as from before the chain, not covered; nothing is chained over them
+afterwards, since a hash computed now would vouch for rows nobody checked
+when they were written.
+
+`abhed record export <session>` writes the session's chain: a header, each
+event as it was hashed (a sealed payload stays sealed, and an erased
+session's stays unreadable), and a trailer with the head the database held.
+`abhed record verify` checks the file on any machine, with no database and
+no configuration: it fails when a line was edited, removed, added, put out
+of order or duplicated, when lines were cut from the end (the trailer no
+longer matches, or is gone), and when the file no longer holds a head given
+with `-head position:hash` or one `-witness` holds for the session. A chain
+that does not verify is exported only with `-unverified`, and the file then
+fails its own check. Like any chain, the file can be recomputed whole,
+trailer and all, by whoever holds it; only a head kept elsewhere shows that.
+
+The tables' owner can still change rows behind the triggers and recompute
+the chain, or cut its end. With `record.witness` each session's head is
+sent at the end of every run, and `verify` checks that the database (or an
+export) still holds every head the witness has. A deleted session's rows
+stay, erased by key, so its witnessed heads still verify. What a witness
+cannot show is a change after the last head it was sent.
+
+**Measured on a developer Mac** (Apple silicon, Postgres 17 in a 4-CPU
+Podman VM, 32 sessions writing through the server's own append path, each
+event its own transaction): 1,500 events a second held for two minutes
+(180,032 events), and 1,400 to 2,300 a second when the writers go as fast as
+they can, with the VM's CPU the limit. Every event the writers were told was
+written was in the database, in order, and every chain verified: none were
+dropped. That is well short of 10,000 a second; a dedicated database server
+will do better, and each event being its own transaction is the cost. `store/chain_soak_test.go` is the soak
+(`ABHED_SOAK_SECONDS`, `ABHED_SOAK_SESSIONS`, `ABHED_SOAK_RATE`). The local
+record, on the same Mac, took about 63,000 events a second with a sync every
+20 (`store/local/soak_test.go`). Measure yours.
+
+### The chain head API
+
+`store/chain` is the stable, storage-neutral view of these chains, for an
+edition or an operator to sign and anchor heads with: `Source.Head(scope)` is
+a chain's last position and hash, and `Source.VerifyRange(scope, from, to)`
+recomputes positions `from` to `to` (0 is the head) and returns the hash it
+links to (`Before`, the one at `from - 1`) and the hash at `to`, to compare
+with a head kept earlier. `Postgres.EventChain()` answers it per session,
+`Postgres.AuditChain()` for the tenant's sandbox audit, and
+`local.Store.Chain()` per session of the local record (positions are lines,
+and the head is the one last synced). `chain.VerifyExport` checks an export
+with nothing else.
 
 ## Exporting
 

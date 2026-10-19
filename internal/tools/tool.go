@@ -147,6 +147,9 @@ type Result struct {
 	// NoOutput marks a bash result whose output was empty, so a terminal can
 	// leave out the "[no output]" placeholder without guessing from the text.
 	NoOutput bool
+	// SandboxNote is the kind of refusal bash put a sandbox note in Content
+	// for (see sandboxHint), "" when it put none; recorded with the result.
+	SandboxNote string
 }
 
 func ok(format string, a ...any) Result {

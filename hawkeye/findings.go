@@ -173,9 +173,14 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 			add(Info, "denied", "Denied: "+c.Tool,
 				fmt.Sprintf("%s — %s (step %q, by %s).", clip(c.Subject, 160), c.Reason, c.Step, c.settledBy()), c.Seq)
 		}
-		if c.SandboxDenied {
+		switch {
+		case c.SandboxDenied:
 			add(Info, "sandbox-denied", "The sandbox refused part of a command",
-				fmt.Sprintf("%s — the command ran, but the sandbox denied an operation in it, whatever its exit status says.", clip(c.Subject, 160)), c.Seq)
+				fmt.Sprintf("%s — the sandbox %s. Whatever its exit status says, that part did not happen.", clip(c.Subject, 160), signals(c.Sandbox)), c.Seq)
+		case c.SandboxUnconfirmed:
+			add(Info, "sandbox-unconfirmed", "A sandboxed command was refused an operation",
+				fmt.Sprintf("%s — its output says an operation was not permitted. Nothing in the record says the sandbox refused it: "+
+					"no signal from the fence or git protection, and no folder every tier denies. It may be the system's own permissions.", clip(c.Subject, 160)), c.Seq)
 		}
 		if strings.Contains(c.Output, "[secret:") {
 			add(Warn, "secret-redacted", "A stored secret's value was written out and redacted",
@@ -268,6 +273,15 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 
 	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].Severity] < rank[out[j].Severity] })
 	return out
+}
+
+// signals words what the sandbox refused, each with the event that shows it.
+func signals(ss []SandboxSignal) string {
+	parts := make([]string, 0, len(ss))
+	for _, s := range ss {
+		parts = append(parts, fmt.Sprintf("%s (#%d, %s)", s.What, s.Seq, s.Source))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // borrowedHosts flags an allowed call that names a host the user never

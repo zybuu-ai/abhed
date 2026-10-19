@@ -548,19 +548,22 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	// A non-zero exit is a valid observation the model must reason about, not a
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
+	note := ""
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
 		content = withNote(content, networkHint)
-	} else if hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
+	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
 		content = withNote(content, hint)
+		note = kind
 	}
 	return Result{
-		Content:   header + "\n" + content,
-		Truncated: truncated,
-		ExitCode:  &exitCode,
-		NoOutput:  noOutput,
+		Content:     header + "\n" + content,
+		Truncated:   truncated,
+		ExitCode:    &exitCode,
+		NoOutput:    noOutput,
+		SandboxNote: note,
 	}
 }
 
@@ -807,10 +810,14 @@ const networkHint = "NOTE: this sandbox has no network access, so the command co
 //
 // The failure is worth catching precisely because the agent usually has a
 // better route: a native tool that holds the credential outside the sandbox.
-func sandboxHint(output string) string {
+//
+// kind is the folder named ("kube", "ssh", "aws", "gnupg"), "credentials"
+// for another of sandbox.HomeSecrets, or "abhed" for Abhed's own state, which
+// the sandbox tiers deny; or "denied" when the output names none of them.
+func sandboxHint(output string) (kind, hint string) {
 	if !strings.Contains(output, "operation not permitted") &&
 		!strings.Contains(output, "Operation not permitted") {
-		return ""
+		return "", ""
 	}
 	for _, c := range []struct{ path, hint string }{
 		{".kube", "Abhed's sandbox blocks reads of ~/.kube, so kubectl and oc cannot " +
@@ -827,10 +834,21 @@ func sandboxHint(output string) string {
 			"signing step themselves."},
 	} {
 		if strings.Contains(output, c.path) {
-			return "NOTE: " + c.hint + " Do not retry this command; it will fail the same way."
+			return strings.TrimPrefix(c.path, "."), "NOTE: " + c.hint + " Do not retry this command; it will fail the same way."
 		}
 	}
-	return "NOTE: the sandbox denied this operation. Retrying the same command will " +
+	kind = "denied"
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		for _, c := range sandbox.HomeSecrets {
+			if strings.Contains(output, filepath.Join(home, c)) || strings.Contains(output, "~/"+c) {
+				kind = "credentials"
+			}
+		}
+	}
+	if strings.Contains(output, ".abhed") {
+		kind = "abhed" // Abhed's own state, which every tier denies
+	}
+	return kind, "NOTE: the sandbox denied this operation. Retrying the same command will " +
 		"fail identically — either use a native Abhed tool for this, or tell the user " +
 		"what needs to change."
 }
