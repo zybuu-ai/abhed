@@ -134,4 +134,22 @@ const wOk = wnotes.length === 1 && wtext.includes('stored secret API_TOKEN;') &&
 console.log((wOk ? 'PASS' : 'FAIL') + '  a withheld secret is named under the message');
 if(!wOk) console.log('        ' + JSON.stringify(wtext));
 ok = wOk && ok;
+// The answer tool's call is not drawn; the verdict is, with a contradicted
+// claim struck through and the reply above it flagged NOT FACT.
+{
+  const before = tx.textContent;
+  render({type:'action.requested', payload:{call_id:'ans1', tool:'answer', args:{text:'All 15 tests pass.'}}});
+  render({type:'observation', payload:{call_id:'ans1', tool:'answer', content:'Answer received'}});
+  const hidden = tx.textContent === before;
+  console.log((hidden ? 'PASS' : 'FAIL') + '  the answer call is not drawn'); ok = hidden && ok;
+  render({type:'agent.delta', payload:{text:'All 15 tests pass.'}});
+  render({type:'agent.message', payload:{text:'All 15 tests pass.'}});
+  render({type:'answer.verdict', payload:{verified:0, unverified:0, contradicted:1, claims:[
+    {n:1, text:'All 15 tests pass.', verdict:'contradicted', load_bearing:true, conflict:{seq:9, excerpt:'12 tests passed'}}]}});
+  const all = tx.textContent;
+  const vOk = all.includes('0 verified \u00b7 0 unverified \u00b7 1 contradicted') && all.includes('record #9: 12 tests passed') &&
+    all.includes('NOT FACT: 1 statement in this reply is contradicted') && tx.querySelectorAll('.contradicted').length >= 2;
+  console.log((vOk ? 'PASS' : 'FAIL') + '  the verdict is drawn and the reply flagged'); if(!vOk) console.log('        ' + JSON.stringify(all.slice(-400)));
+  ok = vOk && ok;
+}
 process.exit(ok?0:1);

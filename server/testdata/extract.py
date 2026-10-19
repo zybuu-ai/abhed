@@ -35,7 +35,7 @@ def grab(fn):
     return src[i:j]
 
 sets = {
-    'render': ['function node(cls, text){','function md(text){','function lastStreamedBubble(){','function wordCount(s){',
+    'render': ['function node(cls, text){','function md(text){','function drawVerdict(p){','function lastStreamedBubble(){','function wordCount(s){',
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
           'function shortPath(p){','function kv(k, v){','function noticeCard(p){','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function offerNext(t){','function takeNext(e){'],
