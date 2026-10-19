@@ -89,8 +89,11 @@ func (sm *serveMetrics) run(ctx context.Context) (string, error) {
 }
 
 // label is the banner's line for the metrics.
-func (sm *serveMetrics) label(addr string) string {
+func (sm *serveMetrics) label(addr string, signIn bool) string {
 	if sm.listen == "" {
+		if !signIn {
+			return MetricsPath + " on the API, for administrators; with no sign-in there are none, so set server.metrics.listen"
+		}
 		return MetricsPath + " on the API, for administrators"
 	}
 	if sm.token != "" {

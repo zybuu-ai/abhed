@@ -129,7 +129,7 @@ func New() *Abhed {
 		requestTime: r.Histogram("abhed_http_request_seconds",
 			"API request latency by route pattern; streams last as long as they are open.", DurationBuckets, "route"),
 		auditEvents: r.Counter("abhed_audit_events_total",
-			"Control-plane audit events written, by outcome (requested, ok, failed).", "outcome"),
+			"Control-plane audit events written, by source (api, sandbox) and outcome (requested, ok, failed).", "source", "outcome"),
 		plans: r.Counter("abhed_plan_decisions_total",
 			"Plan answers by decision (accept, keep-planning) and by whom (person, operator).", "decision", "via"),
 		scopes: r.Counter("abhed_approval_scopes_granted_total",
@@ -148,12 +148,12 @@ func New() *Abhed {
 			"State a command planted that the sandbox found and moved, by what (abhed_state, git).", "what"),
 		calls: map[string]*call{},
 	}
-	r.GaugeFunc("abhed_sessions_running", "Sessions running in this process.", m.runningSessions)
+	r.GaugeFunc("abhed_sessions_live", "Sessions this process holds, as /v1/health counts them.", m.runningSessions)
 	return m
 }
 
-// RunningSessions makes fn the source of the number of sessions running in
-// this process; the last server to call it is the one counted.
+// RunningSessions makes fn the source of the number of sessions this
+// process holds; the last server to call it is the one counted.
 func (m *Abhed) RunningSessions(fn func() int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -194,7 +194,11 @@ func (m *Abhed) Audit(action, outcome string, sandbox bool, d time.Duration, err
 	if err != nil {
 		return
 	}
-	m.auditEvents.Inc(outcome)
+	source := "api"
+	if sandbox {
+		source = "sandbox"
+	}
+	m.auditEvents.Inc(source, outcome)
 	if sandbox && outcome != "requested" {
 		m.sandboxOps.Inc(action, outcome)
 	}

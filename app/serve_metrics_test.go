@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,5 +124,29 @@ func TestAPIAuditLocalFile(t *testing.T) {
 	cfg.Storage.Driver = "postgres"
 	if _, _, _, err := apiAudit(context.Background(), cfg, agent.NewMemStore()); err == nil {
 		t.Fatal("postgres storage without a postgres store was accepted")
+	}
+}
+
+func TestRecordAuditVerifies(t *testing.T) {
+	cfg := config.Default()
+	cfg.Record.Dir, _ = filepath.EvalSymlinks(t.TempDir())
+	f, err := local.OpenAudit(cfg.Record.Dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []string{"requested", "ok"} {
+		_ = f.Append(context.Background(), controlplane.AuditEvent{Principal: "alice", Action: "api:POST /v1/sessions", Outcome: o})
+	}
+	_ = f.Close()
+	var out, errw strings.Builder
+	if code := verifyAudit(cfg, nil, &out, &errw); code != 0 || !strings.Contains(out.String(), "2 chained line(s)") {
+		t.Fatalf("%d %q %q", code, out.String(), errw.String())
+	}
+	path := local.AuditPath(cfg.Record.Dir, "default")
+	b, _ := os.ReadFile(path)
+	_ = os.WriteFile(path, []byte(strings.Replace(string(b), `"alice"`, `"mallory"`, 1)), 0o600)
+	out.Reset()
+	if code := verifyAudit(cfg, nil, &out, &errw); code != 1 || !strings.Contains(out.String(), "FAILED") {
+		t.Fatalf("an edit passed: %d %q", code, out.String())
 	}
 }

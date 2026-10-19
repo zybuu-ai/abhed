@@ -450,7 +450,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 				return 1
 			}
 		}
-		fmt.Printf("  metrics   %s\n", sm.label(addr))
+		fmt.Printf("  metrics   %s\n", sm.label(addr, cfg.Auth.Mode != "" && cfg.Auth.Mode != "none"))
 	}
 
 	serve := srv.ListenAndServe
