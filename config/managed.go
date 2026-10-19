@@ -616,6 +616,10 @@ func (c Config) ExtensionLayer(name string) string {
 // RuleLayer names where a configured permission rule in list (allow, ask or
 // deny) came from: default, user, workspace, managed or flag. A rule loading
 // did not see, as in a Config built by hand, is "config".
+// ManagedAsk reports an ask rule the managed configuration lists, which an
+// approved runbook does not answer; see policy.Engine.KeepAsk.
+func (c Config) ManagedAsk(rule string) bool { return c.RuleLayer("ask", rule) == LayerManaged }
+
 func (c Config) RuleLayer(list, rule string) string {
 	if l, ok := c.ruleLayers[list+"\x00"+strings.TrimSpace(rule)]; ok {
 		return l

@@ -1678,6 +1678,10 @@ function render(ev){
       break;
     }
 
+    // A plan from plan mode, with its runbook, is answered once; the record settles it.
+    case 'plan.proposed': if(ev.actor === 'agent') planCard(p); break;
+    case 'plan.decided': settlePlan(p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') : 'keep planning'); break;
+
     case 'session.ended': {
       hideThinking();
       live = false;
@@ -2019,6 +2023,63 @@ function approval(p, rid){
   const host = (p.call_id && calls.get(p.call_id)) || $('tx');
   host.appendChild(card);
   if(p.call_id) approvals.set(p.call_id, card);
+}
+
+// planCard puts a proposed plan to the person: the plan, each runbook step
+// exactly as it will run, and the three answers the CLI offers. Steps with
+// no undo are confirmed a second time; accepting sends the server's message.
+let planEl = null;
+function planCard(p){
+  settlePlan('superseded by a newer plan');
+  const card = node('approve');
+  const h = document.createElement('h4'); h.textContent = 'Plan ready — proceed with this plan?'; card.appendChild(h);
+  const text = node('', visible(p.text || '', true)); text.style.cssText = 'white-space:pre-wrap;font-size:12px;margin:0 0 9px'; card.appendChild(text);
+  const rb = p.runbook, risky = rb ? rb.steps.filter(st => st.destructive) : [];
+  if(rb){
+    card.appendChild(Object.assign(document.createElement('p'), {className: 'scope-note', textContent: 'Runbook · ' + rb.steps.length + ' steps · plan ' + rb.hash.slice(0, 12) +
+      '. Approving runs each step without asking when it is made exactly as listed; any other change asks.'}));
+    for(const st of rb.steps){
+      const a = Object.assign({}, st.args || {});
+      const what = (st.tool === 'ssh' || st.tool === 'bash') && typeof a.command === 'string' ? a.command : JSON.stringify(a, null, 2);
+      card.appendChild(Object.assign(document.createElement('p'), {textContent: st.index + '. ' + visible(st.tool) + (st.target ? ' · ' + visible(st.target) : '') +
+        (st.destructive ? ' · no undo: ' + visible(st.destructive) : '')}));
+      const pre = document.createElement('pre'); pre.textContent = visible(what, true); card.appendChild(pre);
+    }
+    if([p.text, JSON.stringify(rb.steps)].some(v => hasHidden(v)))
+      card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this plan contains hidden or control characters'}));
+  }
+  const row = node('row'), note = node('note');
+  const answer = async (decision, undoOK) => {
+    row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    try{
+      const r = await api('/v1/sessions/' + current + '/plan', {method:'POST', body: JSON.stringify({decision, plan_hash: p.hash, confirm_no_undo: !!undoOK})});
+      if(decision === 'keep-planning'){ settlePlan('keep planning · say what to change'); return; }
+      settlePlan('approved · mode ' + visible(r.mode || ''));
+      if(r && r.message){ $('q').value = r.message; send(); }
+    }catch(e){
+      if(/no plan is waiting|another plan/i.test(e.message)){ settlePlan('no longer waiting for an answer'); return; }
+      note.textContent = visible(e.message); row.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    }
+  };
+  const mk = (label, cls, decision) => { const b = Object.assign(document.createElement('button'), {className: cls, textContent: label});
+    b.onclick = () => {
+      if(decision === 'keep-planning' || !risky.length) return answer(decision);
+      row.replaceChildren();
+      note.textContent = risky.length + ' step' + (risky.length === 1 ? '' : 's') + ' of this runbook cannot be undone and will run without asking.';
+      const no = Object.assign(document.createElement('button'), {className: 'no', textContent: 'No, keep planning'});
+      const yes = Object.assign(document.createElement('button'), {className: 'yes', textContent: 'Yes, approve the steps that cannot be undone'});
+      no.onclick = () => answer('keep-planning'); yes.onclick = () => answer(decision, true);
+      row.append(no, yes);
+    }; return b; };
+  row.append(mk('Yes, and accept edits', 'no', 'accept-edits'), mk('Yes, ask before each change', 'yes', 'approve'), mk('No, keep planning', 'no', 'keep-planning'));
+  card.append(note, row);
+  $('tx').appendChild(card); planEl = card;
+}
+function settlePlan(how){
+  if(!planEl) return;
+  const card = planEl; planEl = null;
+  const row = card.querySelector('.row'); if(row) row.remove();
+  card.appendChild(node('note', how));
 }
 
 // resolveApproval replaces a pending card with its outcome.

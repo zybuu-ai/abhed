@@ -114,6 +114,18 @@ is unverified, and each `#seq` opens the tool call the statement rests on. The
 statements and excerpts are the model's and the tools' text, shown with every
 control and format character written out. A session's `verify` setting, or
 `verify.mode`, changes or turns it off ([Verified answers](29-verified-answers.md)).
+**A plan from plan mode.** A session started in plan mode can propose a plan
+with `exit_plan`. It is shown as a card with the plan and, when it has a
+[runbook](28-runbooks.md), every step as it will run, with the CLI's three
+answers. Steps that cannot be undone are asked about a second time. Either
+yes leaves plan mode, for `default`, or for `accept-edits` when that is the
+server's configured mode, binds the runbook, and sends the message the
+conversation goes on with. The answer is `POST /v1/sessions/{id}/plan` with
+`decision` (`accept-edits`, `approve` or `keep-planning`), the `plan_hash`
+from `plan.proposed`, and `confirm_no_undo: true` when a step cannot be
+undone; it is taken only between turns, from the session's owner, while the
+process that ran the plan holds it. A plan left after a restart is proposed
+again. The console shows the same card.
 
 **Sending while the agent works.** Send stays enabled during a run. A message
 sent then is not a reason to cancel the step in progress: it is queued, shown

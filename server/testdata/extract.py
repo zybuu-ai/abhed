@@ -11,6 +11,7 @@
 #   extract.py ide.html ide-lines     the line-by-line terminal
 #   extract.py ide.html ide-term      the agent's terminal tab
 #   extract.py ide.html ide-call      an opened call and the plan
+#   extract.py ide.html ide-plan      a proposed plan's card and its runbook
 #   extract.py ide.html ide-lsp       a language server's file URI as a workspace path
 #   extract.py ide.html ide-files     downloads, a session's title and delete, notifications
 #   extract.py ide.html ide-review    rejecting a change in the review
@@ -110,6 +111,9 @@ sets = {
     'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
           'function showSessionModel(s){','async function switchModel(){'],
     # From ide.html: an opened call's arguments and output, and the plan.
+    # From ide.html: a proposed plan's card and its runbook.
+    'ide-plan': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function mdInline(parent, s){','function md(text){',
+          'function stepText(st){','function planCard(p){','function settleAsk(callID, how){'],
     'ide-call': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function fillCall(c){','function clip(text){','function drawPlan(items){'],
     # From ide.html: the agent's read-only terminal tab.
     'ide-term': ['function visible(s, lines){','function reveal(s, lines){','function logTerminal(cmd, p, who){'],

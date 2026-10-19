@@ -82,6 +82,8 @@ type Config struct {
 	Verify VerifyConfig `json:"verify,omitempty"`
 	// Monitor governs the supervisor, which may only tighten a decision.
 	Monitor MonitorConfig `json:"monitor,omitempty"`
+	// Plan governs what an accepted plan may carry.
+	Plan PlanConfig `json:"plan,omitempty"`
 	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
 	Fence FenceConfig `json:"fence,omitempty"`
 	// Egress is the rules of the egress proxy that sandbox.network
@@ -224,6 +226,14 @@ type FenceConfig struct {
 	// AllowRoot lets the fence run as root (Landlock ABI 6 or later), with
 	// the files under /etc only root may read hidden. Managed only.
 	AllowRoot bool `json:"allow_root,omitempty"`
+}
+
+// PlanConfig governs plans from plan mode.
+type PlanConfig struct {
+	// Runbooks lets an accepted plan's runbook answer its steps' asks. On by
+	// default; false makes every step ask as any call does. A workspace may
+	// only turn it off, and a managed value binds either way.
+	Runbooks bool `json:"runbooks"`
 }
 
 type SuggestConfig struct {
@@ -1512,6 +1522,7 @@ func Default() Config {
 		// that deliberately crosses the boundary.
 		WebSearch: WebSearchConfig{Enabled: false, Provider: "duckduckgo", MaxResults: 5},
 		Suggest:   SuggestConfig{Enabled: true},
+		Plan:      PlanConfig{Runbooks: true},
 		Monitor:   MonitorConfig{Enabled: true},
 		CLI:       CLIConfig{Title: true, Copy: true, Notify: "auto"},
 	}

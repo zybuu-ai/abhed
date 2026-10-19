@@ -164,6 +164,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 		loop.EnablePlanExit()
+		if !sessionState.appCfg.Plan.Runbooks {
+			loop.DisableRunbooks()
+		}
 		loop.SetAdapter(sessionState.adapter)
 		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget

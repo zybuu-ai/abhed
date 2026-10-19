@@ -160,9 +160,14 @@ Layered, because no single control is sufficient:
    them.
 5. **Egress default-deny.** With the network off, a fully injected agent's commands have
    nowhere to send data; under the allowlist, only to the destinations the rules allow.
-6. **Anomaly detection (not built).** The aim is to alert on action-sequence patterns
-   inconsistent with the stated task (mass file reads, unexpected network attempts,
-   credential-path access). Nothing does this yet.
+6. **The supervisor (built, on by default).** After policy decides, each call is reviewed
+   against what the person asked and what the session has shown: destructive work outside
+   the task, a program that is not there, a target or host nobody named or showed, a way
+   out after a credential file was read, a planted honeytoken. It may only make a decision
+   stricter, and it tells the model what to do instead
+   ([The supervisor](../guide/04-permissions.md#the-supervisor)). It judges one call at a
+   time with fixed rules (a model judge is optional and unmeasured); it is not anomaly
+   detection over the whole action stream, which is not built.
 
 **What Abhed explicitly does not claim:** that it detects prompt injection reliably.
 Detection is a mitigation layer, not the boundary. The boundary is L3 and L4.
@@ -241,8 +246,8 @@ boundary, and the consequences are worth stating plainly:
 
 `k8s_get` is the sharp edge: in an unattended or `auto` deployment, an injected
 instruction in untrusted content can drive it to read and to reach the network with no
-sandbox boundary in the way. A Secret's values are masked to their length and sha256
-before anything reaches the model, but its keys and metadata are read. Argument-scoped
+sandbox boundary in the way. A Secret's values are masked to their length and a keyed
+fingerprint before anything reaches the model, but its keys and metadata are read. Argument-scoped
 policy rules (`deny k8s_get(secrets*)`) are the control that applies, and they work — but
 whole-tool policy is otherwise the only thing mediating these tools.
 

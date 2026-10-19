@@ -107,6 +107,17 @@ one revision turn when a statement about its work is not verified, then exits
 `answer.verdict` event and the result line's `verdict`. A managed
 `verify.mode` may only be made stricter. See [Verified answers](29-verified-answers.md).
 
+### Runbooks
+
+`-runbook FILE` approves a plan's runbook for the run: the file holds
+`exit_plan`'s own arguments, `{"plan": …, "runbook": […]}`, so a plan
+proposed in a conversation can be saved and run unattended.
+`-runbook-sha256` pins the plan hash you reviewed, and a file that hashes
+otherwise is refused. The steps, made exactly as listed, run without asking;
+any other change asks, which a headless run refuses. The binding is recorded
+as `plan.proposed` and `plan.decided` with `via: operator`, and stderr names
+the hash ([Runbooks](28-runbooks.md)).
+
 ### Limits and instructions
 
 - `-max-turns N` ends the run after N turns (exit `2`).
@@ -203,7 +214,7 @@ send(method="prompt", prompt="fix the failing tests")
 
 | Method | |
 |---|---|
-| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`) |
+| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`), and `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes |
 | `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` when answers are checked |
 | `steer` | redirect a run in progress — the text in `prompt` |
 | `usage` | tokens, turns, compactions |

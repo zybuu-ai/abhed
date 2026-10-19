@@ -38,8 +38,12 @@ All notable changes to Abhed are recorded here. The format follows
 - `k8s_get` of a Secret returned its `data` to the model, and so to the
   record and every screen: only metadata noise was stripped. A Secret's
   values, in `data`, `stringData` and kubectl's last-applied annotation, are
-  now shown as each key with the value's length and sha256, for a single
-  Secret, a list, and what the cluster answers a `k8s_apply` of one.
+  now shown as each key with the value's length and a fingerprint, for a
+  single Secret, a list, and what the cluster answers a `k8s_apply` of one.
+  The fingerprint is an HMAC-SHA256 under a random key Abhed makes when it
+  starts and never writes anywhere, cut to 12 hex digits: two compare only
+  while that Abhed runs, and unlike a plain sha256 it cannot be used to
+  guess a short value offline.
 
 ### Added
 
@@ -67,11 +71,13 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): on its 21 drift cases the rules judge stops
-  19, and it asks about or refuses none of its 19 benign controls.
+  or `go run ./cmd/abhed-drift`): of its 26 drift cases the rules judge stops 23
+  of the 25 a mode let through (the other is the destructive step's), and it
+  asks about or refuses none of its 27 benign controls, `ssh` inspection of
+  declared hosts with `ssh.read_commands` among them.
 - `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
   asking, and the approval names what would change, field by field, from
-  the live object (a Secret's values only as length and sha256). The
+  the live object (a Secret's values only as length and fingerprint). The
   request dry-run is the one sent once approved. A change the dry run
   refuses is refused before anyone is asked, with the cluster's reason.
   A kubeconfig context whose `exec` credential helper has not run yet is
@@ -85,7 +91,8 @@ All notable changes to Abhed are recorded here. The format follows
 - `k8s_apply` `secret_from` builds a Secret, `Opaque` or
   `kubernetes.io/tls`, from stored secrets by NAME and workspace files, so
   a TLS key never passes through the model: the approval and the record
-  name each source with its value's length and sha256, each stored secret
+  name each source with its value's length, a fingerprint for a stored
+  secret and the sha256 for a workspace file, each stored secret
   needs its `secret(NAME)` rule, each file is judged as a `read` of it, and
   the dry run before the approval carries placeholders.
 - `ssh` `stdin_secret` writes a stored secret, by NAME and under its
@@ -99,7 +106,8 @@ All notable changes to Abhed are recorded here. The format follows
   host without passing through the model; `ssh_get` fetches into the
   workspace. Both ask unless an allow rule on `host:remote_path` covers
   them, the workspace file is judged as a read or write of it, and the
-  approval and record keep the paths, size and sha256, never the content.
+  approval and record keep the paths, size and sha256 (for a stored
+  secret, a fingerprint), never the content.
 - A subagent's worktree can be taken back by hunk: `/take` lists the
   worktrees, `/take <id>` asks about each hunk, and the workbench's Changes
   view shows them with tick boxes. What you accept is written into the
@@ -107,7 +115,9 @@ All notable changes to Abhed are recorded here. The format follows
   protection and checkpoints (so `/undo` takes it back); a hunk the
   workspace changed meanwhile is reported as a conflict and left out, and
   the worktree and its branch are removed only when you ask. Each take is
-  recorded as `worktree.taken`
+  recorded as `worktree.taken`. The editor protocol serves the same as
+  `_abhed/worktrees/list` and `_abhed/worktrees/take` (the `worktrees`
+  feature) for Studio to use
   ([Parallel subagents](docs/guide/14-parallel-subagents.md#taking-a-worktree-back)).
 - Changes made through `bash` are checkpointed: before each command the
   workspace's files are noted and copied in memory, within limits, and each
@@ -166,6 +176,38 @@ All notable changes to Abhed are recorded here. The format follows
   they hold and its statements are verified. It lives in configuration the
   agent cannot reach, and a required command runs only where policy would let
   it run unasked.
+- Runbooks: a plan from plan mode can carry the exact calls it will make
+  (`ssh`, `k8s_apply`, `bash`, `edit`, `write`). Each step is checked against
+  the policy and hashed when the plan is proposed, and you approve them once
+  with the plan. A call made exactly as the next step then runs without
+  asking, recorded as `plan.step` with the plan's hash; any other change
+  asks, saying it is not in the approved plan, even where a rule or the mode
+  would allow it. Deny rules, hooks, the supervisor, an ask rule the managed
+  configuration lists and the sandbox still apply, steps that
+  cannot be undone are confirmed a second time, and a rewound or continued
+  session asks for each step again
+  ([Runbooks](docs/guide/28-runbooks.md)).
+- The plan card lists a runbook's steps in the CLI, the workbench, the
+  console and, over ACP, Abhed Studio, which now gets plan mode's
+  `exit_plan` and answers a plan as a permission request. The workbench
+  answers with `POST /v1/sessions/{id}/plan`.
+- `abhed -p -runbook FILE` approves a runbook for a headless run, and
+  `-runbook-sha256` pins the plan hash you reviewed; the SDK takes
+  `Options.Runbook` and `abhed rpc` takes `runbook` on `start`.
+- `plan.runbooks` (on by default) turns runbooks off when false: a plan
+  with one is refused, and so is the operator's `-runbook`. A workspace file
+  may only turn it off; a managed value binds either way
+  ([Configuration](docs/guide/02-configuration.md)).
+- HawkEYE lists remote changes: every `ssh` command and `k8s_apply` write
+  per host and cluster, with the decision, the exit code and the runbook
+  step it was, in the text and HTML reports and the workbench
+  ([HawkEYE](docs/guide/15-hawkeye.md)).
+
+### Changed
+
+- `plan.proposed` carries the plan's `hash`, and its `runbook` when it has
+  one; `plan.decided` carries the `plan_hash` and runbook an accept bound
+  ([Data model](docs/architecture/10-data-model.md)).
 
 ### Fixed
 
@@ -190,6 +232,10 @@ All notable changes to Abhed are recorded here. The format follows
 - Studio's review no longer shows a file whose content was not kept before
   the change (one that holds keys, or one a read rule denies) as a whole
   file added from nothing.
+- The context size that decides when to offload and compact, and that
+  `session.ended` records, counts only the tools the model is offered in the
+  current mode, so a tool of another mode no longer brings compaction early.
+
 
 ## [1.2.8] - 2026-10-14
 

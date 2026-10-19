@@ -224,6 +224,7 @@ editor's session in an untrusted workspace says which model it runs on.
 | `Verify` | replaces `verify.mode` (`off`, `label`, `strict`); empty keeps it, off when unset unless `VerifyByDefault` is set, which labels as the terminal does. In `strict` a run whose answer stays unverified returns an `*EndedError` with `Reason` `unverified`; `Agent.Verdict()` reports the last check ([Verified answers](29-verified-answers.md)) | if the file sets `verify.mode`, only as strict or stricter (`off` < `label` < `strict`) |
 | `Deny` | added to `permissions.deny` | added; the file's deny rules stay |
 | `Extensions` | added to the configured ones | added; an extension can only veto |
+| `Runbook` | approves a plan's runbook before the first `Run`, which is given its steps: each step made exactly as listed runs without calling `Approve`; any other change goes to `Approve` with "not in the approved plan", even where the policy alone would allow it. `SHA256` pins the plan hash; a runbook a deny rule refuses is an error from `New` ([Runbooks](28-runbooks.md)) | the same; deny rules and hooks still apply to every step |
 
 An option the managed file forbids is an error from `New`, a
 `*config.ManagedError` naming the setting, never a silent change of what runs.

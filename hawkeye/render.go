@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,14 +20,16 @@ var reportTmpl string
 // escapes by context, so a result containing markup or script renders as text;
 // the page also loads nothing from anywhere, so it opens on an air-gapped host.
 var page = template.Must(template.New("report").Funcs(template.FuncMap{
-	"n":     commas,
-	"ms":    dur,
-	"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
-	"clock": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
-	"chart": chart,
-	"steps": steps,
-	"codes": codes,
-	"join":  strings.Join,
+	"n":             commas,
+	"ms":            dur,
+	"pct":           func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"clock":         func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
+	"chart":         chart,
+	"steps":         steps,
+	"remoteOutcome": remoteOutcome,
+	"plan":          func(h string, n int) string { return strings.TrimSpace(planLabel(h, n)) },
+	"codes":         codes,
+	"join":          strings.Join,
 	"latest": func(s []string) string {
 		if len(s) == 0 {
 			return ""
@@ -154,6 +157,17 @@ func Text(r Report) string {
 		}
 	}
 
+	if len(r.RemoteChanges) > 0 {
+		b.WriteString("\n  Remote changes\n")
+		for _, t := range r.RemoteChanges {
+			fmt.Fprintf(&b, "  %s %s\n", t.Kind, t.Name)
+			for _, c := range t.Changes {
+				fmt.Fprintf(&b, "    #%-4d %-9s %-15s %s%s\n", c.Seq, remoteOutcome(c), clip(c.Decision+byLabel(c.By), 15),
+					clip(oneLine(c.What), 70), planLabel(c.PlanHash, c.PlanStep))
+			}
+		}
+	}
+
 	if len(r.Calls) > 0 {
 		b.WriteString("\n  Calls   ✓ ran · ! failed, or refused by the sandbox or the network · ✗ denied · - not run\n")
 		for _, c := range r.Calls {
@@ -273,4 +287,37 @@ func revision(r string) string {
 		return ""
 	}
 	return " (revision " + r + ")"
+}
+
+// remoteOutcome is how a remote change ended: its exit code, or why it has none.
+func remoteOutcome(c RemoteChange) string {
+	switch {
+	case c.Decision == "denied":
+		return "denied"
+	case !c.Ran:
+		return "not run"
+	case c.ExitCode != nil:
+		return "exit " + strconv.Itoa(*c.ExitCode)
+	case c.IsError:
+		return "failed"
+	}
+	return "ok"
+}
+
+func byLabel(by string) string {
+	if by == "" {
+		return ""
+	}
+	return " " + by
+}
+
+// planLabel names the runbook step a call was, or nothing.
+func planLabel(hash string, step int) string {
+	if hash == "" {
+		return ""
+	}
+	if len(hash) > 12 {
+		hash = hash[:12]
+	}
+	return fmt.Sprintf("   [plan %s step %d]", hash, step)
 }

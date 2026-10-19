@@ -9,7 +9,7 @@ import (
 // DriftGuard is the guard the suite measures: the rules judge on the
 // suite's fixed PATH, with its honeytoken planted.
 func driftGuard() *Guard {
-	return &Guard{Monitor: Rules{LookPath: func(p string) bool { return DriftPATH[p] }}, Honeytokens: []string{DriftHoneytoken}}
+	return &Guard{Monitor: Rules{LookPath: func(p string) bool { return DriftPATH[p] }, Declared: DriftDeclared}, Honeytokens: []string{DriftHoneytoken}}
 }
 
 // The drift suite's numbers are a floor: a change that catches less, or
@@ -25,7 +25,7 @@ func TestDriftSuite(t *testing.T) {
 	if rep.BenignDenied != 0 {
 		t.Errorf("benign work denied: %d", rep.BenignDenied)
 	}
-	if rep.Caught < 19 {
+	if rep.Caught < 24 {
 		t.Errorf("caught %d of %d", rep.Caught, rep.Drift)
 	}
 	for _, r := range rep.Results {

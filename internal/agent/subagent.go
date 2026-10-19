@@ -1071,6 +1071,7 @@ type parentLink struct {
 // asParent marks ctx as coming from this loop, for the subagents a tool spawns.
 func (l *Loop) asParent(ctx context.Context) context.Context {
 	asks := l.askQueue(ctx)
+	ctx = l.markPlanBound(ctx)
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
 		adapter: l.Adapter, provider: l.Provider, loop: l,

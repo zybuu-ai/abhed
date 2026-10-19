@@ -2,7 +2,9 @@ package k8s
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -17,7 +19,7 @@ import (
 
 // secret_from builds a Secret whose values never pass through the model:
 // each key names a stored secret or a workspace file, Abhed reads it, and
-// only the names, paths, lengths and hashes are judged, approved, recorded
+// only the names, paths, lengths and fingerprints are judged, approved, recorded
 // and shown. The dry run before the approval sends placeholders, so no value
 // leaves Abhed before a person has said yes.
 
@@ -113,15 +115,21 @@ func (sf *secretFrom) keys() []string {
 	return out
 }
 
-// sources names where each key comes from, never a value: with each
-// value's length and sha256 once vals has been read.
+// sources names where each key comes from, never a value: once vals has
+// been read, with a stored secret's length and fingerprint and a file's
+// length and sha256.
 func (sf *secretFrom) sources(vals ...map[string][]byte) string {
 	parts := make([]string, 0, len(sf.Data))
 	for _, k := range sf.keys() {
 		part := k + " from " + sf.Data[k].describe()
 		if len(vals) > 0 {
 			if v, ok := vals[0][k]; ok {
-				part += " " + withheldValue(v)
+				// A workspace file is not a secret, and its sha256 can be checked against the file.
+				if sf.Data[k].Secret == "" {
+					part += fmt.Sprintf(" [%d bytes, sha256 %s]", len(v), fileSum(v))
+				} else {
+					part += " " + withheldValue(v)
+				}
 			}
 		}
 		parts = append(parts, part)
@@ -173,6 +181,11 @@ func (sf *secretFrom) values(sess *tools.Session, secret func(string) (string, e
 		}
 	}
 	return out, nil
+}
+
+func fileSum(v []byte) string {
+	sum := sha256.Sum256(v)
+	return hex.EncodeToString(sum[:])
 }
 
 func (s secretSource) describe() string {

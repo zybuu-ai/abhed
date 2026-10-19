@@ -807,7 +807,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
-	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp"}
+	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true}
 	if c.durable() {
 		rec, err := c.record()
 		if err != nil {
@@ -1059,6 +1059,10 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		err = cmdErr
 	} else {
 		_, err = s.agent.Run(ctx, withAttached(text))
+		// A plan the run proposed is put to the editor; accepted, the turn goes on with it.
+		if next := c.decidePlan(ctx, s, err); next != "" {
+			_, err = s.agent.Run(ctx, next)
+		}
 	}
 	// Every session/update of the run goes out before the reply that ends it.
 	flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)

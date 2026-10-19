@@ -738,6 +738,7 @@ var workspaceRules = map[string]fieldRule{
 	"hooks":               {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
+	"plan.runbooks":       {onlyFalse(func(c *Config) *bool { return &c.Plan.Runbooks }), "only false"},
 	"suggest.model":       {nil, "a provider receives the conversation"},
 
 	"monitor.enabled":        {onlyTrue(func(c *Config) *bool { return &c.Monitor.Enabled }), "only true"},

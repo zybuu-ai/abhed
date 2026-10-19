@@ -58,6 +58,7 @@ configuration](#trusting-the-workspace-configuration).
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 | `verify` | whether each answer is checked against the session's record (`off`, `label`, `strict`), the critic, and the completion contract — [below](#verified-answers), [Verified answers](29-verified-answers.md) |
 | `monitor` | the supervisor, which reviews each call after policy and may only tighten the decision: on with the rules judge by default; `judge: "model"` adds a model judge — [The supervisor](04-permissions.md#the-supervisor) |
+| `plan` | `runbooks` (`true`): whether an accepted plan's runbook answers its steps' asks. `false` turns it off, and a plan with a runbook is refused; a workspace file may only turn it off, and a managed value binds either way — [Runbooks](28-runbooks.md#turning-runbooks-off) |
 | `cli` | the interactive terminal: `title` (`true`), `notify` (`auto`, `bel`, `osc9` or `off`) and `copy` (`true`) — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard); `mode_cycle`, managed only, narrows Shift-Tab |
 
 ## Context

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -59,6 +60,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	calls := map[string]*Call{}
 	var order []string
 	files := map[string]*FileTouch{}
+	remote := map[string]remoteInfo{}
 	var ended agent.SessionEnded
 
 	for _, e := range evs {
@@ -101,6 +103,10 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			calls[a.CallID] = c
 			order = append(order, a.CallID)
 			touch(files, a.Tool, a.Args)
+			if _, ok := remoteTools[a.Tool]; ok {
+				name, ns, what := remoteOf(a.Tool, a.Args)
+				remote[a.CallID] = remoteInfo{name: name, ns: ns, what: clip(what, 2000), where: a.Target}
+			}
 
 		case agent.EvPolicyLayer:
 			var l PolicyLayer
@@ -119,6 +125,8 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
 			c.Rule, c.Layer = d["rule"], d["layer"]
 			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
+			c.PlanHash = d["plan_hash"]
+			c.PlanStep, _ = strconv.Atoi(d["plan_step"])
 			c.Decision = "allowed"
 			if e.Type == agent.EvActionDenied {
 				c.Decision = "denied"
@@ -232,6 +240,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 		r.Files = append(r.Files, *f)
 	}
 	sort.Slice(r.Files, func(i, j int) bool { return r.Files[i].Path < r.Files[j].Path })
+	r.RemoteChanges = remoteChanges(r.Calls, remote)
 
 	r.totals(ended)
 	r.Supervisor = supervisor(evs, r.Calls)

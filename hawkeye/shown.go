@@ -17,9 +17,10 @@ func shown(r Report) Report {
 		c.CallID, c.Tool, c.Args, c.Subject, c.Decision, c.Step = v(c.CallID), v(c.Tool), v(c.Args), v(c.Subject), v(c.Decision), v(c.Step)
 		c.By, c.Scope, c.Approver, c.GrantedScope, c.Reason = v(c.By), v(c.Scope), v(c.Approver), v(c.GrantedScope), v(c.Reason)
 		c.Actor, c.Via, c.Output = v(c.Actor), v(c.Via), ui.VisibleOutput(c.Output)
-		c.Rule, c.Layer = v(c.Rule), v(c.Layer)
+		c.Rule, c.Layer, c.PlanHash = v(c.Rule), v(c.Layer), v(c.PlanHash)
 		return c
 	})
+	r.RemoteChanges = shownRemote(r.RemoteChanges)
 	if r.Policy.ByStep != nil {
 		by := make(map[string]int, len(r.Policy.ByStep))
 		for k, n := range r.Policy.ByStep {

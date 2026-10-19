@@ -1,11 +1,10 @@
 package k8s
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"fmt"
 	"regexp"
+
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 // lastApplied is the annotation kubectl apply keeps the whole object in, a
@@ -18,7 +17,7 @@ func isSecret(obj map[string]any) bool {
 	return kind == "Secret"
 }
 
-// maskSecret replaces each of a Secret's values with its length and sha256,
+// maskSecret replaces each of a Secret's values with its length and fingerprint,
 // keeping the keys, so no value reaches the model, the record or a screen.
 // Anything under data or stringData that is not a key/value map is withheld whole.
 func maskSecret(obj map[string]any) {
@@ -46,7 +45,7 @@ func maskSecret(obj map[string]any) {
 }
 
 // maskedValue is what stands in for one Secret value: the decoded value's
-// length and sha256 for data, the string's own for stringData.
+// length and fingerprint for data, the string's own for stringData.
 func maskedValue(v any, base64Encoded bool) string {
 	s, ok := v.(string)
 	if !ok {
@@ -64,10 +63,8 @@ func maskedValue(v any, base64Encoded bool) string {
 	return withheldValue(raw)
 }
 
-var maskedRe = regexp.MustCompile(`^\[withheld: [0-9]+ bytes, sha256 [0-9a-f]{64}\]$`)
+var maskedRe = regexp.MustCompile(`^\[withheld: [0-9]+ bytes, fingerprint [0-9a-f]{12}, comparable only while this Abhed runs\]$`)
 
-// withheldValue describes a value without showing it.
-func withheldValue(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return fmt.Sprintf("[withheld: %d bytes, sha256 %s]", len(raw), hex.EncodeToString(sum[:]))
-}
+// withheldValue describes a secret value by its length and keyed
+// fingerprint, never the value or a plain hash of it.
+func withheldValue(raw []byte) string { return secrets.Withheld(raw) }
