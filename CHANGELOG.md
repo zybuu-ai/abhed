@@ -303,8 +303,19 @@ All notable changes to Abhed are recorded here. The format follows
   `BashCheckpointFiles`.
 - `hawkeye`: `RemoteTarget`, `RemoteChange`, `Report.RemoteChanges`,
   `Report.Answers` with `Answer`, and `SupervisorStats`.
+- `hawkeye`: also `Call.PlanHash`, `Call.PlanStep`, `Report.Supervisor` and
+  `SupervisorVerdict`.
+- `server`: `ApprovalAnswer` and `PendingAsk.StepTools`.
 - `monitor`: the drift suite's `DriftCase`, `DriftCases`, `DriftResult`,
-  `DriftReport` and `RunDrift`.
+  `DriftReport` and `RunDrift`; the judges `Rules`, `Model` and `Chain`;
+  `Guard.Honeytokens`, `Guard.Unattended` and `Guard.Child`; the `Case`
+  fields `Said`, `Roots`, `Seen`, `DeclaredRead`, `Plan`, `Observed` and
+  `Credential`; `Verdict.Advice`, `Verdict.LatencyMS` and
+  `Verdict.Correction`; the `Code*` verdict codes; and `RulesVersion`,
+  `HoneytokenVersion` and `PromptVersion`. `monitor.Guard` now holds a
+  mutex and a slice, so it is no longer comparable: code that compared two
+  `Guard` values with `==` or used one as a map key no longer compiles; use a
+  `*Guard`.
 - `abhed -p`'s JSON result line gains `verdict` when answers are checked.
 
 ## [1.2.8] - 2026-10-14
