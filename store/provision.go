@@ -217,8 +217,13 @@ var privilegeList = func() *regexp.Regexp {
 }()
 
 // recordTables are the append-only records: the session events and the
-// control plane's sandbox audit, which an older schema does not have yet.
-var recordTables = []string{"events", "sandbox_audit"}
+// control plane's sandbox audit, which an older schema does not have yet; and
+// chain_pre, which says which events are from before the chain, which the
+// server may only read: a row it could add would excuse an unchained event.
+var recordTables = []struct {
+	name     string
+	noInsert bool
+}{{"events", false}, {"sandbox_audit", false}, {"chain_pre", true}}
 
 // recordExposure reports how the connected role could alter an append-only
 // record, or "" when it cannot. It is asked of the database rather than
@@ -226,16 +231,17 @@ var recordTables = []string{"events", "sandbox_audit"}
 func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	var how []string
 	for _, table := range recordTables {
-		var owns, canUpdate, canDelete, canTruncate bool
+		var owns, canInsert, canUpdate, canDelete, canTruncate bool
 		err := pool.QueryRow(ctx, `
 			SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
+			       has_table_privilege(current_user, c.oid, 'INSERT'),
 			       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
 			       has_table_privilege(current_user, c.oid, 'DELETE'),
 			       has_table_privilege(current_user, c.oid, 'TRUNCATE')
-			FROM pg_class c WHERE c.oid = to_regclass('public.' || $1)`, table).
-			Scan(&owns, &canUpdate, &canDelete, &canTruncate)
+			FROM pg_class c WHERE c.oid = to_regclass('public.' || $1)`, table.name).
+			Scan(&owns, &canInsert, &canUpdate, &canDelete, &canTruncate)
 		if errors.Is(err, pgx.ErrNoRows) {
-			if table == "events" {
+			if table.name == "events" {
 				return "", errNoSchema
 			}
 			continue
@@ -244,15 +250,15 @@ func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 			return "", fmt.Errorf("check record privileges: %w", err)
 		}
 		if owns {
-			how = append(how, "owns the "+table+" table, so it can disable the append-only triggers or drop it")
+			how = append(how, "owns the "+table.name+" table, so it can disable the append-only triggers or drop it")
 			continue
 		}
 		for _, p := range []struct {
 			name string
 			can  bool
-		}{{"UPDATE", canUpdate}, {"DELETE", canDelete}, {"TRUNCATE", canTruncate}} {
+		}{{"INSERT", canInsert && table.noInsert}, {"UPDATE", canUpdate}, {"DELETE", canDelete}, {"TRUNCATE", canTruncate}} {
 			if p.can {
-				how = append(how, "holds "+p.name+" on "+table)
+				how = append(how, "holds "+p.name+" on "+table.name)
 			}
 		}
 	}
