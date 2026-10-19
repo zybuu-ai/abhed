@@ -461,7 +461,7 @@ All notable changes to Abhed are recorded here. The format follows
 - `store/local`: `Options.OnAppend`, `Sealed.End`, `LineHash`, and
   `Store.SessionIDs`, `Store.LinesFrom` and `Store.Size`.
 - `store`: `Postgres.OCSFWriter` with `OCSFWriter`, `OCSFCursor` and
-  `ErrOCSFStandby`, `Postgres.EventEnds`, `Postgres.CommitEnd`, and the audit
+  `ErrOCSFStandby`, `Postgres.CommitEnd`, and the audit
   chain's `Postgres.AuditRows`, `Postgres.AuditLinks`, `Sandboxes.AuditLinks`
   and `AuditChainName`; `store/sqlite`: `Store.AuditRows`,
   `Store.AuditLinks` and `AuditChainName`; `store/local`: `AuditRows` and

@@ -3,6 +3,7 @@ package ocsf_test
 import (
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func (v leaseView) Lock() (func(), error) {
 	return v.s.lock.Unlock, nil
 }
 
-func (v leaseView) Load() (map[string]ocsf.Cursor, bool, error) {
+func (v leaseView) Load(_ []string) (map[string]ocsf.Cursor, bool, error) {
 	v.s.mu.Lock()
 	defer v.s.mu.Unlock()
 	out := map[string]ocsf.Cursor{}
@@ -131,4 +132,36 @@ func TestOneWriterAcrossServers(t *testing.T) {
 func fileEvents(t *testing.T, path string) int {
 	t.Helper()
 	return len(readEventsIfAny(t, path))
+}
+
+// A feed's place moves only once its lines are in the file: a sink that
+// does not hold the lease writes nothing and keeps nothing.
+func TestFeedMovesOnlyAfterTheWrite(t *testing.T) {
+	shared := &sharedCursors{rows: map[string]ocsf.Cursor{}, begun: true, holder: "other"}
+	dir := t.TempDir()
+	var done atomic.Int32
+	at := time.Now()
+	feed := func() ([]ocsf.Line, func() error, error) {
+		l := ocsf.Line{Event: agent.Event{ID: "e-1", SessionID: "s-1", Seq: 1, Type: agent.EvUserMessage,
+			Payload: []byte(`{"text":"m"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: at}}
+		return []ocsf.Line{l}, func() error { done.Add(1); return nil }, nil
+	}
+	path := filepath.Join(dir, "f.jsonl")
+	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: path, Cursors: leaseView{shared, "me"}, Poll: 10 * time.Millisecond, Feed: feed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if done.Load() != 0 || fileEvents(t, path) != 0 {
+		t.Fatalf("a standby wrote %d and moved its place %d times", fileEvents(t, path), done.Load())
+	}
+	shared.release("other")
+	deadline := time.Now().Add(5 * time.Second)
+	for fileEvents(t, path) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = sink.Close()
+	if n := fileEvents(t, path); n != 1 || done.Load() == 0 {
+		t.Fatalf("wrote %d, moved %d times", n, done.Load())
+	}
 }

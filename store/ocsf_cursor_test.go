@@ -36,13 +36,13 @@ func TestOCSFWriterLockAndCursors(t *testing.T) {
 		unlock()
 	}
 
-	if _, begun, err := wa.Load(); err != nil || begun {
+	if _, begun, err := wa.Load(nil); err != nil || begun {
 		t.Fatalf("a new sink: begun %v, %v", begun, err)
 	}
 	if err := wa.Save(nil); err != nil {
 		t.Fatal(err)
 	}
-	if cur, begun, _ := wa.Load(); !begun || len(cur) != 0 {
+	if cur, begun, _ := wa.Load(nil); !begun || len(cur) != 0 {
 		t.Fatalf("an empty save marks a begun sink with no cursors: %v %v", begun, cur)
 	}
 	if err := wa.Save(map[string]OCSFCursor{"s-1": {Seq: 5, Provider: "vllm", Primed: true}}); err != nil {
@@ -51,8 +51,14 @@ func TestOCSFWriterLockAndCursors(t *testing.T) {
 	if err := wa.Save(map[string]OCSFCursor{"s-1": {Seq: 3}}); err != nil {
 		t.Fatal(err)
 	}
-	if cur, _, _ := wa.Load(); cur["s-1"].Seq != 5 {
+	if cur, _, _ := wa.Load(nil); cur["s-1"].Seq != 5 {
 		t.Fatalf("a cursor moved back: %+v", cur["s-1"])
+	}
+	if cur, begun, _ := wa.Load([]string{"s-1", "s-none"}); !begun || len(cur) != 1 || cur["s-1"].Seq != 5 {
+		t.Fatalf("loading by name: %v %v", begun, cur)
+	}
+	if cur, begun, _ := wa.Load([]string{}); !begun || len(cur) != 0 {
+		t.Fatalf("loading none: %v %v", begun, cur)
 	}
 
 	// The writer goes; the other takes over and reads the same cursors.
@@ -62,17 +68,18 @@ func TestOCSFWriterLockAndCursors(t *testing.T) {
 		t.Fatalf("the lock was not handed on: %v", err)
 	}
 	unlock()
-	if cur, _, _ := wb.Load(); cur["s-1"].Seq != 5 {
+	if cur, _, _ := wb.Load(nil); cur["s-1"].Seq != 5 {
 		t.Fatalf("the next writer reads %+v", cur["s-1"])
 	}
 	other := openStore(t, "globex")
-	if cur, begun, _ := other.OCSFWriter(sink).Load(); begun || len(cur) != 0 {
+	if cur, begun, _ := other.OCSFWriter(sink).Load(nil); begun || len(cur) != 0 {
 		t.Fatalf("another tenant read the cursors: %v", cur)
 	}
 }
 
-// EventEnds lists each session's last seq, and lately written ones on asking.
-func TestEventEnds(t *testing.T) {
+// A new OCSF reader starts at the last committed event, and the place it
+// keeps round-trips.
+func TestOCSFCommitPos(t *testing.T) {
 	p := openStore(t, "acme")
 	id := fmt.Sprintf("s-ends-%d", time.Now().UnixNano())
 	newSession(t, p, id, "acme")
@@ -81,11 +88,6 @@ func TestEventEnds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ends, err := p.EventEnds(context.Background(), nil)
-	if err != nil || ends[id] != 3 {
-		t.Fatalf("%d, %v", ends[id], err)
-	}
-	// A new reader starts at the last committed event; the place round-trips.
 	end, err := p.CommitEnd(context.Background())
 	if err != nil || end.Session == "" {
 		t.Fatalf("commit end %+v, %v", end, err)
@@ -97,16 +99,11 @@ func TestEventEnds(t *testing.T) {
 	if got, _ := w.LoadPos(); got != end.String() {
 		t.Fatalf("saved %q, loaded %q", end.String(), got)
 	}
-	if _, begun, _ := w.Load(); !begun {
+	if _, begun, _ := w.Load(nil); !begun {
 		t.Fatal("a saved place does not mark the sink begun")
 	}
-	// Up to the end, the ends are the same; up to before the session's first
-	// event, it has none.
-	if upTo, err := p.EventEnds(context.Background(), &end); err != nil || upTo[id] != 3 {
-		t.Fatalf("up to the end: %d, %v", upTo[id], err)
-	}
-	if early, _ := p.EventEnds(context.Background(), &CommitPos{At: time.Unix(0, 0)}); early[id] != 0 {
-		t.Fatalf("up to the start: %d", early[id])
+	if end.Session != id || end.Seq != 3 {
+		t.Fatalf("the last committed event is %s/%d, want %s/3", end.Session, end.Seq, id)
 	}
 }
 

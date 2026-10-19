@@ -296,19 +296,22 @@ It polls its store each second rather than being handed lines:
   lock on a connection of its own, which the database lets go of when that
   connection ends, and keeps its cursors in the `ocsf_cursors` table
   (schema version 13; run `abhed migrate`). Every other server stands by and
-  tries for the lock each second; the one that takes it reads the cursors,
-  looks at every session once for lines past them, and goes on. So each
-  event is written by one server, in order, and a server that stopped
-  between writing and moving its cursor has its last lines written again
-  by the next (at least once; `metadata.uid` tells a repeat). Each poll
-  reads the events committed since the place it last read to, in commit
-  order (schema version 12), and keeps that place in `ocsf_cursors`; only
-  events whose transaction is older than every one still running are read,
-  so a place once passed is never behind an event that commits later. A
-  sink's first start sets its cursors and that place at the same moment. A
-  session is never read whole again; a server that takes over compares
-  every session's last event with the cursors once, and reads what is
-  missing from each cursor's seq by index.
+  tries for the lock each second; the one that takes it goes on from where
+  the last one stopped. Each poll reads the events committed since a place
+  in commit order (schema version 12) kept in `ocsf_cursors`; only events
+  whose transaction is older than every one still running are read, so a
+  place once passed is never behind an event that commits later. The place
+  moves only once the events before it are in the file and their sessions'
+  cursors moved, so a server that stopped between the two has its last
+  lines written again by the next (at least once; `metadata.uid` tells a
+  repeat), and each event is written by one server, in order. A sink's
+  first start sets the place at the last committed event. Taking over reads
+  only what was committed after the place and only the touched sessions'
+  cursors: on a test table of 10,000 sessions and 1,000,000 events it took
+  about 1 ms, against about 100 ms when it compared every session's last
+  event, which grows with the table. A session is read whole only once, for
+  the model provider a later line needs, when it was started before the
+  place.
 
 A lease and one file was chosen over a file per server writing what it
 appended: events carry no server, so the lines a server appended and then
