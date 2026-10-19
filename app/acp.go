@@ -1355,7 +1355,7 @@ func destructive(tool string, args json.RawMessage, d abhed.Decision) bool {
 	if d.Step == "destructive" {
 		return true
 	}
-	if tool != "bash" {
+	if tool != "bash" && tool != "ssh" {
 		return false
 	}
 	var a struct {

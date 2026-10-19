@@ -6,6 +6,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- `ssh` rules matched the remote command as plain text. A deny rule such
+  as `ssh(rm *)` did not stop `true; rm -rf /srv` or `sudo rm -rf /srv`,
+  an allow rule such as `ssh(web1/openssl x509 *)` also approved anything
+  chained after the command (`openssl x509 -in a.pem; rm -rf /var/www`),
+  and a remote `rm -rf` got a plain question. The command is now read as a
+  `bash` command is: deny and ask rules see each command in a chain, pipe
+  or substitution and behind `sudo`, `env`, `nice` and the other runners;
+  an allow rule with a pattern approves only one simple command; a line
+  that cannot be parsed in full is refused while a deny rule for `ssh` has
+  a pattern; a destructive remote command always confirms twice with no
+  "always"; and "don't ask again" offers no scope for a chain or a
+  wildcard.
+
 
 ## [1.2.8] - 2026-10-14
 
