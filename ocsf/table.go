@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -616,60 +615,4 @@ func mapAnswer(b *builder) {
 		b.severity(2)
 	}
 	b.set("message", "answer "+b.str("outcome"))
-}
-
-// auditActivities are API Activity's activity ids for the control plane's verbs.
-var auditActivities = map[string]int{"create": 1, "get": 2, "list": 2, "update": 3, "delete": 4}
-
-// MapAudit maps one control-plane audit row (the sandbox API's record, a
-// table apart from the session record) to API Activity.
-func MapAudit(a controlplane.AuditEvent, opts Options) Event {
-	m := NewMapper(opts)
-	b := &builder{m: m, ev: Event{}, l: Line{Event: agent.Event{
-		ID: a.SandboxID, SessionID: a.SandboxID, Seq: a.Seq, Type: agent.EventType("controlplane." + a.Action),
-		Actor: agent.ActorSystem, Trust: agent.Trusted, CreatedAt: a.At,
-	}}}
-	// The verb is the action itself or a part of it: create, template.create.
-	act, name := 99, "Other"
-	parts := strings.FieldsFunc(a.Action, func(r rune) bool { return r == '.' || r == '_' })
-	for i := len(parts) - 1; i >= 0; i-- {
-		if id, ok := auditActivities[parts[i]]; ok {
-			act, name = id, caser(parts[i])
-			break
-		}
-	}
-	b.classify(6003, act, name)
-	user := map[string]any{"name": a.Principal, "type_id": 1, "type": "User"}
-	if strings.HasPrefix(a.Principal, "system:") {
-		user["type_id"], user["type"] = 3, "System"
-	}
-	b.set("actor", map[string]any{"user": user, "app_name": "Abhed"})
-	b.profile("host")
-	b.api(a.Action, "")
-	switch a.Outcome {
-	case controlplane.OutcomeOK:
-		b.status(1, "", "")
-	case controlplane.OutcomeFailed:
-		b.status(2, "", a.Code)
-	default:
-		b.status(99, a.Outcome, "")
-	}
-	b.set("resources", []any{map[string]any{"uid": a.SandboxID, "type": "sandbox"}})
-	b.set("message", a.Principal+" "+a.Action+" "+a.SandboxID)
-	ev := b.finish()
-	meta := ev["metadata"].(map[string]any)
-	meta["log_name"] = "abhed.controlplane"
-	meta["correlation_uid"] = a.SandboxID
-	delete(meta, "uid")
-	un := ev["unmapped"].(map[string]any)
-	delete(un, "record")
-	un["audit"] = map[string]any{"generation": a.Generation, "detail": a.Detail}
-	return ev
-}
-
-func caser(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }

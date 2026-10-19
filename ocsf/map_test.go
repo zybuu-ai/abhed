@@ -352,3 +352,45 @@ func TestMapAudit(t *testing.T) {
 		t.Fatalf("template.delete is activity %v", act)
 	}
 }
+
+// An API audit row is the request's route and method, who made it, from
+// where, what it created, and its place in the audit chain.
+func TestMapAuditAPIRequest(t *testing.T) {
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	a := controlplane.AuditEvent{Seq: 7, At: at, Principal: "ana@example.com", Action: "api:POST /v1/sessions/{id}/messages",
+		Outcome: controlplane.OutcomeOK, Detail: map[string]string{"method": "POST", "route": "POST /v1/sessions/{id}/messages",
+			"path.id": "s-42", "remote": "10.0.0.7", "created.id": "q-9"}}
+	link := &AuditLink{Chain: "postgres/sandbox_audit", Pos: 3, Prev: "aa", Hash: "bb"}
+	ev := MapAuditLink(a, link, testOpts)
+	for _, v := range Versions {
+		down, err := Downgrade(ev, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Validate(down); err != nil {
+			t.Errorf("%s: %v", v, err)
+		}
+	}
+	n, _ := normal(ev)
+	if n["activity_id"] != json.Number("1") {
+		t.Errorf("a POST is activity %v, want Create", n["activity_id"])
+	}
+	req := n["http_request"].(map[string]any)
+	if req["http_method"] != "POST" || req["url"].(map[string]any)["path"] != "/v1/sessions/s-42/messages" {
+		t.Errorf("http_request %v", req)
+	}
+	if n["src_endpoint"].(map[string]any)["ip"] != "10.0.0.7" {
+		t.Errorf("src_endpoint %v", n["src_endpoint"])
+	}
+	res := n["resources"].([]any)
+	if len(res) != 1 || res[0].(map[string]any)["uid"] != "q-9" {
+		t.Errorf("resources %v", res)
+	}
+	rec := n["unmapped"].(map[string]any)["record"].(map[string]any)
+	if rec["hash"] != "bb" || rec["prev"] != "aa" || rec["pos"] != json.Number("3") || rec["chain"] != "postgres/sandbox_audit" {
+		t.Errorf("unmapped.record %v", rec)
+	}
+	if MapAudit(controlplane.AuditEvent{Action: "admin:user.delete", At: at}, testOpts)["activity_id"] != 4 {
+		t.Error("admin:user.delete is not Delete")
+	}
+}
