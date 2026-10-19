@@ -233,13 +233,22 @@ func TestContainerCloseRemovesEveryCallsContainer(t *testing.T) {
 	}
 }
 
-// Close tears the calls' containers down together, so it takes about one
-// removal however many stand, and still waits for every one.
+// Close tears the calls' containers down together, not one after another,
+// and still waits for every one. Each removal waits until all three have
+// started: removals made one at a time never get there, and say so.
 func TestContainerCloseTearsCallsDownTogether(t *testing.T) {
 	inner, log := fakeEngine(t)
-	engine := filepath.Join(t.TempDir(), "slow-engine")
-	slow := "#!/bin/sh\nif [ \"$1\" = rm ]; then sleep 1; fi\nexec " + inner + " \"$@\"\n"
-	if err := os.WriteFile(engine, []byte(slow), 0o755); err != nil { // #nosec G306 -- a test script that must run
+	dir := t.TempDir()
+	engine, starts := filepath.Join(dir, "barrier-engine"), filepath.Join(dir, "starts")
+	barrier := "#!/bin/sh\nif [ \"$1\" = rm ]; then\n" +
+		"  echo start >> '" + starts + "'\n" +
+		"  i=0\n" +
+		"  while [ \"$(grep -c start '" + starts + "')\" -lt 3 ]; do\n" +
+		"    i=$((i+1)); if [ $i -gt 400 ]; then echo alone >> '" + starts + "'; break; fi\n" +
+		"    sleep 0.05\n" +
+		"  done\n" +
+		"fi\nexec " + inner + " \"$@\"\n"
+	if err := os.WriteFile(engine, []byte(barrier), 0o755); err != nil { // #nosec G306 -- a test script that must run
 		t.Fatal(err)
 	}
 	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
@@ -277,8 +286,13 @@ func TestContainerCloseTearsCallsDownTogether(t *testing.T) {
 	if n := strings.Count(string(b), "rm -f"); n < 3 {
 		t.Fatalf("Close returned with %d of 3 containers removed:\n%s", n, b)
 	}
-	if took > 2500*time.Millisecond {
-		t.Fatalf("Close took %v for three one-second removals: one after another", took)
+	// A removal left waiting alone for the others means they ran in turn.
+	if sb, _ := os.ReadFile(starts); strings.Contains(string(sb), "alone") || strings.Count(string(sb), "start") < 3 {
+		t.Fatalf("the removals did not run together (each waits up to 20 s for the other two):\n%s", sb)
+	}
+	// A loose ceiling: removals in turn would wait out the barrier, 20 s or more.
+	if took > 15*time.Second {
+		t.Fatalf("Close took %v", took)
 	}
 }
 
