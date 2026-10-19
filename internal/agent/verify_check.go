@@ -475,8 +475,15 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	for _, cf := range f.counted {
 		findings = append(findings, ix.counted(pool, cf, cited))
 	}
+	keyedOK := map[string]bool{}
+	for _, kf := range f.keyed {
+		if fd, ok := ix.keyed(pool, kf); ok {
+			findings = append(findings, fd)
+			keyedOK[kf.n] = true
+		}
+	}
 	for _, n := range f.numbers {
-		if countedNumber(f.counted, n) {
+		if countedNumber(f.counted, n) || keyedOK[n] {
 			continue // judged with its unit above
 		}
 		findings = append(findings, ix.number(pool, n, cited))
@@ -624,6 +631,29 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 	}
 	// The output does not count that thing: the bare number decides.
 	return ix.number(pool, cf.n, cited)
+}
+
+// keyed checks "port 8080" where the output labels the word, as "port: 8080"
+// does; ok is false when no result labels it, and the bare number decides.
+func (ix *recordIndex) keyed(pool []*obsRec, kf countFact) (finding, bool) {
+	var other *obsRec
+	var otherAt countAt
+	for i := len(pool) - 1; i >= 0; i-- {
+		for _, at := range pool[i].evidence().labels[kf.unit] {
+			if at.n == kf.n {
+				return finding{out: matched, what: kf.unit + " " + kf.n + " in #" + itoa(pool[i].seq), seq: pool[i].seq, pooled: true}, true
+			}
+			if other == nil {
+				other, otherAt = pool[i], at
+			}
+		}
+	}
+	if other == nil {
+		return finding{}, false
+	}
+	return finding{out: conflicted, seq: other.seq,
+		why:      fmt.Sprintf("it says %s %s; #%d says %s", kf.unit, kf.n, other.seq, otherAt.excerpt),
+		conflict: &Conflict{Seq: other.seq, CallID: other.callID, Excerpt: otherAt.excerpt}}, true
 }
 
 func countedNumber(cs []countFact, n string) bool {

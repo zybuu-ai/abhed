@@ -153,6 +153,10 @@ All notable changes to Abhed are recorded here. The format follows
   findings. The record gains `answer.verdict`; `-p`'s result line, rpc's
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
+- A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
+  of 21 planted wrong claims none is shown as verified and 10 are
+  contradicted, all 14 true controls are verified, and no true or neutral
+  claim is contradicted; the test holds those figures as a floor.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.

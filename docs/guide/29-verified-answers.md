@@ -258,6 +258,21 @@ revision note when one was sent; and the outcome, `verified` only when every
 statement about the session's work was verified and any contract was met. A
 rebuilt or forked conversation includes the revision note, as the model saw it.
 
+## Measuring it
+
+`go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
+corpus: answers a weak model might give, each against a small recorded
+session. 21 plant a wrong test count or result, replica count, port, version,
+host, path, disk figure, file change, command, `file:line` or citation; 14
+controls say only what the session showed; 3 are general knowledge. Today
+none of the 21 planted claims is shown as verified (10 are contradicted, the
+rest unverified), all 14 controls are verified, and none of the 17 true or
+neutral claims is contradicted. The test fails if a planted claim is shown as
+verified, if a true one is contradicted, or if either count falls below its
+floor; the floors only go up. The corpus is small and written by the people
+who wrote the checks, so it shows what the checks do on these shapes of
+mistake, not how often a given model makes them.
+
 ## Limits
 
 - The comparison is textual. A statement can be verified by output that says

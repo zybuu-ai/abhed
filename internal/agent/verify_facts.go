@@ -19,6 +19,7 @@ type facts struct {
 	hosts     []string    // host names and addresses, also literals
 	numbers   []string    // standalone numbers, normalised
 	counted   []countFact // numbers with the word that counts them
+	keyed     []countFact // a word and the number that follows it, as in "port 8080"
 	fileLines []fileLine  // path:line cites, checked against the file now
 	success   bool        // says a command, test or build succeeded
 	testish   string      // "test" or "build" when success names one
@@ -55,6 +56,7 @@ var (
 	ipRe       = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b`)
 	hostRe     = regexp.MustCompile(`\b(?:[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?\.)+[a-z]{2,24}(?::\d+)?\b`)
 	numberRe   = regexp.MustCompile(`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?`)
+	keyedRe    = regexp.MustCompile(`\b([a-z][a-z\-]{1,24})\s+((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b`)
 	countRe    = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(%|[a-z][a-z\-]{1,24})`)
 	// What a claim says when it reports success; negRe undoes it.
 	successRe = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
@@ -73,6 +75,12 @@ var notUnits = map[string]bool{
 	"an": true, "as": true, "from": true, "with": true, "per": true, "than": true, "more": true,
 	"less": true, "times": true, "x": true, "it": true, "that": true, "this": true, "be": true,
 }
+
+// keyStop are words a number follows without being their value.
+var keyStop = map[string]bool{"has": true, "have": true, "had": true, "all": true, "only": true, "about": true,
+	"over": true, "under": true, "after": true, "before": true, "since": true, "took": true, "takes": true,
+	"until": true, "last": true, "first": true, "every": true, "each": true, "runs": true, "ran": true, "uses": true,
+	"used": true, "at": true, "line": true, "lines": true, "step": true, "version": true}
 
 // fileExts are endings that make a dotted name a file, not a host.
 var fileExts = map[string]bool{
@@ -129,7 +137,10 @@ func extractFacts(claim string) facts {
 	text := ansiRe.ReplaceAllString(claim, "")
 	seen := map[string]bool{}
 	addLit := func(s string) {
-		s = normText(strings.Trim(s, ".,;:!?()[]{}'\""))
+		s = normText(strings.Trim(s, ",;:!?()[]{}'\""))
+		if !strings.HasSuffix(s, "...") {
+			s = strings.TrimRight(s, ".")
+		}
 		if len(s) < 2 || seen[s] {
 			return
 		}
@@ -232,6 +243,14 @@ func extractFacts(claim string) facts {
 			f.counted = append(f.counted, cf)
 		}
 	}
+	// "port 8080": a word and the number after it, compared only where the
+	// output labels that word with a number.
+	for _, m := range keyedRe.FindAllStringSubmatch(low, -1) {
+		if notUnits[m[1]] || keyStop[m[1]] {
+			continue
+		}
+		f.keyed = append(f.keyed, countFact{n: normNumber(m[2]), unit: unitOf(m[1])})
+	}
 	nums := map[string]bool{}
 	for _, m := range numberRe.FindAllStringIndex(low, -1) {
 		// A digit inside a word, as in sha256 or utf8, is not a number said.
@@ -276,6 +295,7 @@ type evidenceText struct {
 	norm    string
 	numbers map[string]bool
 	counts  map[string][]countAt // unit -> each number counted by it
+	labels  map[string][]countAt // word -> each number it labels ("port: 8080")
 }
 
 type countAt struct {
@@ -290,7 +310,7 @@ var (
 )
 
 func prepareEvidence(content string) *evidenceText {
-	e := &evidenceText{norm: normText(content), numbers: map[string]bool{}, counts: map[string][]countAt{}}
+	e := &evidenceText{norm: normText(content), numbers: map[string]bool{}, counts: map[string][]countAt{}, labels: map[string][]countAt{}}
 	for _, m := range numberRe.FindAllStringIndex(e.norm, -1) {
 		if m[0] > 0 && isWordRune(rune(e.norm[m[0]-1])) {
 			continue
@@ -315,6 +335,10 @@ func prepareEvidence(content string) *evidenceText {
 	}
 	for _, m := range evLabelRe.FindAllStringSubmatchIndex(e.norm, -1) {
 		add(e.norm[m[4]:m[5]], e.norm[m[2]:m[3]], m[0])
+		if w := e.norm[m[2]:m[3]]; !notUnits[w] {
+			u := unitOf(w)
+			e.labels[u] = append(e.labels[u], countAt{n: normNumber(e.norm[m[4]:m[5]]), excerpt: excerptAround(e.norm, m[0], 60)})
+		}
 	}
 	return e
 }
