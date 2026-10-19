@@ -80,12 +80,12 @@ func TestVerifyFlagUnderManagedMode(t *testing.T) {
 func TestEvidenceRevealsTheCallID(t *testing.T) {
 	store := agent.NewMemStore()
 	rec := agent.NewRecorder(store, "s1", "")
-	id := "c1‮exe.txt"
+	id := "c1\u202eexe.txt"
 	rec.Record(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: id, Tool: "bash", Args: []byte(`{"command":"seq 100"}`)})
 	ev, _ := rec.Record(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: id, Tool: "bash", Content: strings.Repeat("x\n", 60)})
 	surf := &scriptSurface{}
 	slashEvidence(context.Background(), &cmdEnv{ui: surf, st: &cliState{store: store, sessionID: "s1"}}, []string{"#" + strconv.FormatInt(ev.Seq, 10)})
-	if got := surf.blocks[0].Text; strings.Contains(got, "‮") || !strings.Contains(got, "recall call_id") {
+	if got := surf.blocks[0].Text; strings.Contains(got, "\u202e") || !strings.Contains(got, "recall call_id") {
 		t.Fatalf("shown: %q", got[len(got)-80:])
 	}
 }
