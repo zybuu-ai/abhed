@@ -107,6 +107,14 @@ func (r *Renderer) Attach(l *LineReader) {
 	}
 }
 
+// DrawsToolOutput reports whether the renderer draws a recorded call's
+// output under it, as the dock does; the line view shows only a summary.
+func (r *Renderer) DrawsToolOutput() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dock != nil
+}
+
 // Usage returns what the renderer has seen of the model's accounting.
 func (r *Renderer) Usage() Usage {
 	r.usageMu.Lock()
@@ -292,7 +300,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			return
 		}
 		r.endReply(d, "")
-		r.toolRequested(d, a)
+		r.toolRequested(d, a, ev.Actor == agent.ActorUser)
 
 	case agent.EvObservation:
 		var o agent.Observation

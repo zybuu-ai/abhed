@@ -21,6 +21,11 @@ All notable changes to Abhed are recorded here. The format follows
   "always"; and "don't ask again" offers no scope for a chain or a
   wildcard.
 
+### Fixed
+
+- In the terminal UI the output of a `!` command was shown twice: under
+  the call and again below it. It is now shown once, under the call, with
+  up to 40 lines before the rest folds behind ctrl+o.
 
 ## [1.2.8] - 2026-10-14
 
