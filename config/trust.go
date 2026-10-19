@@ -713,6 +713,7 @@ var workspaceRules = map[string]fieldRule{
 	"ssh.enabled":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
 	"ssh.hosts":              {nil, "names machines and keys the agent reaches"},
 	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
+	"ssh.read_commands":      {nil, "lets ssh commands run without asking"},
 	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
 	"skills.dirs":            {nil, "a skill is instructions to the agent"},
 	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},

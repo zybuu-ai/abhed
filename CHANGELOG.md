@@ -21,6 +21,18 @@ All notable changes to Abhed are recorded here. The format follows
   "always"; and "don't ask again" offers no scope for a chain or a
   wildcard.
 
+### Added
+
+- `ssh.read_commands`: commands the operator declares reads on every host,
+  each an exact command or a pattern for one simple command, such as
+  `uptime` or `systemctl status *`. A matching `ssh` call, read as bash
+  reads it, runs in plan mode and asks in no mode, so a plan can start by
+  inspecting the fleet; a chain, pipe, substitution, redirection or a
+  destructive command is never a read. Deny and ask rules come first. Only
+  a trusted configuration file sets it; a managed file that sets it
+  replaces the list, and one that sets the permissions without it sets the
+  person's entries aside. The `ssh` tool's description names the entries.
+
 ### Fixed
 
 - In the terminal UI the output of a `!` command was shown twice: under

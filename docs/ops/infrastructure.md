@@ -311,12 +311,43 @@ retry with `accept_host_key: true` **only if the user has said the host is new
 or ephemeral**. That is a deliberate line: the agent should not decide on its
 own to stop verifying the identity of a machine it is about to run commands on.
 
-**Every remote command requires approval — there is no read-only classification.**
+**Every remote command requires approval unless the operator declared it a read.**
 A local `bash` call can be judged by its text because it runs inside a sandbox
 with a workspace boundary and a checkpoint behind it. None of that holds over
 SSH: the command runs with the remote account's full authority, outside any
 scoping, with no undo. Calling `cat` safe there would be judging the string
-rather than the consequence.
+rather than the consequence, so Abhed does not do it on its own.
+
+The operator can, for the commands they know are reads on their machines,
+with `ssh.read_commands`: a list of exact commands, or patterns for one
+simple command, matched on every host.
+
+```json
+"ssh": { "enabled": true, "read_commands": [
+  "uptime", "df -h", "systemctl status *",
+  "openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt"
+] }
+```
+
+A call whose command is one simple command matching an entry is a read: plan
+mode allows it, so a plan can start by inspecting the fleet, and no mode asks
+for it. Everything else is as before. The command must be one simple command,
+read as bash reads it: `uptime; rm -rf /srv`, `uptime | sh`,
+`systemctl status $(id)`, a redirection, a line the parser cannot read in
+full and one the destructive step names are not reads, and plan mode refuses
+them. Deny and ask rules come first, and a managed `bypass` refusal still
+asks. `*` matches any text, so `systemctl status *` also matches
+`systemctl status nginx --now`; prefer exact commands and patterns whose
+program cannot write. An entry is refused at load when it is not one simple
+command, when it does not start with the program written out (`* --version`),
+when a wildcard follows a runner or a shell (`sudo *`, `bash -c *`), or when
+the destructive step names it. The `ssh` tool's description lists the
+entries, so the model knows which commands it may run in plan mode.
+
+Only a trusted configuration file sets `ssh.read_commands`; a workspace
+cannot. A managed file that sets it replaces the list (`[]` allows none), and
+one that sets any `permissions` key without it sets the person's entries
+aside, as it does their allow rules.
 
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.

@@ -247,7 +247,9 @@ chain, pipe or substitution and behind a runner such as `sudo`, `env` or
 a pattern approves only one simple command, so `ssh(web1/openssl x509 *)`
 does not approve `openssl x509 -in a.pem; rm -rf /var/www`; and a line the
 parser cannot read in full is refused while a deny rule for `ssh` has a
-pattern. A remote command the destructive step names, such as `rm -rf`,
+pattern. A command the operator declared a read in `ssh.read_commands` runs
+unasked and in plan mode, when it is one simple command matching an entry
+([Clusters and machines](../ops/infrastructure.md#ssh)). A remote command the destructive step names, such as `rm -rf`,
 always confirms twice and offers no "always". Neither reads a script the
 remote command runs, which is on a machine Abhed cannot see, nor knows a
 remote login shell other than bash.
@@ -816,7 +818,8 @@ Every call goes through the same steps, and the order is the design:
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Plan mode** — in `plan`, a mutating call is refused here, before the
    destructive and ask steps, so a destructive command or an ask rule is not
-   put to a person who might accept it. Read-only calls go on as before
+   put to a person who might accept it. Read-only calls go on as before, an
+   `ssh` command the operator declared a read (`ssh.read_commands`) among them
 4. **Destructive commands** — force push, hard reset, disk writes, fork bombs
    and similar always confirm, in every mode, because there is no undo. For git
    these are the forms that discard work which Abhed recognises: `git restore`

@@ -146,7 +146,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |
 | `rag` | ignored: a corpus URL and its headers are egress |
-| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts` | ignored: each names an endpoint, hosts, credentials or machines. The web ones are set aside even when trusted |
+| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts`, `ssh.read_commands` | ignored: each names an endpoint, hosts, credentials or machines, or lets a remote command run unasked. The web ones are set aside even when trusted |
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |

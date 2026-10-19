@@ -352,6 +352,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AllowGitExtensions(cfg.Permissions.GitExtensions...); err != nil {
 		return nil, fmt.Errorf("abhed: permissions.git_extensions: %w", err)
 	}
+	if err := pol.AllowRemoteReads(cfg.SSH.ReadCommands...); err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
 
 	// A managed sandbox setting binds here too; otherwise bash is unsandboxed
 	// unless the caller asked for the configured sandbox.

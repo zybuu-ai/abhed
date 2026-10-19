@@ -1238,6 +1238,10 @@ type SSHConfig struct {
 	// ConnectHosts, when set, are the only addresses ssh_connect may reach:
 	// "10.0.0.5", "*.lab.example" or "vm.example:2222", matched without case.
 	ConnectHosts []string `json:"connect_hosts,omitempty"`
+	// ReadCommands are commands an ssh call may run as a read, on any host:
+	// "uptime" or "systemctl status *", each one simple command. A matching
+	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
+	ReadCommands []string `json:"read_commands,omitempty"`
 }
 
 type SSHHostConfig struct {
@@ -1803,6 +1807,9 @@ func (c Config) Validate() error {
 	}
 	if err := new(policy.Engine).AllowGitExtensions(c.Permissions.GitExtensions...); err != nil {
 		return fmt.Errorf("permissions.git_extensions: %w", err)
+	}
+	if err := new(policy.Engine).AllowRemoteReads(c.SSH.ReadCommands...); err != nil {
+		return err
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

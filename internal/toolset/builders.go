@@ -258,7 +258,7 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
 	}
 	return out
 }

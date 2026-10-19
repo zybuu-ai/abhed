@@ -283,6 +283,21 @@ func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {
 		}
 		c.Permissions.GitExtensions = nil
 	}
+	// So do ssh read commands, which run on a host unasked.
+	if c.AllowLocked() && !c.ManagedSets("ssh.read_commands") && len(c.SSH.ReadCommands) > 0 {
+		for _, cmd := range c.SSH.ReadCommands {
+			file := userFile
+			switch c.RuleLayer("ssh_read_commands", cmd) {
+			case LayerSettings:
+				file = settingsFile
+			case LayerWorkspace:
+				file = workspaceFile
+			}
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: "ssh.read_commands", Value: cmd,
+				Reason: "the managed configuration sets the permissions, so only its own ssh.read_commands declares remote reads"})
+		}
+		c.SSH.ReadCommands = nil
+	}
 	if !c.AllowLocked() || c.ManagedSets("permissions.allow") {
 		return
 	}
@@ -533,7 +548,7 @@ func (c *Config) noteRuleLayer(layer string) {
 	}
 	for list, rules := range map[string][]string{
 		"allow": c.Permissions.Allow, "ask": c.Permissions.Ask, "deny": c.Permissions.Deny,
-		"git_extensions": c.Permissions.GitExtensions,
+		"git_extensions": c.Permissions.GitExtensions, "ssh_read_commands": c.SSH.ReadCommands,
 	} {
 		for _, r := range rules {
 			k := list + "\x00" + strings.TrimSpace(r)
@@ -560,13 +575,16 @@ func managedRuleSet(data []byte) map[string]bool {
 			Allow, Ask, Deny []string
 			GitExtensions    []string `json:"git_extensions"`
 		}
+		SSH struct {
+			ReadCommands []string `json:"read_commands"`
+		}
 	}
 	if json.Unmarshal(data, &m) != nil {
 		return nil
 	}
 	out := map[string]bool{}
 	for list, rules := range map[string][]string{"allow": m.Permissions.Allow, "ask": m.Permissions.Ask,
-		"deny": m.Permissions.Deny, "git_extensions": m.Permissions.GitExtensions} {
+		"deny": m.Permissions.Deny, "git_extensions": m.Permissions.GitExtensions, "ssh_read_commands": m.SSH.ReadCommands} {
 		for _, r := range rules {
 			out[list+"\x00"+strings.TrimSpace(r)] = true
 		}

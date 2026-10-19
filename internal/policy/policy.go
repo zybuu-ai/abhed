@@ -431,6 +431,10 @@ type Engine struct {
 	// data out, such as web_fetch.
 	AskReadOnly map[string]func(subject string) string
 
+	// RemoteReads are the commands an ssh call may run as a read, from
+	// ssh.read_commands; see AllowRemoteReads.
+	RemoteReads []Rule
+
 	// GitExtensions are git subcommands outside git itself, such as lfs, the
 	// person opted in to (permissions.git_extensions): the destructive step
 	// does not take them as an alias or extension it cannot read. Deny and
@@ -987,7 +991,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
-	if e.Mode == ModePlan && mutates {
+	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "") {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 	}
 
@@ -1034,6 +1038,18 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	// the record names the stronger reason; before the mode, so no mode skips it.
 	if hookAsk != nil {
 		return *hookAsk
+	}
+
+	// An ssh command the operator declared a read changes nothing, as a read
+	// tool does: no mode but a managed bypass asks for it.
+	if remote != nil && e.Mode != ModeBypass {
+		if rule := e.remoteReadRule(*remote); rule != "" {
+			step := "default"
+			if e.Mode == ModePlan || e.Mode == ModeAuto {
+				step = "mode"
+			}
+			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step}
+		}
 	}
 
 	// 4. Permission mode.
