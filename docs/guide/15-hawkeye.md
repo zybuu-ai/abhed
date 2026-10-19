@@ -90,6 +90,7 @@ capture does not say it left any out.
 | Policy layers | the rules an edition added to the session as a layer of their own, such as a Team workspace's ([Policy layers](04-permissions.md#policy-layers-from-an-edition)), from its `policy.layer` events: name, revision, rules, allow rules set aside, and how many decisions the layer's rules made (`policy_layers` and `policy.by_layer` in the JSON) |
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of, or whose connections the egress allowlist refused (`network_denied`), is marked `!` |
 | Turns | per-turn tokens, time to first token, total latency |
+| Remote changes | per host and per cluster, every `ssh` command and `k8s_apply` write in order: the address or server the approval named, the decision and who made it, the exit code (or `denied`, `not run`, `failed`), and the [runbook](28-runbooks.md) step it was (`remote_changes` in the JSON) |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
 

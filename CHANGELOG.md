@@ -6,6 +6,36 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Runbooks: a plan from plan mode can carry the exact calls it will make
+  (`ssh`, `k8s_apply`, `bash`, `edit`, `write`). Each step is checked against
+  the policy and hashed when the plan is proposed, and you approve them once
+  with the plan. A call made exactly as the next step then runs without
+  asking, recorded as `plan.step` with the plan's hash; any other change
+  asks, saying it is not in the approved plan, even where a rule or the mode
+  would allow it. Deny rules, hooks and the sandbox still apply, steps that
+  cannot be undone are confirmed a second time, and a rewound or continued
+  session asks for each step again
+  ([Runbooks](docs/guide/28-runbooks.md)).
+- The plan card lists a runbook's steps in the CLI, the workbench, the
+  console and, over ACP, Abhed Studio, which now gets plan mode's
+  `exit_plan` and answers a plan as a permission request. The workbench
+  answers with `POST /v1/sessions/{id}/plan`.
+- `abhed -p -runbook FILE` approves a runbook for a headless run, and
+  `-runbook-sha256` pins the plan hash you reviewed; the SDK takes
+  `Options.Runbook` and `abhed rpc` takes `runbook` on `start`.
+- HawkEYE lists remote changes: every `ssh` command and `k8s_apply` write
+  per host and cluster, with the decision, the exit code and the runbook
+  step it was, in the text and HTML reports and the workbench
+  ([HawkEYE](docs/guide/15-hawkeye.md)).
+
+### Changed
+
+- `plan.proposed` carries the plan's `hash`, and its `runbook` when it has
+  one; `plan.decided` carries the `plan_hash` and runbook an accept bound
+  ([Data model](docs/architecture/10-data-model.md)).
+
 
 ## [1.2.8] - 2026-10-14
 

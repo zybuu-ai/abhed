@@ -318,6 +318,11 @@ SSH: the command runs with the remote account's full authority, outside any
 scoping, with no undo. Calling `cat` safe there would be judging the string
 rather than the consequence.
 
+A [runbook](../guide/28-runbooks.md) is the one way to approve remote commands
+ahead of time: the person reads each exact command once, with the plan, and
+only a call made exactly as the next step runs without its own ask. Deny
+rules still refuse it.
+
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.
 

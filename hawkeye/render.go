@@ -124,7 +124,7 @@ func Text(r Report) string {
 		for _, t := range r.RemoteChanges {
 			fmt.Fprintf(&b, "  %s %s\n", t.Kind, t.Name)
 			for _, c := range t.Changes {
-				fmt.Fprintf(&b, "    #%-4d %-9s %-10s %s%s\n", c.Seq, remoteOutcome(c), clip(c.Decision+byLabel(c.By), 10),
+				fmt.Fprintf(&b, "    #%-4d %-9s %-15s %s%s\n", c.Seq, remoteOutcome(c), clip(c.Decision+byLabel(c.By), 15),
 					clip(oneLine(c.What), 70), planLabel(c.PlanHash, c.PlanStep))
 			}
 		}

@@ -467,7 +467,14 @@ The same list is also a config option of `category: "mode"`.
 - The change is recorded `mode.changed {from, to, by: "user", via: "studio"}`,
   and the engine sends `current_mode_update`.
 - Plan mode's exit is the engine's `plan.proposed` / `plan.decided` flow, shown
-  as a normal ask.
+  as a normal ask: a `session/request_permission` whose `toolCall` (`kind:
+  "think"`, `_meta.plan: true`, `planHash` and `steps` when the plan has a
+  runbook) carries the plan and its steps as content, with the options
+  `plan:accept-edits`, `plan:approve` and `plan:keep-planning`. A runbook with
+  steps that cannot be undone is followed by a second request
+  (`_meta.destructive: true`, `plan:confirm` or `plan:decline`). Accepting
+  records `mode.changed` `via: plan-exit` and `plan.decided`, and the same
+  prompt turn goes on with the plan.
 
 **Engine today:** `session/set_mode` answers -32601; the mode is fixed at
 construction. **Not implemented in 1.2.2:** a loop-level mode change through the same
