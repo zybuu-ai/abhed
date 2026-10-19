@@ -284,12 +284,22 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
-- `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Agent.Verdict` and the
-  types `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult` and
-  `RequireResult`.
+- `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Options.Supervisor`,
+  `Options.Runbook`, `Agent.Verdict`, and the types `AnswerVerdict`,
+  `ClaimVerdict`, `Conflict`, `ContractResult`, `RequireResult`, `Runbook`
+  and `RunbookStep`.
 - `server`: `StartSpec.Verify`.
-- `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`),
-  `VerifyRank`, `PlanConfig`, `MonitorConfig` and `ManagedAsk`.
+- `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`
+  and its `On`), `VerifyRank`, `PlanConfig`, `MonitorConfig` and its
+  `JudgeName`, `ManagedAsk`, `Overrides.Supervisor`, `SSHConfig.ReadCommands`,
+  `SSHConfig.Transfers`, `SSHConfig.TransferMaxMB`, `SandboxConfig.Image`,
+  and `ToolsConfig.BashCheckpoints`, `BashCheckpointMB` and
+  `BashCheckpointFiles`.
+- `hawkeye`: `RemoteTarget`, `RemoteChange`, `Report.RemoteChanges`,
+  `Report.Answers` with `Answer`, and `SupervisorStats`.
+- `monitor`: the drift suite's `DriftCase`, `DriftCases`, `DriftResult`,
+  `DriftReport` and `RunDrift`.
+- `abhed -p`'s JSON result line gains `verdict` when answers are checked.
 
 ## [1.2.8] - 2026-10-14
 
