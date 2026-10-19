@@ -312,13 +312,13 @@ func TestCommandProfileDecisions(t *testing.T) {
 // silently filtering nothing.
 func TestUnknownSyscallRefused(t *testing.T) {
 	for _, arch := range archNames {
-		_, err := build(arch, []rule{{name: "no_such_call", errno: errEPERM}})
+		_, err := build(arch, []rule{{name: "no_such_call", errno: errEPERM}}, false)
 		if err == nil || !strings.Contains(err.Error(), `no system call "no_such_call" on `+arch) {
 			t.Errorf("%s: %v", arch, err)
 		}
 	}
 	// Calls only one architecture has.
-	if _, err := build("arm64", []rule{{name: "open", errno: errEPERM}}); err == nil {
+	if _, err := build("arm64", []rule{{name: "open", errno: errEPERM}}, false); err == nil {
 		t.Error("arm64 built a rule for open, which it does not have")
 	}
 	if _, err := testCommand(false).Program("riscv64"); err == nil || !strings.Contains(err.Error(), "riscv64") {

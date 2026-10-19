@@ -46,6 +46,23 @@ All notable changes to Abhed are recorded here. The format follows
 - `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
   or `stringData`, and withholds its values from the record; build such a
   Secret with `secret_from` from stored secrets and workspace files.
+- `abhed serve` writes every API request that changes something to the
+  control-plane audit record, with who made it, before it runs and with its
+  outcome, and answers 503 without making the change when that record
+  cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
+  without, the new file `<records>/<tenant>/audit/api.jsonl` under
+  `record.dir` or `~/.abhed/records`.
+- Postgres: a server started as the runtime role now needs the schema
+  through version 13 (`events.commit_tx`, `ocsf_cursors`) and refuses an
+  older one, saying to run `abhed migrate`.
+- Postgres: schema version 11 adds the `chain_pre` table. Run `abhed migrate`
+  as the owner role before starting a server as the runtime role, which
+  refuses an older schema and says so; a `storage.single_role` server
+  applies it itself.
+- HawkEYE's `sandbox-denied` no longer fires on the words of a command's
+  output alone. A call whose output says an operation was not permitted,
+  with nothing in the record to show the sandbox refused it, is now
+  `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
 
 ### Security
 
@@ -70,9 +87,44 @@ All notable changes to Abhed are recorded here. The format follows
   starts and never writes anywhere, cut to 12 hex digits: two compare only
   while that Abhed runs, and unlike a plain sha256 it cannot be used to
   guess a short value offline.
+- `abhed record verify` on Postgres asked the database's own
+  `abhed_chain_verify` whether a chain held, which the tables' owner could
+  replace with one that passes any chain, and counted an event inserted
+  with the chain's trigger off as "from before the chain" rather than a
+  failure. Abhed now recomputes every hash itself from the rows, and fails
+  an event with no chain unless the migration counted it as there before
+  the chain began.
 
 ### Added
 
+- The Postgres record in commit order, for exporters: each event keeps its
+  writing transaction (`commit_tx`, schema version 12; existing rows are not
+  rewritten and sort first), and `store.Postgres.ScanCommitted` reads a
+  tenant's events after a `CommitPos` only once every earlier transaction
+  has finished, so a reader resuming from a position never passes over a row
+  that commits late. `store.PostgresOf` finds the Postgres store behind a
+  wrapper such as the held store. Run `abhed migrate` to add the column and
+  its index.
+- `server.metrics`: Prometheus metrics for `abhed serve` and its control
+  plane, off by default. Policy decisions by decision, step and tool;
+  approvals by answer; supervisor verdicts by code; egress decisions by kind
+  and decision; sandbox operations and bindings; tool, model, record-write
+  and request latency; model tokens; sessions. Served at `/metrics` to
+  administrators, or on a `listen` address of its own, which needs a bearer
+  token (`token_env`) unless it is loopback. No label carries a path, a
+  command, a host or anything a person or model wrote.
+- Every mutating API route is audited with its principal in the chained
+  control-plane record: the route pattern as `api:<pattern>`, the method,
+  tenant, caller address and wildcard values, never the body or query.
+  `abhed record audit` checks the chain, in Postgres or the local file,
+  recomputing each hash itself, and against any `-head position:hash`
+  kept elsewhere.
+  A create's outcome names the id it made. A terminal's key batches and
+  language-server messages get one event a request instead of two.
+- The control plane's SQLite record (sandbox operations and the
+  reconciler's events) is hash-chained like the Postgres one, and
+  `abhed record audit` checks it; rows from before are reported as
+  unchained.
 - `ssh.read_commands`: commands the operator declares reads on every host.
   An exact entry (`uptime`, `df -h`) matches only its own text
   and may name any program but one that runs what it is given (a shell, a
@@ -264,6 +316,78 @@ All notable changes to Abhed are recorded here. The format follows
   per host and cluster, with the decision, the exit code and the runbook
   step it was, in the text and HTML reports and the workbench
   ([HawkEYE](docs/guide/15-hawkeye.md)).
+- `abhed record export <session>` with `storage.driver: postgres` writes the
+  session's hash chain, each event as it was hashed, with the head the
+  database held; `abhed record verify` checks that file anywhere, with no
+  database, and fails an edited, removed, reordered, duplicated or cut line,
+  or a file that no longer holds a head given with `-head position:hash` or
+  held by `-witness` ([Records](docs/guide/12-records.md#the-postgres-record)).
+- Events written before the Postgres chain began (before 1.2.8) are
+  counted once, per session, in `chain_pre`, and reported as not covered;
+  nothing is chained over them.
+- A chain head API, `store/chain`: a chain's head (last position and hash)
+  and a check of a range of it, answered by the Postgres events (per
+  session), the control-plane audit (per tenant, in Postgres, the local
+  `api.jsonl` or the control plane's SQLite record) and the local record,
+  for heads to be signed and anchored outside the store.
+- Soaks of the chained append path, Postgres and local, which fail on any
+  event a writer was told was written and the store does not hold. On a
+  Mac with Postgres 17 in a 4-CPU Podman VM and 32 sessions writing: 1,500
+  events a second held for two minutes (180,032 events), and 1,400 to 2,300
+  a second flat out with the VM's CPU the limit, none dropped; the local
+  record about 63,000 a second.
+- The fence learns what its seccomp filter refuses: in `mount_namespace`
+  mode, on Linux 5.7 or later, each refusal goes to Abhed (seccomp user
+  notification), which answers with the same EPERM and records the counts
+  as `fence.denied`. The command, in its own PID namespace, cannot reach the
+  listener; with Abhed gone the kernel refuses with ENOSYS. Landlock's
+  refusals are not reported: the kernel offers them only to its audit log
+  (Linux 6.15), which an unprivileged process cannot read.
+- HawkEYE reads the sandbox's own events for `sandbox-denied`: the fence's
+  memory kills and process-limit refusals (`fence.limit`), seccomp's
+  refusals (`fence.denied`), git protection's
+  refusals, and bash's note, now recorded with the result as
+  `sandbox_note`. The detail names each and the event it is from. On a
+  labelled set of 32 calls its precision is 1.00 and its recall 0.83,
+  against 0.62 and 0.56 for the output's words alone
+  ([HawkEYE](docs/guide/15-hawkeye.md#findings)).
+- The record as OCSF events. Every record type maps to an OCSF 1.8.0 class:
+  API Activity (with the AI Operation profile's model, role and tokens) for
+  messages, model calls, calls, decisions and results; File System, Process,
+  Network, HTTP and SSH Activity; Device Config State Change for modes,
+  rules, policy layers and refused settings; Detection Finding for the
+  supervisor's and the answer checker's verdicts and planted state; and
+  Application Lifecycle for sessions and subagents. Each event is derived
+  from one chained line and keeps that line's seq, id, chain links and
+  payload, so the line can be rebuilt from it and its hash checked; it holds
+  no more than the record, redactions included. Events can be taken down to
+  OCSF 1.5.0, 1.3.0 or 1.1.0, what an older version lacks kept under
+  `unmapped`. The schema facts are the published schema's, checked by the
+  tests for every event written ([OCSF events and logs](docs/guide/30-ocsf-and-logs.md)).
+- `abhed logs`: the local record as one line an event, as OCSF, or as its
+  own chained lines, for one session or all of them, with `-f` to follow,
+  `-since`, `-after`, `-type`, and `-cursor FILE`, which keeps the last seq
+  read of each session so a reader that restarts goes on where it stopped.
+- `record.ocsf`: with `enabled`, the command line's record writes each line
+  to a rotated JSONL file of OCSF events (`version`, `max_mb`, `keep`) beside
+  the record, with a cursor that survives a restart: lines recorded while it
+  was off are written when it next starts, and processes sharing the file
+  never write a line twice. `record.ocsf.path` and `record.ocsf.locked`
+  (the managed `record.ocsf` is then the whole of it) are managed only; a
+  managed path's folder is state commands cannot reach. `abhed serve` writes
+  its own file from its store: from Postgres, one server at a time holds an
+  advisory lock and keeps the cursors in the new `ocsf_cursors` table
+  (schema version 13, `abhed migrate`), so another takes over where it
+  stopped and no event is written by two.
+- `GET /v1/sessions/{id}/logs` streams a session's record as OCSF events or
+  shorthand over SSE, on the events stream's sign-in, ownership check and
+  seq cursor (`Last-Event-ID`, `?after=`), with `?version=` and `?type=`.
+  `GET /v1/sandboxes/{id}:events?format=ocsf` gives a page of a sandbox's
+  control-plane record as OCSF API Activity, and `abhed record audit -format
+  ocsf` every row of the control plane's audit chains: the principal as the
+  actor, an API request's method, route, path, caller and created ids, and
+  each row's chain, position and links, with a stable `metadata.uid` from
+  its place in the chain.
 
 ### Changed
 
@@ -274,6 +398,21 @@ All notable changes to Abhed are recorded here. The format follows
 - A `bash` command's `observation` carries `cwd`, the folder the tool ran it
   in, as it followed a lone `cd`
   ([Data model](docs/architecture/10-data-model.md)).
+- An `observation` of `bash` carries `sandbox_note` when bash added a note
+  that an operation was not permitted under a sandbox: the credential path
+  or Abhed's own state the output named, or `denied`
+  ([Data model](docs/architecture/10-data-model.md)).
+- Postgres schema version 14 makes each event insert cheaper with the same
+  hash: the chain's trigger uses fixed queries and renders only the hashed
+  columns (about 120 down to 30 microseconds a row), sets `inserted_at`
+  itself instead of a second trigger, and the unused GIN index on the
+  sealed `payload` is dropped. Apply it with `abhed migrate`. Each event
+  stays its own transaction; the rate many sessions reach is bound by the
+  database's log flushes, and the records guide says how to raise it
+  without giving up durability.
+- A `bash` note now also names a refusal of a credential file the sandbox
+  denies other than `~/.ssh`, `~/.kube`, `~/.aws` and `~/.gnupg` (such as
+  `~/.netrc` or `~/.config/gh`), and of Abhed's own state.
 
 ### Fixed
 
@@ -313,6 +452,14 @@ From `apidiff` between v1.2.8 and this release:
 - Incompatible: `monitor.Guard` now holds a mutex and a slice, so it is no
   longer comparable: code that compared two `Guard` values with `==` or used
   one as a map key no longer compiles; use a `*Guard`.
+
+- `store/chain`: `Linker`, which the Postgres event and audit chains and the
+  control plane's SQLite audit answer, handing out their links as stored for
+  an export of a range.
+- `app`: `WithRecordAnchor`, `AnchorBuilder` and `RecordHead`: an edition's
+  anchor is given each head of the record beside the managed
+  `record.witness` (a local session's as it is synced, a Postgres session's
+  at each run's end), and stopped as the record closes.
 - `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Options.Supervisor`,
   `Options.Runbook`, `(*Agent).Verdict`, and the types `AnswerVerdict`,
   `ClaimVerdict`, `Conflict`, `ContractResult`, `RequireResult`, `Runbook`
@@ -341,6 +488,30 @@ From `apidiff` between v1.2.8 and this release:
   and `RunDrift`.
 - A new command, `cmd/abhed-drift`.
 - `abhed -p`'s JSON result line gains `verdict` when answers are checked.
+- `store/chain`: `Head`, `Range`, `Source`, `Link`, `LinkHash`, `Genesis`,
+  `Walker` and `NewWalker`, and the export format's `Header`, `Writer`,
+  `NewWriter`, `ExportReport`, `VerifyExport`, `IsExport` and
+  `ExportVersion`.
+- `store`: `Postgres.EventChain`, `Postgres.AuditChain`,
+  `Postgres.ExportChain`, and `ChainReport.Reason` and `ChainReport.PreChain`.
+- `store/local`: `Store.Chain` and `AuditChain`.
+- `store/sqlite`: `Store.AuditChain` and `ChainReport.Reason`.
+- `hawkeye`: `SandboxSignal`, `Call.Sandbox` and `Call.SandboxUnconfirmed`.
+- `ocsf`, a new package: `Mapper` (`NewMapper`, `Map`, `Observe`), `Line`,
+  `Options`, `Event`, `Mapping`, `Types`, `MapAudit`, `Downgrade`, `Replay`,
+  `ReplayJSON`, `Validate`, `CheckVersion`, `Shorthand`, `Version`,
+  `Versions`, and the file sink `OpenSink`, `Sink` and `SinkOptions`.
+- `store/local`: `Options.OnAppend`, `Sealed.End`, `LineHash`, and
+  `Store.SessionIDs`, `Store.LinesFrom` and `Store.Size`.
+- `store`: `Postgres.OCSFWriter` with `OCSFWriter`, `OCSFCursor` and
+  `ErrOCSFStandby`, `Postgres.CommitEnd`, and the audit
+  chain's `Postgres.AuditRows`, `Postgres.AuditLinks`, `Sandboxes.AuditLinks`
+  and `AuditChainName`; `store/sqlite`: `Store.AuditRows`,
+  `Store.AuditLinks` and `AuditChainName`; `store/local`: `AuditRows` and
+  `AuditChainName`; `ocsf`: `MapAuditLink` and `AuditLink`.
+- `ocsf`: `Cursor`, `CursorStore`, `ErrStandby`, `Line.Pos`, and
+  `SinkOptions.Cursors`, `Changed` and `Poll`.
+- `config`: `RecordConfig.OCSF`, `OCSFConfig` and `OCSFVersions`.
 
 ## [1.2.8] - 2026-10-14
 

@@ -149,7 +149,8 @@ and none of them is a model's opinion.
 | `subagent-destructive` | warn | a subagent was allowed a destructive command; the detail says who allowed it and names the subagent's session |
 | `denied` | info | a call was refused; the detail says by whom, from the event's `by` (policy, reviewer, the person, headless, or system for a request that ended unanswered), and names the `approver` where the record does |
 | `subagent-denied` | info | a subagent's call was refused, from the parent's `subagent.action`; the detail says by whom and names the subagent's session |
-| `sandbox-denied` | info | a `bash` command ran under a sandbox tier (its observation's `sandbox` is not `none`) but the sandbox refused an operation in it, whatever its exit status says; records without the tier do not raise it |
+| `sandbox-denied` | info | the record shows the sandbox refused part of a command, whatever its exit status says: the fence's `fence.limit` says it killed processes at the memory limit or refused new ones at a process limit; its `fence.denied` names the system calls seccomp refused; git protection (`sandbox.git_planted`, `sandbox.git_linked`, `sandbox.git_walk_bounded` with `refused: true`) did not run it; or, under a sandbox tier, `bash` recorded an operation not permitted on a path the sandbox denies (`sandbox_note`: a credential folder or file in the home folder, or Abhed's own state). The detail names each, with the event it is from |
+| `sandbox-unconfirmed` | info | a `bash` command under a sandbox tier was refused an operation (`sandbox_note: denied`, or, in a record from before 1.2.9, bash's note in its output), and nothing in the record says the sandbox refused it rather than the system's own permissions: a `chown` to root, a `kill` of another user's process, a write the sandbox's file rules or the fence's seccomp or Landlock refused all read the same |
 | `network-denied` | info | the egress allowlist refused a connection or request, from its `egress.decision` events, not from the command's output; one finding per call and destination, naming the call (or Abhed's own model, web or MCP request), the rule and how many times. A command can still exit 0 |
 | `network-would-deny` | info | in `monitor` mode, the allowlist let through what it would have refused |
 | `truncated` | info | tool results were cut before the model saw them |
@@ -170,6 +171,27 @@ server that makes the report. The command line reads only the record, which
 cannot tell a shell still open from a server that stopped with one open, so
 there `no-end` is still raised and says a shell was open.
 
+`sandbox-denied` reads what the sandbox recorded, not the words of the
+output, which a program can print for reasons of its own. On a labelled set
+of 32 calls (`hawkeye/b15_test.go`), 18 run on a Mac on the host and under
+the process tier, the label being whether the sandboxed run was refused
+something the host run was not, and 14 built from the fence's and git
+protection's events in the shapes they are written on Linux (the fence's
+seccomp refusals checked there for real by `TestFenceRecordsSeccompRefusals`):
+`sandbox-denied` had a precision of 1.00 and a recall of 0.83 (15 found,
+none wrong, 3 missed). Reading the output's words alone, as HawkEYE did
+before 1.2.9, had a precision of 0.62 and a recall of 0.56: it took a
+`chown` to root, a `kill` of process 1 and a program printing "Operation not
+permitted" for the sandbox, and missed every memory kill, process-limit
+refusal and git refusal. The three it still misses are refusals no event
+records: a write the process tier's file rules refused, seccomp refusing a
+call in `landlock_only` mode (which keeps no listener), and Landlock
+refusing a write. Landlock reports its refusals only through the kernel's
+audit log, from Linux 6.15 (Landlock ABI 7), which an unprivileged process
+cannot read; so those stay `sandbox-unconfirmed`, or show only as the
+command's own error. Thirty-two calls show the finding is not wrong on the
+cases measured; they are too few to prove a rate of 0.99.
+
 `borrowed-host` is the one worth understanding. All tool output is untrusted,
 and an injected instruction usually has to name somewhere to send things. A
 call to a host that only tool output supplied is that shape — and it is also
@@ -188,9 +210,11 @@ read and not a verdict.
 - **It does not see every file inside `bash`.** File access is counted from
   the file tools' arguments; guessing paths out of a shell command would
   report things that did not happen. What the sandbox itself records about a
-  command is read: the egress proxy's decisions, a fence limit hit, and a
-  `.abhed` planted in the workspace. No sandbox tier records each file a
-  command opens, so that stays out of the report.
+  command is read: the egress proxy's decisions, a fence limit hit, git
+  protection refusing a command, and a `.abhed` planted in the workspace. No
+  sandbox tier records each file a command opens, nor each operation
+  Landlock refuses, nor what seccomp refuses outside `mount_namespace`
+  mode, so those stay out of the report.
 - **Records written by v0.2.0 or earlier have no per-turn events.** The summary falls
   back to the session's own totals and the context chart is omitted.
 

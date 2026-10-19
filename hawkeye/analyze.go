@@ -2,6 +2,8 @@ package hawkeye
 
 import (
 	"encoding/json"
+	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -154,9 +156,18 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			}
 			c.Ran, c.IsError, c.ExitCode = true, o.IsError, o.ExitCode
 			// Only where a sandbox was in force: on the host the same words are the system's.
-			c.SandboxDenied = c.Tool == "bash" && o.Sandbox != "" && o.Sandbox != "none" && sandboxRefused(o.Content)
+			if c.Tool == "bash" && o.Sandbox != "" && o.Sandbox != "none" {
+				if what, ok := sandboxNotes[o.SandboxNote]; ok {
+					c.Sandbox = append(c.Sandbox, SandboxSignal{Seq: e.Seq, Source: "bash", What: what})
+				} else if o.SandboxNote != "" || sandboxRefused(o.Content) {
+					c.SandboxUnconfirmed = true
+				}
+			}
 			c.Truncated, c.DurationMS = o.Truncated, o.DurationMS
 			c.Output, c.OutputLen = clip(o.Content, outputKeep), len(o.Content)
+
+		case agent.EvFenceLimit, agent.EvFenceDenied, sandboxGitPlanted, sandboxGitLinked, sandboxGitWalkBounded:
+			sandboxSignal(calls, e)
 
 		case agent.EvEgressDecision:
 			network(&r, calls, e)
@@ -234,7 +245,10 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 		r.Outcome = "idle"
 	}
 	for _, id := range order {
-		r.Calls = append(r.Calls, *calls[id])
+		c := calls[id]
+		c.SandboxDenied = len(c.Sandbox) > 0
+		c.SandboxUnconfirmed = c.SandboxUnconfirmed && !c.SandboxDenied
+		r.Calls = append(r.Calls, *c)
 	}
 	for _, f := range files {
 		r.Files = append(r.Files, *f)
@@ -446,8 +460,82 @@ func settle(open map[string]bool, e agent.Event) {
 	}
 }
 
-// sandboxRefused spots the note bash adds to its result when the sandbox
-// denied an operation (tools.sandboxHint). The command ran; part of it did not.
+// The events of git protection that refuse a command (sandbox.EvGit*).
+const (
+	sandboxGitPlanted     agent.EventType = "sandbox.git_planted"
+	sandboxGitLinked      agent.EventType = "sandbox.git_linked"
+	sandboxGitWalkBounded agent.EventType = "sandbox.git_walk_bounded"
+)
+
+// sandboxNotes are what bash's note (Observation.SandboxNote) names that the
+// sandbox denies, so the refusal was the sandbox's.
+var sandboxNotes = map[string]string{
+	"ssh": "denied access to ~/.ssh", "kube": "denied access to ~/.kube", "aws": "denied access to ~/.aws",
+	"gnupg": "denied access to ~/.gnupg", "abhed": "denied access to Abhed's own state",
+	"credentials": "denied access to a credential file in the home folder",
+}
+
+// sandboxSignal adds what a sandbox event says it refused to the call it
+// names: the fence's cgroup killing for memory or refusing forks, its
+// seccomp filter refusing system calls, or git protection not running a command.
+func sandboxSignal(calls map[string]*Call, e agent.Event) {
+	var p struct {
+		CallID         string         `json:"call_id"`
+		OOMKill        int64          `json:"oom_kill"`
+		OOMGroupKill   int64          `json:"oom_group_kill"`
+		PidsMax        int64          `json:"pids_max"`
+		SessionPidsMax int64          `json:"session_pids_max"`
+		MemoryMaxMB    int64          `json:"memory_max_mb"`
+		MaxProcs       int64          `json:"max_procs"`
+		Refused        *bool          `json:"refused"`
+		Calls          map[string]int `json:"calls"`
+	}
+	if json.Unmarshal(e.Payload, &p) != nil {
+		return
+	}
+	c := calls[p.CallID]
+	if c == nil || p.CallID == "" {
+		return
+	}
+	add := func(source, what string) {
+		c.Sandbox = append(c.Sandbox, SandboxSignal{Seq: e.Seq, Source: source, What: what})
+	}
+	switch e.Type {
+	case agent.EvFenceLimit:
+		// An oom count alone is the limit reached, with nothing killed.
+		if n := p.OOMKill + p.OOMGroupKill; n > 0 {
+			add("cgroup", fmt.Sprintf("killed %d process(es) at its memory limit (%d MiB)", n, p.MemoryMaxMB))
+		}
+		if p.PidsMax > 0 {
+			add("cgroup", fmt.Sprintf("refused %d new process(es) at its process limit (%d)", p.PidsMax, p.MaxProcs))
+		}
+		if p.SessionPidsMax > 0 {
+			add("cgroup", fmt.Sprintf("refused %d new process(es) at the session's process limit", p.SessionPidsMax))
+		}
+	case agent.EvFenceDenied:
+		if len(p.Calls) > 0 {
+			parts := make([]string, 0, len(p.Calls))
+			for _, name := range slices.Sorted(maps.Keys(p.Calls)) {
+				parts = append(parts, fmt.Sprintf("%s ×%d", name, p.Calls[name]))
+			}
+			add("seccomp", "refused system calls: "+strings.Join(parts, ", "))
+		}
+	case sandboxGitPlanted:
+		add("git", "did not run it: a repository made earlier names a program git would run")
+	case sandboxGitLinked:
+		if p.Refused == nil || *p.Refused {
+			add("git", "did not run it: part of a git folder is a symbolic link")
+		}
+	case sandboxGitWalkBounded:
+		if p.Refused != nil && *p.Refused {
+			add("git", "did not run it: not every repository's configuration and hooks could be found to protect")
+		}
+	}
+}
+
+// sandboxRefused spots the note bash adds to its result when an operation
+// was not permitted under a sandbox (tools.sandboxHint), in a record from
+// before the note was recorded on its own. It is text, and only suggests.
 func sandboxRefused(output string) bool {
 	return strings.Contains(output, "NOTE: the sandbox denied this operation") ||
 		strings.Contains(output, "NOTE: Abhed's sandbox blocks")

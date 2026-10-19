@@ -420,7 +420,7 @@ every other route.
 | `GET /v1/sandboxes/{id}:forward?port=N` | a WebSocket: a byte stream to a port inside the sandbox |
 | `POST /v1/sandboxes/{id}:ssh` | `200 {host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` |
 | `GET /v1/sandboxes/{id}:ssh` | a WebSocket: the SSH relay |
-| `GET /v1/sandboxes/{id}:events?after=&limit=` | `200 {items, next}`: the sandbox's record, oldest first |
+| `GET /v1/sandboxes/{id}:events?after=&limit=` | `200 {items, next}`: the sandbox's record, oldest first; `&format=ocsf` (and `&version=`) gives each row as OCSF API Activity ([OCSF events and logs](30-ocsf-and-logs.md)) |
 | `POST /v1/sandbox-templates` `{name, description?, driver?, labels?, settings?}` | `201`, the template; administrators only |
 | `GET /v1/sandbox-templates?selector=&limit=&after=` | `200 {items, next}` |
 | `GET /v1/sandbox-templates/{name}` | `200`, with `ETag` |

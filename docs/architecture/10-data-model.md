@@ -30,6 +30,10 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 ### Event types
 
+Each type also has a row in the OCSF table (`ocsf/table.go`): the OCSF 1.8 class its lines
+become, or why it is not mapped. A new type fails the tests until it has one; the classes are
+listed in [OCSF events and logs](../guide/30-ocsf-and-logs.md#classes).
+
 | Type | Payload | Emitted by |
 |---|---|---|
 | `session.started` | workspace, model, mode, origin (`chat` or `workbench`), provider; the first event of every session the server starts, so a resume keeps its provider. The CLI's also carries `surface`, `headless`, the permission `mode` it started in, `bypass_confirmed` (true only when bypass came from a confirmed `-dangerously-skip-permissions`) and the system prompt's digests. A CLI run that continues a recorded conversation (`-c`, `-r`, `/resume`, `-fork-session`) records its own after the record, with `resumed: true` and `through_seq`, the last step it goes on from, followed by a `mode.changed` when its mode is not the one the record was left in; a conversation rebuilt within the same process records none. A new `abhed acp` or `abhed rpc` session records one too, with `surface` (`acp`, `rpc`), `headless`, `provider`, `model`, `mode` and `workspace_trust`: `requested` (`stored`, `trusted` or `untrusted`, the trust the surface asked for), `trusted`, `reason` and `sha256` of what applied. An `abhed acp` session continued from its record records a `session.resumed` instead | system |
@@ -39,7 +43,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `agent.message` | text, reasoning (stripped from history) | agent |
 | `action.requested` | tool, args (always a JSON object, the canonical arguments every step and the tool read; `{}` on a call refused at step `args`); `raw_args`, the refused arguments as text; `dropped_args`, keys a built-in tool did not declare and dropped (each clipped to 64 characters, at most 32 and then `+N more`), which the observation also names to the model as `[ignored: …]`; `resolved`, arguments the harness set or rewrote before policy read the call, such as the cluster of the session's only login or a Kubernetes call's default namespace; `via` when something issued it for the agent, such as `skill research pipeline` for a skill pipeline's step (recorded in the record of the loop whose `skill` call ran the pipeline); `supervisor`, the supervisor's verdict on the call when it gave one: `decision`, `code`, `rationale`, `advice`, `judge` | agent |
 | `action.approved` / `.denied` | the step that decided (`step`; `plan` when an approved runbook's step stood in for the ask), `reason`, `by` (`plan` for that step); `plan_hash` and `plan_step` when the call was a runbook step; `rule`, the rule as written, when a deny, ask or allow rule decided, and `layer` when that rule came from a policy layer an edition added (below); `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
-| `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known; `cwd`, the folder a `bash` command ran in, as the tool followed it | tool |
+| `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known; `sandbox_note`, when `bash` added a note that an operation was not permitted under a sandbox: what the output named that the sandbox denies (`ssh`, `kube`, `aws`, `gnupg`, `credentials` for another credential path in the home folder, `abhed` for Abhed's own state), or `denied` when it named none; `cwd`, the folder a `bash` command ran in, as the tool followed it | tool |
 | `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
 | `observation` with `outcome_unknown` | the answer to a call a process approved and then stopped before recording its result, written by the process that recovers the session (or, under an edition that moves turns, continues it): `is_error`, and an "Outcome unknown" text. The call is not run again, and the same call (tool and arguments) later in the session is asked of a person first, in every mode | system |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first, or because the session moved to another process | system |
@@ -101,6 +105,7 @@ and adds `file.restored`; taking a worktree back adds `worktree.taken`.
 | `config.refused` | a setting that did not take effect as written, or a refused change: `layer` (`user`, `settings`, `workspace`, `env` or `command`), `source` (the file, flag or variable), `key`, `value` asked for with credentials redacted, `decision` (`set_aside`, `ignored_untrusted`, `overridden` by the managed file, or `refused` by `/config set`), `reason`, and `principal`: `kind` (`os-user` or `agent-command`), `os_user`, `uid`, `session_owner` on a server, `agent_command` and `command_id` inside an agent's command. Recorded after `session.started`, and when `/config set` refuses | system |
 | `config.narrowed` | the same fields, for a `web_search` or `web_fetch` setting a layer below the managed file narrowed, as it may: turned off, fewer results, fewer hosts | system |
 | `egress.decision` | one decision of the session's egress proxy or of Abhed's own requests under `sandbox.network: "allowlist"`: `call_id`, `kind` (`connect`, `http`, `dns`, `auth`, `request`, `summary`; for Abhed's own requests `model`, `web_fetch`, `web_search` or `mcp`), `host`, `port`, `ip`, `synthetic`, `method` and `path` (plain HTTP; the path without its query, left out with `egress.record_paths: false`), `decision` (`allow`, `deny` or `would_deny`), `rule`, `reason`, `bytes_in`, `bytes_out`, `repeats` on a rate-limit summary, `session` for Abhed's own requests and stdio MCP servers, `mcp_server` for a stdio server's. Never bodies, header values, query strings or credentials ([Network policy](../guide/21-network-policy.md#the-record)) | system |
+| `fence.denied` | the system calls the fence's seccomp filter refused a command, as Abhed answered them (mount_namespace mode, Linux 5.7+), recorded once it has exited: `call_id`, `sandbox`, `source` (`seccomp`), `calls` (each refused call's count by name, a socket's with its family, such as `socket(unix)`; at most 64 names, the rest as `other`) | system |
 | `sandbox.git_planted` | a `commondir` taken out of a git folder before a command, which is then not run (bubblewrap, a container, the vm tier, the fence): `call_id`, `sandbox`, `workspace`, `entries` (`path`, `outcome` `moved` with `moved_to` under `~/.abhed/quarantine`, `removed`, `still_present`, or under the fence `renamed_in_place`), `reason` | system |
 | `sandbox.git_walk_bounded` | the look for git folders stopped at a bound: `call_id`, `sandbox`, `workspace`, `bound`, `refused`, `reason`. With `refused: false` (the workspace's folder bound, recorded once per sandbox) a repository past it, other than the workspace's own, its submodules and linked worktrees and those found earlier, is not protected; with `refused: true` (a git folder's `modules` past its entry bound) the command is not run | system |
 | `sandbox.git_linked` | a git folder part that is a symbolic link (`.git/hooks`, a `.git`, `modules` or `worktrees` folder, or a folder in either), which the sandbox cannot hold read-only, refusing the command: `call_id`, `sandbox`, `workspace`, `paths`, `refused: true` | system |
@@ -187,7 +192,6 @@ CREATE TABLE events (
 );
 CREATE INDEX ON events (session_id, seq);
 CREATE INDEX ON events (type, created_at);
-CREATE INDEX ON events USING GIN (payload);
 
 CREATE TABLE checkpoints (          -- backs /undo (§09)
   id         TEXT PRIMARY KEY,
@@ -212,6 +216,34 @@ CREATE TABLE models (               -- registry + capability profile (§08 L2)
 **Events are append-only.** No UPDATE, no DELETE. Retention is by partition drop, which keeps
 the audit guarantee intact — an audit log you can edit is not an audit log.
 
+**Events are hash-chained** (schema version 8). The sketch above leaves out
+three columns the trigger `zz_events_chain` sets on every insert, whatever the
+writer sent, in the insert's own transaction: `chain_pos` (1, 2, … within the
+session), `prev_hash` (the previous position's `hash`, 64 zeros at position 1)
+and `hash`, the SHA-256 in hex of `prev_hash`, a newline, and the row's
+columns `id, session_id, tenant_id, parent_id, seq, type, payload, actor,
+trust, created_at` as Postgres renders them as `jsonb` text in UTC. The chain
+is **per session**: sessions never wait on each other's lock, a session's
+chain is whole on its own (export, verify, erase by key), and a subagent's
+session has its own. What a per-session chain cannot show by itself is a
+whole session removed, or the end of one cut; that takes a head kept
+elsewhere (`record.witness`, or an edition's anchor; see
+[the Postgres record](../guide/12-records.md#the-postgres-record)). The control plane's `sandbox_audit` is chained the same way **per
+tenant**, being one stream.
+
+`chain_pre` (schema version 11) holds, per chain, how many unchained rows were
+already there when the chain began, counted once by a migration and never
+chained over. The runtime role can only read it. A check fails any unchained
+row it does not cover: one written with the trigger off.
+
+The chain head API (`store/chain`): `Source.Head(scope)` is the last position
+and hash, and `Source.VerifyRange(scope, from, to)` recomputes positions
+`from..to` and returns the hash it links to (`Before`) and the hash at `to`.
+`Postgres.EventChain()` (scope: a session), `Postgres.AuditChain()` (scope:
+the tenant), `local.Store.Chain()` (scope: a session, positions are lines),
+`local.AuditChain(dir)` (scope: the tenant's `api.jsonl`) and
+`sqlite.Store.AuditChain()` (the control plane's SQLite record) answer it.
+
 Tenant isolation is enforced in the query layer *and* by row-level security. A boundary that
 exists in only one place is not a boundary (§ops).
 
@@ -225,6 +257,8 @@ POST /v1/sessions/{id}/messages      → 202, events stream; to a busy session
                                        {delivery:"steered", queue_id}, or with
                                        "interrupt":true a fresh turn
 GET  /v1/sessions/{id}/events        → SSE (resumable via Last-Event-ID or ?after=seq)
+GET  /v1/sessions/{id}/logs          → the same stream as OCSF events (?format=shorthand,
+                                       ?version=, ?type=); see guide/30-ocsf-and-logs.md
 GET  /v1/sessions/{id}/queue         → messages waiting for the next turn boundary
 DELETE /v1/sessions/{id}/queue/{qid} → 204, or 404 once the loop has read it
                                        (these and /interrupt: 421 + Abhed-Session-Node

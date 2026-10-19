@@ -728,21 +728,26 @@ func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(
 		return rec, func() { _ = rec.Close() }, nil
 	}
 	sc := storeConfig(cfg)
-	w, err := openWitness(cfg)
+	anchor, stop, err := recordAnchor(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	if w != nil {
-		sc.Anchor = w.Postgres
+	if anchor != nil {
+		sc.Anchor = func(tenant, session string, pos int64, hash string) {
+			anchor(RecordHead{Store: "postgres", Tenant: tenant, Session: session, Lines: pos, Hash: hash})
+		}
 	}
 	pg, err := store.Open(ctx, sc)
 	if err != nil {
+		if stop != nil {
+			stop()
+		}
 		return nil, nil, fmt.Errorf("open event store: %w", err)
 	}
 	return pg, func() {
 		pg.Close()
-		if w != nil {
-			closeWitness(w)
+		if stop != nil {
+			stop()
 		}
 	}, nil
 }
@@ -770,21 +775,26 @@ func serveStorageLabel(cfg config.Config) string {
 // record.retention_days prunes what is older, leaving tombstones.
 func openRecord(cfg config.Config) (*local.Store, error) {
 	opts := local.Options{Dir: cfg.Record.Dir, Tenant: cliTenant(cfg), User: cliUser(), Redact: openVault().Session()}
-	w, err := openWitness(cfg)
+	anchor, stop, err := recordAnchor(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if w != nil {
-		opts.Anchor = func(tenant, session string, h local.Head) { w.Local(tenant, session, h.Lines, h.Seq, h.Hash) }
-		opts.OnClose = func() { closeWitness(w) }
-		if file := cfg.Record.Witness.File; file != "" {
-			opts.Witnessed = (&witnessFile{cfg: cfg, path: file}).heads
-		}
+	if anchor != nil {
+		opts.Anchor = localAnchor(anchor)
+		opts.OnClose = stop
 	}
+	if file := cfg.Record.Witness.File; file != "" && cfg.Record.Witness.On() && cfg.ManagedSets("record.witness") {
+		opts.Witnessed = (&witnessFile{cfg: cfg, path: file}).heads
+	}
+	startOCSF := withOCSF(cfg, &opts)
 	rec, err := local.Open(opts)
 	if err != nil {
+		if stop != nil {
+			stop()
+		}
 		return nil, fmt.Errorf("open the local record: %w", err)
 	}
+	startOCSF(rec)
 	if days := cfg.Record.RetentionDays; days > 0 && cfg.ManagedSets("record.retention_days") {
 		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 		pruned, _, err := rec.PruneOlder(cutoff, "managed", fmt.Sprintf("record.retention_days is %d", days))

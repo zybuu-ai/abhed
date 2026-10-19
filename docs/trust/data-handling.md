@@ -17,6 +17,7 @@ From `store/schema.sql`, on the Postgres storage driver:
 | `sandboxes`, `sandbox_idempotency`, `sandbox_audit`, `sandbox_templates` | Control-plane sandboxes, replayable requests, and the sandboxes' hash-chained audit record |
 | `owner_changes`, `account_changes` | Trigger-written history of every session owner change and every change to an account's groups or tenant |
 | `session_keys` | Each session's sealing key; deleting the session deletes it |
+| `chain_pre` | Per chain, how many rows were written before the hash chain began, counted once by a migration |
 
 A model's reasoning, where the endpoint reports it, is in `events` twice: in
 parts as it streamed (`agent.reasoning.delta`) and whole (`agent.reasoning`),

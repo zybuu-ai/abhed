@@ -142,8 +142,14 @@ type Call struct {
 
 	// Ran is set only when the record holds the call's result.
 	Ran bool `json:"ran"`
-	// SandboxDenied marks a command the sandbox refused part of.
-	SandboxDenied bool `json:"sandbox_denied,omitempty"`
+	// SandboxDenied marks a command the record shows the sandbox refused part
+	// of, and Sandbox says what, each from its own evidence.
+	SandboxDenied bool            `json:"sandbox_denied,omitempty"`
+	Sandbox       []SandboxSignal `json:"sandbox,omitempty"`
+	// SandboxUnconfirmed marks a command under a sandbox whose output says an
+	// operation was not permitted, with nothing in the record saying the
+	// sandbox refused it rather than the system's own permissions.
+	SandboxUnconfirmed bool `json:"sandbox_unconfirmed,omitempty"`
 	// NetworkDenied counts the connections and requests of this call the
 	// egress allowlist refused, from its egress.decision events.
 	NetworkDenied int  `json:"network_denied,omitempty"`
@@ -290,4 +296,15 @@ type Integrity struct {
 	// Unsure is set when a gap could be omitted deltas but the capture does not
 	// say it left any out: HawkEYE cannot tell, and counts it as missing.
 	Unsure bool `json:"unsure,omitempty"`
+}
+
+// SandboxSignal is one thing the sandbox refused in a call, from the event
+// that shows it.
+type SandboxSignal struct {
+	Seq int64 `json:"seq"`
+	// Source is the evidence: "cgroup" (the fence's limits), "seccomp" (the
+	// fence's system-call filter), "git" (git protection), or "bash" (bash's note on an error naming a folder every
+	// sandbox tier denies).
+	Source string `json:"source"`
+	What   string `json:"what"`
 }

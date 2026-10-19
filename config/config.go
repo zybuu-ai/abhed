@@ -193,6 +193,8 @@ type RecordConfig struct {
 	// Witness is where each head of the record is sent as it is written, so
 	// the record can be checked against what the machine's owner cannot rewrite.
 	Witness WitnessConfig `json:"witness,omitempty"`
+	// OCSF is a JSONL file of the record as OCSF events.
+	OCSF OCSFConfig `json:"ocsf,omitempty"`
 }
 
 // WitnessConfig names an off-host witness for the record's heads. Managed only.
@@ -298,6 +300,8 @@ var managedOnly = map[string]string{
 	"record.dir":                         "only the managed configuration moves the record",
 	"record.retention_days":              "only the managed configuration sets how long the record is kept",
 	"record.witness":                     "only the managed configuration says where the record's heads are witnessed",
+	"record.ocsf.path":                   "only the managed configuration moves the record's OCSF file",
+	"record.ocsf.locked":                 "only the managed configuration locks the record's OCSF file",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
@@ -374,6 +378,10 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.Dir = ""
 	case "record.retention_days":
 		c.Record.RetentionDays = 0
+	case "record.ocsf.path":
+		c.Record.OCSF.Path = ""
+	case "record.ocsf.locked":
+		c.Record.OCSF.Locked = false
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
 	case "hooks.managed_only":
@@ -1086,6 +1094,8 @@ type ServerConfig struct {
 	// workspace and sandbox, as before 1.2.8. Unset, a server with more than
 	// one account gives each session a sandbox of its own.
 	SharedSessions bool `json:"shared_sessions,omitempty"`
+	// Metrics serves Prometheus metrics; off unless enabled. See metrics.go.
+	Metrics ServerMetricsConfig `json:"metrics,omitempty"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
@@ -1794,6 +1804,9 @@ func (c Config) Validate() error {
 	if err := c.Monitor.validate(); err != nil {
 		return err
 	}
+	if err := c.Record.OCSF.validate(); err != nil {
+		return err
+	}
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
 	}
@@ -1867,6 +1880,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
 	}
 	if err := c.validateTLS(); err != nil {
+		return err
+	}
+	if err := c.Server.Metrics.validate(); err != nil {
 		return err
 	}
 	if err := c.validateCLILogin(); err != nil {

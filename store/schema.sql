@@ -151,7 +151,6 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_session_seq_idx ON events (session_id, seq);
 CREATE INDEX IF NOT EXISTS events_type_time_idx   ON events (type, created_at DESC);
 CREATE INDEX IF NOT EXISTS events_tenant_time_idx ON events (tenant_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS events_payload_idx     ON events USING GIN (payload);
 
 -- Append-only enforcement. Retention is handled by dropping partitions or by a
 -- privileged archival role, never by mutating rows in place.
@@ -613,3 +612,155 @@ CREATE TRIGGER session_keys_no_truncate BEFORE TRUNCATE ON session_keys
   FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
 
 INSERT INTO schema_version (version) VALUES (10) ON CONFLICT DO NOTHING;
+
+-- Schema version 11: rows from before the chain are marked once, as they were.
+--
+-- Since version 8 the trigger chains every row, so a row with no chain is
+-- either from before then or was written with the trigger off. This version
+-- counts, per chain, the rows that were already there when the chain began
+-- (each below the chain's first row), and keeps the count where the runtime
+-- role can only read it. Nothing is chained over them after the fact: a hash
+-- computed now would vouch for rows nobody checked when they were written.
+-- A check then fails any unchained row the count does not cover.
+CREATE TABLE IF NOT EXISTS chain_pre (
+  tbl       TEXT        NOT NULL,
+  key       TEXT        NOT NULL,
+  tenant_id TEXT        NOT NULL,
+  pre_rows  BIGINT      NOT NULL,
+  last_seq  BIGINT      NOT NULL,
+  marked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tbl, key)
+);
+DROP TRIGGER IF EXISTS chain_pre_no_update ON chain_pre;
+CREATE TRIGGER chain_pre_no_update BEFORE UPDATE ON chain_pre
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS chain_pre_no_delete ON chain_pre;
+CREATE TRIGGER chain_pre_no_delete BEFORE DELETE ON chain_pre
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS chain_pre_no_truncate ON chain_pre;
+CREATE TRIGGER chain_pre_no_truncate BEFORE TRUNCATE ON chain_pre
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+ALTER TABLE chain_pre ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chain_pre FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chain_pre_tenant_isolation ON chain_pre;
+CREATE POLICY chain_pre_tenant_isolation ON chain_pre
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- abhed_chain_mark_pre marks the unchained rows below each chain's first
+-- row, in every tenant, and leaves a mark already made as it is. Row security
+-- is lifted for the calling transaction only; only the tables' owner can.
+CREATE OR REPLACE FUNCTION abhed_chain_mark_pre() RETURNS void AS $$
+BEGIN
+  ALTER TABLE events NO FORCE ROW LEVEL SECURITY;
+  ALTER TABLE sandbox_audit NO FORCE ROW LEVEL SECURITY;
+  ALTER TABLE chain_pre NO FORCE ROW LEVEL SECURITY;
+  INSERT INTO chain_pre (tbl, key, tenant_id, pre_rows, last_seq)
+  SELECT 'events', e.session_id, min(e.tenant_id), count(*), max(e.seq)
+  FROM events e
+  WHERE e.chain_pos IS NULL
+    AND e.seq < COALESCE((SELECT min(c.seq) FROM events c WHERE c.session_id = e.session_id AND c.chain_pos IS NOT NULL),
+                         9223372036854775807)
+  GROUP BY e.session_id
+  ON CONFLICT DO NOTHING;
+  INSERT INTO chain_pre (tbl, key, tenant_id, pre_rows, last_seq)
+  SELECT 'sandbox_audit', a.tenant_id, a.tenant_id, count(*), max(a.seq)
+  FROM sandbox_audit a
+  WHERE a.chain_pos IS NULL
+    AND a.seq < COALESCE((SELECT min(c.seq) FROM sandbox_audit c WHERE c.tenant_id = a.tenant_id AND c.chain_pos IS NOT NULL),
+                         9223372036854775807)
+  GROUP BY a.tenant_id
+  ON CONFLICT DO NOTHING;
+  ALTER TABLE events FORCE ROW LEVEL SECURITY;
+  ALTER TABLE sandbox_audit FORCE ROW LEVEL SECURITY;
+  ALTER TABLE chain_pre FORCE ROW LEVEL SECURITY;
+END;
+$$ LANGUAGE plpgsql;
+REVOKE ALL ON FUNCTION abhed_chain_mark_pre() FROM PUBLIC;
+
+-- Once, the first time this version is applied: a later run would mark rows
+-- written with the trigger off since.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = 11) THEN
+    PERFORM abhed_chain_mark_pre();
+  END IF;
+END $$;
+
+INSERT INTO schema_version (version) VALUES (11) ON CONFLICT DO NOTHING;
+
+-- Schema version 12: each event's writing transaction, so a reader can follow
+-- the record in commit order. A row whose transaction id is below the oldest
+-- transaction still running is committed, and no row written later can sort
+-- before it: an exporter that resumes from a position never skips one.
+-- Rows from before this version keep no id and sort first, by time.
+-- The column is added without a default and given one after, so existing
+-- rows are not rewritten.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS commit_tx xid8;
+ALTER TABLE events ALTER COLUMN commit_tx SET DEFAULT pg_current_xact_id();
+CREATE INDEX IF NOT EXISTS events_commit_order_idx
+  ON events (tenant_id, (COALESCE(commit_tx, '0'::xid8)), created_at, session_id, seq);
+
+INSERT INTO schema_version (version) VALUES (12) ON CONFLICT DO NOTHING;
+
+-- Schema version 13: the cursors of abhed serve's OCSF file (record.ocsf):
+-- the last event written of each session, by sink, and on the row with no
+-- session the place in commit order the writer reads on from. One server
+-- writes at a time, holding an advisory lock; another takes over from here.
+CREATE TABLE IF NOT EXISTS ocsf_cursors (
+  tenant_id  TEXT        NOT NULL,
+  sink       TEXT        NOT NULL,
+  session_id TEXT        NOT NULL,
+  seq        BIGINT      NOT NULL,
+  provider   TEXT        NOT NULL DEFAULT '',
+  primed     BOOLEAN     NOT NULL DEFAULT false,
+  commit_pos TEXT        NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, sink, session_id)
+);
+ALTER TABLE ocsf_cursors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ocsf_cursors FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS ocsf_cursors_tenant_isolation ON ocsf_cursors;
+CREATE POLICY ocsf_cursors_tenant_isolation ON ocsf_cursors
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+INSERT INTO schema_version (version) VALUES (13) ON CONFLICT DO NOTHING;
+
+-- Schema version 14: a cheaper event chain, the same hash.
+--
+-- The events' chain trigger ran the generic abhed_chain_insert, which builds
+-- its queries as text on every row, so none is planned once, and renders the
+-- row as JSON twice. abhed_events_chain does the same with static queries and
+-- one rendering of only the hashed columns: jsonb_build_object gives the
+-- same jsonb, and so the same text and hash, as the named columns of
+-- to_jsonb(NEW). It also sets inserted_at, which a trigger of its own did, so
+-- each insert runs one PL/pgSQL trigger, not two. The GIN index on payload is
+-- dropped: no query used it, and payloads are sealed, so it indexed
+-- ciphertext on every insert.
+CREATE OR REPLACE FUNCTION abhed_events_chain() RETURNS trigger AS $$
+DECLARE
+  last_pos  bigint;
+  last_hash text;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('events/' || NEW.session_id, 0));
+  SELECT chain_pos, hash INTO last_pos, last_hash FROM events
+    WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
+  NEW.inserted_at := now();
+  NEW.chain_pos := COALESCE(last_pos, 0) + 1;
+  NEW.prev_hash := COALESCE(last_hash, repeat('0', 64));
+  NEW.hash := encode(sha256(convert_to(NEW.prev_hash || E'\n' || jsonb_build_object(
+    'id', NEW.id, 'session_id', NEW.session_id, 'tenant_id', NEW.tenant_id, 'parent_id', NEW.parent_id,
+    'seq', NEW.seq, 'type', NEW.type, 'payload', NEW.payload, 'actor', NEW.actor, 'trust', NEW.trust,
+    'created_at', NEW.created_at)::text, 'UTF8')), 'hex');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SET timezone TO 'UTC';
+
+DROP TRIGGER IF EXISTS zz_events_chain ON events;
+CREATE TRIGGER zz_events_chain BEFORE INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_chain();
+DROP TRIGGER IF EXISTS events_inserted_at ON events;
+DROP INDEX IF EXISTS events_payload_idx;
+
+INSERT INTO schema_version (version) VALUES (14) ON CONFLICT DO NOTHING;

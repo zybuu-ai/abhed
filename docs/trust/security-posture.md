@@ -635,10 +635,13 @@ owned the tables, so it could truncate them or switch the triggers off. With
 **What is not covered.** The owner role and any database superuser can still
 alter the record; that is what owning a database means. Keep those credentials
 off the server host. Postgres events are hash-chained per session by a
-trigger, and with a managed `record.witness` each head is also sent off the
-host, so `abhed record verify` detects a record cut back, re-chained or
-restored from an older copy. Without a witness the owner role can still
-rewrite the chain consistently.
+trigger, in the insert's own transaction, and `abhed record verify`
+recomputes every hash itself rather than trusting a function the owner could
+replace. It finds a row edited, removed, reordered, or written with the
+trigger off. With a managed `record.witness` each head is also sent off the
+host, so it also detects a record cut back, re-chained or restored from an
+older copy. Without a witness the owner role can still rewrite the chain
+consistently, or cut its end.
 
 **`FORCE ROW LEVEL SECURITY`**, not just `ENABLE`. The schema comment explains
 why this specific word matters: a table's owner bypasses ordinary RLS, and
@@ -647,7 +650,8 @@ alone leaves the isolation policy silently inert. This was found by
 `TestRowLevelSecurityIsolatesTenants`, which could read another tenant's rows
 until `FORCE` was added (`README.md`'s evidence-discipline section tells the
 same story). Every tenant table (`sessions`, `events`, `checkpoints`,
-`approvals`, the sandbox tables, `owner_changes` and `session_keys`) carries
+`approvals`, the sandbox tables, `owner_changes`, `session_keys` and
+`ocsf_cursors`) carries
 `ENABLE` and `FORCE` together, with a tenant policy on each.
 
 **Separate database roles, and the app refuses to run as the wrong one.**

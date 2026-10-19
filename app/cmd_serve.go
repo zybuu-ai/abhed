@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -203,6 +204,13 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	defer closeStore()
+	// The OCSF file stops before the store it reads closes.
+	stopOCSF, err := serveOCSF(cfg, eventStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	defer stopOCSF()
 	// Before the store closes: the egress summaries still owed go to it.
 	defer set.CloseEgress()
 
@@ -223,6 +231,23 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 
+	// Metrics only when server.metrics asks; the API audit always.
+	sm, err := newServeMetrics(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
+	cpHooks := a.cpHooks
+	if sm != nil {
+		cpHooks = append(slices.Clip(cpHooks), sm.auditHook())
+	}
+	audit, auditLabel, closeAudit, err := apiAudit(context.Background(), cfg, eventStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	defer closeAudit()
+
 	// The sandbox control plane, only when the configuration turns it on.
 	var cp *controlplane.Service
 	var exposed *expose.Server
@@ -231,7 +256,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if cfg.ControlPlane.Enabled {
 		live := openVault().Live()
 		built, err := buildControlPlane(context.Background(), cfg, workspace, eventStore,
-			func(text string) string { return string(live.Redact([]byte(text))) }, a.cpHooks...)
+			func(text string) string { return string(live.Redact([]byte(text))) }, cpHooks...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
@@ -298,6 +323,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 		SessionSandboxes:    perSession,
 		SoleOwner:           iso.sole,
 		SandboxAPIAdminOnly: iso.adminAPI,
+		APIAudit:            audit,
+	}
+	if sm != nil {
+		opts.Metrics = sm.m
+		opts.Mounts = append(opts.Mounts, sm.mount)
 	}
 	if tlsL != nil {
 		opts.TLS = tlsL.Config()
@@ -416,6 +446,18 @@ func (a *App) serveCmd(workspace, addr string) int {
 		// Not embedded in this build; say where the same pages are, once,
 		// here — never from a page, which must stay usable with no route out.
 		fmt.Printf("  docs      %s (not embedded in this build)\n", docsite.PublicURL)
+	}
+
+	fmt.Printf("  audit     %s\n", auditLabel)
+	if sm != nil {
+		addr := ""
+		if sm.listen != "" {
+			if addr, err = sm.run(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+		}
+		fmt.Printf("  metrics   %s\n", sm.label(addr, cfg.Auth.Mode != "" && cfg.Auth.Mode != "none"))
 	}
 
 	serve := srv.ListenAndServe

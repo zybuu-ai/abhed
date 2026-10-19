@@ -217,7 +217,7 @@ func (l *Loop) ManualObserve(id, call string, result tools.Result, took time.Dur
 	_, err := l.Recorder.Record(EvObservation, ActorTool, Untrusted, Observation{
 		CallID: id, Tool: call, Content: result.Content, IsError: result.IsError,
 		Truncated: result.Truncated, ExitCode: result.ExitCode,
-		DurationMS: took.Milliseconds(), Sandbox: result.Tier,
+		DurationMS: took.Milliseconds(), Sandbox: result.Tier, SandboxNote: result.SandboxNote,
 	})
 	return err
 }

@@ -44,6 +44,10 @@ var runtimeGrants = []struct{ table, privileges string }{
 	{"sandbox_idempotency", "SELECT, INSERT, UPDATE, DELETE"},
 	{"sandbox_audit", "SELECT, INSERT"},
 	{"sandbox_templates", "SELECT, INSERT, DELETE"},
+	// Written once by a migration; the server only reads it.
+	{"chain_pre", "SELECT"},
+	// The OCSF file's cursors move forward; none is removed.
+	{"ocsf_cursors", "SELECT, INSERT, UPDATE"},
 }
 
 // Extension lets an edition add its own tables in the same pass, so they are
@@ -261,7 +265,8 @@ var errNoSchema = errors.New("the schema has not been applied")
 // The runtime role cannot add them, so a missing one is found at start rather
 // than as a failed write the first time someone answers an approval.
 var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"approvals", "request_id"}, {"users", "revocations"}, {"sessions", "title"},
-	{"events", "inserted_at"}, {"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"}}
+	{"events", "inserted_at"}, {"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"},
+	{"chain_pre", "pre_rows"}, {"events", "commit_tx"}, {"ocsf_cursors", "commit_pos"}}
 
 // missingColumns names the required columns the connected database lacks.
 func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {

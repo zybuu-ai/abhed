@@ -276,6 +276,8 @@ abhed record show <session>      a session's events
 abhed record verify              the index and every session
 abhed record verify <session>    one session
 abhed record verify file.jsonl   an export, or a copy from elsewhere
+abhed record audit               the control-plane audit chain abhed serve writes
+abhed record audit -format ocsf  its rows as OCSF events, with their links
 ```
 
 `verify <session>` checks the index first, then the session. It fails, naming
@@ -380,19 +382,117 @@ sent (the last sync), and anything before it was configured.
 ### The Postgres record
 
 In Postgres every event is chained to the one before it in its session, by
-the database itself: a trigger sets `chain_pos`, `prev_hash` and `hash`,
-whatever the server sent, and holds a lock per session so concurrent writers
-make one chain. The control plane's `sandbox_audit` is chained per tenant the
-same way. `abhed record verify [session ...]` with `storage.driver: postgres`
-walks each chain in the database (with no session named, the 100000 most
-recent, deleted and subagent sessions among them and marked so, and it says
-so when there are more) and reports the first event that was
-changed, removed or reordered; events written before 1.2.8 are counted as
-unchained, not as broken. The runtime role cannot change a row, but the
-tables' owner can, and can recompute the chain: with `record.witness` each
-session's head is sent at the end of every run, and `verify` checks that the
-database still holds every head the witness has. A deleted session's rows stay, erased by
-key, so its witnessed heads still verify.
+the database itself, in the same transaction as the insert: a trigger sets
+`chain_pos`, `prev_hash` and `hash`, whatever the server sent, and holds a
+lock per session so concurrent writers make one chain. The runtime role can
+add events and read them, and cannot change, remove or truncate them. The
+control plane's `sandbox_audit`, which holds the sandbox operations and every
+API request that changes something, is chained per tenant the same way;
+`abhed record audit` walks it (and, without Postgres, the server's
+`<records>/<tenant>/audit/api.jsonl`, chained line by line, and the control
+plane's own SQLite record). It recomputes each hash itself, as `verify` does,
+fails a Postgres audit row written with the trigger off, and checks the API's
+chain against any `-head position:hash` kept elsewhere.
+
+The chain is per session, not per tenant, so sessions never wait on each
+other's lock and each session's chain is whole on its own. What no chain can
+show on its own is its end cut off, or a whole session removed, by someone
+who can write the tables; that is what a head kept elsewhere is for.
+
+```
+abhed record verify                      the 100000 most recent sessions
+abhed record verify <session> ...        the sessions named
+abhed record export <session>            ~/.abhed/exports/<session>.chain.jsonl
+abhed record verify s.chain.jsonl        an export, with no database
+abhed record verify -head 42:<hash> s.chain.jsonl
+```
+
+With `storage.driver: postgres`, `abhed record verify` walks each chain and
+recomputes every hash itself, from the rows, rather than trusting a function
+in the database that the tables' owner could replace. It names the first
+event that was changed, removed or put out of order, and fails a session
+holding an event with no chain that was not there when the chain began: one
+written with the trigger off. With no session named it checks the 100000
+most recent, deleted and subagent sessions among them and marked so, and
+says so when there are more.
+
+Events written before 1.2.8 have no chain. Schema version 11 counted them,
+once, per session (the unchained events below the session's first chained
+one), in `chain_pre`, which the runtime role can only read. `verify` reports
+them as from before the chain, not covered; nothing is chained over them
+afterwards, since a hash computed now would vouch for rows nobody checked
+when they were written.
+
+`abhed record export <session>` writes the session's chain: a header, each
+event as it was hashed (a sealed payload stays sealed, and an erased
+session's stays unreadable), and a trailer with the head the database held.
+`abhed record verify` checks the file on any machine, with no database and
+no configuration: it fails when a line was edited, removed, added, put out
+of order or duplicated, when lines were cut from the end (the trailer no
+longer matches, or is gone), and when the file no longer holds a head given
+with `-head position:hash` or one `-witness` holds for the session. A chain
+that does not verify is exported only with `-unverified`, and the file then
+fails its own check. Like any chain, the file can be recomputed whole,
+trailer and all, by whoever holds it; only a head kept elsewhere shows that.
+
+The tables' owner can still change rows behind the triggers and recompute
+the chain, or cut its end. With `record.witness` each session's head is
+sent at the end of every run, and `verify` checks that the database (or an
+export) still holds every head the witness has. A deleted session's rows
+stay, erased by key, so its witnessed heads still verify. What a witness
+cannot show is a change after the last head it was sent.
+
+**Measured on a developer Mac** (Apple silicon, Postgres 17 in a 4-CPU
+Podman VM, 32 sessions writing through the server's own append path, each
+event its own transaction): 1,500 events a second held for two minutes
+(180,032 events), and 1,400 to 2,300 a second when the writers go as fast as
+they can, with the VM's CPU the limit. Every event the writers were told was
+written was in the database, in order, and every chain verified: none were
+dropped. That is well short of 10,000 a second; a dedicated database server
+will do better, and each event being its own transaction is the cost.
+`store/chain_soak_test.go` is the soak (`ABHED_SOAK_SECONDS`,
+`ABHED_SOAK_SESSIONS`, `ABHED_SOAK_RATE`).
+
+There, the writers wait on the database's write-ahead log: each event is
+made durable before its append returns, and the VM's disk flushes are the
+limit. Schema version 14 made each insert cheaper without changing that:
+the chain's trigger time fell from about 120 to about 30 microseconds a
+row, an append from one writer from about 485 to about 345 microseconds,
+and the log written from about 2,740 to about 2,540 bytes an event
+(`store/chain_cost_test.go`, `ABHED_APPEND_COST`). The soak's rate did not
+move with it, as it is bound by the flushes, not by the inserts' work. The local
+record, on the same Mac, took about 63,000 events a second with a sync every
+20 (`store/local/soak_test.go`). Measure yours.
+
+Each event stays its own transaction, by design: an append that returns has
+reached the disk, so a crash loses nothing the agent was told was written.
+Events are not batched, and `synchronous_commit` must stay `on`, or the
+database may lose events it reported written. For a higher rate, give the
+database what flushes depend on:
+
+- a server of its own, not shared with other containers or VMs, on a disk
+  with a fast, safe flush (an SSD with power-loss protection, or a cloud
+  volume sized for its IOPS), and the write-ahead log on it;
+- enough concurrent sessions for group commit to work: Postgres flushes the
+  commits that are waiting together, so many writers share one flush;
+- `commit_delay` (microseconds) with `commit_siblings` can widen that group
+  under heavy concurrent load; it made no clear difference on the shared VM
+  measured here, so measure before keeping it.
+
+### The chain head API
+
+`store/chain` is the stable, storage-neutral view of these chains, for an
+edition or an operator to sign and anchor heads with: `Source.Head(scope)` is
+a chain's last position and hash, and `Source.VerifyRange(scope, from, to)`
+recomputes positions `from` to `to` (0 is the head) and returns the hash it
+links to (`Before`, the one at `from - 1`) and the hash at `to`, to compare
+with a head kept earlier. `Postgres.EventChain()` answers it per session,
+`Postgres.AuditChain()` for the tenant's control-plane audit,
+`local.Store.Chain()` per session of the local record (positions are lines,
+and the head is the one last synced), `local.AuditChain(dir)` for a tenant's
+`api.jsonl`, and `sqlite.Store.AuditChain()` for the control plane's SQLite
+record. `abhed record audit` checks every audit chain through it.
+`chain.VerifyExport` checks an export with nothing else.
 
 ## Exporting
 
@@ -424,6 +524,11 @@ and never into Abhed's state other than `~/.abhed/exports`. A relative
 `/export` path is taken from the workspace, and a path outside it asks first.
 HTML and text exports are for reading, not for verification. Every export is
 redacted, because the record it comes from is.
+
+To read the record as a log instead, as it grows, or to feed a SIEM, `abhed
+logs` prints it as shorthand or OCSF events and `record.ocsf` keeps a file of
+OCSF events beside it; each event carries its line's `prev` and `hash`, so a
+copy can be checked against the chain ([OCSF events and logs](30-ocsf-and-logs.md)).
 
 ## Pruning
 

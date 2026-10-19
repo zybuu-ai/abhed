@@ -33,13 +33,17 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 		fmt.Fprint(stderr, `usage: abhed record <command>
   list    [-all|-repo] [-n N] [-json]   sessions in this workspace, latest active first
   show    <session> [-json]            a session's events
-  verify  [-witness file] [-witness-key key] [session|file ...]
+  verify  [-witness file] [-witness-key key] [-head pos:hash] [session|file ...]
                                        check the chain; no argument checks everything,
                                        and the heads a witness holds (record.witness.file)
   export  <session> [-o path] [-format jsonl|html|txt] [-unverified]
-                                       jsonl carries its head for checking elsewhere
+                                       jsonl carries its head for checking elsewhere;
+                                       with storage.driver postgres, the session's chain
   prune   <session> | -older-than 90d [-yes]
                                        remove sessions, leaving a tombstone in the index
+  audit   [-head pos:hash] [-format ocsf [-ocsf-version V]]
+                                       check the control-plane audit chain abhed serve writes,
+                                       or print its rows as OCSF events
 A session is its id, a unique id prefix, its name, or the path of its file.
 `)
 		return 2
@@ -54,8 +58,14 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 	}
 	// A moved record is state here too, so no export is written into it.
 	registerState(cfg, workspace)
+	if args[0] == "audit" {
+		return verifyAudit(cfg, args[1:], stdout, stderr)
+	}
 	if args[0] == "verify" && cfg.Storage.Driver == "postgres" {
 		return verifyPostgres(cfg, args[1:], stdout, stderr)
+	}
+	if args[0] == "export" && cfg.Storage.Driver == "postgres" {
+		return exportPostgres(cfg, workspace, args[1:], stdout, stderr)
 	}
 	rec, err := openRecord(cfg)
 	if err != nil {
@@ -232,12 +242,29 @@ func (c recordCtx) verify(args []string) int {
 	fs.SetOutput(c.err)
 	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the record against")
 	witnessKey := fs.String("witness-key", "", "the installation's public key, or its witness.key file, the heads must be signed with")
+	heads := headsFlag{}
+	fs.Var(heads, "head", "a head kept elsewhere, position:hash, that an exported chain must still hold (repeatable)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	args = fs.Args()
 	if *witnessed == "" && c.cfg.ManagedSets("record.witness") {
 		*witnessed = c.cfg.Record.Witness.File
+	}
+	if chainExports(args) {
+		bad := false
+		for _, a := range args {
+			bad = verifyChainExport(c.cfg, a, heads, *witnessed, *witnessKey, c.out, c.err) || bad
+		}
+		fmt.Fprintln(c.out, chainExportScope)
+		if bad {
+			return 1
+		}
+		return 0
+	}
+	if len(heads) > 0 {
+		fmt.Fprintln(c.err, "abhed: -head checks an exported Postgres chain; name the export file")
+		return 2
 	}
 	if len(args) == 0 {
 		idx, reps, err := c.rec.VerifyAll()
@@ -657,6 +684,16 @@ func reorderFlags(args []string) []string {
 	return append(flags, rest...)
 }
 
+// chainExports reports whether every argument is an exported chain.
+func chainExports(args []string) bool {
+	for _, a := range args {
+		if !isChainExport(a) {
+			return false
+		}
+	}
+	return len(args) > 0
+}
+
 // pgVerifyLimit is how many sessions record verify walks when none is named.
 var pgVerifyLimit = 100000
 
@@ -668,11 +705,29 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 	fs.SetOutput(stderr)
 	witnessed := fs.String("witness", "", "a copy of the witness's heads to check the database against")
 	witnessKeyGiven := fs.String("witness-key", "", "the installation's public key, or its witness.key file, the heads must be signed with")
+	heads := headsFlag{}
+	fs.Var(heads, "head", "a head kept elsewhere, position:hash, that an exported chain must still hold (repeatable)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	if *witnessed == "" && cfg.ManagedSets("record.witness") {
 		*witnessed = cfg.Record.Witness.File
+	}
+	// An export is checked with nothing but the file: no database is opened.
+	if chainExports(fs.Args()) {
+		bad := false
+		for _, a := range fs.Args() {
+			bad = verifyChainExport(cfg, a, heads, *witnessed, *witnessKeyGiven, stdout, stderr) || bad
+		}
+		fmt.Fprintln(stdout, chainExportScope)
+		if bad {
+			return 1
+		}
+		return 0
+	}
+	if len(heads) > 0 {
+		fmt.Fprintln(stderr, "abhed: -head checks an exported chain; name the export file")
+		return 2
 	}
 	ctx := context.Background()
 	pg, err := store.Open(ctx, storeConfig(cfg))
@@ -711,12 +766,12 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 			fmt.Fprintf(stderr, "abhed: %s: %v\n", id, err)
 			bad = true
 		case !r.OK():
-			fmt.Fprintf(stdout, "FAILED  %s: the chain breaks at event %d of %d: a row was changed, removed or put out of order\n", id, r.FirstBad, r.Rows)
+			fmt.Fprintf(stdout, "FAILED  %s: %s%s\n", id, r.Reason, kind[id])
 			bad = true
 		default:
 			note := ""
-			if r.Unchained > 0 {
-				note = fmt.Sprintf(" (%d event(s) from before the chain, not covered)", r.Unchained)
+			if r.PreChain > 0 {
+				note = fmt.Sprintf(" (%d event(s) from before the chain, marked when it began, not covered)", r.PreChain)
 			}
 			fmt.Fprintf(stdout, "ok      %s: %d chained event(s), head %s%s%s\n", id, r.Rows, short(r.Head), note, kind[id])
 		}
@@ -752,8 +807,9 @@ func verifyPostgres(cfg config.Config, args []string, stdout, stderr io.Writer) 
 	if capped {
 		fmt.Fprintf(stdout, "NOTE    only the %d most recent sessions were checked; name the others to check them\n", pgVerifyLimit)
 	}
-	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered by anyone short of the tables' owner. "+
-		"An owner can recompute the chain; with record.witness each head the witness holds must still be in the database.")
+	fmt.Fprintln(stdout, "A passing check shows no event was changed, removed or reordered, and none written with the chain's trigger off; "+
+		"each hash is recomputed here, not by the database. The tables' owner can still recompute a whole chain or cut its end; "+
+		"with record.witness each head the witness holds must still be in the database.")
 	if bad {
 		return 1
 	}
