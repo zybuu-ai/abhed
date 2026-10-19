@@ -201,8 +201,60 @@ prompt you pick:
 
 Checkpoints outlive the process. After `abhed -c`, `/undo` and `/rewind` still
 work, reading the content from the blobs and checking each blob's hash as it is
-read. Only changes made with the `write` and `edit` tools are checkpointed; a
-file changed through `bash` is not.
+read.
+
+### Changes made through bash
+
+A `bash` command's changes are checkpointed too. Before each command Abhed
+notes the workspace's files (size, times, permission bits) and keeps a copy
+of each in memory; after it, each file the command changed, removed or made
+gets a `checkpoint.saved` like an edit's, holding what the file was just
+before the command. So `/undo` and `/rewind` put a file `sed -i` changed back,
+bring back one `rm` removed with its permission bits, and remove one the
+command made. Only the files that changed reach the record; between commands
+a copy is read again only for a file whose size or times changed, so a
+command in an unchanged workspace costs two walks of its folders.
+
+What is looked at is what `glob` and `grep` see: `.git`, `.abhed`,
+`.abhed-worktrees`, `node_modules`, `vendor`, `target`, `dist`, `build`,
+`.venv`, `__pycache__` and the other folders they pass over are not, nor are
+links or anything outside the workspace. Within that, the limits:
+
+| Limit | Default | What happens past it |
+|---|---|---|
+| copy of one file | 2 MiB | the file's change is recorded with no copy (`skipped`), and `/undo` names it rather than putting it back |
+| copies in all | 32 MiB (`tools.bash_checkpoint_mb`) | the same, for the files past the budget |
+| files looked at | 20,000 (`tools.bash_checkpoint_files`) | the files past it are not looked at, so their changes are not seen |
+| checkpoints one command records | 2,000 | the rest are not recorded |
+
+A file that looks like keys or credentials (`.env`, `*.pem`, SSH keys) is
+never copied, in memory or in the record; its change is recorded with no copy,
+as for the file tools. When a command's changes were not all kept, its result
+ends with a `[checkpoint: …]` note saying what was not, which the record
+holds with the result; the command is not stopped. `"tools":
+{"bash_checkpoints": "required"}` instead refuses a command, before it runs,
+whenever the snapshot before it is not whole (a file over a limit, or a
+workspace over the file count); `"off"` takes no snapshot, as before 1.2.9. A
+workspace file can only make it `required`, and cannot set the limits.
+
+Limits of the approach:
+
+- A command run with `run_in_background`, and what a command moved to the
+  background with Ctrl-B does after the move, is not checkpointed; nor is the
+  workbench terminal's interactive shell, or `ssh` and the `k8s_*` tools,
+  which change other machines.
+- A change is seen by size and times (the change time, which no command can
+  set back, where the system has one), so a write that keeps all of them is
+  not seen.
+- Commands that run at the same time in one workspace, such as parallel
+  subagents without worktrees or a background command still writing, are
+  each checkpointed against the snapshot before them: a file one of them
+  changed while another ran is put back to what that snapshot held.
+- A worktree subagent's commands are not checkpointed, as its edits are not:
+  its changes stay in its worktree until you take them.
+- On `abhed serve` the workbench's Changes view shows a command's changes
+  from the snapshot the session opened with, as before; a served session has
+  no `/undo` to take them back with.
 
 ## Checking the record
 

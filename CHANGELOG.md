@@ -8,6 +8,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Changes made through `bash` are checkpointed: before each command the
+  workspace's files are noted and copied in memory, within limits, and each
+  file the command changed, removed or made is recorded as `checkpoint.saved`,
+  so `/undo` and `/rewind` (and Studio's undo and review) take them back. A
+  change the limits kept no copy of is named in the record and the command's
+  result, not put back; `tools.bash_checkpoints` is `on` (the default), `off`,
+  or `required`, which refuses a command whose snapshot is not whole, and
+  `tools.bash_checkpoint_mb` and `tools.bash_checkpoint_files` set the limits
+  ([Records](docs/guide/12-records.md#changes-made-through-bash)).
 - `sandbox.image` names the container tier's image, such as one with Go,
   Node or Python, in place of `ABHED_SANDBOX_IMAGE`; a workspace file
   cannot set it. `abhed doctor` (and Studio's checks) now warn when the

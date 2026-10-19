@@ -1725,6 +1725,15 @@ type ToolsConfig struct {
 	// SyntaxCheck is what edit and write do with a change that would leave a
 	// file that parsed no longer parsing: "refuse" (the default), "report" or "off".
 	SyntaxCheck string `json:"syntax_check,omitempty"`
+	// BashCheckpoints is what is kept of the workspace before each bash
+	// command, so /undo and /rewind take its changes back: "on" (the
+	// default), "off", or "required", which refuses a command when the
+	// snapshot is not whole.
+	BashCheckpoints string `json:"bash_checkpoints,omitempty"`
+	// BashCheckpointMB bounds the content held for it (32 when zero), and
+	// BashCheckpointFiles the files looked at (20000 when zero).
+	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
+	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -1876,6 +1885,14 @@ func (c Config) Validate() error {
 	case "", "refuse", "report", "off":
 	default:
 		return fmt.Errorf("unknown tools.syntax_check %q (want refuse, report or off)", c.Tools.SyntaxCheck)
+	}
+	switch c.Tools.BashCheckpoints {
+	case "", "on", "off", "required":
+	default:
+		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
+	}
+	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
+		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")
 	}
 	switch c.Sandbox.MinTier {
 	case "none", "process", "container", "vm", "":

@@ -702,7 +702,10 @@ var workspaceRules = map[string]fieldRule{
 	"subagents.max_wakes_per_hour":    {lowerOrZero(func(c *Config) *int { return &c.Subagents.MaxWakesPerHour }), "only lower; zero never wakes"},
 	"subagents.wake_max_turns":        {lower(func(c *Config) *int { return &c.Subagents.WakeMaxTurns }, zeroIs(8)), "only lower"},
 
-	"tools.syntax_check": {stricterSyntax, "only stricter"},
+	"tools.syntax_check":          {stricterSyntax, "only stricter"},
+	"tools.bash_checkpoints":      {onlyRequired, "only required"},
+	"tools.bash_checkpoint_mb":    {nil, "sets how much of the workspace is held in memory"},
+	"tools.bash_checkpoint_files": {nil, "sets how much of the workspace is held in memory"},
 
 	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
 	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
@@ -898,6 +901,14 @@ func onlyLines(dst, ws *Config) bool {
 		return false
 	}
 	dst.Sandbox.Terminal = "lines"
+	return true
+}
+
+func onlyRequired(dst, ws *Config) bool {
+	if ws.Tools.BashCheckpoints != "required" {
+		return false
+	}
+	dst.Tools.BashCheckpoints = "required"
 	return true
 }
 

@@ -208,13 +208,18 @@ func checkpointSaverFor(loopOf func() *agent.Loop, es agent.Store) func(agent.Ch
 		if loop == nil {
 			return cp, nil
 		}
-		if info, err := os.Lstat(cp.Path); err == nil && info.Mode().IsRegular() {
+		// A bash command's checkpoint carries the bits from before it ran.
+		if info, err := os.Lstat(cp.Path); err == nil && info.Mode().IsRegular() && cp.Mode == 0 {
 			cp.Mode = info.Mode().Perm()
 		}
 		// A file policy keeps from being read, or one that holds keys, is
 		// not copied into the record: its checkpoint says so, and it is not
-		// offered for restore.
-		if why := noCheckpoint(loop, cp.Path); cp.Existed && why != "" {
+		// offered for restore. So is one a bash snapshot could not keep.
+		why := cp.Skipped
+		if why == "" {
+			why = noCheckpoint(loop, cp.Path)
+		}
+		if cp.Existed && why != "" {
 			cp.Skipped, cp.Before = why, nil
 			ev, err := loop.Recorder.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted,
 				agent.CheckpointSaved{Path: cp.Path, Turn: cp.Turn, Mode: uint32(cp.Mode), Skipped: why})

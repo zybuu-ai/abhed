@@ -1936,6 +1936,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// The server reads only each file's baseline, so one copy per file is kept, not one per edit.
 	undo.KeepFirst = true
 	sess.Checkpoint = undo.Record
+	// A command's changes are shown from the snapshot the session opened with, not checkpointed.
 
 	live := &liveSession{
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant, workspace: workspace,

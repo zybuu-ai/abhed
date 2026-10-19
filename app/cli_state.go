@@ -195,6 +195,7 @@ func (c *cliState) fresh() {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.undo.Persist = checkpointSaver(c)
 		c.sess.Checkpoint = c.undo.Record
+		c.sess.BashCheckpoint = c.undo.RecordBefore
 		if c.checkpoint != nil {
 			c.sess.Checkpoint = c.checkpoint(c.undo.Record)
 		}

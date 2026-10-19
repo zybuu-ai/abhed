@@ -54,7 +54,7 @@ configuration](#trusting-the-workspace-configuration).
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
-| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
+| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 | `cli` | the interactive terminal: `title` (`true`), `notify` (`auto`, `bel`, `osc9` or `off`) and `copy` (`true`) — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard); `mode_cycle`, managed only, narrows Shift-Tab |
 
