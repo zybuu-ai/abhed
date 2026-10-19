@@ -74,6 +74,10 @@ type SinkOptions struct {
 	// Poll, when set, looks for new lines this often, for a record the sink
 	// is not handed lines from.
 	Poll time.Duration
+	// Feed, when set, is called at each poll while this process writes, to
+	// hand the sink the lines written since the last (through add, as Add);
+	// a poll then lists no sessions, which only a new writer's first scan does.
+	Feed func(add func(Line)) error
 }
 
 // Sink writes the record's lines to a JSONL file as OCSF events. Its cursor,
@@ -150,6 +154,9 @@ func (s *Sink) scan(first bool) error {
 	cur, existed, err := s.o.Cursors.Load()
 	if err != nil {
 		return err
+	}
+	if !full && s.o.Feed != nil {
+		return nil
 	}
 	list := s.o.Sessions
 	if !full && s.o.Changed != nil {
@@ -270,8 +277,14 @@ func (s *Sink) run() {
 		case <-s.wake:
 			s.catchUp()
 		case <-tick:
-			if err := s.scan(false); err != nil && !errors.Is(err, ErrStandby) {
+			err := s.scan(false)
+			if err != nil && !errors.Is(err, ErrStandby) {
 				s.fail(err)
+			}
+			if err == nil && s.o.Feed != nil {
+				if err := s.o.Feed(s.Add); err != nil {
+					s.fail(err)
+				}
 			}
 			s.catchUp()
 		}

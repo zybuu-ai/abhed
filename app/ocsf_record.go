@@ -107,16 +107,12 @@ func recordEnds(rec *local.Store) func() (map[string]ocsf.Cursor, error) {
 	}
 }
 
-// serveOCSFWindow is how far back a poll of a Postgres record looks for
-// sessions with new events; the cursors keep anything seen twice from being
-// written twice, and a server that takes over first looks at every session.
-const serveOCSFWindow = 10 * time.Minute
-
 // serveOCSF has abhed serve write its store to the OCSF file when
 // record.ocsf.enabled is set. With Postgres, one server at a time writes,
-// holding an advisory lock, and the cursors are rows every server reads, so
-// a server that takes over goes on where the last stopped. With the memory
-// store, the one process writes, with its cursor beside the file.
+// holding an advisory lock, reading the events in commit order from where
+// the last poll stopped; the cursors are rows every server reads, so one
+// that takes over goes on where the last stopped. With the memory store,
+// the one process writes, with its cursor beside the file.
 func serveOCSF(cfg config.Config, st server.EventStore) (stop func(), err error) {
 	if !cfg.Record.OCSF.Enabled {
 		return func() {}, nil
@@ -136,21 +132,39 @@ func serveOCSF(cfg config.Config, st server.EventStore) (stop func(), err error)
 	opts := ocsf.SinkOptions{Path: path, Version: o.Version, MaxBytes: int64(o.MaxMB) << 20, Keep: o.Keep,
 		Map: ocsfOptions(tenant), Poll: time.Second}
 	release := func() {}
-	switch s := st.(type) {
-	case *store.Postgres:
-		w := s.OCSFWriter("serve")
+	if pg, ok := store.PostgresOf(st); ok {
+		w := pg.OCSFWriter("serve")
 		release = w.Close
 		opts.Cursors = pgCursors{w}
-		opts.Read = storeLines(s)
-		ends := func(within time.Duration) func() (map[string]ocsf.Cursor, error) {
-			return func() (map[string]ocsf.Cursor, error) {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-				defer cancel()
-				seqs, err := s.EventEnds(ctx, within)
+		opts.Read = storeLines(pg)
+		opts.Sessions = func() (map[string]ocsf.Cursor, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			saved, err := w.LoadPos()
+			if err != nil {
+				return nil, err
+			}
+			if saved != "" {
+				seqs, err := pg.EventEnds(ctx, nil)
 				return seqCursors(seqs), err
 			}
+			// A sink's first start: its cursors and the place its feed reads
+			// on from are the same moment, so no event falls between them.
+			end, err := pg.CommitEnd(ctx)
+			if err != nil {
+				return nil, err
+			}
+			seqs, err := pg.EventEnds(ctx, &end)
+			if err != nil {
+				return nil, err
+			}
+			return seqCursors(seqs), w.SavePos(end.String())
 		}
-		opts.Sessions, opts.Changed = ends(0), ends(serveOCSFWindow)
+		opts.Feed = commitFeed(pg, w)
+		st = nil
+	}
+	switch s := st.(type) {
+	case nil:
 	case *agent.MemStore:
 		opts.Read = storeLines(s)
 		opts.Sessions = func() (map[string]ocsf.Cursor, error) { return seqCursors(s.Ends()), nil }
@@ -216,4 +230,41 @@ func (c pgCursors) Save(moved map[string]ocsf.Cursor) error {
 		rows[id] = store.OCSFCursor{Seq: m.Seq, Provider: m.Provider, Primed: m.Primed}
 	}
 	return c.w.Save(rows)
+}
+
+// commitFeed hands the sink the events committed since the place the
+// writer last read to, kept in Postgres and first set by the sink's first
+// scan. Each poll reads at most 10,000, and the rest at the next.
+func commitFeed(pg *store.Postgres, w *store.OCSFWriter) func(func(ocsf.Line)) error {
+	return func(add func(ocsf.Line)) error {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		saved, err := w.LoadPos()
+		if err != nil || saved == "" {
+			return err // the first scan has not set it yet
+		}
+		pos, err := store.ParseCommitPos(saved)
+		if err != nil {
+			return err
+		}
+		const batch = 500
+		for range 20 {
+			n := 0
+			err := pg.ScanCommitted(ctx, pos, batch, func(ev agent.Event, at store.CommitPos) error {
+				add(ocsf.Line{Event: ev})
+				pos, n = at, n+1
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if n < batch {
+				break
+			}
+		}
+		if p := pos.String(); p != saved {
+			return w.SavePos(p)
+		}
+		return nil
+	}
 }

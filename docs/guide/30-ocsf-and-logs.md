@@ -277,9 +277,14 @@ It polls its store each second rather than being handed lines:
   event is written by one server, in order, and a server that stopped
   between writing and moving its cursor has its last lines written again
   by the next (at least once; `metadata.uid` tells a repeat). Each poll
-  asks for the sessions with events written in the last ten minutes by the
-  database's clock and reads each from its cursor's seq by index; a session
-  is never read whole again.
+  reads the events committed since the place it last read to, in commit
+  order (schema version 12), and keeps that place in `ocsf_cursors`; only
+  events whose transaction is older than every one still running are read,
+  so a place once passed is never behind an event that commits later. A
+  sink's first start sets its cursors and that place at the same moment. A
+  session is never read whole again; a server that takes over compares
+  every session's last event with the cursors once, and reads what is
+  missing from each cursor's seq by index.
 
 A lease and one file was chosen over a file per server writing what it
 appended: events carry no server, so the lines a server appended and then

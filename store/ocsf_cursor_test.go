@@ -79,10 +79,31 @@ func TestEventEnds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, within := range []time.Duration{0, time.Minute} {
-		ends, err := p.EventEnds(context.Background(), within)
-		if err != nil || ends[id] != 3 {
-			t.Fatalf("within %v: %d, %v", within, ends[id], err)
-		}
+	ends, err := p.EventEnds(context.Background(), nil)
+	if err != nil || ends[id] != 3 {
+		t.Fatalf("%d, %v", ends[id], err)
+	}
+	// A new reader starts at the last committed event; the place round-trips.
+	end, err := p.CommitEnd(context.Background())
+	if err != nil || end.Session == "" {
+		t.Fatalf("commit end %+v, %v", end, err)
+	}
+	w := p.OCSFWriter(fmt.Sprintf("pos-%d", time.Now().UnixNano()))
+	if err := w.SavePos(end.String()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := w.LoadPos(); got != end.String() {
+		t.Fatalf("saved %q, loaded %q", end.String(), got)
+	}
+	if _, begun, _ := w.Load(); !begun {
+		t.Fatal("a saved place does not mark the sink begun")
+	}
+	// Up to the end, the ends are the same; up to before the session's first
+	// event, it has none.
+	if upTo, err := p.EventEnds(context.Background(), &end); err != nil || upTo[id] != 3 {
+		t.Fatalf("up to the end: %d, %v", upTo[id], err)
+	}
+	if early, _ := p.EventEnds(context.Background(), &CommitPos{At: time.Unix(0, 0)}); early[id] != 0 {
+		t.Fatalf("up to the start: %d", early[id])
 	}
 }

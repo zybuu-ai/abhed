@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -141,15 +143,15 @@ func (w *OCSFWriter) Save(moved map[string]OCSFCursor) error {
 }
 
 // EventEnds is the last seq of each session with events, erased sessions
-// left out; with within set, only of sessions with an event written in that
-// long before now, by the database's clock.
-func (p *Postgres) EventEnds(ctx context.Context, within time.Duration) (map[string]int64, error) {
+// left out: what a new OCSF writer compares the cursors with, once. With
+// upTo set, only events at or before that place in commit order count.
+func (p *Postgres) EventEnds(ctx context.Context, upTo *CommitPos) (map[string]int64, error) {
 	q := `SELECT e.session_id, max(e.seq) FROM events e
 		WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = e.session_id AND s.deleted_at IS NOT NULL)`
-	args := []any{}
-	if within > 0 {
-		q += ` AND e.created_at > now() - make_interval(secs => $1)`
-		args = append(args, within.Seconds())
+	var args []any
+	if upTo != nil {
+		q += ` AND (COALESCE(e.commit_tx, '0'::xid8), e.created_at, e.session_id, e.seq) <= ($1::text::xid8, $2, $3, $4)`
+		args = append(args, strconv.FormatUint(upTo.Tx, 10), upTo.At, upTo.Session, upTo.Seq)
 	}
 	rows, err := p.pool.Query(ctx, q+` GROUP BY e.session_id`, args...)
 	if err != nil {
@@ -166,4 +168,49 @@ func (p *Postgres) EventEnds(ctx context.Context, within time.Duration) (map[str
 		out[id] = seq
 	}
 	return out, rows.Err()
+}
+
+// LoadPos is the place in commit order the sink's writer reads on from, ""
+// before one was saved.
+func (w *OCSFWriter) LoadPos() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var pos string
+	err := w.p.pool.QueryRow(ctx, `SELECT commit_pos FROM ocsf_cursors WHERE sink = $1 AND session_id = ''`, w.sink).Scan(&pos)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return pos, err
+}
+
+// SavePos keeps the place in commit order the writer has read to.
+func (w *OCSFWriter) SavePos(pos string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := w.p.pool.Exec(ctx, `INSERT INTO ocsf_cursors (tenant_id, sink, session_id, seq, commit_pos)
+		VALUES ($1, $2, '', 0, $3)
+		ON CONFLICT (tenant_id, sink, session_id) DO UPDATE SET commit_pos = EXCLUDED.commit_pos, updated_at = now()`,
+		w.p.tenant, w.sink, pos)
+	return err
+}
+
+// CommitEnd is the place in commit order of the tenant's last committed
+// event, where a reader that starts now begins; with no event, a place
+// before every one that String does not write as "".
+func (p *Postgres) CommitEnd(ctx context.Context) (CommitPos, error) {
+	var pos CommitPos
+	var tx string
+	err := p.pool.QueryRow(ctx, `
+		SELECT COALESCE(commit_tx, '0'::xid8)::text, created_at, session_id, seq FROM events
+		WHERE COALESCE(commit_tx, '0'::xid8) < pg_snapshot_xmin(pg_current_snapshot())
+		ORDER BY COALESCE(commit_tx, '0'::xid8) DESC, created_at DESC, session_id DESC, seq DESC
+		LIMIT 1`).Scan(&tx, &pos.At, &pos.Session, &pos.Seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CommitPos{At: time.Unix(0, 0).UTC()}, nil
+	}
+	if err != nil {
+		return pos, err
+	}
+	pos.Tx, err = strconv.ParseUint(tx, 10, 64)
+	return pos, err
 }
