@@ -149,7 +149,7 @@ func TestTakeWorktreeRespectsPolicy(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(ws, "README.md")); string(b) != "hello\n" {
 		t.Fatalf("README.md %q", b)
 	}
-	if takeRefusedPath("pkg/.GIT/hooks/pre-commit") == "" || takeRefusedPath(".abhed/config.json") == "" || takeRefusedPath("src/a.go") != "" {
+	if takeRefusedPath("pkg/.GIT/hooks/pre-commit") == "" || takeRefusedPath(".abhed/config.json") == "" || takeRefusedPath("src/a.go") != "" || takeRefusedPath("../x") == "" || takeRefusedPath("/etc/x") == "" {
 		t.Fatal("takeRefusedPath")
 	}
 }

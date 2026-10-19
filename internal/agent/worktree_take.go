@@ -252,6 +252,9 @@ func (w Worktree) Changes(ctx context.Context, ws string) (WorktreeChanges, erro
 // takeRefusedPath says why a path is never taken into the main tree: git's
 // own folders and Abhed's state are not the subagent's to change.
 func takeRefusedPath(p string) string {
+	if p == "" || path.IsAbs(p) || !filepath.IsLocal(filepath.FromSlash(p)) {
+		return "it is not a path inside the workspace"
+	}
 	for _, seg := range strings.Split(p, "/") {
 		switch strings.ToLower(seg) {
 		case ".git":
