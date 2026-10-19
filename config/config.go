@@ -78,6 +78,8 @@ type Config struct {
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
 	Suggest SuggestConfig `json:"suggest,omitempty"`
+	// Monitor governs the supervisor, which may only tighten a decision.
+	Monitor MonitorConfig `json:"monitor,omitempty"`
 	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
 	Fence FenceConfig `json:"fence,omitempty"`
 	// Egress is the rules of the egress proxy that sandbox.network
@@ -1497,6 +1499,7 @@ func Default() Config {
 		// that deliberately crosses the boundary.
 		WebSearch: WebSearchConfig{Enabled: false, Provider: "duckduckgo", MaxResults: 5},
 		Suggest:   SuggestConfig{Enabled: true},
+		Monitor:   MonitorConfig{Enabled: true},
 		CLI:       CLIConfig{Title: true, Copy: true, Notify: "auto"},
 	}
 }
@@ -1751,6 +1754,9 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.Monitor.validate(); err != nil {
+		return err
 	}
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)

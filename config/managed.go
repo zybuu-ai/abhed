@@ -59,6 +59,8 @@ func mergeManaged(cfg *Config) error {
 		return nil
 	}
 	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
+	belowMon, belowKeys := cfg.Monitor, slices.Clone(cfg.SetKeys)
+	belowMon.Honeytokens = slices.Clone(belowMon.Honeytokens)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		if info != nil && info.Mode()&fs.ModeSymlink != 0 {
@@ -90,6 +92,7 @@ func mergeManaged(cfg *Config) error {
 		cfg.Permissions.Ask = dedupe(append(slices.Clone(cfg.Permissions.Ask), belowAsk...))
 		delete(cfg.origins, "permissions.ask")
 	}
+	monitorBelow(cfg, belowMon, func(k string) bool { return slices.Contains(belowKeys, k) })
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
 		cfg.Unknown[i].Managed = cfg.Unknown[i].File == path
@@ -398,6 +401,9 @@ type Overrides struct {
 	AdditionalDirs []string
 	// MemoryAuto, when set, turns auto memory on or off.
 	MemoryAuto *bool
+	// Supervisor is off, rules or model. Under a managed configuration it
+	// may turn the supervisor on, never off, and not change a judge it chose.
+	Supervisor string
 	// Warn, when set, takes the warnings about the rules added here, as
 	// LoadOptions.Warn does.
 	Warn func(string)
@@ -457,6 +463,12 @@ func (c Config) Apply(o Overrides) (Config, error) {
 				"the managed configuration sets %q, which may only be made stricter", orRefuse(c.Tools.SyntaxCheck)))
 		}
 		c.Tools.SyntaxCheck = o.SyntaxCheck
+	}
+	if o.Supervisor != "" {
+		var err error
+		if c, err = c.applySupervisor(o.Supervisor); err != nil {
+			return c, err
+		}
 	}
 	if o.MaxTurns > 0 {
 		if c.ManagedSets("limits.max_turns") && c.Limits.MaxTurns > 0 && o.MaxTurns > c.Limits.MaxTurns {
