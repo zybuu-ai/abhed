@@ -148,6 +148,33 @@ func TestOwnerTamperIsDetected(t *testing.T) {
 	}
 }
 
+// A second row at a position the chain holds, which takes the owner dropping
+// the unique index, is in no chain and fails. The index is put back after.
+func TestARowAtATakenPositionFails(t *testing.T) {
+	p, id := chainedSession(t, 3)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		asOwner(t, p, []string{"events_no_delete"}, `DELETE FROM events WHERE session_id = '`+id+`' AND seq = 99`)
+		if _, err := p.pool.Exec(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS events_chain_idx ON events (session_id, chain_pos) WHERE chain_pos IS NOT NULL`); err != nil {
+			t.Errorf("put the index back: %v", err)
+		}
+	})
+	asOwner(t, p, []string{"zz_events_chain"}, `DROP INDEX events_chain_idx`,
+		`INSERT INTO events (id, session_id, tenant_id, seq, type, payload, actor, chain_pos, prev_hash, hash)
+		 SELECT id || '-dup', session_id, tenant_id, 99, 'agent.forged', payload, actor, chain_pos, prev_hash, hash
+		 FROM events WHERE session_id = '`+id+`' AND chain_pos = 3`)
+	r, err := p.VerifyChain(ctx, id)
+	if err != nil || r.OK() {
+		t.Fatalf("verify = %+v, %v", r, err)
+	}
+	// Past the walk's page the row is not read at all; the count still shows it.
+	defer func(n int) { chainPage = n }(chainPage)
+	chainPage = 3
+	if r, err := p.VerifyChain(ctx, id); err != nil || r.OK() || !strings.Contains(r.Reason, "position another holds") {
+		t.Fatalf("verify with a page of 3 = %+v, %v", r, err)
+	}
+}
+
 // A row written with the chain's trigger off has no chain, and is a failure,
 // not a row "from before the chain".
 func TestAnUnchainedRowAfterTheChainFails(t *testing.T) {

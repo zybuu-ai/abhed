@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,8 +33,8 @@ var (
 	auditChain  = chainTable{name: "sandbox_audit", key: "tenant_id", kind: "postgres/sandbox_audit", cols: auditChainColumns}
 )
 
-// chainPage is how many links one query reads.
-const chainPage = 5000
+// chainPage is how many links one query reads; a test pins it lower.
+var chainPage = 5000
 
 // ChainReport is what VerifyChain found for one session's events.
 type ChainReport struct {
@@ -70,8 +71,13 @@ func (p *Postgres) VerifyChain(ctx context.Context, sessionID string) (ChainRepo
 	if !rg.OK() {
 		r.Rows = rg.FirstBad - 1
 	}
-	if r.Unchained, r.PreChain, err = p.unchained(ctx, eventsChain, sessionID); err != nil {
+	var chained int64
+	if r.Unchained, r.PreChain, chained, err = p.unchained(ctx, eventsChain, sessionID); err != nil {
 		return r, fmt.Errorf("verify the chain of %s: %w", sessionID, err)
+	}
+	// A second row at a position the walk read is in no chain.
+	if r.OK() && chained != r.Rows {
+		r.Reason = fmt.Sprintf("%d event(s) claim a chain position another holds", chained-r.Rows)
 	}
 	if r.OK() && r.Unchained > r.PreChain {
 		r.Reason = fmt.Sprintf("%d event(s) carry no chain and were not there when it began: they were written with its trigger off",
@@ -80,11 +86,13 @@ func (p *Postgres) VerifyChain(ctx context.Context, sessionID string) (ChainRepo
 	return r, nil
 }
 
-// unchained counts a chain's rows with no chain, and those marked as from before it.
-func (p *Postgres) unchained(ctx context.Context, t chainTable, key string) (n, pre int64, err error) {
-	err = p.pool.QueryRow(ctx, fmt.Sprintf(`SELECT (SELECT count(*) FROM %s WHERE %s = $1 AND chain_pos IS NULL),
-		COALESCE((SELECT pre_rows FROM chain_pre WHERE tbl = $2 AND key = $1), 0)`, t.name, t.key), key, t.name).Scan(&n, &pre) // #nosec G201 -- names from chainTable, not input
-	return n, pre, err
+// unchained counts a chain's rows with no chain, those marked as from
+// before it, and the rows that have one.
+func (p *Postgres) unchained(ctx context.Context, t chainTable, key string) (n, pre, chained int64, err error) {
+	err = p.pool.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FILTER (WHERE chain_pos IS NULL), count(*) FILTER (WHERE chain_pos IS NOT NULL),
+		COALESCE((SELECT pre_rows FROM chain_pre WHERE tbl = $2 AND key = $1), 0)
+		FROM %s WHERE %s = $1`, t.name, t.key), key, t.name).Scan(&n, &chained, &pre) // #nosec G201 -- names from chainTable, not input
+	return n, pre, chained, err
 }
 
 // EventChain is the per-session chain of events, as a chain.Source whose
@@ -149,7 +157,9 @@ func (p *Postgres) verifyRange(ctx context.Context, t chainTable, key string, fr
 // walk gives fn each link of a chain from position from to to (0 is its
 // last), in order, until fn returns false. Each row is rendered as the
 // chain's trigger hashed it, with only the database's own JSON functions and
-// in UTC as the trigger's were; the hashing is done by the caller.
+// in UTC as the trigger's were; the hashing is done by the caller. Pages are
+// keyed on the last position read, so a forged position far past the others
+// costs one page, not a walk to it.
 func (p *Postgres) walk(ctx context.Context, t chainTable, key string, from, to int64, fn func(chain.Link) bool) error {
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -160,37 +170,35 @@ func (p *Postgres) walk(ctx context.Context, t chainTable, key string, from, to 
 		return err
 	}
 	if to <= 0 {
-		if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(max(chain_pos), 0) FROM %s WHERE %s = $1`, t.name, t.key), key).Scan(&to); err != nil { // #nosec G201 -- names from chainTable
-			return err
-		}
+		to = math.MaxInt64
 	}
 	q := fmt.Sprintf(`SELECT chain_pos, COALESCE(prev_hash, ''), COALESCE(hash, ''),
 		COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(to_jsonb(t)) e WHERE e.key = ANY($4::text[])), '{}'::jsonb)::text
-		FROM %s t WHERE %s = $1 AND chain_pos >= $2 AND chain_pos <= $3 ORDER BY chain_pos`, t.name, t.key) // #nosec G201 -- names from chainTable
-	for lo := from; lo <= to; lo += chainPage {
-		hi := min(lo+chainPage-1, to)
-		rows, err := tx.Query(ctx, q, key, lo, hi, t.cols)
+		FROM %s t WHERE %s = $1 AND chain_pos >= $2 AND chain_pos <= $3 ORDER BY chain_pos LIMIT $5`, t.name, t.key) // #nosec G201 -- names from chainTable
+	for lo := from; ; {
+		rows, err := tx.Query(ctx, q, key, lo, to, t.cols, chainPage)
 		if err != nil {
 			return err
 		}
-		more := true
+		n, more := 0, true
 		for more && rows.Next() {
 			var l chain.Link
 			if err := rows.Scan(&l.Pos, &l.Prev, &l.Hash, &l.Row); err != nil {
 				rows.Close()
 				return err
 			}
+			n++
+			lo = l.Pos + 1
 			more = fn(l)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		if !more {
+		if !more || n < chainPage || lo > to || lo <= 0 {
 			return nil
 		}
 	}
-	return nil
 }
 
 // ChainSession is a session whose events a chain covers.
