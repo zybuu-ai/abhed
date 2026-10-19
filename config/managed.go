@@ -17,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // LoadManaged is the built-in defaults with only the managed configuration
@@ -616,13 +617,16 @@ func (c Config) ExtensionLayer(name string) string {
 // RuleLayer names where a configured permission rule in list (allow, ask or
 // deny) came from: default, user, workspace, managed or flag. A rule loading
 // did not see, as in a Config built by hand, is "config".
-// ManagedAsk reports an ask rule the managed configuration lists, which an
-// approved runbook does not answer; see policy.Engine.KeepAsk.
-func (c Config) ManagedAsk(rule string) bool { return c.RuleLayer("ask", rule) == LayerManaged }
-
 func (c Config) RuleLayer(list, rule string) string {
 	if l, ok := c.ruleLayers[list+"\x00"+strings.TrimSpace(rule)]; ok {
 		return l
 	}
 	return "config"
+}
+
+// ManagedAsk reports an ask decided by an ask rule the managed
+// configuration lists, which an approved runbook does not answer; see
+// policy.Engine.KeepAsk.
+func (c Config) ManagedAsk(r policy.Result) bool {
+	return r.Step == "ask" && r.Rule != "" && c.RuleLayer("ask", r.Rule) == LayerManaged
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // Runbooks are on by default; an untrusted workspace may turn them off, not
@@ -67,7 +68,11 @@ func TestManagedAsk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.ManagedAsk("ssh(prod*/*)") || cfg.ManagedAsk("ssh(dev1/*)") {
-		t.Fatalf("managed ask: %v %v (ask %v)", cfg.ManagedAsk("ssh(prod*/*)"), cfg.ManagedAsk("ssh(dev1/*)"), cfg.Permissions.Ask)
+	ask := func(rule string) policy.Result { return policy.Result{Decision: policy.Ask, Step: "ask", Rule: rule} }
+	if !cfg.ManagedAsk(ask("ssh(prod*/*)")) || cfg.ManagedAsk(ask("ssh(dev1/*)")) {
+		t.Fatalf("managed ask: %v (ask %v)", cfg.ManagedAsk(ask("ssh(prod*/*)")), cfg.Permissions.Ask)
+	}
+	if cfg.ManagedAsk(policy.Result{Decision: policy.Ask, Step: "default", Rule: "ssh(prod*/*)"}) {
+		t.Fatal("an ask no ask rule decided was taken as the managed file's")
 	}
 }

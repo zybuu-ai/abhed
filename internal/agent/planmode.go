@@ -55,6 +55,8 @@ func (l *Loop) proposePlan(_ context.Context, text string, steps []tools.Runbook
 	l.plans.mu.Lock()
 	l.plans.pending = &p
 	l.plans.offered = rb
+	// A new plan lets the old runbook go: what it bound is not what is proposed now.
+	l.plans.bound = nil
 	l.plans.mu.Unlock()
 	return nil
 }

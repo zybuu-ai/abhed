@@ -358,22 +358,31 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "still in plan mode; say what to change"})
 		return ""
 	}
-	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)}
-	if rb := plan.Runbook; rb != nil {
-		if err := st.loop.BindPlan(rb.Hash); err != nil {
-			st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
-			surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so planning goes on: " + err.Error()})
-			return ""
-		}
-		decided.PlanHash, decided.Runbook = rb.Hash, rb
+	if err := st.loop.PlanOffered(plan); err != nil {
+		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so planning goes on: " + err.Error()})
+		return ""
 	}
 	if err := modes.Set(ctx, to, agent.ViaPlanExit); err != nil {
-		st.loop.UnbindPlan()
 		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
 		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode was not changed, so planning goes on: " + err.Error()})
 		return ""
 	}
-	st.recordCLI(agent.EvPlanDecided, decided)
+	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)}
+	if rb := plan.Runbook; rb != nil {
+		decided.PlanHash, decided.Runbook = rb.Hash, rb
+	}
+	// The answer is on record before it binds anything; one the record did
+	// not take binds no runbook, so each step asks.
+	if _, err := st.loop.Recorder.Record(agent.EvPlanDecided, agent.ActorUser, agent.Trusted, decided); err != nil {
+		st.loop.UnbindPlan()
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so no runbook is bound: " + err.Error()})
+		return ""
+	}
+	if err := st.loop.AcceptPlan(plan); err != nil {
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound: " + err.Error()})
+		return ""
+	}
 	st.loop.SetApprovedPlan(plan.Text)
 	if !st.recordsLive() {
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
