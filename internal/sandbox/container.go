@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
@@ -24,12 +25,26 @@ const DefaultImage = "docker.io/library/debian:bookworm-slim"
 // Image, when set, is the execution image in place of ABHED_SANDBOX_IMAGE.
 var Image string
 
-// SandboxImage is the execution image: Image, else $ABHED_SANDBOX_IMAGE, read
-// when used, since on macOS the variable arrives after package init, else
-// DefaultImage. Air-gapped installs pin it by digest: a tag is mutable.
+// configuredImage is sandbox.image from the configuration, set by SetConfiguredImage.
+var configuredImage atomic.Pointer[string]
+
+// SetConfiguredImage makes img, sandbox.image, the execution image in place
+// of ABHED_SANDBOX_IMAGE; "" leaves the variable or the default in force.
+func SetConfiguredImage(img string) {
+	img = strings.TrimSpace(img)
+	configuredImage.Store(&img)
+}
+
+// SandboxImage is the execution image: Image, else sandbox.image, else
+// $ABHED_SANDBOX_IMAGE, read when used, since on macOS the variable arrives
+// after package init, else DefaultImage. Air-gapped installs pin it by
+// digest: a tag is mutable.
 func SandboxImage() string {
 	if Image != "" {
 		return Image
+	}
+	if img := configuredImage.Load(); img != nil && *img != "" {
+		return *img
 	}
 	return envOr("ABHED_SANDBOX_IMAGE", DefaultImage)
 }

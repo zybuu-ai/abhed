@@ -140,7 +140,7 @@ transcript, so a change of mode or a compaction is never invisible:
   each contradicted statement struck through with the record against it, and
   the unverified statements about the work. `/evidence N` opens the record
   behind statement N. `-verify off` or `verify.mode: off` turns it off
-  ([Verified answers](28-verified-answers.md)).
+  ([Verified answers](29-verified-answers.md)).
 - **Subagents.** A subagent starting and returning is a tree under the `task`
   call: its type, its description, its model and, for a worktree, its branch;
   then how it ended, its turns and tokens.

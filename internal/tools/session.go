@@ -44,6 +44,13 @@ type Session struct {
 	// tool gets it by construction — a new tool cannot forget to call it.
 	Checkpoint func(path string, before []byte, existed bool)
 
+	// BashCheckpoint records a file a bash command changed, as it was before
+	// the command; nil leaves bash commands' changes unrecorded. BashCheckpoints
+	// bounds the snapshot taken before each command.
+	BashCheckpoint  func(FileBefore)
+	BashCheckpoints BashCheckpoints
+	bashSnaps       *bashSnaps
+
 	// Guard, when set, may refuse a change edit or write is about to make to
 	// path, such as a file a person has unsaved edits to; nil allows all. It
 	// is given the session's roots, as resolved and as given.
@@ -231,13 +238,15 @@ func (s *Session) Fork() *Session {
 	defer s.mu.Unlock()
 	return &Session{
 		Root: s.Root, Cwd: s.Root, rawRoot: s.rawRoot,
-		rawRoots:   append([]string(nil), s.rawRoots...),
-		Roots:      append([]string(nil), s.Roots...),
-		Checkpoint: s.Checkpoint,
-		Syntax:     s.Syntax,
-		Guard:      s.Guard,
-		reads:      make(map[string]string),
-		scoped:     s.scopedLocked(),
+		rawRoots:        append([]string(nil), s.rawRoots...),
+		Roots:           append([]string(nil), s.Roots...),
+		Checkpoint:      s.Checkpoint,
+		BashCheckpoint:  s.BashCheckpoint,
+		BashCheckpoints: s.BashCheckpoints,
+		Syntax:          s.Syntax,
+		Guard:           s.Guard,
+		reads:           make(map[string]string),
+		scoped:          s.scopedLocked(),
 	}
 }
 

@@ -26,7 +26,7 @@ turns; the status bar names the model the last call went to
 |---|---|
 | **Explorer** | the session's workspace; click a file to open it in the editor. New file, new folder, rename (F2), delete, download and upload are on its toolbar and right-click menu, and files dropped on a folder go into it |
 | **Search** | text or a regular expression across the workspace, with match case and whole word; results grouped by file, a click opens the line |
-| **Changes** | files the agent changed or you saved, each opening for review: accept or reject change by change |
+| **Changes** | files the agent changed or you saved, each opening for review: accept or reject change by change; below them, each subagent worktree's changes by hunk, to [take into the workspace](14-parallel-subagents.md#taking-a-worktree-back) |
 | **Files** | the documents, images, spreadsheets and archives at the top of the workspace, each a click from downloading ([files in and out](#files-in-and-out)) |
 | **Tools** | every tool the agent has, whether it asks before running, and the permission rules in force |
 | **Extensions** | configured extensions and the events they hook, connected MCP servers, loaded skills |
@@ -111,7 +111,7 @@ opens by itself when a statement is contradicted or a statement about the work
 is unverified, and each `#seq` opens the tool call the statement rests on. The
 statements and excerpts are the model's and the tools' text, shown with every
 control and format character written out. A session's `verify` setting, or
-`verify.mode`, changes or turns it off ([Verified answers](28-verified-answers.md)).
+`verify.mode`, changes or turns it off ([Verified answers](29-verified-answers.md)).
 
 **Sending while the agent works.** Send stays enabled during a run. A message
 sent then is not a reason to cancel the step in progress: it is queued, shown
@@ -733,7 +733,7 @@ open.
 - **Files over 4 MB are read-only**, shown in part.
 - **Changes made by commands are found by comparison, within limits.** As
   a session opens, the server notes every file in the workspace (outside
-  `.git`, `node_modules` and `.abhed`) with its size, time and hash, and keeps
+  `.git`, `node_modules`, `.abhed` and the subagents' `.abhed-worktrees`) with its size, time and hash, and keeps
   the text of files up to 1 MB, 16 MB in all. A file a shell command changed,
   created or removed since then, yours or the agent's, is listed under
   **Changes** beside the edit tools' changes and can be reviewed and accepted

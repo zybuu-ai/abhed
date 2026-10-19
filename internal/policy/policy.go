@@ -431,6 +431,10 @@ type Engine struct {
 	// data out, such as web_fetch.
 	AskReadOnly map[string]func(subject string) string
 
+	// RemoteReads are the commands an ssh call may run as a read, from
+	// ssh.read_commands; see AllowRemoteReads.
+	RemoteReads []Rule
+
 	// GitExtensions are git subcommands outside git itself, such as lfs, the
 	// person opted in to (permissions.git_extensions): the destructive step
 	// does not take them as an alias or extension it cannot read. Deny and
@@ -843,27 +847,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	case tool == "bash":
 		// Every step sees the command as written and as the shell splits it,
 		// continuations joined; an allow rule sees no more than the joined form.
-		canon = tools.CanonicalCommand(subject)
-		switch as {
-		case asTyped:
-			canon = canon.AtTerminal()
-		case asLine:
-			canon = canon.AsTerminalLine()
-		}
-		subjects, complete = commandSegments(subject)
-		narrowAllows = !hasShellControl(subject)
-		if canon.Text != subject {
-			more, whole := commandSegments(canon.Text)
-			subjects, complete = append(subjects, more...), complete && whole
-		}
-		// Under a changed IFS, deny and ask rules also read the words it splits.
-		if canon.IFS != "" {
-			more, whole := commandSegments(tools.IFSSplitText(canon.Text, canon.IFS))
-			subjects, complete = append(subjects, more...), complete && whole
-		}
-		// And the commands a bash parser finds, in function bodies and in the
-		// text eval, trap and -c run, read whole: their quoting is undone.
-		subjects = append(subjects, canon.Commands()...)
+		canon, subjects, allowSubjects, narrowAllows, complete = shellRead(subject, as)
 		// And the commands in the scripts it runs, read from where it starts.
 		if e.rulesSeeParts(tool) {
 			script = e.readScripts(canon)
@@ -872,12 +856,6 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		// Deny and ask rules also see each program named by a path as its
 		// base name: bash(curl *) holds for /usr/bin/curl x and ./curl x.
 		subjects = withBaseNames(subjects)
-		if canon.Joined && !canon.Reworded {
-			allowSubjects, narrowAllows = []string{canon.Text}, !hasShellControl(canon.Text)
-		}
-		if canon.Reworded {
-			narrowAllows = false
-		}
 	case key == "path" && e.pathRules(tool):
 		subjects, allowSubjects = e.pathSubjects(subject, e.rulesSeeParts(tool))
 	}
@@ -891,6 +869,13 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			subjects = append(subjects, subject)
 		}
 		subject, narrowAllows = target, !strings.ContainsAny(target, "\n\r")
+	}
+	// An ssh command runs through the remote shell, so it is read as bash's is.
+	var remote *remoteRead
+	if host, command, ok := remoteCommand(tool, args); ok {
+		rr := readRemote(host, command)
+		remote, canon = &rr, rr.canon
+		subjects, allowSubjects, narrowAllows, complete = rr.subjects, rr.allow, rr.narrow, rr.complete
 	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
@@ -957,6 +942,11 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			return r.matchesAny(tool, subjects) || r.matchesFlagsAny(tool, subjects)
 		}
 	}
+	if remote != nil {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			return r.matchesAny(tool, subjects) || r.matchesRemoteFlags(*remote)
+		}
+	}
 	// A Kubernetes call on every namespace, `*`, reads each one: a deny or ask
 	// rule matches it when the rule would match some namespace it covers.
 	if _, k8s := clusterSubject(tool, args); k8s && strings.ContainsAny(subject, "*?") {
@@ -1001,14 +991,17 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
-	if e.Mode == ModePlan && mutates {
+	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "") {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 	}
 
 	// 2c. Destructive commands always confirm, in every mode. There is no
 	// undo for these, so no mode auto-approves them (docs P7, §06).
-	if tool == "bash" {
+	if tool == "bash" || remote != nil {
 		if what, destructive := canon.DestructiveWith(e.GitExtensions); destructive {
+			if remote != nil {
+				what += " on " + remote.host + ", a remote command with no undo"
+			}
 			return Result{Decision: Ask, Reason: fmt.Sprintf("%s — always requires confirmation", what), Scope: "", Step: "destructive"}
 		}
 	}
@@ -1047,6 +1040,18 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		return *hookAsk
 	}
 
+	// An ssh command the operator declared a read changes nothing, as a read
+	// tool does: no mode but a managed bypass asks for it.
+	if remote != nil && e.Mode != ModeBypass {
+		if rule := e.remoteReadRule(*remote); rule != "" {
+			step := "default"
+			if e.Mode == ModePlan || e.Mode == ModeAuto {
+				step = "mode"
+			}
+			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step}
+		}
+	}
+
 	// 4. Permission mode.
 	switch e.Mode {
 	case ModePlan:
@@ -1082,7 +1087,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	// 5. Allow rules. A git option that writes a file or runs a program is
 	// approved only by a rule naming the command exactly, or allowing every one.
 	gitRuns := ""
-	if tool == "bash" {
+	if tool == "bash" || remote != nil {
 		gitRuns = canon.GitRunsOrWrites()
 	}
 	for _, r := range allowRules {
@@ -1223,6 +1228,12 @@ func (e *Engine) suggestScope(tool, subject string) string {
 			return ""
 		}
 		return fmt.Sprintf("%s(%s *)", tool, prefix)
+	}
+	// As for bash, no scope approves a chain; nor one a wildcard would widen.
+	if tool == "ssh" {
+		if _, command, _ := strings.Cut(subject, "/"); hasShellControl(command) || strings.ContainsAny(command, "*?") {
+			return ""
+		}
 	}
 	// A page's site, not the page: "always allow" for one URL would ask again
 	// for the next page there.

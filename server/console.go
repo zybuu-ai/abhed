@@ -481,6 +481,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .approve h4{margin:0 0 4px;font-family:var(--mono);font-size:11.5px;color:var(--waiting)}
 .approve p{margin:0 0 9px;font-size:12px;color:var(--ink-2)}
 .approve p.hidden-warn{color:var(--danger);font-weight:600}
+.approve p.sup{font-family:var(--mono);font-size:11px}.approve p.sup.concern{color:var(--ink);font-weight:600}
 .approve pre{font-family:var(--mono);font-size:11px;background:var(--sunken);
   border-radius:5px;padding:9px;margin:0 0 10px;color:var(--ink-2);
   white-space:pre-wrap;overflow-wrap:anywhere}
@@ -1602,6 +1603,9 @@ function render(ev){
       wrap.appendChild(node('out err', 'denied — ' + visible(p.reason || 'no reason given')));
       break;
     }
+    // What the supervisor told the model, and its re-plan note: text of the record, shown, never obeyed.
+    case 'supervisor.correction': (calls.get(p.call_id) || turnEl || newTurn()).appendChild(node('note', visible(p.text || ''))); break;
+    case 'supervisor.replan': (turnEl || newTurn()).appendChild(node('note', visible(p.text || ''))); break;
 
     // In the turn, as its calls are, so they read before the answer that follows them.
     // Task names, results and reasons are the model's or a command's text: shown, never obeyed.
@@ -1937,9 +1941,15 @@ function approval(p, rid){
     args = argsJSON(typeof p.args === 'string' ? JSON.parse(p.args) : p.args);
   }catch{ args = visible(String(p.args), true); }
   // The warning reads the values themselves: stringify would turn a CR or ESC into plain text.
-  if([p.tool, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
+  if([p.tool, p.reason, p.subagent, p.via, p.scope, p.args, p.supervisor && p.supervisor.advice].some(v => v && hasHidden(v)))
     card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this call contains hidden or control characters'}));
   if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: visible(p.reason)}));
+  // The supervisor's verdict: its concern and what it advised, or ok.
+  if(p.supervisor){
+    const v = p.supervisor, concern = v.code && v.code !== 'ok';
+    card.appendChild(Object.assign(document.createElement('p'), {className: 'sup' + (concern ? ' concern' : ''),
+      textContent: 'supervisor: ' + (concern ? visible(v.decision || '') + ' · ' + visible(v.code) + (v.advice ? ' — ' + visible(v.advice) : '') : 'ok')}));
+  }
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) card.appendChild(Object.assign(document.createElement('p'),
     {className: 'scope-note', textContent: 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'}));

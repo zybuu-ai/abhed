@@ -167,6 +167,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 		fail(err)
 	}
+	sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
@@ -179,6 +180,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
+	must(pol.AllowRemoteReads(cfg.SSH.ReadCommands...))
 
 	sb, err := startSandbox(cfg, workspace, !headless)
 	if err != nil {

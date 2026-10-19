@@ -127,6 +127,16 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
 </section>
 {{end}}
 
+{{with .Supervisor}}
+<section>
+  <h2>Supervisor</h2>
+  <p>{{.Reviewed}} reviewed · {{.Tightened}} tightened · {{.Unavailable}} unavailable · {{.Corrections}} corrections · {{.Replans}} re-plans · slowest {{ms .MaxLatencyMS}}{{if .Judges}} · judge {{join .Judges ", "}}{{end}}</p>
+  {{if .ByCode}}<p>{{codes .ByCode}}</p>{{end}}
+  {{if .Concerns}}<pre>{{range .Concerns}}#{{.Seq}} {{.Tool}} {{.Before}} → {{.After}}  {{.Code}}: {{.Rationale}}
+{{end}}</pre>{{end}}
+</section>
+{{end}}
+
 {{if .PolicyLayers}}
 <section>
   <h2>Policy layers</h2>

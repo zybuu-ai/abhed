@@ -8,7 +8,7 @@ import (
 )
 
 // Profile names the rule set Command builds; it changes whenever the rules do.
-const Profile = "command/3"
+const Profile = "command/4"
 
 // ErrUnsupported is returned by Install where the filter cannot be applied.
 var ErrUnsupported = errors.New("seccomp: the fence's system-call filter needs Linux on amd64, arm64 or s390x")
@@ -22,6 +22,10 @@ type Policy struct {
 	// ProxyOnly, for the egress allowlist, allows inet and inet6 stream
 	// sockets alone, which Landlock then lets connect only to the proxy's port.
 	ProxyOnly bool
+	// LoopbackDatagram, with ProxyOnly, also allows inet and inet6 UDP
+	// datagram sockets, for the session's resolver. Only for a command in a
+	// network namespace holding loopback alone, where UDP reaches nothing else.
+	LoopbackDatagram bool
 	// Socketcall, with AllowNetwork, allows socketcall(SOCKET) where the
 	// architecture has it: the family is behind a pointer the filter cannot
 	// read, so unix sockets are reachable through it.
@@ -41,13 +45,14 @@ func Command(allowNetwork bool, abhed, abhedGroup int) Policy {
 type cond int
 
 const (
-	always     cond = iota // the call is refused outright
-	maskSet                // refused when arg & k != 0
-	below                  // refused when arg < k
-	equal                  // refused when arg == k
-	family                 // socket: refused unless inet, inet6 or route netlink
-	oneOf                  // refused when arg equals any of ks
-	streamInet             // socket: refused unless an inet or inet6 stream socket
+	always          cond = iota // the call is refused outright
+	maskSet                     // refused when arg & k != 0
+	below                       // refused when arg < k
+	equal                       // refused when arg == k
+	family                      // socket: refused unless inet, inet6 or route netlink
+	oneOf                       // refused when arg equals any of ks
+	streamInet                  // socket: refused unless an inet or inet6 stream socket
+	streamOrUDPInet             // socket: refused unless an inet or inet6 TCP stream or UDP datagram socket
 )
 
 type rule struct {
@@ -72,6 +77,7 @@ const (
 	afNetlink       = 16
 	netlinkRoute    = 0
 	ipprotoTCP      = 6
+	ipprotoUDP      = 17
 	sysSocket       = 1 // socketcall's call number for socket
 	prSetSeccomp    = 22
 	seccompGetOpMin = 2 // SECCOMP_GET_ACTION_AVAIL; lower ops install a filter or strict mode
@@ -124,6 +130,9 @@ func (p Policy) rules(info archInfo) []rule {
 		rule{group: "signals to Abhed", name: "rt_tgsigqueueinfo", errno: errEPERM, cond: oneOf, arg: 0, ks: []uint32{pid}, note: "rt_tgsigqueueinfo of it"},
 		rule{group: "signals to Abhed", name: "pidfd_send_signal", errno: errEPERM, note: "pidfd_send_signal to any process"})
 	switch {
+	case p.ProxyOnly && p.LoopbackDatagram:
+		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: streamOrUDPInet,
+			note: "socket other than an inet or inet6 TCP stream or UDP datagram, unix, MPTCP, SCTP and ICMP included; socketpair allowed"})
 	case p.ProxyOnly:
 		rs = append(rs, rule{group: "sockets", name: "socket", errno: errEPERM, cond: streamInet,
 			note: "socket other than an inet or inet6 TCP stream, unix, UDP, MPTCP and SCTP included; socketpair allowed"})
@@ -206,6 +215,24 @@ func build(arch string, rules []rule) (Program, error) {
 					a.jump(opJeq, k, deny, "")
 				}
 			}
+		case streamOrUDPInet:
+			a.ld(info.argLow(0))
+			a.jump(opJeq, afInet, fmt.Sprintf("%d.type", i), "")
+			a.jump(opJeq, afInet6, fmt.Sprintf("%d.type", i), deny)
+			a.mark(fmt.Sprintf("%d.type", i))
+			// A stream's low nibble is 1, a datagram's 2; every other type sets another bit.
+			a.ld(info.argLow(1))
+			a.jump(opJset, 0xc, deny, "")
+			a.jump(opJset, 0x2, fmt.Sprintf("%d.dgram", i), fmt.Sprintf("%d.proto", i))
+			a.mark(fmt.Sprintf("%d.dgram", i))
+			a.jump(opJset, 0x1, deny, "") // 3, a raw socket
+			a.ld(info.argLow(2))
+			a.jump(opJeq, 0, allow, "")
+			a.jump(opJeq, ipprotoUDP, allow, deny)
+			a.mark(fmt.Sprintf("%d.proto", i))
+			a.ld(info.argLow(2))
+			a.jump(opJeq, 0, allow, "")
+			a.jump(opJeq, ipprotoTCP, allow, deny)
 		case streamInet:
 			a.ld(info.argLow(0))
 			a.jump(opJeq, afInet, fmt.Sprintf("%d.type", i), "")

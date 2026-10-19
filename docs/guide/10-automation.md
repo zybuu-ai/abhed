@@ -105,7 +105,7 @@ one revision turn when a statement about its work is not verified, then exits
 `8` if it still is not, so CI fails closed. Unset, `-p` checks nothing unless
 `verify.mode` says so. With `json` or `stream-json`, the check is the
 `answer.verdict` event and the result line's `verdict`. A managed
-`verify.mode` may only be made stricter. See [Verified answers](28-verified-answers.md).
+`verify.mode` may only be made stricter. See [Verified answers](29-verified-answers.md).
 
 ### Limits and instructions
 
@@ -160,7 +160,7 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | `2` | bad invocation, or the turn limit |
 | `3` | token budget |
 | `5` | model retries exhausted |
-| `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](28-verified-answers.md)) |
+| `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](29-verified-answers.md)) |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
 

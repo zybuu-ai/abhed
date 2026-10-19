@@ -29,17 +29,27 @@ func relayDNS(sock string) error {
 	if cred == "" {
 		return errors.New("no proxy credential in HTTP_PROXY")
 	}
-	udp, err := net.ListenPacket("udp", ResolverAddr)
+	udp, tcp, err := ListenResolver()
 	if err != nil {
-		return err
-	}
-	tcp, err := net.Listen("tcp", ResolverAddr)
-	if err != nil {
-		_ = udp.Close()
 		return err
 	}
 	go ServeDNS(udp, tcp, sock, cred)
 	return nil
+}
+
+// ListenResolver listens on ResolverAddr over UDP and TCP, for ServeDNS.
+// Port 53 needs CAP_NET_BIND_SERVICE where the network namespace is owned.
+func ListenResolver() (net.PacketConn, net.Listener, error) {
+	udp, err := net.ListenPacket("udp", ResolverAddr)
+	if err != nil {
+		return nil, nil, err
+	}
+	tcp, err := net.Listen("tcp", ResolverAddr)
+	if err != nil {
+		_ = udp.Close()
+		return nil, nil, err
+	}
+	return udp, tcp, nil
 }
 
 // Relay accepts on ln and joins each connection to the proxy's unix socket

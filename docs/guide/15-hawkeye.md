@@ -89,10 +89,11 @@ capture does not say it left any out.
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
 | Policy layers | the rules an edition added to the session as a layer of their own, such as a Team workspace's ([Policy layers](04-permissions.md#policy-layers-from-an-edition)), from its `policy.layer` events: name, revision, rules, allow rules set aside, and how many decisions the layer's rules made (`policy_layers` and `policy.by_layer` in the JSON) |
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of, or whose connections the egress allowlist refused (`network_denied`), is marked `!` |
+| Supervisor | when the [supervisor](04-permissions.md#the-supervisor) left anything in the record: how many calls it reviewed and tightened, how often its judge was unavailable, the corrections it sent the model and the re-plan notes, its concerns by code with each one's call, and the judge's version (`supervisor` in the JSON) |
 | Turns | per-turn tokens, time to first token, total latency |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
-| Answers | each check of an answer against the record, from its `answer.verdict`: the counts, the mode and whether the agent cited its evidence, and every statement with ✓, ? or ✗ and why (`answers` in the JSON) — [Verified answers](28-verified-answers.md) |
+| Answers | each check of an answer against the record, from its `answer.verdict`: the counts, the mode and whether the agent cited its evidence, and every statement with ✓, ? or ✗ and why (`answers` in the JSON) — [Verified answers](29-verified-answers.md) |
 
 The tokens in the summary and per turn are the conversation's own model
 calls. A next-prompt suggestion's call (`model.call` with `purpose:
@@ -139,7 +140,7 @@ and none of them is a model's opinion.
 | `broken-edit` | info | an `edit` or `write` was refused, because it would have left a file that parsed no longer parsing or its new text was a pasted diff; the file was left as it was |
 | `output-cap` | warn | a turn spent the whole output budget reasoning and made no tool call; the loop nudged it and lowered the effort |
 | `secret-redacted` | warn | a stored secret's value was written out by a command or the model and redacted before the record |
-| `contradicted-claim` | warn | an answer shown last (no revision followed it) made a statement the record contradicts; it was shown struck through, not as fact ([Verified answers](28-verified-answers.md)) |
+| `contradicted-claim` | warn | an answer shown last (no revision followed it) made a statement the record contradicts; it was shown struck through, not as fact ([Verified answers](29-verified-answers.md)) |
 | `contract-unmet` | warn | the completion contract was not met: a required command failed or was not run, or a protected file changed |
 | `abnormal-end` | warn | the session ended as anything other than completed or a user interrupt |
 | `repeated-failure` | warn | the same call failed three times unchanged |

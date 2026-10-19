@@ -25,6 +25,7 @@ var page = template.Must(template.New("report").Funcs(template.FuncMap{
 	"clock": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
 	"chart": chart,
 	"steps": steps,
+	"codes": codes,
 	"join":  strings.Join,
 	"latest": func(s []string) string {
 		if len(s) == 0 {
@@ -93,6 +94,20 @@ func Text(r Report) string {
 			fmt.Fprintf(&b, " · %d would be refused (monitor)", n.WouldDeny)
 		}
 		b.WriteString("\n")
+	}
+	if s := r.Supervisor; s != nil {
+		fmt.Fprintf(&b, "  supervisor %d reviewed · %d tightened · %d unavailable · %d corrections · %d re-plans   slowest %s",
+			s.Reviewed, s.Tightened, s.Unavailable, s.Corrections, s.Replans, dur(s.MaxLatencyMS))
+		if len(s.Judges) > 0 {
+			fmt.Fprintf(&b, "   judge %s", strings.Join(s.Judges, ", "))
+		}
+		b.WriteString("\n")
+		if len(s.ByCode) > 0 {
+			fmt.Fprintf(&b, "             %s\n", codes(s.ByCode))
+		}
+		for _, c := range s.Concerns {
+			fmt.Fprintf(&b, "             #%d %s %s → %s  %s: %s\n", c.Seq, c.Tool, c.Before, c.After, c.Code, clip(oneLine(c.Rationale), 100))
+		}
 	}
 	fmt.Fprintf(&b, "  record    #%d–#%d", r.Integrity.FirstSeq, r.Integrity.LastSeq)
 	if len(r.Integrity.Gaps) > 0 {

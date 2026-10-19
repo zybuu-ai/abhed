@@ -246,7 +246,7 @@ from the engine.
 ### 3.4b Checked answers
 
 A session labels its answers unless the configuration's `verify.mode` says
-otherwise ([Verified answers](../guide/28-verified-answers.md)). After the
+otherwise ([Verified answers](../guide/29-verified-answers.md)). After the
 reply, the engine sends one `agent_message_chunk` whose text is the footer and
 the contradicted and unverified statements as plain lines (empty for an answer
 with nothing to check), and whose `_meta["zybuu.ai/abhed"] = {verdict: …}` is
@@ -962,6 +962,8 @@ them.
 | `conversation.forked` | user | from, through_seq |
 | `terminal.input` | user | line or withheld |
 | `monitor.verdict` | system | verdict, before, after (shown when present) |
+| *new* `supervisor.correction` | system | call_id, code, decision, text |
+| *new* `supervisor.replan` | system | failures, text |
 | `message.dropped` | system | |
 | *new* `mode.changed` | user | from, to, via |
 | *new* `permission.changed` | user | op, list, rule, scope |

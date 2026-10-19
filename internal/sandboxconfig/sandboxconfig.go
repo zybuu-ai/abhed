@@ -56,6 +56,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		}
 	}
 	p := sandbox.DefaultPolicy(workspace)
+	sandbox.SetConfiguredImage(cfg.Sandbox.Image)
 	if cfg.Sandbox.MinTier != "" {
 		p.MinTier = sandbox.Tier(cfg.Sandbox.MinTier)
 	}

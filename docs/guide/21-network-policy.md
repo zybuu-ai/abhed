@@ -355,6 +355,24 @@ Linux release binaries and `make build` are built without cgo; a plain
 `go build` on a machine with a C compiler is not, and its warning says to
 build with `CGO_ENABLED=0`.
 
+On the **fence** tier in `mount_namespace` mode the launcher serves the same
+resolver in the command's network namespace: it binds port 53 there with
+`CAP_NET_BIND_SERVICE` in its own user namespace, binds the session's
+`resolv.conf` read-only over `/etc/resolv.conf` (over the file it links to,
+when it is a link), and then drops every capability before the command
+starts, as for its other mounts. The resolver answers over UDP and TCP, so
+glibc, Go and musl resolvers all resolve. In this mode alone the seccomp
+filter also lets a command make inet and inet6 UDP sockets (not raw, ICMP or
+UDP-Lite ones): the namespace holds only its loopback and no route, the
+command holds no capability to add an interface or a route, and the filter
+refuses new namespaces, so UDP reaches nothing but the namespace's own
+loopback, where only the resolver listens; a datagram to any other address
+fails with "network unreachable". Landlock lets a command connect over TCP
+to port 53 beside the proxy's. Where
+`/etc/resolv.conf` is not a file, Abhed logs a warning once and names
+resolve nothing, as before. In `landlock_only` mode there is no network
+namespace and no resolver.
+
 On **macOS** Seatbelt cannot redirect DNS, so there is no in-sandbox
 resolver and no `dns` record. The profile already refuses both ways a
 command could resolve: a UDP or TCP socket to any DNS server, and the
@@ -516,7 +534,7 @@ allowlist, naming why, rather than opening the network in its place.
 |---|---|
 | process, Linux (bubblewrap) | **Enforced.** The command has its own network namespace with loopback only. A small relay inside it, Abhed's own binary, listens where the proxy variables point and passes each connection to the proxy's unix socket, which is bound into the sandbox, and serves the session's resolver (see Names). Nothing else leaves: a client that ignores the proxy variables has no route out. |
 | process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. So are the LaunchServices and Apple event services (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, the `coreservices` and `lsd` part matched in any case; the whole family is denied, which also cuts Handoff's clipboard and the shared file lists), on every network setting: `open` still runs but exits non-zero without handing the URL to a browser, and `osascript` cannot send Apple events to another app. Other system services are not: `trustd` fetches the issuer (AIA) and revocation (OCSP) URLs of a certificate a command asks it to verify, itself, outside the proxy and unrecorded, so a crafted certificate reaches any host and path. Commands cannot resolve names themselves (see Names); the proxy resolves them. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. A command can read a concurrent command's token and the environment of an MCP server Abhed started; Abhed's own environment is hidden (see [Per-call credentials](#per-call-credentials)). |
-| fence (Linux preview) | **Enforced in `mount_namespace` mode.** Each command has a network namespace holding only its loopback, where the launcher relays the proxy's port to its call's own socket on the host; seccomp allows inet TCP stream sockets alone (not MPTCP or SCTP, which Landlock's TCP rules do not hold) and Landlock TCP connect to that port alone. In `landlock_only` mode there is no network namespace and Landlock filters ports, not addresses, so a command could reach its call's proxy port number on any host: refused there unless the managed `fence.egress_port_only` accepts it. |
+| fence (Linux preview) | **Enforced in `mount_namespace` mode.** Each command has a network namespace holding only its loopback, where the launcher relays the proxy's port to its call's own socket on the host; seccomp allows inet TCP stream sockets (not MPTCP or SCTP, which Landlock's TCP rules do not hold) and UDP datagram sockets, which reach only that loopback, alone, and Landlock TCP connect to that port and the session resolver's port 53 alone (see [Names](#names-dns)). In `landlock_only` mode there is no network namespace and Landlock filters ports, not addresses, so a command could reach its call's proxy port number on any host: refused there unless the managed `fence.egress_port_only` accepts it. |
 | container, vm | **Enforced, through a relay.** Each command runs in a container of its own with no network (`--network none`). A relay inside it, a Linux build of Abhed bound in read-only, listens on the container's loopback at the proxy's port and carries each connection over a long-lived `engine exec`'s stdio to the call's own socket on the session's proxy on the host, at most 128 at once; the relay runs as a user of its own (uid 65534, or 65533 if commands run as 65534), so a command cannot write to its output or signal it, and the relay binary must be readable and executable by that user; the command then runs by a second `exec` with the call's proxy variables, passed to the engine in an `--env-file` only your user can read, removed when the call ends, so the token is neither in an argument nor in the engine CLI's own environment, and the container is removed when the call ends. On a Linux host with a local engine the relay is this binary; where the engine is in a VM (Docker Desktop, a Podman machine) or on another host (`DOCKER_HOST`, `CONTAINER_HOST`) it is the build the managed `control_plane.podman.relay_binary` or `control_plane.docker.relay_binary` names, and without one the tier is refused, never given the network. The workbench terminal on these tiers gets no network under the allowlist. Each command starts a container and two `exec`s, so commands start slower than without the allowlist. |
 | none | **Refused.** Nothing stops a command on the host from ignoring the proxy variables. |
 

@@ -490,6 +490,15 @@ func (c *Cluster) credential() (string, error) {
 	return c.bearer, nil
 }
 
+// needsHelper reports whether the next request would run the exec
+// credential helper first.
+func (c *Cluster) needsHelper() bool {
+	c.tokMu.Lock()
+	defer c.tokMu.Unlock()
+	return c.execCfg != nil && (c.bearer == "" ||
+		!c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second)))
+}
+
 // Do issues a request against the API server.
 func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	// A short-lived token that has expired produces a 401 that looks like a
@@ -539,7 +548,7 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 		// guessing at which verb or resource it lacks.
 		return nil, fmt.Errorf("forbidden by RBAC: %s", apiMessage(data))
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("not found: %s", apiMessage(data))
+		return nil, fmt.Errorf("%w: %s", errNotFound, apiMessage(data))
 	case resp.StatusCode >= 400:
 		return nil, fmt.Errorf("cluster returned %s: %s", resp.Status, apiMessage(data))
 	}
@@ -584,6 +593,9 @@ func (c *Cluster) doPatch(ctx context.Context, path string, body []byte, content
 	}
 	return data, nil
 }
+
+// errNotFound is a 404 from the API server.
+var errNotFound = errors.New("not found")
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
