@@ -17,8 +17,11 @@ var Budgets = struct {
 	StreamOverheadPerSec int           // bytes beyond the text while streaming
 	FirstToken           time.Duration // stub delta to screen, first token
 	DeltaSteady          time.Duration // stub delta to screen, steady state
-	StartupWarm          time.Duration // spawn to prompt ready
-	StartupCold          time.Duration // first run in a fresh HOME
+	StartupWarm          time.Duration // spawn to prompt ready, wall clock, held on an unloaded machine
+	StartupCold          time.Duration // first run in a fresh HOME, wall clock, likewise
+	StartupWarmCPU       time.Duration // the binary's CPU time when its prompt appears
+	StartupColdCPU       time.Duration // the same, first run in a fresh HOME
+	StartupWallCeiling   time.Duration // wall clock to the prompt, held however loaded the machine
 	ApprovalDrawn        time.Duration
 	PasteBytes           int // a raw 25-line paste
 }{
@@ -30,8 +33,15 @@ var Budgets = struct {
 	DeltaSteady:          33 * time.Millisecond,
 	StartupWarm:          150 * time.Millisecond,
 	StartupCold:          400 * time.Millisecond,
-	ApprovalDrawn:        50 * time.Millisecond,
-	PasteBytes:           20 << 10,
+	// 1.2.8 and 1.2.9 both reach the prompt in about 57 ms of CPU (cold
+	// runs 50-80 ms): about twice that fails a start that does twice the
+	// work, while 10 ms sampling and a busy machine do not. The wall-clock
+	// budgets above still hold where the load allows; the ceiling always.
+	StartupWarmCPU:     120 * time.Millisecond,
+	StartupColdCPU:     200 * time.Millisecond,
+	StartupWallCeiling: 2 * time.Second,
+	ApprovalDrawn:      50 * time.Millisecond,
+	PasteBytes:         20 << 10,
 }
 
 // raceSlack scales time budgets under the race detector, which slows the
