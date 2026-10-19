@@ -193,7 +193,7 @@ func (a *AuditFile) Close() error {
 
 // AuditFor lists the events of one sandbox, oldest first; "" lists the API's.
 func (a *AuditFile) AuditFor(_ context.Context, id string) ([]controlplane.AuditEvent, error) {
-	lines, _, err := readAudit(a.path)
+	lines, err := readAudit(a.path)
 	if err != nil {
 		return nil, err
 	}
@@ -331,10 +331,10 @@ func lastAuditLine(f *os.File) (*auditLine, int64, error) {
 	}
 }
 
-func readAudit(path string) ([]auditLine, int64, error) {
+func readAudit(path string) ([]auditLine, error) {
 	b, err := os.ReadFile(path) // #nosec G304 -- the record's own file
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	var out []auditLine
 	for _, raw := range bytes.Split(b, []byte("\n")) {
@@ -346,7 +346,7 @@ func readAudit(path string) ([]auditLine, int64, error) {
 			out = append(out, l)
 		}
 	}
-	return slices.Clip(out), int64(len(b)), nil
+	return slices.Clip(out), nil
 }
 
 // AuditChain is the tenant's audit file under dir ("" is ~/.abhed/records)
@@ -417,7 +417,7 @@ func (a auditSource) VerifyRange(_ context.Context, tenant string, from, to int6
 		r.FirstBad, r.Reason = max(rep.FirstBad, from), fmt.Sprintf("line %d: %s", rep.FirstBad, rep.Why)
 		return r, nil
 	}
-	lines, _, err := readAudit(p)
+	lines, err := readAudit(p)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return chain.Range{}, err
 	}
