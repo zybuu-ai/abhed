@@ -708,12 +708,20 @@ func TestReadingCommands(t *testing.T) {
 			t.Errorf("%q: kind %q, want %q", cmd, got, kind)
 		}
 	}
-	targets, _ := writeTargets("cp login.go /tmp/b.go && sed -i 's/a/b/' cfg.yaml && echo x >> log.txt && tee out.txt < in.txt && git checkout -- main.go && cat a.go 2>/dev/null")
-	want := []string{"/tmp/b.go", "cfg.yaml", "log.txt", "out.txt", "main.go"}
-	if strings.Join(targets, ",") != strings.Join(want, ",") {
-		t.Errorf("write targets %q, want %q", targets, want)
+	targets, known := writeTargets("cp login.go /tmp/b.go && sed -i 's/a/b/' cfg.yaml && echo x >> log.txt && tee out.txt < in.txt && cat a.go 2>/dev/null")
+	for _, want := range []string{"/tmp/b.go", "/w/cfg.yaml", "/w/log.txt", "/w/out.txt"} {
+		if !contains(targets, want) {
+			t.Errorf("write targets %q lack %q", targets, want)
+		}
 	}
-	if !pathIs("/w/internal/auth/login.go", "auth/login.go") || pathIs("/w/data.go", "a.go") || pathIs("/w/login.go.bak", "login.go") {
+	if !known || contains(targets, "/w/login.go") || contains(targets, "/w/a.go") {
+		t.Errorf("targets %q known %v: a file only read is not one", targets, known)
+	}
+	if _, known := writeTargets("git checkout main"); known {
+		t.Error("git checkout of a branch changes files it does not name")
+	}
+	if !pathIs("/w/internal/auth/login.go", "auth/login.go", "/w") || pathIs("/w/data.go", "a.go", "/w") || pathIs("/w/login.go.bak", "login.go", "/w") ||
+		!pathIs("/w/x/y.go", "/w/x/y.go", "/w") || !pathIs("/w/x/y.go", "x/y.go", "/w") {
 		t.Error("paths match on whole segments")
 	}
 	if !runsCommand("cd api && go test ./... -count=1", "go test ./...") || runsCommand("echo 'go test'", "go test") ||
@@ -844,24 +852,38 @@ func TestUnwrappedCommands(t *testing.T) {
 			t.Errorf("%q: known %v, want %v", line, known, want)
 		}
 	}
-	if ts, _ := writeTargets("cd d && sed -i s/a/b/ f"); len(ts) != 1 || ts[0] != "d/f" {
+	if ts, _ := writeTargets("cd d && sed -i s/a/b/ f"); len(ts) != 1 || ts[0] != "/w/d/f" {
 		t.Errorf("cd not resolved: %q", ts)
 	}
-	if ts, _ := writeTargets("echo x>>f"); len(ts) != 1 || ts[0] != "f" {
+	if ts, _ := writeTargets("echo x>>f"); len(ts) != 1 || ts[0] != "/w/f" {
 		t.Errorf("a redirection in a word: %q", ts)
 	}
 }
 
-// A reply with nothing in it is not an answer: no checks, no contract.
-func TestEmptyReplyRunsNoContract(t *testing.T) {
+// A reply with nothing in it has no claims to check, but the contract still
+// gates the run: a failing required command does not let it complete.
+func TestEmptyReplyStillRunsTheContract(t *testing.T) {
 	l, store, _, _ := verifyHarness(t, VerifyLabel, false, nil)
-	l.Verify.Contract = &Contract{Require: []string{"true"}}
+	l.Verify.Contract = &Contract{Require: []string{"false"}}
 	l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: "  \n"})
-	if again, reason := l.checkAnswer(context.Background()); again || reason != TermCompleted {
+	again, reason := l.checkAnswer(context.Background())
+	if !again && reason != TermUnverified {
+		t.Fatalf("an empty reply ended %s with a failing contract", reason)
+	}
+	vs := answerVerdicts(store)
+	if len(vs) != 1 || len(vs[0].Claims) != 0 || vs[0].Contract == nil || vs[0].Contract.OK {
+		t.Fatalf("verdicts %+v", vs)
+	}
+	// With no contract, an empty reply records nothing.
+	l2, store2, _, _ := verifyHarness(t, VerifyLabel, false, nil)
+	l2.messages = append(l2.messages, model.Message{Role: model.RoleAssistant, Content: ""})
+	if again, reason := l2.checkAnswer(context.Background()); again || reason != TermCompleted || len(answerVerdicts(store2)) != 0 {
 		t.Fatalf("%v %s", again, reason)
 	}
-	evs, _ := store.Events("sess1")
-	if len(evs) != 0 {
-		t.Fatalf("an empty reply recorded %d events", len(evs))
-	}
+}
+
+// writeTargets is readLine's files in /w and whether they are all, for the tests.
+func writeTargets(cmd string) ([]string, bool) {
+	lf := readLine(cmd, "/w")
+	return lf.targets, lf.parsed && lf.known
 }
