@@ -284,3 +284,12 @@ func TestObserveWhileWriting(t *testing.T) {
 		t.Fatal("counts lost")
 	}
 }
+
+func TestRequestMethodIsBounded(t *testing.T) {
+	m := New()
+	m.Request("", "BREW-COFFEE", 405, 0)
+	m.Request("GET /v1/health", "GET", 200, 0)
+	if m.requests.Value("unmatched", Other, "405") != 1 || m.requests.Value("GET /v1/health", "GET", "200") != 1 {
+		t.Fatal("methods not bounded")
+	}
+}

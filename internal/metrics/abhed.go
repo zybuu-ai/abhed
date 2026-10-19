@@ -20,6 +20,9 @@ var Steps = []string{
 	"interrupted", "attachment", "state",
 }
 
+// Methods are the HTTP methods a request is counted by; any other is Other.
+var Methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
+
 // Approvers are who an approval or denial names as deciding.
 var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByHeadless, agent.BySystem}
 
@@ -188,7 +191,7 @@ func (m *Abhed) Request(route, method string, status int, d time.Duration) {
 	if route == "" {
 		route = "unmatched"
 	}
-	m.requests.Inc(route, method, strconv.Itoa(status))
+	m.requests.Inc(route, oneOf(method, Methods), strconv.Itoa(status))
 	m.requestTime.Observe(d.Seconds(), route)
 }
 

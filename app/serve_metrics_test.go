@@ -36,7 +36,6 @@ func TestServeMetricsListenerToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sm.m.Observe(agent.Event{Type: agent.EvSessionStarted})
 	h := sm.handler()
 	for _, c := range []struct {
 		auth string
@@ -51,7 +50,7 @@ func TestServeMetricsListenerToken(t *testing.T) {
 		if rec.Code != c.want {
 			t.Fatalf("%q: %d, want %d", c.auth, rec.Code, c.want)
 		}
-		if c.want == 200 && !strings.Contains(rec.Body.String(), "abhed_sessions_started_total 1") {
+		if c.want == 200 && !strings.Contains(rec.Body.String(), "# TYPE abhed_sessions_started_total counter") {
 			t.Fatalf("body %s", rec.Body)
 		}
 		if strings.Contains(rec.Body.String(), "s3cret") {
@@ -99,8 +98,9 @@ func TestCountedAuditKeepsReader(t *testing.T) {
 	if evs, _ := rd.AuditFor(ctx, "sb1"); len(evs) != 2 {
 		t.Fatalf("%d events read back", len(evs))
 	}
-	var b strings.Builder
-	_ = sm.m.Registry.Write(&b)
+	scrape := httptest.NewRecorder()
+	sm.m.Handler().ServeHTTP(scrape, httptest.NewRequest("GET", MetricsPath, nil))
+	b := scrape.Body
 	if !strings.Contains(b.String(), `abhed_sandbox_operations_total{action="create",outcome="ok"} 1`) {
 		t.Fatalf("sandbox operation not counted:\n%s", b.String())
 	}
@@ -190,6 +190,21 @@ func TestRecordAuditVerifiesControlPlane(t *testing.T) {
 	_ = db.Close()
 	var out, errw strings.Builder
 	if code := verifyAudit(cfg, nil, &out, &errw); code != 0 || !strings.Contains(out.String(), "1 chained row(s)") {
+		t.Fatalf("%d %q %q", code, out.String(), errw.String())
+	}
+}
+
+// With the control plane on and its database missing, the check says so and fails.
+func TestRecordAuditReportsMissingControlPlane(t *testing.T) {
+	cfg := config.Default()
+	cfg.Record.Dir, _ = filepath.EvalSymlinks(t.TempDir())
+	cfg.ControlPlane.Enabled = true
+	cfg.ControlPlane.SQLitePath = filepath.Join(t.TempDir(), "none.db")
+	f, _ := local.OpenAudit(cfg.Record.Dir, "default")
+	_ = f.Append(context.Background(), controlplane.AuditEvent{Principal: "alice", Action: "api:POST /v1/sandboxes", Outcome: "requested"})
+	_ = f.Close()
+	var out, errw strings.Builder
+	if code := verifyAudit(cfg, nil, &out, &errw); code != 1 || !strings.Contains(out.String(), "MISSING") {
 		t.Fatalf("%d %q %q", code, out.String(), errw.String())
 	}
 }

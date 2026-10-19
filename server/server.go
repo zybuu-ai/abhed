@@ -230,7 +230,7 @@ type Options struct {
 	Store EventStore
 	// Metrics, when set, counts what the record says and how the API is
 	// used; serving it is the caller's (abhed serve mounts or binds it).
-	Metrics *metrics.Abhed
+	Metrics *Metrics
 	// APIAudit, when set, is the chained record every mutating API request
 	// is written to with its principal, before it runs and with its outcome;
 	// a request whose first event cannot be written is refused.
@@ -765,7 +765,7 @@ func New(opts Options) *Server {
 		tapped = st
 	}
 	if opts.EventTap != nil || opts.Metrics != nil {
-		tapped = tapStore{EventStore: st, tap: opts.EventTap, metrics: opts.Metrics}
+		tapped = tapStore{EventStore: st, tap: opts.EventTap, metrics: opts.Metrics.abhed()}
 	}
 	s := &Server{
 		opts:     opts,
@@ -790,7 +790,7 @@ func New(opts Options) *Server {
 		},
 	}
 	s.streamsEnd, s.endStreamsNow = context.WithCancel(context.Background())
-	if m := opts.Metrics; m != nil {
+	if m := opts.Metrics.abhed(); m != nil {
 		m.RunningSessions(func() int {
 			s.mu.RLock()
 			defer s.mu.RUnlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,7 +16,6 @@ import (
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/driver"
-	"github.com/zybuu-ai/abhed/internal/metrics"
 	"github.com/zybuu-ai/abhed/server/expose"
 )
 
@@ -92,7 +92,7 @@ func fill(pattern string) string {
 
 // auditRig is a server with every route on: local accounts, CLI sign-in,
 // the sandbox API, exposures, account secrets and an edition's mount.
-func auditRig(t *testing.T, audit controlplane.AuditLog, m *metrics.Abhed, mounted *bool) (*cpRig, *expose.Server) {
+func auditRig(t *testing.T, audit controlplane.AuditLog, m *Metrics, mounted *bool) (*cpRig, *expose.Server) {
 	t.Helper()
 	var svc *controlplane.Service
 	ex := expose.New(expose.Options{Enabled: true, Current: func(ctx context.Context, id string) (int64, bool, error) {
@@ -143,6 +143,14 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 			continue
 		}
 		mutating++
+		if r.srv.exposureRoute(p) {
+			before, _ := audit.AuditFor(context.Background(), "")
+			r.do(t, cpCall{method: method, path: fill(p), token: "admin", body: "{}"})
+			if after, _ := audit.AuditFor(context.Background(), ""); len(after) != len(before) {
+				t.Errorf("an exposed app's request %s was audited: %+v", p, after[len(before):])
+			}
+			continue
+		}
 		if why, ok := unaudited[p]; ok {
 			if why == "" {
 				t.Errorf("%s is left out of the audit with no reason", p)
@@ -214,7 +222,7 @@ func (f *failingAudit) Append(context.Context, controlplane.AuditEvent) error {
 func TestUnrecordedChangeIsRefused(t *testing.T) {
 	ran := false
 	fa := &failingAudit{}
-	m := metrics.New()
+	m := NewMetrics()
 	r, _ := auditRig(t, fa, m, &ran)
 	rec := r.do(t, cpCall{method: "POST", path: "/v1/edition/thing", token: "admin"})
 	if rec.Code != http.StatusServiceUnavailable || ran {
@@ -227,8 +235,9 @@ func TestUnrecordedChangeIsRefused(t *testing.T) {
 	if rec := r.do(t, cpCall{method: "GET", path: "/v1/health", token: "admin"}); rec.Code != http.StatusOK {
 		t.Fatalf("health %d", rec.Code)
 	}
-	var b strings.Builder
-	_ = m.Registry.Write(&b)
+	scrape := httptest.NewRecorder()
+	m.Handler().ServeHTTP(scrape, httptest.NewRequest("GET", "/metrics", nil))
+	b := scrape.Body
 	for _, want := range []string{
 		`abhed_record_write_errors_total{record="audit"} 1`,
 		`abhed_http_requests_total{route="POST /v1/edition/thing",method="POST",code="503"} 1`,

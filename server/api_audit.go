@@ -33,6 +33,18 @@ var unaudited = map[string]string{
 	"DELETE /v1/streams/{mux}/{ch}": "closes a read-only stream's channel",
 }
 
+// exposureRoute reports whether pattern is an exposed service's: traffic to
+// a person's own app in a sandbox, not a change to the control plane. The
+// exposure itself is made and removed through audited sandbox routes; the
+// app's requests, and the paths and tokens they carry, are kept out.
+func (s *Server) exposureRoute(pattern string) bool {
+	if s.opts.Expose == nil {
+		return false
+	}
+	_, path, _ := strings.Cut(pattern, " ")
+	return path == s.opts.Expose.Prefix()
+}
+
 // batched are routes a client calls for every few keys: each request gets
 // its first event alone, so a refused write still stops it, and no outcome.
 // A shell's lines are in the session record as terminal.input; a program's
@@ -47,7 +59,7 @@ var batched = map[string]string{
 // principal before it runs and again with its outcome. A request whose
 // first event cannot be written is refused, so no change goes unrecorded.
 func (s *Server) routed(mux *http.ServeMux) http.Handler {
-	audit, m := s.opts.APIAudit, s.opts.Metrics
+	audit, m := s.opts.APIAudit, s.opts.Metrics.abhed()
 	if audit == nil && m == nil {
 		return mux
 	}
@@ -56,7 +68,7 @@ func (s *Server) routed(mux *http.ServeMux) http.Handler {
 		_, pattern := mux.Handler(r)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		var ev controlplane.AuditEvent
-		audited := audit != nil && pattern != "" && Mutating(r.Method) && unaudited[pattern] == ""
+		audited := audit != nil && pattern != "" && Mutating(r.Method) && unaudited[pattern] == "" && !s.exposureRoute(pattern)
 		var created *createdSniffer
 		var out http.ResponseWriter = rec
 		if audited {
@@ -113,7 +125,7 @@ func (s *Server) routed(mux *http.ServeMux) http.Handler {
 func (s *Server) appendAudit(ctx context.Context, ev controlplane.AuditEvent) error {
 	start := time.Now()
 	err := s.opts.APIAudit.Append(ctx, ev)
-	if m := s.opts.Metrics; m != nil {
+	if m := s.opts.Metrics.abhed(); m != nil {
 		m.Audit(ev.Action, ev.Outcome, false, time.Since(start), err)
 	}
 	return err
