@@ -816,4 +816,7 @@ type MonitorVerdict struct {
 	LatencyMS   int64   `json:"latency_ms"`
 	Version     string  `json:"version,omitempty"`
 	Unavailable bool    `json:"unavailable,omitempty"`
+	// Skipped says why the judge was not asked, as when the turn's budget of
+	// judgements was spent; the decision stands as policy made it.
+	Skipped string `json:"skipped,omitempty"`
 }

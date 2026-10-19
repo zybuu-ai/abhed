@@ -53,6 +53,14 @@ type supervision struct {
 	verdicts map[string]monitor.Verdict
 	streak   int
 	plan     string
+	// said are the person's own messages in the conversation, as the record
+	// holds them; loaded marks them read from it, and stale a conversation
+	// replaced since (a fork, a rewind, a restore).
+	said   []string
+	loaded bool
+	// parent is the loop that spawned this one: its person's words are this
+	// subagent's, and its task, which a model wrote, is not.
+	parent *Loop
 }
 
 // SetApprovedPlan keeps the plan the person approved, which the re-plan note restates.
@@ -106,27 +114,78 @@ func (l *Loop) correction(callID string, d policy.Decision) string {
 	return text
 }
 
-// remitAndSaid are the first thing the user asked and everything they said.
+// remitAndSaid are the first thing the person asked and everything they
+// said: only messages recorded as theirs. A compaction summary, a revision
+// or parse note, a nudge and a subagent's task are text a model or the
+// harness wrote, and name nothing on the person's behalf.
 func (l *Loop) remitAndSaid() (string, string) {
-	var remit, said strings.Builder
-	for _, m := range l.messages {
-		if m.Role == model.RoleUser {
-			if remit.Len() == 0 {
-				remit.WriteString(m.Content)
-			}
-			said.WriteString(m.Content)
-			said.WriteByte('\n')
-		}
+	said := l.personSaid()
+	if len(said) == 0 {
+		return "", ""
 	}
-	return remit.String(), said.String()
+	return said[0], strings.Join(said, "\n") + "\n"
 }
 
-// webTools are those whose output is text from the web, which names hosts
-// and paths an attacker chose; it is not evidence for a target.
-var webTools = map[string]bool{"web_fetch": true, "web_search": true}
+// personSaid is the person's messages, oldest first, a subagent's parent's first.
+func (l *Loop) personSaid() []string {
+	l.sup.mu.Lock()
+	parent := l.sup.parent
+	if !l.sup.loaded {
+		l.sup.said, l.sup.loaded = l.recordedSaid(parent != nil), true
+	}
+	own := append([]string(nil), l.sup.said...)
+	l.sup.mu.Unlock()
+	if parent == nil {
+		return own
+	}
+	return append(parent.personSaid(), own...)
+}
+
+// recordedSaid reads the person's messages from the live conversation in the
+// record. A subagent's own prompt is its parent model's task, which has no
+// queue id; a message the person sent it while it ran has one.
+func (l *Loop) recordedSaid(sub bool) []string {
+	if l.Recorder == nil || l.Recorder.store == nil {
+		return nil
+	}
+	evs, err := l.Recorder.store.Events(l.Recorder.sessionID)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range Live(evs) {
+		if e.Type != EvUserMessage || e.Actor != ActorUser {
+			continue
+		}
+		var m Message
+		if json.Unmarshal(e.Payload, &m) != nil || sub && m.QueueID == "" {
+			continue
+		}
+		out = append(out, m.Text)
+	}
+	return out
+}
+
+// noteSaid keeps a message the person just sent; queued says it came while a run went on.
+func (l *Loop) noteSaid(text string, queued bool) {
+	l.sup.mu.Lock()
+	defer l.sup.mu.Unlock()
+	if l.sup.loaded && (l.sup.parent == nil || queued) {
+		l.sup.said = append(l.sup.said, text)
+	}
+}
+
+// forgetSaid has the person's words read again from the record, after the
+// conversation was replaced.
+func (l *Loop) forgetSaid() {
+	l.sup.mu.Lock()
+	l.sup.loaded, l.sup.said = false, nil
+	l.sup.mu.Unlock()
+}
 
 // seen reports whether a tool's output in this conversation showed a text,
-// leaving out what the web returned.
+// leaving out what came from outside: the web, an MCP server, a command
+// that reached the network (see monitor.Untrusted).
 func (l *Loop) seen() func(string) bool {
 	var once sync.Once
 	var text string
@@ -136,7 +195,7 @@ func (l *Loop) seen() func(string) bool {
 			var b strings.Builder
 			for _, m := range l.messages {
 				for _, tc := range m.ToolCalls {
-					if webTools[tc.Name] {
+					if monitor.Untrusted(tc.Name, string(tc.Args)) {
 						web[tc.ID] = true
 					}
 				}
@@ -221,7 +280,7 @@ func (l *Loop) replan(results []callOutcome) {
 		}
 		remit, _ := l.remitAndSaid()
 		note := fmt.Sprintf("Supervisor: the last %d calls were refused or failed. Stop and plan again from the task. The task: %q.",
-			n, strings.TrimSpace(remit))
+			n, clipRunes(strings.TrimSpace(remit), 400))
 		if plan != "" {
 			note += fmt.Sprintf(" The approved plan: %q.", plan)
 		}
