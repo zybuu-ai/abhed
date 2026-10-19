@@ -215,3 +215,34 @@ func ocsfLines(t *testing.T, out string) []ocsf.Line {
 	}
 	return evs
 }
+
+// A follow reads each session from where the last read stopped, not the
+// whole file again: the reader keeps the file's offset.
+func TestLogsFollowReadsOnFromItsOffset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	rec, r, id := logsRecord(t, ws)
+	defer rec.Close()
+	logSay(t, r, "one")
+	var out bytes.Buffer
+	lr := &logsReader{o: logsOpts{format: "shorthand"}, rec: rec, out: &out, mapper: ocsf.NewMapper(ocsf.Options{}),
+		cursor: map[string]int64{}, offset: map[string]int64{}}
+	if err := lr.read(id); err != nil {
+		t.Fatal(err)
+	}
+	size, _ := rec.Size(id)
+	if lr.offset[id] != size || size == 0 {
+		t.Fatalf("offset %d after reading a file of %d bytes", lr.offset[id], size)
+	}
+	logSay(t, r, "two")
+	out.Reset()
+	if err := lr.read(id); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(out.String(), "\n"); got != 1 || !strings.Contains(out.String(), "#2 ") {
+		t.Fatalf("the second read printed %q", out.String())
+	}
+	if after, _ := rec.Size(id); lr.offset[id] != after || after <= size {
+		t.Fatalf("offset %d, file %d", lr.offset[id], after)
+	}
+}

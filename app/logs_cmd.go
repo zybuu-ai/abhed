@@ -150,7 +150,7 @@ func runLogs(ctx context.Context, workspace string, args []string, trust config.
 	}
 	defer func() { _ = rec.Close() }()
 	r := &logsReader{o: o, rec: rec, out: stdout, mapper: ocsf.NewMapper(ocsfOptions(rec.Tenant())),
-		cursor: map[string]int64{}, primed: map[string]bool{}}
+		cursor: map[string]int64{}, offset: map[string]int64{}}
 	if o.cursorFile != "" {
 		if r.cursor, err = readLogsCursor(o.cursorFile); err != nil {
 			fmt.Fprintf(stderr, "abhed: logs: %v\n", err)
@@ -192,7 +192,9 @@ type logsReader struct {
 	out    io.Writer
 	mapper *ocsf.Mapper
 	cursor map[string]int64
-	primed map[string]bool
+	// offset is where each session's file was read to, so a follow reads on
+	// from there rather than reading the file again.
+	offset map[string]int64
 }
 
 // sessions are what the command reads: one, or every session in the record.
@@ -226,15 +228,23 @@ func (r *logsReader) read(id string) error {
 	if !ok && !r.o.all {
 		after = r.o.after
 	}
-	lines, err := r.rec.SealedSince(id, after)
+	read, end, err := r.rec.LinesFrom(id, r.offset[id])
 	if err != nil {
 		return fmt.Errorf("session %s: %w", id, err)
 	}
+	r.offset[id] = end
+	var lines []local.Sealed
+	for _, s := range read {
+		if s.Seq > after {
+			lines = append(lines, s)
+		} else if r.o.format != "record" {
+			// What a later line needs from before the cursor, such as the
+			// provider, read once with the rest of the file.
+			r.mapper.Observe(ocsf.Line{Event: s.Event})
+		}
+	}
 	if len(lines) == 0 {
 		return nil
-	}
-	if r.o.format == "ocsf" || r.o.format == "shorthand" {
-		r.prime(id, after)
 	}
 	enc := json.NewEncoder(r.out)
 	enc.SetEscapeHTML(false)
@@ -278,27 +288,6 @@ func (r *logsReader) read(id string) error {
 		return writeLogsCursor(r.o.cursorFile, r.cursor)
 	}
 	return nil
-}
-
-// prime gives the mapper what a session's lines before after say, once.
-func (r *logsReader) prime(id string, after int64) {
-	if r.primed[id] {
-		return
-	}
-	r.primed[id] = true
-	if after <= 0 {
-		return
-	}
-	lines, err := r.rec.SealedSince(id, 0)
-	if err != nil {
-		return
-	}
-	for _, s := range lines {
-		if s.Seq > after {
-			return
-		}
-		r.mapper.Observe(ocsf.Line{Event: s.Event})
-	}
 }
 
 // recordLine is a line as the record holds it, chain links included.

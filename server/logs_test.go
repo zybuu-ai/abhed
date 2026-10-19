@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -187,5 +188,33 @@ func TestSandboxEventsOCSFCarriesChainLinks(t *testing.T) {
 	r := page.Items[0]["unmapped"].(map[string]any)["record"].(map[string]any)
 	if r["chain"] != "test/audit" || r["pos"] != float64(107) || r["hash"] != "hash-7" || r["prev"] != "prev-7" {
 		t.Fatalf("unmapped.record %v", r)
+	}
+}
+
+// brokenLinks is a chained store whose links cannot be read.
+type brokenLinks struct{ *controlplane.Memory }
+
+func (brokenLinks) AuditLinks(context.Context, []int64) (map[int64]chain.Link, error) {
+	return nil, errors.New("the database went away")
+}
+func (brokenLinks) AuditChainName() string { return "test/audit" }
+
+// A page whose links cannot be read is refused rather than written with
+// other ids than its rows have.
+func TestSandboxEventsOCSFRefusedWithoutLinks(t *testing.T) {
+	mem := brokenLinks{controlplane.NewMemory()}
+	st, _ := controlplane.NewSettings(nil, nil)
+	svc, err := controlplane.New(controlplane.Config{Store: mem, Audit: mem, Drivers: driver.NewRegistry(), Settings: st,
+		Workspace: func(string) (string, error) { return t.TempDir(), nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{}, ControlPlane: svc,
+		Registry: tools.NewRegistry(tools.Read{})})
+	rec := httptest.NewRecorder()
+	items := []controlplane.AuditEvent{{Seq: 7, At: time.Now(), Principal: "ana", Action: "create", SandboxID: "sb", Outcome: "ok"}}
+	s.sandboxEventsOCSF(rec, httptest.NewRequest("GET", "/v1/sandboxes/sb:events?format=ocsf", nil), items, 0)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
 }

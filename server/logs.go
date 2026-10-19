@@ -100,7 +100,13 @@ func (s *Server) sandboxEventsOCSF(w http.ResponseWriter, r *http.Request, items
 	}
 	host, _ := os.Hostname()
 	opts := ocsf.Options{Hostname: host, Tenant: TenantOf(r.Context())}
-	links, chainName := s.auditLinks(r.Context(), items)
+	links, chainName, err := s.auditLinks(r.Context(), items)
+	if err != nil {
+		// Without its links a row's metadata.uid would not be the one it has
+		// when they are read, and a reader would take it as a new event.
+		writeCPError(w, http.StatusServiceUnavailable, "unavailable", "the audit chain's links could not be read: "+err.Error())
+		return
+	}
 	out := make([]ocsf.Event, 0, len(items))
 	for _, a := range items {
 		var link *ocsf.AuditLink
@@ -130,11 +136,11 @@ type auditLinker interface {
 }
 
 // auditLinks are the chain links of a page's rows, where the store keeps
-// them; a store without a chain, or one that cannot be read, gives none.
-func (s *Server) auditLinks(ctx context.Context, items []controlplane.AuditEvent) (map[int64]chain.Link, string) {
+// them; a store without a chain gives none.
+func (s *Server) auditLinks(ctx context.Context, items []controlplane.AuditEvent) (map[int64]chain.Link, string, error) {
 	l, ok := s.opts.ControlPlane.Store().(auditLinker)
 	if !ok || len(items) == 0 {
-		return nil, ""
+		return nil, "", nil
 	}
 	seqs := make([]int64, len(items))
 	for i, a := range items {
@@ -142,8 +148,7 @@ func (s *Server) auditLinks(ctx context.Context, items []controlplane.AuditEvent
 	}
 	links, err := l.AuditLinks(ctx, seqs)
 	if err != nil {
-		s.log.Warn("the audit rows' chain links could not be read; the page is written without them", "err", err)
-		return nil, ""
+		return nil, "", err
 	}
-	return links, l.AuditChainName()
+	return links, l.AuditChainName(), nil
 }
