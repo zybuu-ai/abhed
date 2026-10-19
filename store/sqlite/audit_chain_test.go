@@ -112,3 +112,18 @@ func TestAuditChainHandsOutItsLinks(t *testing.T) {
 		t.Fatalf("stopping after two read %d", n)
 	}
 }
+
+// A row with no chain written after the chain began, as only one who bypassed
+// it could write, fails the check, as on Postgres.
+func TestAuditChainFailsAnUnchainedRowAfterItBegan(t *testing.T) {
+	s := open(t, dbPath(t))
+	ctx := context.Background()
+	_ = s.Append(ctx, controlplane.AuditEvent{At: time.Now(), Principal: "a", Action: "create", SandboxID: "sb", Outcome: "ok"})
+	if _, err := s.w.Exec(`INSERT INTO sandbox_audit (at, principal, action, sandbox_id, generation, outcome)
+		VALUES ('2026-01-01T00:00:00Z', 'a', 'delete', 'sb', 1, 'ok')`); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.VerifyAuditChain(ctx); err != nil || r.OK() || r.Unchained != 0 {
+		t.Fatalf("%+v %v", r, err)
+	}
+}
