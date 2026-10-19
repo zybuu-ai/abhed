@@ -427,41 +427,61 @@ read as bash reads it: `uptime; rm -rf /srv`, `uptime | sh`,
 full and one the destructive step names are not reads, and plan mode refuses
 them. Nor is a call in which the parser finds another command
 (`su -c '…' root`, `sh -c …`, `sudo cat …`, `eval`), one that writes a file
-it can name (`tee`, `cp`, `find -fprint`, `-fprintf`, `-fls`), or one that
-carries a `stdin_secret`: the secret could come back in the output in a form
-the mask does not catch (`head -c 3`, `base64`). Behind a runner, or with a
-`find` action that runs a program (`-exec`, `-execdir`, `-ok`, `-okdir`),
-only an entry written exactly matches. Deny and ask rules come first. In
+it can name (`tee`, `cp`, `find -fprint`), or one that carries a
+`stdin_secret`: the secret could come back in the output in a form the mask
+does not catch (`head -c 3`, `base64`). Deny and ask rules come first. In
 `bypass` mode the read step is not used: bypass allows the call anyway, and
 where the managed configuration refuses bypass, the call asks as in default
-mode, a declared read included. `*` matches any text, so
-`systemctl status *` also matches `systemctl status nginx --now`; prefer
-exact commands and patterns whose program cannot write.
+mode, a declared read included.
 
-An entry is refused at load when it is not one simple command, when it does
-not start with the program written out (`* --version`), when it runs another
-command or writes a file (`sudo cat …`, `tee /tmp/x`), when the destructive
-step names it, or when a wildcard follows a program that runs what it is
-given: a shell (`sh`, `bash`, `dash`, `zsh`, `ksh`, `ksh93`, `mksh`, `ash`,
-`csh`, `tcsh`, `fish`, `rc`, `busybox`, `source`, `.`, `eval`), a runner
-(`sudo`, `doas`, `su`, `runuser`, `pkexec`, `sg`, `chroot`, `flock`,
-`systemd-run`, `script`, `unshare`, `nsenter`, `taskset`, `nice`, `ionice`,
-`stdbuf`, `env`, `timeout`, `nohup`, `setsid`, `xargs`, `parallel`, `watch`,
-`at`, `batch`, `tmux`, `screen`, `strace`, `ltrace`, `gdb`, `ssh`, `docker`,
-`podman`, `kubectl`, `expect`), an interpreter (`python`, `perl`, `ruby`,
-`node`, `php`, `lua`, `tclsh`, `awk` and its kin), or a tool with an option
-that runs a program (`sed`, `tar`, `rsync`, `zip`, `vi`, `less`, `man`).
+**Exact entries.** An entry with no `*` or `?` matches only its own text. It
+may name any program but one that runs what it is given: a shell (`sh`,
+`bash`, `zsh`, `busybox`, `source`, `eval`, …), a runner (`sudo`, `su`,
+`doas`, `env`, `nice`, `timeout`, `xargs`, `nsenter`, `systemd-run`,
+`docker`, `kubectl`, `ssh`, the dynamic loader `ld.so` and `ld-linux*.so`,
+…), an interpreter (`python`, `perl`, `ruby`, `node`, `java`, `go`, `awk`,
+…), or a client with a command that runs one (`socat`, `nc`, `sqlite3`,
+`psql`, `mysql`, `redis-cli`, `git`, `find`, `nginx`, …). Where the program
+is on the list below, the entry must also be a read form of it.
 
-**Do not declare with a wildcard** a program whose other forms change the
-host; Abhed loads such an entry with a warning. Among them: `systemctl`
-other than after a reading verb (`status`, `show`, `cat`, `list-units`,
-`list-unit-files`, `list-timers`, `is-active`, `is-enabled`, `is-failed`),
-`service`, `journalctl` (`--vacuum-size`, `--rotate`), `find` (`-delete`,
-`-fprint`), `openssl` (`-out`), `git`, `curl` and `wget` (`-o`), `sort -o`,
-`tee`, `dd`, `cp`, `mv`, `ln`, `install`, `truncate`, `touch`, `mkdir`,
-`chmod`, `chown`, `crontab`, `ip`, `iptables`, `nft`, `mount`, `sysctl`,
-`kill`, `apt`, `dnf`, `yum`, `rpm`, `dpkg`, `pip`, `npm`, `logrotate`,
-`nginx`, `certbot`. Write those entries out exactly.
+**Wildcard entries.** An entry with `*` or `?` is accepted only for a program
+on this list, after its path and any version suffix are dropped, and only in
+a read form of it; any other is refused at load with "declare the exact
+command instead". Every call the pattern matches is checked against the same
+form, so a dangerous option or verb is never approved through a wildcard,
+whatever the pattern says. For the programs marked *strict*, a call with a
+`$` outside single quotes or an unquoted `*`, `?` or `[` is not a read either,
+since the host's shell could turn it into an option.
+
+| Program | Read form a wildcard may cover |
+|---|---|
+| `cat`, `head`, `tail`, `wc`, `ls`, `stat`, `df`, `du`, `free`, `uptime`, `uname`, `id`, `whoami`, `groups`, `ps`, `pgrep`, `netstat`, `lsblk`, `findmnt`, `grep`, `egrep`, `fgrep`, `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum`, `cksum`, `lscpu`, `lsmem`, `lsmod`, `lspci`, `lsusb`, `nproc`, `w`, `who`, `getent`, `vmstat`, `basename`, `dirname`, `realpath`, `readlink`, `cut`, `cmp`, `diff`, `lsof`, `zcat` | any arguments |
+| `file` | not `-C`/`--compile` (strict) |
+| `rg` | not `--pre`, `--pre-glob`, `-z`/`--search-zip`, which run programs (strict) |
+| `sort` | not `-o`/`--output`, `--compress-program`, `-T`/`--temporary-directory` (strict) |
+| `date` | not `-s`/`--set` or `-f`/`--file`; each operand starts with `+`, so a date to set is not one (strict) |
+| `hostname` | only `-f`, `-s`, `-i`, `-I`, `-d`, `-a`, `-A` and their long forms, and no operand, which would set it (strict) |
+| `dmesg` | not `-C`/`--clear`, `-c`/`--read-clear`, `-D`, `-E`, `-n` or their long forms (strict) |
+| `journalctl` | not `--vacuum-size`, `--vacuum-time`, `--vacuum-files`, `--rotate`, `--flush`, `--sync`, `--relinquish-var`, `--smart-relinquish-var`, `--setup-keys`, `--update-catalog` (strict) |
+| `systemctl` | first operand `status`, `show`, `cat`, `is-active`, `is-enabled`, `is-failed`, `list-units`, `list-unit-files`, `list-timers`, `list-sockets` or `list-dependencies`, written out in the entry (strict) |
+| `hostnamectl` | `status` (strict) |
+| `timedatectl` | `status` or `show` (strict) |
+| `ip` | object `addr`, `address`, `a`, `link`, `l`, `route`, `r`, `neigh`, `neighbour`, `n`, `rule` or `maddr`, then nothing or `show`, `list`, `ls`, `lst` or `get`; only the options `-4`, `-6`, `-0`, `-o`, `-br`, `-s`, `-d`, `-j`, `-p`, `-c`, `-h`, `-iec`, `-r`, `-f` and their full spellings, since ip takes any prefix of an option (`-ba` is `-batch`); never `netns`, `exec` or `vrf` (strict) |
+| `openssl` | `x509`, `s_client`, `verify` or `version`, never `-out`, `-keyout`, `-engine`, `-provider`, `-provider-path`, `-config`, `-sess_out`, `-keylogfile`, `-msgfile`, `-writerand` or `-signkey`, with one dash or two (strict) |
+| `docker`, `podman` | `ps`, `images`, `inspect`, `logs`, `version` or `info` as the first word (strict) |
+| `apt` | `list`, `show`, `policy` or `search` (strict) |
+| `apt-cache` | `policy`, `show`, `search`, `depends` or `rdepends` (strict) |
+| `dpkg` | only `-l`, `-s`, `-L`, `-S`, `-p`, `--get-selections` and their long forms (strict) |
+| `dpkg-query` | only `-l`, `-W`, `-s`, `-L`, `-S`, `-f` and their long forms (strict) |
+| `rpm` | only the query options `-q`, `-qa`, `-qi`, `-ql`, `-qf`, `-qc`, `-qd`, `-qR`, `-qai` and `--query`, `--all`, `--info`, `--list`, `--file`, `--requires`, `--provides`, `--whatprovides`, `--whatrequires`, `--changelog`, `--last`, `--queryformat`, `--qf` (strict) |
+
+Long options are refused by any prefix getopt would take (`--vac=1` is
+`--vacuum-size`), and short ones inside a cluster (`-Tc` holds `-c`). Not on
+the list, so declared exactly or not at all: `find`, `mount`, `ss` (the
+parser reads its operand as a command), `curl`, `wget`, `nginx`, `kubectl`,
+`git`, and every program that runs another. `*` matches any text, spaces
+included, so `ip addr *` does not match `ip addr` alone; write both if both
+are wanted.
 
 The `ssh` tool's description lists the entries, so the model knows which
 commands it may run in plan mode.

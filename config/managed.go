@@ -36,7 +36,6 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 	cfg.noteRuleLayer(LayerManaged)
 	warnUnknown(w, cfg.Unknown)
 	warnNeverAllows(w, cfg.Permissions.Allow)
-	warnRemoteReads(w, cfg.SSH.ReadCommands)
 	warnNotYetInEffect(w, cfg)
 	findings := cfg.RuleFindings()
 	warnRuleFindings(w, findings)

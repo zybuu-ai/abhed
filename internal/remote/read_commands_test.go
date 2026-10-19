@@ -63,7 +63,7 @@ func TestSSHReadCommandsAskInNoMode(t *testing.T) {
 
 // Deny and ask rules, the destructive check and a managed bypass still come first.
 func TestSSHReadCommandsNeverLoosenRules(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "cat *", "find *")
+	e := readsEngine(t, policy.ModePlan, "cat *", "dmesg *")
 	if err := e.AddDeny("ssh(db1/*)", "ssh(cat /etc/shadow)"); err != nil {
 		t.Fatal(err)
 	}
@@ -78,15 +78,16 @@ func TestSSHReadCommandsNeverLoosenRules(t *testing.T) {
 		{"db1", "cat /etc/os-release", policy.Deny, "deny"},
 		{"web1", "cat /etc/shadow", policy.Deny, "deny"},
 		{"web1", "cat /var/secret/key", policy.Ask, "ask"},
-		{"web1", "find / -delete", policy.Deny, "mode"},
+		{"web1", "dmesg -C", policy.Deny, "mode"},
+		{"web1", "cat /etc/os-release; rm -rf /srv", policy.Deny, "mode"},
 		{"web1", "cat /etc/os-release", policy.Allow, "mode"},
 	} {
 		if res := e.Evaluate("ssh", true, sshCall(c.host, c.cmd)); res.Decision != c.want || res.Step != c.step {
 			t.Errorf("%s %q: %+v", c.host, c.cmd, res)
 		}
 	}
-	if res := readsEngine(t, policy.ModeAuto, "find *").Evaluate("ssh", true, sshCall("web1", "find / -delete")); res.Step != "destructive" {
-		t.Errorf("a destructive read pattern match was approved: %+v", res)
+	if res := readsEngine(t, policy.ModeAuto, "cat *").Evaluate("ssh", true, sshCall("web1", "cat x && rm -rf /srv")); res.Step != "destructive" {
+		t.Errorf("a destructive line matching a read pattern was approved: %+v", res)
 	}
 	m := readsEngine(t, policy.ModeBypass, "uptime")
 	m.Managed = true
@@ -133,7 +134,8 @@ func TestSSHReadCommandWildcardAfterARunnerRefused(t *testing.T) {
 			t.Errorf("%s * was accepted", prog)
 		}
 	}
-	for _, bad := range []string{"su -c id root", "sh -c uptime", "sudo cat /var/log/syslog", "find /var/log -fprint /tmp/x", "tee /tmp/x"} {
+	for _, bad := range []string{"su -c id root", "sh -c uptime", "sudo cat /var/log/syslog", "find /var/log -fprint /tmp/x", "tee /tmp/x",
+		"sudo", "python3", "socat -", "kubectl get pods"} {
 		if _, err := policy.ParseRemoteRead(bad); err == nil {
 			t.Errorf("%q, which runs another command or writes, was accepted", bad)
 		}
@@ -149,15 +151,11 @@ func TestSSHReadCommandWildcardAfterARunnerRefused(t *testing.T) {
 // when a find action runs or writes something, or when it carries a secret
 // on stdin, whatever entry it matches.
 func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "find /var/log *", "head *", "cat *")
+	e := readsEngine(t, policy.ModePlan, "head *", "cat *", "uptime")
 	for _, c := range []struct{ cmd, stdin string }{
 		{"su -c 'systemctl stop nginx' root", ""},
 		{"find /var/log -name x -exec id {} +", ""},
-		{"find /var/log -name x -execdir id {} +", ""},
-		{"find /var/log -name x -ok id {} +", ""},
-		{"find /var/log -fprint /etc/cron.d/x", ""},
-		{"find /var/log -fprintf /tmp/x %p", ""},
-		{"find /var/log -fls /tmp/x", ""},
+		{"find /var/log -name x -fprint /etc/cron.d/x", ""},
 		{"head -c 3", "DB_PASSWORD"},
 		{"cat /etc/os-release", "DB_PASSWORD"},
 	} {
@@ -173,7 +171,7 @@ func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
 			t.Errorf("%q (stdin %q) is a read to RemoteReadOf", c.cmd, c.stdin)
 		}
 	}
-	if res := e.Evaluate("ssh", true, sshCall("web1", "find /var/log -name '*.gz'")); res.Decision != policy.Allow {
-		t.Errorf("a plain find was not a read: %+v", res)
+	if res := e.Evaluate("ssh", true, sshCall("web1", "uptime")); res.Decision != policy.Allow {
+		t.Errorf("an exact entry was not a read: %+v", res)
 	}
 }
