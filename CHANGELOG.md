@@ -115,7 +115,9 @@ All notable changes to Abhed are recorded here. The format follows
   protection and checkpoints (so `/undo` takes it back); a hunk the
   workspace changed meanwhile is reported as a conflict and left out, and
   the worktree and its branch are removed only when you ask. Each take is
-  recorded as `worktree.taken`
+  recorded as `worktree.taken`. The editor protocol serves the same as
+  `_abhed/worktrees/list` and `_abhed/worktrees/take` (the `worktrees`
+  feature) for Studio to use
   ([Parallel subagents](docs/guide/14-parallel-subagents.md#taking-a-worktree-back)).
 - Changes made through `bash` are checkpointed: before each command the
   workspace's files are noted and copied in memory, within limits, and each
