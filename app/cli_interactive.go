@@ -52,8 +52,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	defer restoreStreams()
 	// The banner is drawn once the terminal has said what its background
 	// is, in the theme that suits it, and joins the transcript.
-	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
-		sandboxLabel+" · supervisor: "+toolset.SupervisorLabel(appCfg), storageLabel(appCfg)))
+	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace, sandboxLabel, storageLabel(appCfg), toolset.SupervisorLabel(appCfg)))
 	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
 	start.sandbox.noteIfNone(os.Stderr)
 	// The endpoint check started with the session. A server that is down is

@@ -3156,8 +3156,9 @@ function logTerminal(cmd, p, who){
 // excerpts are the model's and the tools' text: shown, never obeyed.
 function drawVerdict(p){
   const claims = p.claims || [], contract = p.contract;
-  if(!claims.length && !contract && !p.revision) return;
   const bad = (p.contradicted || 0) > 0 || (contract && !contract.ok), unk = claims.some(c => c.verdict === 'unverified' && c.load_bearing);
+  // Nothing checkable (a greeting, general knowledge) draws nothing.
+  if(!contract && !p.revision && !bad && !unk && !(p.verified || 0)) return;
   const d = el('details', 'verdict' + (bad ? ' bad' : unk ? ' unk' : '')); d.open = bad || unk;
   const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
   // The reply streamed before it was checked: a contradiction is flagged on
@@ -3167,7 +3168,7 @@ function drawVerdict(p){
     const msgs = tx().querySelectorAll('.msg.agent'), last = msgs[msgs.length - 1];
     if(last){ last.classList.add('contradicted'); last.appendChild(el('div', 'vflag', '✗ NOT FACT: ' + what + (p.revision ? '; the agent is asked to correct it' : '; see the struck-through statements below'))); }
   }
-  d.appendChild(el('summary', '', (bad ? '✗ ' : unk ? '? ' : '✓ ') + (p.verified || 0) + ' verified · ' + (p.unverified || 0) + ' unverified' +
+  d.appendChild(el('summary', '', (bad ? '✗ ' : unk || !(p.verified || 0) ? '? ' : '✓ ') + (p.verified || 0) + ' verified · ' + (p.unverified || 0) + ' unverified' +
     (known ? (known === (p.unverified || 0) ? ' (general knowledge)' : ' (' + known + ' general knowledge)') : '') + ' · ' + (p.contradicted || 0) + ' contradicted' +
     (contract ? (contract.ok ? ' · contract met' : ' · contract not met') : '') + (p.revision ? ' · the agent is asked to revise once' : '')));
   if((p.contradicted || 0) > 0) d.appendChild(el('div', 'vbanner', '✗ NOT FACT: ' + p.contradicted + ' contradicted by the session\'s record' + (p.revision ? ' · the agent is asked to correct it' : '')));

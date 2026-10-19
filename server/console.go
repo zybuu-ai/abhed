@@ -1811,9 +1811,10 @@ function clip(s, n){ return s.length > n ? s.slice(0,n) + '\n… ' + (s.length-n
 // was checked. Claims and excerpts are the model's and the tools' text.
 function drawVerdict(p){
   const claims = p.claims || [], contract = p.contract;
-  if(!claims.length && !contract && !p.revision) return;
   const n = p.contradicted || 0, bad = n > 0 || (contract && !contract.ok);
   const unk = claims.some(c => c.verdict === 'unverified' && c.load_bearing);
+  // Nothing checkable (a greeting, general knowledge) draws nothing.
+  if(!contract && !p.revision && !bad && !unk && !(p.verified || 0)) return;
   if(n > 0){
     const last = lastStreamedBubble(), bubble = last ? last.el : null;
     const said = (turnEl || $('tx')).querySelectorAll('.said:not(.user)');
