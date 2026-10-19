@@ -321,21 +321,42 @@ func (l *Loop) canonicalCall(tool tools.Tool, raw json.RawMessage) (json.RawMess
 	return canon, nil
 }
 
-// BindPlan holds the session to the runbook of the plan just proposed with
-// hash, once the person has accepted it. A plan without a runbook binds
-// nothing, and returns nil.
-func (l *Loop) BindPlan(hash string) error {
+// PlanOffered reports why p cannot be accepted, or nil: its runbook must be
+// the one last proposed. Checked before the answer is recorded, so a plan
+// recorded as accepted is one AcceptPlan then takes.
+func (l *Loop) PlanOffered(p PlanProposed) error {
 	l.plans.mu.Lock()
 	defer l.plans.mu.Unlock()
-	rb := l.plans.offered
-	if rb == nil {
+	return l.offeredLocked(p)
+}
+
+func (l *Loop) offeredLocked(p PlanProposed) error {
+	if p.Runbook == nil {
 		return nil
 	}
-	if rb.Hash != hash {
+	if l.plans.off {
+		return ErrRunbooksOff
+	}
+	if rb := l.plans.offered; rb == nil || rb.Hash != p.Runbook.Hash {
 		return errors.New("the plan accepted is not the one proposed")
 	}
-	l.plans.offered = nil
-	l.plans.bound = &boundPlan{rb: *rb, done: make([]bool, len(rb.Steps))}
+	return nil
+}
+
+// AcceptPlan applies an accepted plan once its plan.decided is recorded: it
+// lets go of any runbook bound before, and holds the session to p's, if it
+// has one. A plan without a runbook leaves none bound.
+func (l *Loop) AcceptPlan(p PlanProposed) error {
+	l.plans.mu.Lock()
+	defer l.plans.mu.Unlock()
+	l.plans.bound = nil
+	if err := l.offeredLocked(p); err != nil {
+		return err
+	}
+	if rb := l.plans.offered; p.Runbook != nil {
+		l.plans.offered = nil
+		l.plans.bound = &boundPlan{rb: *rb, done: make([]bool, len(rb.Steps))}
+	}
 	return nil
 }
 
@@ -405,7 +426,19 @@ func (l *Loop) markPlanBound(ctx context.Context) context.Context {
 
 // planReplaces are the steps whose ask an approved runbook step stands in
 // for. A handover, a hook's or the supervisor's ask still puts the call to a person.
-var planReplaces = map[string]bool{"default": true, "mode": true, "ask": true, "destructive": true, "screen": true}
+// A screen ask, about a command no rule could read in full, still asks.
+var planReplaces = map[string]bool{"default": true, "mode": true, "ask": true, "destructive": true}
+
+// keepsAsk reports an ask the plan does not answer though its step is one it
+// may: the harness's own ask with no rule (naming workspace trust), an ask
+// rule of a policy layer an edition added, and one the surface keeps, such
+// as the managed configuration's.
+func (l *Loop) keepsAsk(d policy.Result) bool {
+	if d.Step != "ask" {
+		return false
+	}
+	return d.Rule == "" || d.Layer != "" || l.Policy != nil && l.Policy.KeepAsk != nil && l.Policy.KeepAsk(d)
+}
 
 // planBind holds a call to the bound runbook. A call that is the next step,
 // exactly, runs on the plan's approval in place of an ask; a mutating call
@@ -450,7 +483,7 @@ func (l *Loop) planBind(ctx context.Context, tool tools.Tool, call model.ToolCal
 		d.Reason = strings.TrimPrefix(d.Reason+"; "+label, "; ")
 		return d, hit
 	}
-	if !planReplaces[d.Step] || d.Step == "ask" && l.Policy != nil && l.Policy.KeepAsk != nil && l.Policy.KeepAsk(d.Rule) {
+	if !planReplaces[d.Step] || l.keepsAsk(d) {
 		d.Reason = label + ", asked again: " + d.Reason
 		return d, hit
 	}

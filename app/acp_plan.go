@@ -78,18 +78,33 @@ func (c *acpConn) decidePlan(ctx context.Context, s *acpSession, runErr error) s
 	if s.liveTasks() > 0 {
 		return keep("Background tasks are running, so the mode was not changed and planning goes on.")
 	}
+	if err := loop.PlanOffered(plan); err != nil {
+		return keep("The runbook was not bound, so planning goes on: " + err.Error())
+	}
+	record := func(t agent.EventType, payload any) error {
+		_, err := loop.Recorder.Record(t, agent.ActorUser, agent.Trusted, payload)
+		return err
+	}
+	// Each change is on record before it takes effect.
+	if from := loop.Policy.Mode; from != to {
+		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
+			return keep("The mode change could not be recorded, so planning goes on: " + err.Error())
+		}
+		loop.Policy.Mode = to
+	}
 	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)}
 	if rb := plan.Runbook; rb != nil {
-		if err := loop.BindPlan(rb.Hash); err != nil {
-			return keep("The runbook was not bound, so planning goes on: " + err.Error())
-		}
 		decided.PlanHash, decided.Runbook = rb.Hash, rb
 	}
-	if from := loop.Policy.Mode; from != to {
-		loop.Policy.Mode = to
-		s.record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit})
+	if err := record(agent.EvPlanDecided, decided); err != nil {
+		loop.UnbindPlan()
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock(
+			"\nThe plan's answer could not be recorded, so no runbook is bound: " + err.Error() + "\n")})
+		return ""
 	}
-	s.record(agent.EvPlanDecided, decided)
+	if err := loop.AcceptPlan(plan); err != nil {
+		return keep("The runbook was not bound: " + err.Error())
+	}
 	loop.SetApprovedPlan(plan.Text)
 	c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "completed"})
 	if rb := plan.Runbook; rb != nil {

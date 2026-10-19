@@ -19,6 +19,8 @@ func (l *Loop) filesJudged(tool tools.Tool, call model.ToolCall, d policy.Result
 	if !ok || d.Decision == policy.Deny {
 		return d
 	}
+	// Rules only: the hooks judge the call itself, with these paths in its
+	// arguments, and are not told of a read or write that is not being made.
 	pol := l.Policy.WithoutHooks()
 	judge := func(as string, mutates bool, path string) (policy.Result, bool) {
 		args, _ := json.Marshal(map[string]string{"path": path})

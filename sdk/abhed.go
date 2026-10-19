@@ -606,9 +606,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 // were answered instead, the returned message is that answer.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 	defer a.startRun()()
-	if a.runbookNote != "" {
-		prompt, a.runbookNote = strings.TrimSpace(prompt+"\n\n"+a.runbookNote), ""
-	}
+	prompt = a.withRunbook(prompt)
 	reason, err := a.loop.Run(ctx, prompt)
 	if err != nil {
 		return "", err
@@ -674,6 +672,7 @@ func (a *Agent) RunJSON(ctx context.Context, prompt string, schema json.RawMessa
 // secrets redacted, so it may no longer match schema (see docs/guide/09-sdk.md).
 func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.RawMessage) (json.RawMessage, error) {
 	defer a.startRun()()
+	prompt = a.withRunbook(prompt)
 	raw, reason, err := agent.RunStructured(ctx, a.loop, a.registry, prompt, schema)
 	if err != nil {
 		var nr agent.ErrNoResult
@@ -720,6 +719,9 @@ func (a *Agent) Queued() int { return len(a.loop.Queued()) }
 // returns an *EndedError with Reason prompt_refused.
 func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 	defer a.startRun()()
+	if note := a.withRunbook(""); note != "" {
+		a.loop.Queue(note)
+	}
 	reason, err := a.loop.RunQueued(ctx)
 	if err != nil {
 		return "", err
@@ -773,6 +775,19 @@ func (a *Agent) Fork(throughSeq int64) error {
 
 // startRun counts a run in progress, after any fork under way, and returns
 // what ends it.
+// withRunbook adds Options.Runbook's steps to the first run's prompt, once,
+// whichever entry point starts it.
+func (a *Agent) withRunbook(prompt string) string {
+	a.forkMu.Lock()
+	note := a.runbookNote
+	a.runbookNote = ""
+	a.forkMu.Unlock()
+	if note == "" {
+		return prompt
+	}
+	return strings.TrimSpace(prompt + "\n\n" + note)
+}
+
 func (a *Agent) startRun() func() {
 	a.forkMu.Lock()
 	a.running++

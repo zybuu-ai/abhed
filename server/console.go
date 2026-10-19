@@ -2053,6 +2053,7 @@ function planCard(p){
     row.querySelectorAll('button').forEach(b => { b.disabled = true; });
     try{
       const r = await api('/v1/sessions/' + current + '/plan', {method:'POST', body: JSON.stringify({decision, plan_hash: p.hash, confirm_no_undo: !!undoOK})});
+      if(r && r.settled === false){ note.textContent = 'Recorded; the plan waits for the other answers the approvers need.'; return; }
       if(decision === 'keep-planning'){ settlePlan('keep planning · say what to change'); return; }
       settlePlan('approved · mode ' + visible(r.mode || ''));
       if(r && r.message){ $('q').value = r.message; send(); }

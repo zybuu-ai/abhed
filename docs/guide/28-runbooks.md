@@ -107,9 +107,19 @@ be undone. A server session leaves plan mode only for `default`, or for
   sandbox, the egress allowlist and the `ssh.connect_hosts` bounds still
   apply. An ask from the supervisor, or for a call that may already have run
   on a process that stopped, still goes to you.
-- **A managed ask rule still asks.** An ask rule the managed configuration
-  lists asks for each call, inside a runbook too; any other ask rule is
-  answered by the plan.
+- **Some asks are never the plan's to answer.** An ask rule the managed
+  configuration lists, or a policy layer an edition added (a Team
+  workspace's), asks for each call inside a runbook too, and so do a command
+  too tangled for the rules to read in full (step `screen`) and one that
+  names workspace trust for a nested run. An ask rule from your own or the
+  workspace's configuration is answered by the plan.
+- **An approval gate decides a runbook as it decides any ask.** On a server
+  whose edition has approvers, accepting a plan with a runbook is one answer
+  to the gate, for the plan's hash: an answer it refuses (such as approving
+  your own runbook) binds nothing, one it holds keeps the plan waiting, and
+  the answer that settles it binds the runbook. Approvers the gate allows
+  answer with the same `POST /v1/sessions/{id}/plan`; `plan.decided` names
+  who answered (`by`).
 - **The supervisor is never answered by the plan.** When it has a concern
   with a step, the step is put to you (`asked again: supervisor: …`), and a
   refusal of its stays a refusal. What the approved runbook names counts as
@@ -121,6 +131,8 @@ be undone. A server session leaves plan mode only for `default`, or for
   file, as a copy on the host does, brings nothing into the session.
 - **Subagents are never steps.** A subagent's change in a session with a
   runbook asks.
+- **A new plan lets the runbook go.** Proposing another plan unbinds it,
+  and accepting a plan without a runbook leaves none bound.
 - **Rewinding or continuing a session lets the runbook go.** A rewound
   conversation, and one continued with `-c` or `-r`, starts unbound: its
   remote steps cannot be taken back, so each asks again. Propose the plan

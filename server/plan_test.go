@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -22,6 +23,11 @@ import (
 // planServer is a server whose model proposes a plan with a runbook of
 // steps, then makes each call in calls in turn.
 func planServer(t *testing.T, runbook string, calls ...string) (*Server, *durableMem, string) {
+	return planServerWith(t, nil, runbook, calls...)
+}
+
+// planServerWith is planServer with its options adjusted by tune.
+func planServerWith(t *testing.T, tune func(*Options), runbook string, calls ...string) (*Server, *durableMem, string) {
 	t.Helper()
 	ws, _ := filepath.EvalSymlinks(t.TempDir())
 	var n atomic.Int32
@@ -54,7 +60,11 @@ func planServer(t *testing.T, runbook string, calls ...string) (*Server, *durabl
 		t.Fatal(err)
 	}
 	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
-	s := New(Options{Workspace: ws, Config: cfg, Adapter: def, Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}), Store: st})
+	opts := Options{Workspace: ws, Config: cfg, Adapter: def, Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}), Store: st}
+	if tune != nil {
+		tune(&opts)
+	}
+	s := New(opts)
 	return s, st, ws
 }
 
@@ -158,5 +168,64 @@ const send = () => { __sent.push(q.value); q.value = ''; };
 `
 	if out, err := runConsoleCases(t, "ide-plan", harness, "ide_plan_cases.mjs"); err != nil {
 		t.Fatalf("the plan card failed:\n%s", out)
+	}
+}
+
+// Under an approval gate the runbook is one request the gate decides: the
+// owner's own approval is refused and binds nothing, one approver is held,
+// and the second settles it, recorded with who answered.
+func TestWorkbenchPlanThroughTheApprovalGate(t *testing.T) {
+	gate := &fourEyes{approvers: map[string]bool{"bob": true, "carol": true}}
+	s, st, _ := planServerWith(t, func(o *Options) {
+		o.Config.Auth.Mode = "oidc"
+		o.Auth = &auth.Middleware{PublicPaths: PublicPaths(), Verifier: tokens{
+			"alice": {Subject: "alice", Tenant: "default"}, "bob": {Subject: "bob", Tenant: "default"},
+			"carol": {Subject: "carol", Tenant: "default"}, "dave": {Subject: "dave", Tenant: "default"},
+		}}
+		o.ApprovalGate = gate
+	}, `[{"tool":"write","target":"WS/notes.txt","args":{"content":"x"}}]`)
+	send := func(token, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		return w
+	}
+	id := sessionOf(t, send("alice", "/v1/sessions", `{"prompt":"plan it","mode":"plan"}`))
+	hash := proposedHash(t, turnsEnded(t, st, id, 1))
+	path, body := "/v1/sessions/"+id+"/plan", `{"decision":"approve","plan_hash":"`+hash+`"}`
+	bound := func() bool { _, _, ok := s.anyLive(t).Loop.BoundRunbook(); return ok }
+
+	if w := send("alice", path, body); w.Code != http.StatusForbidden || bound() {
+		t.Fatalf("the owner approved their own runbook: %d %s", w.Code, w.Body)
+	}
+	if w := send("dave", path, body); w.Code != http.StatusNotFound {
+		t.Fatalf("a non-approver reached the plan: %d", w.Code)
+	}
+	if w := send("bob", path, body); w.Code != http.StatusAccepted || bound() {
+		t.Fatalf("one approval of two: %d %s", w.Code, w.Body)
+	}
+	if _, ok := s.anyLive(t).Loop.PendingPlan(); !ok {
+		t.Fatal("a held answer let the plan go")
+	}
+	if w := send("carol", path, body); w.Code != http.StatusOK || !bound() {
+		t.Fatalf("the second approval: %d %s", w.Code, w.Body)
+	}
+	evs, _ := st.Events(id)
+	var decided []agent.PlanDecided
+	for _, e := range evs {
+		if e.Type == agent.EvPlanDecided {
+			var p agent.PlanDecided
+			_ = json.Unmarshal(e.Payload, &p)
+			decided = append(decided, p)
+		}
+	}
+	if len(decided) != 1 || decided[0].By != "carol" || decided[0].PlanHash != hash {
+		t.Fatalf("plan.decided %+v", decided)
+	}
+	for _, a := range gate.seen {
+		if a.Request != "plan:"+hash || a.Tool != "exit_plan" {
+			t.Fatalf("the gate was told %+v", a)
+		}
 	}
 }

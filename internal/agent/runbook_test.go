@@ -73,7 +73,7 @@ func runbookHarness(t *testing.T, mode policy.Mode, steps []tools.RunbookStep, t
 	if !ok || p.Runbook == nil || len(p.Runbook.Steps) != len(steps) {
 		t.Fatalf("proposed %+v %v", p, ok)
 	}
-	if err := l.BindPlan(p.Runbook.Hash); err != nil {
+	if err := l.AcceptPlan(p); err != nil {
 		t.Fatal(err)
 	}
 	l.Policy.Mode = mode
@@ -304,7 +304,11 @@ func TestRunbookBindingEnds(t *testing.T) {
 	if err := l.proposePlan(context.Background(), "p", []tools.RunbookStep{sshStep("web1", "uptime")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.BindPlan(strings.Repeat("0", 64)); err == nil {
+	forged := PlanProposed{Text: "p", Runbook: &Runbook{Hash: strings.Repeat("0", 64)}}
+	if err := l.PlanOffered(forged); err == nil {
+		t.Fatal("offered a plan that was not proposed")
+	}
+	if err := l.AcceptPlan(forged); err == nil {
 		t.Fatal("bound a plan that was not proposed")
 	}
 	if _, _, ok := l.BoundRunbook(); ok {
@@ -455,7 +459,7 @@ func TestRunbookKeepsAManagedAsk(t *testing.T) {
 	if err := r.l.Policy.AddAsk("ssh(web1/*)"); err != nil {
 		t.Fatal(err)
 	}
-	r.l.Policy.KeepAsk = func(rule string) bool { return rule == "ssh(web1/*)" }
+	r.l.Policy.KeepAsk = func(d policy.Result) bool { return d.Rule == "ssh(web1/*)" }
 	r.appr.yes = false
 	if _, err := r.l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
@@ -468,7 +472,7 @@ func TestRunbookKeepsAManagedAsk(t *testing.T) {
 		{calls: []model.ToolCall{sshCall("a", "web1", "uptime")}}, {text: "done"},
 	})
 	_ = r2.l.Policy.AddAsk("ssh(web1/*)")
-	r2.l.Policy.KeepAsk = func(string) bool { return false }
+	r2.l.Policy.KeepAsk = func(policy.Result) bool { return false }
 	if _, err := r2.l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -490,5 +494,53 @@ func TestRunbooksTurnedOff(t *testing.T) {
 	}
 	if _, err := l.BindRunbook("p", []tools.RunbookStep{sshStep("web1", "uptime")}, ""); !errors.Is(err, ErrRunbooksOff) {
 		t.Fatalf("bound: %v", err)
+	}
+}
+
+// An ask rule of a policy layer an edition added still asks inside a
+// runbook, and so does the harness's own ask that names workspace trust; a
+// screen ask, about a command no rule could read in full, too.
+func TestRunbookKeepsLayerScreenAndTrustAsks(t *testing.T) {
+	tool := fakeSSH{ran: &[]string{}}
+	for _, c := range []struct {
+		name string
+		d    policy.Result
+	}{
+		{"layer", policy.Result{Decision: policy.Ask, Step: "ask", Rule: "ssh(web1/*)", Layer: "team"}},
+		{"trust", policy.Result{Decision: policy.Ask, Step: "ask", Reason: "the command names ABHED_TRUST_WORKSPACE"}},
+		{"screen", policy.Result{Decision: policy.Ask, Step: "screen"}},
+	} {
+		r := runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "uptime")}, nil)
+		got, hit := r.l.planBind(context.Background(), tool, sshCall("a", "web1", "uptime"), c.d)
+		if got.Decision != policy.Ask || hit == nil || hit.replaced || !strings.Contains(got.Reason, "asked again") {
+			t.Fatalf("%s: %+v %+v", c.name, got, hit)
+		}
+	}
+	r := runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "uptime")}, nil)
+	got, hit := r.l.planBind(context.Background(), tool, sshCall("a", "web1", "uptime"),
+		policy.Result{Decision: policy.Ask, Step: "ask", Rule: "ssh(web1/*)"})
+	if got.Decision != policy.Allow || hit == nil || !hit.replaced {
+		t.Fatalf("a configured ask rule was not answered: %+v", got)
+	}
+}
+
+// A new plan lets the old runbook go when it is proposed, and accepting a
+// plan without a runbook leaves none bound.
+func TestRunbookLetGoByANewPlan(t *testing.T) {
+	r := runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "uptime")}, nil)
+	r.l.Policy.Mode = policy.ModePlan
+	if err := r.l.proposePlan(context.Background(), "just look", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := r.l.BoundRunbook(); ok {
+		t.Fatal("a new proposal kept the old runbook")
+	}
+
+	r = runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "uptime")}, nil)
+	if err := r.l.AcceptPlan(PlanProposed{Text: "text only"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := r.l.BoundRunbook(); ok {
+		t.Fatal("an accepted plan without a runbook kept the old one")
 	}
 }

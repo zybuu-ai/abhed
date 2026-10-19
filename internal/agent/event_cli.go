@@ -237,6 +237,8 @@ type PlanDecided struct {
 	PlanHash string   `json:"plan_hash,omitempty"`
 	Runbook  *Runbook `json:"runbook,omitempty"`
 	Via      string   `json:"via,omitempty"`
+	// By is the signed-in person who answered, where the surface knows them.
+	By string `json:"by,omitempty"`
 }
 
 // ModelFallback is the payload of model.fallback.

@@ -2707,6 +2707,7 @@ function planCard(p){
     btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
     try{
       const r = await api('/v1/sessions/' + current + '/plan', {method:'POST', body: JSON.stringify({decision, plan_hash: p.hash, confirm_no_undo: !!undoOK})});
+      if(r && r.settled === false){ note.textContent = 'Recorded; the plan waits for the other answers the approvers need.'; return; }
       if(decision === 'keep-planning'){ settleAsk('plan', 'keep planning · say what to change'); $('q').focus(); return; }
       settleAsk('plan', 'approved · mode ' + visible(r.mode || ''));
       if(r && r.message){ $('q').value = r.message; send(); }
