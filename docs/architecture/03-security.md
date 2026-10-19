@@ -233,14 +233,16 @@ boundary, and the consequences are worth stating plainly:
 | `ssh` | Always asks — it reports `Mutates() = true`, so no mode auto-approves it |
 | `k8s_get` | Read-only, so **auto mode approves it without a prompt** |
 | `web_search` | Asks for each search in every mode but bypass, unless an allow rule names it |
-| `k8s_apply` | Mutating, so it asks |
+| `k8s_apply` | Mutating, so it asks; each write is dry-run on the cluster first and the approval shows the diff |
+| `ssh_put`, `ssh_get` | Off unless `ssh.transfers`; mutating, so they ask unless an allow rule on `host:path` covers them; the workspace file is judged as a read or write |
 | `web_fetch` | Read-only, but it composes a URL that can carry data to the site, so with no `web_fetch.allowed_hosts` it **asks in the default, accept-edits, auto and plan modes** unless an allow rule names the URL. With `allowed_hosts`, a listed host runs unasked on the scheme's default port and asks on any other port. Bypass mode (unless a managed policy disables it) and `abhed eval` approve every ask. It refuses internal, loopback and metadata addresses on every hop and a URL holding a stored secret |
 
 `k8s_get` is the sharp edge: in an unattended or `auto` deployment, an injected
 instruction in untrusted content can drive it to read and to reach the network with no
-sandbox boundary in the way. Argument-scoped policy rules (`deny k8s_get(secrets*)`) are
-the control that applies, and they work — but whole-tool policy is otherwise the only
-thing mediating these tools.
+sandbox boundary in the way. A Secret's values are masked to their length and sha256
+before anything reaches the model, but its keys and metadata are read. Argument-scoped
+policy rules (`deny k8s_get(secrets*)`) are the control that applies, and they work — but
+whole-tool policy is otherwise the only thing mediating these tools.
 
 Under the allowlist, `web_fetch` and `web_search` go through the egress rules and are
 recorded as `egress.decision` events with `kind` `web_fetch` or `web_search`; `web_fetch`
