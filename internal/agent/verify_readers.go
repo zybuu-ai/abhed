@@ -6,9 +6,79 @@ import (
 	"strings"
 )
 
-// The known readers: programs that, in the forms allowed here, change no file.
-// It is an allowlist, like the ssh read commands: a program not here, or one
-// here given an option or an operand that makes it write, counts as a change.
+// The known readers: the few programs that, in the forms allowed here, change
+// nothing. It is an allowlist kept small on purpose. A program is on it only
+// when every option it is let through with is one that cannot write a file or
+// run another program; anything else, including a long option that is not
+// spelled out in full here (GNU and git programs take abbreviations), makes
+// the command a possible change with unknown files. Being wrong this way
+// leaves a claim unverified, which is always an acceptable answer.
+
+// readerSpec says which options a reader may be given.
+type readerSpec struct {
+	// anyOption: the program has no option that writes or runs anything,
+	// so every option, abbreviations included, is let through.
+	anyOption bool
+	// short are the short option letters allowed; shortValued those of them
+	// that take a value, joined or as the next word.
+	short, shortValued string
+	// long are the long options allowed, spelled out in full; longValued
+	// those that take a value as the next word when not given with =.
+	long, longValued map[string]bool
+	// maxOperands bounds the operands, -1 for any: a further one is a file
+	// it writes, as uniq's second.
+	maxOperands int
+	// check, when set, judges the operands as well.
+	check func(opts, ops []string) bool
+}
+
+func set(words ...string) map[string]bool {
+	m := make(map[string]bool, len(words))
+	for _, w := range words {
+		m[w] = true
+	}
+	return m
+}
+
+// parseReader reads a reader's words against its spec: the options it was
+// given, its operands, and whether every option is allowed.
+func parseReader(spec readerSpec, words []string) (opts, ops []string, ok bool) {
+	for i := 1; i < len(words); i++ {
+		a := words[i]
+		switch {
+		case a == "--":
+			return opts, append(ops, words[i+1:]...), true
+		case a == "-" || !strings.HasPrefix(a, "-"):
+			ops = append(ops, a)
+		case spec.anyOption:
+			opts = append(opts, a)
+		case strings.HasPrefix(a, "--"):
+			name, _, eq := strings.Cut(a, "=")
+			if !spec.long[name] {
+				return nil, nil, false
+			}
+			opts = append(opts, a)
+			if spec.longValued[name] && !eq {
+				i++
+			}
+		default:
+			opts = append(opts, a)
+			for j := 1; j < len(a); j++ {
+				c := a[j]
+				if !strings.ContainsRune(spec.short, rune(c)) {
+					return nil, nil, false
+				}
+				if strings.ContainsRune(spec.shortValued, rune(c)) {
+					if j == len(a)-1 {
+						i++ // the value is the next word
+					}
+					break
+				}
+			}
+		}
+	}
+	return opts, ops, true
+}
 
 // pureReader reports whether a simple command, its words literal and its
 // runners taken off, only reads.
@@ -17,149 +87,79 @@ func pureReader(words []string) bool {
 		return true
 	}
 	prog := filepath.Base(words[0])
-	if check, ok := readerPrograms[prog]; ok {
-		return check(words)
+	switch prog {
+	case "git":
+		return gitReader(words)
+	case "go":
+		return goReader(words)
+	case "find":
+		return findReader(words)
 	}
-	return false
-}
-
-// none lets a reader through whatever its options.
-func none(words []string) bool { return true }
-
-// without lets a reader through unless it is given one of the options:
-// short letters (alone or clustered) and long names, with or without =value.
-func without(short string, long ...string) func([]string) bool {
-	return func(words []string) bool {
-		for _, a := range words[1:] {
-			if a == "--" {
-				break
-			}
-			for _, l := range long {
-				if a == l || strings.HasPrefix(a, l+"=") {
-					return false
-				}
-			}
-			if short != "" && len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], short) {
-				return false
-			}
-		}
-		return true
-	}
-}
-
-// atMost lets a reader through with no more than n operands: a further one
-// is a file it writes, as uniq's or xxd's second.
-func atMost(n int, also func([]string) bool) func([]string) bool {
-	return func(words []string) bool {
-		return len(operands(words)) <= n && (also == nil || also(words))
-	}
-}
-
-// subcommands lets a program through for the listed subcommands, each with
-// its own check.
-func subcommands(subs map[string]func([]string) bool) func([]string) bool {
-	return func(words []string) bool {
-		if len(words) < 2 {
-			return false
-		}
-		check, ok := subs[words[1]]
-		return ok && check(words[1:])
-	}
-}
-
-// fixers are the options that make a checker, linter or test runner change
-// files: fix in place, write, or update snapshots and goldens.
-var fixers = []string{"--fix", "--fix-only", "--write", "--update", "--update-snapshots", "--updateSnapshot", "--snapshot-update",
-	"--allow-dirty", "--in-place", "--inplace", "--output", "--outfile", "--out-file", "-update", "-fix", "-w", "-u", "-o"}
-
-// noFixers lets a checker or test runner through unless any word asks it to
-// fix, write or update: the options above, in its own words or after "--".
-func noFixers(words []string) bool {
-	for _, a := range words[1:] {
-		for _, f := range fixers {
-			if a == f || strings.HasPrefix(a, f+"=") {
-				return false
-			}
-		}
-		// go test's -coverprofile and friends name a file it writes.
-		if strings.HasSuffix(strings.SplitN(a, "=", 2)[0], "profile") || strings.HasPrefix(a, "-o=") {
-			return false
-		}
-	}
-	return true
-}
-
-var (
-	// sedPrint is a sed script that only prints or substitutes into its output.
-	sedPrint = regexp.MustCompile(`^(?:[0-9$,/^.*\[\]\\a-zA-Z_ -]*[pdq=]|s(.).*)$`)
-)
-
-// sedReader lets sed through when it is not in place and its script cannot
-// write: no w, W, r, R or e command or flag, no script file.
-func sedReader(words []string) bool {
-	if !without("if", "--in-place", "--file")(words) {
+	spec, ok := readerSpecs[prog]
+	if !ok {
 		return false
 	}
-	scripts := []string{}
-	expr := false
-	for i := 1; i < len(words); i++ {
-		a := words[i]
-		switch {
-		case a == "-e" || a == "--expression":
-			if i+1 < len(words) {
-				scripts = append(scripts, words[i+1])
-				i++
-			}
-			expr = true
-		case strings.HasPrefix(a, "--expression="):
-			scripts, expr = append(scripts, strings.TrimPrefix(a, "--expression=")), true
-		case strings.HasPrefix(a, "-e") && len(a) > 2:
-			scripts, expr = append(scripts, a[2:]), true
-		}
+	opts, ops, ok := parseReader(spec, words)
+	if !ok || (spec.maxOperands >= 0 && len(ops) > spec.maxOperands) {
+		return false
 	}
-	if !expr {
-		ops := operands(words)
-		if len(ops) == 0 {
-			return false
-		}
-		scripts = ops[:1]
-	}
-	for _, sc := range scripts {
-		for _, part := range strings.FieldsFunc(sc, func(r rune) bool { return r == ';' || r == '\n' }) {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			if !sedPrint.MatchString(part) || sedWrites(part) {
-				return false
-			}
-		}
-	}
-	return true
+	return spec.check == nil || spec.check(opts, ops)
 }
 
-// sedWrites reports a sed command that writes or runs: w, W, r, R, e, or an
-// s command whose flags hold w or e.
-func sedWrites(part string) bool {
-	if part[0] == 's' && len(part) > 1 {
-		d := part[1]
-		if i := strings.LastIndexByte(part, d); i > 1 {
-			return strings.ContainsAny(part[i+1:], "weWE")
-		}
-		return true
-	}
-	return strings.ContainsAny(part, "wWrRe")
+// anything: a program with no option that writes a file or runs another.
+var anything = readerSpec{anyOption: true, maxOperands: -1}
+
+var readerSpecs = map[string]readerSpec{
+	"cat": anything, "head": anything, "tail": anything, "wc": anything, "ls": anything, "stat": anything,
+	"grep": anything, "egrep": anything, "fgrep": anything, "diff": anything, "cmp": anything, "jq": anything,
+	"cut": anything, "tr": anything, "echo": anything, "pwd": anything, "true": anything, "false": anything,
+	":": anything, "test": anything, "[": anything, "which": anything, "type": anything, "basename": anything,
+	"dirname": anything, "realpath": anything, "readlink": anything,
+	// ripgrep: --pre and --pre-glob run a program on each file, and -z runs
+	// decompressors; it takes no abbreviations.
+	"rg": {short: "iSFwxnNclLvoqsuUHIabkpe0fgtTmABCMjrE", shortValued: "efgtTmABCMjrE",
+		long: set("--ignore-case", "--smart-case", "--case-sensitive", "--fixed-strings", "--word-regexp", "--line-regexp",
+			"--line-number", "--no-line-number", "--count", "--count-matches", "--files", "--files-with-matches",
+			"--files-without-match", "--glob", "--iglob", "--type", "--type-not", "--hidden", "--no-ignore", "--context",
+			"--after-context", "--before-context", "--max-count", "--only-matching", "--json", "--color", "--heading",
+			"--no-heading", "--multiline", "--invert-match", "--follow", "--max-depth", "--sort", "--sortr", "--vimgrep",
+			"--replace", "--regexp", "--file", "--quiet", "--with-filename", "--no-filename", "--null", "--trim", "--unrestricted"),
+		longValued: set("--glob", "--iglob", "--type", "--type-not", "--context", "--after-context", "--before-context",
+			"--max-count", "--max-depth", "--sort", "--sortr", "--replace", "--regexp", "--file", "--color"),
+		maxOperands: -1},
+	// sed only as sed -n 'script' with print commands: see sedPrintOnly. -e,
+	// -f, -i and the long options they abbreviate are not let through.
+	"sed": {short: "nEruz", long: set("--quiet", "--silent", "--regexp-extended", "--null-data", "--posix", "--debug",
+		"--sandbox"), maxOperands: -1, check: sedPrintOnly},
+	// sort writes with -o and --output, and runs --compress-program.
+	"sort": {short: "bdfgiMhnRrVcCszuk0123456789tST", shortValued: "ktST",
+		long: set("--ignore-leading-blanks", "--dictionary-order", "--ignore-case", "--general-numeric-sort",
+			"--ignore-nonprinting", "--month-sort", "--human-numeric-sort", "--numeric-sort", "--random-sort",
+			"--reverse", "--version-sort", "--check", "--stable", "--unique", "--zero-terminated", "--key",
+			"--field-separator", "--buffer-size", "--parallel"),
+		longValued: set("--key", "--field-separator", "--buffer-size", "--parallel"), maxOperands: -1},
+	// uniq writes its second operand.
+	"uniq": {short: "cdDiuzfsw0123456789", shortValued: "fsw",
+		long: set("--count", "--repeated", "--all-repeated", "--unique", "--ignore-case", "--skip-fields", "--skip-chars",
+			"--check-chars", "--zero-terminated", "--group"),
+		longValued: set("--skip-fields", "--skip-chars", "--check-chars"), maxOperands: 1},
 }
 
-// awkReader lets awk through when its program cannot write a file or run a
-// command and it is not editing in place.
-func awkReader(words []string) bool {
-	for i, a := range words[1:] {
-		if a == "-i" || a == "--include" || strings.HasPrefix(a, "-i") || a == "-f" || strings.HasPrefix(a, "--file") {
-			return false
-		}
-		_ = i
-		if strings.ContainsAny(a, ">|") || strings.Contains(a, "system") || strings.Contains(a, "getline") {
+// sedPrint is one sed command that only prints: an optional address and p,
+// = or l.
+var sedPrint = regexp.MustCompile(`^((\d+|\$|/[^/]*/)(,(\d+|\$|/[^/]*/))?)?\s*!?\s*[p=l]$`)
+
+// sedPrintOnly lets sed through only as sed -n whose script only prints.
+func sedPrintOnly(opts, ops []string) bool {
+	quiet := false
+	for _, o := range opts {
+		quiet = quiet || o == "--quiet" || o == "--silent" || (o[1] != '-' && strings.ContainsRune(o, 'n'))
+	}
+	if !quiet || len(ops) == 0 {
+		return false
+	}
+	for _, part := range strings.FieldsFunc(ops[0], func(r rune) bool { return r == ';' || r == '\n' }) {
+		if !sedPrint.MatchString(strings.TrimSpace(part)) {
 			return false
 		}
 	}
@@ -177,166 +177,70 @@ func findReader(words []string) bool {
 	return true
 }
 
-// gitReader lets git through for the subcommands that leave the working
-// tree, the index and the refs alone, in their listing forms.
-func gitReader(words []string) bool {
-	if len(words) < 2 || strings.HasPrefix(words[1], "-") {
-		return false // global options, such as -C, change what it reads
-	}
-	sub, rest := words[1], words[2:]
-	switch sub {
-	case "status", "rev-parse", "blame", "ls-files", "ls-tree", "describe", "shortlog", "grep", "cat-file", "rev-list",
-		"show-ref", "merge-base", "name-rev", "for-each-ref", "help", "version", "count-objects", "check-ignore":
-		return true
-	case "diff", "log", "show":
-		return without("", "--output", "--ext-diff")(words[1:])
-	case "branch":
-		return len(rest) == 0 || allIn(rest, "-a", "-r", "-v", "-vv", "--list", "-l", "--show-current", "--all", "--remotes")
-	case "tag":
-		return len(rest) == 0 || allIn(rest, "-l", "--list")
-	case "remote":
-		return len(rest) == 0 || allIn(rest, "-v") || (rest[0] == "get-url" || rest[0] == "show")
-	case "config":
-		return len(rest) > 0 && (rest[0] == "--get" || rest[0] == "--get-all" || rest[0] == "--list" || rest[0] == "-l" || rest[0] == "--get-regexp")
-	case "stash":
-		return len(rest) > 0 && (rest[0] == "list" || rest[0] == "show")
-	}
-	return false
+// gitReads are git's reading subcommands and the long options each is let
+// through with, in full: git takes abbreviations, and -O, -o and --output
+// open or write files, while --ext-diff and --textconv run programs.
+var gitReads = map[string]readerSpec{
+	"status": {short: "sbuvz", long: set("--short", "--branch", "--porcelain", "--long", "--untracked-files", "--ignored",
+		"--ignore-submodules", "--show-stash", "--ahead-behind", "--no-ahead-behind", "--verbose"), maxOperands: -1},
+	"diff": {short: "pusRaUMCBWz0123456789", shortValued: "", long: set("--stat", "--numstat", "--shortstat", "--name-only",
+		"--name-status", "--cached", "--staged", "--color", "--no-color", "--word-diff", "--unified", "--patch", "--no-patch",
+		"--minimal", "--ignore-all-space", "--ignore-space-change", "--exit-code", "--quiet", "--summary", "--diff-filter",
+		"--relative", "--no-renames", "--check", "--raw", "--no-ext-diff", "--no-textconv"), maxOperands: -1},
+	"log": {short: "pnSGL0123456789", shortValued: "nSGL", long: set("--oneline", "--graph", "--decorate", "--all", "--stat",
+		"--patch", "--name-only", "--name-status", "--format", "--pretty", "--since", "--until", "--after", "--before",
+		"--author", "--grep", "--max-count", "--follow", "--reverse", "--no-merges", "--merges", "--abbrev-commit", "--date",
+		"--first-parent", "--no-ext-diff", "--no-textconv", "--no-color", "--color"),
+		longValued: set("--author", "--grep", "--max-count", "--since", "--until", "--after", "--before"), maxOperands: -1},
+	"show": {short: "sq", long: set("--stat", "--name-only", "--name-status", "--format", "--pretty", "--patch", "--no-patch",
+		"--oneline", "--color", "--no-color", "--quiet", "--no-ext-diff", "--no-textconv"), maxOperands: -1},
+	"rev-parse": {short: "q", long: set("--show-toplevel", "--abbrev-ref", "--short", "--verify", "--git-dir",
+		"--is-inside-work-tree", "--show-prefix", "--symbolic-full-name", "--quiet", "--show-cdup"), maxOperands: -1},
 }
 
-func allIn(words []string, allowed ...string) bool {
-	for _, w := range words {
-		ok := false
-		for _, a := range allowed {
-			ok = ok || w == a
+// gitReader lets git through for its reading subcommands, with no global
+// option before them (-C, -c and the rest change what it does).
+func gitReader(words []string) bool {
+	if len(words) < 2 {
+		return false
+	}
+	spec, ok := gitReads[words[1]]
+	if !ok {
+		return false
+	}
+	_, _, ok = parseReader(spec, words[1:])
+	return ok
+}
+
+// goTestFlags are the go test and go vet flags allowed, as go spells them (one
+// dash or two, a value with = or as the next word): none writes a file or
+// runs a program. -o, -c, -exec, -vettool, the profiles, -fuzz, -args and the
+// rest are not here.
+var goTestFlags = map[string]bool{
+	"run": true, "v": false, "count": true, "race": false, "short": false, "timeout": true, "cover": false,
+	"covermode": true, "coverpkg": true, "failfast": false, "bench": true, "benchmem": false, "benchtime": true,
+	"cpu": true, "p": true, "parallel": true, "tags": true, "json": false, "list": true, "shuffle": true, "skip": true,
+	"vet": true, "mod": true, "trimpath": false,
+}
+
+// goReader lets go test and go vet through with only the flags above.
+func goReader(words []string) bool {
+	if len(words) < 2 || (words[1] != "test" && words[1] != "vet") {
+		return false
+	}
+	for i := 2; i < len(words); i++ {
+		a := words[i]
+		if !strings.HasPrefix(a, "-") {
+			continue // a package pattern
 		}
+		name, _, eq := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		valued, ok := goTestFlags[name]
 		if !ok {
 			return false
 		}
+		if valued && !eq {
+			i++
+		}
 	}
 	return true
-}
-
-// goReader lets go through for test, vet, build, list, version, env and doc,
-// without the options that write files (-o, a profile, -update) or settings.
-func goReader(words []string) bool {
-	if len(words) < 2 {
-		return false
-	}
-	switch words[1] {
-	case "test", "vet", "build", "list", "doc", "version":
-		return noFixers(words[1:])
-	case "env":
-		return without("wu")(words[1:])
-	}
-	return false
-}
-
-// scriptReader lets npm, pnpm, yarn and bun through for a test, lint, check
-// or build script, with nothing after it that fixes, writes or updates.
-func scriptReader(words []string) bool {
-	if len(words) < 2 {
-		return false
-	}
-	script := words[1]
-	if script == "run" || script == "run-script" {
-		if len(words) < 3 {
-			return false
-		}
-		script = words[2]
-	}
-	if script == "test" || script == "t" || strings.HasPrefix(script, "test:") || script == "lint" || strings.HasPrefix(script, "lint:") ||
-		script == "check" || script == "typecheck" || script == "build" || strings.HasPrefix(script, "build:") {
-		return noFixers(words)
-	}
-	// yarn jest and the like: the binary it runs, judged as itself.
-	if filepath.Base(words[0]) != "npm" && words[1] != "run" {
-		return pureReader(words[1:])
-	}
-	return false
-}
-
-// makeReader lets make through for its checking targets only: make and make
-// all build, which writes.
-func makeReader(words []string) bool {
-	if len(words) < 2 {
-		return false
-	}
-	return allIn(words[1:], "test", "check", "lint", "vet", "tests", "-k", "-s")
-}
-
-// tscReader lets tsc through only when it emits nothing.
-func tscReader(words []string) bool {
-	return noFixers(words) && (allIn([]string{"--noEmit"}, words[1:]...) || hasWord(words, "--noEmit"))
-}
-
-func hasWord(words []string, w string) bool {
-	for _, a := range words {
-		if a == w {
-			return true
-		}
-	}
-	return false
-}
-
-// kubectlReader lets kubectl through for the commands that only read.
-func kubectlReader(words []string) bool {
-	for _, a := range words[1:] {
-		if strings.HasPrefix(a, "-") {
-			continue
-		}
-		switch a {
-		case "get", "describe", "logs", "top", "explain", "version", "api-resources", "api-versions", "cluster-info":
-			return true
-		case "config":
-			return hasWord(words, "view") || hasWord(words, "get-contexts") || hasWord(words, "current-context")
-		}
-		return false
-	}
-	return false
-}
-
-// curlReader lets curl through when it saves nothing and sends nothing.
-func curlReader(words []string) bool {
-	return without("oOTdFX", "--output", "--remote-name", "--upload-file", "--data", "--data-binary", "--data-raw", "--form",
-		"--request", "--remote-name-all", "--output-dir", "--create-dirs", "--cookie-jar", "--dump-header", "--trace", "--trace-ascii", "--stderr")(words)
-}
-
-var readerPrograms map[string]func([]string) bool
-
-func init() {
-	readerPrograms = map[string]func([]string) bool{
-		"ls": none, "cat": none, "head": none, "tail": none, "wc": none, "pwd": none, "echo": none, "printf": without("v"),
-		"true": none, "false": none, ":": none, "which": none, "type": none, "whoami": none, "id": none, "uname": none,
-		"stat": none, "file": without("C", "--compile"), "du": none, "df": none, "basename": none, "dirname": none,
-		"realpath": none, "readlink": none, "nl": none, "column": none, "cut": none, "tr": none, "comm": none, "cmp": none,
-		"diff": without("", "--output"), "md5sum": none, "md5": none, "sha256sum": none, "sha1sum": none, "shasum": none,
-		"hexdump": none, "od": none, "strings": none, "less": none, "more": none, "ps": none, "uptime": none, "free": none,
-		"nproc": none, "lsof": none, "printenv": none, "sleep": none, "test": none, "[": none, "env": atMost(0, nil),
-		"date": without("s", "--set"), "hostname": atMost(0, nil), "tree": without("o", "--output"),
-		"sort": without("o", "--output"), "uniq": atMost(1, nil), "xxd": atMost(1, without("r", "--revert")),
-		"grep": without("", "--pre"), "egrep": none, "fgrep": none, "rg": without("", "--pre"),
-		"jq": none, "yq": without("i", "--inplace"), "sed": sedReader, "gsed": sedReader, "awk": awkReader, "gawk": awkReader,
-		"find": findReader, "git": gitReader, "go": goReader, "make": makeReader, "kubectl": kubectlReader, "curl": curlReader,
-		"cargo": subcommands(map[string]func([]string) bool{"test": noFixers, "check": noFixers, "build": noFixers, "clippy": noFixers}),
-		"npm":   scriptReader, "pnpm": scriptReader, "yarn": scriptReader, "bun": scriptReader,
-		"pytest": noFixers, "jest": noFixers, "vitest": noFixers, "mocha": noFixers, "rspec": noFixers, "phpunit": noFixers,
-		"mypy": noFixers, "flake8": noFixers, "pylint": noFixers, "shellcheck": noFixers, "eslint": noFixers,
-		"golangci-lint": noFixers, "tsc": tscReader,
-		"ruff":   subcommands(map[string]func([]string) bool{"check": noFixers}),
-		"python": pythonReader, "python3": pythonReader,
-	}
-}
-
-// pythonReader lets python through only to run a test runner or checker
-// module, judged as that module.
-func pythonReader(words []string) bool {
-	if len(words) < 3 || words[1] != "-m" {
-		return false
-	}
-	switch words[2] {
-	case "pytest", "unittest", "mypy", "pylint", "flake8":
-		return noFixers(words[2:])
-	}
-	return false
 }

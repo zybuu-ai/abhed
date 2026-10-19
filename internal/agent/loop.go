@@ -1859,6 +1859,11 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}
 
 	start := time.Now()
+	// The folder a command runs in, as the bash tool takes it, for the record.
+	cwd := ""
+	if call.Name == "bash" && l.Session != nil {
+		cwd = l.Session.WorkDir()
+	}
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
@@ -1914,6 +1919,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		ExitCode:   result.ExitCode,
 		DurationMS: elapsed.Milliseconds(),
 		Sandbox:    result.Tier,
+		Cwd:        cwd,
 	}); err != nil {
 		return result, TermError
 	}
