@@ -163,6 +163,9 @@ func runsCommandsIn(command string) bool {
 // runsCommands reports a program that runs a command or code it is given:
 // a shell, an interpreter, or a runner such as sudo, su or systemd-run.
 func runsCommands(name string) bool {
+	// The remote is taken as Linux, where case matters, so a runner is found
+	// in any case, whatever this host folds.
+	name = strings.ToLower(name)
 	_, wrapper := wrapperWords[name]
 	// The dynamic loader runs the program it is given: ld.so, ld-linux*.so.
 	loader := strings.HasPrefix(name, "ld") && strings.Contains(name, ".so")
@@ -190,12 +193,26 @@ var commandRunners = map[string]bool{
 	// Interpreters.
 	"python": true, "perl": true, "ruby": true, "node": true, "nodejs": true, "deno": true, "bun": true, "php": true,
 	"lua": true, "luajit": true, "tclsh": true, "wish": true, "awk": true, "gawk": true, "mawk": true, "nawk": true,
-	"R": true, "Rscript": true, "osascript": true, "pwsh": true, "powershell": true, "make": true, "gdb-multiarch": true,
+	"r": true, "rscript": true, "osascript": true, "pwsh": true, "powershell": true, "make": true, "gdb-multiarch": true,
 	"java": true, "go": true, "cargo": true, "npm": true, "npx": true, "pnpm": true, "yarn": true, "pip": true,
 	// Clients with a command or option that runs a program or a shell.
 	"socat": true, "nc": true, "ncat": true, "netcat": true, "sqlite3": true, "psql": true, "mysql": true,
 	"mariadb": true, "redis-cli": true, "mongo": true, "mongosh": true, "ftp": true, "sftp": true, "scp": true,
 	"git": true, "find": true, "crontab": true, "nginx": true,
+	// Others that run a program or code they are given.
+	"setpriv": true, "prlimit": true, "capsh": true, "setarch": true, "linux32": true, "linux64": true,
+	"run-parts": true, "start-stop-daemon": true, "sshpass": true, "m4": true, "dc": true, "bc": true,
+	"julia": true, "ansible": true, "ansible-playbook": true, "ansible-console": true, "ansible-pull": true,
+	"runcon": true, "bwrap": true, "fakeroot": true, "fakechroot": true, "chpst": true, "proot": true,
+	"unbuffer": true, "daemonize": true, "daemon": true, "nsjail": true, "minijail0": true, "sandbox": true,
+	"systemd-cat": true, "systemd-inhibit": true, "unshare-net": true, "faketime": true, "torsocks": true,
+	"proxychains": true, "proxychains4": true, "ionice-wrapper": true, "chronic": true, "ifne": true,
+	"vipe": true, "lockf": true, "su-exec": true, "gosu": true, "s6-setuidgid": true, "dropbearmulti": true,
+	"emacsclient": true, "groovy": true, "scala": true, "kotlin": true, "elixir": true, "erl": true,
+	"guile": true, "racket": true, "sbcl": true, "ocaml": true, "ghci": true, "runghc": true, "swift": true,
+	"dotnet": true, "mono": true, "qjs": true, "jjs": true, "jshell": true, "nix-shell": true, "nix": true,
+	"flatpak": true, "snap": true, "toolbox": true, "distrobox": true, "lxc": true, "lxc-exec": true,
+	"virsh": true, "incus": true, "ctr": true, "nerdctl": true, "runc": true, "crun": true, "oc": true, "helm": true,
 }
 
 // RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read, or

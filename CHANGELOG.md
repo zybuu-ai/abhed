@@ -87,7 +87,9 @@ All notable changes to Abhed are recorded here. The format follows
   `--cursor-file`, `openssl x509 -CAcreateserial`, `date -s`, `dmesg -C`,
   `sort --compress-program` and `ip addr add` are not reads, whatever the
   pattern; a verb (`systemctl status`, `docker ps`, `apt list`) must be the
-  first word after the program. Any other wildcard entry is refused at load
+  first word after the program, and a program that shows a file's type,
+  size or sum takes no option that would print another file's lines
+  (`file -m`, `wc --files0-from`, `sha256sum -c`). Any other wildcard entry is refused at load
   with "declare the exact command instead". A matching `ssh` call, read as bash
   reads it, runs in plan mode and asks in no mode, so a plan can start by
   inspecting the fleet; a chain, pipe, substitution, redirection, a

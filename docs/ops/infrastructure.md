@@ -434,15 +434,20 @@ does not catch (`head -c 3`, `base64`). Deny and ask rules come first. In
 where the managed configuration refuses bypass, the call asks as in default
 mode, a declared read included.
 
-**Exact entries.** An entry with no `*` or `?` matches only its own text. It
-may name any program but one that runs what it is given: a shell (`sh`,
-`bash`, `zsh`, `busybox`, `source`, `eval`, …), a runner (`sudo`, `su`,
-`doas`, `env`, `nice`, `timeout`, `xargs`, `nsenter`, `systemd-run`,
-`docker`, `kubectl`, `ssh`, the dynamic loader `ld.so` and `ld-linux*.so`,
-…), an interpreter (`python`, `perl`, `ruby`, `node`, `java`, `go`, `awk`,
-…), or a client with a command that runs one (`socat`, `nc`, `sqlite3`,
-`psql`, `mysql`, `redis-cli`, `git`, `find`, `nginx`, …). Where the program
-is on the list below, the entry must also be a read form of it.
+**Exact entries.** An entry with no `*` or `?` matches only its own text, so
+it is the operator's own command: declare only commands you have read and
+know to be reads on your hosts. Known runners are refused, in any case of
+their name: shells (`sh`, `bash`, `zsh`, `busybox`, `source`, `eval`, …),
+runners (`sudo`, `su`, `doas`, `env`, `nice`, `timeout`, `xargs`, `nsenter`,
+`systemd-run`, `setpriv`, `prlimit`, `capsh`, `setarch`, `run-parts`,
+`start-stop-daemon`, `sshpass`, `runcon`, `bwrap`, `fakeroot`, `chpst`,
+`proot`, `unbuffer`, `docker`, `kubectl`, `ssh`, the dynamic loader `ld.so`
+and `ld-linux*.so`, …), interpreters (`python`, `perl`, `ruby`, `node`,
+`java`, `go`, `julia`, `R`, `awk`, `m4`, `dc`, …), and clients with a
+command that runs one (`socat`, `nc`, `sqlite3`, `psql`, `mysql`,
+`redis-cli`, `ansible`, `git`, `find`, `nginx`, …). No such list is
+complete, so the list is a backstop, not the review. Where the program is
+on the list below, the entry must also be a read form of it.
 
 **Wildcard entries.** An entry with `*` or `?` is accepted only for a program
 on this list, named as written (its path dropped), and only in a read form of
@@ -468,8 +473,14 @@ after `=`, never for an option.
 
 | Program | Read form a wildcard may cover |
 |---|---|
-| `cat`, `head`, `tail`, `wc`, `ls`, `stat`, `df`, `du`, `free`, `uptime`, `uname`, `id`, `whoami`, `groups`, `ps`, `pgrep`, `netstat`, `lsblk`, `findmnt`, `grep`, `egrep`, `fgrep`, `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum`, `cksum`, `lscpu`, `lsmem`, `lsmod`, `lspci`, `lsusb`, `nproc`, `w`, `who`, `getent`, `vmstat`, `basename`, `dirname`, `realpath`, `readlink`, `cut`, `cmp`, `diff`, `zcat` | any arguments: none of their options writes a file or runs a program |
-| `file` | options `-b`, `-L`, `-h`, `-i`, `--mime`, `--mime-type`, `--mime-encoding`, `-k`, `-s`, `-E`, `-N`, `-0`, `-r` and their long forms; values `-m`, `-F`, `-e` (not `-C`, which writes, or `-z`/`-Z`, which run decompressors) (strict) |
+| `cat`, `head`, `tail`, `ls`, `stat`, `df`, `free`, `uptime`, `uname`, `id`, `whoami`, `groups`, `ps`, `pgrep`, `netstat`, `lsblk`, `grep`, `egrep`, `fgrep`, `lscpu`, `lsmem`, `lsmod`, `lspci`, `nproc`, `w`, `who`, `getent`, `vmstat`, `basename`, `dirname`, `realpath`, `readlink`, `cut`, `cmp`, `diff`, `zcat` | any arguments: none of their options writes a file or runs a program |
+| `file` | options `-b`, `-L`, `-h`, `-i`, `--mime`, `--mime-type`, `--mime-encoding`, `-k`, `-s`, `-E`, `-N`, `-0`, `-r` and their long forms; values `-F`, `-e` (not `-m`, whose magic file it echoes line by line; not `-C`, which writes, or `-z`/`-Z`, which run decompressors) (strict) |
+| `wc` | options `-c`, `-m`, `-l`, `-L`, `-w` and their long forms; value `--total` (not `--files0-from`, which echoes another file's lines as names) (strict) |
+| `du` | options `-a`, `-b`, `-c`, `-h`, `-k`, `-m`, `-s`, `-x`, `-L`, `-P`, `-l`, `-S`, `-0`, the clusters `-sh`, `-hs`, `-ah`, `-ha`, `-sch`, `-csh`, `-hc`, `-ch`, `-sk`, `-sm`, `-xsh`, and long forms; values `-d`, `-t`, `--time-style`, `-B`, `--exclude` (not `--files0-from` or `-X`) (strict) |
+| `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum` | options `-b`, `-t`, `--tag`, `-z` and their long forms (not `-c`, which reads a list from another file) (strict) |
+| `cksum` | options `--base64`, `--raw`, `--tag`, `--untagged`, `-z`; values `-a`, `-l` (not `--check`) (strict) |
+| `findmnt` | options `-l`, `-n`, `-J`, `-r`, `-a`, `-D`, `-b`, `-u`, `-s`, `-m`, `-k`, `-A`, `-f`, `-v` and long forms; values `-o`, `-t`, `-T`, `-S`, `-O`, `-M` (not `-F`, which parses another file as a table) (strict) |
+| `lsusb` | options `-v`, `-t`; values `-s`, `-d` (not `-D`, which dumps a file) (strict) |
 | `rg` | options `-n`, `-N`, `-i`, `-S`, `-s`, `-w`, `-x`, `-v`, `-l`, `-c`, `-F`, `-H`, `-u`, `-uu`, `-L`, `-o`, `-U`, `-P`, `-q`, `-a` and long forms such as `--no-heading`, `--hidden`, `--files`, `--json`; values `-e`, `-g`, `--iglob`, `-t`, `-T`, `-A`, `-B`, `-C`, `-m`, `-d`, `--max-filesize`, `-E`, `--sort` (not `--pre` or `-z`, which run programs) (strict) |
 | `sort` | options `-n`, `-r`, `-u`, `-h`, `-V`, `-f`, `-b`, `-M`, `-g`, `-s`, `-z`, `-c`, `-C`, `-d`, `-i`, `-R` and their long forms; values `-k`, `-t`, `-S`, `--parallel` (not `-o`, `-T` or `--compress-program`) (strict) |
 | `date` | options `-u`, `-R`, `-I` and its `-Idate`…`-Ins` forms, `--iso-8601` and `--rfc-3339` with a value; values `-d`, `-r`; each operand starts with `+` (strict) |
@@ -480,13 +491,17 @@ after `=`, never for an option.
 | `hostnamectl` | first word `status`; options `--static`, `--transient`, `--pretty` (strict) |
 | `timedatectl` | first word `status` or `show`; options `-a`, `--value`; value `-p` (strict) |
 | `ip` | options before the object, as ip takes them: `-4`, `-6`, `-0`, `-o`, `-br`, `-s`, `-d`, `-j`, `-p`, `-c`, `-h`, `-iec`, `-r` and their full spellings, value `-f`; then object `addr`, `address`, `a`, `link`, `l`, `route`, `r`, `neigh`, `neighbour`, `n`, `rule` or `maddr`, then nothing or `show`, `list`, `ls`, `lst` or `get`; never `netns`, `exec` or `vrf`. ip takes any prefix of an option (`-ba` is `-batch`), so only these, as written, are read (strict) |
-| `openssl` | first word `x509` (options `-noout`, `-text`, `-enddate`, `-startdate`, `-dates`, `-subject`, `-issuer`, `-serial`, `-fingerprint`, `-sha1`, `-sha256`, `-md5`, `-purpose`, `-hash`, `-subject_hash`, `-issuer_hash`, `-email`, `-ocsp_uri`, `-pubkey`, `-modulus`, `-ext_all`; values `-in`, `-inform`, `-checkend`, `-nameopt`, `-ext`, `-certopt`, `-dateopt`), `s_client` (options `-showcerts`, `-verify_return_error`, `-brief`, `-tls1_2`, `-tls1_3`, `-no_ign_eof`, `-quiet`, `-status`, `-crlf`; values `-connect`, `-servername`, `-CAfile`, `-CApath`, `-verify`, `-alpn`, `-starttls`, `-proxy`, `-host`, `-port`), `verify` (options `-verbose`, `-show_chain`, `-crl_check`, `-crl_check_all`, `-partial_chain`, `-x509_strict`; values `-CAfile`, `-CApath`, `-untrusted`, `-purpose`, `-CRLfile`) or `version`; one dash or two (strict) |
+| `openssl` | first word `x509` (options `-noout`, `-text`, `-enddate`, `-startdate`, `-dates`, `-subject`, `-issuer`, `-serial`, `-fingerprint`, `-sha1`, `-sha256`, `-md5`, `-purpose`, `-hash`, `-subject_hash`, `-issuer_hash`, `-email`, `-ocsp_uri`, `-pubkey`, `-modulus`, `-ext_all`; values `-in`, `-inform`, `-checkend`, `-nameopt`, `-ext`, `-certopt`, `-dateopt`), `s_client` (options `-showcerts`, `-verify_return_error`, `-brief`, `-tls1_2`, `-tls1_3`, `-no_ign_eof`, `-quiet`, `-status`, `-crlf`; values `-connect`, `-servername`, `-CAfile`, `-CApath`, `-verify`, `-alpn`, `-starttls`, `-proxy`, `-host`, `-port`; it connects from the host to the address it is given, so it is a way out of the host as well as a read), `verify` (options `-verbose`, `-show_chain`, `-crl_check`, `-crl_check_all`, `-partial_chain`, `-x509_strict`; values `-CAfile`, `-CApath`, `-untrusted`, `-purpose`, `-CRLfile`) or `version`; one dash or two (strict) |
 | `docker`, `podman` | first word `ps` (options `-a`, `-q`, `--no-trunc`, `-l`, `-s`; values `-n`, `-f`, `--format`), `images` (options `-a`, `-q`, `--no-trunc`, `--digests`; values `-f`, `--format`), `inspect` (option `-s`; values `-f`, `--type`), `logs` (options `-f`, `-t`, `--details`; values `-n`, `--since`, `--until`), `version` or `info` (value `-f`); no global option such as `-H` (strict) |
 | `apt` | first word `list` (options `--installed`, `--upgradable`, `-a`), `show` (option `-a`), `policy` or `search` (options `--names-only`, `--full`) (strict) |
 | `apt-cache` | first word `policy`, `show`, `search`, `depends` or `rdepends`; options `--names-only`, `--full`, `--installed`, `--recurse`, `-i` (strict) |
 | `dpkg` | options `-l`, `-s`, `-L`, `-S`, `-p`, `--get-selections` and their long forms (strict) |
 | `dpkg-query` | options `-l`, `-W`, `-s`, `-L`, `-S` and their long forms; value `-f` (strict) |
-| `rpm` | options `-q`, `-qa`, `-qi`, `-ql`, `-qf`, `-qc`, `-qd`, `-qR`, `-qai`, `--query`, `--all`, `--info`, `--list`, `--file`, `--requires`, `--provides`, `--whatprovides`, `--whatrequires`, `--changelog`, `--last`; value `--queryformat` (strict) |
+| `rpm` | options `-q`, `-qa`, `-qi`, `-ql`, `-qf`, `-qc`, `-qd`, `-qR`, `-qai`, `--query`, `--all`, `--info`, `--list`, `--file`, `--requires`, `--provides`, `--whatprovides`, `--whatrequires`, `--changelog`, `--last`; value `--queryformat`, without `:expand` or `%(`, which run macros (strict) |
+
+A reader on the list reads any file the remote account can, and `getent`
+asks the host's resolver, which may query DNS: narrow the path or name in the
+pattern (`cat /var/log/*`, `getent hosts web*`) to what you mean.
 
 Not on the list, so declared exactly or not at all: `find`, `mount`, `ss`
 (the parser reads its operand as a command), `lsof`, `curl`, `wget`,
