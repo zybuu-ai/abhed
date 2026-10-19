@@ -1101,6 +1101,9 @@ func stopReason(ctx context.Context, err error) (stop, reason string) {
 		return "cancelled", string(ended.Reason)
 	case agent.TermMaxBudget:
 		return "max_tokens", "budget"
+	case agent.TermUnverified:
+		// The turn ended with its answer; the checks could not verify it.
+		return "end_turn", string(ended.Reason)
 	}
 	return "refusal", string(ended.Reason)
 }

@@ -134,6 +134,13 @@ transcript, so a change of mode or a compaction is never invisible:
   open, one line above the input says how far it has got
   (`◼ Todos 1/3 done · change the greeting`); Ctrl-T lists every item there,
   and `/todos` draws the list into the transcript.
+- **Checked answers.** Under each reply, one line says what checking it
+  against the session's record found
+  (`✓ 3 verified · 1 unverified (general knowledge) · 0 contradicted`), then
+  each contradicted statement struck through with the record against it, and
+  the unverified statements about the work. `/evidence N` opens the record
+  behind statement N. `-verify off` or `verify.mode: off` turns it off
+  ([Verified answers](28-verified-answers.md)).
 - **Subagents.** A subagent starting and returning is a tree under the `task`
   call: its type, its description, its model and, for a worktree, its branch;
   then how it ended, its turns and tokens.

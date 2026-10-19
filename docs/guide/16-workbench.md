@@ -104,6 +104,15 @@ that urges past a safeguard or towards something destructive.
 `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).
 
+**Checked answers.** Under each reply, a box lists what checking it against
+the session's record found: each statement with a ✓ (verified), ? (unverified)
+or ✗ (contradicted, struck through, with the record entry against it). It
+opens by itself when a statement is contradicted or a statement about the work
+is unverified, and each `#seq` opens the tool call the statement rests on. The
+statements and excerpts are the model's and the tools' text, shown with every
+control and format character written out. A session's `verify` setting, or
+`verify.mode`, changes or turns it off ([Verified answers](28-verified-answers.md)).
+
 **Sending while the agent works.** Send stays enabled during a run. A message
 sent then is not a reason to cancel the step in progress: it is queued, shown
 below the conversation as *Queued — will be read at the next step*, and the

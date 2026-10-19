@@ -97,6 +97,16 @@ answer a JSON value that matches it ([Structured output](13-structured-output.md
 With `-output-format text`, stdout is only that JSON; with `json` or
 `stream-json` it is the result line's `structured_output`.
 
+### Checked answers
+
+`-verify label` checks the answer's statements against what the run
+observed and prints the labels under it; `-verify strict` also gives the agent
+one revision turn when a statement about its work is not verified, then exits
+`8` if it still is not, so CI fails closed. Unset, `-p` checks nothing unless
+`verify.mode` says so. With `json` or `stream-json`, the check is the
+`answer.verdict` event and the result line's `verdict`. A managed
+`verify.mode` may only be made stricter. See [Verified answers](28-verified-answers.md).
+
 ### Limits and instructions
 
 - `-max-turns N` ends the run after N turns (exit `2`).
@@ -150,6 +160,7 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | `2` | bad invocation, or the turn limit |
 | `3` | token budget |
 | `5` | model retries exhausted |
+| `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](28-verified-answers.md)) |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
 
@@ -192,8 +203,8 @@ send(method="prompt", prompt="fix the failing tests")
 
 | Method | |
 |---|---|
-| `start` | open a session — `workspace`, `mode`, `allow`, `deny` |
-| `prompt` | send a prompt, get the final answer — `prompt` |
+| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`) |
+| `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` when answers are checked |
 | `steer` | redirect a run in progress — the text in `prompt` |
 | `usage` | tokens, turns, compactions |
 | `export` | the HTML transcript |
@@ -544,7 +555,13 @@ end. These endpoints, like the session's approvals, answer only its owner.
 A session's `state` in the list is `running`, `waiting_approval`, `idle` or
 `done`. A `done` session also has a `reason`, how its last run ended as
 recorded: `completed`, `user_interrupt`, `shutdown`, `deadline`, `stalled`,
-`error`, `max_turns` and the rest.
+`error`, `max_turns`, `unverified` and the rest.
+
+`POST /v1/sessions` takes `verify` (`off`, `label` or `strict`). A session
+someone watches at the console or the IDE labels its answers unless the
+configuration says otherwise; an unattended one checks only when asked. A
+managed `verify.mode` may only be made stricter: a looser one is refused with
+400.
 
 Sending a message to a session that is already working **steers** it rather than
 being refused.

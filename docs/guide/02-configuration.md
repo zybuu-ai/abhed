@@ -56,6 +56,7 @@ configuration](#trusting-the-workspace-configuration).
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
+| `verify` | whether each answer is checked against the session's record (`off`, `label`, `strict`), the critic, and the completion contract — [below](#verified-answers), [Verified answers](28-verified-answers.md) |
 | `cli` | the interactive terminal: `title` (`true`), `notify` (`auto`, `bel`, `osc9` or `off`) and `copy` (`true`) — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard); `mode_cycle`, managed only, narrows Shift-Tab |
 
 ## Context
@@ -938,6 +939,35 @@ embedded agent unless it sets `Options.Suggest`; nor after an error or a
 stop, during a wake, while an approval waits, or while the person is typing;
 an ask that arrives while it is being made stops it, and one that arrives
 after it was offered takes it away.
+
+## Verified answers
+
+```json
+"verify": {
+  "mode": "strict",
+  "answer_tool": true,
+  "critic": {"enabled": true, "model": "reviewer"},
+  "contract": {"require": ["go test ./..."], "protect": ["*_test.go", ".github/**"]}
+}
+```
+
+Each answer's statements are checked against what the session observed and
+labelled verified, unverified or contradicted. The whole of it is in
+[Verified answers](28-verified-answers.md).
+
+| Key | Default | |
+|---|---|---|
+| `mode` | unset | `off`, `label` or `strict`. Unset is `label` in the terminal, the workbench and console, and Abhed Studio, and `off` for `-p`, `rpc`, unattended runs and the SDK. `-verify`, rpc's `start`, a session's `verify` and `Options.Verify` set it per run, and may only make a managed value stricter. A workspace file may only raise it, never below `label` |
+| `answer_tool` | on in `strict`, off otherwise | offers the agent the `answer` tool, which carries each claim's evidence. A workspace file may only turn it on |
+| `critic.enabled` | `false` | a model checks each verified claim against its evidence and may only downgrade it; it fails closed. One model call per answer with a verified claim |
+| `critic.model` | the session's | a configured provider to ask instead. Neither it nor `critic.enabled` is taken from a workspace file until it is trusted |
+| `critic.timeout_ms` | `30000` | how long the critic may take |
+| `contract.require` | none | commands the harness runs in the sandbox after the last change; each must exit 0 for the run to end `completed`. Not taken from an untrusted workspace file |
+| `contract.protect` | none | globs of files a run must not change. A workspace file may add to them |
+| `contract.timeout_ms` | the bash tool's | how long each required command may take |
+
+A run that strict mode or a contract cannot verify ends `unverified`, and
+`abhed -p` exits 8.
 
 ## Storage
 

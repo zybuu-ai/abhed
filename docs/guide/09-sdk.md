@@ -220,6 +220,7 @@ editor's session in an untrusted workspace says which model it runs on.
 | `ConfiguredLimits` | when `MaxTurns` is zero, the files' `limits.max_turns` binds, as for the CLI; off, it does not | the same, the managed value still the ceiling |
 | `Allow` | added to `permissions.allow` | refused if the file sets any `permissions` setting (mode, deny, ask or allow) |
 | `Suggest` | after each completed `Run`, one small model call offers a next prompt as a `suggestion.offered` event, delivered after `Run` returns (the next `Run` or `Close` cancels it), unless `suggest.enabled` is false; off by default | a managed `suggest.enabled: false` binds |
+| `Verify` | replaces `verify.mode` (`off`, `label`, `strict`); empty keeps it, off when unset unless `VerifyByDefault` is set, which labels as the terminal does. In `strict` a run whose answer stays unverified returns an `*EndedError` with `Reason` `unverified`; `Agent.Verdict()` reports the last check ([Verified answers](28-verified-answers.md)) | if the file sets `verify.mode`, only as strict or stricter (`off` < `label` < `strict`) |
 | `Deny` | added to `permissions.deny` | added; the file's deny rules stay |
 | `Extensions` | added to the configured ones | added; an extension can only veto |
 

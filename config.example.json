@@ -94,6 +94,15 @@
   "web_fetch": {
     "enabled": false
   },
+  "verify": {
+    "critic": {
+      "enabled": false
+    },
+    "contract": {
+      "require": [],
+      "protect": []
+    }
+  },
   "storage": {
     "driver": "memory",
     "tenant": "default",
