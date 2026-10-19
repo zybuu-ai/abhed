@@ -38,6 +38,8 @@ type readSpec struct {
 	operands string
 	// oneDash reads --opt as -opt, as openssl does.
 	oneDash bool
+	// badValue, when set, refuses an option's value (rpm's query formats).
+	badValue func(string) bool
 	// noGlue is set for a program that does not read a short option's value
 	// glued on (ip and openssl take -force and -engine as words of their own).
 	noGlue bool
@@ -60,16 +62,33 @@ func verbsWith(op opts, verbs ...string) map[string]opts {
 var knownReads = func() map[string]readSpec {
 	m := map[string]readSpec{}
 	for _, p := range []string{
-		"cat", "head", "tail", "wc", "ls", "stat", "df", "du", "free", "uptime", "uname", "id", "whoami",
-		"groups", "ps", "pgrep", "netstat", "lsblk", "findmnt", "grep", "egrep", "fgrep", "md5sum", "sha1sum",
-		"sha224sum", "sha256sum", "sha384sum", "sha512sum", "b2sum", "cksum", "lscpu", "lsmem", "lsmod",
-		"lspci", "lsusb", "nproc", "w", "who", "getent", "vmstat", "basename", "dirname", "realpath",
-		"readlink", "cut", "cmp", "diff", "zcat",
+		"cat", "head", "tail", "ls", "stat", "df", "free", "uptime", "uname", "id", "whoami",
+		"groups", "ps", "pgrep", "netstat", "lsblk", "grep", "egrep", "fgrep",
+		"lscpu", "lsmem", "lsmod", "lspci", "nproc", "w", "who", "getent", "vmstat", "basename", "dirname",
+		"realpath", "readlink", "cut", "cmp", "diff", "zcat",
 	} {
 		m[p] = readSpec{plain: true}
 	}
+	// Programs that show a file's size, type or sum, not its lines, may not
+	// take an option that would print another file's lines: file's
+	// -m (magic file), wc's and du's --files0-from, the sums' -c (check
+	// list), findmnt's -F (table file) and lsusb's -D (device file).
 	m["file"] = readSpec{opts: o("-b --brief -L --dereference -h --no-dereference -i --mime --mime-type --mime-encoding "+
-		"-k --keep-going -s --special-files -E -N --no-pad -0 --print0 -r --raw", "-m --magic-file -F --separator -e --exclude"), strict: true}
+		"-k --keep-going -s --special-files -E -N --no-pad -0 --print0 -r --raw", "-F --separator -e --exclude"), strict: true}
+	m["wc"] = readSpec{opts: o("-c --bytes -m --chars -l --lines -L --max-line-length -w --words", "--total"), strict: true}
+	m["du"] = readSpec{opts: o("-a --all -b --bytes -c --total -h --human-readable -k -m -s --summarize -x --one-file-system "+
+		"-L --dereference -P --no-dereference -l --count-links -S --separate-dirs -0 --null --apparent-size --si --inodes "+
+		"-sh -hs -ah -ha -sch -csh -hc -ch -sk -sm -xsh",
+		"-d --max-depth -t --threshold --time-style -B --block-size --exclude"), strict: true}
+	sums := readSpec{opts: o("-b --binary -t --text --tag -z --zero", ""), strict: true}
+	for _, p := range []string{"md5sum", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "b2sum"} {
+		m[p] = sums
+	}
+	m["cksum"] = readSpec{opts: o("--base64 --raw --tag --untagged -z --zero", "-a --algorithm -l --length"), strict: true}
+	m["findmnt"] = readSpec{opts: o("-l --list -n --noheadings -J --json -r --raw -a --ascii -D --df -b --bytes "+
+		"-u --notruncate -s --fstab -m --mtab -k --kernel -A --all -f --first-only -v --nofsroot",
+		"-o --output -t --types -T --target -S --source -O --options -M --mountpoint"), strict: true}
+	m["lsusb"] = readSpec{opts: o("-v --verbose -t --tree", "-s -d"), strict: true}
 	m["rg"] = readSpec{opts: o("-n --line-number -N --no-line-number -i --ignore-case -S --smart-case -s --case-sensitive "+
 		"-w --word-regexp -x --line-regexp -v --invert-match -l --files-with-matches --files-without-match -c --count "+
 		"--count-matches -F --fixed-strings -H --with-filename --no-filename --no-heading --heading --hidden --no-ignore "+
@@ -136,7 +155,9 @@ var knownReads = func() map[string]readSpec {
 	m["dpkg"] = readSpec{opts: o("-l --list -s --status -L --listfiles -S --search -p --print-avail --get-selections", ""), strict: true}
 	m["dpkg-query"] = readSpec{opts: o("-l --list -W --show -s --status -L --listfiles -S --search", "-f --showformat"), strict: true}
 	m["rpm"] = readSpec{opts: o("-q -qa -qi -ql -qf -qc -qd -qR -qai --query --all --info --list --file --requires "+
-		"--provides --whatprovides --whatrequires --changelog --last", "--queryformat --qf"), strict: true}
+		"--provides --whatprovides --whatrequires --changelog --last", "--queryformat --qf"), strict: true,
+		// A query format's :expand and %( run macros, and so programs.
+		badValue: func(v string) bool { return strings.Contains(v, ":expand") || strings.Contains(v, "%(") }}
 	return m
 }()
 
@@ -208,19 +229,20 @@ func (s readSpec) optionOK(op opts, w string, next []string, skip func(string) b
 	if op.flags[w] {
 		return true, 0
 	}
+	bad := func(v string) bool { return s.badValue != nil && s.badValue(v) }
 	if op.values[w] {
 		// The next word is its value, unless it is an option, which is judged as one.
 		if len(next) > 0 && (skip(next[0]) || !strings.HasPrefix(next[0], "-")) {
-			return true, 1
+			return !bad(next[0]), 1
 		}
 		return true, 0
 	}
-	if name, _, eq := strings.Cut(w, "="); eq && strings.HasPrefix(w, "--") {
-		return op.values[name], 0
+	if name, v, eq := strings.Cut(w, "="); eq && strings.HasPrefix(w, "--") {
+		return op.values[name] && !bad(v), 0
 	}
 	// A short value option with its value glued on, as -n50.
 	if !s.noGlue && len(w) > 2 && !strings.HasPrefix(w, "--") && op.values[w[:2]] {
-		return true, 0
+		return !bad(w[2:]), 0
 	}
 	return false, 0
 }
@@ -255,6 +277,10 @@ func readCallOK(spec readSpec, args []string, skip func(string) bool) bool {
 			continue
 		}
 		if !ended && strings.HasPrefix(w, "-") && w != "-" {
+			// ip's options come before its object; one after it is not read.
+			if spec.objects != nil && len(operands) > 0 {
+				return false
+			}
 			ok, value := spec.optionOK(op, w, args[i+1:], skip)
 			if !ok {
 				return false
