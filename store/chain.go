@@ -62,25 +62,35 @@ func (r ChainReport) OK() bool { return r.FirstBad == 0 && r.Reason == "" }
 // trigger off; an owner who recomputes the whole chain, or cuts its end, is
 // caught only against a head kept elsewhere.
 func (p *Postgres) VerifyChain(ctx context.Context, sessionID string) (ChainReport, error) {
-	r := ChainReport{Session: sessionID}
-	rg, err := p.verifyRange(ctx, eventsChain, sessionID, 1, 0)
+	r, err := p.verifyChainOf(ctx, eventsChain, sessionID)
 	if err != nil {
 		return r, fmt.Errorf("verify the chain of %s: %w", sessionID, err)
+	}
+	return r, nil
+}
+
+// verifyChainOf is the whole check of one chain: every link recomputed, and
+// every row without one accounted for as from before the chain.
+func (p *Postgres) verifyChainOf(ctx context.Context, t chainTable, key string) (ChainReport, error) {
+	r := ChainReport{Session: key}
+	rg, err := p.verifyRange(ctx, t, key, 1, 0)
+	if err != nil {
+		return r, err
 	}
 	r.Rows, r.Head, r.FirstBad, r.Reason = rg.To, rg.Hash, rg.FirstBad, rg.Reason
 	if !rg.OK() {
 		r.Rows = rg.FirstBad - 1
 	}
 	var chained int64
-	if r.Unchained, r.PreChain, chained, err = p.unchained(ctx, eventsChain, sessionID); err != nil {
-		return r, fmt.Errorf("verify the chain of %s: %w", sessionID, err)
+	if r.Unchained, r.PreChain, chained, err = p.unchained(ctx, t, key); err != nil {
+		return r, err
 	}
 	// A second row at a position the walk read is in no chain.
 	if r.OK() && chained != r.Rows {
-		r.Reason = fmt.Sprintf("%d event(s) claim a chain position another holds", chained-r.Rows)
+		r.Reason = fmt.Sprintf("%d row(s) claim a chain position another holds", chained-r.Rows)
 	}
 	if r.OK() && r.Unchained > r.PreChain {
-		r.Reason = fmt.Sprintf("%d event(s) carry no chain and were not there when it began: they were written with its trigger off",
+		r.Reason = fmt.Sprintf("%d row(s) carry no chain and were not there when it began: they were written with its trigger off",
 			r.Unchained-r.PreChain)
 	}
 	return r, nil

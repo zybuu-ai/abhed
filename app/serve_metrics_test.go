@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -144,8 +145,25 @@ func TestRecordAuditVerifies(t *testing.T) {
 	if code := verifyAudit(cfg, nil, &out, &errw); code != 0 || !strings.Contains(out.String(), "2 chained line(s)") {
 		t.Fatalf("%d %q %q", code, out.String(), errw.String())
 	}
+	// A head kept elsewhere: it passes while the file still holds it, and
+	// fails once the file is cut back past it.
+	h, err := local.AuditChain(cfg.Record.Dir).Head(context.Background(), "default")
+	if err != nil || h.Pos != 2 {
+		t.Fatalf("head = %+v, %v", h, err)
+	}
+	kept := fmt.Sprintf("%d:%s", h.Pos, h.Hash)
+	out.Reset()
+	if code := verifyAudit(cfg, []string{"-head", kept}, &out, &errw); code != 0 || !strings.Contains(out.String(), "1 head(s) given") {
+		t.Fatalf("a kept head failed: %d %q %q", code, out.String(), errw.String())
+	}
 	path := local.AuditPath(cfg.Record.Dir, "default")
 	b, _ := os.ReadFile(path)
+	first, _, _ := strings.Cut(string(b), "\n")
+	_ = os.WriteFile(path, []byte(first+"\n"), 0o600)
+	out.Reset()
+	if code := verifyAudit(cfg, []string{"-head", kept}, &out, &errw); code != 1 || !strings.Contains(out.String(), "not the head kept elsewhere") {
+		t.Fatalf("a cut past a kept head passed: %d %q", code, out.String())
+	}
 	_ = os.WriteFile(path, []byte(strings.Replace(string(b), `"alice"`, `"mallory"`, 1)), 0o600)
 	out.Reset()
 	if code := verifyAudit(cfg, nil, &out, &errw); code != 1 || !strings.Contains(out.String(), "FAILED") {

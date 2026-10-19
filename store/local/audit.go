@@ -18,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store/chain"
 )
 
 // AuditFile is the control-plane audit record of a server without Postgres:
@@ -346,4 +347,90 @@ func readAudit(path string) ([]auditLine, int64, error) {
 		}
 	}
 	return slices.Clip(out), int64(len(b)), nil
+}
+
+// AuditChain is the tenant's audit file under dir ("" is ~/.abhed/records)
+// as a chain.Source; positions are its lines, and the scope is the tenant.
+func AuditChain(dir string) chain.Source { return auditSource{dir} }
+
+type auditSource struct{ dir string }
+
+func (a auditSource) path(tenant string) (string, error) {
+	dir := a.dir
+	if dir == "" {
+		d, err := DefaultDir()
+		if err != nil {
+			return "", err
+		}
+		dir = d
+	}
+	if tenant == "" {
+		tenant = "default"
+	}
+	if err := checkID("tenant", tenant); err != nil {
+		return "", err
+	}
+	return AuditPath(dir, tenant), nil
+}
+
+func (a auditSource) Head(_ context.Context, tenant string) (chain.Head, error) {
+	p, err := a.path(tenant)
+	if err != nil {
+		return chain.Head{}, err
+	}
+	h := chain.Head{Chain: "local/audit", Tenant: tenant, Scope: tenant}
+	f, err := os.Open(p) // #nosec G304 -- the record's own file
+	if errors.Is(err, os.ErrNotExist) {
+		return h, nil
+	}
+	if err != nil {
+		return h, err
+	}
+	defer f.Close()
+	l, _, err := lastAuditLine(f)
+	if err != nil || l == nil {
+		return h, err
+	}
+	h.Pos, h.Hash = l.Seq, l.Hash
+	return h, nil
+}
+
+// VerifyRange checks the whole file, as VerifyAudit does, and reports
+// whether lines from to to (0 is the last) are among those that hold.
+func (a auditSource) VerifyRange(_ context.Context, tenant string, from, to int64) (chain.Range, error) {
+	p, err := a.path(tenant)
+	if err != nil {
+		return chain.Range{}, err
+	}
+	if from < 1 {
+		from = 1
+	}
+	rep, err := VerifyAudit(p)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return chain.Range{}, err
+	}
+	if to <= 0 {
+		to = rep.Lines
+	}
+	r := chain.Range{From: from, To: to, Before: Genesis}
+	if !rep.OK() && rep.FirstBad <= to {
+		r.FirstBad, r.Reason = max(rep.FirstBad, from), fmt.Sprintf("line %d: %s", rep.FirstBad, rep.Why)
+		return r, nil
+	}
+	lines, _, err := readAudit(p)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return chain.Range{}, err
+	}
+	if from > 1 && from-1 <= int64(len(lines)) {
+		r.Before = lines[from-2].Hash
+	}
+	switch {
+	case to == 0:
+	case to > int64(len(lines)):
+		r.FirstBad = int64(len(lines)) + 1
+		r.Reason = fmt.Sprintf("the file holds no line %d: lines were cut from its end", to)
+	default:
+		r.Hash = lines[to-1].Hash
+	}
+	return r, nil
 }

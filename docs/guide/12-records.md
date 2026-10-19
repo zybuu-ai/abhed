@@ -388,7 +388,10 @@ add events and read them, and cannot change, remove or truncate them. The
 control plane's `sandbox_audit`, which holds the sandbox operations and every
 API request that changes something, is chained per tenant the same way;
 `abhed record audit` walks it (and, without Postgres, the server's
-`<records>/<tenant>/audit/api.jsonl`, chained line by line).
+`<records>/<tenant>/audit/api.jsonl`, chained line by line, and the control
+plane's own SQLite record). It recomputes each hash itself, as `verify` does,
+fails a Postgres audit row written with the trigger off, and checks the API's
+chain against any `-head position:hash` kept elsewhere.
 
 The chain is per session, not per tenant, so sessions never wait on each
 other's lock and each session's chain is whole on its own. What no chain can
@@ -445,8 +448,9 @@ event its own transaction): 1,500 events a second held for two minutes
 they can, with the VM's CPU the limit. Every event the writers were told was
 written was in the database, in order, and every chain verified: none were
 dropped. That is well short of 10,000 a second; a dedicated database server
-will do better, and each event being its own transaction is the cost. `store/chain_soak_test.go` is the soak
-(`ABHED_SOAK_SECONDS`, `ABHED_SOAK_SESSIONS`, `ABHED_SOAK_RATE`). The local
+will do better, and each event being its own transaction is the cost.
+`store/chain_soak_test.go` is the soak (`ABHED_SOAK_SECONDS`,
+`ABHED_SOAK_SESSIONS`, `ABHED_SOAK_RATE`). The local
 record, on the same Mac, took about 63,000 events a second with a sync every
 20 (`store/local/soak_test.go`). Measure yours.
 
@@ -458,10 +462,12 @@ a chain's last position and hash, and `Source.VerifyRange(scope, from, to)`
 recomputes positions `from` to `to` (0 is the head) and returns the hash it
 links to (`Before`, the one at `from - 1`) and the hash at `to`, to compare
 with a head kept earlier. `Postgres.EventChain()` answers it per session,
-`Postgres.AuditChain()` for the tenant's sandbox audit, and
+`Postgres.AuditChain()` for the tenant's control-plane audit,
 `local.Store.Chain()` per session of the local record (positions are lines,
-and the head is the one last synced). `chain.VerifyExport` checks an export
-with nothing else.
+and the head is the one last synced), `local.AuditChain(dir)` for a tenant's
+`api.jsonl`, and `sqlite.Store.AuditChain()` for the control plane's SQLite
+record. `abhed record audit` checks every audit chain through it.
+`chain.VerifyExport` checks an export with nothing else.
 
 ## Exporting
 

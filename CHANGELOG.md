@@ -105,7 +105,9 @@ All notable changes to Abhed are recorded here. The format follows
 - Every mutating API route is audited with its principal in the chained
   control-plane record: the route pattern as `api:<pattern>`, the method,
   tenant, caller address and wildcard values, never the body or query.
-  `abhed record audit` checks the chain, in Postgres or the local file.
+  `abhed record audit` checks the chain, in Postgres or the local file,
+  recomputing each hash itself, and against any `-head position:hash`
+  kept elsewhere.
   A create's outcome names the id it made. A terminal's key batches and
   language-server messages get one event a request instead of two.
 - The control plane's SQLite record (sandbox operations and the
@@ -302,8 +304,9 @@ All notable changes to Abhed are recorded here. The format follows
   nothing is chained over them.
 - A chain head API, `store/chain`: a chain's head (last position and hash)
   and a check of a range of it, answered by the Postgres events (per
-  session), the sandbox audit (per tenant) and the local record, for heads
-  to be signed and anchored outside the store.
+  session), the control-plane audit (per tenant, in Postgres, the local
+  `api.jsonl` or the control plane's SQLite record) and the local record,
+  for heads to be signed and anchored outside the store.
 - Soaks of the chained append path, Postgres and local, which fail on any
   event a writer was told was written and the store does not hold. On a
   Mac with Postgres 17 in a 4-CPU Podman VM and 32 sessions writing: 1,500
@@ -399,7 +402,8 @@ All notable changes to Abhed are recorded here. The format follows
   `ExportVersion`.
 - `store`: `Postgres.EventChain`, `Postgres.AuditChain`,
   `Postgres.ExportChain`, and `ChainReport.Reason` and `ChainReport.PreChain`.
-- `store/local`: `Store.Chain`.
+- `store/local`: `Store.Chain` and `AuditChain`.
+- `store/sqlite`: `Store.AuditChain` and `ChainReport.Reason`.
 - `hawkeye`: `SandboxSignal`, `Call.Sandbox` and `Call.SandboxUnconfirmed`.
 
 ## [1.2.8] - 2026-10-14

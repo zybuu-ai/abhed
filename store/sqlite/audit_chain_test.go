@@ -53,3 +53,30 @@ func TestAuditChainCountsUnchainedRows(t *testing.T) {
 		t.Fatalf("%+v %v", r, err)
 	}
 }
+
+// The control plane's record answers the chain API, and a head kept before
+// an edit no longer matches.
+func TestAuditChainIsASource(t *testing.T) {
+	s := open(t, dbPath(t))
+	ctx := context.Background()
+	for i := range 3 {
+		if err := s.Append(ctx, controlplane.AuditEvent{At: time.Now(), Principal: "a", Action: "create", SandboxID: "sb",
+			Generation: int64(i), Outcome: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := s.AuditChain()
+	h, err := src.Head(ctx, "")
+	if err != nil || h.Pos != 3 || len(h.Hash) != 64 {
+		t.Fatalf("head = %+v, %v", h, err)
+	}
+	if r, err := src.VerifyRange(ctx, "", 2, 3); err != nil || !r.OK() || r.Hash != h.Hash {
+		t.Fatalf("range = %+v, %v", r, err)
+	}
+	if _, err := s.w.Exec(`DROP TRIGGER sandbox_audit_no_update; UPDATE sandbox_audit SET outcome = 'failed' WHERE chain_pos = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := src.VerifyRange(ctx, "", 1, 3); r.OK() || r.FirstBad != 2 {
+		t.Fatalf("after an edit = %+v", r)
+	}
+}

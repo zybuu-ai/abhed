@@ -139,3 +139,42 @@ func TestAuditRefusesLinkedFolder(t *testing.T) {
 		t.Fatal("a linked audit folder was used")
 	}
 }
+
+// The audit file answers the chain API: its head, and ranges that hold up
+// to an edited line.
+func TestAuditFileIsAChainSource(t *testing.T) {
+	dir := t.TempDir()
+	a, err := OpenAudit(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, o := range []string{"requested", "ok", "requested", "ok"} {
+		if err := a.Append(ctx, auditEv("api:POST /v1/sessions", o)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	src := AuditChain(dir)
+	h, err := src.Head(ctx, "default")
+	if err != nil || h.Pos != 4 || len(h.Hash) != 64 || h.Chain != "local/audit" {
+		t.Fatalf("head = %+v, %v", h, err)
+	}
+	if r, err := src.VerifyRange(ctx, "default", 2, 0); err != nil || !r.OK() || r.To != 4 || r.Hash != h.Hash || r.Before == Genesis {
+		t.Fatalf("range = %+v, %v", r, err)
+	}
+	path := AuditPath(dir, "default")
+	data, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, bytes.Replace(data, []byte(`"outcome":"requested"`), []byte(`"outcome":"rejected"`), 2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Lines 1 and 3 were edited, so no range from the start holds.
+	if r, err := src.VerifyRange(ctx, "default", 1, 2); err != nil || r.OK() {
+		t.Fatalf("a range over an edited first line = %+v, %v", r, err)
+	}
+	if r, _ := src.VerifyRange(ctx, "default", 1, 4); r.OK() || r.FirstBad != 1 {
+		t.Fatalf("whole range = %+v", r)
+	}
+}

@@ -236,8 +236,9 @@ The chain head API (`store/chain`): `Source.Head(scope)` is the last position
 and hash, and `Source.VerifyRange(scope, from, to)` recomputes positions
 `from..to` and returns the hash it links to (`Before`) and the hash at `to`.
 `Postgres.EventChain()` (scope: a session), `Postgres.AuditChain()` (scope:
-the tenant) and `local.Store.Chain()` (scope: a session, positions are lines)
-answer it.
+the tenant), `local.Store.Chain()` (scope: a session, positions are lines),
+`local.AuditChain(dir)` (scope: the tenant's `api.jsonl`) and
+`sqlite.Store.AuditChain()` (the control plane's SQLite record) answer it.
 
 Tenant isolation is enforced in the query layer *and* by row-level security. A boundary that
 exists in only one place is not a boundary (§ops).
