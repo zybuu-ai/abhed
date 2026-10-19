@@ -56,6 +56,32 @@ func (m *Manager) plans(sess *tools.Session, create bool) *plans {
 	return p
 }
 
+// maxPlanned is how many planned requests a session keeps at once.
+const maxPlanned = 32
+
+// pruneLocked drops the plans that waited too long, and the oldest past
+// maxPlanned.
+func (ps *plans) pruneLocked() {
+	var oldest [32]byte
+	for len(ps.m) > 0 {
+		first := true
+		var at time.Time
+		for k, p := range ps.m {
+			if time.Since(p.at) > plannedFor {
+				delete(ps.m, k)
+				continue
+			}
+			if first || p.at.Before(at) {
+				oldest, at, first = k, p.at, false
+			}
+		}
+		if len(ps.m) <= maxPlanned {
+			return
+		}
+		delete(ps.m, oldest)
+	}
+}
+
 func (m *Manager) keep(sess *tools.Session, raw json.RawMessage, p planned) {
 	ps := m.plans(sess, true)
 	if ps == nil {
@@ -63,13 +89,9 @@ func (m *Manager) keep(sess *tools.Session, raw json.RawMessage, p planned) {
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	for k, old := range ps.m {
-		if time.Since(old.at) > plannedFor {
-			delete(ps.m, k)
-		}
-	}
 	p.at = time.Now()
 	ps.m[sha256.Sum256(raw)] = p
+	ps.pruneLocked()
 }
 
 func (m *Manager) peek(sess *tools.Session, raw json.RawMessage) (planned, bool) {
@@ -79,11 +101,9 @@ func (m *Manager) peek(sess *tools.Session, raw json.RawMessage) (planned, bool)
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+	ps.pruneLocked()
 	p, ok := ps.m[sha256.Sum256(raw)]
-	if !ok || time.Since(p.at) > plannedFor {
-		return planned{}, false
-	}
-	return p, true
+	return p, ok
 }
 
 // takePlanned returns, once, the request planned for these arguments.
@@ -94,13 +114,26 @@ func (m *Manager) takePlanned(sess *tools.Session, raw json.RawMessage) *request
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+	ps.pruneLocked()
 	key := sha256.Sum256(raw)
 	p, ok := ps.m[key]
 	delete(ps.m, key)
-	if !ok || time.Since(p.at) > plannedFor {
+	if !ok {
 		return nil
 	}
 	return p.req
+}
+
+// Unplan drops what was planned for a call that will not run.
+func (t ApplyTool) Unplan(sess *tools.Session, raw json.RawMessage) {
+	if t.M == nil {
+		return
+	}
+	if ps := t.M.plans(sess, false); ps != nil {
+		ps.mu.Lock()
+		delete(ps.m, sha256.Sum256(raw))
+		ps.mu.Unlock()
+	}
 }
 
 // Precheck plans the call and has the cluster dry-run it. A call that
@@ -138,6 +171,14 @@ func (t ApplyTool) PrecheckContext(ctx context.Context, sess *tools.Session, raw
 	preview, err := dryRun(ctx, c, req)
 	if err != nil {
 		return fmt.Errorf("the cluster's dry run of this change failed, so it was not applied: %w", err)
+	}
+	if req.masked != nil {
+		// A Secret's values are not kept while the call waits: Run reads
+		// them again and sends them only if each still has the fingerprint
+		// that was approved.
+		kept := *req
+		kept.body, kept.dryBody = nil, nil
+		req = &kept
 	}
 	t.M.keep(sess, raw, planned{req: req, preview: preview})
 	return nil

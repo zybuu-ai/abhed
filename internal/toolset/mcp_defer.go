@@ -194,6 +194,12 @@ func (d *deferredTool) PrecheckContext(ctx context.Context, sess *tools.Session,
 	return tools.Precheck(ctx, d.Tool, sess, args)
 }
 
+func (d *deferredTool) Unplan(sess *tools.Session, args json.RawMessage) {
+	if u, ok := d.Tool.(tools.Unplanner); ok {
+		u.Unplan(sess, args)
+	}
+}
+
 func (d *deferredTool) Precheck(sess *tools.Session, args json.RawMessage) error {
 	if p, ok := d.Tool.(tools.Prechecker); ok {
 		return p.Precheck(sess, args)

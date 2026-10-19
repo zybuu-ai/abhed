@@ -59,6 +59,13 @@ type ContextPrechecker interface {
 	PrecheckContext(ctx context.Context, sess *Session, args json.RawMessage) error
 }
 
+// Unplanner is a tool that readies something for a call before it is
+// approved, such as the request a dry run checked; Unplan lets it go when
+// the call is refused or not approved.
+type Unplanner interface {
+	Unplan(sess *Session, args json.RawMessage)
+}
+
 // Precheck runs t's check of a call, with ctx when it takes one; nil when t
 // makes none.
 func Precheck(ctx context.Context, t Tool, sess *Session, args json.RawMessage) error {

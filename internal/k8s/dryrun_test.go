@@ -258,3 +258,37 @@ func TestDryRunStopsWithTheTurn(t *testing.T) {
 		t.Fatalf("dry run against a silent cluster: %v after %s", err, time.Since(start))
 	}
 }
+
+// A plan is let go when its call is not approved, and a session keeps a
+// bounded number of them.
+func TestPlansAreLetGo(t *testing.T) {
+	srv := httptest.NewServer(&fakeCluster{live: liveDeploy, answer: liveDeploy})
+	defer srv.Close()
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
+	sess := newSession(t)
+	reg := tools.NewRegistry(ApplyTool{M: mgr})
+	l := agent.NewLoop(&oneCall{name: "k8s_apply", args: `{"action":"restart","resource":"deployments","name":"web"}`},
+		reg, policy.New(policy.ModeDefault), rejectAll{}, sess, agent.NewRecorder(agent.NewMemStore(), "s", ""), agent.DefaultConfig())
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if ps := mgr.plans(sess, false); ps == nil || len(ps.m) != 0 {
+		t.Fatalf("a rejected call's plan was kept: %v", ps)
+	}
+	tool := ApplyTool{M: mgr}
+	for i := range 40 {
+		raw := json.RawMessage(fmt.Sprintf(`{"action":"scale","resource":"deployments","name":"web","namespace":"prod","replicas":%d}`, i))
+		if err := tool.Precheck(sess, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(mgr.plans(sess, false).m); n != maxPlanned {
+		t.Fatalf("kept %d plans, want %d", n, maxPlanned)
+	}
+}
+
+type rejectAll struct{}
+
+func (rejectAll) Approve(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
+	return false, nil
+}

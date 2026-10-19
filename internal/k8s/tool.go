@@ -704,9 +704,14 @@ func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	}
 	// The request the dry run checked and the approver saw is the one sent.
 	req := t.M.takePlanned(sess, raw)
-	if req == nil {
+	if req == nil || req.masked != nil {
+		approved := req
 		if req, err = t.plan(ctx, sess, c, a); err != nil {
 			return errf("%v", err)
+		}
+		if approved != nil && !sameValues(approved.masked, req.masked) {
+			return errf("Not applied: a value secret_from reads changed after the call was approved; " +
+				"make the call again to approve the new value.")
 		}
 	}
 	data, err := c.send(ctx, req, false)
@@ -1095,6 +1100,20 @@ func pluralFor(kind string) string {
 		return k[:len(k)-1] + "ies"
 	}
 	return k + "s"
+}
+
+// sameValues reports whether two plans' masked values, length and
+// fingerprint per key, are the same.
+func sameValues(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func mustJSON(v any) json.RawMessage {

@@ -205,3 +205,35 @@ func TestSecretFromRefusesBadSourcesBeforeAsking(t *testing.T) {
 		})
 	}
 }
+
+// While a secret_from call waits for its approval, the plan holds none of
+// its values; a value changed in between is not sent.
+func TestSecretFromKeepsNoValuesWhileWaiting(t *testing.T) {
+	f := &fakeCluster{answer: `{"kind":"Secret","apiVersion":"v1","metadata":{"name":"site-tls","namespace":"prod"}}`}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
+	sess := newSession(t)
+	crt := filepath.Join(sess.Root, "site.crt")
+	if err := os.WriteFile(crt, []byte(tlsCrt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	vals := map[string]string{"TLS_KEY": tlsKey}
+	tool := ApplyTool{M: mgr, Secret: stored(vals)}
+	raw := json.RawMessage(tlsArgs("TLS_KEY")(crt))
+	if err := tool.Precheck(sess, raw); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := mgr.peek(sess, raw)
+	if !ok || p.req == nil || p.req.body != nil || p.req.dryBody != nil {
+		t.Fatalf("the waiting plan holds a body: %+v", p.req)
+	}
+	vals["TLS_KEY"] = strings.Replace(tlsKey, "S0VZ", "T1RI", 1)
+	res := tool.Run(context.Background(), sess, raw)
+	if !res.IsError || !strings.Contains(res.Content, "changed after the call was approved") {
+		t.Fatalf("sent a value no one approved: %s", res.Content)
+	}
+	if _, real := f.writes(); len(real) != 0 {
+		t.Fatalf("sent %+v", real)
+	}
+}
