@@ -258,7 +258,11 @@ Limits of the approach:
   each checkpointed against the snapshot before them: a file one of them
   changed while another ran is put back to what that snapshot held.
 - A worktree subagent's commands are not checkpointed, as its edits are not:
-  its changes stay in its worktree until you take them.
+  its changes stay in its worktree until you take them. Under `required` its
+  `bash` commands are refused, as everywhere nothing keeps checkpoints: give
+  such work a subagent without a worktree, or leave `bash_checkpoints` at
+  `on`, since what you take back from a worktree with `/take` is
+  checkpointed as you take it.
 - On `abhed serve` the workbench's Changes view shows a command's changes
   from the snapshot the session opened with, as before; a served session has
   no `/undo` to take them back with.

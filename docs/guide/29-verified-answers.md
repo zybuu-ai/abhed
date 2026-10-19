@@ -72,11 +72,22 @@ counts (`12 tests`, `replicas: 3`). Then:
   a tool result, does not count. A person's own calls at the workbench do not
   count as evidence for the model, though they do count as changes.
 - **The evidence must still be current.** A file read is out of date once that
-  file is edited or a command that may write has run; a command's output is out
-  of date after any change at all. Abhed treats a command as only reading when
-  every part of it is a program known not to write (`ls`, `grep`, `git diff`,
-  `go test`, `npm test`, `pytest` and the like) with no redirection to a file.
-  Anything else counts as a change, which is the cautious way to be wrong.
+  file is edited or a command that may have changed it runs; a command's output
+  is out of date after any change at all. A shell line is read with the same
+  parser policy uses, quoting and redirections as the shell reads them, and
+  each simple command in it is judged on its own, with runners and launchers
+  (`env`, `time`, `sudo`, `timeout`, `xargs`, `npx`, `uv run`, `poetry run`,
+  `pnpm exec` and the like) taken off first. A command counts as changing
+  nothing only when it is a known reader in its reading form: `ls`, `cat`,
+  `grep`, `jq`, `git status` and `git diff`, `go test`, `npm test`, `pytest`
+  and the rest of a short allowlist, each refused with the options or
+  operands that make it write (`-i` and `--in-place`, `-w`, `-o`, `--fix`,
+  `-u` and `--update`, `--write`, `uniq`'s or `xxd`'s second file, `tree -o`,
+  `make` with no checking target, and so on), and with no output redirected
+  to a file. Anything else counts as a change, which is the cautious way to be
+  wrong. Within one line, output printed before a later command on the same
+  line changes something is out of date by that change: `cat f && sed -i … f`
+  does not show the file as it is.
 - **What the statement says must be in the output.** Its quote, and every
   path, host, version, date and number in it, must appear in the evidence,
   compared without case, terminal colours or extra spaces. A number with its
@@ -85,26 +96,31 @@ counts (`12 tests`, `replicas: 3`). Then:
   `12 tests passed` is ✗, with `12 tests passed` shown beside it.
 - **"Tests pass" and "the command succeeded" need an exit code.** Such a
   statement needs a command (of the kind it names: tests, or a build) that
-  exited 0 after the last change. The kind is read from the program and its
+  exited 0 after the last change, with nothing changed after it on its own
+  line (`go test && sed -i …` does not count). The kind is read from the program and its
   subcommand (`go test`, `npm test`, `pytest`, `make`, `cargo build`, …), so
   `ls tests` or `test -f go.mod` is not a test run. If the last such command since the last
   change failed, the statement is contradicted.
 - **"I changed X" and "I ran `Y`" are checked against the calls.** A statement
   that the agent edited, created or removed a file needs a call in the record
-  that changed that file, matched on whole path segments (`a.go` is not
-  `data.go`); a command counts only for the files it writes (a redirection,
-  `tee`, the destination of `cp` or `mv`, `sed -i`, `rm`, `touch`, …), not for
-  one it reads, and a `cd` earlier on the line places what follows. It is
-  contradicted only when every change in the session names its files and none
-  is this one: after a command whose writes cannot be read from it (a script,
-  `git apply`, `patch`, a tool other than `write`, `edit`, `bash` and `ssh`),
-  it is unverified instead. One that it ran a command needs that command as
-  one of the simple commands of a call, with any further arguments:
-  `echo 'go test'` is not `go test`; the same program and subcommand with
-  other arguments leaves it unverified. With none, the statement is
-  contradicted. Runners and launchers (`env`, `time`, `sudo`, `timeout`,
-  `npx`, `uv run`, `poetry run`, `pnpm exec` and the like) are taken off
-  first, so `env sed -i` is a change and `timeout 300 go test` a test run.
+  that changed that file, matched as the same file on whole path segments
+  (`a.go` is not `data.go`, and a short name stands for a file in the
+  workspace, not outside it). A command counts for the files a known writer
+  names (a redirection, `tee`, the destination of `cp`, `mv` and `cp -t`,
+  `sed -i` and `sed --expression= -i`, `rm`, `touch`, `gofmt -w`, …), not for
+  one it only reads, each resolved against the folder the call ran in: the
+  workspace, moved by an earlier call that is only `cd <folder>` (as the bash
+  tool follows it) and by a `cd` earlier on the same line. It is contradicted
+  only when every change in the session names its files in full this way and
+  none is this one. After a change whose files cannot be read from the call
+  (a script, `git apply`, `git checkout <branch>`, `yq -i`, `eslint --fix`, a
+  folder's contents copied, a tool other than `write`, `edit`, `bash` and
+  `ssh`), it is unverified instead. One that it ran a command needs that
+  command as one of the simple commands of a call, with any further
+  arguments, runners taken off both: `echo 'go test'` is not `go test`, and
+  "I ran `npx jest`" is met by `jest --ci`; the same program and subcommand
+  with other arguments leaves it unverified. With none, the statement is
+  contradicted.
 - **A subagent's work counts.** The parent's record names each subagent's
   session, and its own record is read too (up to three levels deep): its
   results are evidence and its calls are changes, placed at the parent's
@@ -269,10 +285,11 @@ A run with a contract ends `completed` only when all of this holds. Otherwise
 the agent gets its one revision turn (with the failing command's output in the
 note), and then the run ends `unverified`, exit 8, whatever the mode. A contract
 works with `mode: off` too: then only the contract is checked. It gates an
-answer: a run that ends on a plan proposed for approval, a structured result or
-nothing said runs neither the checks nor the contract (`abhed -p -json-schema`
-says so on stderr when a contract is configured), and plan mode, which
-changes nothing, runs no contract. `abhed serve` refuses to start, and a
+answer: a run that ends on a plan proposed for approval or a structured result
+runs neither the checks nor the contract (`abhed -p -json-schema` says so on
+stderr when a contract is configured), and plan mode, which changes nothing,
+runs no contract. A reply with nothing in it has no claims to check, but the
+contract still runs and still decides how the run ends. `abhed serve` refuses to start, and a
 session to open, when its answers cannot be checked as configured (a critic
 model that is not there, say).
 
@@ -293,19 +310,22 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 32 plant a wrong test count or result, replica count, port, version,
-host, path, disk figure, file change, command, `file:line` or citation, among
-them "tests pass" after only `ls tests` or `test -f go.mod` ran, a change
-claimed for `a.go` when `data.go` was edited or for a file only copied, a
-command claimed from an `echo` of it, and a read relied on after `env sed -i`,
-`time sed -i`, `command cp`, `sort -o` or `make` changed things; 25 controls
-say only what the session showed, among them files written by a heredoc,
-`sed -i` after a `cd`, `gofmt -w` or `echo x>>f`, and tests run under
-`timeout`, `npx` or `uv run`; 6 are neutral: general knowledge, and true
-change claims after a script or `git apply` whose writes cannot be read, or a
-command quoted with its arguments in another order. Today none of the 32
-planted claims is shown as verified (16 are contradicted, the rest
-unverified), all 25 controls are verified, and none of the 31 true or neutral
+session. 46 plant a wrong claim: a test count or result, a replica count,
+port, version, host, path, disk figure, file change, command, `file:line` or
+citation; among them a change claimed for a file a quoted `=>` or `->` only
+grepped, "tests pass" after only `ls tests` ran or with an edit later on the
+same line, and a read relied on after `env sed -i`, `yq -i`, `awk -i
+inplace`, `uniq` in out, `tree -o`, `ruff --fix`, `jest -u`, `npm run lint --
+--fix`, `sort -o`, `make` or a `sed -i` later on its own line. 32 controls say
+only what the session showed, among them files written by a heredoc, `sed -i`
+after a `cd` on the line or in an earlier call, `sed --expression= -i`,
+`gofmt -w`, `echo x>>f`, `mv x dir/` and `cp -t`, absolute and relative paths
+for the same file, and tests run under `timeout`, `npx` or `uv run`. 11 are
+neutral: general knowledge, and true change claims after a script, `git
+apply`, `git checkout <branch>`, `yq -i`, `eslint --fix`, `golangci-lint
+--fix` or a folder copy, whose files cannot be read from the call. Today none
+of the 46 planted claims is shown as verified (18 are contradicted, the rest
+unverified), all 32 controls are verified, and none of the 43 true or neutral
 claims is contradicted. The test fails if a planted claim is shown as
 verified, if a true one is contradicted, or if either count falls below its
 floor; the floors only go up. The corpus is small and written by the people
