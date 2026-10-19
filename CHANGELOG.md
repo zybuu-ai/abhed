@@ -37,7 +37,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 - In the terminal UI the output of a `!` command was shown twice: under
   the call and again below it. It is now shown once, under the call, with
-  up to 40 lines before the rest folds behind ctrl+o.
+  up to 40 lines before the rest folds behind ctrl+o. Without the terminal
+  UI (a line view), a failing `!` command's output was also shown twice;
+  it is now shown once.
 - On the fence tier in `mount_namespace` mode under the egress allowlist, a
   command resolved no name, an allowed one included (`getent hosts` gave
   nothing), while the process tier resolved it through the session's

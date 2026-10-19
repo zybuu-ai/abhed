@@ -201,3 +201,30 @@ func TestBangOutputDrawnOnceInTheTerminalUI(t *testing.T) {
 		t.Fatalf("output does not join the next message: %+v", q)
 	}
 }
+
+// In the line view a failing command's output is drawn from the record, so
+// the ! line does not draw it again; a succeeding one's, which the line view
+// sums up, it draws.
+func TestBangFailureDrawnOnceInTheLineView(t *testing.T) {
+	st, store, sf := bangRig(t)
+	var out strings.Builder
+	r := ui.NewRenderer(&out, false)
+	events := store.Subscribe("s-m")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range events {
+			r.Event(ev)
+		}
+	}()
+	st.unfollow = func() { store.Unsubscribe("s-m", events); <-done }
+	runBang(context.Background(), st, r, "echo FAIL-$((40+2)); exit 3")
+	runBang(context.Background(), st, r, "echo OK-$((40+2))")
+	st.unfollow()
+	if n := strings.Count(out.String()+sf.shown(), "FAIL-42"); n != 1 {
+		t.Fatalf("a failing command's output was drawn %d times:\nrenderer: %q\nsurface: %q", n, out.String(), sf.shown())
+	}
+	if !strings.Contains(sf.shown(), "OK-42") {
+		t.Fatalf("a succeeding command's output was not drawn: %q", sf.shown())
+	}
+}
