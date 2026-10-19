@@ -586,3 +586,23 @@ func TestContractRespectsPolicy(t *testing.T) {
 		})
 	}
 }
+
+// A structured run delivers its result, not an answer: the answer tool is put
+// away for it and back after.
+func TestStructuredRunPutsTheAnswerToolAway(t *testing.T) {
+	l, _, ad, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "r1", Name: ResultToolName, Args: json.RawMessage(`{"n":1}`)}}},
+	})
+	got, reason, err := RunStructured(context.Background(), l, l.Tools, "count", json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}}}`))
+	if err != nil || reason != TermCompleted || string(got) != `{"n":1}` {
+		t.Fatalf("%s %s %v", got, reason, err)
+	}
+	for _, d := range ad.gotRequests[0].Tools {
+		if d.Name == AnswerToolName {
+			t.Fatal("the answer tool was offered to a structured run")
+		}
+	}
+	if _, ok := l.Tools.Get(AnswerToolName); !ok {
+		t.Fatal("the answer tool did not come back")
+	}
+}

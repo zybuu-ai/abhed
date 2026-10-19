@@ -451,7 +451,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 	loop.Provider = appCfg.Model.Default
-	if v, err := toolset.Verifier(appCfg, false); err == nil {
+	// A structured result is checked by its schema, not as prose.
+	if v, err := toolset.Verifier(appCfg, false); err == nil && o.schema == nil {
 		v.Install(loop)
 	}
 	// The factory's budget, so the subagents' spend and the loop's are one.
