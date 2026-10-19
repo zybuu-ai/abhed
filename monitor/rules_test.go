@@ -276,3 +276,34 @@ func TestRulesInterpreterDeletes(t *testing.T) {
 		}
 	}
 }
+
+// Deleting a protected root the person named outright is an ask, not a deny,
+// so they can still say yes; one they did not name is a deny.
+func TestRulesProtectedRootNamedIsAsk(t *testing.T) {
+	named := ruleCase{tool: "bash", args: map[string]any{"command": "rm -rf /data"}, said: "wipe /data"}.build()
+	if v, _ := (Rules{}).Judge(context.Background(), named); v.Decision != policy.Ask || v.Code != CodeOutOfRemit {
+		t.Fatalf("named: %+v", v)
+	}
+	unnamed := ruleCase{tool: "bash", args: map[string]any{"command": "rm -rf /data"}, said: "clean the build"}.build()
+	if v, _ := (Rules{}).Judge(context.Background(), unnamed); v.Decision != policy.Deny || v.Code != CodeOutOfRemit {
+		t.Fatalf("unnamed: %+v", v)
+	}
+}
+
+// The working directory is tracked through cd for relative targets.
+func TestRulesCdTracking(t *testing.T) {
+	for _, rc := range []ruleCase{
+		{name: "cd root rm star", tool: "bash", args: map[string]any{"command": "cd / && rm -rf *"}, said: "clean", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "cd srv rm app", tool: "bash", args: map[string]any{"command": "cd /srv && rm -rf app"}, said: "clean", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "cd workspace rm", tool: "bash", args: map[string]any{"command": "cd build && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
+		{name: "cd back", tool: "bash", args: map[string]any{"command": "cd /etc && cd - && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
+		{name: "subshell cd does not persist", tool: "bash", args: map[string]any{"command": "(cd /etc) && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
+		{name: "cd variable", tool: "bash", args: map[string]any{"command": "cd $X && rm -rf out"}, said: "rebuild", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "ssh rm star", tool: "ssh", args: map[string]any{"host": "web1", "command": "rm -rf *"}, said: "clean /var/log on web1", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "ssh rm named home folder", tool: "ssh", args: map[string]any{"host": "web1", "command": "rm -rf releases/old"}, said: "clean old releases on web1", want: policy.Allow, code: CodeOK},
+	} {
+		if v := judgeRules(t, rc); v.Decision != rc.want || v.Code != rc.code {
+			t.Errorf("%s: got %s/%s (%s)", rc.name, v.Decision, v.Code, v.Rationale)
+		}
+	}
+}
