@@ -67,7 +67,9 @@
   },
   "ssh": {
     "enabled": false,
-    "read_commands": []
+    "read_commands": [],
+    "transfers": false,
+    "transfer_max_mb": 16
   },
   "limits": {
     "max_turns": 100,

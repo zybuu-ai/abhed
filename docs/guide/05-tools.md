@@ -15,6 +15,7 @@
 | `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default, and only the managed configuration turns it on ([Web search](02-configuration.md#web-search)) |
 | `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |
 | `ssh`, `ssh_connect` | remote execution, off by default |
+| `ssh_put`, `ssh_get` | file transfer over SFTP, off by default (`ssh.transfers`) |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
 
 `write` creates a new file's missing folders, inside the workspace and never
@@ -127,9 +128,17 @@ verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.
 `k8s_apply` takes one object per call; a JSON list is refused with a message
-that says to apply each item in its own call.
+that says to apply each item in its own call. Each write is dry-run on the
+cluster before the approval, which shows what would change; `rollback`
+returns a Deployment to an earlier revision, and `k8s_get` with
+`wait_seconds` waits for a rollout. `secret_from` builds a Secret from
+stored secrets, each under its own `secret(NAME)` rule, and workspace
+files, so a TLS key never passes through the model. `k8s_get` shows a
+Secret's keys with each value's length and sha256, never the value.
 `ssh_connect` sends a password only to a host whose key is already in
-`known_hosts`.
+`known_hosts`. `ssh` takes `stdin_secret`, a stored secret's NAME, to give a
+remote command a password or key on stdin, and `ssh_put` sends a workspace
+file or a stored secret to a host, so neither passes through the model.
 
 A login or a connected host belongs to the session that made it and that
 session's subagents, and ends with it. Another session on the same server,

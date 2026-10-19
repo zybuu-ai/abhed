@@ -35,6 +35,11 @@ All notable changes to Abhed are recorded here. The format follows
   a pattern; a destructive remote command always confirms twice with no
   "always"; and "don't ask again" offers no scope for a chain or a
   wildcard.
+- `k8s_get` of a Secret returned its `data` to the model, and so to the
+  record and every screen: only metadata noise was stripped. A Secret's
+  values, in `data`, `stringData` and kubectl's last-applied annotation, are
+  now shown as each key with the value's length and sha256, for a single
+  Secret, a list, and what the cluster answers a `k8s_apply` of one.
 
 ### Added
 
@@ -64,6 +69,37 @@ All notable changes to Abhed are recorded here. The format follows
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
   or `go run ./cmd/abhed-drift`): on its 21 drift cases the rules judge stops
   19, and it asks about or refuses none of its 19 benign controls.
+- `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
+  asking, and the approval names what would change, field by field, from
+  the live object (a Secret's values only as length and sha256). The
+  request dry-run is the one sent once approved. A change the dry run
+  refuses is refused before anyone is asked, with the cluster's reason.
+  A kubeconfig context whose `exec` credential helper has not run yet is
+  asked about without a dry run, since the helper runs only for an
+  approved call.
+- `k8s_apply` `rollback` puts a Deployment's previous revision (or a named
+  `revision`) back, as `kubectl rollout undo` does; it asks like any write
+  and is refused if the Deployment changed since it was approved.
+  `k8s_get` `wait_seconds` waits, up to 600 seconds, for a Deployment's
+  rollout to finish or fail, so the agent need not poll.
+- `k8s_apply` `secret_from` builds a Secret, `Opaque` or
+  `kubernetes.io/tls`, from stored secrets by NAME and workspace files, so
+  a TLS key never passes through the model: the approval and the record
+  name each source with its value's length and sha256, each stored secret
+  needs its `secret(NAME)` rule, each file is judged as a `read` of it, and
+  the dry run before the approval carries placeholders.
+- `ssh` `stdin_secret` writes a stored secret, by NAME and under its
+  `secret(NAME)` rule, to the remote command's stdin, so a password for
+  `sudo -S` or a key written to a file never appears in the command line,
+  the approval, the record or the model's view; output that echoes it
+  reads `[secret NAME]`.
+- `ssh_put` and `ssh_get` move one file over SFTP, behind `ssh.transfers`
+  (off by default) and `ssh.transfer_max_mb` (16 by default): `ssh_put`
+  sends a workspace file or a stored secret by NAME, so a key reaches a
+  host without passing through the model; `ssh_get` fetches into the
+  workspace. Both ask unless an allow rule on `host:remote_path` covers
+  them, the workspace file is judged as a read or write of it, and the
+  approval and record keep the paths, size and sha256, never the content.
 
 ### Fixed
 

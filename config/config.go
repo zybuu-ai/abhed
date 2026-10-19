@@ -1244,6 +1244,10 @@ type SSHConfig struct {
 	// "uptime" or "systemctl status *", each one simple command. A matching
 	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
 	ReadCommands []string `json:"read_commands,omitempty"`
+	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
+	Transfers bool `json:"transfers,omitempty"`
+	// TransferMaxMB bounds one transfer; 0 is 16.
+	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
 }
 
 type SSHHostConfig struct {

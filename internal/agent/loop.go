@@ -1490,6 +1490,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision = policy.Result{Decision: policy.Ask, Step: "handover",
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
+	decision = l.filesJudged(tool, call, decision)
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
 	// deny. An allowed write the tool would refuse (into .abhed in

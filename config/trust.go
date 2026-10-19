@@ -714,6 +714,8 @@ var workspaceRules = map[string]fieldRule{
 	"ssh.hosts":              {nil, "names machines and keys the agent reaches"},
 	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
 	"ssh.read_commands":      {nil, "lets ssh commands run without asking"},
+	"ssh.transfers":          {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
+	"ssh.transfer_max_mb":    {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
 	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
 	"skills.dirs":            {nil, "a skill is instructions to the agent"},
 	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},

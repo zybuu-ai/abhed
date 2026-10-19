@@ -131,8 +131,9 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
-| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
+| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `ssh.transfers` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
+| `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `monitor.enabled` | **applied** only when true |
