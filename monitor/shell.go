@@ -179,7 +179,7 @@ func applyCd(st *dirState, word string) {
 	case strings.HasPrefix(word, "/"):
 		st.prev, st.dir = st.dir, path.Clean(word)
 	case strings.ContainsAny(word, "$*?`"):
-		st.prev, st.dir, st.known = st.dir, st.dir, false // a target only running the line would give
+		st.prev, st.known = st.dir, false // a target only running the line would give
 	default:
 		st.prev, st.dir = st.dir, path.Clean(joinDir(st.dir, word))
 	}
