@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -321,5 +324,65 @@ func TestAuditChainIsASource(t *testing.T) {
 	}
 	if err := src.(chain.Linker).Links(ctx, "another-tenant", 1, 0, func(chain.Link) bool { return true }); err == nil {
 		t.Fatal("another tenant's audit links were read")
+	}
+}
+
+// A runtime role that could add a mark to chain_pre could excuse an event
+// written with the chain's trigger off: the server refuses to start as one.
+func TestRuntimeRoleThatCanMarkPreChainRowsIsRefused(t *testing.T) {
+	runtimeStore(t, "t-premark-grant") // provisions the runtime role
+	owner := openStore(t, "t-premark-grant")
+	rt := os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	rc, err := pgx.ParseConfig(rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := pgx.Identifier{rc.User}.Sanitize()
+	ctx := context.Background()
+	for _, priv := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE"} {
+		if _, err := owner.pool.Exec(ctx, `GRANT `+priv+` ON chain_pre TO `+role); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Open(ctx, DefaultConfig(rt))
+		if _, rerr := owner.pool.Exec(ctx, `REVOKE `+priv+` ON chain_pre FROM `+role); rerr != nil {
+			t.Fatal(rerr)
+		}
+		if err == nil || !strings.Contains(err.Error(), "holds "+priv+" on chain_pre") {
+			t.Errorf("a runtime role holding %s on chain_pre: %v", priv, err)
+		}
+	}
+	if p, err := Open(ctx, DefaultConfig(rt)); err != nil {
+		t.Fatalf("the runtime role, as provisioned, is refused: %v", err)
+	} else {
+		p.Close()
+	}
+}
+
+// The trigger sets commit_tx, whatever the runtime role sends, so no event
+// can be kept out of the commit-ordered scan by a value of the writer's.
+func TestRuntimeRoleCannotSetCommitTx(t *testing.T) {
+	p := runtimeStore(t, "t-commit-tx")
+	ctx := context.Background()
+	id := testID(t, "sess-ctx-")
+	newSession(t, p, id, "t-commit-tx")
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var mine string
+	if err := tx.QueryRow(ctx, `SELECT pg_current_xact_id()::text`).Scan(&mine); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO events (id, session_id, tenant_id, seq, type, payload, actor, commit_tx)
+		VALUES ($1, $2, 't-commit-tx', 1, 'agent.message', '{}', 'agent', '18446744073709551615'::xid8)`, id+"-1", id); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := tx.QueryRow(ctx, `SELECT commit_tx::text FROM events WHERE id = $1`, id+"-1").Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != mine {
+		t.Fatalf("commit_tx stored as %s, want the writing transaction %s", stored, mine)
 	}
 }
