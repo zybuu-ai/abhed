@@ -82,6 +82,7 @@ func mergeManaged(cfg *Config) error {
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
 	cfg.managedRules = managedRuleSet(data)
+	lockOCSF(cfg, data)
 	if cfg.ManagedSets("permissions.deny") {
 		// Its deny rules join the others: a managed file may add a deny rule, never take one away.
 		cfg.Permissions.Deny = dedupe(append(slices.Clone(cfg.Permissions.Deny), below...))

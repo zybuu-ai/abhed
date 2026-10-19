@@ -193,6 +193,8 @@ type RecordConfig struct {
 	// Witness is where each head of the record is sent as it is written, so
 	// the record can be checked against what the machine's owner cannot rewrite.
 	Witness WitnessConfig `json:"witness,omitempty"`
+	// OCSF is a JSONL file of the record as OCSF events.
+	OCSF OCSFConfig `json:"ocsf,omitempty"`
 }
 
 // WitnessConfig names an off-host witness for the record's heads. Managed only.
@@ -298,6 +300,8 @@ var managedOnly = map[string]string{
 	"record.dir":                         "only the managed configuration moves the record",
 	"record.retention_days":              "only the managed configuration sets how long the record is kept",
 	"record.witness":                     "only the managed configuration says where the record's heads are witnessed",
+	"record.ocsf.path":                   "only the managed configuration moves the record's OCSF file",
+	"record.ocsf.locked":                 "only the managed configuration locks the record's OCSF file",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
@@ -374,6 +378,10 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.Dir = ""
 	case "record.retention_days":
 		c.Record.RetentionDays = 0
+	case "record.ocsf.path":
+		c.Record.OCSF.Path = ""
+	case "record.ocsf.locked":
+		c.Record.OCSF.Locked = false
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
 	case "hooks.managed_only":
@@ -1792,6 +1800,9 @@ func (c Config) Validate() error {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
 	}
 	if err := c.Monitor.validate(); err != nil {
+		return err
+	}
+	if err := c.Record.OCSF.validate(); err != nil {
 		return err
 	}
 	if c.Record.RetentionDays < 0 {
