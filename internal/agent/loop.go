@@ -1887,7 +1887,8 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	// Tool output is untrusted: it may contain text that looks like
 	// instructions. The trust tag travels with the event (docs arch §6).
 	trust := Untrusted
-	l.noteCall(call.Name, policy.Subject(call.Name, call.Args), result.IsError)
+	l.noteCall(call.Name, policy.Subject(call.Name, call.Args), result.IsError,
+		l.Monitor != nil && !result.IsError && monitor.CredentialSeen(call.Name, string(call.Args), result.Content))
 	if _, err := l.Recorder.Record(EvObservation, ActorTool, trust, Observation{
 		CallID:     call.ID,
 		Tool:       call.Name,
@@ -2497,10 +2498,10 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 }
 
 // noteCall keeps the last few calls and outcomes for the monitor.
-func (l *Loop) noteCall(tool, subject string, isError bool) {
+func (l *Loop) noteCall(tool, subject string, isError, credential bool) {
 	l.monitorMu.Lock()
 	defer l.monitorMu.Unlock()
-	l.recentCalls = append(l.recentCalls, monitor.Recent{Tool: tool, Subject: subject, IsError: isError})
+	l.recentCalls = append(l.recentCalls, monitor.Recent{Tool: tool, Subject: subject, IsError: isError, Credential: credential})
 	if len(l.recentCalls) > 20 {
 		l.recentCalls = l.recentCalls[len(l.recentCalls)-20:]
 	}
