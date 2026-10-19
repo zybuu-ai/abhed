@@ -288,6 +288,9 @@ type Loop struct {
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
 	Monitor *monitor.Guard
+	// Verify, when set, checks each completed run's answer against the
+	// record before the run ends; see Verifier. Nil checks nothing.
+	Verify *Verifier
 	// OwnerActive, when set, is asked before a woken run calls the model
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
@@ -851,6 +854,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		b.deferred = nil
 		b.mu.Unlock()
 	}
+	l.beginAnswer()
 turns:
 	for {
 		if ctx.Err() != nil {
@@ -942,6 +946,15 @@ turns:
 				if ctx.Err() != nil {
 					continue
 				}
+			}
+			// The answer is checked before the run ends; a revision turn
+			// it asks for goes round again.
+			if reason == TermCompleted {
+				again, end := l.checkAnswer(ctx)
+				if again {
+					continue
+				}
+				reason = end
 			}
 			// The turn ends first; a suggestion is made after it, off the run.
 			if reason == TermCompleted {

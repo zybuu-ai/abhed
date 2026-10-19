@@ -107,6 +107,14 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			// Each model call is a new assistant turn, even one whose calls were all refused.
 			lastAssistant = nil
 
+		case EvAnswerVerdict:
+			// A revision turn's note was the next thing the model read.
+			var v AnswerVerdict
+			if json.Unmarshal(ev.Payload, &v) == nil && v.Revision != "" {
+				msgs = append(msgs, model.Message{Role: model.RoleUser, Content: v.Revision})
+				lastAssistant = nil
+			}
+
 		case EvSubagentNotice:
 			// A background result: the task_status call and its result, as the
 			// live conversation received them.
