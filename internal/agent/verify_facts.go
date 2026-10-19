@@ -24,6 +24,7 @@ type facts struct {
 	success   bool        // says a command, test or build succeeded
 	testish   string      // "test" or "build" when success names one
 	changed   bool        // says the agent changed the paths it names
+	negated   bool        // says something did not happen, or is not so
 	scope     []string    // packages or folders a test claim names, such as internal/auth
 	ran       []string    // commands the claim says were run
 }
@@ -62,11 +63,15 @@ var (
 	// What a claim says when it reports success; negRe undoes it.
 	successRe = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
 	negRe     = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
-	noFailRe  = regexp.MustCompile(`\bno (?:errors|failures|failed tests?)\b`)
+	noFailRe  = regexp.MustCompile(`\bno (?:errors|failures|failed tests?|tests? failed)\b`)
 	testRe    = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
 	buildRe   = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
 	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
-	ranRe     = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
+	// What a claim says when it says a thing did not happen or is not so;
+	// such a claim is never verified by output showing the thing.
+	negationRe   = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor)\b`)
+	notChangedRe = regexp.MustCompile(`\b(?:i|we)\s+(?:did\s+not|didn't|have\s+not|haven't|never|did\s+never)\s+(?:\w+\s+)?(?:edit|update|change|modify|create|write|touch|delete|remove|rename|patch|rewrite|replace)`)
+	ranRe        = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
 )
 
 // Words that follow a number without counting anything.
@@ -160,6 +165,11 @@ func extractFacts(claim string) facts {
 	}
 	lower := strings.ToLower(text)
 	f.changed = changedRe.MatchString(lower)
+	f.negated = negationRe.MatchString(noFailRe.ReplaceAllString(lower, " "))
+
+	if notChangedRe.MatchString(lower) {
+		f.changed, f.negated = true, true
+	}
 	for _, w := range strings.Fields(text) {
 		if w = rawPath(strings.Trim(w, "`")); strings.Contains(w, "/") && !strings.Contains(w, "://") {
 			f.scope = append(f.scope, w)
@@ -279,6 +289,15 @@ func extractFacts(claim string) facts {
 			f.testish = "build"
 		}
 	}
+	// A change claim may name a folder (internal/auth), which the file-path
+	// reading leaves out.
+	if f.changed {
+		for _, w := range f.scope {
+			if !contains(f.paths, w) {
+				f.paths = append(f.paths, w)
+			}
+		}
+	}
 	return f
 }
 
@@ -298,6 +317,15 @@ func looksLikePath(p string) bool {
 // punctuation of the sentence around it are taken off.
 func rawPath(p string) string {
 	return strings.TrimRight(strings.TrimLeft(strings.TrimSpace(p), "(['\""), ".,;:!?)]}'\"")
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func isWordRune(r rune) bool { return unicode.IsLetter(r) || r == '_' }

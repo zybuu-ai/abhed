@@ -50,7 +50,7 @@ func TestVerifyStrictThroughTheSDK(t *testing.T) {
 		t.Fatalf("want an unverified end, got %v", err)
 	}
 	v := a.Verdict()
-	if v == nil || v.Outcome != "unverified" || v.Contradicted == 0 {
+	if v == nil || v.Outcome != "unverified" || v.Unverified == 0 || v.Contradicted != 0 {
 		t.Fatalf("verdict %+v", v)
 	}
 }
