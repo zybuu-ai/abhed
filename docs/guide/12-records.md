@@ -391,8 +391,9 @@ API request that changes something, is chained per tenant the same way;
 `abhed record audit` walks it (and, without Postgres, the server's
 `<records>/<tenant>/audit/api.jsonl`, chained line by line, and the control
 plane's own SQLite record). It recomputes each hash itself, as `verify` does,
-fails a Postgres audit row written with the trigger off, and checks the API's
-chain against any `-head position:hash` kept elsewhere.
+fails a Postgres audit row written with the trigger off, and a SQLite row with
+no chain written after the chain began, and checks the API's chain against any
+`-head position:hash` kept elsewhere.
 
 The chain is per session, not per tenant, so sessions never wait on each
 other's lock and each session's chain is whole on its own. What no chain can

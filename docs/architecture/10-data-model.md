@@ -234,7 +234,13 @@ tenant**, being one stream.
 `chain_pre` (schema version 11) holds, per chain, how many unchained rows were
 already there when the chain began, counted once by a migration and never
 chained over. The runtime role can only read it. A check fails any unchained
-row it does not cover: one written with the trigger off.
+row it does not cover: one written with the trigger off. The runtime role
+holding INSERT, UPDATE, DELETE or TRUNCATE on `chain_pre` is refused at
+start, as it is for any privilege beyond appending to the record.
+
+The chain's trigger also sets `inserted_at` and `commit_tx` (the writing
+transaction, which orders the commit-ordered scan exporters read),
+whatever the writer sent, so no writer can keep a row out of that scan.
 
 The chain head API (`store/chain`): `Source.Head(scope)` is the last position
 and hash, and `Source.VerifyRange(scope, from, to)` recomputes positions
