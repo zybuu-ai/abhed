@@ -130,24 +130,27 @@ func (s *Server) answerPlan(w http.ResponseWriter, r *http.Request, live *liveSe
 	if plan.Runbook != nil && !s.gateAnswer(w, r, s.planAnswer(live, plan, user, true)) {
 		return
 	}
-	// Each change is on record before it takes effect; the plan stays
-	// waiting until the runbook is bound.
-	if from := loop.Policy.Mode; from != to {
-		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
-			WriteError(w, http.StatusInternalServerError, "the mode change could not be recorded, so it was not made")
-			return
-		}
-		loop.Policy.Mode = to
-	}
+	// Each change is on record before it takes effect: the answer first, so
+	// one the record did not take changes nothing and the plan still waits;
+	// then the mode, whose record failing undoes the answer on the record.
 	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to), By: user}
 	if rb := plan.Runbook; rb != nil {
 		decided.PlanHash, decided.Runbook = rb.Hash, rb
 	}
 	if err := record(agent.EvPlanDecided, decided); err != nil {
-		loop.UnbindPlan()
 		s.log.Error("plan decision not recorded", "session", id, "error", err)
-		WriteError(w, http.StatusInternalServerError, "the answer could not be recorded, so no runbook is bound")
+		WriteError(w, http.StatusInternalServerError, "the answer could not be recorded, so nothing changed and the plan still waits")
 		return
+	}
+	if from := loop.Policy.Mode; from != to {
+		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
+			_ = record(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning, By: user})
+			loop.TakePlan()
+			s.log.Error("plan mode change not recorded", "session", id, "error", err)
+			WriteError(w, http.StatusInternalServerError, "the mode change could not be recorded, so it was not made and planning goes on")
+			return
+		}
+		loop.Policy.Mode = to
 	}
 	if err := loop.AcceptPlan(plan); err != nil {
 		WriteError(w, http.StatusConflict, "the runbook was not bound: "+err.Error())

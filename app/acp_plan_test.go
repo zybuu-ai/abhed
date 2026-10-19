@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,5 +56,38 @@ func TestStudioRunbookPlan(t *testing.T) {
 	}
 	if len(steps) != 1 || steps[0]["by"] != agent.ByPlan || steps[0]["plan_hash"] != decided[0]["plan_hash"] {
 		t.Fatalf("plan.step %v", steps)
+	}
+}
+
+// An accepted plan whose answer the record does not take changes nothing
+// over ACP: the session stays in plan mode and the plan still waits.
+func TestStudioPlanAnswerNotRecorded(t *testing.T) {
+	r := newStudioRig(t, "")
+	notes := filepath.Join(r.ws, "notes.txt")
+	r.model.script(
+		callTool("c1", "exit_plan", map[string]any{"plan": "1. write notes", "runbook": []any{
+			map[string]any{"tool": "write", "target": notes, "args": map[string]any{"content": "x"}},
+		}}),
+		say("done"))
+	var id string
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		if method != "session/request_permission" {
+			return map[string]any{}
+		}
+		r.cl.conn.session(id).parts.Loop.Recorder.Gate = func() error { return errors.New("the record is gone") }
+		return chosen(params, "allow_once")
+	})
+	id = r.open()
+	r.cl.ok("session/set_mode", map[string]any{"sessionId": id, "modeId": "plan"}, nil)
+	r.prompt(id, "plan the notes")
+	loop := r.cl.conn.session(id).parts.Loop
+	if loop.Policy.Mode != "plan" {
+		t.Fatalf("mode %s after an answer the record did not take", loop.Policy.Mode)
+	}
+	if _, _, bound := loop.BoundRunbook(); bound {
+		t.Fatal("a runbook was bound")
+	}
+	if _, ok := loop.PendingPlan(); !ok {
+		t.Fatal("the plan no longer waits")
 	}
 }

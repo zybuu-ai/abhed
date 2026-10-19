@@ -375,8 +375,12 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 	// The answer is on record before it binds anything; one the record did
 	// not take binds no runbook, so each step asks.
 	if _, err := st.loop.Recorder.Record(agent.EvPlanDecided, agent.ActorUser, agent.Trusted, decided); err != nil {
+		// Back to plan mode, with the plan waiting again: an answer the record
+		// does not hold leaves nothing in force.
 		st.loop.UnbindPlan()
-		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so no runbook is bound: " + err.Error()})
+		_ = modes.Set(ctx, policy.ModePlan, agent.ViaSlash)
+		st.loop.ReofferPlan(plan)
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so the session stays in plan mode and the plan is put to you again after the next turn: " + err.Error()})
 		return ""
 	}
 	if err := st.loop.AcceptPlan(plan); err != nil {

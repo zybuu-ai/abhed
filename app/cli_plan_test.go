@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -164,5 +165,21 @@ func TestPlanAcceptedIntoARefusedModeKeepsPlanning(t *testing.T) {
 	}
 	if got := planDecisions(t, events()); !slices.Equal(got, []string{"keep-planning>"}) {
 		t.Fatalf("recorded %v", got)
+	}
+}
+
+// An accepted plan whose answer the record does not take leaves the session
+// in plan mode, with the plan waiting for an answer again.
+func TestPlanAnswerNotRecordedKeepsPlanning(t *testing.T) {
+	env, surface, _ := planEnv(t, config.Default(), planAskEach)
+	env.st.loop.Recorder.Gate = func() error { return errors.New("the record is gone") }
+	if next := decidePlan(context.Background(), env.st, env.pol, surface); next != "" {
+		t.Fatalf("goes on with %q", next)
+	}
+	if env.pol.Mode != policy.ModePlan {
+		t.Fatalf("mode %s after an answer the record did not take", env.pol.Mode)
+	}
+	if _, ok := env.st.loop.PendingPlan(); !ok {
+		t.Fatal("the plan no longer waits for an answer")
 	}
 }

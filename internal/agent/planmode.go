@@ -82,6 +82,16 @@ func (l *Loop) PendingPlanSince() time.Time {
 	return l.plans.since
 }
 
+// ReofferPlan puts a taken plan back to wait for an answer, when the answer
+// given could not be recorded; a newer plan proposed meanwhile is kept.
+func (l *Loop) ReofferPlan(p PlanProposed) {
+	l.plans.mu.Lock()
+	defer l.plans.mu.Unlock()
+	if l.plans.pending == nil {
+		l.plans.pending = &p
+	}
+}
+
 // TakePlan returns the plan the last run proposed, once.
 func (l *Loop) TakePlan() (PlanProposed, bool) {
 	l.plans.mu.Lock()
