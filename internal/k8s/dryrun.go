@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -256,7 +258,14 @@ func diffValue(path string, a, b any, out *[]string) {
 	}
 }
 
+// plainKey is a field name shown as it is; any other is quoted, so a key
+// cannot read as the approval's own words.
+var plainKey = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
+
 func join(path, key string) string {
+	if !plainKey.MatchString(key) {
+		key = strconv.Quote(key)
+	}
 	if path == "" {
 		return key
 	}
