@@ -12,8 +12,8 @@ import (
 // filesJudged judges each workspace file a call reads or writes as a read or
 // a write of that path would be judged by the rules, and only tightens d: a
 // file a rule denies refuses the call, and one an ask rule covers makes an
-// allowed call ask. The mode's own answer for the file is not taken, since
-// the call itself was judged in the mode.
+// allowed call ask. The mode's own answer for the file, and its default,
+// are not taken, since the call itself was judged in the mode.
 func (l *Loop) filesJudged(tool tools.Tool, call model.ToolCall, d policy.Result) policy.Result {
 	fa, ok := tool.(tools.FileArgs)
 	if !ok || d.Decision == policy.Deny {
@@ -27,7 +27,7 @@ func (l *Loop) filesJudged(tool tools.Tool, call model.ToolCall, d policy.Result
 		case r.Decision == policy.Deny && r.Step != "mode":
 			return policy.Result{Decision: policy.Deny, Step: "deny", Rule: r.Rule, Layer: r.Layer,
 				Reason: fmt.Sprintf("the file %s it would %s: %s", path, as, r.Reason)}, true
-		case r.Decision == policy.Ask && r.Step != "mode" && d.Decision == policy.Allow:
+		case r.Decision == policy.Ask && (r.Step == "ask" || r.Step == "destructive") && d.Decision == policy.Allow:
 			return policy.Result{Decision: policy.Ask, Step: r.Step, Rule: r.Rule, Layer: r.Layer,
 				Reason: fmt.Sprintf("the file %s it would %s: %s", path, as, r.Reason)}, true
 		}

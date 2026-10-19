@@ -1238,6 +1238,10 @@ type SSHConfig struct {
 	// ConnectHosts, when set, are the only addresses ssh_connect may reach:
 	// "10.0.0.5", "*.lab.example" or "vm.example:2222", matched without case.
 	ConnectHosts []string `json:"connect_hosts,omitempty"`
+	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
+	Transfers bool `json:"transfers,omitempty"`
+	// TransferMaxMB bounds one transfer; 0 is 16.
+	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
 }
 
 type SSHHostConfig struct {

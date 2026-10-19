@@ -40,6 +40,13 @@ All notable changes to Abhed are recorded here. The format follows
   `sudo -S` or a key written to a file never appears in the command line,
   the approval, the record or the model's view; output that echoes it
   reads `[secret NAME]`.
+- `ssh_put` and `ssh_get` move one file over SFTP, behind `ssh.transfers`
+  (off by default) and `ssh.transfer_max_mb` (16 by default): `ssh_put`
+  sends a workspace file or a stored secret by NAME, so a key reaches a
+  host without passing through the model; `ssh_get` fetches into the
+  workspace. Both ask unless an allow rule on `host:remote_path` covers
+  them, the workspace file is judged as a read or write of it, and the
+  approval and record keep the paths, size and sha256, never the content.
 
 ## [1.2.8] - 2026-10-14
 

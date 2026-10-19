@@ -423,6 +423,41 @@ the command's stdin`), and anything the command prints of it comes back as
 `[secret DB_PW]`. The rules read the call as they read any `ssh` call, by
 `host/command`, and the secret needs its own rule in every mode.
 
+### Moving files to and from a host
+
+With `"transfers": true`, `ssh_put` and `ssh_get` move one file at a time
+over SFTP, as the host's own `sftp-server` serves it. They are off by
+default, so turning on `ssh` alone gives no new way to change a host.
+
+```json
+"ssh": { "enabled": true, "transfers": true, "transfer_max_mb": 16 }
+```
+
+- `ssh_put` writes `remote_path` (absolute and clean) on a host from a
+  workspace `file` or a stored `secret` by NAME, with `mode` (octal; 0644
+  for a file, 0600 for a secret, by default). What is sent never passes
+  through the model: a TLS key goes from the secrets store to the host.
+  Where the server can rename over a file (OpenSSH's `posix-rename`), the
+  content is written beside the target and renamed over it, so a failed
+  transfer leaves the old file; elsewhere it is written in place.
+- `ssh_get` reads `remote_path` into a workspace `file`. A new file is
+  readable by its owner only; an existing one is replaced only if the
+  session has read it, and the change can be undone like a write.
+
+Both always ask unless an allow rule covers them, and read as
+`host:remote_path`, so `ssh_get(web1:/etc/nginx/*)` allows fetching the
+nginx configuration from `web1` and nothing else. Rules on `ssh` do not
+cover them. A secret needs its own `secret(NAME)` rule; the workspace file
+is judged as a `read` (for `ssh_put`) or `write` (for `ssh_get`) of it would
+be, so `deny read(*.key)` and `ask write(*.conf)` hold here too. The
+approval names the account, address, path, source and mode, and the result
+gives the size and sha256 of what moved; neither, nor the record, holds
+the content. A file over `transfer_max_mb` (16 MiB by default, at most
+1024) is refused before it is read or sent, and a call that cannot succeed
+(an unknown host, a relative or unclean path, a source that cannot be read)
+is refused before anyone is asked. A workspace configuration can only turn
+transfers off or lower the bound.
+
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment
 variable, never the password itself. A passphrase-protected key says so and
