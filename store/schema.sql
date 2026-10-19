@@ -689,3 +689,16 @@ BEGIN
 END $$;
 
 INSERT INTO schema_version (version) VALUES (11) ON CONFLICT DO NOTHING;
+-- Schema version 12: each event's writing transaction, so a reader can follow
+-- the record in commit order. A row whose transaction id is below the oldest
+-- transaction still running is committed, and no row written later can sort
+-- before it: an exporter that resumes from a position never skips one.
+-- Rows from before this version keep no id and sort first, by time.
+-- The column is added without a default and given one after, so existing
+-- rows are not rewritten.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS commit_tx xid8;
+ALTER TABLE events ALTER COLUMN commit_tx SET DEFAULT pg_current_xact_id();
+CREATE INDEX IF NOT EXISTS events_commit_order_idx
+  ON events (tenant_id, (COALESCE(commit_tx, '0'::xid8)), created_at, session_id, seq);
+
+INSERT INTO schema_version (version) VALUES (12) ON CONFLICT DO NOTHING;

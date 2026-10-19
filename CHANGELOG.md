@@ -94,6 +94,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The Postgres record in commit order, for exporters: each event keeps its
+  writing transaction (`commit_tx`, schema version 12; existing rows are not
+  rewritten and sort first), and `store.Postgres.ScanCommitted` reads a
+  tenant's events after a `CommitPos` only once every earlier transaction
+  has finished, so a reader resuming from a position never passes over a row
+  that commits late. `store.PostgresOf` finds the Postgres store behind a
+  wrapper such as the held store. Run `abhed migrate` to add the column and
+  its index.
 - `server.metrics`: Prometheus metrics for `abhed serve` and its control
   plane, off by default. Policy decisions by decision, step and tool;
   approvals by answer; supervisor verdicts by code; egress decisions by kind
