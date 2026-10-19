@@ -18,7 +18,7 @@ func supervisorDoctor(cfg config.Config) string {
 	}
 	var notes []string
 	if m.APIKeyEnv != "" && os.Getenv(m.APIKeyEnv) == "" {
-		notes = append(notes, config.Printable(m.APIKeyEnv)+" is not set; every judgement will fail closed")
+		notes = append(notes, config.Printable(m.APIKeyEnv)+" is not set, so the judge is sent no key; an endpoint that needs one fails every judgement closed")
 	}
 	if p, ok := cfg.Model.Providers[cfg.Model.Default]; ok && p.Model != "" && p.Model == m.Model {
 		notes = append(notes, "the judge is the agent's own model; one of another family is less likely to share its mistakes")
