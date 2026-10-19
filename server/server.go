@@ -4214,6 +4214,9 @@ type approveRequest struct {
 	// Optional for older clients, which answer whichever request is pending;
 	// clients should send it.
 	RequestID string `json:"request_id,omitempty"`
+	// ConfirmUndo, for a plan's runbook (request_id plan:<hash>), confirms
+	// the steps it lists as having no undo.
+	ConfirmUndo bool `json:"confirm_no_undo,omitempty"`
 }
 
 func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
@@ -4222,6 +4225,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	// The session is looked up first, so an unknown one is 404 whatever the body.
 	decErr := json.NewDecoder(r.Body).Decode(&req)
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	owned := ok
 	if !ok {
 		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	}
@@ -4249,6 +4253,19 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if decErr != nil {
 		badBody(w, decErr, "invalid JSON body")
+		return
+	}
+	// A plan's runbook listed in the approval queue is answered as POST /plan answers it.
+	if hash, isPlan := strings.CutPrefix(req.RequestID, planRequest); isPlan {
+		if req.Scope != "" {
+			WriteError(w, http.StatusBadRequest, "a runbook has no scope to always allow")
+			return
+		}
+		decision := planKeep
+		if req.Approved {
+			decision = planApprove
+		}
+		s.answerPlan(w, r, live, owned, decision, hash, req.ConfirmUndo, true)
 		return
 	}
 	s.answerHere(w, r, live, req)

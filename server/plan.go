@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -44,6 +45,20 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	s.answerPlan(w, r, live, owner, req.Decision, req.PlanHash, req.ConfirmUndo, false)
+}
+
+// planRequest names a waiting plan's runbook as a request: in PendingAsks,
+// to the approval gate, and as the request_id an answer on
+// POST /v1/sessions/{id}/approve gives.
+const planRequest = "plan:"
+
+// answerPlan answers the plan waiting in live, from POST /plan or, through
+// the approval queue, POST /approve with request_id plan:<hash>; queued
+// says the latter, whose reply carries no message to send. A plan an
+// approver accepts goes on with its message queued for the owner's next run.
+func (s *Server) answerPlan(w http.ResponseWriter, r *http.Request, live *liveSession, owner bool, decision, hash string, confirmUndo, queued bool) {
+	user, id := UserOf(r.Context()), live.ID
 	// Held as a message holds it, so no turn starts while the mode changes.
 	live.claimMu.Lock()
 	defer live.claimMu.Unlock()
@@ -60,7 +75,7 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusConflict, "no plan is waiting for an answer in this session")
 		return
 	}
-	if req.PlanHash == "" || req.PlanHash != plan.Hash {
+	if hash == "" || hash != plan.Hash {
 		WriteError(w, http.StatusConflict, "the answer is for another plan than the one waiting")
 		return
 	}
@@ -73,9 +88,9 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		return err
 	}
 	configured := policy.Mode(orDefaultStr(s.opts.Config.Permissions.Mode, string(policy.ModeDefault)))
-	to := map[string]policy.Mode{planAcceptEdits: policy.ModeAcceptEdits, planApprove: policy.ModeDefault}[req.Decision]
+	to := map[string]policy.Mode{planAcceptEdits: policy.ModeAcceptEdits, planApprove: policy.ModeDefault}[decision]
 	switch {
-	case req.Decision == planKeep:
+	case decision == planKeep:
 		// The owner withdraws their own plan; an approver's refusal is an answer the gate weighs.
 		if !owner && !s.gateAnswer(w, r, s.planAnswer(live, plan, user, false)) {
 			return
@@ -85,6 +100,10 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		loop.TakePlan()
+		if queued {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		WriteJSON(w, http.StatusOK, map[string]string{"decision": planKeep})
 		return
 	case to == "":
@@ -97,7 +116,7 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusConflict, "background tasks are running in this session; answer the plan once they end")
 		return
 	}
-	if n := undoable(plan.Runbook); n > 0 && !req.ConfirmUndo {
+	if n := undoable(plan.Runbook); n > 0 && !confirmUndo {
 		WriteError(w, http.StatusPreconditionRequired, fmt.Sprintf("%d steps of the runbook cannot be undone; confirm them with confirm_no_undo", n))
 		return
 	}
@@ -139,7 +158,80 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 	if rb := plan.Runbook; rb != nil {
 		msg += "\n" + agent.RunbookPrompt(*rb)
 	}
-	WriteJSON(w, http.StatusOK, map[string]string{"decision": req.Decision, "mode": string(to), "message": msg})
+	if !owner || queued {
+		// The owner's next run reads it first; nobody else sends to their session.
+		loop.Queue(msg)
+	}
+	if queued {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{"decision": decision, "mode": string(to), "message": msg})
+}
+
+// pendingPlanAsk is the plan waiting in l with a runbook, as the approval
+// queue lists it, or false. Called without l.mu held.
+func pendingPlanAsk(l *liveSession, tenant, owner string) (PendingAsk, bool) {
+	if l.Loop == nil {
+		return PendingAsk{}, false
+	}
+	plan, ok := l.Loop.PendingPlan()
+	if !ok || plan.Runbook == nil {
+		return PendingAsk{}, false
+	}
+	return PendingAsk{SessionID: l.ID, Tenant: tenant, Owner: owner, Request: planRequest + plan.Hash,
+		RequestID: planRequest + plan.Hash, Tool: "exit_plan", Args: redactedArgs(l, planSummary(plan)),
+		Reason: planReason(plan), Since: l.Loop.PendingPlanSince(), StepTools: stepTools(plan)}, true
+}
+
+// planSummary is a runbook as an approver reads it in a queue: the plan's
+// text, clipped, and each step on one line.
+func planSummary(plan agent.PlanProposed) json.RawMessage {
+	text := []rune(plan.Text)
+	if len(text) > 1000 {
+		text = append(text[:1000], '…')
+	}
+	var steps []string
+	for _, st := range plan.Runbook.Steps {
+		line := fmt.Sprintf("%d. %s %s %s", st.Index, st.Tool, st.Target, stepWhat(st))
+		if st.Destructive != "" {
+			line += " (no undo: " + st.Destructive + ")"
+		}
+		steps = append(steps, line)
+	}
+	out, _ := json.Marshal(map[string]any{"plan": string(text), "steps": steps})
+	return out
+}
+
+// stepTools are the tools a runbook's steps call, each once, in order.
+func stepTools(plan agent.PlanProposed) []string {
+	var out []string
+	for _, st := range plan.Runbook.Steps {
+		if !slices.Contains(out, st.Tool) {
+			out = append(out, st.Tool)
+		}
+	}
+	return out
+}
+
+// stepWhat is what a step runs, on one line.
+func stepWhat(st agent.RunbookStep) string {
+	var a map[string]any
+	if json.Unmarshal(st.Args, &a) == nil {
+		if c, ok := a["command"].(string); ok {
+			return c
+		}
+	}
+	return string(st.Args)
+}
+
+// planReason says what approving a runbook approves.
+func planReason(plan agent.PlanProposed) string {
+	why := fmt.Sprintf("a runbook of %d steps, plan %s: approving it runs each step made exactly as listed without asking", len(plan.Runbook.Steps), plan.Hash)
+	if n := undoable(plan.Runbook); n > 0 {
+		why += fmt.Sprintf("; %d cannot be undone", n)
+	}
+	return why
 }
 
 // planAnswer is an answer to a plan's runbook as the approval gate is told
@@ -148,14 +240,9 @@ func (s *Server) planAnswer(live *liveSession, plan agent.PlanProposed, by strin
 	s.mu.RLock()
 	tenant, owner := live.Tenant, live.User
 	s.mu.RUnlock()
-	args, _ := json.Marshal(map[string]any{"plan": plan.Text, "runbook": plan.Runbook})
-	n := 0
-	if plan.Runbook != nil {
-		n = len(plan.Runbook.Steps)
-	}
-	return ApprovalAnswer{Tenant: tenant, SessionID: live.ID, Owner: owner, Request: "plan:" + plan.Hash,
-		Tool: "exit_plan", Args: redactedArgs(live, args), Reason: fmt.Sprintf("a runbook of %d steps, plan %s", n, plan.Hash),
-		Since: live.Created, By: by, Approved: approved}
+	return ApprovalAnswer{Tenant: tenant, SessionID: live.ID, Owner: owner, Request: planRequest + plan.Hash,
+		Tool: "exit_plan", Args: redactedArgs(live, planSummary(plan)), Reason: planReason(plan),
+		Since: live.Loop.PendingPlanSince(), By: by, Approved: approved, StepTools: stepTools(plan)}
 }
 
 // undoable counts a runbook's steps that cannot be undone.
