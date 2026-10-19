@@ -172,6 +172,9 @@ func (l *Loop) supervisorCase(call model.ToolCall, mutates bool, before policy.R
 	if l.Policy != nil {
 		c.DeclaredRead = l.Policy.RemoteReadOf(call.Name, call.Args)
 	}
+	l.sup.mu.Lock()
+	c.Plan = l.sup.plan
+	l.sup.mu.Unlock()
 	return c
 }
 

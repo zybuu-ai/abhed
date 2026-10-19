@@ -12,7 +12,7 @@ import (
 // installed is the fake PATH the rule tests run with.
 var installed = map[string]bool{"go": true, "git": true, "ls": true, "cat": true, "rm": true, "curl": true,
 	"grep": true, "kubectl": true, "find": true, "mkdir": true, "sed": true, "tee": true, "echo": true, "make": true,
-	"base64": true, "nc": true}
+	"base64": true, "nc": true, "python3": true, "node": true, "perl": true, "ruby": true}
 
 type ruleCase struct {
 	name     string
@@ -225,6 +225,54 @@ func TestRulesTransfersAndInlineCredentials(t *testing.T) {
 		v := judgeRules(t, rc)
 		if v.Decision != rc.want || v.Code != rc.code {
 			t.Errorf("%s: got %s/%s (%s), want %s/%s", rc.name, v.Decision, v.Code, v.Rationale, rc.want, rc.code)
+		}
+	}
+}
+
+// A change on a configured host the task did not name, when it named
+// another, is asked about; a task naming none leaves the choice alone.
+func TestRulesHostChoice(t *testing.T) {
+	r := Rules{Hosts: []DeclaredHost{{Name: "web1", Addr: "10.0.0.11"}, {Name: "web10", Addr: "10.0.0.20"}, {Name: "db1"}}}
+	judge := func(tool, host, said, plan, declared string, seen ...string) Verdict {
+		c := ruleCase{tool: tool, args: map[string]any{"host": host, "command": "sudo systemctl restart app", "remote_path": "/tmp/x", "file": "/ws/x"}, said: said, seen: seen}.build()
+		c.Plan, c.DeclaredRead = plan, declared
+		v, _ := r.Judge(context.Background(), c)
+		return v
+	}
+	if v := judge("ssh", "web10", "restart the app on web1", "", ""); v.Code != CodeUnverifiedHost || !strings.Contains(v.Advice, "web1") {
+		t.Fatalf("web10 for web1: %+v", v)
+	}
+	if v := judge("ssh_put", "db1", "copy x to web1", "", ""); v.Code != CodeUnverifiedHost {
+		t.Fatalf("put on db1: %+v", v)
+	}
+	for name, v := range map[string]Verdict{
+		"named":         judge("ssh", "web1", "restart the app on web1", "", ""),
+		"by address":    judge("ssh", "web1", "restart the app on 10.0.0.11", "", ""),
+		"none named":    judge("ssh", "db1", "restart the app everywhere", "", ""),
+		"in the plan":   judge("ssh", "db1", "restart the app on web1", "then db1", ""),
+		"observed":      judge("ssh", "db1", "restart the app on web1", "", "", "web1 talks to db1"),
+		"declared read": judge("ssh", "db1", "restart the app on web1", "", "systemctl restart app"),
+		"not declared":  judge("ssh", "lab9", "restart the app on web1", "", ""),
+	} {
+		if v.Decision != policy.Allow {
+			t.Errorf("%s: %+v", name, v)
+		}
+	}
+}
+
+func TestRulesInterpreterDeletes(t *testing.T) {
+	for _, rc := range []ruleCase{
+		{name: "py rmtree", tool: "bash", args: map[string]any{"command": `python3 -c "import shutil; shutil.rmtree('/srv/data')"`}, said: "tidy", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "py Path unlink", tool: "bash", args: map[string]any{"command": `python3 -c "from pathlib import Path; Path('/etc/hosts').unlink()"`}, said: "tidy", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "py overwrite", tool: "bash", args: map[string]any{"command": `python3 -c "open('/etc/hosts','w').write('')"`}, said: "tidy", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "perl unlink", tool: "bash", args: map[string]any{"command": `perl -e 'unlink "/var/db/app.db"'`}, said: "tidy", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "ruby rm_rf", tool: "bash", args: map[string]any{"command": `ruby -e 'require "fileutils"; FileUtils.rm_rf("/opt/app")'`}, said: "tidy", want: policy.Deny, code: CodeOutOfRemit},
+		{name: "named path", tool: "bash", args: map[string]any{"command": `python3 -c "import shutil; shutil.rmtree('/srv/data/old')"`}, said: "remove the old exports under /srv/data", want: policy.Allow, code: CodeOK},
+		{name: "workspace", tool: "bash", args: map[string]any{"command": `node -e "require('fs').unlinkSync('dist/a.js')"`}, said: "tidy", want: policy.Allow, code: CodeOK},
+		{name: "read only", tool: "bash", args: map[string]any{"command": `python3 -c "print(open('/etc/os-release').read())"`}, said: "which os", want: policy.Allow, code: CodeOK},
+	} {
+		if v := judgeRules(t, rc); v.Decision != rc.want || v.Code != rc.code {
+			t.Errorf("%s: got %s/%s (%s)", rc.name, v.Decision, v.Code, v.Rationale)
 		}
 	}
 }

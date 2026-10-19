@@ -21,7 +21,7 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 	if !m.Enabled {
 		return nil
 	}
-	var judge monitor.Monitor = monitor.Rules{LookPath: hostLookPath(reg), Declared: declared(cfg)}
+	var judge monitor.Monitor = monitor.Rules{LookPath: hostLookPath(reg), Declared: declared(cfg), Hosts: sshHosts(cfg)}
 	if m.Judge == "model" {
 		judge = monitor.Chain{judge, monitor.Model{Endpoint: m.Endpoint, Model: m.Model, APIKey: apiKey(m.APIKeyEnv)}}
 	}
@@ -49,6 +49,19 @@ func declared(cfg config.Config) []string {
 	}
 	for _, c := range cfg.K8s.Clusters {
 		out = append(out, c.Name)
+	}
+	return out
+}
+
+// sshHosts are the configured ssh hosts by name and address.
+func sshHosts(cfg config.Config) []monitor.DeclaredHost {
+	var out []monitor.DeclaredHost
+	for _, h := range cfg.SSH.Hosts {
+		addr := h.Addr
+		if host, _, err := net.SplitHostPort(h.Addr); err == nil {
+			addr = host
+		}
+		out = append(out, monitor.DeclaredHost{Name: h.Name, Addr: addr})
 	}
 	return out
 }

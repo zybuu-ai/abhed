@@ -42,7 +42,12 @@ type Rules struct {
 	// Declared are the hosts and clusters the operator configured, by name
 	// and address: the operator naming one is as good as the person naming it.
 	Declared []string
+	// Hosts are the configured ssh hosts, each by its name and address.
+	Hosts []DeclaredHost
 }
+
+// DeclaredHost is one configured ssh host.
+type DeclaredHost struct{ Name, Addr string }
 
 // Judge applies the rules: a deny for destructive work outside the remit or
 // a program that is not there, an ask for a target nothing showed or a
@@ -55,7 +60,7 @@ func (r Rules) Judge(_ context.Context, c Case) (Verdict, error) {
 		}
 	}
 	var ask *Verdict
-	for _, check := range []func(*given, Case) *Verdict{r.drift, r.program, r.evidence, r.composition} {
+	for _, check := range []func(*given, Case) *Verdict{r.drift, r.program, r.evidence, r.hostChoice, r.composition} {
 		v := check(k, c)
 		if v == nil {
 			continue
@@ -347,8 +352,47 @@ func destroys(prog string, args []string) []string {
 	if strings.HasPrefix(prog, "mkfs.") {
 		return operands(args)
 	}
+	if code := oneLiner(prog, args); code != "" {
+		var out []string
+		for _, m := range codeDeletes.FindAllStringSubmatch(code, -1) {
+			for _, g := range m[1:] {
+				if g != "" {
+					out = append(out, g)
+				}
+			}
+		}
+		return out
+	}
 	return nil
 }
+
+// oneLiner is the code an interpreter is given on its command line.
+func oneLiner(prog string, args []string) string {
+	flag := ""
+	switch {
+	case strings.HasPrefix(prog, "python"):
+		flag = "-c"
+	case prog == "node", prog == "perl", prog == "ruby":
+		flag = "-e"
+	case prog == "php":
+		flag = "-r"
+	default:
+		return ""
+	}
+	for i, a := range args {
+		if (a == flag || prog == "node" && a == "--eval") && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// codeDeletes finds the well-known calls that delete or overwrite a file,
+// with the literal path they are given, in one line of Python, Node, Perl,
+// Ruby or PHP. A textual scan: it finds the common forms, not every one.
+var codeDeletes = regexp.MustCompile(`(?:\b(?:rmtree|remove|unlink|rmdir|removedirs|rmSync|unlinkSync|rmdirSync|rm_rf|rm_r|rm_f|delete|truncate|writeFileSync|write_text|write_bytes)\s*\(?\s*['"]([^'"]+)['"]` +
+	`|\bPath\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*(?:unlink|rmdir|write_text|write_bytes)\b` +
+	`|\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][wa])`)
 
 func execsRemove(args []string) bool {
 	for i, a := range args {
@@ -535,6 +579,66 @@ func sends(prog string, args []string) bool {
 		}
 	}
 	return false
+}
+
+// hostChoice asks about a change on one configured host when the task, or
+// the approved plan, names others by name and this one nowhere: the shape of
+// a model that picked the wrong machine. A task that names no configured
+// host ("the web hosts") leaves the choice to the model.
+func (r Rules) hostChoice(k *given, c Case) *Verdict {
+	if (c.Tool != "ssh" && c.Tool != "ssh_put") || declaredRead(c) || len(r.Hosts) == 0 {
+		return nil
+	}
+	target := strings.ToLower(k.str("host"))
+	text := k.said + "\n" + strings.ToLower(c.Plan)
+	var chosen *DeclaredHost
+	var named []string
+	for i, h := range r.Hosts {
+		hit := false
+		for _, n := range []string{h.Name, h.Addr} {
+			n = strings.ToLower(n)
+			if n == "" {
+				continue
+			}
+			if n == target {
+				chosen = &r.Hosts[i]
+			}
+			hit = hit || mentions(text, n)
+		}
+		if hit {
+			named = append(named, h.Name)
+		}
+	}
+	if chosen == nil || len(named) == 0 {
+		return nil
+	}
+	for _, n := range []string{chosen.Name, chosen.Addr} {
+		if n != "" && (mentions(text, strings.ToLower(n)) || k.observed(n)) {
+			return nil
+		}
+	}
+	return &Verdict{Decision: policy.Ask, Code: CodeUnverifiedHost, Confidence: 0.8,
+		Rationale: fmt.Sprintf("the task names %s, not %s, and nothing earlier showed %s", strings.Join(named, ", "), chosen.Name, chosen.Name),
+		Advice:    fmt.Sprintf("run it on %s, as the task says, or ask the person whether %s is meant", strings.Join(named, " or "), chosen.Name)}
+}
+
+// mentions reports n in text as a whole word, so web1 is not found in web10.
+func mentions(text, n string) bool {
+	for i := 0; ; {
+		j := strings.Index(text[i:], n)
+		if j < 0 {
+			return false
+		}
+		start, end := i+j, i+j+len(n)
+		if (start == 0 || !hostRune(text[start-1])) && (end == len(text) || !hostRune(text[end])) {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+func hostRune(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '_'
 }
 
 // written names the files a command writes through its arguments.

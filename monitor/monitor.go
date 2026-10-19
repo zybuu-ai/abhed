@@ -58,6 +58,8 @@ type Case struct {
 	// DeclaredRead is the operator's ssh.read_commands entry an ssh call
 	// runs, when it runs one: the operator has said that command is a read.
 	DeclaredRead string
+	// Plan is the plan the person approved, if any.
+	Plan string
 }
 
 // Provenance is one name in the arguments and where it was first seen.
