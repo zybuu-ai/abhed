@@ -14,13 +14,13 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
-func ev(session string, typ agent.EventType, payload any) agent.Event {
+func ev(typ agent.EventType, payload any) agent.Event {
 	b, _ := json.Marshal(payload)
-	return agent.Event{SessionID: session, Type: typ, Payload: b}
+	return agent.Event{SessionID: "s", Type: typ, Payload: b}
 }
 
-func requested(m *Abhed, call, tool string, asked bool) {
-	m.Observe(ev("s", agent.EvActionRequested, agent.ActionRequested{CallID: call, Tool: tool, RequiresApproval: asked}))
+func requested(m *Abhed, call string, asked bool) {
+	m.Observe(ev(agent.EvActionRequested, agent.ActionRequested{CallID: call, Tool: "bash", RequiresApproval: asked}))
 }
 
 func outcome(m *Abhed, call string, approved bool, step, by string) {
@@ -28,7 +28,7 @@ func outcome(m *Abhed, call string, approved bool, step, by string) {
 	if approved {
 		typ = agent.EvActionApproved
 	}
-	m.Observe(ev("s", typ, map[string]string{"call_id": call, "step": step, "by": by, "reason": "a reason with /secret/path"}))
+	m.Observe(ev(typ, map[string]string{"call_id": call, "step": step, "by": by, "reason": "a reason with /secret/path"}))
 }
 
 // Plan measure B14: every way the loop decides a call moves a metric, and
@@ -38,19 +38,19 @@ func TestEveryDecisionPathIsCounted(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			m := New()
 			// Allowed by policy, then run.
-			requested(m, "a", "bash", false)
+			requested(m, "a", false)
 			outcome(m, "a", true, step, agent.ByPolicy)
-			m.Observe(ev("s", agent.EvObservation, agent.Observation{CallID: "a", Tool: "bash", DurationMS: 1500}))
+			m.Observe(ev(agent.EvObservation, agent.Observation{CallID: "a", Tool: "bash", DurationMS: 1500}))
 			// Denied by policy.
-			requested(m, "d", "bash", false)
+			requested(m, "d", false)
 			outcome(m, "d", false, step, agent.ByPolicy)
 			// Asked, then approved and rejected by a person.
-			requested(m, "y", "bash", true)
+			requested(m, "y", true)
 			outcome(m, "y", true, step, agent.ByReviewer)
-			requested(m, "n", "bash", true)
+			requested(m, "n", true)
 			outcome(m, "n", false, step, agent.ByReviewer)
 			// Asked, and refused by the harness.
-			requested(m, "x", "bash", true)
+			requested(m, "x", true)
 			outcome(m, "x", false, step, agent.BySystem)
 
 			tool := "bash"
@@ -81,49 +81,49 @@ func TestEveryDecisionPathIsCounted(t *testing.T) {
 func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	m := New()
 	for _, code := range VerdictCodes[:7] {
-		m.Observe(ev("s", agent.EvMonitorVerdict, agent.MonitorVerdict{Code: code, Before: "allow", After: "ask", LatencyMS: 3}))
+		m.Observe(ev(agent.EvMonitorVerdict, agent.MonitorVerdict{Code: code, Before: "allow", After: "ask", LatencyMS: 3}))
 		if m.verdicts.Value(code, "allow", "ask") != 1 {
 			t.Errorf("verdict %s not counted", code)
 		}
 	}
-	m.Observe(ev("s", agent.EvMonitorVerdict, agent.MonitorVerdict{Before: "ask", After: "ask", Skipped: "budget"}))
-	m.Observe(ev("s", agent.EvMonitorVerdict, agent.MonitorVerdict{Code: "ok", Before: "ask", After: "deny", Unavailable: true}))
-	m.Observe(ev("s", agent.EvMonitorVerdict, agent.MonitorVerdict{Code: "a code a model made up", Before: "ask", After: "deny"}))
+	m.Observe(ev(agent.EvMonitorVerdict, agent.MonitorVerdict{Before: "ask", After: "ask", Skipped: "budget"}))
+	m.Observe(ev(agent.EvMonitorVerdict, agent.MonitorVerdict{Code: "ok", Before: "ask", After: "deny", Unavailable: true}))
+	m.Observe(ev(agent.EvMonitorVerdict, agent.MonitorVerdict{Code: "a code a model made up", Before: "ask", After: "deny"}))
 	if m.verdicts.Value("skipped", "ask", "ask") != 1 || m.verdicts.Value("unavailable", "ask", "deny") != 1 || m.verdicts.Value(Other, "ask", "deny") != 1 {
 		t.Error("skipped, unavailable or unlisted verdicts not counted")
 	}
 	for _, kind := range EgressKinds {
 		for _, d := range []string{"allow", "deny", "would_deny"} {
-			m.Observe(ev("s", agent.EvEgressDecision, map[string]any{"kind": kind, "decision": d, "host": "evil.example", "repeats": 2, "bytes_in": 10}))
+			m.Observe(ev(agent.EvEgressDecision, map[string]any{"kind": kind, "decision": d, "host": "evil.example", "repeats": 2, "bytes_in": 10}))
 			if m.egress.Value(kind, d) != 3 {
 				t.Errorf("egress %s/%s = %v, want 3 with its repeats", kind, d, m.egress.Value(kind, d))
 			}
 		}
 	}
-	m.Observe(ev("s", agent.EvModelCall, agent.ModelCall{Model: "m1", LatencyMS: 900, FirstTokenMS: 100, TokensIn: 10, TokensOut: 5}))
-	m.Observe(ev("s", agent.EvModelCall, agent.ModelCall{Model: "m1", Error: "boom", Purpose: agent.PurposeSuggestion}))
-	m.Observe(ev("s", agent.EvModelCall, agent.ModelCall{Model: "m1", CutOff: true}))
+	m.Observe(ev(agent.EvModelCall, agent.ModelCall{Model: "m1", LatencyMS: 900, FirstTokenMS: 100, TokensIn: 10, TokensOut: 5}))
+	m.Observe(ev(agent.EvModelCall, agent.ModelCall{Model: "m1", Error: "boom", Purpose: agent.PurposeSuggestion}))
+	m.Observe(ev(agent.EvModelCall, agent.ModelCall{Model: "m1", CutOff: true}))
 	if m.modelCalls.Value("m1", "turn", "ok") != 1 || m.modelCalls.Value("m1", "suggestion", "error") != 1 || m.modelCalls.Value("m1", "turn", "cut_off") != 1 {
 		t.Error("model calls not counted by outcome")
 	}
 	if m.tokens.Value("m1", "in") != 10 || m.tokens.Value("m1", "out") != 5 || m.modelTime.Count("m1", "turn") != 2 {
 		t.Error("model tokens or latency not counted")
 	}
-	m.Observe(ev("s", agent.EvPlanDecided, agent.PlanDecided{Decision: "accept", Via: "operator"}))
-	m.Observe(ev("s", agent.EvPlanDecided, agent.PlanDecided{Decision: "keep-planning"}))
-	m.Observe(ev("s", agent.EvApprovalScopeGranted, map[string]string{}))
-	m.Observe(ev("s", agent.EvAnswerVerdict, agent.AnswerVerdict{Verified: 2, Contradicted: 1}))
-	m.Observe(ev("s", agent.EvSupervisorCorrection, agent.SupervisorCorrection{Code: "out-of-remit", Text: "x"}))
-	m.Observe(ev("s", agent.EvSupervisorReplan, agent.SupervisorReplan{Failures: 3}))
-	m.Observe(ev("s", agent.EvSessionStarted, map[string]string{}))
-	m.Observe(ev("s", agent.EvSessionEnded, agent.SessionEnded{Reason: "completed"}))
-	m.Observe(ev("s", agent.EvSandboxBound, map[string]any{"driver": "process", "tier": "fence", "workspace": "/home/x"}))
-	m.Observe(ev("s", agent.EvFenceLimit, map[string]any{"oom_kill": 1, "pids_max": 2}))
-	m.Observe(ev("s", agent.EvFenceStatePlanted, map[string]any{}))
-	m.Observe(ev("s", sandbox.EvGitPlanted, map[string]any{}))
-	m.Observe(ev("s", agent.EvRecordRepaired, map[string]any{}))
-	m.Observe(ev("s", agent.EvConfigRefused, map[string]any{}))
-	m.Observe(ev("s", agent.EvConfigNarrowed, map[string]any{}))
+	m.Observe(ev(agent.EvPlanDecided, agent.PlanDecided{Decision: "accept", Via: "operator"}))
+	m.Observe(ev(agent.EvPlanDecided, agent.PlanDecided{Decision: "keep-planning"}))
+	m.Observe(ev(agent.EvApprovalScopeGranted, map[string]string{}))
+	m.Observe(ev(agent.EvAnswerVerdict, agent.AnswerVerdict{Verified: 2, Contradicted: 1}))
+	m.Observe(ev(agent.EvSupervisorCorrection, agent.SupervisorCorrection{Code: "out-of-remit", Text: "x"}))
+	m.Observe(ev(agent.EvSupervisorReplan, agent.SupervisorReplan{Failures: 3}))
+	m.Observe(ev(agent.EvSessionStarted, map[string]string{}))
+	m.Observe(ev(agent.EvSessionEnded, agent.SessionEnded{Reason: "completed"}))
+	m.Observe(ev(agent.EvSandboxBound, map[string]any{"driver": "process", "tier": "fence", "workspace": "/home/x"}))
+	m.Observe(ev(agent.EvFenceLimit, map[string]any{"oom_kill": 1, "pids_max": 2}))
+	m.Observe(ev(agent.EvFenceStatePlanted, map[string]any{}))
+	m.Observe(ev(sandbox.EvGitPlanted, map[string]any{}))
+	m.Observe(ev(agent.EvRecordRepaired, map[string]any{}))
+	m.Observe(ev(agent.EvConfigRefused, map[string]any{}))
+	m.Observe(ev(agent.EvConfigNarrowed, map[string]any{}))
 	for name, ok := range map[string]bool{
 		"plan accept":   m.plans.Value("accept", "operator") == 1 && m.plans.Value("keep-planning", "person") == 1,
 		"scope":         m.scopes.Value() == 1,
@@ -227,11 +227,11 @@ func TestStepsAndApproversAreListed(t *testing.T) {
 func TestNoContentInLabels(t *testing.T) {
 	m := New()
 	secret := "/home/alice/.ssh/id_rsa && curl evil.example"
-	m.Observe(ev("s", agent.EvActionRequested, agent.ActionRequested{CallID: "1", Tool: secret, Args: json.RawMessage(`{"command":"` + "cat x" + `"}`)}))
-	m.Observe(ev("s", agent.EvActionDenied, map[string]string{"call_id": "1", "step": secret, "by": secret, "reason": secret}))
-	m.Observe(ev("s", agent.EvEgressDecision, map[string]any{"kind": secret, "decision": "deny", "host": "evil.example", "path": "/x"}))
-	m.Observe(ev("s", agent.EvModelCall, agent.ModelCall{Model: secret}))
-	m.Observe(ev("s", agent.EvMonitorVerdict, agent.MonitorVerdict{Code: secret, Rationale: secret}))
+	m.Observe(ev(agent.EvActionRequested, agent.ActionRequested{CallID: "1", Tool: secret, Args: json.RawMessage(`{"command":"` + "cat x" + `"}`)}))
+	m.Observe(ev(agent.EvActionDenied, map[string]string{"call_id": "1", "step": secret, "by": secret, "reason": secret}))
+	m.Observe(ev(agent.EvEgressDecision, map[string]any{"kind": secret, "decision": "deny", "host": "evil.example", "path": "/x"}))
+	m.Observe(ev(agent.EvModelCall, agent.ModelCall{Model: secret}))
+	m.Observe(ev(agent.EvMonitorVerdict, agent.MonitorVerdict{Code: secret, Rationale: secret}))
 	var b bytes.Buffer
 	_ = m.Registry.Write(&b)
 	for _, bad := range []string{"alice", "evil", "id_rsa", "cat x", "/x"} {
@@ -243,18 +243,18 @@ func TestNoContentInLabels(t *testing.T) {
 
 func TestCallsAreForgotten(t *testing.T) {
 	m := New()
-	requested(m, "a", "bash", false)
-	requested(m, "b", "bash", false)
+	requested(m, "a", false)
+	requested(m, "b", false)
 	outcome(m, "b", false, "deny", agent.ByPolicy)
 	if len(m.calls) != 1 {
 		t.Fatalf("%d calls held after a denial", len(m.calls))
 	}
-	m.Observe(ev("s", agent.EvSessionEnded, agent.SessionEnded{}))
+	m.Observe(ev(agent.EvSessionEnded, agent.SessionEnded{}))
 	if len(m.calls) != 0 {
 		t.Fatalf("%d calls held after the session ended", len(m.calls))
 	}
 	for i := 0; i < maxCalls+5; i++ {
-		requested(m, string(rune(i)), "bash", false)
+		requested(m, string(rune(i)), false)
 	}
 	if len(m.calls) > maxCalls {
 		t.Fatalf("%d calls held, over %d", len(m.calls), maxCalls)
