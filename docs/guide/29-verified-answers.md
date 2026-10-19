@@ -85,12 +85,18 @@ counts (`12 tests`, `replicas: 3`). Then:
   `12 tests passed` is ✗, with `12 tests passed` shown beside it.
 - **"Tests pass" and "the command succeeded" need an exit code.** Such a
   statement needs a command (of the kind it names: tests, or a build) that
-  exited 0 after the last change. If the last such command since the last
+  exited 0 after the last change. The kind is read from the program and its
+  subcommand (`go test`, `npm test`, `pytest`, `make`, `cargo build`, …), so
+  `ls tests` or `test -f go.mod` is not a test run. If the last such command since the last
   change failed, the statement is contradicted.
 - **"I changed X" and "I ran `Y`" are checked against the calls.** A statement
   that the agent edited, created or removed a file needs a call in the record
-  that changed that file; one that it ran a command needs that command. With
-  none, the statement is contradicted.
+  that changed that file, matched on whole path segments (`a.go` is not
+  `data.go`); a command counts only for the files it writes (a redirection,
+  `tee`, the destination of `cp` or `mv`, `sed -i`, `rm`, `touch`, …), not for
+  one it reads. One that it ran a command needs that command as one of the
+  simple commands of a call, with any further arguments: `echo 'go test'` is
+  not `go test`. With none, the statement is contradicted.
 - **A subagent's work counts.** The parent's record names each subagent's
   session, and its own record is read too (up to three levels deep): its
   results are evidence and its calls are changes, placed at the parent's
@@ -161,7 +167,9 @@ its labels. The SDK returns an `*EndedError` whose `Reason` is `unverified`;
   reply itself, with a red edge, and at the top of its box; Studio gets it as
   the first line of the verdict's text.
 - **The terminal**: under the reply, a footer such as
-  `✓ 3 verified · 1 unverified (general knowledge) · 0 contradicted`, then
+  `? 3 verified · 1 unverified · 0 contradicted · /evidence N` on one line
+  (no footer for a reply with nothing to check, such as a greeting; ✓ only when
+  something was verified and nothing about the work was not), then
   each contradicted statement struck through with the record against it, and
   the unverified statements about the session's work. `/evidence` lists every
   statement with its verdict and reason; `/evidence N` opens the record behind
@@ -170,7 +178,7 @@ its labels. The SDK returns an `*EndedError` whose `Reason` is `unverified`;
 - **`abhed -p`**: the same lines under the answer in text output; in `json`
   and `stream-json`, the `answer.verdict` event and a `verdict` field on the
   result line.
-- **The workbench**: a box under the reply with a ✓, ? or ✗ badge on each
+- **The workbench and the console**: a box under the reply with a ✓, ? or ✗ badge on each
   statement, contradicted ones struck through; it opens by itself when
   something needs a look, and each `#seq` opens the tool call behind it.
 - **Abhed Studio and other ACP editors**: an `agent_message_chunk` after the
@@ -203,7 +211,8 @@ It never raises one, so tool output that tries to talk it into agreeing can at
 worst fail to lower a verdict, and the plain checks still stand underneath. If
 it cannot be reached, times out, or answers in a form that cannot be read, every
 statement it was asked about becomes unverified, and the verdict says the critic
-was unavailable. It costs one model call per answer with a verified statement,
+was unavailable; the same happens, with no call, when the session's token
+budget is spent. It costs one model call per answer with a verified statement,
 recorded as a `model.call` with `purpose: critic`. `model` names a configured
 provider, ideally a different model family from the agent's; unset, the
 session's own model is asked. A workspace file cannot turn the critic on or
@@ -227,8 +236,9 @@ declares it in configuration, which the agent cannot read or change: the
 
 - **`require`** are commands the **harness** runs, in the session's sandbox,
   after the agent's last change. Each must exit 0. They are recorded as calls
-  by the system with `via: "completion contract"`, and a pass is reused while
-  nothing has changed since. Policy still judges each one: a deny rule, plan
+  by the system with `via: "completion contract"`, approved `by: operator`,
+  and a pass is reused while nothing has changed since. They are not counted
+  as changes, so what was read before them stays current. Policy still judges each one: a deny rule, plan
   mode, a destructive command, an ask rule, a screen or a hook, or a managed
   policy that asks, stops it, and the contract fails rather than run it
   unasked. Only an ordinary default-mode ask is taken as answered by the
@@ -242,13 +252,20 @@ declares it in configuration, which the agent cannot read or change: the
   folder, `**` crosses folders, and a pattern without a slash matches a name
   at any depth. The files are hashed (up to 5,000) when the run starts and
   again when it ends; any change, addition or removal marks the run unverified.
+  Globs that match more than 5,000 files leave the contract unmet, with
+  `protect_partial`, since the rest could not be checked.
 - **Claims**: with a contract, every statement about the session's work must
   also be verified.
 
 A run with a contract ends `completed` only when all of this holds. Otherwise
 the agent gets its one revision turn (with the failing command's output in the
 note), and then the run ends `unverified`, exit 8, whatever the mode. A contract
-works with `mode: off` too: then only the contract is checked.
+works with `mode: off` too: then only the contract is checked. It gates an
+answer: a run that ends on a plan proposed for approval, a structured result or
+nothing said runs neither the checks nor the contract, and plan mode, which
+changes nothing, runs no contract. `abhed serve` refuses to start, and a
+session to open, when its answers cannot be checked as configured (a critic
+model that is not there, say).
 
 An untrusted workspace may add `protect` patterns but not `require` commands,
 which are processes the harness runs; a trusted one may set both.
@@ -267,12 +284,16 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 21 plant a wrong test count or result, replica count, port, version,
-host, path, disk figure, file change, command, `file:line` or citation; 14
-controls say only what the session showed; 3 are general knowledge. Today
-none of the 21 planted claims is shown as verified (10 are contradicted, the
-rest unverified), all 14 controls are verified, and none of the 17 true or
-neutral claims is contradicted. The test fails if a planted claim is shown as
+session. 27 plant a wrong test count or result, replica count, port, version,
+host, path, disk figure, file change, command, `file:line` or citation, among
+them "tests pass" after only `ls tests` or `test -f go.mod` ran, a change
+claimed for `a.go` when `data.go` was edited or for a file only copied, and a
+command claimed from an `echo` of it; 19 controls say only what the session
+showed, a file written by a heredoc or `sed -i` and a command run with more
+arguments among them; 3 are general knowledge. Today none of the 27 planted
+claims is shown as verified (16 are contradicted, the rest unverified), all 19
+controls are verified, and none of the 22 true or neutral claims is
+contradicted. The test fails if a planted claim is shown as
 verified, if a true one is contradicted, or if either count falls below its
 floor; the floors only go up. The corpus is small and written by the people
 who wrote the checks, so it shows what the checks do on these shapes of

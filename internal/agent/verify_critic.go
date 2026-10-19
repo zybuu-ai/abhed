@@ -81,6 +81,16 @@ func (l *Loop) critique(ctx context.Context, c *Critic, verdicts []ClaimVerdict,
 	if len(asked) == 0 {
 		return ""
 	}
+	// No budget left for the call: the critic is unavailable, which fails
+	// closed like any other time it cannot answer.
+	if l.Budget.Exhausted() {
+		for _, i := range asked {
+			verdicts[i].Verdict = ClaimUnverified
+			verdicts[i].Critic = "the token budget is spent, so the critic was not asked"
+			verdicts[i].Reason = "the critic could not confirm it: the token budget is spent"
+		}
+		return CriticUnavailable
+	}
 	a := c.Adapter
 	if a == nil {
 		a = l.Adapter

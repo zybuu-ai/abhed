@@ -98,6 +98,9 @@ type Verifier struct {
 	revised bool
 	last    *AnswerVerdict
 	protect map[string]string
+	// protectPartial is set when the run's start could not hash every
+	// protected file.
+	protectPartial bool
 }
 
 // givenAnswer is what the agent delivered through the answer tool.
@@ -303,9 +306,9 @@ func (l *Loop) beginAnswer() {
 	v.pending, v.revised, v.last = nil, false, nil
 	v.mu.Unlock()
 	if c := v.Contract; c != nil && len(c.Protect) > 0 {
-		snap := c.snapshot(l.Session)
+		snap, partial := c.snapshot(l.Session)
 		v.mu.Lock()
-		v.protect = snap
+		v.protect, v.protectPartial = snap, partial
 		v.mu.Unlock()
 	}
 }
@@ -463,6 +466,9 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 		}
 		if len(c.Protected) > 0 {
 			fmt.Fprintf(&b, "- protected files changed, which the operator does not allow: %s\n", strings.Join(c.Protected, ", "))
+		}
+		if c.ProtectPartial {
+			b.WriteString("- the protected files are too many to check; this is the operator's to narrow, not yours to fix\n")
 		}
 	}
 	b.WriteString("Check what you can with a tool, then give your answer again")

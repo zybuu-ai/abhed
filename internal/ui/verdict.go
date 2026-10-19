@@ -101,6 +101,9 @@ func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
 		if len(c.Protected) > 0 {
 			rows = append(rows, "    "+s.Red("✗")+" "+s.Dim("protected files changed: "+VisibleLine(clip(strings.Join(c.Protected, ", "), 160))))
 		}
+		if c.ProtectPartial {
+			rows = append(rows, "    "+s.Red("✗")+" "+s.Dim("protect matches more files than are checked, so they could not all be checked"))
+		}
 	}
 	return rows
 }

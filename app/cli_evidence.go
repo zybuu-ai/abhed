@@ -122,7 +122,7 @@ func recordEntry(events []agent.Event, seq int64) string {
 			if json.Unmarshal(ev.Payload, &o) != nil {
 				break
 			}
-			head := fmt.Sprintf("#%d %s", seq, o.Tool)
+			head := fmt.Sprintf("#%d %s", seq, ui.VisibleLine(o.Tool))
 			if a, ok := calls[o.CallID]; ok {
 				head += " " + ui.VisibleLine(clipArgs(a.Args))
 				if a.Via != "" {
@@ -135,7 +135,7 @@ func recordEntry(events []agent.Event, seq int64) string {
 			lines := strings.Split(strings.TrimRight(o.Content, "\n"), "\n")
 			more := ""
 			if len(lines) > evidenceLines {
-				more = fmt.Sprintf("\n… %d more line(s); recall call_id %s for the rest", len(lines)-evidenceLines, o.CallID)
+				more = fmt.Sprintf("\n… %d more line(s); recall call_id %s for the rest", len(lines)-evidenceLines, ui.VisibleLine(o.CallID))
 				lines = lines[:evidenceLines]
 			}
 			return head + "\n" + ui.VisibleOutput(strings.Join(lines, "\n")) + more

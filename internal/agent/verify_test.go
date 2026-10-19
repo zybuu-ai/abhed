@@ -784,3 +784,43 @@ func TestNoContractOnAPlan(t *testing.T) {
 		})
 	}
 }
+
+// Protect globs that match more files than are hashed leave the contract
+// unmet, said so, rather than check some silently.
+func TestContractProtectPartial(t *testing.T) {
+	old := maxProtected
+	maxProtected = 2
+	t.Cleanup(func() { maxProtected = old })
+	l, store, _, dir := verifyHarness(t, VerifyLabel, false, []scriptedTurn{{text: "Done."}, {text: "Done."}})
+	for _, n := range []string{"a_test.go", "b_test.go", "c_test.go"} {
+		os.WriteFile(filepath.Join(dir, n), []byte("package x\n"), 0o644)
+	}
+	l.Verify.Contract = &Contract{Protect: []string{"*_test.go"}}
+	if reason, _ := l.Run(context.Background(), "go"); reason != TermUnverified {
+		t.Fatalf("got %s", reason)
+	}
+	vs := answerVerdicts(store)
+	if c := vs[len(vs)-1].Contract; c == nil || c.OK || !c.ProtectPartial {
+		t.Fatalf("contract %+v", c)
+	}
+}
+
+// With the budget spent the critic is not called, and fails closed.
+func TestCriticRespectsTheBudget(t *testing.T) {
+	l, _, _, _ := verifyHarness(t, VerifyLabel, false, nil)
+	b := newRec(t)
+	b.call("c1", "read", map[string]string{"path": "/w/app.yaml"}, "replicas: 3\n", nil)
+	verdicts, ix := checkClaims(checkEnv{events: b.events()}, textClaims("There are 3 replicas."))
+	if verdicts[0].Verdict != ClaimVerified {
+		t.Fatalf("setup: %+v", verdicts[0])
+	}
+	critic := &scriptedAdapter{turns: []scriptedTurn{{text: `{"verdicts":[{"n":1,"verdict":"supported"}]}`}}}
+	l.Budget = NewBudget(1, 0, false)
+	l.Budget.Spend(1)
+	if got := l.critique(context.Background(), &Critic{Adapter: critic}, verdicts, ix); got != CriticUnavailable {
+		t.Fatalf("critic %q", got)
+	}
+	if len(critic.gotRequests) != 0 || verdicts[0].Verdict != ClaimUnverified {
+		t.Fatalf("called %d times, verdict %s", len(critic.gotRequests), verdicts[0].Verdict)
+	}
+}
