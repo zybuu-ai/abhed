@@ -708,7 +708,7 @@ func TestReadingCommands(t *testing.T) {
 			t.Errorf("%q: kind %q, want %q", cmd, got, kind)
 		}
 	}
-	targets := writeTargets("cp login.go /tmp/b.go && sed -i 's/a/b/' cfg.yaml && echo x >> log.txt && tee out.txt < in.txt && git checkout -- main.go && cat a.go 2>/dev/null")
+	targets, _ := writeTargets("cp login.go /tmp/b.go && sed -i 's/a/b/' cfg.yaml && echo x >> log.txt && tee out.txt < in.txt && git checkout -- main.go && cat a.go 2>/dev/null")
 	want := []string{"/tmp/b.go", "cfg.yaml", "log.txt", "out.txt", "main.go"}
 	if strings.Join(targets, ",") != strings.Join(want, ",") {
 		t.Errorf("write targets %q, want %q", targets, want)
@@ -822,5 +822,32 @@ func TestCriticRespectsTheBudget(t *testing.T) {
 	}
 	if len(critic.gotRequests) != 0 || verdicts[0].Verdict != ClaimUnverified {
 		t.Fatalf("called %d times, verdict %s", len(critic.gotRequests), verdicts[0].Verdict)
+	}
+}
+
+// Runners and launchers are taken off before a command is judged, and a line
+// whose writes cannot all be read leaves a change claim open.
+func TestUnwrappedCommands(t *testing.T) {
+	for _, c := range []string{"env sed -i s/a/b/ f", "time sed -i s/a/b/ f", "command cp a b", "make", "make all", "sort -o f f", "timeout 5 rm x"} {
+		if inspectionCommand(c) {
+			t.Errorf("%q may write", c)
+		}
+	}
+	for _, c := range []string{"env go test ./...", "time go vet ./...", "timeout 60 cat f", "make test"} {
+		if !inspectionCommand(c) {
+			t.Errorf("%q reads only", c)
+		}
+	}
+	for line, want := range map[string]bool{"gofmt -w a.go": true, "cd d && sed -i s/a/b/ f": true, "python3 gen.py": false,
+		"git apply fix.patch": false, "echo x>>f": true, "ls && cat f": true} {
+		if _, known := writeTargets(line); known != want {
+			t.Errorf("%q: known %v, want %v", line, known, want)
+		}
+	}
+	if ts, _ := writeTargets("cd d && sed -i s/a/b/ f"); len(ts) != 1 || ts[0] != "d/f" {
+		t.Errorf("cd not resolved: %q", ts)
+	}
+	if ts, _ := writeTargets("echo x>>f"); len(ts) != 1 || ts[0] != "f" {
+		t.Errorf("a redirection in a word: %q", ts)
 	}
 }
