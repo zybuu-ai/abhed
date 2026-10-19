@@ -256,7 +256,10 @@ does not approve `openssl x509 -in a.pem; rm -rf /var/www`; and a line the
 parser cannot read in full is refused while a deny rule for `ssh` has a
 pattern. A command the operator declared a read in `ssh.read_commands` runs
 unasked and in plan mode, when it is one simple command matching an entry
-([Clusters and machines](../ops/infrastructure.md#ssh)). A remote command the destructive step names, such as `rm -rf`,
+that runs no other command, writes no file and carries no `stdin_secret`
+([Clusters and machines](../ops/infrastructure.md#ssh)). In `bypass` mode the
+read step is not used: bypass allows it as it allows anything, and where the
+managed configuration refuses bypass the call asks, as in default mode. A remote command the destructive step names, such as `rm -rf`,
 always confirms twice and offers no "always". Neither reads a script the
 remote command runs, which is on a machine Abhed cannot see, nor knows a
 remote login shell other than bash.

@@ -1584,6 +1584,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	warnSetAside(w, cfg.SetAside)
 	warnNotYetInEffect(w, cfg)
 	warnNeverAllows(w, cfg.Permissions.Allow)
+	warnRemoteReads(w, cfg.SSH.ReadCommands)
 	warnRuleFindings(w, cfg.RuleFindings())
 	if !o.Quiet {
 		warnUntrusted(w, cfg.Workspace)

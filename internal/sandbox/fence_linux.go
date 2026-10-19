@@ -85,6 +85,9 @@ type fenceSpec struct {
 	// PIDNS is set when the launcher is init of a PID namespace of its own:
 	// it runs the command as its child and passes signals on.
 	PIDNS bool `json:"pidns,omitempty"`
+	// OwnNet is set when the launcher is started in a network namespace of
+	// its own, holding only loopback: the resolver and UDP are allowed only then.
+	OwnNet bool `json:"own_net,omitempty"`
 	// Socketcall allows socketcall(SOCKET) with Network, on s390x.
 	Socketcall bool `json:"socketcall,omitempty"`
 	// Leaf is the call's cgroup, which the launcher joins first.
@@ -408,10 +411,6 @@ func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *ser
 		// relay's, in a network namespace with nothing else in it.
 		spec.ConnectTCP = []uint16{fc.port}
 		relay = fc.relay
-		// And the resolver's port, which in the namespace only the launcher serves.
-		if relay != nil && relay.DNS != "" {
-			spec.ConnectTCP = append(spec.ConnectTCP, 53)
-		}
 		if fc.caDir != "" {
 			spec.Read = append(spec.Read, fc.caDir) // the inspection CA bundle's folder, where its clients are pointed
 		}
@@ -438,9 +437,18 @@ func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *ser
 			return refusedCmd("%v", err)
 		}
 	}
+	// The command gets a network namespace of its own only with the relay in
+	// mount mode; the resolver is served only there.
+	ownNet := plan != nil && relay != nil
+	if relay != nil && !ownNet {
+		relay.DNS, relay.ResolvConf = "", ""
+	}
+	if ownNet && relay.DNS != "" {
+		spec.ConnectTCP = append(spec.ConnectTCP, 53) // the resolver's port, which only the launcher serves there
+	}
 	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: network, Socketcall: network && f.policy.FenceSocketcall, Leaf: leaf.Path(),
 		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan,
-		ProxyOnly: f.policy.Egress != nil, Egress: relay, PIDNS: plan != nil})
+		ProxyOnly: f.policy.Egress != nil, Egress: relay, PIDNS: plan != nil, OwnNet: ownNet})
 	if err != nil {
 		drop()
 		return refusedCmd("%v", err)
@@ -463,7 +471,7 @@ func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *ser
 	cmd.ExtraFiles = []*os.File{theirs}
 	if plan != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
-		mountns.AttrWith(cmd.SysProcAttr, mountns.Spaces{PID: true, Net: relay != nil, Resolver: relay != nil && relay.DNS != ""})
+		mountns.AttrWith(cmd.SysProcAttr, mountns.Spaces{PID: true, Net: ownNet, Resolver: ownNet && relay.DNS != ""})
 	}
 	// Release ends the wait at once for a command that never starts.
 	abandoned := make(chan struct{})
@@ -735,8 +743,15 @@ func runLauncher(args []string) int {
 				return launchFail("%v", err)
 			}
 		}
+		// What allows UDP and the resolver is checked, not taken on trust: a
+		// namespace of its own, holding loopback alone.
+		if s.OwnNet {
+			if err := loopbackOnly(); err != nil {
+				return launchFail("%v", err)
+			}
+		}
 		// The resolver's port is bound while the launcher may; it is served as init.
-		if s.Egress != nil && s.Egress.DNS != "" {
+		if s.OwnNet && s.PIDNS && s.Egress != nil && s.Egress.DNS != "" {
 			serve, err := fenceResolver(s.Egress)
 			if err != nil {
 				return launchFail("the egress resolver: %v", err)
@@ -798,6 +813,20 @@ const fenceChildArg = "__abhed_fence_child"
 // process outside the namespace sends them to init.
 var initSignals = []os.Signal{unix.SIGINT, unix.SIGTERM, unix.SIGHUP, unix.SIGQUIT, unix.SIGUSR1, unix.SIGUSR2,
 	unix.SIGWINCH, unix.SIGCONT, unix.SIGALRM}
+
+// loopbackOnly refuses a network namespace with an interface beside loopback.
+func loopbackOnly() error {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return fmt.Errorf("listing the network namespace's interfaces: %w", err)
+	}
+	for _, i := range ifs {
+		if i.Flags&net.FlagLoopback == 0 {
+			return fmt.Errorf("the command's network namespace has interface %s beside loopback", i.Name)
+		}
+	}
+	return nil
+}
 
 // fenceResolver binds the session's resolv.conf over the host's and listens
 // on the resolver's address in the command's network namespace, and returns
@@ -914,7 +943,7 @@ func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	pol.ProxyOnly = s.ProxyOnly
 	// In its own network namespace, which holds only loopback, UDP reaches
 	// nothing but the session's resolver, which a resolver like musl's needs.
-	pol.LoopbackDatagram = s.ProxyOnly && s.PIDNS && s.Egress != nil
+	pol.LoopbackDatagram = s.ProxyOnly && s.OwnNet
 	// Only where Landlock scopes abstract unix sockets: a pathname one is
 	// still reachable through it, as the setting's documentation says.
 	pol.Socketcall = s.Network && s.Socketcall && socketcallOff(int(abi), os.Geteuid() == 0) == ""
