@@ -44,6 +44,9 @@ type Rules struct {
 	Declared []string
 	// Hosts are the configured ssh hosts, each by its name and address.
 	Hosts []DeclaredHost
+	// Home is the home folder ~ stands for in a local command, so a target
+	// under ~ can be placed against the workspace. "" leaves ~ unexpanded.
+	Home string
 }
 
 // DeclaredHost is one configured ssh host.
@@ -54,6 +57,7 @@ type DeclaredHost struct{ Name, Addr string }
 // credential followed by a way out, and ok otherwise.
 func (r Rules) Judge(_ context.Context, c Case) (Verdict, error) {
 	k := facts(c)
+	k.home = r.Home
 	for _, d := range r.Declared {
 		if d != "" {
 			k.declared = append(k.declared, strings.ToLower(d))
@@ -89,6 +93,7 @@ type given struct {
 	// plan or runbook prose: what counts where the directory is unknown.
 	person string
 	roots  []string
+	home   string // the local home ~ stands for; "" when not known
 	seen   func(string) bool
 	// done are the subjects of earlier calls that succeeded.
 	done     []string
@@ -290,32 +295,36 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 		where = "on " + k.str("host")
 	}
 	for _, cmd := range s.cmds {
-		// A wrapper with an option (sudo -D, env -C, command -p, nice -n …)
-		// may move the directory or hide the program; its words are not read
-		// as a command line. If they look destructive, the person is asked.
-		if optioned(wrapperPrefix(cmd.words)) {
+		// A command name the check cannot read plainly (\rm, r\m, a quoted or
+		// expanded name), or a wrapper with an option (sudo -u, env -C,
+		// command -p, nice -n …), may hide the program or move the directory;
+		// its words are not read as a command line. If they look destructive —
+		// a deleting program, an interpreter, a protected root — the person is asked.
+		if !plainHead(cmd) || optioned(wrapperPrefix(cmd.words)) {
 			if looksDestructive(cmd.words) {
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("a command run through a wrapper with options, which the check does not read, looks like it deletes; %s", remit(c)),
-					Advice:    "run the delete without the wrapper's options, naming the path in full, or confirm this is meant"}
+					Rationale: fmt.Sprintf("a command whose program or wrapper options the check does not read looks like it deletes or runs code; %s", remit(c)),
+					Advice:    "run the delete plainly, with no wrapper options and the path in full, or confirm this is meant"}
 			}
 			continue
 		}
 		prog, args := cmd.program()
+		prog = path.Base(prog) // /bin/rm is rm
 		for _, t := range destroys(prog, args) {
 			if t == "" {
 				continue
 			}
 			if strings.HasPrefix(t, "$") && !homeish(t) {
-				// A target only running the line would give. Where the directory
-				// is unknown, or known but outside own ground, it could point
-				// anywhere that matters, so it is put to the person.
-				if !cmd.dirKnown || !r.ownGround(k, c, orDot(cmd.dir)) {
+				// A target only running the line would give. It is read only when
+				// it is a variable set to a plain literal earlier in the same plain
+				// chain, and then judged as that path; otherwise it is asked about.
+				v, ok := literalVar(cmd, t)
+				if !ok {
 					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-						Rationale: fmt.Sprintf("%s would destroy a target only running the line would give, in a directory %s; %s", prog, dirPhrase(cmd), remit(c)),
+						Rationale: fmt.Sprintf("%s would destroy a target only running the line would give; %s", prog, remit(c)),
 						Advice:    "name the path to delete in full, somewhere the task covers, or confirm you mean this one"}
 				}
-				continue
+				t = v
 			}
 			eff, known := effectiveTarget(cmd, t)
 			// Where the directory is unknown, only what the person said in their
@@ -369,6 +378,13 @@ func (Rules) ownGround(k *given, c Case, t string) bool {
 	if homeish(t) {
 		if k.named(homeTilde(t)) {
 			return true
+		}
+		// Locally ~ is the session's home: placed there, a target under the
+		// workspace (a workspace under ~) is the workspace's own ground.
+		if !remote(c) && k.home != "" {
+			if p, ok := expandHome(t, k.home); ok && k.local(p) {
+				return true
+			}
 		}
 		// Over ssh the home is the login's own, so a folder under it whose top
 		// name the task gave as a bare word — not inside a path, not the host
@@ -441,7 +457,9 @@ var destroyerNames = map[string]bool{"rm": true, "rmdir": true, "shred": true, "
 // looksDestructive reports words that name a deleting program, or a protected root.
 func looksDestructive(words []string) bool {
 	for _, w := range words {
-		if destroyerNames[w] || strings.HasPrefix(w, "mkfs.") {
+		name := path.Base(strings.ReplaceAll(w, `\`, "")) // \rm, r\m and /bin/rm are rm
+		if destroyerNames[name] || strings.HasPrefix(name, "mkfs.") || codeRunners[name] ||
+			strings.HasPrefix(name, "python") {
 			return true
 		}
 		if protectedRoot(w) {
@@ -449,6 +467,39 @@ func looksDestructive(words []string) bool {
 		}
 	}
 	return false
+}
+
+// codeRunners are interpreters and shells, which run code the check does not
+// read; one among a hidden command's words makes it look destructive.
+var codeRunners = map[string]bool{"node": true, "perl": true, "ruby": true, "php": true, "bash": true, "sh": true,
+	"zsh": true, "dash": true, "ksh": true, "fish": true, "awk": true, "gawk": true, "busybox": true, "xargs": true}
+
+// plainHead reports a command whose name is a single plain literal.
+func plainHead(cmd command) bool {
+	if cmd.call == nil || len(cmd.call.Args) == 0 {
+		return true // a redirection or assignment only
+	}
+	_, ok := plainWord(cmd.call.Args[0])
+	return ok
+}
+
+// literalVar is the plain literal a $X or ${X} target was set to earlier in
+// the same plain chain, where the directory is known.
+func literalVar(cmd command, t string) (string, bool) {
+	if !cmd.dirKnown || cmd.vars == nil {
+		return "", false
+	}
+	name := strings.TrimPrefix(t, "$")
+	if strings.HasPrefix(name, "{") && strings.HasSuffix(name, "}") {
+		name = name[1 : len(name)-1]
+	}
+	for _, r := range name {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return "", false // not a single plain variable reference
+		}
+	}
+	v, ok := cmd.vars[name]
+	return v, ok
 }
 
 func orDot(s string) string {
@@ -478,6 +529,19 @@ func display(eff, written string) string {
 
 func homeish(t string) bool {
 	return strings.HasPrefix(t, "~") || strings.HasPrefix(t, "$HOME") || strings.HasPrefix(t, "${HOME}")
+}
+
+// expandHome places a ~, ~/x, $HOME or ${HOME} target under home. A ~user
+// target is not expanded.
+func expandHome(t, home string) (string, bool) {
+	t = homeTilde(t)
+	if t == "~" {
+		return path.Clean(home), true
+	}
+	if rest, ok := strings.CutPrefix(t, "~/"); ok {
+		return path.Clean(path.Join(home, rest)), true
+	}
+	return "", false
 }
 
 // homeTilde writes $HOME and ${HOME} as ~, the way the person would name it.

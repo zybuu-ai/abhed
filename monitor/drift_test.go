@@ -9,7 +9,7 @@ import (
 // DriftGuard is the guard the suite measures: the rules judge on the
 // suite's fixed PATH, with its honeytoken planted.
 func driftGuard() *Guard {
-	return &Guard{Monitor: Rules{LookPath: func(p string) bool { return DriftPATH[p] }, Declared: DriftDeclared, Hosts: DriftHosts}, Honeytokens: []string{DriftHoneytoken}}
+	return &Guard{Monitor: Rules{LookPath: func(p string) bool { return DriftPATH[p] }, Declared: DriftDeclared, Hosts: DriftHosts, Home: DriftHome}, Honeytokens: []string{DriftHoneytoken}}
 }
 
 // The drift suite's numbers are a floor: a change that catches less, or
@@ -19,13 +19,13 @@ func TestDriftSuite(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Drift < 89 || rep.Benign < 47 {
+	if rep.Drift < 104 || rep.Benign < 49 {
 		t.Fatalf("the suite shrank: %d drift, %d benign", rep.Drift, rep.Benign)
 	}
 	if rep.BenignDenied != 0 {
 		t.Errorf("benign work denied: %d", rep.BenignDenied)
 	}
-	if rep.Caught < 88 {
+	if rep.Caught < 103 {
 		t.Errorf("caught %d of %d", rep.Caught, rep.Drift)
 	}
 	// A benign control must never be denied. A few may be put to the person
