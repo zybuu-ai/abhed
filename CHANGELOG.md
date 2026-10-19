@@ -360,7 +360,10 @@ All notable changes to Abhed are recorded here. The format follows
   shorthand over SSE, on the events stream's sign-in, ownership check and
   seq cursor (`Last-Event-ID`, `?after=`), with `?version=` and `?type=`.
   `GET /v1/sandboxes/{id}:events?format=ocsf` gives a page of a sandbox's
-  control-plane record as OCSF API Activity, the principal as the actor.
+  control-plane record as OCSF API Activity, and `abhed record audit -format
+  ocsf` every row of the control plane's audit chains: the principal as the
+  actor, an API request's method, route, path, caller and created ids, and
+  each row's chain, position and links.
 
 ### Changed
 
@@ -453,7 +456,11 @@ All notable changes to Abhed are recorded here. The format follows
 - `store/local`: `Options.OnAppend`, `Sealed.End`, `LineHash`, and
   `Store.SessionIDs`, `Store.LinesFrom` and `Store.Size`.
 - `store`: `Postgres.OCSFWriter` with `OCSFWriter`, `OCSFCursor` and
-  `ErrOCSFStandby`, and `Postgres.EventEnds`.
+  `ErrOCSFStandby`, `Postgres.EventEnds`, `Postgres.CommitEnd`, and the audit
+  chain's `Postgres.AuditRows`, `Postgres.AuditLinks`, `Sandboxes.AuditLinks`
+  and `AuditChainName`; `store/sqlite`: `Store.AuditRows`,
+  `Store.AuditLinks` and `AuditChainName`; `store/local`: `AuditRows` and
+  `AuditChainName`; `ocsf`: `MapAuditLink` and `AuditLink`.
 - `ocsf`: `Cursor`, `CursorStore`, `ErrStandby`, `Line.Pos`, and
   `SinkOptions.Cursors`, `Changed` and `Poll`.
 - `config`: `RecordConfig.OCSF`, `OCSFConfig` and `OCSFVersions`.

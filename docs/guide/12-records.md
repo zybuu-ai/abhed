@@ -277,6 +277,7 @@ abhed record verify              the index and every session
 abhed record verify <session>    one session
 abhed record verify file.jsonl   an export, or a copy from elsewhere
 abhed record audit               the control-plane audit chain abhed serve writes
+abhed record audit -format ocsf  its rows as OCSF events, with their links
 ```
 
 `verify <session>` checks the index first, then the session. It fails, naming

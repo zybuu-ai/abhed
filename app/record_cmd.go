@@ -41,7 +41,9 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
                                        with storage.driver postgres, the session's chain
   prune   <session> | -older-than 90d [-yes]
                                        remove sessions, leaving a tombstone in the index
-  audit                                check the control-plane audit chain abhed serve writes
+  audit   [-head pos:hash] [-format ocsf [-ocsf-version V]]
+                                       check the control-plane audit chain abhed serve writes,
+                                       or print its rows as OCSF events
 A session is its id, a unique id prefix, its name, or the path of its file.
 `)
 		return 2

@@ -168,12 +168,31 @@ moves under `unmapped.downgraded.attributes` by its dotted path, with
 1.5.0 requires a response, so an egress decision on a request is written as
 Network Activity (Open, or Refuse for a denial) in 1.3.0 and 1.1.0.
 
-**The control plane.** A sandbox's record (`/v1/sandboxes/{id}:events`) is a
-table apart from the session record. With `?format=ocsf` each row is API
-Activity: the principal as `actor.user`, Create, Read, Update or Delete from
-the action's verb (Other for the rest, such as `exec`), the outcome as
-`status_id`, the sandbox as a resource, and `unmapped.audit` with its
-generation and detail. Those rows are not hash-chained yet.
+**The control plane.** The control plane's audit record is a chain apart
+from the session record: the sandbox operations, every mutating API request
+(`api:<METHOD> <route>`) and, from the Enterprise edition, its admin events
+(`admin:<action>`), in Postgres (`sandbox_audit`, one chain per tenant), in
+the control plane's SQLite database, or in the local `api.jsonl`. Each row
+is API Activity:
+
+- the principal as `actor.user` (System for `system:` principals);
+- for an API request, the activity from its method (POST Create, GET Read,
+  PUT and PATCH Update, DELETE Delete), the route as `api.operation`, the
+  method and the path with its wildcards' values as `http_request`, the
+  caller's address as `src_endpoint.ip`, and each id its answer named
+  (`created.id`, `created.session_id`, `created.name`) as a target resource;
+- for any other action, Create, Read, Update or Delete from a verb in it
+  (`create`, `template.delete`, `admin:user.delete`), Other for the rest
+  (`exec`, `reconcile`);
+- the outcome as `status_id` (Requested, Success or Failure with its code),
+  the sandbox as a resource, and the whole row under `unmapped.audit`;
+- its place in its chain under `unmapped.record`: `chain`
+  (`postgres/sandbox_audit`, `sqlite/sandbox_audit` or `local/audit`),
+  `pos`, `prev` and `hash`, the same links `abhed record audit` checks.
+
+`GET /v1/sandboxes/{id}:events?format=ocsf` gives a page this way, and
+`abhed record audit -format ocsf [-ocsf-version V]` prints every row of each
+chain, one event a line.
 
 ## The shorthand
 
@@ -318,7 +337,6 @@ resumes where it stopped. A bad `format` or `version` is `400`.
   are no supervisor spans, and HTTPS traffic is recorded as the egress
   proxy's decisions on connections, with a request's method and path only
   for plain HTTP or with `egress.inspect_tls`.
-- The control plane's sandbox record is mapped, not chained.
 - `abhed serve` on the memory store loses its sessions, and so their OCSF
   lines not yet written, when it exits.
 - Sending events to a SIEM (syslog over TLS, Splunk HEC, Elastic, object

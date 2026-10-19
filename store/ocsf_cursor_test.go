@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/store/chain"
 )
 
 // One server at a time holds an OCSF sink's writer lock; the cursors only
@@ -105,5 +107,41 @@ func TestEventEnds(t *testing.T) {
 	}
 	if early, _ := p.EventEnds(context.Background(), &CommitPos{At: time.Unix(0, 0)}); early[id] != 0 {
 		t.Fatalf("up to the start: %d", early[id])
+	}
+}
+
+// The tenant's audit rows come back with their chain links, the last one's
+// hash the head the chain reports, by row and by seq alike.
+func TestAuditRowsAndLinks(t *testing.T) {
+	tenant := fmt.Sprintf("audit-%d", time.Now().UnixNano())
+	p := openStore(t, tenant)
+	q, err := p.Sandboxes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := q.Append(context.Background(), controlplane.AuditEvent{At: time.Now(), Principal: "alice",
+			Action: "api:POST /v1/sessions", Outcome: "ok", Detail: map[string]string{"created.id": "s-1"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var seqs []int64
+	var last chain.Link
+	if err := p.AuditRows(context.Background(), func(a controlplane.AuditEvent, l chain.Link) error {
+		if a.Detail["created.id"] != "s-1" {
+			t.Errorf("row %d lost its detail: %v", a.Seq, a.Detail)
+		}
+		seqs, last = append(seqs, a.Seq), l
+		return nil
+	}); err != nil || len(seqs) != 3 {
+		t.Fatalf("%d rows, %v", len(seqs), err)
+	}
+	head, err := p.AuditChain().Head(context.Background(), tenant)
+	if err != nil || last.Pos != head.Pos || last.Hash != head.Hash {
+		t.Fatalf("last %+v, head %+v, %v", last, head, err)
+	}
+	links, err := q.AuditLinks(context.Background(), seqs)
+	if err != nil || links[seqs[2]].Hash != head.Hash || links[seqs[1]].Hash != links[seqs[2]].Prev {
+		t.Fatalf("%v %v", links, err)
 	}
 }

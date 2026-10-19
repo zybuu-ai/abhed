@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/ocsf"
+	"github.com/zybuu-ai/abhed/store/chain"
 )
 
 // streamLogs serves a session's record as OCSF events over SSE: the same
@@ -98,9 +100,14 @@ func (s *Server) sandboxEventsOCSF(w http.ResponseWriter, r *http.Request, items
 	}
 	host, _ := os.Hostname()
 	opts := ocsf.Options{Hostname: host, Tenant: TenantOf(r.Context())}
+	links, chainName := s.auditLinks(r.Context(), items)
 	out := make([]ocsf.Event, 0, len(items))
 	for _, a := range items {
-		ev := ocsf.MapAudit(a, opts)
+		var link *ocsf.AuditLink
+		if l, ok := links[a.Seq]; ok {
+			link = &ocsf.AuditLink{Chain: chainName, Pos: l.Pos, Prev: l.Prev, Hash: l.Hash}
+		}
+		ev := ocsf.MapAuditLink(a, link, opts)
 		if version != ocsf.Version {
 			var err error
 			if ev, err = ocsf.Downgrade(ev, version); err != nil {
@@ -114,4 +121,29 @@ func (s *Server) sandboxEventsOCSF(w http.ResponseWriter, r *http.Request, items
 		Items []ocsf.Event `json:"items"`
 		Next  int64        `json:"next,omitempty"`
 	}{out, next})
+}
+
+// auditLinker is a control-plane store whose audit rows are chained.
+type auditLinker interface {
+	AuditLinks(ctx context.Context, seqs []int64) (map[int64]chain.Link, error)
+	AuditChainName() string
+}
+
+// auditLinks are the chain links of a page's rows, where the store keeps
+// them; a store without a chain, or one that cannot be read, gives none.
+func (s *Server) auditLinks(ctx context.Context, items []controlplane.AuditEvent) (map[int64]chain.Link, string) {
+	l, ok := s.opts.ControlPlane.Store().(auditLinker)
+	if !ok || len(items) == 0 {
+		return nil, ""
+	}
+	seqs := make([]int64, len(items))
+	for i, a := range items {
+		seqs[i] = a.Seq
+	}
+	links, err := l.AuditLinks(ctx, seqs)
+	if err != nil {
+		s.log.Warn("the audit rows' chain links could not be read; the page is written without them", "err", err)
+		return nil, ""
+	}
+	return links, l.AuditChainName()
 }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 	"slices"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/ocsf"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/chain"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -26,6 +29,9 @@ type auditTarget struct {
 	// unchained, when set, says what the chain does not cover: a note for
 	// rows from before it or a torn last line, or a failure for any other.
 	unchained func(context.Context) (note, failed string, err error)
+	// rows gives the chain's rows in order with their links, for -format ocsf.
+	rows      func(context.Context, func(controlplane.AuditEvent, chain.Link) error) error
+	chainName string
 }
 
 // verifyAudit is `abhed record audit`: it walks the control-plane audit
@@ -37,8 +43,14 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	heads := headsFlag{}
 	fs.Var(heads, "head", "a head of the API's audit chain kept elsewhere, position:hash, that it must still hold (repeatable)")
-	if fs.Parse(args) != nil || fs.NArg() > 0 {
-		fmt.Fprintln(stderr, "usage: abhed record audit [-head pos:hash]")
+	format := fs.String("format", "text", "text: check the chains; ocsf: print every row as an OCSF event, one a line")
+	version := fs.String("ocsf-version", ocsf.Version, "the OCSF version for -format ocsf")
+	if fs.Parse(args) != nil || fs.NArg() > 0 || (*format != "text" && *format != "ocsf") {
+		fmt.Fprintln(stderr, "usage: abhed record audit [-head pos:hash] [-format text|ocsf] [-ocsf-version V]")
+		return 2
+	}
+	if err := ocsf.CheckVersion(*version); err != nil {
+		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 2
 	}
 	ctx := context.Background()
@@ -52,6 +64,7 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 		}
 		defer pg.Close()
 		targets = append(targets, auditTarget{name: "audit (tenant " + pg.Tenant() + ")", scope: pg.Tenant(), unit: "row", src: pg.AuditChain(),
+			rows: pg.AuditRows, chainName: store.AuditChainName,
 			unchained: func(ctx context.Context) (string, string, error) {
 				r, err := pg.VerifyAuditChain(ctx)
 				if err != nil || r.OK() {
@@ -69,6 +82,9 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 			return 1
 		}
 		targets = append(targets, auditTarget{name: path, scope: tenant, unit: "line", src: local.AuditChain(cfg.Record.Dir),
+			rows: func(ctx context.Context, fn func(controlplane.AuditEvent, chain.Link) error) error {
+				return local.AuditRows(ctx, path, fn)
+			}, chainName: local.AuditChainName,
 			unchained: func(context.Context) (string, string, error) {
 				r, err := local.VerifyAudit(path)
 				if err != nil || !r.Torn {
@@ -85,6 +101,7 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 				}
 				defer func() { _ = db.Close() }()
 				targets = append(targets, auditTarget{name: db.Path(), unit: "row", src: db.AuditChain(),
+					rows: db.AuditRows, chainName: sqlite.AuditChainName,
 					unchained: func(ctx context.Context) (string, string, error) {
 						r, err := db.VerifyAuditChain(ctx)
 						if err != nil || r.OK() {
@@ -97,6 +114,9 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 				return 1
 			}
 		}
+	}
+	if *format == "ocsf" {
+		return auditOCSF(ctx, cfg, targets, *version, stdout, stderr)
 	}
 	bad := false
 	for i, t := range targets {
@@ -168,4 +188,29 @@ func preChainNote(n int64) string {
 func mustDefaultDir() string {
 	d, _ := local.DefaultDir()
 	return d
+}
+
+// auditOCSF prints every row of the audit chains as OCSF API Activity, its
+// place in its chain under unmapped.record. It reads; it does not check.
+func auditOCSF(ctx context.Context, cfg config.Config, targets []auditTarget, version string, stdout, stderr io.Writer) int {
+	opts := ocsfOptions(orDefault(cfg.Storage.Tenant, "default"))
+	enc := json.NewEncoder(stdout)
+	enc.SetEscapeHTML(false)
+	for _, t := range targets {
+		err := t.rows(ctx, func(a controlplane.AuditEvent, l chain.Link) error {
+			ev := ocsf.MapAuditLink(a, &ocsf.AuditLink{Chain: t.chainName, Pos: l.Pos, Prev: l.Prev, Hash: l.Hash}, opts)
+			if version != ocsf.Version {
+				var err error
+				if ev, err = ocsf.Downgrade(ev, version); err != nil {
+					return err
+				}
+			}
+			return enc.Encode(ev)
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "abhed: %s: %v\n", t.name, err)
+			return 1
+		}
+	}
+	return 0
 }

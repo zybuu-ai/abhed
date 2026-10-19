@@ -2,7 +2,9 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,9 +12,12 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/ocsf"
+	"github.com/zybuu-ai/abhed/store/chain"
 )
 
 func logsServer(t *testing.T, cfg config.Config) (*httptest.Server, *agent.MemStore) {
@@ -144,5 +149,43 @@ func TestLogsStreamIsTheOwnersOnly(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("another person's session: %d", resp.StatusCode)
+	}
+}
+
+// linkedMemory is a control-plane store whose audit rows are chained.
+type linkedMemory struct{ *controlplane.Memory }
+
+func (linkedMemory) AuditLinks(_ context.Context, seqs []int64) (map[int64]chain.Link, error) {
+	out := map[int64]chain.Link{}
+	for _, q := range seqs {
+		out[q] = chain.Link{Pos: q + 100, Prev: fmt.Sprintf("prev-%d", q), Hash: fmt.Sprintf("hash-%d", q)}
+	}
+	return out, nil
+}
+func (linkedMemory) AuditChainName() string { return "test/audit" }
+
+// A page of a chained store's rows carries each row's chain links.
+func TestSandboxEventsOCSFCarriesChainLinks(t *testing.T) {
+	mem := linkedMemory{controlplane.NewMemory()}
+	st, _ := controlplane.NewSettings(nil, nil)
+	svc, err := controlplane.New(controlplane.Config{Store: mem, Audit: mem, Drivers: driver.NewRegistry(), Settings: st,
+		Workspace: func(string) (string, error) { return t.TempDir(), nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{}, ControlPlane: svc,
+		Registry: tools.NewRegistry(tools.Read{})})
+	rec := httptest.NewRecorder()
+	items := []controlplane.AuditEvent{{Seq: 7, At: time.Now(), Principal: "ana", Action: "create", SandboxID: "sb", Outcome: "ok"}}
+	s.sandboxEventsOCSF(rec, httptest.NewRequest("GET", "/v1/sandboxes/sb:events?format=ocsf", nil), items, 0)
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Items) != 1 {
+		t.Fatalf("%v %s", err, rec.Body.String())
+	}
+	r := page.Items[0]["unmapped"].(map[string]any)["record"].(map[string]any)
+	if r["chain"] != "test/audit" || r["pos"] != float64(107) || r["hash"] != "hash-7" || r["prev"] != "prev-7" {
+		t.Fatalf("unmapped.record %v", r)
 	}
 }
