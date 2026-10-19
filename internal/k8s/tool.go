@@ -607,7 +607,11 @@ func (t ApplyTool) Target(sess *tools.Session, raw json.RawMessage) string {
 	if json.Unmarshal(raw, &a) != nil || t.M == nil {
 		return ""
 	}
-	return t.M.where(sess, a.Cluster, a.Context)
+	where := t.M.where(sess, a.Cluster, a.Context)
+	if p, ok := t.M.peek(sess, raw); ok && p.preview != "" {
+		where = strings.TrimPrefix(where+"; "+p.preview, "; ")
+	}
+	return where
 }
 
 func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
@@ -619,41 +623,83 @@ func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	if err != nil {
 		return errf("%v", err)
 	}
-
-	switch a.Action {
-	case "apply":
-		return t.apply(ctx, c, a)
-	case "delete":
-		return t.delete(ctx, c, a)
-	case "scale":
-		return t.scale(ctx, c, a)
-	case "restart":
-		return t.restart(ctx, c, a)
+	// The request the dry run checked and the approver saw is the one sent.
+	req := t.M.takePlanned(sess, raw)
+	if req == nil {
+		if req, err = t.plan(ctx, c, a); err != nil {
+			return errf("%v", err)
+		}
 	}
-	return errf("unknown action %q (want apply, delete, scale or restart)", a.Action)
+	data, err := c.send(ctx, req, false)
+	if err != nil {
+		return errf("%v", err)
+	}
+	return tools.Result{Content: req.done(data)}
 }
 
-func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+// request is one write k8s_apply sends: built once, dry-run before the
+// approval, and sent as it was built.
+type request struct {
+	method, path, contentType string
+	body                      []byte
+	// live is the object's path as it stands, read for the dry run's diff.
+	live string
+	// done is what the model is told once the cluster has answered.
+	done func(data []byte) string
+}
+
+// send sends req, as a server-side dry run when dryRun is set.
+func (c *Cluster) send(ctx context.Context, req *request, dryRun bool) ([]byte, error) {
+	path := req.path
+	if dryRun {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		path += sep + "dryRun=All"
+	}
+	if req.method == "PATCH" {
+		return c.doPatch(ctx, path, req.body, req.contentType)
+	}
+	return c.Do(ctx, req.method, path, req.body)
+}
+
+// plan builds the request a call sends, refusing one that cannot be sent.
+func (t ApplyTool) plan(ctx context.Context, c *Cluster, a applyArgs) (*request, error) {
+	switch a.Action {
+	case "apply":
+		return t.apply(c, a)
+	case "delete":
+		return t.delete(c, a)
+	case "scale":
+		return t.scale(c, a)
+	case "restart":
+		return t.restart(c, a)
+	}
+	return nil, fmt.Errorf("unknown action %q (want apply, delete, scale or restart)", a.Action)
+}
+
+func (t ApplyTool) apply(c *Cluster, a applyArgs) (*request, error) {
 	if strings.TrimSpace(a.Manifest) == "" {
-		return errf("apply needs a manifest.")
+		return nil, fmt.Errorf("apply needs a manifest")
 	}
 	mf, err := kubescope.DecodeManifest(a.Manifest)
 	if err != nil {
-		return errf("%v. Convert YAML to JSON first.", err)
+		return nil, fmt.Errorf("%v. Convert YAML to JSON first", err)
 	}
 	kind, apiVersion, name := mf.Kind, mf.APIVersion, mf.Name
 	if kind == "" || apiVersion == "" {
-		return errf("manifest needs both apiVersion and kind.")
+		return nil, fmt.Errorf("manifest needs both apiVersion and kind")
 	}
 	// One object, in one namespace, is what the approval and the rules judged.
 	if _, list := mf.Object["items"]; list || strings.HasSuffix(kind, "List") {
-		return errf("apply takes one object per call; apply each item of the %s on its own.", kind)
+		return nil, fmt.Errorf("apply takes one object per call; apply each item of the %s on its own", kind)
 	}
 	if name == "" {
-		return errf("manifest metadata.name is required.")
+		return nil, fmt.Errorf("manifest metadata.name is required")
 	}
 	if !kubescope.ValidKind(kind) || !kubescope.ValidAPIVersion(apiVersion) {
-		return errf("the manifest's kind %q or apiVersion %q cannot stand in a request path.", kind, apiVersion)
+		return nil, fmt.Errorf("the manifest's kind %q or apiVersion %q cannot stand in a request path", kind, apiVersion)
 	}
 	ns := a.Namespace
 	if ns == "" {
@@ -662,14 +708,14 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 		}
 	}
 	if err := checkSegments(ns, name, ""); err != nil || ns == "*" {
-		return errf("the manifest's name and namespace must each stand as one path segment: %v", err)
+		return nil, fmt.Errorf("the manifest's name and namespace must each stand as one path segment: %v", err)
 	}
 	ns, name = url.PathEscape(ns), url.PathEscape(name)
 
 	base := apiBase(apiVersion) + "/" + pluralFor(kind)
 	namespaced, known := kubescope.KindScope(kind)
 	if !known {
-		return errf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash.", kind)
+		return nil, fmt.Errorf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash", kind)
 	}
 	if namespaced {
 		base = apiBase(apiVersion) + "/namespaces/" + ns + "/" + pluralFor(kind)
@@ -677,61 +723,57 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 
 	// Server-side apply: one PATCH that creates or updates, so there is no
 	// read-modify-write race between checking existence and writing.
-	path := base + "/" + name + "?fieldManager=abhed&force=true"
 	// The bytes sent are the canonical encoding the rules and the approver saw.
-	data, err := c.doPatch(ctx, path, mf.Canonical, "application/apply-patch+yaml")
-	if err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Applied %s/%s in %s.\n%s",
-		kind, name, ns, summarize(data))}
+	return &request{method: "PATCH", path: base + "/" + name + "?fieldManager=abhed&force=true",
+		contentType: "application/apply-patch+yaml", body: mf.Canonical, live: base + "/" + name,
+		done: func(data []byte) string {
+			return fmt.Sprintf("Applied %s/%s in %s.\n%s", kind, name, ns, summarize(data))
+		}}, nil
 }
 
-func (t ApplyTool) delete(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+func (t ApplyTool) delete(c *Cluster, a applyArgs) (*request, error) {
 	if a.Resource == "" || a.Name == "" {
-		return errf("delete needs resource and name.")
+		return nil, fmt.Errorf("delete needs resource and name")
 	}
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
 	if err != nil {
-		return errf("%v", err)
+		return nil, err
 	}
-	if _, err := c.Do(ctx, "DELETE", path, nil); err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Deleted %s/%s.", a.Resource, a.Name)}
+	return &request{method: "DELETE", path: path, live: path, done: func([]byte) string {
+		return fmt.Sprintf("Deleted %s/%s.", a.Resource, a.Name)
+	}}, nil
 }
 
-func (t ApplyTool) scale(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+func (t ApplyTool) scale(c *Cluster, a applyArgs) (*request, error) {
 	if a.Resource == "" || a.Name == "" || a.Replicas == nil {
-		return errf("scale needs resource, name and replicas.")
+		return nil, fmt.Errorf("scale needs resource, name and replicas")
 	}
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
 	if err != nil {
-		return errf("%v", err)
+		return nil, err
 	}
 	body := []byte(fmt.Sprintf(`{"spec":{"replicas":%d}}`, *a.Replicas))
-	if _, err := c.doPatch(ctx, path+"/scale", body, "application/merge-patch+json"); err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Scaled %s/%s to %d replicas.",
-		a.Resource, a.Name, *a.Replicas)}
+	return &request{method: "PATCH", path: path + "/scale", body: body,
+		contentType: "application/merge-patch+json", live: path + "/scale", done: func([]byte) string {
+			return fmt.Sprintf("Scaled %s/%s to %d replicas.", a.Resource, a.Name, *a.Replicas)
+		}}, nil
 }
 
-func (t ApplyTool) restart(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+func (t ApplyTool) restart(c *Cluster, a applyArgs) (*request, error) {
 	if a.Resource == "" || a.Name == "" {
-		return errf("restart needs resource and name.")
+		return nil, fmt.Errorf("restart needs resource and name")
 	}
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
 	if err != nil {
-		return errf("%v", err)
+		return nil, err
 	}
 	// The same annotation kubectl rollout restart sets.
 	body := []byte(`{"spec":{"template":{"metadata":{"annotations":` +
 		`{"abhed.restartedAt":"` + nowRFC3339() + `"}}}}}`)
-	if _, err := c.doPatch(ctx, path, body, "application/strategic-merge-patch+json"); err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Restarted %s/%s.", a.Resource, a.Name)}
+	return &request{method: "PATCH", path: path, body: body,
+		contentType: "application/strategic-merge-patch+json", live: path, done: func([]byte) string {
+			return fmt.Sprintf("Restarted %s/%s.", a.Resource, a.Name)
+		}}, nil
 }
 
 // ---------------------------------------------------------------- rendering

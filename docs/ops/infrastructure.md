@@ -49,6 +49,21 @@ the record and every screen get. The hash lets you check a value you hold
 against the cluster's; a short password can be guessed from it offline, so
 keep `k8s_get(*/*/secrets)` denied where that matters.
 
+**Every write is dry-run first.** Before anyone is asked, `k8s_apply` sends
+the request it will make as a server-side dry run (`dryRun=All`), so the
+cluster's admission, validation and RBAC judge it, and reads the object as
+it stands. The approval then names what would change, field by field, after
+the cluster and the credential: `dry run: 2 field(s) change: spec.replicas:
+2 → 3; spec.template.spec.containers[0].image: "nginx:1.25" → "nginx:1.27"`,
+or `dry run: creates Deployment demo/web`. Status and metadata noise are
+left out, a Secret's values are shown only as length and sha256, and past
+20 fields the rest are counted. The same text is in `action.requested`.
+The request that was dry-run is the one sent once approved, byte for byte;
+a restart's timestamp included. A change the dry run refuses is refused
+before anyone is asked, with the cluster's reason, and nothing is applied:
+the model reads `the cluster's dry run of this change failed, so it was not
+applied: …`. A call a rule denies reaches no cluster, not even for a dry run.
+
 `allow_writes` decides whether `k8s_apply` exists at all. Even with it on, there
 is no permission mode that auto-approves a cluster write: a mistaken delete in
 production is not recoverable the way a file edit is.
@@ -239,8 +254,8 @@ is what your own `kubectl` can. Token, tokenFile, client certificates and `exec`
 credential helpers (the cloud CLIs) all work; exec tokens are refreshed before
 they expire, because an expired token returns a 401 that reads like a
 permissions problem. An `exec` helper runs only when Abhed sends a request:
-never while a `k8s_apply` waits for approval, and never for a call that is
-denied or refused in plan mode.
+for a `k8s_apply`, that includes its dry run before the approval, and never
+a call that is denied or refused in plan mode.
 
 Abhed talks to the API directly rather than importing `client-go`, which would
 add roughly a hundred transitive dependencies to a bundle where each one is

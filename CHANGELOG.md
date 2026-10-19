@@ -14,6 +14,15 @@ All notable changes to Abhed are recorded here. The format follows
   now shown as each key with the value's length and sha256, for a single
   Secret, a list, and what the cluster answers a `k8s_apply` of one.
 
+### Added
+
+- `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
+  asking, and the approval names what would change, field by field, from
+  the live object (a Secret's values only as length and sha256). The
+  request dry-run is the one sent once approved. A change the dry run
+  refuses is refused before anyone is asked, with the cluster's reason.
+  A kubeconfig `exec` helper now runs for that dry run, before the approval.
+
 ## [1.2.8] - 2026-10-14
 
 ### Upgrading from 1.2.7

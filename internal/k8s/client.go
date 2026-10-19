@@ -539,7 +539,7 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 		// guessing at which verb or resource it lacks.
 		return nil, fmt.Errorf("forbidden by RBAC: %s", apiMessage(data))
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("not found: %s", apiMessage(data))
+		return nil, fmt.Errorf("%w: %s", errNotFound, apiMessage(data))
 	case resp.StatusCode >= 400:
 		return nil, fmt.Errorf("cluster returned %s: %s", resp.Status, apiMessage(data))
 	}
@@ -584,6 +584,9 @@ func (c *Cluster) doPatch(ctx context.Context, path string, body []byte, content
 	}
 	return data, nil
 }
+
+// errNotFound is a 404 from the API server.
+var errNotFound = errors.New("not found")
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
