@@ -289,7 +289,7 @@ All notable changes to Abhed are recorded here. The format follows
   `RequireResult`.
 - `server`: `StartSpec.Verify`.
 - `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`),
-  `VerifyRank`, `PlanConfig`, `MonitorConfig` and `ManagedAsk`.
+  `VerifyRank`, `PlanConfig`, `MonitorConfig` and `ManagedAskRule`.
 
 ## [1.2.8] - 2026-10-14
 

@@ -1890,7 +1890,7 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
-	pol.KeepAsk = s.opts.Config.ManagedAsk
+	pol.KeepAsk = toolset.KeepManagedAsks(s.opts.Config)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
 	_ = pol.AllowGitExtensions(s.opts.Config.Permissions.GitExtensions...)
 	_ = pol.AllowRemoteReads(s.opts.Config.SSH.ReadCommands...)
