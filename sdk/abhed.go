@@ -106,6 +106,13 @@ type Options struct {
 	// If the managed configuration sets it, it may only be made stricter.
 	SyntaxCheck string
 
+	// Supervisor overrides the monitor section: "rules" (the default),
+	// "model" (the rules, then the configured model judge) or "off". The
+	// supervisor reviews calls after policy and may only tighten a decision.
+	// Under a managed configuration that turns it on, "off" is refused, and
+	// a judge the managed file chose may not be changed.
+	Supervisor string
+
 	// Allow and Deny are policy rules, e.g. "bash(go test*)", added to the
 	// configured ones. Deny is absolute: no mode, extension or approver
 	// overrides it. Allow is refused if the managed configuration sets any
@@ -283,7 +290,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
-		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
+		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns, Supervisor: opts.Supervisor,
 		Allow: opts.Allow, Deny: opts.Deny, Warn: cfgWarn,
 	}); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
@@ -496,6 +503,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 	})
 	loop.Budget = budget
+	// With no approver nobody answers an ask, so the supervisor's are denials.
+	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
 	}

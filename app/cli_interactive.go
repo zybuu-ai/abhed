@@ -53,7 +53,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// The banner is drawn once the terminal has said what its background
 	// is, in the theme that suits it, and joins the transcript.
 	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
-		sandboxLabel, storageLabel(appCfg)))
+		sandboxLabel+" · supervisor: "+toolset.SupervisorLabel(appCfg), storageLabel(appCfg)))
 	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
 	start.sandbox.noteIfNone(os.Stderr)
 	// The endpoint check started with the session. A server that is down is
@@ -168,6 +168,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget
 		loop.Suggest = cliSuggester(sessionState.appCfg, editor)
+		loop.Monitor = toolset.Supervisor(sessionState.appCfg, registry, false)
 		toolset.Summarize(loop.Compactor, extHost, id)
 		// Background tasks belong to the conversation and outlive a task;
 		// their results are shown as they arrive, at the prompt too.

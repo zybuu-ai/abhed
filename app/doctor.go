@@ -186,6 +186,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
 	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
+	fmt.Printf("supervisor  %s\n", supervisorDoctor(cfg))
 	vaultErr := vaultLoads()
 	if vaultErr != nil {
 		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
