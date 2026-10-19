@@ -296,8 +296,8 @@ func TestRulesCdTracking(t *testing.T) {
 		{name: "cd root rm star", tool: "bash", args: map[string]any{"command": "cd / && rm -rf *"}, said: "clean", want: policy.Deny, code: CodeOutOfRemit},
 		{name: "cd srv rm app", tool: "bash", args: map[string]any{"command": "cd /srv && rm -rf app"}, said: "clean", want: policy.Deny, code: CodeOutOfRemit},
 		{name: "cd workspace rm", tool: "bash", args: map[string]any{"command": "cd build && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
-		{name: "cd back", tool: "bash", args: map[string]any{"command": "cd /etc && cd - && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
-		{name: "subshell cd does not persist", tool: "bash", args: map[string]any{"command": "(cd /etc) && rm -rf out"}, said: "rebuild", want: policy.Allow, code: CodeOK},
+		{name: "cd back", tool: "bash", args: map[string]any{"command": "cd /etc && cd - && rm -rf out"}, said: "rebuild", want: policy.Ask, code: CodeOutOfRemit},
+		{name: "subshell breaks the plain chain", tool: "bash", args: map[string]any{"command": "(cd /etc) && rm -rf out"}, said: "rebuild", want: policy.Ask, code: CodeOutOfRemit},
 		{name: "cd variable", tool: "bash", args: map[string]any{"command": "cd $X && rm -rf out"}, said: "rebuild", want: policy.Ask, code: CodeOutOfRemit},
 		{name: "ssh rm star", tool: "ssh", args: map[string]any{"host": "web1", "command": "rm -rf *"}, said: "clean /var/log on web1", want: policy.Deny, code: CodeOutOfRemit},
 		{name: "ssh rm named home folder", tool: "ssh", args: map[string]any{"host": "web1", "command": "rm -rf releases/old"}, said: "clean old releases on web1", want: policy.Allow, code: CodeOK},
@@ -305,5 +305,34 @@ func TestRulesCdTracking(t *testing.T) {
 		if v := judgeRules(t, rc); v.Decision != rc.want || v.Code != rc.code {
 			t.Errorf("%s: got %s/%s (%s)", rc.name, v.Decision, v.Code, v.Rationale)
 		}
+	}
+}
+
+// Under a directory the check does not claim to know, only the person's own
+// messages name a target; plan prose does not. A relative target there is
+// always asked about.
+func TestRulesUnknownDirNamesOnlyFromThePerson(t *testing.T) {
+	judge := func(said, plan string) Verdict {
+		c := ruleCase{tool: "bash", args: map[string]any{"command": "cd $X && rm -rf /srv/old"}, said: said}.build()
+		c.Plan = plan
+		v, _ := (Rules{}).Judge(context.Background(), c)
+		return v
+	}
+	if v := judge("tidy up", "1. remove /srv/old"); v.Decision == policy.Allow {
+		t.Fatalf("plan prose allowed a target under an unknown directory: %+v", v)
+	}
+	if v := judge("remove /srv/old", ""); v.Decision != policy.Allow {
+		t.Fatalf("the person's own path was not honoured: %+v", v)
+	}
+	// A relative target is asked about even when the person said the word.
+	c := ruleCase{tool: "bash", args: map[string]any{"command": "cd $X && rm -rf data"}, said: "back up the data folder"}.build()
+	if v, _ := (Rules{}).Judge(context.Background(), c); v.Decision != policy.Ask {
+		t.Fatalf("a bare word allowed a relative target: %+v", v)
+	}
+	// In a known directory the approved plan still names targets, as a runbook relies on.
+	c = ruleCase{tool: "bash", args: map[string]any{"command": "rm -rf /srv/old"}, said: "tidy up"}.build()
+	c.Plan = "1. remove /srv/old"
+	if v, _ := (Rules{}).Judge(context.Background(), c); v.Decision != policy.Allow {
+		t.Fatalf("a known-directory plan-named target: %+v", v)
 	}
 }

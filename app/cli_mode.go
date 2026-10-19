@@ -378,22 +378,19 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		// Back to plan mode, with the plan waiting again: an answer the record
 		// does not hold leaves nothing in force.
 		st.loop.UnbindPlan()
-		if err := modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit); err != nil {
-			surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode could not be put back to plan: " + err.Error()})
-		}
 		st.loop.ReofferPlan(plan)
-		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so the session stays in plan mode and the plan is put to you again after the next turn: " + err.Error()})
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so " +
+			backToPlan(ctx, modes) + " and the plan is put to you again after the next turn: " + err.Error()})
 		return ""
 	}
 	if err := st.loop.AcceptPlan(plan); err != nil {
 		// The accepted answer did not take effect: back to plan mode, and on
 		// the record. The plan stays pending so it is put to the person again.
-		if merr := modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit); merr != nil {
-			surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode could not be put back to plan: " + merr.Error()})
-		}
+		where := backToPlan(ctx, modes)
 		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
 		st.loop.ReofferPlan(plan)
-		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so the session stays in plan mode and the plan is put to you again after the next turn: " + err.Error()})
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so " + where +
+			" and the plan is put to you again after the next turn: " + err.Error()})
 		return ""
 	}
 	st.loop.SetApprovedPlan(plan.Text)
@@ -446,4 +443,14 @@ func (c *cliState) carryState() {
 		carried = append(carried, pendingEvent{agent.EvWorkspaceDirAdded, d})
 	}
 	c.pending = append(carried, c.pending...)
+}
+
+// backToPlan puts the session back into plan mode after a plan answer did
+// not take effect, and says where that left it: the reply must not claim plan
+// mode when the change back could not be made.
+func backToPlan(ctx context.Context, modes *cliModes) string {
+	if err := modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit); err != nil {
+		return "the session could not be put back into plan mode (" + err.Error() + ")"
+	}
+	return "the session stays in plan mode"
 }
