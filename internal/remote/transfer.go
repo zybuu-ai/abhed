@@ -235,6 +235,9 @@ func (t PutTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return err
 	}
+	if a.Host == "" {
+		return nil // nothing names a host yet; Run says what is missing
+	}
 	if _, err := a.check(); err != nil {
 		return err
 	}
@@ -366,6 +369,9 @@ func (t GetTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 	var a getArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return err
+	}
+	if a.Host == "" {
+		return nil // nothing names a host yet; Run says what is missing
 	}
 	p, err := a.check(sess)
 	if err != nil {

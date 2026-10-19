@@ -112,7 +112,7 @@ func (t ApplyTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 		return nil
 	}
 	var a applyArgs
-	if json.Unmarshal(raw, &a) != nil {
+	if json.Unmarshal(raw, &a) != nil || a.Action == "" {
 		return nil
 	}
 	c, err := t.M.cluster(sess, a.Cluster, a.Context)
