@@ -380,7 +380,7 @@ func TestDescribe(t *testing.T) {
 	for _, arch := range archNames {
 		off := testCommand(false).describe(arch)
 		on := testCommand(true).describe(arch)
-		for _, want := range []string{"seccomp command/3 on linux/" + arch, "kills other architectures",
+		for _, want := range []string{"seccomp command/4 on linux/" + arch, "kills other architectures",
 			"process tampering (ptrace, process_vm_readv, process_vm_writev, kcmp, pidfd_getfd)",
 			"clone with namespace flags", "clone3 with ENOSYS", "pivot_root, chroot", "io_uring_register",
 			"kexec_file_load", "keyrings (keyctl, add_key, request_key)", "prctl PR_SET_SECCOMP", "sha256 ",

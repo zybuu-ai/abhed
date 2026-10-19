@@ -308,7 +308,7 @@ func TestFenceDescribe(t *testing.T) {
 	p := fencePolicy(t)
 	p.CPUPercent = 150
 	off := NewFence(p).Describe()
-	for _, want := range []string{"preview", "Landlock", "seccomp command/3", "every socket refused", "memory 4096 MB",
+	for _, want := range []string{"preview", "Landlock", "seccomp command/4", "every socket refused", "memory 4096 MB",
 		"at most 512 processes", "CPU 150%", "not covered", "Abhed itself", "network filtering", "signal your other processes",
 		"no other terminal", "is renamed out of the way once the command ends and moved to ~/.abhed/quarantine where it can be",
 		"when the workspace can no longer be listed", "the session's commands still running are ended", "signals to Abhed's process id",

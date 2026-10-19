@@ -113,10 +113,6 @@ func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy, mounts bool)
 	return fc, nil
 }
 
-// fenceResolvConf is resolvConf over TCP: the fence's seccomp filter lets a
-// command make inet stream sockets alone, so lookups must not use UDP.
-const fenceResolvConf = "# Written by Abhed: names resolve through the session's egress policy.\nnameserver 127.0.0.1\nsearch .\noptions timeout:2 attempts:2 use-vc\n"
-
 // startDNS serves the session's resolver once, for commands in a network
 // namespace of their own, and reports whether it does. Where /etc/resolv.conf
 // is not a file to bind over, names stay unresolved, as before.
@@ -130,7 +126,7 @@ func (e *fenceEgress) startDNS() bool {
 			slog.Warn("egress: the fence's resolver did not start, so names will not resolve inside it", "err", err)
 			return
 		}
-		if err := os.WriteFile(filepath.Join(e.dir, "resolv.conf"), []byte(fenceResolvConf), 0o644); err != nil { // #nosec G306 -- read inside the fence
+		if err := os.WriteFile(filepath.Join(e.dir, "resolv.conf"), []byte(resolvConf), 0o644); err != nil { // #nosec G306 -- read inside the fence
 			slog.Warn("egress: the fence's resolv.conf was not written, so names will not resolve inside it", "err", err)
 			return
 		}

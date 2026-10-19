@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -66,8 +68,54 @@ func TestFenceResolvesAllowedNames(t *testing.T) {
 			t.Fatalf("curl through the resolver:\n%s", got)
 		}
 	}
-	// UDP stays refused: the resolver is reached over TCP alone.
-	if out, _ := fenceRun(t, f, p.Workspace, "exec 3<>/dev/udp/127.0.0.1/53 && echo UDP-OPEN || echo UDP-REFUSED", nil, "call-dns4"); !strings.Contains(out, "UDP-REFUSED") {
-		t.Fatalf("a UDP socket was made under the allowlist:\n%s", out)
+	// The namespace holds loopback alone and no route, so UDP, which the
+	// filter allows here for the resolver, reaches nothing else.
+	if out, _ := fenceRun(t, f, p.Workspace, "grep -cv -e '^Inter' -e '^ face' -e '^ *lo:' /proc/net/dev; grep -c . /proc/net/route; awk '$NF != \"lo\"' /proc/net/ipv6_route | wc -l", nil, "call-dns4"); strings.Join(strings.Fields(out), " ") != "0 1 0" {
+		t.Fatalf("the namespace has more than loopback:\n%s", out)
 	}
+	if _, err := exec.LookPath("python3"); err == nil {
+		udp := `import socket
+for fam, addr in ((socket.AF_INET, "1.1.1.1"), (socket.AF_INET, "10.0.2.3"), (socket.AF_INET6, "2606:4700:4700::1111")):
+    s = socket.socket(fam, socket.SOCK_DGRAM)
+    try:
+        s.sendto(b"x", (addr, 53)); print("SENT", addr)
+    except OSError as e:
+        print("UNREACHABLE", addr, e.errno)
+q = bytes.fromhex("abcd01000001000000000000") + b"\x07allowed\x04test\x00\x00\x01\x00\x01"
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5); s.sendto(q, ("127.0.0.1", 53))
+r = s.recv(512); print("ANSWER", ".".join(str(b) for b in r[-4:]))`
+		out, _ := fenceRun(t, f, p.Workspace, "python3 -c '"+udp+"'", nil, "call-dns5")
+		t.Logf("UDP:\n%s", out)
+		if strings.Contains(out, "SENT") || strings.Count(out, "UNREACHABLE") != 3 || !strings.Contains(out, "ANSWER 198.1") {
+			t.Fatalf("UDP under the fence:\n%s", out)
+		}
+	}
+	// A musl resolver, which sends UDP alone, resolves as glibc's does.
+	if dir := os.Getenv("ABHED_TEST_MUSL_DIR"); dir != "" {
+		g, gp := fenced(t, func(q *Policy) { q.Egress = pol; q.ReadOnlyPaths = append(q.ReadOnlyPaths, dir) })
+		bb := dir + "/lib/ld-musl-" + muslArch() + ".so.1 " + dir + "/bin/busybox"
+		out, _ := fenceRun(t, g, gp.Workspace, bb+" nslookup allowed.test; "+bb+" nslookup other.test || echo OTHER-NONE", nil, "call-musl")
+		t.Logf("busybox (musl) nslookup:\n%s", out)
+		if !strings.Contains(out, "198.1") || !strings.Contains(out, "OTHER-NONE") {
+			t.Fatalf("busybox (musl) nslookup:\n%s", out)
+		}
+		// And through musl's getaddrinfo, which wget uses: with the proxy off,
+		// the connection to the synthetic address is refused after the lookup.
+		out, _ = fenceRun(t, g, gp.Workspace, bb+" wget -Y off -T 2 -O /dev/null http://allowed.test/; "+bb+" wget -Y off -T 2 -O /dev/null http://other.test/", nil, "call-musl2")
+		t.Logf("busybox (musl) wget:\n%s", out)
+		if !strings.Contains(out, "(198.1") || !strings.Contains(out, "bad address 'other.test'") {
+			t.Fatalf("musl's getaddrinfo:\n%s", out)
+		}
+	}
+}
+
+// muslArch is musl's name for this machine, as its loader is named.
+func muslArch() string {
+	if runtime.GOARCH == "arm64" {
+		return "aarch64"
+	}
+	if runtime.GOARCH == "amd64" {
+		return "x86_64"
+	}
+	return runtime.GOARCH
 }

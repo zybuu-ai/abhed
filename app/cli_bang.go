@@ -39,9 +39,9 @@ func runBang(ctx context.Context, st *cliState, r *ui.Renderer, cmd string) {
 		return
 	}
 	out := strings.TrimRight(res.Content, "\n")
-	// The terminal UI draws the call and its output from the record; drawn
-	// again here, the output showed twice.
-	if r == nil || st.unfollow == nil || !r.DrawsToolOutput() {
+	// The renderer draws the call and, in the terminal UI or for a failure,
+	// its output from the record; drawn again here, the output showed twice.
+	if r == nil || st.unfollow == nil || !r.DrawsResult(res.IsError, res.ExitCode) {
 		sf.Append(ui.Block{Kind: ui.BlockToolOut, Text: bangShown(out)})
 	}
 	if len(out) > bangOutputMax {

@@ -912,6 +912,9 @@ func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	// 4. seccomp, on every thread, refusing signals to Abhed by its id.
 	pol := seccomp.Command(s.Network, abhed, abhedGroup)
 	pol.ProxyOnly = s.ProxyOnly
+	// In its own network namespace, which holds only loopback, UDP reaches
+	// nothing but the session's resolver, which a resolver like musl's needs.
+	pol.LoopbackDatagram = s.ProxyOnly && s.PIDNS && s.Egress != nil
 	// Only where Landlock scopes abstract unix sockets: a pathname one is
 	// still reachable through it, as the setting's documentation says.
 	pol.Socketcall = s.Network && s.Socketcall && socketcallOff(int(abi), os.Geteuid() == 0) == ""

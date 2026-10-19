@@ -115,6 +115,16 @@ func (r *Renderer) DrawsToolOutput() bool {
 	return r.dock != nil
 }
 
+// DrawsResult reports whether the renderer draws the output of a recorded
+// result like this one: the dock always does, the line view only when the
+// call failed (an error or a non-zero exit), as lineEvent does.
+func (r *Renderer) DrawsResult(isError bool, exitCode *int) bool {
+	if r.DrawsToolOutput() {
+		return true
+	}
+	return isError || !r.quiet && exitCode != nil && *exitCode != 0
+}
+
 // Usage returns what the renderer has seen of the model's accounting.
 func (r *Renderer) Usage() Usage {
 	r.usageMu.Lock()

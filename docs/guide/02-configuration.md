@@ -572,7 +572,7 @@ without running anything.
   stdin, stdout and stderr through the descriptors it was given, but cannot
   open `/dev/ptmx` or any `/dev/pts/*`, so it can neither read nor write your
   other terminals.
-- **System calls.** The seccomp filter (profile `command/3`) refuses ptrace,
+- **System calls.** The seccomp filter (profile `command/4`) refuses ptrace,
   namespaces, mounts, bpf, kernel keyrings, loading modules and a filter of
   the command's own. It also refuses signals aimed at Abhed: `kill`,
   `tkill`, `tgkill`, `rt_sigqueueinfo` and `rt_tgsigqueueinfo` naming Abhed's
@@ -596,7 +596,8 @@ without running anything.
   connect only to the session's egress proxy's port. In `mount_namespace`
   mode each command also gets a network namespace of its own holding only its
   loopback, where the launcher relays that port to the proxy's socket on the
-  host, so the proxy is the one way out. In `landlock_only` there is no
+  host, so the proxy is the one way out; there UDP sockets are allowed too,
+  for the session's resolver, as they reach only that loopback. In `landlock_only` there is no
   network namespace, and Landlock filters ports, not addresses, so a command
   could reach that port number on any host; the fence refuses the allowlist
   there unless the managed `fence.egress_port_only` is `true`, which accepts
