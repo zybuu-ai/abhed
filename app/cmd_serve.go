@@ -203,6 +203,13 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	defer closeStore()
+	// The OCSF file stops before the store it reads closes.
+	stopOCSF, err := serveOCSF(cfg, eventStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	defer stopOCSF()
 	// Before the store closes: the egress summaries still owed go to it.
 	defer set.CloseEgress()
 

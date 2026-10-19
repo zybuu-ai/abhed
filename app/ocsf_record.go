@@ -1,13 +1,19 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/ocsf"
+	"github.com/zybuu-ai/abhed/server"
+	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
 )
 
@@ -99,4 +105,115 @@ func recordEnds(rec *local.Store) func() (map[string]ocsf.Cursor, error) {
 		}
 		return out, nil
 	}
+}
+
+// serveOCSFWindow is how far back a poll of a Postgres record looks for
+// sessions with new events; the cursors keep anything seen twice from being
+// written twice, and a server that takes over first looks at every session.
+const serveOCSFWindow = 10 * time.Minute
+
+// serveOCSF has abhed serve write its store to the OCSF file when
+// record.ocsf.enabled is set. With Postgres, one server at a time writes,
+// holding an advisory lock, and the cursors are rows every server reads, so
+// a server that takes over goes on where the last stopped. With the memory
+// store, the one process writes, with its cursor beside the file.
+func serveOCSF(cfg config.Config, st server.EventStore) (stop func(), err error) {
+	if !cfg.Record.OCSF.Enabled {
+		return func() {}, nil
+	}
+	o := cfg.Record.OCSF
+	tenant := orDefault(cfg.Storage.Tenant, "default")
+	path := o.Path
+	if path == "" {
+		dir := cfg.Record.Dir
+		if dir == "" {
+			if dir, err = local.DefaultDir(); err != nil {
+				return nil, err
+			}
+		}
+		path = filepath.Join(dir, tenant, "ocsf", "serve.ocsf.jsonl")
+	}
+	opts := ocsf.SinkOptions{Path: path, Version: o.Version, MaxBytes: int64(o.MaxMB) << 20, Keep: o.Keep,
+		Map: ocsfOptions(tenant), Poll: time.Second}
+	release := func() {}
+	switch s := st.(type) {
+	case *store.Postgres:
+		w := s.OCSFWriter("serve")
+		release = w.Close
+		opts.Cursors = pgCursors{w}
+		opts.Read = storeLines(s)
+		ends := func(within time.Duration) func() (map[string]ocsf.Cursor, error) {
+			return func() (map[string]ocsf.Cursor, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				seqs, err := s.EventEnds(ctx, within)
+				return seqCursors(seqs), err
+			}
+		}
+		opts.Sessions, opts.Changed = ends(0), ends(serveOCSFWindow)
+	case *agent.MemStore:
+		opts.Read = storeLines(s)
+		opts.Sessions = func() (map[string]ocsf.Cursor, error) { return seqCursors(s.Ends()), nil }
+	default:
+		return nil, fmt.Errorf("record.ocsf: this event store cannot be written as OCSF")
+	}
+	sink, err := ocsf.OpenSink(opts)
+	if err != nil {
+		release()
+		return nil, fmt.Errorf("record.ocsf: %w", err)
+	}
+	return func() {
+		_ = sink.Close()
+		release()
+	}, nil
+}
+
+// storeLines reads a session's events after a cursor's seq.
+func storeLines(st interface {
+	Since(string, int64) ([]agent.Event, error)
+}) func(string, ocsf.Cursor) ([]ocsf.Line, error) {
+	return func(id string, from ocsf.Cursor) ([]ocsf.Line, error) {
+		evs, err := st.Since(id, from.Seq)
+		out := make([]ocsf.Line, len(evs))
+		for i, ev := range evs {
+			out[i] = ocsf.Line{Event: ev}
+		}
+		return out, err
+	}
+}
+
+func seqCursors(seqs map[string]int64) map[string]ocsf.Cursor {
+	out := make(map[string]ocsf.Cursor, len(seqs))
+	for id, seq := range seqs {
+		out[id] = ocsf.Cursor{Seq: seq}
+	}
+	return out
+}
+
+// pgCursors keeps a sink's cursors in Postgres, behind the writer's lock.
+type pgCursors struct{ w *store.OCSFWriter }
+
+func (c pgCursors) Lock() (func(), error) {
+	unlock, err := c.w.Lock()
+	if errors.Is(err, store.ErrOCSFStandby) {
+		return nil, ocsf.ErrStandby
+	}
+	return unlock, err
+}
+
+func (c pgCursors) Load() (map[string]ocsf.Cursor, bool, error) {
+	rows, begun, err := c.w.Load()
+	out := make(map[string]ocsf.Cursor, len(rows))
+	for id, r := range rows {
+		out[id] = ocsf.Cursor{Seq: r.Seq, Provider: r.Provider, Primed: r.Primed}
+	}
+	return out, begun, err
+}
+
+func (c pgCursors) Save(moved map[string]ocsf.Cursor) error {
+	rows := make(map[string]store.OCSFCursor, len(moved))
+	for id, m := range moved {
+		rows[id] = store.OCSFCursor{Seq: m.Seq, Provider: m.Provider, Primed: m.Primed}
+	}
+	return c.w.Save(rows)
 }

@@ -321,3 +321,11 @@ func TestSinkCatchesUpPastAStaleHead(t *testing.T) {
 		t.Fatal("nothing was read back from the record")
 	}
 }
+
+func readEventsIfAny(t *testing.T, path string) []ocsf.Line {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		return nil
+	}
+	return readEvents(t, path)
+}

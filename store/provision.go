@@ -44,6 +44,8 @@ var runtimeGrants = []struct{ table, privileges string }{
 	{"sandbox_idempotency", "SELECT, INSERT, UPDATE, DELETE"},
 	{"sandbox_audit", "SELECT, INSERT"},
 	{"sandbox_templates", "SELECT, INSERT, DELETE"},
+	// The OCSF file's cursors move forward; none is removed.
+	{"ocsf_cursors", "SELECT, INSERT, UPDATE"},
 }
 
 // Extension lets an edition add its own tables in the same pass, so they are

@@ -613,3 +613,25 @@ CREATE TRIGGER session_keys_no_truncate BEFORE TRUNCATE ON session_keys
   FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
 
 INSERT INTO schema_version (version) VALUES (10) ON CONFLICT DO NOTHING;
+
+-- Schema version 12: the cursors of abhed serve's OCSF file (record.ocsf):
+-- the last event written of each session, by sink. One server writes at a
+-- time, holding an advisory lock; another takes over from these rows.
+CREATE TABLE IF NOT EXISTS ocsf_cursors (
+  tenant_id  TEXT        NOT NULL,
+  sink       TEXT        NOT NULL,
+  session_id TEXT        NOT NULL,
+  seq        BIGINT      NOT NULL,
+  provider   TEXT        NOT NULL DEFAULT '',
+  primed     BOOLEAN     NOT NULL DEFAULT false,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, sink, session_id)
+);
+ALTER TABLE ocsf_cursors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ocsf_cursors FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS ocsf_cursors_tenant_isolation ON ocsf_cursors;
+CREATE POLICY ocsf_cursors_tenant_isolation ON ocsf_cursors
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+INSERT INTO schema_version (version) VALUES (12) ON CONFLICT DO NOTHING;
