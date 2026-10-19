@@ -32,7 +32,14 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "invalid JSON body")
 		return
 	}
-	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	user := UserOf(r.Context())
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), user)
+	owner := ok
+	if !ok {
+		// An approver the edition's gate lets answer this session's asks may
+		// answer its runbook too: that is one approval of every step.
+		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), user)
+	}
 	if !ok {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
@@ -57,6 +64,10 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusConflict, "the answer is for another plan than the one waiting")
 		return
 	}
+	if !owner && plan.Runbook == nil {
+		WriteError(w, http.StatusForbidden, "only the session's owner answers a plan without a runbook")
+		return
+	}
 	record := func(t agent.EventType, payload any) error {
 		_, err := loop.Recorder.Record(t, agent.ActorUser, agent.Trusted, payload)
 		return err
@@ -65,11 +76,15 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 	to := map[string]policy.Mode{planAcceptEdits: policy.ModeAcceptEdits, planApprove: policy.ModeDefault}[req.Decision]
 	switch {
 	case req.Decision == planKeep:
-		loop.TakePlan()
-		if err := record(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning}); err != nil {
+		// The owner withdraws their own plan; an approver's refusal is an answer the gate weighs.
+		if !owner && !s.gateAnswer(w, r, s.planAnswer(live, plan, user, false)) {
+			return
+		}
+		if err := record(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning, By: user}); err != nil {
 			WriteError(w, http.StatusInternalServerError, "the answer could not be recorded")
 			return
 		}
+		loop.TakePlan()
 		WriteJSON(w, http.StatusOK, map[string]string{"decision": planKeep})
 		return
 	case to == "":
@@ -86,32 +101,61 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusPreconditionRequired, fmt.Sprintf("%d steps of the runbook cannot be undone; confirm them with confirm_no_undo", n))
 		return
 	}
-	loop.TakePlan()
-	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)}
-	if rb := plan.Runbook; rb != nil {
-		if err := loop.BindPlan(rb.Hash); err != nil {
-			WriteError(w, http.StatusConflict, "the runbook was not bound: "+err.Error())
-			return
-		}
-		decided.PlanHash, decided.Runbook = rb.Hash, rb
+	if err := loop.PlanOffered(plan); err != nil {
+		WriteError(w, http.StatusConflict, "the runbook cannot be bound: "+err.Error())
+		return
 	}
+	// A runbook answers asks, so the gate that decides who answers them, and
+	// when an answer settles, decides this one: refused, held or settled.
+	if plan.Runbook != nil && !s.gateAnswer(w, r, s.planAnswer(live, plan, user, true)) {
+		return
+	}
+	// Each change is on record before it takes effect; the plan stays
+	// waiting until the runbook is bound.
 	if from := loop.Policy.Mode; from != to {
 		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
-			loop.UnbindPlan()
 			WriteError(w, http.StatusInternalServerError, "the mode change could not be recorded, so it was not made")
 			return
 		}
 		loop.Policy.Mode = to
 	}
-	if err := record(agent.EvPlanDecided, decided); err != nil {
-		s.log.Error("plan decision not recorded", "session", id, "error", err)
+	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to), By: user}
+	if rb := plan.Runbook; rb != nil {
+		decided.PlanHash, decided.Runbook = rb.Hash, rb
 	}
+	if err := record(agent.EvPlanDecided, decided); err != nil {
+		loop.UnbindPlan()
+		s.log.Error("plan decision not recorded", "session", id, "error", err)
+		WriteError(w, http.StatusInternalServerError, "the answer could not be recorded, so no runbook is bound")
+		return
+	}
+	if err := loop.AcceptPlan(plan); err != nil {
+		WriteError(w, http.StatusConflict, "the runbook was not bound: "+err.Error())
+		return
+	}
+	loop.TakePlan()
 	loop.SetApprovedPlan(plan.Text)
 	msg := fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
 	if rb := plan.Runbook; rb != nil {
 		msg += "\n" + agent.RunbookPrompt(*rb)
 	}
 	WriteJSON(w, http.StatusOK, map[string]string{"decision": req.Decision, "mode": string(to), "message": msg})
+}
+
+// planAnswer is an answer to a plan's runbook as the approval gate is told
+// it: one request, named by the plan's hash, for every step.
+func (s *Server) planAnswer(live *liveSession, plan agent.PlanProposed, by string, approved bool) ApprovalAnswer {
+	s.mu.RLock()
+	tenant, owner := live.Tenant, live.User
+	s.mu.RUnlock()
+	args, _ := json.Marshal(map[string]any{"plan": plan.Text, "runbook": plan.Runbook})
+	n := 0
+	if plan.Runbook != nil {
+		n = len(plan.Runbook.Steps)
+	}
+	return ApprovalAnswer{Tenant: tenant, SessionID: live.ID, Owner: owner, Request: "plan:" + plan.Hash,
+		Tool: "exit_plan", Args: redactedArgs(live, args), Reason: fmt.Sprintf("a runbook of %d steps, plan %s", n, plan.Hash),
+		Since: live.Created, By: by, Approved: approved}
 }
 
 // undoable counts a runbook's steps that cannot be undone.
