@@ -241,6 +241,7 @@ func Main(args []string, opts ...Option) int {
 	// No background shell outlives the process that started it.
 	defer endAtExit()
 	a := newApp(opts...)
+	recordAnchors = a.anchors
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.

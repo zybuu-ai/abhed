@@ -44,6 +44,7 @@ type App struct {
 	serverOpts []ServerOptionsHook
 	serveHooks []ServeHook
 	cpHooks    []ControlPlaneHook
+	anchors    []AnchorBuilder
 	// trust is -trust-workspace: the say the command line gives over the
 	// workspace's own configuration file.
 	trust config.TrustChoice

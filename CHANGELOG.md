@@ -377,6 +377,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `app`: `WithRecordAnchor`, `AnchorBuilder` and `RecordHead`: an edition's
+  anchor is given each head of the record beside the managed
+  `record.witness` (a local session's as it is synced, a Postgres session's
+  at each run's end), and stopped as the record closes.
 - `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Options.Supervisor`,
   `Options.Runbook`, `Agent.Verdict`, and the types `AnswerVerdict`,
   `ClaimVerdict`, `Conflict`, `ContractResult`, `RequireResult`, `Runbook`
