@@ -126,3 +126,21 @@ func isManaged(err error) bool {
 	var me *ManagedError
 	return errors.As(err, &me)
 }
+
+// Any managed monitor section keeps the supervisor on.
+func TestManagedMonitorSectionLocksItOn(t *testing.T) {
+	withManaged(t, `{"monitor":{"honeytokens":["MANAGEDHONEY0002"]}}`)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, `{"monitor":{"enabled":false}}`)
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Monitor.Enabled {
+		t.Fatal("a person's false turned off a managed supervisor")
+	}
+	if _, err := cfg.Apply(Overrides{Supervisor: "off"}); !isManaged(err) {
+		t.Fatalf("off under a managed section: %v", err)
+	}
+}

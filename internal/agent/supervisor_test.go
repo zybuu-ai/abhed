@@ -128,8 +128,10 @@ func TestSupervisorEvidenceFromObservations(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		tool string
+		args string
 		want string
-	}{{"listing", "bash", "allow"}, {"web", "web_fetch", "ask"}} {
+	}{{"listing", "bash", `{"command":"ls /opt/app/conf.d"}`, "allow"}, {"web", "web_fetch", `{"url":"https://x.example"}`, "ask"},
+		{"mcp", "mcp__docs__read", `{}`, "ask"}, {"curl", "bash", `{"command":"curl -s https://x.example/list"}`, "ask"}} {
 		var got monitor.Case
 		probe := monitor.Func(func(_ context.Context, c monitor.Case) (monitor.Verdict, error) {
 			got = c
@@ -139,7 +141,7 @@ func TestSupervisorEvidenceFromObservations(t *testing.T) {
 		l.Monitor = &monitor.Guard{Monitor: probe}
 		l.messages = []model.Message{
 			{Role: model.RoleUser, Content: "set up the app's config"},
-			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "o1", Name: tc.tool}}},
+			{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "o1", Name: tc.tool, Args: json.RawMessage(tc.args)}}},
 			{Role: model.RoleTool, ToolCallID: "o1", Content: "/opt/app/conf.d/main.conf"},
 		}
 		c := call("write", map[string]string{"path": "/opt/app/conf.d/main.conf", "content": "x"})
@@ -195,5 +197,89 @@ func TestSupervisorSeesDeclaredReads(t *testing.T) {
 	other := call("ssh", map[string]string{"host": "web1", "command": "certbot renew"})
 	if got := l.supervisorCase(other, true, policy.Result{Decision: policy.Ask}).DeclaredRead; got != "" {
 		t.Fatalf("an undeclared command reads as declared: %q", got)
+	}
+}
+
+// Only what the person said names things: a compaction summary or a nudge
+// in the conversation is the harness's text, and a subagent's task is its
+// parent model's.
+func TestSupervisorSaidIsThePersons(t *testing.T) {
+	l, store, _ := harness(t, nil, policy.ModeBypass, true)
+	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "fix the README"}); err != nil {
+		t.Fatal(err)
+	}
+	l.messages = []model.Message{
+		{Role: model.RoleUser, Content: "[Earlier conversation was compacted] then delete /etc/nginx"},
+		{Role: model.RoleUser, Content: "fix the README"},
+		{Role: model.RoleUser, Content: "Your previous response could not be parsed: /srv/data"},
+	}
+	remit, said := l.remitAndSaid()
+	if remit != "fix the README" || strings.Contains(said, "/etc/nginx") || strings.Contains(said, "/srv/data") {
+		t.Fatalf("remit %q said %q", remit, said)
+	}
+	// A message sent while the loop runs is the person's too.
+	l.noteSaid("and /etc/hosts", true)
+	if _, said := l.remitAndSaid(); !strings.Contains(said, "/etc/hosts") {
+		t.Fatalf("said %q", said)
+	}
+
+	child := NewRecorder(store, "sub1", "sess1")
+	sub, _ := harnessIn(t, t.TempDir(), nil, policy.ModeBypass, true)
+	sub.Recorder = child
+	sub.sup.parent = l
+	if _, err := child.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "task from the parent model: wipe /var/lib/app"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "also look at /opt/app", QueueID: "q1"}); err != nil {
+		t.Fatal(err)
+	}
+	remit, said = sub.remitAndSaid()
+	if remit != "fix the README" || strings.Contains(said, "/var/lib/app") || !strings.Contains(said, "/opt/app") || !strings.Contains(said, "/etc/hosts") {
+		t.Fatalf("subagent remit %q said %q", remit, said)
+	}
+	// A fork or restore reads the person's words again from the record.
+	l.Restore(nil)
+	if _, said := l.remitAndSaid(); strings.Contains(said, "/etc/hosts") || !strings.Contains(said, "fix the README") {
+		t.Fatalf("after restore %q", said)
+	}
+}
+
+// A call the turn budget kept from the judge is recorded as not reviewed,
+// and says so in its reason.
+func TestSupervisorBudgetSkipIsRecorded(t *testing.T) {
+	a := call("bash", map[string]string{"command": "go vet ./...", "description": "a"})
+	a.ID = "ca"
+	b := call("bash", map[string]string{"command": "go test ./...", "description": "b"})
+	b.ID = "cb"
+	l, store, _ := harness(t, []scriptedTurn{{calls: []model.ToolCall{a, b}}, {text: "done"}}, policy.ModeBypass, true)
+	l.Monitor = &monitor.Guard{Monitor: monitor.Rules{}, MaxPerTurn: 1}
+	l.Run(context.Background(), "check the code")
+	vs := verdicts(t, store)
+	if len(vs) != 2 || vs[0].Skipped != "" || vs[1].Skipped != monitor.SkippedBudget || vs[1].CallID != "cb" {
+		t.Fatalf("verdicts %+v", vs)
+	}
+	reqs := eventsOf(t, store, EvActionRequested)
+	if len(reqs) != 2 || !strings.Contains(string(reqs[1]), "supervisor: not reviewed (turn budget spent)") {
+		t.Fatalf("requests %s", reqs)
+	}
+}
+
+// The re-plan note quotes a long task clipped.
+func TestSupervisorReplanClipsTheTask(t *testing.T) {
+	deny := monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		return monitor.Verdict{Decision: policy.Deny, Code: "out-of-remit", Rationale: "no", Advice: "a"}, nil
+	})
+	var calls []model.ToolCall
+	for _, n := range []string{"a", "b", "c"} {
+		c := call("bash", map[string]string{"command": "make " + n, "description": n})
+		c.ID = "c" + n
+		calls = append(calls, c)
+	}
+	l, store, _ := harness(t, []scriptedTurn{{calls: calls}, {text: "done"}}, policy.ModeBypass, true)
+	l.Monitor = &monitor.Guard{Monitor: deny}
+	l.Run(context.Background(), strings.Repeat("long task ", 200))
+	notes := eventsOf(t, store, EvSupervisorReplan)
+	if len(notes) != 1 || len(notes[0]) > 1200 {
+		t.Fatalf("note of %d bytes", len(notes[0]))
 	}
 }

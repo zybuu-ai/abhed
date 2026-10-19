@@ -101,6 +101,9 @@ func Text(r Report) string {
 	if s := r.Supervisor; s != nil {
 		fmt.Fprintf(&b, "  supervisor %d reviewed · %d tightened · %d unavailable · %d corrections · %d re-plans   slowest %s",
 			s.Reviewed, s.Tightened, s.Unavailable, s.Corrections, s.Replans, dur(s.MaxLatencyMS))
+		if s.Unreviewed > 0 {
+			fmt.Fprintf(&b, "   %d not reviewed (turn budget)", s.Unreviewed)
+		}
 		if len(s.Judges) > 0 {
 			fmt.Fprintf(&b, "   judge %s", strings.Join(s.Judges, ", "))
 		}

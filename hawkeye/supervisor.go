@@ -11,7 +11,9 @@ import (
 
 // SupervisorStats is what the supervisor did in the session.
 type SupervisorStats struct {
-	Reviewed    int            `json:"reviewed"`
+	Reviewed int `json:"reviewed"`
+	// Unreviewed are the calls the turn budget kept from the judge.
+	Unreviewed  int            `json:"unreviewed,omitempty"`
 	Tightened   int            `json:"tightened"`
 	Unavailable int            `json:"unavailable"`
 	Corrections int            `json:"corrections"`
@@ -53,6 +55,10 @@ func supervisor(evs []agent.Event, calls []Call) *SupervisorStats {
 				continue
 			}
 			seen = true
+			if v.Skipped != "" {
+				s.Unreviewed++
+				continue
+			}
 			s.Reviewed++
 			if v.After != v.Before {
 				s.Tightened++

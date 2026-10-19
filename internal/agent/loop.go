@@ -544,6 +544,7 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 		}
 		n++
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+		l.noteSaid(text, true)
 		l.setPrompt(text)
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
@@ -744,6 +745,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	l.noteSaid(text, false)
 	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
@@ -1102,6 +1104,7 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	l.messages = append([]model.Message(nil), msgs...)
+	l.forgetSaid()
 	l.UnbindPlan() // a runbook binds the conversation that approved it, not one rebuilt from a record
 	if turns > l.turns {
 		l.turns = turns
@@ -2475,6 +2478,14 @@ func (l *Loop) noteReasoning(text string) {
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
 	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
+	if out.Skipped == monitor.SkippedBudget {
+		// Unreviewed, and said so: in the record and in the reason every
+		// approver, and a runbook step's label, shows.
+		l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{CallID: call.ID, Before: string(before.Decision),
+			After: string(before.Decision), Skipped: out.Skipped})
+		before.Reason = strings.TrimPrefix(before.Reason+"; supervisor: not reviewed ("+out.Skipped+")", "; ")
+		return before
+	}
 	if out.Skipped != "" {
 		return before
 	}
