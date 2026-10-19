@@ -182,10 +182,12 @@ All notable changes to Abhed are recorded here. The format follows
   with the plan. A call made exactly as the next step then runs without
   asking, recorded as `plan.step` with the plan's hash; any other change
   asks, saying it is not in the approved plan, even where a rule or the mode
-  would allow it. Deny rules, hooks, the supervisor, an ask rule the managed
-  configuration lists and the sandbox still apply, steps that
-  cannot be undone are confirmed a second time, and a rewound or continued
-  session asks for each step again
+  would allow it. Deny rules, hooks, the supervisor and the sandbox still
+  apply; an ask rule of the managed configuration or of an edition's policy
+  layer, and a command too tangled to read in full, still ask. Steps that
+  cannot be undone are confirmed a second time, an edition's approval gate
+  decides a runbook as one answer, and a new plan, a rewind or a continued
+  session lets the runbook go
   ([Runbooks](docs/guide/28-runbooks.md)).
 - The plan card lists a runbook's steps in the CLI, the workbench, the
   console and, over ACP, Abhed Studio, which now gets plan mode's
@@ -206,7 +208,8 @@ All notable changes to Abhed are recorded here. The format follows
 ### Changed
 
 - `plan.proposed` carries the plan's `hash`, and its `runbook` when it has
-  one; `plan.decided` carries the `plan_hash` and runbook an accept bound
+  one; `plan.decided` carries the `plan_hash` and runbook an accept bound,
+  and on a server who answered (`by`)
   ([Data model](docs/architecture/10-data-model.md)).
 
 ### Fixed

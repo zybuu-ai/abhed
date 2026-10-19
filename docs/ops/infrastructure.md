@@ -505,7 +505,10 @@ Both always ask unless an allow rule covers them, and read as
 nginx configuration from `web1` and nothing else. Rules on `ssh` do not
 cover them. A secret needs its own `secret(NAME)` rule; the workspace file
 is judged as a `read` (for `ssh_put`) or `write` (for `ssh_get`) of it would
-be, so `deny read(*.key)` and `ask write(*.conf)` hold here too. The
+be, so `deny read(*.key)` and `ask write(*.conf)` hold here too. That
+judgement is by the rules alone: an extension hook judges the `ssh_put` or
+`ssh_get` call itself, with the file's path in its arguments, and is not
+asked again about a `read` or `write` that is not being made. The
 approval names the account, address, path, source and mode, and the result
 gives the size and sha256 of what moved (for a stored secret, its
 fingerprint instead, as for Secrets above); neither, nor the record, holds
