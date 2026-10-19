@@ -629,13 +629,14 @@ func MapAudit(a controlplane.AuditEvent, opts Options) Event {
 		ID: a.SandboxID, SessionID: a.SandboxID, Seq: a.Seq, Type: agent.EventType("controlplane." + a.Action),
 		Actor: agent.ActorSystem, Trust: agent.Trusted, CreatedAt: a.At,
 	}}}
-	verb := a.Action
-	if i := strings.IndexAny(verb, "._"); i > 0 && auditActivities[verb[:i]] != 0 {
-		verb = verb[:i]
-	}
+	// The verb is the action itself or a part of it: create, template.create.
 	act, name := 99, "Other"
-	if id, ok := auditActivities[verb]; ok {
-		act, name = id, caser(verb)
+	parts := strings.FieldsFunc(a.Action, func(r rune) bool { return r == '.' || r == '_' })
+	for i := len(parts) - 1; i >= 0; i-- {
+		if id, ok := auditActivities[parts[i]]; ok {
+			act, name = id, caser(parts[i])
+			break
+		}
 	}
 	b.classify(6003, act, name)
 	user := map[string]any{"name": a.Principal, "type_id": 1, "type": "User"}

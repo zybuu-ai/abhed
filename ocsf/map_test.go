@@ -10,7 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
@@ -318,5 +320,35 @@ func golden(t *testing.T, path string, got []byte) {
 				t.Fatalf("%s differs at line %d:\n got %s\nwant %s\n(run go test ./ocsf -update if the change is meant)", path, i+1, gl, wl)
 			}
 		}
+	}
+}
+
+// A control-plane row is API Activity in every version, its principal the actor.
+func TestMapAudit(t *testing.T) {
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	for _, a := range []controlplane.AuditEvent{
+		{Seq: 1, At: at, Principal: "alice", Action: "create", SandboxID: "sb-1", Outcome: controlplane.OutcomeRequested},
+		{Seq: 2, At: at, Principal: "alice", Action: "template.delete", SandboxID: "", Outcome: controlplane.OutcomeOK},
+		{Seq: 3, At: at, Principal: controlplane.DriverPrincipal, Action: "sandbox.snapshot", SandboxID: "sb-1", Outcome: controlplane.OutcomeOK,
+			Detail: map[string]string{"snapshot": "s1"}},
+		{Seq: 4, At: at, Principal: "bob", Action: "exec", SandboxID: "sb-1", Outcome: controlplane.OutcomeFailed, Code: "denied"},
+	} {
+		ev := MapAudit(a, testOpts)
+		for _, v := range Versions {
+			down, err := Downgrade(ev, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Validate(down); err != nil {
+				t.Errorf("%s in %s: %v", a.Action, v, err)
+			}
+		}
+		user := ev["actor"].(map[string]any)["user"].(map[string]any)
+		if user["name"] != a.Principal {
+			t.Errorf("%s: actor %v", a.Action, user)
+		}
+	}
+	if act := MapAudit(controlplane.AuditEvent{Action: "template.delete", At: at}, testOpts)["activity_id"]; act != 4 {
+		t.Fatalf("template.delete is activity %v", act)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/ocsf"
 )
@@ -82,4 +83,35 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.Seq, data)
 	}
 	s.streamSession(w, r, write)
+}
+
+// sandboxEventsOCSF is a page of a sandbox's record as OCSF API Activity:
+// GET /v1/sandboxes/{id}:events?format=ocsf[&version=V].
+func (s *Server) sandboxEventsOCSF(w http.ResponseWriter, r *http.Request, items []controlplane.AuditEvent, next int64) {
+	version := r.URL.Query().Get("version")
+	if version == "" {
+		version = ocsf.Version
+	}
+	if err := ocsf.CheckVersion(version); err != nil {
+		writeCPError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	host, _ := os.Hostname()
+	opts := ocsf.Options{Hostname: host, Tenant: TenantOf(r.Context())}
+	out := make([]ocsf.Event, 0, len(items))
+	for _, a := range items {
+		ev := ocsf.MapAudit(a, opts)
+		if version != ocsf.Version {
+			var err error
+			if ev, err = ocsf.Downgrade(ev, version); err != nil {
+				writeCPError(w, http.StatusInternalServerError, "internal", err.Error())
+				return
+			}
+		}
+		out = append(out, ev)
+	}
+	_ = json.NewEncoder(w).Encode(struct {
+		Items []ocsf.Event `json:"items"`
+		Next  int64        `json:"next,omitempty"`
+	}{out, next})
 }
