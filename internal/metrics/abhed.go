@@ -67,8 +67,9 @@ type Abhed struct {
 	refused       *Counter
 	planted       *Counter
 
-	mu    sync.Mutex
-	calls map[string]*call
+	mu      sync.Mutex
+	calls   map[string]*call
+	running func() int
 }
 
 // call is what the decision of one tool call needs from its request.
@@ -85,7 +86,7 @@ const maxCalls = 10000
 // New makes the metric set on a new registry.
 func New() *Abhed {
 	r := NewRegistry()
-	return &Abhed{
+	m := &Abhed{
 		Registry: r,
 		decisions: r.Counter("abhed_policy_decisions_total",
 			"Tool calls by the policy decision (allow, ask, deny), the step that made it, and the tool.", "decision", "step", "tool"),
@@ -147,11 +148,26 @@ func New() *Abhed {
 			"State a command planted that the sandbox found and moved, by what (abhed_state, git).", "what"),
 		calls: map[string]*call{},
 	}
+	r.GaugeFunc("abhed_sessions_running", "Sessions running in this process.", m.runningSessions)
+	return m
 }
 
-// RunningSessions exports fn as the number of sessions running in this process.
+// RunningSessions makes fn the source of the number of sessions running in
+// this process; the last server to call it is the one counted.
 func (m *Abhed) RunningSessions(fn func() int) {
-	m.Registry.GaugeFunc("abhed_sessions_running", "Sessions running in this process.", func() float64 { return float64(fn()) })
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.running = fn
+}
+
+func (m *Abhed) runningSessions() float64 {
+	m.mu.Lock()
+	fn := m.running
+	m.mu.Unlock()
+	if fn == nil {
+		return 0
+	}
+	return float64(fn())
 }
 
 // RecordWrite counts one write to the named record.
