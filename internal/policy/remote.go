@@ -75,6 +75,30 @@ type remoteRead struct {
 	narrow   bool
 	complete bool
 	stdin    bool // the call writes a stored secret to the command's stdin
+	// quotedOnly is a command whose only shell control text is inside
+	// single quotes, which the shell passes as written.
+	quotedOnly bool
+}
+
+// withoutSingleQuoted is s with the text inside each pair of single quotes
+// dropped; an unclosed quote keeps the rest.
+func withoutSingleQuoted(s string) string {
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(s, '\'')
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		j := strings.IndexByte(s[i+1:], '\'')
+		if j < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		b.WriteString("''")
+		s = s[i+j+2:]
+	}
 }
 
 // readRemote reads an ssh call's command. A line the parser cannot read in
@@ -83,7 +107,10 @@ func readRemote(host, command string) remoteRead {
 	canon, cmds, allow, narrow, complete := shellRead(command, asCommand)
 	cmds = withBaseNames(cmds)
 	r := remoteRead{host: host, command: command, canon: canon, commands: cmds, complete: complete}
-	r.narrow = narrow && !canon.Unparsed() && !canon.Incomplete() && canon.Opaque() == "" && !canon.ProgramHidden()
+	parsed := !canon.Unparsed() && !canon.Incomplete() && canon.Opaque() == "" && !canon.ProgramHidden()
+	r.narrow = narrow && parsed
+	// Shell control text only inside single quotes, as a query format's ${…}.
+	r.quotedOnly = !narrow && parsed && !canon.Reworded && !hasShellControl(withoutSingleQuoted(command))
 	seen := map[string]bool{}
 	add := func(s string) {
 		if !seen[s] {

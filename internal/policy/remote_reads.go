@@ -34,7 +34,11 @@ func ParseRemoteRead(p string) (Rule, error) {
 		return Rule{}, fmt.Errorf("ssh.read_commands: an entry is empty")
 	}
 	canon := tools.CanonicalCommand(s)
-	if hasShellControl(s) || canon.Reworded || canon.Unparsed() || canon.Incomplete() {
+	control := hasShellControl(s)
+	if control && knownReads[rawProgram(s)].quotedValues && !hasShellControl(withoutSingleQuoted(s)) {
+		control = false // a query format's ${…}, in single quotes
+	}
+	if control || canon.Reworded || canon.Unparsed() || canon.Incomplete() {
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not one simple command "+
 			"(write an exact command or a pattern such as \"systemctl status *\"; no ; & | < > ( ) ` ${ or newline)", p)
 	}
@@ -76,7 +80,12 @@ func ParseRemoteRead(p string) (Rule, error) {
 // or "": only one simple command, whose words the text shows, that no
 // check reads as destructive.
 func (e *Engine) remoteReadRule(rr remoteRead) string {
-	if len(e.RemoteReads) == 0 || !rr.narrow || !rr.complete || rr.canon.Hidden || rr.canon.IFSSplit {
+	if len(e.RemoteReads) == 0 || !rr.complete || rr.canon.Hidden || rr.canon.IFSSplit {
+		return ""
+	}
+	// A query format's ${…} in single quotes is read only for the forms that take one.
+	quotedFormat := rr.quotedOnly && knownReads[rawProgram(rr.command)].quotedValues
+	if !rr.narrow && !quotedFormat {
 		return ""
 	}
 	// A secret on stdin may come back in what the command prints, transformed
@@ -119,7 +128,7 @@ func wildcardReadOK(text string) bool {
 		return false
 	}
 	words, dollar, glob := shellWords(text)
-	if len(words) == 0 || spec.strict && (dollar || glob) {
+	if len(words) == 0 || dollar || glob {
 		return false
 	}
 	return readCallOK(spec, words[1:], func(string) bool { return false })
@@ -212,7 +221,7 @@ var commandRunners = map[string]bool{
 	"guile": true, "racket": true, "sbcl": true, "ocaml": true, "ghci": true, "runghc": true, "swift": true,
 	"dotnet": true, "mono": true, "qjs": true, "jjs": true, "jshell": true, "nix-shell": true, "nix": true,
 	"flatpak": true, "snap": true, "toolbox": true, "distrobox": true, "lxc": true, "lxc-exec": true,
-	"virsh": true, "incus": true, "ctr": true, "nerdctl": true, "runc": true, "crun": true, "oc": true, "helm": true,
+	"tini": true, "dumb-init": true, "catatonit": true, "s6-svscan": true, "virsh": true, "incus": true, "ctr": true, "nerdctl": true, "runc": true, "crun": true, "oc": true, "helm": true,
 }
 
 // RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read, or
