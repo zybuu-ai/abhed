@@ -13,6 +13,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -74,7 +75,8 @@ func TestPutAFileAndASecret(t *testing.T) {
 
 	keyDst := filepath.Join(remote, "site.key")
 	res = call(t, put, sess, map[string]any{"host": "vm1", "remote_path": keyDst, "secret": "SITE_KEY"})
-	if res.IsError || strings.Contains(res.Content, "TUFURVJJQUw") || !strings.Contains(res.Content, shaHex([]byte(keyPEM))) {
+	if res.IsError || strings.Contains(res.Content, "TUFURVJJQUw") || strings.Contains(res.Content, shaHex([]byte(keyPEM))) ||
+		!strings.Contains(res.Content, "fingerprint "+secrets.Fingerprint([]byte(keyPEM))) {
 		t.Fatalf("put secret: %s", res.Content)
 	}
 	info, err := os.Stat(keyDst)

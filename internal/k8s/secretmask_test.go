@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 // secretServer answers every request with body, as a cluster holding a Secret would.
@@ -46,13 +48,16 @@ func TestGetSecretMasksValues(t *testing.T) {
 		if res.IsError {
 			t.Fatalf("get %s: %s", resource, res.Content)
 		}
-		for _, leak := range []string{"S0VZLU1BVEVSSUFM", "KEY-MATERIAL", "hunter2-plain", "Q0VSVA=="} {
+		// Neither a value nor its plain sha256, which a short one is guessed from.
+		for _, leak := range []string{"S0VZLU1BVEVSSUFM", "KEY-MATERIAL", "hunter2-plain", "Q0VSVA==",
+			sha("KEY-MATERIAL"), sha("hunter2-plain"), "sha256"} {
 			if strings.Contains(res.Content, leak) {
 				t.Errorf("get %s showed a value %q:\n%s", resource, leak, res.Content)
 			}
 		}
 		for _, want := range []string{`"tls.key"`, `"tls.crt"`, `"password"`,
-			"12 bytes, sha256 " + sha("KEY-MATERIAL"), "13 bytes, sha256 " + sha("hunter2-plain"),
+			"12 bytes, fingerprint " + secrets.Fingerprint([]byte("KEY-MATERIAL")),
+			"13 bytes, fingerprint " + secrets.Fingerprint([]byte("hunter2-plain")),
 			`"team": "web"`, "withheld: holds the Secret's values"} {
 			if !strings.Contains(res.Content, want) {
 				t.Errorf("get %s: want %q in:\n%s", resource, want, res.Content)

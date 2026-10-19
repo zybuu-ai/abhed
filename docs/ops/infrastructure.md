@@ -41,13 +41,19 @@ construction rather than by correctly interpreting text.
 **A Secret's values never reach the model.** `k8s_get` of `secrets`, a
 single one or a list, and what the cluster answers a `k8s_apply` of a
 Secret, show each key of `data` and `stringData` with the value's length
-and sha256 in its place (`"tls.key": "[withheld: 1704 bytes, sha256 …]"`),
-for `data` of the decoded value. The `kubectl.kubernetes.io/last-applied-configuration`
+and a fingerprint in its place (`"tls.key": "[withheld: 1704 bytes,
+fingerprint 3f9a0c…, comparable only while this Abhed runs]"`), for `data`
+of the decoded value. The `kubectl.kubernetes.io/last-applied-configuration`
 annotation, which holds the whole object, is withheld too, and a response to
 a `secrets` read that is not JSON is not shown at all. The same text is what
-the record and every screen get. The hash lets you check a value you hold
-against the cluster's; a short password can be guessed from it offline, so
-keep `k8s_get(*/*/secrets)` denied where that matters.
+the record and every screen get. The fingerprint is an
+HMAC-SHA256 of the value under a random key Abhed makes when it starts and
+never writes anywhere, cut to 12 hex digits. Two fingerprints compare only
+while that Abhed process runs (a value changed by a write shows as a new
+fingerprint), and one in the record cannot be used to guess the value
+offline, as a plain sha256 of a short password could; nor can it be
+checked against a value outside Abhed. Keys and metadata are still read, so
+keep `k8s_get(*/*/secrets)` denied where even those matter.
 
 **Every write is dry-run first.** Before anyone is asked, `k8s_apply` sends
 the request it will make as a server-side dry run (`dryRun=All`), so the
@@ -56,7 +62,7 @@ it stands. The approval then names what would change, field by field, after
 the cluster and the credential: `dry run: 2 field(s) change: spec.replicas:
 2 → 3; spec.template.spec.containers[0].image: "nginx:1.25" → "nginx:1.27"`,
 or `dry run: creates Deployment demo/web`. Status and metadata noise are
-left out, a Secret's values are shown only as length and sha256, and past
+left out, a Secret's values are shown only as length and fingerprint, and past
 20 fields the rest are counted. The same text is in `action.requested`.
 The request that was dry-run is the one sent once approved, byte for byte;
 a restart's timestamp included. A change the dry run refuses is refused
@@ -84,12 +90,14 @@ does, and each file is judged as a `read` of it would be, so
 `deny read(*.key)` holds here too. The rules read the call as an `apply` of
 a Secret in its namespace, and the manifest they, the approver and the
 record see is the Secret without its values. The approval names each
-source with its value's length and sha256:
+source with its value's length, and a workspace file's sha256 or a stored
+secret's fingerprint:
 `builds Secret site-tls (kubernetes.io/tls) with tls.crt from file
-/work/certs/site.crt [withheld: 1310 bytes, sha256 …], tls.key from stored
-secret SITE_TLS_KEY [withheld: …]`. The dry run before it sends
-placeholders, so no value leaves Abhed before a person says yes, and the
-diff compares the live Secret's values with the ones read by hash. A
+/work/certs/site.crt [1310 bytes, sha256 …], tls.key from stored
+secret SITE_TLS_KEY [withheld: 1704 bytes, fingerprint …]`. The dry run
+before it sends placeholders, so no value leaves Abhed before a person says
+yes, and the diff compares the live Secret's values with the ones read by
+fingerprint. A
 source that cannot be read, a certificate that is not one, values over
 1 MiB in all, or a call with both a `manifest` and `secret_from` is refused
 before anyone is asked, naming the source and never its content.
@@ -494,7 +502,8 @@ cover them. A secret needs its own `secret(NAME)` rule; the workspace file
 is judged as a `read` (for `ssh_put`) or `write` (for `ssh_get`) of it would
 be, so `deny read(*.key)` and `ask write(*.conf)` hold here too. The
 approval names the account, address, path, source and mode, and the result
-gives the size and sha256 of what moved; neither, nor the record, holds
+gives the size and sha256 of what moved (for a stored secret, its
+fingerprint instead, as for Secrets above); neither, nor the record, holds
 the content. A file over `transfer_max_mb` (16 MiB by default, at most
 1024) is refused before it is read or sent, and a call that cannot succeed
 (an unknown host, a relative or unclean path, a source that cannot be read)
